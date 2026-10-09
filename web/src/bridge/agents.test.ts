@@ -481,3 +481,20 @@ test("what the window open on an agent does when the server says a mission chang
   assert.equal(does("modified", AGENT, null), "stay");
   assert.equal(does("reset", null, null), "stay");
 });
+
+test("an action whose data is a briefing, not a button's number, is one of the agent's special interactions", () => {
+  const talk = (second: unknown) => decodeConversation({
+    type: "tuple",
+    items: [
+      { type: "tuple", items: [{ type: "tuple", items: [127958, 1382] }, { type: "list", items: [{ type: "tuple", items: [816, 3] }, { type: "tuple", items: [900, second] }] }] },
+      { type: "dict", entries: [] },
+    ],
+  } as JsonValue);
+  assert.equal(talk(9).specialInteractions, false);
+  assert.equal(talk({ type: "dict", entries: [["Mission Title ID", 58607], ["ContentID", 2156]] }).specialInteractions, true);
+  // An empty dict is not a briefing, and a list is not a dict.
+  assert.equal(talk({ type: "dict", entries: [] }).specialInteractions, false);
+  assert.equal(talk({ type: "list", items: [1] }).specialInteractions, false);
+  // No actions at all.
+  assert.equal(decodeConversation({ type: "tuple", items: [{ type: "tuple", items: [{ type: "tuple", items: [1, 2] }, { type: "list", items: [] }] }, { type: "dict", entries: [] }] } as JsonValue).specialInteractions, false);
+});

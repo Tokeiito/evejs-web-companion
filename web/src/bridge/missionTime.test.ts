@@ -4,7 +4,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { MISSION_TIME_LABELS, MISSION_TIME_WORD_LABELS, decodeMissionTimes, missionTimeText } from "./missionTime.ts";
+import { MISSION_TIME_LABELS, MISSION_TIME_WORD_LABELS, decodeMissionTimes, missionTimeShown, missionTimeText } from "./missionTime.ts";
+import type { AgentConversation } from "../store/types.ts";
 import { BLUE_TIME, INTERVAL_LABELS, TIME_PARTS } from "./timeInterval.ts";
 
 const { SEC, MIN, HOUR } = BLUE_TIME;
@@ -89,4 +90,27 @@ test("the labels are the client's", () => {
     expiresAt: "UI/Agents/Dialogue/ThisMissionExpiresAt",
   });
   assert.deepEqual([...MISSION_TIME_WORD_LABELS].sort(), Object.values(MISSION_TIME_LABELS).sort());
+});
+
+test("the window shows a mission's time unless the agent said not yet or offers a special interaction", () => {
+  const talk = (info: Partial<AgentConversation["lastActionInfo"]> = {}, special?: boolean): AgentConversation => ({
+    agentSays: "",
+    agentSaysWords: null,
+    contentID: 2156,
+    actions: [],
+    ...(special === undefined ? {} : { specialInteractions: special }),
+    lastActionInfo: { missionCompleted: null, missionDeclined: null, missionQuit: null, loyaltyPoints: null, ...info },
+  });
+  assert.equal(missionTimeShown(talk()), true);
+  assert.equal(missionTimeShown(talk({}, false)), true);
+  // Whatever the last action was: the line goes with what the agent says, not with the objectives.
+  assert.equal(missionTimeShown(talk({ missionCompleted: true, missionDeclined: true, missionQuit: true })), true);
+  assert.equal(missionTimeShown(talk({ missionCantReplay: 0 })), true);
+  assert.equal(missionTimeShown(talk({ missionCantReplay: null })), true);
+  // "Not yet": the replay timer's place.
+  assert.equal(missionTimeShown(talk({ missionCantReplay: 36_000_000_000 })), false);
+  // A special interaction's place.
+  assert.equal(missionTimeShown(talk({}, true)), false);
+  // No window.
+  assert.equal(missionTimeShown(null), false);
 });

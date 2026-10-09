@@ -21,6 +21,7 @@
 import { formatTemplate, plainText } from "./clientWords.ts";
 import { BLUE_TIME, fmtTimeInterval } from "./timeInterval.ts";
 import { readDictEntry, unwrapLong, type JsonValue } from "./wire.ts";
+import type { AgentConversation } from "../store/types.ts";
 
 export const MISSION_TIME_LABELS = Object.freeze({
   declineGeneric: "UI/Agents/StandardMission/DeclineMessageGeneric",
@@ -48,6 +49,15 @@ export function decodeMissionTimes(briefingResult: JsonValue | undefined): Missi
     declineTime: unwrapLong(readDictEntry(briefingResult, "Decline Time")),
     expirationTime: unwrapLong(readDictEntry(briefingResult, "Expiration Time")),
   };
+}
+
+/**
+ * Whether the window shows the mission's time at all (GetBriefingHTML, 232 to 250): not when the agent
+ * has answered "not yet", where a replay timer takes its place, and not beside one of the agent's
+ * special interactions.
+ */
+export function missionTimeShown(conversation: AgentConversation | null): boolean {
+  return conversation !== null && !conversation.lastActionInfo.missionCantReplay && conversation.specialInteractions !== true;
 }
 
 type Templates = Readonly<Record<string, string | null | undefined>>;

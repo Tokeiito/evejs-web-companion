@@ -184,6 +184,9 @@ export function decodeConversation(result: JsonValue): AgentConversation {
     agentSaysWords,
     contentID: toNumber(saysItems[1]),
     actions,
+    // An action whose data is a dict is one of the agent's special interactions, not a button
+    // (agentDialogueWindow.GetBriefingHTML: type(actionData) == dict).
+    specialInteractions: seqItems(inner[1]).some((entry) => dictEntries(seqItems(entry)[1]).length > 0),
     lastActionInfo: {
       missionCompleted: toBoolOrNull(readDict(lastActionInfo, "missionCompleted")),
       missionDeclined: toBoolOrNull(readDict(lastActionInfo, "missionDeclined")),

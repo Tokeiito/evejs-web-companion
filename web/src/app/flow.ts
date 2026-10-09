@@ -74,6 +74,7 @@ import {
   type MissionChange,
 } from "../bridge/agents.ts";
 import { sessionChangeNames } from "../bridge/sessionChange.ts";
+import { decodeMissionTimes } from "../bridge/missionTime.ts";
 import {
   decodeCashBalance,
   decodeCharStandings,
@@ -4196,6 +4197,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       type: "agents/briefing",
       briefing: objectivesShown(conversation.lastActionInfo) ? decodeBriefing(reads.briefing, reads.objective) : null,
     });
+    // The briefing's two times belong to what the agent says, not to the objectives: they are kept whatever the last action was.
+    store.apply({ type: "agents/mission-times", times: decodeMissionTimes(reads.briefing) });
   }
 
   // R6 — the post-completion reward readout (Step 12): wallet / LP / standings.

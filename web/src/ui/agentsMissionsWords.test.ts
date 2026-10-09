@@ -46,9 +46,26 @@ const TEMPLATES: Record<string, string | null> = {
   "#58607": "A Made-Up Errand to {[location]objectiveLocationSystemID.name}",
   "#58700": "Another Errand",
   "#129932": "Take it to {[location]objectiveLocationSystemID.name}.",
+  "UI/Agents/StandardMission/DeclineMessageGeneric": "<i>Saying no too often costs standing.</i>",
+  "UI/Agents/StandardMission/DeclineMessageTimeLeft": "Saying no inside {timeRemaining} costs standing.",
+  "UI/Agents/Dialogue/ThisMissionExpiresAt": "Gone at {[datetime]expireTime}",
+  "/Carbon/UI/Common/WrittenDateTimeQuantity/Hour": '{[numeric]units} {[numeric]units-> "hr", "hrs"}',
+  "/Carbon/UI/Common/WrittenDateTimeQuantity/Minute": '{[numeric]units} {[numeric]units-> "mn", "mns"}',
+  "/Carbon/UI/Common/WrittenDateTimeQuantity/ListForm": "{firstPart} plus {secondPart}",
+  "UI/Common/Formatting/ListGenericDelimiter": "; ",
 };
 
-function panel(options: { words: boolean | "none of them"; talking: boolean; buttons?: readonly number[]; briefed?: boolean; briefedTitleID?: number | null }): string {
+function panel(options: {
+  words: boolean | "none of them";
+  talking: boolean;
+  buttons?: readonly number[];
+  briefed?: boolean;
+  briefedTitleID?: number | null;
+  /** What the briefing says of time, the last action's "not yet", and whether a special interaction is on offer. */
+  times?: { declineTime: bigint | null; expirationTime: bigint | null } | null;
+  cantReplay?: number | null;
+  special?: boolean;
+}): string {
   const store = createClientStore();
   store.apply({ type: "names/resolved", entries: { [`agent:${AGENT}`]: "Antaken Kamola", "agent:3009999": "Some Other Agent", "system:30002780": "Muvolailen" } });
   store.apply({
@@ -67,9 +84,13 @@ function panel(options: { words: boolean | "none of them"; talking: boolean; but
         agentSaysWords: { label: null, parameters: null, text: null, messageID: 129932 },
         contentID: 2156,
         actions: (options.buttons ?? []).map((buttonType, index) => ({ actionID: 800 + index, buttonType, label: `button ${buttonType}` })),
-        lastActionInfo: { missionCompleted: null, missionDeclined: null, missionQuit: null, loyaltyPoints: null },
+        ...(options.special === undefined ? {} : { specialInteractions: options.special }),
+        lastActionInfo: { missionCompleted: null, missionDeclined: null, missionQuit: null, loyaltyPoints: null, missionCantReplay: options.cantReplay ?? null },
       },
     });
+    if (options.times !== undefined) {
+      store.apply({ type: "agents/mission-times", times: options.times });
+    }
     store.apply({ type: "agents/mission-keywords", key: `${AGENT}:2156`, keywords: { objectiveLocationSystemID: 30002780 } });
   }
   if (options.briefed) {
@@ -169,4 +190,38 @@ test("the title above what the agent says is the briefing's when one is held, an
   assert.equal(titleOf(panel({ words: true, talking: true, buttons: [3, 9] })), "A Made-Up Errand to Muvolailen");
   assert.equal(titleOf(panel({ words: true, talking: true, buttons: [3, 9], briefed: true, briefedTitleID: null })), "A Made-Up Errand to Muvolailen");
   assert.equal(titleOf(panel({ words: true, talking: true, buttons: [3, 9], briefed: true, briefedTitleID: 0 })), "A Made-Up Errand to Muvolailen");
+});
+
+test("the mission's time is written under what the agent says, in the client's words", () => {
+  const timeOf = (body: string): string | null => body.match(/<p class="note mission-time">([^<]*)<\/p>/)?.[1] ?? null;
+  const HOUR = 36_000_000_000n;
+  const MIN = 600_000_000n;
+  // An offer with no decline timer running.
+  assert.equal(timeOf(panel({ words: true, talking: true, times: { declineTime: -1n, expirationTime: null } })), "Saying no too often costs standing.");
+  // Inside the decline window.
+  assert.equal(timeOf(panel({ words: true, talking: true, times: { declineTime: 3n * HOUR + 24n * MIN, expirationTime: null } })), "Saying no inside 3 hrs plus 24 mns costs standing.");
+  // Accepted: when it expires.
+  const when = (BigInt(Date.UTC(2026, 9, 15, 23, 54, 0)) + 11_644_473_600_000n) * 10_000n;
+  const accepted = panel({ words: true, talking: true, times: { declineTime: null, expirationTime: when } });
+  assert.equal(timeOf(accepted), "Gone at 2026.10.15 23:54");
+  // It comes straight after what the agent says.
+  assert.match(accepted, /class="agent-says"[^>]*>[^<]*<\/p>\s*(<!--[^>]*-->\s*)*<p class="note mission-time">/);
+});
+
+test("no line for a mission's time where the client shows none", () => {
+  const drawn = (options: Parameters<typeof panel>[0]): boolean => /mission-time/.test(panel(options));
+  const times = { declineTime: -1n, expirationTime: null };
+  assert.equal(drawn({ words: true, talking: true, times }), true);
+  // The agent said not yet; one of its special interactions is on offer.
+  assert.equal(drawn({ words: true, talking: true, times, cantReplay: 36_000_000_000 }), false);
+  assert.equal(drawn({ words: true, talking: true, times, special: true }), false);
+  // The briefing says nothing of time, or there is no briefing.
+  assert.equal(drawn({ words: true, talking: true, times: { declineTime: null, expirationTime: null } }), false);
+  assert.equal(drawn({ words: true, talking: true, times: null }), false);
+  assert.equal(drawn({ words: true, talking: true }), false);
+  // No window open.
+  assert.equal(drawn({ words: true, talking: false, times }), false);
+  // Without the client's words for it, nothing is written in their place.
+  assert.equal(drawn({ words: false, talking: true, times }), false);
+  assert.equal(drawn({ words: "none of them", talking: true, times }), false);
 });

@@ -797,6 +797,8 @@ test("opening an agent's window presses Request Mission at once, as the client's
   });
   await flow.openConversation(3008416);
   assert.deepEqual(pressed(), [null, 821]);
+  // The briefing's times are kept with the layout.
+  assert.deepEqual(store.agents.get().missionTimes, { declineTime: null, expirationTime: 134295222004640000n });
   // One layout, of what came of the press: the briefing read once, after both. Then the journal, which the press changed.
   assert.deepEqual(requests.map((request) => request.path.split("/").at(-1)), ["action", "action", "briefing", "journal"]);
   assert.notEqual(store.agents.get().journal, null);
@@ -1319,4 +1321,60 @@ test("only being busy is waited out: any other refusal of the window's own quest
   await push("OnAgentMissionChange", ["modified", 3008416]);
   assert.deepEqual(asked().filter((word) => word.includes(":action:")), ["3008416:action:null"]);
   assert.match(store.agents.get().actionError ?? "", /will not talk now/);
+});
+
+// --- the mission's time, read with every layout --------------------------------
+
+/** The briefing answer with these two times in it. */
+const briefingWith = (declineTime: unknown, expirationTime: unknown) => ({
+  ...BRIEFING_RESPONSE,
+  briefing: { type: "dict", entries: [["Mission Title ID", 58607], ["Decline Time", declineTime], ["Expiration Time", expirationTime]] },
+});
+
+test("each layout keeps what its own briefing says of time, whatever the last action was", async () => {
+  const store = createClientStore();
+  let briefingAnswer: unknown = briefingWith(-1, null);
+  const answers: Record<string, ReturnType<typeof conversationWith>> = {
+    null: conversationWith([[816, 3], [817, 9]]),
+    816: conversationWith([[819, 6], [822, 11]]),
+    822: conversationWith([[821, 2]], [["missionQuit", true]]),
+  };
+  const { fetch } = makeFakeFetch((path, _method, body) => {
+    if (path === "/api/bridge/agents") return { status: 200, body: AGENTS_RESPONSE };
+    if (path === "/api/bridge/agents/3008416/action") return { status: 200, body: answers[String(body.actionID)]! };
+    if (path === "/api/bridge/agents/3008416/briefing") return { status: 200, body: briefingAnswer };
+    if (path === "/api/bridge/journal") return { status: 200, body: journalResponse([]) };
+    throw new Error(`unexpected ${path}`);
+  });
+  const flow = createAppFlow(store, { fetch });
+  await flow.loadAgents();
+  assert.equal(store.agents.get().missionTimes, null, "nothing is known of a mission's time before a window is open");
+
+  // An offer, no decline timer running.
+  await flow.openConversation(3008416);
+  assert.deepEqual(store.agents.get().missionTimes, { declineTime: -1n, expirationTime: null });
+
+  // Accepted: read again, and now it expires.
+  briefingAnswer = briefingWith(null, { type: "long", value: "134365346460600000" });
+  await flow.chooseAction(3008416, { actionID: 816, buttonType: 3, label: "Accept" });
+  assert.deepEqual(store.agents.get().missionTimes, { declineTime: null, expirationTime: 134365346460600000n });
+
+  // Quit: the objectives are not shown, but what the briefing still says of time is kept.
+  briefingAnswer = briefingWith(55_712_640_218, null);
+  await flow.chooseAction(3008416, { actionID: 822, buttonType: 11, label: "Quit" });
+  assert.equal(store.agents.get().briefing, null);
+  assert.deepEqual(store.agents.get().missionTimes, { declineTime: 55_712_640_218n, expirationTime: null });
+
+  // No mission, no briefing: no times.
+  briefingAnswer = { ...BRIEFING_RESPONSE, briefing: null };
+  await flow.openConversation(3008416);
+  assert.equal(store.agents.get().missionTimes, null);
+});
+
+test("a window that closes takes its mission's time with it", async () => {
+  const { store, flow, push } = await listening({ null: ACCEPTED });
+  await flow.openConversation(3008416);
+  assert.notEqual(store.agents.get().missionTimes, null);
+  await push("OnAgentMissionChange", ["reset", 3008416]);
+  assert.equal(store.agents.get().missionTimes, null);
 });

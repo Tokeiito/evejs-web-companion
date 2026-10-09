@@ -19,6 +19,8 @@
   import MissionBot from "./MissionBot.svelte";
   import { panelErrorWords } from "../bridge/refusals.ts";
   import { offerOpen } from "../bridge/agents.ts";
+  import { MISSION_TIME_WORD_LABELS, missionTimeShown, missionTimeText } from "../bridge/missionTime.ts";
+  import { INTERVAL_WORD_LABELS } from "../bridge/timeInterval.ts";
   import { questionText, wordsLabels, wordsNameRefs, type ClientWording } from "../bridge/questions.ts";
   import { filetimeOf, journalRowAsks, journalRowText, journalRowWords } from "../bridge/journalWords.ts";
 
@@ -79,6 +81,15 @@
     const refs = wordsNameRefs(said, saysClient);
     if (refs.length > 0) {
       flow.requestNames(refs);
+    }
+  });
+
+  // The mission's time, under what the agent says (agentDialogueWindow.GetMissionTimeText): what declining
+  // would cost and for how long, or when the mission expires. In the client's words or not at all.
+  const missionTime = $derived(missionTimeShown($agents.conversation) ? missionTimeText($agents.missionTimes, $words.templates) : null);
+  $effect(() => {
+    if ($agents.conversation) {
+      flow.requestWords([...MISSION_TIME_WORD_LABELS, ...INTERVAL_WORD_LABELS]);
     }
   });
 
@@ -349,6 +360,9 @@
       <h3 class="mission-title">{talkTitle}</h3>
     {/if}
     <p class="agent-says" style="white-space: pre-line">{saysText}</p>
+    {#if missionTime}
+      <p class="note mission-time">{missionTime}</p>
+    {/if}
     <p class="controls">
       {#each $agents.conversation.actions as action (action.actionID)}
         <button

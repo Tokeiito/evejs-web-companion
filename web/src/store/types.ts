@@ -3,6 +3,7 @@
 // (util.KeyVal rows, {type:"long"} wrappers, ...) live in ../bridge/wire.ts.
 
 import type { BoundDogmaAllInfo } from "../bridge/boundDogma.ts";
+import type { MissionTimes } from "../bridge/missionTime.ts";
 import type { MiningBurstServices, CompressionServiceObservation } from "../bridge/miningSupportServices.ts";
 import type { CoreMobilityFuelObservation } from "../bridge/miningSupportCore.ts";
 import type { ModuleReachObservation } from "../bridge/moduleReach.ts";
@@ -1123,6 +1124,12 @@ export interface AgentConversation {
   readonly agentSaysWords: QuestionWords | null;
   readonly contentID: number | null;
   readonly actions: readonly AgentAction[];
+  /**
+   * Whether the agent offers one of its special interactions: an action whose data is a briefing and
+   * not a button's number. The client draws those as links under what the agent says, in the place
+   * of the mission's time.
+   */
+  readonly specialInteractions?: boolean;
   readonly lastActionInfo: AgentLastActionInfo;
 }
 
@@ -1185,6 +1192,8 @@ export interface AgentsState {
    */
   readonly missionKeywords: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
   readonly briefing: CourierBriefing | null;
+  /** What the mission's briefing says of time, as read for the layout on show; null with no briefing. */
+  readonly missionTimes: MissionTimes | null;
   readonly journal: JournalState | null;
   /** True once the agent list has loaded. */
   readonly loaded: boolean;

@@ -481,6 +481,8 @@ export type FeedEvent =
     }
   // The accepted-courier briefing (null clears it, e.g. after a decline).
   | { readonly type: "agents/briefing"; readonly briefing: CourierBriefing | null }
+  // What the briefing read for this layout says of the mission's time (null with no briefing).
+  | { readonly type: "agents/mission-times"; readonly times: import("../bridge/missionTime.ts").MissionTimes | null }
   // The mission journal (active + offered missions).
   | { readonly type: "agents/journal"; readonly journal: JournalState }
   // An agent action/read failed; null clears the error after success.
