@@ -24,7 +24,8 @@
   import { PANE_WORD_LABELS, objectivePane, paneMessageIDs, paneNameRefs, type PaneBlock, type PaneMark } from "../bridge/missionObjectivePane.ts";
   import type { MissionMessage } from "../bridge/missionObjectives.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
-  import { questionText, wordsLabels, wordsNameRefs, type ClientWording } from "../bridge/questions.ts";
+  import { questionMarkup, questionText, wordsLabels, wordsNameRefs, type ClientWording } from "../bridge/questions.ts";
+  import { PAGE_WORD_LABELS, missionPage, pageMessageIDs, pageNameRefs, type MissionPage, type MissionPageInput, type PagePanel, type PageRewards, type PageSteps, type StepState } from "../bridge/missionPage.ts";
   import { filetimeOf, journalRowAsks, journalRowText, journalRowWords } from "../bridge/journalWords.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
@@ -346,6 +347,103 @@
   });
   const MARKS: Readonly<Record<PaneMark, readonly [string, string]>> = { done: ["✓", "done"], open: ["○", "not yet"], failed: ["✕", "failed"] };
 
+  // The mission's page, which the journal's "Read Details" opens: the client's job board's page of it
+  // (bridge/missionPage.ts), in the client's words.
+  const pageInput = $derived.by<MissionPageInput | null>(() => {
+    const held = $agents.missionPage;
+    return held === null ? null : {
+      missionState: held.missionState,
+      important: held.important,
+      expirationTime: typeof held.expirationTime === "string" && /^-?\d+$/.test(held.expirationTime) ? BigInt(held.expirationTime) : null,
+      missionTitleID: held.missionTitleID,
+      missionTitle: held.missionTitle,
+      objectives: held.objectives,
+      record: held.record,
+    };
+  });
+  // Everything said about a mission is filled with the mission's keywords and then its agent's own IDs
+  // (AgentMissionJob._message_arguments).
+  function pageClient(agentID: number, contentID: number | null): ClientWording {
+    const row = $agents.agents.find((agent) => agent.agentID === agentID) ?? null;
+    return {
+      templates: $words.templates,
+      playerID: $station.online?.characterID ?? null,
+      extra: {
+        ...(((contentID === null ? null : $agents.missionKeywords[`${agentID}:${contentID}`]) ?? {}) as NonNullable<ClientWording["extra"]>),
+        agentID,
+        agentCorpID: row?.corporationID ?? undefined,
+        agentStationID: row?.stationID ?? undefined,
+        agentLocation: row?.stationID ?? undefined,
+      },
+    };
+  }
+  const byNumber = (messageID: number): { label: null; parameters: null; text: null; messageID: number } => ({ label: null, parameters: null, text: null, messageID });
+  // The time left runs down while the page is on show. The clock hangs on whether a page is open and on
+  // nothing else: anything else the agents' store is told would start its wait again, and it would never strike.
+  let pageClock = $state(Date.now());
+  const pageOpen = $derived($agents.missionPage !== null);
+  $effect(() => {
+    if (!pageOpen) {
+      return;
+    }
+    pageClock = Date.now();
+    const ticking = setInterval(() => { pageClock = Date.now(); }, 10_000);
+    return () => clearInterval(ticking);
+  });
+  const pageShown = $derived.by<{ readonly agentID: number; readonly page: MissionPage } | null>(() => {
+    const held = $agents.missionPage;
+    if (held === null || pageInput === null) {
+      return null;
+    }
+    const online = $station.online;
+    const client = pageClient(held.agentID, held.contentID);
+    const page = missionPage(pageInput, {
+      templates: $words.templates,
+      nameOf: nameWithAgents,
+      locationID: online?.stationID ?? online?.structureID ?? online?.solarSystemID ?? null,
+      stationID: online?.stationID ?? null,
+      solarSystemID: online?.solarSystemID ?? null,
+      now: filetimeOf(pageClock),
+      // The mission's name is its message with nothing filled in.
+      messageText: (messageID) => (hasWords(`#${messageID}`) ? questionText(byNumber(messageID), nameWithAgents, { templates: $words.templates }) : null),
+      sayOfMission: (messageID) => questionMarkup(byNumber(messageID), nameWithAgents, client),
+      say: (message) => message.text ?? questionMarkup({ label: message.label, parameters: message.parameters, text: null, messageID: message.messageID ?? undefined }, nameWithAgents, pageClient(held.agentID, message.contentID ?? held.contentID)),
+    });
+    return { agentID: held.agentID, page };
+  });
+  $effect(() => {
+    const held = $agents.missionPage;
+    if (held === null || pageInput === null) {
+      return;
+    }
+    const dungeons = (held.objectives?.dungeons ?? []).map((dungeon) => dungeon.briefingMessage).filter((message): message is MissionMessage => message !== null);
+    const numbered = [...pageMessageIDs(held.record), ...(held.missionTitleID !== null && held.missionTitleID > 0 ? [held.missionTitleID] : [])];
+    flow.requestWords([
+      ...PAGE_WORD_LABELS,
+      ...numbered.map((id) => `#${id}`),
+      ...dungeons.map((message) => message.label ?? (message.messageID === null ? null : `#${message.messageID}`)).filter((key): key is string => key !== null),
+    ]);
+    for (const message of dungeons) {
+      if (message.contentID !== null) {
+        flow.requestMissionKeywords(held.agentID, message.contentID);
+      }
+    }
+    // The names in the steps and the rewards, and those the mission's own text is filled with.
+    const said = pageMessageIDs(held.record).map(byNumber);
+    const refs = [{ kind: "agent" as const, id: held.agentID }, ...pageNameRefs(pageInput), ...wordsNameRefs(said, pageClient(held.agentID, held.contentID))]
+      .map((ref) => (ref.kind === "owner" && isAgentID(ref.id) ? { kind: "agent" as const, id: ref.id } : ref));
+    flow.requestNames(refs);
+  });
+  const STEP_MARKS: Readonly<Record<StepState, readonly [string, string]>> = { done: ["✓", "done"], open: ["○", "not yet"], failed: ["✕", "failed"] };
+
+  // A mission's line in the client's journal has "Read Details" first in its menu, and a double click
+  // does the same (missionentry.py 64 and 78). Here it is a button on the line.
+  const READ_DETAILS = "UI/Agents/Commands/ReadDetails";
+  const readDetailsWords = $derived.by<string>(() => {
+    const template = $words.templates[READ_DETAILS];
+    return typeof template === "string" ? plainText(template) : "Read details";
+  });
+
   // A mission's line in the client's journal has "Start Conversation with <agent>" in its menu
   // (missionentry.py 64, agents.OpenDialogueWindow), wherever the agent is. Here it is a button on the line.
   const START_CONVERSATION = "UI/Agents/Commands/StartConversationWith";
@@ -364,7 +462,7 @@
   $effect(() => {
     const journal = $agents.journal;
     if (journal && journal.active.length + journal.offered.length > 0) {
-      flow.requestWords([START_CONVERSATION, REMOVE_OFFER]);
+      flow.requestWords([READ_DETAILS, START_CONVERSATION, REMOVE_OFFER]);
     }
   });
 </script>
@@ -374,6 +472,9 @@
     <span class="journal-line">{missionLabel(mission)}</span>
     {#if mission.agentID}
       {@const agentID = mission.agentID}
+      <button type="button" class="link journal-details" disabled={busy} onclick={() => run(() => flow.openMissionDetails(agentID))}>
+        {readDetailsWords}
+      </button>
       <button type="button" class="link journal-talk" disabled={busy} onclick={() => run(() => flow.openConversation(agentID))}>
         {startConversationWords(agentID)}
       </button>
@@ -592,6 +693,90 @@
       Load the package into the active ship, autopilot to the dropoff station,
       dock, then Complete Mission in the agent conversation.
     </p>
+    {/if}
+  </section>
+{/if}
+
+{#snippet pageSteps(group: PageSteps)}
+  {#if group.steps.length > 0}
+    {#if group.briefing}
+      <p class="mission-block-text mission-steps-briefing" style="white-space: pre-line">{group.briefing}</p>
+    {/if}
+    <ul class="mission-rows mission-steps">
+      {#each group.steps as step}
+        <li class="mission-step {step.kind}">
+          <span class="mission-mark {step.state}" title={STEP_MARKS[step.state][1]}>{STEP_MARKS[step.state][0]}</span>
+          {#if step.title}<span class="mission-row-label">{step.title}</span>{/if}
+          {#if step.where}<span class="mission-step-where">{step.where}</span>{/if}
+          <span class="mission-row-text">{step.text}</span>
+        </li>
+      {/each}
+    </ul>
+  {/if}
+{/snippet}
+
+{#snippet pagePanel(kind: string, panel: PagePanel | null)}
+  {#if panel}
+    <div class="mission-page-panel {kind}">
+      {#if panel.title}<h3 class="mission-block-title">{panel.title}</h3>{/if}
+      {#if panel.text}<p class="note">{panel.text}</p>{/if}
+      <p class="mission-page-panel-items">{panel.items}</p>
+    </div>
+  {/if}
+{/snippet}
+
+{#snippet pageRewards(kind: string, group: PageRewards | null)}
+  {#if group}
+    <div class="mission-page-rewards {kind}">
+      {#if group.title}<h3 class="mission-block-title">{group.title}</h3>{/if}
+      <ul class="mission-rows">
+        {#each group.rewards as reward}
+          <li><span class="mission-row-text">{reward}</span></li>
+        {/each}
+      </ul>
+    </div>
+  {/if}
+{/snippet}
+
+{#if pageShown}
+  {@const page = pageShown.page}
+  {@const pageAgentID = pageShown.agentID}
+  <section class="mission-page">
+    <h2 class="mission-page-title">
+      {page.title ?? "Mission"}
+      {#if page.state?.text}<span class="mission-page-state {page.state.kind}">{page.state.text}</span>{/if}
+    </h2>
+    <p class="controls">
+      <button type="button" class="mission-page-talk" disabled={busy} onclick={() => run(() => flow.openConversation(pageAgentID))}>
+        {page.talk ?? "Start conversation"}
+      </button>
+      <button type="button" class="link mission-page-close" onclick={() => flow.closeMissionDetails()}>Close</button>
+    </p>
+    {#if $words.available === false}
+      <p class="note mission-page-wordless">The mission's details are worded with the retail client's own text, which this server has no client to read from.</p>
+    {/if}
+    {#if page.expires}
+      <p class="note mission-page-expires">{page.expires}</p>
+    {/if}
+    {#if page.important}
+      <p class="note mission-warning">{page.important}</p>
+    {/if}
+    {#if page.briefing}
+      {#if page.briefing.title}<h3 class="mission-block-title">{page.briefing.title}</h3>{/if}
+      <p class="mission-block-text mission-page-briefing" style="white-space: pre-line">{page.briefing.text}</p>
+    {/if}
+    {#if page.objectives}
+      {#if page.objectives.title}<h3 class="mission-block-title">{page.objectives.title}</h3>{/if}
+      {@render pageSteps(page.objectives.general)}
+      {@render pageSteps(page.objectives.extra)}
+    {/if}
+    {@render pagePanel("collateral", page.collateral)}
+    {@render pagePanel("granted", page.granted)}
+    {@render pageRewards("rewards", page.rewards)}
+    {@render pageRewards("bonus", page.bonusRewards)}
+    {#if page.extra}
+      {#if page.extra.title}<h3 class="mission-block-title">{page.extra.title}</h3>{/if}
+      <p class="mission-block-text mission-page-extra" style="white-space: pre-line">{page.extra.text}</p>
     {/if}
   </section>
 {/if}

@@ -1170,6 +1170,23 @@ export interface JournalMission {
   readonly expirationTime: string | null;
 }
 
+/**
+ * A mission's page, as the retail client's job board holds the job it is drawn from: what the journal's
+ * line said when the page was opened, the mission's own objectives as last read, and the client's own
+ * record of the mission.
+ */
+export interface MissionPageState {
+  readonly agentID: number;
+  readonly contentID: number | null;
+  readonly missionState: number | null;
+  readonly important: boolean;
+  readonly expirationTime: string | null;
+  readonly missionTitleID: number | null;
+  readonly missionTitle: string | null;
+  readonly objectives: MissionObjectives | null;
+  readonly record: import("../bridge/missionPage.ts").ClientMission | null;
+}
+
 /** The decoded mission journal: active + offered missions. */
 export interface JournalState {
   readonly active: readonly JournalMission[];
@@ -1200,6 +1217,8 @@ export interface AgentsState {
   readonly objectives: MissionObjectives | null;
   /** What the mission's briefing says of time, as read for the layout on show; null with no briefing. */
   readonly missionTimes: MissionTimes | null;
+  /** The mission's page on show (the journal's Read Details); null when none is. */
+  readonly missionPage: MissionPageState | null;
   readonly journal: JournalState | null;
   /** True once the agent list has loaded. */
   readonly loaded: boolean;

@@ -9436,3 +9436,12 @@
 .mission-mark.failed { color: var(--danger, #e3170d); }
 .mission-row-label { opacity: 0.7; }
 .mission-outcome { font-weight: 600; }
+
+/* A mission's page, from the journal's Read Details (ui/AgentsMissions.svelte). */
+.mission-page-state { margin-left: 0.75rem; font-size: 0.8em; font-weight: 600; }
+.mission-page-state.offered { color: var(--warn, #e0a030); }
+.mission-page-state.expired { color: var(--danger, #e3170d); }
+.mission-page-state.completed { color: var(--ok, #5aba56); }
+.mission-step-where { font-weight: 600; }
+.mission-page-panel { border-left: 3px solid var(--warn, #e0a030); padding-left: 0.75rem; margin: 0.5rem 0; }
+.mission-page-panel.granted { border-left-color: var(--ok, #5aba56); }

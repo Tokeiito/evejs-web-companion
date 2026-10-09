@@ -899,7 +899,11 @@ interface PushSource {
  * A pilot online with its live channel open and the Agents panel loaded. Its agents answer each DoAction
  * from `answers`, by the action pressed (null for the opening). `hold` makes every DoAction wait.
  */
-async function listening(answers: Record<string, ReturnType<typeof conversationWith>>, options: { journal?: boolean } = {}) {
+async function listening(
+  answers: Record<string, ReturnType<typeof conversationWith>>,
+  /** `routes` answers a path before anything here does: [status, body], or undefined to leave it to what is here. */
+  options: { journal?: boolean; routes?: (path: string) => Promise<[number, unknown] | undefined> | [number, unknown] | undefined } = {},
+) {
   const store = createClientStore();
   const requests: Recorded[] = [];
   const state: {
@@ -920,7 +924,10 @@ async function listening(answers: Record<string, ReturnType<typeof conversationW
     requests.push({ path, method: (init && init.method) || "GET", body });
     let status = 200;
     let answer: unknown = { ok: true };
-    if (path === "/api/bridge/call") {
+    const routed = options.routes ? await options.routes(path) : undefined;
+    if (routed !== undefined) {
+      [status, answer] = routed;
+    } else if (path === "/api/bridge/call") {
       // What coming online reads of the station: answered with nothing, in the route's own envelope.
       answer = { ok: true, service: body.service, method: body.method, result: null, notifications: [] };
     } else if (path === "/api/bridge/select") {
@@ -1463,4 +1470,237 @@ test("the server saying the offer is gone closes the window on that agent and re
   assert.equal(store.agents.get().activeAgentID, null);
   assert.equal(store.agents.get().objectives, null);
   assert.deepEqual(asked(), ["journal", "remove-offer"]);
+});
+
+// --- the journal's "Read Details": the mission's page -----------------------------
+
+/** The server's answer about mission 1382 (the journal's line for 3008416), in the state given. */
+const pageAnswer = (missionState: number, contentID = 1382) => ({
+  type: "dict",
+  entries: [["contentID", contentID], ["missionState", missionState], ["completionStatus", 0], ["loyaltyPoints", 49]],
+});
+const PAGE_RECORD = { contentTemplate: "agent.missionTemplatizedContent_BasicCourierMission", messages: { "messages.mission.briefing": 900954 }, nameID: 900260 };
+
+/** A pilot with a mission's page to open: the objectives and the client's record are answered from `state`. */
+async function withMissionPage() {
+  const page: { objective: unknown; record: unknown; recordFails: boolean; objectiveFails: boolean; hold: Promise<void> | null } = { objective: pageAnswer(2), record: PAGE_RECORD, recordFails: false, objectiveFails: false, hold: null };
+  const made = await listening({ null: ACCEPTED }, {
+    routes: async (path) => {
+      if (/\/mission-objectives$/.test(path)) {
+        if (page.hold) await page.hold;
+        return page.objectiveFails ? [409, { ok: false, error: "CALL_REFUSED", message: "The agent has nothing to say of it." }] : [200, { ok: true, agentID: 3008416, objective: page.objective, notifications: [] }];
+      }
+      if (path.startsWith("/api/client-data/missions/")) {
+        return page.recordFails ? [502, { ok: false, error: "UNREACHABLE", message: "No answer." }] : [200, { ok: true, available: page.record !== null, mission: page.record }];
+      }
+      if (/\/keywords\?/.test(path)) return [200, { ok: true, keywords: { type: "dict", entries: [["objectiveQuantity", 1]] }, notifications: [] }];
+      return undefined;
+    },
+  });
+  /** What was asked for the page, in the order it was asked. */
+  const pageAsked = () => made.requests.map((request) => request.path).filter((path) => /mission-objectives|client-data|keywords/.test(path));
+  return { ...made, page, pageAsked };
+}
+
+test("Read Details opens the mission's page: one read of the agent's object, the mission's keywords, and the client's own record", async () => {
+  const { store, flow, requests, pageAsked } = await withMissionPage();
+  await flow.openMissionDetails(3008416);
+  await until(() => store.agents.get().missionPage?.record != null);
+  assert.deepEqual(pageAsked().sort(), ["/api/bridge/agents/3008416/keywords?contentID=1382", "/api/bridge/agents/3008416/mission-objectives", "/api/client-data/missions/1382"]);
+  // Reads, all three: nothing is asked of the agent that changes anything.
+  assert.deepEqual(requests.map((request) => request.method), ["GET", "GET", "GET"]);
+  const held = store.agents.get().missionPage;
+  assert.ok(held);
+  // What the journal's line said, kept as the job is made from it.
+  assert.deepEqual({ ...held, objectives: null, record: null }, {
+    agentID: 3008416, contentID: 1382, missionState: 2, important: false, expirationTime: "134295222004640000", missionTitleID: 58607, missionTitle: null, objectives: null, record: null,
+  });
+  assert.equal(held.objectives?.contentID, 1382);
+  assert.equal(held.objectives?.loyaltyPoints, 49);
+  assert.deepEqual(held.record, { nameID: 900260, messages: { "messages.mission.briefing": 900954 } });
+  assert.deepEqual(store.agents.get().missionKeywords["3008416:1382"], { objectiveQuantity: 1 });
+  assert.equal(store.agents.get().actionError, null);
+  // The agent's window is another thing, and stays shut.
+  assert.equal(store.agents.get().activeAgentID, null);
+});
+
+test("the page is on show before its reads answer, and an agent with no mission in the journal has none", async () => {
+  const { store, flow, page, pageAsked } = await withMissionPage();
+  let release = (): void => {};
+  page.hold = new Promise<void>((resolve) => { release = resolve; });
+  const opening = flow.openMissionDetails(3008416);
+  await until(() => store.agents.get().missionPage !== null);
+  assert.equal(store.agents.get().missionPage?.objectives, null);
+  release();
+  await opening;
+  assert.equal(store.agents.get().missionPage?.objectives?.contentID, 1382);
+
+  flow.closeMissionDetails();
+  assert.equal(store.agents.get().missionPage, null);
+  const before = pageAsked().length;
+  await flow.openMissionDetails(OTHER_AGENT);
+  assert.equal(store.agents.get().missionPage, null);
+  assert.equal(pageAsked().length, before);
+});
+
+test("the client's record of a mission is asked for once; its keywords once; the agent every time the page opens", async () => {
+  const { store, flow, pageAsked } = await withMissionPage();
+  await flow.openMissionDetails(3008416);
+  await until(() => store.agents.get().missionPage?.record != null);
+  flow.closeMissionDetails();
+  await flow.openMissionDetails(3008416);
+  await until(() => store.agents.get().missionPage?.record != null);
+  const count = (part: string) => pageAsked().filter((path) => path.includes(part)).length;
+  assert.equal(count("client-data"), 1);
+  assert.equal(count("keywords"), 1);
+  assert.equal(count("mission-objectives"), 2);
+  // The record lands on the page opened the second time too.
+  assert.deepEqual(store.agents.get().missionPage?.record?.nameID, 900260);
+});
+
+test("a record that could not be asked for is asked for again; one the client does not have is not", async () => {
+  const { store, flow, page, pageAsked } = await withMissionPage();
+  const count = () => pageAsked().filter((path) => path.includes("client-data")).length;
+  page.recordFails = true;
+  await flow.openMissionDetails(3008416);
+  await until(() => count() === 1);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(store.agents.get().missionPage?.record, null);
+  // The page is there all the same.
+  assert.equal(store.agents.get().missionPage?.objectives?.contentID, 1382);
+  page.recordFails = false;
+  page.record = null;
+  await flow.openMissionDetails(3008416);
+  await until(() => count() === 2);
+  await flow.openMissionDetails(3008416);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(count(), 2);
+  assert.equal(store.agents.get().missionPage?.record, null);
+});
+
+test("an agent that will not answer leaves the page with what the journal said, and says why", async () => {
+  const { store, flow, page } = await withMissionPage();
+  page.objectiveFails = true;
+  await flow.openMissionDetails(3008416);
+  assert.equal(store.agents.get().missionPage?.missionState, 2);
+  assert.equal(store.agents.get().missionPage?.objectives, null);
+  assert.match(store.agents.get().actionError ?? "", /nothing to say of it/);
+});
+
+test("an answer about another mission, or no answer, leaves the page's objectives as they were", async () => {
+  const { store, flow, page, push } = await withMissionPage();
+  await flow.openMissionDetails(3008416);
+  const first = store.agents.get().missionPage?.objectives;
+  assert.ok(first);
+  page.objective = pageAnswer(2, 9999);
+  await push("OnAgentMissionChange", ["modified", 3008416]);
+  assert.equal(store.agents.get().missionPage?.objectives, first);
+  page.objective = null;
+  await push("OnAgentMissionChange", ["modified", 3008416]);
+  assert.equal(store.agents.get().missionPage?.objectives, first);
+});
+
+test("told its mission changed, the page reads it again; completed or accepted, it takes that state first", async () => {
+  const { store, flow, page, push, pageAsked } = await withMissionPage();
+  await flow.openMissionDetails(3008416);
+  const reads = () => pageAsked().filter((path) => path.includes("mission-objectives")).length;
+  assert.equal(reads(), 1);
+
+  page.objective = pageAnswer(3);
+  await push("OnAgentMissionChange", ["failed", 3008416]);
+  assert.equal(reads(), 2);
+  assert.equal(store.agents.get().missionPage?.objectives?.missionState, 3);
+  // The journal's state is left as it was: only the objectives say what became of it.
+  assert.equal(store.agents.get().missionPage?.missionState, 2);
+
+  // A mission that is over answers nothing: the state is the one the server named, and what was read stays.
+  page.objective = null;
+  await push("OnAgentMissionChange", ["completed", 3008416]);
+  assert.equal(reads(), 3);
+  assert.equal(store.agents.get().missionPage?.missionState, 4);
+  assert.equal(store.agents.get().missionPage?.objectives?.missionState, 3);
+
+  page.objective = pageAnswer(2);
+  await push("OnAgentMissionChange", ["accepted", 3008416]);
+  assert.equal(reads(), 4);
+  assert.equal(store.agents.get().missionPage?.missionState, 2);
+  assert.equal(store.agents.get().missionPage?.objectives?.missionState, 2);
+
+  // A change that is another agent's is not this page's; one that names no agent is everyone's.
+  await push("OnAgentMissionChange", ["modified", OTHER_AGENT]);
+  assert.equal(reads(), 4);
+  await push("OnAgentMissionChange", ["modified", null]);
+  assert.equal(reads(), 5);
+  // And one the job board does nothing with reads nothing.
+  await push("OnAgentMissionChange", ["prolong", 3008416]);
+  assert.equal(reads(), 5);
+});
+
+test("told the mission is gone, its page closes; another agent's page stays", async () => {
+  for (const action of ["offered", "declined", "offer_declined", "offer_removed", "quit", "reset"]) {
+    const { store, flow, push } = await withMissionPage();
+    await flow.openMissionDetails(3008416);
+    await push("OnAgentMissionChange", [action, OTHER_AGENT]);
+    assert.equal(store.agents.get().missionPage?.agentID, 3008416, action);
+    await push("OnAgentMissionChange", [action, 3008416]);
+    assert.equal(store.agents.get().missionPage, null, action);
+  }
+});
+
+test("a change of ship or of station reads the page's mission again; any other change of session does not", async () => {
+  const { store, flow, push, pageAsked } = await withMissionPage();
+  const reads = () => pageAsked().filter((path) => path.includes("mission-objectives")).length;
+  // With no page on show there is nothing to read.
+  await push("OnSessionChanged", [{ shipid: [1, 2] }], "sessionchange");
+  assert.equal(reads(), 0);
+  await flow.openMissionDetails(3008416);
+  assert.equal(reads(), 1);
+  await push("OnSessionChanged", [{ shipid: [1, 2] }], "sessionchange");
+  assert.equal(reads(), 2);
+  await push("OnSessionChanged", [{ stationid: [60000004, null], solarsystemid: [null, 30002780] }], "sessionchange");
+  assert.equal(reads(), 3);
+  await push("OnSessionChanged", [{ solarsystemid: [30002780, 30002778] }], "sessionchange");
+  assert.equal(reads(), 3);
+  assert.equal(store.agents.get().missionPage?.agentID, 3008416);
+});
+
+test("an answer that comes after the page was closed is not written to it", async () => {
+  const { store, flow, page } = await withMissionPage();
+  let release = (): void => {};
+  page.hold = new Promise<void>((resolve) => { release = resolve; });
+  const opening = flow.openMissionDetails(3008416);
+  await until(() => store.agents.get().missionPage !== null);
+  flow.closeMissionDetails();
+  release();
+  await opening;
+  assert.equal(store.agents.get().missionPage, null);
+});
+
+test("an answer for one agent's mission is not written to another agent's page, even of the same mission", async () => {
+  // Two agents with the same mission on the journal, which nothing forbids.
+  const second = { ...ACTIVE_MISSION_ROW, items: ACTIVE_MISSION_ROW.items.map((item, index) => (index === 4 ? OTHER_AGENT : item)) };
+  let release = (): void => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const { store, flow } = await listening({ null: ACCEPTED }, {
+    routes: async (path) => {
+      if (path === "/api/bridge/journal") return [200, journalResponse([ACTIVE_MISSION_ROW, second])];
+      if (path === "/api/bridge/agents/3008416/mission-objectives") {
+        await held;
+        return [200, { ok: true, objective: pageAnswer(3), notifications: [] }];
+      }
+      if (/\/mission-objectives$/.test(path)) return [200, { ok: true, objective: pageAnswer(2), notifications: [] }];
+      if (path.startsWith("/api/client-data/missions/")) return [200, { ok: true, available: true, mission: PAGE_RECORD }];
+      return undefined;
+    },
+  });
+  const first = flow.openMissionDetails(3008416);
+  await until(() => store.agents.get().missionPage?.agentID === 3008416);
+  await flow.openMissionDetails(OTHER_AGENT);
+  assert.equal(store.agents.get().missionPage?.agentID, OTHER_AGENT);
+  assert.equal(store.agents.get().missionPage?.objectives?.missionState, 2);
+  release();
+  await first;
+  // The first agent's answer came, and the page on show is still the second's, as it answered.
+  assert.equal(store.agents.get().missionPage?.agentID, OTHER_AGENT);
+  assert.equal(store.agents.get().missionPage?.objectives?.missionState, 2);
 });

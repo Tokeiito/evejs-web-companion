@@ -485,6 +485,8 @@ export type FeedEvent =
   | { readonly type: "agents/objectives"; readonly objectives: import("../bridge/missionObjectives.ts").MissionObjectives | null }
   // What the briefing read for this layout says of the mission's time (null with no briefing).
   | { readonly type: "agents/mission-times"; readonly times: import("../bridge/missionTime.ts").MissionTimes | null }
+  /** The mission's page on show: opened, read again, or (null) closed. */
+  | { readonly type: "agents/mission-page"; readonly page: import("./types.ts").MissionPageState | null }
   // The mission journal (active + offered missions).
   | { readonly type: "agents/journal"; readonly journal: JournalState }
   // An agent action/read failed; null clears the error after success.

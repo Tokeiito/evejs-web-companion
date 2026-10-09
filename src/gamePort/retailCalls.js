@@ -270,7 +270,7 @@ const RETAIL_CALLS = Object.freeze({
   // ── an agent (a bound agentMgr object) ────────────────────────────────────
   "agentMgr.DoAction": same(`${AGENT_WINDOW}:428`, "DoAction(actionID)"),
   "agentMgr.GetMissionBriefingInfo": same(`${AGENTS}:750`, "no arguments"),
-  "agentMgr.GetMissionObjectiveInfo": same(`${AGENT_WINDOW}:222`, "no arguments when the dialogue opens"),
+  "agentMgr.GetMissionObjectiveInfo": same(`${AGENT_WINDOW}:222`, "no arguments when the dialogue opens; the job board's page of a mission adds ignoreLocateCheck=True (jobboard/client/features/agent_missions/job.py:413)"),
   "agentMgr.GetAgentLocationWrap": same(`${AGENT_WINDOW}:276`, "no arguments"),
   "agentMgr.RemoveOfferFromJournal": same(`${AGENTS}:783`, "GetAgentMoniker(agentID).RemoveOfferFromJournal(), no arguments, on the agent's bound object"),
   "agentMgr.GetMissionJournalInfo": differs(`${AGENTS}:747`, "The client sends (charID, contentID). The BFF sends nothing."),

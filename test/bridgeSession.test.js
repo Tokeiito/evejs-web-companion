@@ -852,3 +852,39 @@ test("an offer is removed by asking the agent's own bound object, with no argume
   assert.equal(old.status, 404);
   assert.equal(calls.length, 1);
 });
+
+// ── The journal's "Read Details" (GET /api/bridge/agents/:agentID/mission-objectives) ──
+
+test("a mission's page reads its objectives from the agent's own bound object, with ignoreLocateCheck and nothing else, as the client's job board does", async () => {
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  const bound = [];
+  gamePort.bindObject = async (service, method, args) => { bound.push({ service, method, args }); return { boundHandle: "bound-agent", notifications: [] }; };
+  const calls = [];
+  const objective = { type: "dict", entries: [["contentID", 2156], ["missionState", 1]] };
+  gamePort.callBoundMethod = async (service, method, args, kwargs, sessionFields, bridgeSessionID, handle) => {
+    calls.push({ service, method, args, kwargs, bridgeSessionID, handle });
+    return { service, method, result: objective, notifications: [] };
+  };
+  const { baseUrl } = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gameport" });
+  const read = (agent) => apiRequest(baseUrl, `/api/bridge/agents/${agent}/mission-objectives`);
+
+  // No pilot, no agent to ask.
+  assert.equal((await read(3008416)).response.status, 409);
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+
+  // Not an agent: nothing is bound and nothing is asked.
+  for (const agent of [0, "x", -5, "1.5"]) {
+    const refused = await read(agent);
+    assert.equal(refused.response.status, 400, String(agent));
+    assert.equal(refused.payload.error, "INVALID_AGENT");
+  }
+  assert.deepEqual(calls, []);
+  assert.deepEqual(bound, []);
+
+  const answered = await read(3008416);
+  assert.equal(answered.response.status, 200, JSON.stringify(answered.payload));
+  // Raw: the browser decodes it.
+  assert.deepEqual(answered.payload, { ok: true, agentID: 3008416, objective, notifications: [] });
+  assert.deepEqual(bound, [{ service: "agentMgr", method: "MachoBindObject", args: [3008416] }]);
+  assert.deepEqual(calls, [{ service: "agentMgr", method: "GetMissionObjectiveInfo", args: [], kwargs: { ignoreLocateCheck: true }, bridgeSessionID: GAME_PORT_SESSION_ID, handle: "bound-agent" }]);
+});

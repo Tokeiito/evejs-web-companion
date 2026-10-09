@@ -265,6 +265,17 @@ function argumentsFor(words: QuestionWords, client: ClientWording, nameOf: NameO
 }
 
 /**
+ * The retail client's own text for some words, filled in, with the client's markup still in it (`<br>`,
+ * `<b>` and the like); null when the page does not have the client's text for them. For text the client
+ * tidies before drawing it. Plain text has no markup and is not answered here.
+ */
+export function questionMarkup(words: QuestionWords, nameOf: NameOf, client: ClientWording): string | null {
+  const key = wordsKey(words);
+  const template = key !== null ? client.templates[key] : null;
+  return typeof template === "string" ? formatTemplate(template, argumentsFor(words, client, nameOf), { nameOf, playerID: client.playerID ?? null }) : null;
+}
+
+/**
  * What to show for a title, a body, a choice or an agent's line: its text;
  * the retail client's own text for its label, filled in, when the page has
  * it; failing that this client's words for the label; failing that the label
@@ -274,10 +285,9 @@ export function questionText(words: QuestionWords, nameOf: NameOf = nameByID, cl
   if (words.text !== null) {
     return words.text;
   }
-  const key = wordsKey(words);
-  const template = client && key !== null ? client.templates[key] : null;
-  if (typeof template === "string") {
-    return plainText(formatTemplate(template, argumentsFor(words, client as ClientWording, nameOf), { nameOf, playerID: client?.playerID ?? null }));
+  const marked = client === null ? null : questionMarkup(words, nameOf, client);
+  if (marked !== null) {
+    return plainText(marked);
   }
   if (words.label === null && typeof words.messageID === "number") {
     // A mission's own text that the page does not have: its number, which is what the server sent.

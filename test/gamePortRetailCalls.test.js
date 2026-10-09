@@ -442,3 +442,16 @@ test("removing an offer is asked as the client asks it: nothing but the call, on
   assert.deepEqual(form.args, []);
   assert.equal(form.kwargs, null);
 });
+
+test("a mission's objectives are asked as the client asks them: with nothing, or from the job board's page with ignoreLocateCheck", () => {
+  const plain = retailForm("agentMgr", "GetMissionObjectiveInfo", [], null);
+  assert.equal(plain.status, "same");
+  assert.deepEqual(plain.args, []);
+  assert.equal(plain.kwargs, null);
+  // The keyword goes out as it was given.
+  const page = retailForm("agentMgr", "GetMissionObjectiveInfo", [], { ignoreLocateCheck: true });
+  assert.equal(page.status, "same");
+  assert.deepEqual(page.args, []);
+  assert.deepEqual(page.kwargs, { ignoreLocateCheck: true });
+  assert.match(page.note, /ignoreLocateCheck=True \(jobboard\/client\/features\/agent_missions\/job\.py:413\)/);
+});

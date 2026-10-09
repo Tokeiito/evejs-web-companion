@@ -76,6 +76,7 @@ import {
 import { sessionChangeNames } from "../bridge/sessionChange.ts";
 import { decodeMissionTimes } from "../bridge/missionTime.ts";
 import { decodeObjectives } from "../bridge/missionObjectives.ts";
+import { decodeClientMission, pageObjectives, pageOnMissionChange, type ClientMission } from "../bridge/missionPage.ts";
 import {
   decodeCashBalance,
   decodeCharStandings,
@@ -136,6 +137,7 @@ import type {
   ActivityNotificationRow,
   AgentAction,
   AgentConversation,
+  MissionPageState,
   QuestionAnswer,
   ChatChannel,
   ContractDetail,
@@ -917,6 +919,14 @@ export interface AppFlow {
   loadJournal(): Promise<void>;
   /** The journal's "Remove Offer" for an agent's offered mission. */
   removeOffer(agentID: number): Promise<void>;
+  /**
+   * The journal's "Read Details": the mission that agent has with the pilot, as the client's job board
+   * shows it. Lands in `store.agents.missionPage`. Nothing happens for an agent with no mission in the
+   * journal.
+   */
+  openMissionDetails(agentID: number): Promise<void>;
+  /** Close the mission's page. */
+  closeMissionDetails(): void;
   /**
    * Load the accepted courier's package from the station hangar into the active
    * ship. Both the briefing's cargo TYPE and its QUANTITY are needed: the type
@@ -1937,9 +1947,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       onMissionChange(missionChange);
       return;
     }
+    const sessionNames = sessionChangeNames(method, args);
+    // The job board marks every mission out of date when the pilot's ship or station changes
+    // (AgentMissionsJobProvider.OnSessionChanged), and a page on show reads its mission again.
+    if (sessionNames?.includes("shipid") || sessionNames?.includes("stationid")) {
+      readOpenMissionPageAgain();
+    }
     // agentDialogueWindow.OnSessionChanged: another station, or none, and the window talks to its agent
     // again, since what an agent will do depends on where the pilot is.
-    if (sessionChangeNames(method, args)?.includes("stationid")) {
+    if (sessionNames?.includes("stationid")) {
       talkToOpenAgentAgain();
       return;
     }
@@ -4176,7 +4192,103 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     } else if (what === "again") {
       talkToOpenAgentAgain();
     }
+    missionPageOnChange(change);
     refreshJournal();
+  }
+
+  // --- the journal's Read Details: the mission's page in the client's job board -------------------------
+
+  // The client's own record of each mission, asked of the BFF once (evemissions.client.data.get_mission).
+  const clientMissions = new Map<number, Promise<ClientMission | null>>();
+  function clientMissionRecord(contentID: number): Promise<ClientMission | null> {
+    let asked = clientMissions.get(contentID);
+    if (asked === undefined) {
+      asked = api.loadClientMission(contentID, callOptions).then(decodeClientMission, () => {
+        // Not remembered: a later ask tries again.
+        clientMissions.delete(contentID);
+        return null;
+      });
+      clientMissions.set(contentID, asked);
+    }
+    return asked;
+  }
+
+  /** The page on show, when it is this agent's. */
+  function missionPageOf(agentID: number): MissionPageState | null {
+    const page = store.agents.get().missionPage;
+    return page !== null && page.agentID === agentID ? page : null;
+  }
+
+  // AgentMissionJob.update_objective_info: the page's one read of the server, made as it opens and again
+  // whenever its job is marked out of date. A page closed, or opened on another agent, before the answer
+  // came is not written to.
+  async function readMissionPage(agentID: number): Promise<void> {
+    const answer = decodeObjectives((await api.loadMissionObjectives(agentID, callOptions)) ?? undefined);
+    const page = missionPageOf(agentID);
+    if (page !== null) {
+      store.apply({ type: "agents/mission-page", page: { ...page, objectives: pageObjectives(page.objectives, answer, page.contentID) } });
+    }
+  }
+
+  function readOpenMissionPageAgain(): void {
+    const page = store.agents.get().missionPage;
+    if (page !== null) {
+      // A read that fails leaves the page as it was; the next change reads again.
+      void readMissionPage(page.agentID).catch(() => {});
+    }
+  }
+
+  // AgentMissionsJobProvider.OnAgentMissionChanged, for the job whose page is on show. A change that
+  // names no agent is every agent's.
+  function missionPageOnChange(change: MissionChange): void {
+    const page = store.agents.get().missionPage;
+    if (page === null || (change.agentID !== null && change.agentID !== page.agentID)) {
+      return;
+    }
+    const what = pageOnMissionChange(change.action);
+    if (what === "close") {
+      store.apply({ type: "agents/mission-page", page: null });
+    } else if (what !== null) {
+      if (what.missionState !== null) {
+        store.apply({ type: "agents/mission-page", page: { ...page, missionState: what.missionState } });
+      }
+      readOpenMissionPageAgain();
+    }
+  }
+
+  async function openMissionDetails(agentID: number): Promise<void> {
+    const journal = store.agents.get().journal;
+    const row = journal === null ? undefined : [...journal.active, ...journal.offered].find((mission) => mission.agentID === agentID);
+    if (row === undefined) {
+      return;
+    }
+    const contentID = row.missionID;
+    store.apply({
+      type: "agents/mission-page",
+      page: {
+        agentID,
+        contentID,
+        missionState: row.missionState,
+        important: row.importantMission === true,
+        expirationTime: row.expirationTime,
+        missionTitleID: row.missionTitleID,
+        missionTitle: row.missionTitle ?? null,
+        objectives: null,
+        record: null,
+      },
+    });
+    if (contentID !== null) {
+      // What the page words the mission with: its keywords, from its agent (agents.PrimeMessageArguments),
+      // and the client's own record of it. Neither holds the page up.
+      requestMissionKeywords(agentID, contentID);
+      void clientMissionRecord(contentID).then((record) => {
+        const page = missionPageOf(agentID);
+        if (page !== null && page.contentID === contentID) {
+          store.apply({ type: "agents/mission-page", page: { ...page, record } });
+        }
+      });
+    }
+    await runAgentAction(() => readMissionPage(agentID));
   }
 
   async function loadBriefing(agentID: number): Promise<void> {
@@ -13319,6 +13431,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // agent's window if it is open; an offer that was not removed changes nothing.
     async removeOffer(agentID) {
       await runAgentAction(() => api.removeAgentOffer(agentID, callOptions));
+    },
+
+    openMissionDetails,
+
+    closeMissionDetails() {
+      store.apply({ type: "agents/mission-page", page: null });
     },
 
     loadRewards,

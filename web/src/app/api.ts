@@ -2067,6 +2067,18 @@ export async function removeAgentOffer(agentID: number, options: ApiOptions = {}
   await postJson(`/api/bridge/agents/${agentID}/remove-offer`, { confirm: true }, options);
 }
 
+/** A mission's objectives as the job board's page of it reads them (raw; decoded in the flow). */
+export async function loadMissionObjectives(agentID: number, options: ApiOptions = {}): Promise<JsonValue> {
+  const data = await getJson(`/api/bridge/agents/${agentID}/mission-objectives`, options);
+  return data.objective ?? null;
+}
+
+/** The retail client's own record of a mission; null when the BFF cannot read the client's data, or the client has no such mission. */
+export async function loadClientMission(missionID: number, options: ApiOptions = {}): Promise<JsonValue> {
+  const data = await getJson(`/api/client-data/missions/${missionID}`, options);
+  return data.mission ?? null;
+}
+
 /**
  * Answer a question the SERVER asked (a `question` event on the live channel).
  * The BFF hands the answer to the game server, which has been waiting for it.

@@ -72,6 +72,10 @@ function panel(options: {
   times?: { declineTime: bigint | null; expirationTime: bigint | null } | null;
   cantReplay?: number | null;
   special?: boolean;
+  /** A mission's page held by the store, whether the client's words for it are to hand, and whether the BFF has a client at all. */
+  page?: Record<string, unknown>;
+  pageWords?: boolean;
+  noClient?: boolean;
 }): string {
   const store = createClientStore();
   store.apply({ type: "names/resolved", entries: { [`agent:${AGENT}`]: "Antaken Kamola", "agent:3009999": "Some Other Agent", "system:30002780": "Muvolailen" } });
@@ -114,8 +118,18 @@ function panel(options: {
   if (options.objectives !== undefined) {
     store.apply({ type: "agents/objectives", objectives: options.objectives as never });
   }
+  if (options.page !== undefined) {
+    store.apply({
+      type: "agents/mission-page",
+      page: { agentID: AGENT, contentID: 2156, missionState: 1, important: false, expirationTime: String(filetimeOf(NOW_MS) + 5n * HOUR_TICKS), missionTitleID: 58607, missionTitle: null, objectives: null, record: null, ...options.page } as never,
+    });
+    store.apply({ type: "agents/mission-keywords", key: `${AGENT}:2156`, keywords: { objectiveLocationSystemID: 30002780 } });
+  }
+  if (options.noClient) {
+    store.apply({ type: "words/loaded", available: false, templates: {} });
+  }
   if (options.words === true) {
-    const templates = options.paneWords ? { ...TEMPLATES, ...PANE_TEMPLATES } : TEMPLATES;
+    const templates = { ...TEMPLATES, ...(options.paneWords ? PANE_TEMPLATES : {}), ...(options.pageWords ? PAGE_TEMPLATES : {}) };
     store.apply({ type: "words/loaded", available: true, templates: Object.fromEntries(Object.entries(templates).filter(([key]) => !(options.without ?? []).includes(key))) });
   } else if (options.words === "none of them") {
     // Asked for, and the client has no text for any of it.
@@ -244,6 +258,7 @@ test("no line for a mission's time where the client shows none", () => {
 const PANE_TEMPLATES: Record<string, string> = {
   "UI/Agents/Commands/StartConversationWith": "Speak with {[character]agentID.name}",
   "UI/Agents/Commands/RemoveOffer": "<b>Take it away</b>",
+  "UI/Agents/Commands/ReadDetails": "<i>Look closer</i>",
   [PANE_LABELS.heading.open]: "{missionName}: to do",
   [PANE_LABELS.heading.complete]: "{missionName}: done",
   [PANE_LABELS.overview]: "Do all of these.",
@@ -266,6 +281,35 @@ const PANE_TEMPLATES: Record<string, string> = {
   "#115502": "Go to {[location]dungeonLocationID.name} and end it.",
 };
 const text = (html: string): string => html.replace(/<!--[^>]*-->/g, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+
+const { PAGE_LABELS, PAGE_MESSAGES } = await import("../bridge/missionPage.ts");
+const PAGE_TEMPLATES: Record<string, string> = {
+  [PAGE_LABELS.offered]: "On offer now",
+  [PAGE_LABELS.completed]: "All done",
+  [PAGE_LABELS.importantStandings]: "<b>This one counts.</b>",
+  [PAGE_LABELS.briefingTitle]: "What it is",
+  [PAGE_LABELS.objectivesTitle]: "To do",
+  [PAGE_LABELS.cargo]: "Load",
+  [PAGE_LABELS.pickup]: "From",
+  [PAGE_LABELS.dropOff]: "To",
+  [PAGE_LABELS.objectiveLocation]: "Place",
+  [PAGE_LABELS.transportBlurb]: "Carry these:",
+  [PAGE_LABELS.dungeonBody]: "Destroy them",
+  [PAGE_LABELS.cargoWithSize]: "{cargoDescription} ({[numeric]size, decimalPlaces=1} m3)",
+  [PAGE_LABELS.rewardsTitle]: "Pay",
+  [PAGE_LABELS.bonusTitle]: "Extra",
+  [PAGE_LABELS.loyaltyPointsShort]: "{[numeric]lpAmount, useGrouping} pts",
+  [PAGE_LABELS.isk]: "{[numeric]amount, useGrouping, decimalPlaces=2} ISK",
+  [PAGE_LABELS.quantityAndItem]: "{[numeric]quantity, useGrouping} x {[item]item.name}",
+  [PAGE_LABELS.startConversation]: "Have a word",
+  "#900260": "The Made-Up Errand",
+  "#900954": "The briefing itself.",
+  "#900955": "Bring it to {[location]objectiveLocationSystemID.name},\r\n<b>{[character]agentID.name}</b> says.<br>Soon.<br><br>",
+  "#900956": "One more thing",
+  "#900957": "Mind the <i>gate</i>.",
+};
+const PAGE_RECORD = { nameID: 900260, messages: { [PAGE_MESSAGES.briefing]: 900954, [PAGE_MESSAGES.offered]: 900955, [PAGE_MESSAGES.extraHeader]: 900956, [PAGE_MESSAGES.extraBody]: 900957 } };
+const pageOf = (body: string): string | null => body.match(/<section class="mission-page">([\s\S]*?)<\/section>/)?.[1] ?? null;
 const paneOf = (body: string): string | null => body.match(/<section class="mission-objectives">([\s\S]*?)<\/section>/)?.[1] ?? null;
 
 test("with the client's words the objectives pane is drawn, in its order, with the marks beside its rows", () => {
@@ -347,8 +391,8 @@ test("each journal line can start a conversation with its agent, in the client's
   assert.deepEqual(buttons(client), ["Speak with Some Other Agent", "Speak with Antaken Kamola"]);
   // Without them, this page's own.
   assert.deepEqual(buttons(panel({ words: false, talking: false })), ["Start conversation with Some Other Agent", "Start conversation with Antaken Kamola"]);
-  // The button sits on its line, after the line's words.
-  assert.match(client, /<li><span class="journal-line">[^<]*<\/span>\s*(<!--[^>]*-->\s*)*<button[^>]*class="link journal-talk"/);
+  // The buttons sit on the line, after its words: Read Details first, as the client's menu has it, then this one.
+  assert.match(client, /<li><span class="journal-line">[^<]*<\/span>\s*(<!--[^>]*-->\s*)*<button[^>]*class="link journal-details"[^>]*>[^<]*<\/button>\s*(<!--[^>]*-->\s*)*<button[^>]*class="link journal-talk"/);
 });
 
 test("an offer's journal line can be removed; a mission that was accepted cannot", () => {
@@ -359,12 +403,85 @@ test("an offer's journal line can be removed; a mission that was accepted cannot
     ]);
   // The client's words for it, without their markup.
   assert.deepEqual(lines(panel({ words: true, paneWords: true, talking: false })), [
-    ["Taken", ["journal-talk: Speak with Some Other Agent"]],
-    ["On offer", ["journal-talk: Speak with Antaken Kamola", "journal-remove: Take it away"]],
+    ["Taken", ["journal-details: Look closer", "journal-talk: Speak with Some Other Agent"]],
+    ["On offer", ["journal-details: Look closer", "journal-talk: Speak with Antaken Kamola", "journal-remove: Take it away"]],
   ]);
   // This page's own.
   assert.deepEqual(lines(panel({ words: false, talking: false })).map(([, buttons]) => buttons), [
-    ["journal-talk: Start conversation with Some Other Agent"],
-    ["journal-talk: Start conversation with Antaken Kamola", "journal-remove: Remove offer"],
+    ["journal-details: Read details", "journal-talk: Start conversation with Some Other Agent"],
+    ["journal-details: Read details", "journal-talk: Start conversation with Antaken Kamola", "journal-remove: Remove offer"],
   ]);
+});
+
+// --- the mission's page (the journal's Read Details) ---------------------------------
+
+test("a mission's page is drawn from what is held, in the client's order and words", () => {
+  const body = panel({ words: true, pageWords: true, talking: false, page: { objectives: decodeObjectives(COURIER_OFFERED_GATEWAY), record: PAGE_RECORD } });
+  const page = pageOf(body);
+  assert.ok(page, "the page is drawn");
+  assert.equal(text(page), [
+    // The client's own name for the mission, and its state.
+    "The Made-Up Errand On offer now",
+    "Have a word Close",
+    // The journal's own label, with this page's short form of the time left.
+    "Goes in 5h",
+    // What the agent says on offering, filled with the mission's keywords and the agent, tidied, and plain.
+    "What it is Bring it to Muvolailen,Antaken Kamola says. Soon.",
+    "To do Carry these:",
+    "○ Load 1 x type 2595 (0.1 m3)",
+    "○ From station 60000004",
+    "○ To station 60000019",
+    "Pay 13,800.00 ISK 49 pts",
+    "Extra 17,000.00 ISK",
+    "One more thing Mind the gate.",
+  ].join(" "));
+  // The state is coloured by what it is, and the briefing keeps its line break.
+  assert.match(page, /<span class="mission-page-state offered">On offer now<\/span>/);
+  assert.match(page, /Antaken Kamola says\.\nSoon\./);
+  // The agent's window is not opened by reading a mission's details.
+  assert.doesNotMatch(body, /Conversation ·/);
+});
+
+test("a page with nothing read yet shows what the journal said; a mission that is not an offer has the briefing itself", () => {
+  const waiting = pageOf(panel({ words: true, pageWords: true, talking: false, page: {} })) as string;
+  // No record: the journal's name for it, filled with nothing.
+  assert.equal(text(waiting), "A Made-Up Errand to On offer now Have a word Close Goes in 5h");
+  const accepted = pageOf(panel({ words: true, pageWords: true, talking: false, page: { missionState: 2, record: PAGE_RECORD, expirationTime: null } })) as string;
+  assert.equal(text(accepted), "The Made-Up Errand Have a word Close What it is The briefing itself. One more thing Mind the gate.");
+  // A mission that matters to standings says so, above the briefing.
+  const important = pageOf(panel({ words: true, pageWords: true, talking: false, page: { missionState: 2, important: true, record: PAGE_RECORD, expirationTime: null } })) as string;
+  assert.match(text(important), /Close This one counts\. What it is/);
+});
+
+test("a mission to fight has its dungeon as a step, in the agent's words", () => {
+  const page = pageOf(panel({ words: true, pageWords: true, talking: false, page: { contentID: 13735, missionState: 2, expirationTime: null, objectives: decodeObjectives(ENCOUNTER_OFFERED_GATEWAY) } })) as string;
+  // The objectives' own state is the one that counts: on offer.
+  assert.match(text(page), /On offer now/);
+  // The agent's words for the dungeon are not to hand here: the client's stock ones.
+  assert.match(text(page), /To do Destroy them ○ Place system 30002779 Pay 65,000\.00 ISK 87 pts Extra 80,000\.00 ISK/);
+});
+
+test("no page is drawn with none held, and with no client to read the page says what it lacks", () => {
+  assert.equal(pageOf(panel({ words: true, pageWords: true, talking: false })), null);
+  const bare = pageOf(panel({ words: false, noClient: true, talking: false, page: { objectives: decodeObjectives(COURIER_OFFERED_GATEWAY) } })) as string;
+  assert.match(bare, /class="note mission-page-wordless"/);
+  // Its own words for the two buttons and the title, and the steps by their places alone.
+  assert.match(text(bare), /^Mission Start conversation Close The mission's details are worded with the retail client's own text/);
+  assert.match(text(bare), /station 60000004 ○ station 60000019$/);
+  // Before it is known whether there is a client, and with one, there is no such note.
+  assert.doesNotMatch(pageOf(panel({ words: false, talking: false, page: {} })) as string, /mission-page-wordless/);
+  assert.doesNotMatch(pageOf(panel({ words: true, pageWords: true, talking: false, page: {} })) as string, /mission-page-wordless/);
+});
+
+test("a mission with something to carry and somewhere to fight has the carrying first, each under its own line", () => {
+  const dict = (entries: Array<[string, unknown]>) => ({ type: "dict", entries });
+  const tuple = (...items: unknown[]) => ({ type: "tuple", items });
+  const place = (locationID: number, solarsystemID: number) => dict([["locationID", locationID], ["solarsystemID", solarsystemID], ["typeID", 1531]]);
+  const both = decodeObjectives(dict([
+    ["contentID", 2156], ["missionState", 2], ["completionStatus", 0],
+    ["objectives", { type: "list", items: [tuple("transport", tuple(1, place(60000004, 30002780), 1, place(60000019, 30002778), dict([["typeID", 2595], ["quantity", 1], ["volume", 0], ["hasCargo", true]])))] }],
+    ["dungeons", { type: "list", items: [dict([["dungeonID", 3030], ["objectiveCompleted", 1], ["location", place(30002779, 30002779)]])] }],
+  ]) as never);
+  const page = pageOf(panel({ words: true, pageWords: true, talking: false, page: { missionState: 2, expirationTime: null, objectives: both } })) as string;
+  assert.match(text(page), /To do Carry these: ✓ Load 1 x type 2595 ✓ From station 60000004 ○ To station 60000019 Destroy them ✓ Place system 30002779$/);
 });
