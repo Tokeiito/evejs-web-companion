@@ -1474,11 +1474,9 @@ function createGamePortPilots({
   async function bindRetail(entry, service, method, args, kwargs) {
     const { session } = entry;
     if (method === "MachoBindObject") {
-      // michelle.GetRemotePark(): the park's own bound ballpark, the one object everything is asked of.
-      if (service === "beyonce" && entry.space) return entry.space.remote();
-      const params = monikerParams(entry, service, args[0]);
-      if (params === undefined) return null;
-      return (await session.bind(service, params)).objectID;
+      // michelle.GetRemotePark(): the park's own bound ballpark, the one object everything is asked of. Any other
+      // moniker is made by bindObject and binds when it is first called.
+      return entry.space.remote();
     }
     if (service === "invbroker" && method === "GetInventory") {
       // invCache.GetInventory(const.containerHangar): the station's hangar from
@@ -1500,10 +1498,32 @@ function createGamePortPilots({
     return boundObjectID(await session.call(service, method, argumentsToWire(args), kwargs ?? null));
   }
 
+  /**
+   * A call on a moniker the BFF asked for. As the client's own Moniker (moniker.py), it binds when it is first
+   * called, carrying that call, and the calls after go to the object it bound; and where the client makes a new
+   * Moniker for a call, one is made here for it and not kept.
+   */
+  function handleCall(entry, handle, object, method, args, kwargs) {
+    if (madeAfresh(object.service, method, { dockedInStation: attribute(entry, "stationid") !== null })) {
+      return entry.session.bind(object.service, object.params, [method, args, kwargs]).then((bound) => bound.result);
+    }
+    const kept = { has: () => object.objectID !== null, get: () => object.objectID, set: (key, objectID) => { object.objectID = objectID; } };
+    return keptCall(entry, kept, handle, object.service, () => object.params, method, args, kwargs);
+  }
+
   async function bindObject(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined) {
     const entry = held(bridgeSessionID, sessionFields);
     assertAllowed(service, method);
     ledger.note(service, method, BOUND_AS_THE_CLIENT_BINDS);
+    if (method === "MachoBindObject" && !(service === "beyonce" && entry.space)) {
+      // A Moniker: what it is bound by is settled now, from what the client's own carries (eveMoniker.py), and
+      // nothing is sent until it is called.
+      const params = monikerParams(entry, service, Array.isArray(args) ? args[0] : undefined);
+      if (params === undefined) throw fail("BOUND_NO_OBJECT", `${service}.${method} did not return a bound object.`);
+      const made = randomBytes(24).toString("base64url");
+      entry.bound.set(made, { objectID: null, service, params });
+      return { boundHandle: made, service, method, notifications: drain(entry) };
+    }
     let objectID;
     try {
       objectID = await run(entry, service, method, async () => bindRetail(entry, service, method, Array.isArray(args) ? args : [], kwargs));
@@ -1527,8 +1547,18 @@ function createGamePortPilots({
     if (retailNeeds(service, method) === "dogma") await shipReadings(entry, whereabouts(entry));
     const form = shape(service, method, args, kwargs, contextFor(entry));
     ledger.note(service, method, form);
-    const result = await run(entry, service, method, async () =>
-      entry.session.callBound(object.objectID, method, argumentsToWire(form.args), form.kwargs));
+    let result;
+    try {
+      result = await run(entry, service, method, async () => (object.params === undefined
+        ? entry.session.callBound(object.objectID, method, argumentsToWire(form.args), form.kwargs)
+        : handleCall(entry, String(boundHandle), object, method, argumentsToWire(form.args), form.kwargs)));
+    } catch (error) {
+      // The session's own word for a bind the server answered without an object: the gateway's, for a bind.
+      if (/ did not return a bound object\.| could not say where its object lives\./.test(error.message)) {
+        throw fail("BOUND_NO_OBJECT", `${service}.MachoBindObject did not return a bound object.`);
+      }
+      throw error;
+    }
     if (service === "scanMgr") afterScanManagerCall(entry, method, form.args, result);
     if (service === "dogmaIM") afterGroupingCall(entry, method, form.args, result);
     if (service === "beyonce") afterMovementCall(entry, method, form.args, kwargs);

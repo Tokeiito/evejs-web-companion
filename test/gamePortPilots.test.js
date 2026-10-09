@@ -904,8 +904,10 @@ test("undocking is sent; reaching space makes the ballpark, docking lets it go, 
   const { pilots, session, handle } = await selected({}, hand.options);
   const ship = await pilots.bindObject("ship", "MachoBindObject", [[STATION, 15]], null, WHOSE, handle);
   await pilots.callBoundMethod("ship", "Undock", [SHIP, false], null, WHOSE, handle, ship.boundHandle);
-  // With the client's keyword: its online modules by slot, of which this ship's dogma names none.
-  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:1", method: "Undock", args: [SHIP, false], kwargs: { onlineModules: { type: "dict", entries: [] } } });
+  // With the client's keyword: its online modules by slot, of which this ship's dogma names none. Godma's dogma
+  // location was bound first, to be primed; the ship's moniker binds with the undock itself.
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:2", method: "Undock", args: [SHIP, false], kwargs: { onlineModules: { type: "dict", entries: [] } } });
+  assert.deepEqual([session.binds.map((bind) => bind.service), session.carried], [["dogmaIM", "ship"], ["GetAllInfo", "Undock"]]);
   assert.equal(hand.parks.length, 0, "docked: no ballpark");
 
   // The session reaches space.
@@ -1011,9 +1013,16 @@ test("the two inventory managers are two monikers, as invCache keeps them", asyn
   assert.deepEqual(session.boundCalls.map((call) => call.objectID), ["N=1:1", "N=1:3"]);
 });
 
+/** Every service a test binds, with something to ask of what it binds. */
+const ASKABLE = { allowed: new Set(["ship", "invbroker", "dogmaIM", "agentMgr", "planetMgr", "charMgr", "reprocessingSvc", "fleetObjectHandler", "entity", "beyonce"].flatMap((service) => [`${service}.MachoBindObject`, `${service}.Ask`])) };
+
 test("a service's object is bound with what the retail client's moniker for it carries", async () => {
-  const docked = await selected();
-  const bind = (service, args) => docked.pilots.bindObject(service, "MachoBindObject", args, null, WHO, docked.handle);
+  const docked = await selected(undefined, ASKABLE);
+  // A moniker binds when it is first called: each is made and asked one thing.
+  const bind = async (service, args) => {
+    const { boundHandle } = await docked.pilots.bindObject(service, "MachoBindObject", args, null, WHO, docked.handle);
+    await docked.pilots.callBoundMethod(service, "Ask", [], null, WHO, docked.handle, boundHandle);
+  };
   // Bound for where the pilot is, whatever the BFF passed.
   await bind("ship", [[STATION, 15]]);
   await bind("invbroker", [[STRUCTURE, 15]]);
@@ -1044,16 +1053,19 @@ test("a service's object is bound with what the retail client's moniker for it c
 });
 
 test("what only exists in space has no moniker while docked, and its own once there", async () => {
-  const { pilots, session, handle } = await selected();
+  const { pilots, session, handle } = await selected(undefined, ASKABLE);
   await rejects(pilots.bindObject("entity", "MachoBindObject", [], null, WHO, handle), "BOUND_NO_OBJECT", /entity\.MachoBindObject did not return a bound object/);
   await rejects(pilots.bindObject("beyonce", "MachoBindObject", [[SYSTEM, 5]], null, WHO, handle), "BOUND_NO_OBJECT");
   assert.deepEqual(session.binds, []);
 
   delete session.attributes.stationid;
   session.attributes.solarsystemid = SYSTEM;
-  await pilots.bindObject("entity", "MachoBindObject", [], null, WHO, handle);
-  await pilots.bindObject("beyonce", "MachoBindObject", [[SYSTEM, 5]], null, WHO, handle);
-  await pilots.bindObject("ship", "MachoBindObject", [[STATION, 15]], null, WHO, handle);
+  // Each binds when it is first called, by what it was made with.
+  for (const [service, args] of [["entity", []], ["beyonce", [[SYSTEM, 5]]], ["ship", [[STATION, 15]]]]) {
+    const { boundHandle } = await pilots.bindObject(service, "MachoBindObject", args, null, WHO, handle);
+    assert.equal(session.binds.some((bind) => bind.service === service), false, `${service}: nothing is sent for the making of it`);
+    await pilots.callBoundMethod(service, "Ask", [], null, WHO, handle, boundHandle);
+  }
   assert.deepEqual(session.binds, [
     { service: "entity", params: SYSTEM },
     { service: "beyonce", params: SYSTEM },
@@ -1195,10 +1207,11 @@ test("when the server says a bound object is gone, its handle is forgotten, as t
   // machoNet.OnMachoObjectDisconnect(objectID, clientID, refID) -> session.UnregisterMachoObject(objectID, refID)
   const { pilots, session, handle } = await selected();
   const hangar = (await pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, handle)).boundHandle;
-  const ship = (await pilots.bindObject("ship", "MachoBindObject", [[STATION, 15]], null, WHO, handle)).boundHandle;
-  // The hangar is "N=1:2" (the manager that made it is "N=1:1"); the ship object is "N=1:3".
+  const agent = (await pilots.bindObject("agentMgr", "MachoBindObject", [3008416], null, WHO, handle)).boundHandle;
+  await pilots.callBoundMethod("agentMgr", "DoAction", [null], null, WHO, handle, agent);
+  // The hangar is "N=1:2" (the manager that made it is "N=1:1"); the agent's object, bound by that call, is "N=1:3".
   session.notify("OnMachoObjectDisconnect", [Buffer.from("N=1:3"), 1065450, null]);
-  await rejects(pilots.callBoundMethod("ship", "Board", [1], null, WHO, handle, ship), "BOUND_HANDLE_NOT_FOUND");
+  await rejects(pilots.callBoundMethod("agentMgr", "DoAction", [null], null, WHO, handle, agent), "BOUND_HANDLE_NOT_FOUND");
   await pilots.callBoundMethod("invbroker", "StackAll", [4], null, WHO, handle, hangar);
 
   // The inventory manager going takes nothing else with it, but the next hangar bind makes a new one.
@@ -1216,10 +1229,9 @@ test("when the server says a bound object is gone, its handle is forgotten, as t
 });
 
 test("a bind's failures are the gateway's: no object, a refusal, a lost session", async () => {
-  const noObject = await selected({ answers: { "bind:agentMgr": () => { throw sessionError("BIND_FAILED", "agentMgr did not return a bound object."); } } });
-  await rejects(noObject.pilots.bindObject("agentMgr", "MachoBindObject", [1], null, WHO, noObject.handle), "BOUND_NO_OBJECT", /^agentMgr\.MachoBindObject did not return a bound object\.$/);
-  const nowhere = await selected({ answers: { "bind:agentMgr": () => { throw sessionError("RESOLVE_FAILED", "agentMgr could not say where its object lives."); } } });
-  await rejects(nowhere.pilots.bindObject("agentMgr", "MachoBindObject", [1], null, WHO, nowhere.handle), "BOUND_NO_OBJECT");
+  // (A moniker's own, which come when it is first called, are in "a moniker whose bind finds no object".)
+  const nowhere = await selected({ answers: { "bind:invbroker": () => { throw sessionError("RESOLVE_FAILED", "invbroker could not say where its object lives."); } } });
+  await rejects(nowhere.pilots.bindObject("invbroker", "GetInventoryFromId", [5], null, WHO, nowhere.handle), "BOUND_NO_OBJECT");
   const empty = await selected({ answers: { "bound:GetInventoryFromId": () => null } });
   await rejects(empty.pilots.bindObject("invbroker", "GetInventoryFromId", [5], null, WHO, empty.handle), "BOUND_NO_OBJECT");
 
@@ -1228,8 +1240,8 @@ test("a bind's failures are the gateway's: no object, a refusal, a lost session"
   // A failed bind leaves no handle behind, and the manager it did bind is still the manager.
   assert.equal(refused.session.binds.length, 1);
 
-  const lost = await selected({ answers: { "bind:ship": () => { throw sessionError("CONNECTION_LOST"); } } });
-  await rejects(lost.pilots.bindObject("ship", "MachoBindObject", [[STATION, 15]], null, WHO, lost.handle), "SESSION_NOT_FOUND");
+  const lost = await selected({ answers: { "bind:invbroker": () => { throw sessionError("CONNECTION_LOST"); } } });
+  await rejects(lost.pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, lost.handle), "SESSION_NOT_FOUND");
   assert.equal(lost.pilots.size, 0);
 
   const failing = await selected({ answers: { "bound:List": () => { throw refusedBy("CustomNotify", "That container is locked."); } } });
@@ -2291,7 +2303,7 @@ test("a call on a handle the BFF bound itself is shaped with what the pilot know
   const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": fittedAllInfo() } }, moduleOptions());
   const ship = await pilots.bindObject("ship", "MachoBindObject", [[STATION, 15]], null, WHOSE, handle);
   await pilots.callBoundMethod("ship", "Undock", [SHIP, false], null, WHOSE, handle, ship.boundHandle);
-  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:1", method: "Undock", args: [SHIP, false], kwargs: { onlineModules: { type: "dict", entries: [[19, FITTED_MODULE]] } } });
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:2", method: "Undock", args: [SHIP, false], kwargs: { onlineModules: { type: "dict", entries: [[19, FITTED_MODULE]] } } });
 });
 
 test("whatever is asked of ship or dogmaIM by name is made on the moniker, read against the client or not", async () => {
@@ -3085,6 +3097,81 @@ test("in space the ship's Moniker is kept while the ship is the same, and shipCo
   session.notify("OnMachoObjectDisconnect", [Buffer.from(session.boundCalls.filter((call) => call.method === "LaunchDrones").at(-1).objectID), 0, 0]);
   await drones();
   assert.deepEqual([ships(), session.carried.at(-1)], [4, "LaunchDrones"]);
+});
+
+// ── the monikers the BFF asks for ────────────────────────────────────────────
+//
+// The BFF binds an object and then calls it, in two steps (its gateway's way). The client has no such first step:
+// a Moniker is made, and binds when it is first called, carrying that call (moniker.py). So a moniker the BFF
+// asks for is made and not bound, and what the server sees is the client's bind.
+
+const HANDLE_PAIRS = { allowed: new Set([
+  "fleetObjectHandler.MachoBindObject", "fleetObjectHandler.GetInitState", "fleetObjectHandler.GetWings",
+  "agentMgr.MachoBindObject", "agentMgr.DoAction", "ship.MachoBindObject", "ship.Board", "crimewatch.MachoBindObject", "crimewatch.GetClientStates",
+]) };
+
+test("a moniker the BFF asks for is made and not bound: its first call goes with the bind, and the calls after to the object", async () => {
+  const { pilots, session, handle } = await selected({ answers: { "bound:GetInitState": "the state", "bound:GetWings": "the wings" } }, HANDLE_PAIRS);
+  session.calls.length = 0;
+  const fleet = await pilots.bindObject("fleetObjectHandler", "MachoBindObject", [[1099511627776]], null, WHO, handle);
+  assert.deepEqual([typeof fleet.boundHandle, fleet.service, fleet.method], ["string", "fleetObjectHandler", "MachoBindObject"]);
+  // Nothing has been sent: not a bind, and nothing by name.
+  assert.deepEqual([session.binds, session.boundCalls, session.calls], [[], [], []]);
+  const state = await pilots.callBoundMethod("fleetObjectHandler", "GetInitState", [], null, WHO, handle, fleet.boundHandle);
+  assert.equal(state.result, "the state");
+  assert.deepEqual([session.binds, session.carried], [[{ service: "fleetObjectHandler", params: 1099511627776 }], ["GetInitState"]]);
+  const wings = await pilots.callBoundMethod("fleetObjectHandler", "GetWings", [7], { passive: 1 }, WHO, handle, fleet.boundHandle);
+  assert.equal(wings.result, "the wings");
+  assert.deepEqual([session.binds.length, session.boundCalls.map((call) => [call.objectID, call.method, call.args, call.kwargs])], [1, [["N=1:1", "GetInitState", [], null], ["N=1:1", "GetWings", [7], { passive: 1 }]]]);
+  // Another moniker of the same service is another Moniker: bound by its own first call, with what it was asked for.
+  const other = await pilots.bindObject("fleetObjectHandler", "MachoBindObject", [[1099511627777]], null, WHO, handle);
+  await pilots.callBoundMethod("fleetObjectHandler", "GetWings", [], null, WHO, handle, other.boundHandle);
+  assert.deepEqual([session.binds.at(-1), session.carried, session.boundCalls.at(-1).objectID], [{ service: "fleetObjectHandler", params: 1099511627777 }, ["GetInitState", "GetWings"], "N=1:2"]);
+  // Two calls at once on one that is not bound: one bind, the other waits for the object.
+  const agent = await pilots.bindObject("agentMgr", "MachoBindObject", [3008416], null, WHO, handle);
+  await Promise.all([1, 2].map((actionID) => pilots.callBoundMethod("agentMgr", "DoAction", [actionID], null, WHO, handle, agent.boundHandle)));
+  assert.deepEqual([session.binds.filter((bind) => bind.service === "agentMgr"), session.boundCalls.slice(-2).map((call) => [call.objectID, call.args])], [[{ service: "agentMgr", params: 3008416 }], [["N=1:3", [1]], ["N=1:3", [2]]]]);
+});
+
+test("where the client makes a Moniker for each call, a moniker the BFF asks for is made anew for each too", async () => {
+  const { pilots, session, handle } = await selected({ answers: { "bound:Board": ([shipID]) => `aboard ${shipID}` } }, HANDLE_PAIRS);
+  const ship = await pilots.bindObject("ship", "MachoBindObject", [[STATION, 15]], null, WHO, handle);
+  const first = await pilots.callBoundMethod("ship", "Board", [SHIP + 1], null, WHO, handle, ship.boundHandle);
+  const second = await pilots.callBoundMethod("ship", "Board", [SHIP + 2], null, WHO, handle, ship.boundHandle);
+  // Each answer is its own call's, come back with the bind.
+  assert.deepEqual([first.result, second.result], [`aboard ${SHIP + 1}`, `aboard ${SHIP + 2}`]);
+  const crime = await pilots.bindObject("crimewatch", "MachoBindObject", [], null, WHO, handle);
+  await pilots.callBoundMethod("crimewatch", "GetClientStates", [], null, WHO, handle, crime.boundHandle);
+  await pilots.callBoundMethod("crimewatch", "GetClientStates", [], null, WHO, handle, crime.boundHandle);
+  // Docked in a station: a bind for each call of the ship's, and for each of crimewatch's anywhere.
+  assert.deepEqual(session.binds.map((bind) => bind.service), ["ship", "ship", "crimewatch", "crimewatch"]);
+  assert.deepEqual(session.carried, ["Board", "Board", "GetClientStates", "GetClientStates"]);
+  assert.deepEqual(session.boundCalls.map((call) => call.objectID), ["N=1:1", "N=1:2", "N=1:3", "N=1:4"]);
+});
+
+test("a moniker whose bind finds no object says so at the call that made it bind, and the next call binds again", async () => {
+  let answer = () => { throw sessionError("BIND_FAILED", "agentMgr did not return a bound object."); };
+  const { pilots, session, handle } = await selected({ answers: { "bind:agentMgr": (params, call) => answer(params, call) } }, HANDLE_PAIRS);
+  const agent = await pilots.bindObject("agentMgr", "MachoBindObject", [1], null, WHO, handle);
+  const ask = () => pilots.callBoundMethod("agentMgr", "DoAction", [null], null, WHO, handle, agent.boundHandle);
+  await rejects(ask(), "BOUND_NO_OBJECT", /^agentMgr\.MachoBindObject did not return a bound object\.$/);
+  answer = () => { throw sessionError("RESOLVE_FAILED", "agentMgr could not say where its object lives."); };
+  await rejects(ask(), "BOUND_NO_OBJECT");
+  // A refusal of the call it carried is the call's own refusal.
+  answer = () => { throw refusedBy("NotNow"); };
+  await rejects(ask(), "CALL_REFUSED", /^NotNow$/);
+  // Any other failure of it is a failed call, and no word about objects.
+  answer = () => { throw new Error("the wire fell silent"); };
+  await rejects(ask(), "CALL_FAILED", /^agentMgr\.DoAction failed: the wire fell silent$/);
+  // Each try was a bind; none bound, so the moniker is still to bind, and does.
+  answer = (params, call) => ({ objectID: "N=1:50", nodeID: 1, result: `bound by ${call[0]}` });
+  assert.deepEqual([(await ask()).result, session.binds.length], ["bound by DoAction", 5]);
+  // A lost connection ends the session, as anywhere.
+  answer = null;
+  const lost = await selected({ answers: { "bind:agentMgr": () => { throw sessionError("CONNECTION_LOST"); } } }, HANDLE_PAIRS);
+  const gone = await lost.pilots.bindObject("agentMgr", "MachoBindObject", [1], null, WHO, lost.handle);
+  await rejects(lost.pilots.callBoundMethod("agentMgr", "DoAction", [null], null, WHO, lost.handle, gone.boundHandle), "SESSION_NOT_FOUND");
+  assert.equal(lost.pilots.size, 0);
 });
 
 // ── the skill handler ────────────────────────────────────────────────────────
