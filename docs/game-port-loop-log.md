@@ -198,6 +198,16 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   transport: "There is no accepted mission naming cargo to load". Seen on 2026-10-08 with Test
   Two, on the gateway BFF and the game-port one alike. Not looked into further: it is the bot's
   own logic, not the transport. See the entry "a hosted bot on the game port".
+- **Travel no longer takes the fewest jumps. It takes the route the retail client's autopilot plots**
+  with its settings as they come: the safe way (high security wherever there is one, however much
+  longer), and round Jita and Zarzakh unless one of them is where it is going. That is every
+  traveller's route, the bots' too: a hauler that used to cut through low security or through
+  Jita now goes round. Seen on 2026-10-09: Muvolailen to Perimeter went by Maurasi, where the
+  fewest jumps go by Jita; Muvolailen to a low-security station 18 jumps off is 29 the safe way.
+  The retail client lets a pilot change this (shorter, less secure, the penalty, what is avoided)
+  and here there is nowhere to set it yet. To have the old way back meanwhile, `startRoute` in
+  `web/src/app/flow.ts` is the one place: `solveRoute(graph, originSystem, targetSystemID)` is
+  still in `web/src/nav/routeSolver.ts`. See the entry "travel by the client's route".
 - **eve.js's test runner cleans the temp folder.** The first sub-agent's test run swept 32 stale
   directories (11.7 GB, none touched for 29 hours) from the OS temp folder, `evejs-web-*` among
   them. That is the runner's own housekeeping, not something asked for; nothing in use was lost.
@@ -5915,4 +5925,102 @@ page's travel autopilot still flies the shortest way, not this one.
     paid in a system of the safest class, for whether its ISK is reduced.
 17. Other things asked once beside the store, looked at for the fault of two entries ago.
 18. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
+    client's own map is in.
+
+## 2026-10-09 — travel by the client's route
+
+Commit `c29d913`, pushed. Item 1 of the last list.
+
+**What the retail client does.** Its autopilot flies the route its pathfinder plots
+(`clientPathfinderService.GetWaypointPath`, `GetAutopilotPathBetween`), with the settings
+of the entry before this: the safe route, a penalty of 50, Jita and Zarzakh avoided. A route
+from a system to itself is that system alone, and there is none to or from a system outside
+known space.
+
+**What the page did.** Breadth-first: the fewest jumps, through anything. So the mission's
+page, since the last entry, could say "29 jumps" of a place the Travel panel would then fly
+to in 18.
+
+**What was built.**
+
+- `autopilotPath` in `web/src/nav/autopilotRoute.ts`: the route itself. The flood now keeps,
+  for each system, the one it was entered from, and the jump counts are read off the same.
+- `routeAlong` in `web/src/nav/routeSolver.ts`: the gates along a way already chosen.
+- `startRoute` plans with the two. Everything that travels goes through it.
+- The fixture's builder now records, for each pair, how many low-security and how many
+  null-security systems the client's route enters, beside its jumps. Which systems it goes
+  through is not recorded: among routes that cost it the same, the module picks by the order
+  of its map (on this server's map, Muvolailen to a place 29 jumps off, its route and this
+  one differ in one system of the thirty).
+
+**A decision taken in the operator's place:** the bots travel this way too. It is under "For
+the operator", with the one line to change to go back.
+
+**Tests that changed.** Three files' made-up maps numbered their systems 1, 2 and 3 and gave
+them no security. The client plots only through known space and by security, so six tests
+failed, rightly. Their maps are numbered and levelled as real ones are; nothing they assert
+was loosened.
+
+**Proof.**
+
+- Tests: 4 new. 26 ways of breaking it tried; two survived, both lines that did nothing (the
+  start marked as entered from itself; a check for a way with no gate, when the way is through
+  the same map), and both are gone.
+- The solver's route against the client's, over the fixture's 2,468 pairs: a real way through
+  the map each time, as long, with as many low and as many null-security systems, and through
+  nothing avoided.
+- Suite: 9512 tests, 9488 pass, 0 fail, 24 skipped, 0 todo.
+- **Flown, in the browser, on the game port,** eve.js `e066a81e9`, as Test Two in a Badger,
+  from the station in Muvolailen to Perimeter (the store copied first and put back after; the
+  pilot is docked where it was and the journal is at one offer). The Travel panel planned
+  "Muvolailen → Maurasi" and "Maurasi → Perimeter", which is the client's pathfinder's own
+  route for that pair; the fewest jumps go by Jita. It undocked, warped, jumped twice and said
+  "arrived", in Perimeter, in 1 minute 55 seconds, and the server's flight status said in
+  space in 30000144.
+- **From there the mission's page** said 2 jumps to the pick-up and 5 to the drop-off; the
+  client's pathfinder says 2 and 5.
+
+**Not done.** The pilot's settings for all this (route type, penalty, what is avoided): the
+client has a window for them and keeps them with the character's settings. The jumps other
+parts of the page count are still the fewest (the agent finder's, the courier's, the industry
+window's); the client counts some of those its autopilot's way and some the plain way
+(`GetJumpCountFromCurrent`), and each wants looking at. Waypoints, of which the client's
+route may have several.
+
+### Next
+
+1. The autopilot's settings, as the client keeps them: the route type (and the two it has that
+   are not built), the penalty, the avoided systems, and whether avoiding is on.
+2. The jumps the rest of the page counts, each by the way the client counts that one.
+3. Around a place's name, the last of it: the outlaw's warning (the pilot's own security
+   status). The agent's own window's steps, if the client's say how far.
+4. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+   own counts on it, with the push doing the work as it does for Remove Offer.
+5. The agent's cards above its own window, where the client's window has its own header.
+6. The ledger's unread pairs, most called first: the inventory and wallet reads, then the
+   writes on `ship` and `dogmaIM`.
+7. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+8. Phase 3's writes, feature by feature, each set beside what the client sends.
+9. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+10. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+11. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+12. Small, in Ready Fit: the capacity the client never asks for; the window following a change
+    of pilot.
+13. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+14. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+15. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+16. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions); the client's own map, to set beside this server's.
+17. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+18. Other things asked once beside the store, looked at for the fault of three entries ago.
+19. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
     client's own map is in.
