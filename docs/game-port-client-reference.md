@@ -907,11 +907,21 @@ the transfer and the web gateway's list has not got it, so the transport has a s
 its own beside the gateway's (`GAME_PORT_ONLY_CALLS`). Through the gateway the route is
 refused.
 
-Not the client's yet: the page's haul does not use that route. It sends the launchpads up
-before its bot starts, docked, through `src/piCustomsExport.js`, which logs a second game-port
-client in for it, asks the rate by the service's name, and binds `invbroker` with the office's
-ID. This server takes both. And the page reads an office as it reads any container, with one
-`List`, not the window's four reads.
+The page's haul uses that route for a pilot on the game port: its collecting block sends a
+colony's launchpads up when the ship is at that planet's office, one launchpad at a time, and
+then empties the office. Which planet an office is, the client reads off the office's slim
+item (`customsOfficeItem.planetID`, `importExportUI.py` 94), and so does the page: the game
+port's snapshot passes it on for an orbital. The web gateway's snapshot does not say it.
+
+Not the client's yet:
+
+- For a pilot on the gateway the launchpads are still sent up before the bot starts, docked,
+  through `src/piCustomsExport.js`, which logs a second game-port client in for it, asks the
+  rate by the service's name, and binds `invbroker` with the office's ID. This server takes
+  both.
+- The page reads an office as it reads any container, with one `List`, not the window's four
+  reads. And the collecting block reads every office in the system on every tick, from
+  wherever the ship is. A client opens the office it is at.
 
 **Asking with a cached version.** When the client already holds an answer, it sends that answer's
 version as `machoVersion`, and the server can reply "still good" instead of the answer. We always
