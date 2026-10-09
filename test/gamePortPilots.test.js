@@ -223,6 +223,8 @@ test("select logs in as the account and makes the retail client's three calls, i
     "skillMgr2.GetMySkillHandler",
     // And its agents' journal, as the client's journal service asks for it.
     "agentMgr.GetMyJournalDetails",
+    // And the table of agents, as the client's agents service asks for it. The choosing does not wait on that one.
+    "agentMgr.GetAgents",
   ]);
   assert.deepEqual(session.calls[0].args, []);
   assert.deepEqual(session.calls[1].args, [PILOT]);
@@ -316,7 +318,7 @@ test("a pilot left in space is selected in space and given a ballpark as the cli
   const first = await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, outcome.bridgeSessionID);
   assert.deepEqual(session.calls.map((call) => `${call.service}.${call.method}`), [
     "charUnboundMgr.GetCharacterSelectionData", "charUnboundMgr.GetCharacterLockType", "charUnboundMgr.SelectCharacterID",
-    "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler", "agentMgr.GetMyJournalDetails", "beyonce.GetFormations",
+    "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler", "agentMgr.GetMyJournalDetails", "agentMgr.GetAgents", "beyonce.GetFormations",
   ]);
   assert.deepEqual(session.binds, [{ service: "beyonce", params: SYSTEM }]);
   assert.deepEqual([hand.parks.length, typeof hand.parks[0].tick, hand.parks[0].stopped], [1, "function", false]);
@@ -473,8 +475,10 @@ test("the allowlist it ships with is the gateway's own list of pairs", async () 
     await pilots.callMethod(service, method, [], null, { userid: ACCOUNT }, bridgeSessionID);
   }
   // The three of choosing a character, the two readings of its standings, the asking for its skill handler, the
-  // reading of its journal, and the forty.
-  assert.equal(made[0].calls.length, 3 + 2 + 1 + 1 + 40);
+  // reading of its journal, the asking for the table of agents, and the forty but one: the table of agents is
+  // among the forty, and is not asked for twice.
+  assert.equal(contract.gatewayAllowlist.pairs.slice(0, 40).includes("agentMgr.GetAgents"), true);
+  assert.equal(made[0].calls.length, 3 + 2 + 1 + 1 + 1 + 39);
   assert.equal(contract.gatewayAllowlist.pairs.length, contract.gatewayAllowlist.count);
 });
 
@@ -1169,6 +1173,7 @@ test("the transport keeps a tally of what it called and how each compared with t
     // Asked for and not answered by this stand-in: nothing was asked of a handler, and nothing of one is tallied.
     "skillMgr2.GetMySkillHandler": { same: 1 },
     "agentMgr.GetMyJournalDetails": { same: 1 },
+    "agentMgr.GetAgents": { same: 1 },
     "invbroker.Add": { differs: 1 },
     "invbroker.GetInventory": { reshaped: 1 },
     "invbroker.List": { reshaped: 1 },
@@ -3764,7 +3769,7 @@ test("a character chosen has its standings read as the client's standing service
   const { pilots, session, handle } = await selected({ answers: STANDING_ANSWERS });
   assert.deepEqual(session.calls.map((call) => `${call.service}.${call.method}`), [
     "charUnboundMgr.GetCharacterSelectionData", "charUnboundMgr.GetCharacterLockType", "charUnboundMgr.SelectCharacterID",
-    "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler", "agentMgr.GetMyJournalDetails",
+    "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler", "agentMgr.GetMyJournalDetails", "agentMgr.GetAgents",
   ]);
   assert.deepEqual(session.calls.slice(3, 5).map((call) => [call.args, call.kwargs]), [[[], null], [[], null]]);
   const kept = await pilots.standingsKept(WHO, handle);
@@ -3954,7 +3959,7 @@ test("a character chosen has its skill handler asked for and bound, and asked wh
   // by the character, and the rest go to the object, in the order a real client asked this server.
   assert.deepEqual(session.calls.slice(3).map((call) => [`${call.service}.${call.method}`, call.args, call.kwargs]), [
     ["standingMgr.GetNPCNPCStandings", [], null], ["standingMgr.GetCharStandings", [], null], ["skillMgr2.GetMySkillHandler", [], null],
-    ["agentMgr.GetMyJournalDetails", [], null],
+    ["agentMgr.GetMyJournalDetails", [], null], ["agentMgr.GetAgents", [], null],
   ]);
   assert.deepEqual([session.binds, session.carried, session.nodes], [[{ service: "skillHandler", params: PILOT }], ["GetSkills"], []]);
   assert.deepEqual(handlerCalls(session), LOGIN_READS);
@@ -4321,12 +4326,12 @@ const missionOf = (agentID, state = 1, contentID = 1) => [state, 0, "UI/Agents/M
 const journalWith = (...missions) => [{ type: "list", items: missions }, { type: "list", items: [] }];
 const JOURNAL_PAIRS = { allowed: new Set(["agentMgr.MachoBindObject", "agentMgr.DoAction", "agentMgr.GetMyJournalDetails", "station.GetGuests"]) };
 const journalStates = (journal) => journal[0].items.map((each) => [each[0], each[4], each[9]]);
-const journalAsked = (session) => session.calls.filter((call) => call.service === "agentMgr").map((call) => call.method);
+const journalAsked = (session) => session.calls.filter((call) => call.service === "agentMgr" && call.method === "GetMyJournalDetails").map((call) => call.method);
 
 test("a character chosen has its agents' journal read as the client's journal service reads it, and it is kept", async () => {
   const { pilots, session, handle } = await selected({ answers: { "agentMgr.GetMyJournalDetails": journalWith(missionOf(3008416)) } }, JOURNAL_PAIRS);
   // By name, with nothing, after the standings and the skill handler.
-  assert.deepEqual(session.calls.slice(3).map((call) => [`${call.service}.${call.method}`, call.args, call.kwargs]).at(-1), ["agentMgr.GetMyJournalDetails", [], null]);
+  assert.deepEqual(session.calls.slice(3).map((call) => [`${call.service}.${call.method}`, call.args, call.kwargs]).at(-2), ["agentMgr.GetMyJournalDetails", [], null]);
   assert.deepEqual(ledgerOf(pilots, "agentMgr.GetMyJournalDetails"), [{ same: 1 }, "eve/client/script/ui/shared/neocom/journal.py:312"]);
   // Read from what is kept, in the gateway's form, with nothing asked.
   const kept = await pilots.journalKept(WHO, handle);
@@ -4452,6 +4457,79 @@ test("an agent has one object, whoever asks on it: the BFF's handle and the jour
   first.session.notify("OnAgentMissionChange", ["quit", 3008416]);
   await settled();
   assert.deepEqual([first.session.binds.length, first.session.carried.at(-1), first.session.boundCalls.at(-1).objectID], [2, "GetMyJournalDetails", "N=1:2"]);
+});
+
+// ── the agents' table ────────────────────────────────────────────────────────
+//
+// agents.py __GetAllAgents: the client asks for the whole table of agents once, as its character is chosen, and
+// keeps it for as long as it runs. Each pilot here asks the same, and one copy is kept for them all.
+
+const agentsRowset = (...agentIDs) => ({
+  type: "object", name: Buffer.from("eve.common.script.sys.rowset.Rowset"),
+  args: { type: "dict", entries: [[Buffer.from("header"), { type: "list", items: [Buffer.from("agentID"), Buffer.from("stationID")] }], [Buffer.from("lines"), { type: "list", items: agentIDs.map((agentID) => ({ type: "list", items: [agentID, STATION] })) }]] },
+});
+const AGENT_PAIRS = { allowed: new Set(["agentMgr.GetAgents", "station.GetGuests", "someService.GetAgents"]) };
+const agentIDsIn = (result) => new Map(result.args.entries).get("lines").items.map((line) => line.items[0]);
+const agentsAsked = (session) => session.calls.filter((call) => call.service === "agentMgr" && call.method === "GetAgents");
+const readAgents = async (pilots, handle, who = WHO) => (await pilots.callMethod("agentMgr", "GetAgents", [], null, who, handle)).result;
+
+test("the table of agents is asked for as a character is chosen, and a read of it after is answered from what was answered then", async () => {
+  const { pilots, session, handle } = await selected({ answers: { "agentMgr.GetAgents": agentsRowset(3008416, 3008417) } }, AGENT_PAIRS);
+  // By name, with nothing: the last thing the choosing asks.
+  assert.deepEqual([agentsAsked(session), session.calls.at(-1).method], [[{ service: "agentMgr", method: "GetAgents", args: [], kwargs: null }], "GetAgents"]);
+  const first = await readAgents(pilots, handle);
+  // In the gateway's form, as a read of it came before.
+  assert.deepEqual([first.type, first.name, agentIDsIn(first)], ["object", "eve.common.script.sys.rowset.Rowset", [3008416, 3008417]]);
+  // Read again: the very table that was kept, with nothing asked and nothing more in the ledger.
+  const again = await pilots.callMethod("agentMgr", "GetAgents", [], null, WHO, handle);
+  assert.equal(again.result, first);
+  assert.deepEqual([again.service, again.method, again.notifications, agentsAsked(session).length, ledgerOf(pilots, "agentMgr.GetAgents")], ["agentMgr", "GetAgents", [], 1, [{ same: 1 }, "eve/client/script/ui/station/agents/agents.py:92"]]);
+  // A read of the same name on another service is that service's own: asked, and noted as any call is.
+  await pilots.callMethod("someService", "GetAgents", [], null, WHO, handle);
+  assert.deepEqual([session.calls.at(-1).service, ledgerOf(pilots, "someService.GetAgents")[0], agentsAsked(session).length], ["someService", { unchecked: 1 }, 1]);
+  // Another account's session reads nothing, and a transport the pair is not allowed on does not hand it over.
+  await assert.rejects(pilots.callMethod("agentMgr", "GetAgents", [], null, { userid: 9 }, handle), (error) => error.code === "SESSION_NOT_FOUND");
+  const closed = await selected({ answers: { "agentMgr.GetAgents": agentsRowset(1) } }, { allowed: new Set(["station.GetGuests"]) });
+  await rejects(closed.pilots.callMethod("agentMgr", "GetAgents", [], null, WHO, closed.handle), "CALL_NOT_ALLOWED");
+});
+
+test("one table of agents is kept for all pilots: each asks as it is chosen, and what the last was answered is what any of them reads", async () => {
+  let asked = 0;
+  const built = build({
+    userid: (userName) => (userName === "test" ? ACCOUNT : 5),
+    answers: {
+      "charUnboundMgr.GetCharacterSelectionData": selectionData([characterRow(), characterRow({ characterID: 140000099 })]),
+      "agentMgr.GetAgents": () => agentsRowset(3008416, 3008500 + (asked += 1)),
+    },
+  }, AGENT_PAIRS);
+  const one = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const own = await readAgents(built.pilots, one.bridgeSessionID);
+  assert.deepEqual(agentIDsIn(own), [3008416, 3008501]);
+  const other = { userid: 5, userName: "other" };
+  const two = await built.pilots.selectCharacter([140000099, null, true], null, other);
+  // Each pilot's own session asked, once, as its client would.
+  assert.deepEqual(built.made.map((session) => agentsAsked(session).length), [1, 1]);
+  const [theirs, mine] = [await readAgents(built.pilots, two.bridgeSessionID, { userid: 5 }), await readAgents(built.pilots, one.bridgeSessionID)];
+  assert.deepEqual([agentIDsIn(theirs), mine === theirs, asked], [[3008416, 3008502], true, 2]);
+});
+
+test("a table of agents that could not be read at the choosing does not fail it, and is asked for when it is wanted", async () => {
+  let refuse = true;
+  let asked = 0;
+  const { pilots, session, handle, outcome } = await selected({ answers: { "agentMgr.GetAgents": () => { asked += 1; if (refuse) throw refusedBy("NotNow"); return agentsRowset(3008416); } } }, AGENT_PAIRS);
+  assert.deepEqual([outcome.session.characterID, asked], [PILOT, 1]);
+  // Wanted and refused: the reader is refused. Wanted again once it can be had: asked, once for two readers at once, and kept.
+  await rejects(pilots.callMethod("agentMgr", "GetAgents", [], null, WHO, handle), "CALL_REFUSED");
+  refuse = false;
+  const [first, second] = await Promise.all([readAgents(pilots, handle), readAgents(pilots, handle)]);
+  await readAgents(pilots, handle);
+  assert.deepEqual([agentIDsIn(first), first === second, asked, agentsAsked(session).length], [[3008416], true, 3, 3]);
+  // A connection lost under the asking ends the session, as anywhere.
+  let drop = false;
+  const lost = await selected({ answers: { "agentMgr.GetAgents": () => { if (drop) throw sessionError("CONNECTION_LOST"); throw refusedBy("NotNow"); } } }, AGENT_PAIRS);
+  drop = true;
+  await rejects(lost.pilots.callMethod("agentMgr", "GetAgents", [], null, WHO, lost.handle), "SESSION_NOT_FOUND");
+  assert.equal(lost.pilots.size, 0);
 });
 
 test("with godma not primed there is no entry to give, and the ship is still said", async () => {

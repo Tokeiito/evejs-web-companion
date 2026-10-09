@@ -187,6 +187,14 @@ agent asked at once after each notice, and one object for an agent whoever asks 
 handle or the journal's own reading (`agents.GetAgentMoniker`). On the game port the Journal
 route answers from what is kept.
 
+**The agents' table, 2026-10-09.** The client's agents service asks `agentMgr.GetAgents()` once,
+as its character is chosen, and keeps the whole table for as long as it runs. On Tranquility the
+answer is a cached object the client fetches and writes to disk; this server answers the table
+itself, some eleven thousand rows, each time it is asked. Each pilot on the game port asks as it
+is chosen, without the choosing waiting on it, and one copy is kept for all pilots, in the
+gateway's form: what the last to ask was answered. A read of the table through the BFF is
+answered from that copy. Measured: 88 to 95 ms a read of the Agents route before, 1 to 5 after.
+
 **The customs export's call shape.** `src/piCustomsExport.js` binds `invbroker` with the office ID
 and calls `ImportExportWithPlanet` on that. The client goes through `invCache`: it binds the
 broker for a location, asks it for the office's inventory, and calls that. eve.js accepts both.

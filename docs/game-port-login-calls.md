@@ -10,8 +10,8 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 
 | The game port | Kinds | Calls | Meaning |
 |---|---|---|---|
-| at login | 18 | 23 | The game port asks this at login too. |
-| by a feature | 17 | 23 | A feature of the web client asks this when it is wanted, in a form read against the client's. |
+| at login | 19 | 24 | The game port asks this at login too. |
+| by a feature | 16 | 22 | A feature of the web client asks this when it is wanted, in a form read against the client's. |
 | by a route | 15 | 16 | The BFF has a route that can ask this. It has not been read against the client's. |
 | never | 50 | 55 | Nothing of ours asks this. |
 
@@ -95,7 +95,7 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `stationSvc.GetStationItemBits` | 1 | by a feature |
 | `station.GetGuests` | 1 | by a feature |
 | `chatAuthenticationService.GetAuthenticationToken` | 1 | never |
-| `agentMgr.GetAgents` | 1 | by a feature |
+| `agentMgr.GetAgents` | 1 | at login |
 | `invbroker.GetSelfInvItem` (inferred) | 2 | never |
 | `invbroker.GetAvailableTurretSlots` (inferred) | 1 | by a route |
 | `invbroker.List` (inferred) | 3 | by a feature |

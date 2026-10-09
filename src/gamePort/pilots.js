@@ -514,6 +514,12 @@ function createGamePortPilots({
   const filetime = (ms) => (BigInt(Math.trunc(ms)) + 11644473600000n) * 10000n;
   /** standingsvc.__RefreshStandings: RemoteSvc('standingMgr').GetNPCNPCStandings(), no arguments. The web client never asks it. */
   const NPC_STANDINGS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/client/script/ui/services/standingsvc.py:115", note: null });
+  /**
+   * agents.py __GetAllAgents: the whole table of agents, which every client asks its server for once and keeps for
+   * as long as it runs. It is the same for every pilot and large (some eleven thousand rows), so here it is kept
+   * once for them all, in the gateway's form: what the last pilot to ask was answered. Null until one has been.
+   */
+  let agentsTable = null;
   /** journal._UpdateMissionDataPartial: GetAgentMoniker(agentID).GetMyJournalDetails(), no arguments, on the agent's own moniker. */
   const AGENTS_OWN_JOURNAL = Object.freeze({ status: "same", source: "eve/client/script/ui/shared/neocom/journal.py:325", note: null });
   /** What the client asks of its skill handler of its own accord that the web client never asks, and where each is asked. */
@@ -875,6 +881,8 @@ function createGamePortPilots({
       journalWork: Promise.resolve(),
       /** agents.agentMonikers: the one object the client keeps for an agent, by agent, each as it is held in `bound`. */
       agents: new Map(),
+      /** agents.allAgents: this pilot's own asking for the table of agents, once it has asked; over when it is answered. */
+      agentsAsked: null,
       /** Questions the server has asked and the user has not answered yet, by ID. */
       questions: new Map(),
       ended: false,
@@ -964,6 +972,8 @@ function createGamePortPilots({
       await primeSkills(entry);
       // journal._UpdateMissionDataFull: a character chosen has its agents' journal read, for the missions it is on.
       await journalUpToDate(entry).catch(() => {});
+      // agents.__GetAllAgents: the table of agents is asked for as a character is chosen. The choosing does not wait on it.
+      agentsKnown(entry);
     } catch (error) {
       session.close();
       // The login failing is not the select call failing; say what the session said.
@@ -1015,6 +1025,12 @@ function createGamePortPilots({
     if (retailNeeds(service, method) === "dogma") {
       await shipReadings(entry, whereabouts(entry));
       await entry.itemWork;
+    }
+    // The client's agents service has the table of agents from when its character was chosen, and asks for it only
+    // where it has none.
+    if (service === "agentMgr" && method === "GetAgents") {
+      await run(entry, service, method, () => agentsKnown(entry));
+      return { service, method, result: agentsTable, notifications: drain(entry) };
     }
     const form = shape(service, method, args, kwargs, contextFor(entry));
     // Asked of the service by name and made on its moniker: the arguments may be the client's as they stand, the call was not.
@@ -1949,7 +1965,23 @@ function createGamePortPilots({
     return keptCall(entry, kept, object.key ?? handle, object.service, () => object.params, method, args, kwargs);
   }
 
-  // ── the agents' journal as it is kept ─────────────────────────────────────
+  // ── the agents' table, and the agents' journal as it is kept ──────────────
+
+  /**
+   * agents.__GetAllAgents, for one pilot: RemoteSvc('agentMgr').GetAgents(), asked once and not again while what
+   * answered is had. Asked again where the asking failed. What answers is the one table kept for all pilots.
+   */
+  function agentsKnown(entry) {
+    if (!entry.agentsAsked) {
+      const asked = (async () => {
+        ledger.note("agentMgr", "GetAgents", shape("agentMgr", "GetAgents", [], null, contextFor(entry)));
+        agentsTable = wireToBridgeJson(await entry.session.call("agentMgr", "GetAgents", [], null));
+      })();
+      entry.agentsAsked = asked;
+      asked.catch(() => { entry.agentsAsked = null; });
+    }
+    return entry.agentsAsked;
+  }
 
   /** agents.GetAgentMoniker: the one Moniker('agentMgr', agentID) the client keeps for an agent, made when first wanted. */
   function agentObject(entry, agentID) {
