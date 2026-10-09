@@ -61,6 +61,19 @@ test("Add is the client's when it carries a quantity, and is marked when it does
   const split = form("invbroker.Add", [100, 60003760], { flag: 5, qty: 3 });
   assert.equal(split.status, "same");
   assert.deepEqual(split.kwargs, { flag: 5, qty: 3 });
+  // Where the pilot's inventory cache holds the item, a call with no quantity is given the stack's size, as the
+  // client's own would be (invControllers._AddItem: quantity = item.stacksize).
+  const knows = { stackSize: (itemID) => (itemID === 100 ? 3822 : itemID === 101 ? 1 : null) };
+  const filled = withContext("invbroker.Add", [100, 60003760], { flag: 5 }, knows);
+  assert.deepEqual([filled.args, filled.kwargs, filled.status, filled.moniker], [[100, 60003760], { flag: 5, qty: 3822 }, "reshaped", false]);
+  assert.deepEqual(withContext("invbroker.Add", [101, 60003760], { flag: 4 }, knows).kwargs, { flag: 4, qty: 1 });
+  // A quantity the caller gave is the caller's, whatever is held of the item; null is none given.
+  assert.deepEqual([withContext("invbroker.Add", [100, 60003760], { flag: 5, qty: 3 }, knows).kwargs, withContext("invbroker.Add", [100, 60003760], { flag: 5, qty: 3 }, knows).status], [{ flag: 5, qty: 3 }, "same"]);
+  assert.deepEqual(withContext("invbroker.Add", [100, 60003760], { flag: 5, qty: null }, knows).kwargs, { flag: 5, qty: 3822 });
+  // An item the cache does not hold: sent as it came, and marked.
+  const unknown = withContext("invbroker.Add", [999, 60003760], { flag: 5 }, knows);
+  assert.deepEqual([unknown.kwargs, unknown.status], [{ flag: 5 }, "differs"]);
+  assert.match(unknown.note, /always sends qty.* This call has none, and the item is in no listing the pilot holds\.$/);
 });
 
 test("a call the client never makes is still sent, and is counted as the web client's own", () => {

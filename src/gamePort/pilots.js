@@ -59,7 +59,7 @@ const { GAME_PORT_HANDLE_PREFIX } = require("../pilotTransport");
 const { ON_AN_ANSWERED_OBJECT, createCallLedger, madeAfresh, retailForm, retailNeeds } = require("./retailCalls");
 const { createPilotSpace } = require("./pilotSpace");
 const { createPilotClock } = require("./pilotClock");
-const { EFFECT_CATEGORY, EFFECT_ONLINE, createPilotDogma } = require("./pilotDogma");
+const { EFFECT_CATEGORY, EFFECT_ONLINE, createPilotDogma, rowFields } = require("./pilotDogma");
 const { MAX_PROBES, createPilotScanner } = require("./pilotScanner");
 const { createPilotFleet } = require("./pilotFleet");
 const { createPilotStandings } = require("./pilotStandings");
@@ -2030,6 +2030,26 @@ function createGamePortPilots({
     return effect ? effect.effectCategoryID === EFFECT_CATEGORY.TARGET : null;
   }
 
+  /**
+   * An item's stack size as the client's inventory cache would have it (item.stacksize), from the item's row in a
+   * listing the pilot holds (INVENTORY_LISTINGS): the row's own stack size where the codec gives one, else its
+   * quantity, and 1 for a thing that is one of a kind, whose quantity is below nothing. Null for an item no
+   * listing held has, and for a row that says neither.
+   */
+  function stackSizeOf(entry, itemID) {
+    const wanted = positive(itemID);
+    if (wanted === null) return null;
+    for (const listing of entry.listings.answers()) {
+      for (const row of itemsOf(listing)) {
+        const fields = rowFields(row);
+        if (fields === null || positive(fields.itemID) !== wanted) continue;
+        const [size, quantity] = [fields.stacksize, fields.quantity].map((value) => (typeof value === "number" && Number.isFinite(value) ? value : null));
+        return size !== null ? size : quantity === null ? null : quantity < 0 ? 1 : quantity;
+      }
+    }
+    return null;
+  }
+
   /** What only the pilot's own client would know, for a call to be sent as that client sends it (retailCalls.js). */
   function contextFor(entry) {
     const typeOf = (itemID) => entry.dogma.typeOf(positive(itemID) ?? 0);
@@ -2042,6 +2062,8 @@ function createGamePortPilots({
         const shipID = attribute(entry, "shipid");
         return entry.dogmaLoaded && shipID !== null ? entry.dogma.onlineModules(shipID) : null;
       },
+      // invCache: the item as a listing has it.
+      stackSize: (itemID) => stackSizeOf(entry, itemID),
       effectName: (itemID) => defaultEffectName(typeOf(itemID)),
       effectTargeted: (itemID, effectName) => effectTargeted(typeOf(itemID), effectName),
       effectRepeats: (itemID, effectName) => effectRepeats(typeOf(itemID), effectName),

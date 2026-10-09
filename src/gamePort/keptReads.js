@@ -16,6 +16,8 @@ function createKeptReads() {
   let forgotten = 0;
   let work = Promise.resolve();
   return {
+    /** Everything kept, each as it was answered. */
+    answers: () => [...kept.values()],
     /** Fails as `ask` fails, for who asked; what is asked next is none the worse. */
     read(keptAs, ask) {
       const reading = work.then(async () => {

@@ -69,3 +69,14 @@ test("an asking that fails fails for who asked, keeps nothing, and leaves the ne
   await assert.rejects(reads.read("unread", () => { throw new Error("at once"); }), /at once/);
   assert.equal(await reads.read("unread", async () => 3), 3);
 });
+
+test("everything kept can be read as it was answered, and nothing once it is forgotten", async () => {
+  const reads = createKeptReads();
+  assert.deepEqual(reads.answers(), []);
+  await reads.read("one", async () => "first");
+  await reads.read("two", async () => "second");
+  await assert.rejects(reads.read("three", async () => { throw new Error("refused"); }));
+  assert.deepEqual(reads.answers(), ["first", "second"]);
+  reads.forget();
+  assert.deepEqual(reads.answers(), []);
+});

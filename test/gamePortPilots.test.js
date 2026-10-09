@@ -5493,3 +5493,39 @@ test("in another ship the listings are asked for again, and a listing the server
   refuse = false;
   assert.deepEqual([await list(hangar), await list(hangar)], [3, 3]);
 });
+
+// invControllers._AddItem: an item is added with qty=quantity, the stack's size when the whole stack moves. The
+// BFF's routes send no quantity for a whole stack. The transport fills it in from what the pilot's listings hold
+// of the item, as the client's own inventory cache would have it.
+
+test("a whole stack is moved with its quantity, from what the pilot's listings hold of it: the stack's size, and 1 for a thing that is one of a kind", async () => {
+  const rows = (...items) => ({ type: "list", items: items.map((fields) => ({ type: "packedrow", fields })) });
+  const held = rows({ itemID: 501, typeID: 34, quantity: 3822, flagID: 4 }, { itemID: 502, typeID: 648, quantity: -1, singleton: 1, flagID: 4 }, { itemID: 503, typeID: 35, quantity: 5, stacksize: 7, flagID: 4 }, { itemID: 504, typeID: 36, flagID: 4 }, { itemID: 506, typeID: 38, quantity: 0, flagID: 4 }, { typeID: 37, quantity: 9, flagID: 4 });
+  const { pilots, session, handle, hangar, ship } = await withContainers({ "bound:List": () => held });
+  const listed = () => pilots.callBoundMethod("invbroker", "List", [4], null, WHO, handle, hangar);
+  const added = async (itemID, kwargs = { flag: 5 }) => {
+    await pilots.callBoundMethod("invbroker", "Add", [itemID, STATION], kwargs, WHO, handle, ship);
+    return session.boundCalls.findLast((call) => call.method === "Add").kwargs;
+  };
+  // Nothing listed yet: the item is in no listing held, and the call goes as it came.
+  assert.deepEqual(await added(501), { flag: 5 });
+  await listed();
+  assert.deepEqual(await added(501), { flag: 5, qty: 3822 });
+  // The move forgot the listings, as any write does: the next one finds nothing held until they are listed again.
+  assert.deepEqual(await added(501), { flag: 5 });
+  await listed();
+  assert.deepEqual(await added(502), { flag: 5, qty: 1 }, "one of a kind: its quantity is below nothing, and its stack is 1");
+  await listed();
+  assert.deepEqual(await added(503), { flag: 5, qty: 7 }, "the row's own stack size, where the codec gives one");
+  await listed();
+  assert.deepEqual(await added(501, { flag: 5, qty: 100 }), { flag: 5, qty: 100 }, "a quantity given is the caller's");
+  await listed();
+  assert.deepEqual([await added(504), await added(999)], [{ flag: 5 }, { flag: 5 }], "a row with no quantity, and an item in no listing: as they came");
+  await listed();
+  assert.deepEqual(await added(506), { flag: 5, qty: 0 }, "a stack of nothing is a stack of nothing, as the client would send it");
+  // No item named: the row that names none is not taken for it.
+  await listed();
+  assert.deepEqual(await added(0), { flag: 5 });
+  const tally = pilots.callLedger().find((row) => row.pair === "invbroker.Add").statuses;
+  assert.deepEqual(tally, { differs: 5, reshaped: 4, same: 1 });
+});

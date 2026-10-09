@@ -804,4 +804,4 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
   };
 }
 
-module.exports = { ATTRIBUTE, CHARGED, DGM_TAU_CONSTANT, EFFECT_CATEGORY, EFFECT_ONLINE, HEAT, calculateHeat, chargeValue, createPilotDogma, filetimeNow };
+module.exports = { ATTRIBUTE, CHARGED, DGM_TAU_CONSTANT, EFFECT_CATEGORY, EFFECT_ONLINE, HEAT, calculateHeat, chargeValue, createPilotDogma, filetimeNow, rowFields };

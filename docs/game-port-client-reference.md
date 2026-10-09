@@ -323,6 +323,23 @@ holds again when the server says an item changed, and a mining laser's cycle is 
 The client asks nothing there. To match it the notices have to be worked into what is kept, as
 its cache does, and that is not done.
 
+**A whole stack moved, 2026-10-09.** The client adds an item to a container with
+`Add(itemID, sourceLocationID, qty=quantity, flag=self.locationFlag)` (`invControllers.py` 213),
+and the quantity is the stack's size when the whole stack moves (`_AddItem`: `quantity =
+item.stacksize`, from the item its inventory cache holds). Of 22 `Add` calls read from the
+recordings (the first three in each file that has any), 21 carry one, 3,822 for a hold of ore
+among them; one carries `qty=None`, from a path not found. The BFF's three routes that move
+one item (a move between places, cargo to and from the hangar, and the ore hold unloaded) send
+no quantity for a whole stack.
+
+On the game port the transport now fills it in, from the item's row in a listing the pilot
+holds (the listings kept since the entry above): the row's stack size, or its quantity, and 1
+for a thing that is one of a kind, whose quantity is below nothing. A quantity the caller gave
+is the caller's. An item in no listing held goes as it came, and the ledger marks the call.
+The route for a move between places lists the source before it moves, so the row is there; that
+one was seen live. The other two go by what the page listed to show the item, if nothing has
+been said to change since.
+
 **A follow, an orbit, and the throttle, 2026-10-09.** The client's menu sends an approach as
 `bp.CmdFollowBall(targetID, const.approachRange)`, keep at range as `bp.CmdFollowBall(targetID,
 range)` and an orbit as `bp.CmdOrbit(targetID, range)` (`movementFunctions.py` 302, 229, 260),

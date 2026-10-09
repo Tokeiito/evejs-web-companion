@@ -445,10 +445,16 @@ const RETAIL_CALLS = Object.freeze({
   ),
   "invbroker.Add": judged(
     `${INV_CONTROLLERS}:213`,
-    // Add(itemID, sourceLocationID, qty=quantity, flag=self.locationFlag): both keywords, always.
-    (args, kwargs) => (kwargs.qty === undefined || kwargs.qty === null
-      ? { status: "differs", note: "The client always sends qty, the stack's size when the whole stack moves. This call has none." }
-      : { status: "same" }),
+    // Add(itemID, sourceLocationID, qty=quantity, flag=self.locationFlag): both keywords, always. The quantity is
+    // the stack's size when the whole stack moves (_AddItem: quantity = item.stacksize, from the item the client's
+    // inventory cache holds). A call with none is given it from what the pilot's own listings hold of the item.
+    (args, kwargs, context) => {
+      if (kwargs.qty !== undefined && kwargs.qty !== null) return { status: "same" };
+      const size = context && context.stackSize ? context.stackSize(args[0]) : null;
+      return size === null
+        ? { status: "differs", note: "The client always sends qty, the stack's size when the whole stack moves. This call has none, and the item is in no listing the pilot holds." }
+        : { kwargs: { ...kwargs, qty: size }, status: "reshaped" };
+    },
     "Add(itemID, sourceLocationID, qty=, flag=)",
   ),
   "invbroker.MultiAdd": reshaped(
