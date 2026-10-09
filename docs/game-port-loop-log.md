@@ -203,7 +203,7 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
 
 | 2026-10-08 | After a warp the server's second `SetBallMassive(ship, 0)` is stamped two ticks after the first. A ball dropping out of warp makes itself massive (`Ballpark::WarpDistance`), and when the drop is on the first stamp's tick the second arrives one step late: for that step the ship is massive, and beside a station (sent as a massive ball 100 km in radius) it bounces off it (`Ballpark::Potential`) | two recordings, four landings: stamps (D, D+2) in three, (D+1, D+3) in one; replayed through the park the ship rests 413.2 m and 412.8 m from the server's at the station, 0.06 m in the fourth. Not observed on a running retail client | **not fixed**: a third entry cannot go out under the server's own ceiling and would make the client's park double-step; left for the operator | the recording replayed with the stamps one tick apart: within a metre at both rests (a test) |
 | 2026-10-08 | Declining a mission pushes `OnAgentMissionChange('reset', agentID)`. The client closes the agent's window on `reset` (`agents.py` 688 to 696), so the agent's answer to the decline is never laid out | recordings of the retail client on Tranquility (`D:\SSDSync\EveBadStuff\LOGS`): both declines arrive as `'declined'`, and `reset` is nowhere in the tree | `c6e7e6672`, by a sub-agent: `'declined'` is pushed; a test in the server's suite watched to fail first | live in the browser on the game port: the window stays, with the agent's greeting, Request Mission and "Mission declined." |
-| 2026-10-08 | A briefing's "Decline Time" is the absolute time the decline cooldown ends. The client writes it out as an interval (`agentDialogueWindow.py` 326 to 337, `FmtTimeInterval`), which for a timestamp is about 425 years | the same recordings: None 110 times, -1 13 times, and otherwise the time remaining, never more than four hours of ticks | `e066a81e9`, by the same sub-agent | not yet seen in the page: the mission's time is the next unit |
+| 2026-10-08 | A briefing's "Decline Time" is the absolute time the decline cooldown ends. The client writes it out as an interval (`agentDialogueWindow.py` 326 to 337, `FmtTimeInterval`), which for a timestamp is about 425 years | the same recordings: None 110 times, -1 13 times, and otherwise the time remaining, never more than four hours of ticks | `e066a81e9`, by the same sub-agent | live in the browser on the game port: a new offer inside the decline window says 3 hours and 59 minutes are left |
 
 Withdrawn the same day: "after undocking the server's ship is a tick behind". It is not; that was
 the second row above, seen through a recorder that always asked at the same point in the second.
@@ -4410,6 +4410,93 @@ one minute). Neither is read into the store or shown yet.
 3. A push the page's own call caused, taken once: the stream's copy and the answer's told
    apart.
 4. `agentMgr.RemoveOfferFromJournal` on the agent's bound object, and a way to press it.
+5. The ledger's unread pairs, most called first: the inventory and wallet reads, then the
+   writes on `ship` and `dogmaIM`.
+6. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+7. Phase 3's writes, feature by feature, each set beside what the client sends.
+8. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+9. Small, in space: an overview row's speed columns the client's way; the bar the client
+   fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+10. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+11. Small, in Ready Fit: the capacity the client never asks for; the window following a change
+    of pilot.
+12. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+
+---
+
+## 2026-10-09 — the mission's time, under what the agent says
+
+Commits `76a99ee`, `adcd794` and `4193b8c`, pushed. Server: eve.js `e066a81e9`.
+
+**What the retail client does.** The window's left pane (`agentDialogueWindow.GetBriefingHTML`,
+232 to 250) is the agent's header, the mission's title, what the agent says, and then the
+mission's time and picture. The time is `GetMissionTimeText` (326 to 337), from the briefing
+read for that layout:
+
+- "Decline Time" -1: its general words about what declining costs.
+- "Decline Time" otherwise: how long is left on the decline timer, written out by
+  `FmtTimeInterval`, to minutes, or to seconds in the last minute.
+- No decline time, and an "Expiration Time": when the mission expires.
+
+There is no line when the agent answered "not yet" (a replay timer takes its place) or offers
+one of its special interactions (an action whose data is a briefing and not a button's number).
+
+`FmtTimeInterval` (`carbon/common/script/util/format.py` 39 to 59, and
+`timeIntervalFormatters.py`) divides the game's time greedily into years of 365 days, months
+of 30, days, hours, minutes, seconds and milliseconds, writes each unit that is not nought with
+the client's label for it, and joins them as the client's list.
+
+**What the page did.** It showed none of it. The briefing's expiry was kept for the courier
+table only.
+
+**What was built.** The interval, written as the client writes one; the line, read and worded;
+the two times read with every layout and kept with it; the line shown straight after what the
+agent says, in the client's words or not at all.
+
+**Proof.**
+
+- Tests: 21 new (8 for the interval, 8 for the line, 5 for reading and showing it). 62 ways of
+  breaking it; 61 caught, and the one left writes the same words either way, at exactly one
+  minute.
+- Suite: 9323 tests, 9299 pass, 0 fail, 24 skipped, 0 todo.
+- **In the browser, on the game port**, eve.js `e066a81e9`, as Test Two with its courier
+  agent. The line's words are the client's own, so what is recorded here is its length, its
+  first words and its numbers:
+
+  | what was done | the line under what the agent says |
+  |---|---|
+  | the agent clicked, a mission on offer and no decline timer running | 212 characters, beginning "Declining a mission from a p", naming 4 hours: the general message |
+  | Decline, and Yes | none: there is no mission |
+  | Request Mission, a new offer inside the decline window | 125 characters, beginning "Declining a mission from thi", with "3 hours" and "59 minutes" |
+  | Accept | "This mission expires at 2026.10.16 00:16", a week on |
+
+  The third row is the server fix of the last entry seen from the client's side: the time
+  left, where the unfixed server's timestamp would have been written as centuries.
+- **The staging was undone**: the store was copied with the server stopped before the check and
+  put back after, and the agent again offers what it offered before.
+
+**Not done.**
+
+- The replay timer ("not yet") and the "no mission" words that go with it. EveJS never sends a
+  time for it, so it could not be seen.
+- The agent's header (its division, where it is, the pilot's standing with it) and the
+  mission's picture.
+- A special interaction is known for one now, and still drawn as a button with no name.
+- The line is as old as its layout, as in the client: it does not count down.
+
+### Next
+
+1. The objectives of a mission that is not a courier; a special interaction drawn as the
+   client draws one; messages inside messages when one turns up.
+2. A push the page's own call caused, taken once: the stream's copy and the answer's told
+   apart.
+3. `agentMgr.RemoveOfferFromJournal` on the agent's bound object, and a way to press it.
+4. The agent's header: its division, its place (read already, and not shown), the pilot's
+   effective standing with it, and loyalty points.
 5. The ledger's unread pairs, most called first: the inventory and wallet reads, then the
    writes on `ship` and `dogmaIM`.
 6. The scanner the client's way: results kept from the server's word, a probe's destination
