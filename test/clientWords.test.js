@@ -410,3 +410,16 @@ test("a client whose labels cannot be read has no dialogs either", () => {
   assert.equal(errors.length, 1);
   assert.equal(words.status().dialogs, 0);
 });
+
+// ── the tool that says what a text is like ───────────────────────────────────
+
+test("the tool describes a text by its size, parameters, tags and entities, and its first forty characters", () => {
+  const { describe } = require("../scripts/client-words");
+  assert.equal(describe(null), "not found");
+  assert.equal(describe("plain"), '5 characters; parameters none; tags none; entities none; begins "plain"');
+  const text = "<b>{[numeric]made, decimalPlaces=1}</B>&nbsp;<url=showinfo:5>{up}</url><br>and &NBSP; &amp; so on, to more than forty characters in all";
+  assert.equal(
+    describe(text),
+    `${text.length} characters; parameters {[numeric]made, decimalPlaces=1} {up}; tags b url br; entities &nbsp; &NBSP; &amp;; begins ${JSON.stringify(text.slice(0, 40))}`,
+  );
+});

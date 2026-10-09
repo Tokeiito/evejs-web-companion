@@ -6,7 +6,8 @@
 //
 // <clientRoot> is the folder that holds `tq` and `ResFiles`. With nothing asked
 // for it reports only the counts. For each label it reports the length of the
-// client's text, the parameters it takes, and its first forty characters:
+// client's text, the parameters it takes, the tags and entities in it by name,
+// and its first forty characters:
 // enough to see that the right text was found, without copying the client's
 // text out of the client. For a dialog by its name ("dialog:" and the key the
 // server sends, as in dialog:ShipContrabandWarningUndock) it reports the
@@ -20,7 +21,11 @@ const { createClientWords } = require("../src/clientData/clientWords");
 function describe(text) {
   if (text === null) return "not found";
   const parameters = text.match(/\{[^{}]*\}/g) || [];
-  return `${text.length} characters; parameters ${parameters.length > 0 ? parameters.join(" ") : "none"}; begins ${JSON.stringify(text.slice(0, 40))}`;
+  // The markup the client's text renderer reads, by name only: a fixture made in a label's shape wants these too.
+  const tags = [...new Set((text.match(/<\/?[A-Za-z][^<>]*>/g) || []).map((tag) => /[A-Za-z]+/.exec(tag)[0].toLowerCase()))];
+  const entities = [...new Set(text.match(/&[A-Za-z]+;/g) || [])];
+  const named = (all) => (all.length > 0 ? all.join(" ") : "none");
+  return `${text.length} characters; parameters ${named(parameters)}; tags ${named(tags)}; entities ${named(entities)}; begins ${JSON.stringify(text.slice(0, 40))}`;
 }
 
 function main(argv = process.argv.slice(2)) {
@@ -56,4 +61,4 @@ if (require.main === module) {
   process.exitCode = main();
 }
 
-module.exports = { main };
+module.exports = { describe, main };
