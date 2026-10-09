@@ -672,6 +672,39 @@ the dict, and the path a list. This server answers a move with two times (the co
 when the pin the commodities left may send again: five minutes on) and a launch with one (when
 it was made); it refuses a second launch inside a minute.
 
+**A pilot's colonies and launches, 2026-10-09.** Both asked of the planet manager by name, with
+nothing, and both recorded on Tranquility so:
+
+| Call | Where the client makes it | What it keeps |
+|---|---|---|
+| `planetMgr.GetPlanetsForChar()` | `planetSvc.py` 67 | asked once; the client changes its own copy as a colony's pins change |
+| `planetMgr.GetMyLaunchesDetails()` | `planetUISvc.py` 172 | asked once; asked again after `OnPILaunchesChange`, or when its window reloads |
+
+The launches come as a `CRowset` whose row descriptor Tranquility sent as `launchID` int32,
+`solarSystemID` int32, `itemID` int64, `ownerID` int32, `planetID` int32, `status` uint8,
+`launchTime` a file time, and `x`, `y`, `z` doubles. The recordings have empty lists only, so no
+launch's own numbers are known: the column's kind says a launch's ID fits 32 bits.
+
+This server counted launches up from 910,000,000,000, which does not fit, and could not put a
+list with a launch in it on the wire: the client was answered nothing. It counts from
+910,000,000 since eve.js `c30983877` (2026-10-09), and gives a stored launch a new ID when it
+reads the store.
+
+What the client's journal does with a launch in its list (`journal.py` 436 to 465). No recording
+has any of the three:
+
+| The pilot's choice | The call |
+|---|---|
+| Warp to it, when it is further than the least a warp goes | `CmdWarpToStuff('launch', launchID)` on the ballpark's object: the launch's ID, not its container's, and no range |
+| Approach it, when it is nearer | `CmdFollowBall(itemID, 50)`: the container's item, at 50 m |
+| Remove it from the list | `planetMgr.DeleteLaunch(launchID)` by name, then the launches asked for afresh |
+
+The page's haul warps to a launch the first way, through a route of its own
+(`/api/bridge/flight/warp-launch`). The page's block was written to warp to the container as an
+item, counting on this server to find an item anywhere in the system by its ID. That was never
+seen to work or fail here: the list came back empty first. The client's journal names the
+launch, so the page does now.
+
 **The order of a KeyVal's fields on the wire.** `utillib.KeyVal(a=1, b=2)` keeps its keywords
 as the instance's own dict, so its fields go out in that dict's order. That is not the order
 written, and not the order a plain function's keywords are in. A class is not a plain

@@ -327,6 +327,26 @@ Take these defaults, and list each under "For the operator" in the log so they c
   finds the calls that write one out; the routes that take one from the page's request are
   found with `grep -n 'typeof body\.[a-zA-Z]* === "object"' src/server.js`. Each needs the
   client's own form in the registry, and a try on the game port.
+- **What the gateway shows may be what the game port cannot be sent.** The gateway prints a
+  handler's answer without marshalling it. An answer the server cannot marshal (a number too
+  big for its column, a bare object) reaches a game-port client as nothing at all, with a
+  `[PKT] ERR` line in the server's log and no error to the caller. A pilot's launches were so
+  from the first launch on. After any walk, look for those lines over the walk's minutes:
+  `awk '/^\[<date>T<hh:m>/' server.log | grep -aE "\[PKT\] ERR|Cannot marshal|out of range"`.
+- **A feature the page has is proven by using it in the page.** Three routes were mended and
+  tried by script, with "not in the browser" written each time. The first of them used in the
+  page, the Planetary Industry window's Haul, found a server fault and a call that was not the
+  client's, neither of which any script of mine had reached. The steps, with the pane hidden:
+  the window's Pilots tab, `#pi-add-choice` set to the pilot and Add; its Colonies tab,
+  Refresh, the box `input.pi-haul-tick`, and "Haul 1 colony". The run is the BFF's own bot:
+  its log is `bot-logs/<characterID>.jsonl` in the BFF's data folder (`botlog.js` in the
+  scratchpad prints it), `/api/bots/active` says whether it still runs, and it must have
+  ended before the store is put back. `haul-stage.sh` stages a colony's two pins with the
+  server stopped, and `gm-run.js` gives the pilot the hauler (`/giveskill me 3340 1`,
+  `/giveitem 655 1`).
+- **eve.js's tests run through its own runner**, from that repository's root:
+  `npm run test:isolated -- server/tests/<file>.test.js`. A bare `node --test` of one refuses
+  to open the store and reads as one failed test.
 - **A pilot with no skills cannot show that a module fits.** Test Pilot has none: the server
   answers that the module failed to load, through either transport. Test Two has the skills
   for an afterburner and a mining laser.

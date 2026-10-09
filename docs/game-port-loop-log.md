@@ -17273,3 +17273,326 @@ a notice in the game port's answer and none in the gateway's (`OnServerBrainUpda
 58. Waiting on the operator's word: the skill history in Tranquility's form (a `CRowset` of `(logDate,
     eventTypeID, skillTypeID, relativePoints, absolutePoints)`), by a sub-agent, and this repository's reading of
     it.
+
+## 2026-10-09 — the Planetary Industry window's Haul, walked in the browser on the game port
+
+Commit `4b950aa`, pushed; eve.js `c30983877`, on `main`, not pushed. From item 9: the first of the
+three mended routes to be used in the page itself.
+
+**Why this and not the next route.** The list's next were the other routes that take a plain
+object. I looked: the page uses none of them. Three iterations running I had written "not in
+the browser" under a mended route. So this one uses the page.
+
+**What the Haul button does.** It sends the ticked colonies' launchpads up into their customs
+offices. Then it starts a run on the BFF's own bot: launch what the command centers hold, get
+into a ship with a planetary hold, undock, empty the customs offices, collect the launches,
+fly back, unload, and get back into the first ship.
+
+**The first walk.** As Test Two, with 200 Aqueous Liquids staged on the launchpad, 100 more and
+50 Microorganisms in the command center, and an Epithal given. The run finished in two and a half
+minutes and said so. It had not collected its own launch. Its log has "Reading your planet
+launches", then the flight home.
+
+| Read of the pilot's launches | Answer |
+|---|---|
+| Through the gateway BFF | one row: launch 910000000000, its container, where it is |
+| Through the game-port BFF | nothing, and no error |
+
+The server's log, once in that run and once at each of my two reads after it:
+
+```
+[PKT] ERR planetMgr GetMyLaunchesDetails() The value of "value" is out of range. It must be >= -2147483648 and <= 2147483647. Received 910_000_000_000
+```
+
+**The server's fault.** It numbered launches from 910,000,000,000 and sends the launch's ID in
+a 32-bit column. From a pilot's first launch on, the list could not be put on the wire, and a
+game client was answered nothing. The gateway does not marshal, and showed the row. The column
+is right: Tranquility's recordings have the same descriptor, with the ID as a 32-bit integer
+(`Archive/Open PI Panel - adding route.txt`, 649). Their lists are all empty, so no launch's
+own number is recorded.
+
+A sub-agent mended it in eve.js: launches are numbered from 910,000,000, and a launch stored
+under an old number is given a new one when the store is read, keeping its container and its
+place. I read the change and ran its test file myself: 34 tests, 34 pass, 0 fail, 0 cancelled.
+Four of them are new and push the handler's real answer through the server's own encoder, one
+of those through the packet dispatcher. The sub-agent reports each failed on the code as it
+was, with the line above.
+
+**The page's faults the walk showed.**
+
+- **An answer of nothing was taken for no launches.** The page's read says in its own comment
+  that it must never mistake "could not read" for "no launches", and it did: only a named
+  error counted. An answer of nothing is unread now. The collecting block tries ten times,
+  then says the launches could not be read and stops, where it used to go on.
+- **A launch was warped to as an item, by its container's ID.** The client's journal warps to
+  a launch by the launch's own ID: `CmdWarpToStuff('launch', launchID)`, with no range
+  (`journal.py` 453). The page has a route for it now, and the block uses it.
+- **Three planet calls were unchecked in the ledger.** `GetPlanetsForChar` and
+  `GetMyLaunchesDetails` are in the recordings, each by name and with nothing.
+  `DeleteLaunch(launchID)` is the journal's Remove on a launch; no recording has one.
+
+**The second walk,** on the mended server and the new page, from the same staging:
+
+| Step | What the bot's log has | Result |
+|---|---|---|
+| Export | (the window) "Launched 200 units from 1 colony into their customs offices" | |
+| Launch | launch 50 and 100 from the command center | ok |
+| Board | board the Epithal | ok |
+| Undock, warp to the customs office, empty it | | ok |
+| Launches | "Reading your planet launches", then **warp to launch 910000000** | ok |
+| Collect | collect launch 910000000 from its container | ok |
+| Home | set course, dock, empty holds (5 stacks), board the Badger | ok |
+
+Three minutes. Afterwards, read by script on the game port: the hangar has the 200 from the
+customs office, 160 Biofuels that were in the office before (the store as it stands has them
+there), and the launch's 100 and 50; the pilot
+has no launches listed; the colony is empty; the wallet is down 162.50 ISK. The server's log
+for the warp reads `CmdWarpToStuff char=140000002 type=launch target=910000000 minRange=0`, and
+has no `[PKT] ERR` in those minutes. The Bot Manager lists the run as finished.
+
+The call ledger for that BFF's whole life (the board's reads and the run): 49 pairs, every call
+of them the same or reshaped, none that differs and none unchecked. The first walk's ledger had
+the two planet reads unchecked, beside others from parity passes run on that BFF before it.
+
+**Proof.**
+
+- Tests watched to fail on the code as it was: 2 of the BFF's route, 3 of the page's read and
+  its warp, 2 of the collecting block with two more of its own changed to the new warp, 1 of
+  the registry's, and the bot log's own check that every action has a sentence. 2 more were
+  written after the code and seen to catch its breaking: they hold the page to carrying out
+  every action a bot can decide on. Nothing did before, for this action or any other.
+- 27 ways of breaking it were tried, in three passes, and all 27 are caught. One line I had
+  added could have no effect, by the code around it, and I took it out again.
+- Suite: 9905 tests, 9881 pass, 0 fail, 0 cancelled, 24 skipped. The page's type check passes.
+- **In the browser, on the game port:** the two walks above, by the window's own buttons.
+- **On both transports, by script:** two passes of the parity tool as Test Two, the first of
+  them the first after both BFFs were restarted, both 21 identical, 13 tolerated.
+- **Not through the gateway BFF.** The haul was not run there.
+- The store was saved before each walk and put back after: the colony is empty, the wallet
+  reads what it read, the hangar has the Badger alone. Both copies are deleted. EveJS was
+  restarted four times for it and runs the mended code now. I took Test Two off the window's
+  board again, and the pane is back to its own size.
+
+**Decisions taken in the operator's place.**
+
+- **Where the server's launches are numbered from, and what becomes of old ones.** 910,000,000
+  is the sub-agent's choice: no recording has a launch's number. A store's old launches are
+  renumbered when it is read, and still answer to their old numbers. eve.js's `UPDATING.md`
+  says so.
+- **A haul that cannot read its launches stops, in space, and says why.** Before, it flew home
+  and reported that it had finished. On the server as it was, every haul with a launch in it
+  would stop there.
+- **A row with no launch ID is still warped to as an item.** The page's reader keeps such a row
+  if it has a container. No server answer I have seen has one.
+- **The new route names no range.** The client names none for a launch. The other warps of the
+  page's bots name the autopilot's.
+- **One haul bot is saved in the game-port BFF's library** ("Planetary: haul"), as the button
+  saves it. It is in that BFF's own data folder, not in the store, and I left it.
+
+**For the operator.**
+
+- eve.js `main` is five ahead of its origin, not pushed: `16d95626a`, `59d2ac81e`,
+  `3ccbcef51`, `342a366a6`, `c30983877`.
+- The sub-agent reports `server/tests/testStoreIsolationGuard.test.js` red on the unchanged
+  tree as well, 13 or 14 tests of it, a different set each run, nearly all saying the live
+  store's `gamestore.sqlite-wal` changed during the test. The live server was running. It is
+  not in `doc/TEST_BASELINE.md`. I did not look into it.
+
+**Not done.**
+
+- The export into the customs office is made by a second game-port client the BFF logs in for
+  it, not on the pilot's transport, so the ledger and the registry see none of its calls.
+- The colonies and the launches kept as the client keeps them: the collecting step asked for
+  each 15 times.
+- The same haul through the gateway BFF.
+- The scripted refit and the Ready Fit window in the browser.
+
+### Next
+
+1. The login's calls, service by service, each done as the fleet, the standings, the skills, the journal, the
+   agents' table, the corporation's registry, the address book, the alliance's registry, the notifications, the
+   calendar and the contracts' figures were. Next: the station's guests and services (`station.GetGuests`,
+   `stationSvc.GetStationItemBits`, `map.GetStationInfo`, `officeManager.GetMyCorporationsOffices`), with
+   something of the page to show them; the hangar's and the ship's lists; then what of the 48 kinds nothing of
+   ours asks is worth asking. Each looked for in every folder of the recordings first, then read in the
+   decompiled service.
+2. The skills' rest: the queue trimmed and an alpha's levels refused as the client does both; a skill
+   lent by an expert system shown at its lent level; a booster running out while a skill trains, and an alpha
+   clone's rate; the attributes' three at login, for what makes a client ask them then; an implant plugged and
+   a booster taken, for the readings after them seen live; a level finishing by itself; `bound-skills`' three
+   probes that are not the client's calls as they stand; the gateway's sheet marking a paused queue's first
+   skill as in training.
+3. The checks on a held call that no test I ran would miss: a read let through while a pilot's
+   colonies are exported, and the session still being the one held. Each given a test, or found
+   in the suite.
+4. The standings' rest: the character's own race's faction at 0.0; one owner's history
+   kept and forgotten as the client does, and its two reads set beside the client's;
+   `OnStandingsModified` seen live.
+5. The same login report for a login in space, and for the game port with the page's
+   panels open.
+6. Around the fleet, what is left: `SendBroadcast` and `MassInvite`; `fleetMgr`'s
+   watchlist and broadcasts (the watchlist's second argument first); `fleetProxy`'s
+   adverts and `GetAvailableFleetAds`, and with them a pilot applying to a fleet, for the
+   join requests seen live; an invite from a pilot in no fleet forming one first; the cost
+   of contacting; the pilot's own kicking as a leaving, and a disbanding refused here as
+   the client refuses it.
+7. What becomes of a bound object the client has done with (`moniker.py`
+   `__ClearBoundObject`: `DisconnectObject` after a delay): read in the client, looked for
+   in the recordings, and done so. The handles the BFF asks for and drops are among them.
+8. The object cache's rest. What the client's code names that is not named yet: the four that need an item's
+   owner, flag and station (`invItemFunctions.py` 287: items delivered to a corporation's hangar or to a
+   member, a stack split and items trashed at another station), the two given on a refusal, and those that
+   hang on what a window holds (`cachedCallsNamed.js` lists them). Then a bound object's cached answers; the
+   server's call seen live (a saved fitting changed); and the formations' own keeping taken out, now that the
+   cache has them.
+9. The routes that take a plain object from the page's request and hand it on, each tried on the game port
+   and given the client's own form: `ship/fit-ships`, `fleet/advert/add` and `update`,
+   `dogma/drones/settings`, `market/plex/sell`, `market/buy-multiple`, and the two the registry has
+   already (`scan/request-scans`, `fleet/options`) tried. A plain object cannot be put on the wire, so each
+   may fail there outright, as the sale, the saved fitting and the colony's commodities did. None of them
+   is used by the page. Then what the page does with a saved fitting, walked in the browser on the game
+   port: the scripted refit, and the Ready Fit window. And a saved fitting's own rest: its drones, charges
+   and the like, which the route does not take; the ship's inventory kept, as the client keeps it.
+10. Planetary industry's rest, each walked in the page on the game port. The export into a customs office
+    made on the pilot's own transport and through the registry: it logs a second game-port client of its
+    own in for it now (`src/piCustomsExport.js`, on `src/gameClient.js`), which the ledger does not see,
+    and its three calls (`map.GetSolarsystemItems`, `planetOrbitalRegistryBroker.GetTaxRate`,
+    `invbroker.ImportExportWithPlanet`) are read against no recording yet. The colonies and the launches
+    kept as the client keeps them: a haul's collecting step asked for each 15 times, once every two seconds,
+    where the client asks once and waits for `OnPILaunchesChange`. The approach to a launch's container as
+    the client's (`CmdFollowBall(itemID, 50)`) set beside what the page sends. The window's "a server bot
+    is flying this pilot now", which stayed after the bot had ended until Refresh. The restart of
+    extractors, and a colony built, each from the window. And the same haul through the gateway BFF, which
+    was not tried.
+11. The market's rest, each set beside what the client sends or shows. What the page's order form does not
+    show and the client's does: the type's average price and how far the price is from it, on a sale; the
+    fee for a repriced order, with Margin Trading's discount (`skilllimits.py` 35); and the sales tax on a
+    sale. The page's other dates by the game's calendar, as a history's day is. The fee rate at a structure
+    (`structureSettings.CharacterGetService`) and in an upgraded warzone system. Then buying several and the
+    plex orders, which no window of the page uses yet, each tried live as Test Pilot at Jita: the market
+    daemon that is running refuses Test Two's station. And the order of the fields of the other KeyVals the
+    registry makes, a scanner's probes among them: one the client makes is in the order its Python keeps the
+    keywords (`py27.js` `constructorKeywordOrder`), one the server sent is in the order it came.
+12. The client's other names, asked of the server as it asks them: corporations' tickers, alliances' short
+    names and places (`GetMultiCorpTickerNamesEx`, `GetMultiAllianceShortNamesEx`, `GetMultiLocationsEx`).
+13. The login report's "by a feature" made to say what is so: it marks a call that has an entry in the
+    registry. (The station's three are asked by the page's own docked panel, through the route that passes on
+    any call: what I wrote of them was wrong.)
+14. The corporation routes' other calls read against the client: the ledger has 11 unchecked
+    (`GetStructureReinforceDefault`, `DoesMyCorpAcceptStructures`, `DoesCorpRestrictCorpMails`,
+    `GetApplications`, `GetOldApplications`, `GetMyOldApplications`, `GetAllianceApplications`,
+    `GetCorpWelcomeMail`, `GetMembersPaged`, `GetMemberTrackingInfo`, `GetMemberTrackingInfoSimple`).
+15. A window of the page for the corporation's members, read with the shared readers (`unwrapBool` for
+    `blockRoles` among them).
+16. The alliance's other pairs read against the client: the five asked by name (`GetAlliancePublicInfo`,
+    `GetAllianceMembers`, `GetAllianceMembersOlderThan`, `GetDaysInAlliance`, `GetEmploymentRecord`),
+    `GetBillBalance` (the BFF asks it with nothing, the client with a bill's ID), and the ten writes.
+17. A bind in flight when the session's corporation or alliance changes: what is asked next waits for it and
+    takes its object for the new one's. Forget a bind with the moniker it was for.
+18. A pilot's applications kept as its client keeps them, once the pilot-training onboarding no
+    longer reads a trainee's list straight after an officer's change to it (it could wait for the
+    server's word, or ask afresh).
+19. A Contacts window, and with it the address book kept as the client keeps it: the pilot's contacts, its
+    corporation's and alliance's, and who is online, each worked over at the server's notices
+    (`OnPersonalContactsUpdated`, `OnPersonalContactsAdded`, `OnPersonalContactsDeleted`,
+    `OnOrganizationContactsUpdated`, `OnContactNoLongerContact`, `OnContactSlashCommand`,
+    `OnContactLoggedOn`, `OnContactLoggedOff`).
+20. The notifications' rest: one of the server's three notices seen reaching a pilot who is online; the six
+    writes read against the client (a list of IDs goes out as a plain array); the page's read of group 0,
+    which is no group; and a new notification worked into the kept lists in place, as the client does.
+21. The calendar's rest: the pilot's answers to invitations asked for once and kept
+    (`GetResponsesForCharacter`, asked at every read of the route now), an opened event's details kept, and one
+    of the three notices seen reaching a pilot.
+22. The contracts' login figures used as the client uses them, for notices of contracts that want attention,
+    and asked once in a session (the page's Contracts window asks again as it opens).
+23. The presence route's `Prime` taken out: the client never asks the server for it.
+24. Around the contracts: "Offered to you" from the owner's list; the corporation's lists;
+    a rowset read where a server answers one; the search with something staged for each of
+    its filters, on both transports; what the sub-agent left in the server (the operator's
+    section). And the same fault elsewhere in the server: a search of its services for a
+    keyword read as a plain property, with no helper in the file, names two more
+    (`seasonManagerService.js`, `dungeonService.js`). Neither was read.
+25. Around a fitted module: the recording read past `SetModuleOnline`'s answer, and this
+    server's fit set beside it; the recording of ammunition loaded while docked, and charges
+    in slots as godma holds them; the Fitting panel's cargo figure after a module's state
+    changes; a refusal to put one online shown as the client shows it; the dogma route
+    answered from godma's priming instead of its own `GetAllInfo`.
+26. Something staged for every list route that has only been compared empty (the market's
+    orders, the mail, the calendar, the corporation's hangars), and the parity pass read
+    again.
+27. A ship with several modules fitted and a hold with a packaged ship in it, staged: the
+    Fitting window's figures and the client's sums, each set beside the server's.
+28. The walk in space, the rest: a thing shot at, somewhere with no sentry guns; an agent talked to and a
+    ship boarded in space, for the monikers the BFF asks for; a fleet formed there; the ship's moniker seen
+    kept, and the skill handler's.
+29. A stopped ship told to follow or orbit: what Tranquility's server does with its speed fraction, read
+    from a recording's ballpark updates (one with a follow straight after a stop), and this server held to
+    it. And an approach straight behind a stop, as the client sends or holds it, if a recording ever has
+    one.
+30. The server's notices of an item worked into what a container is kept as listing, as the client's
+    cache works them (`invCache._ProcessItemChange`: a ship's, a hangar's and a corporation's each by its own
+    rules), so that nothing is asked after one. Then a flag counted as listed once an item with it has come,
+    and a container's capacity kept as the client keeps it.
+31. Small, around a move: the dialog saying a stack of ore's volume as it says a stack of minerals'; the
+    path by which the client sends `Add` with `qty=None`, found (one recording has it); the two other routes
+    that move one item seen live with their quantity.
+32. The targets' rest: what has the ship locked seen with something locking it, and shown; a target named
+    before its ball has come held until it does; a ship that blew up kept until its explosion ends; the
+    lists emptied when the ballpark is given a whole new state.
+33. The ledger counting what was sent, not what the BFF asked for: where a moniker is made
+    and not bound, and where a call is shared. (The skill handler's kept reads are counted as
+    sent already.)
+34. The parity tool's rest: a read that takes what it reads (`GetSkillChangesForISIS`) taken for what it
+    is, and the notices a session got at login kept out of the first route's answer
+    (`/api/bridge/flight/status`). As Test Pilot that route read "moved" in two passes of two, with
+    `OnServerBrainUpdated` in one and `OnModuleAttributeChanges` in the other; as Test Two, in none of
+    four. And a clean pass's count written down for each of the two pilots.
+35. The routes that answer from the store or the gateway's snapshot, listed, and each set
+    beside what the client asks. The pages for pilots who are not signed in are among them.
+36. Phase 3's writes, feature by feature, each set beside what the client sends, each
+    looked for in every folder of the recordings first.
+37. The wallet's "Market Transactions", and the lines the client derives from a transaction.
+38. The avoidance list's own window, and a route plotted again when a setting changes under it.
+39. Around a place's name, the last of it: the outlaw's warning (the pilot's own security
+    status). The agent's own window's steps, if the client's say how far.
+40. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+    own counts on it, with the push doing the work as it does for Remove Offer.
+41. The agent's cards above its own window, where the client's window has its own header.
+42. The scanner the client's way: results kept from the server's word, a probe's destination
+    and range kept here and sent with the scan.
+43. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+    codes not done.
+44. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+45. Small, around the walk: the Agents window not listing
+    a station's agents in space; the page asking the BFF for its bots four times a cycle (eight, 40 in 30 seconds, with the Planetary Industry,
+    Industry, Companions and Bot Manager windows open on the hangar page); the last route that
+    asks `scanMgr.GetFullState` by name. Also: the Flight window's ship state, as old
+    as its last refresh.
+46. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+47. Small, in Ready Fit: the window following a change of pilot.
+48. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+49. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+50. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+51. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions); the client's own map, to set beside this server's.
+52. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+53. Other things asked once beside the store, and other panels' effects, looked at for the
+    faults of earlier entries.
+54. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
+    client's own map is in.
+55. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
+56. A wreck opened with its type said: no capacity, as the client has none for one.
+57. Why a call sent right behind the table of agents is answered 50 to 80 ms late, and whether
+    the table should wait until the pilot's first readings are in.
+58. Waiting on a recording: no skill sent when an implant or a booster moves a training skill's points (a
+    server's, to be measured against Tranquility first).
+59. Waiting on the operator's word: the skill history in Tranquility's form (a `CRowset` of `(logDate,
+    eventTypeID, skillTypeID, relativePoints, absolutePoints)`), by a sub-agent, and this repository's reading of
+    it.
