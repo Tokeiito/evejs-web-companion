@@ -6151,3 +6151,94 @@ client shows when avoiding is turned on.
     and other panels' effects, looked at for the two faults of this one.
 19. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
     client's own map is in.
+
+## 2026-10-09 — the jumps the rest of the page counts
+
+Commit `69ce2ed`, pushed. Item 1 of the last list.
+
+**What the retail client does.** It counts jumps two ways, and each list says which
+(`clientPathfinderService`):
+
+- **its autopilot's route, with the pilot's settings** (`GetAutopilotJumpCount`): a mission's
+  places, its location search's results (`entries/universe.py`), its agent lists
+  (`agencyUtil.py`), the assets window, contracts, the info window, bookmarks;
+- **the plain fewest jumps, nothing avoided** (`GetJumpCount`, `GetJumpCountFromCurrent`): its
+  industry facilities and jobs, market orders, fleets, corporation offices.
+
+**What the page did.** The fewest jumps everywhere but a mission's page.
+
+**What was built.**
+
+- `autopilotDistances` in `web/src/nav/autopilotRoute.ts`: the jumps from a system to every
+  system its route can reach, with an avoided system among them where a route may end there
+  (each by a flood of its own, as only that one may enter it).
+- The Travel panel's search and the agent finder count the autopilot's way.
+- So do the bots, for the reason their own comment gives: the number a bot refuses on should
+  be the number it would have had to fly, and since two entries ago that is the autopilot's
+  route. The jumps a mission bot weighs, the jumps to a drop-off in a script, and the agents a
+  script finds within so many jumps all go by the pilot's settings now.
+- The industry manager is left on the plain count, which is the client's for industry.
+
+**Proof.**
+
+- Tests: 6 new. 16 ways of breaking it tried; two survived, both checks that could not
+  matter, and both are gone.
+- The jumps to everywhere against the client's pathfinder: every one of the fixture's 6,364
+  pairs, each read from one flood for its start.
+- Suite: 9532 tests, 9508 pass, 0 fail, 24 skipped, 0 todo.
+- **In the browser, on the game port,** as Test Two, docked in Muvolailen; nothing was staged:
+  - the agent finder listed agents in 22 systems, nearest first. Its jumps for all of them
+    are the client's pathfinder's with the settings as they come. Two of them, Niyabainen and
+    one more beyond Jita, are 3 and 4 jumps where the fewest are 2 and 2;
+  - "prefer shorter" chosen and avoiding turned off, and the finder refreshed: those two
+    read 2 and 2, which is the client's pathfinder's count for those settings;
+  - the Travel panel's search for Niyabainen said "2 jumps" with those settings and "3 jumps"
+    with the safer route and avoiding back on.
+  The settings were cleared from the browser afterwards.
+
+**Not seen working.** Two of the bots' three counts have no test of their own and were not
+run: the jumps a mission bot weighs (`getJumps`) and the jumps to a drop-off in a script.
+Each is one line that asks the same helper the finder and the search ask. The third, the
+agents a script finds within so many jumps, has a test: an agent two jumps off through Jita is
+not found within two until the pilot turns avoiding off.
+
+**Not done.** The page's other lists that the client counts its autopilot's way and that
+count nothing here yet (assets, contracts).
+
+### Next
+
+1. The avoidance list's own window, and a route plotted again when a setting changes under it.
+2. Around a place's name, the last of it: the outlaw's warning (the pilot's own security
+   status). The agent's own window's steps, if the client's say how far.
+3. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+   own counts on it, with the push doing the work as it does for Remove Offer.
+4. The agent's cards above its own window, where the client's window has its own header.
+5. The ledger's unread pairs, most called first: the inventory and wallet reads, then the
+   writes on `ship` and `dogmaIM`.
+6. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+7. Phase 3's writes, feature by feature, each set beside what the client sends.
+8. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+9. Small, in space: an overview row's speed columns the client's way; the bar the client
+   fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+10. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+11. Small, in Ready Fit: the capacity the client never asks for; the window following a change
+    of pilot.
+12. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+13. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+14. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+15. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions); the client's own map, to set beside this server's.
+16. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+17. Other things asked once beside the store, looked at for the fault of five entries ago;
+    and other panels' effects, looked at for the two faults of the entry before this.
+18. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
+    client's own map is in.
+19. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
