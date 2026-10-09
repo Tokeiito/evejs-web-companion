@@ -562,8 +562,26 @@ once.
 
 The BFF's route gave an item as a plain object. The wire has no such value, and nothing could
 be sold on the game port. The registry now makes each item the client's KeyVal. A route has no
-`delta` and no fee rate. The fee rate is worked out since the next paragraph's work; `delta`
-is not made up, so the item goes out with seven fields and the call is noted as differing.
+`delta` and no fee rate. Both are worked out now, as the two paragraphs after this have it,
+and the item goes out with all eight.
+
+**A sale item's delta, 2026-10-09.** Each entry of the client's sale window asks the market
+for its type's average price when it is made (`buySellItemContainerBase.py` 28), and the item
+carries `(price - averagePrice) / averagePrice` (57). `marketsvc.GetAveragePrice(typeID)`
+(368) is:
+
+1. The type's price history, its two halves asked and joined (the paragraph on the history).
+2. Of the rows no older than seven days: the sum of average times quantity, over the sum of
+   quantity. The days the join filled in count, each with its 2.
+3. With nothing traded in the week: the type's base price over its portion size, or 1.0 where
+   that is nothing.
+4. Rounded to the hundredth.
+
+`priceHistory.js` has the join, the average and the delta, held to the client's own Python
+over ten histories. On the game port a sale asks for the two halves for each item that has no
+delta, in the client's order and before the sale, and the registry works the delta out. This
+server's history for Tritanium ends a month ago, so its week is seven filled-in days at
+100.00 and the average is 100.00.
 
 **The broker's fee rate, 2026-10-09.** The client names it with an order: a buy order's ninth
 argument (`buyThisTypeWindow.py` 701), a sale's fourth for an order that stands
