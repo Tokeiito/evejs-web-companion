@@ -319,7 +319,7 @@ class GamePortSession {
     this.cachedObjects = new Map();
     /** objectCaching.methodCallCachingDetails: what the server said of a method's answers, by "service.method": {versionCheck, sessionInfo}. */
     this.methodCallDetails = new Map();
-    /** objectCaching.cachedMethodCalls: an answer by service, method, the session's value it is kept by, and arguments: {result, stamp}. */
+    /** objectCaching.cachedMethodCalls: an answer by service, method, the session's value it is kept by, and arguments: {result, stamp, checksum}. */
     this.cachedMethodCalls = new Map();
     /** objectCaching.runid: when this run began, as the client reckons time. Set when it is first wanted. */
     this.runStarted = null;
@@ -511,16 +511,34 @@ class GamePortSession {
 
   /** sm.RemoteSvc(service).method(*args, **kwargs) */
   call(service, method, args = [], kwargs = null) {
-    const kept = this.cachedMethodCall(service, method, args);
-    if (kept) return Promise.resolve(kept.result);
-    return this._call({ destination: anyAddress(service), boundObject: null, service, method, args, kwargs });
+    return this._serviceCall(anyAddress(service), service, method, args, kwargs);
   }
 
   /** sm.ProxySvc(service).method(*args, **kwargs): addressed to our proxy node. */
   proxyCall(service, method, args = [], kwargs = null) {
-    const kept = this.cachedMethodCall(service, method, args);
-    if (kept) return Promise.resolve(kept.result);
-    return this._call({ destination: nodeAddress(this.proxyNodeID, service), boundObject: null, service, method, args, kwargs });
+    return this._serviceCall(nodeAddress(this.proxyNodeID, service), service, method, args, kwargs);
+  }
+
+  /**
+   * A call of a service's method, as ServiceCallGPCS makes one (RemoteServiceCallWithoutTheStars): the object
+   * cache is asked first. An answer held and still good is the answer, and nothing is sent. One held that is due
+   * a check is asked for with the version held, machoVersion=[stamp, checksum]; the server answers with a new
+   * answer, which is kept in its place, or with CacheOK, and then the copy held is the answer and is good from
+   * now (UpdateVersionCheckPeriod). With nothing held the version is 1.
+   */
+  async _serviceCall(destination, service, method, args, kwargs) {
+    const said = this.methodCallDetails.get(`${service}.${method}`);
+    const kept = said ? this.cachedMethodCalls.get(this._methodCallKey(service, method, args, said)) : undefined;
+    if (kept && !this._shouldVersionCheck(said, kept)) return kept.result;
+    const machoVersion = kept ? { type: "list", items: [kept.stamp, kept.checksum] } : 1;
+    try {
+      return await this._call({ destination, boundObject: null, service, method, args, kwargs, machoVersion });
+    } catch (error) {
+      const className = error && error.refusal ? error.refusal.className : null;
+      if (!kept || typeof className !== "string" || !className.endsWith("objectCaching.CacheOK")) throw error;
+      kept.stamp = this._filetimeNow();
+      return kept.result;
+    }
   }
 
   /**
@@ -594,16 +612,16 @@ class GamePortSession {
   }
 
   /** The call itself: numbered, wrapped and sent, and its answer awaited. */
-  _makeCall({ destination, boundObject, service, method, args }, written) {
+  _makeCall({ destination, boundObject, service, method, args, machoVersion = 1 }, written) {
     if (!this.loggedIn || this.closed) {
       return Promise.reject(new GamePortError("NOT_CONNECTED", "The game connection is not logged in."));
     }
     const callID = this.nextCallID;
     this.nextCallID += 1;
     // Every call's keywords carry machoVersion, 1 unless a cached answer says
-    // otherwise, and go out in the order the client's own dict would hold them:
+    // otherwise (_serviceCall), and go out in the order the client's own dict would hold them:
     // a service's method and a bound object's method build that dict differently.
-    written.set("machoVersion", 1);
+    written.set("machoVersion", machoVersion);
     const names = [...written.keys()].filter((name) => name !== "machoVersion");
     const keywords = dict(keywordOrder(names, { via: boundObject === null ? "function" : "object" }).map((name) => [name, written.get(name)]));
     // ObjectCallGPCS: (0, pickle((1, method, args, kw))) for a service,
@@ -689,7 +707,7 @@ class GamePortSession {
    * (details, result, version). What the server says of the method's answers the first time is what holds for
    * the run. The answer is kept unless the details say it is not to be (a version check of None).
    */
-  _cacheMethodCall(service, method, args, [details, , version], result) {
+  _cacheMethodCall(service, method, args, [details, held, version], result) {
     const pair = `${service}.${method}`;
     if (!this.methodCallDetails.has(pair)) {
       const entries = new Map((details && Array.isArray(details.entries) ? details.entries : []).map(([name, entry]) => [text(name), entry]));
@@ -700,9 +718,15 @@ class GamePortSession {
     }
     const said = this.methodCallDetails.get(pair);
     if (said.versionCheck === null) return;
-    const stamp = BigInt(integer(Array.isArray(version) ? version[0] : null) ?? 0);
+    // CachedMethodCallResult.GetVersion: a result that is a reference to a cached object has that object's
+    // version, and its own is None; one held inline has its own. A version is (when, checksum).
+    const reference = stateOfClass(held, "cachedObject.CachedObject");
+    const [when, checksum] = itemsOfSequence(reference ? reference[2] : version);
+    // With no version to check it by, there is nothing the client could send for it: not kept.
+    if (integer(when) === null || checksum === undefined || checksum === null) return;
     this.runStarted ??= this._filetimeNow();
-    this.cachedMethodCalls.set(this._methodCallKey(service, method, args, said), { result, stamp });
+    // The checksum is sent back as it came; "when" is moved on by a check that says the copy is good.
+    this.cachedMethodCalls.set(this._methodCallKey(service, method, args, said), { result, stamp: BigInt(integer(when)), checksum });
   }
 
   /**
@@ -735,8 +759,8 @@ class GamePortSession {
    * and still good; null for a method the server has not marked as cached, an answer not kept, and one that is
    * due a check with the server.
    *
-   * Not done as the client does it: a check with the server. The client sends the call with the version it holds
-   * and may be told its copy is good (CacheOK). Here an answer due a check is asked for afresh.
+   * This is the cache's own word, for whoever wants to know whether a call would be sent. A call itself goes
+   * through _serviceCall, which makes the check with the server where one is due.
    */
   cachedMethodCall(service, method, args = []) {
     const said = this.methodCallDetails.get(`${service}.${method}`);

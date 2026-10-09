@@ -329,10 +329,11 @@ test("every call is addressed, numbered and wrapped as the retail client does it
     ["GetApplications", "any", "corpRegistry", 0],
     ["GetKeyMap", "any", "account", 0],
     // A cached answer that is a reference: the client fetches it from
-    // objectCaching through its proxy node, once.
+    // objectCaching through its proxy node, once. The conversation asks for the
+    // medals a second time, and that asking is not here: the server said the
+    // answer is good for an hour, and the object cache answered it.
     ["GetAllCorpMedals", "any", "corporationSvc", 0],
     ["GetCachableObject", "node", "objectCaching", 0],
-    ["GetAllCorpMedals", "any", "corporationSvc", 0],
     ["Ping", "node", "pingService", 0],
   ]);
   const fetch = calls.find((call) => call.method === "GetCachableObject");
@@ -1104,7 +1105,8 @@ async function cachingSession(context) {
     const asking = how === "bound" ? session.callBound("N=65450:9", method, args) : session[how](service, method, args);
     await settle();
     const sent = transport.sent.length - before;
-    if (sent > 0) transport.deliver(callResponse(lastCall(transport).packet.source.callID, answer));
+    // An answer may be a whole packet's bytes, made from the call's own number: an ErrorResponse, say.
+    if (sent > 0) transport.deliver(typeof answer === "function" ? answer(lastCall(transport).packet.source.callID) : callResponse(lastCall(transport).packet.source.callID, answer));
     return [await asking, sent];
   };
   return { session, transport, clock, stampNow, ask };
@@ -1221,4 +1223,104 @@ test("the server's word that a cached answer has changed forgets that one; forge
   session.forgetCachedMethodCalls();
   assert.deepEqual([await ask("call", "stationSvc", "GetStation", [60003760], cachedResult(11)), await ask("call", "stationSvc", "GetStation", [60003760], cachedResult(12))], [[11, 1], [11, 0]], "asked again, and kept again as the server first said");
   assert.deepEqual([await ask("call", "svc", "Checked", [], cachedResult(2, { versionCheck: "never" })), await ask("call", "svc", "Checked", [], cachedResult(3, { versionCheck: "never" }))], [[2, 1], [3, 1]]);
+});
+
+// The check with the server (ServiceCallGPCS.RemoteServiceCallWithoutTheStars): an answer held that is due a check
+// is asked for with the version held, machoVersion=[stamp, checksum], where a call with nothing held says 1. The
+// server answers with a new answer, or with the exception objectCaching.CacheOK: the copy held is good, and is
+// good from then (UpdateVersionCheckPeriod). Recorded on Tranquility: GetCharStandings sent with
+// {'machoVersion': [134275735884561765L, 1]}, and ErrorResponses to shipKillCounter's.
+
+/** The server's "your copy is good", as this server builds it (machoErrors.js buildCacheOkPayload). */
+const refusedWith = (className, args) => (callID) => marshalEncode(buildPacket(TYPE.ERROR_RESPONSE, {
+  source: nodeAddress(65450, "svc"),
+  destination: clientAddress(2065450, callID),
+  userID: 2,
+  body: [TYPE.CALL_REQ, 2, [{ type: "substream", value: { type: "objectex1", header: [{ type: "token", value: className }, args], list: [], dict: [] } }]],
+}));
+const cacheOK = refusedWith("carbon.common.script.net.objectCaching.CacheOK", ["CacheOK"]);
+/** The machoVersion the last call went out with. */
+const versionSent = (transport) => lastCall(transport).kwargs.entries.find(([name]) => text(name) === "machoVersion")[1];
+
+test("an answer due a check is asked for with the version held; told the copy is good, the session uses it and counts it good from then", { timeout: 5000 }, async (context) => {
+  const { session, transport, clock, stampNow, ask } = await cachingSession(context);
+  const got = stampNow();
+  assert.deepEqual(await ask("call", "svc", "Timed", [4], cachedResult(1, { versionCheck: "5 minutes", stamp: got })), [1, 1]);
+  assert.equal(versionSent(transport), 1, "with nothing held, the version is 1");
+  clock.ms += 5 * 60_000;
+  // Due a check: sent with what is held, and the copy is good.
+  assert.deepEqual(await ask("call", "svc", "Timed", [4], cacheOK), [1, 1]);
+  assert.deepEqual(versionSent(transport), { type: "list", items: [got, 7] });
+  const renewed = stampNow();
+  // Good from the check, not from when it was first got: nothing asked until five minutes after that.
+  clock.ms += 4 * 60_000 + 59_000;
+  assert.deepEqual(await ask("call", "svc", "Timed", [4], cachedResult(9)), [1, 0]);
+  clock.ms += 1000;
+  // The next check carries the stamp of the last, and this time the server has a new answer: that one is held now.
+  const newer = stampNow();
+  assert.deepEqual(await ask("call", "svc", "Timed", [4], cachedResult(2, { versionCheck: "5 minutes", stamp: newer })), [2, 1]);
+  assert.deepEqual(versionSent(transport), { type: "list", items: [renewed, 7] });
+  assert.deepEqual([await ask("call", "svc", "Timed", [4], cachedResult(9)), session.cachedMethodCall("svc", "Timed", [4])], [[2, 0], { result: 2 }]);
+});
+
+test("an answer the server says to check always is asked for each time with its version, and is the same answer while the server says so", { timeout: 5000 }, async (context) => {
+  const { session, transport, ask } = await cachingSession(context);
+  assert.deepEqual(await ask("proxyCall", "svc", "Always", [], cachedResult(1, { versionCheck: "always", stamp: 500n })), [1, 1]);
+  assert.equal(session.cachedMethodCall("svc", "Always", []), null, "held, and due a check: the cache alone does not answer");
+  assert.deepEqual([await ask("proxyCall", "svc", "Always", [], cacheOK), versionSent(transport).items[1]], [[1, 1], 7]);
+  assert.deepEqual(await ask("proxyCall", "svc", "Always", [], cacheOK), [1, 1]);
+  assert.deepEqual(await ask("proxyCall", "svc", "Always", [], cachedResult(2, { versionCheck: "always", stamp: 900n })), [2, 1]);
+  assert.deepEqual(await ask("proxyCall", "svc", "Always", [], cacheOK), [2, 1]);
+});
+
+test("a check the server refuses for another reason is refused, and what is held is still held; CacheOK with nothing held is a refusal too", { timeout: 5000 }, async (context) => {
+  const { session, ask } = await cachingSession(context);
+  assert.deepEqual(await ask("call", "svc", "Always", [], cachedResult(1, { versionCheck: "always" })), [1, 1]);
+  await assert.rejects(ask("call", "svc", "Always", [], refusedWith("eveexceptions.UserError", ["NotNow", { type: "dict", entries: [] }])), (error) => error.code === "GAME_CALL_REFUSED" && error.refusal.key === "NotNow");
+  assert.deepEqual(await ask("call", "svc", "Always", [], cacheOK), [1, 1], "the copy is still there for the next check");
+  // A method with nothing held: the server's CacheOK is no answer to anything.
+  await assert.rejects(ask("call", "svc", "Never", [], cacheOK), (error) => error.code === "GAME_CALL_REFUSED");
+  assert.equal(session.cachedMethodCall("svc", "Never", []), null);
+});
+
+// CachedMethodCallResult.GetVersion: a result that is a reference to a cached object has that object's version,
+// and none of its own. This server answers GetAllCorpMedals so, and the recording has its bytes. (The first
+// build of the check read the result's own version, which is None there, and sent [0, None] straight away: a
+// made-up answer with a version of its own had passed every test.)
+
+test("a cached answer that is a reference is kept by the version of the object it refers to, and that is the version a check carries", { timeout: 5000 }, async (context) => {
+  const [referenceAnswer, objectAnswer] = serverFrames.filter((frame) => frame.during === "corporationSvc.GetAllCorpMedals").map(decoded);
+  const reference = referenceAnswer.args[4][0].value;
+  assert.equal(reference.args[2], null, "the recorded result has no version of its own");
+  const [stamp, checksum] = reference.args[1].args[2];
+  const corporation = reference.args[1].args[0][2][2];
+  const { session, transport, clock, ask } = await cachingSession(context);
+  // The session's clock, at the moment the server stamped the object.
+  clock.ms += Number((BigInt(stamp) - FILETIME_EPOCH) / 10000n) - Math.trunc(session.serverNow());
+  const asking = session.call("corporationSvc", "GetAllCorpMedals", [corporation]);
+  await settle();
+  transport.deliver(callResponse(lastCall(transport).packet.source.callID, reference));
+  await settle();
+  assert.equal(lastCall(transport).method, "GetCachableObject");
+  transport.deliver(callResponse(lastCall(transport).packet.source.callID, objectAnswer.args[4][0].value));
+  const medals = await asking;
+  assert.deepEqual(session.cachedMethodCall("corporationSvc", "GetAllCorpMedals", [corporation]), { result: medals });
+  // Good for the hour the server said, from the object's own stamp.
+  clock.ms += 59 * 60_000 + 59_000;
+  assert.deepEqual(await ask("call", "corporationSvc", "GetAllCorpMedals", [corporation], cacheOK), [medals, 0]);
+  clock.ms += 1000;
+  assert.deepEqual(await ask("call", "corporationSvc", "GetAllCorpMedals", [corporation], cacheOK), [medals, 1]);
+  assert.deepEqual(versionSent(transport), { type: "list", items: [BigInt(stamp), checksum] });
+});
+
+test("an answer with no version to check it by is not kept", { timeout: 5000 }, async (context) => {
+  const { session, ask } = await cachingSession(context);
+  const unversioned = (value) => { const made = cachedResult(value); return { ...made, args: [made.args[0], made.args[1], null] }; };
+  assert.deepEqual([await ask("call", "svc", "Unversioned", [], unversioned(1)), await ask("call", "svc", "Unversioned", [], unversioned(2))], [[1, 1], [2, 1]]);
+  assert.equal(session.cachedMethodCall("svc", "Unversioned", []), null);
+  // Nor one whose version does not say when, or has no checksum.
+  const undated = (value) => { const made = cachedResult(value); return { ...made, args: [made.args[0], made.args[1], [null, 7]] }; };
+  assert.deepEqual([await ask("call", "svc", "Undated", [], undated(1)), await ask("call", "svc", "Undated", [], undated(2))], [[1, 1], [2, 1]]);
+  const half = (value) => { const made = cachedResult(value); return { ...made, args: [made.args[0], made.args[1], [5n, null]] }; };
+  assert.deepEqual([await ask("call", "svc", "Half", [], half(1)), await ask("call", "svc", "Half", [], half(2))], [[1, 1], [2, 1]]);
 });
