@@ -221,6 +221,14 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   and no decoder was removed. To have the dogma reads asked again, add them back to
   `DOGMA_BOUND_READS` in `src/server.js`. See the entries "the ledger from a walk" and "the
   proxy's services".
+- **A station's hangar has no limit on the game port** (2026-10-09). The Inventory panel's holds
+  are reckoned as the retail client reckons them, and for a station's hangar the client's own
+  figure is 9,000,000,000,000,000 m³. The server, asked, says 1,000,000 m³ for the same hangar
+  (it has no branch for that flag and answers its default). The page and its bots took that
+  for the hangar's size when working out whether something fits; on the game port they no
+  longer do. Whether the server holds a move to its 1,000,000 has not been tried. To go back,
+  take the hangar out of `CLIENT_RECKONED`'s reach by answering `askedOf` for it in the
+  inventory route of `src/server.js`. See the entry "the Inventory panel's holds".
 
 ## Server defects
 
@@ -6908,3 +6916,141 @@ nothing to ask about, each time a window opens. To have them asked again, add th
 26. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
     client's own map is in.
 27. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
+
+## 2026-10-09 — the Inventory panel's holds, reckoned as the client reckons them
+
+Commit `469b7cc`, pushed. Item 1 of the last list: `invbroker.GetCapacity`, the call the page
+made most that the client never makes.
+
+**What the retail client does.**
+
+- **It never asks the server how full a hold is.** Its inventory cache answers `GetCapacity`
+  itself (`invCache.py` 1224), and for a ship godma does (`godma.py` 871).
+- **A station's hangar has no capacity to show.** Its controllers have none
+  (`invControllers.py`: `hasCapacity` is true for a ship's cargo and bays and for containers,
+  not for a station's items or ships), and the cache's own answer for a station is
+  9000000000000000.0 with nothing used.
+- **A ship's hold is the ship's attribute as godma has it now** (the cargo is `capacity`), and
+  what is used is summed from the hold's List: each thing in that flag, by
+  `GetItemVolume` (`inventorycommon/util.py` 43), where its volume is above nought.
+- **A thing's volume:** assembled (a singleton), its type's own; packaged, the override for
+  its type, else for its group, else its type's own (`GetPackagedVolume`); a plastic wrap,
+  its quantity over a hundred, negated; times the stack, unless the volume is -1.
+- **The overrides are tables in the client's code** (`inventorycommon/const.py`): 49 groups
+  and 264 types in this build.
+- **Which bays a ship has is its type's attributes**, read from godma's type and not asked of
+  anyone (`treeData.py` 300 to 363: `droneCapacity`, `specialOreHoldCapacity` and the rest).
+  The page asks the server about each of twenty-seven flags to find that out.
+
+**What was measured first.** With the overrides taken out of the client into the scratchpad,
+the client's sum was set beside the server's own `GetCapacity` for both test pilots' hangar
+and cargo: the same to the last digit, four holds of four. And dogma's `capacity` for the
+active ship in `GetAllInfo` was the server's cargo capacity for both (3900 and 120). The
+holds are nearly empty: one assembled ship in each hangar, one stack in one cargo.
+
+**What was built.**
+
+- `scripts/client-constants.py` and `src/clientData/clientConstants.js`: the client's own
+  constants, read by running one module of its code in its own Python when first asked for.
+  The packaged volumes are the first set.
+- `src/clientData/holdCapacity.js`: the client's rule for a thing's volume and for what is
+  used of a hold.
+- The game-port transport answers a ship's attribute from the godma it keeps.
+- On the game port the Inventory panel's route asks two Lists and no `GetCapacity`. The
+  hangar has the client's figure for a station and what is used of it summed the client's
+  way (the client shows no figure for a hangar; the page shows the room used). The cargo has
+  godma's capacity and the same sum. Where that cannot be followed, and on the gateway, the
+  server is asked as before.
+- `scripts/bff-parity.js` names the one figure that is meant to differ between the
+  transports, and counts any other difference in a hold's capacity as divergent.
+
+**Proof.**
+
+- Tests: 16 new. 74 ways of breaking it tried; three survived a first pass, all checks in the
+  constants' reader that a printed JSON value cannot fail, and they are gone. All are caught.
+- Suite: 9573 tests, 9549 pass, 0 fail, 24 skipped, 0 todo. No test process left behind.
+- **The real client**: the script printed the two tables and the wrap's type from the
+  install; the BFF read them on first use (it would have asked the server otherwise).
+- **The server's own log of the game port** (eve.js `e066a81e9`, with another session's
+  uncommitted edits in the checkout): both test pilots' Inventory read by script, four
+  `List` calls on the bound inventories and no `GetCapacity`.
+- **On both transports, by script** (`scripts/bff-parity.js`, as Test Two): the Inventory
+  route differs in one figure, the hangar's capacity, named as the client's own; what is
+  used of the hangar, and the cargo's capacity and use, are identical to what the server
+  answers the gateway. 11 identical, 7 tolerated, 2 moved, 2 divergent (the two as before).
+- **In the browser, on the game port:** the Inventory window drew "0.1 of 3,900 m³" for the
+  cargo and "250,000 m³" for the item hangar; all twenty-two panels opened with nothing
+  failing.
+- The ledger of the pass and the walk: 62 pairs in 314 calls. `invbroker.GetCapacity` 81,
+  every one from the bays route (three readings of twenty-seven flags); none from the
+  Inventory panel.
+
+**Not seen working.**
+
+- **A packaged ship, a container or a wrap in a hold.** No test pilot has one. The rule for
+  them is the client's, held by tests with made-up numbers, and has not been set beside the
+  server's answer for a real one.
+- A ship whose cargo a module or a skill has changed: both pilots' ships are bare.
+- Whether the server holds a station's hangar to the 1,000,000 m³ it answers (see "For the
+  operator").
+
+**Not done.**
+
+- The other three routes that ask `GetCapacity`: a ship's bays (twenty-seven flags a
+  reading), the mining holds, a container. They need each flag's capacity attribute, which
+  is in a module of the client's code that imports others.
+- The gateway transport: it keeps no godma, and asks as before.
+- A structure's hangar: the route is refused in a structure before it gets there.
+
+### Next
+
+1. A ship's bays the client's way: which bays from its type's attributes, each one's capacity
+   from godma or the type, what is used from one List; then the mining holds and a
+   container. The flag's attribute from the client's own table.
+2. A ship with modules fitted and a hold with a packaged ship in it, staged: the Fitting
+   window's figures and the client's sum, each set beside the server's.
+3. The rest of the web client's own calls: `dogmaIM.ShipGetInfo` and `ShipOnlineModules`,
+   `contractProxy.GetMyCurrentContractList` (`GetContractListForOwner`),
+   `charMgr.GetCloneInfo` (`jumpCloneSvc.GetCloneState` on its moniker, godma's implants).
+4. The Fleet panel asking nothing of a fleet's object while the pilot is in no fleet.
+5. The walk in space: undocked, every panel and the space view, the store put aside first
+   and put back after; its unread pairs read.
+6. The routes that answer from the store, listed, and each set beside what the client asks.
+7. The standings the client's way: `GetNPCNPCStandings`, and asked once at the session's
+   change and kept, with the server's notices keeping them right.
+8. Two couriers staged, for the contract search's sort and filters; the corporation's
+   expired list beside the pilot's own; the summary asked once and kept.
+9. The corporation registry's other calls, each set beside the client's.
+10. Phase 3's writes, feature by feature, each set beside what the client sends.
+11. The wallet's "Market Transactions", and the lines the client derives from a transaction.
+12. The avoidance list's own window, and a route plotted again when a setting changes under it.
+13. Around a place's name, the last of it: the outlaw's warning (the pilot's own security
+    status). The agent's own window's steps, if the client's say how far.
+14. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+    own counts on it, with the push doing the work as it does for Remove Offer.
+15. The agent's cards above its own window, where the client's window has its own header.
+16. The scanner the client's way: results kept from the server's word, a probe's destination
+    and range kept here and sent with the scan.
+17. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+    codes not done.
+18. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+19. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+20. Small, in Ready Fit: the window following a change of pilot.
+21. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+22. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+23. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+24. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions); the client's own map, to set beside this server's.
+25. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+26. Other things asked once beside the store, and other panels' effects, looked at for the
+    faults of earlier entries.
+27. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
+    client's own map is in.
+28. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.

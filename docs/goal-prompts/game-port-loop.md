@@ -187,6 +187,17 @@ Take these defaults, and list each under "For the operator" in the log so they c
   an iteration, make sure no command of yours is still running. The same holds for anything
   else started detached: on 2026-10-09 the recorder's launcher was piped to `tail` and the
   command sat for four minutes until its shells were stopped.
+- **A constant written into the client's code can be read at run time**, where the client knows
+  something from neither the server nor its data files. `python scripts/client-constants.py
+  <client>\tq\bin64 <client>\tq\code.ccp <module ending .pyj> <name> ...` runs one module of the
+  client's code in its own Python and prints the named values as JSON; the BFF reads a set the
+  same way on first use (`src/clientData/clientConstants.js`, one entry in `CONSTANTS` each). The
+  module must import nothing: `inventorycommon/const.pyj` does not, and
+  `eve/common/script/util/inventoryFlagsCommon.pyj` (a flag's capacity attribute) does, and would
+  need its imports stood in for. Look for the table in the decompiled source first, then read it
+  from the install: the numbers are not to be copied into this repository.
+- **A route given to `scripts/bff-parity.js` on the command line is rewritten by the shell**
+  (`/api/...` becomes a path under the Git folder). Put `MSYS_NO_PATHCONV=1` before the command.
 - **What a BFF really puts on the wire can be read**, where the server's log says too little
   (it gives a call's service, method, argument count and `dst=node` or `dst=any`, and none of
   its keywords). Start `scripts/record-game-port.js record 26007 26000 <file outside the
