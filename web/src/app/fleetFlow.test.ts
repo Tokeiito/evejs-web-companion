@@ -566,3 +566,36 @@ test("somebody else locking this ship is not a lock of ours", async () => {
   assert.deepEqual(store.get().targeting.lockedTargetIDs, []);
   assert.equal(state.fleetReads, 0, "and it is not a roster invalidation either");
 });
+
+test("the names a fleet's roster needs are asked for by the composition's word for each member", async () => {
+  const record = (charID: number, more: readonly (readonly [string, unknown])[] = []) => keyVal([["charID", charID], ["wingID", null], ["squadID", null], ["role", 1], ["job", 0], ...more]);
+  const entry = (characterID: number, shipTypeID: number, stationID: number | null, solarSystemID: number) =>
+    keyVal([["characterID", characterID], ["shipTypeID", shipTypeID], ["stationID", stationID], ["solarSystemID", solarSystemID]]);
+  const fleet = populatedFleet();
+  fleet.reads.GetInitState.result = keyVal([
+    ["motd", ""],
+    ["fleetID", 654500010000],
+    ["members", { type: "dict", entries: [[140000005, record(140000005)], [140000002, record(140000002, [["shipTypeID", 670], ["stationID", 60003760], ["solarSystemID", 30000142]])], [140000003, record(140000003, [["shipTypeID", 588], ["stationID", 60003466], ["solarSystemID", 30000140]])]] }],
+    ["wings", { type: "dict", entries: [] }],
+  ]) as never;
+  fleet.reads.GetFleetComposition.result = { type: "list", items: [entry(140000005, 587, null, 30000144), entry(140000002, 648, 60000004, 30002780)] } as never;
+  const asked: string[] = [];
+  const store = createClientStore();
+  const flow = createAppFlow(store, {
+    fetch: async (input: unknown, init?: { body?: unknown }) => {
+      if (String(input) === "/api/names") {
+        const body = JSON.parse(String(init?.body)) as { items?: { kind: string; id: number }[] };
+        for (const ref of body.items ?? []) asked.push(`${ref.kind}:${ref.id}`);
+        return json({ ok: true, names: {} });
+      }
+      return json(fleet);
+    },
+  });
+  await flow.loadFleet();
+  await waitFor(() => asked.length > 0, "the roster's names were never asked for");
+  // The composition's ship and place for the two it names; the record's own for the one it does not.
+  for (const wanted of ["type:587", "system:30000144", "type:648", "station:60000004", "system:30002780", "type:588", "station:60003466", "system:30000140"]) {
+    assert.ok(asked.includes(wanted), `${wanted} is asked for, of ${asked.join(" ")}`);
+  }
+  for (const stale of ["type:670", "station:60003760", "system:30000142"]) assert.equal(asked.includes(stale), false, stale);
+});

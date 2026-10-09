@@ -1828,13 +1828,16 @@ async function fleetRoute({ transport = "gameport", own = { fleetID: null }, kno
   const byName = backend.callMethod;
   backend.callMethod = async (service, method, ...rest) => { asked.push(service + "." + method); return byName(service, method, ...rest); };
   const given = [];
+  const keptAsked = [];
   if (knows) gamePort.fleet = (sessionFields, bridgeSessionID) => { given.push({ sessionFields, bridgeSessionID }); return own; };
+  // What the transport keeps of the fleet, where the test says it keeps any.
+  if (knows && typeof own.kept === "function") gamePort.fleetKept = async (sessionFields, bridgeSessionID) => { keptAsked.push({ sessionFields, bridgeSessionID }); return own.kept(); };
   const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => transport });
   await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
   asked.length = 0;
   const answer = await apiRequest(baseUrl, "/api/bridge/bound-fleet");
   assert.equal(answer.response.status, 200, JSON.stringify(answer.payload));
-  return { payload: answer.payload, asked, given, baseUrl };
+  return { payload: answer.payload, asked, given, keptAsked, baseUrl };
 }
 const ALL_FIVE = ["bind fleetObjectHandler", ...FLEET_READ_NAMES.map((name) => `fleetObjectHandler.${name}`)];
 
@@ -1919,4 +1922,73 @@ test("the fleet's handle is not kept across a leaving, refused or not", async ()
     const next = await apiRequest(baseUrl, "/api/bridge/fleet/leave", LEAVE);
     assert.deepEqual([next.response.status, next.payload.applied, log], [200, true, ["bind fleetObjectHandler", "fleetObjectHandler.LeaveFleet"]], time);
   }
+});
+
+// ── The fleet as it is kept ──────────────────────────────────────────────────
+//
+// fleetSvc.py reads a fleet's state once and keeps it right from the server's notices; its wings and its message
+// with it. Where the game port holds the fleet's object it keeps the fleet the same way (pilots.js fleetKept), and
+// the route's reads of those three are answered from it. The route asked the server for all five at every read.
+
+const KEPT_READS = ["GetInitState", "GetWings", "GetMotd"];
+const STILL_ASKED = ["bind fleetObjectHandler", "fleetObjectHandler.GetFleetComposition", "fleetObjectHandler.GetJoinRequests"];
+const keptFleet = (fleetID) => ({
+  GetInitState: fleetState(fleetID),
+  GetWings: { type: "dict", entries: [[5, "a wing"]] },
+  GetMotd: "kept",
+  notifications: [{ kind: "client", method: "OnFleetJoin", args: [] }],
+});
+
+test("on the game port a fleet whose object is held is read from what is kept, and only the rest is asked", async () => {
+  const kept = keptFleet(654500010000);
+  const own = { fleetID: 654500010000, holdsObject: true, kept: () => kept };
+  const { payload, asked, keptAsked, baseUrl } = await fleetRoute({ own });
+  assert.deepEqual(asked.slice().sort(), STILL_ASKED);
+  assert.deepEqual(KEPT_READS.map((name) => payload.reads[name]), [{ result: kept.GetInitState }, { result: kept.GetWings }, { result: "kept" }]);
+  assert.deepEqual([payload.reads.GetJoinRequests, payload.reads.GetFleetComposition], [{ result: null }, { result: null }]);
+  // What was kept is asked for as the pilot's own, and its notices come with the route's.
+  assert.deepEqual(keptAsked, [{ sessionFields: { userid: 4 }, bridgeSessionID: GAME_PORT_SESSION_ID }]);
+  assert.deepEqual([payload.fleetID, payload.membership, payload.notifications], ["654500010000", undefined, kept.notifications]);
+  // The fleet the BFF holds for the session is the kept state's own.
+  assert.equal((await apiRequest(baseUrl, "/api/bots/squad-board")).payload.fleetID, "654500010000");
+  // A message of the day that is empty is an answer, and so is one that is None.
+  for (const motd of ["", null]) {
+    kept.GetMotd = motd;
+    assert.deepEqual((await apiRequest(baseUrl, "/api/bridge/bound-fleet")).payload.reads.GetMotd, { result: motd }, JSON.stringify(motd));
+  }
+});
+
+test("with nothing kept the fleet is asked all five, as before", async () => {
+  const fleetID = 654500010000;
+  for (const [why, options] of [
+    ["no object is held", { own: { fleetID, holdsObject: false, kept: () => keptFleet(fleetID) } }],
+    ["nothing could be read", { own: { fleetID, holdsObject: true, kept: () => null } }],
+    ["the reading failed", { own: { fleetID, holdsObject: true, kept: () => { throw Object.assign(new Error("lost"), { code: "CALL_FAILED" }); } } }],
+    ["the transport keeps none", { own: { fleetID, holdsObject: true } }],
+    ["the gateway", { own: { fleetID, holdsObject: true, kept: () => keptFleet(fleetID) }, transport: "gateway" }],
+  ]) {
+    const { payload, asked, keptAsked } = await fleetRoute(options);
+    assert.deepEqual(asked.slice().sort(), ALL_FIVE.slice().sort(), why);
+    assert.deepEqual(payload.reads.GetInitState, { result: fleetState(fleetID) }, why);
+    // Kept or not is asked only where an object is held, and only of the game port.
+    assert.equal(keptAsked.length, why === "nothing could be read" || why === "the reading failed" ? 1 : 0, why);
+  }
+});
+
+test("a session the game port has lost while the kept fleet is read is forgotten, and the route says so", async () => {
+  const own = { fleetID: 654500010000, holdsObject: true, kept: () => { throw Object.assign(new Error("gone"), { code: "SESSION_NOT_FOUND", statusCode: 404 }); } };
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  const asked = [];
+  gamePort.bindObject = async (service) => { asked.push(`bind ${service}`); return { boundHandle: "h", notifications: [] }; };
+  gamePort.callBoundMethod = async (service, method) => { asked.push(`${service}.${method}`); return { service, method, result: null, notifications: [] }; };
+  gamePort.fleet = () => own;
+  gamePort.fleetKept = async () => own.kept();
+  const { baseUrl } = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gameport" });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const answer = await apiRequest(baseUrl, "/api/bridge/bound-fleet");
+  assert.deepEqual([answer.response.status, answer.payload.ok, asked], [404, false, []]);
+  // The pilot is no longer held: the next read is refused for want of one.
+  const next = await apiRequest(baseUrl, "/api/bridge/bound-fleet");
+  assert.equal(next.response.status >= 400, true);
+  assert.notEqual(next.response.status, 404);
 });

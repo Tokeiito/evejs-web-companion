@@ -3141,10 +3141,13 @@ const intoFleet = (session, fleetID) => {
 
 /** A pilot that has formed a fleet through the BFF's two steps: `made` is the handle CreateFleet's object went by. */
 async function formed(answers = {}) {
-  const built = await selected({ answers: { "fleetObjectHandler.CreateFleet": boundObject("N=1:500"), "bound:GetInitState": "the state", "bound:GetWings": "the wings", ...answers } }, FLEET_PAIRS);
+  // The session comes into the fleet while Init is being answered, as the server's session change does.
+  const built = await selected({ answers: {
+    "fleetObjectHandler.CreateFleet": boundObject("N=1:500"), "bound:Init": () => { intoFleet(built.session, FLEET); return null; },
+    "bound:GetInitState": "the state", "bound:GetWings": "the wings", ...answers,
+  } }, FLEET_PAIRS);
   const made = await built.pilots.bindObject("fleetObjectHandler", "CreateFleet", [], null, WHO, built.handle);
   await built.pilots.callBoundMethod("fleetObjectHandler", "Init", [null, null], null, WHO, built.handle, made.boundHandle);
-  intoFleet(built.session, FLEET);
   return { ...built, made };
 }
 /** The BFF asks for "my fleet" and reads it: says the answer. */
@@ -3178,7 +3181,8 @@ test("a fleet the pilot forms is the object CreateFleet answered: Init goes on i
   const byNumber = await pilots.bindObject("fleetObjectHandler", "MachoBindObject", [[FLEET]], null, WHO, handle);
   await pilots.callBoundMethod("fleetObjectHandler", "GetWings", [], null, WHO, handle, byNumber.boundHandle);
   assert.deepEqual(fleetBinds(session), []);
-  assert.deepEqual(onObjects(session, "GetInitState", "GetWings").map(([objectID, method]) => [objectID, method]), [["N=1:500", "GetInitState"], ["N=1:500", "GetWings"], ["N=1:500", "GetWings"], ["N=1:500", "GetWings"]]);
+  // The first of these is the client's own reading of the fleet it formed; the rest are what was asked here.
+  assert.deepEqual(onObjects(session, "GetInitState", "GetWings").map(([objectID, method]) => [objectID, method]), [["N=1:500", "GetInitState"], ["N=1:500", "GetInitState"], ["N=1:500", "GetWings"], ["N=1:500", "GetWings"], ["N=1:500", "GetWings"]]);
   // A fleet that is named is another fleet's Moniker, as an invite's is: bound for itself by its own first call.
   const other = await pilots.bindObject("fleetObjectHandler", "MachoBindObject", [[FLEET + 1]], null, WHO, handle);
   await pilots.callBoundMethod("fleetObjectHandler", "RejectInvite", [true], null, WHO, handle, other.boundHandle);
@@ -3274,7 +3278,204 @@ test("a fleet the pilot joins by invite is the Moniker that accepted: bound by t
   // "My fleet" is that Moniker's object, and nothing binds for it.
   const { answer } = await readOwnFleet(built);
   assert.equal(answer.result, "the state");
-  assert.deepEqual([fleetBinds(session), onObjects(session, "GetInitState").map(([objectID]) => objectID)], [[], [accepted]]);
+  // The fleet's state was read on it when the pilot joined, and is read on it here.
+  assert.deepEqual([fleetBinds(session), onObjects(session, "GetInitState").map(([objectID]) => objectID)], [[], [accepted, accepted]]);
+});
+
+// ── the fleet as it is kept ──────────────────────────────────────────────────
+//
+// fleetSvc.py asks a fleet for its state once, when it forms or joins one (InitFleet), and keeps it right from the
+// server's notices (src/gamePort/pilotFleet.js). The answers and notices here are a real server's
+// (test/fixtures/fleetSession.json: PILOT is its founder).
+
+const fleetRecording = JSON.parse(require("node:fs").readFileSync(require("node:path").join(__dirname, "fixtures", "fleetSession.json"), "utf8"),
+  (key, value) => (value && typeof value.$long === "string" ? BigInt(value.$long) : value && typeof value.$str === "string" ? Buffer.from(value.$str, "latin1") : value));
+const recorded = (pilot, call) => fleetRecording[pilot].events.filter((event) => event.kind === "answer" && event.call === call).map((event) => event.value);
+const recordedNotice = (pilot, method) => fleetRecording[pilot].events.find((event) => event.kind === "notice" && event.method === method);
+const [FOUNDED, WITH_TWO] = recorded("founder", "GetInitState");
+const WINGS_AFTER = recorded("founder", "GetWings")[0];
+const OTHER = fleetRecording.joiner.characterID;
+/** What a read of the kept fleet says, in short: its members' numbers, how many wings it has, its message. */
+const keptShort = (kept) => {
+  const entries = Object.fromEntries(kept.GetInitState.args.entries);
+  return [entries.members.entries.map(([charID]) => Number(charID)), kept.GetWings.entries.length, kept.GetMotd];
+};
+const fleetCalls = (session) => session.boundCalls.filter((call) => call.method !== "GetAllInfo").map((call) => `${call.objectID} ${call.method}`);
+
+test("forming a fleet reads its state once and asks its number, and after that the fleet is read from what is kept", async () => {
+  const built = await formed({ "bound:GetInitState": FOUNDED, "bound:GetFleetID": fleetRecording.fleetID });
+  const { pilots, session, handle } = built;
+  // fleetSvc.CreateFleet: Init, then InitFleet (GetInitState), then self.fleet.GetFleetID(), all on the one object.
+  assert.deepEqual(fleetCalls(session), ["N=1:500 Init", "N=1:500 GetInitState", "N=1:500 GetFleetID"]);
+  const kept = await pilots.fleetKept(WHO, handle);
+  assert.deepEqual(keptShort(kept), [[PILOT], 1, ""]);
+  // In the gateway's form, as a read of GetInitState comes: names as text, numbers as the page reads them.
+  assert.deepEqual([kept.GetInitState.type, kept.GetInitState.name, Object.fromEntries(kept.GetInitState.args.entries).fleetID], ["object", "util.KeyVal", 654500010000]);
+  assert.ok(Array.isArray(kept.notifications));
+  // Read again, and again: nothing is asked.
+  await pilots.fleetKept(WHO, handle);
+  assert.deepEqual(fleetCalls(session).length, 3);
+  assert.deepEqual(fleetBinds(session), []);
+  // Another pilot's session cannot read it.
+  await assert.rejects(pilots.fleetKept({ userid: 9 }, handle), (error) => error.code === "SESSION_NOT_FOUND");
+});
+
+test("what the server says of a fleet afterwards is kept without asking, and a wing or squad notice has the wings asked for again", async () => {
+  let wings = WINGS_AFTER;
+  const built = await formed({ "bound:GetInitState": FOUNDED, "bound:GetWings": () => { if (wings === null) throw refusedBy("FleetError"); return wings; } });
+  const { pilots, session, handle } = built;
+  const asked = () => fleetCalls(session).slice(3);
+  await pilots.fleetKept(WHO, handle);
+  session.notify("OnFleetJoin", recordedNotice("founder", "OnFleetJoin").args);
+  // The notices the pilot has been sent since its last read come with this one, once.
+  const afterJoin = await pilots.fleetKept(WHO, handle);
+  assert.deepEqual([afterJoin.notifications.map((each) => each.method), (await pilots.fleetKept(WHO, handle)).notifications], [["OnFleetJoin"], []]);
+  assert.deepEqual([keptShort(afterJoin), asked()], [[[PILOT, OTHER], 1, ""], []]);
+  session.notify("OnFleetMotdChanged", recordedNotice("founder", "OnFleetMotdChanged").args);
+  session.notify("OnFleetMemberChanged", recordedNotice("founder", "OnFleetMemberChanged").args);
+  assert.deepEqual([keptShort(await pilots.fleetKept(WHO, handle)), asked()], [[[PILOT, OTHER], 1, "Fly safe"], []]);
+  // OnFleetWingAdded: self.wings = self.fleet.GetWings(), on the fleet's object. One asking for each notice.
+  session.notify("OnFleetWingAdded", recordedNotice("founder", "OnFleetWingAdded").args);
+  assert.deepEqual([keptShort(await pilots.fleetKept(WHO, handle)), asked()], [[[PILOT, OTHER], 2, "Fly safe"], ["N=1:500 GetWings"]]);
+  wings = { type: "dict", entries: [] };
+  session.notify("OnFleetSquadDeleted", [5n]);
+  session.notify("OnFleetWingDeleted", [6n]);
+  assert.deepEqual([keptShort(await pilots.fleetKept(WHO, handle)), asked()], [[[PILOT, OTHER], 0, "Fly safe"], ["N=1:500 GetWings", "N=1:500 GetWings", "N=1:500 GetWings"]]);
+  // Several in one notification are each taken; the wings are asked for once for it.
+  session.notify("__MultiEvent", [["OnFleetLeave", [OTHER]], ["OnFleetSquadAdded", [5n, 6n]], ["OnFleetWingAdded", [7n]]]);
+  assert.deepEqual([keptShort(await pilots.fleetKept(WHO, handle))[0], asked().length], [[PILOT], 4]);
+  // Wings that could not be had leave the wings as they were, and the fleet readable.
+  wings = null;
+  session.notify("OnFleetSquadNameChanged", [6n, "x"]);
+  assert.deepEqual([keptShort(await pilots.fleetKept(WHO, handle)), asked().length], [[[PILOT], 0, "Fly safe"], 5]);
+});
+
+test("a fleet the pilot joins is read once, after the acceptance; its own OnFleetJoin reads it again only where the object is held", async () => {
+  const state = { now: recorded("joiner", "GetInitState")[0] };
+  // The stand-in pilot is the recording's founder; the notice is the joiner's, so it is made this pilot's own.
+  const theirs = recordedNotice("joiner", "OnFleetJoin").args[0];
+  const ownJoin = [{ ...theirs, args: { type: "dict", entries: theirs.args.entries.map(([name, value]) => (String(name) === "charID" ? [name, PILOT] : [name, value])) } }];
+  let session;
+  const built = await selected({ answers: {
+    // On this server the session comes into the fleet, and the pilot's own OnFleetJoin comes, before the acceptance is answered.
+    "bound:AcceptInvite": () => { intoFleet(session, FLEET); session.notify("OnFleetJoin", ownJoin); return null; },
+    "bound:GetInitState": () => state.now,
+  } }, FLEET_PAIRS);
+  ({ session } = built);
+  const { pilots, handle } = built;
+  const invite = await pilots.bindObject("fleetObjectHandler", "MachoBindObject", [[FLEET]], null, WHO, handle);
+  await pilots.callBoundMethod("fleetObjectHandler", "AcceptInvite", [null], null, WHO, handle, invite.boundHandle);
+  // OnFleetInvite: AcceptInvite, then self.fleet = the Moniker, then InitFleet. One GetInitState, on what bound.
+  const object = fleetCalls(session)[0].split(" ")[0];
+  assert.deepEqual(fleetCalls(session), [`${object} AcceptInvite`, `${object} GetInitState`]);
+  assert.deepEqual(keptShort(await pilots.fleetKept(WHO, handle))[0], [PILOT, OTHER].sort());
+  // Tranquility sends it after: the object is held by then, and the state is read again (fleetSvc.OnFleetJoin).
+  state.now = FOUNDED;
+  session.notify("OnFleetJoin", ownJoin);
+  assert.deepEqual([keptShort(await pilots.fleetKept(WHO, handle))[0], fleetCalls(session)], [[PILOT], [`${object} AcceptInvite`, `${object} GetInitState`, `${object} GetInitState`]]);
+});
+
+test("out of the fleet nothing is kept: by the pilot's own leaving, the server's word for it, or the session's", async () => {
+  const ways = {
+    "LeaveFleet": async ({ pilots, handle }) => { const own = await pilots.bindObject("fleetObjectHandler", "MachoBindObject", [], null, WHO, handle); await pilots.callBoundMethod("fleetObjectHandler", "LeaveFleet", [], null, WHO, handle, own.boundHandle); },
+    "OnFleetLeave": async ({ session }) => session.notify("OnFleetLeave", [PILOT]),
+    "OnFleetDisbanded": async ({ session }) => session.notify("OnFleetDisbanded", [[OTHER, PILOT]]),
+    "the session": async ({ session }) => intoFleet(session, null),
+    "the object let go": async ({ session }) => session.notify("OnMachoObjectDisconnect", ["N=1:500", 1, null]),
+  };
+  for (const [name, leave] of Object.entries(ways)) {
+    const state = { unreadable: false };
+    const built = await formed({ "bound:GetInitState": () => { if (state.unreadable) throw refusedBy("FleetNotFound"); return FOUNDED; } });
+    assert.deepEqual(keptShort(await built.pilots.fleetKept(WHO, built.handle))[0], [PILOT], name);
+    await leave(built);
+    assert.deepEqual([await built.pilots.fleetKept(WHO, built.handle), built.pilots.fleet(FIELDS, built.handle).holdsObject], [null, false], name);
+    // A wing notice or the pilot's own joining that comes after is nobody's to ask about: nothing is asked, or counted as asked.
+    const asked = () => [fleetCalls(built.session).length, built.pilots.callLedger().filter((row) => row.pair.startsWith("fleetObjectHandler.")).map((row) => `${row.pair} ${row.calls}`)];
+    const before = asked();
+    built.session.notify("OnFleetWingAdded", [5n]);
+    built.session.notify("OnFleetJoin", [keyVal([["charID", PILOT]])]);
+    await built.pilots.fleetKept(WHO, built.handle);
+    assert.deepEqual(asked(), before, name);
+    // A fleet formed after that whose state cannot be read is not the old fleet: nothing is kept of either.
+    state.unreadable = true;
+    const again = await built.pilots.bindObject("fleetObjectHandler", "CreateFleet", [], null, WHO, built.handle);
+    await built.pilots.callBoundMethod("fleetObjectHandler", "Init", [null, null], null, WHO, built.handle, again.boundHandle);
+    assert.deepEqual([await built.pilots.fleetKept(WHO, built.handle), built.pilots.fleet(FIELDS, built.handle).holdsObject], [null, true], name);
+  }
+  // Another member's leaving is not the pilot's.
+  const built = await formed({ "bound:GetInitState": WITH_TWO });
+  built.session.notify("OnFleetLeave", [OTHER]);
+  assert.deepEqual([keptShort(await built.pilots.fleetKept(WHO, built.handle))[0], built.pilots.fleet(FIELDS, built.handle).holdsObject], [[PILOT], true]);
+  // A session that moves to another fleet has no members until the state is read again; the object is kept.
+  intoFleet(built.session, FLEET + 5);
+  assert.deepEqual(keptShort(await built.pilots.fleetKept(WHO, built.handle))[0], []);
+});
+
+test("a message the server has not said is asked for when the fleet is read, and a state that could not be read is asked for again", async () => {
+  // fleetSvc.GetMotd: self.fleet.GetMotd() only where self.motd is None.
+  const noMotd = { ...FOUNDED, args: { ...FOUNDED.args, entries: FOUNDED.args.entries.map(([name, value]) => (String(name) === "motd" ? [name, null] : [name, value])) } };
+  const said = await formed({ "bound:GetInitState": noMotd, "bound:GetMotd": Buffer.from("asked for") });
+  assert.deepEqual([keptShort(await said.pilots.fleetKept(WHO, said.handle))[2], fleetCalls(said.session).slice(3)], ["asked for", ["N=1:500 GetMotd"]]);
+  await said.pilots.fleetKept(WHO, said.handle);
+  assert.deepEqual(fleetCalls(said.session).slice(3), ["N=1:500 GetMotd"]);
+  // A pilot who is out of the fleet by the time the message comes has nothing kept to read.
+  const gone = await formed({ "bound:GetInitState": noMotd, "bound:GetMotd": () => { intoFleet(gone.session, null); return Buffer.from("late"); } });
+  assert.equal(await gone.pilots.fleetKept(WHO, gone.handle), null);
+
+  // The state's reading fails after Init: the fleet is formed all the same, and its number is not asked.
+  let fail = true;
+  const built = await formed({ "bound:GetInitState": () => { if (fail) throw refusedBy("FleetNotFound"); return FOUNDED; } });
+  assert.deepEqual(fleetCalls(built.session), ["N=1:500 Init", "N=1:500 GetInitState"]);
+  // Read while it still fails: nothing kept to answer from.
+  assert.equal(await built.pilots.fleetKept(WHO, built.handle), null);
+  fail = false;
+  assert.deepEqual(keptShort(await built.pilots.fleetKept(WHO, built.handle))[0], [PILOT]);
+  assert.deepEqual(fleetCalls(built.session), ["N=1:500 Init", "N=1:500 GetInitState", "N=1:500 GetInitState", "N=1:500 GetInitState"]);
+  // An answer that is no fleet's state is not kept either.
+  const odd = await formed({ "bound:GetInitState": "the state" });
+  assert.equal(await odd.pilots.fleetKept(WHO, odd.handle), null);
+  // And with no fleet's object held there is nothing to read, and nothing is asked.
+  const none = await selected({}, FLEET_PAIRS);
+  assert.deepEqual([await none.pilots.fleetKept(WHO, none.handle), fleetCalls(none.session)], [null, []]);
+});
+
+test("what the client asks of its fleet of its own accord is asked at once, and an answer that comes too late is not the next fleet's", async () => {
+  // Each notice is a tasklet of its own in the client: two wing notices are two askings, neither waiting for the other.
+  const waiting = [];
+  const state = { now: FOUNDED };
+  const built = await formed({ "bound:GetInitState": () => state.now, "bound:GetWings": () => new Promise((resolve) => waiting.push(resolve)) });
+  const { pilots, session, handle } = built;
+  session.notify("OnFleetWingAdded", [5n]);
+  session.notify("OnFleetSquadAdded", [5n, 6n]);
+  const turn = () => new Promise((resolve) => setImmediate(resolve));
+  await turn();
+  assert.deepEqual([waiting.length, fleetCalls(session).slice(3)], [2, ["N=1:500 GetWings", "N=1:500 GetWings"]]);
+  // A read of the fleet waits for everything the client is asking, whichever is answered first.
+  let read = null;
+  const reading = pilots.fleetKept(WHO, handle).then((kept) => { read = kept; });
+  waiting[1]({ type: "dict", entries: [] });
+  await turn();
+  assert.equal(read, null);
+  waiting[0](WINGS_AFTER);
+  await reading;
+  assert.equal(keptShort(read)[1], 2);
+  // The pilot leaves, and forms another fleet, before the next is answered: those wings are the old fleet's.
+  waiting.length = 0;
+  session.notify("OnFleetWingNameChanged", [5n, "x"]);
+  await turn();
+  assert.equal(waiting.length, 1);
+  intoFleet(session, null);
+  const again = await pilots.bindObject("fleetObjectHandler", "CreateFleet", [], null, WHO, handle);
+  await pilots.callBoundMethod("fleetObjectHandler", "Init", [null, null], null, WHO, handle, again.boundHandle);
+  for (const answer of waiting) answer(WINGS_AFTER);
+  assert.deepEqual(keptShort(await pilots.fleetKept(WHO, handle)), [[PILOT], 1, ""]);
+
+  // A state answered as the session leaves the fleet is nobody's: nothing is kept, held or not.
+  let leaving = null;
+  const gone = await formed({ "bound:GetInitState": () => { if (leaving) leaving(); return FOUNDED; } });
+  leaving = () => intoFleet(gone.session, null);
+  gone.session.notify("OnFleetJoin", [keyVal([["charID", PILOT]])]);
+  assert.deepEqual([await gone.pilots.fleetKept(WHO, gone.handle), gone.pilots.fleet(FIELDS, gone.handle).holdsObject], [null, false]);
 });
 
 // ── the monikers the BFF asks for ────────────────────────────────────────────

@@ -1,0 +1,4693 @@
+{
+ "fleetID": {
+  "$long": "654500010000"
+ },
+ "founder": {
+  "characterID": 140000001,
+  "events": [
+   {
+    "kind": "sessionchange",
+    "changes": {
+     "fleetid": [
+      null,
+      {
+       "$long": "654500010000"
+      }
+     ],
+     "fleetrole": [
+      null,
+      1
+     ]
+    }
+   },
+   {
+    "kind": "answer",
+    "call": "Init",
+    "args": [
+     588,
+     null
+    ],
+    "value": null
+   },
+   {
+    "kind": "answer",
+    "call": "GetInitState",
+    "args": [],
+    "value": {
+     "type": "object",
+     "name": {
+      "$str": "util.KeyVal"
+     },
+     "args": {
+      "type": "dict",
+      "entries": [
+       [
+        {
+         "$str": "motd"
+        },
+        {
+         "$str": ""
+        }
+       ],
+       [
+        {
+         "$str": "options"
+        },
+        {
+         "type": "object",
+         "name": {
+          "$str": "util.KeyVal"
+         },
+         "args": {
+          "type": "dict",
+          "entries": [
+           [
+            {
+             "$str": "isFreeMove"
+            },
+            false
+           ],
+           [
+            {
+             "$str": "isRegistered"
+            },
+            false
+           ],
+           [
+            {
+             "$str": "autoJoinSquadID"
+            },
+            null
+           ]
+          ]
+         }
+        }
+       ],
+       [
+        {
+         "$str": "fleetID"
+        },
+        {
+         "$long": "654500010000"
+        }
+       ],
+       [
+        {
+         "$str": "members"
+        },
+        {
+         "type": "dict",
+         "entries": [
+          [
+           140000001,
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "squadID"
+               },
+               -1
+              ],
+              [
+               {
+                "$str": "wingID"
+               },
+               -1
+              ],
+              [
+               {
+                "$str": "skills"
+               },
+               {
+                "type": "list",
+                "items": [
+                 0,
+                 0,
+                 0
+                ]
+               }
+              ],
+              [
+               {
+                "$str": "timestamp"
+               },
+               {
+                "$long": "134360175505990000"
+               }
+              ],
+              [
+               "stationID",
+               60003760
+              ],
+              [
+               "clientID",
+               1065450
+              ],
+              [
+               {
+                "$str": "job"
+               },
+               2
+              ],
+              [
+               "role",
+               1
+              ],
+              [
+               {
+                "$str": "shipTypeID"
+               },
+               588
+              ],
+              [
+               "solarSystemID",
+               30000142
+              ],
+              [
+               {
+                "$str": "memberOptOuts"
+               },
+               {
+                "type": "object",
+                "name": {
+                 "$str": "util.KeyVal"
+                },
+                "args": {
+                 "type": "dict",
+                 "entries": [
+                  [
+                   {
+                    "$str": "acceptsConduitJumps"
+                   },
+                   true
+                  ],
+                  [
+                   {
+                    "$str": "acceptsFleetRegroups"
+                   },
+                   true
+                  ],
+                  [
+                   {
+                    "$str": "acceptsFleetWarp"
+                   },
+                   true
+                  ]
+                 ]
+                }
+               }
+              ],
+              [
+               "charID",
+               140000001
+              ]
+             ]
+            }
+           }
+          ]
+         ]
+        }
+       ],
+       [
+        {
+         "$str": "isLootLogging"
+        },
+        false
+       ],
+       [
+        {
+         "$str": "squads"
+        },
+        {
+         "type": "dict",
+         "entries": [
+          [
+           {
+            "$long": "654500040001"
+           },
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "squadID"
+               },
+               {
+                "$long": "654500040001"
+               }
+              ],
+              [
+               "name",
+               {
+                "$str": ""
+               }
+              ]
+             ]
+            }
+           }
+          ]
+         ]
+        }
+       ],
+       [
+        {
+         "$str": "wings"
+        },
+        {
+         "type": "dict",
+         "entries": [
+          [
+           {
+            "$long": "654500030001"
+           },
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "wingID"
+               },
+               {
+                "$long": "654500030001"
+               }
+              ],
+              [
+               "name",
+               {
+                "$str": ""
+               }
+              ],
+              [
+               {
+                "$str": "squads"
+               },
+               {
+                "type": "dict",
+                "entries": [
+                 [
+                  {
+                   "$long": "654500040001"
+                  },
+                  {
+                   "type": "object",
+                   "name": {
+                    "$str": "util.KeyVal"
+                   },
+                   "args": {
+                    "type": "dict",
+                    "entries": [
+                     [
+                      {
+                       "$str": "squadID"
+                      },
+                      {
+                       "$long": "654500040001"
+                      }
+                     ],
+                     [
+                      "name",
+                      {
+                       "$str": ""
+                      }
+                     ]
+                    ]
+                   }
+                  }
+                 ]
+                ]
+               }
+              ]
+             ]
+            }
+           }
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    }
+   },
+   {
+    "kind": "answer",
+    "call": "GetFleetID",
+    "args": [],
+    "value": {
+     "$long": "654500010000"
+    }
+   },
+   {
+    "kind": "answer",
+    "call": "Invite",
+    "args": [
+     140000002,
+     null,
+     null,
+     null
+    ],
+    "value": true
+   },
+   {
+    "kind": "notice",
+    "method": "OnFleetJoin",
+    "idtype": "*fleetid",
+    "args": [
+     {
+      "type": "object",
+      "name": {
+       "$str": "util.KeyVal"
+      },
+      "args": {
+       "type": "dict",
+       "entries": [
+        [
+         {
+          "$str": "squadID"
+         },
+         {
+          "$long": "654500040001"
+         }
+        ],
+        [
+         {
+          "$str": "wingID"
+         },
+         {
+          "$long": "654500030001"
+         }
+        ],
+        [
+         {
+          "$str": "skills"
+         },
+         {
+          "type": "list",
+          "items": [
+           0,
+           0,
+           0
+          ]
+         }
+        ],
+        [
+         {
+          "$str": "timestamp"
+         },
+         {
+          "$long": "134360175518230000"
+         }
+        ],
+        [
+         "stationID",
+         60000004
+        ],
+        [
+         "clientID",
+         2065450
+        ],
+        [
+         {
+          "$str": "job"
+         },
+         0
+        ],
+        [
+         "role",
+         4
+        ],
+        [
+         {
+          "$str": "shipTypeID"
+         },
+         648
+        ],
+        [
+         "solarSystemID",
+         30002780
+        ],
+        [
+         {
+          "$str": "memberOptOuts"
+         },
+         {
+          "type": "object",
+          "name": {
+           "$str": "util.KeyVal"
+          },
+          "args": {
+           "type": "dict",
+           "entries": [
+            [
+             {
+              "$str": "acceptsConduitJumps"
+             },
+             true
+            ],
+            [
+             {
+              "$str": "acceptsFleetRegroups"
+             },
+             true
+            ],
+            [
+             {
+              "$str": "acceptsFleetWarp"
+             },
+             true
+            ]
+           ]
+          }
+         }
+        ],
+        [
+         "charID",
+         140000002
+        ]
+       ]
+      }
+     }
+    ]
+   },
+   {
+    "kind": "notice",
+    "method": "OnFleetWingAdded",
+    "idtype": "fleetid",
+    "args": [
+     {
+      "$long": "654500030002"
+     }
+    ]
+   },
+   {
+    "kind": "answer",
+    "call": "CreateWing",
+    "args": [],
+    "value": {
+     "$long": "654500030002"
+    }
+   },
+   {
+    "kind": "notice",
+    "method": "OnFleetSquadAdded",
+    "idtype": "fleetid",
+    "args": [
+     {
+      "$long": "654500030002"
+     },
+     {
+      "$long": "654500040002"
+     }
+    ]
+   },
+   {
+    "kind": "answer",
+    "call": "CreateSquad",
+    "args": [
+     {
+      "$long": "654500030002"
+     }
+    ],
+    "value": {
+     "$long": "654500040002"
+    }
+   },
+   {
+    "kind": "notice",
+    "method": "OnFleetWingNameChanged",
+    "idtype": "fleetid",
+    "args": [
+     {
+      "$long": "654500030002"
+     },
+     {
+      "$str": "Second win"
+     }
+    ]
+   },
+   {
+    "kind": "answer",
+    "call": "ChangeWingName",
+    "args": [
+     {
+      "$long": "654500030002"
+     },
+     "Second wing"
+    ],
+    "value": true
+   },
+   {
+    "kind": "notice",
+    "method": "OnFleetMemberChanged",
+    "idtype": "*fleetid",
+    "args": [
+     140000002,
+     {
+      "$long": "654500010000"
+     },
+     {
+      "$long": "654500030001"
+     },
+     {
+      "$long": "654500040001"
+     },
+     4,
+     0,
+     {
+      "type": "object",
+      "name": {
+       "$str": "util.KeyVal"
+      },
+      "args": {
+       "type": "dict",
+       "entries": [
+        [
+         {
+          "$str": "acceptsConduitJumps"
+         },
+         true
+        ],
+        [
+         {
+          "$str": "acceptsFleetRegroups"
+         },
+         true
+        ],
+        [
+         {
+          "$str": "acceptsFleetWarp"
+         },
+         true
+        ]
+       ]
+      }
+     },
+     {
+      "$long": "654500030002"
+     },
+     {
+      "$long": "654500040002"
+     },
+     4,
+     0,
+     {
+      "type": "object",
+      "name": {
+       "$str": "util.KeyVal"
+      },
+      "args": {
+       "type": "dict",
+       "entries": [
+        [
+         {
+          "$str": "acceptsConduitJumps"
+         },
+         true
+        ],
+        [
+         {
+          "$str": "acceptsFleetRegroups"
+         },
+         true
+        ],
+        [
+         {
+          "$str": "acceptsFleetWarp"
+         },
+         true
+        ]
+       ]
+      }
+     },
+     false
+    ]
+   },
+   {
+    "kind": "answer",
+    "call": "MoveMember",
+    "args": [
+     140000002,
+     {
+      "$long": "654500030002"
+     },
+     {
+      "$long": "654500040002"
+     },
+     4
+    ],
+    "value": true
+   },
+   {
+    "kind": "notice",
+    "method": "OnFleetMotdChanged",
+    "idtype": "fleetid",
+    "args": [
+     {
+      "$str": "Fly safe"
+     },
+     true
+    ]
+   },
+   {
+    "kind": "answer",
+    "call": "SetMotdEx",
+    "args": [
+     "Fly safe"
+    ],
+    "value": true
+   },
+   {
+    "kind": "answer",
+    "call": "GetWings",
+    "args": [],
+    "value": {
+     "type": "dict",
+     "entries": [
+      [
+       {
+        "$long": "654500030001"
+       },
+       {
+        "type": "object",
+        "name": {
+         "$str": "util.KeyVal"
+        },
+        "args": {
+         "type": "dict",
+         "entries": [
+          [
+           {
+            "$str": "wingID"
+           },
+           {
+            "$long": "654500030001"
+           }
+          ],
+          [
+           "name",
+           {
+            "$str": ""
+           }
+          ],
+          [
+           {
+            "$str": "squads"
+           },
+           {
+            "type": "dict",
+            "entries": [
+             [
+              {
+               "$long": "654500040001"
+              },
+              {
+               "type": "object",
+               "name": {
+                "$str": "util.KeyVal"
+               },
+               "args": {
+                "type": "dict",
+                "entries": [
+                 [
+                  {
+                   "$str": "squadID"
+                  },
+                  {
+                   "$long": "654500040001"
+                  }
+                 ],
+                 [
+                  "name",
+                  {
+                   "$str": ""
+                  }
+                 ]
+                ]
+               }
+              }
+             ]
+            ]
+           }
+          ]
+         ]
+        }
+       }
+      ],
+      [
+       {
+        "$long": "654500030002"
+       },
+       {
+        "type": "object",
+        "name": {
+         "$str": "util.KeyVal"
+        },
+        "args": {
+         "type": "dict",
+         "entries": [
+          [
+           {
+            "$str": "wingID"
+           },
+           {
+            "$long": "654500030002"
+           }
+          ],
+          [
+           "name",
+           {
+            "$str": "Second win"
+           }
+          ],
+          [
+           {
+            "$str": "squads"
+           },
+           {
+            "type": "dict",
+            "entries": [
+             [
+              {
+               "$long": "654500040002"
+              },
+              {
+               "type": "object",
+               "name": {
+                "$str": "util.KeyVal"
+               },
+               "args": {
+                "type": "dict",
+                "entries": [
+                 [
+                  {
+                   "$str": "squadID"
+                  },
+                  {
+                   "$long": "654500040002"
+                  }
+                 ],
+                 [
+                  "name",
+                  {
+                   "$str": ""
+                  }
+                 ]
+                ]
+               }
+              }
+             ]
+            ]
+           }
+          ]
+         ]
+        }
+       }
+      ]
+     ]
+    }
+   },
+   {
+    "kind": "answer",
+    "call": "GetInitState",
+    "args": [],
+    "value": {
+     "type": "object",
+     "name": {
+      "$str": "util.KeyVal"
+     },
+     "args": {
+      "type": "dict",
+      "entries": [
+       [
+        {
+         "$str": "motd"
+        },
+        {
+         "$str": "Fly safe"
+        }
+       ],
+       [
+        {
+         "$str": "options"
+        },
+        {
+         "type": "object",
+         "name": {
+          "$str": "util.KeyVal"
+         },
+         "args": {
+          "type": "dict",
+          "entries": [
+           [
+            {
+             "$str": "isFreeMove"
+            },
+            false
+           ],
+           [
+            {
+             "$str": "isRegistered"
+            },
+            false
+           ],
+           [
+            {
+             "$str": "autoJoinSquadID"
+            },
+            null
+           ]
+          ]
+         }
+        }
+       ],
+       [
+        {
+         "$str": "fleetID"
+        },
+        {
+         "$long": "654500010000"
+        }
+       ],
+       [
+        {
+         "$str": "members"
+        },
+        {
+         "type": "dict",
+         "entries": [
+          [
+           140000001,
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "squadID"
+               },
+               -1
+              ],
+              [
+               {
+                "$str": "wingID"
+               },
+               -1
+              ],
+              [
+               {
+                "$str": "skills"
+               },
+               {
+                "type": "list",
+                "items": [
+                 0,
+                 0,
+                 0
+                ]
+               }
+              ],
+              [
+               {
+                "$str": "timestamp"
+               },
+               {
+                "$long": "134360175505990000"
+               }
+              ],
+              [
+               "stationID",
+               60003760
+              ],
+              [
+               "clientID",
+               1065450
+              ],
+              [
+               {
+                "$str": "job"
+               },
+               2
+              ],
+              [
+               "role",
+               1
+              ],
+              [
+               {
+                "$str": "shipTypeID"
+               },
+               588
+              ],
+              [
+               "solarSystemID",
+               30000142
+              ],
+              [
+               {
+                "$str": "memberOptOuts"
+               },
+               {
+                "type": "object",
+                "name": {
+                 "$str": "util.KeyVal"
+                },
+                "args": {
+                 "type": "dict",
+                 "entries": [
+                  [
+                   {
+                    "$str": "acceptsConduitJumps"
+                   },
+                   true
+                  ],
+                  [
+                   {
+                    "$str": "acceptsFleetRegroups"
+                   },
+                   true
+                  ],
+                  [
+                   {
+                    "$str": "acceptsFleetWarp"
+                   },
+                   true
+                  ]
+                 ]
+                }
+               }
+              ],
+              [
+               "charID",
+               140000001
+              ]
+             ]
+            }
+           }
+          ],
+          [
+           140000002,
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "squadID"
+               },
+               {
+                "$long": "654500040002"
+               }
+              ],
+              [
+               {
+                "$str": "wingID"
+               },
+               {
+                "$long": "654500030002"
+               }
+              ],
+              [
+               {
+                "$str": "skills"
+               },
+               {
+                "type": "list",
+                "items": [
+                 0,
+                 0,
+                 0
+                ]
+               }
+              ],
+              [
+               {
+                "$str": "timestamp"
+               },
+               {
+                "$long": "134360175518230000"
+               }
+              ],
+              [
+               "stationID",
+               60000004
+              ],
+              [
+               "clientID",
+               2065450
+              ],
+              [
+               {
+                "$str": "job"
+               },
+               0
+              ],
+              [
+               "role",
+               4
+              ],
+              [
+               {
+                "$str": "shipTypeID"
+               },
+               648
+              ],
+              [
+               "solarSystemID",
+               30002780
+              ],
+              [
+               {
+                "$str": "memberOptOuts"
+               },
+               {
+                "type": "object",
+                "name": {
+                 "$str": "util.KeyVal"
+                },
+                "args": {
+                 "type": "dict",
+                 "entries": [
+                  [
+                   {
+                    "$str": "acceptsConduitJumps"
+                   },
+                   true
+                  ],
+                  [
+                   {
+                    "$str": "acceptsFleetRegroups"
+                   },
+                   true
+                  ],
+                  [
+                   {
+                    "$str": "acceptsFleetWarp"
+                   },
+                   true
+                  ]
+                 ]
+                }
+               }
+              ],
+              [
+               "charID",
+               140000002
+              ]
+             ]
+            }
+           }
+          ]
+         ]
+        }
+       ],
+       [
+        {
+         "$str": "isLootLogging"
+        },
+        false
+       ],
+       [
+        {
+         "$str": "squads"
+        },
+        {
+         "type": "dict",
+         "entries": [
+          [
+           {
+            "$long": "654500040001"
+           },
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "squadID"
+               },
+               {
+                "$long": "654500040001"
+               }
+              ],
+              [
+               "name",
+               {
+                "$str": ""
+               }
+              ]
+             ]
+            }
+           }
+          ],
+          [
+           {
+            "$long": "654500040002"
+           },
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "squadID"
+               },
+               {
+                "$long": "654500040002"
+               }
+              ],
+              [
+               "name",
+               {
+                "$str": ""
+               }
+              ]
+             ]
+            }
+           }
+          ]
+         ]
+        }
+       ],
+       [
+        {
+         "$str": "wings"
+        },
+        {
+         "type": "dict",
+         "entries": [
+          [
+           {
+            "$long": "654500030001"
+           },
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "wingID"
+               },
+               {
+                "$long": "654500030001"
+               }
+              ],
+              [
+               "name",
+               {
+                "$str": ""
+               }
+              ],
+              [
+               {
+                "$str": "squads"
+               },
+               {
+                "type": "dict",
+                "entries": [
+                 [
+                  {
+                   "$long": "654500040001"
+                  },
+                  {
+                   "type": "object",
+                   "name": {
+                    "$str": "util.KeyVal"
+                   },
+                   "args": {
+                    "type": "dict",
+                    "entries": [
+                     [
+                      {
+                       "$str": "squadID"
+                      },
+                      {
+                       "$long": "654500040001"
+                      }
+                     ],
+                     [
+                      "name",
+                      {
+                       "$str": ""
+                      }
+                     ]
+                    ]
+                   }
+                  }
+                 ]
+                ]
+               }
+              ]
+             ]
+            }
+           }
+          ],
+          [
+           {
+            "$long": "654500030002"
+           },
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "wingID"
+               },
+               {
+                "$long": "654500030002"
+               }
+              ],
+              [
+               "name",
+               {
+                "$str": "Second win"
+               }
+              ],
+              [
+               {
+                "$str": "squads"
+               },
+               {
+                "type": "dict",
+                "entries": [
+                 [
+                  {
+                   "$long": "654500040002"
+                  },
+                  {
+                   "type": "object",
+                   "name": {
+                    "$str": "util.KeyVal"
+                   },
+                   "args": {
+                    "type": "dict",
+                    "entries": [
+                     [
+                      {
+                       "$str": "squadID"
+                      },
+                      {
+                       "$long": "654500040002"
+                      }
+                     ],
+                     [
+                      "name",
+                      {
+                       "$str": ""
+                      }
+                     ]
+                    ]
+                   }
+                  }
+                 ]
+                ]
+               }
+              ]
+             ]
+            }
+           }
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    }
+   },
+   {
+    "kind": "answer",
+    "call": "GetWings",
+    "args": [],
+    "value": {
+     "type": "dict",
+     "entries": [
+      [
+       {
+        "$long": "654500030001"
+       },
+       {
+        "type": "object",
+        "name": {
+         "$str": "util.KeyVal"
+        },
+        "args": {
+         "type": "dict",
+         "entries": [
+          [
+           {
+            "$str": "wingID"
+           },
+           {
+            "$long": "654500030001"
+           }
+          ],
+          [
+           "name",
+           {
+            "$str": ""
+           }
+          ],
+          [
+           {
+            "$str": "squads"
+           },
+           {
+            "type": "dict",
+            "entries": [
+             [
+              {
+               "$long": "654500040001"
+              },
+              {
+               "type": "object",
+               "name": {
+                "$str": "util.KeyVal"
+               },
+               "args": {
+                "type": "dict",
+                "entries": [
+                 [
+                  {
+                   "$str": "squadID"
+                  },
+                  {
+                   "$long": "654500040001"
+                  }
+                 ],
+                 [
+                  "name",
+                  {
+                   "$str": ""
+                  }
+                 ]
+                ]
+               }
+              }
+             ]
+            ]
+           }
+          ]
+         ]
+        }
+       }
+      ],
+      [
+       {
+        "$long": "654500030002"
+       },
+       {
+        "type": "object",
+        "name": {
+         "$str": "util.KeyVal"
+        },
+        "args": {
+         "type": "dict",
+         "entries": [
+          [
+           {
+            "$str": "wingID"
+           },
+           {
+            "$long": "654500030002"
+           }
+          ],
+          [
+           "name",
+           {
+            "$str": "Second win"
+           }
+          ],
+          [
+           {
+            "$str": "squads"
+           },
+           {
+            "type": "dict",
+            "entries": [
+             [
+              {
+               "$long": "654500040002"
+              },
+              {
+               "type": "object",
+               "name": {
+                "$str": "util.KeyVal"
+               },
+               "args": {
+                "type": "dict",
+                "entries": [
+                 [
+                  {
+                   "$str": "squadID"
+                  },
+                  {
+                   "$long": "654500040002"
+                  }
+                 ],
+                 [
+                  "name",
+                  {
+                   "$str": ""
+                  }
+                 ]
+                ]
+               }
+              }
+             ]
+            ]
+           }
+          ]
+         ]
+        }
+       }
+      ]
+     ]
+    }
+   },
+   {
+    "kind": "answer",
+    "call": "GetInitState",
+    "args": [],
+    "value": {
+     "type": "object",
+     "name": {
+      "$str": "util.KeyVal"
+     },
+     "args": {
+      "type": "dict",
+      "entries": [
+       [
+        {
+         "$str": "motd"
+        },
+        {
+         "$str": "Fly safe"
+        }
+       ],
+       [
+        {
+         "$str": "options"
+        },
+        {
+         "type": "object",
+         "name": {
+          "$str": "util.KeyVal"
+         },
+         "args": {
+          "type": "dict",
+          "entries": [
+           [
+            {
+             "$str": "isFreeMove"
+            },
+            false
+           ],
+           [
+            {
+             "$str": "isRegistered"
+            },
+            false
+           ],
+           [
+            {
+             "$str": "autoJoinSquadID"
+            },
+            null
+           ]
+          ]
+         }
+        }
+       ],
+       [
+        {
+         "$str": "fleetID"
+        },
+        {
+         "$long": "654500010000"
+        }
+       ],
+       [
+        {
+         "$str": "members"
+        },
+        {
+         "type": "dict",
+         "entries": [
+          [
+           140000001,
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "squadID"
+               },
+               -1
+              ],
+              [
+               {
+                "$str": "wingID"
+               },
+               -1
+              ],
+              [
+               {
+                "$str": "skills"
+               },
+               {
+                "type": "list",
+                "items": [
+                 0,
+                 0,
+                 0
+                ]
+               }
+              ],
+              [
+               {
+                "$str": "timestamp"
+               },
+               {
+                "$long": "134360175505990000"
+               }
+              ],
+              [
+               "stationID",
+               60003760
+              ],
+              [
+               "clientID",
+               1065450
+              ],
+              [
+               {
+                "$str": "job"
+               },
+               2
+              ],
+              [
+               "role",
+               1
+              ],
+              [
+               {
+                "$str": "shipTypeID"
+               },
+               588
+              ],
+              [
+               "solarSystemID",
+               30000142
+              ],
+              [
+               {
+                "$str": "memberOptOuts"
+               },
+               {
+                "type": "object",
+                "name": {
+                 "$str": "util.KeyVal"
+                },
+                "args": {
+                 "type": "dict",
+                 "entries": [
+                  [
+                   {
+                    "$str": "acceptsConduitJumps"
+                   },
+                   true
+                  ],
+                  [
+                   {
+                    "$str": "acceptsFleetRegroups"
+                   },
+                   true
+                  ],
+                  [
+                   {
+                    "$str": "acceptsFleetWarp"
+                   },
+                   true
+                  ]
+                 ]
+                }
+               }
+              ],
+              [
+               "charID",
+               140000001
+              ]
+             ]
+            }
+           }
+          ],
+          [
+           140000002,
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "squadID"
+               },
+               {
+                "$long": "654500040002"
+               }
+              ],
+              [
+               {
+                "$str": "wingID"
+               },
+               {
+                "$long": "654500030002"
+               }
+              ],
+              [
+               {
+                "$str": "skills"
+               },
+               {
+                "type": "list",
+                "items": [
+                 0,
+                 0,
+                 0
+                ]
+               }
+              ],
+              [
+               {
+                "$str": "timestamp"
+               },
+               {
+                "$long": "134360175518230000"
+               }
+              ],
+              [
+               "stationID",
+               60000004
+              ],
+              [
+               "clientID",
+               2065450
+              ],
+              [
+               {
+                "$str": "job"
+               },
+               0
+              ],
+              [
+               "role",
+               4
+              ],
+              [
+               {
+                "$str": "shipTypeID"
+               },
+               648
+              ],
+              [
+               "solarSystemID",
+               30002780
+              ],
+              [
+               {
+                "$str": "memberOptOuts"
+               },
+               {
+                "type": "object",
+                "name": {
+                 "$str": "util.KeyVal"
+                },
+                "args": {
+                 "type": "dict",
+                 "entries": [
+                  [
+                   {
+                    "$str": "acceptsConduitJumps"
+                   },
+                   true
+                  ],
+                  [
+                   {
+                    "$str": "acceptsFleetRegroups"
+                   },
+                   true
+                  ],
+                  [
+                   {
+                    "$str": "acceptsFleetWarp"
+                   },
+                   true
+                  ]
+                 ]
+                }
+               }
+              ],
+              [
+               "charID",
+               140000002
+              ]
+             ]
+            }
+           }
+          ]
+         ]
+        }
+       ],
+       [
+        {
+         "$str": "isLootLogging"
+        },
+        false
+       ],
+       [
+        {
+         "$str": "squads"
+        },
+        {
+         "type": "dict",
+         "entries": [
+          [
+           {
+            "$long": "654500040001"
+           },
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "squadID"
+               },
+               {
+                "$long": "654500040001"
+               }
+              ],
+              [
+               "name",
+               {
+                "$str": ""
+               }
+              ]
+             ]
+            }
+           }
+          ],
+          [
+           {
+            "$long": "654500040002"
+           },
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "squadID"
+               },
+               {
+                "$long": "654500040002"
+               }
+              ],
+              [
+               "name",
+               {
+                "$str": ""
+               }
+              ]
+             ]
+            }
+           }
+          ]
+         ]
+        }
+       ],
+       [
+        {
+         "$str": "wings"
+        },
+        {
+         "type": "dict",
+         "entries": [
+          [
+           {
+            "$long": "654500030001"
+           },
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "wingID"
+               },
+               {
+                "$long": "654500030001"
+               }
+              ],
+              [
+               "name",
+               {
+                "$str": ""
+               }
+              ],
+              [
+               {
+                "$str": "squads"
+               },
+               {
+                "type": "dict",
+                "entries": [
+                 [
+                  {
+                   "$long": "654500040001"
+                  },
+                  {
+                   "type": "object",
+                   "name": {
+                    "$str": "util.KeyVal"
+                   },
+                   "args": {
+                    "type": "dict",
+                    "entries": [
+                     [
+                      {
+                       "$str": "squadID"
+                      },
+                      {
+                       "$long": "654500040001"
+                      }
+                     ],
+                     [
+                      "name",
+                      {
+                       "$str": ""
+                      }
+                     ]
+                    ]
+                   }
+                  }
+                 ]
+                ]
+               }
+              ]
+             ]
+            }
+           }
+          ],
+          [
+           {
+            "$long": "654500030002"
+           },
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "wingID"
+               },
+               {
+                "$long": "654500030002"
+               }
+              ],
+              [
+               "name",
+               {
+                "$str": "Second win"
+               }
+              ],
+              [
+               {
+                "$str": "squads"
+               },
+               {
+                "type": "dict",
+                "entries": [
+                 [
+                  {
+                   "$long": "654500040002"
+                  },
+                  {
+                   "type": "object",
+                   "name": {
+                    "$str": "util.KeyVal"
+                   },
+                   "args": {
+                    "type": "dict",
+                    "entries": [
+                     [
+                      {
+                       "$str": "squadID"
+                      },
+                      {
+                       "$long": "654500040002"
+                      }
+                     ],
+                     [
+                      "name",
+                      {
+                       "$str": ""
+                      }
+                     ]
+                    ]
+                   }
+                  }
+                 ]
+                ]
+               }
+              ]
+             ]
+            }
+           }
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    }
+   },
+   {
+    "kind": "notice",
+    "method": "OnFleetLeave",
+    "idtype": "*fleetid",
+    "args": [
+     140000002
+    ]
+   },
+   {
+    "kind": "answer",
+    "call": "GetInitState",
+    "args": [],
+    "value": {
+     "type": "object",
+     "name": {
+      "$str": "util.KeyVal"
+     },
+     "args": {
+      "type": "dict",
+      "entries": [
+       [
+        {
+         "$str": "motd"
+        },
+        {
+         "$str": "Fly safe"
+        }
+       ],
+       [
+        {
+         "$str": "options"
+        },
+        {
+         "type": "object",
+         "name": {
+          "$str": "util.KeyVal"
+         },
+         "args": {
+          "type": "dict",
+          "entries": [
+           [
+            {
+             "$str": "isFreeMove"
+            },
+            false
+           ],
+           [
+            {
+             "$str": "isRegistered"
+            },
+            false
+           ],
+           [
+            {
+             "$str": "autoJoinSquadID"
+            },
+            null
+           ]
+          ]
+         }
+        }
+       ],
+       [
+        {
+         "$str": "fleetID"
+        },
+        {
+         "$long": "654500010000"
+        }
+       ],
+       [
+        {
+         "$str": "members"
+        },
+        {
+         "type": "dict",
+         "entries": [
+          [
+           140000001,
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "squadID"
+               },
+               -1
+              ],
+              [
+               {
+                "$str": "wingID"
+               },
+               -1
+              ],
+              [
+               {
+                "$str": "skills"
+               },
+               {
+                "type": "list",
+                "items": [
+                 0,
+                 0,
+                 0
+                ]
+               }
+              ],
+              [
+               {
+                "$str": "timestamp"
+               },
+               {
+                "$long": "134360175505990000"
+               }
+              ],
+              [
+               "stationID",
+               60003760
+              ],
+              [
+               "clientID",
+               1065450
+              ],
+              [
+               {
+                "$str": "job"
+               },
+               2
+              ],
+              [
+               "role",
+               1
+              ],
+              [
+               {
+                "$str": "shipTypeID"
+               },
+               588
+              ],
+              [
+               "solarSystemID",
+               30000142
+              ],
+              [
+               {
+                "$str": "memberOptOuts"
+               },
+               {
+                "type": "object",
+                "name": {
+                 "$str": "util.KeyVal"
+                },
+                "args": {
+                 "type": "dict",
+                 "entries": [
+                  [
+                   {
+                    "$str": "acceptsConduitJumps"
+                   },
+                   true
+                  ],
+                  [
+                   {
+                    "$str": "acceptsFleetRegroups"
+                   },
+                   true
+                  ],
+                  [
+                   {
+                    "$str": "acceptsFleetWarp"
+                   },
+                   true
+                  ]
+                 ]
+                }
+               }
+              ],
+              [
+               "charID",
+               140000001
+              ]
+             ]
+            }
+           }
+          ]
+         ]
+        }
+       ],
+       [
+        {
+         "$str": "isLootLogging"
+        },
+        false
+       ],
+       [
+        {
+         "$str": "squads"
+        },
+        {
+         "type": "dict",
+         "entries": [
+          [
+           {
+            "$long": "654500040001"
+           },
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "squadID"
+               },
+               {
+                "$long": "654500040001"
+               }
+              ],
+              [
+               "name",
+               {
+                "$str": ""
+               }
+              ]
+             ]
+            }
+           }
+          ],
+          [
+           {
+            "$long": "654500040002"
+           },
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "squadID"
+               },
+               {
+                "$long": "654500040002"
+               }
+              ],
+              [
+               "name",
+               {
+                "$str": ""
+               }
+              ]
+             ]
+            }
+           }
+          ]
+         ]
+        }
+       ],
+       [
+        {
+         "$str": "wings"
+        },
+        {
+         "type": "dict",
+         "entries": [
+          [
+           {
+            "$long": "654500030001"
+           },
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "wingID"
+               },
+               {
+                "$long": "654500030001"
+               }
+              ],
+              [
+               "name",
+               {
+                "$str": ""
+               }
+              ],
+              [
+               {
+                "$str": "squads"
+               },
+               {
+                "type": "dict",
+                "entries": [
+                 [
+                  {
+                   "$long": "654500040001"
+                  },
+                  {
+                   "type": "object",
+                   "name": {
+                    "$str": "util.KeyVal"
+                   },
+                   "args": {
+                    "type": "dict",
+                    "entries": [
+                     [
+                      {
+                       "$str": "squadID"
+                      },
+                      {
+                       "$long": "654500040001"
+                      }
+                     ],
+                     [
+                      "name",
+                      {
+                       "$str": ""
+                      }
+                     ]
+                    ]
+                   }
+                  }
+                 ]
+                ]
+               }
+              ]
+             ]
+            }
+           }
+          ],
+          [
+           {
+            "$long": "654500030002"
+           },
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "wingID"
+               },
+               {
+                "$long": "654500030002"
+               }
+              ],
+              [
+               "name",
+               {
+                "$str": "Second win"
+               }
+              ],
+              [
+               {
+                "$str": "squads"
+               },
+               {
+                "type": "dict",
+                "entries": [
+                 [
+                  {
+                   "$long": "654500040002"
+                  },
+                  {
+                   "type": "object",
+                   "name": {
+                    "$str": "util.KeyVal"
+                   },
+                   "args": {
+                    "type": "dict",
+                    "entries": [
+                     [
+                      {
+                       "$str": "squadID"
+                      },
+                      {
+                       "$long": "654500040002"
+                      }
+                     ],
+                     [
+                      "name",
+                      {
+                       "$str": ""
+                      }
+                     ]
+                    ]
+                   }
+                  }
+                 ]
+                ]
+               }
+              ]
+             ]
+            }
+           }
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    }
+   },
+   {
+    "kind": "sessionchange",
+    "changes": {
+     "fleetid": [
+      {
+       "$long": "654500010000"
+      },
+      null
+     ],
+     "fleetrole": [
+      1,
+      null
+     ]
+    }
+   },
+   {
+    "kind": "notice",
+    "method": "OnFleetDisbanded",
+    "idtype": "fleetid",
+    "args": [
+     [
+      140000001
+     ]
+    ]
+   },
+   {
+    "kind": "answer",
+    "call": "LeaveFleet",
+    "args": [],
+    "value": true
+   }
+  ]
+ },
+ "joiner": {
+  "characterID": 140000002,
+  "events": [
+   {
+    "kind": "notice",
+    "method": "OnFleetInvite",
+    "idtype": "clientID",
+    "args": [
+     {
+      "$long": "654500010000"
+     },
+     140000001,
+     {
+      "$str": "AskJoinFleet"
+     },
+     {
+      "type": "dict",
+      "entries": [
+       [
+        {
+         "$str": "autoAccept"
+        },
+        false
+       ],
+       [
+        "name",
+        [
+         2,
+         140000001
+        ]
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "kind": "notice",
+    "method": "OnFleetRespawnPointsUpdate",
+    "idtype": "clientID",
+    "args": [
+     {
+      "type": "list",
+      "items": []
+     }
+    ]
+   },
+   {
+    "kind": "sessionchange",
+    "changes": {
+     "fleetid": [
+      null,
+      {
+       "$long": "654500010000"
+      }
+     ],
+     "fleetrole": [
+      null,
+      4
+     ],
+     "wingid": [
+      null,
+      {
+       "$long": "654500030001"
+      }
+     ],
+     "squadid": [
+      null,
+      {
+       "$long": "654500040001"
+      }
+     ]
+    }
+   },
+   {
+    "kind": "notice",
+    "method": "OnFleetStateChange",
+    "idtype": "charid",
+    "args": [
+     {
+      "type": "object",
+      "name": {
+       "$str": "util.KeyVal"
+      },
+      "args": {
+       "type": "dict",
+       "entries": [
+        [
+         {
+          "$str": "targetTags"
+         },
+         {
+          "type": "dict",
+          "entries": []
+         }
+        ]
+       ]
+      }
+     }
+    ]
+   },
+   {
+    "kind": "notice",
+    "method": "OnFleetJoin",
+    "idtype": "*fleetid",
+    "args": [
+     {
+      "type": "object",
+      "name": {
+       "$str": "util.KeyVal"
+      },
+      "args": {
+       "type": "dict",
+       "entries": [
+        [
+         {
+          "$str": "squadID"
+         },
+         {
+          "$long": "654500040001"
+         }
+        ],
+        [
+         {
+          "$str": "wingID"
+         },
+         {
+          "$long": "654500030001"
+         }
+        ],
+        [
+         {
+          "$str": "skills"
+         },
+         {
+          "type": "list",
+          "items": [
+           0,
+           0,
+           0
+          ]
+         }
+        ],
+        [
+         {
+          "$str": "timestamp"
+         },
+         {
+          "$long": "134360175518230000"
+         }
+        ],
+        [
+         "stationID",
+         60000004
+        ],
+        [
+         "clientID",
+         2065450
+        ],
+        [
+         {
+          "$str": "job"
+         },
+         0
+        ],
+        [
+         "role",
+         4
+        ],
+        [
+         {
+          "$str": "shipTypeID"
+         },
+         648
+        ],
+        [
+         "solarSystemID",
+         30002780
+        ],
+        [
+         {
+          "$str": "memberOptOuts"
+         },
+         {
+          "type": "object",
+          "name": {
+           "$str": "util.KeyVal"
+          },
+          "args": {
+           "type": "dict",
+           "entries": [
+            [
+             {
+              "$str": "acceptsConduitJumps"
+             },
+             true
+            ],
+            [
+             {
+              "$str": "acceptsFleetRegroups"
+             },
+             true
+            ],
+            [
+             {
+              "$str": "acceptsFleetWarp"
+             },
+             true
+            ]
+           ]
+          }
+         }
+        ],
+        [
+         "charID",
+         140000002
+        ]
+       ]
+      }
+     }
+    ]
+   },
+   {
+    "kind": "answer",
+    "call": "AcceptInvite",
+    "args": [
+     648
+    ],
+    "value": null
+   },
+   {
+    "kind": "answer",
+    "call": "GetInitState",
+    "args": [],
+    "value": {
+     "type": "object",
+     "name": {
+      "$str": "util.KeyVal"
+     },
+     "args": {
+      "type": "dict",
+      "entries": [
+       [
+        {
+         "$str": "motd"
+        },
+        {
+         "$str": ""
+        }
+       ],
+       [
+        {
+         "$str": "options"
+        },
+        {
+         "type": "object",
+         "name": {
+          "$str": "util.KeyVal"
+         },
+         "args": {
+          "type": "dict",
+          "entries": [
+           [
+            {
+             "$str": "isFreeMove"
+            },
+            false
+           ],
+           [
+            {
+             "$str": "isRegistered"
+            },
+            false
+           ],
+           [
+            {
+             "$str": "autoJoinSquadID"
+            },
+            null
+           ]
+          ]
+         }
+        }
+       ],
+       [
+        {
+         "$str": "fleetID"
+        },
+        {
+         "$long": "654500010000"
+        }
+       ],
+       [
+        {
+         "$str": "members"
+        },
+        {
+         "type": "dict",
+         "entries": [
+          [
+           140000001,
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "squadID"
+               },
+               -1
+              ],
+              [
+               {
+                "$str": "wingID"
+               },
+               -1
+              ],
+              [
+               {
+                "$str": "skills"
+               },
+               {
+                "type": "list",
+                "items": [
+                 0,
+                 0,
+                 0
+                ]
+               }
+              ],
+              [
+               {
+                "$str": "timestamp"
+               },
+               {
+                "$long": "134360175505990000"
+               }
+              ],
+              [
+               "stationID",
+               60003760
+              ],
+              [
+               "clientID",
+               1065450
+              ],
+              [
+               {
+                "$str": "job"
+               },
+               2
+              ],
+              [
+               "role",
+               1
+              ],
+              [
+               {
+                "$str": "shipTypeID"
+               },
+               588
+              ],
+              [
+               "solarSystemID",
+               30000142
+              ],
+              [
+               {
+                "$str": "memberOptOuts"
+               },
+               {
+                "type": "object",
+                "name": {
+                 "$str": "util.KeyVal"
+                },
+                "args": {
+                 "type": "dict",
+                 "entries": [
+                  [
+                   {
+                    "$str": "acceptsConduitJumps"
+                   },
+                   true
+                  ],
+                  [
+                   {
+                    "$str": "acceptsFleetRegroups"
+                   },
+                   true
+                  ],
+                  [
+                   {
+                    "$str": "acceptsFleetWarp"
+                   },
+                   true
+                  ]
+                 ]
+                }
+               }
+              ],
+              [
+               "charID",
+               140000001
+              ]
+             ]
+            }
+           }
+          ],
+          [
+           140000002,
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "squadID"
+               },
+               {
+                "$long": "654500040001"
+               }
+              ],
+              [
+               {
+                "$str": "wingID"
+               },
+               {
+                "$long": "654500030001"
+               }
+              ],
+              [
+               {
+                "$str": "skills"
+               },
+               {
+                "type": "list",
+                "items": [
+                 0,
+                 0,
+                 0
+                ]
+               }
+              ],
+              [
+               {
+                "$str": "timestamp"
+               },
+               {
+                "$long": "134360175518230000"
+               }
+              ],
+              [
+               "stationID",
+               60000004
+              ],
+              [
+               "clientID",
+               2065450
+              ],
+              [
+               {
+                "$str": "job"
+               },
+               0
+              ],
+              [
+               "role",
+               4
+              ],
+              [
+               {
+                "$str": "shipTypeID"
+               },
+               648
+              ],
+              [
+               "solarSystemID",
+               30002780
+              ],
+              [
+               {
+                "$str": "memberOptOuts"
+               },
+               {
+                "type": "object",
+                "name": {
+                 "$str": "util.KeyVal"
+                },
+                "args": {
+                 "type": "dict",
+                 "entries": [
+                  [
+                   {
+                    "$str": "acceptsConduitJumps"
+                   },
+                   true
+                  ],
+                  [
+                   {
+                    "$str": "acceptsFleetRegroups"
+                   },
+                   true
+                  ],
+                  [
+                   {
+                    "$str": "acceptsFleetWarp"
+                   },
+                   true
+                  ]
+                 ]
+                }
+               }
+              ],
+              [
+               "charID",
+               140000002
+              ]
+             ]
+            }
+           }
+          ]
+         ]
+        }
+       ],
+       [
+        {
+         "$str": "isLootLogging"
+        },
+        false
+       ],
+       [
+        {
+         "$str": "squads"
+        },
+        {
+         "type": "dict",
+         "entries": [
+          [
+           {
+            "$long": "654500040001"
+           },
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "squadID"
+               },
+               {
+                "$long": "654500040001"
+               }
+              ],
+              [
+               "name",
+               {
+                "$str": ""
+               }
+              ]
+             ]
+            }
+           }
+          ]
+         ]
+        }
+       ],
+       [
+        {
+         "$str": "wings"
+        },
+        {
+         "type": "dict",
+         "entries": [
+          [
+           {
+            "$long": "654500030001"
+           },
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "wingID"
+               },
+               {
+                "$long": "654500030001"
+               }
+              ],
+              [
+               "name",
+               {
+                "$str": ""
+               }
+              ],
+              [
+               {
+                "$str": "squads"
+               },
+               {
+                "type": "dict",
+                "entries": [
+                 [
+                  {
+                   "$long": "654500040001"
+                  },
+                  {
+                   "type": "object",
+                   "name": {
+                    "$str": "util.KeyVal"
+                   },
+                   "args": {
+                    "type": "dict",
+                    "entries": [
+                     [
+                      {
+                       "$str": "squadID"
+                      },
+                      {
+                       "$long": "654500040001"
+                      }
+                     ],
+                     [
+                      "name",
+                      {
+                       "$str": ""
+                      }
+                     ]
+                    ]
+                   }
+                  }
+                 ]
+                ]
+               }
+              ]
+             ]
+            }
+           }
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    }
+   },
+   {
+    "kind": "notice",
+    "method": "OnFleetWingAdded",
+    "idtype": "fleetid",
+    "args": [
+     {
+      "$long": "654500030002"
+     }
+    ]
+   },
+   {
+    "kind": "notice",
+    "method": "OnFleetSquadAdded",
+    "idtype": "fleetid",
+    "args": [
+     {
+      "$long": "654500030002"
+     },
+     {
+      "$long": "654500040002"
+     }
+    ]
+   },
+   {
+    "kind": "notice",
+    "method": "OnFleetWingNameChanged",
+    "idtype": "fleetid",
+    "args": [
+     {
+      "$long": "654500030002"
+     },
+     {
+      "$str": "Second win"
+     }
+    ]
+   },
+   {
+    "kind": "notice",
+    "method": "OnFleetMemberChanged",
+    "idtype": "*fleetid",
+    "args": [
+     140000002,
+     {
+      "$long": "654500010000"
+     },
+     {
+      "$long": "654500030001"
+     },
+     {
+      "$long": "654500040001"
+     },
+     4,
+     0,
+     {
+      "type": "object",
+      "name": {
+       "$str": "util.KeyVal"
+      },
+      "args": {
+       "type": "dict",
+       "entries": [
+        [
+         {
+          "$str": "acceptsConduitJumps"
+         },
+         true
+        ],
+        [
+         {
+          "$str": "acceptsFleetRegroups"
+         },
+         true
+        ],
+        [
+         {
+          "$str": "acceptsFleetWarp"
+         },
+         true
+        ]
+       ]
+      }
+     },
+     {
+      "$long": "654500030002"
+     },
+     {
+      "$long": "654500040002"
+     },
+     4,
+     0,
+     {
+      "type": "object",
+      "name": {
+       "$str": "util.KeyVal"
+      },
+      "args": {
+       "type": "dict",
+       "entries": [
+        [
+         {
+          "$str": "acceptsConduitJumps"
+         },
+         true
+        ],
+        [
+         {
+          "$str": "acceptsFleetRegroups"
+         },
+         true
+        ],
+        [
+         {
+          "$str": "acceptsFleetWarp"
+         },
+         true
+        ]
+       ]
+      }
+     },
+     false
+    ]
+   },
+   {
+    "kind": "notice",
+    "method": "OnFleetMove",
+    "idtype": "fleetid",
+    "args": []
+   },
+   {
+    "kind": "notice",
+    "method": "OnFleetMotdChanged",
+    "idtype": "fleetid",
+    "args": [
+     {
+      "$str": "Fly safe"
+     },
+     true
+    ]
+   },
+   {
+    "kind": "answer",
+    "call": "GetWings",
+    "args": [],
+    "value": {
+     "type": "dict",
+     "entries": [
+      [
+       {
+        "$long": "654500030001"
+       },
+       {
+        "type": "object",
+        "name": {
+         "$str": "util.KeyVal"
+        },
+        "args": {
+         "type": "dict",
+         "entries": [
+          [
+           {
+            "$str": "wingID"
+           },
+           {
+            "$long": "654500030001"
+           }
+          ],
+          [
+           "name",
+           {
+            "$str": ""
+           }
+          ],
+          [
+           {
+            "$str": "squads"
+           },
+           {
+            "type": "dict",
+            "entries": [
+             [
+              {
+               "$long": "654500040001"
+              },
+              {
+               "type": "object",
+               "name": {
+                "$str": "util.KeyVal"
+               },
+               "args": {
+                "type": "dict",
+                "entries": [
+                 [
+                  {
+                   "$str": "squadID"
+                  },
+                  {
+                   "$long": "654500040001"
+                  }
+                 ],
+                 [
+                  "name",
+                  {
+                   "$str": ""
+                  }
+                 ]
+                ]
+               }
+              }
+             ]
+            ]
+           }
+          ]
+         ]
+        }
+       }
+      ],
+      [
+       {
+        "$long": "654500030002"
+       },
+       {
+        "type": "object",
+        "name": {
+         "$str": "util.KeyVal"
+        },
+        "args": {
+         "type": "dict",
+         "entries": [
+          [
+           {
+            "$str": "wingID"
+           },
+           {
+            "$long": "654500030002"
+           }
+          ],
+          [
+           "name",
+           {
+            "$str": "Second win"
+           }
+          ],
+          [
+           {
+            "$str": "squads"
+           },
+           {
+            "type": "dict",
+            "entries": [
+             [
+              {
+               "$long": "654500040002"
+              },
+              {
+               "type": "object",
+               "name": {
+                "$str": "util.KeyVal"
+               },
+               "args": {
+                "type": "dict",
+                "entries": [
+                 [
+                  {
+                   "$str": "squadID"
+                  },
+                  {
+                   "$long": "654500040002"
+                  }
+                 ],
+                 [
+                  "name",
+                  {
+                   "$str": ""
+                  }
+                 ]
+                ]
+               }
+              }
+             ]
+            ]
+           }
+          ]
+         ]
+        }
+       }
+      ]
+     ]
+    }
+   },
+   {
+    "kind": "answer",
+    "call": "GetInitState",
+    "args": [],
+    "value": {
+     "type": "object",
+     "name": {
+      "$str": "util.KeyVal"
+     },
+     "args": {
+      "type": "dict",
+      "entries": [
+       [
+        {
+         "$str": "motd"
+        },
+        {
+         "$str": "Fly safe"
+        }
+       ],
+       [
+        {
+         "$str": "options"
+        },
+        {
+         "type": "object",
+         "name": {
+          "$str": "util.KeyVal"
+         },
+         "args": {
+          "type": "dict",
+          "entries": [
+           [
+            {
+             "$str": "isFreeMove"
+            },
+            false
+           ],
+           [
+            {
+             "$str": "isRegistered"
+            },
+            false
+           ],
+           [
+            {
+             "$str": "autoJoinSquadID"
+            },
+            null
+           ]
+          ]
+         }
+        }
+       ],
+       [
+        {
+         "$str": "fleetID"
+        },
+        {
+         "$long": "654500010000"
+        }
+       ],
+       [
+        {
+         "$str": "members"
+        },
+        {
+         "type": "dict",
+         "entries": [
+          [
+           140000001,
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "squadID"
+               },
+               -1
+              ],
+              [
+               {
+                "$str": "wingID"
+               },
+               -1
+              ],
+              [
+               {
+                "$str": "skills"
+               },
+               {
+                "type": "list",
+                "items": [
+                 0,
+                 0,
+                 0
+                ]
+               }
+              ],
+              [
+               {
+                "$str": "timestamp"
+               },
+               {
+                "$long": "134360175505990000"
+               }
+              ],
+              [
+               "stationID",
+               60003760
+              ],
+              [
+               "clientID",
+               1065450
+              ],
+              [
+               {
+                "$str": "job"
+               },
+               2
+              ],
+              [
+               "role",
+               1
+              ],
+              [
+               {
+                "$str": "shipTypeID"
+               },
+               588
+              ],
+              [
+               "solarSystemID",
+               30000142
+              ],
+              [
+               {
+                "$str": "memberOptOuts"
+               },
+               {
+                "type": "object",
+                "name": {
+                 "$str": "util.KeyVal"
+                },
+                "args": {
+                 "type": "dict",
+                 "entries": [
+                  [
+                   {
+                    "$str": "acceptsConduitJumps"
+                   },
+                   true
+                  ],
+                  [
+                   {
+                    "$str": "acceptsFleetRegroups"
+                   },
+                   true
+                  ],
+                  [
+                   {
+                    "$str": "acceptsFleetWarp"
+                   },
+                   true
+                  ]
+                 ]
+                }
+               }
+              ],
+              [
+               "charID",
+               140000001
+              ]
+             ]
+            }
+           }
+          ],
+          [
+           140000002,
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "squadID"
+               },
+               {
+                "$long": "654500040002"
+               }
+              ],
+              [
+               {
+                "$str": "wingID"
+               },
+               {
+                "$long": "654500030002"
+               }
+              ],
+              [
+               {
+                "$str": "skills"
+               },
+               {
+                "type": "list",
+                "items": [
+                 0,
+                 0,
+                 0
+                ]
+               }
+              ],
+              [
+               {
+                "$str": "timestamp"
+               },
+               {
+                "$long": "134360175518230000"
+               }
+              ],
+              [
+               "stationID",
+               60000004
+              ],
+              [
+               "clientID",
+               2065450
+              ],
+              [
+               {
+                "$str": "job"
+               },
+               0
+              ],
+              [
+               "role",
+               4
+              ],
+              [
+               {
+                "$str": "shipTypeID"
+               },
+               648
+              ],
+              [
+               "solarSystemID",
+               30002780
+              ],
+              [
+               {
+                "$str": "memberOptOuts"
+               },
+               {
+                "type": "object",
+                "name": {
+                 "$str": "util.KeyVal"
+                },
+                "args": {
+                 "type": "dict",
+                 "entries": [
+                  [
+                   {
+                    "$str": "acceptsConduitJumps"
+                   },
+                   true
+                  ],
+                  [
+                   {
+                    "$str": "acceptsFleetRegroups"
+                   },
+                   true
+                  ],
+                  [
+                   {
+                    "$str": "acceptsFleetWarp"
+                   },
+                   true
+                  ]
+                 ]
+                }
+               }
+              ],
+              [
+               "charID",
+               140000002
+              ]
+             ]
+            }
+           }
+          ]
+         ]
+        }
+       ],
+       [
+        {
+         "$str": "isLootLogging"
+        },
+        false
+       ],
+       [
+        {
+         "$str": "squads"
+        },
+        {
+         "type": "dict",
+         "entries": [
+          [
+           {
+            "$long": "654500040001"
+           },
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "squadID"
+               },
+               {
+                "$long": "654500040001"
+               }
+              ],
+              [
+               "name",
+               {
+                "$str": ""
+               }
+              ]
+             ]
+            }
+           }
+          ],
+          [
+           {
+            "$long": "654500040002"
+           },
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "squadID"
+               },
+               {
+                "$long": "654500040002"
+               }
+              ],
+              [
+               "name",
+               {
+                "$str": ""
+               }
+              ]
+             ]
+            }
+           }
+          ]
+         ]
+        }
+       ],
+       [
+        {
+         "$str": "wings"
+        },
+        {
+         "type": "dict",
+         "entries": [
+          [
+           {
+            "$long": "654500030001"
+           },
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "wingID"
+               },
+               {
+                "$long": "654500030001"
+               }
+              ],
+              [
+               "name",
+               {
+                "$str": ""
+               }
+              ],
+              [
+               {
+                "$str": "squads"
+               },
+               {
+                "type": "dict",
+                "entries": [
+                 [
+                  {
+                   "$long": "654500040001"
+                  },
+                  {
+                   "type": "object",
+                   "name": {
+                    "$str": "util.KeyVal"
+                   },
+                   "args": {
+                    "type": "dict",
+                    "entries": [
+                     [
+                      {
+                       "$str": "squadID"
+                      },
+                      {
+                       "$long": "654500040001"
+                      }
+                     ],
+                     [
+                      "name",
+                      {
+                       "$str": ""
+                      }
+                     ]
+                    ]
+                   }
+                  }
+                 ]
+                ]
+               }
+              ]
+             ]
+            }
+           }
+          ],
+          [
+           {
+            "$long": "654500030002"
+           },
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "wingID"
+               },
+               {
+                "$long": "654500030002"
+               }
+              ],
+              [
+               "name",
+               {
+                "$str": "Second win"
+               }
+              ],
+              [
+               {
+                "$str": "squads"
+               },
+               {
+                "type": "dict",
+                "entries": [
+                 [
+                  {
+                   "$long": "654500040002"
+                  },
+                  {
+                   "type": "object",
+                   "name": {
+                    "$str": "util.KeyVal"
+                   },
+                   "args": {
+                    "type": "dict",
+                    "entries": [
+                     [
+                      {
+                       "$str": "squadID"
+                      },
+                      {
+                       "$long": "654500040002"
+                      }
+                     ],
+                     [
+                      "name",
+                      {
+                       "$str": ""
+                      }
+                     ]
+                    ]
+                   }
+                  }
+                 ]
+                ]
+               }
+              ]
+             ]
+            }
+           }
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    }
+   },
+   {
+    "kind": "answer",
+    "call": "GetWings",
+    "args": [],
+    "value": {
+     "type": "dict",
+     "entries": [
+      [
+       {
+        "$long": "654500030001"
+       },
+       {
+        "type": "object",
+        "name": {
+         "$str": "util.KeyVal"
+        },
+        "args": {
+         "type": "dict",
+         "entries": [
+          [
+           {
+            "$str": "wingID"
+           },
+           {
+            "$long": "654500030001"
+           }
+          ],
+          [
+           "name",
+           {
+            "$str": ""
+           }
+          ],
+          [
+           {
+            "$str": "squads"
+           },
+           {
+            "type": "dict",
+            "entries": [
+             [
+              {
+               "$long": "654500040001"
+              },
+              {
+               "type": "object",
+               "name": {
+                "$str": "util.KeyVal"
+               },
+               "args": {
+                "type": "dict",
+                "entries": [
+                 [
+                  {
+                   "$str": "squadID"
+                  },
+                  {
+                   "$long": "654500040001"
+                  }
+                 ],
+                 [
+                  "name",
+                  {
+                   "$str": ""
+                  }
+                 ]
+                ]
+               }
+              }
+             ]
+            ]
+           }
+          ]
+         ]
+        }
+       }
+      ],
+      [
+       {
+        "$long": "654500030002"
+       },
+       {
+        "type": "object",
+        "name": {
+         "$str": "util.KeyVal"
+        },
+        "args": {
+         "type": "dict",
+         "entries": [
+          [
+           {
+            "$str": "wingID"
+           },
+           {
+            "$long": "654500030002"
+           }
+          ],
+          [
+           "name",
+           {
+            "$str": "Second win"
+           }
+          ],
+          [
+           {
+            "$str": "squads"
+           },
+           {
+            "type": "dict",
+            "entries": [
+             [
+              {
+               "$long": "654500040002"
+              },
+              {
+               "type": "object",
+               "name": {
+                "$str": "util.KeyVal"
+               },
+               "args": {
+                "type": "dict",
+                "entries": [
+                 [
+                  {
+                   "$str": "squadID"
+                  },
+                  {
+                   "$long": "654500040002"
+                  }
+                 ],
+                 [
+                  "name",
+                  {
+                   "$str": ""
+                  }
+                 ]
+                ]
+               }
+              }
+             ]
+            ]
+           }
+          ]
+         ]
+        }
+       }
+      ]
+     ]
+    }
+   },
+   {
+    "kind": "answer",
+    "call": "GetInitState",
+    "args": [],
+    "value": {
+     "type": "object",
+     "name": {
+      "$str": "util.KeyVal"
+     },
+     "args": {
+      "type": "dict",
+      "entries": [
+       [
+        {
+         "$str": "motd"
+        },
+        {
+         "$str": "Fly safe"
+        }
+       ],
+       [
+        {
+         "$str": "options"
+        },
+        {
+         "type": "object",
+         "name": {
+          "$str": "util.KeyVal"
+         },
+         "args": {
+          "type": "dict",
+          "entries": [
+           [
+            {
+             "$str": "isFreeMove"
+            },
+            false
+           ],
+           [
+            {
+             "$str": "isRegistered"
+            },
+            false
+           ],
+           [
+            {
+             "$str": "autoJoinSquadID"
+            },
+            null
+           ]
+          ]
+         }
+        }
+       ],
+       [
+        {
+         "$str": "fleetID"
+        },
+        {
+         "$long": "654500010000"
+        }
+       ],
+       [
+        {
+         "$str": "members"
+        },
+        {
+         "type": "dict",
+         "entries": [
+          [
+           140000001,
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "squadID"
+               },
+               -1
+              ],
+              [
+               {
+                "$str": "wingID"
+               },
+               -1
+              ],
+              [
+               {
+                "$str": "skills"
+               },
+               {
+                "type": "list",
+                "items": [
+                 0,
+                 0,
+                 0
+                ]
+               }
+              ],
+              [
+               {
+                "$str": "timestamp"
+               },
+               {
+                "$long": "134360175505990000"
+               }
+              ],
+              [
+               "stationID",
+               60003760
+              ],
+              [
+               "clientID",
+               1065450
+              ],
+              [
+               {
+                "$str": "job"
+               },
+               2
+              ],
+              [
+               "role",
+               1
+              ],
+              [
+               {
+                "$str": "shipTypeID"
+               },
+               588
+              ],
+              [
+               "solarSystemID",
+               30000142
+              ],
+              [
+               {
+                "$str": "memberOptOuts"
+               },
+               {
+                "type": "object",
+                "name": {
+                 "$str": "util.KeyVal"
+                },
+                "args": {
+                 "type": "dict",
+                 "entries": [
+                  [
+                   {
+                    "$str": "acceptsConduitJumps"
+                   },
+                   true
+                  ],
+                  [
+                   {
+                    "$str": "acceptsFleetRegroups"
+                   },
+                   true
+                  ],
+                  [
+                   {
+                    "$str": "acceptsFleetWarp"
+                   },
+                   true
+                  ]
+                 ]
+                }
+               }
+              ],
+              [
+               "charID",
+               140000001
+              ]
+             ]
+            }
+           }
+          ],
+          [
+           140000002,
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "squadID"
+               },
+               {
+                "$long": "654500040002"
+               }
+              ],
+              [
+               {
+                "$str": "wingID"
+               },
+               {
+                "$long": "654500030002"
+               }
+              ],
+              [
+               {
+                "$str": "skills"
+               },
+               {
+                "type": "list",
+                "items": [
+                 0,
+                 0,
+                 0
+                ]
+               }
+              ],
+              [
+               {
+                "$str": "timestamp"
+               },
+               {
+                "$long": "134360175518230000"
+               }
+              ],
+              [
+               "stationID",
+               60000004
+              ],
+              [
+               "clientID",
+               2065450
+              ],
+              [
+               {
+                "$str": "job"
+               },
+               0
+              ],
+              [
+               "role",
+               4
+              ],
+              [
+               {
+                "$str": "shipTypeID"
+               },
+               648
+              ],
+              [
+               "solarSystemID",
+               30002780
+              ],
+              [
+               {
+                "$str": "memberOptOuts"
+               },
+               {
+                "type": "object",
+                "name": {
+                 "$str": "util.KeyVal"
+                },
+                "args": {
+                 "type": "dict",
+                 "entries": [
+                  [
+                   {
+                    "$str": "acceptsConduitJumps"
+                   },
+                   true
+                  ],
+                  [
+                   {
+                    "$str": "acceptsFleetRegroups"
+                   },
+                   true
+                  ],
+                  [
+                   {
+                    "$str": "acceptsFleetWarp"
+                   },
+                   true
+                  ]
+                 ]
+                }
+               }
+              ],
+              [
+               "charID",
+               140000002
+              ]
+             ]
+            }
+           }
+          ]
+         ]
+        }
+       ],
+       [
+        {
+         "$str": "isLootLogging"
+        },
+        false
+       ],
+       [
+        {
+         "$str": "squads"
+        },
+        {
+         "type": "dict",
+         "entries": [
+          [
+           {
+            "$long": "654500040001"
+           },
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "squadID"
+               },
+               {
+                "$long": "654500040001"
+               }
+              ],
+              [
+               "name",
+               {
+                "$str": ""
+               }
+              ]
+             ]
+            }
+           }
+          ],
+          [
+           {
+            "$long": "654500040002"
+           },
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "squadID"
+               },
+               {
+                "$long": "654500040002"
+               }
+              ],
+              [
+               "name",
+               {
+                "$str": ""
+               }
+              ]
+             ]
+            }
+           }
+          ]
+         ]
+        }
+       ],
+       [
+        {
+         "$str": "wings"
+        },
+        {
+         "type": "dict",
+         "entries": [
+          [
+           {
+            "$long": "654500030001"
+           },
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "wingID"
+               },
+               {
+                "$long": "654500030001"
+               }
+              ],
+              [
+               "name",
+               {
+                "$str": ""
+               }
+              ],
+              [
+               {
+                "$str": "squads"
+               },
+               {
+                "type": "dict",
+                "entries": [
+                 [
+                  {
+                   "$long": "654500040001"
+                  },
+                  {
+                   "type": "object",
+                   "name": {
+                    "$str": "util.KeyVal"
+                   },
+                   "args": {
+                    "type": "dict",
+                    "entries": [
+                     [
+                      {
+                       "$str": "squadID"
+                      },
+                      {
+                       "$long": "654500040001"
+                      }
+                     ],
+                     [
+                      "name",
+                      {
+                       "$str": ""
+                      }
+                     ]
+                    ]
+                   }
+                  }
+                 ]
+                ]
+               }
+              ]
+             ]
+            }
+           }
+          ],
+          [
+           {
+            "$long": "654500030002"
+           },
+           {
+            "type": "object",
+            "name": {
+             "$str": "util.KeyVal"
+            },
+            "args": {
+             "type": "dict",
+             "entries": [
+              [
+               {
+                "$str": "wingID"
+               },
+               {
+                "$long": "654500030002"
+               }
+              ],
+              [
+               "name",
+               {
+                "$str": "Second win"
+               }
+              ],
+              [
+               {
+                "$str": "squads"
+               },
+               {
+                "type": "dict",
+                "entries": [
+                 [
+                  {
+                   "$long": "654500040002"
+                  },
+                  {
+                   "type": "object",
+                   "name": {
+                    "$str": "util.KeyVal"
+                   },
+                   "args": {
+                    "type": "dict",
+                    "entries": [
+                     [
+                      {
+                       "$str": "squadID"
+                      },
+                      {
+                       "$long": "654500040002"
+                      }
+                     ],
+                     [
+                      "name",
+                      {
+                       "$str": ""
+                      }
+                     ]
+                    ]
+                   }
+                  }
+                 ]
+                ]
+               }
+              ]
+             ]
+            }
+           }
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    }
+   },
+   {
+    "kind": "sessionchange",
+    "changes": {
+     "fleetid": [
+      {
+       "$long": "654500010000"
+      },
+      null
+     ],
+     "fleetrole": [
+      4,
+      null
+     ],
+     "wingid": [
+      {
+       "$long": "654500030001"
+      },
+      null
+     ],
+     "squadid": [
+      {
+       "$long": "654500040001"
+      },
+      null
+     ]
+    }
+   },
+   {
+    "kind": "answer",
+    "call": "LeaveFleet",
+    "args": [],
+    "value": true
+   }
+  ]
+ }
+}

@@ -320,6 +320,7 @@ import {
   fleetCommanderCharacterIDs,
   decodeFleetCenter,
   decodeFleetInviteNotification,
+  memberWhereabouts,
   type FleetPendingInvite,
 } from "../bridge/fleetCenter.ts";
 import { canBroadcastInFleet, canTagInFleet } from "../bridge/fleetCommand.ts";
@@ -3557,10 +3558,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     const refs: NameRef[] = [];
     for (const member of snapshot.fleet.initState.value.members) {
+      // The ship and place the panel will show: the composition's word for the member (memberWhereabouts).
+      const where = memberWhereabouts(member, snapshot.fleet.composition.value);
       const characterID = fleetNameID(member.charID);
-      const stationID = fleetNameID(member.stationID);
-      const systemID = fleetNameID(member.solarSystemID);
-      const shipTypeID = fleetNameID(member.shipTypeID);
+      const stationID = fleetNameID(where.stationID);
+      const systemID = fleetNameID(where.solarSystemID);
+      const shipTypeID = fleetNameID(where.shipTypeID);
       if (characterID !== null) refs.push({ kind: "character", id: characterID });
       if (stationID !== null) refs.push({ kind: "station", id: stationID });
       if (systemID !== null) refs.push({ kind: "system", id: systemID });

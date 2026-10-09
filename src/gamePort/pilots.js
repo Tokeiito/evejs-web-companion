@@ -61,6 +61,7 @@ const { createPilotSpace } = require("./pilotSpace");
 const { createPilotClock } = require("./pilotClock");
 const { EFFECT_CATEGORY, EFFECT_ONLINE, createPilotDogma } = require("./pilotDogma");
 const { MAX_PROBES, createPilotScanner } = require("./pilotScanner");
+const { createPilotFleet } = require("./pilotFleet");
 const { projectFlight, projectSpace } = require("./spaceProjection");
 const { MODE: BALL_MODE } = require("./destiny/state");
 const contract = require("../../contracts/evejs-web-bridge-contract.json");
@@ -462,6 +463,8 @@ function createGamePortPilots({
   const DOGMA_AS_GODMA_PRIMES = Object.freeze({ status: "same", source: "eve/client/script/environment/godma.py:2409", note: null });
   /** The server's clock (100 ns since 1601) for a reading of this machine's, in milliseconds. */
   const filetime = (ms) => (BigInt(Math.trunc(ms)) + 11644473600000n) * 10000n;
+  /** fleetSvc.CreateFleet: self.fleet.GetFleetID(), once the fleet it formed has been read. The web client never asks it. */
+  const FLEET_ID_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/client/script/parklife/fleetSvc.py:338", note: null });
   const BOUND_AS_THE_CLIENT_BINDS = Object.freeze({ status: "reshaped", source: "eve/common/script/net/eveMoniker.py, eve/client/script/environment/invCache.py", note: null });
 
   // ── errors ────────────────────────────────────────────────────────────────
@@ -785,6 +788,10 @@ function createGamePortPilots({
       itemWork: Promise.resolve(),
       /** The pilot's scan probes as the client's scan service knows them (pilotScanner.js). */
       scanner: createPilotScanner({ typeAttribute }),
+      /** The pilot's fleet as the client's fleet service keeps it (pilotFleet.js): read once, kept right by the server's notices. */
+      fleetKept: createPilotFleet({ characterID }),
+      /** What the client asks of a fleet of its own accord, one thing after another: over when each is answered. */
+      fleetWork: Promise.resolve(),
       /** Questions the server has asked and the user has not answered yet, by ID. */
       questions: new Map(),
       ended: false,
@@ -801,6 +808,7 @@ function createGamePortPilots({
       if (entry.space) entry.space.feed(notification);
       entry.dogma.feed(notification);
       entry.scanner.feed(notification);
+      afterFleetNotice(entry, entry.fleetKept.feed(notification));
       record(entry, notificationToBridgeJson(notification));
     });
     session.onSessionChange((changes) => {
@@ -809,7 +817,10 @@ function createGamePortPilots({
       // gameui.GetShipAccess: the ship's moniker it keeps is for the ship the pilot is in.
       if ("shipid" in changes) entry.monikers.delete("ship");
       // fleetSvc.ProcessSessionChange: in no fleet, there is no fleet's object.
-      if ("fleetid" in changes && changes.fleetid[1] === null) entry.fleet = null;
+      if ("fleetid" in changes) {
+        entry.fleetKept.sessionChanged();
+        if (changes.fleetid[1] === null) outOfFleet(entry);
+      }
       // scanSvc.OnSessionChanged: another system, ship or structure, and the scanner knows of no probes.
       if (["solarsystemid", "shipid", "structureid"].some((name) => name in changes)) entry.scanner.flush();
       // base_corporation.GetCorpRegistry: another corporation, another registry.
@@ -1337,7 +1348,7 @@ function createGamePortPilots({
     for (const [handle, object] of entry.bound) {
       if (object.objectID === objectID) entry.bound.delete(handle);
     }
-    if (entry.fleet && entry.fleet.objectID === objectID) entry.fleet = null;
+    if (entry.fleet && entry.fleet.objectID === objectID) outOfFleet(entry);
   }
 
   /** eveMoniker.GetLocationBindParams: the solar system when the session has one, else the station. */
@@ -1518,20 +1529,110 @@ function createGamePortPilots({
     return boundObjectID(await session.call(service, method, argumentsToWire(args), kwargs ?? null));
   }
 
+  // ── the fleet's own object, and the fleet as it is kept ───────────────────
+
+  /** No fleet's object is held, and nothing of a fleet is kept (fleetSvc.Clear, and a session in no fleet). */
+  function outOfFleet(entry) {
+    entry.fleet = null;
+    entry.fleetKept.clear();
+  }
+
+  /** One call the client makes of its own accord on the fleet's object, in the client's form and in the ledger. */
+  function ownFleetCall(entry, object, method) {
+    ledger.note("fleetObjectHandler", method, method === "GetFleetID" ? FLEET_ID_AS_THE_CLIENT_ASKS : shape("fleetObjectHandler", method, [], null, contextFor(entry)));
+    return entry.session.callBound(object.objectID, method, [], null);
+  }
+
+  /** fleetSvc.InitFleet: the fleet's state asked of its object, and kept where that is the fleet's object still. */
+  async function initFleet(entry, object) {
+    const state = await ownFleetCall(entry, object, "GetInitState");
+    if (entry.fleet === object) entry.fleetKept.init(state);
+  }
+
+  /**
+   * Something the client's fleet service does of its own accord. Each is a tasklet of its own in the client, so
+   * none waits for another (the same call made twice at once is one call: session.js). What cannot be done is
+   * left undone, as an error in the client's handler leaves it. Answers when this one is over; entry.fleetWork
+   * is over when all of them are.
+   */
+  function fleetDoes(entry, work) {
+    const doing = work().catch(() => {});
+    entry.fleetWork = Promise.all([entry.fleetWork, doing]);
+    return doing;
+  }
+
+  /** What the client does after a notice about its fleet (pilotFleet.js feed): each of `next`, in order. */
+  function afterFleetNotice(entry, next) {
+    for (const what of next) {
+      const object = entry.fleet;
+      if (what === "left") {
+        entry.fleet = null;
+      } else if (object && what === "init") {
+        // OnFleetJoin, the pilot's own: InitFleet.
+        fleetDoes(entry, () => initFleet(entry, object));
+      } else if (object) {
+        // A wing or squad's notice: self.wings = self.fleet.GetWings().
+        fleetDoes(entry, async () => {
+          const wings = await ownFleetCall(entry, object, "GetWings");
+          if (entry.fleet === object) entry.fleetKept.setWings(wings);
+        });
+      }
+    }
+  }
+
+  /**
+   * fleetSvc keeps one object for the pilot's fleet, self.fleet, and reads the fleet's state from it as soon as
+   * it has it. CreateFleet (331): after Init, InitFleet and then self.fleet.GetFleetID(). OnFleetInvite (1194):
+   * the Moniker that accepted is the object from then on, and InitFleet. LeaveFleet (365): once it has answered
+   * there is no object and nothing kept (self.Clear()).
+   */
+  function afterFleetCall(entry, object, method) {
+    if (method === "AcceptInvite") {
+      entry.fleet = object;
+      return fleetDoes(entry, () => initFleet(entry, object));
+    }
+    if (entry.fleet !== object) return null;
+    if (method === "LeaveFleet") outOfFleet(entry);
+    if (method !== "Init") return null;
+    return fleetDoes(entry, async () => {
+      await initFleet(entry, object);
+      await ownFleetCall(entry, object, "GetFleetID");
+    });
+  }
+
+  /**
+   * The fleet as the client's fleet service has it kept, for a pilot whose fleet's object is held: its state as
+   * GetInitState answered it when the pilot formed or joined the fleet, kept right since by the server's notices;
+   * its wings; its message of the day, asked for only where the server has said none (fleetSvc.GetMotd). Each in
+   * the gateway's form, under the name of the read it stands for. Null where no object is held or no state could
+   * be read: then nothing is kept, as the client keeps nothing.
+   */
+  async function fleetKept(sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    // What the client is asking of its own accord comes first.
+    await entry.fleetWork;
+    // A state that could not be read when the client read it is read now: the BFF's own doing, for the page's sake.
+    const object = entry.fleet;
+    if (object && !entry.fleetKept.inited) await fleetDoes(entry, () => initFleet(entry, object));
+    if (!entry.fleetKept.inited) return null;
+    if (entry.fleetKept.motd() === null) {
+      await fleetDoes(entry, async () => entry.fleetKept.setMotd(await ownFleetCall(entry, object, "GetMotd")));
+    }
+    // Out of the fleet meanwhile, there is nothing kept.
+    if (!entry.fleetKept.inited) return null;
+    return {
+      GetInitState: wireToBridgeJson(entry.fleetKept.read()),
+      GetWings: wireToBridgeJson(entry.fleetKept.wings()),
+      GetMotd: wireToBridgeJson(entry.fleetKept.motd()),
+      notifications: drain(entry),
+    };
+  }
+
   /**
    * A call on a moniker the BFF asked for. As the client's own Moniker (moniker.py), it binds when it is first
    * called, carrying that call, and the calls after go to the object it bound; and where the client makes a new
    * Moniker for a call, one is made here for it and not kept.
    */
-  /**
-   * fleetSvc keeps one object for the pilot's fleet, self.fleet. The Moniker that accepted an invite is it from
-   * then on (OnFleetInvite, 1195), and once LeaveFleet has answered on it there is none (LeaveFleet: self.Clear()).
-   */
-  function afterFleetCall(entry, object, method) {
-    if (method === "AcceptInvite") entry.fleet = object;
-    else if (method === "LeaveFleet" && entry.fleet === object) entry.fleet = null;
-  }
-
   function handleCall(entry, handle, object, method, args, kwargs) {
     if (madeAfresh(object.service, method, { dockedInStation: attribute(entry, "stationid") !== null })) {
       return entry.session.bind(object.service, object.params, [method, args, kwargs]).then((bound) => bound.result);
@@ -1599,7 +1700,7 @@ function createGamePortPilots({
     if (service === "scanMgr") afterScanManagerCall(entry, method, form.args, result);
     if (service === "dogmaIM") afterGroupingCall(entry, method, form.args, result);
     if (service === "beyonce") afterMovementCall(entry, method, form.args, kwargs);
-    if (service === "fleetObjectHandler") afterFleetCall(entry, object, method);
+    if (service === "fleetObjectHandler") await afterFleetCall(entry, object, method);
     return {
       service,
       method,
@@ -1691,6 +1792,7 @@ function createGamePortPilots({
     answerClientQuestion,
     ship,
     fleet,
+    fleetKept,
     shipInfo,
     shipAttribute,
     shutdown,

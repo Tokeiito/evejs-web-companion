@@ -3,6 +3,7 @@
   import { isSessionLost } from "../app/flow.ts";
   import { nameKey, resolvedName } from "../store/names.ts";
   import type { AppFlow } from "../app/flow.ts";
+  import { memberWhereabouts } from "../bridge/fleetCenter.ts";
   import type { FleetMember, FleetSquad, FleetWing } from "../bridge/boundFleet.ts";
   import type { ClientStore } from "../store/clientStore.ts";
 
@@ -24,6 +25,8 @@
   const rosterCountWords = $derived(`${roster.length} ${roster.length === 1 ? "member" : "members"}`);
   const wings = $derived($fleet.fleet?.initState.value.wings ?? []);
   const joinRequests = $derived($fleet.fleet?.joinRequests.value ?? []);
+  // What each member flies and where: the composition's word, as the client's own window for these has it.
+  const composition = $derived($fleet.fleet?.composition.value ?? []);
   const inviteeID = $derived(parseCharacterID(inviteeText));
   const inviteeName = $derived(
     inviteeID === null ? null : ($names.resolved[nameKey("character", inviteeID)] ?? null),
@@ -64,18 +67,19 @@
   }
 
   function memberShip(member: FleetMember): string {
-    return resolvedName($names.resolved, "type", positiveID(member.shipTypeID), "Ship unavailable");
+    return resolvedName($names.resolved, "type", positiveID(memberWhereabouts(member, composition).shipTypeID), "Ship unavailable");
   }
 
   function memberLocation(member: FleetMember): string {
-    const stationID = positiveID(member.stationID);
+    const where = memberWhereabouts(member, composition);
+    const stationID = positiveID(where.stationID);
     if (stationID !== null) {
       return resolvedName($names.resolved, "station", stationID, "Docked location unavailable");
     }
     return resolvedName(
       $names.resolved,
       "system",
-      positiveID(member.solarSystemID),
+      positiveID(where.solarSystemID),
       "Location unavailable",
     );
   }

@@ -10,7 +10,7 @@
 // session field is allowed to be stale, and a transport failure also decodes to
 // empty values.
 
-import { decodeBoundFleet, type BoundFleet, type BoundFleetResult } from "./boundFleet.ts";
+import { decodeBoundFleet, type BoundFleet, type BoundFleetResult, type FleetCompositionEntry, type FleetMember } from "./boundFleet.ts";
 import { unwrapLong, type JsonValue } from "./wire.ts";
 // ⚠ A VALUE IMPORT INTO A MODULE THAT IMPORTS US BACK, and it is safe because
 // the edge going the other way is TYPE-ONLY (`import type { FleetCenterSnapshot }`)
@@ -52,6 +52,22 @@ function positiveFleetID(value: number | string | null): boolean {
 // comes from fleetObjectHandler's member gate (_resolveFleetIDForMember), which
 // the bound reads pass through before the runtime is reached.
 const FLEETLESS_REFUSALS: ReadonlySet<string> = new Set(["FleetNotFound", "FleetNotInFleet"]);
+
+/**
+ * What a member flies and where it is, as the page shows them. The client keeps neither in a member's record once
+ * that record has changed (fleetSvc.OnFleetMemberChanged makes a new one of six fields), and its own window for
+ * them asks GetFleetComposition. So the composition's word for the pilot is taken, whole: a pilot it says is in
+ * space is not docked where its record last had it. The record's own, as it was when the member joined, is what
+ * is left where the composition has no word for that pilot.
+ */
+export function memberWhereabouts(
+  member: FleetMember,
+  composition: readonly FleetCompositionEntry[],
+): Pick<FleetMember, "shipTypeID" | "stationID" | "solarSystemID"> {
+  const said = member.charID === null ? undefined : composition.find((entry) => entry.characterID === member.charID);
+  const { shipTypeID, stationID, solarSystemID } = said ?? member;
+  return { shipTypeID, stationID, solarSystemID };
+}
 
 /** Classify one decoded read without turning an error-shaped empty into fleetless. */
 export function fleetAvailability(fleet: BoundFleet): FleetAvailability {

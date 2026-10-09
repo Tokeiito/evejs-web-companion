@@ -5,6 +5,7 @@ import {
   authoritativeFleetMemberCharacterIDs,
   decodeFleetCenter,
   decodeFleetInviteNotification,
+  memberWhereabouts,
 } from "./fleetCenter.ts";
 
 const READS = [
@@ -147,4 +148,46 @@ test("Fleet Center takes the session's own word that there is no fleet, and noth
     reads: { ...notAsked, GetInitState: { result: { type: "object", name: "util.KeyVal", args: { type: "dict", entries: [["fleetID", 654500010000], ["members", { type: "dict", entries: [] }]] } } } },
   } as never);
   assert.equal(ready.availability, "ready");
+});
+
+test("a member's ship and place are the fleet composition's word, and its own record's only where that has none", () => {
+  // The client keeps neither in a member's record once the record has changed (fleetSvc.OnFleetMemberChanged makes
+  // a new one of six fields); its window for them asks GetFleetComposition.
+  const keyVal = (entries: readonly (readonly [string, unknown])[]) => ({ type: "object", name: "util.KeyVal", args: { type: "dict", entries } });
+  const joined = keyVal([["charID", 140000002], ["wingID", 1], ["squadID", 2], ["role", 4], ["job", 0], ["shipTypeID", 648], ["stationID", 60000004], ["solarSystemID", 30002780]]);
+  const changed = keyVal([["charID", 140000003], ["wingID", 1], ["squadID", 2], ["role", 4], ["job", 0]]);
+  const unnamed = keyVal([["wingID", 1], ["shipTypeID", 670], ["stationID", 60003760], ["solarSystemID", 30000142]]);
+  const entry = (characterID: unknown, shipTypeID: unknown, stationID: unknown, solarSystemID: unknown) =>
+    keyVal([["characterID", characterID], ["shipTypeID", shipTypeID], ["stationID", stationID], ["solarSystemID", solarSystemID], ["skills", { type: "list", items: [] }], ["skillIDs", { type: "list", items: [] }]]);
+  const center = (composition: readonly unknown[]) => decodeFleetCenter({
+    ok: true,
+    characterID: 140000002,
+    fleetID: null,
+    reads: {
+      GetInitState: { result: keyVal([["fleetID", 654500010000], ["members", { type: "dict", entries: [[140000002, joined], [140000003, changed], [0, unnamed]] }]]) },
+      GetWings: { result: { type: "dict", entries: [] } },
+      GetMotd: { result: "" },
+      GetJoinRequests: { result: { type: "dict", entries: [] } },
+      GetFleetComposition: { result: { type: "list", items: composition } },
+    },
+  } as never).fleet;
+
+  // With no composition: each record's own, which for a changed record is nothing.
+  const whereabouts = (fleet: ReturnType<typeof center>, index: number) => {
+    const member = fleet.initState.value.members[index];
+    assert.ok(member, `member ${index}`);
+    return memberWhereabouts(member, fleet.composition.value);
+  };
+  const bare = center([]);
+  assert.equal(bare.initState.value.members.length, 3);
+  assert.deepEqual(whereabouts(bare, 0), { shipTypeID: 648, stationID: 60000004, solarSystemID: 30002780 });
+  assert.deepEqual(whereabouts(bare, 1), { shipTypeID: null, stationID: null, solarSystemID: null });
+  assert.deepEqual(whereabouts(bare, 2), { shipTypeID: 670, stationID: 60003760, solarSystemID: 30000142 });
+
+  // The composition's word is taken whole: a pilot it says is in space is not docked where its record last had it.
+  const fleet = center([entry(140000003, 587, null, 30000144), entry(140000002, 648, null, 30002781), entry(null, 1, 2, 3)]);
+  assert.deepEqual(whereabouts(fleet, 0), { shipTypeID: 648, stationID: null, solarSystemID: 30002781 });
+  assert.deepEqual(whereabouts(fleet, 1), { shipTypeID: 587, stationID: null, solarSystemID: 30000144 });
+  // A record that names nobody is nobody's entry, even one that names nobody too.
+  assert.deepEqual(whereabouts(fleet, 2), { shipTypeID: 670, stationID: 60003760, solarSystemID: 30000142 });
 });

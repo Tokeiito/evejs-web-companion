@@ -2903,8 +2903,8 @@ app.get("/api/bridge/bound-fleet", requireAuth, async (req, res, next) => {
   invalidateFleetBoundHandles(held);
   // fleetSvc.py 254, 366: the client asks nothing of a fleet unless session.fleetid says the pilot is in one.
   // On the game port the session is the server's own, so its word is taken and nothing is asked.
+  let own = null;
   if (gamePortPilots && isGamePortHandle(held.bridgeSessionID) && typeof gamePortPilots.fleet === "function") {
-    let own;
     try {
       own = gamePortPilots.fleet({ userid: held.accountID }, held.bridgeSessionID);
     } catch (error) {
@@ -2925,6 +2925,21 @@ app.get("/api/bridge/bound-fleet", requireAuth, async (req, res, next) => {
       return;
     }
   }
+  // fleetSvc.py reads a fleet's state once and keeps it right from the server's notices, its wings and its message
+  // with it. Where the game port holds the fleet's object it keeps the fleet the same way (pilots.js fleetKept),
+  // and those reads are answered from what is kept. With nothing kept they are asked, as before.
+  let kept = null;
+  if (own && own.holdsObject === true) {
+    try {
+      kept = await gamePortPilots.fleetKept({ userid: held.accountID }, held.bridgeSessionID);
+    } catch (error) {
+      if (error && error.code === "SESSION_NOT_FOUND") {
+        forgetBridgeSession(req.webSessionID, held);
+        next(error);
+        return;
+      }
+    }
+  }
   const spec = fleetBindSpec();
   const FLEET_READS = [
     // GetInitState() — the full fleet KeyVal {motd, options, fleetID, members(dict),
@@ -2942,11 +2957,11 @@ app.get("/api/bridge/bound-fleet", requireAuth, async (req, res, next) => {
     ["GetFleetComposition", []],
   ];
   try {
-    const notifications = [];
+    const notifications = kept ? [...kept.notifications] : [];
     const settled = await Promise.allSettled(
-      FLEET_READS.map(([method, args]) =>
-        boundCall(held, req.webSessionID, spec, method, args, null, notifications),
-      ),
+      FLEET_READS.map(([method, args]) => (kept && Object.hasOwn(kept, method)
+        ? { result: kept[method] }
+        : boundCall(held, req.webSessionID, spec, method, args, null, notifications))),
     );
     // A lost live session cannot be recovered by any read; surface it so the page
     // returns to character select (matching /api/bridge/bound-planet).

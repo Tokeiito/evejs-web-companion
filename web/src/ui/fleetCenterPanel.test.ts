@@ -223,3 +223,40 @@ test("every consequential Fleet Center call is behind an explicit UI confirmatio
     );
   }
 });
+
+test("Fleet Center shows a member's ship and place from the fleet's composition, where its record no longer has them", () => {
+  const record = (charID: number, more: readonly (readonly [string, unknown])[] = []) => keyVal([["charID", charID], ["wingID", null], ["squadID", null], ["role", 1], ["job", 0], ...more]);
+  const entry = (characterID: number, shipTypeID: number, stationID: number | null, solarSystemID: number) =>
+    keyVal([["characterID", characterID], ["shipTypeID", shipTypeID], ["stationID", stationID], ["solarSystemID", solarSystemID], ["skills", { type: "list", items: [] }], ["skillIDs", { type: "list", items: [] }]]);
+  const snapshot = decodeFleetCenter({
+    ok: true,
+    characterID: 140000005,
+    fleetID: null,
+    reads: {
+      GetInitState: { result: keyVal([
+        ["motd", ""],
+        ["fleetID", 654500010000],
+        // The first has changed since it joined (six fields); the second's record is as it joined, in another ship.
+        ["members", { type: "dict", entries: [[140000005, record(140000005)], [140000002, record(140000002, [["shipTypeID", 670], ["stationID", 60003760], ["solarSystemID", 30000142]])]] }],
+        ["wings", { type: "dict", entries: [] }],
+      ]) },
+      GetWings: { result: { type: "dict", entries: [] } },
+      GetMotd: { result: "" },
+      GetJoinRequests: { result: { type: "dict", entries: [] } },
+      GetFleetComposition: { result: { type: "list", items: [entry(140000005, 587, null, 30000144), entry(140000002, 648, 60000004, 30002780)] } },
+    },
+  } as never);
+  const store = createClientStore();
+  store.apply({
+    type: "names/resolved",
+    entries: {
+      "character:140000005": "Fleet Boss", "character:140000002": "Logi Pilot",
+      "type:587": "Rifter", "type:648": "Badger", "type:670": "Capsule",
+      "system:30000144": "Perimeter", "station:60000004": "Muvolailen X - Moon 3", "station:60003760": "Jita IV - Moon 4",
+    },
+  });
+  loadSnapshot(store, snapshot);
+  const body = render(FleetCenter as never, { props: { store, flow: fakeFlow() } } as never).body;
+  for (const text of ["Rifter", "Perimeter", "Badger", "Muvolailen X - Moon 3"]) assert.match(body, new RegExp(text));
+  for (const stale of ["Capsule", "Jita IV", "Ship unavailable", "Location unavailable"]) assert.equal(body.includes(stale), false, stale);
+});
