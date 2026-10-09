@@ -275,6 +275,12 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   every bind the transport makes went differently from the client's, the skill handler's
   included, so that was done first. See the entry "a moniker binds as the client's Moniker
   does".
+- **Docked, the game port now makes no call the retail client does not make** (2026-10-09),
+  as far as the registry has read them: in a parity pass and the browser's read of all 22
+  panels the ledger has 56 pairs, none the client never makes, none unchecked, none known to
+  differ. That is a count of pairs, not of how each bind and each login step goes: the log's
+  list has what is known to differ still (which monikers are kept, the BFF's own binds, what
+  the client asks at login). See `docs/game-port-call-ledger.md`.
 
 ## Server defects
 
@@ -7900,6 +7906,163 @@ None, and made the call after.
    pass read again.
 7. A login set beside the recording's, call by call: what the client asks before anything
    is opened, and in what order.
+8. The Fleet panel asking nothing of a fleet's object while the pilot is in no fleet.
+9. A ship with several modules fitted and a hold with a packaged ship in it, staged: the
+   Fitting window's figures and the client's sums, each set beside the server's.
+10. The walk in space: undocked, every panel and the space view, the store put aside first
+    and put back after; its unread pairs read.
+11. The routes that answer from the store, listed, and each set beside what the client asks.
+12. The standings the client's way: `GetNPCNPCStandings`, and asked once at the session's
+    change and kept, with the server's notices keeping them right.
+13. The corporation registry's other calls, each set beside the client's.
+14. Phase 3's writes, feature by feature, each set beside what the client sends, each
+    looked for in every folder of the recordings first.
+15. The wallet's "Market Transactions", and the lines the client derives from a transaction.
+16. The avoidance list's own window, and a route plotted again when a setting changes under it.
+17. Around a place's name, the last of it: the outlaw's warning (the pilot's own security
+    status). The agent's own window's steps, if the client's say how far.
+18. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+    own counts on it, with the push doing the work as it does for Remove Offer.
+19. The agent's cards above its own window, where the client's window has its own header.
+20. The scanner the client's way: results kept from the server's word, a probe's destination
+    and range kept here and sent with the scan.
+21. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+    codes not done.
+22. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+23. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+24. Small, in Ready Fit: the window following a change of pilot.
+25. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+26. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+27. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+28. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions); the client's own map, to set beside this server's.
+29. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+30. Other things asked once beside the store, and other panels' effects, looked at for the
+    faults of earlier entries.
+31. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
+    client's own map is in.
+32. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
+33. A wreck opened with its type said: no capacity, as the client has none for one.
+
+## 2026-10-09 — the skill handler, and the sheet's implants from it
+
+Commit `8f5a6a8`, pushed. Item 1 of the last list: the last call the game port made that
+the client never makes.
+
+**What the retail client does.** Its skills service asks `skillMgr2.GetMySkillHandler()`
+once and keeps the Moniker that answers (`skillsvc.py` 128). Everything it reads of skills
+is a call on that moniker. The implants in the pilot's head are `GetImplants()` on it, asked
+once and kept (965); godma's `implants` of the character is that (`godma.py` 1920), and the
+sheet lists them sorted by the slot their type's own attribute says
+(`implantsBoostersPanel.py` 36). It never asks `charMgr.GetCloneInfo`.
+
+- **Recorded on Tranquility at login** ("Logging in then renaming ship"): the moniker names
+  service `skillMgr2`, its node, and the character; it is bound with no asking where it
+  lives, the bind carrying `GetBoosters`; then on the object `GetSkillQueueAndFreePoints`,
+  `GetBoosters`, `GetSkills`, `CheckAndSendNotifications`, `GetAllSkills`,
+  `GetSkillHistory(10)`, `GetBoosters`, `GetImplants` (answered an empty dict) and
+  `GetAttributes`.
+- **This server's log of a retail client** (2026-10-06): the moniker names service
+  `skillHandler` and no node, so the client asks where it lives, binds (carrying
+  `GetSkills`) and calls the object after.
+
+**What the page did.** The Character Sheet's route asked `charMgr.GetCloneInfo`, and the page
+showed the implants from it and nothing else. The BFF's other skill reads went to
+`skillHandler` by name.
+
+**What was built.**
+
+- The transport holds a skill handler: asked for once, however many reads are waiting; the
+  moniker bound by what it says itself (its service and parameters; its node, where it
+  names one, told to the session so that it is not asked for); the first read riding along
+  and the rest on the object. Every `skillHandler` call the BFF makes by name goes this way.
+- The registry has `GetMySkillHandler` and nine of the handler's reads, each beside the
+  client's line.
+- On the game port the sheet's route asks `GetImplants` and hands the page the implants in
+  the form it reads a clone in, each in the slot its type's attribute says. Refused, or not
+  a dict of things with a type, the route says so.
+- The page's decoder says what such an answer does not carry (the clone's two stations, the
+  jump clones) as not given, where it said naught.
+- The parity tool compares that one answer as the page reads it: the two transports give it
+  in two forms now, by design.
+
+**Proof.**
+
+- Tests: 10 new (1 on the registry, 1 on the session, 3 on the transport, 3 on the route,
+  1 on the page's decoder, 1 on the parity tool); the table of services reached through a
+  moniker, which a test pins, has the handler added. 61 ways of breaking it tried. Seven
+  survived a first pass: two checks that did nothing were taken out and cases were added
+  for the rest. One was not tried for how I had spelled it, and was tried again; the source
+  was looked at after and is whole. All are caught.
+- Suite: 9635 tests, 9611 pass, 0 fail, 0 cancelled, 24 skipped. No test process left behind.
+- **Two implants, staged** (an Ocular Filter and a Memory Augmentation given to Test Two and
+  plugged in through the gateway; a third the server refused to plug in, not looked into;
+  the store put aside first and put back after: one row in the hangar and one in the cargo
+  again, the journal `[1,0]`, no implants). Read through both check BFFs: the same two, by
+  type and slot, the gateway's from the server's clone answer and the game port's from the
+  handler with the slots from the static tables.
+- **The server's own log** (eve.js `603ae3d3d`, with other sessions' uncommitted edits in
+  the checkout): from the game port, `skillMgr2 GetMySkillHandler()`, `skillHandler
+  MachoResolveObject()`, `skillHandler MachoBindObject()` with "nested call: GetImplants",
+  as the retail client's three lines of 2026-10-06 go; and no `charMgr GetCloneInfo()` once
+  the BFF was on the change.
+- **In the browser, on the game port:** the Character Sheet listed "Ocular Filter - Basic"
+  and "Memory Augmentation - Basic", in that order; all 25 windows drew with no failure.
+- **On both transports, by script**, staged: the sheet identical as the page reads it;
+  12 identical, 6 tolerated, 2 moved (two clocks), 2 divergent. Before the tool compared it
+  so, the sheet read divergent for its two forms.
+- The ledger, from two passes, the sheet read by script and the browser's read of all 22
+  panels: 56 pairs, none the client never makes (4 at the start of the day), none
+  unchecked, none differing.
+
+**Not seen working.**
+
+- A moniker that names its node, as Tranquility's does: tests only.
+- A refused or unreadable implants read, and an implant of a type the static tables have
+  no slot for: tests only.
+
+**Not done.**
+
+- The client asks for the implants once and keeps them, asking again when its attributes
+  are read anew. The route asks each time the sheet is opened.
+- What the client asks of the handler at login, in the recording's order, is not made.
+- Four of the handler's reads the BFF can make are not set beside the client's
+  (`GetSkillHistory`, which the client gives a count; `CheckInjectionConstraints`;
+  `GetDiminishedSpFromInjectors`; `GetSkillQueue`). No panel asks them.
+- The Skills panel's own route answers from the store, not from the handler.
+- Boosters, which the client's sheet lists beside the implants; the jump clones
+  (`jumpCloneSvc.GetCloneState`, recorded bound with its call riding along).
+
+### Next
+
+1. The monikers the client makes afresh for each call (`ship`, `crimewatch`): counted from
+   the recording and the server's log, read in `eveMoniker.py`'s callers, and bound so.
+2. The BFF's own two-step binds, each made when its first call comes and with it.
+3. A login set beside the recording's, call by call: what the client asks before anything
+   is opened, and in what order (the skill handler's nine among them).
+4. Around the skill handler: the implants asked once and kept; the Skills panel from the
+   handler; the handler's other reads; boosters and jump clones on the sheet.
+5. Around the contracts: "Offered to you" from the owner's list; the corporation's lists;
+   a rowset read where a server answers one; the search with something staged for each of
+   its filters, on both transports; what the sub-agent left in the server (the operator's
+   section). And the same fault elsewhere in the server: a search of its services for a
+   keyword read as a plain property, with no helper in the file, names two more
+   (`seasonManagerService.js`, `dungeonService.js`). Neither was read.
+6. Around a fitted module: the recording read past `SetModuleOnline`'s answer, and this
+   server's fit set beside it; the recording of ammunition loaded while docked, and charges
+   in slots as godma holds them; the Fitting panel's cargo figure after a module's state
+   changes; a refusal to put one online shown as the client shows it; the dogma route
+   answered from godma's priming instead of its own `GetAllInfo`.
+7. Something staged for every list route that has only been compared empty (the market's
+   orders, the mail, the calendar, the fleet, the corporation's hangars), and the parity
+   pass read again.
 8. The Fleet panel asking nothing of a fleet's object while the pilot is in no fleet.
 9. A ship with several modules fitted and a hold with a packaged ship in it, staged: the
    Fitting window's figures and the client's sums, each set beside the server's.
