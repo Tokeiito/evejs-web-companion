@@ -6766,3 +6766,137 @@ fleet's object, mail and notifications. With them the ledger's pass has no pair 
 24. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
     client's own map is in.
 25. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
+
+## 2026-10-09 — the ledger from a walk, and two routes that asked too much
+
+Commit `3288122`, pushed. Item 1 of the last list, docked: the ledger made from the scripted
+pass and from a walk in the browser through every panel of the page.
+
+**What the walk showed.** All twenty-two panels and the mission's page opened on the game
+port with nothing failing. Beside the pass's pairs it made eleven more, nine of them unread.
+It also showed that two things taken for probes are the page's own traffic: the Fitting
+window opens the dogma route, and the Fleet panel asks the fleet's five reads whether or not
+the pilot is in a fleet.
+
+**What the retail client does.**
+
+- **Its fitting window asks dogma nothing of its own.** godma is primed once with
+  `GetAllInfo` (`godma.py` 2409) and the window reads from that. The route the page opens
+  asked eleven reads; the page read one of them.
+- **A corporation's assets are searched when the pilot presses Search**
+  (`corp_ui_accounts.py` 752), with `SearchAssets(which, itemCategoryID, itemGroupID,
+  itemTypeID, qty)`, and a filter that is not set is None. The route searched with every
+  reading of where the offices are, with nought for each filter, and the page did not read
+  the answer.
+- Asked as the BFF asks them: `stationSvc.GetStationItemBits()`, `station.GetGuests()`,
+  `map.GetStationInfo()`, `structureDirectory.GetStructureInfo(structureID)`,
+  `agentMgr.GetSolarSystemOfAgent(agentID)`, `GetMissionKeywords(contentID)` on the agent's
+  object, and `corpmgr.GetAssetInventory(session.corpid, which)` and
+  `GetAssetInventoryForLocation(session.corpid, locationID, which)`.
+
+**What was built.**
+
+- The dogma route asks `GetAllInfo` alone. Nine calls fewer with every opening of the
+  Fitting window, among them both of the ledger's known differences.
+- The assets route searches only when a request names one of the four filters, and answers
+  the search as none, with no error, when it does not. On the game port a filter that is not
+  set goes out as None.
+- Nine more pairs have entries in `src/gamePort/retailCalls.js` (109 now).
+- `docs/game-port-call-ledger.md` is made from the pass, the walk, and the assets asked by
+  script: 64 pairs in 447 calls. 43 the client's own, 16 reshaped to it, 5 the web client's
+  own, **none differing and none unread**.
+
+**A decision taken in the operator's place.** The dogma route was built in the plumbing sweep
+to make eleven reads reachable. It now makes one. The other ten stay on the allowlist, and
+their decoders and the decoders' tests stay; what is gone is asking them of the server with
+nothing to ask about, each time a window opens. To have them asked again, add them back to
+`DOGMA_BOUND_READS` in `src/server.js`.
+
+**Proof.**
+
+- Tests: 5 new, 3 changed (two of the ledger's own and the transport's tally used the
+  station's guests as their pair nobody had read; they use a made-up pair now). 31 ways of
+  breaking it tried. Three survived a first pass and the tests were tightened: each filter
+  named alone, a filter that is text, and a sixth argument. All are caught.
+- Suite: 9557 tests, 9533 pass, 0 fail, 24 skipped, 0 todo. No test process left behind.
+- **The server's own log of the game port** (eve.js `e066a81e9`, with another session's
+  uncommitted edits in the checkout), as Test Two: the assets asked for the offices alone,
+  one `corpmgr GetAssetInventory` with two arguments and no search; asked with a filter,
+  that and one `SearchAssets` with five. The dogma route: one bound `GetAllInfo` with three
+  arguments, and no other read of dogma behind it.
+- **On both transports, by script** (`scripts/bff-parity.js`): 12 identical, 6 tolerated,
+  2 moved, 2 divergent, as before, and the game port's pass nine calls shorter.
+- **In the browser, on the game port:** every panel opened again after the change with
+  nothing failing. The Fitting window drew the ship for Test Two (a Badger) and for Test
+  Pilot (a Reaper).
+
+**Not seen working.**
+
+- **A module's figures in the Fitting window.** Neither test pilot's ship has a module
+  fitted, so the window had nothing to list and nothing to click. That the page reads a
+  module's figures out of `GetAllInfo` alone is held by its tests, not seen.
+- The assets route reached from the page: the second walk did not open the views that ask it
+  (PI, Build), so it was asked by script.
+
+**Not done.**
+
+- The walk in space.
+- What the ledger cannot see: a route that answers from the store's file asks the server
+  nothing, so it is in no ledger, and the client's way of reading the same thing is not set
+  beside it. The Skills panel made no call of the game port at all.
+- The Fleet panel's five reads for a pilot in no fleet: the client has a fleet's object only
+  while it is in one.
+- The five calls the client never makes that the page still does:
+  `invbroker.GetCapacity` (128 in this walk), `contractProxy.GetMyCurrentContractList`,
+  `dogmaIM.ShipGetInfo` and `ShipOnlineModules`, `charMgr.GetCloneInfo`.
+
+### Next
+
+1. The web client's own calls, one at a time, each replaced by what the client does:
+   `invbroker.GetCapacity` first (the client works a capacity out itself), then
+   `dogmaIM.ShipGetInfo` and `ShipOnlineModules`, `contractProxy.GetMyCurrentContractList`
+   (`GetContractListForOwner`), `charMgr.GetCloneInfo` (`jumpCloneSvc.GetCloneState` on
+   its moniker, and godma's implants).
+2. The Fleet panel asking nothing of a fleet's object while the pilot is in no fleet.
+3. The walk in space: undocked, every panel and the space view, the store put aside first
+   and put back after; its unread pairs read.
+4. A ship with modules fitted, staged, for the Fitting window's figures seen in the browser.
+5. The routes that answer from the store, listed, and each set beside what the client asks.
+6. The standings the client's way: `GetNPCNPCStandings`, and asked once at the session's
+   change and kept, with the server's notices keeping them right.
+7. Two couriers staged, for the contract search's sort and filters; the corporation's
+   expired list beside the pilot's own; the summary asked once and kept.
+8. The corporation registry's other calls, each set beside the client's.
+9. Phase 3's writes, feature by feature, each set beside what the client sends.
+10. The wallet's "Market Transactions", and the lines the client derives from a transaction.
+11. The avoidance list's own window, and a route plotted again when a setting changes under it.
+12. Around a place's name, the last of it: the outlaw's warning (the pilot's own security
+    status). The agent's own window's steps, if the client's say how far.
+13. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+    own counts on it, with the push doing the work as it does for Remove Offer.
+14. The agent's cards above its own window, where the client's window has its own header.
+15. The scanner the client's way: results kept from the server's word, a probe's destination
+    and range kept here and sent with the scan.
+16. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+    codes not done.
+17. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+18. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+19. Small, in Ready Fit: the window following a change of pilot.
+20. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+21. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+22. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+23. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions); the client's own map, to set beside this server's.
+24. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+25. Other things asked once beside the store, and other panels' effects, looked at for the
+    faults of earlier entries.
+26. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
+    client's own map is in.
+27. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
