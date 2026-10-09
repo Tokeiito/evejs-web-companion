@@ -1120,9 +1120,12 @@ test("the market's other three of the walk: a type's book as the client asks it,
   const book = form("marketProxy.GetOrders", [34]);
   assert.deepEqual([book.status, book.args], ["same", [34]]);
   assert.match(book.source, /marketsvc\.py:734$/);
-  const history = RETAIL_CALLS["marketProxy.GetNewPriceHistory"];
-  assert.equal(history.status, "differs");
-  assert.match(history.note, /GetOldPriceHistory/);
+  // marketsvc.py 338, 339: a type's history in its two halves, each with the type.
+  for (const [method, line] of [["GetOldPriceHistory", 338], ["GetNewPriceHistory", 339]]) {
+    const half = form(`marketProxy.${method}`, [34]);
+    assert.deepEqual([half.status, half.args], ["same", [34]], method);
+    assert.match(half.source, new RegExp(`marketsvc\\.py:${line}$`), method);
+  }
   // marketsvc.py 266: nine, the last the broker's fee the client's window showed. The BFF's route has none to name.
   const nine = [60003760, 34, 0.01, 1, -1, 1, 1, false];
   const feeless = form("marketProxy.PlaceBuyOrder", [...nine, null]);

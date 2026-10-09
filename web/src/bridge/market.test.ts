@@ -33,6 +33,8 @@ import {
   distanceLabel,
   brokerFeeWords,
   estimateBrokerFee,
+  historyDayText,
+  joinPriceHistory,
   filterByJumps,
   formatIsk,
   iskDelta,
@@ -390,6 +392,64 @@ test("decodePriceHistory reads the day rows", () => {
   assert.equal(days[0]?.day, 133000000000000000n);
   assert.equal(days[0]?.average, "5.5");
   assert.equal(days[0]?.volume, 1000);
+});
+
+// marketsvc.GetHistoryRowList (344): the two halves of a type's history joined. The dates below are whole days;
+// DAY is a day of the clock's 100 ns ticks.
+const DAY = 864000000000n;
+const NOON = 133000000000000000n / DAY * DAY + DAY / 2n;
+const MIDNIGHT = NOON - DAY / 2n;
+const traded = (daysAgo: number, average: string, volume = 100, orders = 7) => ({ day: MIDNIGHT - BigInt(daysAgo) * DAY, low: "1", high: "9", average, volume, orders });
+const carried = (daysAgo: number, price: string) => ({ day: MIDNIGHT - BigInt(daysAgo) * DAY, low: price, high: price, average: price, volume: 2, orders: 2 });
+
+test("a type's history is its old half, the days with no trade filled with the price before them, and then its new half", () => {
+  // Days 6, 5 and 3 ago traded; the new half is yesterday's.
+  const old = [traded(6, "5"), traded(5, "5.5"), traded(3, "6")];
+  const fresh = [traded(1, "7")];
+  assert.deepEqual(joinPriceHistory(old, fresh, NOON), [
+    traded(6, "5"),
+    traded(5, "5.5"),
+    // The day between two that traded, at the average before it, with the client's two and two for what was traded.
+    carried(4, "5.5"),
+    traded(3, "6"),
+    // From the last of the old half up to yesterday's midnight.
+    carried(2, "6"),
+    carried(1, "6"),
+    traded(1, "7"),
+  ]);
+  // The halves are not changed by it.
+  assert.equal(old.length, 3);
+  assert.equal(fresh.length, 1);
+});
+
+test("with no new half the history ends in a row for now at the last price, nothing traded", () => {
+  const joined = joinPriceHistory([traded(1, "6")], [], NOON);
+  assert.deepEqual(joined, [traded(1, "6"), { day: NOON, low: "6", high: "6", average: "6", volume: 0, orders: 0 }]);
+  // Nothing at all: one row for now, at nothing.
+  assert.deepEqual(joinPriceHistory([], [], NOON), [{ day: NOON, low: "0", high: "0", average: "0", volume: 0, orders: 0 }]);
+});
+
+test("nothing is filled in before the first day of the old half, and a new half alone is the history", () => {
+  // The first day is long ago: the client begins counting from now, so no day before it is made up.
+  assert.deepEqual(joinPriceHistory([traded(40, "5")], [traded(0, "7")], NOON).slice(0, 2), [traded(40, "5"), carried(39, "5")]);
+  assert.equal(joinPriceHistory([traded(40, "5")], [traded(0, "7")], NOON).length, 1 + 39 + 1);
+  assert.deepEqual(joinPriceHistory([], [traded(0, "7"), traded(0, "8")], NOON), [traded(0, "7"), traded(0, "8")]);
+  // A new half that is older than the days filled in after the old one goes last all the same, as the client has it.
+  const stale = joinPriceHistory([traded(5, "5")], [traded(4, "6")], NOON);
+  assert.deepEqual(stale.map((row) => [Number((MIDNIGHT - (row.day ?? 0n)) / DAY), row.volume]), [[5, 100], [4, 2], [3, 2], [2, 2], [1, 2], [4, 100]]);
+  // A day of the old half that has no date is kept where it stands and counts for nothing.
+  assert.deepEqual(joinPriceHistory([traded(3, "5"), { ...traded(0, "9"), day: null }, traded(2, "6")], [traded(0, "7")], NOON).map((row) => row.average), ["5", "9", "6", "6", "7"]);
+});
+
+test("a day of the history is named by the game's own calendar, whatever the hour and wherever the reader is", () => {
+  // A history's day begins at midnight by the game's clock, which is UTC. Read by a local clock west of it, that
+  // midnight is the evening before: every day of the page's history was named a day early.
+  const start = historyDayText(MIDNIGHT);
+  assert.equal(start, new Date(Number(MIDNIGHT / 10000n - 11644473600000n)).toLocaleDateString(undefined, { timeZone: "UTC" }));
+  assert.equal(historyDayText(MIDNIGHT + DAY - 1n), start, "the last tick of the day is the same day");
+  assert.notEqual(historyDayText(MIDNIGHT + DAY), start);
+  assert.notEqual(historyDayText(MIDNIGHT - 1n), start);
+  assert.deepEqual([historyDayText(null), historyDayText(0n)], ["—", "—"]);
 });
 
 test("decodePriceHistory reads a day the gateway prints as bare digits", () => {

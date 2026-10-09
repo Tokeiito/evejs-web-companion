@@ -5252,7 +5252,7 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
     // Six INDEPENDENT reads (R2's rule): one failure never blanks the rest. A
     // player whose order book fails to load still sees their own orders and
     // their ISK.
-    const [book, ownOrders, history, transactions, escrow, balance, priceHistory] =
+    const [book, ownOrders, history, transactions, escrow, balance, priceHistory, priceHistoryOld] =
       await Promise.allSettled([
         typeID > 0
           ? heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetOrders", [typeID], null)
@@ -5268,9 +5268,14 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
         typeID > 0
           ? heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetNewPriceHistory", [typeID], null)
           : Promise.resolve({ result: null }),
+        // marketsvc.GetPriceHistory (333): the client asks a type's history in two halves and joins them. The new
+        // half alone is, on this server, the last day and nothing else.
+        typeID > 0
+          ? heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetOldPriceHistory", [typeID], null)
+          : Promise.resolve({ result: null }),
       ]);
 
-    const settled = [book, ownOrders, history, transactions, escrow, balance, priceHistory];
+    const settled = [book, ownOrders, history, transactions, escrow, balance, priceHistory, priceHistoryOld];
     for (const entry of settled) {
       if (entry.status === "rejected" && entry.reason && entry.reason.code === "SESSION_NOT_FOUND") {
         next(entry.reason);
@@ -5312,6 +5317,7 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
       escrow: { result: valueOf(escrow), error: codeOf(escrow) },
       cashBalance: { result: valueOf(balance), error: codeOf(balance) },
       priceHistory: { result: valueOf(priceHistory), error: codeOf(priceHistory) },
+      priceHistoryOld: { result: valueOf(priceHistoryOld), error: codeOf(priceHistoryOld) },
       marketUnavailable: outage
         ? "The market is not answering right now, so these figures may be incomplete."
         : null,

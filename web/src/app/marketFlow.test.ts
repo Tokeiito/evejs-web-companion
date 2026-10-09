@@ -300,6 +300,29 @@ test("the broker's fee rate the Market read says is kept for the order form; a r
   assert.equal(store.get().market.brokersFeeRate, null);
 });
 
+test("the type's price history is both halves the Market read hands on, joined as the client joins them", async () => {
+  const DAY = 864000000000n;
+  const midnight = (BigInt(Date.now()) * 10000n + 116444736000000000n) / DAY * DAY;
+  const half = (...lines: readonly (readonly [bigint, number])[]) => ({
+    type: "object",
+    name: "eve.common.script.sys.rowset.Rowset",
+    args: { type: "dict", entries: [["columns", list(["historyDate", "lowPrice", "highPrice", "avgPrice", "volume", "orders"])], ["RowClass", { type: "token", value: "blue.DBRow" }], ["lines", { type: "list", items: lines.map(([day, average]) => [long(String(day)), 1, 9, average, 100, 7]) }]] },
+  });
+  const { store, flow } = makeFlow(
+    respondOk((path) => (path.startsWith("/api/bridge/market") ? { status: 200, body: marketPanel({
+      priceHistoryOld: { result: half([midnight - 4n * DAY, 5], [midnight - 2n * DAY, 6]), error: null },
+      priceHistory: { result: half([midnight - DAY, 7]), error: null },
+    }) } : null)),
+  );
+  await flow.loadMarket(TYPE_ID);
+  // Four and two days ago traded, the day between is carried, yesterday is carried and then the new half's own.
+  assert.deepEqual(store.get().market.priceHistory.map((row) => [Number((midnight - (row.day ?? 0n)) / DAY), row.average, row.volume]), [[4, "5", 100], [3, "5", 2], [2, "6", 100], [1, "6", 2], [1, "7", 100]]);
+  // A read that hands on no old half (an older BFF): the new half, as before.
+  const older = makeFlow(respondOk((path) => (path.startsWith("/api/bridge/market") ? { status: 200, body: marketPanel({ priceHistory: { result: half([midnight - DAY, 7]), error: null } }) } : null)));
+  await older.flow.loadMarket(TYPE_ID);
+  assert.deepEqual(older.store.get().market.priceHistory.map((row) => row.average), ["7"]);
+});
+
 test("loadMarket(null) still reads the player's own market — no item needed", async () => {
   const { flow, requests } = makeFlow(
     respondOk((path) =>

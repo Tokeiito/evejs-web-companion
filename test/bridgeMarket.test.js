@@ -419,7 +419,7 @@ test("every market call is on marketProxy — the `market` service is NEVER name
 
 // --- the read route ---------------------------------------------------------
 
-test("GET /api/bridge/market issues the seven top-level reads and NO bind", async () => {
+test("GET /api/bridge/market issues the eight top-level reads and NO bind", async () => {
   const gateway = fakeGateway();
   const { baseUrl } = await startTestServer({ gateway });
   await selectOnServer(baseUrl);
@@ -437,6 +437,7 @@ test("GET /api/bridge/market issues the seven top-level reads and NO bind", asyn
     "marketProxy.GetMarketOrderHistory",
     "marketProxy.CharGetTransactions",
     "marketProxy.GetCharEscrow",
+    "marketProxy.GetOldPriceHistory",
     "marketProxy.GetNewPriceHistory",
     "account.GetCashBalance",
   ]) {
@@ -1071,4 +1072,30 @@ test("a THROWN refusal keeps the server's own words and takes nothing", async ()
   assert.equal(response.status >= 400, true);
   assert.equal(payload.ok, false);
   assert.equal(gateway.state.balance, 1000000, "a refused order must cost nothing");
+});
+
+// marketsvc.GetPriceHistory (333): the client asks a type's history in two halves, GetOldPriceHistory(typeID) and
+// GetNewPriceHistory(typeID), and joins them. The route asked the new half alone, which on this server is the last
+// day and nothing else: the page's history was one row.
+
+test("GET /api/bridge/market asks a type's price history in both halves, each with the type, and hands on both", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  const { response, payload } = await apiRequest(baseUrl, `/api/bridge/market?typeID=${TYPE_ID}`);
+  assert.equal(response.status, 200);
+  const halves = gateway.calls.topLevel.filter((call) => /PriceHistory$/.test(call.method)).map((call) => [call.service, call.method, call.args]);
+  assert.deepEqual(halves.sort(([, a], [, b]) => a.localeCompare(b)), [["marketProxy", "GetNewPriceHistory", [TYPE_ID]], ["marketProxy", "GetOldPriceHistory", [TYPE_ID]]]);
+  // Each half its own read, with its own error.
+  assert.deepEqual([Object.keys(payload.priceHistoryOld).sort(), Object.keys(payload.priceHistory).sort()], [["error", "result"], ["error", "result"]]);
+  assert.deepEqual([payload.priceHistoryOld.error, payload.priceHistory.error], [null, null]);
+});
+
+test("with no type chosen neither half of a price history is asked for", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  const { payload } = await apiRequest(baseUrl, "/api/bridge/market");
+  assert.deepEqual(gateway.calls.topLevel.filter((call) => /PriceHistory$/.test(call.method)), []);
+  assert.deepEqual([payload.priceHistoryOld, payload.priceHistory], [{ result: null, error: null }, { result: null, error: null }]);
 });

@@ -733,7 +733,8 @@ const RETAIL_CALLS = Object.freeze({
   "marketProxy.GetMarketOrderHistory": same(`${MARKET_QUOTE}:395`, "GetMarketProxy().GetMarketOrderHistory(), no arguments"),
   "marketProxy.GetCharEscrow": same(`${MARKET_QUOTE}:401`, "GetMarketProxy().GetCharEscrow(), no arguments"),
   "marketProxy.GetOrders": same(`${MARKET_QUOTE}:734`, "GetMarketProxy().GetOrders(typeID): a type's book, which the object cache keeps and OnOwnOrdersChanged names"),
-  "marketProxy.GetNewPriceHistory": differs(`${MARKET_QUOTE}:339`, "The client asks a type's history in two halves, GetOldPriceHistory(typeID) and GetNewPriceHistory(typeID), and joins them. The BFF's route asks for the new half alone."),
+  "marketProxy.GetOldPriceHistory": same(`${MARKET_QUOTE}:338`, "GetMarketProxy().GetOldPriceHistory(typeID): the first half of a type's price history, which the client joins to the other (GetHistoryRowList, 344)"),
+  "marketProxy.GetNewPriceHistory": same(`${MARKET_QUOTE}:339`, "GetMarketProxy().GetNewPriceHistory(typeID): the second half of a type's price history, asked right behind the first"),
   "marketProxy.PlaceBuyOrder": needing(Object.freeze({
     status: "same",
     source: `${MARKET_QUOTE}:266`,

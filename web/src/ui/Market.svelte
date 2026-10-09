@@ -24,6 +24,7 @@
     distanceLabel,
     brokerFeeWords,
     estimateBrokerFee,
+    historyDayText,
     filterByJumps,
     formatIsk,
     rangeLabel,
@@ -667,16 +668,17 @@
       {/if}
 
       {#if $market.priceHistory.length > 0}
-        <h3>Recent prices</h3>
+        <h3>Price history</h3>
         <div class="table-wrap overflow-x-auto">
           <table class="guests reflow">
             <thead>
               <tr><th>Day</th><th class="num">Lowest</th><th class="num">Highest</th><th class="num">Average</th><th class="num">Traded</th></tr>
             </thead>
             <tbody>
-              {#each $market.priceHistory as day (day.day)}
+              <!-- Keyed by its place: the history the game makes of its two halves can have a day twice. -->
+              {#each $market.priceHistory as day, place (place)}
                 <tr>
-                  <td data-label="Day">{dateText(day.day)}</td>
+                  <td data-label="Day">{historyDayText(day.day)}</td>
                   <td class="num" data-label="Lowest">{formatIsk(day.low)}</td>
                   <td class="num" data-label="Highest">{formatIsk(day.high)}</td>
                   <td class="num" data-label="Average">{formatIsk(day.average)}</td>

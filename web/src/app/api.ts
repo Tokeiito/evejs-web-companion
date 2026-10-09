@@ -1199,7 +1199,9 @@ export interface RawMarketReads {
   readonly transactions: RawMarketRead;
   readonly escrow: RawMarketRead;
   readonly cashBalance: RawMarketRead;
+  /** The type's price history, in the two halves the game asks it in: this is the new half, and the old one is beside it. */
   readonly priceHistory: RawMarketRead;
+  readonly priceHistoryOld: RawMarketRead;
   /** Non-null when the market DAEMON is not answering (≠ "no orders"). */
   readonly marketUnavailable: string | null;
 }
@@ -1236,6 +1238,7 @@ export async function loadMarket(
     escrow: asMarketRead(data.escrow),
     cashBalance: asMarketRead(data.cashBalance),
     priceHistory: asMarketRead(data.priceHistory),
+    priceHistoryOld: asMarketRead(data.priceHistoryOld),
     marketUnavailable:
       typeof data.marketUnavailable === "string" ? data.marketUnavailable : null,
   };

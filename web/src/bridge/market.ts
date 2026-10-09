@@ -371,6 +371,66 @@ export function decodePriceHistory(result: JsonValue): readonly MarketPriceHisto
   return rows;
 }
 
+/** A day of the clock's 100 ns ticks. */
+const DAY_OF_FILETIME = 864000000000n;
+
+/**
+ * A day of a price history as a date. The day begins at midnight by the game's clock, which is UTC, and is named
+ * by that calendar: by the reader's own, west of it, that midnight is the evening before.
+ */
+export function historyDayText(day: bigint | null): string {
+  if (day === null) return "—";
+  const unixMs = Number(day / 10000n - 11644473600000n);
+  return Number.isFinite(unixMs) && unixMs > 0 ? new Date(unixMs).toLocaleDateString(undefined, { timeZone: "UTC" }) : "—";
+}
+
+/**
+ * marketsvc.GetHistoryRowList (344): a type's price history from the two halves the game asks it in.
+ *
+ * The old half's days in order, and for each day with no trade between two of them a row at the average of the
+ * day before, which the client gives 2 for the quantity and 2 for the orders. Then the same from the last of the
+ * old half up to yesterday. Then the new half as it came, or, where there is none, one row for now at the last
+ * price with nothing traded. `now` is the clock in 100 ns ticks.
+ *
+ * As the client has it, and so with its two oddities: nothing is filled in before the first day of the old half
+ * (it starts counting from now), and the new half goes last whatever its days are.
+ */
+export function joinPriceHistory(
+  old: readonly MarketPriceHistoryRow[],
+  fresh: readonly MarketPriceHistoryRow[],
+  now: bigint,
+): readonly MarketPriceHistoryRow[] {
+  const history: MarketPriceHistoryRow[] = [];
+  const carried = (day: bigint, price: string, tradedAndOrders: number): MarketPriceHistoryRow =>
+    ({ day, low: price, high: price, average: price, volume: tradedAndOrders, orders: tradedAndOrders });
+  const midnightToday = (now / DAY_OF_FILETIME) * DAY_OF_FILETIME;
+  let lastTime = now;
+  let lastPrice = "0";
+  for (const entry of old) {
+    if (entry.day === null) {
+      history.push(entry);
+      continue;
+    }
+    while (lastTime + DAY_OF_FILETIME < entry.day) {
+      lastTime += DAY_OF_FILETIME;
+      history.push(carried(lastTime, lastPrice, 2));
+    }
+    history.push(entry);
+    lastTime = entry.day;
+    lastPrice = entry.average;
+  }
+  while (lastTime < midnightToday - DAY_OF_FILETIME) {
+    lastTime += DAY_OF_FILETIME;
+    history.push(carried(lastTime, lastPrice, 2));
+  }
+  if (fresh.length > 0) {
+    history.push(...fresh);
+  } else {
+    history.push(carried(now, lastPrice, 0));
+  }
+  return history;
+}
+
 // =============================================================================
 // marketQuote, client-side
 // =============================================================================

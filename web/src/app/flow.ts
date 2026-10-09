@@ -41,6 +41,7 @@ import {
   decodeOwnOrders,
   decodePriceHistory,
   decodeTransactions,
+  joinPriceHistory,
   marketRefusalMessage,
   toAmountString,
 } from "../bridge/market.ts";
@@ -3175,7 +3176,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       orderHistory,
       transactions,
       escrow: reads.escrow.error ? null : decodeEscrow(reads.escrow.result),
-      priceHistory: decodePriceHistory(reads.priceHistory.result),
+      // marketsvc.GetPriceHistory: the two halves joined, as the client joins them. A read with no old half at
+      // all (nothing asked, or an older BFF) is the new half as it came.
+      priceHistory: reads.priceHistoryOld.result === null
+        ? decodePriceHistory(reads.priceHistory.result)
+        : joinPriceHistory(decodePriceHistory(reads.priceHistoryOld.result), decodePriceHistory(reads.priceHistory.result), BigInt(Date.now()) * 10000n + 116444736000000000n),
       cashBalance: toAmountString(reads.cashBalance.result),
       bookError: reads.book.error,
       // The own-orders picture is one thing to the player, so a failure in
