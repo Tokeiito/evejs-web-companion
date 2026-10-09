@@ -1222,7 +1222,6 @@ test("a buy order with no fee named goes out with the rate the client would name
   // A rate of nought is a rate.
   assert.deepEqual(withContext("marketProxy.PlaceBuyOrder", [...nine, null], null, feeKnown(0)).args[8], 0);
   assert.equal(retailNeeds("marketProxy", "PlaceBuyOrder"), "fee");
-  assert.equal(retailNeeds("marketProxy", "PlaceMultiSellOrder"), "fee");
 });
 
 test("a sale's items are given the fee rate of their station, and an order that stands names the first item's", () => {
@@ -1245,4 +1244,31 @@ test("a sale's items are given the fee rate of their station, and an order that 
   const without = withContext("marketProxy.PlaceMultiSellOrder", [[ROUTES_ITEM], false, 1, null], null, feeKnown(null));
   assert.deepEqual([without.status, without.args], ["differs", [{ type: "list", items: [SIX] }, false, 1, null]]);
   assert.match(without.note, /rawBrokerFeePercentage/);
+});
+
+// A sale item's delta (buySellItemContainerBase.py 57): how far its price is from the type's average over a week,
+// which the entry asks the market for when it is made. Where whoever shapes the call has the average
+// (context.averagePrice), the item is the client's eight and the sale the client's call.
+
+const averageKnown = (average = 790123.456) => ({ ...feeKnown(0.03), averagePrice: (typeID) => (typeID === 34 ? average : null) });
+
+test("a sale's item is given how far its price is from the type's average, and with the fee is the client's eight", () => {
+  const delta = (987654.32 - 790123.456) / 790123.456;
+  const whole = withContext("marketProxy.PlaceMultiSellOrder", [[ROUTES_ITEM], false, 1, null], null, averageKnown());
+  assert.equal(whole.status, "reshaped");
+  assert.deepEqual(whole.args, [{ type: "list", items: [saleKeyVal([["itemID", 9988400109051], ["typeID", 34], ["rawBrokerFeePercentage", 0.03], ["price", 987654.32], ["officeID", null], ["stationID", 60003760], ["delta", delta], ["quantity", 1]])] }, false, 1, 0.03]);
+  // A price at the average is no distance from it, and that is a delta.
+  assert.equal(withContext("marketProxy.PlaceMultiSellOrder", [[ROUTES_ITEM], false, 1, null], null, averageKnown(987654.32)).args[0].items[0].args.entries.find(([name]) => name === "delta")[1], 0);
+  // A delta given with the item is not worked out again.
+  assert.equal(withContext("marketProxy.PlaceMultiSellOrder", [[{ ...ROUTES_ITEM, delta: -0.25 }], false, 1, null], null, averageKnown()).args[0].items[0].args.entries.find(([name]) => name === "delta")[1], -0.25);
+  // No average to be had, or an average of nothing: no delta is made up, and the sale is noted for it.
+  for (const context of [averageKnown(null), averageKnown(0), { ...feeKnown(0.03), averagePrice: () => "100" }, feeKnown(0.03)]) {
+    const short = withContext("marketProxy.PlaceMultiSellOrder", [[ROUTES_ITEM], false, 1, null], null, context);
+    assert.equal(short.status, "differs");
+    assert.match(short.note, /delta/);
+    assert.equal(short.args[0].items[0].args.entries.some(([name]) => name === "delta"), false);
+  }
+  // Another type's average is not this one's.
+  assert.equal(withContext("marketProxy.PlaceMultiSellOrder", [[{ ...ROUTES_ITEM, typeID: 35 }], false, 1, null], null, averageKnown()).status, "differs");
+  assert.equal(retailNeeds("marketProxy", "PlaceMultiSellOrder"), "sale");
 });

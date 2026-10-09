@@ -78,10 +78,12 @@ const wholeAndPositive = (value) => typeof value === "number" && Number.isSafeIn
  * what it knows of it, which is no value the wire has. Answers { item, has, rate }: the util.KeyVal, its fields in
  * the order the client's Python keeps the keywords of such a call (py27.js constructorKeywordOrder); which of the
  * eight it has; and its broker's fee rate, where it has one. Of the two the window works out, the fee rate is
- * `rateAt(stationID)` where a route gave none and it can be worked out; delta is not made up. An item that is
- * the client's KeyVal already is answered as it is. Null for what is no item of a sale.
+ * `rateAt(stationID)` where a route gave none and it can be worked out, and delta is how far the price is from
+ * `averageOf(typeID)`, the type's average over a week (GetDelta, buySellItemContainerBase.py 57), where that is to
+ * be had. Neither is made up. An item that is the client's KeyVal already is answered as it is. Null for what is
+ * no item of a sale.
  */
-function saleItem(given, rateAt = () => null) {
+function saleItem(given, rateAt = () => null, averageOf = () => null) {
   if (!given || typeof given !== "object" || Array.isArray(given)) return null;
   if (given.type === "object") {
     const entries = given.args && Array.isArray(given.args.entries) ? given.args.entries : [];
@@ -92,9 +94,19 @@ function saleItem(given, rateAt = () => null) {
   if (!wholeAndPositive(given.stationID) || !wholeAndPositive(given.typeID) || !wholeAndPositive(given.quantity)) return null;
   if (typeof given.price !== "number" || !Number.isFinite(given.price) || given.price <= 0) return null;
   const rate = given.rawBrokerFeePercentage ?? rateAt(given.stationID) ?? undefined;
-  const fields = { ...given, price: Math.round(given.price * 100) / 100, officeID: given.officeID ?? null, rawBrokerFeePercentage: rate };
+  const delta = given.delta !== undefined ? given.delta : deltaFrom(given.price, averageOf(given.typeID));
+  const fields = { ...given, price: Math.round(given.price * 100) / 100, officeID: given.officeID ?? null, delta, rawBrokerFeePercentage: rate };
   const written = SALE_ITEM.filter((name) => fields[name] !== undefined);
   return { item: keyVal(constructorKeywordOrder(written).map((name) => [name, fields[name]])), has: written, rate: rate ?? null };
+}
+
+/** buySellItemContainerBase.GetDelta: how far a price is from an average, as a fraction of it; undefined with no average, or one of nothing. */
+const deltaFrom = (price, average) => (average !== null && average > 0 ? (price - average) / average : undefined);
+
+/** A type's average price over a week as the client's sale entry has it, where whoever shapes the call has it: a number, or null. */
+function averagePriceOf(context, typeID) {
+  const average = context && typeof context.averagePrice === "function" ? context.averagePrice(typeID) : null;
+  return typeof average === "number" && Number.isFinite(average) ? average : null;
 }
 
 /** The broker's fee rate at a station as the client would work it out, where whoever shapes the call can: a number, or null. */
@@ -755,7 +767,7 @@ const RETAIL_CALLS = Object.freeze({
     shape: (args, kwargs, context) => {
       const [given, useCorp, duration, named] = args;
       const listed = Array.isArray(given) ? given : given && given.type === "list" && Array.isArray(given.items) ? given.items : null;
-      const items = listed ? listed.map((item) => saleItem(item, (stationID) => brokersFeeOf(context, stationID))) : [];
+      const items = listed ? listed.map((item) => saleItem(item, (stationID) => brokersFeeOf(context, stationID), (typeID) => averagePriceOf(context, typeID))) : [];
       if (args.length !== 4 || items.length === 0 || items.includes(null)) {
         return { args, kwargs, status: "differs", note: "The client sends four: a list of the items, each a util.KeyVal, whether it is for the corporation, for how long, and the broker's fee rate. This is not that." };
       }
@@ -771,7 +783,7 @@ const RETAIL_CALLS = Object.freeze({
       if (duration !== 0 && typeof fee !== "number") return { args: shaped, kwargs, status: "differs", note: "For an order that stands, the client names the broker's fee rate its window showed. This call names none." };
       return asGiven ? { args, kwargs } : { args: shaped, kwargs, status: "reshaped" };
     },
-  }), "fee"),
+  }), "sale"),
   "marketProxy.CancelCharOrder": needing(Object.freeze({
     status: "same",
     source: `${MARKET_QUOTE}:282`,

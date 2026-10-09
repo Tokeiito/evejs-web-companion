@@ -5834,6 +5834,79 @@ test("a buy order goes out with the broker's fee rate worked out from the pilot'
   assert.deepEqual(pilots.callLedger().find((row) => row.pair === "marketProxy.PlaceBuyOrder").statuses, { reshaped: 2, differs: 1 });
 });
 
+// buySellItemContainerBase.py 28: the entry of a sale asks the market for the type's average price when it is
+// made, which is the two halves of its history (marketsvc.py 333), and the item carries how far its price is
+// from it. The history below is the server's Rowset in shape and in kinds of value, read off a game-port session;
+// the numbers are made up, and its days are counted back from the stand-in server's clock.
+
+const FILETIME_OF_UNIX = 116444736000000000n;
+const A_DAY = 864000000000n;
+const serverMidnight = (serverNowMs) => ((BigInt(serverNowMs) * 10000n + FILETIME_OF_UNIX) / A_DAY) * A_DAY;
+const pricesRowset = (...lines) => ({
+  type: "object",
+  name: Buffer.from("eve.common.script.sys.rowset.Rowset"),
+  args: { type: "dict", entries: [[Buffer.from("columns"), { type: "list", items: ["historyDate", "lowPrice", "highPrice", "avgPrice", "volume", "orders"].map((name) => Buffer.from(name)) }], ["RowClass", { type: "token", value: "blue.DBRow" }], ["lines", { type: "list", items: lines }]] },
+});
+const SALE_PAIRS = new Set(["marketProxy.PlaceMultiSellOrder", "marketProxy.GetOldPriceHistory", "marketProxy.GetNewPriceHistory"]);
+const fieldOfSaleItem = (call, name) => (call.args[0].items[0].args.entries.find(([key]) => key === name) ?? [])[1];
+
+test("a sale asks for the two halves of its item's price history first, and the item carries how far its price is from the week's average", async () => {
+  const serverNow = 1_700_000_000_000;
+  const midnight = serverMidnight(serverNow);
+  // Three days ago 10 traded at 5; today 30 at 7. The two days between are carried at 5, two traded each.
+  let unreadable = false;
+  const answers = {
+    ...STANDING_ANSWERS,
+    ...handlerAnswers(),
+    "marketProxy.GetOldPriceHistory": ([typeID]) => { if (unreadable) throw refusedBy("NotNow"); return typeID === 34 ? pricesRowset([midnight - 3n * A_DAY, 4, 6, 5, 10, 3]) : pricesRowset(); },
+    "marketProxy.GetNewPriceHistory": ([typeID]) => (typeID === 34 ? pricesRowset([midnight, 6, 8, 7, 30, 4]) : pricesRowset()),
+  };
+  const { pilots, session, handle } = await selected({ answers, serverNow }, { allowed: SALE_PAIRS, stationOwner: () => ({ ownerID: 1000099, factionID: 500099 }), typeBasePrice: (typeID) => (typeID === 35 ? { basePrice: 12500, portionSize: 100 } : null) });
+  const sale = (typeID, price) => pilots.callMethod("marketProxy", "PlaceMultiSellOrder", [[{ itemID: 9001, typeID, stationID: 60003760, price, quantity: 2 }], false, 1, null], null, WHO, handle);
+  await sale(34, 5.5);
+  const calls = session.proxyCalls.filter((call) => call.service === "marketProxy");
+  assert.deepEqual(calls.map((call) => [call.method, call.method === "PlaceMultiSellOrder" ? "..." : call.args]), [["GetOldPriceHistory", [34]], ["GetNewPriceHistory", [34]], ["PlaceMultiSellOrder", "..."]]);
+  const average = Number(((5 * 10 + 5 * 2 + 5 * 2 + 7 * 30) / (10 + 2 + 2 + 30)).toFixed(2));
+  assert.equal(average, 6.36);
+  assert.equal(fieldOfSaleItem(calls.at(-1), "delta"), (5.5 - average) / average);
+  // The whole of the client's call now: the eight fields, and the fee named.
+  assert.equal(calls.at(-1).args[0].items[0].args.entries.length, 8);
+  assert.deepEqual(Object.fromEntries(pilots.callLedger().filter((row) => row.pair.startsWith("marketProxy.")).map((row) => [row.pair, row.statuses])),
+    { "marketProxy.GetOldPriceHistory": { same: 1 }, "marketProxy.GetNewPriceHistory": { same: 1 }, "marketProxy.PlaceMultiSellOrder": { reshaped: 1 } });
+  // A type nothing has traded: its base price over its portion size, from the game's data.
+  await sale(35, 250);
+  assert.equal(fieldOfSaleItem(lastMarketCall(session), "delta"), (250 - 125) / 125);
+  // The halves are asked for again at each sale, as each entry of the client's asks.
+  assert.equal(session.proxyCalls.filter((call) => call.method === "GetOldPriceHistory").length, 2);
+  // Two items of two types in one sale: each by its own type's average.
+  await pilots.callMethod("marketProxy", "PlaceMultiSellOrder", [[{ itemID: 9001, typeID: 35, stationID: 60003760, price: 250, quantity: 2 }, { itemID: 9002, typeID: 34, stationID: 60003760, price: 5.5, quantity: 1 }], false, 1, null], null, WHO, handle);
+  assert.deepEqual(lastMarketCall(session).args[0].items.map((item) => item.args.entries.find(([key]) => key === "delta")[1]), [(250 - 125) / 125, (5.5 - average) / average]);
+  // An average is the sale's own: a history that cannot be read at the next sale leaves that sale's item without a delta.
+  unreadable = true;
+  await sale(34, 5.5);
+  assert.equal(fieldOfSaleItem(lastMarketCall(session), "delta"), undefined);
+});
+
+test("a sale has the pilot's skills read first where they are not kept, as an order has, for the fee its item carries", async () => {
+  let asked = 0;
+  const skills = () => { asked += 1; if (asked === 1) throw refusedBy("NotNow"); return skillsOf(skillOf(BROKER_RELATIONS, 1, 250, 2)); };
+  const { pilots, session, handle } = await selected({ answers: { ...STANDING_ANSWERS, ...handlerAnswers({ "bound:GetSkills": skills }), "marketProxy.GetOldPriceHistory": pricesRowset(), "marketProxy.GetNewPriceHistory": pricesRowset() } }, { allowed: SALE_PAIRS, stationOwner: () => ({ ownerID: 1000099, factionID: 500099 }) });
+  await pilots.callMethod("marketProxy", "PlaceMultiSellOrder", [[{ itemID: 9001, typeID: 34, stationID: 60003760, price: 5.5, quantity: 2 }], false, 1, null], null, WHO, handle);
+  assert.deepEqual([asked, fieldOfSaleItem(lastMarketCall(session), "rawBrokerFeePercentage")], [2, brokersFeeRate({ brokerRelations: 1, factionToCharStanding: 0.0, corpToCharStanding: 0.0 })]);
+});
+
+test("a history that cannot be read leaves the sale's item without a delta, and the sale goes all the same", async () => {
+  const answers = { ...STANDING_ANSWERS, ...handlerAnswers(), "marketProxy.GetOldPriceHistory": () => { throw refusedBy("NotNow"); }, "marketProxy.GetNewPriceHistory": pricesRowset() };
+  const { pilots, session, handle } = await selected({ answers }, { allowed: SALE_PAIRS, stationOwner: () => ({ ownerID: 1000099, factionID: 500099 }) });
+  await pilots.callMethod("marketProxy", "PlaceMultiSellOrder", [[{ itemID: 9001, typeID: 34, stationID: 60003760, price: 5.5, quantity: 2 }], false, 1, null], null, WHO, handle);
+  assert.equal(fieldOfSaleItem(lastMarketCall(session), "delta"), undefined);
+  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "marketProxy.PlaceMultiSellOrder").statuses, { differs: 1 });
+  // An item that has its delta already, and what is no item, ask for nothing.
+  session.proxyCalls.length = 0;
+  await pilots.callMethod("marketProxy", "PlaceMultiSellOrder", [[{ itemID: 9001, typeID: 34, stationID: 60003760, price: 5.5, quantity: 2, delta: 0.5 }, "x"], false, 1, null], null, WHO, handle).catch(() => {});
+  assert.deepEqual(session.proxyCalls.map((call) => call.method), ["PlaceMultiSellOrder"]);
+});
+
 test("a pilot with no Broker Relations and an owner with no standing to it pays the base rate; with its skills not to be had, no rate is named", async () => {
   const none = await selected({ answers: { ...STANDING_ANSWERS, ...handlerAnswers() } }, { allowed: FEE_PAIRS, stationOwner: () => ({ ownerID: 1000099, factionID: 500099 }) });
   await none.pilots.callMethod("marketProxy", "PlaceBuyOrder", buyOrder(60003760), null, WHO, none.handle);

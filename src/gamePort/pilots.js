@@ -69,6 +69,7 @@ const { createKeptReads } = require("./keptReads");
 const { isBridgeWritePair } = require("../bridgeCallPolicy");
 const { namedAfterCall, namedOnNotice, namedOnSessionChange } = require("./cachedCallsNamed");
 const { brokersFeeRate } = require("./brokerFee");
+const { averagePrice, historyRows } = require("./priceHistory");
 const { TARGETS, TARGETERS, createPilotTargets } = require("./pilotTargets");
 const { buildSkillSheet } = require("./skillSheet");
 const { projectFlight, projectSpace } = require("./spaceProjection");
@@ -207,6 +208,8 @@ const KEPT_UNTIL_CHANGED = Object.freeze({
 const INVENTORY_LISTINGS = new Set(["List", "ListByFlags"]);
 const ITEM_NOTICES = new Set(["OnItemChange", "OnItemsChanged"]);
 const MARKET_PROXY = "marketProxy";
+/** The clock's 100 ns ticks at the start of Unix time. */
+const FILETIME_OF_UNIX_EPOCH = 116444736000000000n;
 /** invconst.typeBrokerRelations. */
 const TYPE_BROKER_RELATIONS = 3446;
 const OWN_ORDERS = "GetCharOrders";
@@ -493,6 +496,13 @@ function defaultTypeNames(typeID) {
   const type = require("../staticData").getType(typeID);
   return type ? { name: String(type.name ?? ""), groupName: String(type.groupName ?? "") } : null;
 }
+/** A type's { basePrice, portionSize } from the game's static data; null for a type it has not. */
+function defaultTypeBasePrice(typeID) {
+  // eslint-disable-next-line global-require
+  const type = require("../staticData").getType(typeID);
+  return type ? { basePrice: Number(type.basePrice) || 0, portionSize: Number(type.portionSize) || 1 } : null;
+}
+
 /** A station's { ownerID, factionID } from the game's static data; null for what is no station there. */
 function defaultStationOwner(stationID) {
   // eslint-disable-next-line global-require
@@ -612,6 +622,8 @@ function createGamePortPilots({
   typeGroup = defaultTypeGroup,
   // A station's owner and that owner's faction, for the broker's fee: cfg.stations and get_corporation_faction_id on the retail client.
   stationOwner = defaultStationOwner,
+  // A type's base price and portion size, for its average price where nothing has traded: evetypes on the retail client.
+  typeBasePrice = defaultTypeBasePrice,
   typeNames = defaultTypeNames,
   // A type's dogma effects, for naming the one a module is switched on by and saying whether it repeats.
   typeEffects = defaultTypeEffects,
@@ -1013,6 +1025,8 @@ function createGamePortPilots({
       kept: Object.fromEntries(Object.keys(KEPT_UNTIL_CHANGED).map((service) => [service, createKeptReads()])),
       /** What each container bound for the BFF lists, as the server answered, until something may have changed it (INVENTORY_LISTINGS). */
       listings: createKeptReads(),
+      /** marketQuote.GetAveragePrice for the items of the sale being made, by type (saleAveragesRead). */
+      saleAverages: new Map(),
       /** beyonce.GetFormations as the server answered it, or the asking of it under way; null before it is asked (formationsKnown). */
       formations: null,
       /** The pilot's last order to its ship in this ballpark, as { method, targetID, range }, or null (alreadyFollowing). */
@@ -1207,7 +1221,8 @@ function createGamePortPilots({
     // What the client has to hand before it makes this call: godma primed for the ship, which it is from the moment it has one,
     // and anything just fitted answered for.
     if (retailNeeds(service, method) === "orders") await ownOrdersRead(entry);
-    if (retailNeeds(service, method) === "fee") await feeInputsRead(entry);
+    if (retailNeeds(service, method) === "fee" || retailNeeds(service, method) === "sale") await feeInputsRead(entry);
+    if (retailNeeds(service, method) === "sale") await saleAveragesRead(entry, args);
     if (retailNeeds(service, method) === "dogma") {
       await shipReadings(entry, whereabouts(entry));
       await entry.itemWork;
@@ -1326,6 +1341,35 @@ function createGamePortPilots({
     };
     // A skill's level or a standing that is not known is null: no rate is made of a guess.
     return Object.values(sums).every((value) => typeof value === "number") ? brokersFeeRate(sums) : null;
+  }
+
+  /**
+   * buySellItemContainerBase.py 28: each entry of the client's sale window asks the market for its type's average
+   * price when it is made, which is the two halves of the type's price history (marketsvc.GetAveragePrice, 368).
+   * Here they are asked for as the sale goes, once for each item that has no delta of its own, each noted as the
+   * client's asking, and the average worked out from them (priceHistory.js) is kept for the shaping of this sale.
+   * A history that cannot be read leaves the type without an average: the item then goes without a delta.
+   */
+  async function saleAveragesRead(entry, args) {
+    entry.saleAverages.clear();
+    const [given] = Array.isArray(args) ? args : [];
+    for (const item of itemsOf(given)) {
+      const typeID = item && typeof item === "object" && item.type === undefined && item.delta === undefined ? positive(item.typeID) : null;
+      if (typeID === null) continue;
+      const half = (method) => {
+        const form = shape(MARKET_PROXY, method, [typeID], null, contextFor(entry));
+        ledger.note(MARKET_PROXY, method, form);
+        return byName(entry.session, MARKET_PROXY, method, form);
+      };
+      try {
+        const old = historyRows(await half("GetOldPriceHistory"));
+        const fresh = historyRows(await half("GetNewPriceHistory"));
+        const now = BigInt(Math.trunc(entry.session.serverNow())) * 10000n + FILETIME_OF_UNIX_EPOCH;
+        entry.saleAverages.set(typeID, averagePrice(old, fresh, now, typeBasePrice(typeID) ?? undefined));
+      } catch {
+        // Not this sale's to tell. Nothing is kept from a sale before (cleared above), so the type has no average.
+      }
+    }
   }
 
   /** The rate for whoever wants to show it: what an order placed at that station would name, or null. */
@@ -2240,6 +2284,8 @@ function createGamePortPilots({
       ownOrder: (orderID) => ownOrderOf(entry, orderID),
       // marketQuote.GetBrokersFeeCommissionFromStationID: the rate the client names with an order there.
       brokersFee: (stationID) => brokersFeeAt(entry, stationID),
+      // marketQuote.GetAveragePrice, as the entries of the sale being made have it (saleAveragesRead).
+      averagePrice: (typeID) => entry.saleAverages.get(positive(typeID)) ?? null,
       effectName: (itemID) => defaultEffectName(typeOf(itemID)),
       effectTargeted: (itemID, effectName) => effectTargeted(typeOf(itemID), effectName),
       effectRepeats: (itemID, effectName) => effectRepeats(typeOf(itemID), effectName),
