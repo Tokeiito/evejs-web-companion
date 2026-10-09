@@ -253,6 +253,23 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   client's own `SetModuleOnline`. I have not called it a defect or had it changed: the end
   state is the same for a retail client, and the recording was not read past that call's
   answer. Say if you want it looked into.
+- **One more server fix is on eve.js's local `main`, not pushed by me** (2026-10-09):
+  `603ae3d3d`, a game client's contract search now has its filters applied. Found with
+  contracts staged: a search for public couriers from the game port answered two item
+  exchanges, one of them private. A machoNet call's keywords reach a handler as the marshal
+  decoder's dict and the search read them as plain properties, so every filter, the sort and
+  the page start went unapplied for any real client; the web gateway's plain keywords were
+  filtered. A sub-agent fixed it test first (41 failing cases watched), in the checkout's
+  own branch, touching two files. `main` was one commit ahead of `origin/main` after it:
+  other sessions' commits there had been pushed by then.
+- **Three things that sub-agent found in the contract search and left alone**, each read or
+  run by it, none by me: a type name written the client's way (`mineral:tritanium`) now finds
+  nothing, where before the fix every search found everything; an exact-type search
+  (`itemTypes` as the client's dict) is not exact from either transport; and
+  `GetContractListForOwner` reads neither "issued to or by" nor the page keywords, answers
+  a list where Tranquility answered a rowset with `bids` beside it, and takes a status of
+  None for "outstanding". Its test runner also swept 400 stale `evejs-*` folders (1.4 GB)
+  from the temp folder.
 
 ## Server defects
 
@@ -7625,3 +7642,144 @@ followed it. The brief now says to search every folder, and before building.
     client's own map is in.
 28. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
 29. A wreck opened with its type said: no capacity, as the client has none for one.
+
+## 2026-10-09 — the pilot's own contracts, the client's way
+
+Commit `4f05839`, pushed; and a server fix, eve.js `603ae3d3d`, by a sub-agent. The second
+of the four calls the client never makes; the last, `charMgr.GetCloneInfo`, is not done.
+
+**What the retail client does.** Its My Contracts panel lists an owner's contracts by status
+(`contractPanels.py` 419). Recorded on Tranquility, to the proxy node:
+`GetContractListForOwner(charID, 0, None, None)` with `num=100` and `startContractID=None`,
+answered `{contracts: a rowset, items: {}, bids: {}}`. It never sends
+`GetMyCurrentContractList`. One contract in full is `GetContract(contractID)`, recorded with
+the ID alone. Its search was recorded too ("Open and Search Contract"): twenty-seven
+keywords with `machoVersion`, in the order this transport already sent them.
+
+**What the page did.** Asked `GetMyCurrentContractList` twice, for what the pilot issued and
+for what the pilot took on.
+
+**What was built.**
+
+- On the game port the route asks the owner's outstanding and the owner's in progress, in
+  the client's form. Each answer lists every contract the owner is a party to, so the page's
+  two lists are drawn from them: issued by the pilot, taken on by the pilot, each newest
+  first with the items of its own contracts. If either answer is refused or cannot be read,
+  both lists say so. The gateway asks as before.
+- The registry has both calls, each set beside the recording.
+- The parity tool prints what it calls moved (below).
+
+**Found with contracts staged, and repaired.** There were no contracts in the world, so
+every pass so far had compared empty lists. With four staged, the game port's search for
+public couriers answered two item exchanges and the gateway's answered none. The parity
+tool had this down as data that moved between its reads. Reading the server: a real call's
+keywords arrive as the marshal decoder's dict, and the search read its filters off them as
+properties. Handed to a sub-agent; fixed test first in eve.js (the operator's section).
+After the server was restarted on it, both transports found none.
+
+**Proof.**
+
+- Tests: 6 new (2 on the registry, 4 on the route). 69 ways of breaking it tried; six
+  survived a first pass and led to one check that did nothing being taken out and four
+  cases added (one of the two answers failing alone, a contract with no items listed, an
+  answer with no items at all, a keyword that is not the page's). All are caught.
+- Suite: 9618 tests, 9594 pass, 0 fail, 0 cancelled, 24 skipped. An earlier run, made while
+  the sub-agent's tests ran, had 2 cancelled (the brief has it). No test process left behind.
+- **Four contracts, staged twice** between Test Two and Test Pilot (an item exchange left
+  outstanding, a courier each way taken by the other, an item exchange offered to Test Two
+  alone; the store put aside first and put back after each time: both pilots' hangars as
+  before, the journal `[1,0]`, no contracts). Read as Test Two through both check BFFs:
+  the same two issued and the same one taken on, by ID, status and parties.
+- **The server's own log**, from the game port after the change: `GetContractListForOwner`
+  to the proxy node, two a read, and no `GetMyCurrentContractList`.
+- **In the browser, on the game port:** "Offered to you (1), Waiting (2), Taken on (1),
+  Expired (0)"; under Waiting the delivery being delivered and the item trade waiting,
+  under Taken on the delivery from Jita. With the server fix in, "Jobs on offer" said there
+  are no public delivery jobs.
+- **On both transports, by script**, staged and with the fix in: the Contracts route differs
+  only in how a long number is written (18 places); nothing on it is called moved. 10
+  identical, 8 tolerated, 2 moved (two clocks), 2 divergent.
+- The ledger, from that pass, the route read by script and the browser's read of all 22
+  panels: 56 pairs, none unchecked, none differing, 1 the client never makes.
+
+**Not seen working.**
+
+- An answer in Tranquility's form. Its contracts are a rowset, which the route does not
+  read: on such a server both lists would say they could not be read. This server answers
+  a list.
+- More than a hundred of an owner's contracts. The client pages by the last contract's ID;
+  the route asks for the first page.
+- A refused read, live. The corporation's contracts.
+
+**Not done.**
+
+- `charMgr.GetCloneInfo`. The page shows only the implants from it, and the client gets
+  those from `GetImplants` on its skill handler, recorded at login:
+  `skillMgr2.GetMySkillHandler()`, a bind with the first call riding along, then calls on
+  the bound object. The transport holds no skill handler, and the BFF's skill reads go by
+  name where the client binds.
+- "Offered to you" still comes from the summary and a `GetContract` for each, though the
+  owner's outstanding list has the ones offered to the pilot in person.
+- The page's lists are its own two, not the client's by status.
+
+### Next
+
+1. `charMgr.GetCloneInfo`, the last call the client never makes: the skill handler held by
+   the transport as the client holds it (bound from `GetMySkillHandler`'s moniker), the
+   implants from `GetImplants` on it, and the BFF's other skill reads made the same way.
+2. Around the contracts: "Offered to you" from the owner's list; the corporation's lists;
+   a rowset read where a server answers one; the search with something staged for each of
+   its filters, on both transports; what the sub-agent left in the server (the operator's
+   section).
+3. Around a fitted module: the recording read past `SetModuleOnline`'s answer, and this
+   server's fit set beside it; the recording of ammunition loaded while docked, and charges
+   in slots as godma holds them; the Fitting panel's cargo figure after a module's state
+   changes; a refusal to put one online shown as the client shows it; the dogma route
+   answered from godma's priming instead of its own `GetAllInfo`.
+4. Something staged for every list route that has only been compared empty (the market's
+   orders, the mail, the calendar, the fleet, the corporation's hangars), and the parity
+   pass read again.
+5. The Fleet panel asking nothing of a fleet's object while the pilot is in no fleet.
+6. A ship with several modules fitted and a hold with a packaged ship in it, staged: the
+   Fitting window's figures and the client's sums, each set beside the server's.
+7. The walk in space: undocked, every panel and the space view, the store put aside first
+   and put back after; its unread pairs read.
+8. The routes that answer from the store, listed, and each set beside what the client asks.
+9. The standings the client's way: `GetNPCNPCStandings`, and asked once at the session's
+   change and kept, with the server's notices keeping them right.
+10. The corporation registry's other calls, each set beside the client's.
+11. Phase 3's writes, feature by feature, each set beside what the client sends, each
+    looked for in every folder of the recordings first.
+12. The wallet's "Market Transactions", and the lines the client derives from a transaction.
+13. The avoidance list's own window, and a route plotted again when a setting changes under it.
+14. Around a place's name, the last of it: the outlaw's warning (the pilot's own security
+    status). The agent's own window's steps, if the client's say how far.
+15. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+    own counts on it, with the push doing the work as it does for Remove Offer.
+16. The agent's cards above its own window, where the client's window has its own header.
+17. The scanner the client's way: results kept from the server's word, a probe's destination
+    and range kept here and sent with the scan.
+18. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+    codes not done.
+19. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+20. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+21. Small, in Ready Fit: the window following a change of pilot.
+22. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+23. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+24. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+25. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions); the client's own map, to set beside this server's.
+26. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+27. Other things asked once beside the store, and other panels' effects, looked at for the
+    faults of earlier entries.
+28. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
+    client's own map is in.
+29. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
+30. A wreck opened with its type said: no capacity, as the client has none for one.

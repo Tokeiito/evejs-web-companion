@@ -266,6 +266,18 @@ Take these defaults, and list each under "For the operator" in the log so they c
   boarding that never settles: 45 seconds. Run with `--test-timeout=15000` it is cancelled, and
   a cancelled test is not counted as failed. Give that file `--test-timeout=60000`, and when
   reading a run's totals read `cancelled` beside `fail`.
+- **A pass over an empty world proves little.** The Contracts route read "identical" on both
+  transports through every parity pass while there were no contracts. With four staged
+  between the two test pilots (`contracts-stage.js` in the scratchpad shows how: give items,
+  `/api/bridge/contracts/create` and `accept` through the gateway BFF), a search differed and
+  a server defect was behind it. Stage what a list route lists before trusting a pass of it.
+- **What the parity tool calls moved is a reading, not a fact.** It prints a `moved?` line for
+  each value it puts down to time passing between its two reads, with both values: read them.
+  A clock is a clock; a count of none against two is not.
+- **Do not run this repository's whole suite while a sub-agent runs eve.js's tests.** On
+  2026-10-09 a full run beside one had two tests cancelled (the two HTTP provisioning tests,
+  each over five seconds); both passed alone and in the next full run. The cause was not
+  looked for.
 - **A native module of the client's can be run and asked.** What a script hands to a module with no
   source among the scripts (`pyEvePathfinder` is `bin64/_pyevepathfinder.dll`, loaded by
   `blue.LoadExtension`) loads in the client's own Python with `imp.load_dynamic('_name', path)`
