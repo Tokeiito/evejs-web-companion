@@ -85,14 +85,19 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
       const answer = key in answers ? answers[key] : null;
       return typeof answer === "function" ? answer(args, kwargs) : answer;
     },
-    /** A Moniker's bind: answers "N=1:<n>", counting up. */
-    async bind(service, params) {
+    /**
+     * A Moniker's bind: answers "N=1:<n>", counting up. The call that came with it, if one did, is answered as a
+     * call on the new object is, and is listed among the bound calls with them: `carried` says how each bind went.
+     */
+    async bind(service, params, call = null) {
       if (session.closed) throw sessionError("CONNECTION_CLOSED");
       session.binds.push({ service, params });
+      session.carried.push(call === null ? null : call[0]);
       const answer = answers[`bind:${service}`];
-      if (typeof answer === "function") return answer(params);
+      if (typeof answer === "function") return answer(params, call);
       session.objects += 1;
-      return { objectID: `N=1:${session.objects}`, nodeID: 1, result: null };
+      const objectID = `N=1:${session.objects}`;
+      return { objectID, nodeID: 1, result: call === null ? null : await session.callBound(objectID, call[0], call[1], call[2]) };
     },
     /** A call on a bound object. The inventory managers hand back another bound object. */
     async callBound(objectID, method, args = [], kwargs = null) {
@@ -107,6 +112,8 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
       return null;
     },
     binds: [],
+    /** For each bind, in order: the method of the call it carried, or null for a bind that carried none. */
+    carried: [],
     proxyCalls: [],
     boundCalls: [],
     objects: 0,
@@ -2931,6 +2938,73 @@ test("a module fitted to a ship the pilot is no longer in is neither asked about
   session.notify("OnItemsChanged", fittedNow(SHIP + 9));
   await settled();
   assert.deepEqual(ownCalls(session), []);
+});
+
+// ── how a Moniker the client keeps is bound ──────────────────────────────────
+//
+// moniker.py: a call that finds its Moniker unbound goes with the bind, MachoBindObject(params, (method, args,
+// keywords)), and the ones after it to the object that bound. Recorded on Tranquility at login for the dogma
+// location (GetAllInfo), invCache's two managers (GetInventoryFromId, GetInventory) and the skill handler; the
+// corporation's registry is bound with no call (base_corporation.GetCorpRegistry: Bind()), and was recorded so.
+
+test("a call that finds its Moniker unbound goes with the bind, and the calls after it to the object", async () => {
+  const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": ownShipAllInfo(), "bound:ItemGetInfo": ([itemID]) => itemRow(Number(itemID)) } }, onlineByType);
+  assert.deepEqual([session.binds, session.carried], [[], []]);
+  // godma's dogma location: the first thing asked of it is GetAllInfo, and its bind carries that.
+  await pilots.shipInfo(FIELDS, handle);
+  assert.deepEqual([session.binds, session.carried], [[{ service: "dogmaIM", params: [STATION, 15] }], ["GetAllInfo"]]);
+  assert.deepEqual(session.boundCalls.map((call) => [call.objectID, call.method, call.args, call.kwargs]), [["N=1:1", "GetAllInfo", [true, true, null], null]]);
+  // Bound now: what is asked of it next goes to the object, and nothing is bound.
+  session.notify("OnItemsChanged", fittedNow(SHIP + 9));
+  await pilots.shipInfo(FIELDS, handle);
+  assert.deepEqual([session.binds.length, session.boundCalls.slice(1).map((call) => [call.objectID, call.method])], [1, [["N=1:1", "ItemGetInfo"], ["N=1:1", "SetModuleOnline"]]]);
+  // invCache's two managers, each bound by the first thing asked of it and by nothing after.
+  await pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, handle);
+  await pilots.bindObject("invbroker", "GetInventoryFromId", [SHIP], { passive: 0 }, WHO, handle);
+  await pilots.bindObject("invbroker", "GetInventoryFromId", [77], { passive: 1 }, WHO, handle);
+  await pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, handle);
+  assert.deepEqual(session.carried, ["GetAllInfo", "GetInventory", "GetInventoryFromId"]);
+  assert.deepEqual(session.boundCalls.slice(3).map((call) => [call.method, call.args]), [["GetInventory", [10004, null]], ["GetInventoryFromId", [SHIP, 0]], ["GetInventoryFromId", [77, 1]], ["GetInventory", [10004, null]]]);
+  // A named call on a service's moniker: the ship's is bound by the undock, with its keyword.
+  await pilots.callMethod("ship", "Undock", [SHIP, false], { onlineModules: [] }, FIELDS, handle);
+  assert.deepEqual([session.carried.at(-1), session.binds.at(-1)], ["Undock", { service: "ship", params: [STATION, 15] }]);
+  assert.deepEqual(session.boundCalls.at(-1).kwargs, { onlineModules: { type: "dict", entries: [[27, SHIP + 1], [30, SHIP + 9]] } });
+});
+
+test("the corporation's registry is bound for its own sake, with no call, and then asked", async () => {
+  const { pilots, session, handle } = await selected(undefined, REGISTRY_PAIRS);
+  await pilots.callMethod("corpRegistry", "GetCorporation", [], null, FIELDS, handle);
+  await pilots.callMethod("corpRegistry", "GetShareholders", [98000001], null, FIELDS, handle);
+  assert.deepEqual([session.binds, session.carried], [[{ service: "corpRegistry", params: 1000044 }], [null]]);
+  assert.deepEqual(session.boundCalls.map((call) => [call.objectID, call.method, call.args]), [["N=1:1", "GetCorporation", []], ["N=1:1", "GetShareholders", [98000001]]]);
+});
+
+test("a Moniker binds once at a time: a call that finds it binding waits for the object; after a bind that failed, the next call binds for itself", async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const waiting = await selected({ answers: {
+    "bind:dogmaIM": async (params, call) => { await gate; return { objectID: "N=1:90", nodeID: 1, result: `with the bind: ${call[0]}` }; },
+    "bound:GetCharacterBaseAttributes": "on the object",
+    "bound:GetDroneDamageStates": "on the object too",
+  } }, { allowed: new Set(["dogmaIM.GetCharacterBaseAttributes", "dogmaIM.GetDroneDamageStates"]), shape: (service, method, args, kwargs) => ({ args, kwargs, status: "same", source: null, note: null, moniker: true, proxy: false }) });
+  const ask = (method) => waiting.pilots.callMethod("dogmaIM", method, [], null, FIELDS, waiting.handle).then((answer) => answer.result);
+  const [first, second, third] = [ask("GetCharacterBaseAttributes"), ask("GetDroneDamageStates"), ask("GetCharacterBaseAttributes")];
+  await settled();
+  assert.deepEqual([waiting.session.binds.length, waiting.session.carried, waiting.session.boundCalls], [1, ["GetCharacterBaseAttributes"], []]);
+  release();
+  assert.deepEqual(await Promise.all([first, second, third]), ["with the bind: GetCharacterBaseAttributes", "on the object too", "on the object"]);
+  assert.deepEqual([waiting.session.binds.length, waiting.session.boundCalls.map((call) => [call.objectID, call.method])], [1, [["N=1:90", "GetDroneDamageStates"], ["N=1:90", "GetCharacterBaseAttributes"]]]);
+
+  // The call that came with a bind is refused: nothing was bound, and the next call goes with a bind of its own.
+  let binds = 0;
+  const refusing = await selected({ answers: {
+    "bind:dogmaIM": async (params, call) => { binds += 1; if (binds === 1) throw refusedBy("NotNow"); return { objectID: "N=1:91", nodeID: 1, result: `bound by ${call[0]}` }; },
+  } }, { allowed: new Set(["dogmaIM.GetCharacterBaseAttributes", "dogmaIM.GetDroneDamageStates"]), shape: (service, method, args, kwargs) => ({ args, kwargs, status: "same", source: null, note: null, moniker: true, proxy: false }) });
+  const again = (method) => refusing.pilots.callMethod("dogmaIM", method, [], null, FIELDS, refusing.handle).then((answer) => answer.result);
+  // Two at once: the one that waited on the failed bind binds for itself.
+  const [refused, after] = [again("GetCharacterBaseAttributes"), again("GetDroneDamageStates")];
+  await rejects(refused, "CALL_REFUSED");
+  assert.deepEqual([await after, refusing.session.carried], ["bound by GetDroneDamageStates", ["GetCharacterBaseAttributes", "GetDroneDamageStates"]]);
 });
 
 test("with godma not primed there is no entry to give, and the ship is still said", async () => {

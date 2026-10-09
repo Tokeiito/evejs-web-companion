@@ -34,7 +34,7 @@ const {
   TYPE, anyAddress, buildPacket, clientAddress, dictGet, integer, nodeAddress, parsePacket, text, unwrapSubstream,
 } = require("./packets");
 const { caseFold, cryptoHash, passwordHash, randomBytes } = require("./placebo");
-const { keywordOrder, orderEntries } = require("./py27");
+const { keywordOrder, monikerKeywordOrder, orderEntries } = require("./py27");
 const { wireToBridgeJson } = require("./bridgeJson");
 
 /** What the client says it is. From the client's start.ini and GPS.py. */
@@ -83,6 +83,16 @@ const KNOWN_HANDSHAKE_FUNCTIONS = new Map([
 ]);
 
 const dict = (entries) => ({ type: "dict", entries });
+/** A bind's parameters as a name for the address: a number however it is held, or the numbers of a tuple. */
+const addressKey = (value) => (Array.isArray(value) ? `(${value.map(addressKey).join(",")})` : String(value));
+/**
+ * The call a bind carries, as the client's Moniker hands it over: (method, args, keywords), the keywords a dict of
+ * their own in the order moniker.py leaves them in, and never None.
+ */
+function carriedCall([method, args, kwargs]) {
+  const written = new Map(kwargs && kwargs.type === "dict" ? kwargs.entries : Object.entries(kwargs ?? {}));
+  return [method, args ?? [], dict(monikerKeywordOrder([...written.keys()]).map((name) => [name, written.get(name)]))];
+}
 /** A Python unicode object, as opposed to a byte string. */
 const unicode = (value) => ({ type: "wstring", value });
 const bytes = (buffer) => ({ type: "bytes", value: buffer });
@@ -277,6 +287,10 @@ class GamePortSession {
     this.handshakeWaiters = [];
     this.pending = new Map();
     this.nextCallID = 1;
+    /** machoNet's address cache: "service:bindParams" -> the node that address was said to live on. */
+    this.nodeOfAddress = new Map();
+    /** The addresses being asked about now, each with the answer that is awaited. */
+    this.resolving = new Map();
     /** Cached objects fetched so far, by object ID: {stamp, checksum, value}. */
     this.cachedObjects = new Map();
 
@@ -476,16 +490,29 @@ class GamePortSession {
   }
 
   /**
-   * Bind a service's object, as a Moniker does: ask any node which node holds
-   * the object (MachoResolveObject), then bind it on that node
-   * (MachoBindObject). Returns {objectID, nodeID, result}; `result` is the
-   * answer to `call`, a (method, args, kwargs) the bind can carry along.
+   * Bind a service's object, as a Moniker does (moniker.py Bind): find the node
+   * the address lives on, which is asked of any node once (MachoResolveObject)
+   * and remembered as machoNet's address cache remembers it, then bind there
+   * (MachoBindObject). `call` is the call that made the Moniker bind,
+   * [method, args, keywords], and rides along: the client sends
+   * MachoBindObject(bindParams, (method, args, keywords)) and gets the object
+   * and the call's answer together. Returns {objectID, nodeID, result}.
    */
   async bind(service, bindParams, call = null) {
-    const nodeID = integer(await this.call(service, "MachoResolveObject", [bindParams]));
-    if (nodeID === null) throw new GamePortError("RESOLVE_FAILED", `${service} could not say where its object lives.`);
+    const address = `${service}:${addressKey(bindParams)}`;
+    let nodeID = this.nodeOfAddress.get(address) ?? null;
+    if (nodeID === null) {
+      // Asked once however many are waiting: machoNet shares the answer among the same call made twice at once.
+      if (!this.resolving.has(address)) {
+        const asking = this.call(service, "MachoResolveObject", [bindParams]).finally(() => this.resolving.delete(address));
+        this.resolving.set(address, asking);
+      }
+      nodeID = integer(await this.resolving.get(address));
+      if (nodeID === null) throw new GamePortError("RESOLVE_FAILED", `${service} could not say where its object lives.`);
+      this.nodeOfAddress.set(address, nodeID);
+    }
     const reply = await this._call({
-      destination: nodeAddress(nodeID, service), boundObject: null, service, method: "MachoBindObject", args: [bindParams, call], kwargs: null,
+      destination: nodeAddress(nodeID, service), boundObject: null, service, method: "MachoBindObject", args: [bindParams, call === null ? null : carriedCall(call)], kwargs: null,
     });
     const head = Array.isArray(reply) ? reply[0] : null;
     const pair = unwrapSubstream(head && typeof head === "object" && head.type === "substruct" ? head.value : head);

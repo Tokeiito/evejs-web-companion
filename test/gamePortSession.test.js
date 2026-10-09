@@ -23,6 +23,7 @@ const { marshalDecode, marshalDecodeExact, marshalEncode } = require("../src/gam
 const { GamePortSession, GamePortError } = require("../src/gamePort/session");
 const { TYPE, buildPacket, clientAddress, nodeAddress, parsePacket, text, dictGet } = require("../src/gamePort/packets");
 const { caseFold, cryptoHash, passwordHash } = require("../src/gamePort/placebo");
+const { monikerKeywordOrder } = require("../src/gamePort/py27");
 const { converse, recordingSessionOptions } = require("../scripts/capture-game-frames");
 const fixture = require("./fixtures/gamePortFrames.json");
 const oracle = require("./fixtures/py27Oracle.json");
@@ -790,4 +791,126 @@ test("a provisional answer's wait runs from when it came, ends in a timeout, and
     assert.equal(failure, "CALL_TIMEOUT");
     assert.equal(session.pending.has(Number(callID)), false);
   }
+});
+
+// ── a Moniker's bind ─────────────────────────────────────────────────────────
+//
+// moniker.py: a Moniker that is not bound finds the node its address lives on (machoNet's address cache, or
+// MachoResolveObject, whose answer goes into that cache) and binds there, carrying the call that made it bind:
+// MachoBindObject(bindParams, (method, args, keywords)). Recorded on Tranquility at login, eleven binds, ten of
+// them carrying a call; and in this server's own log of a retail client, one MachoResolveObject of crimewatch
+// and four binds after it.
+
+/** What a bind is answered with: the bound object, and the answer to the call it carried. */
+const boundAs = (objectID, result = null) => [{ type: "substruct", value: { type: "substream", value: [Buffer.from(objectID), 134359051855730000n] } }, result];
+/** Answer the last call the session sent. */
+async function answerLast(transport, result) {
+  await settle();
+  transport.deliver(callResponse(lastCall(transport).packet.source.callID, result));
+  await settle();
+}
+const sentTo = (transport) => { const call = lastCall(transport); return [call.method, call.packet.destination.kind, call.packet.destination.service]; };
+
+test("the node an address lives on is asked for once: another bind of that address goes straight to the node", { timeout: 5000 }, async (context) => {
+  const { session, transport } = await loggedIn(context);
+  const first = session.bind("crimewatch", [60000004, 15]);
+  await settle();
+  assert.deepEqual(sentTo(transport), ["MachoResolveObject", "any", "crimewatch"]);
+  await answerLast(transport, 65450);
+  assert.deepEqual(sentTo(transport), ["MachoBindObject", "node", "crimewatch"]);
+  await answerLast(transport, boundAs("N=65450:71"));
+  assert.deepEqual([(await first).objectID, (await first).nodeID], ["N=65450:71", 65450]);
+
+  // The same address again, its station written as a long this time: one packet, the bind, to the node that was named.
+  const before = transport.sent.length;
+  const second = session.bind("crimewatch", [60000004n, 15]);
+  await settle();
+  assert.equal(transport.sent.length, before + 1);
+  assert.deepEqual([...sentTo(transport), lastCall(transport).packet.destination.nodeID], ["MachoBindObject", "node", "crimewatch", 65450]);
+  await answerLast(transport, boundAs("N=65450:72"));
+  assert.equal((await second).objectID, "N=65450:72");
+
+  // Another service at the same place, the same service somewhere else or by another group of the same number, and
+  // addresses that are one number each: every one is asked for.
+  for (const [service, params] of [["ship", [60000004, 15]], ["crimewatch", [30002780, 5]], ["crimewatch", [60000004, 5]], ["skillHandler", 140000002], ["skillHandler", 140000003]]) {
+    const bind = session.bind(service, params);
+    await settle();
+    assert.deepEqual(sentTo(transport), ["MachoResolveObject", "any", service], service);
+    await answerLast(transport, 65450);
+    await answerLast(transport, boundAs("N=65450:80"));
+    await bind;
+  }
+  // An address no node would own up to is not remembered as living anywhere: it is asked for again.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const lost = assert.rejects(session.bind("ship", [60000099, 15]), (error) => error.code === "RESOLVE_FAILED");
+    await settle();
+    assert.equal(lastCall(transport).method, "MachoResolveObject");
+    await answerLast(transport, null);
+    await lost;
+  }
+});
+
+test("two binds of one address at once ask where it lives once, and each then binds", { timeout: 5000 }, async (context) => {
+  // The client's machoNet shares one answer among the same call made twice at once ("Sharing result for call ...
+  // for 2 waiting threads", in a recording of its login): invCache's two managers are one address.
+  const { session, transport } = await loggedIn(context);
+  const before = transport.sent.length;
+  const [station, location] = [session.bind("invbroker", [60000004, 15], ["GetInventory", [10004, null], null]), session.bind("invbroker", [60000004, 15], ["GetInventoryFromId", [9001, 0], null])];
+  await settle();
+  assert.equal(transport.sent.length, before + 1);
+  assert.equal(lastCall(transport).method, "MachoResolveObject");
+  await answerLast(transport, 65450);
+  // Both binds are on the wire now, each with its own call; they are answered in the order they were sent.
+  const sent = transport.sent.slice(before + 1).map((bytes) => { const [, pickle] = parsePacket(marshalDecodeExact(inflated(bytes))).body[0]; return [text(pickle.value[1]), text(pickle.value[2][1][0])]; });
+  assert.deepEqual(sent, [["MachoBindObject", "GetInventory"], ["MachoBindObject", "GetInventoryFromId"]]);
+  const ids = transport.sent.slice(before + 1).map((bytes) => parsePacket(marshalDecodeExact(inflated(bytes))).source.callID);
+  transport.deliver(callResponse(ids[0], boundAs("N=65450:14")));
+  transport.deliver(callResponse(ids[1], boundAs("N=65450:15")));
+  assert.deepEqual([(await station).objectID, (await location).objectID], ["N=65450:14", "N=65450:15"]);
+  // A resolve that fails fails both, and the next bind asks again.
+  const [one, two] = [session.bind("ship", [60000099, 15]), session.bind("ship", [60000099, 15])].map((bind) => assert.rejects(bind, (error) => error.code === "RESOLVE_FAILED"));
+  await answerLast(transport, null);
+  await Promise.all([one, two]);
+  const asked = transport.sent.length;
+  const again = assert.rejects(session.bind("ship", [60000099, 15]), (error) => error.code === "RESOLVE_FAILED");
+  await settle();
+  assert.deepEqual([transport.sent.length, lastCall(transport).method], [asked + 1, "MachoResolveObject"]);
+  await answerLast(transport, null);
+  await again;
+});
+
+test("a call given to a bind rides along with it: (method, arguments, keywords) after the bind's own parameters", { timeout: 5000 }, async (context) => {
+  const { session, transport } = await loggedIn(context);
+  const carried = async (service, params, call, answer) => {
+    const bind = session.bind(service, params, call);
+    await answerLast(transport, 65450);
+    const sent = lastCall(transport);
+    await answerLast(transport, answer);
+    return { sent, bound: await bind };
+  };
+  // As recorded: MachoBindObject(charID, ('GetBoosters', (), {})), and machoVersion on the bind's own keywords alone.
+  const boosters = await carried("skillHandler", 140000002, ["GetBoosters", [], null], boundAs("N=65450:5", "the call's own answer"));
+  assert.equal(boosters.sent.method, "MachoBindObject");
+  assert.deepEqual(boosters.sent.kwargs.entries.map(([key, value]) => [text(key), value]), [["machoVersion", 1]]);
+  const [params, call] = boosters.sent.args;
+  assert.deepEqual([params, call.length, text(call[0]), call[1], call[2]], [140000002, 3, "GetBoosters", [], { type: "dict", entries: [] }]);
+  assert.deepEqual([boosters.bound.objectID, text(boosters.bound.result)], ["N=65450:5", "the call's own answer"]);
+
+  // Its arguments are a tuple of their own, and its keywords go in the order the client's Python gives them, without the
+  // two the client keeps to itself.
+  const written = ["passive", "machoTimeout", "flag", "qty", "locationID", "ownerID", "itemID", "typeID", "force", "name"];
+  const keywords = Object.fromEntries(written.map((name, index) => [name, index]));
+  const many = await carried("invbroker", [60000004, 15], ["GetInventoryFromId", [9988400091900n, 1], keywords], boundAs("N=65450:6"));
+  const [, withKeywords] = many.sent.args;
+  assert.deepEqual([text(withKeywords[0]), withKeywords[1]], ["GetInventoryFromId", [9988400091900, 1]]);
+  assert.deepEqual(withKeywords[2].entries.map(([key]) => text(key)), monikerKeywordOrder(written));
+  assert.deepEqual(new Map(withKeywords[2].entries.map(([key, value]) => [text(key), value])).get("locationID"), 4);
+  assert.equal(withKeywords[2].entries.length, written.length - 1);
+  // Keywords given as a dict's entries are the same thing.
+  const asEntries = await carried("ship", [60000004, 15], ["Undock", [9001, false], { type: "dict", entries: [["onlineModules", { type: "dict", entries: [[19, 9002]] }]] }], boundAs("N=65450:7"));
+  assert.deepEqual(asEntries.sent.args[1][2], { type: "dict", entries: [[Buffer.from("onlineModules"), { type: "dict", entries: [[19, 9002]] }]] });
+
+  // With no call the bind carries None, as a Moniker bound for its own sake does.
+  const bare = await carried("corpRegistry", 98000000, null, boundAs("N=65450:8"));
+  assert.deepEqual(bare.sent.args, [98000000, null]);
 });

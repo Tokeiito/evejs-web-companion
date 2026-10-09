@@ -215,4 +215,24 @@ function keywordOrder(written, { via = "function", hops = 0, added = ["machoVers
   return sent.keys();
 }
 
-module.exports = { Dict, dictOrder, hashKey, hashLong, hashString, keywordOrder, orderEntries };
+/** moniker.py Bind's localKeywords: what a call's keywords say to the client itself, and are not sent. */
+const MONIKER_LOCAL_KEYWORDS = new Set(["machoTimeout", "noCallThrottling"]);
+
+/**
+ * The order the keywords of a call go in when the call rides along with a
+ * Moniker's bind (moniker.py). MonikerCallWrap is an object with __call__, so
+ * the interpreter collects them as for a bound object's method; Bind then
+ * builds a new dict of them, without the client's own two. Nothing is added:
+ * machoVersion goes on the bind's own keywords.
+ */
+function monikerKeywordOrder(written) {
+  const collected = new Dict();
+  for (const key of [...written].reverse()) collected.set(key);
+  const keywords = new Dict();
+  for (const key of collected.keys()) keywords.set(key);
+  const sent = new Dict();
+  for (const key of keywords.keys()) if (!MONIKER_LOCAL_KEYWORDS.has(key)) sent.set(key);
+  return sent.keys();
+}
+
+module.exports = { Dict, dictOrder, hashKey, hashLong, hashString, keywordOrder, monikerKeywordOrder, orderEntries };

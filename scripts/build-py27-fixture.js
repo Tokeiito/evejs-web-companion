@@ -179,10 +179,21 @@ function snippet(sets) {
     // A plain function, which is what a remote SERVICE's method is in the client.
     "def function0(*args, **keywords):",
     "    return bottom(keywords)",
+    // A call that rides along with a Moniker's bind (moniker.py): the wrapper is an object with __call__, and
+    // Bind builds the keywords anew without the two the client keeps to itself. Nothing is added to them.
+    "class MonikerWrap:",
+    "    def __call__(self, *args, **kw):",
+    "        call = ('Method', args, kw)",
+    "        localKeywords = ('machoTimeout', 'noCallThrottling')",
+    "        if call is not None and call[2]:",
+    "            c2 = {k: v for k, v in call[2].iteritems() if k not in localKeywords}",
+    "            call = (call[0], call[1], c2)",
+    "        return chr(31).join(call[2].keys())",
+    "mw = MonikerWrap()",
   );
   for (const keys of keywordCases()) {
     const call = `(1, ${keys.map((key) => `${key}=0`).join(", ")})`;
-    lines.push(`out('kw ' + w0${call} + chr(30) + w1${call} + chr(30) + w2${call} + chr(30) + function0${call})`);
+    lines.push(`out('kw ' + w0${call} + chr(30) + w1${call} + chr(30) + w2${call} + chr(30) + function0${call} + chr(30) + mw${call})`);
   }
   for (const hex of CRC_INPUTS) {
     lines.push(`out('crc ${hex} %d' % binascii.crc_hqx(binascii.unhexlify('${hex}'), 0))`);
@@ -243,8 +254,10 @@ function main(argv = process.argv.slice(2)) {
     } else if (kind === "kw") {
       // The same call made on an object with __call__ whose keywords then pass
       // through no, one and two more functions, and made on a plain function.
-      const [object0, object1, object2, viaFunction] = rest.split(String.fromCharCode(30)).map((order) => order.split(SEPARATOR));
-      fixture.keywords.push({ written: keywordSets[fixture.keywords.length], viaObject: [object0, object1, object2], viaFunction });
+      const [object0, object1, object2, viaFunction, moniker] = rest.split(String.fromCharCode(30)).map((order) => order.split(SEPARATOR));
+      // And made on a Moniker that is not bound yet, where the call goes with the bind: none left is one empty name.
+      const viaMoniker = moniker.filter((name) => name !== "");
+      fixture.keywords.push({ written: keywordSets[fixture.keywords.length], viaObject: [object0, object1, object2], viaFunction, viaMoniker });
     } else if (kind === "fold") {
       fixture.caseFolds.push(rest.split(" "));
     } else if (kind === "literal" || kind === "inserted") {

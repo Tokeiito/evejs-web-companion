@@ -8,7 +8,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { Dict, dictOrder, hashKey, keywordOrder } = require("../src/gamePort/py27");
+const { Dict, dictOrder, hashKey, keywordOrder, monikerKeywordOrder } = require("../src/gamePort/py27");
 const oracle = require("./fixtures/py27Oracle.json");
 
 /** "s:name" -> "name"; "i:123" -> 123, or a BigInt when a number would lose digits. */
@@ -90,4 +90,20 @@ test("a copied dict has the table size the client's interpreter gives it", () =>
 test("a key with no Python 2.7 hash here is refused, not guessed", () => {
   assert.throws(() => hashKey(1.5), /No Python 2\.7 hash/);
   assert.throws(() => hashKey(null), /No Python 2\.7 hash/);
+});
+
+test("the keywords of a call that rides along with a Moniker's bind go in the order the client's own Python gives them", () => {
+  // moniker.py: MonikerCallWrap.__call__ collects them, Bind builds them anew without machoTimeout and
+  // noCallThrottling, and nothing is added. Asked of the client's python27.dll for every case.
+  assert.ok(oracle.keywords.every(({ viaMoniker }) => Array.isArray(viaMoniker)));
+  for (const { written, viaMoniker } of oracle.keywords) {
+    assert.deepEqual(monikerKeywordOrder(written), viaMoniker, `moniker: ${written}`);
+  }
+  // The cases tell this path from a bound object's own, and from the order written.
+  const kept = (names) => names.filter((name) => name !== "machoVersion" && name !== "machoTimeout" && name !== "noCallThrottling");
+  const unlikeObject = oracle.keywords.filter(({ viaObject, viaMoniker }) => kept(viaObject[0]).join() !== viaMoniker.join());
+  const unlikeWritten = oracle.keywords.filter(({ written, viaMoniker }) => kept(written).join() !== viaMoniker.join());
+  assert.ok(unlikeObject.length > 5 && unlikeWritten.length > 50, `${unlikeObject.length} and ${unlikeWritten.length}`);
+  // The two the client keeps to itself are never sent; one of them alone leaves none.
+  assert.deepEqual([monikerKeywordOrder(["machoTimeout"]), monikerKeywordOrder(["passive", "noCallThrottling"]), monikerKeywordOrder([])], [[], ["passive"], []]);
 });
