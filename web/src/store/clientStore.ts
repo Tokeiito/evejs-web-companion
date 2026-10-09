@@ -2624,6 +2624,9 @@ export function createClientStore(): ClientStore {
         names.set({ ...current, autopilotJumps: { ...current.autopilotJumps, ...event.jumps } });
         break;
       }
+      case "names/autopilot-jumps-cleared":
+        names.set({ ...names.get(), autopilotJumps: INITIAL_NAMES.autopilotJumps });
+        break;
       case "names/system-security": {
         const current = names.get();
         names.set({ ...current, systemSecurity: { ...current.systemSecurity, ...event.security } });

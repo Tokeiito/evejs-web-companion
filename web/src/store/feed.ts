@@ -1040,6 +1040,8 @@ export type FeedEvent =
   | { readonly type: "names/system-security"; readonly security: Readonly<Record<number, number | null>> }
   // The jumps on the autopilot's route between some pairs of systems, by "<from>:<to>" (null: no route).
   | { readonly type: "names/autopilot-jumps"; readonly jumps: Readonly<Record<string, number | null>> }
+  // The autopilot's settings changed, or the pilot did: what was worked out before is forgotten.
+  | { readonly type: "names/autopilot-jumps-cleared" }
   // The retail client's text for some labels has been read (or found missing).
   | {
       readonly type: "words/loaded";

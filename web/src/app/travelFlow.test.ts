@@ -438,3 +438,105 @@ test("startRoute plots the way the client's autopilot does: the safe way, and ro
   assert.deepEqual((await routeTo(JITA)).systems, [JITA]);
   assert.deepEqual((await routeTo(LOW)).systems, [LOW]);
 });
+
+// --- the autopilot's settings ------------------------------------------------
+
+/** Alpha to Delta: two jumps through a low-security system, two through Jita, or three through safe ones. */
+const SETTINGS_DELTA = 30000004;
+const SETTINGS_LOW = 30000006;
+const SETTINGS_JITA = 30000142;
+const SETTINGS_GRAPH = {
+  ok: true,
+  systems: { [ALPHA]: "Alpha", [BRAVO]: "Bravo", [CHARLIE]: "Charlie", [SETTINGS_DELTA]: "Delta", [SETTINGS_LOW]: "Low", [SETTINGS_JITA]: "Jita" },
+  security: { [ALPHA]: 1, [BRAVO]: 0.9, [CHARLIE]: 0.8, [SETTINGS_DELTA]: 0.7, [SETTINGS_LOW]: 0.3, [SETTINGS_JITA]: 0.9 },
+  edges: [[ALPHA, SETTINGS_LOW], [SETTINGS_LOW, SETTINGS_DELTA], [ALPHA, SETTINGS_JITA], [SETTINGS_JITA, SETTINGS_DELTA], [ALPHA, BRAVO], [BRAVO, CHARLIE], [CHARLIE, SETTINGS_DELTA]]
+    .flatMap(([a, b], at) => [[a, b, 700 + at * 2, 701 + at * 2], [b, a, 701 + at * 2, 700 + at * 2]]),
+};
+function settingsFlow(kept: Map<string, string> | null, characterID = 140000003) {
+  const store = createClientStore();
+  const flow = createAppFlow(store, {
+    fetch: makeFakeFetch((path) => (path === "/api/map/graph" ? { status: 200, body: SETTINGS_GRAPH } : defaultResponder(path))),
+    storage: kept === null ? null : { getItem: (key) => kept.get(key) ?? null, setItem: (key, value) => { kept.set(key, value); } },
+  });
+  store.apply({ type: "character/online", character: { characterID, characterName: "Test", stationID: 60000001, structureID: null, solarSystemID: ALPHA, corporationID: 98000000 }, station: null });
+  const wayTo = async (destination: number) => {
+    await flow.startRoute(destination);
+    const systems = store.travel.get().route.map((hop) => hop.toSystemID);
+    flow.abortRoute();
+    return systems;
+  };
+  return { store, flow, wayTo };
+}
+
+test("the route goes by the pilot's settings: shorter still goes round what is avoided, and with avoiding off through it", async () => {
+  const { flow, wayTo } = settingsFlow(new Map());
+  assert.deepEqual(flow.autopilotSettings(), {});
+  assert.deepEqual(await wayTo(SETTINGS_DELTA), [BRAVO, CHARLIE, SETTINGS_DELTA]);
+  // Shorter: through low security, but not through Jita.
+  assert.deepEqual(flow.setAutopilotRouteType("shortest"), { pfRouteType: "shortest" });
+  assert.deepEqual(await wayTo(SETTINGS_DELTA), [SETTINGS_LOW, SETTINGS_DELTA]);
+  // Safer again, with avoiding off: through Jita. The first click on the tick leaves avoiding on.
+  flow.setAutopilotRouteType("safe");
+  assert.deepEqual(flow.clickAutopilotAvoidSystems(), { pfRouteType: "safe", pfAvoidSystems: true });
+  assert.deepEqual(await wayTo(SETTINGS_DELTA), [BRAVO, CHARLIE, SETTINGS_DELTA]);
+  assert.deepEqual(flow.clickAutopilotAvoidSystems(), { pfRouteType: "safe", pfAvoidSystems: false });
+  assert.deepEqual(await wayTo(SETTINGS_DELTA), [SETTINGS_JITA, SETTINGS_DELTA]);
+  // Less secure: the low-security way is the one inside its limits.
+  flow.setAutopilotRouteType("unsafe");
+  assert.deepEqual(await wayTo(SETTINGS_DELTA), [SETTINGS_LOW, SETTINGS_DELTA]);
+  // The penalty: at its least, one low-security system costs the safe route less than two more jumps.
+  flow.setAutopilotRouteType("safe");
+  flow.clickAutopilotAvoidSystems();
+  assert.deepEqual(flow.setAutopilotPenalty(1), { pfRouteType: "safe", pfAvoidSystems: true, pfPenalty: 1 });
+  assert.deepEqual(await wayTo(SETTINGS_DELTA), [SETTINGS_LOW, SETTINGS_DELTA]);
+});
+
+test("the settings are kept for the character: another flow reads them back, and another character has its own", async () => {
+  const kept = new Map<string, string>();
+  const first = settingsFlow(kept);
+  first.flow.setAutopilotRouteType("shortest");
+  first.flow.setAutopilotPenalty(20);
+  assert.deepEqual(JSON.parse(kept.get("evejs.autopilot.settings.140000003")!), { pfRouteType: "shortest", pfPenalty: 20 });
+
+  const again = settingsFlow(kept);
+  assert.deepEqual(again.flow.autopilotSettings(), { pfRouteType: "shortest", pfPenalty: 20 });
+  assert.deepEqual(await again.wayTo(SETTINGS_DELTA), [SETTINGS_LOW, SETTINGS_DELTA]);
+
+  const other = settingsFlow(kept, 140000009);
+  assert.deepEqual(other.flow.autopilotSettings(), {});
+  assert.deepEqual(await other.wayTo(SETTINGS_DELTA), [BRAVO, CHARLIE, SETTINGS_DELTA]);
+  other.flow.setAutopilotRouteType("unsafe");
+  assert.deepEqual(again.flow.autopilotSettings(), { pfRouteType: "shortest", pfPenalty: 20 });
+  assert.deepEqual(Object.keys(Object.fromEntries(kept)).sort(), ["evejs.autopilot.settings.140000003", "evejs.autopilot.settings.140000009"]);
+
+  // With nowhere to keep them they last as long as the flow does.
+  const unkept = settingsFlow(null);
+  unkept.flow.setAutopilotRouteType("shortest");
+  assert.deepEqual(unkept.flow.autopilotSettings(), { pfRouteType: "shortest" });
+  assert.deepEqual(await unkept.wayTo(SETTINGS_DELTA), [SETTINGS_LOW, SETTINGS_DELTA]);
+});
+
+test("the jumps worked out are by the settings too, and are forgotten when a setting changes or the pilot does", async () => {
+  const kept = new Map<string, string>();
+  const { store, flow } = settingsFlow(kept);
+  const jumps = () => store.names.get().autopilotJumps;
+  const worked = async () => {
+    flow.requestAutopilotJumps(ALPHA, [SETTINGS_DELTA]);
+    for (let waited = 0; waited < 200 && !(`${ALPHA}:${SETTINGS_DELTA}` in jumps()); waited += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    return jumps()[`${ALPHA}:${SETTINGS_DELTA}`];
+  };
+  assert.equal(await worked(), 3);
+  flow.setAutopilotRouteType("shortest");
+  assert.deepEqual(jumps(), {});
+  assert.equal(await worked(), 2);
+  flow.setAutopilotPenalty(30);
+  assert.deepEqual(jumps(), {});
+  assert.equal(await worked(), 2);
+  flow.clickAutopilotAvoidSystems();
+  assert.deepEqual(jumps(), {});
+  // Another pilot at the helm, with nothing set: the last one's counts are not kept for it.
+  assert.equal(await worked(), 2);
+  store.apply({ type: "character/online", character: { characterID: 140000009, characterName: "Other", stationID: 60000001, structureID: null, solarSystemID: ALPHA, corporationID: 98000000 }, station: null });
+  assert.equal(await worked(), 3);
+  assert.deepEqual(flow.autopilotSettings(), {});
+});

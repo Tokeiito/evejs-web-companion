@@ -1958,6 +1958,13 @@ test("names resolved after a system's security has been read leave it where it i
     systemSecurity: { 30002780: 0.708087, 30002778: 0.830855 },
     autopilotJumps: { "30002780:30002778": 2, "30002778:30002780": 2, "30002780:31000005": null },
   });
+  // The jumps forgotten, as when the autopilot's settings change, leave the rest.
+  store.apply({ type: "names/autopilot-jumps-cleared" });
+  assert.deepEqual(store.names.get(), {
+    resolved: { "system:30002780": "Muvolailen", "system:30002778": "Tasabeshi" },
+    systemSecurity: { 30002780: 0.708087, 30002778: 0.830855 },
+    autopilotJumps: {},
+  });
 });
 
 // --- what is asked once, after the pilot is selected again ------------------------------

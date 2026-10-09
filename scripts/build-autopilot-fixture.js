@@ -29,6 +29,8 @@ const path = require("node:path");
 const WEB_ROOT = path.resolve(__dirname, "..");
 const OUTPUT = path.join(WEB_ROOT, "test", "fixtures", "autopilotRoute.json");
 const BASE = 30000000;
+/** The client's route types and the limits each gives the module (evePathfinder/core.py ROUTE_TYPES); "shortest" gives none. */
+const LIMITS = { safe: [0.45, 1.0], unsafe: [0.0, 0.45], "unsafe + zerosec": [-1.0, 0.45], shortest: null };
 /** How many orders each map is put to the module in. */
 const ORDERS = 8;
 
@@ -61,11 +63,29 @@ function detour(name, middle, n, options = {}) {
   const round = chain(Array.from({ length: n }, (_, i) => BASE + 100 + i), 1.0, start);
   return {
     name,
+    routeType: options.routeType ?? "safe",
     penalty: options.penalty ?? 50,
     avoid: options.avoid ?? [],
     systems: { [start]: options.start ?? 1.0, [BASE + 2]: middle, [end]: options.end ?? 1.0, ...round.systems },
     jumps: [[start, BASE + 2], [BASE + 2, end], ...round.jumps, ...(n > 0 ? [[round.last, end]] : [])],
     pairs: [[start, end], [end, start], [start, BASE + 2]],
+  };
+}
+
+/** Start - `k` systems of one security - end, against `n` of another, the ends of a third: which costs the module less. */
+function twoWays(routeType, penalty, k, wayLevel, n, roundLevel, ends) {
+  const start = BASE + 1;
+  const end = BASE + 2;
+  const way = chain(Array.from({ length: k }, (_, i) => BASE + 10000 + i), wayLevel, start);
+  const round = chain(Array.from({ length: n }, (_, i) => BASE + 20000 + i), roundLevel, start);
+  return {
+    name: `${routeType}, penalty ${penalty}: ${k} systems at ${wayLevel} against ${n} at ${roundLevel}, the ends at ${ends}`,
+    routeType,
+    penalty,
+    avoid: [],
+    systems: { [start]: ends, [end]: ends, ...way.systems, ...round.systems },
+    jumps: [...way.jumps, [way.last, end], ...round.jumps, [round.last, end]],
+    pairs: [[start, end]],
   };
 }
 
@@ -78,6 +98,7 @@ function lowsAgainstNull(before, penalty) {
   const tail = chain([BASE + 200, BASE + 201], 1.0, join);
   return {
     name: `two low systems against one null-security system, ${before} safe systems before, penalty ${penalty}`,
+    routeType: "safe",
     penalty,
     avoid: [],
     systems: { [start]: 1.0, ...lead.systems, [BASE + 50]: 0.3, [BASE + 51]: 0.3, [BASE + 60]: -0.5, [join]: 1.0, ...tail.systems },
@@ -89,7 +110,7 @@ function lowsAgainstNull(before, penalty) {
 const LEVELS = [1.0, 1.0, 0.9, 0.7, 0.5, 0.45, 0.4499999, 0.4, 0.3, 0.1, 0.05, 0.0, -0.1, -0.5, -1.0];
 
 /** A made-up map of `count` systems: a spanning tree, some more jumps across it, and an island. */
-function scattered(seed, count, penalty, avoiding) {
+function scattered(seed, count, penalty, avoiding, routeType = "safe") {
   const next = generator(seed);
   const ids = Array.from({ length: count }, (_, i) => BASE + 1000 + i * 7);
   const systems = {};
@@ -112,13 +133,13 @@ function scattered(seed, count, penalty, avoiding) {
   for (let wanted = 60; wanted > 0; wanted -= 1) pairs.push([ids[next(count)], ids[next(count)]]);
   // Each avoided system is gone to, and left, at least once.
   for (const id of avoid) pairs.push([ids[next(count)], id], [id, ids[next(count)]]);
-  return { name: `a made-up map of ${count} systems (seed ${seed}), penalty ${penalty}, ${avoid.length} avoided`, penalty, avoid: [...new Set(avoid)], systems, jumps, pairs };
+  return { name: `${routeType}: a made-up map of ${count} systems (seed ${seed}), penalty ${penalty}, ${avoid.length} avoided`, routeType, penalty, avoid: [...new Set(avoid)], systems, jumps, pairs };
 }
 
 function cases() {
   const list = [
-    { name: "a line of six safe systems", penalty: 50, avoid: [], systems: Object.fromEntries([1, 2, 3, 4, 5, 6].map((i) => [BASE + i, 1.0])), jumps: [1, 2, 3, 4, 5].map((i) => [BASE + i, BASE + i + 1]), pairs: [[BASE + 1, BASE + 6], [BASE + 6, BASE + 1], [BASE + 2, BASE + 4], [BASE + 3, BASE + 3]] },
-    { name: "two systems and no jump between them", penalty: 50, avoid: [], systems: { [BASE + 1]: 1.0, [BASE + 2]: 1.0 }, jumps: [], pairs: [[BASE + 1, BASE + 2]] },
+    { name: "a line of six safe systems", routeType: "safe", penalty: 50, avoid: [], systems: Object.fromEntries([1, 2, 3, 4, 5, 6].map((i) => [BASE + i, 1.0])), jumps: [1, 2, 3, 4, 5].map((i) => [BASE + i, BASE + i + 1]), pairs: [[BASE + 1, BASE + 6], [BASE + 6, BASE + 1], [BASE + 2, BASE + 4], [BASE + 3, BASE + 3]] },
+    { name: "two systems and no jump between them", routeType: "safe", penalty: 50, avoid: [], systems: { [BASE + 1]: 1.0, [BASE + 2]: 1.0 }, jumps: [], pairs: [[BASE + 1, BASE + 2]] },
   ];
   // What a system outside the limits costs, by the penalty: the way round is taken until it is longer.
   for (const [penalty, lengths] of [[0, [1, 2, 3]], [5, [1, 2, 3, 4]], [10, [3, 4, 5, 6]], [15, [8, 9, 10, 11]], [20, [20, 21, 22, 23]], [25, [45, 46, 47, 48]], [50, [3, 40]]]) {
@@ -151,6 +172,32 @@ function cases() {
       seed += 1;
     }
   }
+  // The other route types. Where their limits lie, and what a system costs inside them: each pair of
+  // lengths straddles the one at which the module changes its mind (measured).
+  // The penalty on the slider that the module is given as 4.
+  const four = Math.log(4) / 0.15;
+  for (const [routeType, k, wayLevel, lengths] of [
+    // Inside the limits: a hundred systems of one security against so many at 0.3.
+    ["unsafe", 100, 0.45, [86, 87]], ["unsafe", 100, 0.44, [100, 101]], ["unsafe", 100, 0.0001, [100, 101]],
+    ["unsafe + zerosec", 100, 0.45, [95, 96]], ["unsafe + zerosec", 100, 0.0, [103, 104]], ["unsafe + zerosec", 100, -0.1, [104, 105]],
+    ["unsafe + zerosec", 100, -0.5, [107, 108]], ["unsafe + zerosec", 100, -0.99, [111, 112]],
+    // Outside them: twenty, each at the penalty or twice it.
+    ["unsafe", 20, 0.0, [177, 178]], ["unsafe", 20, 0.4500001, [88, 89]], ["unsafe", 20, 1.0, [88, 89]],
+    ["unsafe + zerosec", 20, -1.0, [177, 178]], ["unsafe + zerosec", 20, 0.5, [88, 89]],
+  ]) {
+    for (const n of lengths) list.push(twoWays(routeType, four, k, wayLevel, n, 0.3, 0.3));
+  }
+  for (const wayLevel of [0.5, 0.3, 0.0, -0.5, -1.0]) for (const n of [40, 41]) list.push(twoWays("shortest", 50, 40, wayLevel, n, 1.0, 1.0));
+  for (const routeType of ["shortest", "unsafe", "unsafe + zerosec"]) {
+    for (const n of [0, 1, 6]) list.push(detour(`${routeType}: the middle (0.3) avoided, ${n} on the way round`, 0.3, n, { avoid: [BASE + 2], routeType }));
+    list.push(detour(`${routeType}: the end avoided`, 0.3, 3, { avoid: [BASE + 3], routeType }));
+    for (const count of [12, 30, 60, 100, 160]) {
+      for (const [penalty, avoiding] of [[50, false], [50, true], [10, true], [35.5, true]]) {
+        list.push(scattered(seed, count, penalty, avoiding, routeType));
+        seed += 1;
+      }
+    }
+  }
   return list;
 }
 
@@ -169,7 +216,7 @@ function snippet(dll, list) {
     "        items[i], items[j] = items[j], items[i]",
     "    return items",
     `pf = imp.load_dynamic('_pyevepathfinder', ${JSON.stringify(dll)})`,
-    "def answers(systems, jumps, penalty, avoid, pairs):",
+    "def answers(systems, jumps, limits, penalty, avoid, pairs):",
     "    m = pf.EveMap()",
     "    m.CreateRegion(10000001)",
     "    m.CreateConstellation(20000001, 10000001)",
@@ -184,8 +231,12 @@ function snippet(dll, list) {
     "    level_of = dict(systems)",
     "    counts = []",
     "    for a, b in pairs:",
-    // The "safe" route type's limits, and the penalty as AutopilotPathfinderInterface.GetSecurityPenalty works it out.
-    "        goal.AvoidSystemsOutsideSecurityLimits(0.45, 1.0, math.exp(0.15 * penalty))",
+    // As EvePathfinderCore._RunNewPathfinderFrom: no limits for "shortest", else the route type's, and the
+    // penalty as AutopilotPathfinderInterface.GetSecurityPenalty works it out.
+    "        if limits is None:",
+    "            goal.IgnoreSecurityLimits()",
+    "        else:",
+    "            goal.AvoidSystemsOutsideSecurityLimits(limits[0], limits[1], math.exp(0.15 * penalty))",
     "        goal.ClearOrigins()",
     "        goal.AddOrigin(m, a)",
     "        goal.ClearGoalSystems()",
@@ -207,7 +258,8 @@ function snippet(dll, list) {
     // Each jump goes both ways, and each way is a jump of its own to the module.
     const jumps = each.jumps.flatMap(([a, b]) => [`(${a},${b})`, `(${b},${a})`]);
     const pairs = each.pairs.map(([a, b]) => `(${a},${b})`).join(",");
-    const rest = `${JSON.stringify(each.penalty)}, [${each.avoid.join(",")}], [${pairs}]`;
+    const limits = LIMITS[each.routeType];
+    const rest = `${limits === null ? "None" : `(${limits.map((limit) => limit.toFixed(2)).join(", ")})`}, ${JSON.stringify(each.penalty)}, [${each.avoid.join(",")}], [${pairs}]`;
     lines.push(`S = [${systems.join(",")}]`, `J = [${jumps.join(",")}]`);
     lines.push(`out(answers(S, J, ${rest}))`);
     lines.push(`out(answers(S[::-1], J[::-1], ${rest}))`);
@@ -243,31 +295,39 @@ function main(argv = process.argv.slice(2)) {
   }
   let kept = 0;
   let leftOut = 0;
+  let unmade = 0;
   const recorded = list.map((each, index) => {
     const asWritten = answered[index * ORDERS];
     const others = answered.slice(index * ORDERS + 1, (index + 1) * ORDERS);
     const pairs = [];
     each.pairs.forEach(([from, to], at) => {
-      if (others.some((answers) => answers[at] !== asWritten[at])) {
+      const [count, lows, nulls] = asWritten[at].split(":").map(Number);
+      if (others.some((answers) => Number(answers[at].split(":")[0]) !== count)) {
         leftOut += 1;
         return;
       }
       kept += 1;
-      // The module answers -1 where there is no route.
-      const [count, lows, nulls] = asWritten[at].split(":").map(Number);
-      pairs.push(count === -1 ? [from, to, null, 0, 0] : [from, to, count, lows, nulls]);
+      // The module answers -1 where there is no route. What a route is made of is kept only where every
+      // order of the map gave the same: routes as long and as cheap may differ in it.
+      // And not at all for "shortest", where every system costs the same and nothing but length decides.
+      const made = each.routeType !== "shortest" && others.every((answers) => answers[at] === asWritten[at]);
+      if (!made) unmade += 1;
+      pairs.push(count === -1 ? [from, to, null, null, null] : [from, to, count, made ? lows : null, made ? nulls : null]);
     });
-    return { name: each.name, penalty: each.penalty, avoid: each.avoid, systems: Object.entries(each.systems).map(([id, level]) => [Number(id), level]), jumps: each.jumps, pairs };
+    return { name: each.name, routeType: each.routeType, penalty: each.penalty, avoid: each.avoid, systems: Object.entries(each.systems).map(([id, level]) => [Number(id), level]), jumps: each.jumps, pairs };
   });
   const fixture = {
-    source: "The retail client's own pathfinder (pyEvePathfinder) run over made-up maps by scripts/build-autopilot-fixture.js. A pair is [from, to, jumps, low-security systems entered, null-security systems entered], each from its answer; jumps null is no route.",
-    routeType: "safe",
+    source: "The retail client's own pathfinder (pyEvePathfinder) run over made-up maps by scripts/build-autopilot-fixture.js. A pair is [from, to, jumps, low-security systems entered, null-security systems entered], each from its answer; jumps null is no route, and the other two are null where they changed with the order of the map.",
+    routeTypes: Object.keys(LIMITS),
     ordersEachMapWasPutIn: ORDERS,
     leftOutForChangingWithTheOrderOfTheMap: leftOut,
     cases: recorded,
   };
   fs.writeFileSync(OUTPUT, `${JSON.stringify(fixture)}\n`);
-  console.log(`${recorded.length} maps, ${kept} pairs recorded, ${leftOut} left out for changing with the order of the map; ${fs.statSync(OUTPUT).size} bytes at ${path.relative(WEB_ROOT, OUTPUT)}`);
+  console.log(`${recorded.length} maps, ${kept} pairs recorded (${unmade} without what the route is made of), ${leftOut} left out for changing with the order of the map; ${fs.statSync(OUTPUT).size} bytes at ${path.relative(WEB_ROOT, OUTPUT)}`);
+  const byType = {};
+  for (const each of recorded) byType[each.routeType] = (byType[each.routeType] ?? 0) + each.pairs.length;
+  console.log(`pairs by route type: ${JSON.stringify(byType)}`);
   return 0;
 }
 

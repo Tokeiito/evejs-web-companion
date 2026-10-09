@@ -460,8 +460,15 @@
       flow.requestAgentSolarSystem(agentToLocate);
     }
     flow.requestSystemSecurity(pageSystemIDs(pageInput));
-    // How far each place is, from where the pilot is now.
-    if (place.solarSystemID !== null && held.objectives !== null) {
+  });
+  // How far each place is, from where the pilot is now. This hangs on the counts held as well as on the page:
+  // when the autopilot's settings change the counts are forgotten, and nothing else would ask for them again
+  // (seen live on 2026-10-09: the distances went blank and stayed so).
+  const jumpsHeld = $derived($names.autopilotJumps);
+  $effect(() => {
+    void jumpsHeld;
+    const held = $agents.missionPage;
+    if (held !== null && held.objectives !== null && place.solarSystemID !== null) {
       flow.requestAutopilotJumps(place.solarSystemID, objectiveSystemIDs(held.objectives));
     }
   });

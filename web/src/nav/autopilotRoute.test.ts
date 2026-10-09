@@ -9,21 +9,22 @@ import { fileURLToPath } from "node:url";
 
 import {
   DEFAULT_AUTOPILOT_SETTINGS, SOLAR_SYSTEM_JITA, SOLAR_SYSTEM_ZARZAKH, autopilotJumpCount, autopilotJumpCounts, autopilotMap, autopilotPath, isKnownSpaceSystem,
-  type AutopilotMap, type AutopilotSettings,
+  type AutopilotMap, type AutopilotRouteType, type AutopilotSettings,
 } from "./autopilotRoute.ts";
 import { buildSystemGraph } from "./routeSolver.ts";
 
 interface RecordedCase {
   readonly name: string;
+  readonly routeType: AutopilotRouteType;
   readonly penalty: number;
   readonly avoid: readonly number[];
   readonly systems: ReadonlyArray<readonly [number, number]>;
   readonly jumps: ReadonlyArray<readonly [number, number]>;
-  /** From, to, the jumps on the client's route (null: none), and how many low and null-security systems it enters. */
-  readonly pairs: ReadonlyArray<readonly [number, number, number | null, number, number]>;
+  /** From, to, the jumps on the client's route (null: none), and how many low and null-security systems it enters (null: that went by the order of the map). */
+  readonly pairs: ReadonlyArray<readonly [number, number, number | null, number | null, number | null]>;
 }
 const FIXTURE = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "../../../test/fixtures/autopilotRoute.json"), "utf8")) as {
-  readonly routeType: string;
+  readonly routeTypes: readonly string[];
   readonly cases: readonly RecordedCase[];
 };
 
@@ -37,10 +38,14 @@ function mapOf(systems: ReadonlyArray<readonly [number, number]>, jumps: Readonl
   }
   return { neighbors: (id) => neighbours.get(id) ?? [], security: (id) => security.get(id) ?? null };
 }
-const settingsOf = (recorded: RecordedCase): AutopilotSettings => ({ penalty: recorded.penalty, avoid: recorded.avoid });
+const settingsOf = (recorded: RecordedCase): AutopilotSettings => ({ routeType: recorded.routeType, penalty: recorded.penalty, avoid: recorded.avoid });
 
-test("the fixture is the client's safe route, and is not a small one", () => {
-  assert.equal(FIXTURE.routeType, "safe");
+test("the fixture has every route type the client has, and is not a small one", () => {
+  assert.deepEqual([...FIXTURE.routeTypes].sort(), ["safe", "shortest", "unsafe", "unsafe + zerosec"]);
+  for (const routeType of FIXTURE.routeTypes) {
+    const pairs = FIXTURE.cases.filter((each) => each.routeType === routeType).reduce((sum, each) => sum + each.pairs.length, 0);
+    assert.ok(pairs >= 1000, `${routeType}: ${pairs} pairs`);
+  }
   assert.ok(FIXTURE.cases.length >= 100);
   assert.ok(FIXTURE.cases.reduce((sum, each) => sum + each.pairs.length, 0) >= 2000);
   // It has routes that are not there, routes of one jump, and long ones.
@@ -75,7 +80,7 @@ test("and the same when all that is wanted from one system is asked together", (
 });
 
 test("the settings as they come are the client's: penalty 50, Jita and Zarzakh avoided", () => {
-  assert.deepEqual(DEFAULT_AUTOPILOT_SETTINGS, { penalty: 50, avoid: [30000142, 30100000] });
+  assert.deepEqual(DEFAULT_AUTOPILOT_SETTINGS, { routeType: "safe", penalty: 50, avoid: [30000142, 30100000] });
   assert.equal(SOLAR_SYSTEM_JITA, 30000142);
   assert.equal(SOLAR_SYSTEM_ZARZAKH, 30100000);
   // Left unsaid, they are what is used: a route goes round Jita, and may end there.
@@ -87,7 +92,7 @@ test("the settings as they come are the client's: penalty 50, Jita and Zarzakh a
   assert.equal(autopilotJumpCount(map, A, B), 3);
   assert.equal(autopilotJumpCount(map, A, SOLAR_SYSTEM_JITA), 1);
   assert.equal(autopilotJumpCount(map, SOLAR_SYSTEM_JITA, B), 1);
-  assert.equal(autopilotJumpCount(map, A, B, { penalty: 50, avoid: [] }), 2);
+  assert.equal(autopilotJumpCount(map, A, B, { routeType: "safe", penalty: 50, avoid: [] }), 2);
   // Asked together, an avoided system gone to does not open the way through it for the others.
   assert.deepEqual([...autopilotJumpCounts(map, A, [SOLAR_SYSTEM_JITA, B, SOLAR_SYSTEM_JITA, A])], [[SOLAR_SYSTEM_JITA, 1], [B, 3], [A, 0]]);
   assert.deepEqual([...autopilotJumpCounts(map, A, [B, SOLAR_SYSTEM_JITA])], [[B, 3], [SOLAR_SYSTEM_JITA, 1]]);
@@ -154,8 +159,11 @@ test("the route itself is a way through the map that costs what the client's doe
       assert.equal(new Set(path).size, path.length, said);
       for (let at = 1; at < path.length; at += 1) assert.ok(joined.has(`${path[at - 1]}:${path[at]}`), said);
       const entered = path.slice(1);
-      assert.equal(entered.filter((id) => security.get(id)! > 0 && security.get(id)! < 0.45).length, lows, said);
-      assert.equal(entered.filter((id) => security.get(id)! <= 0).length, nulls, said);
+      // Among routes as long and as cheap, what the client's is made of may go by the order of its map: then there is nothing to hold this one to.
+      if (lows !== null && nulls !== null) {
+        assert.equal(entered.filter((id) => security.get(id)! > 0 && security.get(id)! < 0.45).length, lows, said);
+        assert.equal(entered.filter((id) => security.get(id)! <= 0).length, nulls, said);
+      }
       // Only where it ends may it be in an avoided system.
       assert.ok(entered.slice(0, -1).every((id) => !recorded.avoid.includes(id)), said);
       checked += 1;
@@ -176,5 +184,5 @@ test("a route from a system to itself is that system alone, and there is none to
   const round = mapOf([[30000140, 1], [SOLAR_SYSTEM_JITA, 1], [30000141, 1], [30000143, 1], [30000144, 1]], [[30000140, SOLAR_SYSTEM_JITA], [SOLAR_SYSTEM_JITA, 30000141], [30000140, 30000143], [30000143, 30000144], [30000144, 30000141]]);
   assert.deepEqual(autopilotPath(round, 30000140, 30000141), [30000140, 30000143, 30000144, 30000141]);
   assert.deepEqual(autopilotPath(round, 30000140, SOLAR_SYSTEM_JITA), [30000140, SOLAR_SYSTEM_JITA]);
-  assert.deepEqual(autopilotPath(round, 30000140, 30000141, { penalty: 50, avoid: [] }), [30000140, SOLAR_SYSTEM_JITA, 30000141]);
+  assert.deepEqual(autopilotPath(round, 30000140, 30000141, { routeType: "safe", penalty: 50, avoid: [] }), [30000140, SOLAR_SYSTEM_JITA, 30000141]);
 });

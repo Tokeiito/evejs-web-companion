@@ -186,7 +186,17 @@ import {
   routeAlong,
   type SystemGraph,
 } from "../nav/routeSolver.ts";
-import { autopilotJumpCounts, autopilotMap, autopilotPath } from "../nav/autopilotRoute.ts";
+import { autopilotJumpCounts, autopilotMap, autopilotPath, type AutopilotRouteType } from "../nav/autopilotRoute.ts";
+import {
+  autopilotSettingsFrom,
+  loadAutopilotSettings,
+  saveAutopilotSettings,
+  withAvoidSystemsClicked,
+  withPenalty,
+  withRouteType,
+  type SettingsStorage,
+  type StoredAutopilotSettings,
+} from "../nav/autopilotSettings.ts";
 // R30 slice A — reading the already-cached gate graph as "what is on this grid
 // and where does it go", so a stargate row can offer a jump.
 import { buildGateLinks, type GateLink } from "../space/gateLinks.ts";
@@ -397,6 +407,11 @@ export interface AppFlowOptions {
    * confirm; with no browser nobody is asked and the answer is Cancel.
    */
   readonly confirm?: (message: string) => boolean | Promise<boolean>;
+  /**
+   * Where the autopilot's settings are kept, by character (nav/autopilotSettings.ts). The browser's own
+   * storage unless given; null keeps them only as long as the flow lasts.
+   */
+  readonly storage?: SettingsStorage | null;
   /**
    * R107 multibox — when true, this flow carries its OWN session token on every
    * call (via `callOptions.token`) instead of the per-tab global in
@@ -1393,6 +1408,16 @@ export interface AppFlow {
    * the store holds is not worked out again. Never throws.
    */
   requestAutopilotJumps(fromSystemID: number, toSystemIDs: readonly number[]): void;
+  /** The autopilot's settings as the pilot has set them: only what has been set is there (nav/autopilotSettings.ts). */
+  autopilotSettings(): StoredAutopilotSettings;
+  /**
+   * Change one of the autopilot's settings, as the client's route panel does: kept for this character, and
+   * what was worked out with the old settings forgotten. Each answers the settings as they now are. A route
+   * already being flown is not plotted again.
+   */
+  setAutopilotRouteType(routeType: AutopilotRouteType): StoredAutopilotSettings;
+  setAutopilotPenalty(penalty: number): StoredAutopilotSettings;
+  clickAutopilotAvoidSystems(): StoredAutopilotSettings;
   /**
    * Multibox — open or close this pilot's live push channel (SSE). Browsers
    * allow only ~6 concurrent HTTP/1.1 connections per origin, and every open
@@ -6211,12 +6236,38 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return routeGraphLoading;
   }
 
+  // The autopilot's settings, as the client keeps them: with the character, on this machine. Read when the
+  // pilot at the helm is first asked about, and kept here from then on.
+  const settingsStorage: SettingsStorage | null = options.storage !== undefined ? options.storage : typeof localStorage === "undefined" ? null : localStorage;
+  let autopilotKept: { readonly characterID: number | null; readonly stored: StoredAutopilotSettings } = { characterID: null, stored: {} };
+  function autopilotSettings(): StoredAutopilotSettings {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID !== autopilotKept.characterID) {
+      autopilotKept = { characterID, stored: characterID === null ? {} : loadAutopilotSettings(settingsStorage, characterID) };
+      // Another pilot, other settings: what was worked out for the last one is not this one's.
+      store.apply({ type: "names/autopilot-jumps-cleared" });
+    }
+    return autopilotKept.stored;
+  }
+  function changeAutopilotSettings(change: (stored: StoredAutopilotSettings) => StoredAutopilotSettings): StoredAutopilotSettings {
+    const stored = change(autopilotSettings());
+    const characterID = autopilotKept.characterID;
+    autopilotKept = { characterID, stored };
+    if (characterID !== null) {
+      saveAutopilotSettings(settingsStorage, characterID, stored);
+    }
+    // The client's pathfinder keeps what it has worked out by its settings, and works it out again when they change.
+    store.apply({ type: "names/autopilot-jumps-cleared" });
+    return stored;
+  }
+
   // The jumps on the autopilot's route, worked out here as the client works them out
   // (clientPathfinderService.GetAutopilotJumpCount): nothing is asked of the server.
   function requestAutopilotJumps(fromSystemID: number, toSystemIDs: readonly number[]): void {
     if (!Number.isSafeInteger(fromSystemID) || fromSystemID <= 0) {
       return;
     }
+    const settings = autopilotSettingsFrom(autopilotSettings());
     const held = store.names.get().autopilotJumps;
     const keyOf = (toID: number): string => `${fromSystemID}:${toID}`;
     const wanted = [...new Set(toSystemIDs)].filter((toID) => Number.isSafeInteger(toID) && toID > 0 && !(keyOf(toID) in held));
@@ -6225,7 +6276,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     void loadRouteGraph()
       .then((graph) => {
-        const counts = autopilotJumpCounts(autopilotMap(graph), fromSystemID, wanted);
+        const counts = autopilotJumpCounts(autopilotMap(graph), fromSystemID, wanted, settings);
         store.apply({ type: "names/autopilot-jumps", jumps: Object.fromEntries([...counts].map(([toID, count]) => [keyOf(toID), count])) });
       })
       // Without the map nothing is kept: a later ask reads it again.
@@ -6396,8 +6447,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const targetSystemID = structure?.solarSystemID ?? destination.solarSystemID;
 
     // 4. Solve the route: the one the client's autopilot plots with its settings as they come, the safe
-    //    way and round the systems it avoids (nav/autopilotRoute.ts), not the fewest jumps.
-    const way = autopilotPath(autopilotMap(graph), originSystem, targetSystemID);
+    //    way and round the systems it avoids unless the pilot has set it otherwise (nav/autopilotRoute.ts,
+    //    nav/autopilotSettings.ts), not the fewest jumps.
+    const way = autopilotPath(autopilotMap(graph), originSystem, targetSystemID, autopilotSettingsFrom(autopilotSettings()));
     // The way is through this same map, so each of its jumps has a gate.
     const route = way === null ? null : routeAlong(graph, way);
     if (route === null) {
@@ -13926,6 +13978,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     requestAgentSolarSystem,
     requestSystemSecurity,
     requestAutopilotJumps,
+    autopilotSettings,
+    setAutopilotRouteType: (routeType) => changeAutopilotSettings((stored) => withRouteType(stored, routeType)),
+    setAutopilotPenalty: (penalty) => changeAutopilotSettings((stored) => withPenalty(stored, penalty)),
+    clickAutopilotAvoidSystems: () => changeAutopilotSettings(withAvoidSystemsClicked),
 
     /**
      * R92 multibox — is this the pilot the player is LOOKING at?

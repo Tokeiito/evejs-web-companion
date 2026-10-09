@@ -18,6 +18,11 @@
   import type { DestinationMatch } from "../store/types.ts";
   import { resolvedName, type NameRef } from "../store/names.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
+  import { plainText } from "../bridge/clientWords.ts";
+  import {
+    OFFERED_ROUTE_TYPES, PENALTY_RANGE, ROUTE_SETTING_WORD_LABELS, avoidingSystems, penaltyOf, penaltyWords, routeSettingWords, routeTypeOf,
+    type StoredAutopilotSettings,
+  } from "../nav/autopilotSettings.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -25,6 +30,34 @@
   const travel = store.travel;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+  // svelte-ignore state_referenced_locally
+  const station = store.station;
+
+  // The autopilot's settings, which the client's route panel has in its menu: the kind of route, the
+  // security penalty, and whether the systems on the list are avoided (nav/autopilotSettings.ts). They are
+  // the pilot's own, so they are read again when the pilot at the helm changes.
+  // svelte-ignore state_referenced_locally
+  let routeSettings = $state.raw<StoredAutopilotSettings>(flow.autopilotSettings());
+  // svelte-ignore state_referenced_locally
+  let penaltyShown = $state(penaltyOf(routeSettings));
+  const pilotID = $derived($station.online?.characterID ?? null);
+  // The effect hangs on the pilot alone. It must not read what it sets: read back, each setting would start it
+  // again, and the panel stops ("effect_update_depth_exceeded", seen live on 2026-10-09).
+  $effect(() => {
+    void pilotID;
+    const kept = flow.autopilotSettings();
+    routeSettings = kept;
+    penaltyShown = penaltyOf(kept);
+  });
+  $effect(() => {
+    flow.requestWords(ROUTE_SETTING_WORD_LABELS);
+  });
+  const settingText = (label: string): string | null => {
+    const template = $words.templates[label];
+    return typeof template === "string" ? plainText(template) : null;
+  };
 
   // R7a — set a destination anywhere by NAME (primary), with the raw-ID input
   // kept as a fallback. The search box hits the static /api/map/find route; a
@@ -266,6 +299,50 @@
     {#if error}
       <p class="error">{error}</p>
     {/if}
+  </section>
+
+  <section class="route-settings">
+    <h2>Route settings</h2>
+    <p class="controls">
+      {#each OFFERED_ROUTE_TYPES as routeType (routeType)}
+        <label class="route-type">
+          <input
+            type="radio"
+            name="pfRouteType"
+            value={routeType}
+            checked={routeTypeOf(routeSettings) === routeType}
+            onchange={() => { routeSettings = flow.setAutopilotRouteType(routeType); }}
+          />
+          {routeSettingWords(routeType as "shortest" | "safe" | "unsafe", settingText)}
+        </label>
+      {/each}
+    </p>
+    <p class="controls">
+      <label class="route-penalty">
+        <input
+          type="range"
+          min={PENALTY_RANGE.least}
+          max={PENALTY_RANGE.most}
+          step="1"
+          value={penaltyShown}
+          oninput={(event) => { penaltyShown = Number(event.currentTarget.value); }}
+          onchange={(event) => { routeSettings = flow.setAutopilotPenalty(Number(event.currentTarget.value)); penaltyShown = penaltyOf(routeSettings); }}
+        />
+        {penaltyWords(routeSettingWords("penalty", settingText), penaltyShown)}
+      </label>
+      <label class="route-avoid">
+        <input
+          type="checkbox"
+          checked={avoidingSystems(routeSettings)}
+          onchange={(event) => {
+            routeSettings = flow.clickAutopilotAvoidSystems();
+            // The client's first click on a tick never touched leaves it on: the box is put back to what is kept.
+            event.currentTarget.checked = avoidingSystems(routeSettings);
+          }}
+        />
+        {routeSettingWords("avoidSystems", settingText)}
+      </label>
+    </p>
   </section>
 
   <section>
