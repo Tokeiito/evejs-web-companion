@@ -56,7 +56,7 @@ const { GamePortSession } = require("./session");
 const { connectTcp, gameEndpoint } = require("./tcp");
 const { notificationToBridgeJson, sessionChangeToBridgeJson, wireToBridgeJson } = require("./bridgeJson");
 const { GAME_PORT_HANDLE_PREFIX } = require("../pilotTransport");
-const { createCallLedger, madeAfresh, retailForm, retailNeeds } = require("./retailCalls");
+const { ON_AN_ANSWERED_OBJECT, createCallLedger, madeAfresh, retailForm, retailNeeds } = require("./retailCalls");
 const { createPilotSpace } = require("./pilotSpace");
 const { createPilotClock } = require("./pilotClock");
 const { EFFECT_CATEGORY, EFFECT_ONLINE, createPilotDogma } = require("./pilotDogma");
@@ -1137,7 +1137,9 @@ function createGamePortPilots({
     // What the client's skill services keep is noted where it is asked for, which is not every time it is wanted (skillRead).
     const keptByAService = (service === SKILL_HANDLER && Object.hasOwn(SKILL_KEPT, method)) || (service === CORP_REGISTRY && method === AGGRESSION_SETTINGS);
     if (!keptByAService) {
-      ledger.note(service, method, form.moniker && form.status === "same" ? { ...form, status: "reshaped" } : form);
+      ledger.note(service, method, ON_AN_ANSWERED_OBJECT.has(`${service}.${method}`)
+        ? { ...form, status: "differs", note: "Asked of the service by its name. The client asks the object another call answered." }
+        : form.moniker && form.status === "same" ? { ...form, status: "reshaped" } : form);
     }
     // A call the client makes on a service's moniker is made on the object bound for where the pilot is.
     const result = await run(entry, service, method, async () => (form.moniker

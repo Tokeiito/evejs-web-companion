@@ -108,6 +108,13 @@ const PROXY_SERVICES = Object.freeze(new Set([
  */
 const TRANSPORT_OWN_CALLS = Object.freeze(["config.GetMultiOwnersEx"]);
 
+/**
+ * Calls the client makes on an object that another call answered, where no moniker is: the system's scan manager,
+ * which GetSystemScanMgr() answers. Asked of the service by its name, such a call is not the client's call,
+ * whatever it is asked with.
+ */
+const ON_AN_ANSWERED_OBJECT = Object.freeze(new Set(["scanMgr.GetFullState"]));
+
 /** Whether the retail client makes this call on the service's moniker for where the pilot is. */
 const madeOnMoniker = (service, method) => Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method) && method !== "MachoBindObject";
 
@@ -457,6 +464,11 @@ const RETAIL_CALLS = Object.freeze({
   "agentMgr.GetMissionJournalInfo": differs(`${AGENTS}:747`, "The client sends (charID, contentID). The BFF sends nothing."),
 
   // ── the scanner (the scan manager a service call answers with, and the dogma location) ─────────────
+  "beyonce.GetFormations": same("eve/client/script/remote/michelle.py:324", "RemoteSvc('beyonce').GetFormations(), no arguments, by name, as the ballpark is made. Recorded on Tranquility so."),
+  "beyonce.CmdWarpToStuffAutopilot": same("eve/client/script/parklife/autopilot.py:465", "GetRemotePark().CmdWarpToStuffAutopilot(destinationID): the autopilot's warp, on the ballpark's object. Recorded on Tranquility with the one ID."),
+  "beyonce.CmdWarpToStuff": same("eve/client/script/remote/michelle.py:737", "bp.CmdWarpToStuff(subject, subjectID, minRange=...), on the ballpark's object: 'item' and the thing's ID from the menu (movementFunctions.py 452), 'char' for a fleet member, 'bookmark' for a bookmark. Recorded on Tranquility as ('item', itemID, minRange=0)."),
+  "beyonce.CmdDock": same("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:517", "bp.CmdDock(itemID, session.shipid), on the ballpark's object, through sessionMgr.PerformSessionChange('dock', ...). Recorded on Tranquility with the two IDs."),
+  "scanMgr.GetFullState": same("eve/client/script/parklife/sensorSuiteService.py:718", "scanSvc.GetScanMan().GetFullState(), no arguments, on the system's scan manager: the object GetSystemScanMgr() answers. Recorded on Tranquility on that object."),
   "scanMgr.GetSystemScanMgr": same(`${SCAN_SVC}:115`, "no arguments"),
   "scanMgr.RequestScans": reshaped(
     `${SCAN_SVC}:195`,
@@ -769,4 +781,4 @@ function createCallLedger() {
   };
 }
 
-module.exports = { CONTRACT_SEARCH_KEYWORDS, MONIKER_SERVICES, PROXY_SERVICES, REPEATS, RETAIL_CALLS, TRANSPORT_OWN_CALLS, createCallLedger, list, madeAfresh, madeOnMoniker, retailForm, retailNeeds };
+module.exports = { CONTRACT_SEARCH_KEYWORDS, MONIKER_SERVICES, ON_AN_ANSWERED_OBJECT, PROXY_SERVICES, REPEATS, RETAIL_CALLS, TRANSPORT_OWN_CALLS, createCallLedger, list, madeAfresh, madeOnMoniker, retailForm, retailNeeds };

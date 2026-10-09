@@ -2836,7 +2836,12 @@ app.get("/api/bridge/scan-full-state", requireAuth, async (req, res, next) => {
   }
   let cell;
   try {
-    const value = await heldTopLevelCall(held, req.webSessionID, "scanMgr", "GetFullState", [], null);
+    // sensorSuiteService asks the system's scan manager, scanSvc.GetScanMan().GetFullState(): the object that
+    // GetSystemScanMgr() answers, which the scanner's other calls are made on too. On the game port it is asked
+    // so. The gateway answers it by the service's name, from the session's system, as before.
+    const value = gamePortPilots && isGamePortHandle(held.bridgeSessionID)
+      ? await boundCall(held, req.webSessionID, systemScanBindSpec(), "GetFullState", [], null)
+      : await heldTopLevelCall(held, req.webSessionID, "scanMgr", "GetFullState", [], null);
     cell = { result: value.result };
   } catch (error) {
     // A lost live session cannot be recovered by any read; surface it so the page

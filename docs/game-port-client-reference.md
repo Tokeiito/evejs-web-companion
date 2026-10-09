@@ -295,6 +295,22 @@ for them again each time it opens, which is the page's own way.
 The notifications' lists and the calendar's months are kept by one helper,
 `src/gamePort/keptReads.js`: answers kept until something changes them.
 
+**The flight's calls and the scanner's sites, 2026-10-09.** Read against the client after a walk
+in space on the game port found them unread. The menu's warp is `bp.CmdWarpToStuff('item', itemID,
+minRange=...)` on the ballpark's object (`michelle.py`, from `movementFunctions.py`); the
+autopilot's is `CmdWarpToStuffAutopilot(destinationID)` (`autopilot.py`); docking is
+`CmdDock(itemID, session.shipid)`, sent through `sessionMgr.PerformSessionChange('dock', ...)`.
+The Tranquility recordings have each in that form (30, 3 and 24 files). `michelle` asks
+`beyonce.GetFormations()` by name once, as it makes its park. The BFF sent all four as the client
+does.
+
+The sensor suite asks for the sites it can see with `scanSvc.GetScanMan().GetFullState()`: on the
+system's scan manager, which is the object `scanMgr.GetSystemScanMgr()` answers, and so it is
+recorded on Tranquility. The BFF's scanner route asked `scanMgr.GetFullState` by the service's
+name. On the game port it now asks the scan manager's object, bound once for the pilot's system,
+as the scanner's other calls already did. The gateway's route is as it was. Asked by name on the
+game port (one route with no window behind it still does), the ledger says the call differs.
+
 **Training paused, 2026-10-09.** The client's queue panel pauses with one call,
 `skillHandler.AbortTraining()`, made only while a skill is in training (`skillQueuePanelNew.py`
 `PauseTraining`, `skillsvc.py` `AbortTrain`). The server stops the skill and says so with

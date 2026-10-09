@@ -1920,6 +1920,39 @@ test("a recall moves the probes the server answers with, and a destroyed probe i
   assert.deepEqual(await probes(), [[third, 2], [fourth, 1]]);
 });
 
+test("the flight's calls and the scanner's read are the client's: on the ballpark's object and the scan manager's, and the formations by name", async () => {
+  const allowed = new Set(["beyonce.MachoBindObject", "beyonce.GetFormations", "beyonce.CmdWarpToStuff", "beyonce.CmdWarpToStuffAutopilot", "beyonce.CmdDock", "scanMgr.GetSystemScanMgr", "scanMgr.GetFullState"]);
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "scanMgr.GetSystemScanMgr": boundObject("N=1:77"), "bound:GetFullState": { type: "list", items: ["sites"] } } }, { ...handTicked().options, allowed });
+  const handle = (await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS)).bridgeSessionID;
+  const { pilots, session } = built;
+  const park = await pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
+  // The formations, which michelle asks for by name as it makes its park: asked so through the BFF, it is the client's call.
+  await pilots.callMethod("beyonce", "GetFormations", [], null, WHOSE, handle);
+  assert.deepEqual([session.calls.at(-1), ledgerOf(pilots, "beyonce.GetFormations")], [{ service: "beyonce", method: "GetFormations", args: [], kwargs: null }, [{ same: 1 }, "eve/client/script/remote/michelle.py:324"]]);
+  // The menu's warp, the autopilot's and the dock, each on the ballpark's object with what the client sends.
+  const fly = (method, args, kwargs = null) => pilots.callBoundMethod("beyonce", method, args, kwargs, WHOSE, handle, park.boundHandle);
+  await fly("CmdWarpToStuff", ["item", 40000001], { minRange: 0 });
+  await fly("CmdWarpToStuffAutopilot", [50000001]);
+  await fly("CmdDock", [60000004, SHIP]);
+  assert.deepEqual(session.boundCalls.slice(-3).map((call) => [call.method, call.args, call.kwargs]), [
+    ["CmdWarpToStuff", ["item", 40000001], { minRange: 0 }], ["CmdWarpToStuffAutopilot", [50000001], null], ["CmdDock", [60000004, SHIP], null],
+  ]);
+  assert.deepEqual(["CmdWarpToStuff", "CmdWarpToStuffAutopilot", "CmdDock"].map((method) => ledgerOf(pilots, `beyonce.${method}`)), [
+    [{ same: 1 }, "eve/client/script/remote/michelle.py:737"],
+    [{ same: 1 }, "eve/client/script/parklife/autopilot.py:465"],
+    [{ same: 1 }, "eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:517"],
+  ]);
+  // sensorSuiteService: scanSvc.GetScanMan().GetFullState(), on the object GetSystemScanMgr() answered.
+  const scanManager = await pilots.bindObject("scanMgr", "GetSystemScanMgr", [], null, WHOSE, handle);
+  const sites = await pilots.callBoundMethod("scanMgr", "GetFullState", [], null, WHOSE, handle, scanManager.boundHandle);
+  assert.deepEqual([sites.result, session.boundCalls.at(-1), ledgerOf(pilots, "scanMgr.GetFullState")], [
+    { type: "list", items: ["sites"] }, { objectID: "N=1:77", method: "GetFullState", args: [], kwargs: null }, [{ same: 1 }, "eve/client/script/parklife/sensorSuiteService.py:718"],
+  ]);
+  // Asked of the service by its name it reaches the server so, and the ledger says that is not the client's call.
+  await pilots.callMethod("scanMgr", "GetFullState", [], null, WHOSE, handle);
+  assert.deepEqual([session.calls.at(-1), ledgerOf(pilots, "scanMgr.GetFullState")[0]], [{ service: "scanMgr", method: "GetFullState", args: [], kwargs: null }, { same: 1, differs: 1 }]);
+});
+
 test("another system, another ship or a structure, and the scanner knows of no probes; other changes leave them", async () => {
   for (const [changes, left] of [
     [{ solarsystemid: [SYSTEM, 30000144] }, 0],

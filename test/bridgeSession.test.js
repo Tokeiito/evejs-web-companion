@@ -2155,6 +2155,41 @@ test("where the transport cannot make a sheet, and on the gateway, the sheet is 
 
 // ── the agents' journal ──────────────────────────────────────────────────────
 //
+// sensorSuiteService asks the system's scan manager for the sites it knows of: the object GetSystemScanMgr()
+// answers. The scanner's route asks so on the game port, and by the service's name on the gateway, as it did.
+
+/** The scanner's read through the route; on the game port unless told otherwise. Says what was bound, and asked of what. */
+async function scanFullState({ transport = "gameport", answer = () => ({ type: "list", items: ["sites"] }) } = {}) {
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  const gateway = fakeGateway();
+  const backend = transport === "gameport" ? gamePort : gateway;
+  const asked = [];
+  backend.callMethod = async (service, method, args) => { asked.push({ byName: `${service}.${method}`, args }); return { service, method, result: answer(), notifications: [] }; };
+  backend.bindObject = async (service, method, args) => { asked.push({ bound: `${service}.${method}`, args }); return { boundHandle: "the-scan-manager", notifications: [] }; };
+  backend.callBoundMethod = async (service, method, args, kwargs, sessionFields, bridgeSessionID, handle) => {
+    asked.push({ onObject: `${service}.${method}`, args, kwargs, sessionFields, handle });
+    return { service, method, result: answer(), notifications: [] };
+  };
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => transport });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  asked.length = 0;
+  const read = () => apiRequest(baseUrl, "/api/bridge/scan-full-state");
+  return { first: await read(), again: await read(), asked };
+}
+
+test("on the game port the scanner's sites are asked of the system's scan manager, bound once, and by name on the gateway as before", async () => {
+  const onGamePort = await scanFullState();
+  assert.deepEqual([onGamePort.first.response.status, onGamePort.first.payload.reads, onGamePort.again.payload.reads], [200, { GetFullState: { result: { type: "list", items: ["sites"] } } }, { GetFullState: { result: { type: "list", items: ["sites"] } } }]);
+  // GetSystemScanMgr() once, and GetFullState() on what it answered, with nothing, each time.
+  const onObject = { onObject: "scanMgr.GetFullState", args: [], kwargs: null, sessionFields: { userid: 4 }, handle: "the-scan-manager" };
+  assert.deepEqual(onGamePort.asked, [{ bound: "scanMgr.GetSystemScanMgr", args: [] }, onObject, onObject]);
+  const onGateway = await scanFullState({ transport: "gateway" });
+  assert.deepEqual([onGateway.first.payload.reads, onGateway.asked], [{ GetFullState: { result: { type: "list", items: ["sites"] } } }, [{ byName: "scanMgr.GetFullState", args: [] }, { byName: "scanMgr.GetFullState", args: [] }]]);
+  // A read the server refuses is the read's own failure, in the route's envelope, on either transport.
+  const refused = await scanFullState({ answer: () => { throw Object.assign(new Error("NotNow"), { code: "CALL_REFUSED", statusCode: 409 }); } });
+  assert.deepEqual([refused.first.response.status, refused.first.payload.reads], [200, { GetFullState: { error: "CALL_REFUSED", message: "NotNow" } }]);
+});
+
 // cfg.eveowners names a player's corporation, alliance or character by asking the game server
 // (config.GetMultiOwnersEx). The game port asks as the client does and keeps the rows (pilots.js ownersNamed), and
 // the names route asks it for what the static tables cannot name.
