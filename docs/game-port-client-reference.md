@@ -323,6 +323,22 @@ holds again when the server says an item changed, and a mining laser's cycle is 
 The client asks nothing there. To match it the notices have to be worked into what is kept, as
 its cache does, and that is not done.
 
+**The formations, asked for once, 2026-10-09.** `michelle.AddBallpark` asks
+`sm.RemoteSvc('beyonce').GetFormations()` each time it makes a ballpark (`michelle.py` 324). The
+answer is a cached method call's, and the client's object cache answers every asking after the
+first: a Tranquility recording of a flight through several systems has "ObjectCaching beyonce ::
+GetFormations ( () ) returning a cached result" at each ballpark it adds. So the server is asked
+once.
+
+On the game port each ballpark asked the server for itself, and the BFF's own route asked again
+each time the page wanted them: nine askings for four ballparks in one hour of this server's
+log. Now the first asking is sent, counted in the ledger as the client's own, and kept for the
+pilot; a ballpark made later, and the BFF's route, are answered from it. An asking that fails is
+not kept. The gateway's route is as it was.
+
+This is one cached method call kept by hand. The client's object cache does the same for every
+call the server marks as cached, and the transport has no such cache of its own.
+
 **An attribute's value, 2026-10-09.** The client never asks the server for an attribute's
 value: its own dogma location answers (`baseDogmaLocation.GetAttributeValue`), from what
 `GetAllInfo` brought and each change the server has told of since. The BFF asked the server

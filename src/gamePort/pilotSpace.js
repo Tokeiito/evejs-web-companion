@@ -76,6 +76,8 @@ function createPilotSpace({
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   onError = () => {},
   onPost = null,
+  // michelle.AddBallpark's own asking for the formations; a pilot's transport gives it one that asks the server once.
+  askFormations = () => session.call("beyonce", "GetFormations", []),
 } = {}) {
   let timer = null;
   let released = false;
@@ -121,7 +123,7 @@ function createPilotSpace({
   function start() {
     bound ??= (async () => {
       try {
-        formations = await session.call("beyonce", "GetFormations", []);
+        formations = await askFormations();
       } catch (error) {
         onError(error, "GetFormations");
       }

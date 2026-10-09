@@ -1927,9 +1927,8 @@ test("the flight's calls and the scanner's read are the client's: on the ballpar
   const handle = (await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS)).bridgeSessionID;
   const { pilots, session } = built;
   const park = await pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
-  // The formations, which michelle asks for by name as it makes its park: asked so through the BFF, it is the client's call.
-  await pilots.callMethod("beyonce", "GetFormations", [], null, WHOSE, handle);
-  assert.deepEqual([session.calls.at(-1), ledgerOf(pilots, "beyonce.GetFormations")], [{ service: "beyonce", method: "GetFormations", args: [], kwargs: null }, [{ same: 1 }, "eve/client/script/remote/michelle.py:324"]]);
+  // The formations, which michelle asks for by name as it makes its park: the park's own asking is the client's call, and is counted.
+  assert.deepEqual([session.calls.filter((call) => call.method === "GetFormations"), ledgerOf(pilots, "beyonce.GetFormations")], [[{ service: "beyonce", method: "GetFormations", args: [], kwargs: null }], [{ same: 1 }, "eve/client/script/remote/michelle.py:324"]]);
   // The menu's warp, the autopilot's and the dock, each on the ballpark's object with what the client sends.
   const fly = (method, args, kwargs = null) => pilots.callBoundMethod("beyonce", method, args, kwargs, WHOSE, handle, park.boundHandle);
   await fly("CmdWarpToStuff", ["item", 40000001], { minRange: 0 });
@@ -5577,4 +5576,69 @@ test("where godma cannot be primed an attribute's value is asked of the server, 
   );
   assert.equal((await pilots.callMethod("dogmaIM", "QueryAttributeValue", [FITTED_MODULE, 73], null, FIELDS, handle)).result, 8500);
   assert.deepEqual(session.boundCalls.at(-1).args, [FITTED_MODULE, 73]);
+});
+
+// ── the formations, asked for once ───────────────────────────────────────────
+//
+// michelle.AddBallpark asks sm.RemoteSvc('beyonce').GetFormations() each time it makes a ballpark, and the client's
+// object cache answers every asking after the first: a Tranquility recording of a flight through several systems
+// has "returning a cached result" at each ballpark. The server is asked once for the pilot.
+
+const FORMATIONS = { type: "list", items: [[Buffer.from("Diamond"), [[100, 0, 0]]]] };
+/** The same as the BFF hands it on: the name as text. */
+const FORMATIONS_AS_JSON = { type: "list", items: [["Diamond", [[100, 0, 0]]]] };
+const formationsAsked = (session) => session.calls.filter((call) => call.service === "beyonce" && call.method === "GetFormations").length;
+
+test("the formations are asked for once for a pilot: by its first ballpark, and whatever asks after is answered from that", async () => {
+  const hand = handTicked();
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "beyonce.GetFormations": FORMATIONS } }, { ...hand.options, allowed: new Set(["beyonce.GetFormations", "beyonce.CmdStop"]) });
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const { pilots, session } = built;
+  const asks = async () => (await pilots.callMethod("beyonce", "GetFormations", [], null, WHOSE, handle)).result;
+  assert.equal(formationsAsked(session), 1, "the park asked as it was made");
+  // The BFF's own asking is answered with what the park was, as the client's object cache answers a second asking.
+  assert.deepEqual([await asks(), await asks(), formationsAsked(session)], [FORMATIONS_AS_JSON, FORMATIONS_AS_JSON, 1]);
+  // Another system, another ballpark: it has the formations the first was given, and the server is not asked.
+  Object.assign(session.attributes, { solarsystemid: SYSTEM + 1, solarsystemid2: SYSTEM + 1, locationid: SYSTEM + 1 });
+  session.change({ solarsystemid: [SYSTEM, SYSTEM + 1], solarsystemid2: [SYSTEM, SYSTEM + 1], locationid: [SYSTEM, SYSTEM + 1] });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual([hand.parks.length, hand.parks[1].space.formations, formationsAsked(session)], [2, FORMATIONS, 1]);
+  assert.equal(typeof hand.parks[1].tick, "function", "the second park is ticking");
+  // Anything else asked of the service by its name is sent, and is answered as the server answers it.
+  assert.equal((await pilots.callMethod("beyonce", "CmdStop", [], null, WHOSE, handle)).result, null);
+  assert.deepEqual(session.calls.at(-1), { service: "beyonce", method: "CmdStop", args: [], kwargs: null });
+  // Counted once, as the client's own call.
+  const row = pilots.callLedger().find((each) => each.pair === "beyonce.GetFormations");
+  assert.deepEqual([row.calls, row.statuses], [1, { same: 1 }]);
+});
+
+test("a docked pilot's formations are asked for when something first wants them, and its ballpark is given those", async () => {
+  const hand = handTicked();
+  const built = build({ answers: { "beyonce.GetFormations": FORMATIONS } }, { ...hand.options, allowed: new Set(["beyonce.GetFormations"]) });
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const { pilots, session } = built;
+  assert.equal(formationsAsked(session), 0, "docked, there is no ballpark to ask for them");
+  assert.deepEqual((await pilots.callMethod("beyonce", "GetFormations", [], null, FIELDS, handle)).result, FORMATIONS_AS_JSON);
+  assert.deepEqual((await pilots.callMethod("beyonce", "GetFormations", [], null, FIELDS, handle)).result, FORMATIONS_AS_JSON);
+  assert.equal(formationsAsked(session), 1);
+  // Undocked: the ballpark is made with what is kept.
+  Object.assign(session.attributes, { solarsystemid: SYSTEM, stationid: null, locationid: SYSTEM });
+  session.change({ solarsystemid: [null, SYSTEM], stationid: [STATION, null], locationid: [STATION, SYSTEM] });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual([hand.parks.length, hand.parks[0].space.formations, formationsAsked(session)], [1, FORMATIONS, 1]);
+});
+
+test("formations the server refused are not kept: the park goes on without them, and the next asking asks again", async () => {
+  let refuse = true;
+  const hand = handTicked();
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "beyonce.GetFormations": () => { if (refuse) throw refusedBy("NotNow"); return FORMATIONS; } } }, { ...hand.options, allowed: new Set(["beyonce.GetFormations"]) });
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const { pilots, session } = built;
+  // The park asked, was refused, said so, and ticks all the same.
+  assert.deepEqual([formationsAsked(session), hand.parks[0].space.formations, typeof hand.parks[0].tick], [1, null, "function"]);
+  assert.deepEqual(hand.errors.map(([what]) => what), ["GetFormations"]);
+  await rejects(pilots.callMethod("beyonce", "GetFormations", [], null, WHOSE, handle), "CALL_REFUSED");
+  refuse = false;
+  assert.deepEqual([(await pilots.callMethod("beyonce", "GetFormations", [], null, WHOSE, handle)).result, formationsAsked(session)], [FORMATIONS_AS_JSON, 3]);
+  assert.deepEqual([(await pilots.callMethod("beyonce", "GetFormations", [], null, WHOSE, handle)).result, formationsAsked(session)], [FORMATIONS_AS_JSON, 3]);
 });

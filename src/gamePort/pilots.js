@@ -973,6 +973,8 @@ function createGamePortPilots({
       kept: Object.fromEntries(Object.keys(KEPT_UNTIL_CHANGED).map((service) => [service, createKeptReads()])),
       /** What each container bound for the BFF lists, as the server answered, until something may have changed it (INVENTORY_LISTINGS). */
       listings: createKeptReads(),
+      /** beyonce.GetFormations as the server answered it, or the asking of it under way; null before it is asked (formationsKnown). */
+      formations: null,
       /** The pilot's last order to its ship in this ballpark, as { method, targetID, range }, or null (alreadyFollowing). */
       lastMove: null,
       /** What the ship has locked and what has it locked, as the client's target service keeps them (pilotTargets.js); the askings of them, one after another; and whether godma has yet to ask for them. */
@@ -1175,6 +1177,11 @@ function createGamePortPilots({
     if (Object.hasOwn(KEPT_UNTIL_CHANGED, service) && KEPT_UNTIL_CHANGED[service].keptAs(method, form) !== null) {
       const kept = await run(entry, service, method, () => keptRead(entry, service, method, form));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
+    }
+    // The formations are asked for once, as the client's object cache has them after its first asking.
+    if (service === "beyonce" && method === "GetFormations") {
+      const known = await run(entry, service, method, () => formationsKnown(entry));
+      return { service, method, result: wireToBridgeJson(known === undefined ? null : known), notifications: drain(entry) };
     }
     // An attribute's value is the client's own dogma location's to answer, where godma holds the item.
     if (service === "dogmaIM" && method === "QueryAttributeValue") {
@@ -1511,7 +1518,7 @@ function createGamePortPilots({
       entry.lastMove = null;
     }
     if (wanted !== null && !entry.space) {
-      entry.space = createSpace({ session: entry.session, solarSystemID: wanted, sleep, simTime: entry.clock.simTime, onError: (error, what) => onSpaceError(error, what, entry.characterID) });
+      entry.space = createSpace({ session: entry.session, solarSystemID: wanted, sleep, simTime: entry.clock.simTime, askFormations: () => formationsKnown(entry), onError: (error, what) => onSpaceError(error, what, entry.characterID) });
       // michelle.DoDestinyUpdate: the dogma messages riding with a ballpark update are scattered as OnMultiEvent, which is godma's.
       entry.space.park.onMultiEvent = (messages) => entry.dogma.multiEvent(messages);
       // targetMgr.DoBallsRemove: a ball that goes is no target any more.
@@ -1694,6 +1701,23 @@ function createGamePortPilots({
     if (ball.mode !== mode || ball.followId !== targetID || ball.followRange !== range) return false;
     const last = entry.lastMove;
     return last === null || (last.method === method && last.targetID === targetID && last.range === range);
+  }
+
+  /**
+   * michelle.AddBallpark: sm.RemoteSvc('beyonce').GetFormations(), each time a ballpark is made. The client's
+   * object cache answers every asking after the first (recorded on Tranquility: "returning a cached result" at
+   * each ballpark of a flight through several systems), so the server is asked once. Here the first asking is
+   * sent, noted, and kept for the pilot; a ballpark made later, and the BFF's own asking, are answered from it.
+   * An asking that fails is not kept.
+   */
+  function formationsKnown(entry) {
+    if (entry.formations === null) {
+      ledger.note("beyonce", "GetFormations", shape("beyonce", "GetFormations", [], null, contextFor(entry)));
+      const asking = entry.session.call("beyonce", "GetFormations", []);
+      entry.formations = asking;
+      asking.catch(() => { if (entry.formations === asking) entry.formations = null; });
+    }
+    return entry.formations;
   }
 
   /** The tick of the pilot's park, or null when it has none. */
