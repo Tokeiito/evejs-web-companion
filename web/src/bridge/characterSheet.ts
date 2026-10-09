@@ -202,6 +202,9 @@ function decodeImplants(
  * failure. null when the KeyVal is absent (a failed read; the flow carries the
  * reason).
  */
+/** Whether an answer carries a field at all: the implants alone, as the client's own sheet reads them, carry no other. */
+const said = (result: JsonValue, name: string): boolean => readKeyVal(result, name) !== undefined;
+
 export function decodeCloneSummary(
   result: JsonValue | null | undefined,
 ): CloneSummary | null {
@@ -209,10 +212,10 @@ export function decodeCloneSummary(
     return null;
   }
   return {
-    homeStationID: toInt(readKeyVal(result, "homeStationID")),
-    cloneStationID: toInt(readKeyVal(result, "cloneStationID")),
+    homeStationID: said(result, "homeStationID") ? toInt(readKeyVal(result, "homeStationID")) : null,
+    cloneStationID: said(result, "cloneStationID") ? toInt(readKeyVal(result, "cloneStationID")) : null,
     implants: decodeImplants(readKeyVal(result, "implants")),
-    jumpCloneCount: dictEntries(readKeyVal(result, "clones")).length,
+    jumpCloneCount: said(result, "clones") ? dictEntries(readKeyVal(result, "clones")).length : null,
   };
 }
 

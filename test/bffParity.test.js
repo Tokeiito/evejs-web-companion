@@ -94,3 +94,30 @@ test("where the game port answers what the client reckons for itself, the differ
   assert.equal(judge(inventory(capacity(1000000, 1), capacity(1, 1)), inventory(capacity(2000000, 1), capacity(1, 1)), "/api/bridge/assets").verdict, "moved");
   assert.equal(judge(inventory(capacity(1000000, 1), capacity(1, 1)), inventory(capacity(2000000, 1), capacity(1, 1))).verdict, "moved");
 });
+
+test("where the two transports answer the sheet's clone in two forms, what the page reads of it is what is compared", () => {
+  const kv = (entries) => ({ type: "object", name: "util.KeyVal", args: { type: "dict", entries } });
+  const dict = (entries) => ({ type: "dict", entries });
+  // The gateway: the server's whole clone answer, its implants keyed by item. The game port: the implants the
+  // client's skill handler lists, keyed by slot, and nothing else.
+  const whole = (implants) => ok({ ok: true, publicInfo: null, cloneInfo: kv([["homeStationID", 60003760], ["clones", dict([])], ["implants", dict(implants)], ["timeLastJump", "0"]]) });
+  const listed = (implants) => ok({ ok: true, publicInfo: null, cloneInfo: kv([["implants", dict(implants)]]) });
+  const implant = (typeID, slot, more = []) => kv([["typeID", typeID], ...more, ["slot", slot]]);
+  const byItem = [[9988400109053, implant(9941, 2, [["name", ""]])], [9988400109052, implant(9899, 1, [["name", ""]])]];
+  const same = judge(whole(byItem), listed([[1, implant(9899, 1)], [2, implant(9941, 2)]]), "/api/bridge/character-sheet");
+  assert.deepEqual([same.verdict, same.detail], ["identical", ""]);
+  // Another implant, one missing, or one in another slot is a difference, and is not put down to data that moved.
+  for (const other of [[[1, implant(9899, 1)], [2, implant(10216, 2)]], [[1, implant(9899, 1)]], [[1, implant(9899, 1)], [3, implant(9941, 3)]], []]) {
+    assert.equal(judge(whole(byItem), listed(other), "/api/bridge/character-sheet").verdict, "divergent", JSON.stringify(other));
+  }
+  // A clean clone on both is the same; no clone read on one of them is not.
+  assert.equal(judge(whole([]), listed([]), "/api/bridge/character-sheet").verdict, "identical");
+  assert.equal(judge(whole([]), ok({ ok: true, publicInfo: null, cloneInfo: null }), "/api/bridge/character-sheet").verdict, "divergent");
+  // Nor is a clone answer with no implants to read the same as none: it is compared as it came.
+  assert.equal(judge(ok({ ok: true, publicInfo: null, cloneInfo: kv([["homeStationID", 60003760]]) }), ok({ ok: true, publicInfo: null, cloneInfo: null }), "/api/bridge/character-sheet").verdict, "divergent");
+  // The rest of the sheet is compared as it is.
+  const named = judge(ok({ ok: true, publicInfo: "a", cloneInfo: null }), ok({ ok: true, publicInfo: "b", cloneInfo: null }), "/api/bridge/character-sheet");
+  assert.notEqual(named.verdict, "identical");
+  // On another route the two forms are two different answers.
+  assert.notEqual(judge(whole(byItem), listed([[1, implant(9899, 1)], [2, implant(9941, 2)]]), "/api/bridge/assets").verdict, "identical");
+});

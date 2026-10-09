@@ -13353,18 +13353,56 @@ app.get("/api/bridge/standings", requireAuth, async (req, res, next) => {
 // (worldHasNoContracts precedent). ⚠ Raw retail shapes ship out; the browser
 // decodes them (web/src/bridge/characterSheet.ts) and resolves every entity id to
 // a name (R7d) — corp / alliance / home station / implant typeIDs — via /api/names.
+/** dogma/const.py attributeImplantness: the slot an implant's type goes in. */
+const ATTRIBUTE_IMPLANTNESS = 331;
+
+/**
+ * What the Character Sheet reads of the pilot's clone, from what the client's own sheet lists: the implants its
+ * skill handler answers (skillsvc.GetImplants), each known by its type and put in the slot its type's own
+ * attribute says, which is what the client sorts them by (implantsBoostersPanel.py 43). In the form the page
+ * reads a clone in, each implant under the key the server gave it. Null when the answer is not a dict of things
+ * with a type: none at all would say the pilot's head is empty.
+ */
+function cloneOfImplants(result) {
+  if (!result || !Array.isArray(result.entries)) {
+    return null;
+  }
+  const keyVal = (entries) => ({ type: "object", name: "util.KeyVal", args: { type: "dict", entries } });
+  const slotOf = (typeID) =>
+    (typeof staticData.getTypeDogmaAttribute === "function" ? Number(staticData.getTypeDogmaAttribute(typeID, ATTRIBUTE_IMPLANTNESS, 0)) : 0);
+  const implants = [];
+  for (const [key, implant] of result.entries) {
+    const typeID = mailNumber(contractRowField(implant, "typeID"));
+    if (!(typeID > 0)) {
+      return null;
+    }
+    implants.push([key, keyVal([["typeID", typeID], ["slot", slotOf(typeID)]])]);
+  }
+  return keyVal([["implants", { type: "dict", entries: implants }]]);
+}
+
 app.get("/api/bridge/character-sheet", requireAuth, async (req, res, next) => {
   const held = requireHeldBridgeSession(req, res);
   if (!held) {
     return;
   }
+  // implantsBoostersPanel.py 40: the client's sheet lists what its skill handler answers and never asks
+  // charMgr.GetCloneInfo. On the game port the implants are asked for its way.
+  const asTheClient = Boolean(gamePortPilots && isGamePortHandle(held.bridgeSessionID));
   try {
-    const [publicInfo, description, homeStation, cloneInfo] = await Promise.allSettled([
+    const [publicInfo, description, homeStation, cloneRead] = await Promise.allSettled([
       heldTopLevelCall(held, req.webSessionID, "charMgr", "GetPublicInfo3", [], null),
       heldTopLevelCall(held, req.webSessionID, "charMgr", "GetCharacterDescription", [], null),
       heldTopLevelCall(held, req.webSessionID, "charMgr", "GetHomeStationRow", [], null),
-      heldTopLevelCall(held, req.webSessionID, "charMgr", "GetCloneInfo", [], null),
+      asTheClient
+        ? heldTopLevelCall(held, req.webSessionID, "skillHandler", "GetImplants", [], null)
+        : heldTopLevelCall(held, req.webSessionID, "charMgr", "GetCloneInfo", [], null),
     ]);
+    let cloneInfo = cloneRead;
+    if (asTheClient && cloneRead.status === "fulfilled") {
+      const clone = cloneOfImplants(cloneRead.value.result);
+      cloneInfo = clone ? { status: "fulfilled", value: { result: clone } } : { status: "rejected", reason: { code: "READ_FAILED" } };
+    }
     // A lost live session can't be recovered by any read; surface it so the page
     // returns to character select (as every held call does).
     for (const settled of [publicInfo, description, homeStation, cloneInfo]) {

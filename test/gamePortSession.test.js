@@ -879,6 +879,34 @@ test("two binds of one address at once ask where it lives once, and each then bi
   await again;
 });
 
+test("a moniker that names its node is bound there without asking where it lives", { timeout: 5000 }, async (context) => {
+  // moniker.py __setstate__: a Moniker that arrives with a node puts it in machoNet's address cache. Recorded on
+  // Tranquility: the skill handler's moniker named its node, and its bind was not preceded by a MachoResolveObject.
+  const { session, transport } = await loggedIn(context);
+  session.setNodeOfAddress("skillMgr2", 2124510715n, 65451);
+  const before = transport.sent.length;
+  const bind = session.bind("skillMgr2", 2124510715, ["GetBoosters", [], null]);
+  await settle();
+  assert.equal(transport.sent.length, before + 1);
+  assert.deepEqual([...sentTo(transport), lastCall(transport).packet.destination.nodeID], ["MachoBindObject", "node", "skillMgr2", 65451]);
+  await answerLast(transport, boundAs("N=65451:9"));
+  assert.equal((await bind).nodeID, 65451);
+  // An address that is a tuple is known the same way.
+  session.setNodeOfAddress("ship", [60000004, 15], 65452);
+  const docked = session.bind("ship", [60000004n, 15], null);
+  await settle();
+  assert.deepEqual([...sentTo(transport), lastCall(transport).packet.destination.nodeID], ["MachoBindObject", "node", "ship", 65452]);
+  await answerLast(transport, boundAs("N=65452:3"));
+  await docked;
+  // Only that address: the same service for another character is asked about.
+  const other = session.bind("skillMgr2", 2124510716, null);
+  await settle();
+  assert.equal(lastCall(transport).method, "MachoResolveObject");
+  await answerLast(transport, 65450);
+  await answerLast(transport, boundAs("N=65450:10"));
+  await other;
+});
+
 test("a call given to a bind rides along with it: (method, arguments, keywords) after the bind's own parameters", { timeout: 5000 }, async (context) => {
   const { session, transport } = await loggedIn(context);
   const carried = async (service, params, call, answer) => {

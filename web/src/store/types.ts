@@ -1443,10 +1443,11 @@ export interface CharacterImplant {
  * REAL answer the page renders honestly, not a failure.
  */
 export interface CloneSummary {
-  readonly homeStationID: number;
-  readonly cloneStationID: number;
+  /** Null where the answer does not say: the client's own read of the implants carries none of the three. */
+  readonly homeStationID: number | null;
+  readonly cloneStationID: number | null;
   readonly implants: readonly CharacterImplant[];
-  readonly jumpCloneCount: number;
+  readonly jumpCloneCount: number | null;
 }
 
 /**

@@ -1731,3 +1731,74 @@ test("on the gateway the pilot's own contracts are asked of the server as before
   ]);
   assert.deepEqual([ids(payload.outstanding), ids(payload.accepted)], [[901], [902]]);
 });
+
+// ── The pilot's implants on the Character Sheet route ────────────────────────
+//
+// The client's sheet lists the implants its skill handler answers (skillsvc.GetImplants, which godma's
+// 'implants' of the character hands on), each by its type and sorted by the slot the type's own attribute says
+// (implantsBoostersPanel.py 40). It never asks charMgr.GetCloneInfo. Of that answer the page shows the implants
+// and nothing else.
+
+const IMPLANT_SLOTS = { 9899: 1, 9941: 2, 3097: 6 };
+const implantStatics = () => ({ ...fakeStaticData(), getTypeDogmaAttribute: (typeID, attributeID, fallback) => (attributeID === 331 && IMPLANT_SLOTS[typeID] !== undefined ? IMPLANT_SLOTS[typeID] : fallback) });
+const implantRow = (typeID, more = []) => ({ type: "object", name: "util.KeyVal", args: { type: "dict", entries: [["typeID", typeID], ...more] } });
+const implantsAnswer = (...entries) => ({ type: "dict", entries });
+const cloneWith = (...implants) => ({ type: "object", name: "util.KeyVal", args: { type: "dict", entries: [["implants", { type: "dict", entries: implants.map(([key, typeID, slot]) => [key, implantRow(typeID, [["slot", slot]])]) }]] } });
+const FROM_CLONE_INFO = { type: "object", name: "util.KeyVal", args: { type: "dict", entries: [["homeStationID", 60003760], ["implants", { type: "dict", entries: [] }]] } };
+
+/** A pilot opening the Character Sheet; on the game port unless told otherwise. Says what was asked for the clone and what the route answered of it. */
+async function characterSheetRoute({ transport = "gameport", implants = implantsAnswer([6, implantRow(3097, [["slot", 99]])], [1, implantRow(9899)]), statics = implantStatics(), failing = false } = {}) {
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  const gateway = fakeGateway();
+  const backend = transport === "gameport" ? gamePort : gateway;
+  const asked = [];
+  backend.callMethod = async (service, method, args, kwargs) => {
+    asked.push([`${service}.${method}`, args, kwargs ?? null]);
+    if (method === "GetImplants") {
+      if (failing) throw Object.assign(new Error("refused"), { code: "CALL_REFUSED" });
+      return { service, method, result: implants, notifications: [] };
+    }
+    // The server's own answer to the page's old call, marked so that it is known for the server's.
+    if (method === "GetCloneInfo") return { service, method, result: FROM_CLONE_INFO, notifications: [] };
+    return { service, method, result: null, notifications: [] };
+  };
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => transport, staticData: statics });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  asked.length = 0;
+  const answer = await apiRequest(baseUrl, "/api/bridge/character-sheet");
+  assert.equal(answer.response.status, 200, JSON.stringify(answer.payload));
+  return { payload: answer.payload, clone: asked.filter(([pair]) => /GetImplants|GetCloneInfo/.test(pair)), all: asked.map(([pair]) => pair).sort() };
+}
+
+test("on the game port the Character Sheet's implants are the skill handler's, each in the slot its type says, and the clone is not asked about", async () => {
+  const { payload, clone, all } = await characterSheetRoute();
+  // GetSkillHandler().GetImplants(), with nothing; and charMgr.GetCloneInfo not at all.
+  assert.deepEqual(clone, [["skillHandler.GetImplants", [], null]]);
+  assert.deepEqual(all, ["charMgr.GetCharacterDescription", "charMgr.GetHomeStationRow", "charMgr.GetPublicInfo3", "skillHandler.GetImplants"]);
+  // In the form the page reads a clone in: each implant by its type, in its type's slot whatever the server said of one, under the server's own key.
+  assert.deepEqual([payload.cloneInfo, payload.errors.cloneInfo], [cloneWith([6, 3097, 6], [1, 9899, 1]), null]);
+  // Implants as rows are read the same; a type the static tables have no slot for is in none.
+  const packed = await characterSheetRoute({ implants: implantsAnswer([2, { type: "packedrow", columns: [], fields: { typeID: { type: "long", value: "9941" } }, values: [] }], [3, implantRow(424242)]) });
+  assert.deepEqual(packed.payload.cloneInfo, cloneWith([2, 9941, 2], [3, 424242, 0]));
+  const unknowing = await characterSheetRoute({ statics: fakeStaticData() });
+  assert.deepEqual(unknowing.payload.cloneInfo, cloneWith([6, 3097, 0], [1, 9899, 0]));
+  // A pilot with none: a clean clone, which is an answer.
+  const clean = await characterSheetRoute({ implants: implantsAnswer() });
+  assert.deepEqual([clean.payload.cloneInfo, clean.payload.errors.cloneInfo], [cloneWith(), null]);
+});
+
+test("implants that are refused or cannot be read are said to be so, and the rest of the sheet is answered", async () => {
+  const refused = await characterSheetRoute({ failing: true });
+  assert.deepEqual([refused.payload.cloneInfo, refused.payload.errors], [null, { publicInfo: null, description: null, homeStation: null, cloneInfo: "CALL_REFUSED" }]);
+  // No answer, one that is no dict, and an implant with no type: an empty list would say the pilot has none.
+  for (const odd of [null, { type: "list", items: [] }, 7, implantsAnswer([1, implantRow(9899)], [2, implantRow(0)]), implantsAnswer([1, "x"])]) {
+    const unread = await characterSheetRoute({ implants: odd });
+    assert.deepEqual([unread.payload.cloneInfo, unread.payload.errors.cloneInfo, unread.payload.errors.publicInfo], [null, "READ_FAILED", null], JSON.stringify(odd));
+  }
+});
+
+test("on the gateway the Character Sheet's clone is asked of the server as before", async () => {
+  const { payload, clone } = await characterSheetRoute({ transport: "gateway" });
+  assert.deepEqual(clone, [["charMgr.GetCloneInfo", [], null]]);
+  assert.deepEqual([payload.cloneInfo, payload.errors.cloneInfo], [FROM_CLONE_INFO, null]);
+});

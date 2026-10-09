@@ -203,6 +203,17 @@ test("decodeCloneSummary reads implants (by typeID + slot, slot-sorted) and coun
   assert.equal(clone!.jumpCloneCount, 1);
 });
 
+test("decodeCloneSummary says what an answer does not carry: the implants alone leave the stations and the jump clones unsaid", () => {
+  // On the game port the route answers the implants the client's own sheet lists, and nothing of the clone besides.
+  const clone = decodeCloneSummary(keyval([["implants", dict([[1, keyval([["typeID", 9941], ["slot", 2]])]])]]));
+  assert.deepEqual(clone, { homeStationID: null, cloneStationID: null, implants: [{ typeID: 9941, slot: 2 }], jumpCloneCount: null });
+  // Each is said or not on its own.
+  assert.deepEqual(decodeCloneSummary(keyval([["homeStationID", 60015249], ["implants", dict([])]])), { homeStationID: 60015249, cloneStationID: null, implants: [], jumpCloneCount: null });
+  assert.deepEqual(decodeCloneSummary(keyval([["cloneStationID", 60015250], ["clones", dict([])]])), { homeStationID: null, cloneStationID: 60015250, implants: [], jumpCloneCount: 0 });
+  // An answer that carries them, with none of either, says none.
+  assert.deepEqual(decodeCloneSummary(CLONE_INFO_CLEAN), { homeStationID: 60015249, cloneStationID: 60015249, implants: [], jumpCloneCount: 0 });
+});
+
 test("decodeCloneSummary returns null when the KeyVal is absent (a failed read)", () => {
   assert.equal(decodeCloneSummary(null), null);
   assert.equal(decodeCloneSummary({ type: "list", items: [] }), null);

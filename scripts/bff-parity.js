@@ -179,15 +179,45 @@ const CLIENT_RECKONED = Object.freeze({
   }),
 });
 
+/**
+ * The implants of a clone answer as the Character Sheet shows them: each by its type and its slot, in slot order.
+ * A clone answer with no implants to read is left as it is.
+ */
+function implantsShown(cloneInfo) {
+  const fieldsOf = (value) => new Map(value && value.args && Array.isArray(value.args.entries) ? value.args.entries : []);
+  const implants = fieldsOf(cloneInfo).get("implants");
+  if (!implants || !Array.isArray(implants.entries)) return cloneInfo;
+  return {
+    implantsShown: implants.entries
+      .map(([, row]) => [Number(fieldsOf(row).get("typeID")), Number(fieldsOf(row).get("slot"))])
+      .sort((left, right) => left[1] - right[1] || left[0] - right[0])
+      .map(([typeID, slot]) => `type ${typeID} in slot ${slot}`),
+  };
+}
+
+/**
+ * Where the two transports answer one thing in two forms by design, the answer as the page reads it. The game
+ * port's Character Sheet has the implants the client's skill handler lists, keyed by slot; the gateway's has the
+ * server's whole clone answer, with its implants keyed by item. The page shows the implants and nothing else of it.
+ */
+const AS_THE_PAGE_READS = Object.freeze({
+  "/api/bridge/character-sheet": (payload) => (payload && typeof payload === "object" ? { ...payload, cloneInfo: implantsShown(payload.cloneInfo) } : payload),
+});
+
 function judge(gatewayAnswer, gamePortAnswer, route = null) {
   if (gatewayAnswer.status !== gamePortAnswer.status) {
     return { verdict: "status differs", detail: `${gatewayAnswer.status} against ${gamePortAnswer.status}: ${JSON.stringify(gamePortAnswer.payload).slice(0, 200)}` };
   }
   const references = [];
+  const read = (route !== null && AS_THE_PAGE_READS[route]) || ((payload) => payload);
   const differences = compare(
-    withEnvelopesOpened(withoutVolatile(gatewayAnswer.payload), "$", references),
-    withEnvelopesOpened(withoutVolatile(gamePortAnswer.payload)),
+    withEnvelopesOpened(withoutVolatile(read(gatewayAnswer.payload)), "$", references),
+    withEnvelopesOpened(withoutVolatile(read(gamePortAnswer.payload))),
   );
+  // What the page reads of such an answer is the same thing read two ways: a difference in it is one of them being wrong.
+  for (const difference of route !== null && AS_THE_PAGE_READS[route] ? differences : []) {
+    if (/\.implantsShown(\b|$)/.test(difference.path)) difference.kind = "read-differently";
+  }
   // Where the gateway could only point at the object cache, the game port having the object is a gain.
   for (const difference of differences) {
     if (difference.kind === "null-vs-value" && references.includes(difference.path)) difference.kind = "gained";

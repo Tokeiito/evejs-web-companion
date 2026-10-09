@@ -130,6 +130,20 @@ const CORPORATION_SERVICES = new Set(["corpRegistry"]);
  * it is first called, with that call riding along (moniker.py).
  */
 const BOUND_BEFORE_USE = new Set(["corpRegistry"]);
+/** The name the BFF asks the skill handler's reads by. What they are bound by is what the handler's own moniker says. */
+const SKILL_HANDLER = "skillHandler";
+const MONIKER_CLASS = "carbon.common.script.net.moniker.Moniker";
+
+/**
+ * A Moniker as it arrives in an answer: its state is (service, nodeID, bindParams, sessionCheck) (moniker.py
+ * __getstate__). Null for anything else, or for one with no service or nothing to bind by.
+ */
+function monikerOf(value) {
+  if (!value || textOf(value.name) !== MONIKER_CLASS || !Array.isArray(value.args)) return null;
+  const [service, nodeID, params] = value.args;
+  if (!textOf(service) || params === null || params === undefined) return null;
+  return { service: textOf(service), nodeID: positive(nodeID), params };
+}
 
 /**
  * How long a call waits once the server has said its answer will be late. The
@@ -739,6 +753,8 @@ function createGamePortPilots({
       monikers: new Map(),
       /** The binds under way, by what is being bound: a Moniker binds once, and a call that finds it binding waits. */
       binding: new Map(),
+      /** skillsvc's skillHandler: the moniker skillMgr2 answered, once asked for; a promise of { service, nodeID, params }. */
+      skillHandler: null,
       /** The pilot's sim clock (pilotClock.js): what its park steps by and its dogma measures in. */
       clock,
       /** The pilot's ballpark while it is in space (pilotSpace.js), else null. */
@@ -1367,11 +1383,37 @@ function createGamePortPilots({
   }
 
   /**
-   * A call on a moniker the client keeps for where the pilot is (eveMoniker.py: GetShipAccess for `ship`,
-   * CharGetDogmaLocation for `dogmaIM`).
+   * skillsvc.GetSkillHandler: the client asks skillMgr2 for its skill handler once and keeps the Moniker that
+   * answers. The moniker says what it is bound by: its service, its parameters, and its node where the server
+   * names one, which is then known without asking (moniker.py __setstate__). Asked for again after an answer
+   * that was no moniker, or none.
    */
-  const monikerCall = (entry, service, method, args, kwargs = null) =>
-    keptCall(entry, entry.monikers, service, service, () => monikerParams(entry, service, undefined), method, args, kwargs);
+  function skillHandlerMoniker(entry) {
+    if (!entry.skillHandler) {
+      const asked = (async () => {
+        ledger.note("skillMgr2", "GetMySkillHandler", shape("skillMgr2", "GetMySkillHandler", [], null, contextFor(entry)));
+        const moniker = monikerOf(await entry.session.call("skillMgr2", "GetMySkillHandler", [], null));
+        if (!moniker) throw fail("CALL_FAILED", "skillMgr2.GetMySkillHandler did not answer a skill handler.");
+        if (moniker.nodeID !== null) entry.session.setNodeOfAddress(moniker.service, moniker.params, moniker.nodeID);
+        return moniker;
+      })();
+      entry.skillHandler = asked;
+      asked.catch(() => { if (entry.skillHandler === asked) entry.skillHandler = null; });
+    }
+    return entry.skillHandler;
+  }
+
+  /**
+   * A call on a moniker the client keeps: for where the pilot is (eveMoniker.py: GetShipAccess for `ship`,
+   * CharGetDogmaLocation for `dogmaIM`), for its corporation, or its skill handler.
+   */
+  async function monikerCall(entry, service, method, args, kwargs = null) {
+    if (service !== SKILL_HANDLER) {
+      return keptCall(entry, entry.monikers, service, service, () => monikerParams(entry, service, undefined), method, args, kwargs);
+    }
+    const moniker = await skillHandlerMoniker(entry);
+    return keptCall(entry, entry.monikers, service, moniker.service, () => moniker.params, method, args, kwargs);
+  }
 
   /**
    * shipmodulebutton.GetDefaultEffect, as far as the static data here can say

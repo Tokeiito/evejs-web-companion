@@ -67,6 +67,8 @@ const MONIKER_SERVICES = Object.freeze({
   ship: new Set(["GetShipFittingInfo"]),
   dogmaIM: new Set(["CreateNewbieShip", "GetRequiredSkillLevels"]),
   corpRegistry: new Set(),
+  // skillsvc.GetSkillHandler: the moniker skillMgr2.GetMySkillHandler answers, kept. On this server it names this service.
+  skillHandler: new Set(),
 });
 /**
  * The services the client reaches with sm.ProxySvc(name): every one in the decompiled client, and none
@@ -434,7 +436,7 @@ const RETAIL_CALLS = Object.freeze({
   }),
   "charMgr.GetHomeStationRow": same("eve/client/script/ui/shared/neocom/charactersheet.py:59", "RemoteSvc('charMgr').GetHomeStationRow(), no arguments, asked once and kept until the session is reset"),
   "charMgr.GetHomeStation": webOnly("eve/client/script/ui/shared/neocom/charactersheet.py:59", "The client never asks this of charMgr: its character sheet's service asks GetHomeStationRow()."),
-  "charMgr.GetCloneInfo": webOnly("eve/client/script/ui/services/clonejumpsvc.py:76", "The client never asks this. Its jump clones, their implants and the time of the last jump come from GetCloneState() on the jumpCloneSvc moniker for where the pilot is; the implants in the pilot's head are godma's, from GetAllInfo."),
+  "charMgr.GetCloneInfo": webOnly("eve/client/script/ui/services/clonejumpsvc.py:76", "The client never asks this. Its jump clones, their implants and the time of the last jump come from GetCloneState() on the jumpCloneSvc moniker for where the pilot is; the implants in the pilot's head are what its skill handler answers GetImplants() with (skillsvc.py 967), which godma's 'implants' of the character hands on."),
   "charMgr.ListStations": same(`${INV_CACHE}:833`, "invCache's global container: self.moniker.ListStations(), no arguments, kept for five minutes"),
 
   // ── industry ──────────────────────────────────────────────────────────────
@@ -487,6 +489,16 @@ const RETAIL_CALLS = Object.freeze({
     note: "ProxySvc('contractProxy').GetContractListForOwner(ownerID, status, contractType, issuedBy, num=100, startContractID=...): the My Contracts panel's list, asked when the panel opens and when its button is pressed, for the status its filter is on. Recorded on Tranquility as (charID, 0, None, None), num=100, startContractID=None.",
     shape: ownersContracts,
   }),
+  "skillMgr2.GetMySkillHandler": same(`${SKILL_SVC}:130`, "session.ConnectToRemoteService('skillMgr2').GetMySkillHandler(), no arguments: asked once and the moniker it answers kept."),
+  "skillHandler.GetSkills": same(`${SKILL_SVC}:136`, "GetSkillHandler().GetSkills(), no arguments"),
+  "skillHandler.GetAllSkills": same(`${SKILL_SVC}:142`, "GetSkillHandler().GetAllSkills(), no arguments"),
+  "skillHandler.GetAttributes": same(`${SKILL_SVC}:224`, "GetSkillHandler().GetAttributes(), no arguments"),
+  "skillHandler.GetSkillChangesForISIS": same(`${SKILL_SVC}:379`, "GetSkillHandler().GetSkillChangesForISIS(), no arguments"),
+  "skillHandler.GetRespecInfo": same(`${SKILL_SVC}:802`, "GetSkillHandler().GetRespecInfo(), no arguments"),
+  "skillHandler.GetFreeSkillPoints": same(`${SKILL_SVC}:852`, "GetSkillHandler().GetFreeSkillPoints(), no arguments"),
+  "skillHandler.GetBoosters": same(`${SKILL_SVC}:962`, "GetSkillHandler().GetBoosters(), no arguments: asked once and kept. Recorded on Tranquility as the call the handler's bind carried."),
+  "skillHandler.GetImplants": same(`${SKILL_SVC}:967`, "GetSkillHandler().GetImplants(), no arguments: the implants in the pilot's head, asked once and kept (godma's 'implants' of the character is this). Recorded on Tranquility at login."),
+  "skillHandler.GetSkillPoints": same(`${SKILL_SVC}:989`, "GetSkillHandler().GetSkillPoints(), no arguments"),
   "contractProxy.GetContract": judged(
     `${CONTRACTS_SVC}:336`,
     (args) => (args.length === 1 && args[0] > 0 ? { status: "same" } : { status: "differs", note: "The client names the one contract and nothing else: GetContract(contractID)." }),

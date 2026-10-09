@@ -287,12 +287,14 @@ test("what a call needs the pilot to have first is said by the registry: godma p
   assert.deepEqual([retailNeeds("invbroker", "List"), retailNeeds("agentMgr", "DoAction"), retailNeeds("someService", "SomeMethod"), retailNeeds("dogmaIM", "GetTargets")], [null, null, null, null]);
 });
 
-test("everything of ship, dogmaIM and corpRegistry is made on a moniker, read or not, but the three the client asks by name", () => {
+test("everything of ship, dogmaIM, corpRegistry and the skill handler is made on a moniker, read or not, but the three the client asks by name", () => {
   assert.deepEqual(Object.fromEntries(Object.entries(MONIKER_SERVICES).map(([service, named]) => [service, [...named].sort()])), {
     ship: ["GetShipFittingInfo"],
     dogmaIM: ["CreateNewbieShip", "GetRequiredSkillLevels"],
     // The client never asks the corporation registry by name at all.
     corpRegistry: [],
+    // Nor its skill handler: every read of it is a call on the moniker skillMgr2 answered.
+    skillHandler: [],
   });
   assert.deepEqual([madeOnMoniker("corpRegistry", "GetCorporation"), madeOnMoniker("corpRegistry", "AddBulletin"), madeOnMoniker("corpRegistry", "MachoBindObject")], [true, true, false]);
   assert.deepEqual([madeOnMoniker("ship", "Undock"), madeOnMoniker("dogmaIM", "GetTargets"), madeOnMoniker("ship", "SomethingNobodyRead"), madeOnMoniker("dogmaIM", "Overload")], [true, true, true, true]);
@@ -603,6 +605,21 @@ test("an owner's contracts are asked for as the My Contracts panel asks: owner, 
     const nobody = form("contractProxy.GetContractListForOwner", args, null);
     assert.deepEqual([nobody.status, /owner and a status/.test(nobody.note)], ["differs", true], JSON.stringify(args));
   }
+});
+
+test("the skill handler is asked for by name and its reads are made on what its moniker binds", () => {
+  // skillsvc.py 130: session.ConnectToRemoteService('skillMgr2').GetMySkillHandler(), no arguments, kept. Recorded
+  // on Tranquility at login with the reads after it on the object its moniker bound.
+  const handler = form("skillMgr2.GetMySkillHandler", []);
+  assert.deepEqual([handler.status, handler.args, handler.kwargs, handler.moniker, handler.proxy], ["same", [], null, false, false]);
+  assert.match(handler.source, /skillsvc\.py:130$/);
+  for (const [method, line] of [["GetSkills", 136], ["GetAllSkills", 142], ["GetAttributes", 224], ["GetSkillChangesForISIS", 379], ["GetRespecInfo", 802], ["GetFreeSkillPoints", 852], ["GetBoosters", 962], ["GetImplants", 967], ["GetSkillPoints", 989]]) {
+    const read = form(`skillHandler.${method}`, []);
+    assert.deepEqual([read.status, read.args, read.kwargs, read.moniker, read.source.endsWith(`skillsvc.py:${line}`)], ["same", [], null, true, true], method);
+  }
+  // A read of it this registry has not set beside the client's is still made on the moniker.
+  const unread = form("skillHandler.GetSkillHistory", []);
+  assert.deepEqual([unread.status, unread.moniker], ["unchecked", true]);
 });
 
 test("one contract in full is asked for by its ID, as the client's contracts service asks", () => {

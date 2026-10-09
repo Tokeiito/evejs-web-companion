@@ -490,6 +490,14 @@ class GamePortSession {
   }
 
   /**
+   * machoNet.SetNodeOfAddress: an address is known to live on a node without asking. A Moniker that arrives
+   * naming its node says so (moniker.py __setstate__).
+   */
+  setNodeOfAddress(service, bindParams, nodeID) {
+    this.nodeOfAddress.set(`${service}:${addressKey(bindParams)}`, nodeID);
+  }
+
+  /**
    * Bind a service's object, as a Moniker does (moniker.py Bind): find the node
    * the address lives on, which is asked of any node once (MachoResolveObject)
    * and remembered as machoNet's address cache remembers it, then bind there
