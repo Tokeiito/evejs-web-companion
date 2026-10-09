@@ -934,7 +934,7 @@ function createGamePortPilots({
         // crimewatchSvc.ProcessSessionChange and bco_members.OnSessionChanged: in another corporation, its aggression
         // settings and its members' names are read at once. (The choosing of the character reads them itself.)
         entry.aggression = null;
-        if (changes.corpid[1] && sessions.has(entry.handle)) corporationRead(entry, false);
+        if (changes.corpid[1] && sessions.has(entry.handle)) corporationRead(entry);
         // standingsvc.ProcessSessionChange: in another corporation the standings are read again. (The choosing of
         // the character reads them itself, once the character is on the session.)
         if (changes.corpid[1] && sessions.has(entry.handle)) refreshStandings(entry);
@@ -986,8 +986,12 @@ function createGamePortPilots({
       await primeSkills(entry);
       // journal._UpdateMissionDataFull: a character chosen has its agents' journal read, for the missions it is on.
       await journalUpToDate(entry).catch(() => {});
-      // crimewatchSvc, bco_members and bco_applications: the corporation's registry is bound and asked its three.
-      await corporationRead(entry, true);
+      // crimewatchSvc and bco_members: the corporation's registry is bound, and asked its settings and its members' names.
+      await corporationRead(entry);
+      // addressbook.GetContacts: the pilot's contacts, its corporation's, and who of the watched is online.
+      await addressBookRead(entry);
+      // bco_applications: the pilot's own applications, which the client asks for once.
+      await corporationAsk(entry, "GetMyApplications").catch(() => {});
       // agents.__GetAllAgents: the table of agents is asked for as a character is chosen. The choosing does not wait
       // on it, so it is asked for last: a call sent right behind it was answered 50 to 80 ms late (2026-10-09).
       agentsKnown(entry);
@@ -1812,6 +1816,12 @@ function createGamePortPilots({
     return boundObjectID(await session.call(service, method, argumentsToWire(args), kwargs ?? null));
   }
 
+  /** idCheckers.IsNPC(session.corpid): whether the pilot's corporation is an NPC one. */
+  function inNpcCorporation(entry) {
+    const corporationID = attribute(entry, "corpid");
+    return corporationID > MAX_SYSTEM_ITEM && corporationID < MIN_PLAYER_OWNER;
+  }
+
   // ── the standings as they are kept ────────────────────────────────────────
 
   /**
@@ -1827,9 +1837,7 @@ function createGamePortPilots({
     };
     entry.standingsWork = (async () => {
       const npcNpc = await ask("GetNPCNPCStandings");
-      const corporationID = attribute(entry, "corpid");
-      const inNpcCorporation = corporationID > MAX_SYSTEM_ITEM && corporationID < MIN_PLAYER_OWNER;
-      const [char, corp] = inNpcCorporation ? [await ask("GetCharStandings")] : await Promise.all([ask("GetCharStandings"), ask("GetCorpStandings")]);
+      const [char, corp] = inNpcCorporation(entry) ? [await ask("GetCharStandings")] : await Promise.all([ask("GetCharStandings"), ask("GetCorpStandings")]);
       entry.standings.refreshed({ npcNpc, char, corp });
     })().catch(() => {});
     return entry.standingsWork;
@@ -2010,20 +2018,42 @@ function createGamePortPilots({
    * What the client's services ask of the corporation's registry when the session's corporation changes, the
    * choosing of a character among them: its aggression settings (crimewatchSvc.ProcessSessionChange), which
    * are kept, and its members' names (bco_members.OnSessionChanged, which primes the client's names with them
-   * and keeps nothing else). A character chosen is also asked for its own applications, as the client asks for
-   * them once (bco_applications). The order is Tranquility's recording of a login. Each fails for itself.
+   * and keeps nothing else). Each fails for itself.
    *
-   * The applications are not kept here, though the client keeps them and works its list over at each
-   * OnCorporationApplicationChanged: the BFF's own flows read one pilot's applications straight after another
-   * pilot's change to them, on another connection, where a kept list could be a notice behind.
+   * A character chosen is asked besides for its own applications, as the client asks for them once
+   * (bco_applications), after the address book's reads as a recorded login has them. They are not kept here,
+   * though the client keeps them and works its list over at each OnCorporationApplicationChanged: the BFF's own
+   * flows read one pilot's applications straight after another pilot's change to them, on another connection,
+   * where a kept list could be a notice behind.
    */
-  function corporationRead(entry, chosen) {
+  function corporationRead(entry) {
     return corporationDoes(entry, async () => {
       await aggressionRefreshed(entry).catch(() => {});
-      for (const method of ["GetEveOwners", ...(chosen ? ["GetMyApplications"] : [])]) {
-        await corporationAsk(entry, method).catch(() => {});
-      }
+      await corporationAsk(entry, "GetEveOwners").catch(() => {});
     });
+  }
+
+  /**
+   * addressbook.GetContacts, as a character is chosen (OnCharacterSessionChanged). The client asks these side by
+   * side, and Tranquility's recording of a login has them in this order: the pilot's contacts and blocked owners
+   * (charMgr.GetContactList), its corporation's contacts where the corporation is not an NPC one
+   * (corp.GetContactList, which is GetCorpRegistry().GetCorporateContacts()), and who of its watched contacts is
+   * online (onlineStatus.Prime, which is GetInitialState). Each fails for itself.
+   *
+   * Nothing is kept of them, though the client keeps all three and works them over at the server's notices: no
+   * window of the page reads a contact yet. The alliance's contacts, which the client asks for beside these on
+   * the alliance's own moniker, are not asked: the transport makes no such moniker yet.
+   */
+  async function addressBookRead(entry) {
+    const byName = (service, method) => {
+      ledger.note(service, method, shape(service, method, [], null, contextFor(entry)));
+      return entry.session.call(service, method, [], null);
+    };
+    await Promise.all([
+      byName("charMgr", "GetContactList"),
+      ...(inNpcCorporation(entry) ? [] : [corporationAsk(entry, "GetCorporateContacts")]),
+      byName("onlineStatus", "GetInitialState"),
+    ].map((asked) => asked.catch(() => {})));
   }
 
   /** crimewatchSvc.OnCorpAggressionSettingsChange(aggressionSettings): the settings are what the server says. */

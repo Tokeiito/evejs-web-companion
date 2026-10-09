@@ -10,9 +10,9 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 
 | The game port | Kinds | Calls | Meaning |
 |---|---|---|---|
-| at login | 24 | 29 | The game port asks this at login too. |
+| at login | 26 | 31 | The game port asks this at login too. |
 | by a feature | 14 | 20 | A feature of the web client asks this when it is wanted, in a form read against the client's. |
-| by a route | 12 | 13 | The BFF has a route that can ask this. It has not been read against the client's. |
+| by a route | 10 | 11 | The BFF has a route that can ask this. It has not been read against the client's. |
 | never | 50 | 55 | Nothing of ours asks this. |
 
 ## Before a character is chosen
@@ -90,8 +90,8 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `warRegistry.MachoBindObject` | 1 | never |
 | `officeManager.GetMyCorporationsOffices` | 1 | by a feature |
 | `warRegistry.GetWars` (inferred) | 1 | by a route |
-| `charMgr.GetContactList` | 1 | by a route |
-| `onlineStatus.GetInitialState` | 1 | by a route |
+| `charMgr.GetContactList` | 1 | at login |
+| `onlineStatus.GetInitialState` | 1 | at login |
 | `stationSvc.GetStationItemBits` | 1 | by a feature |
 | `station.GetGuests` | 1 | by a feature |
 | `chatAuthenticationService.GetAuthenticationToken` | 1 | never |

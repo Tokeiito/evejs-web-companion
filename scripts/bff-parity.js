@@ -44,6 +44,8 @@ const DOCKED_ROUTES = [
   "/api/bridge/agents",
   "/api/bridge/assets",
   "/api/bridge/character-sheet",
+  "/api/bridge/contact-list",
+  "/api/bridge/presence?targetID=0",
   "/api/bridge/corp-settings",
   "/api/bridge/corp-applications",
   "/api/bridge/corp-members",

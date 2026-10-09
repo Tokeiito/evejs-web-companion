@@ -218,6 +218,23 @@ read of them asks the server each time, because the BFF's pilot-training onboard
 trainee's applications straight after an officer's change to them, on another connection, where a
 kept list could be a notice behind.
 
+**The address book at login, 2026-10-09.** As its character is chosen the client's address book
+asks, side by side (`addressbookService.GetContacts`): `charMgr.GetContactList()` by name, for the
+pilot's contacts and blocked owners; its corporation's contacts, `GetCorporateContacts()` on the
+corporation's registry, unless the corporation is an NPC one; its alliance's, `GetAllianceContacts()`
+on the alliance's own moniker, if it is in one; and `onlineStatus.GetInitialState()` by name
+(the online status service's `Prime`), for who of its watched contacts is online. Two Tranquility
+logins of a pilot in a player's corporation have the contact list, the corporation's and the
+online state in that order, after the members' names and before the applications. The client keeps
+all of them and works them over at the server's notices (`OnPersonalContactsUpdated`,
+`OnOrganizationContactsUpdated`, `OnContactLoggedOn`, `OnContactLoggedOff` and others).
+
+On the game port the transport asks the same, in that order, as a pilot is chosen, and waits for
+them. It keeps none of them: no window of the page reads a contact yet, and a read of the routes
+asks the server as before. The alliance's contacts are not asked: the transport has no moniker for
+an alliance's registry and asks `allianceRegistry` by name. `onlineStatus.Prime`, which a BFF route
+asks of the server, is the client's own service's method and never a call of the client's.
+
 **The customs export's call shape.** `src/piCustomsExport.js` binds `invbroker` with the office ID
 and calls `ImportExportWithPlanet` on that. The client goes through `invCache`: it binds the
 broker for a location, asks it for the office's inventory, and calls that. eve.js accepts both.

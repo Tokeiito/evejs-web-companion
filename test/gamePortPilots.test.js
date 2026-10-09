@@ -252,6 +252,10 @@ test("select logs in as the account and makes the retail client's three calls, i
     "skillMgr2.GetMySkillHandler",
     // And its agents' journal, as the client's journal service asks for it.
     "agentMgr.GetMyJournalDetails",
+    // And its contacts and who of them is online, as the client's address book asks. (Its corporation's contacts
+    // are asked of the registry, and not at all of an NPC corporation, which the stand-in pilot's is.)
+    "charMgr.GetContactList",
+    "onlineStatus.GetInitialState",
     // And the table of agents, as the client's agents service asks for it. The choosing does not wait on that one.
     "agentMgr.GetAgents",
   ]);
@@ -347,7 +351,7 @@ test("a pilot left in space is selected in space and given a ballpark as the cli
   const first = await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, outcome.bridgeSessionID);
   assert.deepEqual(session.calls.map((call) => `${call.service}.${call.method}`), [
     "charUnboundMgr.GetCharacterSelectionData", "charUnboundMgr.GetCharacterLockType", "charUnboundMgr.SelectCharacterID",
-    "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler", "agentMgr.GetMyJournalDetails", "agentMgr.GetAgents", "beyonce.GetFormations",
+    "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler", "agentMgr.GetMyJournalDetails", "charMgr.GetContactList", "onlineStatus.GetInitialState", "agentMgr.GetAgents", "beyonce.GetFormations",
   ]);
   assert.deepEqual(session.binds, [{ service: "beyonce", params: SYSTEM }]);
   assert.deepEqual([hand.parks.length, typeof hand.parks[0].tick, hand.parks[0].stopped], [1, "function", false]);
@@ -504,10 +508,10 @@ test("the allowlist it ships with is the gateway's own list of pairs", async () 
     await pilots.callMethod(service, method, [], null, { userid: ACCOUNT }, bridgeSessionID);
   }
   // The three of choosing a character, the two readings of its standings, the asking for its skill handler, the
-  // reading of its journal, the asking for the table of agents, and the forty but one: the table of agents is
-  // among the forty, and is not asked for twice.
+  // reading of its journal, the address book's two, the asking for the table of agents, and the forty but one:
+  // the table of agents is among the forty, and is not asked for twice.
   assert.equal(contract.gatewayAllowlist.pairs.slice(0, 40).includes("agentMgr.GetAgents"), true);
-  assert.equal(made[0].calls.length, 3 + 2 + 1 + 1 + 1 + 39);
+  assert.equal(made[0].calls.length, 3 + 2 + 1 + 1 + 2 + 1 + 39);
   assert.equal(contract.gatewayAllowlist.pairs.length, contract.gatewayAllowlist.count);
 });
 
@@ -1203,6 +1207,8 @@ test("the transport keeps a tally of what it called and how each compared with t
     "skillMgr2.GetMySkillHandler": { same: 1 },
     "agentMgr.GetMyJournalDetails": { same: 1 },
     "agentMgr.GetAgents": { same: 1 },
+    "charMgr.GetContactList": { same: 1 },
+    "onlineStatus.GetInitialState": { same: 1 },
     "corpRegistry.GetAggressionSettings": { same: 1 },
     "corpRegistry.GetEveOwners": { same: 1 },
     "corpRegistry.GetMyApplications": { same: 1 },
@@ -2366,7 +2372,8 @@ test("whatever is asked of ship or dogmaIM by name is made on the moniker, read 
   const allowed = new Set(["dogmaIM.GetTargets", "dogmaIM.AddTarget", "dogmaIM.Overload", "dogmaIM.CreateNewbieShip", "ship.LeaveShip", "ship.GetShipConfiguration", "ship.LaunchDrones", "ship.GetShipFittingInfo", "station.GetGuests"]);
   const { pilots, session, handle } = await selected({ answers: { "bound:GetTargets": { type: "list", items: [9001] } } }, { allowed });
   const made = () => session.boundCalls.at(-1);
-  const byName = () => session.calls.filter((call) => !call.service.startsWith("charUnboundMgr") && call.service !== "standingMgr" && call.service !== "skillMgr2" && call.service !== "agentMgr" && call.method !== "ShipGetInfo").map((call) => `${call.service}.${call.method}`);
+  const chosen = session.calls.length;
+  const byName = () => session.calls.slice(chosen).filter((call) => call.method !== "ShipGetInfo").map((call) => `${call.service}.${call.method}`);
 
   // A read, with the server's answer handed back as any call's is.
   const targets = await pilots.callMethod("dogmaIM", "GetTargets", [], null, FIELDS, handle);
@@ -2788,8 +2795,9 @@ test("a character chosen has its corporation's registry bound, and asked what th
   // Moniker('corpRegistry', session.corpid), bound for its own sake; then the three on what it bound, each with nothing.
   assert.deepEqual([binds, carried], [[{ service: "corpRegistry", params: 1000044 }], [null]]);
   assert.deepEqual(boundCalls, REGISTRY_READS.map((method) => ({ objectID: "N=2:1", method, args: [], kwargs: null })));
-  // The choosing waits for them, and not for the table of agents, which is asked for behind them.
-  assert.deepEqual(session.sent.slice(-4), [...REGISTRY_READS, "GetAgents"]);
+  // The address book's come between the members' names and the applications, as in a recorded login. The
+  // choosing waits for all of them, and not for the table of agents, which is asked for behind them.
+  assert.deepEqual(session.sent.slice(-6), ["GetAggressionSettings", "GetEveOwners", "GetContactList", "GetInitialState", "GetMyApplications", "GetAgents"]);
   // Nothing was asked of the service by its name, and each is in the ledger as the client's own call.
   assert.deepEqual(session.calls.filter((call) => call.service === "corpRegistry"), []);
   assert.deepEqual(REGISTRY_READS.map((method) => ledgerOf(pilots, `corpRegistry.${method}`)), [
@@ -2893,6 +2901,80 @@ test("the settings that cannot be read at the choosing are asked for when they a
   const built = build({ answers: { "bound:GetEveOwners": () => { built.session.drop(); throw sessionError("CONNECTION_CLOSED"); } } }, REGISTRY_KEPT_PAIRS);
   await rejects(built.pilots.selectCharacter([PILOT, null, true], null, FIELDS), "SESSION_SELECT_FAILED", /closed the connection/);
   assert.deepEqual([built.session.boundCalls.filter(onRegistry).map((call) => call.method), built.pilots.size], [["GetAggressionSettings", "GetEveOwners"], 0]);
+});
+
+// ── the address book ─────────────────────────────────────────────────────────
+
+const ADDRESS_BOOK_PAIRS = { allowed: new Set(["charMgr.GetContactList", "onlineStatus.GetInitialState", "onlineStatus.GetOnlineStatus", "onlineStatus.Prime", "corpRegistry.GetCorporateContacts", "station.GetGuests"]) };
+const byNameOf = (session, ...services) => session.calls.filter((call) => services.includes(call.service)).map((call) => [`${call.service}.${call.method}`, call.args, call.kwargs]);
+
+test("a character chosen has its contacts, its corporation's and who of them is online asked for as the client's address book asks", async () => {
+  // In a player's corporation: the pilot's own by name, the corporation's of its registry, the online state by name.
+  const { pilots, session } = await selected({ corpid: 98000001 }, ADDRESS_BOOK_PAIRS);
+  assert.deepEqual(byNameOf(session, "charMgr", "onlineStatus"), [["charMgr.GetContactList", [], null], ["onlineStatus.GetInitialState", [], null]]);
+  // The corporation's, on the object the registry was bound to as the character was chosen, with nothing.
+  assert.deepEqual([session.registryAtChoosing.binds.length, session.registryAtChoosing.boundCalls.map((call) => [call.objectID, call.method, call.args, call.kwargs])], [1, [
+    ["N=2:1", "GetAggressionSettings", [], null], ["N=2:1", "GetEveOwners", [], null], ["N=2:1", "GetCorporateContacts", [], null], ["N=2:1", "GetMyApplications", [], null],
+  ]]);
+  // Side by side, in the order of a recorded login, after the members' names and before the applications.
+  assert.deepEqual(session.sent.slice(-7), ["GetAggressionSettings", "GetEveOwners", "GetContactList", "GetCorporateContacts", "GetInitialState", "GetMyApplications", "GetAgents"]);
+  // Each is in the ledger as the client's own call.
+  assert.deepEqual(["charMgr.GetContactList", "corpRegistry.GetCorporateContacts", "onlineStatus.GetInitialState"].map((pair) => ledgerOf(pilots, pair)), [
+    [{ same: 1 }, "eve/client/script/ui/shared/neocom/addressBook/addressbookService.py:207"],
+    [{ same: 1 }, "eve/client/script/ui/services/corporation/base_corporation.py:993"],
+    [{ same: 1 }, "eve/client/script/ui/shared/comtool/onlineStatus.py:79"],
+  ]);
+
+  // In an NPC corporation, as the stand-in pilot is by default, the corporation's are none and are not asked for.
+  const npc = await selected({}, ADDRESS_BOOK_PAIRS);
+  assert.deepEqual([byNameOf(npc.session, "charMgr", "onlineStatus").map(([pair]) => pair), npc.session.registryAtChoosing.boundCalls.map((call) => call.method)], [
+    ["charMgr.GetContactList", "onlineStatus.GetInitialState"], REGISTRY_READS,
+  ]);
+  assert.equal(ledgerOf(npc.pilots, "corpRegistry.GetCorporateContacts"), null);
+});
+
+test("nothing of the address book's is kept: a read of it through the BFF asks the server, and the client's own name for its priming is no call of the client's", async () => {
+  let asked = 0;
+  const { pilots, session, handle } = await selected({ corpid: 98000001, answers: { "charMgr.GetContactList": () => { asked += 1; return { type: "list", items: [asked] }; } } }, ADDRESS_BOOK_PAIRS);
+  const read = async (service, method, args = []) => (await pilots.callMethod(service, method, args, null, FIELDS, handle)).result;
+  // Asked at the choosing, and again at each read.
+  assert.deepEqual([await read("charMgr", "GetContactList"), await read("charMgr", "GetContactList"), ledgerOf(pilots, "charMgr.GetContactList")[0]], [{ type: "list", items: [2] }, { type: "list", items: [3] }, { same: 3 }]);
+  await read("onlineStatus", "GetInitialState");
+  await read("corpRegistry", "GetCorporateContacts");
+  assert.deepEqual([ledgerOf(pilots, "onlineStatus.GetInitialState")[0], ledgerOf(pilots, "corpRegistry.GetCorporateContacts")[0], session.boundCalls.at(-1)], [{ same: 2 }, { same: 1, reshaped: 1 }, { objectID: "N=2:1", method: "GetCorporateContacts", args: [], kwargs: null }]);
+  // onlineStatus.GetOnlineStatus(charID) is the client's, for a character its kept state does not have.
+  await read("onlineStatus", "GetOnlineStatus", [PILOT + 1]);
+  assert.deepEqual([session.calls.at(-1), ledgerOf(pilots, "onlineStatus.GetOnlineStatus")], [{ service: "onlineStatus", method: "GetOnlineStatus", args: [PILOT + 1], kwargs: null }, [{ same: 1 }, "eve/client/script/ui/shared/comtool/onlineStatus.py:56"]]);
+  // Prime is the client's own service's method, and never a call of its: asked of the server it is the web's alone.
+  await read("onlineStatus", "Prime");
+  assert.deepEqual(ledgerOf(pilots, "onlineStatus.Prime"), [{ "web-only": 1 }, "eve/client/script/ui/shared/comtool/onlineStatus.py:74"]);
+});
+
+test("each of the address book's reads fails for itself, and the choosing is none the worse", async () => {
+  // The pilot's own refused: the corporation's and the online state are asked all the same, and what follows them.
+  const refused = await selected({ corpid: 98000001, answers: { "charMgr.GetContactList": () => { throw refusedBy("NotNow"); } } }, ADDRESS_BOOK_PAIRS);
+  assert.deepEqual([refused.outcome.session.characterID, refused.session.sent.slice(-7)], [PILOT, ["GetAggressionSettings", "GetEveOwners", "GetContactList", "GetCorporateContacts", "GetInitialState", "GetMyApplications", "GetAgents"]]);
+  // The corporation's refused, and the online state.
+  const others = await selected({ corpid: 98000001, answers: { "bound:GetCorporateContacts": () => { throw refusedBy("NotNow"); }, "onlineStatus.GetInitialState": () => { throw refusedBy("NotNow"); } } }, ADDRESS_BOOK_PAIRS);
+  assert.deepEqual([others.outcome.session.characterID, others.session.sent.slice(-2)], [PILOT, ["GetMyApplications", "GetAgents"]]);
+  // So does the asking for the applications that follows them.
+  const unapplied = await selected({ answers: { "bound:GetMyApplications": () => { throw refusedBy("NotNow"); } } }, ADDRESS_BOOK_PAIRS);
+  assert.deepEqual([unapplied.outcome.session.characterID, unapplied.session.sent.slice(-2)], [PILOT, ["GetMyApplications", "GetAgents"]]);
+  // The choosing waits for the address book's answers: the applications are not asked for, nor a session handed out, before them.
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const waiting = build({ answers: { "charMgr.GetContactList": () => gate } }, ADDRESS_BOOK_PAIRS);
+  let chosen = false;
+  const choosing = waiting.pilots.selectCharacter([PILOT, null, true], null, FIELDS).then(() => { chosen = true; });
+  await settled();
+  assert.deepEqual([chosen, waiting.session.sent.at(-1)], [false, "GetInitialState"]);
+  release(null);
+  await choosing;
+  assert.deepEqual([chosen, waiting.session.sent.slice(-2)], [true, ["GetMyApplications", "GetAgents"]]);
+  // A connection lost under them is the choosing lost, as one lost anywhere in it is: no session is handed out.
+  const built = build({ answers: { "onlineStatus.GetInitialState": () => { built.session.drop(); throw sessionError("CONNECTION_CLOSED"); } } }, ADDRESS_BOOK_PAIRS);
+  await rejects(built.pilots.selectCharacter([PILOT, null, true], null, FIELDS), "SESSION_SELECT_FAILED", /closed the connection/);
+  assert.deepEqual([built.session.sent.at(-1), built.pilots.size], ["GetInitialState", 0]);
 });
 
 test("the wallet's transactions go out with a bool for whose they are, however the BFF said it", async () => {
@@ -3936,7 +4018,8 @@ test("a character chosen has its standings read as the client's standing service
   const { pilots, session, handle } = await selected({ answers: STANDING_ANSWERS });
   assert.deepEqual(session.calls.map((call) => `${call.service}.${call.method}`), [
     "charUnboundMgr.GetCharacterSelectionData", "charUnboundMgr.GetCharacterLockType", "charUnboundMgr.SelectCharacterID",
-    "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler", "agentMgr.GetMyJournalDetails", "agentMgr.GetAgents",
+    "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler", "agentMgr.GetMyJournalDetails",
+    "charMgr.GetContactList", "onlineStatus.GetInitialState", "agentMgr.GetAgents",
   ]);
   assert.deepEqual(session.calls.slice(3, 5).map((call) => [call.args, call.kwargs]), [[[], null], [[], null]]);
   const kept = await pilots.standingsKept(WHO, handle);
@@ -4126,7 +4209,7 @@ test("a character chosen has its skill handler asked for and bound, and asked wh
   // by the character, and the rest go to the object, in the order a real client asked this server.
   assert.deepEqual(session.calls.slice(3).map((call) => [`${call.service}.${call.method}`, call.args, call.kwargs]), [
     ["standingMgr.GetNPCNPCStandings", [], null], ["standingMgr.GetCharStandings", [], null], ["skillMgr2.GetMySkillHandler", [], null],
-    ["agentMgr.GetMyJournalDetails", [], null], ["agentMgr.GetAgents", [], null],
+    ["agentMgr.GetMyJournalDetails", [], null], ["charMgr.GetContactList", [], null], ["onlineStatus.GetInitialState", [], null], ["agentMgr.GetAgents", [], null],
   ]);
   assert.deepEqual([session.binds, session.carried, session.nodes], [[{ service: "skillHandler", params: PILOT }], ["GetSkills"], []]);
   assert.deepEqual(handlerCalls(session), LOGIN_READS);
@@ -4498,7 +4581,7 @@ const journalAsked = (session) => session.calls.filter((call) => call.service ==
 test("a character chosen has its agents' journal read as the client's journal service reads it, and it is kept", async () => {
   const { pilots, session, handle } = await selected({ answers: { "agentMgr.GetMyJournalDetails": journalWith(missionOf(3008416)) } }, JOURNAL_PAIRS);
   // By name, with nothing, after the standings and the skill handler.
-  assert.deepEqual(session.calls.slice(3).map((call) => [`${call.service}.${call.method}`, call.args, call.kwargs]).at(-2), ["agentMgr.GetMyJournalDetails", [], null]);
+  assert.deepEqual(session.calls.slice(3).map((call) => [`${call.service}.${call.method}`, call.args, call.kwargs])[3], ["agentMgr.GetMyJournalDetails", [], null]);
   assert.deepEqual(ledgerOf(pilots, "agentMgr.GetMyJournalDetails"), [{ same: 1 }, "eve/client/script/ui/shared/neocom/journal.py:312"]);
   // Read from what is kept, in the gateway's form, with nothing asked.
   const kept = await pilots.journalKept(WHO, handle);
