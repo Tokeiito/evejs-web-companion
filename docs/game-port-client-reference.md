@@ -295,6 +295,34 @@ for them again each time it opens, which is the page's own way.
 The notifications' lists and the calendar's months are kept by one helper,
 `src/gamePort/keptReads.js`: answers kept until something changes them.
 
+**What a container lists, 2026-10-09.** The client's inventory cache (`invCache.py`) asks a
+container for a flag's items once: `invCacheContainer.List(flag)` sends `List(flag=flag)` only
+for a flag it has not listed, and `ListByFlags` sends only the flags not yet listed. From then
+on it goes by the server's `OnItemChange` and `OnItemsChanged`, working each changed item into
+what it holds (`_ProcessItemChange`), and asks again for nothing. A whole mining mission
+recorded on Tranquility has twelve `List` calls, one for each container and flag, and a
+recording of one mining cycle has none.
+
+On the game port the transport now keeps each listing as the server answered it, by the handle
+it was asked on and what was asked, and forgets every listing when anything may have changed
+one: at either notice, in another place or ship, and at any write of the pilot's own, done or
+refused (`pilots.js`, `INVENTORY_LISTINGS`). What is forgotten is asked for when next wanted.
+The gateway's listings are as they were.
+
+What that changes is small, and was measured in the server's logs of two flights, one before
+and one after:
+
+| | Before | After |
+|---|---|---|
+| At a login, as the page's windows open | each of two containers listed two or three times at once | each listed once |
+| After each of the server's notices of an item | two `List` and one `ListByFlags` | the same |
+| With no notice | nothing but at a login, and twice at the pilot's own doing | nothing but at a login |
+
+The page was not asking over and over, as the ledger's count had seemed to say: it reads the
+holds again when the server says an item changed, and a mining laser's cycle is such a change.
+The client asks nothing there. To match it the notices have to be worked into what is kept, as
+its cache does, and that is not done.
+
 **A follow, an orbit, and the throttle, 2026-10-09.** The client's menu sends an approach as
 `bp.CmdFollowBall(targetID, const.approachRange)`, keep at range as `bp.CmdFollowBall(targetID,
 range)` and an orbit as `bp.CmdOrbit(targetID, range)` (`movementFunctions.py` 302, 229, 260),

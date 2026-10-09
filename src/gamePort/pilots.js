@@ -66,6 +66,7 @@ const { createPilotStandings } = require("./pilotStandings");
 const { createPilotSkills } = require("./pilotSkills");
 const { createPilotJournal } = require("./pilotJournal");
 const { createKeptReads } = require("./keptReads");
+const { isBridgeWritePair } = require("../bridgeCallPolicy");
 const { TARGETS, TARGETERS, createPilotTargets } = require("./pilotTargets");
 const { buildSkillSheet } = require("./skillSheet");
 const { projectFlight, projectSpace } = require("./spaceProjection");
@@ -192,6 +193,26 @@ const KEPT_UNTIL_CHANGED = Object.freeze({
     writes: Object.freeze({ calendarMgr: new Set(["CreatePersonalEvent", "CreateCorporationEvent", "CreateAllianceEvent", "EditPersonalEvent", "EditCorporationEvent", "EditAllianceEvent", "DeleteEvent"]) }),
   }),
 });
+/**
+ * A container's two listings, which the client's inventory cache keeps (invCacheContainer.List, ListByFlags, in
+ * invCache.py): a flag's items are asked for once, and from then on the cache goes by the server's word of each
+ * item that changes. Here a listing is kept as the server answered it, by the handle it was asked on and what
+ * was asked, and every listing is forgotten when anything may have changed one: at either of the server's two
+ * notices of an item, in another place or ship, and at any write of the pilot's own, done or refused. What is
+ * forgotten is asked for when it is next wanted. (The client works each change into what it holds, and asks
+ * again for nothing.)
+ */
+const INVENTORY_LISTINGS = new Set(["List", "ListByFlags"]);
+const ITEM_NOTICES = new Set(["OnItemChange", "OnItemsChanged"]);
+/** The dogma location's calls that lock and unlock: a write each, and no container's contents are changed by one. */
+const TARGETING = new Set(["AddTarget", "CancelAddTarget", "RemoveTarget", "RemoveTargets", "ClearTargets"]);
+/**
+ * Whether one of the pilot's own calls may have changed what a container holds: any the BFF counts as a write
+ * (bridgeCallPolicy.js), but for an order to the ship's engines and a lock, which move no item.
+ */
+const mayChangeContents = (service, method) => isBridgeWritePair(service, method) && service !== "beyonce" && !(service === "dogmaIM" && TARGETING.has(method));
+/** What a listing is kept as: the handle, and what was asked as it is sent, which says which of the two it is (flag=, or flags=). */
+const listingKeptAs = (boundHandle, form) => `${boundHandle}|${JSON.stringify([form.args, form.kwargs], (key, value) => (typeof value === "bigint" ? String(value) : value))}`;
 /** The dogma location's two reads the client's target service keeps the answers of, by what each is kept as (pilotTargets.js). */
 const TARGETS_KEPT = Object.freeze({ GetTargets: TARGETS, GetTargeters: TARGETERS });
 /** calendar.FetchNextEvents: the month of a time and the month after it, each as [month, year], December's next being January's (GetBrowsedMonth). */
@@ -950,6 +971,8 @@ function createGamePortPilots({
       ownersWork: Promise.resolve(),
       /** What the client's services keep until it changes, as the server answered it, by the service asked (KEPT_UNTIL_CHANGED). */
       kept: Object.fromEntries(Object.keys(KEPT_UNTIL_CHANGED).map((service) => [service, createKeptReads()])),
+      /** What each container bound for the BFF lists, as the server answered, until something may have changed it (INVENTORY_LISTINGS). */
+      listings: createKeptReads(),
       /** The pilot's last order to its ship in this ballpark, as { method, targetID, range }, or null (alreadyFollowing). */
       lastMove: null,
       /** What the ship has locked and what has it locked, as the client's target service keeps them (pilotTargets.js); the askings of them, one after another; and whether godma has yet to ask for them. */
@@ -980,14 +1003,19 @@ function createGamePortPilots({
       afterSkillNotice(entry, entry.skills.feed(notification));
       afterCorporationNotice(entry, notification);
       entry.targets.feed(notification);
+      // invCache.OnItemChange: an item changed, and what a container lists may not be so any more.
+      if (ITEM_NOTICES.has(notification.method)) entry.listings.forget();
       for (const [service, keeper] of Object.entries(KEPT_UNTIL_CHANGED)) if (keeper.notices.has(notification.method)) entry.kept[service].forget();
       // A mission changed: what the client shows of its missions is drawn again from the journal, which reads it again.
       if (entry.journal.feed(notification)) journalUpToDate(entry);
       record(entry, notificationToBridgeJson(notification));
     });
     session.onSessionChange((changes) => {
-      // A new place, or a new ship: what dogma said of the old one is not about this one.
-      if (LOCATION_ATTRIBUTES.some((name) => name in changes) || "shipid" in changes) entry.dogmaLoaded = null;
+      // A new place, or a new ship: what dogma said of the old one is not about this one, and nor is what a container listed.
+      if (LOCATION_ATTRIBUTES.some((name) => name in changes) || "shipid" in changes) {
+        entry.dogmaLoaded = null;
+        entry.listings.forget();
+      }
       // gameui.GetShipAccess: the ship's moniker it keeps is for the ship the pilot is in.
       if ("shipid" in changes) entry.monikers.delete("ship");
       // fleetSvc.ProcessSessionChange: in no fleet, there is no fleet's object.
@@ -1173,6 +1201,7 @@ function createGamePortPilots({
       for (const [reads, keeper] of Object.entries(KEPT_UNTIL_CHANGED)) {
         if (Object.hasOwn(keeper.writes, service) && keeper.writes[service].has(method)) entry.kept[reads].forget();
       }
+      if (mayChangeContents(service, method)) entry.listings.forget();
     });
     // targetMgr._LockTarget: (flag, targets) with no flag set says the lock is made already, and the client adds the target itself.
     if (service === "dogmaIM" && method === "AddTarget" && itemsOf(result).length > 0 && !itemsOf(result)[0]) entry.targets.added(form.args[0]);
@@ -2421,19 +2450,27 @@ function createGamePortPilots({
     assertAllowed(service, method);
     if (retailNeeds(service, method) === "dogma") await shipReadings(entry, whereabouts(entry));
     const form = shape(service, method, args, kwargs, contextFor(entry));
-    ledger.note(service, method, form);
+    /** The call itself, noted as it is sent. */
+    const sent = async () => {
+      ledger.note(service, method, form);
+      return object.params === undefined
+        ? entry.session.callBound(object.objectID, method, argumentsToWire(form.args), form.kwargs)
+        : handleCall(entry, String(boundHandle), object, method, argumentsToWire(form.args), form.kwargs);
+    };
+    // What a container lists is the inventory cache's to answer: asked for, and noted, only where nothing is kept.
+    const listing = service === "invbroker" && INVENTORY_LISTINGS.has(method);
     let result;
     try {
-      result = await run(entry, service, method, async () => (object.params === undefined
-        ? entry.session.callBound(object.objectID, method, argumentsToWire(form.args), form.kwargs)
-        : handleCall(entry, String(boundHandle), object, method, argumentsToWire(form.args), form.kwargs)));
+      result = await run(entry, service, method, () => (listing ? entry.listings.read(listingKeptAs(boundHandle, form), sent) : sent()));
     } catch (error) {
+      if (mayChangeContents(service, method)) entry.listings.forget();
       // The session's own word for a bind the server answered without an object: the gateway's, for a bind.
       if (/ did not return a bound object\.| could not say where its object lives\./.test(error.message)) {
         throw fail("BOUND_NO_OBJECT", `${service}.MachoBindObject did not return a bound object.`);
       }
       throw error;
     }
+    if (mayChangeContents(service, method)) entry.listings.forget();
     if (service === "scanMgr") afterScanManagerCall(entry, method, form.args, result);
     if (service === "dogmaIM") afterGroupingCall(entry, method, form.args, result);
     if (service === "beyonce") afterMovementCall(entry, method, form.args, kwargs);

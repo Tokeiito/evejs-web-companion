@@ -5403,3 +5403,93 @@ test("the ship is already flying an order when its own ball says so, and the pil
   Object.assign(newPark.ballpark.ball(newPark.ego), { mode: BALL_MODES.FOLLOW, followId: 9001, followRange: Math.fround(50) });
   assert.equal(already("CmdFollowBall", 9001, 50), true);
 });
+
+// ── what a container lists, kept until it changes ────────────────────────────
+//
+// The client's inventory cache asks a container for a flag's items once (invCacheContainer.List, ListByFlags) and
+// from then on goes by the server's OnItemChange. A whole mining mission recorded on Tranquility has twelve List
+// calls, one for each container and flag. The BFF's routes list a container each time they want it.
+
+const LIST_PAIRS = new Set(["dogmaIM.MachoBindObject", "dogmaIM.List", "invbroker.GetInventory", "invbroker.GetInventoryFromId", "invbroker.MachoBindObject", "invbroker.List", "invbroker.ListByFlags", "invbroker.Add", "invbroker.GetCapacity", "station.GetGuests", "slash.SlashCmd", "dogmaIM.AddTarget", "beyonce.CmdStop"]);
+/** A docked pilot with its hangar and its ship bound. Each listing the server answers is a different one, so that what was kept can be told from what was asked for again. */
+async function withContainers(answers = {}) {
+  let answered = 0;
+  const lists = () => ({ type: "list", items: [answered += 1] });
+  const built = await selected({ answers: { "bound:List": lists, "bound:ListByFlags": lists, ...answers } }, { allowed: LIST_PAIRS });
+  const hangar = (await built.pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, built.handle)).boundHandle;
+  const ship = (await built.pilots.bindObject("invbroker", "GetInventoryFromId", [SHIP], { passive: 0 }, WHO, built.handle)).boundHandle;
+  /** One listing through the transport: the number of the server's answer it is. */
+  const list = async (container, flag = 4, method = "List") => (await built.pilots.callBoundMethod("invbroker", method, [flag], null, WHO, built.handle, container)).result.items[0];
+  return { ...built, hangar, ship, list, asked: () => answered };
+}
+
+test("what a container lists is asked for once and kept: by container, by flag, and by which of the two listings it is", async () => {
+  const { pilots, session, handle, hangar, ship, list, asked } = await withContainers();
+  assert.deepEqual([await list(hangar), await list(hangar), await list(hangar)], [1, 1, 1]);
+  // Another flag, another container, and the other listing are each their own.
+  assert.deepEqual([await list(hangar, 5), await list(ship), await list(ship, 5), await list(hangar, [4, 5], "ListByFlags")], [2, 3, 4, 5]);
+  assert.deepEqual([await list(hangar), await list(hangar, 5), await list(ship), await list(ship, 5), await list(hangar, [4, 5], "ListByFlags")], [1, 2, 3, 4, 5]);
+  assert.equal(asked(), 5);
+  // On the wire as the client spells it, and the ledger counts what was sent.
+  assert.deepEqual(session.boundCalls.filter((call) => call.method === "List").map((call) => call.kwargs), [{ flag: 4 }, { flag: 5 }, { flag: 4 }, { flag: 5 }]);
+  const tally = Object.fromEntries(pilots.callLedger().map((row) => [row.pair, row.calls]));
+  assert.deepEqual([tally["invbroker.List"], tally["invbroker.ListByFlags"]], [4, 1]);
+  // Anything else of a container's is asked each time, and so is a List that is not a container's.
+  for (let time = 0; time < 2; time += 1) await pilots.callBoundMethod("invbroker", "GetCapacity", [4], null, WHO, handle, hangar);
+  assert.equal(session.boundCalls.filter((call) => call.method === "GetCapacity").length, 2);
+  const elsewhere = (await pilots.bindObject("dogmaIM", "MachoBindObject", [[STATION, 15]], null, WHO, handle)).boundHandle;
+  const others = [];
+  for (let time = 0; time < 2; time += 1) others.push((await pilots.callBoundMethod("dogmaIM", "List", [4], null, WHO, handle, elsewhere)).result.items[0]);
+  assert.deepEqual(others, [6, 7]);
+});
+
+test("the server's word of an item changed forgets every listing, and what is asked for after it is kept again", async () => {
+  const { session, hangar, ship, list, asked } = await withContainers();
+  assert.deepEqual([await list(hangar), await list(ship)], [1, 2]);
+  session.notify("OnItemChange", [{ type: "packedrow", fields: { itemID: 1 } }, { type: "dict", entries: [] }, null]);
+  assert.deepEqual([await list(hangar), await list(ship), await list(hangar), await list(ship)], [3, 4, 3, 4]);
+  session.notify("OnItemsChanged", [{ type: "list", items: [] }, { type: "dict", entries: [] }, null]);
+  assert.deepEqual([await list(ship), await list(ship)], [5, 5]);
+  // A notice that is not of an item changes nothing kept.
+  session.notify("OnTarget", [Buffer.from("add"), 9001]);
+  session.notify("OnSomethingElse", [1]);
+  assert.deepEqual([await list(ship), asked()], [5, 5]);
+});
+
+test("the pilot's own writes forget every listing, done or refused; its reads, its orders to the engines and its locks forget none", async () => {
+  let refuse = false;
+  const { pilots, handle, hangar, ship, list, asked } = await withContainers({ "bound:Add": () => { if (refuse) throw refusedBy("NotEnoughCargoSpace"); return null; } });
+  assert.deepEqual([await list(hangar), await list(ship)], [1, 2]);
+  // A write on a container.
+  await pilots.callBoundMethod("invbroker", "Add", [1, STATION], { flag: 5 }, WHO, handle, hangar);
+  assert.deepEqual([await list(hangar), await list(ship), await list(hangar)], [3, 4, 3]);
+  // A write the server refuses: what it left done is not known.
+  refuse = true;
+  await rejects(pilots.callBoundMethod("invbroker", "Add", [1, STATION], { flag: 5 }, WHO, handle, hangar), "CALL_REFUSED");
+  assert.deepEqual([await list(hangar), await list(hangar)], [5, 5]);
+  // A write by a service's name.
+  await pilots.callMethod("slash", "SlashCmd", ["/giveitem 34 1"], null, WHO, handle);
+  assert.deepEqual([await list(hangar), await list(hangar)], [6, 6]);
+  // Reads, an order to the engines, and a lock: no container is changed by any of them.
+  await pilots.callMethod("station", "GetGuests", [], null, WHO, handle);
+  await pilots.callMethod("beyonce", "CmdStop", [], null, WHO, handle);
+  await pilots.callMethod("dogmaIM", "AddTarget", [9001], null, WHO, handle);
+  await pilots.callBoundMethod("invbroker", "GetCapacity", [4], null, WHO, handle, hangar);
+  assert.deepEqual([await list(hangar), asked()], [6, 6]);
+});
+
+test("in another ship the listings are asked for again, and a listing the server refuses is not kept", async () => {
+  let refuse = false;
+  let answered = 0;
+  const lists = () => { if (refuse) throw refusedBy("NotNow"); return { type: "list", items: [answered += 1] }; };
+  const { session, hangar, list } = await withContainers({ "bound:List": lists });
+  assert.deepEqual([await list(hangar), await list(hangar)], [1, 1]);
+  session.attributes.shipid = SHIP + 7;
+  session.change({ shipid: [SHIP, SHIP + 7] });
+  assert.deepEqual([await list(hangar), await list(hangar)], [2, 2]);
+  session.notify("OnItemChange", [null, null, null]);
+  refuse = true;
+  await rejects(list(hangar), "CALL_REFUSED");
+  refuse = false;
+  assert.deepEqual([await list(hangar), await list(hangar)], [3, 3]);
+});
