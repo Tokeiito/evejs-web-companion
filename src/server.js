@@ -13072,9 +13072,15 @@ app.get("/api/bridge/standings", requireAuth, async (req, res, next) => {
   const fromID = Number(req.query && req.query.fromID) || 0;
   const wantDetail = fromID > 0;
   try {
+    // standingsvc.py 118: a pilot in an NPC corporation is asked for its own standings alone, and its
+    // corporation's are taken to be none (idCheckers.IsNPC: above the system's items, below the players').
+    const corporationID = Number(held.corporationID) || 0;
+    const inNpcCorporation = corporationID > 10000 && corporationID < 90000000;
     const [char, corp, transactions, compositions] = await Promise.allSettled([
       heldTopLevelCall(held, req.webSessionID, "standingMgr", "GetCharStandings", [], null),
-      heldTopLevelCall(held, req.webSessionID, "standingMgr", "GetCorpStandings", [], null),
+      inNpcCorporation
+        ? Promise.resolve({ result: null })
+        : heldTopLevelCall(held, req.webSessionID, "standingMgr", "GetCorpStandings", [], null),
       wantDetail
         ? heldTopLevelCall(
             held,

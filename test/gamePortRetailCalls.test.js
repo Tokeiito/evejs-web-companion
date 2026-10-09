@@ -303,7 +303,8 @@ test("everything of ship, dogmaIM and corpRegistry is made on a moniker, read or
   assert.equal(retailForm("dogmaIM", "CreateNewbieShip", [1, 2], null).moniker, false);
   for (const pair of Object.keys(RETAIL_CALLS)) {
     const [service, method] = pair.split(".");
-    assert.equal(retailForm(service, method, [], null).moniker, service === "ship" || service === "dogmaIM" || service === "corpRegistry", pair);
+    // On the moniker for every pair of those three services but the ones the client asks by the service's name.
+    assert.equal(retailForm(service, method, [], null).moniker, Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method), pair);
   }
 });
 
@@ -476,4 +477,37 @@ test("the wallet's reads: the balance, the entry types and the divisions as they
   // The corporation's own record is asked with nothing, of the registry's moniker.
   const corporation = retailForm("corpRegistry", "GetCorporation", [], null);
   assert.deepEqual([corporation.status, corporation.args, corporation.moniker], ["same", [], true]);
+});
+
+test("dogma's reads: all info as godma first primes it, an item by its ID, and what the client never asks marked as the web client's own", () => {
+  // GetAllInfo(primeCharacter, primeShip, primeStructure): three, as given; with fewer, godma's first priming.
+  assert.deepEqual([retailForm("dogmaIM", "GetAllInfo", [true, false, null], null).status, retailForm("dogmaIM", "GetAllInfo", [true, false, null], null).args], ["same", [true, false, null]]);
+  for (const given of [[], [true], [true, true]]) {
+    const form = retailForm("dogmaIM", "GetAllInfo", given, null);
+    assert.deepEqual([form.status, form.args, form.moniker], ["reshaped", [true, true, null], true], JSON.stringify(given));
+  }
+  // An item is always named.
+  assert.equal(retailForm("dogmaIM", "ItemGetInfo", [9988400023309], null).status, "same");
+  for (const given of [[], [null], [1, 2]]) {
+    const form = retailForm("dogmaIM", "ItemGetInfo", given, null);
+    assert.deepEqual([form.status, form.args], ["differs", given], JSON.stringify(given));
+    assert.match(form.note, /always names the item/);
+  }
+  assert.equal(retailForm("dogmaIM", "GetTargeters", [], null).status, "same");
+  assert.equal(retailForm("dogmaIM", "GetLayerDamageValuesByItems", [[]], null).status, "differs");
+  for (const method of ["GetDroneSettingAttributes", "GetCharacterAttributes", "GetRequiredSkillLevels", "QueryAllAttributesForItem", "QueryAttributeValue", "GetLocationInfo"]) {
+    const form = retailForm("dogmaIM", method, [], null);
+    assert.equal(form.status, "web-only", method);
+    assert.ok(form.note.length > 20, method);
+  }
+  // The one of those the client's tools ask by the service's name is not made on the moniker.
+  assert.equal(retailForm("dogmaIM", "GetRequiredSkillLevels", [587], null).moniker, false);
+  assert.equal(retailForm("dogmaIM", "QueryAttributeValue", [1, 4], null).moniker, true);
+});
+
+test("the agents' table and journal, and the standings, are asked with nothing, as the client asks", () => {
+  for (const pair of ["agentMgr.GetAgents", "agentMgr.GetMyJournalDetails", "standingMgr.GetCharStandings", "standingMgr.GetCorpStandings"]) {
+    const form = retailForm(...pair.split("."), [], null);
+    assert.deepEqual([form.status, form.args, form.kwargs, form.moniker], ["same", [], null, false], pair);
+  }
 });

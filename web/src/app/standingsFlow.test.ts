@@ -231,6 +231,21 @@ test("loadStandings: a SUCCESSFUL empty read is [] (a real 'no standings')", asy
   assert.equal(standings.charError, null);
 });
 
+test("a pilot in an NPC corporation: its corporation's standings, never asked for, are none and not unread", async () => {
+  // standingsvc.py 118: the client asks for the pilot's own alone and takes the corporation's to be {}.
+  // The BFF answers that corp as null with no error.
+  const store = createClientStore();
+  const flow = createAppFlow(store, {
+    fetch: standingsFetch({ char: standingsRowset(CHAR_ROWS), corp: null }),
+  });
+
+  await flow.loadStandings();
+
+  const standings = store.standings.get();
+  assert.equal(standings.char?.length, 3);
+  assert.deepEqual([standings.corp, standings.corpError], [[], null]);
+});
+
 test("loadStandingDetail(char) decodes the standing HISTORY (transactions)", async () => {
   const store = createClientStore();
   const flow = createAppFlow(store, {

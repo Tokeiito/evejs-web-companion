@@ -991,6 +991,33 @@ test("the wallet reads what the retail client reads: no journal by any other cal
   assert.deepEqual(Object.keys(wallet.payload.errors).sort(), ["cash", "corp", "divisions", "entryTypes", "transactions"]);
 });
 
+// ── Standings (GET /api/bridge/standings) ────────────────────────────────────
+
+test("a pilot in an NPC corporation is asked for its own standings alone; in a player's corporation, for the corporation's too", async () => {
+  for (const [corporationID, asked] of [[1000044, ["GetCharStandings"]], [98000001, ["GetCharStandings", "GetCorpStandings"]], [90000000, ["GetCharStandings", "GetCorpStandings"]], [10001, ["GetCharStandings"]]]) {
+    const calls = [];
+    const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+    const select = gamePort.selectCharacter;
+    gamePort.selectCharacter = async (...args) => {
+      const selected = await select(...args);
+      return { ...selected, session: { ...selected.session, corporationID, corpid: corporationID } };
+    };
+    gamePort.callMethod = async (service, method, args, kwargs) => {
+      calls.push({ service, method, args, kwargs });
+      return { service, method, result: { type: "list", items: [] }, notifications: [] };
+    };
+    const { baseUrl } = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gameport" });
+    await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+    calls.length = 0;
+    const standings = await apiRequest(baseUrl, "/api/bridge/standings");
+    assert.equal(standings.response.status, 200, JSON.stringify(standings.payload));
+    assert.deepEqual(calls.filter((call) => call.service === "standingMgr").map((call) => call.method).sort(), asked, String(corporationID));
+    // Not asked is not a failure: no standings and no error, as the client takes an NPC corporation's to be none.
+    assert.deepEqual([standings.payload.errors.char, standings.payload.errors.corp], [null, null], String(corporationID));
+    assert.deepEqual(standings.payload.corp, asked.length === 1 ? null : { type: "list", items: [] }, String(corporationID));
+  }
+});
+
 // ── Where an agent is (GET /api/bridge/agents/:agentID/solar-system) ─────────
 
 test("which solar system an agent is in is asked of the server as the client asks it, and passed on as it came", async () => {

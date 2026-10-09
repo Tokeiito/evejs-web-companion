@@ -91,6 +91,12 @@ const CC_STEPS = "eve/client/script/ui/login/charcreation/steps";
 const ACCOUNT_SVC = "eve/client/script/ui/services/accountsvc.py";
 const WALLET_SVC = "eve/client/script/ui/shared/neocom/wallet/walletSvc.py";
 const CORP_SVC = "eve/client/script/ui/services/corporation";
+const DRONE_DAMAGE = "eveDrones/droneDamageTracker.py";
+const SKILL_SVC = "eve/client/script/ui/services/skillsvc.py";
+const STANDING_SVC = "eve/client/script/ui/services/standingsvc.py";
+const JOURNAL_WINDOW = "eve/client/script/ui/shared/neocom/journal.py";
+const DEV_TOOLS = "eve/devtools/script";
+const CLIENT_OWN_DOGMA = "eve/common/script/dogma/baseDogmaLocation.py";
 /** What the module button sends for a module left to repeat: settings.char.autorepeat unset, and an effect that can repeat. */
 const REPEATS = 1000;
 
@@ -307,6 +313,29 @@ const RETAIL_CALLS = Object.freeze({
   "scanMgr.SetProbeDestination": webOnly(`${SCAN_SVC}:169`, "The client keeps a probe's destination itself and sends it with the next RequestScans."),
   "scanMgr.SetProbeRangeStep": webOnly(`${SCAN_SVC}:173`, "The client keeps a probe's range step itself and sends it with the next RequestScans."),
   "scanMgr.ConeScan": same("eve/client/script/parklife/directionalScanSvc.py:47", "ConeScan(scanAngle, scanRange, x, y, z)"),
+  "dogmaIM.GetAllInfo": Object.freeze({
+    status: "same",
+    source: `${GODMA}:2409`,
+    note: "GetDogmaLM().GetAllInfo(primeCharacter, primeShip, primeStructure): three positional, each saying whether that one is to be primed. Asked with fewer, it goes out as godma's first priming does: (True, True, None)",
+    shape: (args, kwargs) => (args.length === 3 ? { args, kwargs } : { args: [true, true, null], kwargs, status: "reshaped" }),
+  }),
+  "dogmaIM.ItemGetInfo": judged(
+    `${GODMA}:1649`,
+    (args) => (args.length === 1 && args[0] !== null && args[0] !== undefined ? { status: "same" } : { status: "differs", note: "The client always names the item: ItemGetInfo(itemID). Asked with none, the server answers for the ship; the client never asks so." }),
+    "GetDogmaLM().ItemGetInfo(itemID)",
+  ),
+  "dogmaIM.GetTargeters": same(`${GODMA}:2364`, "GetDogmaLM().GetTargeters(), no arguments"),
+  "dogmaIM.GetLayerDamageValuesByItems": differs(`${DRONE_DAMAGE}:38`, "The client sends a set of the drones in the bay whose damage it does not know, and does not ask at all when there are none. The BFF sends a list, and sends it empty."),
+  "dogmaIM.GetDroneSettingAttributes": webOnly(`${GODMA}:2357`, "The client never asks this: godma keeps the drone settings that GetAllInfo brought, and answers from those."),
+  "dogmaIM.GetCharacterAttributes": webOnly(`${SKILL_SVC}:224`, "The client never asks dogma for these: its skills service asks the skill handler (GetSkillHandler().GetAttributes())."),
+  "dogmaIM.GetRequiredSkillLevels": webOnly(`${DEV_TOOLS}/dna.py:584`, "Only a developer's tool in the client asks this (RemoteSvc('dogmaIM').GetRequiredSkillLevels(typeID), by the service's name). The client proper has a type's required skills in its own static data."),
+  "dogmaIM.QueryAllAttributesForItem": webOnly(`${DEV_TOOLS}/svc_dgmattr.py:220`, "Only a developer's tool in the client asks this (GetServerDogmaLM().QueryAllAttributesForItem(itemID))."),
+  "dogmaIM.QueryAttributeValue": webOnly(`${CLIENT_OWN_DOGMA}:1722`, "The client never asks the server this. Its own dogma location works an attribute's value out, from what GetAllInfo and the server's notices brought."),
+  "dogmaIM.GetLocationInfo": webOnly("dogma/items/baseDogmaItem.py:58", "The client never asks the server this. Its own dogma items know their owner, place and flag."),
+  "agentMgr.GetAgents": same(`${AGENTS}:92`, "RemoteSvc('agentMgr').GetAgents(), no arguments: the whole table, kept for the session"),
+  "agentMgr.GetMyJournalDetails": same(`${JOURNAL_WINDOW}:312`, "RemoteSvc('agentMgr').GetMyJournalDetails(), no arguments"),
+  "standingMgr.GetCharStandings": same(`${STANDING_SVC}:119`, "RemoteSvc('standingMgr').GetCharStandings(), no arguments"),
+  "standingMgr.GetCorpStandings": same(`${STANDING_SVC}:126`, "RemoteSvc('standingMgr').GetCorpStandings(), no arguments, and only for a pilot whose corporation is not an NPC one (118)"),
   "account.GetCashBalance": same(`${WALLET_SVC}:41`, "RemoteSvc('account').GetCashBalance(0): nought for the pilot's own wallet"),
   "account.GetEntryTypes": same(`${ACCOUNT_SVC}:101`, "GetAccountMgr().GetEntryTypes(), no arguments, once for the session"),
   "account.GetWalletDivisionsInfo": same(`${ACCOUNT_SVC}:135`, "GetAccountMgr().GetWalletDivisionsInfo(), no arguments, kept five minutes"),
