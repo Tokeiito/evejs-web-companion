@@ -5281,3 +5281,102 @@ states, and nothing of the recordings is in the repository.
     for ship restrictions, divisions for an agent's card).
 15. When there is a recording of it: a courier's agent talked to again where the pilot
     accepted, before the package has gone anywhere (the operator's section).
+
+---
+
+## 2026-10-09 — the agent's card and its corporation's, on a mission's page
+
+Commit `8333bdf`, pushed. Item 1 of the last list, without the standing.
+
+**What the retail client does.** The mission's page in the job board is headed by two cards
+(`page.py` 78 to 106):
+
+- the agent's: "Level N" (the label `UI/Agents/AgentEntry/Level`), its name, and the name of
+  its division;
+- its corporation's: the pilot's effective standing with the agent, the corporation's name,
+  and its faction's.
+
+All of it comes from `agents.GetAgentByID`, which is not a call. The client reads
+`agentMgr.GetAgents` once, keeps the table, and adds to each row the faction of the agent's
+corporation from its own data (`agents.py` 89 to 107, `npcs/npccorporations.py` 123). A
+division's name is the client's own too (`npcs/divisions.py`).
+
+**What the page had.** Each station agent's level, division's number and corporation, from the
+same table read for the station's list. Nothing for an agent somewhere else, no faction, and
+no name for a division.
+
+**What was built.**
+
+- Two more of the client's tables read by its own loaders: its corporations and its
+  divisions. One line each in `TABLES`.
+- `GET /api/bridge/agents/:agentID/record`: the agent's row, with its corporation's faction
+  and the number of its division's name. The BFF reads the agents table once for its life,
+  through whichever pilot first asks, as the client reads it once.
+- The page: the two cards, between the warning and the briefing. Asked for once for each
+  agent.
+
+**Proof.**
+
+- Tests: 7 new. 51 ways of breaking it. Two got through at first: a check on an array that
+  did nothing (taken out) and the level's label, which no test named (now named).
+- **A fault of the breakage tool, caught**: one run died on a file error and left its
+  breakage in `web/src/app/flow.ts`. The next run said the text was missing, the file was
+  set beside its diff and put right, and the whole suite passed after. A run that ends in an
+  error is worth a look at the file it was breaking.
+- Suite: 9446 tests, 9422 pass, 0 fail, 24 skipped, 0 todo.
+- **The route, live, on both transports**, eve.js `e066a81e9`, as Test Two:
+
+  | agent | answer |
+  |---|---|
+  | 3008416, first asked | 200 in 374 ms: level 1, division 22, corporation 1000002, faction 500001, division's name the message 60113 |
+  | 3011895, an agent in another station | 200 in 2 ms: level 1, division 24, corporation 1000031, faction 500001, name 60115 |
+  | 3008416 again | 200 in 2 ms, the same |
+  | 3000001, no agent | 200, `agent: null` |
+
+  The client has a text for each division's name, and the BFF a name for each corporation and
+  faction. The gateway BFF answered the same.
+- **In the browser, on the game port**: Read Details on the journal's line asked for
+  `agents/3008416/record` once, and the page had, between when it expires and its briefing,
+  "Level 1", the agent's name and "Distribution" on one card, and its corporation and
+  "Caldari State" on the other.
+- Nothing was staged.
+
+**Not done.** The pilot's effective standing on the corporation's card
+(`standingsvc.GetEffectiveStandingWithAgent`): the greatest of the pilot's standings with the
+faction, the corporation and the agent, each raised by a skill, or the least of them when one
+is at -2 or worse. It needs the pilot's standings, three skills' levels and the client's
+bonus rule. The same cards above the agent's own window. An agent whose row has no
+corporation takes its station's owner in the client; here it has no second card.
+
+### Next
+
+1. The pilot's effective standing with an agent, as the client works it out, on the
+   corporation's card.
+2. The client's short written interval (`FormatTimeIntervalShortWritten`), for the journal's
+   line, the page's time left and the bonus's countdown.
+3. Around a place's name: the security rating before it, the low-security warning, how many
+   jumps away it is (the page has no route of its own yet), and the reduced-rewards banner.
+4. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+   own counts on it, with the push doing the work as it does for Remove Offer.
+5. The agent's cards above its own window, where the client's window has its own header.
+6. The ledger's unread pairs, most called first: the inventory and wallet reads, then the
+   writes on `ship` and `dogmaIM`.
+7. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+8. Phase 3's writes, feature by feature, each set beside what the client sends.
+9. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+10. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+11. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+12. Small, in Ready Fit: the capacity the client never asks for; the window following a change
+    of pilot.
+13. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+14. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+15. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions).
+16. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section).
