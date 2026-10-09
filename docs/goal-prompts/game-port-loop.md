@@ -184,7 +184,17 @@ Take these defaults, and list each under "For the operator" in the log so they c
   such task was open when the iteration ended, and the wakeup scheduled for 09:53 had not fired
   at 10:32, when the operator asked why the loop had stopped. Use
   `powershell -File start-bff-check.ps1 ... > bffgp.start.log 2>&1 < /dev/null`. Before ending
-  an iteration, make sure no command of yours is still running.
+  an iteration, make sure no command of yours is still running. The same holds for anything
+  else started detached: on 2026-10-09 the recorder's launcher was piped to `tail` and the
+  command sat for four minutes until its shells were stopped.
+- **What a BFF really puts on the wire can be read**, where the server's log says too little
+  (it gives a call's service, method, argument count and `dst=node` or `dst=any`, and none of
+  its keywords). Start `scripts/record-game-port.js record 26007 26000 <file outside the
+  repository>` detached, start one more check BFF with `EVEJS_GAME_PORT=26007` in its
+  environment, ask it what is wanted, stop both, and `describe` the file: each call with its
+  address, its arguments and its keywords in the order sent. The order the client's own Python
+  would give a call's keywords is asked of `scripts/py27-oracle.py`, which has builtins only
+  (no `copy`, no `json`; `copy.copy` of a dict is `dict(d)`).
 - **The browser pane is hidden, and a hidden page stops polling space**, so the autopilot and
   anything else that decides from the space feed does nothing there. Before selecting a pilot,
   tell the page it is visible: redefine `document.visibilityState` (to `"visible"`) and

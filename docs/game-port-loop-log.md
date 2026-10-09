@@ -6485,3 +6485,153 @@ then looked at with Test Pilot. The brief now says which pilot is which.
 22. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
     client's own map is in.
 23. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
+
+## 2026-10-09 — the proxy's services, and the contract search's keywords
+
+Commit `8b342c2`, pushed. Item 1 of the last list: the ledger's unread pairs, most called
+first, which were the contracts'. Reading them turned up something wider than a pair.
+
+**What the retail client does.**
+
+- **Fourteen services are reached with `sm.ProxySvc(name)`**, and none of the fourteen any
+  other way: `contractProxy`, `marketProxy`, `calendarProxy`, `fleetProxy`, `corpRecProxy`,
+  `bountyProxy`, `raffleProxy`, `search`, `XmppChatMgr`, `eventLog`, `alert`,
+  `clientStatLogger`, `machoNet`, `pingService`. `ProxySvc` connects to the service at the
+  client's proxy node (`serviceManager.py` 558); `RemoteSvc` names no node. The two leave
+  with different addresses, and this server's own log of a retail client (9 August) shows it:
+  `calendarProxy`, `eventLog` and `XmppChatMgr` arrive as `dst=node`, `calendarMgr` and the
+  rest as `dst=any`. A name says nothing: the calendar has a service of each kind.
+- **The contract search is one call with twenty-six keywords**, every one every time and no
+  positional argument (`contractsearch.py` 1367): None for a filter that is not set, the sort
+  the panel's list is on (it starts on date created, oldest first; on price for auctions and
+  exchanges together), and `startNum`. The panel starts on the current region; no
+  `locationID` is its All Regions.
+- **`contractProxy.GetMyCurrentContractList` is never sent.** The client's contracts service
+  has a wrapper for it that nothing calls. Its My Contracts panel lists with
+  `GetContractListForOwner(ownerID, status, contractType, issuedBy, num=100,
+  startContractID=...)` (`contractPanels.py` 419).
+- `GetMyExpiredContractList` is asked with False and then with True for the corporation's,
+  the two together, and kept. `GetLoginInfo()` is asked once, when the notifications are
+  ready, for the Neocom's blink.
+- **The market's transactions are asked for with None for the date**, wherever the client
+  asks (`marketSvc.py` 23 and its two callers). `GetCharOrders`, `GetMarketOrderHistory` and
+  `GetCharEscrow` take nothing.
+- **An event's details and its responses are asked of an event the pilot has opened**, by the
+  event's ID and its owner's (`eveCalendarsvc.py` 261, 415). The month's list is
+  `calendarProxy.GetEventList(month, year)`, the pilot's own responses
+  `calendarMgr.GetResponsesForCharacter()`.
+
+**What the BFF did.** Sent every one of the proxy's services with no node. Searched contracts
+with three keywords. Asked the market's transactions from date nought. And on every opening
+of the Activity panel asked the calendar for the details and the responses of event nought,
+with no owner, which the server refused both times.
+
+**What was built.**
+
+- The registry lists the proxy's services, and the transport addresses a call of theirs to
+  the pilot's proxy node, on a pilot's connection and on an account's own. One change, for
+  every route that asks one.
+- A contract search goes out with the client's twenty-six keywords, written in the call's
+  order: what the route gave, None for the rest, and the sort the panel starts on.
+- The market's transactions go out with None.
+- The calendar route asks for an event's details and responses only when an event is named.
+  Otherwise each answers as none, with no error. The page uses neither.
+- Twelve more pairs have entries in `src/gamePort/retailCalls.js` (the commit's message says
+  eleven; twelve is right); the two reads of an event
+  count as the client's only with the event and its owner both.
+- `docs/game-port-call-ledger.md` made again from one pass: 63 pairs in 99 calls. 21 the
+  client's own, 11 reshaped to it, 10 the web client's own, 2 known differences, 19 not yet
+  read (31 before this entry).
+
+**Proof.**
+
+- Tests: 6 new, one changed (the calendar's defaults, which asserted the two calls for event
+  nought). 57 ways of breaking it tried. Three survived a first pass: two swaps in the list
+  of keywords, which the test had compared with itself and now states in the call's order;
+  and a check that did nothing, which is gone. All are caught.
+- Suite: 9547 tests, 9523 pass, 0 fail, 24 skipped, 0 todo. No test process left behind.
+- **The client's own Python** (its `python27.dll`) was asked the order a service's method
+  gives those twenty-six keywords and `machoVersion`: the transport's order is the same, all
+  twenty-seven, and a test holds it.
+- **On the wire**, read with the recorder between a game-port BFF and the server, as Test
+  Two: `contractProxy.SearchContracts()` to `node(65450, contractProxy)` with the
+  twenty-seven keywords in that order; `marketProxy.CharGetTransactions(None)` and the other
+  three to `node(65450, marketProxy)`; `calendarProxy.GetEventList(10, 2026)` to the node,
+  `calendarMgr.GetResponsesForCharacter()` and `account.GetCashBalance(0)` to no node.
+- **The server's own log** (eve.js `e066a81e9`, with another session's uncommitted edits in
+  the checkout), for the pass after the calendar's repair: `contractProxy` five calls and
+  `marketProxy` four, all `dst=node`; one `calendarProxy GetEventList`, `dst=node`; one
+  `calendarMgr GetResponsesForCharacter`, `dst=any`; no read of an event.
+- **On both transports, by script** (`scripts/bff-parity.js`): 12 identical, 6 tolerated,
+  2 moved, 2 divergent, as before. Contracts and the calendar identical, the market as it was.
+- **In the browser, on the game port:** Contracts ("no public delivery jobs in this world
+  yet"), Market (the ISK line and the escrow) and Activity (mail, notifications, one upcoming
+  event) drew, and nothing failed.
+
+**A command that did not end.** The recorder's launcher was piped to `tail`, the trap the
+brief already names for a BFF. It was found within the iteration and its shells stopped; the
+recording was then made with the launchers' output in files. The brief says so for anything
+started detached, and how to read a BFF's wire this way.
+
+**Not seen working.**
+
+- A search that finds something. This world has no public contract, so the server was seen to
+  take the twenty-six keywords and answer none, not to filter or sort by them. Staging two
+  couriers would show the sort the client starts on (oldest first), which is the opposite of
+  what the server gives a search with no sort.
+- `fleetProxy`, `corpRecProxy`, `bountyProxy`, `search` and the rest of the fourteen: the
+  pass asks none of them. They are addressed by the same line, which the tests hold.
+
+**Not done.**
+
+- The page's own lists of contracts read as the client reads them
+  (`GetContractListForOwner`), in place of the call the client never makes; the
+  corporation's expired list beside the pilot's own; and `GetLoginInfo` asked once and kept.
+- The search scoped as the client's panel starts: the current region.
+- The gateway transport still sends what the route spells. The game port is the one that is
+  set beside the client.
+
+### Next
+
+1. The ledger's unread pairs, most called first: `charMgr` (five), industry's three
+   services, `fleetObjectHandler`'s five, mail and notifications.
+2. The page's own contracts read the client's way: `GetContractListForOwner`, both expired
+   lists, the summary asked once. Two couriers staged, for the search's sort and filters.
+3. The standings the client's way: `GetNPCNPCStandings`, and asked once at the session's
+   change and kept, with the server's notices keeping them right.
+4. The probe route's two differing calls: repaired or the route gone, by what the page uses.
+5. The corporation registry's other calls, each set beside the client's.
+6. Phase 3's writes, feature by feature, each set beside what the client sends.
+7. The wallet's "Market Transactions", and the lines the client derives from a transaction.
+8. The avoidance list's own window, and a route plotted again when a setting changes under it.
+9. Around a place's name, the last of it: the outlaw's warning (the pilot's own security
+   status). The agent's own window's steps, if the client's say how far.
+10. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+    own counts on it, with the push doing the work as it does for Remove Offer.
+11. The agent's cards above its own window, where the client's window has its own header.
+12. The scanner the client's way: results kept from the server's word, a probe's destination
+    and range kept here and sent with the scan.
+13. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+    codes not done.
+14. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+15. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+16. Small, in Ready Fit: the capacity the client never asks for; the window following a change
+    of pilot.
+17. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+18. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+19. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+20. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions); the client's own map, to set beside this server's.
+21. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+22. Other things asked once beside the store, and other panels' effects, looked at for the
+    faults of earlier entries.
+23. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
+    client's own map is in.
+24. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
