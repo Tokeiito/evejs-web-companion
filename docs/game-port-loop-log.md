@@ -204,10 +204,12 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   traveller's route, the bots' too: a hauler that used to cut through low security or through
   Jita now goes round. Seen on 2026-10-09: Muvolailen to Perimeter went by Maurasi, where the
   fewest jumps go by Jita; Muvolailen to a low-security station 18 jumps off is 29 the safe way.
-  The retail client lets a pilot change this (shorter, less secure, the penalty, what is avoided)
-  and here there is nowhere to set it yet. To have the old way back meanwhile, `startRoute` in
-  `web/src/app/flow.ts` is the one place: `solveRoute(graph, originSystem, targetSystemID)` is
-  still in `web/src/nav/routeSolver.ts`. See the entry "travel by the client's route".
+  The retail client lets a pilot change this, and since the entry "the autopilot's settings" so
+  does the Travel panel, under "Route settings": "prefer shorter" for the fewest jumps, and the
+  tick for avoiding the systems on the list (click it twice the first time: the client's own
+  first click leaves it on). The settings are each pilot's own and are kept in the browser, so
+  a bot flies by whatever its pilot has set there; nothing sets them for a whole fleet. See the
+  entries "travel by the client's route" and "the autopilot's settings".
 - **eve.js's test runner cleans the temp folder.** The first sub-agent's test run swept 32 stale
   directories (11.7 GB, none touched for 29 hours) from the OS temp folder, `evejs-web-*` among
   them. That is the runner's own housekeeping, not something asked for; nothing in use was lost.
@@ -6022,5 +6024,130 @@ route may have several.
     accepted, before the package has gone anywhere (the operator's section); and a mission
     paid in a system of the safest class, for whether its ISK is reduced.
 18. Other things asked once beside the store, looked at for the fault of three entries ago.
+19. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
+    client's own map is in.
+
+## 2026-10-09 — the autopilot's settings
+
+Commit `04e3eef`, pushed. Item 1 of the last list.
+
+**What the retail client does.** Its route panel's menu (`infoPanelRoute.py`
+`GetSettingsMenu`) has three kinds of route, "prefer shorter", "prefer safer" and "prefer
+less secure" (`pfRouteType`: shortest, safe, unsafe); a slider from 1 to 100 for the
+security penalty (`pfPenalty`); and ticks, one of them for avoiding the systems on the
+pilot's list (`pfAvoidSystems`, the list being `autopilot_avoidance2`). They are the
+character's own settings, kept on the player's machine (`settings.char.ui`). Until set they
+are taken to be: safe, 50, on, and Jita and Zarzakh.
+
+Changing one makes the pathfinder work its routes out again (its cache goes by the settings).
+
+One slip of the client's own, kept: the tick is drawn from the setting taken as on until set,
+and a click sets it to the opposite of the setting taken as off until set
+(`OnCheckBoxAvoidSystems`). The first click on a tick never touched leaves avoiding on.
+
+**The other route types, measured.** Run as before over made-up maps, the client's pathfinder
+showed:
+
+- "shortest" has no limits and charges every system the same;
+- with limits, a system is inside them when its security is above the lower one and no more
+  than the upper. The lower is held in single precision, which is why 0.45 itself is inside
+  "safe" (0.45 to 1.0) while 0.0 is outside "unsafe" (0.0 to 0.45) and -1.0 outside "unsafe +
+  zerosec" (-1.0 to 0.45);
+- inside the limits a system costs 0.9 and up to 0.1 more, by how far its security lies below
+  the upper limit as a share of the limits' span; and for that, a system of 0.45 or above
+  counts as 1.0 and one above nought as 0.45, while one at nought or below counts as it is.
+  For "safe" that is 0.9 for every system inside, as the entry before last had it;
+- outside, as before: the penalty above nought, twice it at nought or below.
+
+The formula was fitted to where the module changed its mind between two ways of made-up
+lengths, then checked: the fixture now has all four types, 6,364 pairs over 239 maps, and the
+solver answers every one as the module does.
+
+**What the page did.** One route for everyone, the safe one, since the last entry.
+
+**What was built.**
+
+- `web/src/nav/autopilotRoute.ts`: every route type.
+- `web/src/nav/autopilotSettings.ts`: the settings under the client's names, what each is
+  taken to be until set, the tick's slip, and keeping them by character in the browser's
+  storage.
+- The flow reads the pilot's settings when it plans a route or counts jumps, and forgets the
+  jumps it has worked out when a setting changes or the pilot does.
+- The Travel panel's "Route settings": the three choices, the slider with its label as the
+  client writes it, and the tick, in the client's words.
+
+**Two faults found in the browser, and by no test.**
+
+- The Travel panel stopped ("Travel stopped working: effect_update_depth_exceeded"). Its new
+  effect read back the settings it had just set, so each run started the next.
+- With that put right, changing a setting blanked the distances on a mission's page and they
+  stayed blank: the jumps were forgotten, and the page asked for them only when the page
+  itself changed. It now asks whenever what it holds of them changes.
+
+A panel's tests render it once, on the server, where no effect runs. The brief now says so.
+
+**Proof.**
+
+- Tests: 14 new. 73 ways of breaking it tried; five survived a first pass: two checks that
+  could not matter were removed, and three tests were made to look at what they had not. All
+  that can be caught are.
+- Suite: 9526 tests, 9502 pass, 0 fail, 24 skipped, 0 todo.
+- **Against the client's own pathfinder over this server's whole map**, from Muvolailen to
+  four systems under six settings (safe at 50 with and without avoiding, safe at 1,
+  shortest with and without avoiding, unsafe): the same counts every time.
+- **In the browser, on the game port,** as Test Two, with the low-security courier staged
+  (the store copied first and put back after; the journal is back at one offer):
+  - the settings drawn in the client's words (its five labels, by their lengths), with the
+    safer route chosen, the slider at 50 and the tick on;
+  - the mission's page beside it: 29 and 29 jumps; "prefer shorter" 18 and 15; "prefer less
+    secure" 35 and 32; safer again 29 and 29; the slider let go at 1, 19 and 15. Each is the
+    client's pathfinder's own count for that setting;
+  - the tick clicked once stayed on, and clicked again went off;
+  - after a reload the settings were as they had been left. They were cleared from the
+    browser afterwards.
+
+**Not done.** The list's own window (adding and removing systems, constellations and regions).
+The other ticks: pod kills, Triglavian and EDENCOM systems (each needs a list from the
+server), jump gates, stopping at each waypoint. A route already being flown is not plotted
+again when a setting changes, as the client's is. The slider's hint, and the dialog the
+client shows when avoiding is turned on.
+
+### Next
+
+1. The jumps the rest of the page counts, each by the way the client counts that one (the
+   agent finder's, the courier's, the industry window's: some its autopilot's way, some the
+   plain way, `GetJumpCountFromCurrent`).
+2. The avoidance list's own window, and a route plotted again when a setting changes under it.
+3. Around a place's name, the last of it: the outlaw's warning (the pilot's own security
+   status). The agent's own window's steps, if the client's say how far.
+4. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+   own counts on it, with the push doing the work as it does for Remove Offer.
+5. The agent's cards above its own window, where the client's window has its own header.
+6. The ledger's unread pairs, most called first: the inventory and wallet reads, then the
+   writes on `ship` and `dogmaIM`.
+7. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+8. Phase 3's writes, feature by feature, each set beside what the client sends.
+9. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+10. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+11. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+12. Small, in Ready Fit: the capacity the client never asks for; the window following a change
+    of pilot.
+13. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+14. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+15. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+16. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions); the client's own map, to set beside this server's.
+17. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+18. Other things asked once beside the store, looked at for the fault of four entries ago;
+    and other panels' effects, looked at for the two faults of this one.
 19. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
     client's own map is in.

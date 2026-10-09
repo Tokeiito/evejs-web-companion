@@ -205,6 +205,12 @@ Take these defaults, and list each under "For the operator" in the log so they c
   markup, which the tool names too (its tags and its entities): a fixture of mine with a space
   where the real label has `&nbsp;` passed every test and drew the entity on the page. The
   client's label parser is CCP's own and open (`trinity/trinity/Tr2LabelTextParser.cpp`).
+- **An effect that sets something must not read it, and something forgotten must be asked for again by
+  something that sees it go.** Two faults of 2026-10-09, both in a panel's `$effect`, both invisible to
+  every test (a panel's tests render it once, on the server, where no effect runs): one read the state
+  it had just set and stopped the panel ("effect_update_depth_exceeded"); the other asked for a thing
+  once and never again after the store forgot it. Any unit that adds or changes an effect is looked at
+  in the browser, through the change that makes it run again.
 - **A native module of the client's can be run and asked.** What a script hands to a module with no
   source among the scripts (`pyEvePathfinder` is `bin64/_pyevepathfinder.dll`, loaded by
   `blue.LoadExtension`) loads in the client's own Python with `imp.load_dynamic('_name', path)`
