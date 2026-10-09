@@ -915,6 +915,8 @@ export interface AppFlow {
   loadBriefing(agentID: number): Promise<void>;
   /** Load the mission journal (agentMgr.GetMyJournalDetails). */
   loadJournal(): Promise<void>;
+  /** The journal's "Remove Offer" for an agent's offered mission. */
+  removeOffer(agentID: number): Promise<void>;
   /**
    * Load the accepted courier's package from the station hangar into the active
    * ship. Both the briefing's cargo TYPE and its QUANTITY are needed: the type
@@ -13311,6 +13313,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadBriefing,
 
     loadJournal,
+
+    // missionentry.RemoveOffer: the call and nothing else. The server says the offer is gone
+    // (OnAgentMissionChange "offer_removed"), and that is what reads the journal again and closes the
+    // agent's window if it is open; an offer that was not removed changes nothing.
+    async removeOffer(agentID) {
+      await runAgentAction(() => api.removeAgentOffer(agentID, callOptions));
+    },
 
     loadRewards,
 

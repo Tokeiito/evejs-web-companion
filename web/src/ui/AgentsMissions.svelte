@@ -18,7 +18,7 @@
   // R36 — the mission bot sits with the agents it works for.
   import MissionBot from "./MissionBot.svelte";
   import { panelErrorWords } from "../bridge/refusals.ts";
-  import { offerOpen } from "../bridge/agents.ts";
+  import { AGENT_MISSION_STATE, offerOpen } from "../bridge/agents.ts";
   import { MISSION_TIME_WORD_LABELS, missionTimeShown, missionTimeText } from "../bridge/missionTime.ts";
   import { INTERVAL_WORD_LABELS } from "../bridge/timeInterval.ts";
   import { PANE_WORD_LABELS, objectivePane, paneMessageIDs, paneNameRefs, type PaneBlock, type PaneMark } from "../bridge/missionObjectivePane.ts";
@@ -349,6 +349,12 @@
   // A mission's line in the client's journal has "Start Conversation with <agent>" in its menu
   // (missionentry.py 64, agents.OpenDialogueWindow), wherever the agent is. Here it is a button on the line.
   const START_CONVERSATION = "UI/Agents/Commands/StartConversationWith";
+  // An offer's line has "Remove Offer" too (missionentry.py 65).
+  const REMOVE_OFFER = "UI/Agents/Commands/RemoveOffer";
+  const removeOfferWords = $derived.by<string>(() => {
+    const template = $words.templates[REMOVE_OFFER];
+    return typeof template === "string" ? plainText(template) : "Remove offer";
+  });
   const startConversationWords = (agentID: number): string => {
     const template = $words.templates[START_CONVERSATION];
     return typeof template === "string"
@@ -358,7 +364,7 @@
   $effect(() => {
     const journal = $agents.journal;
     if (journal && journal.active.length + journal.offered.length > 0) {
-      flow.requestWords([START_CONVERSATION]);
+      flow.requestWords([START_CONVERSATION, REMOVE_OFFER]);
     }
   });
 </script>
@@ -371,6 +377,11 @@
       <button type="button" class="link journal-talk" disabled={busy} onclick={() => run(() => flow.openConversation(agentID))}>
         {startConversationWords(agentID)}
       </button>
+      {#if mission.missionState === AGENT_MISSION_STATE.OFFERED}
+        <button type="button" class="link journal-remove" disabled={busy} onclick={() => run(() => flow.removeOffer(agentID))}>
+          {removeOfferWords}
+        </button>
+      {/if}
     {/if}
   </li>
 {/snippet}

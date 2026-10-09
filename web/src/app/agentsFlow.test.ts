@@ -1430,3 +1430,37 @@ test("a window that closes takes its objectives with it", async () => {
   await push("OnAgentMissionChange", ["reset", 3008416]);
   assert.equal(store.agents.get().objectives, null);
 });
+
+// --- the journal's "Remove Offer" ----------------------------------------------
+
+test("removing an offer is the one call; what the server says of it does the rest", async () => {
+  const store = createClientStore();
+  const { fetch, requests } = makeFakeFetch((path) => {
+    if (path === "/api/bridge/agents/3008416/remove-offer") return { status: 200, body: { ok: true, result: null, notifications: [] } };
+    throw new Error(`unexpected ${path}`);
+  });
+  const flow = createAppFlow(store, { fetch });
+  await flow.removeOffer(3008416);
+  // Confirmed by the click, to the agent's own route, and nothing read after it: the journal is read when the server says the offer is gone.
+  assert.deepEqual(requests.map((request) => [request.method, request.path, request.body]), [["POST", "/api/bridge/agents/3008416/remove-offer", { confirm: true }]]);
+  assert.equal(store.agents.get().actionError, null);
+});
+
+test("an offer that will not be removed says why, where the agents are", async () => {
+  const store = createClientStore();
+  const { fetch } = makeFakeFetch(() => ({ status: 409, body: { ok: false, error: "CALL_REFUSED", message: "There is no offer to remove." } }));
+  const flow = createAppFlow(store, { fetch });
+  await flow.removeOffer(3008416);
+  assert.match(store.agents.get().actionError ?? "", /no offer to remove/);
+});
+
+test("the server saying the offer is gone closes the window on that agent and reads the journal again", async () => {
+  const { store, flow, requests, push, asked } = await listening({ null: ACCEPTED });
+  await flow.openConversation(3008416);
+  requests.length = 0;
+  await flow.removeOffer(3008416);
+  await push("OnAgentMissionChange", ["offer_removed", 3008416]);
+  assert.equal(store.agents.get().activeAgentID, null);
+  assert.equal(store.agents.get().objectives, null);
+  assert.deepEqual(asked(), ["journal", "remove-offer"]);
+});

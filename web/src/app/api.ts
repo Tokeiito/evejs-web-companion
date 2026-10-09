@@ -2062,6 +2062,11 @@ export async function agentAction(
   return data.result ?? null;
 }
 
+/** The journal's "Remove Offer": the agent's own offer, asked of the agent's bound object. */
+export async function removeAgentOffer(agentID: number, options: ApiOptions = {}): Promise<void> {
+  await postJson(`/api/bridge/agents/${agentID}/remove-offer`, { confirm: true }, options);
+}
+
 /**
  * Answer a question the SERVER asked (a `question` event on the live channel).
  * The BFF hands the answer to the game server, which has been waiting for it.

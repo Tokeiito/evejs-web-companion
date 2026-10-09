@@ -434,3 +434,11 @@ test("saved fittings are asked of the owner's manager with the owner, as fitting
   assert.match(retailForm("corpFittingMgr", "GetFittings", [], null, {}).note, /no corporation/);
   assert.match(retailForm("charFittingMgr", "GetFittings", [], null).note, /no character/);
 });
+
+test("removing an offer is asked as the client asks it: nothing but the call, on the agent's object", () => {
+  const form = retailForm("agentMgr", "RemoveOfferFromJournal", [], null);
+  assert.equal(form.status, "same");
+  assert.match(form.source, /ui\/station\/agents\/agents\.py:783$/);
+  assert.deepEqual(form.args, []);
+  assert.equal(form.kwargs, null);
+});

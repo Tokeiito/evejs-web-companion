@@ -805,3 +805,50 @@ test("the briefing's three reads are asked of the bound agent in the order the c
     errors: { briefing: null, objective: "CALL_FAILED", location: null },
   });
 });
+
+// ── The journal's "Remove Offer" (POST /api/bridge/agents/:agentID/remove-offer) ──
+
+test("an offer is removed by asking the agent's own bound object, with no arguments, as the client asks", async () => {
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  const bound = [];
+  gamePort.bindObject = async (service, method, args) => { bound.push({ service, method, args }); return { boundHandle: "bound-agent", notifications: [] }; };
+  const calls = [];
+  gamePort.callBoundMethod = async (service, method, args, kwargs, sessionFields, bridgeSessionID, handle) => {
+    calls.push({ service, method, args, kwargs, bridgeSessionID, handle });
+    return { service, method, result: null, notifications: [{ method: "OnAgentMissionChange", args: ["offer_removed", 3008416] }] };
+  };
+  const { baseUrl } = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gameport" });
+  const remove = (agent, body) => apiRequest(baseUrl, `/api/bridge/agents/${agent}/remove-offer`, { method: "POST", body });
+
+  // No pilot, no agent to ask.
+  assert.equal((await remove(3008416, { confirm: true })).response.status, 409);
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+
+  // Not confirmed, or not an agent: nothing is bound and nothing is asked.
+  const unconfirmed = await remove(3008416, {});
+  assert.equal(unconfirmed.response.status, 400);
+  assert.equal(unconfirmed.payload.error, "CONFIRMATION_REQUIRED");
+  for (const agent of [0, "x", -5, "1.5"]) {
+    const refused = await remove(agent, { confirm: true });
+    assert.equal(refused.response.status, 400, String(agent));
+    assert.equal(refused.payload.error, "INVALID_AGENT");
+  }
+  assert.deepEqual(calls, []);
+  assert.deepEqual(bound, []);
+
+  const removed = await remove(3008416, { confirm: true });
+  assert.equal(removed.response.status, 200, JSON.stringify(removed.payload));
+  // What the server pushed because of it goes back with the answer.
+  assert.deepEqual(removed.payload, { ok: true, result: null, notifications: [{ method: "OnAgentMissionChange", args: ["offer_removed", 3008416] }] });
+  assert.deepEqual(bound, [{ service: "agentMgr", method: "MachoBindObject", args: [3008416] }]);
+  assert.deepEqual(calls, [{ service: "agentMgr", method: "RemoveOfferFromJournal", args: [], kwargs: null, bridgeSessionID: GAME_PORT_SESSION_ID, handle: "bound-agent" }]);
+
+  // The route that asked the service by name, with no agent, is gone.
+  const old = await ORIGINAL_FETCH(`${baseUrl}/api/bridge/agent/journal/remove-offer`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie: `evejs_web_poc=${COOKIE_TOKEN}` },
+    body: JSON.stringify({ confirm: true }),
+  });
+  assert.equal(old.status, 404);
+  assert.equal(calls.length, 1);
+});

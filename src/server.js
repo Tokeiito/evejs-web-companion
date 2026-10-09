@@ -8675,11 +8675,29 @@ app.post("/api/bridge/pvp/end-gate/activate", requireAuth, async (req, res, next
 
 // --- agentMgr nav/journal WRITES (4) — docked => not-in-space -----------------
 
-app.post("/api/bridge/agent/journal/remove-offer", requireAuth, async (req, res, next) => {
-  if (!requireWriteConfirmation(req, res, "This removes the declined offer from your agent journal. Confirm to continue.")) {
+// The journal's "Remove Offer" (missionentry.py 75): the client asks the AGENT'S bound object,
+// GetAgentMoniker(agentID).RemoveOfferFromJournal(), with no arguments (agents.py 782). The server knows
+// which offer from which agent's object is asked. This route used to ask the service by name with no
+// agent, which removes nothing.
+app.post("/api/bridge/agents/:agentID/remove-offer", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
     return;
   }
-  await dispatchBridgeWrite(req, res, next, "agentMgr", "RemoveOfferFromJournal", []);
+  const agentID = Number(req.params.agentID) || 0;
+  if (!Number.isSafeInteger(agentID) || agentID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_AGENT", message: "A positive agentID is required." });
+    return;
+  }
+  if (!requireWriteConfirmation(req, res, "This removes that agent's offer from your journal. Confirm to continue.")) {
+    return;
+  }
+  try {
+    const outcome = await boundCall(held, req.webSessionID, agentBindSpec(agentID), "RemoveOfferFromJournal", [], null);
+    res.json({ ok: true, result: outcome.result, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
 });
 
 // GotoLocation(locationType, [deviationOverride], [referringAgentID]).

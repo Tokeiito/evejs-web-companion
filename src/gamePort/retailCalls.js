@@ -272,6 +272,7 @@ const RETAIL_CALLS = Object.freeze({
   "agentMgr.GetMissionBriefingInfo": same(`${AGENTS}:750`, "no arguments"),
   "agentMgr.GetMissionObjectiveInfo": same(`${AGENT_WINDOW}:222`, "no arguments when the dialogue opens"),
   "agentMgr.GetAgentLocationWrap": same(`${AGENT_WINDOW}:276`, "no arguments"),
+  "agentMgr.RemoveOfferFromJournal": same(`${AGENTS}:783`, "GetAgentMoniker(agentID).RemoveOfferFromJournal(), no arguments, on the agent's bound object"),
   "agentMgr.GetMissionJournalInfo": differs(`${AGENTS}:747`, "The client sends (charID, contentID). The BFF sends nothing."),
 
   // ── the scanner (the scan manager a service call answers with, and the dogma location) ─────────────

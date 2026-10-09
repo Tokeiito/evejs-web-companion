@@ -243,6 +243,7 @@ test("no line for a mission's time where the client shows none", () => {
 
 const PANE_TEMPLATES: Record<string, string> = {
   "UI/Agents/Commands/StartConversationWith": "Speak with {[character]agentID.name}",
+  "UI/Agents/Commands/RemoveOffer": "<b>Take it away</b>",
   [PANE_LABELS.heading.open]: "{missionName}: to do",
   [PANE_LABELS.heading.complete]: "{missionName}: done",
   [PANE_LABELS.overview]: "Do all of these.",
@@ -348,4 +349,22 @@ test("each journal line can start a conversation with its agent, in the client's
   assert.deepEqual(buttons(panel({ words: false, talking: false })), ["Start conversation with Some Other Agent", "Start conversation with Antaken Kamola"]);
   // The button sits on its line, after the line's words.
   assert.match(client, /<li><span class="journal-line">[^<]*<\/span>\s*(<!--[^>]*-->\s*)*<button[^>]*class="link journal-talk"/);
+});
+
+test("an offer's journal line can be removed; a mission that was accepted cannot", () => {
+  const lines = (body: string): Array<[string, string[]]> =>
+    [...body.matchAll(/<li><span class="journal-line">([^<]*)<\/span>([\s\S]*?)<\/li>/g)].map((match) => [
+      (match[1] as string).split(" · ")[0] as string,
+      [...(match[2] as string).matchAll(/<button[^>]*class="link (journal-[a-z]+)"[^>]*>([\s\S]*?)<\/button>/g)].map((button) => `${button[1]}: ${text(button[2] as string)}`),
+    ]);
+  // The client's words for it, without their markup.
+  assert.deepEqual(lines(panel({ words: true, paneWords: true, talking: false })), [
+    ["Taken", ["journal-talk: Speak with Some Other Agent"]],
+    ["On offer", ["journal-talk: Speak with Antaken Kamola", "journal-remove: Take it away"]],
+  ]);
+  // This page's own.
+  assert.deepEqual(lines(panel({ words: false, talking: false })).map(([, buttons]) => buttons), [
+    ["journal-talk: Start conversation with Some Other Agent"],
+    ["journal-talk: Start conversation with Antaken Kamola", "journal-remove: Remove offer"],
+  ]);
 });
