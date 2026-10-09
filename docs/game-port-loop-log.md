@@ -308,6 +308,19 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   writes too. Two routes of the BFF that ask the same thing of the same pilot at the same
   moment, with the same arguments, are one call to the server; made one after the other
   they are two, as before. See the entry "one call at a time of any one thing".
+- **On the game port the transport now asks a fleet things nobody in the page asked for**
+  (2026-10-09), as the client asks them: the fleet's state when the pilot forms or joins it
+  (and its number, for one it formed), the wings again at each wing or squad notice, the
+  message where the server has said none. The Fleet panel's state, wings and message then
+  come from what is kept and the server's notices, not from a call at each read. See the
+  entry "a fleet read once, and kept".
+- **The Fleet panel shows a member's ship and place from the fleet's composition**
+  (2026-10-09), on both transports, falling back to the member's own record only where the
+  composition has no word for that pilot. The client keeps neither in a member's record
+  once the record changes, and shows them from the composition in a window of its own.
+- **A fleet's state that could not be read is asked for again at the panel's next read**
+  (2026-10-09). The client would not ask again until its own `OnFleetJoin`. I kept the
+  panel from staying empty.
 - **My scratch folder holds 33 older copies of the store, 1.9 GB**, from the checks of
   8 October, before I took to deleting each copy once the store was back. I have not
   deleted them: some are named "before-..." and I cannot say now that none is wanted. They
@@ -8717,6 +8730,176 @@ case shared by hand is gone: it is a call like any other now.
     talked to and a ship boarded for the monikers the BFF asks for; a fleet formed there.
 11. The ledger counting what was sent, not what the BFF asked for: where a moniker is made
     and not bound, and now where a call is shared.
+12. The routes that answer from the store, listed, and each set beside what the client asks.
+13. The standings the client's way: `GetNPCNPCStandings`, and asked once at the session's
+    change and kept, with the server's notices keeping them right.
+14. The corporation registry's other calls, each set beside the client's.
+15. Phase 3's writes, feature by feature, each set beside what the client sends, each
+    looked for in every folder of the recordings first.
+16. The wallet's "Market Transactions", and the lines the client derives from a transaction.
+17. The avoidance list's own window, and a route plotted again when a setting changes under it.
+18. Around a place's name, the last of it: the outlaw's warning (the pilot's own security
+    status). The agent's own window's steps, if the client's say how far.
+19. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+    own counts on it, with the push doing the work as it does for Remove Offer.
+20. The agent's cards above its own window, where the client's window has its own header.
+21. The scanner the client's way: results kept from the server's word, a probe's destination
+    and range kept here and sent with the scan.
+22. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+    codes not done.
+23. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+24. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+25. Small, in Ready Fit: the window following a change of pilot.
+26. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+27. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+28. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+29. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions); the client's own map, to set beside this server's.
+30. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+31. Other things asked once beside the store, and other panels' effects, looked at for the
+    faults of earlier entries.
+32. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
+    client's own map is in.
+33. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
+34. A wreck opened with its type said: no capacity, as the client has none for one.
+
+## 2026-10-09 — a fleet read once, and kept
+
+Commit `c07b845`, pushed. Item 1 of the last list.
+
+**What the retail client does** (`fleetSvc.py`; the reading is in the last entry). It asks a
+fleet for its state once, when it forms or joins one, and keeps it right from the server's
+notices. A wing or squad notice has it ask for the wings again. Its main window shows a
+member's name, wing, squad and rank from that; a member's ship and place are in a window of
+their own, from `GetFleetComposition`. A member whose record has changed is kept as six
+fields only, the ship it joined in not among them.
+
+**What the BFF did.** The Fleet route asked the server for the state, the wings and the
+message at every read of the panel, with the join requests and the composition: five calls
+a read. The page showed each member's ship and place from the member's record.
+
+**What was built.**
+
+- `src/gamePort/pilotFleet.js`: the fleet as the client's fleet service keeps it. What
+  `GetInitState` answered is kept whole, in the form it came in, and each notice does to it
+  what the client's handler does: `OnFleetJoin` (another's is put in; the pilot's own has
+  the state read again), `OnFleetLeave`, `OnFleetDisbanded`, `OnFleetMemberChanged` (a new
+  record of six fields), `OnFleetOptionsChanged`, `OnFleetMotdChanged`, the six wing and
+  squad notices (the wings are asked for again), and several in one `__MultiEvent`.
+- The transport reads the state where the client does: after `Init` for a fleet the pilot
+  formed, with `GetFleetID` after it; after `AcceptInvite` for one it joined; at the pilot's
+  own `OnFleetJoin` where the object is held. Each of these is asked at once, as a tasklet
+  of the client's is, not one after another. Out of the fleet nothing is kept.
+- On the game port the route's reads of the state, the wings and the message are answered
+  from what is kept. The join requests and the composition are still asked.
+- The page takes each member's ship and place from the composition, and asks for those
+  names.
+- `scripts/record-fleet-session.js` and `test/fixtures/fleetSession.json`: two real
+  sessions against this server, forming, joining, changing and leaving a fleet, with every
+  notice and answer each got.
+
+**Proof.**
+
+- Tests: 20 new. The store's replay the recording and, at every later `GetInitState` the
+  recording holds (five of them, after a member joined, wings and a squad were made, a wing
+  named, a member moved, a message set, a member left), set what is kept beside the
+  server's own answer: the same, in what the client keeps. The store was written before
+  its tests; the transport's, the route's and the page's were watched to fail first. Two
+  older tests now count the client's own read of the fleet among what is sent.
+- 137 ways of breaking it tried. 24 survived a first pass: 8 showed checks that did
+  nothing, which are out, and 16 led to cases added. All are caught now.
+- Suite: 9679 tests, 9655 pass, 0 fail, 0 cancelled, 24 skipped. No test process left
+  behind. The web client builds.
+- **Two pilots through the BFF, on the game port, by script:** formed, read twice,
+  invited, joined, a wing made, a squad made, the joiner moved, a message set, each read
+  after each change, both left. Every read showed what the server had: both members after
+  the join, two wings after the wing, the moved member in its new wing with a record of six
+  fields and its ship from the composition, the message, one member after the other left.
+  **The server's log for the whole run:** `GetInitState` 2 (one for each pilot),
+  `GetFleetID` 1, `GetWings` 4 (one for each pilot at each of two notices), and for the ten
+  reads made in a fleet `GetJoinRequests` 10 and `GetFleetComposition` 10. One bind and one
+  resolve, the joiner's. Before this the ten reads were fifty calls.
+- **In the browser, on the game port, as Test Two:** Form fleet → "1 member ... Test Two
+  Badger · Muvolailen X - Moon 3 ... Fleet commander". An invitation sent from the panel to
+  Test Pilot, who accepted by script: the panel showed "2 members ... Test Pilot Reaper ·
+  Jita IV - Moon 4 - Caldari Navy Assembly Plant Member" with nothing clicked. Test Pilot
+  left: "1 member", with nothing clicked. Leave fleet → "Not in a fleet". No failure shown.
+  The server's log for that pilot's fleet object: `Init`, `GetInitState` once,
+  `GetFleetID`, `Invite`, four reads of two calls each, `LeaveFleet`.
+- **On both transports, by script:** 12 identical, 6 tolerated, 2 moved (two clocks),
+  2 divergent, as before.
+- The recorder as committed was run once more, and the tests pass on what it wrote.
+- The store was put aside before each live check and put back after: both pilots in no
+  fleet, Test Two's hangar 1 row, cargo 1 row, journal `[1,0]`. The copies are deleted.
+
+**Seen and not repaired.**
+
+- **The join requests and the composition are asked at every read.** The client asks for
+  the join requests when their window opens, and the composition when its window does, and
+  keeps that for a time. A member who is not the boss is refused the join requests by this
+  server at every read.
+- **A member who is moved is sent `OnFleetMove`, and the client answers it with
+  `FinishMove`.** The transport does not.
+- **Four of the fleet's writes are unread** against the client: `CreateWing`,
+  `CreateSquad`, `MoveMember`, `SetMotdEx`. The ledger lists them as unchecked.
+- **The ledger counts a moniker asked for as a bind**: 19 for the 2 the server saw.
+
+**Not seen working.**
+
+- The pilot's own `OnFleetJoin` coming after the acceptance, as Tranquility sends it; a
+  wing or squad deleted, a squad named; `OnFleetOptionsChanged`; a fleet disbanded under a
+  member; a message of the day that is None; a state that could not be read; a fleet's
+  object the server lets go: tests only. None of them came up in the runs.
+
+**Not done.**
+
+- Where no object is held for a fleet the session is in, the route asks all five as before
+  (the operator's section, last entry but one).
+
+### Next
+
+1. Around the fleet: the join requests and the composition asked as the client asks them
+   (on demand, kept, the boss's only); `FinishMove` at `OnFleetMove`; the four unread
+   writes and the rest of the fleet's, each set beside the client's and the recording's
+   (`MoveMember`, `MakeLeader`); an invite from a pilot in no fleet forming one first; the
+   cost of contacting; `fleetProxy.GetAvailableFleetAds`.
+2. A login set beside the recording's, call by call: what the client asks before anything
+   is opened, and in what order (the skill handler's nine among them).
+3. What becomes of a bound object the client has done with (`moniker.py`
+   `__ClearBoundObject`: `DisconnectObject` after a delay): read in the client, looked for
+   in the recordings, and done so. The handles the BFF asks for and drops are among them.
+4. Around the skill handler: the implants asked once and kept; the Skills panel from the
+   handler; the handler's other reads; boosters and jump clones on the sheet.
+5. Around the contracts: "Offered to you" from the owner's list; the corporation's lists;
+   a rowset read where a server answers one; the search with something staged for each of
+   its filters, on both transports; what the sub-agent left in the server (the operator's
+   section). And the same fault elsewhere in the server: a search of its services for a
+   keyword read as a plain property, with no helper in the file, names two more
+   (`seasonManagerService.js`, `dungeonService.js`). Neither was read.
+6. Around a fitted module: the recording read past `SetModuleOnline`'s answer, and this
+   server's fit set beside it; the recording of ammunition loaded while docked, and charges
+   in slots as godma holds them; the Fitting panel's cargo figure after a module's state
+   changes; a refusal to put one online shown as the client shows it; the dogma route
+   answered from godma's priming instead of its own `GetAllInfo`.
+7. Something staged for every list route that has only been compared empty (the market's
+   orders, the mail, the calendar, the corporation's hangars), and the parity pass read
+   again.
+8. A ship with several modules fitted and a hold with a packaged ship in it, staged: the
+   Fitting window's figures and the client's sums, each set beside the server's.
+9. The walk in space: undocked, every panel and the space view, the store put aside first
+   and put back after; its unread pairs read; the ship's moniker seen kept; an agent
+   talked to and a ship boarded for the monikers the BFF asks for; a fleet formed there.
+10. The ledger counting what was sent, not what the BFF asked for: where a moniker is made
+    and not bound, and where a call is shared.
+11. Other services whose state the client keeps from notices and the BFF asks for at every
+    read, found by the same reading: each listed, and the worst done.
 12. The routes that answer from the store, listed, and each set beside what the client asks.
 13. The standings the client's way: `GetNPCNPCStandings`, and asked once at the session's
     change and kept, with the server's notices keeping them right.
