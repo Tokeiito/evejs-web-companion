@@ -316,6 +316,12 @@ Take these defaults, and list each under "For the operator" in the log so they c
   "Offer to buy…", the two number inputs and the select in `section.bulk`, "Check this order…",
   "Yes, place this buy order"; then "Your orders", "Take it down…", "Yes, take this order
   down". The pilot's "GO TO FIRST PILOT" dialog has to be answered first.
+- **A script's own game-port session keeps cached answers and has nothing to name them.** The
+  naming on a notice is the transport's (`pilots.js`), not the session's. A script that writes
+  and reads again through a bare `GamePortSession` gets the answer from before the write: mine
+  read no orders while the one it had just placed stood open, and left it open. Name the call
+  by hand first, `session.invalidateCachedMethodCalls([[service, method, args]])`
+  (`orders-direct.js` in the scratchpad does).
 - **The gateway BFF hands on the server's cached-answer envelope; the game-port BFF hands on
   what was in it.** A script that reads a route's answer on both has to open the envelope for
   the one (`orders-of.js` in the scratchpad does, for the pilot's orders): mine read "no orders"

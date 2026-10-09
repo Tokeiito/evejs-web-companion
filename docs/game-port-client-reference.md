@@ -486,8 +486,40 @@ own row, a number: `CancelCharOrder(orderID, regionID)` and
 order.price, order.range, order.volRemaining, order.issueDate)` (`marketsvc.py` 281, 285). The
 BFF's routes have the ID as the text the page sent. On the wire that was a string, this server
 read it as order 0, and no order could be taken down on the game port. The registry now sends
-the number. Still not the client's: the route names no region for the first, and sends nought
-for the date of issue in the second. The server reads neither, and the ledger notes both.
+the number.
+
+The client has both calls' other arguments off the same row: the order is one of the pilot's
+own orders, `GetCharOrders`, which its object cache keeps (`quote.py` 302 passes
+`order.orderID, order.regionID`). The BFF's routes have no row, and sent nought for the region, a
+bool for the side, where the pilot is for the station, and nought for the date of issue. The
+server reads only the order and the new price, so both worked and neither was the client's
+call. The transport now reads the row out of the pilot's orders the session keeps
+(`pilots.js` `ownOrderOf`) and sends what the client sends, each value as it came off the wire.
+Where the session keeps no orders it asks for them first, as the client has them before it
+touches one. An order in no such list goes out as it came.
+
+Made first as the client makes them, on a session of a script's own, to see the server take
+them. The order's row off the wire, and the nine sent:
+
+| Column | Off the wire | Sent to reprice |
+|---|---|---|
+| `orderID` | a long | first |
+| the new price | | second |
+| `bid` | 1 | third |
+| `stationID`, `solarSystemID` | numbers | fourth, fifth |
+| `price` | 0.01 | sixth |
+| `range` | -1 | seventh |
+| `volRemaining` | 1 | eighth |
+| `issueDate` | a long | ninth |
+
+The server answered None to each, the order's price was the new one, and its two notices said
+"Modified" and "Cancelled".
+
+Three more of the market's calls are in the registry. A type's book, `GetOrders(typeID)`, is
+the client's as it stands. Its price history is not: the client asks two halves,
+`GetOldPriceHistory` and `GetNewPriceHistory`, and the BFF's route asks the new one alone. A
+buy order is not: the client's ninth argument is the broker's fee its window showed
+(`buyThisTypeWindow.py` 701), and the route sends none.
 
 **The formations, asked for once, 2026-10-09.** `michelle.AddBallpark` asks
 `sm.RemoteSvc('beyonce').GetFormations()` each time it makes a ballpark (`michelle.py` 324). The
