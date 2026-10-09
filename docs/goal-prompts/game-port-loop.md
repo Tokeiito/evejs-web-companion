@@ -77,7 +77,11 @@ Consult in this order. When two disagree, a recording of the real thing settles 
    `LOG_MANIFEST.md`, missions under `Missions/`). The client's own log of sessions against CCP's
    server, every packet printed as a `MarshalStream` repr. This is what CCP's server really
    sends, and it settles what the decompiled client only implies: grep it for a call or a
-   notification by name before calling anything EveJS does right or wrong. Reading the bytes:
+   notification by name before calling anything EveJS does right or wrong, and before building
+   from the decompiled source alone. **Search every folder of it** (`grep -rl`): most recordings
+   are in subfolders, and one named for a mission may hold a fitting. On 2026-10-09 a search of
+   the top folder alone missed the one recording of a module being fitted, which showed a call
+   the reading of the code had missed. Reading the bytes:
    a dict entry's value is written BEFORE its key; `\x01` is None, `\x07` is -1, `/\x05`
    and five bytes is a long.
 

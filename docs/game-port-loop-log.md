@@ -236,6 +236,23 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   a hangar ship's cargo as smaller than the server will let it be filled. The ship being flown
   is not affected: its capacities are godma's, which have the skills in them. See the entry "a
   ship's bays".
+- **The game-port transport now makes two calls nobody in the page asked for** (2026-10-09).
+  When the server says a module is in a slot of the pilot's ship, the transport asks
+  `ItemGetInfo(module)`, and for a module newly fitted it then sends
+  `SetModuleOnline(ship, module)`, because the retail client does both of its own accord: a
+  recording of it on Tranquility has them in that order. On this server the fit has put the
+  module online already and the second call is answered without complaint. If a server
+  refuses it for any reason but "already online", the module shows as offline and the page
+  says nothing of why; the retail client shows the refusal. To turn both off, take
+  `onSlotted` and `onFitted` out of where the dogma store is made in
+  `src/gamePort/pilots.js`: a module then shows offline after a fit until the pilot docks,
+  undocks or logs in again. See the entry "the ship's own dogma, from godma".
+- **This server puts a module online when it is fitted; Tranquility, in the one recording
+  there is, did not** (2026-10-09). Here the online effect's start is told before the item's
+  move. In the recording nothing of the kind was read between the item's move and the
+  client's own `SetModuleOnline`. I have not called it a defect or had it changed: the end
+  state is the same for a retail client, and the recording was not read past that call's
+  answer. Say if you want it looked into.
 
 ## Server defects
 
@@ -7421,3 +7438,190 @@ the capacity. The bots open cans and customs offices for what is in them.
     client's own map is in.
 27. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
 28. A wreck opened with its type said: no capacity, as the client has none for one.
+
+## 2026-10-09 — the ship's own dogma, from godma
+
+Commits `d5e1da7` and `1c0b7e5`, pushed. The first part of item 1 of the last list: two of
+the four calls the page made that the client never makes.
+
+**What the retail client does.** It never asks `dogmaIM.ShipGetInfo` or
+`ShipOnlineModules`. Its godma is primed once with `GetAllInfo` (`godma.py` 2409) and kept
+right by the server's notices; the fitting window and the undock read the ship from there.
+
+A module fitted, moved or taken out arrives as an item that moved (`OnItemsChanged`, which
+`invCache.py` 219 hands on one item at a time as `OnItemChange`). Two of the client's
+services then act, and **a recording of the retail client on Tranquility has both on the
+wire** (`Missions/Done/Combat/Encounter at Station 464 - Plus Some Data Analyzer
+Mechanics.txt`, 2026-07-17 20:13:32, a module moved from the hold to a middle slot, docked):
+
+1. `Add` on the inventory object, and before its answer two `OnItemsChanged` notices: the
+   item made a single one, then the item in its slot.
+2. Godma asks `ItemGetInfo(itemID)` on the dogma location and holds the answer, the item's
+   row as `GetAllInfo` lists one (`godma.py` 1208, 1629).
+3. The dogma location fits it ("Fitting item as a result from item change") and, its type
+   having the online effect, calls `SetModuleOnline(ship, module)` on the same object, which
+   answered None (`clientDogmaIM.py` 57, `clientDogmaLocation.py` 570, 611, 624, 698). The
+   code takes a refusal of "EffectAlreadyActive2" as no failure.
+
+**What the page did.** The Fitting route, the drones route and the script observation asked
+the server `ShipGetInfo` and `ShipOnlineModules` each time; the flight status asked
+`ShipGetInfo` for the ship's type and whether it is a capsule.
+
+**What was built.**
+
+- On the game port those routes answer from godma: the ship's row as `GetAllInfo` gave it,
+  with its attributes as they are now (the capacitor and shield as they have recharged to),
+  and the modules whose online effect is running. Only for the ship godma was primed for
+  where it is now; otherwise, and on the gateway, the server is asked as before.
+- The dogma store takes `OnItemsChanged` and `OnItemChange`: an item now in a slot of the
+  held ship is held from then on, one that has left is forgotten with what was known of it,
+  one that changed slot is in the new one.
+- The transport does what the client does next, one call at a time and in the order the
+  items were told of: `ItemGetInfo` for a module or a subsystem in a slot (not for what is
+  in the drone bay or a fighter tube), its answer held in place of what was known; then, for
+  one newly fitted whose type has the online effect, online at once and `SetModuleOnline`,
+  and offline after all if the server refuses for another reason or does not answer. A read
+  of the ship, and the undock, wait for these.
+
+**How it went, and a claim withdrawn.** The first build (`d5e1da7`) was from the client's
+code alone and had `SetModuleOnline` without `ItemGetInfo`. I had searched the top folder
+of the recordings for a fitting, found none, and had "no recording was found" written for
+this entry. A search of every folder found the one above, and the second build (`1c0b7e5`)
+followed it. The brief now says to search every folder, and before building.
+
+**Measured on the way.**
+
+- Before the item changes were taken: a cargo expander fitted through the game port left
+  godma's ship attributes equal to the server's own, and the online list empty where the
+  server's had the module. This server's notices for the fit were one bundle (four attribute
+  changes and the online effect starting) and then `OnItemsChanged`: the effect is told
+  before the item is.
+- After the second build, the server's own log for a fit in a session primed without the
+  module: `GetAllInfo`, `Add` on another object, the notices, then `ItemGetInfo` and
+  `SetModuleOnline` on the object `GetAllInfo` was asked of. Neither was refused.
+- A module taken offline through the game port: the server sent the ship's capacity, speed
+  and hull changes with the effect stopping, and godma's capacity was the server's (3,900).
+
+**Proof.**
+
+- Tests: 22 new (10 on the dogma store, 9 on the transport, 3 on the routes); four of the
+  flight status's rewritten to read godma; one example swapped (a test used
+  `OnItemsChanged` as its notice that is not dogma's). 142 ways of breaking it tried over
+  the two builds. The survivors each led to a check that did nothing being taken out or a
+  test being made to carry what the wire carries (a row's 64-bit IDs); one found a real
+  fault before it was committed (a ship change with dogma not answering gave the last
+  ship's row). All are caught.
+- Suite: 9612 tests, 9588 pass, 0 fail, 0 cancelled, 24 skipped. No test process left behind.
+- **A module, staged three times** (a cargo expander given to Test Two; the store put aside
+  first and put back after each time: one row in the hangar and one in the cargo again, the
+  journal `[1,0]`, nothing fitted). With the second build: fitted in a session primed
+  without it and read at once through the game port, then through the gateway: capacity
+  4,582.5, speed, hull, what is fitted and how many are online, the same on both.
+- **In the browser, on the game port, with the second build:** the Fitting panel drew the
+  fitted Badger from godma's priming ("Online", cargo 0.1 / 4,582.5 m³). "Unfit": the slot
+  empty, cargo 3,900 m³. The expander picked and put in low slot 1 through the panel: the
+  slot read "Online" a second and a half later, with "Take offline" beside it, cargo
+  4,582.5 m³. "Take offline": "Offline". "Bring online": "Online". With the first build the
+  bare ship was seen too (CPU 0 / 456, power grid 0 / 222).
+- **The server's own log** (eve.js `e066a81e9`, with another session's uncommitted edits in
+  the checkout), for everything the game port did across both builds: `ShipGetInfo` 0,
+  `ShipOnlineModules` 0.
+- **On both transports, by script** (`scripts/bff-parity.js`): 11 identical, 7 tolerated,
+  2 moved, 2 divergent, as before; the flight status identical. One pass, made seconds
+  after the server came back up, read 10 identical and 3 moved; the pass after it was as
+  before. Which third route moved was not kept.
+- The ledger (`docs/game-port-call-ledger.md`), from the pass, the browser's read of all 22
+  panels and the fittings: 58 pairs, none unchecked, none differing, 2 the client never
+  makes (4 before).
+
+**Seen and not repaired.**
+
+- In the browser (first build) the Fitting panel's cargo figure stayed 4,582.5 m³ while the
+  module was offline. By script at the same step the route's capacity was 3,900. The panel
+  takes that figure from the page's inventory read, which it did not make again after the
+  module's state changed. The page's code is the same on both transports; the gateway was
+  not looked at in the browser.
+- This server has the module online before the client asks, where the recording has
+  nothing of the kind before the client's own call (the operator's section).
+
+**Not seen working.**
+
+- A refusal to put a module online ("already online", or any other): tests only. This
+  server refused nothing.
+- What `ItemGetInfo` answered being held: tests only. No route reads a module's own
+  attributes from godma while docked, so live there were the call and the online state.
+- A module moved from one slot to another, a subsystem, a fit in space, a change of ship
+  with modules aboard: tests, or nothing.
+- The drones route and the script observation on the game port: tests only; no request for
+  either was among the browser's.
+
+**Not done.**
+
+- A charge put in a slot as an item while docked. Godma asks about those too; there is a
+  recording of ammunition topped up from the hold while docked, not yet read.
+- Godma's other cases for an item that moved: a stack that only changed size, an item put
+  in one of the ship's other holds.
+- A refusal to put a module online is not shown to the user.
+- A drone launched is let go of by the store, where the client keeps it. Nothing asked of
+  the store is about a drone.
+- The Fitting window's dogma route still asks `GetAllInfo` of its own each time, where the
+  client primes once.
+- The recording past the answer to `SetModuleOnline`: what Tranquility tells the client
+  once the module is online.
+
+### Next
+
+1. The rest of the web client's own calls: `contractProxy.GetMyCurrentContractList`
+   (`GetContractListForOwner`), `charMgr.GetCloneInfo` (`jumpCloneSvc.GetCloneState` on
+   its moniker, godma's implants).
+2. Around a fitted module: the recording read past `SetModuleOnline`'s answer, and this
+   server's fit set beside it; the recording of ammunition loaded while docked, and charges
+   in slots as godma holds them; the Fitting panel's cargo figure after a module's state
+   changes; a refusal to put one online shown as the client shows it; the dogma route
+   answered from godma's priming instead of its own `GetAllInfo`.
+3. The Fleet panel asking nothing of a fleet's object while the pilot is in no fleet.
+4. A ship with several modules fitted and a hold with a packaged ship in it, staged: the
+   Fitting window's figures and the client's sums, each set beside the server's.
+5. The walk in space: undocked, every panel and the space view, the store put aside first
+   and put back after; its unread pairs read.
+6. The routes that answer from the store, listed, and each set beside what the client asks.
+7. The standings the client's way: `GetNPCNPCStandings`, and asked once at the session's
+   change and kept, with the server's notices keeping them right.
+8. Two couriers staged, for the contract search's sort and filters; the corporation's
+   expired list beside the pilot's own; the summary asked once and kept.
+9. The corporation registry's other calls, each set beside the client's.
+10. Phase 3's writes, feature by feature, each set beside what the client sends, **each
+    looked for in every folder of the recordings first**.
+11. The wallet's "Market Transactions", and the lines the client derives from a transaction.
+12. The avoidance list's own window, and a route plotted again when a setting changes under it.
+13. Around a place's name, the last of it: the outlaw's warning (the pilot's own security
+    status). The agent's own window's steps, if the client's say how far.
+14. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+    own counts on it, with the push doing the work as it does for Remove Offer.
+15. The agent's cards above its own window, where the client's window has its own header.
+16. The scanner the client's way: results kept from the server's word, a probe's destination
+    and range kept here and sent with the scan.
+17. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+    codes not done.
+18. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+19. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+20. Small, in Ready Fit: the window following a change of pilot.
+21. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+22. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+23. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+24. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions); the client's own map, to set beside this server's.
+25. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+26. Other things asked once beside the store, and other panels' effects, looked at for the
+    faults of earlier entries.
+27. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
+    client's own map is in.
+28. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
+29. A wreck opened with its type said: no capacity, as the client has none for one.
