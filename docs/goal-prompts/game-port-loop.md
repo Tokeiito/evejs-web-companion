@@ -88,6 +88,9 @@ Consult in this order. When two disagree, a recording of the real thing settles 
 Tools already built for this: `scripts/recordings/` (read the Tranquility recordings: decode a
 file's lines, tally what agents offered, see `README.md` there), `scripts/capture-game-frames.js`
 (record a conversation as a fixture), `scripts/record-game-port.js` (record any client),
+`scripts/record-fleet-session.js` (two real sessions through a fleet's life, every notice and
+answer each got: the pattern for a fixture that sets what a store keeps beside the server's own
+later answer),
 `scripts/parity-harness.js`,
 `scripts/soak-game-session.js`, `scripts/py27-oracle.py` with `scripts/build-py27-fixture.js`,
 `scripts/vendor-marshal.js`.
