@@ -41,6 +41,8 @@ const TEMPLATES: Record<string, string> = {
   [L.cargoWithSize]: "{cargoDescription} ({[numeric]size, decimalPlaces=1} m3)",
   [L.thisStation]: "Right here",
   [L.thisSolarSystem]: "In this system",
+  [L.jumpsAway]: "<b>{[numeric]jumps}</b> {[numeric]jumps -> \"jump\", \"jumps\"} off",
+  [L.noRoute]: "No way <i>there</i>",
   [L.collateralTitle]: "Held",
   [L.collateralText]: "You put this up:",
   [L.grantedItems]: "Given",
@@ -72,6 +74,7 @@ const context = (overrides: Partial<PageContext> = {}): PageContext => ({
   sayOfMission: (messageID) => `Message <b>${messageID}</b>`,
   say: (message) => (message.messageID === null ? message.text : `Agent's <i>${message.messageID}</i> of ${message.contentID}`),
   securityOf: () => null,
+  jumpsTo: () => undefined,
   ...overrides,
 });
 const mission = (fixture: JsonValue): MissionObjectives => decodeObjectives(fixture) as MissionObjectives;
@@ -141,6 +144,8 @@ test("every label the page uses is asked for", () => {
   assert.ok(PAGE_WORD_LABELS.includes("UI/Agents/Dialogue/EffectiveStandingLow"));
   assert.ok(PAGE_WORD_LABELS.includes("UI/Journal/JournalWindow/Agents/OfferExpiresIn"));
   assert.ok(PAGE_WORD_LABELS.includes("UI/Agents/StandardMission/SecurityTaxMessage"));
+  assert.ok(PAGE_WORD_LABELS.includes("UI/Agents/StandardMission/JumpsAway"));
+  assert.ok(PAGE_WORD_LABELS.includes("UI/Generic/NoGateToGateRoute"));
 });
 
 test("an answer about this mission is kept; one about another mission, or none, changes nothing", () => {
@@ -446,6 +451,39 @@ test("how far a place is: this station, this solar system, or not said", () => {
   // A structure is neither a station nor a system: nothing is said of it, wherever the pilot is.
   assert.deepEqual(where(null, 30002778), [null, null, null]);
   assert.deepEqual(where(null, null), [null, null, null]);
+});
+
+test("how far a place is: so many jumps by the autopilot's route from where the pilot is, or no route, once that is worked out", () => {
+  const stations = answer([["objectives", list(tuple("transport", tuple(1, place(60000004, 30002780), 1, place(60000019, 30002778), cargo(false))))]]);
+  const asked: number[] = [];
+  const where = (objectives: MissionObjectives, jumps: Record<number, number | null>, overrides: Partial<PageContext> = {}) =>
+    missionPage(input({ objectives }), context({ stationID: null, solarSystemID: 30000001, jumpsTo: (id) => { asked.push(id); return jumps[id]; }, ...overrides })).objectives?.general.steps.map((step) => step.where);
+  // A station stands for its system. One jump is a jump; more are jumps.
+  assert.deepEqual(where(stations, { 30002780: 1, 30002778: 7 }), [null, "1 jump off", "7 jumps off"]);
+  assert.deepEqual(where(stations, { 30002780: 0, 30002778: null }), [null, "0 jumps off", "No way there"]);
+  // Not worked out yet: nothing is said.
+  assert.deepEqual(where(stations, { 30002778: 3 }), [null, null, "3 jumps off"]);
+  // Where the pilot is comes first, and then no route is asked about.
+  asked.length = 0;
+  assert.deepEqual(where(stations, { 30002780: 5, 30002778: 2 }, { stationID: 60000004, solarSystemID: 30002780 }), [null, "Right here", "2 jumps off"]);
+  assert.deepEqual(where(stations, { 30002780: 5, 30002778: 2 }, { solarSystemID: 30002780 }), [null, "In this system", "2 jumps off"]);
+  assert.deepEqual(asked, [30002778, 30002778]);
+  // A structure is neither a station nor a system: nothing is said of it, whatever its system's distance.
+  const structure = answer([["objectives", list(tuple("transport", tuple(1, place(1030000000001, 30002778), 1, place(60000019, 30002778), cargo(false))))]]);
+  assert.deepEqual(where(structure, { 30002778: 4 }), [null, null, "4 jumps off"]);
+  // A place that is a solar system is told by the system it names as its own (the two are one, for a dungeon).
+  const dungeon = missionPage(input({ objectives: mission(ENCOUNTER_OFFERED_GATEWAY) }), context({ solarSystemID: 30000001, jumpsTo: (id) => (id === 30002779 ? 12 : undefined) }));
+  assert.deepEqual(dungeon.objectives?.extra.steps.map((step) => step.where), ["12 jumps off"]);
+  // The jumps are to the system a place names as its own, even where the place is another system; one that names none is said nothing of.
+  const elsewhere = (solarsystemID: number | null) => answer([["objectives", list(tuple("agent", tuple(3009999, dict([["locationID", 30000050], ["solarsystemID", solarsystemID], ["typeID", 5]]))))]]);
+  assert.deepEqual(where(elsewhere(30000060), { 30000050: 2, 30000060: 6 }), ["6 jumps off"]);
+  assert.deepEqual(missionPage(input({ objectives: elsewhere(null) }), context({ solarSystemID: 30000001, jumpsTo: () => 5 })).objectives?.general.steps.map((step) => step.where), [null]);
+  // A station that names no system is said nothing of.
+  const adrift = answer([["objectives", list(tuple("agent", tuple(3009999, dict([["locationID", 60000004], ["solarsystemID", null], ["typeID", 1531]]))))]]);
+  assert.deepEqual(where(adrift, { 30002780: 1 }), [null]);
+  // Without the client's words, nothing.
+  const { [L.jumpsAway]: _jumps, [L.noRoute]: _none, ...wordless } = TEMPLATES;
+  assert.deepEqual(where(stations, { 30002780: 1, 30002778: null }, { templates: wordless }), [null, null, null]);
 });
 
 test("a place on the page has its system's security rating before it, and a warning where that is low", () => {

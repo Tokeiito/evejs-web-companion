@@ -63,7 +63,9 @@ function fakeStaticData() {
         : null;
     },
     getSolarSystem(id) {
-      return Number(id) === MAURASI_SYSTEM ? { solarSystemID: MAURASI_SYSTEM } : null;
+      // Maurasi has a security in the data (a made-up one); Jita's row here has none.
+      if (Number(id) === MAURASI_SYSTEM) return { solarSystemID: MAURASI_SYSTEM, security: 0.3125 };
+      return Number(id) === JITA_SYSTEM ? { solarSystemID: JITA_SYSTEM } : null;
     },
     getSolarSystemName(id) {
       if (Number(id) === JITA_SYSTEM) return "Jita";
@@ -124,6 +126,8 @@ test("GET /api/map/graph returns the system-adjacency graph", async () => {
   // The Maurasi -> Jita edge carries [fromSystem, toSystem, fromGate, toGate].
   const edge = payload.edges.find((e) => e[0] === MAURASI_SYSTEM && e[1] === JITA_SYSTEM);
   assert.deepEqual(edge, [MAURASI_SYSTEM, JITA_SYSTEM, 50000802, 50001248]);
+  // Each system's security goes with the map, for the route the client's autopilot plots; one with none is left out.
+  assert.deepEqual(payload.security, { [MAURASI_SYSTEM]: 0.3125 });
 });
 
 test("GET /api/map/graph requires the web login session", async () => {

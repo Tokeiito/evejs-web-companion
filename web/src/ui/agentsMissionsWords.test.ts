@@ -83,6 +83,8 @@ function panel(options: {
   /** What the client's agents service knows of the page's agent, and the solar system the server says it is in. */
   agentRecord?: Record<string, unknown> | null;
   agentSystem?: number | null;
+  /** The jumps on the autopilot's route, by "<from>:<to>", as worked out. */
+  jumps?: Record<string, number | null>;
   /** The pilot's standings and skills as read, each as [id, value] pairs. */
   standings?: ReadonlyArray<readonly [number, number]>;
   skillLevels?: ReadonlyArray<readonly [number, number]>;
@@ -149,6 +151,9 @@ function panel(options: {
   if (options.agentRecord !== undefined) {
     store.apply({ type: "agents/record", agentID: AGENT, record: options.agentRecord as never });
     store.apply({ type: "names/resolved", entries: { "corporation:1000002": "A Made-Up Company", "faction:500001": "A Made-Up State" } });
+  }
+  if (options.jumps !== undefined) {
+    store.apply({ type: "names/autopilot-jumps", jumps: options.jumps });
   }
   if (options.agentSystem !== undefined) {
     store.apply({ type: "agents/solar-system", agentID: AGENT, solarSystemID: options.agentSystem });
@@ -339,6 +344,8 @@ const PAGE_TEMPLATES: Record<string, string> = {
   [PAGE_LABELS.rewardsTitle]: "Pay",
   [PAGE_LABELS.bonusTitle]: "Extra",
   [PAGE_LABELS.securityTax]: "<b>Less is paid</b> hereabouts.",
+  [PAGE_LABELS.jumpsAway]: "{[numeric]jumps} {[numeric]jumps -> \"jump\", \"jumps\"} off",
+  [PAGE_LABELS.noRoute]: "No way there",
   [PAGE_LABELS.loyaltyPointsShort]: "{[numeric]lpAmount, useGrouping} pts",
   [PAGE_LABELS.isk]: "{[numeric]amount, useGrouping, decimalPlaces=2} ISK",
   [PAGE_LABELS.quantityAndItem]: "{[numeric]quantity, useGrouping} x {[item]item.name}",
@@ -664,4 +671,20 @@ test("the banner about reduced rewards is drawn after the rewards and before the
     assert.doesNotMatch(none, /mission-page-banner/, JSON.stringify(options));
     assert.match(text(none), /Extra 17,000\.00 ISK One more thing Mind the gate\./);
   }
+});
+
+// --- how many jumps away ----------------------------------------------------------------
+
+test("a place's distance is drawn from where the pilot is now: jumps by the autopilot's route, once worked out", () => {
+  const held = { missionState: 2, expirationTime: null, objectives: decodeObjectives(COURIER_OFFERED_GATEWAY) };
+  const jumps = { "30000142:30002780": 4, "30000142:30002778": 1, "30002780:30002778": 2, "30009999:30002780": 9 };
+  const drawn = (options: Partial<Parameters<typeof panel>[0]>) => text(pageOf(panel({ words: true, pageWords: true, talking: false, page: held, jumps, ...options })) as string);
+  // In space, three systems off: both places by their jumps from there.
+  assert.match(drawn({ flight: { docked: false, stationID: null, structureID: null, solarSystemID: 30000142 } }), /○ From 4 jumps off station 60000004 ○ To 1 jump off station 60000019/);
+  // Docked where the package is: that station is here, and the other is told from this system.
+  assert.match(drawn({ flight: { docked: true, stationID: 60000004, structureID: null, solarSystemID: 30002780 } }), /✓ From Right here station 60000004 ○ To 2 jumps off station 60000019/);
+  // From a system nothing is worked out for yet, nothing is said.
+  assert.match(drawn({ flight: { docked: false, stationID: null, structureID: null, solarSystemID: 30000144 } }), /○ From station 60000004 ○ To station 60000019/);
+  // No route.
+  assert.match(drawn({ jumps: { "30000142:30002780": null }, flight: { docked: false, stationID: null, structureID: null, solarSystemID: 30000142 } }), /○ From No way there station 60000004 ○ To station 60000019/);
 });

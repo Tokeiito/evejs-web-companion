@@ -3193,6 +3193,8 @@ export async function reprocessItems(
 export interface SystemGraphResult {
   readonly systems: Readonly<Record<string, string>>;
   readonly edges: ReadonlyArray<readonly [number, number, number, number]>;
+  /** Each system's security as it was made, by its ID. */
+  readonly security: Readonly<Record<string, number>>;
 }
 
 /** Fetch the system-adjacency graph for the client-side route solver. */
@@ -3206,6 +3208,10 @@ export async function loadSystemGraph(options: ApiOptions = {}): Promise<SystemG
     edges: Array.isArray(data.edges)
       ? (data.edges as ReadonlyArray<readonly [number, number, number, number]>)
       : [],
+    security:
+      typeof data.security === "object" && data.security !== null && !Array.isArray(data.security)
+        ? (data.security as Record<string, number>)
+        : {},
   };
 }
 

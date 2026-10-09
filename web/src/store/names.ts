@@ -71,6 +71,11 @@ export interface NamesState {
    * and no entry for one not answered yet. Static reference data, kept as names are.
    */
   readonly systemSecurity: Readonly<Record<number, number | null>>;
+  /**
+   * The jumps on the autopilot's route between two solar systems, by "<from>:<to>": null where there is
+   * no route, and no entry for a pair not worked out yet. With the settings as the client has them at first.
+   */
+  readonly autopilotJumps: Readonly<Record<string, number | null>>;
 }
 
 /**

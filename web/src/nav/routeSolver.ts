@@ -46,12 +46,16 @@ export interface SystemEdge {
 export interface SystemGraphData {
   readonly systems: Readonly<Record<string, string>>;
   readonly edges: ReadonlyArray<readonly [number, number, number, number]>;
+  /** Each system's security as it was made, by its ID; a map served without it has none. */
+  readonly security?: Readonly<Record<string, number>>;
 }
 
 /** A built, queryable system-adjacency graph. */
 export interface SystemGraph {
   hasSystem(systemID: number): boolean;
   systemName(systemID: number): string | null;
+  /** The security the system was made with; null where the map has none for it. */
+  security(systemID: number): number | null;
   neighbors(systemID: number): readonly SystemEdge[];
   readonly systemCount: number;
   readonly edgeCount: number;
@@ -74,6 +78,13 @@ export function buildSystemGraph(data: SystemGraphData): SystemGraph {
       if (typeof name === "string" && name.length > 0) {
         names.set(id, name);
       }
+    }
+  }
+
+  const security = new Map<number, number>();
+  for (const [key, level] of Object.entries(data.security ?? {})) {
+    if (typeof level === "number" && Number.isFinite(level)) {
+      security.set(Number(key), level);
     }
   }
 
@@ -100,6 +111,7 @@ export function buildSystemGraph(data: SystemGraphData): SystemGraph {
   return {
     hasSystem: (systemID) => known.has(systemID),
     systemName: (systemID) => names.get(systemID) ?? null,
+    security: (systemID) => security.get(systemID) ?? null,
     neighbors: (systemID) => adjacency.get(systemID) ?? [],
     systemCount: known.size,
     edgeCount,

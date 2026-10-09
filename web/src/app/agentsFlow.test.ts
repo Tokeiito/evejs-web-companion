@@ -1950,8 +1950,14 @@ test("names resolved after a system's security has been read leave it where it i
   store.apply({ type: "names/resolved", entries: { "system:30002780": "Muvolailen" } });
   store.apply({ type: "names/system-security", security: { 30002780: 0.708087 } });
   store.apply({ type: "names/resolved", entries: { "system:30002778": "Tasabeshi" } });
+  store.apply({ type: "names/autopilot-jumps", jumps: { "30002780:30002778": 2 } });
   store.apply({ type: "names/system-security", security: { 30002778: 0.830855 } });
-  assert.deepEqual(store.names.get(), { resolved: { "system:30002780": "Muvolailen", "system:30002778": "Tasabeshi" }, systemSecurity: { 30002780: 0.708087, 30002778: 0.830855 } });
+  store.apply({ type: "names/autopilot-jumps", jumps: { "30002778:30002780": 2, "30002780:31000005": null } });
+  assert.deepEqual(store.names.get(), {
+    resolved: { "system:30002780": "Muvolailen", "system:30002778": "Tasabeshi" },
+    systemSecurity: { 30002780: 0.708087, 30002778: 0.830855 },
+    autopilotJumps: { "30002780:30002778": 2, "30002778:30002780": 2, "30002780:31000005": null },
+  });
 });
 
 // --- what is asked once, after the pilot is selected again ------------------------------
@@ -2051,4 +2057,70 @@ test("an answer that is not a solar system's ID is kept as none", async () => {
     await until(() => store.agents.get().agentSolarSystems[agents[index]!] !== undefined);
     assert.equal(store.agents.get().agentSolarSystems[agents[index]!], null, String(each));
   }
+});
+
+// --- how many jumps away, by the autopilot's route ---------------------------------------
+
+/**
+ * A made-up map: five safe systems in a line (A to E); two ways across from A to D that are a jump shorter,
+ * one through a low-security system and one through Jita, which the autopilot avoids; and one system apart.
+ */
+const JUMPS_MAP = {
+  ok: true,
+  systems: { 30000001: "A", 30000002: "B", 30000003: "C", 30000004: "D", 30000005: "E", 30000006: "Low", 30000007: "Apart", 30000142: "Jita" },
+  edges: [[1, 2], [2, 3], [3, 4], [4, 5], [1, 6], [6, 4], [1, 142], [142, 4]].flatMap(([a, b], at) => [[30000000 + a!, 30000000 + b!, 50000000 + at * 2, 50000001 + at * 2], [30000000 + b!, 30000000 + a!, 50000001 + at * 2, 50000000 + at * 2]]),
+  security: { 30000001: 1, 30000002: 0.9, 30000003: 0.8, 30000004: 0.7, 30000005: 0.6, 30000006: 0.3, 30000007: 1, 30000142: 0.9 },
+};
+
+test("the jumps on the autopilot's route are worked out here from the map, read once, and each pair once", async () => {
+  let fails = false;
+  let hold: Promise<void> | null = null;
+  const { store, flow, requests } = await listening({ null: ACCEPTED }, {
+    routes: async (path) => {
+      if (path !== "/api/map/graph") return undefined;
+      if (hold) await hold;
+      return fails ? [502, { ok: false, error: "UNREACHABLE", message: "No answer." }] : [200, JUMPS_MAP];
+    },
+  });
+  const reads = () => requests.filter((request) => request.path === "/api/map/graph").length;
+  const held = () => store.names.get().autopilotJumps;
+
+  // A map that cannot be read leaves nothing, and is read again when next wanted.
+  fails = true;
+  flow.requestAutopilotJumps(30000001, [30000004]);
+  await until(() => reads() === 1);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(held(), {});
+  fails = false;
+
+  // Asked twice while the map is on its way: one read, and each pair worked out once.
+  let release = () => {};
+  hold = new Promise((resolve) => { release = resolve; });
+  flow.requestAutopilotJumps(30000001, [30000004, 30000004, 30000006]);
+  flow.requestAutopilotJumps(30000001, [30000004, 30000007, 30000001, 30000142]);
+  flow.requestAutopilotJumps(30000004, [30000001]);
+  release();
+  hold = null;
+  await until(() => "30000004:30000001" in held() && "30000001:30000007" in held());
+  assert.equal(reads(), 2);
+  // With the settings as the client has them at first: the three safe jumps, not the two through low security
+  // or through Jita; a low system or Jita gone to is one jump; none to a system apart.
+  assert.deepEqual(held(), { "30000001:30000004": 3, "30000001:30000006": 1, "30000001:30000007": null, "30000001:30000001": 0, "30000001:30000142": 1, "30000004:30000001": 3 });
+
+  // Asked again, nothing is read and nothing changes; what is not a system is not asked about.
+  const before = held();
+  flow.requestAutopilotJumps(30000001, [30000004, 30000006]);
+  flow.requestAutopilotJumps(0, [30000004]);
+  flow.requestAutopilotJumps(1.5, [30000004]);
+  flow.requestAutopilotJumps(30000001, [0, -1, 1.5, Number.NaN]);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(reads(), 2);
+  assert.equal(held(), before);
+  // Another pair is worked out from the map already held.
+  flow.requestAutopilotJumps(30000002, [30000005]);
+  await until(() => "30000002:30000005" in held());
+  assert.equal(held()["30000002:30000005"], 3);
+  assert.equal(reads(), 2);
+  // What was held before is still there.
+  assert.equal(held()["30000001:30000004"], 3);
 });

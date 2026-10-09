@@ -21509,6 +21509,15 @@ app.get("/api/bridge/formations", requireAuth, async (req, res, next) => {
 app.get("/api/map/graph", requireAuth, async (req, res, next) => {
   try {
     const graph = staticData.getSolarSystemGraph();
+    // Each system's security as it was made, for the route the client's autopilot plots, which goes by it
+    // (web/src/nav/autopilotRoute.ts). A system with none in the data is left out.
+    const security = {};
+    for (const id of Object.keys(graph.systems)) {
+      const system = staticData.getSolarSystem(Number(id));
+      if (system && typeof system.security === "number") {
+        security[id] = system.security;
+      }
+    }
     res.json({
       ok: true,
       source: "static-data",
@@ -21516,6 +21525,7 @@ app.get("/api/map/graph", requireAuth, async (req, res, next) => {
       edgeCount: graph.edges.length,
       systems: graph.systems,
       edges: graph.edges,
+      security,
     });
   } catch (error) {
     next(error);

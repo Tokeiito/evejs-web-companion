@@ -426,6 +426,8 @@
       sayOfMission: (messageID) => questionMarkup(byNumber(messageID), nameWithAgents, client),
       say: (message) => message.text ?? questionMarkup({ label: message.label, parameters: message.parameters, text: null, messageID: message.messageID ?? undefined }, nameWithAgents, pageClient(held.agentID, message.contentID ?? held.contentID)),
       securityOf,
+      // From where the pilot is now, by the autopilot's route.
+      jumpsTo: (solarSystemID) => (place.solarSystemID === null ? undefined : $names.autopilotJumps[`${place.solarSystemID}:${solarSystemID}`]),
     });
     return { agentID: held.agentID, page };
   });
@@ -458,6 +460,10 @@
       flow.requestAgentSolarSystem(agentToLocate);
     }
     flow.requestSystemSecurity(pageSystemIDs(pageInput));
+    // How far each place is, from where the pilot is now.
+    if (place.solarSystemID !== null && held.objectives !== null) {
+      flow.requestAutopilotJumps(place.solarSystemID, objectiveSystemIDs(held.objectives));
+    }
   });
   const STEP_MARKS: Readonly<Record<StepState, readonly [string, string]>> = { done: ["✓", "done"], open: ["○", "not yet"], failed: ["✕", "failed"] };
 

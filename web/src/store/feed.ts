@@ -1038,6 +1038,8 @@ export type FeedEvent =
     }
   // The security of some solar systems has been read (null: no such system).
   | { readonly type: "names/system-security"; readonly security: Readonly<Record<number, number | null>> }
+  // The jumps on the autopilot's route between some pairs of systems, by "<from>:<to>" (null: no route).
+  | { readonly type: "names/autopilot-jumps"; readonly jumps: Readonly<Record<string, number | null>> }
   // The retail client's text for some labels has been read (or found missing).
   | {
       readonly type: "words/loaded";

@@ -20,8 +20,7 @@
 // This makes the same page as plain text, in the client's words, read from its install at run time (the
 // words store). What cannot be said is left out.
 //
-// Not done: how many jumps away a place is (the client plots the route), which leaves a place's distance
-// blank unless the pilot is there; "Objectives Complete" as the state (the client
+// Not done: "Objectives Complete" as the state (the client
 // has it from its own tracker); a ship's packaged size as cargo; the ship restrictions panel; the
 // bonus's countdown; a blueprint's properties; what an alpha clone is paid.
 // The bonus's countdown is the one time on the client's page that is not written here.
@@ -69,6 +68,9 @@ export const PAGE_LABELS = Object.freeze({
   cargoWithSize: `${FOLDER}CargoDescriptionWithSize`,
   thisStation: `${FOLDER}ThisStation`,
   thisSolarSystem: `${FOLDER}ThisSolarSystem`,
+  /** Takes jumps, the jumps on the autopilot's route there. */
+  jumpsAway: `${FOLDER}JumpsAway`,
+  noRoute: "UI/Generic/NoGateToGateRoute",
   collateralTitle: `${FOLDER}CollateralTitle`,
   collateralText: `${FOLDER}CollateralText`,
   grantedItems: `${FOLDER}GrantedItems`,
@@ -241,6 +243,12 @@ export interface PageContext {
   readonly say: (message: MissionMessage) => string | null;
   /** The security a solar system was made with; null when it is not known. */
   readonly securityOf: (solarSystemID: number) => number | null;
+  /**
+   * The jumps on the autopilot's route from the pilot's solar system to another
+   * (clientPathfinderService.GetAutopilotJumpCount): null where there is no route, and undefined while it
+   * is not worked out.
+   */
+  readonly jumpsTo: (solarSystemID: number) => number | null | undefined;
 }
 
 const OFFERED_STATES: readonly number[] = [0, 1];
@@ -443,8 +451,13 @@ export function missionPage(input: MissionPageInput, context: PageContext): Miss
       if (location.solarsystemID === null) return null;
       locationID = location.solarsystemID;
     }
-    // The client asks first whether it is a solar system at all; only a solar system can be the pilot's.
-    return context.solarSystemID === locationID ? words(PAGE_LABELS.thisSolarSystem) : null;
+    // The client asks first whether it is a solar system at all; only a solar system can be the pilot's, or so many jumps off.
+    if (!isSolarSystem(locationID)) return null;
+    if (context.solarSystemID === locationID) return words(PAGE_LABELS.thisSolarSystem);
+    // The jumps are to the place's own system, whatever the place is (objectivesteps.py 153).
+    const jumps = location.solarsystemID === null ? undefined : context.jumpsTo(location.solarsystemID);
+    if (jumps === undefined) return null;
+    return jumps === null ? words(PAGE_LABELS.noRoute) : words(PAGE_LABELS.jumpsAway, { jumps });
   };
   const cargoText = (cargo: MissionCargo): string => {
     const text = words(PAGE_LABELS.quantityAndItem, { quantity: cargo.quantity ?? 0, item: cargo.typeID ?? 0 }) ?? "";

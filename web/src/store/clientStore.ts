@@ -767,6 +767,7 @@ const INITIAL_CHAT: ChatState = Object.freeze({
 const INITIAL_NAMES: NamesState = Object.freeze({
   resolved: Object.freeze({}) as NamesState["resolved"],
   systemSecurity: Object.freeze({}) as NamesState["systemSecurity"],
+  autopilotJumps: Object.freeze({}) as NamesState["autopilotJumps"],
 });
 
 // The retail client's text for the server's labels. Like names: read once,
@@ -2616,6 +2617,11 @@ export function createClientStore(): ClientStore {
         // reference data — a name only ever gets more resolved, never cleared).
         const current = names.get();
         names.set({ ...current, resolved: { ...current.resolved, ...event.entries } });
+        break;
+      }
+      case "names/autopilot-jumps": {
+        const current = names.get();
+        names.set({ ...current, autopilotJumps: { ...current.autopilotJumps, ...event.jumps } });
         break;
       }
       case "names/system-security": {

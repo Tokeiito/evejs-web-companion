@@ -186,6 +186,7 @@ import {
   solveRoute,
   type SystemGraph,
 } from "../nav/routeSolver.ts";
+import { autopilotJumpCounts, autopilotMap } from "../nav/autopilotRoute.ts";
 // R30 slice A — reading the already-cached gate graph as "what is on this grid
 // and where does it go", so a stargate row can offer a jump.
 import { buildGateLinks, type GateLink } from "../space/gateLinks.ts";
@@ -1385,6 +1386,13 @@ export interface AppFlow {
    * Batched and remembered like names: each is asked for once. Never throws.
    */
   requestSystemSecurity(systemIDs: readonly number[]): void;
+  /**
+   * Work out how many jumps the autopilot's route has from one solar system to others, to land in
+   * `store.names.autopilotJumps` under "<from>:<to>". The client works this out itself, from its own map
+   * (nav/autopilotRoute.ts); so does this, from the map the route solver uses, which is read once. A pair
+   * the store holds is not worked out again. Never throws.
+   */
+  requestAutopilotJumps(fromSystemID: number, toSystemIDs: readonly number[]): void;
   /**
    * Multibox — open or close this pilot's live push channel (SSE). Browsers
    * allow only ~6 concurrent HTTP/1.1 connections per origin, and every open
@@ -6181,15 +6189,47 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // the tab kills this JS and the loop simply stops issuing (no "stop" sent) —
   // the ship completes its last server-side command and sits (roadmap §7).
   let routeGraph: SystemGraph | null = null;
+  let routeGraphLoading: Promise<SystemGraph> | null = null;
   let autopilot: AutopilotController | null = null;
 
-  async function loadRouteGraph(): Promise<SystemGraph> {
+  // Read once: those who ask while it is on its way wait for the same read, and a read that fails is not kept.
+  function loadRouteGraph(): Promise<SystemGraph> {
     if (routeGraph) {
-      return routeGraph;
+      return Promise.resolve(routeGraph);
     }
-    const data = await api.loadSystemGraph(callOptions);
-    routeGraph = buildSystemGraph(data);
-    return routeGraph;
+    routeGraphLoading ??= api.loadSystemGraph(callOptions).then(
+      (data) => {
+        routeGraph = buildSystemGraph(data);
+        routeGraphLoading = null;
+        return routeGraph;
+      },
+      (error) => {
+        routeGraphLoading = null;
+        throw error;
+      },
+    );
+    return routeGraphLoading;
+  }
+
+  // The jumps on the autopilot's route, worked out here as the client works them out
+  // (clientPathfinderService.GetAutopilotJumpCount): nothing is asked of the server.
+  function requestAutopilotJumps(fromSystemID: number, toSystemIDs: readonly number[]): void {
+    if (!Number.isSafeInteger(fromSystemID) || fromSystemID <= 0) {
+      return;
+    }
+    const held = store.names.get().autopilotJumps;
+    const keyOf = (toID: number): string => `${fromSystemID}:${toID}`;
+    const wanted = [...new Set(toSystemIDs)].filter((toID) => Number.isSafeInteger(toID) && toID > 0 && !(keyOf(toID) in held));
+    if (wanted.length === 0) {
+      return;
+    }
+    void loadRouteGraph()
+      .then((graph) => {
+        const counts = autopilotJumpCounts(autopilotMap(graph), fromSystemID, wanted);
+        store.apply({ type: "names/autopilot-jumps", jumps: Object.fromEntries([...counts].map(([toID, count]) => [keyOf(toID), count])) });
+      })
+      // Without the map nothing is kept: a later ask reads it again.
+      .catch(() => {});
   }
 
   // Wire the framework-agnostic controller to the BFF calls and the store. The
@@ -13882,6 +13922,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     requestAgentRecord,
     requestAgentSolarSystem,
     requestSystemSecurity,
+    requestAutopilotJumps,
 
     /**
      * R92 multibox — is this the pilot the player is LOOKING at?
