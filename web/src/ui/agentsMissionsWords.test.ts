@@ -75,6 +75,9 @@ function panel(options: {
   /** Where the pilot was selected, and what its flight status has said since (neither: nothing is known of where it is). */
   online?: { stationID: number | null; structureID: number | null; solarSystemID: number | null };
   flight?: { docked: boolean; stationID: number | null; structureID: number | null; solarSystemID: number | null };
+  /** The security of solar systems as read, by ID, and whether the client's words for a place's name are to hand. */
+  security?: Record<number, number>;
+  locationWords?: boolean;
   /** Whether the client's words for a short written interval are to hand. */
   intervalWords?: boolean;
   /** What the client's agents service knows of the page's agent. */
@@ -155,11 +158,14 @@ function panel(options: {
       skills: options.skillLevels.map(([typeID, level]) => ({ typeID, name: `skill ${typeID}`, groupName: "Social", level, rank: 1, skillPoints: 0, levelSkillPoints: [], inTraining: false })),
     } as never);
   }
+  if (options.security !== undefined) {
+    store.apply({ type: "names/system-security", security: options.security });
+  }
   if (options.noClient) {
     store.apply({ type: "words/loaded", available: false, templates: {} });
   }
   if (options.words === true) {
-    const templates = { ...TEMPLATES, ...(options.paneWords ? PANE_TEMPLATES : {}), ...(options.pageWords ? PAGE_TEMPLATES : {}), ...(options.intervalWords ? SHORT_INTERVAL_TEMPLATES : {}) };
+    const templates = { ...TEMPLATES, ...(options.paneWords ? PANE_TEMPLATES : {}), ...(options.pageWords ? PAGE_TEMPLATES : {}), ...(options.intervalWords ? SHORT_INTERVAL_TEMPLATES : {}), ...(options.locationWords ? LOCATION_TEMPLATES : {}) };
     store.apply({ type: "words/loaded", available: true, templates: Object.fromEntries(Object.entries(templates).filter(([key]) => !(options.without ?? []).includes(key))) });
   } else if (options.words === "none of them") {
     // Asked for, and the client has no text for any of it.
@@ -350,6 +356,10 @@ const SHORT_INTERVAL_TEMPLATES: Record<string, string> = {
   "/Carbon/UI/Common/WrittenDateTimeQuantityShort/Hour": "{[numeric]value} hrs",
   "/Carbon/UI/Common/WrittenDateTimeQuantityShort/Minute": "{[numeric]value} mns",
   "/Carbon/UI/Common/WrittenDateTimeQuantityShort/DateTimeShortWritten2Elements": "{value1} and {value2}",
+};
+const LOCATION_TEMPLATES: Record<string, string> = {
+  "UI/Agents/LocationWrapper": "{startFontTag}{[numeric]securityRating, decimalPlaces=1}{endFontTag}{image}&nbsp;{locationName, linkinfo=linkdata} {securityWarning}",
+  "UI/Agents/LowSecWarning": "<b>(low!)</b>",
 };
 const PAGE_RECORD = { nameID: 900260, messages: { [PAGE_MESSAGES.briefing]: 900954, [PAGE_MESSAGES.offered]: 900955, [PAGE_MESSAGES.extraHeader]: 900956, [PAGE_MESSAGES.extraBody]: 900957 } };
 const pageOf = (body: string): string | null => body.match(/<section class="mission-page">([\s\S]*?)<\/section>/)?.[1] ?? null;
@@ -612,4 +622,17 @@ test("the journal's line and the mission's page write the time left the client's
   const own = panel({ words: true, pageWords: true, talking: false, page: {} });
   assert.deepEqual(journalLines(own).map((line) => line.split(" · ").pop()), ["Ends at 2026.10.10 15:30", "Goes in 5h"]);
   assert.match(text(pageOf(own) as string), /Goes in 5h$/);
+});
+
+// --- a place's security rating ----------------------------------------------------------
+
+test("a place is drawn with its system's security rating, on the page and on the pane, once that is read", () => {
+  const security = { 30002780: 0.708087, 30002778: 0.3 };
+  const page = pageOf(panel({ words: true, pageWords: true, locationWords: true, talking: false, security, page: { missionState: 2, expirationTime: null, objectives: decodeObjectives(COURIER_OFFERED_GATEWAY) } })) as string;
+  assert.match(text(page), /○ From 0\.7 station 60000004 ○ To 0\.3 station 60000019 \(low!\)/);
+  const pane = paneOf(panel({ words: true, paneWords: true, locationWords: true, talking: true, buttons: [3, 9], security, objectives: decodeObjectives(COURIER_OFFERED_GATEWAY) })) as string;
+  assert.match(text(pane), /From 0\.7 station 60000004 ○ To 0\.3 station 60000019 \(low!\)/);
+  // Before it is read, the name alone.
+  const before = pageOf(panel({ words: true, pageWords: true, locationWords: true, talking: false, page: { missionState: 2, expirationTime: null, objectives: decodeObjectives(COURIER_OFFERED_GATEWAY) } })) as string;
+  assert.match(text(before), /○ From station 60000004 ○ To station 60000019/);
 });

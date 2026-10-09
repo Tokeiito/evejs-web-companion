@@ -476,12 +476,20 @@ export function typedLabels(args: TemplateArguments): string[] {
  * around words), which the client's own text renderer draws. Here a `<br>`
  * is a line break and any other tag is dropped, leaving the words it
  * wrapped. A "<" that does not open a tag is left alone.
+ *
+ * In what is left, the client's label parser turns four entities into the
+ * characters they stand for, in any letter case, and no others (CCP's trinity,
+ * Tr2LabelTextParser.cpp, STATE_GT_AMPSTART): `&amp;`, `&lt;`, `&gt;`, and
+ * `&nbsp;`, which it writes as an ordinary space. Each is read once: what
+ * `&amp;lt;` leaves is `&lt;`.
  */
 export function plainText(marked: string): string {
   return marked
     .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/?[A-Za-z][^<>]*>/g, "");
+    .replace(/<\/?[A-Za-z][^<>]*>/g, "")
+    .replace(/&(amp|lt|gt|nbsp);/gi, (_whole, name: string) => LABEL_ENTITIES[name.toLowerCase()]!);
 }
+const LABEL_ENTITIES: Readonly<Record<string, string>> = Object.freeze({ amp: "&", lt: "<", gt: ">", nbsp: " " });
 
 /** The names a template's tags need for these arguments, for the page's name cache to fetch. */
 export function templateNameRefs(template: string, args: TemplateArguments, context: Pick<FormatContext, "playerID"> = {}): NameRef[] {

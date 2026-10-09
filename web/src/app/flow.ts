@@ -1373,6 +1373,11 @@ export interface AppFlow {
    */
   requestAgentRecord(agentID: number): void;
   /**
+   * Ask for the security of these solar systems, to land in `store.names.systemSecurity` under their IDs.
+   * Batched and remembered like names: each is asked for once. Never throws.
+   */
+  requestSystemSecurity(systemIDs: readonly number[]): void;
+  /**
    * Multibox — open or close this pilot's live push channel (SSE). Browsers
    * allow only ~6 concurrent HTTP/1.1 connections per origin, and every open
    * EventSource holds one for its whole life, so a tab full of pilots each
@@ -12795,6 +12800,39 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     );
   }
 
+  // A system's security is static, like a name: asked for once, in one request for all that are wanted at once.
+  const securityAsked = new Set<number>();
+  let securityQueue: number[] = [];
+  function requestSystemSecurity(systemIDs: readonly number[]): void {
+    const fresh = [...new Set(systemIDs)].filter((id) => Number.isSafeInteger(id) && id > 0 && !securityAsked.has(id));
+    if (fresh.length === 0) {
+      return;
+    }
+    for (const id of fresh) {
+      securityAsked.add(id);
+    }
+    const first = securityQueue.length === 0;
+    securityQueue.push(...fresh);
+    if (!first) {
+      return;
+    }
+    queueMicrotask(() => {
+      const batch = securityQueue;
+      securityQueue = [];
+      void api.loadSystemSecurity(batch, callOptions).then(
+        (security) => {
+          store.apply({ type: "names/system-security", security });
+        },
+        () => {
+          // Not remembered: a later ask tries again.
+          for (const id of batch) {
+            securityAsked.delete(id);
+          }
+        },
+      );
+    });
+  }
+
   // What the client's agents service knows of an agent, asked for once (agents.GetAgentByID reads a table
   // the client keeps for the session).
   const agentRecordsAsked = new Set<number>();
@@ -13825,6 +13863,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     requestWords,
     requestMissionKeywords,
     requestAgentRecord,
+    requestSystemSecurity,
 
     /**
      * R92 multibox — is this the pilot the player is LOOKING at?

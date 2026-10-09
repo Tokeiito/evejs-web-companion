@@ -21500,6 +21500,22 @@ app.get("/api/map/graph", requireAuth, async (req, res, next) => {
   }
 });
 
+// The security of solar systems, by ID, from the static reference data: the level each system was made
+// with, which is what the retail client keeps with its own static data and shows beside a place's name.
+// An ID that is no system's is null (as is a level that is not a number, which JSON writes as null).
+// Bounded: at most 200 a request.
+const SECURITY_REQUEST_LIMIT = 200;
+app.post("/api/map/security", requireAuth, (req, res) => {
+  const asked = Array.isArray(req.body && req.body.ids) ? req.body.ids : [];
+  const ids = asked.filter((id) => Number.isSafeInteger(id) && id > 0).slice(0, SECURITY_REQUEST_LIMIT);
+  const security = {};
+  for (const id of ids) {
+    const system = staticData.getSolarSystem(id);
+    security[id] = system && typeof system.security === "number" ? system.security : null;
+  }
+  res.json({ ok: true, security });
+});
+
 // Resolve a picked destination (a courier destination is a station; the route
 // solver works on systems) to its solar system, from static reference data —
 // the same client-local resolution the select route does for station identity.

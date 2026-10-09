@@ -66,6 +66,11 @@ export interface NameRef {
  */
 export interface NamesState {
   readonly resolved: Readonly<Record<string, string | null>>;
+  /**
+   * The security each solar system asked about was made with, by its ID: null for an ID that is no system's,
+   * and no entry for one not answered yet. Static reference data, kept as names are.
+   */
+  readonly systemSecurity: Readonly<Record<number, number | null>>;
 }
 
 /**

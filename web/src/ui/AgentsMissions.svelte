@@ -26,6 +26,7 @@
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { questionMarkup, questionText, wordsLabels, wordsNameRefs, type ClientWording } from "../bridge/questions.ts";
   import { sessionPlace } from "../bridge/sessionPlace.ts";
+  import { objectiveSystemIDs } from "../bridge/locationWrapper.ts";
   import { PAGE_WORD_LABELS, missionPage, pageMessageIDs, pageNameRefs, type MissionPage, type MissionPageInput, type PagePanel, type PageRewards, type PageSteps, type StepState } from "../bridge/missionPage.ts";
   import { filetimeOf, journalRowAsks, journalRowText, journalRowWords } from "../bridge/journalWords.ts";
 
@@ -317,8 +318,11 @@
       // The mission's name is its message with nothing filled in, as the pane's own GetByMessageID has it.
       messageText: (messageID) => (hasWords(`#${messageID}`) ? questionText({ label: null, parameters: null, text: null, messageID }, saysName, { templates: $words.templates }) : null),
       say: (message) => sayOfMission(agentID, message),
+      securityOf,
     });
   });
+  // A place's name has its system's security rating before it (bridge/locationWrapper.ts).
+  const securityOf = (solarSystemID: number): number | null => $names.systemSecurity[solarSystemID] ?? null;
   // What an agent says of a dungeon, filled as everything it says of that mission is: the mission's
   // keywords, then the agent's own IDs (agents.py ProcessMessage).
   function sayOfMission(agentID: number, message: MissionMessage): string | null {
@@ -353,6 +357,7 @@
     if (refs.length > 0) {
       flow.requestNames(refs);
     }
+    flow.requestSystemSecurity(objectiveSystemIDs(objectives));
   });
   const MARKS: Readonly<Record<PaneMark, readonly [string, string]>> = { done: ["✓", "done"], open: ["○", "not yet"], failed: ["✕", "failed"] };
 
@@ -419,6 +424,7 @@
       messageText: (messageID) => (hasWords(`#${messageID}`) ? questionText(byNumber(messageID), nameWithAgents, { templates: $words.templates }) : null),
       sayOfMission: (messageID) => questionMarkup(byNumber(messageID), nameWithAgents, client),
       say: (message) => message.text ?? questionMarkup({ label: message.label, parameters: message.parameters, text: null, messageID: message.messageID ?? undefined }, nameWithAgents, pageClient(held.agentID, message.contentID ?? held.contentID)),
+      securityOf,
     });
     return { agentID: held.agentID, page };
   });
@@ -445,6 +451,9 @@
     const refs = [{ kind: "agent" as const, id: held.agentID }, ...pageNameRefs(pageInput), ...wordsNameRefs(said, pageClient(held.agentID, held.contentID))]
       .map((ref) => (ref.kind === "owner" && isAgentID(ref.id) ? { kind: "agent" as const, id: ref.id } : ref));
     flow.requestNames(refs);
+    if (held.objectives !== null) {
+      flow.requestSystemSecurity(objectiveSystemIDs(held.objectives));
+    }
   });
   const STEP_MARKS: Readonly<Record<StepState, readonly [string, string]>> = { done: ["✓", "done"], open: ["○", "not yet"], failed: ["✕", "failed"] };
 

@@ -70,6 +70,7 @@ const context = (overrides: Partial<PageContext> = {}): PageContext => ({
   messageText: (messageID) => `Name ${messageID}`,
   sayOfMission: (messageID) => `Message <b>${messageID}</b>`,
   say: (message) => (message.messageID === null ? message.text : `Agent's <i>${message.messageID}</i> of ${message.contentID}`),
+  securityOf: () => null,
   ...overrides,
 });
 const mission = (fixture: JsonValue): MissionObjectives => decodeObjectives(fixture) as MissionObjectives;
@@ -130,7 +131,7 @@ test("the messages the page words are the record's name, briefing, offer and ext
 
 test("every label the page uses is asked for", () => {
   // Its own, and those its time left is written with.
-  assert.deepEqual([...PAGE_WORD_LABELS].sort(), [...Object.values(L), ...SHORT_INTERVAL_WORD_LABELS].sort());
+  assert.deepEqual([...PAGE_WORD_LABELS].sort(), [...Object.values(L), ...SHORT_INTERVAL_WORD_LABELS, "UI/Agents/LocationWrapper", "UI/Agents/LowSecWarning"].sort());
   assert.ok(PAGE_WORD_LABELS.includes("/Carbon/UI/Common/WrittenDateTimeQuantityShort/Hour"));
   assert.ok(PAGE_WORD_LABELS.includes("UI/Chat/StartConversationAgent"));
   assert.ok(PAGE_WORD_LABELS.includes("UI/Agents/AgentEntry/Level"));
@@ -440,6 +441,20 @@ test("how far a place is: this station, this solar system, or not said", () => {
   // A structure is neither a station nor a system: nothing is said of it, wherever the pilot is.
   assert.deepEqual(where(null, 30002778), [null, null, null]);
   assert.deepEqual(where(null, null), [null, null, null]);
+});
+
+test("a place on the page has its system's security rating before it, and a warning where that is low", () => {
+  const WRAPPED = { ...TEMPLATES, "UI/Agents/LocationWrapper": "{startFontTag}{[numeric]securityRating, decimalPlaces=1}{endFontTag}{image}&nbsp;{locationName, linkinfo=linkdata} {securityWarning}", "UI/Agents/LowSecWarning": "(low!)" };
+  const texts = (security: Record<number, number>, objectives = mission(COURIER_OFFERED_GATEWAY)) =>
+    [...(missionPage(input({ objectives }), context({ templates: WRAPPED, securityOf: (id) => security[id] ?? null })).objectives?.general.steps ?? []),
+      ...(missionPage(input({ objectives }), context({ templates: WRAPPED, securityOf: (id) => security[id] ?? null })).objectives?.extra.steps ?? [])].map((step) => step.text);
+  // The cargo is not a place; the two stations are.
+  assert.deepEqual(texts({ 30002780: 0.708087, 30002778: 0.3 }), ["1 x type#2595 (0.1 m3)", "0.7 station#60000004", "0.3 station#60000019 (low!)"]);
+  assert.deepEqual(texts({}), ["1 x type#2595 (0.1 m3)", "station#60000004", "station#60000019"]);
+  // A dungeon's place, and a ship in space to go to, are wrapped the same.
+  assert.deepEqual(texts({ 30002779: -0.2 }, mission(ENCOUNTER_OFFERED_GATEWAY)), ["-0.2 system#30002779 (low!)"]);
+  const ship = dict([["locationID", 30002778], ["solarsystemID", 30002778], ["typeID", 5], ["shipTypeID", 606]]);
+  assert.deepEqual(texts({ 30002778: 0.830855 }, answer([["objectives", list(tuple("agent", tuple(3009999, ship)))]])), ["0.8 type#606 in system#30002778"]);
 });
 
 test("a ship in space to go to is worded by its type", () => {

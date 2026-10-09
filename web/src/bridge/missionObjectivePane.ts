@@ -16,14 +16,15 @@
 // client's, read from its install at run time (the words store). A block whose words are not to hand is
 // left out, and the page shows only what it can say.
 //
-// Not done: the security rating the client writes before a place's name; its warning about low
-// security on the way (it plots the route); the banner about reduced payouts in high security; the
+// Not done: the client's warning about low security on the way (it plots the route); the banner about
+// reduced payouts in high security; the
 // links to a dungeon's ship restrictions; a blueprint's properties after its name; a heraldry agent's
 // own loyalty points.
 
 import { formatTemplate, plainText, QUANTITY_AND_ITEM } from "./clientWords.ts";
 import { AGENT_MISSION_STATE_FAILED, TYPE_CREDITS, objectivesHeading, type MissionCargo, type MissionItem, type MissionLocation, type MissionMessage, type MissionObjective, type MissionObjectives } from "./missionObjectives.ts";
 import { INTERVAL_WORD_LABELS, intervalWriter } from "./timeInterval.ts";
+import { LOCATION_WORD_LABELS, wrapLocation } from "./locationWrapper.ts";
 import type { NameKind } from "../store/names.ts";
 
 const FOLDER = "UI/Agents/StandardMission/";
@@ -81,6 +82,7 @@ export const PANE_LABELS = Object.freeze({
 export const PANE_WORD_LABELS: readonly string[] = [
   ...Object.values(PANE_LABELS).flatMap((label) => (typeof label === "string" ? [label] : Object.values(label))),
   ...INTERVAL_WORD_LABELS,
+  ...LOCATION_WORD_LABELS,
 ];
 
 /** The mark the client draws beside a row: its tick, its circle, or its cross. */
@@ -116,6 +118,8 @@ export interface PaneContext {
   readonly messageText: (messageID: number) => string | null;
   /** What an agent says of a dungeon, as agents.py ProcessMessage fills it; null when it cannot be had. */
   readonly say: (message: MissionMessage) => string | null;
+  /** The security a solar system was made with; null when it is not known. */
+  readonly securityOf: (solarSystemID: number) => number | null;
 }
 
 /** The names the pane will ask for, so the page can fetch them before it is drawn. */
@@ -187,14 +191,13 @@ export function objectivePane(objectives: MissionObjectives, context: PaneContex
   const overview = words(PANE_LABELS.overview);
   if (overview !== null) blocks.push({ kind: "overview", title: null, text: overview, rows: [] });
 
-  // LocationWrapper: a ship in space to go to is worded by its type; anything else by its own name.
+  // LocationWrapper: a ship in space to go to is worded by its type; anything else by its own name. Either
+  // way with its system's security rating before it, and a warning after it where that is low.
   const placeText = (location: MissionLocation | null): string | null => {
     if (location === null || location.locationID === null) return null;
-    if (location.shipTypeID !== null) {
-      const ship = words(PANE_LABELS.itemLocation, { typeID: location.shipTypeID, locationID: location.locationID });
-      if (ship !== null) return ship;
-    }
-    return context.nameOf(placeKind(location.locationID), location.locationID);
+    const ship = location.shipTypeID === null ? null : words(PANE_LABELS.itemLocation, { typeID: location.shipTypeID, locationID: location.locationID });
+    const name = ship ?? context.nameOf(placeKind(location.locationID), location.locationID);
+    return wrapLocation(name, location.solarsystemID, context.templates, context.securityOf);
   };
   const cargoText = (cargo: MissionCargo | null): string | null => {
     if (cargo === null || cargo.typeID === null) return null;

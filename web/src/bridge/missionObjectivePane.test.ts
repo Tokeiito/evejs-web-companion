@@ -65,6 +65,7 @@ const context = (overrides: Partial<PaneContext> = {}): PaneContext => ({
   locationID: null,
   messageText: (messageID) => `Mission ${messageID}`,
   say: (message) => (message.messageID === null ? message.text : `Message ${message.messageID} of ${message.contentID}`),
+  securityOf: () => null,
   ...overrides,
 });
 const mission = (fixture: JsonValue): MissionObjectives => decodeObjectives(fixture) as MissionObjectives;
@@ -290,4 +291,17 @@ test("a transport that starts and ends in one place, and a thing to bring that i
   assert.deepEqual(marks(tuple("fetch", tuple(1000002, here, cargo(true))), 30002780), ["open", "done"]);
   // A place the server does not name by ID is nowhere the pilot can be, even when where the pilot is is not known.
   assert.deepEqual(marks(tuple("fetch", tuple(1000002, dict([["typeID", 1531]]), cargo(false))), null), ["open", "open"]);
+});
+
+test("a place on the pane has its system's security rating before it, and a warning where that is low", () => {
+  const WRAPPED = { ...TEMPLATES, "UI/Agents/LocationWrapper": "{startFontTag}{[numeric]securityRating, decimalPlaces=1}{endFontTag}{image}&nbsp;{locationName, linkinfo=linkdata} {securityWarning}", "UI/Agents/LowSecWarning": "(low!)" };
+  const rows = (security: Record<number, number>) => objectivePane(mission(COURIER_OFFERED_GATEWAY), context({ templates: WRAPPED, securityOf: (id) => security[id] ?? null }))
+    .flatMap((block) => block.rows).filter((row) => row.label === "From" || row.label === "To").map((row) => row.text);
+  assert.deepEqual(rows({ 30002780: 0.708087, 30002778: 0.3 }), ["0.7 station#60000004", "0.3 station#60000019 (low!)"]);
+  // A system whose security is not known yet: the name alone, as before.
+  assert.deepEqual(rows({ 30002780: 0.708087 }), ["0.7 station#60000004", "station#60000019"]);
+  assert.deepEqual(rows({}), ["station#60000004", "station#60000019"]);
+  // The labels it is written with are asked for with the pane's own.
+  assert.ok(PANE_WORD_LABELS.includes("UI/Agents/LocationWrapper"));
+  assert.ok(PANE_WORD_LABELS.includes("UI/Agents/LowSecWarning"));
 });

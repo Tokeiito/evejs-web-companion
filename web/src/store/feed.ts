@@ -1034,6 +1034,8 @@ export type FeedEvent =
       readonly type: "names/resolved";
       readonly entries: Readonly<Record<string, string | null>>;
     }
+  // The security of some solar systems has been read (null: no such system).
+  | { readonly type: "names/system-security"; readonly security: Readonly<Record<number, number | null>> }
   // The retail client's text for some labels has been read (or found missing).
   | {
       readonly type: "words/loaded";

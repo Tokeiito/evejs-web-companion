@@ -2067,6 +2067,18 @@ export async function removeAgentOffer(agentID: number, options: ApiOptions = {}
   await postJson(`/api/bridge/agents/${agentID}/remove-offer`, { confirm: true }, options);
 }
 
+/** The security of these solar systems, by ID: a number, or null for an ID that is not a system's. */
+export async function loadSystemSecurity(ids: readonly number[], options: ApiOptions = {}): Promise<Record<number, number | null>> {
+  const data = await postJson("/api/map/security", { ids }, options);
+  const raw = typeof data.security === "object" && data.security !== null && !Array.isArray(data.security) ? (data.security as Record<string, JsonValue>) : {};
+  const security: Record<number, number | null> = {};
+  for (const id of ids) {
+    const value = raw[String(id)];
+    security[id] = typeof value === "number" && Number.isFinite(value) ? value : null;
+  }
+  return security;
+}
+
 /** What the client's agents service knows of one agent (raw; decoded in the flow). Null for an agent the server does not list. */
 export async function loadAgentRecord(agentID: number, options: ApiOptions = {}): Promise<JsonValue> {
   const data = await getJson(`/api/bridge/agents/${agentID}/record`, options);

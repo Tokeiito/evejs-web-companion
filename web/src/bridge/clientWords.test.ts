@@ -170,6 +170,14 @@ test("the client's markup becomes plain text: a break is a new line, and other t
   // What is not a tag is left alone.
   assert.equal(plainText("5 < 7 and 9 > 2, <3, a<b, x <> y"), "5 < 7 and 9 > 2, <3, a<b, x <> y");
   assert.equal(plainText("no markup at all"), "no markup at all");
+  // The four entities the client's label parser reads, in any letter case; no others.
+  assert.equal(plainText("0.7&nbsp;Somewhere&NBSP;Else"), "0.7 Somewhere Else");
+  assert.equal(plainText("Fish &amp; Chips &AMP; peas"), "Fish & Chips & peas");
+  assert.equal(plainText("a &lt; b &GT; c &Lt;b&gT;"), "a < b > c <b>");
+  assert.equal(plainText("&quot;quoted&quot; &apos; &#160; &copy; &nbsp &amp"), "&quot;quoted&quot; &apos; &#160; &copy; &nbsp &amp");
+  // Each is read once, and after the tags have gone: an entity never makes a tag, nor another entity.
+  assert.equal(plainText("&amp;lt; &amp;amp; &amp;nbsp;"), "&lt; &amp; &nbsp;");
+  assert.equal(plainText("<b>&lt;b&gt;</b>"), "<b>");
   assert.equal(plainText(""), "");
 });
 

@@ -765,6 +765,7 @@ const INITIAL_CHAT: ChatState = Object.freeze({
 // refetches.
 const INITIAL_NAMES: NamesState = Object.freeze({
   resolved: Object.freeze({}) as NamesState["resolved"],
+  systemSecurity: Object.freeze({}) as NamesState["systemSecurity"],
 });
 
 // The retail client's text for the server's labels. Like names: read once,
@@ -2608,7 +2609,12 @@ export function createClientStore(): ClientStore {
         // Merge the freshly-resolved batch into the names cache (static
         // reference data — a name only ever gets more resolved, never cleared).
         const current = names.get();
-        names.set({ resolved: { ...current.resolved, ...event.entries } });
+        names.set({ ...current, resolved: { ...current.resolved, ...event.entries } });
+        break;
+      }
+      case "names/system-security": {
+        const current = names.get();
+        names.set({ ...current, systemSecurity: { ...current.systemSecurity, ...event.security } });
         break;
       }
       case "words/loaded": {

@@ -138,6 +138,8 @@ const FIXTURE = {
   faction: { 500001: "Caldari State" },
   agent: { 3008416: "Antaken Kamola" },
 };
+// The security a fixture system was made with, where a test gives it one (made-up numbers).
+const SYSTEM_SECURITY = {};
 
 function fakeStaticData() {
   return {
@@ -149,7 +151,7 @@ function fakeStaticData() {
     },
     getSolarSystem(id) {
       const name = FIXTURE.system[Number(id)];
-      return name ? { solarSystemID: Number(id), solarSystemName: name } : null;
+      return name ? { solarSystemID: Number(id), solarSystemName: name, ...(Number(id) in SYSTEM_SECURITY ? { security: SYSTEM_SECURITY[Number(id)] } : {}) } : null;
     },
     getSolarSystemName(id) {
       return FIXTURE.system[Number(id)] || null;
@@ -838,4 +840,36 @@ test("with no client configured the client's data is not available, and no loade
   const { baseUrl } = await startTestServer();
   const answer = await apiRequest(baseUrl, "/api/client-data/missions/1381");
   assert.deepEqual(answer.payload, { ok: true, available: false, mission: null });
+});
+
+// --- 5. POST /api/map/security: the security solar systems were made with -----
+
+test("POST /api/map/security answers each system's security from the static data, and null for what is not a system", async () => {
+  const [known, another] = Object.keys(FIXTURE.system).map(Number);
+  SYSTEM_SECURITY[known] = 0.708087;
+  SYSTEM_SECURITY[another] = -0.25;
+  const { baseUrl } = await startTestServer();
+  const { response, payload } = await apiRequest(baseUrl, "/api/map/security", { method: "POST", body: { ids: [known, another, 39999999] } });
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload, { ok: true, security: { [known]: 0.708087, [another]: -0.25, 39999999: null } });
+  // A system the static data has no security for is null too, not nought.
+  delete SYSTEM_SECURITY[another];
+  assert.deepEqual((await apiRequest(baseUrl, "/api/map/security", { method: "POST", body: { ids: [another] } })).payload.security, { [another]: null });
+  SYSTEM_SECURITY[another] = Number.NaN;
+  assert.deepEqual((await apiRequest(baseUrl, "/api/map/security", { method: "POST", body: { ids: [another] } })).payload.security, { [another]: null });
+  delete SYSTEM_SECURITY[known];
+  delete SYSTEM_SECURITY[another];
+});
+
+test("POST /api/map/security takes whole positive numbers, two hundred at most, and needs a login", async () => {
+  const { baseUrl } = await startTestServer();
+  const odd = await apiRequest(baseUrl, "/api/map/security", { method: "POST", body: { ids: [0, -1, 1.5, "30000142", null, 30000142] } });
+  assert.deepEqual(Object.keys(odd.payload.security), ["30000142"]);
+  const many = await apiRequest(baseUrl, "/api/map/security", { method: "POST", body: { ids: Array.from({ length: 250 }, (_, index) => 30000001 + index) } });
+  assert.equal(Object.keys(many.payload.security).length, 200);
+  for (const body of [{}, { ids: "30000142" }, { ids: null }]) {
+    assert.deepEqual((await apiRequest(baseUrl, "/api/map/security", { method: "POST", body })).payload, { ok: true, security: {} });
+  }
+  const stranger = await apiRequest(baseUrl, "/api/map/security", { method: "POST", body: { ids: [30000142] }, authenticated: false });
+  assert.equal(stranger.response.status, 401);
 });

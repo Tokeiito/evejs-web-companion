@@ -1903,3 +1903,53 @@ test("standings that could not be read leave the page as it is, and are tried ag
   await until(() => store.standings.get().loaded);
   assert.equal(reads(), 2);
 });
+
+// --- a solar system's security, asked for like a name ---------------------------------
+
+test("systems' security is asked for once each, in one request for all that are wanted together", async () => {
+  const bodies: number[][] = [];
+  let fails = false;
+  const { store, flow, requests } = await listening({ null: ACCEPTED }, {
+    routes: (path) => {
+      if (path !== "/api/map/security") return undefined;
+      const body = requests[requests.length - 1]!.body as { ids: number[] };
+      bodies.push(body.ids);
+      return fails ? [502, { ok: false, error: "UNREACHABLE", message: "No answer." }] : [200, { ok: true, security: Object.fromEntries(body.ids.map((id) => [id, id === 30009999 ? null : (id % 100) / 100])) }];
+    },
+  });
+  flow.requestSystemSecurity([30002780, 30002778, 30002780]);
+  flow.requestSystemSecurity([30002778, 30002779]);
+  await until(() => store.names.get().systemSecurity[30002779] !== undefined);
+  // One request, each system once.
+  assert.deepEqual(bodies, [[30002780, 30002778, 30002779]]);
+  assert.deepEqual(store.names.get().systemSecurity, { 30002780: 0.8, 30002778: 0.78, 30002779: 0.79 });
+  // Asked again: nothing goes out. What is not a system is not asked about at all.
+  flow.requestSystemSecurity([30002780, 30002779, 0, -1, 1.5]);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(bodies.length, 1);
+  // A system the BFF does not know is remembered as none; names already held are left alone.
+  flow.requestSystemSecurity([30009999]);
+  await until(() => store.names.get().systemSecurity[30009999] !== undefined);
+  assert.equal(store.names.get().systemSecurity[30009999], null);
+  assert.equal(store.names.get().systemSecurity[30002780], 0.8);
+  // One that could not be asked for is asked for again.
+  fails = true;
+  flow.requestSystemSecurity([30001111]);
+  await until(() => bodies.length === 3);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(store.names.get().systemSecurity[30001111], undefined);
+  fails = false;
+  flow.requestSystemSecurity([30001111]);
+  await until(() => store.names.get().systemSecurity[30001111] !== undefined);
+  assert.deepEqual(bodies[3], [30001111]);
+  assert.equal(store.names.get().systemSecurity[30001111], 0.11);
+});
+
+test("names resolved after a system's security has been read leave it where it is, and the other way round", async () => {
+  const store = createClientStore();
+  store.apply({ type: "names/resolved", entries: { "system:30002780": "Muvolailen" } });
+  store.apply({ type: "names/system-security", security: { 30002780: 0.708087 } });
+  store.apply({ type: "names/resolved", entries: { "system:30002778": "Tasabeshi" } });
+  store.apply({ type: "names/system-security", security: { 30002778: 0.830855 } });
+  assert.deepEqual(store.names.get(), { resolved: { "system:30002780": "Muvolailen", "system:30002778": "Tasabeshi" }, systemSecurity: { 30002780: 0.708087, 30002778: 0.830855 } });
+});

@@ -21,7 +21,7 @@
 // words store). What cannot be said is left out.
 //
 // Not done: how many jumps away a place is (the client plots the route), which leaves a place's distance
-// blank unless the pilot is there; the security rating before a place's name; "Objectives Complete" as the state (the client
+// blank unless the pilot is there; "Objectives Complete" as the state (the client
 // has it from its own tracker); a ship's packaged size as cargo; the ship restrictions panel; the
 // reduced-rewards banner; the bonus's countdown; a blueprint's properties; what an alpha clone is paid.
 // The bonus's countdown is the one time on the client's page that is not written here.
@@ -30,6 +30,7 @@ import { formatTemplate, plainText, QUANTITY_AND_ITEM } from "./clientWords.ts";
 import type { AgentRecord } from "./agents.ts";
 import { effectiveStandingWithAgent } from "./effectiveStanding.ts";
 import { SHORT_INTERVAL_WORD_LABELS, shortIntervalWriter } from "./timeInterval.ts";
+import { LOCATION_WORD_LABELS, wrapLocation } from "./locationWrapper.ts";
 import { AGENT_MISSION_STATE_FAILED, TYPE_CREDITS, type MissionCargo, type MissionItem, type MissionLocation, type MissionMessage, type MissionObjectives } from "./missionObjectives.ts";
 import type { NameKind } from "../store/names.ts";
 
@@ -88,7 +89,7 @@ export const PAGE_LABELS = Object.freeze({
 });
 
 /** Every label the page may need, for asking the words store: its own, and those its time left is written with. */
-export const PAGE_WORD_LABELS: readonly string[] = [...Object.values(PAGE_LABELS), ...SHORT_INTERVAL_WORD_LABELS];
+export const PAGE_WORD_LABELS: readonly string[] = [...Object.values(PAGE_LABELS), ...SHORT_INTERVAL_WORD_LABELS, ...LOCATION_WORD_LABELS];
 
 /** The keys of a mission's messages in the client's record that the page reads (job.py 143 to 157). */
 export const PAGE_MESSAGES = Object.freeze({
@@ -231,6 +232,8 @@ export interface PageContext {
   readonly sayOfMission: (messageID: number) => string | null;
   /** What an agent says of a dungeon, as agents.py ProcessMessage fills it; null when it cannot be had. */
   readonly say: (message: MissionMessage) => string | null;
+  /** The security a solar system was made with; null when it is not known. */
+  readonly securityOf: (solarSystemID: number) => number | null;
 }
 
 const OFFERED_STATES: readonly number[] = [0, 1];
@@ -402,14 +405,13 @@ export function missionPage(input: MissionPageInput, context: PageContext): Miss
   const description = offered && record?.messages[PAGE_MESSAGES.offered] !== undefined ? message(PAGE_MESSAGES.offered) : message(PAGE_MESSAGES.briefing);
   const briefing = description === "" ? null : { title: words(PAGE_LABELS.briefingTitle), text: description };
 
-  // LocationWrapper: a ship in space to go to is worded by its type; anything else by its own name.
+  // LocationWrapper: a ship in space to go to is worded by its type; anything else by its own name. Either
+  // way with its system's security rating before it, and a warning after it where that is low.
   const placeText = (location: MissionLocation | null): string => {
     if (location === null || location.locationID === null) return "";
-    if (location.shipTypeID !== null) {
-      const ship = words(PAGE_LABELS.itemLocation, { typeID: location.shipTypeID, locationID: location.locationID });
-      if (ship !== null) return ship;
-    }
-    return context.nameOf(placeKind(location.locationID), location.locationID);
+    const ship = location.shipTypeID === null ? null : words(PAGE_LABELS.itemLocation, { typeID: location.shipTypeID, locationID: location.locationID });
+    const name = ship ?? context.nameOf(placeKind(location.locationID), location.locationID);
+    return wrapLocation(name, location.solarsystemID, context.templates, context.securityOf);
   };
   // ObjectiveSteps._get_location_info: a station is the pilot's own, or stands for its system; a system is the pilot's own, or so many jumps away.
   const whereText = (location: MissionLocation | null): string | null => {
