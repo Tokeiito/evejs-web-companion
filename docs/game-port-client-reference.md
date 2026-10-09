@@ -223,11 +223,13 @@ asks, side by side (`addressbookService.GetContacts`): `charMgr.GetContactList()
 pilot's contacts and blocked owners; its corporation's contacts, `GetCorporateContacts()` on the
 corporation's registry, unless the corporation is an NPC one; its alliance's, `GetAllianceContacts()`
 on the alliance's own moniker, if it is in one; and `onlineStatus.GetInitialState()` by name
-(the online status service's `Prime`), for who of its watched contacts is online. Two Tranquility
-logins of a pilot in a player's corporation have the contact list, the corporation's and the
-online state in that order, after the members' names and before the applications. The client keeps
-all of them and works them over at the server's notices (`OnPersonalContactsUpdated`,
-`OnOrganizationContactsUpdated`, `OnContactLoggedOn`, `OnContactLoggedOff` and others).
+(the online status service's `Prime`), for who of its watched contacts is online. One Tranquility
+login of a pilot in a player's corporation has the contact list, the corporation's and the online
+state one after another in that order (calls 99, 100, 101); another has the online state asked
+earlier (424) and then the contact list and the corporation's together (443, 444). In both they
+come after the members' names and before the applications. The client keeps all of them and works
+them over at the server's notices (`OnPersonalContactsUpdated`, `OnOrganizationContactsUpdated`,
+`OnContactLoggedOn`, `OnContactLoggedOff` and others).
 
 On the game port the transport asks the same, in that order, as a pilot is chosen, and waits for
 them. It keeps none of them: no window of the page reads a contact yet, and a read of the routes
