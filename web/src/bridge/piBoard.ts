@@ -80,6 +80,7 @@ export type PiDispatchState =
         readonly units: number;
         readonly colonies: number;
         readonly refusals: readonly string[];
+        readonly atTheOffices?: true;
       };
     }
   | { readonly kind: "refused"; readonly sentence: string };
@@ -669,6 +670,11 @@ export function piHaulDispatchWords(state: PiDispatchState | null): string | nul
   const started = "The haul has started on the server. Its steps show in the Bot Manager.";
   const exported = state.exported ?? null;
   if (exported === null) return started;
+  // The run sends the launchpads up itself, at each office: nothing went up yet,
+  // and that is not "nothing was on them".
+  if (exported.atTheOffices === true) {
+    return "The haul has started on the server. It sends each colony's launchpads up at its customs office. Its steps show in the Bot Manager.";
+  }
   // What went up is said first, because it is the half the Bot Manager cannot
   // show: the hop happens before the run exists.
   const launched = exported.units === 0

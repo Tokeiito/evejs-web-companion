@@ -206,3 +206,122 @@ test("in warp, nothing is decided", () => {
   assert.equal(t.action.kind, "wait");
   assert.equal(t.outcome.kind, "acting");
 });
+
+// ── sending a colony's launchpads up, at the office ─────────────────────────
+//
+// importExportUI.py 549: the client sends a launchpad's goods up from the office's own window, at the office.
+// The office's slim item says which planet it is (customsOfficeItem.planetID, importExportUI.py 94), and the
+// colony's pins say what each launchpad holds. So the block sends them up when the ship is at that planet's
+// office, one launchpad at a time, and then takes what the office holds.
+
+const PLANET_A = 40000001;
+const PLANET_B = 40000002;
+type Colony = NonNullable<ScriptObservation["colonies"]>[number];
+const pin = (pinID: number, kind: Colony["pins"][number]["kind"], contents: readonly [number, number][]): Colony["pins"][number] => ({
+  pinID, kind, usedM3: null, capacityM3: null, lastLaunchAtMs: null,
+  contents: contents.map(([typeID, quantity]) => ({ typeID, quantity })),
+});
+const colony = (planetID: number, pins: Colony["pins"]): Colony => ({ planetID, planetName: null, extractors: [], pins });
+const refused = (action: string, targetID: number, count: number) => ({
+  key: `cc:${action}:${targetID}`, targetID, count, firstAt: 0, lastAt: 0, words: "The server said no.", kind: "refused" as const,
+});
+
+test("at an office, a launchpad of its planet's colony that holds goods is sent up before anything is taken", () => {
+  const t = collect(step, obs({
+    snapshot: snapshot([office(OFFICE_A, 1000, { planetID: PLANET_A })]),
+    customsOffices: [holding(OFFICE_A, 300)],
+    colonies: [colony(PLANET_A, [pin(501, "launchpad", [[2268, 200], [2073, 50]])])],
+  }), {}, NB);
+  assert.deepEqual(t.action, { kind: "exportCustoms", officeID: OFFICE_A, pinID: 501, commodities: { 2268: 200, 2073: 50 } });
+  assert.equal(t.outcome.kind, "acting");
+  assert.match(t.why, /up into the customs office/);
+});
+
+test("an office that holds nothing is still gone to when its planet's launchpad holds goods", () => {
+  const seen = obs({
+    snapshot: snapshot([office(OFFICE_A, 500_000, { planetID: PLANET_A })]),
+    customsOffices: [holding(OFFICE_A, 0)],
+    colonies: [colony(PLANET_A, [pin(501, "launchpad", [[2268, 200]])])],
+  });
+  const t = collect(step, seen, {}, NB);
+  assert.deepEqual(t.action, { kind: "warp", targetID: OFFICE_A });
+  // With nothing on the launchpad either, there is nothing to go there for.
+  const empty = collect(step, { ...seen, colonies: [colony(PLANET_A, [pin(501, "launchpad", [])])] }, {}, NB);
+  assert.equal(empty.outcome.kind, "done");
+});
+
+test("one launchpad is sent up at a time, and with the launchpads empty the office is emptied", () => {
+  const at = (pins: Colony["pins"]) => collect(step, obs({
+    snapshot: snapshot([office(OFFICE_A, 1000, { planetID: PLANET_A })]),
+    customsOffices: [holding(OFFICE_A, 300)],
+    colonies: [colony(PLANET_A, pins)],
+  }), {}, NB).action;
+  assert.deepEqual(at([pin(501, "launchpad", [[2268, 200]]), pin(502, "launchpad", [[2073, 50]])]), { kind: "exportCustoms", officeID: OFFICE_A, pinID: 501, commodities: { 2268: 200 } });
+  assert.deepEqual(at([pin(501, "launchpad", []), pin(502, "launchpad", [[2073, 50]])]), { kind: "exportCustoms", officeID: OFFICE_A, pinID: 502, commodities: { 2073: 50 } });
+  assert.deepEqual(at([pin(501, "launchpad", []), pin(502, "launchpad", [])]), { kind: "collectCustoms", officeID: OFFICE_A });
+});
+
+test("only a launchpad is sent up: what a command center, a storage or a factory holds stays where it is", () => {
+  const t = collect(step, obs({
+    snapshot: snapshot([office(OFFICE_A, 1000, { planetID: PLANET_A })]),
+    customsOffices: [holding(OFFICE_A, 300)],
+    colonies: [colony(PLANET_A, [pin(601, "command", [[2268, 9]]), pin(602, "storage", [[2268, 9]]), pin(603, "factory", [[2268, 9]])])],
+  }), {}, NB);
+  assert.deepEqual(t.action, { kind: "collectCustoms", officeID: OFFICE_A });
+});
+
+test("an office whose planet is not said, another planet's office, and colonies not read: nothing is sent up", () => {
+  const pads = [colony(PLANET_A, [pin(501, "launchpad", [[2268, 200]])])];
+  const at = (planetID: number | null | undefined, colonies: ScriptObservation["colonies"], units: number) => collect(step, obs({
+    snapshot: snapshot([office(OFFICE_A, 1000, planetID === undefined ? {} : { planetID })]),
+    customsOffices: [holding(OFFICE_A, units)],
+    colonies,
+  }), {}, NB);
+  // The gateway's snapshot does not say which planet an office is.
+  for (const planetID of [undefined, null]) {
+    assert.deepEqual(at(planetID, pads, 300).action, { kind: "collectCustoms", officeID: OFFICE_A });
+    assert.equal(at(planetID, pads, 0).outcome.kind, "done");
+  }
+  assert.deepEqual(at(PLANET_B, pads, 300).action, { kind: "collectCustoms", officeID: OFFICE_A });
+  assert.equal(at(PLANET_B, pads, 0).outcome.kind, "done");
+  // Colonies that could not be read are no reason to stop taking what the offices hold.
+  for (const colonies of [null, undefined]) {
+    assert.deepEqual(at(PLANET_A, colonies, 300).action, { kind: "collectCustoms", officeID: OFFICE_A });
+    assert.equal(at(PLANET_A, colonies, 0).outcome.kind, "done");
+  }
+});
+
+test("a launchpad the server would not take from is left after five tries; the office is still emptied, and the block says so when it ends", () => {
+  const seen = (count: number, units: number) => obs({
+    snapshot: snapshot([office(OFFICE_A, 1000, { planetID: PLANET_A })]),
+    customsOffices: [holding(OFFICE_A, units)],
+    colonies: [colony(PLANET_A, [pin(501, "launchpad", [[2268, 200]]), pin(502, "launchpad", [[2073, 50]])])],
+    refusals: count > 0 ? [refused("exportCustoms", 501, count)] : [],
+  });
+  // Four refusals: still tried. Five: the next launchpad's turn.
+  assert.deepEqual(collect(step, seen(4, 300), {}, NB).action, { kind: "exportCustoms", officeID: OFFICE_A, pinID: 501, commodities: { 2268: 200 } });
+  assert.deepEqual(collect(step, seen(5, 300), {}, NB).action, { kind: "exportCustoms", officeID: OFFICE_A, pinID: 502, commodities: { 2073: 50 } });
+  // Both left: what the office holds is taken all the same.
+  const bothLeft = obs({
+    snapshot: snapshot([office(OFFICE_A, 1000, { planetID: PLANET_A })]),
+    customsOffices: [holding(OFFICE_A, 300)],
+    colonies: [colony(PLANET_A, [pin(501, "launchpad", [[2268, 200]]), pin(502, "launchpad", [[2073, 50]])])],
+    refusals: [refused("exportCustoms", 501, 5), refused("exportCustoms", 502, 5)],
+  });
+  assert.deepEqual(collect(step, bothLeft, {}, NB).action, { kind: "collectCustoms", officeID: OFFICE_A });
+  // And with the office empty the block ends, saying what it could not send up.
+  const ended = collect(step, { ...bothLeft, customsOffices: [holding(OFFICE_A, 0)] }, {}, NB);
+  assert.equal(ended.outcome.kind, "done");
+  assert.match(ended.why, /2 launchpads would not send their goods up/);
+  const one = collect(step, { ...bothLeft, customsOffices: [holding(OFFICE_A, 0)], colonies: [colony(PLANET_A, [pin(501, "launchpad", [[2268, 200]])])] }, {}, NB);
+  assert.match(one.why, /1 launchpad would not send its goods up/);
+});
+
+test("the nearest office with something to do is worked first, whether that is goods to take or a launchpad to send up", () => {
+  const t = collect(step, obs({
+    snapshot: snapshot([office(OFFICE_A, 900_000, { planetID: PLANET_A }), office(OFFICE_B, 400_000, { planetID: PLANET_B })]),
+    customsOffices: [holding(OFFICE_A, 300), holding(OFFICE_B, 0)],
+    colonies: [colony(PLANET_B, [pin(701, "launchpad", [[2268, 5]])])],
+  }), {}, NB);
+  assert.deepEqual(t.action, { kind: "warp", targetID: OFFICE_B });
+});

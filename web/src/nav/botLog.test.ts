@@ -55,6 +55,7 @@ const EVERY_ACTION: readonly ScriptAction[] = [
   { kind: "lootContainer", containerID: 52 },
   { kind: "collectLaunch", containerID: 52, launchID: 72 },
   { kind: "collectCustoms", officeID: 1_200_040_000_001 },
+  { kind: "exportCustoms", officeID: 1_200_040_000_001, pinID: 1054656331535, commodities: { 2268: 200, 2073: 50 } },
   { kind: "haulTransfer", itemID: 53, quantity: 1, from: { kind: "cargo" },
     to: { kind: "corp", division: 1 }, stationID: 60003760, corporationID: 98, division: 1,
     typeID: 34, sourceQuantity: 1 },

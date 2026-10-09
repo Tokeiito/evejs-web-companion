@@ -5807,6 +5807,42 @@ function customsOfficesOnGrid(snapshot: SpaceSnapshot): readonly SpaceEntity[] {
     .sort((left, right) => away(left) - away(right));
 }
 
+/**
+ * The launchpads of the colony on an office's planet that hold goods and have
+ * not been given up on: what the retail client's customs window would send up
+ * from that office. None where the office does not say its planet (the web
+ * gateway's snapshot), or where the colonies were not read.
+ */
+function launchpadsToSendUp(
+  office: SpaceEntity,
+  obs: ScriptObservation,
+  stepID: string,
+): readonly { readonly pinID: number; readonly commodities: Readonly<Record<number, number>>; readonly leftAlone: boolean }[] {
+  // An office that does not say its planet is no colony's: null matches none.
+  const planetID = office.planetID ?? null;
+  const pads: { pinID: number; commodities: Record<number, number>; leftAlone: boolean }[] = [];
+  for (const colony of obs.colonies ?? []) {
+    if (colony.planetID !== planetID) {
+      continue;
+    }
+    for (const pin of colony.pins) {
+      if (pin.kind !== "launchpad" || pin.contents.length === 0) {
+        continue; // only a spaceport's goods go up through an office
+      }
+      const commodities: Record<number, number> = {};
+      for (const item of pin.contents) {
+        commodities[item.typeID] = item.quantity;
+      }
+      pads.push({
+        pinID: pin.pinID,
+        commodities,
+        leftAlone: shouldSetAside(obs.refusals, stepID, "exportCustoms", pin.pinID, MAX_BLOCK_ATTEMPTS),
+      });
+    }
+  }
+  return pads;
+}
+
 const collectCustoms: MacroDecider = (step, obs, mem) => {
   const phase = "Collecting from the customs offices";
   if (obs.flightStatus?.docked === true) {
@@ -5846,18 +5882,27 @@ const collectCustoms: MacroDecider = (step, obs, mem) => {
     return tick(WAIT, "Reading the customs offices.", phase, ACTING, false, mem);
   }
   const unitsIn = new Map(contents.map((office) => [office.officeID, office.units]));
+  // What each office's planet still has on its launchpads: sent up at the
+  // office, as the retail client's customs window does, before anything is taken.
+  const padsAt = new Map(offices.map((office) => [office.itemID, launchpadsToSendUp(office, obs, step.id)]));
+  const toSendUp = (office: SpaceEntity) => (padsAt.get(office.itemID) ?? []).filter((pad) => !pad.leftAlone);
   const holding = offices.filter(
     (office) =>
-      (unitsIn.get(office.itemID) ?? 0) > 0 &&
-      !shouldSetAside(obs.refusals, step.id, "collectCustoms", office.itemID, MAX_BLOCK_ATTEMPTS),
+      toSendUp(office).length > 0 ||
+      ((unitsIn.get(office.itemID) ?? 0) > 0 &&
+        !shouldSetAside(obs.refusals, step.id, "collectCustoms", office.itemID, MAX_BLOCK_ATTEMPTS)),
   );
   if (holding.length === 0) {
     const stubborn = offices.filter((office) => (unitsIn.get(office.itemID) ?? 0) > 0).length;
+    const leftAlone = [...padsAt.values()].flat().filter((pad) => pad.leftAlone).length;
+    const ended = stubborn > 0
+      ? `${stubborn} customs office${stubborn === 1 ? "" : "s"} would not give up ${stubborn === 1 ? "its" : "their"} goods.`
+      : "Every customs office in this system is emptied.";
     return tick(
       WAIT,
-      stubborn > 0
-        ? `${stubborn} customs office${stubborn === 1 ? "" : "s"} would not give up ${stubborn === 1 ? "its" : "their"} goods.`
-        : "Every customs office in this system is emptied.",
+      leftAlone > 0
+        ? `${ended} ${leftAlone} launchpad${leftAlone === 1 ? "" : "s"} would not send ${leftAlone === 1 ? "its" : "their"} goods up.`
+        : ended,
       phase,
       { kind: "done" },
     );
@@ -5920,6 +5965,17 @@ const collectCustoms: MacroDecider = (step, obs, mem) => {
       ACTING,
       true,
       clearCloseInStall({ approaching: target.itemID }),
+    );
+  }
+  const [pad] = toSendUp(target);
+  if (pad !== undefined) {
+    return tick(
+      { kind: "exportCustoms", officeID: target.itemID, pinID: pad.pinID, commodities: pad.commodities },
+      "Sending a launchpad's goods up into the customs office.",
+      phase,
+      ACTING,
+      true,
+      { approaching: null },
     );
   }
   return tick(

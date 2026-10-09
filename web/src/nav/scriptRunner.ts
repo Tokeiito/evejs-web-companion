@@ -169,6 +169,11 @@ function actionTargetID(action: ScriptAction): number | null {
   if (action.kind === "collectCustoms") {
     return action.officeID;
   }
+  // And a launchpad as an office is: one that will not send its goods up must
+  // not spend the next launchpad's budget.
+  if (action.kind === "exportCustoms") {
+    return action.pinID;
+  }
   return null;
 }
 

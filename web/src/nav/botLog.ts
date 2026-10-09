@@ -209,6 +209,10 @@ export function describeAction(action: ScriptAction): string {
       return `launch ${Object.entries(action.commodities)
         .map(([typeID, quantity]) => `${typeID}x${quantity}`)
         .join(",")} from command centre ${action.commandPinID} on planet ${action.planetID}`;
+    case "exportCustoms":
+      return `send ${Object.entries(action.commodities)
+        .map(([typeID, quantity]) => `${typeID}x${quantity}`)
+        .join(",")} from launchpad ${action.pinID} up into customs office ${action.officeID}`;
     case "repairItems":
       return `repair ${action.itemIDs.join(",")}`;
     case "rememberBeltDry":

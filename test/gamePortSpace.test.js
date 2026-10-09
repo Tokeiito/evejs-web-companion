@@ -720,3 +720,17 @@ test("the pilot's own ship says what it was last aligned to while it flies that 
   park.ballpark.stop(undock.shipID);
   assert.equal(ship({ itemID: 40009089, bookmark: false, since: 12 }).alignTarget, null);
 });
+
+// importExportUI.py 94: the client knows which planet a customs office is from the office's slim item (planetID),
+// and opens the office's window for that planet's colony. The recording is this server's own undock.
+test("a customs office's row says which planet it is, as its slim item does, and no other row has a planet", () => {
+  const park = undockedPark();
+  const space = projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID });
+  const offices = space.entities.filter((row) => row.kind === "orbital");
+  const planets = new Set(space.entities.filter((row) => row.kind === "planet").map((row) => row.itemID));
+  assert.deepEqual([offices.length, planets.size], [8, 8]);
+  // Each office is at one of the system's planets, and no two at the same one.
+  for (const office of offices) assert.ok(planets.has(office.planetID), `office ${office.itemID} names planet ${office.planetID}`);
+  assert.equal(new Set(offices.map((office) => office.planetID)).size, 8);
+  assert.deepEqual(space.entities.filter((row) => row.kind !== "orbital" && "planetID" in row), []);
+});

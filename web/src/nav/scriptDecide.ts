@@ -206,6 +206,13 @@ export type ScriptAction =
    * says whether anything is left.
    */
   | { readonly kind: "collectCustoms"; readonly officeID: number }
+  /**
+   * Send what one launchpad holds up into its planet's customs office, from
+   * the office itself (the retail customs window's transfer). The pilot's own
+   * session makes the call; the office charges its export tax.
+   */
+  | { readonly kind: "exportCustoms"; readonly officeID: number; readonly pinID: number;
+      readonly commodities: Readonly<Record<number, number>> }
   | { readonly kind: "haulTransfer"; readonly itemID: number; readonly quantity: number;
       readonly from: import("../store/types.ts").InventoryPlace;
       readonly to: import("../store/types.ts").InventoryPlace;

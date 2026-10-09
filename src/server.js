@@ -21670,6 +21670,34 @@ app.post("/api/pi/customs-export", requireAuth, async (req, res, next) => {
       res.status(404).json({ ok: false, error: "CHARACTER_NOT_FOUND" });
       return;
     }
+    // A pilot on the game port: the haul's own run sends each colony's
+    // launchpads up at its customs office, on the pilot's session, as the
+    // retail client's customs window does (/api/bridge/planet/customs/export).
+    // Nothing is sent from here, so nobody is logged in, logged out or read.
+    if (typeof gateway.getSelectTransport === "function" && gateway.getSelectTransport({
+      accountID: Number(req.account.accountID),
+      characterID,
+      userName: String(req.account.username || ""),
+    }) === "gameport") {
+      res.json({
+        ok: true,
+        atTheOffices: true,
+        connected: false,
+        handedBack: null,
+        planets: planetIDs.map((planetID) => ({
+          planetID,
+          planetName: null,
+          solarSystemID: 0,
+          solarSystemName: null,
+          officeID: null,
+          exported: false,
+          units: 0,
+          reason: "at-the-office",
+          message: null,
+        })),
+      });
+      return;
+    }
     // Reserve before any asynchronous ownership or snapshot read, including
     // exports for an offline pilot. Selection, bot handoff and another export
     // must not acquire this pilot while the game connection is being prepared.

@@ -141,6 +141,8 @@ function projectEntity(park, ball, slim, ego, placed) {
     row.npcEntityType = null;
     row.compressionFacility = null;
   }
+  // importExportUI.py 94: which planet a customs office is, from the office's own slim item.
+  if (kind === "orbital") row.planetID = positive(slim.get("planetID"));
   return row;
 }
 

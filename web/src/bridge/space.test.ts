@@ -495,3 +495,15 @@ test("the pace of the pilot's clock decodes as a number above nothing and no mor
   // Absent (the gateway's snapshot), null, not a number, or no pace a clock can hold.
   assert.deepEqual([pace(undefined), pace(null), pace("half"), pace(0), pace(-0.5), pace(1.5), pace([0.5])], [null, null, null, null, null, null, null]);
 });
+
+// importExportUI.py 94: the client knows which planet a customs office is from the office's slim item.
+test("a customs office's row carries its planet where the BFF says it, and null where it does not", () => {
+  const row = (more: { [key: string]: JsonValue }): JsonValue => ({
+    kind: "orbital", itemID: 1200040176368, typeID: 2233, groupID: 1025, categoryID: 46, name: "Customs Office",
+    radius: 1000, position: { x: 1, y: 2, z: 3 }, velocity: { x: 0, y: 0, z: 0 }, ...more,
+  });
+  const snapshot = decodeSpaceSnapshot({ inSpace: true, solarSystemID: 30002780, shipID: 9001, sampledAtMs: 1, entities: [
+    row({ planetID: 40176368 }), row({ itemID: 1200040176369 }), row({ itemID: 1200040176370, planetID: "x" }), row({ itemID: 1200040176371, planetID: 0 }),
+  ] });
+  assert.deepEqual(snapshot.entities.map((entity) => entity.planetID), [40176368, null, null, null]);
+});

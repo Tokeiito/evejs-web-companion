@@ -311,6 +311,11 @@ export interface PiHaulExportSummary {
   readonly colonies: number;
   /** One sentence per colony the server refused, in its own words where it gave any. */
   readonly refusals: readonly string[];
+  /**
+   * Present when nothing went up here because the run itself sends each
+   * colony's launchpads up at its customs office (a pilot on the game port).
+   */
+  readonly atTheOffices?: true;
 }
 
 /** Read an export answer into the summary the row shows. */
@@ -330,6 +335,8 @@ export function summarizeCustomsExport(result: CustomsExportResult): PiHaulExpor
     // "nothing on the pads" is the ordinary case between hauls, not a refusal.
     if (planet.reason === "nothing-on-the-pads") continue;
     if (planet.reason === "no-colony") continue;
+    // The run sends this colony's launchpads up itself, at the office.
+    if (planet.reason === "at-the-office") continue;
     refusals.push(
       planet.reason === "no-office"
         ? `${where} has no customs office to launch into.`
@@ -338,7 +345,7 @@ export function summarizeCustomsExport(result: CustomsExportResult): PiHaulExpor
           : `${where} would not launch just now.`,
     );
   }
-  return { units, colonies, refusals };
+  return result.atTheOffices === true ? { units, colonies, refusals, atTheOffices: true } : { units, colonies, refusals };
 }
 
 /**

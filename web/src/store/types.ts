@@ -1692,6 +1692,13 @@ export interface SpaceEntity {
    */
   readonly remainingQuantity: number | null;
   readonly miningYieldTypeID: number | null;
+  /**
+   * A customs office's planet, as its slim item says it (the retail client
+   * opens the office's window for that planet's colony). null on every other
+   * row, and on an office where the transport did not say: the web gateway's
+   * snapshot does not.
+   */
+  readonly planetID?: number | null;
   readonly miningResourceFamily?: "ore" | "ice" | "gas" | null;
   readonly beltID: number | null;
   /**

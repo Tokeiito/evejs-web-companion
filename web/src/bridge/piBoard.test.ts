@@ -560,3 +560,8 @@ test("an empty set of launchpads is said plainly, not as a failure", () => {
 test("a restart's start carries no export sentence", () => {
   assert.equal(piHaulDispatchWords({ kind: "started" }), "The haul has started on the server. Its steps show in the Bot Manager.");
 });
+
+test("a haul whose run sends the launchpads up itself says so, and not that nothing was on them", () => {
+  const words = piHaulDispatchWords({ kind: "started", exported: { units: 0, colonies: 0, refusals: [], atTheOffices: true } });
+  assert.equal(words, "The haul has started on the server. It sends each colony's launchpads up at its customs office. Its steps show in the Bot Manager.");
+});

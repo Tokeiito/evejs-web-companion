@@ -11182,7 +11182,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             damagedItemIDs = null;
           }
         }
-        if (macro === "restart-extractors" || macro === "launch-commodities") {
+        if (macro === "restart-extractors" || macro === "launch-commodities" || macro === "collect-customs") {
           try {
             const readAt = Date.now();
             const report = decodeColonyReport((await api.getPlanets(callOptions)).planets, readAt);
@@ -12434,6 +12434,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             await api.deleteLaunch(action.launchID, callOptions);
             return;
           }
+          case "exportCustoms":
+            await api.exportToCustomsOffice(action.officeID, action.pinID, action.commodities, callOptions);
+            return;
           case "collectCustoms": {
             // No claim and no record to delete. An office's storage is
             // partitioned by depositor server-side, so these rows are this

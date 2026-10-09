@@ -4889,6 +4889,12 @@ export interface CustomsExportPlanet {
 }
 
 export interface CustomsExportResult {
+  /**
+   * True when nothing was sent up here because the haul's own run will send
+   * each colony's launchpads up at its customs office, as the retail client
+   * does (a pilot on the game port). Each planet then reads "at-the-office".
+   */
+  readonly atTheOffices?: boolean;
   /** False when nothing needed sending, so nobody was logged out. */
   readonly connected: boolean;
   /** True/false when the caller's own pilot was re-selected; null when it was not ours. */
@@ -4917,6 +4923,7 @@ export async function exportToCustomsOffices(
   );
   const planets = Array.isArray(data.planets) ? data.planets : [];
   return {
+    atTheOffices: data.atTheOffices === true,
     connected: data.connected === true,
     handedBack: typeof data.handedBack === "boolean" ? data.handedBack : null,
     planets: planets.map((row) => {
@@ -5230,6 +5237,25 @@ export async function warpToBookmark(
 export async function bookmarkMiningSiteLocation(shipID: number, folderID: number, name: string, comment: string,
   options: ApiOptions = {}): Promise<void> {
   await postJson("/api/bridge/flight/bookmark-location", { itemID: shipID, folderID, name, comment, expiryMode: 2, confirm: true }, options);
+}
+
+/**
+ * Send one launchpad's goods up into its planet's customs office, on the
+ * pilot's own session and at the office, as the retail client's customs window
+ * does (the office's tax rate asked, then ImportExportWithPlanet naming it).
+ * The BFF refuses a docked pilot; the server charges the office's export tax.
+ */
+export async function exportToCustomsOffice(
+  officeID: number,
+  pinID: number,
+  commodities: Readonly<Record<number, number>>,
+  options: ApiOptions = {},
+): Promise<void> {
+  await postJson(
+    "/api/bridge/planet/customs/export",
+    { officeID, pinID, commodities: { ...commodities }, confirm: true },
+    options,
+  );
 }
 
 /**

@@ -32,3 +32,12 @@ test("a launch's warp is carried out as the launch's own warp", () => {
   assert.ok(at >= 0);
   assert.match(flow.slice(at, at + 160), /^case "warpLaunch":\s+await api\.warpToLaunch\(action\.launchID, callOptions\);\s+return;/);
 });
+
+test("a launchpad sent up at its office is carried out by the customs office's own transfer, and the colonies are read while offices are collected from", () => {
+  const flow = readFileSync(fileURLToPath(new URL("./flow.ts", import.meta.url)), "utf8");
+  const at = flow.indexOf('case "exportCustoms":');
+  assert.ok(at >= 0);
+  assert.match(flow.slice(at, at + 220), /^case "exportCustoms":\s+await api\.exportToCustomsOffice\(action\.officeID, action\.pinID, action\.commodities, callOptions\);\s+return;/);
+  // The block needs what each launchpad holds, so the read that gives it runs for this block too.
+  assert.match(flow, /if \(macro === "restart-extractors" \|\| macro === "launch-commodities" \|\| macro === "collect-customs"\) \{/);
+});

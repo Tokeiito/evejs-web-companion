@@ -736,8 +736,9 @@ test("unreadable colonies are refused instead of reported as empty pads", async 
   assert.deepEqual(client.calls, []);
 });
 
-async function startTestServer({ gateway, client, botHost, bridgeSessionStore, beforeListen = () => {} } = {}) {
+async function startTestServer({ gateway, client, botHost, bridgeSessionStore, beforeListen = () => {}, more = {} } = {}) {
   const app = createApp({
+    ...more,
     eveStore: fakeStore(),
     eveGatewayClient: gateway,
     webAuth: fakeAuth(),
@@ -1029,4 +1030,50 @@ test("the route is bounded and signed-in only", async () => {
   const noPlanets = await post(baseUrl, "/api/pi/customs-export", { confirm: true, characterID: FARMER_ID, planetIDs: [] });
   assert.equal(noPlanets.response.status, 400);
   assert.equal(noPlanets.payload.error, "INVALID_REQUEST");
+});
+
+// ── a pilot on the game port ─────────────────────────────────────────────────
+//
+// The retail client sends a launchpad's goods up from the customs office's own window, at the office. For a pilot
+// on the game port the haul's run does the same (the collecting block, with /api/bridge/planet/customs/export),
+// so this route sends nothing up beforehand: no second login, nobody logged out, no colony read.
+
+test("for a pilot on the game port nothing is sent up before the run: the route says the run does it, at the offices", async () => {
+  const client = fakeClient();
+  const gateway = fakeGateway();
+  const asked = [];
+  const baseUrl = await startTestServer({ gateway, client, more: {
+    gamePortPilots: {},
+    pilotTransportFor: (who) => { asked.push(who); return who.userName === ACCOUNT.username ? "gameport" : "gateway"; },
+  } });
+  const { response, payload } = await post(baseUrl, "/api/pi/customs-export", { confirm: true, characterID: FARMER_ID, planetIDs: [PLANET_A, PLANET_B] });
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.deepEqual([payload.ok, payload.atTheOffices, payload.connected, payload.handedBack], [true, true, false, null]);
+  assert.deepEqual(payload.planets.map((planet) => [planet.planetID, planet.exported, planet.units, planet.reason, planet.officeID]), [
+    [PLANET_A, false, 0, "at-the-office", null],
+    [PLANET_B, false, 0, "at-the-office", null],
+  ]);
+  // Asked about this pilot of this account, by the BFF's own name for the account.
+  assert.deepEqual(asked, [{ accountID: ACCOUNT.accountID, characterID: FARMER_ID, userName: ACCOUNT.username }]);
+  // No game connection, no colony read, nobody selected or released.
+  assert.deepEqual([client.loggedIn ?? null, client.calls.length, gateway.asked, gateway.selected], [null, 0, [], []]);
+});
+
+test("the game port's answer still wants a confirmation, a pilot of the account's own, and a planet", async () => {
+  const baseUrl = await startTestServer({ gateway: fakeGateway(), client: fakeClient(), more: { gamePortPilots: {}, pilotTransportFor: () => "gameport" } });
+  const unconfirmed = await post(baseUrl, "/api/pi/customs-export", { characterID: FARMER_ID, planetIDs: [PLANET_A] });
+  assert.deepEqual([unconfirmed.response.status, unconfirmed.payload.error], [400, "CONFIRMATION_REQUIRED"]);
+  const notOurs = await post(baseUrl, "/api/pi/customs-export", { confirm: true, characterID: 999, planetIDs: [PLANET_A] });
+  assert.deepEqual([notOurs.response.status, notOurs.payload.error], [404, "CHARACTER_NOT_FOUND"]);
+  const nowhere = await post(baseUrl, "/api/pi/customs-export", { confirm: true, characterID: FARMER_ID, planetIDs: [] });
+  assert.deepEqual([nowhere.response.status, nowhere.payload.error], [400, "INVALID_REQUEST"]);
+});
+
+test("a pilot on the gateway, in a process that has a game port, is still sent up the old way", async () => {
+  const client = fakeClient();
+  const gateway = fakeGateway();
+  const baseUrl = await startTestServer({ gateway, client, more: { gamePortPilots: {}, pilotTransportFor: () => "gateway" } });
+  const { response, payload } = await post(baseUrl, "/api/pi/customs-export", { confirm: true, characterID: FARMER_ID, planetIDs: [PLANET_A] });
+  assert.equal(response.status, 200);
+  assert.deepEqual([payload.connected, payload.atTheOffices ?? null, payload.planets[0].exported, payload.planets[0].units], [true, null, true, 300]);
 });

@@ -428,3 +428,18 @@ test("a partial pad export keeps its successful units and refusal while the haul
   } as never, {}, {});
   assert.deepEqual(collected.action, { kind: "collectCustoms", officeID: 1_200_040_000_001 });
 });
+
+// On the game port the BFF does not send the launchpads up before the run: the run does it itself, at each
+// office, as the client does. The BFF says so, and that is no refusal.
+test("an export the run itself will make at the offices is no refusal, and the summary says whose it is", () => {
+  const summary = summarizeCustomsExport({
+    connected: false,
+    handedBack: null,
+    atTheOffices: true,
+    planets: [
+      { planetID: 1, planetName: "Alpha II", solarSystemID: 2, solarSystemName: "Alpha", officeID: null, exported: false, units: 0, reason: "at-the-office", message: null },
+      { planetID: 2, planetName: "Alpha IX", solarSystemID: 2, solarSystemName: "Alpha", officeID: null, exported: false, units: 0, reason: "at-the-office", message: null },
+    ],
+  });
+  assert.deepEqual(summary, { units: 0, colonies: 0, refusals: [], atTheOffices: true });
+});

@@ -264,3 +264,16 @@ test("what the browser asks to be shown goes with the account's call to the gate
   seam.accountCall("charUnboundMgr", "GetCharacterSelectionData", [], null, { accountID: 9, userName: "rrfarmer", fields: "languageID" });
   assert.deepEqual(gateway.calls[1].args[4], { userid: 9 });
 });
+
+// ── which transport a pilot would be selected on ─────────────────────────────
+
+test("the seam says which transport a pilot would be chosen on, and a process with no game port has no such question", () => {
+  const asked = [];
+  const seam = createPilotTransport({ gateway: recorder("gateway"), gamePort: withAccountCall(), transportFor: (who) => { asked.push(who); return byName(who); } });
+  assert.equal(seam.getSelectTransport({ accountID: 4, characterID: 140000001, userName: "test" }), "gameport");
+  assert.equal(seam.getSelectTransport({ accountID: 9, characterID: 140000009, userName: "rrfarmer" }), "gateway");
+  assert.deepEqual(asked, [{ accountID: 4, characterID: 140000001, userName: "test" }, { accountID: 9, characterID: 140000009, userName: "rrfarmer" }]);
+  assert.equal("getSelectTransport" in seam, true);
+  // Nothing of it reaches either transport.
+  assert.equal(typeof createPilotTransport({ gateway: recorder("gateway") }).getSelectTransport, "undefined");
+});

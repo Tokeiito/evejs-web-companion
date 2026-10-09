@@ -159,6 +159,8 @@ function decodeEntity(value: JsonValue): SpaceEntity | null {
     // and would send a player straight past a full belt.
     remainingQuantity: countOrNull(raw.remainingQuantity),
     miningYieldTypeID: idOrNull(raw.miningYieldTypeID),
+    // A customs office's planet, where the BFF says it.
+    planetID: idOrNull(raw.planetID),
     beltID: idOrNull(raw.beltID),
     // The rock's ORE GRADE (dogma 2699), stamped by the BFF from static data.
     // An ABSENT oreGrade decodes to null ("unknown"), never 0: 0-Grade ore is a

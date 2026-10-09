@@ -173,10 +173,24 @@ function createPilotTransport({ gateway, gamePort = null, transportFor = () => "
       ? gamePort.accountCall(service, method, args, kwargs, { userid: accountID, userName })
       : gateway.callMethod(service, method, args, kwargs, { ...shown, userid: accountID });
   };
+  /**
+   * getSelectTransport({ accountID, characterID, userName }) -> "gateway" | "gameport"
+   *
+   * Which transport this pilot would be chosen on. Asked by what must act
+   * differently before a pilot is chosen at all. Named as a read, which it is.
+   */
+  const getSelectTransport = (who = {}) => transportFor({
+    accountID: Number(who.accountID) || null,
+    characterID: Number(who.characterID) || null,
+    userName: String(who.userName || ""),
+  });
   return new Proxy(gateway, {
     get(target, name) {
       if (name === "accountCall") {
         return accountCall;
+      }
+      if (name === "getSelectTransport") {
+        return getSelectTransport;
       }
       if (!Object.hasOwn(PILOT_FUNCTIONS, name)) {
         return target[name];
@@ -187,7 +201,7 @@ function createPilotTransport({ gateway, gamePort = null, transportFor = () => "
       return routed.get(name);
     },
     has(target, name) {
-      if (name === "accountCall") return true;
+      if (name === "accountCall" || name === "getSelectTransport") return true;
       return Object.hasOwn(PILOT_FUNCTIONS, name)
         ? typeof target[name] === "function" || typeof gamePort[name] === "function"
         : name in target;
