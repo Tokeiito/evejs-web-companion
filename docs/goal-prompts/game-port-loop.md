@@ -192,10 +192,17 @@ Take these defaults, and list each under "For the operator" in the log so they c
   <client>\tq\bin64 <client>\tq\code.ccp <module ending .pyj> <name> ...` runs one module of the
   client's code in its own Python and prints the named values as JSON; the BFF reads a set the
   same way on first use (`src/clientData/clientConstants.js`, one entry in `CONSTANTS` each). The
-  module must import nothing: `inventorycommon/const.pyj` does not, and
-  `eve/common/script/util/inventoryFlagsCommon.pyj` (a flag's capacity attribute) does, and would
-  need its imports stood in for. Look for the table in the decompiled source first, then read it
-  from the install: the numbers are not to be copied into this repository.
+  module that imports others is given those it uses while it runs (`--with
+  dogma.const=dogma/const.pyj`, from the same archive, in the order they need each other) and has
+  the ones it does not use stood in for (`--stub evetypes`); a name may be dotted, to reach
+  through an import (`dogma.const.attributeCapacity`). Look for the table in the decompiled
+  source first, then read it from the install: the numbers are not to be copied into this
+  repository.
+- **A set of hulls to measure against is one GM command away.** `POST /api/bridge/gm/slash` with
+  `{"command": "/gmships", "confirm": true}` put 146 assembled ships of as many types in Test
+  Two's hangar (2026-10-09), and reading each through both check BFFs set the client's way of
+  knowing a thing beside the server's for eighty of them in two minutes. Put the store aside
+  first and put it back after.
 - **A route given to `scripts/bff-parity.js` on the command line is rewritten by the shell**
   (`/api/...` becomes a path under the Git folder). Put `MSYS_NO_PATHCONV=1` before the command.
 - **What a BFF really puts on the wire can be read**, where the server's log says too little
