@@ -291,7 +291,11 @@ Take these defaults, and list each under "For the operator" in the log so they c
   a server defect was behind it. Stage what a list route lists before trusting a pass of it.
 - **What a pass of the parity tool reads when nothing is wrong** (since 2026-10-09, as Test Two,
   docked): 21 identical, 13 tolerated, nothing moved, nothing divergent, and the tool exits 0.
-  Anything else is news: read it.
+  Anything else is news: read it. The count is that pilot's. As Test Pilot, who is in no
+  alliance, two passes read 23 identical, 10 tolerated and 1 moved (2026-10-09): the alliance's
+  reads are refused alike on both transports, and `/api/bridge/flight/status` had a notice in
+  the game port's answer both times. I took the other pilot's count for a fault and spent a
+  while finding out it was not: say which pilot a pass was of.
 - **What the parity tool calls moved is a reading, not a fact.** It prints a `moved?` line for
   each value it puts down to time passing between its two reads, with both values: read them.
   A clock is a clock, and the tool leaves the server's own (`serverNowMs`) and a search's own
