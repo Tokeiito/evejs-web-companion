@@ -211,6 +211,18 @@ Take these defaults, and list each under "For the operator" in the log so they c
   it had just set and stopped the panel ("effect_update_depth_exceeded"); the other asked for a thing
   once and never again after the store forgot it. Any unit that adds or changes an effect is looked at
   in the browser, through the change that makes it run again.
+- **The test pilots are not alike, and a check on one says nothing of the other's case.** Test Two
+  (account `test2`) is in a player's corporation (98000000); Test Pilot (account `test`, docked in
+  Jita) is in an NPC one (1000044). Anything the client does by `idCheckers.IsNPC(session.corpid)`
+  wants both looked at. Every pilot's corporation is in the store's `characters` table (`key`,
+  `json`), which `node:sqlite` reads with `readOnly: true` while the server runs.
+- **The page brings its pilots back by itself.** It keeps who was online in
+  `sessionStorage['evejs-web-online-pilots:v1']` and signs them in again on a reload, so a
+  `POST /api/logout` from a script does not leave the tab logged out: use the page's own "Log out"
+  button, once for each pilot. Another pilot is brought on from "Pilots" (a row of the roster); the
+  "Bringing pilots online" dialog stays up over the page until "Stay here" or "Go to first pilot" is
+  clicked, and "in client" in it means the pilot is on. The pilot's button in the bar makes it the
+  one the page shows.
 - **A test that sends a pilot into space must bring it back, or the file never ends.** In
   `test/gamePortPilots.test.js` a session change that gives the pilot a solar system starts its space
   (timers and all); a test that leaves it there passes and then the file hangs, and so does the whole

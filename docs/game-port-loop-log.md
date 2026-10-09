@@ -6360,3 +6360,128 @@ the test now moves its pilot between two stations, and the brief says how to run
 20. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
     client's own map is in.
 21. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
+
+## 2026-10-09 — fourteen more of the ledger's pairs, and standings asked as the client asks
+
+Commit `6d35884`, pushed. Item 1 of the last list: the ledger made again, and its unread pairs
+taken most called first.
+
+**What the retail client does.**
+
+- **`dogmaIM.GetAllInfo`** is asked on the dogma location's moniker with three positional
+  arguments, `GetAllInfo(primeCharacter, primeShip, primeStructure)` (`godma.py` 2409), each
+  saying whether that one is to be primed. The BFF asked with none.
+- **`dogmaIM.ItemGetInfo`** always names its item (`godma.py` 1649). The BFF's probe route asks
+  with none, which this server answers for the ship; the client never asks so.
+- **`dogmaIM.GetLayerDamageValuesByItems`** is sent a set of the drones in the bay whose damage
+  the client does not know, and is not asked at all when there are none
+  (`droneDamageTracker.py` 38). The probe route sends an empty list.
+- **`dogmaIM.GetTargeters`**, **`agentMgr.GetAgents`**, **`agentMgr.GetMyJournalDetails`** and
+  **`standingMgr.GetCharStandings`** are asked with nothing, as the BFF asks them.
+- **Six of dogma's reads the client never makes**: `GetDroneSettingAttributes` (godma keeps the
+  drone settings `GetAllInfo` brought), `GetCharacterAttributes` (the skills service asks the
+  skill handler), `QueryAttributeValue` and `GetLocationInfo` (the client's own dogma works them
+  out), and `GetRequiredSkillLevels` and `QueryAllAttributesForItem` (asked only by a
+  developer's tool in the client).
+- **`standingMgr.GetCorpStandings` is asked only for a pilot whose corporation is not an NPC
+  one** (`standingsvc.py` 118, `idCheckers.IsNPC(session.corpid)`). For a pilot in an NPC
+  corporation the client asks `GetCharStandings` alone and takes the corporation's to be none.
+  The BFF asked both for everyone.
+- The client asks its standings when the character or the corporation changes
+  (`ProcessSessionChange`), and keeps them; and it asks `standingMgr.GetNPCNPCStandings()`
+  first, each time. The page asks when its panel opens, and nothing here asks the third read.
+
+**What was built.**
+
+- Fourteen pairs have entries in `src/gamePort/retailCalls.js`, each with the client file and
+  line it was read from. `GetAllInfo` asked with fewer than three arguments goes out as godma's
+  first priming does, `(True, True, None)`. `ItemGetInfo` counts as the client's only when it
+  names an item. The six are marked as the web client's own, and the drones' damage read as a
+  known difference.
+- The standings route does not ask for the corporation's standings when the pilot's
+  corporation is an NPC one. It answers them as none, with no error, and the page lists them as
+  none ("has no standings with anyone yet"), not as unread.
+- `docs/game-port-call-ledger.md` is made again, from one pass of `scripts/bff-parity.js` over
+  the docked routes as Test Two: 65 pairs in 101 calls. 14 the client's own, 9 reshaped to it,
+  9 the web client's own, 2 known differences, 31 not yet read (45 before this entry).
+
+**Proof.**
+
+- Tests: 4 new (two on the registry, one on the route, one on the page's side). 18 ways of
+  breaking it tried, all caught.
+- Suite: 9541 tests, 9517 pass, 0 fail, 24 skipped, 0 todo. No test process left behind.
+- **On both transports, by script** (`scripts/bff-parity.js`, as Test Two): 12 identical,
+  6 tolerated, 2 moved, 2 divergent, as before (the two are the tuples in the journal and in
+  industry's facilities, known from earlier entries). `/api/bridge/standings` identical.
+- **The server's own log** (eve.js `e066a81e9`, with another session's uncommitted edits in
+  the checkout): `GetAllInfo` arrives with three arguments. As Test Pilot, in NPC corporation
+  1000044, on the game port: `standingMgr GetCharStandings()` and nothing else of
+  `standingMgr`; the route answered in 4 ms with the pilot's own standings, the corporation's
+  as none, and no error. As Test Two, in a player's corporation, both are asked.
+- **In the browser, on the game port:** Test Two's Standings window drew both lists (six rows
+  each, in three groups). Test Pilot's drew its own (13 rows) and, under its corporation's,
+  "Your corporation has no standings with anyone yet."; nothing failed.
+
+**A wrong note of mine, put right.** Earlier notes of this loop had Test Two in an NPC
+corporation. It is in a player's (98000000), which is why the ledger still lists
+`GetCorpStandings` after the repair: for that pilot the client asks it too. The NPC case was
+then looked at with Test Pilot. The brief now says which pilot is which.
+
+**Not done.**
+
+- `standingMgr.GetNPCNPCStandings`, which the client asks at every refresh and nothing here
+  asks; and standings asked once at the session's change and kept, where the page asks at each
+  opening of its panel.
+- What the client's standings window shows for an NPC corporation's pilot under the
+  corporation's heading, if it shows that heading at all.
+- The probe route's two differing calls (`ItemGetInfo` with no item, the drones' damage with
+  an empty list): the route is a probe of the BFF's own, and whether anything of the page's
+  counts on it has not been looked at.
+- The ledger has no walk in the browser in it, and nothing in space: pairs the page asks only
+  on a click, or only undocked, are not listed.
+- The 31 unread pairs: `contractProxy` (the most called), `charMgr`, `marketProxy`,
+  `industryManager`, `facilityManager`, `blueprintManager`, `calendarMgr` and
+  `calendarProxy`, `mailMgr`, `notificationMgr`, `fleetObjectHandler`, and the rest.
+
+### Next
+
+1. The ledger's unread pairs, most called first: `contractProxy`, then `charMgr`,
+   `marketProxy`, industry's three services, the calendar's two, mail and notifications.
+2. The standings the client's way: `GetNPCNPCStandings`, and asked once at the session's
+   change and kept, with the server's notices keeping them right.
+3. The probe route's two differing calls: repaired or the route gone, by what the page uses.
+4. The corporation registry's other calls, each set beside the client's.
+5. Phase 3's writes, feature by feature, each set beside what the client sends.
+6. The wallet's "Market Transactions", and the lines the client derives from a transaction.
+7. The avoidance list's own window, and a route plotted again when a setting changes under it.
+8. Around a place's name, the last of it: the outlaw's warning (the pilot's own security
+   status). The agent's own window's steps, if the client's say how far.
+9. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+   own counts on it, with the push doing the work as it does for Remove Offer.
+10. The agent's cards above its own window, where the client's window has its own header.
+11. The scanner the client's way: results kept from the server's word, a probe's destination
+    and range kept here and sent with the scan.
+12. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+    codes not done.
+13. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+14. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+15. Small, in Ready Fit: the capacity the client never asks for; the window following a change
+    of pilot.
+16. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+17. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+18. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+19. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions); the client's own map, to set beside this server's.
+20. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+21. Other things asked once beside the store, and other panels' effects, looked at for the
+    faults of earlier entries.
+22. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
+    client's own map is in.
+23. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
