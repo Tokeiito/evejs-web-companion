@@ -188,6 +188,7 @@ async function startTestServer(options = {}) {
     gamePortPilots: options.gamePortPilots,
     pilotTransportFor: options.pilotTransportFor,
     ...(options.clientBuiltData ? { clientBuiltData: options.clientBuiltData } : {}),
+    ...(options.clientConstants ? { clientConstants: options.clientConstants } : {}),
     errorLogger() {},
   });
   const server = app.listen(0, "127.0.0.1");
@@ -1016,6 +1017,122 @@ test("a pilot in an NPC corporation is asked for its own standings alone; in a p
     assert.deepEqual([standings.payload.errors.char, standings.payload.errors.corp], [null, null], String(corporationID));
     assert.deepEqual(standings.payload.corp, asked.length === 1 ? null : { type: "list", items: [] }, String(corporationID));
   }
+});
+
+// ── The Inventory panel's holds (GET /api/bridge/inventory) ──────────────────
+
+const HOLD_VOLUMES = { 77002: 16500, 77010: 0.01, 77011: 2, 77012: null };
+const holdRow = (fields) => ({ type: "packedrow", fields: { itemID: 1, typeID: 77010, groupID: 18, categoryID: 4, flagID: 4, quantity: 1, stacksize: 1, singleton: 0, ...fields } });
+const HANGAR_ROWS = [
+  holdRow({ itemID: 9001, typeID: 77002, groupID: 901, categoryID: 6, quantity: -1, singleton: 1 }), // the active ship, assembled: 16500
+  holdRow({ itemID: 9002, typeID: 77002, groupID: 901, categoryID: 6, quantity: 2, stacksize: 2 }),  // two packaged: 2 x 2500
+  holdRow({ itemID: 9003, quantity: 1000, stacksize: 1000 }),                                        // 10
+];
+const CARGO_ROWS = [
+  holdRow({ itemID: 9011, flagID: 5, quantity: 300, stacksize: 300 }),                               // 3
+  holdRow({ itemID: 9012, flagID: 5, typeID: 77011, quantity: 40, stacksize: 40 }),                  // 80
+  holdRow({ itemID: 9013, flagID: 87, typeID: 77011, quantity: 500, stacksize: 500 }),               // the drone bay's, not the cargo's
+];
+const holdConstants = (packaged = { byGroup: new Map([[901, 2500]]), byType: new Map(), plasticWrapTypeID: 77099 }) => ({ packagedVolumes: async () => packaged });
+const holdStatics = () => ({ ...fakeStaticData(), getType: (typeID) => (HOLD_VOLUMES[typeID] === undefined ? null : { typeID, volume: HOLD_VOLUMES[typeID] }) });
+
+/** A game-port pilot, docked, whose inventories answer the rows above; the capacity the server would give is a marked one. */
+async function inventoryOnGamePort({ shipAttribute = async () => 3900, constants = holdConstants(), hangar = HANGAR_ROWS, cargo = CARGO_ROWS, statics = holdStatics(), shipID = SELECT_SESSION_ECHO.shipID } = {}) {
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  const select = gamePort.selectCharacter;
+  gamePort.selectCharacter = async (...args) => {
+    const selected = await select(...args);
+    return { ...selected, session: { ...selected.session, shipID } };
+  };
+  gamePort.readFlightStatus = async () => ({ flight: { docked: true, inSpace: false, stationID: SELECT_SESSION_ECHO.stationID, solarSystemID: SELECT_SESSION_ECHO.solarSystemID, shipID }, notifications: [] });
+  gamePort.bindObject = async (service, method, args) => ({ boundHandle: `${method}:${args[0]}`, notifications: [] });
+  const calls = [];
+  gamePort.callBoundMethod = async (service, method, args, kwargs, sessionFields, bridgeSessionID, handle) => {
+    calls.push({ method, args, handle });
+    if (method === "List") {
+      const rows = handle.startsWith("GetInventoryFromId") ? cargo : hangar;
+      if (rows === null) throw Object.assign(new Error("Refused"), { code: "CALL_REFUSED" });
+      return { service, method, result: { type: "list", items: rows }, notifications: [] };
+    }
+    return { service, method, result: { type: "object", name: "util.KeyVal", args: { type: "dict", entries: [["capacity", 1000000], ["used", 777]] } }, notifications: [] };
+  };
+  const attributes = [];
+  if (shipAttribute) gamePort.shipAttribute = async (attributeID, sessionFields, bridgeSessionID) => { attributes.push({ attributeID, sessionFields, bridgeSessionID }); return shipAttribute(attributeID); };
+  const { baseUrl } = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gameport", staticData: statics, clientConstants: constants });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const answer = await apiRequest(baseUrl, "/api/bridge/inventory");
+  assert.equal(answer.response.status, 200, JSON.stringify(answer.payload));
+  return { payload: answer.payload, calls, attributes };
+}
+const capacityOf = (hold) => Object.fromEntries(hold.capacity.args.entries);
+
+test("on the game port the Inventory panel's holds are reckoned as the client reckons them, and the server is not asked", async () => {
+  const { payload, calls, attributes } = await inventoryOnGamePort();
+  // invCache.py 1224, godma.py 871: the client never asks GetCapacity. Two Lists, and that is all.
+  assert.deepEqual(calls.map((call) => [call.method, call.args]), [["List", [4]], ["List", [5]]]);
+  // A station's hangar has no limit: the client's own figure for one. What is in it is summed the client's way:
+  // the assembled ship by its type's volume, the packaged two by their group's, the stack by its own.
+  assert.deepEqual(capacityOf(payload.hangar), { capacity: 9000000000000000, used: 16500 + 5000 + 10 });
+  // The cargo: the ship's capacity as godma has it, and what the List answered in the cargo's own flag.
+  assert.deepEqual(capacityOf(payload.cargo), { capacity: 3900, used: 83 });
+  assert.deepEqual(attributes, [{ attributeID: 38, sessionFields: { userid: 4 }, bridgeSessionID: GAME_PORT_SESSION_ID }]);
+  assert.deepEqual([payload.hangar.error, payload.cargo.error], [null, null]);
+  assert.deepEqual(payload.hangar.list.items, HANGAR_ROWS);
+});
+
+test("where the client's way cannot be followed, the hold's capacity is asked of the server as before", async () => {
+  const asked = (calls) => calls.filter((call) => call.method === "GetCapacity").map((call) => call.args[0]);
+  const fromServer = { capacity: 1000000, used: 777 };
+  // No client to read the packaged volumes from: both.
+  const noClient = await inventoryOnGamePort({ constants: { packagedVolumes: async () => null } });
+  assert.deepEqual(asked(noClient.calls), [4, 5]);
+  assert.deepEqual([capacityOf(noClient.payload.hangar), capacityOf(noClient.payload.cargo)], [fromServer, fromServer]);
+  // Godma does not know the ship's capacity: the cargo alone.
+  const noDogma = await inventoryOnGamePort({ shipAttribute: async () => null });
+  assert.deepEqual(asked(noDogma.calls), [5]);
+  assert.deepEqual([capacityOf(noDogma.payload.hangar).capacity, capacityOf(noDogma.payload.cargo)], [9000000000000000, fromServer]);
+  // A transport that keeps no godma: the cargo alone.
+  assert.deepEqual(asked((await inventoryOnGamePort({ shipAttribute: null })).calls), [5]);
+  // Something in the hold whose volume nobody knows: that hold alone.
+  const unknown = await inventoryOnGamePort({ cargo: [...CARGO_ROWS, holdRow({ itemID: 9014, flagID: 5, typeID: 77999 })] });
+  assert.deepEqual(asked(unknown.calls), [5]);
+  assert.deepEqual(capacityOf(unknown.payload.cargo), fromServer);
+  // A type the static tables have, with no volume to it: the same.
+  assert.deepEqual(asked((await inventoryOnGamePort({ cargo: [...CARGO_ROWS, holdRow({ itemID: 9015, flagID: 5, typeID: 77012 })] })).calls), [5]);
+  // A row that is not one: that hold alone.
+  assert.deepEqual(asked((await inventoryOnGamePort({ hangar: [...HANGAR_ROWS, { type: "list", items: [] }] })).calls), [4]);
+  // Static tables that know no type's volume at all: both, for neither can be summed.
+  assert.deepEqual(asked((await inventoryOnGamePort({ statics: fakeStaticData() })).calls), [4, 5]);
+  // No ship: there is no cargo to reckon or to ask about, and godma is not troubled.
+  const afoot = await inventoryOnGamePort({ shipID: null });
+  assert.deepEqual([afoot.calls.map((call) => call.method), afoot.attributes, afoot.payload.cargo.error], [["List"], [], "NO_ACTIVE_SHIP"]);
+  assert.equal(capacityOf(afoot.payload.hangar).capacity, 9000000000000000);
+  // The List itself failing: nothing to sum, so that hold is asked, and the other is still reckoned.
+  const hangarDown = await inventoryOnGamePort({ hangar: null });
+  assert.deepEqual(asked(hangarDown.calls), [4]);
+  assert.deepEqual(capacityOf(hangarDown.payload.cargo), { capacity: 3900, used: 83 });
+  assert.equal(hangarDown.payload.hangar.error, "CALL_REFUSED");
+});
+
+test("on the gateway the Inventory panel's holds are asked of the server, as they were", async () => {
+  const calls = [];
+  const gateway = fakeGateway();
+  gateway.readFlightStatus = async () => ({ flight: { docked: true, inSpace: false, stationID: SELECT_SESSION_ECHO.stationID, solarSystemID: SELECT_SESSION_ECHO.solarSystemID, shipID: SELECT_SESSION_ECHO.shipID }, notifications: [] });
+  gateway.bindObject = async (service, method, args) => ({ boundHandle: `${method}:${args[0]}`, notifications: [] });
+  gateway.callBoundMethod = async (service, method, args) => { calls.push([method, args]); return { service, method, result: method === "List" ? { type: "list", items: [] } : null, notifications: [] }; };
+  const expected = [["GetCapacity", 4], ["GetCapacity", 5], ["List", 4], ["List", 5]];
+  const { baseUrl } = await startTestServer({ gateway, staticData: holdStatics(), clientConstants: holdConstants() });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  await apiRequest(baseUrl, "/api/bridge/inventory");
+  assert.deepEqual(calls.map(([method, args]) => [method, args[0]]).sort(), expected);
+  // And so with a game port in the process, for a pilot who is not on it.
+  calls.length = 0;
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  gamePort.shipAttribute = async () => { throw new Error("not this pilot's transport"); };
+  const both = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => "gateway", staticData: holdStatics(), clientConstants: holdConstants() });
+  await apiRequest(both.baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  assert.equal((await apiRequest(both.baseUrl, "/api/bridge/inventory")).response.status, 200);
+  assert.deepEqual(calls.map(([method, args]) => [method, args[0]]).sort(), expected);
 });
 
 // ── The Fitting window's dogma (GET /api/bridge/bound-dogma) ─────────────────

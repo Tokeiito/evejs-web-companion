@@ -15,6 +15,8 @@ const webAuth = require("./webAuth");
 const staticDataModule = require("./staticData");
 const { createClientWords } = require("./clientData/clientWords");
 const { createClientBuiltData } = require("./clientData/clientBuiltData");
+const { createClientConstants } = require("./clientData/clientConstants");
+const { STATION_CAPACITY, capacityAnswer, usedVolume } = require("./clientData/holdCapacity");
 const { readMinerPilot } = require("./pilotTrainingRead");
 const { createTrainingQueueService } = require("./pilotTrainingQueue");
 const { createFactorySessions } = require("./factorySessions");
@@ -197,6 +199,13 @@ const clientBuiltData = options.clientBuiltData || createClientBuiltData({
   clientRoot: config.clientRoot,
   python: config.clientPython,
   onError: (error) => console.warn(`[client-data] a table of the client's built data could not be read: ${error && error.message}`),
+});
+// The retail client's own constants, read by running its code from the same
+// install (src/clientData/clientConstants.js).
+const clientConstants = options.clientConstants || createClientConstants({
+  clientRoot: config.clientRoot,
+  python: config.clientPython,
+  onError: (error) => console.warn(`[client-data] the client's constants could not be read: ${error && error.message}`),
 });
 // The game-port client the customs-export hop speaks. Injected so the route
 // is exercised in tests without a socket, exactly as the gateway client is.
@@ -1543,6 +1552,8 @@ app.post("/api/bridge/release", requireAuth, async (req, res, next) => {
 
 const ITEM_FLAG_HANGAR = 4;
 const ITEM_FLAG_CARGO_HOLD = 5;
+/** dogma's `capacity`: a ship's cargo hold, as godma has it. */
+const ATTRIBUTE_CAPACITY = 38;
 // A placeholder groupStation bind tuple for ship.MachoBindObject; EveJS's ship
 // bind mints an OID and ignores bindParams (the retail moniker is
 // Moniker('ship',(stationID,groupStation))).
@@ -1900,9 +1911,43 @@ async function boundCall(held, webSessionID, bindSpec, method, args, kwargs, bin
   }
 }
 
+/** A type's own volume from the static tables, or null when they do not know it. */
+function staticTypeVolume(typeID) {
+  if (typeof staticData.getType !== "function") return null;
+  const type = staticData.getType(typeID);
+  const volume = type && type.volume !== null && type.volume !== undefined ? Number(type.volume) : NaN;
+  return Number.isFinite(volume) ? volume : null;
+}
+
+/**
+ * A hold's capacity as the retail client reckons it, from a List that has
+ * answered: the capacity handed in, and the volume of what the List holds in
+ * that flag (src/clientData/holdCapacity.js). Null where it cannot be reckoned:
+ * the List failed, or something in the hold has a volume nobody here knows.
+ */
+function reckonedCapacity(settledList, flag, capacity, packaged) {
+  if (settledList.status !== "fulfilled") return null;
+  const listed = settledList.value && settledList.value.result;
+  const rows = (listed && Array.isArray(listed.items) ? listed.items : [])
+    .map((row) => (row && row.type === "packedrow" && row.fields ? row.fields : null));
+  if (rows.includes(null)) return null;
+  const used = usedVolume(rows, flag, staticTypeVolume, packaged);
+  return used === null ? null : capacityAnswer(capacity, used);
+}
+
 // Load the full Inventory & Ship panel: station hangar + active-ship cargo,
-// each with its List and GetCapacity. The four reads are INDEPENDENT
+// each with its List and its capacity. The reads are INDEPENDENT
 // (Promise.allSettled) so one failed read never blanks the rest (R2's rule).
+//
+// ⚠ THE RETAIL CLIENT NEVER ASKS THE SERVER HOW FULL A HOLD IS. Its inventory
+// cache reckons a capacity itself (invCache.py 1224), and godma a ship's
+// (godma.py 871). On the game port this route does the same: a station's hangar
+// has the client's own figure for a place with no limit, the cargo has the
+// ship's capacity as godma holds it, and what is used of each is summed from
+// its List by the client's own rule with the client's own packaged volumes.
+// Where that cannot be followed (no client to read the volumes from, godma not
+// knowing the ship, a thing whose volume is not known), and on the gateway,
+// GetCapacity is asked as before.
 app.get("/api/bridge/inventory", requireAuth, async (req, res, next) => {
   const held = requireHeldBridgeSession(req, res);
   if (!held) {
@@ -1917,16 +1962,38 @@ app.get("/api/bridge/inventory", requireAuth, async (req, res, next) => {
     const shipID = held.activeShipID;
     const hangarSpec = hangarBindSpec(held);
     const cargoSpec = shipID ? cargoBindSpec(held, shipID) : null;
-    const [hangarList, hangarCap, cargoList, cargoCap] = await Promise.allSettled([
-      boundCall(held, req.webSessionID, hangarSpec, "List", [ITEM_FLAG_HANGAR], null),
-      boundCall(held, req.webSessionID, hangarSpec, "GetCapacity", [ITEM_FLAG_HANGAR], null),
-      cargoSpec
-        ? boundCall(held, req.webSessionID, cargoSpec, "List", [ITEM_FLAG_CARGO_HOLD], null)
-        : Promise.reject(Object.assign(new Error("No active ship."), { code: "NO_ACTIVE_SHIP" })),
-      cargoSpec
-        ? boundCall(held, req.webSessionID, cargoSpec, "GetCapacity", [ITEM_FLAG_CARGO_HOLD], null)
-        : Promise.reject(Object.assign(new Error("No active ship."), { code: "NO_ACTIVE_SHIP" })),
-    ]);
+    const noShip = () => Promise.reject(Object.assign(new Error("No active ship."), { code: "NO_ACTIVE_SHIP" }));
+    const listOf = (spec, flag) => (spec ? boundCall(held, req.webSessionID, spec, "List", [flag], null) : noShip());
+    const askedOf = (spec, flag) => (spec ? boundCall(held, req.webSessionID, spec, "GetCapacity", [flag], null) : noShip());
+    const onGamePort = Boolean(gamePortPilots) && isGamePortHandle(held.bridgeSessionID);
+    const packaged = onGamePort ? await clientConstants.packagedVolumes() : null;
+    let hangarList;
+    let hangarCap;
+    let cargoList;
+    let cargoCap;
+    if (!packaged) {
+      [hangarList, hangarCap, cargoList, cargoCap] = await Promise.allSettled([
+        listOf(hangarSpec, ITEM_FLAG_HANGAR),
+        askedOf(hangarSpec, ITEM_FLAG_HANGAR),
+        listOf(cargoSpec, ITEM_FLAG_CARGO_HOLD),
+        askedOf(cargoSpec, ITEM_FLAG_CARGO_HOLD),
+      ]);
+    } else {
+      [hangarList, cargoList] = await Promise.allSettled([
+        listOf(hangarSpec, ITEM_FLAG_HANGAR),
+        listOf(cargoSpec, ITEM_FLAG_CARGO_HOLD),
+      ]);
+      const shipCapacity = cargoSpec && typeof gamePortPilots.shipAttribute === "function"
+        ? await gamePortPilots.shipAttribute(ATTRIBUTE_CAPACITY, { userid: held.accountID }, held.bridgeSessionID)
+        : null;
+      // Docked in a structure this route is refused above, so the hangar here is a station's.
+      const hangarOwn = reckonedCapacity(hangarList, ITEM_FLAG_HANGAR, STATION_CAPACITY, packaged);
+      const cargoOwn = shipCapacity === null ? null : reckonedCapacity(cargoList, ITEM_FLAG_CARGO_HOLD, shipCapacity, packaged);
+      [hangarCap, cargoCap] = await Promise.allSettled([
+        hangarOwn ? Promise.resolve({ result: hangarOwn }) : askedOf(hangarSpec, ITEM_FLAG_HANGAR),
+        cargoOwn ? Promise.resolve({ result: cargoOwn }) : askedOf(cargoSpec, ITEM_FLAG_CARGO_HOLD),
+      ]);
+    }
 
     // A lost live session can't be recovered by any read; surface it so the
     // page returns to character select.

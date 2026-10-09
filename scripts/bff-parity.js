@@ -164,7 +164,22 @@ async function pass(base, accountName, accountID, characterID, routes) {
   return { answers, logged: logSince(mark, characterID) };
 }
 
-function judge(gatewayAnswer, gamePortAnswer) {
+/**
+ * Where the game port answers what the retail client reckons for itself, and
+ * the gateway what the server says when it is asked (which the client never
+ * asks). `own` are the places where the two are not meant to agree, each with
+ * why. Everything else under `under` is the same thing reckoned two ways: a
+ * difference there is one of the two being wrong, and is not data that moved.
+ */
+const CLIENT_RECKONED = Object.freeze({
+  "/api/bridge/inventory": Object.freeze({
+    under: /^\$\.(hangar|cargo)\.capacity\./,
+    // invCache.GetCapacity: a station's hangar has the client's own figure for a place with no limit.
+    own: /^\$\.hangar\.capacity\.args\.capacity$/,
+  }),
+});
+
+function judge(gatewayAnswer, gamePortAnswer, route = null) {
   if (gatewayAnswer.status !== gamePortAnswer.status) {
     return { verdict: "status differs", detail: `${gatewayAnswer.status} against ${gamePortAnswer.status}: ${JSON.stringify(gamePortAnswer.payload).slice(0, 200)}` };
   }
@@ -177,7 +192,12 @@ function judge(gatewayAnswer, gamePortAnswer) {
   for (const difference of differences) {
     if (difference.kind === "null-vs-value" && references.includes(difference.path)) difference.kind = "gained";
   }
-  const settled = (difference) => MOVED.has(difference.kind) || TOLERATED.has(difference.kind) || difference.kind === "gained";
+  const reckoned = route === null ? undefined : CLIENT_RECKONED[route];
+  for (const difference of reckoned ? differences : []) {
+    if (reckoned.own.test(difference.path)) difference.kind = "client-reckoned";
+    else if (reckoned.under.test(difference.path)) difference.kind = "reckoned-differently";
+  }
+  const settled = (difference) => MOVED.has(difference.kind) || TOLERATED.has(difference.kind) || difference.kind === "gained" || difference.kind === "client-reckoned";
   const verdict = differences.length === 0 ? "identical"
     : differences.every((difference) => MOVED.has(difference.kind)) ? "moved"
       : differences.every(settled) ? "tolerated"
@@ -215,7 +235,7 @@ async function main() {
   }
   const counts = {};
   for (const route of routes) {
-    const { verdict, detail, differences = [] } = judge(viaGateway.answers[route], viaGamePort.answers[route]);
+    const { verdict, detail, differences = [] } = judge(viaGateway.answers[route], viaGamePort.answers[route], route);
     counts[verdict] = (counts[verdict] ?? 0) + 1;
     console.log(`${verdict.padEnd(15)} ${String(viaGateway.answers[route].status).padEnd(4)} ${route}${detail ? `   ${detail}` : ""}`);
     if (verdict === "divergent" || verdict === "status differs") {

@@ -75,3 +75,22 @@ test("the routes compared are reads the web client's docked panels make", () => 
   for (const route of DOCKED_ROUTES) assert.match(route, /^\/api\/bridge\//);
   assert.equal(new Set(DOCKED_ROUTES).size, DOCKED_ROUTES.length);
 });
+
+test("where the game port answers what the client reckons for itself, the difference is named, not taken for data that moved", () => {
+  const capacity = (limit, used) => ({ type: "object", name: "util.KeyVal", args: { type: "dict", entries: [["capacity", limit], ["used", used]] } });
+  const inventory = (hangar, cargo) => ok({ ok: true, hangar: { capacity: hangar, error: null }, cargo: { capacity: cargo, error: null } });
+  // A station hangar: the server's default limit on the gateway, the client's own figure on the game port.
+  const hangar = judge(inventory(capacity(1000000, 250000), capacity(3900, 0.1)), inventory(capacity(9000000000000000, 250000), capacity(3900, 0.1)), "/api/bridge/inventory");
+  assert.deepEqual([hangar.verdict, hangar.detail], ["tolerated", "client-reckoned ×1"]);
+  // What is used of it is the same thing reckoned two ways, and a difference there is a difference.
+  const used = judge(inventory(capacity(1000000, 250000), capacity(3900, 0.1)), inventory(capacity(9000000000000000, 250001), capacity(3900, 0.1)), "/api/bridge/inventory");
+  assert.deepEqual([used.verdict, used.detail], ["divergent", "client-reckoned ×1, reckoned-differently ×1"]);
+  // So is the cargo's capacity, which godma and the server should agree on, and what is used of that.
+  for (const cargo of [capacity(4000, 0.1), capacity(3900, 0.2)]) {
+    const differing = judge(inventory(capacity(1000000, 250000), capacity(3900, 0.1)), inventory(capacity(9000000000000000, 250000), cargo), "/api/bridge/inventory");
+    assert.deepEqual([differing.verdict, differing.detail], ["divergent", "client-reckoned ×1, reckoned-differently ×1"]);
+  }
+  // On another route, or with the route not said, a number that differs is data that moved, as before.
+  assert.equal(judge(inventory(capacity(1000000, 1), capacity(1, 1)), inventory(capacity(2000000, 1), capacity(1, 1)), "/api/bridge/assets").verdict, "moved");
+  assert.equal(judge(inventory(capacity(1000000, 1), capacity(1, 1)), inventory(capacity(2000000, 1), capacity(1, 1))).verdict, "moved");
+});

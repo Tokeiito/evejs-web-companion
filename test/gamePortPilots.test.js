@@ -2717,3 +2717,30 @@ test("the account's own connection addresses a call the same way: the proxy's se
   assert.deepEqual(made[0].proxyCalls.map((call) => [call.service, call.method, call.args]), [["search", "QuickQuery", ["zaph", [2]]]]);
   assert.deepEqual(made[0].calls.map((call) => call.method), ["GetCharCreationInfo"]);
 });
+
+// ── a ship's attribute, as godma holds it ────────────────────────────────────
+
+const holdsAllInfo = () => keyVal([["shipInfo", { type: "dict", entries: [
+  [BigInt(SHIP), keyVal([["itemID", BigInt(SHIP)], ["time", DOGMA_T], ["attributes", { type: "dict", entries: [[38, 3900], [283, 25], [1556, 0]] }]])],
+] }]]);
+
+test("a ship's attribute is godma's: held from the one GetAllInfo, and never asked for by itself", async () => {
+  const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": holdsAllInfo() } });
+  session.calls.length = 0;
+  assert.equal(await pilots.shipAttribute(38, FIELDS, handle), 3900);
+  assert.equal(await pilots.shipAttribute(283, FIELDS, handle), 25);
+  // Nought is a value; an attribute the ship has not is not known.
+  assert.equal(await pilots.shipAttribute(1556, FIELDS, handle), 0);
+  assert.equal(await pilots.shipAttribute(1557, FIELDS, handle), null);
+  // Godma primed once, as the client primes it, and nothing else asked of the server.
+  assert.deepEqual(session.boundCalls.filter((call) => call.method === "GetAllInfo").map((call) => call.args), [[true, true, null]]);
+  assert.deepEqual(session.calls, []);
+  // A session is its account's own.
+  await rejects(pilots.shipAttribute(38, { userid: 9 }, handle), "SESSION_NOT_FOUND");
+  await rejects(pilots.shipAttribute(38, FIELDS, "gp:nope"), "SESSION_NOT_FOUND");
+});
+
+test("with dogma not answering, a ship's attribute is not known", async () => {
+  const { pilots, handle } = await selected({ answers: { "bound:GetAllInfo": () => { throw new Error("not now"); } } });
+  assert.equal(await pilots.shipAttribute(38, FIELDS, handle), null);
+});

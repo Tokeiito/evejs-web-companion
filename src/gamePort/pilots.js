@@ -541,6 +541,18 @@ function createGamePortPilots({
     });
   }
 
+  /**
+   * The pilot's own ship's attribute, as godma holds it: primed once with GetAllInfo, as the client primes it,
+   * and kept right by the server's notices. The client reads a hold's capacity from here and never asks the
+   * server for one (godma.py 871). Null for an attribute godma was not told of, or with godma not primed.
+   */
+  async function shipAttribute(attributeID, sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    const place = whereabouts(entry);
+    await shipReadings(entry, place);
+    return entry.dogma.attribute(place.shipID, attributeID);
+  }
+
   /** The user's answer to a question the server asked. */
   async function answerClientQuestion(bridgeSessionID, questionID, answer, sessionFields = {}) {
     const entry = held(bridgeSessionID, sessionFields);
@@ -1458,6 +1470,7 @@ function createGamePortPilots({
     openSessionEventStream,
     accountCall,
     answerClientQuestion,
+    shipAttribute,
     shutdown,
     /** Every pair called since this transport was made, most called first, with how each compares with the retail client's. */
     callLedger: () => ledger.rows(),
