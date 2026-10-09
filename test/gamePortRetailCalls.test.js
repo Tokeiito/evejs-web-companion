@@ -297,6 +297,8 @@ test("everything of ship, dogmaIM, corpRegistry and the skill handler is made on
     skillHandler: [],
     // Nor crimewatch: each use makes a moniker for where the pilot is and calls it.
     crimewatch: [],
+    // The alliance's registry is asked by name about any alliance by its ID; all else is asked of the moniker for the session's own.
+    allianceRegistry: ["GetAllianceMembers", "GetAllianceMembersOlderThan", "GetAlliancePublicInfo", "GetDaysInAlliance", "GetEmploymentRecord", "GetRankedAlliances"],
   });
   assert.deepEqual([madeOnMoniker("corpRegistry", "GetCorporation"), madeOnMoniker("corpRegistry", "AddBulletin"), madeOnMoniker("corpRegistry", "MachoBindObject")], [true, true, false]);
   assert.deepEqual([madeOnMoniker("ship", "Undock"), madeOnMoniker("dogmaIM", "GetTargets"), madeOnMoniker("ship", "SomethingNobodyRead"), madeOnMoniker("dogmaIM", "Overload")], [true, true, true, true]);
@@ -309,9 +311,31 @@ test("everything of ship, dogmaIM, corpRegistry and the skill handler is made on
   assert.equal(retailForm("dogmaIM", "CreateNewbieShip", [1, 2], null).moniker, false);
   for (const pair of Object.keys(RETAIL_CALLS)) {
     const [service, method] = pair.split(".");
-    // On the moniker for every pair of those three services but the ones the client asks by the service's name.
-    assert.equal(retailForm(service, method, [], null).moniker, Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method), pair);
+    // On the moniker for every pair of those services but the ones the client asks by the service's name. (For a
+    // pilot in an alliance: one in none has no moniker for an alliance's registry.)
+    assert.equal(retailForm(service, method, [], null, { allianceID: 99000001 }).moniker, Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method), pair);
   }
+});
+
+test("the alliance's registry is asked on the moniker for the session's alliance, by name about any alliance, and not at all by a client in none", () => {
+  const IN = { allianceID: 99000001 };
+  const form = (method, args, context) => { const made = retailForm("allianceRegistry", method, args, null, context); return [made.status, made.args, made.moniker]; };
+  // eveMoniker.GetAlliance: the client's alliance service asks its moniker, read against the client or not.
+  assert.deepEqual([form("GetRelationships", [], IN), form("SetRelationship", [5, 99000002], IN)], [["same", [], true], ["unchecked", [5, 99000002], true]]);
+  assert.equal(retailForm("allianceRegistry", "GetRelationships", [], null, IN).source, "eve/client/script/ui/services/alliances/all_cso_relationships.py:25");
+  // What is asked about any alliance is asked by name, in an alliance or out of one.
+  assert.deepEqual([form("GetRankedAlliances", [100], IN), form("GetRankedAlliances", [100], {}), form("GetAlliancePublicInfo", [99000002], {})], [["same", [100], false], ["same", [100], false], ["unchecked", [99000002], false]]);
+  // all_cso_alliance.GetAlliance: the session's own alliance of the moniker, with nothing, however the BFF named it; another's by name, by its ID.
+  assert.deepEqual([form("GetAlliance", [], IN), form("GetAlliance", [99000001], IN), form("GetAlliance", [99000002], IN)], [["same", [], true], ["reshaped", [], true], ["same", [99000002], false]]);
+  // With no alliance the client cannot make the moniker (eveMoniker.py 171) and asks nothing of it: what the BFF asks
+  // goes by name as it was given, and is the web's alone. Another alliance's record is still the client's to ask.
+  for (const context of [{}, { allianceID: null }, undefined]) {
+    assert.deepEqual([form("GetRelationships", [], context), form("SetRelationship", [5, 99000002], context), form("GetAlliance", [], context)], [["web-only", [], false], ["web-only", [5, 99000002], false], ["web-only", [], false]]);
+    assert.deepEqual(form("GetAlliance", [99000002], context), ["same", [99000002], false]);
+  }
+  assert.equal(retailForm("allianceRegistry", "GetRelationships", [], null, {}).source, "eve/common/script/net/eveMoniker.py:171");
+  // No other service's moniker wants anything of the session.
+  assert.deepEqual([retailForm("corpRegistry", "GetCorporation", [], null, {}).moniker, retailForm("ship", "Undock", [], null, {}).moniker], [true, true]);
 });
 
 test("targeting, onlining, scooping and leaving a ship are the client's calls as they stand", () => {

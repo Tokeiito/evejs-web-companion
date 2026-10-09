@@ -71,7 +71,12 @@ const MONIKER_SERVICES = Object.freeze({
   skillHandler: new Set(),
   // crimewatchSvc: eveMoniker.CharGetCrimewatchLocation(), made at every use.
   crimewatch: new Set(),
+  // The alliance service's moniker for the session's alliance (all_cso.GetMoniker: eveMoniker.GetAlliance(), bound
+  // when it is made). What is asked about any alliance by its ID is asked of the service by name.
+  allianceRegistry: new Set(["GetAlliancePublicInfo", "GetRankedAlliances", "GetEmploymentRecord", "GetAllianceMembers", "GetDaysInAlliance", "GetAllianceMembersOlderThan"]),
 });
+/** Monikers for something a session may not have, by what it is in the call's context: the client cannot make one without it (eveMoniker.GetAlliance raises). */
+const MONIKER_NEEDS = Object.freeze({ allianceRegistry: "allianceID" });
 
 /** shipConfigSvc.py 51: eveMoniker.GetShipAccess().GetShipConfiguration(shipID), a Moniker of its own each time. */
 const OWN_SHIP_MONIKER = new Set(["GetShipConfiguration"]);
@@ -119,6 +124,16 @@ const CC_STEPS = "eve/client/script/ui/login/charcreation/steps";
 const ACCOUNT_SVC = "eve/client/script/ui/services/accountsvc.py";
 const WALLET_SVC = "eve/client/script/ui/shared/neocom/wallet/walletSvc.py";
 const CORP_SVC = "eve/client/script/ui/services/corporation";
+const ALLIANCE_SVC = "eve/client/script/ui/services/alliances";
+/**
+ * all_cso_alliance.GetAlliance(allianceID): its own alliance the client asks of its moniker, with nothing; another
+ * it asks of the service by name, by the alliance's ID. Asked with none, the pilot's own.
+ */
+const ofAnAlliance = (args, kwargs, context) => {
+  const asked = Number(args[0]) > 0 ? Number(args[0]) : null;
+  if (asked === null) return { args: [], kwargs };
+  return asked === context.allianceID ? { args: [], kwargs, status: "reshaped" } : { args: [asked], kwargs, moniker: false };
+};
 const CONTRACTS_SVC = "eve/client/script/ui/shared/neocom/contracts/contracts.py";
 const CONTRACT_SEARCH = "eve/client/script/ui/shared/neocom/contracts/contractsearch.py";
 const MARKET_QUOTE = "eve/client/script/ui/services/marketsvc.py";
@@ -648,6 +663,20 @@ const RETAIL_CALLS = Object.freeze({
       ? { args: [accountKey, year, month, isCorp], kwargs }
       : { args: [accountKey, year, month, Boolean(isCorp)], kwargs, status: "reshaped" }),
   }),
+  "allianceRegistry.GetAlliance": Object.freeze({
+    status: "same",
+    source: `${ALLIANCE_SVC}/all_cso_alliance.py:51`,
+    note: "GetMoniker().GetAlliance(), no arguments, on the alliance's moniker, for the session's own alliance; RemoteSvc('allianceRegistry').GetAlliance(allianceID) by name for any other (53)",
+    shape: ofAnAlliance,
+  }),
+  "allianceRegistry.GetAllianceContacts": same(`${ALLIANCE_SVC}/all_cso.py:243`, "GetMoniker().GetAllianceContacts(), no arguments, on the alliance's moniker: the address book asks it as the character is chosen, for a pilot in an alliance"),
+  "allianceRegistry.GetApplications": same(`${ALLIANCE_SVC}/all_cso_applications.py:26`, "GetMoniker().GetApplications(), no arguments, on the alliance's moniker, kept"),
+  "allianceRegistry.GetBulletins": same(`${ALLIANCE_SVC}/all_cso.py:231`, "GetMoniker().GetBulletins(), no arguments, on the alliance's moniker, kept for fifteen minutes"),
+  "allianceRegistry.GetBills": same(`${ALLIANCE_SVC}/all_cso.py:217`, "GetMoniker().GetBills(), no arguments, on the alliance's moniker, by an accountant"),
+  "allianceRegistry.GetPrimeTimeInfo": same(`${ALLIANCE_SVC}/all_cso.py:288`, "GetMoniker().GetPrimeTimeInfo(), no arguments, on the alliance's moniker"),
+  "allianceRegistry.GetCapitalSystemInfo": same(`${ALLIANCE_SVC}/all_cso.py:295`, "GetMoniker().GetCapitalSystemInfo(), no arguments, on the alliance's moniker"),
+  "allianceRegistry.GetRelationships": same(`${ALLIANCE_SVC}/all_cso_relationships.py:25`, "GetMoniker().GetRelationships(), no arguments, on the alliance's moniker, kept"),
+  "allianceRegistry.GetRankedAlliances": same(`${ALLIANCE_SVC}/all_cso_alliance.py:30`, "RemoteSvc('allianceRegistry').GetRankedAlliances(maxLen), by name, kept for five seconds"),
   "corpRegistry.GetAggressionSettings": same("eve/client/script/ui/services/crimewatchSvc.py:615", "GetCorpRegistry().GetAggressionSettings(), no arguments, on the corporation's moniker: asked when the session's corporation changes, the choosing of a character among them, and kept"),
   "corpRegistry.RegisterNewAggressionSettings": same("eve/client/script/ui/shared/neocom/corporation/corp_ui_home.py:634", "GetCorpRegistry().RegisterNewAggressionSettings(not isFFEnabled): the one bool, on the corporation's moniker. What it answers is for the window that asked: the settings the client keeps change by the server's notice"),
   "corpRegistry.GetCorporateContacts": same(`${CORP_SVC}/base_corporation.py:993`, "GetCorpRegistry().GetCorporateContacts(), no arguments, on the corporation's moniker: the address book asks it as the character is chosen, and only for a pilot whose corporation is not an NPC one (991)"),
@@ -686,19 +715,25 @@ function retailForm(service, method, args, kwargs, context = {}) {
   const entry = RETAIL_CALLS[`${service}.${method}`];
   const moniker = madeOnMoniker(service, method);
   const proxy = PROXY_SERVICES.has(service);
-  if (!entry) return { ...given, status: "unchecked", source: null, note: null, moniker, proxy };
-  if (typeof entry.shape !== "function") return { ...given, status: entry.status, source: entry.source, note: entry.note ?? null, moniker, proxy };
+  // A call for a moniker the client cannot make, its session lacking what the moniker is for: the client asks
+  // nothing. What the BFF asks all the same goes as it was given, by the service's name.
+  const lacking = Object.hasOwn(MONIKER_NEEDS, service) && !(context ?? {})[MONIKER_NEEDS[service]];
+  const made = (form) => (form.moniker && lacking
+    ? { ...given, status: "web-only", source: "eve/common/script/net/eveMoniker.py:171", note: "The client asks this on a moniker it cannot make while its session has no alliance, and so does not ask it at all.", moniker: false, proxy }
+    : form);
+  if (!entry) return made({ ...given, status: "unchecked", source: null, note: null, moniker, proxy });
+  if (typeof entry.shape !== "function") return made({ ...given, status: entry.status, source: entry.source, note: entry.note ?? null, moniker, proxy });
   const shaped = entry.shape(given.args, given.kwargs ?? {}, context ?? {});
   const keywords = shaped.kwargs && Object.keys(shaped.kwargs).length > 0 ? shaped.kwargs : null;
-  return {
+  return made({
     args: shaped.args,
     kwargs: keywords,
     status: shaped.status ?? entry.status,
     source: entry.source,
     note: shaped.note ?? entry.note ?? null,
-    moniker,
+    moniker: shaped.moniker ?? moniker,
     proxy,
-  };
+  });
 }
 
 /** What the pilot must have before this call can be shaped as the client's: "dogma", or null. */

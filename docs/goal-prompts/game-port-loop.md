@@ -293,7 +293,9 @@ Take these defaults, and list each under "For the operator" in the log so they c
   each value it puts down to time passing between its two reads, with both values: read them.
   A clock is a clock; a count of none against two is not. A read that takes what it reads
   (`skillHandler.GetSkillChangesForISIS`) reads "moved" for whichever transport asks second:
-  run the pass again.
+  run the pass again. And the first route of a pass, `/api/bridge/flight/status`, now and then
+  reads "moved" with a count of notices: a notice that reached the game port's session at login
+  (`OnModuleAttributeChanges`, seen 2026-10-09) goes out with the first answer.
 - **A test that puts a pilot in space must use the park that moves by hand.** In
   `test/gamePortPilots.test.js`, `selected({ inSpace: true })` makes a real park with a real
   timer, and the test process then never ends: a run sat until its own time limit killed it

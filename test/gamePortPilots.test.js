@@ -49,7 +49,7 @@ const onRegistry = (call) => call.objectID.startsWith(`N=${REGISTRY_NODE}:`);
  * a function of the arguments; a function may throw. Selecting puts the
  * character on the session as the server's session change does.
  */
-function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesOnline = true, inSpace = false, handshakeAnswer = null, corpid = 1000044, serverNow = 1_700_000_000_000 } = {}) {
+function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesOnline = true, inSpace = false, handshakeAnswer = null, corpid = 1000044, allianceid = null, serverNow = 1_700_000_000_000 } = {}) {
   const listeners = { notification: new Set(), sessionChange: new Set(), close: new Set(), clientCall: new Set() };
   const session = {
     attributes: {},
@@ -74,9 +74,10 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
       if (key === "charUnboundMgr.SelectCharacterID" && !(key in answers)) {
         if (comesOnline) {
           const place = inSpace ? { solarsystemid: SYSTEM } : { stationid: STATION };
-          Object.assign(session.attributes, { charid: BigInt(args[0]), corpid, solarsystemid2: SYSTEM, shipid: SHIP, ...place });
-          // The server's session change for a character chosen names its corporation among the rest.
-          session.change({ charid: [null, args[0]], corpid: [null, corpid], stationid: [null, STATION] });
+          const alliance = allianceid === null ? {} : { allianceid };
+          Object.assign(session.attributes, { charid: BigInt(args[0]), corpid, solarsystemid2: SYSTEM, shipid: SHIP, ...alliance, ...place });
+          // The server's session change for a character chosen names its corporation among the rest, and its alliance if it is in one.
+          session.change({ charid: [null, args[0]], corpid: [null, corpid], stationid: [null, STATION], ...(allianceid === null ? {} : { allianceid: [null, allianceid] }) });
         }
         return null;
       }
@@ -2975,6 +2976,103 @@ test("each of the address book's reads fails for itself, and the choosing is non
   const built = build({ answers: { "onlineStatus.GetInitialState": () => { built.session.drop(); throw sessionError("CONNECTION_CLOSED"); } } }, ADDRESS_BOOK_PAIRS);
   await rejects(built.pilots.selectCharacter([PILOT, null, true], null, FIELDS), "SESSION_SELECT_FAILED", /closed the connection/);
   assert.deepEqual([built.session.sent.at(-1), built.pilots.size], ["GetInitialState", 0]);
+});
+
+// ── the alliance's registry ──────────────────────────────────────────────────
+
+const ALLIANCE = 99000001;
+const IN_AN_ALLIANCE = { corpid: 98000001, allianceid: ALLIANCE };
+const ALLIANCE_PAIRS = { allowed: new Set(["allianceRegistry.GetAllianceContacts", "allianceRegistry.GetRelationships", "allianceRegistry.GetAlliance", "allianceRegistry.GetRankedAlliances", "allianceRegistry.SetRelationship", "ship.LeaveShip", "station.GetGuests"]) };
+const ofTheAlliance = (list) => list.filter((bind) => bind.service === "allianceRegistry");
+
+test("a pilot in an alliance has the alliance's moniker made and bound, and its contacts asked for beside the address book's others", async () => {
+  const { pilots, session } = await selected(IN_AN_ALLIANCE, ALLIANCE_PAIRS);
+  // Moniker('allianceRegistry', (session.allianceid, 1)), bound for its own sake (all_cso.GetMoniker), and then asked.
+  assert.deepEqual([session.binds, session.carried], [[{ service: "allianceRegistry", params: [ALLIANCE, 1] }], [null]]);
+  assert.deepEqual(session.boundCalls, [{ objectID: "N=1:1", method: "GetAllianceContacts", args: [], kwargs: null }]);
+  // The address book asks its four side by side: the bind is on its way while the online state is asked for.
+  assert.deepEqual(session.sent.slice(-7), ["GetEveOwners", "GetContactList", "GetCorporateContacts", "GetInitialState", "GetAllianceContacts", "GetMyApplications", "GetAgents"]);
+  assert.deepEqual([session.calls.filter((call) => call.service === "allianceRegistry"), ledgerOf(pilots, "allianceRegistry.GetAllianceContacts")], [[], [{ same: 1 }, "eve/client/script/ui/services/alliances/all_cso.py:243"]]);
+
+  // A pilot in no alliance has no such moniker: nothing of the alliance's is bound or asked.
+  const out = await selected({ corpid: 98000001 }, ALLIANCE_PAIRS);
+  assert.deepEqual([out.session.binds, out.session.boundCalls, ledgerOf(out.pilots, "allianceRegistry.GetAllianceContacts")], [[], [], null]);
+
+  // A registry that cannot be bound, or contacts refused: the choosing stands, and the rest are asked.
+  const unbound = await selected({ ...IN_AN_ALLIANCE, answers: { "bind:allianceRegistry": () => { throw sessionError("RESOLVE_FAILED", "allianceRegistry could not say where its object lives."); } } }, ALLIANCE_PAIRS);
+  assert.deepEqual([unbound.outcome.session.characterID, unbound.session.binds.length, unbound.session.sent.slice(-3)], [PILOT, 1, ["GetInitialState", "GetMyApplications", "GetAgents"]]);
+  const refused = await selected({ ...IN_AN_ALLIANCE, answers: { "bound:GetAllianceContacts": () => { throw refusedBy("NotNow"); } } }, ALLIANCE_PAIRS);
+  assert.deepEqual([refused.outcome.session.characterID, refused.session.sent.slice(-3)], [PILOT, ["GetAllianceContacts", "GetMyApplications", "GetAgents"]]);
+});
+
+test("what the BFF asks of the alliance's registry is made on the moniker, or by name where the client asks by name", async () => {
+  const { pilots, session, handle } = await selected({ ...IN_AN_ALLIANCE, answers: { "bound:GetRelationships": { type: "dict", entries: [[99000002, 5]] }, "allianceRegistry.GetRankedAlliances": { type: "list", items: [1] } } }, ALLIANCE_PAIRS);
+  const ask = async (method, args = []) => (await pilots.callMethod("allianceRegistry", method, args, null, FIELDS, handle)).result;
+  const byName = () => session.calls.filter((call) => call.service === "allianceRegistry").map((call) => [call.method, call.args]);
+  // On what was bound as the character was chosen: no other bind, and nothing by the service's name.
+  assert.deepEqual(await ask("GetRelationships"), { type: "dict", entries: [[99000002, 5]] });
+  assert.deepEqual([session.boundCalls.at(-1), session.binds.length, byName(), ledgerOf(pilots, "allianceRegistry.GetRelationships")], [
+    { objectID: "N=1:1", method: "GetRelationships", args: [], kwargs: null }, 1, [], [{ reshaped: 1 }, "eve/client/script/ui/services/alliances/all_cso_relationships.py:25"],
+  ]);
+  // A pair nobody has read against the client goes to the moniker too, as it was given.
+  await ask("SetRelationship", [5, 99000002]);
+  assert.deepEqual([session.boundCalls.at(-1), ledgerOf(pilots, "allianceRegistry.SetRelationship")[0]], [{ objectID: "N=1:1", method: "SetRelationship", args: [5, 99000002], kwargs: null }, { unchecked: 1 }]);
+  // The alliance's own record: of the moniker, with nothing, however the BFF named the alliance.
+  await ask("GetAlliance");
+  await ask("GetAlliance", [ALLIANCE]);
+  assert.deepEqual([session.boundCalls.slice(-2), ledgerOf(pilots, "allianceRegistry.GetAlliance")[0]], [
+    [{ objectID: "N=1:1", method: "GetAlliance", args: [], kwargs: null }, { objectID: "N=1:1", method: "GetAlliance", args: [], kwargs: null }], { reshaped: 2 },
+  ]);
+  // Another alliance's, and the ranking of them all, by name.
+  await ask("GetAlliance", [ALLIANCE + 1]);
+  assert.deepEqual(await ask("GetRankedAlliances", [100]), { type: "list", items: [1] });
+  assert.deepEqual([byName(), ledgerOf(pilots, "allianceRegistry.GetAlliance")[0], ledgerOf(pilots, "allianceRegistry.GetRankedAlliances")[0], session.binds.length], [
+    [["GetAlliance", [ALLIANCE + 1]], ["GetRankedAlliances", [100]]], { reshaped: 2, same: 1 }, { same: 1 }, 1,
+  ]);
+});
+
+test("the alliance's moniker is the alliance's: kept when the pilot moves, made and bound again in another alliance, and none in none", async () => {
+  const { pilots, session, handle } = await selected(IN_AN_ALLIANCE, ALLIANCE_PAIRS);
+  const ask = () => pilots.callMethod("allianceRegistry", "GetRelationships", [], null, FIELDS, handle);
+  // Another station: the ship's moniker is for the place, the alliance's is not.
+  session.attributes.stationid = 60000004;
+  session.change({ stationid: [STATION, 60000004] });
+  await ask();
+  assert.deepEqual([ofTheAlliance(session.binds).length, session.boundCalls.at(-1).objectID], [1, "N=1:1"]);
+  // all_cso.OnSessionChanged: in another alliance its moniker is made and bound at once, with no call. What is asked
+  // while it binds waits for the object, and binds nothing itself.
+  session.attributes.allianceid = ALLIANCE + 1;
+  session.change({ allianceid: [ALLIANCE, ALLIANCE + 1] });
+  await ask();
+  await settled();
+  assert.deepEqual([ofTheAlliance(session.binds), session.carried, session.boundCalls.at(-1)], [
+    [{ service: "allianceRegistry", params: [ALLIANCE, 1] }, { service: "allianceRegistry", params: [ALLIANCE + 1, 1] }], [null, null],
+    { objectID: "N=1:2", method: "GetRelationships", args: [], kwargs: null },
+  ]);
+  // A change of the session that is not the alliance's leaves it as it is.
+  session.attributes.corpid = 98000002;
+  session.change({ corpid: [98000001, 98000002] });
+  await settled();
+  await ask();
+  assert.deepEqual([ofTheAlliance(session.binds).length, session.boundCalls.at(-1).objectID], [2, "N=1:2"]);
+  // Out of any alliance: nothing is bound. The client would ask nothing; what the BFF asks goes by name, the web's alone.
+  session.attributes.allianceid = null;
+  session.change({ allianceid: [ALLIANCE + 1, null] });
+  await settled();
+  const bound = session.boundCalls.length;
+  await ask();
+  assert.deepEqual([ofTheAlliance(session.binds).length, session.boundCalls.length - bound, session.calls.at(-1), ledgerOf(pilots, "allianceRegistry.GetRelationships")], [
+    2, 0, { service: "allianceRegistry", method: "GetRelationships", args: [], kwargs: null }, [{ reshaped: 3, "web-only": 1 }, "eve/client/script/ui/services/alliances/all_cso_relationships.py:25"],
+  ]);
+  // In an alliance again, with a bind that fails: the next thing asked binds for itself.
+  let fails = true;
+  const failing = await selected({ ...IN_AN_ALLIANCE, answers: { "bind:allianceRegistry": (params) => { if (fails) throw sessionError("RESOLVE_FAILED", "no"); return { objectID: "N=1:70", nodeID: 1, result: null }; } } }, ALLIANCE_PAIRS);
+  failing.session.attributes.allianceid = ALLIANCE + 1;
+  failing.session.change({ allianceid: [ALLIANCE, ALLIANCE + 1] });
+  await settled();
+  fails = false;
+  await failing.pilots.callMethod("allianceRegistry", "GetRelationships", [], null, FIELDS, failing.handle);
+  assert.deepEqual([ofTheAlliance(failing.session.binds).map((bind) => bind.params), failing.session.boundCalls.at(-1).objectID], [[[ALLIANCE, 1], [ALLIANCE + 1, 1], [ALLIANCE + 1, 1]], "N=1:70"]);
 });
 
 test("the wallet's transactions go out with a bool for whose they are, however the BFF said it", async () => {

@@ -136,16 +136,22 @@ const LOCATION_ATTRIBUTES = ["stationid", "structureid", "solarsystemid", "locat
 const CORPORATION_SERVICES = new Set(["corpRegistry"]);
 const CORP_REGISTRY = "corpRegistry";
 /**
+ * The service whose moniker is for the pilot's alliance (eveMoniker.GetAlliance: its session check is on
+ * allianceid). Kept through a move, and made again when the alliance changes.
+ */
+const ALLIANCE_REGISTRY = "allianceRegistry";
+/**
  * The registry's read whose answer is kept as the client keeps it: the corporation's aggression settings
  * (crimewatchSvc.corpAggressionSettings). Asked when the client asks, and from then on answered from what is kept.
  */
 const AGGRESSION_SETTINGS = "GetAggressionSettings";
 /**
  * Monikers the client binds for their own sake before it calls anything on them: base_corporation.GetCorpRegistry
- * makes the corporation's and calls Bind() on it, which sends MachoBindObject(params, None). Any other binds when
- * it is first called, with that call riding along (moniker.py).
+ * makes the corporation's and calls Bind() on it, which sends MachoBindObject(params, None), and all_cso.GetMoniker
+ * does the same with the alliance's. Any other binds when it is first called, with that call riding along
+ * (moniker.py).
  */
-const BOUND_BEFORE_USE = new Set(["corpRegistry"]);
+const BOUND_BEFORE_USE = new Set(["corpRegistry", "allianceRegistry"]);
 /** The name the BFF asks the skill handler's reads by. What they are bound by is what the handler's own moniker says. */
 const SKILL_HANDLER = "skillHandler";
 /**
@@ -928,6 +934,11 @@ function createGamePortPilots({
       }
       // scanSvc.OnSessionChanged: another system, ship or structure, and the scanner knows of no probes.
       if (["solarsystemid", "shipid", "structureid"].some((name) => name in changes)) entry.scanner.flush();
+      // all_cso.OnSessionChanged: another alliance, another moniker, made and bound at once; no alliance, none.
+      if ("allianceid" in changes) {
+        entry.monikers.delete(ALLIANCE_REGISTRY);
+        if (sessions.has(entry.handle)) allianceBound(entry).catch(() => {});
+      }
       // base_corporation.GetCorpRegistry: another corporation, another registry.
       if ("corpid" in changes) {
         for (const service of CORPORATION_SERVICES) entry.monikers.delete(service);
@@ -1471,7 +1482,7 @@ function createGamePortPilots({
     entry.inventoryManagers.clear();
     for (const service of [...entry.monikers.keys()]) {
       // The skill handler is the character's, wherever it is: skillsvc keeps its moniker until it forgets everything.
-      if (!CORPORATION_SERVICES.has(service) && service !== SKILL_HANDLER) entry.monikers.delete(service);
+      if (!CORPORATION_SERVICES.has(service) && service !== ALLIANCE_REGISTRY && service !== SKILL_HANDLER) entry.monikers.delete(service);
     }
     for (const [handle, object] of entry.bound) {
       if (LOCATION_SERVICES.has(object.service)) entry.bound.delete(handle);
@@ -1524,6 +1535,8 @@ function createGamePortPilots({
         return attribute(entry, "structureid") ?? attribute(entry, "stationid") ?? undefined;
       case "corpRegistry": // GetCorpRegistry: Moniker('corpRegistry', session.corpid)
         return attribute(entry, "corpid") ?? undefined;
+      case "allianceRegistry": // GetAlliance: Moniker('allianceRegistry', (session.allianceid, 1)), the 1 for "is master"
+        return [attribute(entry, "allianceid"), 1];
       case "fleetObjectHandler": // GetFleet: Moniker(fleetID or session.fleetid), which is None outside a fleet
         return positive(Array.isArray(given) ? given[0] : given) ?? attribute(entry, "fleetid");
       default: // agentMgr (agentID), planetMgr (planetID), charMgr ((charid, containerGlobal)): as given
@@ -1544,16 +1557,30 @@ function createGamePortPilots({
     while (!kept.has(key) && entry.binding.has(name)) await entry.binding.get(name).catch(() => {});
     if (kept.has(key)) return entry.session.callBound(kept.get(key), method, args, kwargs);
     const carries = !BOUND_BEFORE_USE.has(service);
-    const binding = entry.session.bind(service, paramsOf(), carries ? [method, args, kwargs] : null);
+    const bound = await binds(entry, kept, key, name, service, paramsOf(), carries ? [method, args, kwargs] : null);
+    return carries ? bound.result : entry.session.callBound(bound.objectID, method, args, kwargs);
+  }
+
+  /** A moniker's bind, with the call it carries or none: known as binding while it is, and its object kept when it answers. */
+  async function binds(entry, kept, key, name, service, params, call) {
+    const binding = entry.session.bind(service, params, call);
     entry.binding.set(name, binding);
-    let bound;
     try {
-      bound = await binding;
+      const bound = await binding;
       kept.set(key, bound.objectID);
+      return bound;
     } finally {
       entry.binding.delete(name);
     }
-    return carries ? bound.result : entry.session.callBound(bound.objectID, method, args, kwargs);
+  }
+
+  /**
+   * all_cso.GetMoniker, as the session's alliance changes: the new alliance's moniker made and bound for its own
+   * sake (Bind()). Nothing is sent for a session with no alliance: the client cannot make the moniker.
+   */
+  async function allianceBound(entry) {
+    if (attribute(entry, "allianceid") === null) return;
+    await binds(entry, entry.monikers, ALLIANCE_REGISTRY, `${ALLIANCE_REGISTRY}:${ALLIANCE_REGISTRY}`, ALLIANCE_REGISTRY, monikerParams(entry, ALLIANCE_REGISTRY, undefined), null);
   }
 
   /**
@@ -2040,18 +2067,26 @@ function createGamePortPilots({
    * (corp.GetContactList, which is GetCorpRegistry().GetCorporateContacts()), and who of its watched contacts is
    * online (onlineStatus.Prime, which is GetInitialState). Each fails for itself.
    *
-   * Nothing is kept of them, though the client keeps all three and works them over at the server's notices: no
-   * window of the page reads a contact yet. The alliance's contacts, which the client asks for beside these on
-   * the alliance's own moniker, are not asked: the transport makes no such moniker yet.
+   * A pilot in an alliance is asked for the alliance's contacts beside these, between the corporation's and the
+   * online state (alliance.GetContactList, which is GetMoniker().GetAllianceContacts(), the moniker made and bound
+   * for it). No recording has an alliance: the place is the address book's own order.
+   *
+   * Nothing is kept of them, though the client keeps them all and works them over at the server's notices: no
+   * window of the page reads a contact yet.
    */
   async function addressBookRead(entry) {
     const byName = (service, method) => {
       ledger.note(service, method, shape(service, method, [], null, contextFor(entry)));
       return entry.session.call(service, method, [], null);
     };
+    const ofTheAlliance = (method) => {
+      ledger.note(ALLIANCE_REGISTRY, method, shape(ALLIANCE_REGISTRY, method, [], null, contextFor(entry)));
+      return keptCall(entry, entry.monikers, ALLIANCE_REGISTRY, ALLIANCE_REGISTRY, () => monikerParams(entry, ALLIANCE_REGISTRY, undefined), method, [], null);
+    };
     await Promise.all([
       byName("charMgr", "GetContactList"),
       ...(inNpcCorporation(entry) ? [] : [corporationAsk(entry, "GetCorporateContacts")]),
+      ...(attribute(entry, "allianceid") === null ? [] : [ofTheAlliance("GetAllianceContacts")]),
       byName("onlineStatus", "GetInitialState"),
     ].map((asked) => asked.catch(() => {})));
   }

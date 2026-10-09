@@ -233,9 +233,26 @@ them over at the server's notices (`OnPersonalContactsUpdated`, `OnOrganizationC
 
 On the game port the transport asks the same, in that order, as a pilot is chosen, and waits for
 them. It keeps none of them: no window of the page reads a contact yet, and a read of the routes
-asks the server as before. The alliance's contacts are not asked: the transport has no moniker for
-an alliance's registry and asks `allianceRegistry` by name. `onlineStatus.Prime`, which a BFF route
-asks of the server, is the client's own service's method and never a call of the client's.
+asks the server as before. `onlineStatus.Prime`, which a BFF route asks of the server, is the
+client's own service's method and never a call of the client's.
+
+**The alliance's registry, 2026-10-09.** No Tranquility recording has a pilot in an alliance, so
+this is the decompiled client alone (`all_cso.py`, `eveMoniker.py`). The client's alliance service
+keeps one moniker, `Moniker('allianceRegistry', (session.allianceid, 1))`, the 1 for "is master",
+and binds it for its own sake when it makes it (`GetMoniker`: `Bind()`), as the corporation's
+registry is bound. It makes it when something first wants it, which at login is the address book
+asking `GetAllianceContacts()`, and makes and binds a new one at once when the session's alliance
+changes. With no alliance it cannot make one (`eveMoniker.GetAlliance` raises) and asks nothing.
+Everything of the session's own alliance is asked of the moniker. What is asked about any
+alliance by its ID is asked of the service by name: `GetAlliancePublicInfo`, `GetRankedAlliances`,
+`GetEmploymentRecord`, `GetAllianceMembers`, `GetDaysInAlliance`, `GetAllianceMembersOlderThan`,
+and `GetAlliance(allianceID)` for an alliance that is not the session's (its own is
+`GetMoniker().GetAlliance()`, with nothing).
+
+On the game port the transport does the same. For a pilot in an alliance the address book's reads
+at the choosing bind the moniker and ask its contacts, and what the BFF asks of the alliance's
+registry goes to the moniker or by name as the client's would. For a pilot in none, what the BFF
+asks all the same goes by name as before, and the ledger says it is the web's alone.
 
 **The customs export's call shape.** `src/piCustomsExport.js` binds `invbroker` with the office ID
 and calls `ImportExportWithPlanet` on that. The client goes through `invCache`: it binds the
