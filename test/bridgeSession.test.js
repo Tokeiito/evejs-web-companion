@@ -2309,3 +2309,62 @@ test("with no journal kept, and on the gateway, the server is asked for it as be
   const next = await apiRequest(lost.baseUrl, "/api/bridge/journal");
   assert.equal(next.response.status >= 400 && next.response.status !== 404, true);
 });
+
+// ── a follow or an orbit, and the throttle ───────────────────────────────────
+//
+// The client's autopilot sends CmdSetSpeedFraction(1.0) before its approach, the one with no range. Its menu's
+// approach, keep at range and orbit send the one command and nothing before it, and are recorded so on
+// Tranquility. The routes do the same on the game port, and open the throttle before each through the gateway, as
+// they always have.
+
+const [FOLLOWED, PILOTS_SYSTEM] = [9001, 30000142];
+const THROTTLE_OPENED = ["CmdSetSpeedFraction", [1]];
+/** One of the flight's routes asked of a pilot in space; on the game port unless told otherwise. Says what was sent to the ballpark's object, in order. */
+async function flown(path, body, { transport = "gameport" } = {}) {
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  const gateway = fakeGateway();
+  const backend = transport === "gameport" ? gamePort : gateway;
+  const asked = [];
+  backend.readFlightStatus = async () => ({ flight: { docked: false, inSpace: true, stationID: null, solarSystemID: PILOTS_SYSTEM, shipID: 9002 }, notifications: [] });
+  backend.readSpaceSnapshot = async () => ({ space: { inSpace: true, solarSystemID: PILOTS_SYSTEM, ship: { itemID: 9002 }, entities: [] }, notifications: [] });
+  backend.bindObject = async (service, method, args) => { asked.push({ bound: `${service}.${method}`, args }); return { boundHandle: "the-park", notifications: [] }; };
+  backend.callBoundMethod = async (service, method, args, kwargs, sessionFields, bridgeSessionID, handle) => {
+    asked.push({ sent: [method, args], on: [service, handle] });
+    return { service, method, result: null, notifications: [] };
+  };
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => transport });
+  // A pilot is not moved until the page has said its check for lost drones is done.
+  const selected = await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const ready = await apiRequest(baseUrl, "/api/bridge/drone-recovery/ready", { method: "POST", body: { checkID: selected.payload.droneRecoveryCheckID } });
+  assert.equal(ready.response.status, 200, JSON.stringify(ready.payload));
+  asked.length = 0;
+  const answer = await apiRequest(baseUrl, path, { method: "POST", body });
+  const sent = asked.filter((each) => each.sent);
+  return { status: answer.response.status, sent: sent.map((each) => each.sent), on: [...new Set(sent.map((each) => each.on.join(" ")))], bound: asked.filter((each) => each.bound).map((each) => each.bound) };
+}
+
+test("on the game port the throttle is opened only before the autopilot's approach: the menu's approach, keep at range and orbit go alone", async () => {
+  // The menu's approach, at the route's own 50 m or at a range the page names.
+  const menus = await flown("/api/bridge/flight/approach", { destinationID: FOLLOWED });
+  assert.deepEqual([menus.status, menus.sent, menus.on, menus.bound], [200, [["CmdFollowBall", [FOLLOWED, 50]]], ["beyonce the-park"], ["beyonce.MachoBindObject"]]);
+  assert.deepEqual((await flown("/api/bridge/flight/approach", { destinationID: FOLLOWED, range: 3000 })).sent, [["CmdFollowBall", [FOLLOWED, 3000]]]);
+  // The autopilot's: no range, and the throttle opened first.
+  assert.deepEqual((await flown("/api/bridge/flight/approach", { destinationID: FOLLOWED, range: 0 })).sent, [THROTTLE_OPENED, ["CmdFollowBall", [FOLLOWED, 0]]]);
+  // Keep at range and orbit are the menu's, whatever the range.
+  assert.deepEqual((await flown("/api/bridge/flight/keep-at-range", { targetID: FOLLOWED, range: 5000 })).sent, [["CmdFollowBall", [FOLLOWED, 5000]]]);
+  assert.deepEqual((await flown("/api/bridge/flight/keep-at-range", { targetID: FOLLOWED })).sent, [["CmdFollowBall", [FOLLOWED, 1000]]]);
+  assert.deepEqual((await flown("/api/bridge/flight/orbit", { targetID: FOLLOWED, range: 2500 })).sent, [["CmdOrbit", [FOLLOWED, 2500]]]);
+  assert.deepEqual((await flown("/api/bridge/flight/orbit", { targetID: FOLLOWED })).sent, [["CmdOrbit", [FOLLOWED, 1000]]]);
+});
+
+test("through the gateway an approach, keep at range and orbit each open the throttle first, as before", async () => {
+  for (const [path, body, command] of [
+    ["/api/bridge/flight/approach", { destinationID: FOLLOWED }, ["CmdFollowBall", [FOLLOWED, 50]]],
+    ["/api/bridge/flight/approach", { destinationID: FOLLOWED, range: 0 }, ["CmdFollowBall", [FOLLOWED, 0]]],
+    ["/api/bridge/flight/keep-at-range", { targetID: FOLLOWED, range: 5000 }, ["CmdFollowBall", [FOLLOWED, 5000]]],
+    ["/api/bridge/flight/orbit", { targetID: FOLLOWED, range: 2500 }, ["CmdOrbit", [FOLLOWED, 2500]]],
+  ]) {
+    const { status, sent } = await flown(path, body, { transport: "gateway" });
+    assert.deepEqual([status, sent], [200, [THROTTLE_OPENED, command]], `${path} ${JSON.stringify(body)}`);
+  }
+});

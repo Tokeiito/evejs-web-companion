@@ -16984,6 +16984,22 @@ app.post("/api/bridge/chat/:channel/send", requireAuth, async (req, res, next) =
 // michelle.GetRemotePark(). Keyed by system so a jump (which changes the
 // system) rebinds the park for the new system rather than reusing a stale OID.
 const BEYONCE_BIND_GROUP = 5;
+/**
+ * Whether the throttle is opened before a follow or an orbit is sent:
+ * beyonce.CmdSetSpeedFraction(1.0) on the ballpark's object first.
+ *
+ * The retail client's autopilot opens it before its own approach, which is the
+ * one with no range (autopilot.py: CmdSetSpeedFraction(1.0), then
+ * CmdFollowBall(id, 0.0)). Its menu's approach, keep at range and orbit send the
+ * one command and nothing before it (movementFunctions.py), and are recorded so
+ * on Tranquility. On the game port the BFF sends what the client sends. Through
+ * the gateway each of them opens the throttle first, as it always has.
+ */
+function throttleOpenedFirst(held, theAutopilotsOwn) {
+  const onGamePort = Boolean(gamePortPilots) && isGamePortHandle(held.bridgeSessionID);
+  return !onGamePort || theAutopilotsOwn;
+}
+
 function parkBindSpec(solarSystemID) {
   return {
     key: `park:${solarSystemID}`,
@@ -18003,8 +18019,10 @@ app.post("/api/bridge/flight/dock", requireAuth, async (req, res, next) => {
   }
 });
 
-// Approach a gate/target at full speed:
+// Approach a gate/target:
 // beyonce.CmdSetSpeedFraction(1.0) + CmdFollowBall(destinationID, range).
+// On the game port the throttle is opened only before the autopilot's approach,
+// the one with no range, as the client opens it (throttleOpenedFirst).
 //
 // R13: the range is no longer hardcoded to 0.0. Retail has TWO callers of this
 // one method and they differ only in that number — the right-click "Approach"
@@ -18041,7 +18059,9 @@ app.post("/api/bridge/flight/approach", requireAuth, async (req, res, next) => {
       return;
     }
     const spec = parkBindSpec(before.flight.solarSystemID);
-    await boundCall(held, req.webSessionID, spec, "CmdSetSpeedFraction", [1.0], null);
+    if (throttleOpenedFirst(held, range === 0)) {
+      await boundCall(held, req.webSessionID, spec, "CmdSetSpeedFraction", [1.0], null);
+    }
     const outcome = await boundCall(held, req.webSessionID, spec, "CmdFollowBall", [destinationID, range], null);
     const after = await readHeldFlightAfterCommand(held, req.webSessionID, before);
     res.json({
@@ -18059,6 +18079,7 @@ app.post("/api/bridge/flight/approach", requireAuth, async (req, res, next) => {
 // range). The SAME server method as Approach — retail has no separate
 // keep-at-range command, it just passes a non-zero range. Default 1000 m,
 // floored at 50 m (below that the server treats it as a docking-style approach).
+// On the game port it is the follow alone, as the client's menu sends it.
 app.post("/api/bridge/flight/keep-at-range", requireAuth, async (req, res, next) => {
   const held = requireHeldBridgeSession(req, res);
   if (!held) {
@@ -18088,7 +18109,9 @@ app.post("/api/bridge/flight/keep-at-range", requireAuth, async (req, res, next)
       return;
     }
     const spec = parkBindSpec(before.flight.solarSystemID);
-    await boundCall(held, req.webSessionID, spec, "CmdSetSpeedFraction", [1.0], null);
+    if (throttleOpenedFirst(held, false)) {
+      await boundCall(held, req.webSessionID, spec, "CmdSetSpeedFraction", [1.0], null);
+    }
     const outcome = await boundCall(held, req.webSessionID, spec, "CmdFollowBall", [targetID, range], null);
     const after = await readHeldFlightAfterCommand(held, req.webSessionID, before);
     res.json({
@@ -18105,7 +18128,8 @@ app.post("/api/bridge/flight/keep-at-range", requireAuth, async (req, res, next)
 // Orbit: beyonce.CmdOrbit(targetID, range) (allowlisted in R13). Default 1000 m.
 // The range is coerced the way the retail client coerces it before sending —
 // float below 10, int at or above — so the wire value matches what the real
-// client puts on it.
+// client puts on it. Through the gateway the throttle is opened first; on the
+// game port it is the orbit alone, as the client's menu sends it.
 app.post("/api/bridge/flight/orbit", requireAuth, async (req, res, next) => {
   const held = requireHeldBridgeSession(req, res);
   if (!held) {
@@ -18132,7 +18156,9 @@ app.post("/api/bridge/flight/orbit", requireAuth, async (req, res, next) => {
       return;
     }
     const spec = parkBindSpec(before.flight.solarSystemID);
-    await boundCall(held, req.webSessionID, spec, "CmdSetSpeedFraction", [1.0], null);
+    if (throttleOpenedFirst(held, false)) {
+      await boundCall(held, req.webSessionID, spec, "CmdSetSpeedFraction", [1.0], null);
+    }
     const outcome = await boundCall(held, req.webSessionID, spec, "CmdOrbit", [targetID, range], null);
     const after = await readHeldFlightAfterCommand(held, req.webSessionID, before);
     res.json({

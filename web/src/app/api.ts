@@ -2708,9 +2708,11 @@ export async function warpToFleetMember(
 }
 
 /**
- * Approach a gate/target at full speed (beyonce.CmdSetSpeedFraction(1) +
- * CmdFollowBall). The range is retail's: the menu approach uses 50 m, and the
- * autopilot's close-the-gap step uses 0.
+ * Approach a gate/target (beyonce.CmdFollowBall). The range is retail's: the
+ * menu approach uses 50 m, and the autopilot's close-the-gap step uses 0. The
+ * autopilot's goes out with the throttle opened first
+ * (beyonce.CmdSetSpeedFraction(1)), as the client's does; through the gateway
+ * every approach does.
  */
 export async function approach(
   destinationID: number,

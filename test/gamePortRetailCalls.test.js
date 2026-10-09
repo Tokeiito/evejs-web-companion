@@ -349,14 +349,16 @@ test("an approach, the speed set before the autopilot's, and a GM's command are 
   for (const [pair, args, where, moniker] of [
     ["beyonce.CmdFollowBall", [9001, 50], /movementFunctions\.py:302$/, false],
     ["beyonce.CmdSetSpeedFraction", [1.0], /autopilot\.py:434$/, false],
+    ["beyonce.CmdOrbit", [9001, 5000], /movementFunctions\.py:260$/, false],
+    ["beyonce.CmdStop", [], /eveCommands\.py:1104$/, false],
     ["slash.SlashCmd", ["/giveskill me 3386 3"], /menusvc\.py:834$/, false],
   ]) {
     const answer = form(pair, args);
     assert.deepEqual([answer.args, answer.kwargs, answer.status, answer.moniker], [args, null, "same", moniker], pair);
     assert.match(answer.source, where, pair);
   }
-  // Where the BFF sends a speed the client would not is said beside it.
-  assert.match(RETAIL_CALLS["beyonce.CmdSetSpeedFraction"].note, /send none before theirs, and the BFF's routes for those do/);
+  // Where the client sends none, and that the game port's routes send none there either, is said beside it.
+  assert.match(RETAIL_CALLS["beyonce.CmdSetSpeedFraction"].note, /send none before theirs, and on the game port the BFF's routes send none either; through the gateway they do/);
 });
 
 test("targeting, onlining, scooping and leaving a ship are the client's calls as they stand", () => {

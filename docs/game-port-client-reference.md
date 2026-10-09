@@ -295,6 +295,28 @@ for them again each time it opens, which is the page's own way.
 The notifications' lists and the calendar's months are kept by one helper,
 `src/gamePort/keptReads.js`: answers kept until something changes them.
 
+**A follow, an orbit, and the throttle, 2026-10-09.** The client's menu sends an approach as
+`bp.CmdFollowBall(targetID, const.approachRange)`, keep at range as `bp.CmdFollowBall(targetID,
+range)` and an orbit as `bp.CmdOrbit(targetID, range)` (`movementFunctions.py` 302, 229, 260),
+each alone. Only its autopilot opens the throttle first: `park.CmdSetSpeedFraction(1.0)`, then
+`park.CmdFollowBall(destinationID, 0.0)` (`autopilot.py` 434). The Tranquility recordings have
+all four so: a mission's flight with a dozen follows and orbits and no speed call beside any, and
+an autopilot's flight with the speed call before each follow of a gate. On this server a stopped
+ship told to follow or orbit moves off without it: seen live for each, the ship's own ballpark
+reading FOLLOW or ORBIT with its speed fraction at 1 again. (CCP's ballpark library sets a
+stopped ball's fraction to 1 only for a go-to-point; for a follow it would be their server's own
+code, which is not on this machine.)
+
+The BFF's three routes sent the speed call before every one. On the game port they now send it
+only before an approach with no range, which is the autopilot's and is what the page's own
+autopilot asks for. Through the gateway they are as they were. `CmdOrbit` and `CmdStop()`
+(`eveCommands.py` 1104) were read against the client in the same walk and are the client's as
+the BFF sends them.
+
+Not done as the client does it: its menu sends nothing when the ship is already following or
+orbiting that ball at that range (`_IsAlreadyFollowingBallAtRange`). The BFF sends the command
+each time it is asked.
+
 **What the ship has locked, and a module's target, 2026-10-09.** The client's target service
 (`targetMgr.py`) asks the server for neither list while it flies. On undocking, or on logging in
 in space, godma asks the dogma location once for each (`RefreshTargets`, godma.py 2360):
@@ -321,9 +343,9 @@ Read against the client in the same walk, and the BFF's as the client's: `CmdFol
 range)` (the menu's approach, `movementFunctions.py` 302; recorded as `(itemID, 50)`),
 `CmdSetSpeedFraction(1.0)` (the autopilot's, before its approach), `Board(shipID, session.shipid
 or session.stationid)` on the ship's moniker (recorded in space with the bind carrying it), and
-`slash.SlashCmd(command)` by name. One thing is not the client's: the BFF's routes for the menu's
-approach, keep at range and orbit send `CmdSetSpeedFraction(1.0)` first, as the autopilot does,
-and the client's menu sends none.
+`slash.SlashCmd(command)` by name. One thing was not the client's, and is repaired above: the
+BFF's routes for the menu's approach, keep at range and orbit sent `CmdSetSpeedFraction(1.0)`
+first, as the autopilot does, and the client's menu sends none.
 
 **The flight's calls and the scanner's sites, 2026-10-09.** Read against the client after a walk
 in space on the game port found them unread. The menu's warp is `bp.CmdWarpToStuff('item', itemID,
