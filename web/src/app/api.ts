@@ -2067,6 +2067,12 @@ export async function removeAgentOffer(agentID: number, options: ApiOptions = {}
   await postJson(`/api/bridge/agents/${agentID}/remove-offer`, { confirm: true }, options);
 }
 
+/** What the client's agents service knows of one agent (raw; decoded in the flow). Null for an agent the server does not list. */
+export async function loadAgentRecord(agentID: number, options: ApiOptions = {}): Promise<JsonValue> {
+  const data = await getJson(`/api/bridge/agents/${agentID}/record`, options);
+  return data.agent ?? null;
+}
+
 /** A mission's objectives as the job board's page of it reads them (raw; decoded in the flow). */
 export async function loadMissionObjectives(agentID: number, options: ApiOptions = {}): Promise<JsonValue> {
   const data = await getJson(`/api/bridge/agents/${agentID}/mission-objectives`, options);

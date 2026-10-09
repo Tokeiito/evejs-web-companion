@@ -48,9 +48,17 @@ function client({ printed = JSON.stringify(MISSIONS), index = INDEX, fails = nul
   return { data, runs, read, errors, release: () => release && release() };
 }
 
-test("the missions table is the client's missionsLoader over its missions.fsdbinary", () => {
-  assert.deepEqual(TABLES.missions, { loader: "missionsLoader", resource: "res:/staticdata/missions.fsdbinary" });
+test("each table is one of the client's loaders over its own file, named in lower case as the index is kept", () => {
+  assert.deepEqual(TABLES, {
+    missions: { loader: "missionsLoader", resource: "res:/staticdata/missions.fsdbinary" },
+    npcCorporations: { loader: "npcCorporationsLoader", resource: "res:/staticdata/npccorporations.fsdbinary" },
+    npcCorporationDivisions: { loader: "npcCorporationDivisionsLoader", resource: "res:/staticdata/npccorporationdivisions.fsdbinary" },
+  });
+  for (const table of Object.values(TABLES)) assert.equal(table.resource, table.resource.toLowerCase());
 });
+
+/** What status() says of every table before any is read. */
+const UNREAD = Object.fromEntries(Object.keys(TABLES).map((name) => [name, { loaded: false, rows: 0, error: null }]));
 
 test("a table is read by the client's loader, from where the client's index says its file is", async () => {
   const { data, runs, read, errors } = client();
@@ -58,7 +66,7 @@ test("a table is read by the client's loader, from where the client's index says
   // Nothing is read until something is asked for.
   assert.deepEqual(runs, []);
   assert.deepEqual(read, []);
-  assert.deepEqual(data.status(), { available: true, python: "a-python", tables: { missions: { loaded: false, rows: 0, error: null } } });
+  assert.deepEqual(data.status(), { available: true, python: "a-python", tables: UNREAD });
 
   assert.deepEqual(await data.lookup("missions", 1381), { available: true, row: MISSIONS[1381] });
   assert.deepEqual(read, [[path.join(ROOT, "tq", "resfileindex.txt"), "utf8"]]);
@@ -106,7 +114,7 @@ test("with no client there is nothing to read, and nothing is run", async () => 
   assert.deepEqual(read, []);
   // And it is no failure: nothing was tried.
   assert.deepEqual(errors, []);
-  assert.deepEqual(data.status(), { available: false, python: "a-python", tables: { missions: { loaded: false, rows: 0, error: null } } });
+  assert.deepEqual(data.status(), { available: false, python: "a-python", tables: UNREAD });
 });
 
 test("a table this does not read is not one, and nothing is run for it", async () => {
@@ -146,4 +154,24 @@ test("what the loader printed must be a table", async () => {
     assert.deepEqual(await data.lookup("missions", 875), { available: false, row: null }, JSON.stringify(printed));
     assert.equal(errors.length, 1, JSON.stringify(printed));
   }
+});
+
+test("each table is read on its own, by its own loader, and reading one reads no other", async () => {
+  const runs = [];
+  const data = createClientBuiltData({
+    clientRoot: ROOT,
+    readFile: () => ["res:/staticdata/npccorporations.fsdbinary,71/7149_corps,e8b1,71305,1", "res:/staticdata/npccorporationdivisions.fsdbinary,4d/4d27_divisions,ffc8,3468,1"].join("\n"),
+    async run(how) {
+      runs.push(how.loader);
+      return how.loader === "npcCorporationsLoader" ? JSON.stringify({ 1000002: { factionID: 500001, nameID: 9 } }) : JSON.stringify({ 22: { nameID: 900109 } });
+    },
+  });
+  assert.deepEqual(await data.lookup("npcCorporationDivisions", 22), { available: true, row: { nameID: 900109 } });
+  assert.deepEqual(runs, ["npcCorporationDivisionsLoader"]);
+  assert.deepEqual(await data.lookup("npcCorporations", 1000002), { available: true, row: { factionID: 500001, nameID: 9 } });
+  assert.deepEqual(runs, ["npcCorporationDivisionsLoader", "npcCorporationsLoader"]);
+  // The index has no missions file here: that table fails alone.
+  assert.deepEqual(await data.lookup("missions", 1), { available: false, row: null });
+  assert.deepEqual(await data.lookup("npcCorporationDivisions", 22), { available: true, row: { nameID: 900109 } });
+  assert.equal(runs.length, 2);
 });

@@ -12484,6 +12484,67 @@ app.get("/api/bridge/agents", requireAuth, async (req, res, next) => {
   }
 });
 
+// What the retail client's agents service knows of one agent (agents.GetAgentByID, which the mission's
+// page and the standings read from). The client reads agentMgr.GetAgents once and keeps the table; to each
+// row it adds the faction of the agent's corporation, from its own data (agents.py 89 to 107). So does this:
+// one read of the table for the life of this process, through whichever pilot first asks, and the faction
+// from the client's own record of the corporation. The division's name is the client's too
+// (npcs/divisions.py), so the number of its message goes with the row. Without a client to read, those two
+// are null. An agent the server does not list is null.
+let agentTableRead = null;
+function agentTable(held, webSessionID) {
+  if (agentTableRead === null) {
+    agentTableRead = heldTopLevelCall(held, webSessionID, "agentMgr", "GetAgents", [], null).then(
+      (outcome) => new Map(decodeStationAgents(outcome.result, 0).map((agent) => [agent.agentID, agent])),
+      (error) => {
+        // Not kept: the next ask reads again.
+        agentTableRead = null;
+        throw error;
+      },
+    );
+  }
+  return agentTableRead;
+}
+
+app.get("/api/bridge/agents/:agentID/record", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const agentID = Number(req.params.agentID) || 0;
+  if (!Number.isSafeInteger(agentID) || agentID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_AGENT", message: "A positive agentID is required." });
+    return;
+  }
+  try {
+    const row = (await agentTable(held, req.webSessionID)).get(agentID) || null;
+    if (row === null) {
+      res.json({ ok: true, agent: null });
+      return;
+    }
+    const [corporation, division] = await Promise.all([
+      row.corporationID ? clientBuiltData.lookup("npcCorporations", row.corporationID) : { row: null },
+      row.divisionID ? clientBuiltData.lookup("npcCorporationDivisions", row.divisionID) : { row: null },
+    ]);
+    const whole = (value) => (Number.isSafeInteger(value) && value > 0 ? value : null);
+    res.json({
+      ok: true,
+      agent: {
+        agentID: row.agentID,
+        agentTypeID: row.agentTypeID,
+        divisionID: row.divisionID,
+        level: row.level,
+        stationID: row.stationID,
+        corporationID: row.corporationID,
+        factionID: whole(corporation.row && corporation.row.factionID),
+        divisionNameID: whole(division.row && division.row.nameID),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Drive the agent conversation: DoAction(actionID). actionID null opens the
 // conversation; a server-assigned action token (from availableActions) requests
 // / accepts / declines. The in-person accept is synchronous; a decline is a

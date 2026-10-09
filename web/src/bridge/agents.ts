@@ -227,6 +227,45 @@ export interface MissionChange {
   readonly agentID: number | null;
 }
 
+/**
+ * What the retail client's agents service knows of one agent (agents.GetAgentByID): its row of the server's
+ * agents table, with the faction of its corporation added from the client's own data, and here the number
+ * of the message its division's name is (npcs/divisions.py).
+ */
+export interface AgentRecord {
+  readonly agentID: number;
+  readonly agentTypeID: number | null;
+  readonly divisionID: number | null;
+  readonly level: number | null;
+  readonly stationID: number | null;
+  readonly corporationID: number | null;
+  readonly factionID: number | null;
+  readonly divisionNameID: number | null;
+}
+
+/** A record as the BFF answers it (GET /api/bridge/agents/<id>/record), or null for anything that is not one. */
+export function decodeAgentRecord(value: unknown): AgentRecord | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const row = value as Record<string, unknown>;
+  const whole = (given: unknown): number | null => (typeof given === "number" && Number.isSafeInteger(given) && given > 0 ? given : null);
+  const agentID = whole(row.agentID);
+  if (agentID === null) {
+    return null;
+  }
+  return {
+    agentID,
+    agentTypeID: whole(row.agentTypeID),
+    divisionID: whole(row.divisionID),
+    level: whole(row.level),
+    stationID: whole(row.stationID),
+    corporationID: whole(row.corporationID),
+    factionID: whole(row.factionID),
+    divisionNameID: whole(row.divisionNameID),
+  };
+}
+
 /** Reads a pushed OnAgentMissionChange(action, agentID). Null for any other notification. */
 export function decodeMissionChange(method: string | null, args: readonly unknown[]): MissionChange | null {
   const action = args[0];

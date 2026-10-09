@@ -75,6 +75,8 @@ function panel(options: {
   /** Where the pilot was selected, and what its flight status has said since (neither: nothing is known of where it is). */
   online?: { stationID: number | null; structureID: number | null; solarSystemID: number | null };
   flight?: { docked: boolean; stationID: number | null; structureID: number | null; solarSystemID: number | null };
+  /** What the client's agents service knows of the page's agent. */
+  agentRecord?: Record<string, unknown> | null;
   /** A mission's page held by the store, whether the client's words for it are to hand, and whether the BFF has a client at all. */
   page?: Record<string, unknown>;
   pageWords?: boolean;
@@ -134,6 +136,10 @@ function panel(options: {
       page: { agentID: AGENT, contentID: 2156, missionState: 1, important: false, expirationTime: String(filetimeOf(NOW_MS) + 5n * HOUR_TICKS), missionTitleID: 58607, missionTitle: null, objectives: null, record: null, ...options.page } as never,
     });
     store.apply({ type: "agents/mission-keywords", key: `${AGENT}:2156`, keywords: { objectiveLocationSystemID: 30002780 } });
+  }
+  if (options.agentRecord !== undefined) {
+    store.apply({ type: "agents/record", agentID: AGENT, record: options.agentRecord as never });
+    store.apply({ type: "names/resolved", entries: { "corporation:1000002": "A Made-Up Company", "faction:500001": "A Made-Up State" } });
   }
   if (options.noClient) {
     store.apply({ type: "words/loaded", available: false, templates: {} });
@@ -312,6 +318,8 @@ const PAGE_TEMPLATES: Record<string, string> = {
   [PAGE_LABELS.isk]: "{[numeric]amount, useGrouping, decimalPlaces=2} ISK",
   [PAGE_LABELS.quantityAndItem]: "{[numeric]quantity, useGrouping} x {[item]item.name}",
   [PAGE_LABELS.startConversation]: "Have a word",
+  [PAGE_LABELS.agentLevel]: "Grade {level}",
+  "#900109": "Deliveries",
   [PAGE_LABELS.thisStation]: "Right here",
   [PAGE_LABELS.thisSolarSystem]: "In this system",
   "#900260": "The Made-Up Errand",
@@ -525,4 +533,25 @@ test("the agent window's pane goes by where the pilot is now too", () => {
   // Pick-up, drop-off, cargo.
   assert.deepEqual(marks(), ["done", "open", "open"]);
   assert.deepEqual(marks({ docked: false, stationID: null, structureID: null, solarSystemID: 30002780 }), ["open", "open", "open"]);
+});
+
+// --- the agent's card and its corporation's, on the mission's page ---------------------
+
+test("the mission's page has the agent's card and its corporation's, between the warning and the briefing", () => {
+  const record = { agentID: AGENT, agentTypeID: 2, divisionID: 22, level: 1, stationID: 60000004, corporationID: 1000002, factionID: 500001, divisionNameID: 900109 };
+  const page = pageOf(panel({ words: true, pageWords: true, talking: false, agentRecord: record, page: { missionState: 2, important: true, expirationTime: null, record: PAGE_RECORD } })) as string;
+  assert.equal(text(page), "The Made-Up Errand Have a word Close This one counts. Grade 1 Antaken Kamola Deliveries A Made-Up Company A Made-Up State What it is The briefing itself. One more thing Mind the gate.");
+  assert.match(page, /<div class="mission-page-card agent">[\s\S]*<div class="mission-page-card corporation">/);
+
+  // An agent with no corporation has the one card; one not known to the client's agents service has none.
+  const alone = pageOf(panel({ words: true, pageWords: true, talking: false, agentRecord: { ...record, corporationID: null, factionID: null }, page: { missionState: 2, expirationTime: null } })) as string;
+  assert.match(text(alone), /Close Grade 1 Antaken Kamola Deliveries$/);
+  assert.doesNotMatch(alone, /mission-page-card corporation/);
+  for (const agentRecord of [null, undefined]) {
+    const none = pageOf(panel({ words: true, pageWords: true, talking: false, ...(agentRecord === null ? { agentRecord } : {}), page: { missionState: 2, expirationTime: null } })) as string;
+    assert.doesNotMatch(none, /mission-page-card/);
+  }
+  // Without the client's words the card has the names, and no level or division.
+  const wordless = pageOf(panel({ words: false, talking: false, agentRecord: record, page: { missionState: 2, expirationTime: null } })) as string;
+  assert.match(text(wordless), /Close Antaken Kamola A Made-Up Company A Made-Up State$/);
 });

@@ -442,6 +442,7 @@ const INITIAL_AGENTS: AgentsState = Object.freeze({
   objectives: null,
   missionTimes: null,
   missionPage: null,
+  agentRecords: Object.freeze({}) as AgentsState["agentRecords"],
   journal: null,
   loaded: false,
   actionError: null,
@@ -1740,6 +1741,11 @@ export function createClientStore(): ClientStore {
       case "agents/mission-page":
         agents.set({ ...agents.get(), missionPage: event.page });
         break;
+      case "agents/record": {
+        const current = agents.get();
+        agents.set({ ...current, agentRecords: { ...current.agentRecords, [event.agentID]: event.record } });
+        break;
+      }
       case "agents/journal":
         agents.set({ ...agents.get(), journal: event.journal });
         break;

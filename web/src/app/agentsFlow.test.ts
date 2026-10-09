@@ -1483,7 +1483,11 @@ const PAGE_RECORD = { contentTemplate: "agent.missionTemplatizedContent_BasicCou
 
 /** A pilot with a mission's page to open: the objectives and the client's record are answered from `state`. */
 async function withMissionPage() {
-  const page: { objective: unknown; record: unknown; recordFails: boolean; objectiveFails: boolean; hold: Promise<void> | null } = { objective: pageAnswer(2), record: PAGE_RECORD, recordFails: false, objectiveFails: false, hold: null };
+  const page: { objective: unknown; record: unknown; recordFails: boolean; objectiveFails: boolean; hold: Promise<void> | null; agent: unknown; agentFails: boolean } = {
+    objective: pageAnswer(2), record: PAGE_RECORD, recordFails: false, objectiveFails: false, hold: null,
+    agent: { agentID: 3008416, agentTypeID: 2, divisionID: 22, level: 1, stationID: 60000004, corporationID: 1000002, factionID: 500001, divisionNameID: 900109 },
+    agentFails: false,
+  };
   const made = await listening({ null: ACCEPTED }, {
     routes: async (path) => {
       if (/\/mission-objectives$/.test(path)) {
@@ -1494,6 +1498,7 @@ async function withMissionPage() {
         return page.recordFails ? [502, { ok: false, error: "UNREACHABLE", message: "No answer." }] : [200, { ok: true, available: page.record !== null, mission: page.record }];
       }
       if (/\/keywords\?/.test(path)) return [200, { ok: true, keywords: { type: "dict", entries: [["objectiveQuantity", 1]] }, notifications: [] }];
+      if (/\/record$/.test(path)) return page.agentFails ? [502, { ok: false, error: "UNREACHABLE", message: "No answer." }] : [200, { ok: true, agent: page.agent }];
       return undefined;
     },
   });
@@ -1507,8 +1512,10 @@ test("Read Details opens the mission's page: one read of the agent's object, the
   await flow.openMissionDetails(3008416);
   await until(() => store.agents.get().missionPage?.record != null);
   assert.deepEqual(pageAsked().sort(), ["/api/bridge/agents/3008416/keywords?contentID=1382", "/api/bridge/agents/3008416/mission-objectives", "/api/client-data/missions/1382"]);
-  // Reads, all three: nothing is asked of the agent that changes anything.
-  assert.deepEqual(requests.map((request) => request.method), ["GET", "GET", "GET"]);
+  // Reads, all of them: nothing is asked of the agent that changes anything.
+  assert.deepEqual([...new Set(requests.map((request) => request.method))], ["GET"]);
+  // And what the client's agents service knows of the agent, for its card.
+  assert.deepEqual(requests.map((request) => request.path).filter((path) => path.endsWith("/record")), ["/api/bridge/agents/3008416/record"]);
   const held = store.agents.get().missionPage;
   assert.ok(held);
   // What the journal's line said, kept as the job is made from it.
@@ -1782,4 +1789,41 @@ test("the same answer twice is one push; after the pilot is selected again its n
   await flow.removeOffer(3008416);
   await settle();
   assert.equal(journalReads(), 1);
+});
+
+test("what the client knows of an agent is asked for once, kept by its ID, and asked for again only if it could not be had", async () => {
+  const { store, flow, requests, page } = await withMissionPage();
+  const asked = () => requests.filter((request) => request.path.endsWith("/record")).map((request) => request.path);
+  await flow.openMissionDetails(3008416);
+  await until(() => store.agents.get().agentRecords[3008416] !== undefined);
+  assert.deepEqual(store.agents.get().agentRecords[3008416], { agentID: 3008416, agentTypeID: 2, divisionID: 22, level: 1, stationID: 60000004, corporationID: 1000002, factionID: 500001, divisionNameID: 900109 });
+  flow.closeMissionDetails();
+  await flow.openMissionDetails(3008416);
+  flow.requestAgentRecord(3008416);
+  assert.deepEqual(asked(), ["/api/bridge/agents/3008416/record"]);
+
+  // An agent the server does not list is remembered as none, and not asked about again.
+  page.agent = null;
+  flow.requestAgentRecord(OTHER_AGENT);
+  await until(() => store.agents.get().agentRecords[OTHER_AGENT] !== undefined);
+  assert.equal(store.agents.get().agentRecords[OTHER_AGENT], null);
+  flow.requestAgentRecord(OTHER_AGENT);
+  assert.equal(asked().length, 2);
+  // The first agent's record is still there.
+  assert.equal(store.agents.get().agentRecords[3008416]?.level, 1);
+
+  // One that could not be asked for is asked for again.
+  page.agentFails = true;
+  flow.requestAgentRecord(3009999);
+  await until(() => asked().length === 3);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(store.agents.get().agentRecords[3009999], undefined);
+  page.agentFails = false;
+  page.agent = { agentID: 3009999, level: 4 };
+  flow.requestAgentRecord(3009999);
+  await until(() => store.agents.get().agentRecords[3009999] !== undefined);
+  assert.equal(store.agents.get().agentRecords[3009999]?.level, 4);
+  // Nothing is asked for what is not an agent.
+  for (const not of [0, -1, 1.5, Number.NaN]) flow.requestAgentRecord(not);
+  assert.equal(asked().length, 4);
 });

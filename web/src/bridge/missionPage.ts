@@ -20,14 +20,15 @@
 // This makes the same page as plain text, in the client's words, read from its install at run time (the
 // words store). What cannot be said is left out.
 //
-// Not done: the agent's and its corporation's cards (level, division, standing, faction); how many jumps
-// away a place is (the client plots the route), which leaves a place's distance blank unless the pilot
-// is there; the security rating before a place's name; "Objectives Complete" as the state (the client
+// Not done: the pilot's effective standing, which the client writes on the corporation's card; how many
+// jumps away a place is (the client plots the route), which leaves a place's distance blank unless the
+// pilot is there; the security rating before a place's name; "Objectives Complete" as the state (the client
 // has it from its own tracker); a ship's packaged size as cargo; the ship restrictions panel; the
 // reduced-rewards banner; the bonus's countdown; a blueprint's properties; what an alpha clone is paid.
 // The time left is written in this page's own short form: the client's short written interval is not done.
 
 import { formatTemplate, plainText, QUANTITY_AND_ITEM } from "./clientWords.ts";
+import type { AgentRecord } from "./agents.ts";
 import { AGENT_MISSION_STATE_FAILED, TYPE_CREDITS, type MissionCargo, type MissionItem, type MissionLocation, type MissionMessage, type MissionObjectives } from "./missionObjectives.ts";
 import type { NameKind } from "../store/names.ts";
 
@@ -43,6 +44,8 @@ export const PAGE_LABELS = Object.freeze({
   offerDoesNotExpire: `${JOURNAL}OfferDoesNotExpire`,
   missionDoesNotExpire: `${JOURNAL}MissionDoesNotExpire`,
   importantStandings: `${FOLDER}ImportantStandingsWarning`,
+  /** Takes level. */
+  agentLevel: "UI/Agents/AgentEntry/Level",
   briefingTitle: `${FOLDER}MissionBriefing`,
   objectivesTitle: `${FOLDER}Objectives`,
   agentLocation: `${FOLDER}AgentLocation`,
@@ -147,6 +150,19 @@ export interface PagePanel {
   readonly items: string;
 }
 
+/** The agent's card: its level, its name, the division it works in. */
+export interface PageAgent {
+  readonly level: string | null;
+  readonly name: string;
+  readonly division: string | null;
+}
+
+/** Its corporation's card: the corporation, and the faction it belongs to. */
+export interface PageCorporation {
+  readonly name: string;
+  readonly faction: string | null;
+}
+
 export interface PageRewards {
   readonly title: string | null;
   readonly rewards: readonly string[];
@@ -157,6 +173,9 @@ export interface MissionPage {
   readonly state: { readonly kind: "expired" | "offered" | "completed"; readonly text: string | null } | null;
   readonly expires: string | null;
   readonly important: string | null;
+  /** The two cards, when the client's agents service knows the agent; the second only for an agent with a corporation. */
+  readonly agent: PageAgent | null;
+  readonly corporation: PageCorporation | null;
   readonly briefing: { readonly title: string | null; readonly text: string } | null;
   /** The steps the client groups first (an agent to see, cargo, pick-up, drop-off), then the dungeons. */
   readonly objectives: { readonly title: string | null; readonly general: PageSteps; readonly extra: PageSteps } | null;
@@ -180,6 +199,8 @@ export interface MissionPageInput {
   readonly missionTitle: string | null;
   /** This mission's objectives as last read for the page (pageObjectives); null before any have come. */
   readonly objectives: MissionObjectives | null;
+  /** What the client's agents service knows of the mission's agent; null before it has answered, or when it does not know it. */
+  readonly agent: AgentRecord | null;
   readonly record: ClientMission | null;
 }
 
@@ -272,6 +293,11 @@ export function pageMissionState(input: MissionPageInput): number | null {
 /** The names the page will ask for, so they can be fetched before it is drawn. */
 export function pageNameRefs(input: MissionPageInput): Array<{ kind: NameKind; id: number }> {
   const refs: Array<{ kind: NameKind; id: number }> = [];
+  if (input.agent !== null) {
+    refs.push({ kind: "owner", id: input.agent.agentID });
+    if (input.agent.corporationID !== null) refs.push({ kind: "corporation", id: input.agent.corporationID });
+    if (input.agent.factionID !== null) refs.push({ kind: "faction", id: input.agent.factionID });
+  }
   const objectives = input.objectives;
   if (objectives === null) return refs;
   const place = (location: MissionLocation | null): void => {
@@ -336,6 +362,18 @@ export function missionPage(input: MissionPageInput, context: PageContext): Miss
   }
 
   const important = input.important || objectives?.importantStandings === true ? words(PAGE_LABELS.importantStandings) : null;
+
+  // page.py _construct_agent and _construct_corporation: the agent's level, name and division; its corporation and that corporation's faction.
+  const known = input.agent;
+  const agent: PageAgent | null = known === null ? null : {
+    level: known.level === null ? null : words(PAGE_LABELS.agentLevel, { level: known.level }),
+    name: context.nameOf("owner", known.agentID),
+    division: known.divisionNameID === null ? null : context.messageText(known.divisionNameID),
+  };
+  const corporation: PageCorporation | null = known === null || known.corporationID === null ? null : {
+    name: context.nameOf("corporation", known.corporationID),
+    faction: known.factionID === null ? null : context.nameOf("faction", known.factionID),
+  };
 
   // AgentMissionJob.description: what the agent says on offering while it is an offer and the mission has such words, else the briefing.
   const message = (key: string): string => {
@@ -456,6 +494,8 @@ export function missionPage(input: MissionPageInput, context: PageContext): Miss
     state,
     expires,
     important,
+    agent,
+    corporation,
     briefing,
     objectives: steps === 0 ? null : {
       title: words(PAGE_LABELS.objectivesTitle),

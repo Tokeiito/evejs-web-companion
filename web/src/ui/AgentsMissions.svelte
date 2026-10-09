@@ -363,6 +363,7 @@
       missionTitle: held.missionTitle,
       objectives: held.objectives,
       record: held.record,
+      agent: $agents.agentRecords[held.agentID] ?? null,
     };
   });
   // Everything said about a mission is filled with the mission's keywords and then its agent's own IDs
@@ -420,7 +421,8 @@
       return;
     }
     const dungeons = (held.objectives?.dungeons ?? []).map((dungeon) => dungeon.briefingMessage).filter((message): message is MissionMessage => message !== null);
-    const numbered = [...pageMessageIDs(held.record), ...(held.missionTitleID !== null && held.missionTitleID > 0 ? [held.missionTitleID] : [])];
+    const divisionNameID = pageInput.agent?.divisionNameID ?? null;
+    const numbered = [...pageMessageIDs(held.record), ...(held.missionTitleID !== null && held.missionTitleID > 0 ? [held.missionTitleID] : []), ...(divisionNameID === null ? [] : [divisionNameID])];
     flow.requestWords([
       ...PAGE_WORD_LABELS,
       ...numbered.map((id) => `#${id}`),
@@ -763,6 +765,21 @@
     {/if}
     {#if page.important}
       <p class="note mission-warning">{page.important}</p>
+    {/if}
+    {#if page.agent}
+      <div class="mission-page-cards">
+        <div class="mission-page-card agent">
+          {#if page.agent.level}<span class="mission-page-card-line">{page.agent.level}</span>{/if}
+          <strong class="mission-page-card-name">{page.agent.name}</strong>
+          {#if page.agent.division}<span class="mission-page-card-line minor">{page.agent.division}</span>{/if}
+        </div>
+        {#if page.corporation}
+          <div class="mission-page-card corporation">
+            <strong class="mission-page-card-name">{page.corporation.name}</strong>
+            {#if page.corporation.faction}<span class="mission-page-card-line minor">{page.corporation.faction}</span>{/if}
+          </div>
+        {/if}
+      </div>
     {/if}
     {#if page.briefing}
       {#if page.briefing.title}<h3 class="mission-block-title">{page.briefing.title}</h3>{/if}

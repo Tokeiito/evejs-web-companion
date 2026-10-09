@@ -187,6 +187,7 @@ async function startTestServer(options = {}) {
     staticData: options.staticData || fakeStaticData(),
     gamePortPilots: options.gamePortPilots,
     pilotTransportFor: options.pilotTransportFor,
+    ...(options.clientBuiltData ? { clientBuiltData: options.clientBuiltData } : {}),
     errorLogger() {},
   });
   const server = app.listen(0, "127.0.0.1");
@@ -887,4 +888,96 @@ test("a mission's page reads its objectives from the agent's own bound object, w
   assert.deepEqual(answered.payload, { ok: true, agentID: 3008416, objective, notifications: [] });
   assert.deepEqual(bound, [{ service: "agentMgr", method: "MachoBindObject", args: [3008416] }]);
   assert.deepEqual(calls, [{ service: "agentMgr", method: "GetMissionObjectiveInfo", args: [], kwargs: { ignoreLocateCheck: true }, bridgeSessionID: GAME_PORT_SESSION_ID, handle: "bound-agent" }]);
+});
+
+// ── What the client's agents service knows of an agent (GET /api/bridge/agents/:agentID/record) ──
+
+/** agentMgr.GetAgents as the server answers it: a rowset of every agent. */
+const AGENT_TABLE = {
+  type: "object",
+  name: "util.Rowset",
+  args: {
+    type: "dict",
+    entries: [
+      ["header", { type: "list", items: ["agentID", "agentTypeID", "divisionID", "level", "stationID", "corporationID"] }],
+      ["lines", { type: "list", items: [
+        { type: "list", items: [3008416, 2, 22, 1, 60000004, 1000002] },
+        { type: "list", items: [3011895, 2, 24, 1, 60000019, 1000017] },
+        { type: "list", items: [3019999, 4, null, 3, null, null] },
+      ] }],
+    ],
+  },
+};
+
+function builtData(tables, available = true) {
+  const asked = [];
+  return {
+    asked,
+    available: () => available,
+    async lookup(name, key) {
+      asked.push([name, key]);
+      return available ? { available: true, row: (tables[name] || {})[key] ?? null } : { available: false, row: null };
+    },
+  };
+}
+
+test("an agent's record is its row of the agents table, with its corporation's faction and its division's name from the client's own data", async () => {
+  const calls = [];
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  gamePort.callMethod = async (service, method, args, kwargs) => {
+    calls.push({ service, method, args, kwargs });
+    return { service, method, result: AGENT_TABLE, notifications: [] };
+  };
+  const clientBuiltData = builtData({ npcCorporations: { 1000002: { factionID: 500001, nameID: 9 }, 1000017: { nameID: 9 } }, npcCorporationDivisions: { 22: { nameID: 900109, internalName: "x" } } });
+  const { baseUrl } = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gameport", clientBuiltData });
+  const read = (agent) => apiRequest(baseUrl, `/api/bridge/agents/${agent}/record`);
+
+  // No pilot, nobody to ask through.
+  assert.equal((await read(3008416)).response.status, 409);
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  for (const agent of [0, "x", -5, "1.5"]) {
+    const refused = await read(agent);
+    assert.equal(refused.response.status, 400, String(agent));
+    assert.equal(refused.payload.error, "INVALID_AGENT");
+  }
+  calls.length = 0;
+
+  const found = await read(3008416);
+  assert.equal(found.response.status, 200, JSON.stringify(found.payload));
+  assert.deepEqual(found.payload, { ok: true, agent: { agentID: 3008416, agentTypeID: 2, divisionID: 22, level: 1, stationID: 60000004, corporationID: 1000002, factionID: 500001, divisionNameID: 900109 } });
+  // The table is asked for as the client asks: the whole of it, with nothing.
+  assert.deepEqual(calls.filter((call) => call.method === "GetAgents"), [{ service: "agentMgr", method: "GetAgents", args: [], kwargs: null }]);
+  assert.deepEqual(clientBuiltData.asked, [["npcCorporations", 1000002], ["npcCorporationDivisions", 22]]);
+
+  // A corporation with no faction in the client's record, and a division the client does not have: null, each.
+  assert.deepEqual((await read(3011895)).payload.agent, { agentID: 3011895, agentTypeID: 2, divisionID: 24, level: 1, stationID: 60000019, corporationID: 1000017, factionID: null, divisionNameID: null });
+  // An agent with no corporation and no division asks the client for neither.
+  clientBuiltData.asked.length = 0;
+  assert.deepEqual((await read(3019999)).payload.agent, { agentID: 3019999, agentTypeID: 4, divisionID: null, level: 3, stationID: null, corporationID: null, factionID: null, divisionNameID: null });
+  assert.deepEqual(clientBuiltData.asked, []);
+  // An agent the server does not list.
+  assert.deepEqual((await read(3000001)).payload, { ok: true, agent: null });
+  // And the table was read once for all of that, as the client reads it once.
+  assert.equal(calls.filter((call) => call.method === "GetAgents").length, 1);
+});
+
+test("an agent's record without a client to read has its row and nothing of the client's; a table that could not be read is read again", async () => {
+  let fails = true;
+  let reads = 0;
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  gamePort.callMethod = async (service, method) => {
+    if (method !== "GetAgents") return { service, method, result: null, notifications: [] };
+    reads += 1;
+    if (fails) throw Object.assign(new Error("The game server did not answer in time."), { code: "EVE_GATEWAY_TIMEOUT", statusCode: 504 });
+    return { service, method, result: AGENT_TABLE, notifications: [] };
+  };
+  const { baseUrl } = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gameport", clientBuiltData: builtData({}, false) });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  reads = 0;
+  const failed = await apiRequest(baseUrl, "/api/bridge/agents/3008416/record");
+  assert.equal(failed.response.status >= 500, true, JSON.stringify(failed.payload));
+  fails = false;
+  const found = await apiRequest(baseUrl, "/api/bridge/agents/3008416/record");
+  assert.deepEqual(found.payload.agent, { agentID: 3008416, agentTypeID: 2, divisionID: 22, level: 1, stationID: 60000004, corporationID: 1000002, factionID: null, divisionNameID: null });
+  assert.equal(reads, 2);
 });

@@ -22,6 +22,7 @@ const TEMPLATES: Record<string, string> = {
   [L.offerDoesNotExpire]: "The offer stays",
   [L.missionDoesNotExpire]: "The mission stays",
   [L.importantStandings]: "<b><i>This one counts.</i></b>",
+  [L.agentLevel]: "Grade {level}",
   [L.briefingTitle]: "What it is",
   [L.objectivesTitle]: "To do",
   [L.agentLocation]: "Agent is at",
@@ -77,8 +78,10 @@ const input = (overrides: Partial<MissionPageInput> = {}): MissionPageInput => (
   missionTitle: null,
   objectives: null,
   record: null,
+  agent: null,
   ...overrides,
 });
+const AGENT = { agentID: 3008416, agentTypeID: 2, divisionID: 22, level: 1, stationID: 60000004, corporationID: 1000002, factionID: 500001, divisionNameID: 900109 };
 const dict = (entries: Array<[string, unknown]>) => ({ type: "dict", entries }) as unknown as JsonValue;
 const tuple = (...items: unknown[]) => ({ type: "tuple", items }) as unknown as JsonValue;
 const list = (...items: unknown[]) => ({ type: "list", items }) as unknown as JsonValue;
@@ -123,6 +126,7 @@ test("the messages the page words are the record's name, briefing, offer and ext
 test("every label the page uses is asked for", () => {
   assert.deepEqual([...PAGE_WORD_LABELS].sort(), Object.values(L).sort());
   assert.ok(PAGE_WORD_LABELS.includes("UI/Chat/StartConversationAgent"));
+  assert.ok(PAGE_WORD_LABELS.includes("UI/Agents/AgentEntry/Level"));
   assert.ok(PAGE_WORD_LABELS.includes("UI/Journal/JournalWindow/Agents/OfferExpiresIn"));
 });
 
@@ -173,6 +177,8 @@ test("an offered courier: the offer's words, cargo then pick-up then drop-off, a
     state: { kind: "offered", text: "On offer" },
     expires: `Offer goes in ${5n * HOUR}`,
     important: null,
+    agent: null,
+    corporation: null,
     // On offer, what the agent says on offering stands for the briefing.
     briefing: { title: "What it is", text: "Message 900955" },
     objectives: {
@@ -218,7 +224,7 @@ test("an accepted mission to fight: the briefing itself, the dungeon in the agen
 
 test("a page with nothing read yet has its name and its state from the journal, and no more", () => {
   assert.deepEqual(missionPage(input({ missionState: 2, missionTitle: "Told as text" }), context()), {
-    title: "Told as text", state: null, expires: null, important: null, briefing: null, objectives: null, collateral: null, granted: null, rewards: null, bonusRewards: null, extra: null, talk: "Talk",
+    title: "Told as text", state: null, expires: null, important: null, agent: null, corporation: null, briefing: null, objectives: null, collateral: null, granted: null, rewards: null, bonusRewards: null, extra: null, talk: "Talk",
   });
   assert.equal(missionPage(input({ missionTitleID: null }), context()).title, null);
   // A name the client has no text for is no name.
@@ -266,6 +272,27 @@ test("a mission that matters to standings says so, whether the journal or the ob
   assert.equal(important({ objectives: { ...mission(COURIER_OFFERED_GATEWAY), importantStandings: true } }), "This one counts.");
   assert.equal(important({ objectives: mission(COURIER_OFFERED_GATEWAY) }), null);
   assert.equal(important({}), null);
+});
+
+test("the agent's card is its level, its name and its division; its corporation's, the corporation and its faction", () => {
+  const page = missionPage(input({ agent: AGENT }), context());
+  assert.deepEqual(page.agent, { level: "Grade 1", name: "owner#3008416", division: "Name 900109" });
+  assert.deepEqual(page.corporation, { name: "corporation#1000002", faction: "faction#500001" });
+  // What is not known is left off its card, and the card stays.
+  const bare = missionPage(input({ agent: { ...AGENT, level: null, divisionNameID: null, factionID: null } }), context());
+  assert.deepEqual(bare.agent, { level: null, name: "owner#3008416", division: null });
+  assert.deepEqual(bare.corporation, { name: "corporation#1000002", faction: null });
+  // A division whose name the client has no text for.
+  assert.equal(missionPage(input({ agent: AGENT }), context({ messageText: () => null })).agent?.division, null);
+  // An agent with no corporation has no second card; one the client's agents service does not know has neither.
+  const alone = missionPage(input({ agent: { ...AGENT, corporationID: null } }), context());
+  assert.notEqual(alone.agent, null);
+  assert.equal(alone.corporation, null);
+  const unknown = missionPage(input({}), context());
+  assert.equal(unknown.agent, null);
+  assert.equal(unknown.corporation, null);
+  // Without the client's words the level is not said.
+  assert.equal(missionPage(input({ agent: AGENT }), context({ templates: {} })).agent?.level, null);
 });
 
 test("the briefing: the offer's words only while it is an offer and the mission has them; tidied, and shown plain", () => {
@@ -443,4 +470,8 @@ test("the names the page needs are those of its places, its cargo, its agents an
     "owner:3009999", "station:60000019", "station:60000004", "structure:1030000000001", "type:2595", "system:30002779", "type:2595", "system:30002779", "type:606", "type:34", "owner:3008416", "type:35",
   ]);
   assert.deepEqual(pageNameRefs(input({})), []);
+  // The agent's cards need its own name, its corporation's and its faction's, whether or not anything is read of the mission.
+  assert.deepEqual(pageNameRefs(input({ agent: AGENT })).map((ref) => `${ref.kind}:${ref.id}`), ["owner:3008416", "corporation:1000002", "faction:500001"]);
+  assert.deepEqual(pageNameRefs(input({ agent: { ...AGENT, corporationID: null, factionID: null } })).map((ref) => `${ref.kind}:${ref.id}`), ["owner:3008416"]);
+  assert.deepEqual(pageNameRefs(input({ agent: AGENT, objectives })).length, 15);
 });

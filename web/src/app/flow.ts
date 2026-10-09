@@ -67,6 +67,7 @@ import {
   decodeBriefing,
   decodeConversation,
   decodeJournal,
+  decodeAgentRecord,
   decodeMissionChange,
   objectivesShown,
   openingAction,
@@ -1365,6 +1366,11 @@ export interface AppFlow {
    * for each mission, as the client does. Never throws.
    */
   requestMissionKeywords(agentID: number, contentID: number): void;
+  /**
+   * Ask what the client's agents service knows of an agent (its level, division, corporation and
+   * faction), to land in `store.agents.agentRecords` under its ID. Asked once for each agent. Never throws.
+   */
+  requestAgentRecord(agentID: number): void;
   /**
    * Multibox — open or close this pilot's live push channel (SSE). Browsers
    * allow only ~6 concurrent HTTP/1.1 connections per origin, and every open
@@ -4290,6 +4296,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         record: null,
       },
     });
+    // The agent's own card, and its corporation's (page.py _construct_agent_section).
+    requestAgentRecord(agentID);
     if (contentID !== null) {
       // What the page words the mission with: its keywords, from its agent (agents.PrimeMessageArguments),
       // and the client's own record of it. Neither holds the page up.
@@ -12765,6 +12773,25 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     );
   }
 
+  // What the client's agents service knows of an agent, asked for once (agents.GetAgentByID reads a table
+  // the client keeps for the session).
+  const agentRecordsAsked = new Set<number>();
+  function requestAgentRecord(agentID: number): void {
+    if (!Number.isSafeInteger(agentID) || agentID <= 0 || agentRecordsAsked.has(agentID)) {
+      return;
+    }
+    agentRecordsAsked.add(agentID);
+    void api.loadAgentRecord(agentID, callOptions).then(
+      (record) => {
+        store.apply({ type: "agents/record", agentID, record: decodeAgentRecord(record) });
+      },
+      () => {
+        // Not remembered: a later ask tries again.
+        agentRecordsAsked.delete(agentID);
+      },
+    );
+  }
+
   function requestWords(labels: readonly string[]): void {
     let queued = false;
     for (const label of labels) {
@@ -13775,6 +13802,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     requestNames,
     requestWords,
     requestMissionKeywords,
+    requestAgentRecord,
 
     /**
      * R92 multibox — is this the pilot the player is LOOKING at?

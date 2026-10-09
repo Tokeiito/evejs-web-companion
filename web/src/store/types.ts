@@ -1219,6 +1219,11 @@ export interface AgentsState {
   readonly missionTimes: MissionTimes | null;
   /** The mission's page on show (the journal's Read Details); null when none is. */
   readonly missionPage: MissionPageState | null;
+  /**
+   * What the client's agents service knows of each agent asked about, by its ID: null for an agent the
+   * server does not list, and no entry at all for one not yet answered.
+   */
+  readonly agentRecords: Readonly<Record<number, import("../bridge/agents.ts").AgentRecord | null>>;
   readonly journal: JournalState | null;
   /** True once the agent list has loaded. */
   readonly loaded: boolean;

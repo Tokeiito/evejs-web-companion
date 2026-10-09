@@ -34,6 +34,10 @@ const MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
 // the index is kept).
 const TABLES = Object.freeze({
   missions: Object.freeze({ loader: "missionsLoader", resource: "res:/staticdata/missions.fsdbinary" }),
+  // An NPC corporation's own record: the client takes an agent's faction from its corporation's (npcs/npccorporations.py).
+  npcCorporations: Object.freeze({ loader: "npcCorporationsLoader", resource: "res:/staticdata/npccorporations.fsdbinary" }),
+  // The divisions agents work in, each with the message its name is (npcs/divisions.py).
+  npcCorporationDivisions: Object.freeze({ loader: "npcCorporationDivisionsLoader", resource: "res:/staticdata/npccorporationdivisions.fsdbinary" }),
 });
 
 /** Runs the client's loader on a data file and answers what it printed. */
