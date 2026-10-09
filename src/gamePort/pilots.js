@@ -64,6 +64,7 @@ const { MAX_PROBES, createPilotScanner } = require("./pilotScanner");
 const { createPilotFleet } = require("./pilotFleet");
 const { createPilotStandings } = require("./pilotStandings");
 const { createPilotSkills } = require("./pilotSkills");
+const { createPilotJournal } = require("./pilotJournal");
 const { buildSkillSheet } = require("./skillSheet");
 const { projectFlight, projectSpace } = require("./spaceProjection");
 const { MODE: BALL_MODE } = require("./destiny/state");
@@ -513,6 +514,8 @@ function createGamePortPilots({
   const filetime = (ms) => (BigInt(Math.trunc(ms)) + 11644473600000n) * 10000n;
   /** standingsvc.__RefreshStandings: RemoteSvc('standingMgr').GetNPCNPCStandings(), no arguments. The web client never asks it. */
   const NPC_STANDINGS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/client/script/ui/services/standingsvc.py:115", note: null });
+  /** journal._UpdateMissionDataPartial: GetAgentMoniker(agentID).GetMyJournalDetails(), no arguments, on the agent's own moniker. */
+  const AGENTS_OWN_JOURNAL = Object.freeze({ status: "same", source: "eve/client/script/ui/shared/neocom/journal.py:325", note: null });
   /** What the client asks of its skill handler of its own accord that the web client never asks, and where each is asked. */
   const SKILL_OWN = Object.freeze({
     GetSkillQueueAndFreePoints: Object.freeze({ status: "same", source: "eve/client/script/ui/services/skillQueueSvc.py:117", note: null }),
@@ -867,6 +870,11 @@ function createGamePortPilots({
       skillsWork: Promise.resolve(),
       /** The character's name, as the selection screen's row had it. */
       characterName: "",
+      /** The pilot's agents' journal as the client's journal service keeps it (pilotJournal.js), and the readings of it, one after another. */
+      journal: createPilotJournal(),
+      journalWork: Promise.resolve(),
+      /** agents.agentMonikers: the one object the client keeps for an agent, by agent, each as it is held in `bound`. */
+      agents: new Map(),
       /** Questions the server has asked and the user has not answered yet, by ID. */
       questions: new Map(),
       ended: false,
@@ -886,6 +894,8 @@ function createGamePortPilots({
       afterFleetNotice(entry, entry.fleetKept.feed(notification));
       entry.standings.feed(notification);
       afterSkillNotice(entry, entry.skills.feed(notification));
+      // A mission changed: what the client shows of its missions is drawn again from the journal, which reads it again.
+      if (entry.journal.feed(notification)) journalUpToDate(entry);
       record(entry, notificationToBridgeJson(notification));
     });
     session.onSessionChange((changes) => {
@@ -952,6 +962,8 @@ function createGamePortPilots({
       await refreshStandings(entry);
       // skillsvc, skillQueueSvc and the notifications: a character chosen has its skills, its queue and its history read.
       await primeSkills(entry);
+      // journal._UpdateMissionDataFull: a character chosen has its agents' journal read, for the missions it is on.
+      await journalUpToDate(entry).catch(() => {});
     } catch (error) {
       session.close();
       // The login failing is not the select call failing; say what the session said.
@@ -1430,6 +1442,10 @@ function createGamePortPilots({
 
   /** The server has let one bound object go: whatever names it here is forgotten, as the client forgets the object. */
   function forgetObject(entry, objectID) {
+    // An agent's moniker is the client's still, and binds again by its next call: the handles for it are new ones' to ask for.
+    for (const [agentID, object] of entry.agents) {
+      if (object.objectID === objectID) entry.agents.set(agentID, { ...object, objectID: null });
+    }
     for (const [which, held] of entry.inventoryManagers) {
       if (held === objectID) entry.inventoryManagers.delete(which);
     }
@@ -1929,7 +1945,54 @@ function createGamePortPilots({
       return entry.session.bind(object.service, object.params, [method, args, kwargs]).then((bound) => bound.result);
     }
     const kept = { has: () => object.objectID !== null, get: () => object.objectID, set: (key, objectID) => { object.objectID = objectID; } };
-    return keptCall(entry, kept, handle, object.service, () => object.params, method, args, kwargs);
+    // An object several handles name is bound once: its own name, where it has one, is what its binding is known by.
+    return keptCall(entry, kept, object.key ?? handle, object.service, () => object.params, method, args, kwargs);
+  }
+
+  // ── the agents' journal as it is kept ─────────────────────────────────────
+
+  /** agents.GetAgentMoniker: the one Moniker('agentMgr', agentID) the client keeps for an agent, made when first wanted. */
+  function agentObject(entry, agentID) {
+    if (!entry.agents.has(agentID)) entry.agents.set(agentID, { objectID: null, service: "agentMgr", params: agentID, key: `agent:${agentID}` });
+    return entry.agents.get(agentID);
+  }
+
+  /**
+   * journal._CheckUpdateMissionData, one reading at a time as under the service's semaphore. With no journal kept
+   * the whole of it is asked for by name. With one kept and agents marked, each marked agent is asked for its own
+   * part on its own moniker, all at once, and the parts are put into what is kept (pilotJournal.js). Fails as the
+   * asking fails, for whoever waits on it: the agents marked are then marked no longer, and what was kept is as it
+   * was, as in the client.
+   */
+  function journalUpToDate(entry) {
+    const reading = entry.journalWork.then(async () => {
+      if (!entry.journal.kept) {
+        ledger.note("agentMgr", "GetMyJournalDetails", shape("agentMgr", "GetMyJournalDetails", [], null, contextFor(entry)));
+        entry.journal.full(await entry.session.call("agentMgr", "GetMyJournalDetails", [], null));
+        return;
+      }
+      const agentIDs = entry.journal.takeOutdated();
+      const answers = await Promise.all(agentIDs.map((agentID) => {
+        ledger.note("agentMgr", "GetMyJournalDetails", AGENTS_OWN_JOURNAL);
+        const object = agentObject(entry, agentID);
+        return handleCall(entry, object.key, object, "GetMyJournalDetails", [], null);
+      }));
+      entry.journal.partial(agentIDs, answers);
+    });
+    entry.journalWork = reading.catch(() => {});
+    return reading;
+  }
+
+  /**
+   * The pilot's agents' journal as the client's journal service has it: read when the character was chosen, and
+   * after a mission's change made right by its agent's own answer. In the gateway's form. Null where what the
+   * server answered was no journal: then nothing is kept.
+   */
+  async function journalKept(sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    await run(entry, "agentMgr", "GetMyJournalDetails", () => journalUpToDate(entry));
+    const journal = entry.journal.read();
+    return journal ? wireToBridgeJson(journal) : null;
   }
 
   async function bindObject(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined) {
@@ -1943,7 +2006,9 @@ function createGamePortPilots({
       // The pilot's own fleet (none named, or the session's named) is asked of the one object fleetSvc keeps for
       // it, where it is held: no Moniker is made.
       const named = positive(Array.isArray(given) ? given[0] : given);
-      const own = service === "fleetObjectHandler" && (named === null || named === attribute(entry, "fleetid")) ? entry.fleet : null;
+      const fleets = service === "fleetObjectHandler" && (named === null || named === attribute(entry, "fleetid")) ? entry.fleet : null;
+      // An agent is asked on the one object the client's agents service keeps for it, whoever asks.
+      const own = fleets ?? (service === "agentMgr" && named !== null ? agentObject(entry, named) : null);
       const params = monikerParams(entry, service, given);
       if (params === undefined) throw fail("BOUND_NO_OBJECT", `${service}.${method} did not return a bound object.`);
       const made = randomBytes(24).toString("base64url");
@@ -2087,6 +2152,7 @@ function createGamePortPilots({
     standingsKept,
     skillSheet,
     saveSkillQueue,
+    journalKept,
     shipInfo,
     shipAttribute,
     shutdown,

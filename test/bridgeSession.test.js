@@ -2152,3 +2152,54 @@ test("where the transport cannot make a sheet, and on the gateway, the sheet is 
   const next = await apiRequest(lost.baseUrl, "/api/bridge/skills");
   assert.equal(next.response.status >= 400 && next.response.status !== 404, true);
 });
+
+// ── the agents' journal ──────────────────────────────────────────────────────
+//
+// journal.py reads the journal once, keeps it, and makes it right from each changed mission's own agent. The game
+// port keeps it the same way (pilots.js journalKept), and the Journal route answers from that.
+
+const journalAnswer = (...agentIDs) => [{ type: "list", items: agentIDs.map((agentID) => [1, 0, "UI/Agents/MissionTypes/Courier", 57959, agentID]) }, { type: "list", items: [] }];
+
+/** A pilot reading its journal; on the game port unless told otherwise. Says what was asked of agentMgr and what the route answered. */
+async function journalRoute({ transport = "gameport", kept } = {}) {
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  const gateway = fakeGateway();
+  const backend = transport === "gameport" ? gamePort : gateway;
+  const asked = [];
+  backend.callMethod = async (service, method, args) => {
+    asked.push([`${service}.${method}`, args]);
+    return { service, method, result: "asked by name", notifications: [] };
+  };
+  const keptAsked = [];
+  if (kept !== undefined) gamePort.journalKept = async (sessionFields, bridgeSessionID) => { keptAsked.push({ sessionFields, bridgeSessionID }); return kept(); };
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => transport });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  asked.length = 0;
+  const answer = await apiRequest(baseUrl, "/api/bridge/journal");
+  return { answer, payload: answer.payload, asked, keptAsked, baseUrl };
+}
+
+test("on the game port the journal is read from what is kept, and the server is not asked for it", async () => {
+  const kept = journalAnswer(3008416);
+  const read = await journalRoute({ kept: () => kept });
+  assert.deepEqual([read.answer.response.status, read.payload, read.asked], [200, { ok: true, result: kept }, []]);
+  assert.deepEqual(read.keptAsked, [{ sessionFields: { userid: 4 }, bridgeSessionID: GAME_PORT_SESSION_ID }]);
+  // An empty journal is a journal.
+  const empty = await journalRoute({ kept: () => journalAnswer() });
+  assert.deepEqual([empty.payload, empty.asked], [{ ok: true, result: journalAnswer() }, []]);
+});
+
+test("with no journal kept, and on the gateway, the server is asked for it as before; a reading refused is the route's refusal", async () => {
+  const none = await journalRoute({ kept: () => null });
+  assert.deepEqual([none.payload, none.asked, none.keptAsked.length], [{ ok: true, result: "asked by name" }, [["agentMgr.GetMyJournalDetails", []]], 1]);
+  const gateway = await journalRoute({ kept: () => journalAnswer(1), transport: "gateway" });
+  assert.deepEqual([gateway.payload, gateway.asked, gateway.keptAsked], [{ ok: true, result: "asked by name" }, [["agentMgr.GetMyJournalDetails", []]], []]);
+  // The reading refused by the server: the route says so, and does not ask by name behind it.
+  const refused = await journalRoute({ kept: () => { throw Object.assign(new Error("NotNow"), { code: "CALL_REFUSED", statusCode: 409 }); } });
+  assert.deepEqual([refused.answer.response.status, refused.payload.error, refused.asked], [409, "CALL_REFUSED", []]);
+  // A session the game port has lost while the journal is read is forgotten, and the route says so.
+  const lost = await journalRoute({ kept: () => { throw Object.assign(new Error("gone"), { code: "SESSION_NOT_FOUND", statusCode: 404 }); } });
+  assert.deepEqual([lost.answer.response.status, lost.payload.ok, lost.asked], [404, false, []]);
+  const next = await apiRequest(lost.baseUrl, "/api/bridge/journal");
+  assert.equal(next.response.status >= 400 && next.response.status !== 404, true);
+});

@@ -221,6 +221,8 @@ test("select logs in as the account and makes the retail client's three calls, i
     "standingMgr.GetCharStandings",
     // And its skill handler is asked for, as the client's skill service asks. This stand-in answers none, so nothing is asked of one.
     "skillMgr2.GetMySkillHandler",
+    // And its agents' journal, as the client's journal service asks for it.
+    "agentMgr.GetMyJournalDetails",
   ]);
   assert.deepEqual(session.calls[0].args, []);
   assert.deepEqual(session.calls[1].args, [PILOT]);
@@ -314,7 +316,7 @@ test("a pilot left in space is selected in space and given a ballpark as the cli
   const first = await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, outcome.bridgeSessionID);
   assert.deepEqual(session.calls.map((call) => `${call.service}.${call.method}`), [
     "charUnboundMgr.GetCharacterSelectionData", "charUnboundMgr.GetCharacterLockType", "charUnboundMgr.SelectCharacterID",
-    "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler", "beyonce.GetFormations",
+    "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler", "agentMgr.GetMyJournalDetails", "beyonce.GetFormations",
   ]);
   assert.deepEqual(session.binds, [{ service: "beyonce", params: SYSTEM }]);
   assert.deepEqual([hand.parks.length, typeof hand.parks[0].tick, hand.parks[0].stopped], [1, "function", false]);
@@ -470,8 +472,9 @@ test("the allowlist it ships with is the gateway's own list of pairs", async () 
     const [service, method] = pair.split(".");
     await pilots.callMethod(service, method, [], null, { userid: ACCOUNT }, bridgeSessionID);
   }
-  // The three of choosing a character, the two readings of its standings, the asking for its skill handler, and the forty.
-  assert.equal(made[0].calls.length, 3 + 2 + 1 + 40);
+  // The three of choosing a character, the two readings of its standings, the asking for its skill handler, the
+  // reading of its journal, and the forty.
+  assert.equal(made[0].calls.length, 3 + 2 + 1 + 1 + 40);
   assert.equal(contract.gatewayAllowlist.pairs.length, contract.gatewayAllowlist.count);
 });
 
@@ -1165,6 +1168,7 @@ test("the transport keeps a tally of what it called and how each compared with t
     "standingMgr.GetCharStandings": { same: 1 },
     // Asked for and not answered by this stand-in: nothing was asked of a handler, and nothing of one is tallied.
     "skillMgr2.GetMySkillHandler": { same: 1 },
+    "agentMgr.GetMyJournalDetails": { same: 1 },
     "invbroker.Add": { differs: 1 },
     "invbroker.GetInventory": { reshaped: 1 },
     "invbroker.List": { reshaped: 1 },
@@ -2325,7 +2329,7 @@ test("whatever is asked of ship or dogmaIM by name is made on the moniker, read 
   const allowed = new Set(["dogmaIM.GetTargets", "dogmaIM.AddTarget", "dogmaIM.Overload", "dogmaIM.CreateNewbieShip", "ship.LeaveShip", "ship.GetShipConfiguration", "ship.LaunchDrones", "ship.GetShipFittingInfo", "station.GetGuests"]);
   const { pilots, session, handle } = await selected({ answers: { "bound:GetTargets": { type: "list", items: [9001] } } }, { allowed });
   const made = () => session.boundCalls.at(-1);
-  const byName = () => session.calls.filter((call) => !call.service.startsWith("charUnboundMgr") && call.service !== "standingMgr" && call.service !== "skillMgr2" && call.method !== "ShipGetInfo").map((call) => `${call.service}.${call.method}`);
+  const byName = () => session.calls.filter((call) => !call.service.startsWith("charUnboundMgr") && call.service !== "standingMgr" && call.service !== "skillMgr2" && call.service !== "agentMgr" && call.method !== "ShipGetInfo").map((call) => `${call.service}.${call.method}`);
 
   // A read, with the server's answer handed back as any call's is.
   const targets = await pilots.callMethod("dogmaIM", "GetTargets", [], null, FIELDS, handle);
@@ -3760,7 +3764,7 @@ test("a character chosen has its standings read as the client's standing service
   const { pilots, session, handle } = await selected({ answers: STANDING_ANSWERS });
   assert.deepEqual(session.calls.map((call) => `${call.service}.${call.method}`), [
     "charUnboundMgr.GetCharacterSelectionData", "charUnboundMgr.GetCharacterLockType", "charUnboundMgr.SelectCharacterID",
-    "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler",
+    "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler", "agentMgr.GetMyJournalDetails",
   ]);
   assert.deepEqual(session.calls.slice(3, 5).map((call) => [call.args, call.kwargs]), [[[], null], [[], null]]);
   const kept = await pilots.standingsKept(WHO, handle);
@@ -3950,6 +3954,7 @@ test("a character chosen has its skill handler asked for and bound, and asked wh
   // by the character, and the rest go to the object, in the order a real client asked this server.
   assert.deepEqual(session.calls.slice(3).map((call) => [`${call.service}.${call.method}`, call.args, call.kwargs]), [
     ["standingMgr.GetNPCNPCStandings", [], null], ["standingMgr.GetCharStandings", [], null], ["skillMgr2.GetMySkillHandler", [], null],
+    ["agentMgr.GetMyJournalDetails", [], null],
   ]);
   assert.deepEqual([session.binds, session.carried, session.nodes], [[{ service: "skillHandler", params: PILOT }], ["GetSkills"], []]);
   assert.deepEqual(handlerCalls(session), LOGIN_READS);
@@ -4304,6 +4309,149 @@ test("a queue the server refuses is refused with the server's word, and the queu
   const lost = await selected({ answers: handlerAnswers({ "bound:SaveNewQueue": () => { throw sessionError("CONNECTION_LOST"); } }) }, SHEET);
   await rejects(lost.pilots.saveSkillQueue([], WHO, lost.handle), "SESSION_NOT_FOUND");
   assert.equal(lost.pilots.size, 0);
+});
+
+// ── the agents' journal ──────────────────────────────────────────────────────
+//
+// journal.py: the whole journal is asked for once and kept; a mission's change marks its agent, whose own part is
+// then asked for on the agent's own moniker and put into what is kept (pilotJournal.js). The moniker is the one
+// the client's agents service keeps for the agent, whoever asks on it.
+
+const missionOf = (agentID, state = 1, contentID = 1) => [state, 0, "UI/Agents/MissionTypes/Courier", 5000 + contentID, agentID, 134365346460600000n, { type: "list", items: [] }, 0, 0, contentID];
+const journalWith = (...missions) => [{ type: "list", items: missions }, { type: "list", items: [] }];
+const JOURNAL_PAIRS = { allowed: new Set(["agentMgr.MachoBindObject", "agentMgr.DoAction", "agentMgr.GetMyJournalDetails", "station.GetGuests"]) };
+const journalStates = (journal) => journal[0].items.map((each) => [each[0], each[4], each[9]]);
+const journalAsked = (session) => session.calls.filter((call) => call.service === "agentMgr").map((call) => call.method);
+
+test("a character chosen has its agents' journal read as the client's journal service reads it, and it is kept", async () => {
+  const { pilots, session, handle } = await selected({ answers: { "agentMgr.GetMyJournalDetails": journalWith(missionOf(3008416)) } }, JOURNAL_PAIRS);
+  // By name, with nothing, after the standings and the skill handler.
+  assert.deepEqual(session.calls.slice(3).map((call) => [`${call.service}.${call.method}`, call.args, call.kwargs]).at(-1), ["agentMgr.GetMyJournalDetails", [], null]);
+  assert.deepEqual(ledgerOf(pilots, "agentMgr.GetMyJournalDetails"), [{ same: 1 }, "eve/client/script/ui/shared/neocom/journal.py:312"]);
+  // Read from what is kept, in the gateway's form, with nothing asked.
+  const kept = await pilots.journalKept(WHO, handle);
+  assert.deepEqual([journalStates(kept), kept[1]], [[[1, 3008416, 1]], { type: "list", items: [] }]);
+  assert.deepEqual(kept[0].items[0][5], { type: "long", value: "134365346460600000" });
+  await pilots.journalKept(WHO, handle);
+  assert.deepEqual([journalAsked(session), session.binds, ledgerOf(pilots, "agentMgr.GetMyJournalDetails")[0]], [["GetMyJournalDetails"], [], { same: 1 }]);
+  // Another account's session reads nothing.
+  await assert.rejects(pilots.journalKept({ userid: 9 }, handle), (error) => error.code === "SESSION_NOT_FOUND");
+  // A journal that cannot be read at the choosing does not fail the choosing: it is asked for when it is wanted.
+  let refuse = true;
+  const late = await selected({ answers: { "agentMgr.GetMyJournalDetails": () => { if (refuse) throw refusedBy("NotNow"); return journalWith(missionOf(3008416)); } } }, JOURNAL_PAIRS);
+  assert.equal(late.outcome.session.characterID, PILOT);
+  refuse = false;
+  // Two readers at once are one reading: the second finds what the first kept.
+  const [one, two] = await Promise.all([late.pilots.journalKept(WHO, late.handle), late.pilots.journalKept(WHO, late.handle)]);
+  assert.deepEqual([journalStates(one), journalStates(two), journalAsked(late.session).length], [[[1, 3008416, 1]], [[1, 3008416, 1]], 2]);
+});
+
+test("after a mission changes, its agent is asked for its own part on its own moniker, at once, and that is put into what is kept", async () => {
+  let own = journalWith(missionOf(3008416, 2));
+  const { pilots, session, handle } = await selected({ answers: { "agentMgr.GetMyJournalDetails": journalWith(missionOf(3008416), missionOf(3008417, 2, 7)), "bound:GetMyJournalDetails": () => own } }, JOURNAL_PAIRS);
+  session.notify("OnAgentMissionChange", [Buffer.from("accepted"), 3008416]);
+  await settled();
+  // Moniker('agentMgr', agentID), bound by this first call on it. The other agent's mission is as it was.
+  assert.deepEqual([session.binds, session.carried, session.boundCalls.map((call) => [call.objectID, call.method, call.args, call.kwargs])], [[{ service: "agentMgr", params: 3008416 }], ["GetMyJournalDetails"], [["N=1:1", "GetMyJournalDetails", [], null]]]);
+  assert.deepEqual(journalStates(await pilots.journalKept(WHO, handle)), [[2, 3008417, 7], [2, 3008416, 1]]);
+  // It was not asked for by name again, and the reading after asks nothing.
+  assert.deepEqual([journalAsked(session), session.boundCalls.length], [["GetMyJournalDetails"], 1]);
+  assert.deepEqual(ledgerOf(pilots, "agentMgr.GetMyJournalDetails")[0], { same: 2 });
+  // Changed again, and gone: asked on the object the moniker bound, with no second bind.
+  own = journalWith();
+  session.notify("OnAgentMissionChange", ["quit", 3008416]);
+  await settled();
+  assert.deepEqual([session.binds.length, session.boundCalls.map((call) => call.objectID), journalStates(await pilots.journalKept(WHO, handle))], [1, ["N=1:1", "N=1:1"], [[2, 3008417, 7]]]);
+  // Two agents changed before anything is read: both asked, each on its own moniker.
+  own = journalWith();
+  const before = session.boundCalls.length;
+  session.notify("__MultiEvent", []);
+  session.notify("OnAgentMissionChange", ["offered", 3008418]);
+  session.notify("OnAgentMissionChange", ["offered", 3008417]);
+  await settled();
+  await pilots.journalKept(WHO, handle);
+  assert.deepEqual(session.binds.map((bind) => bind.params), [3008416, 3008418, 3008417]);
+  assert.deepEqual([session.boundCalls.length - before, journalStates(await pilots.journalKept(WHO, handle))], [2, []]);
+});
+
+test("a change with no agent forgets the journal, which is read again in whole; a reading that fails leaves what was kept", async () => {
+  let whole = journalWith(missionOf(3008416));
+  let refuse = false;
+  const answers = { "agentMgr.GetMyJournalDetails": () => { if (refuse) throw refusedBy("NotNow"); return whole; }, "bound:GetMyJournalDetails": () => { throw refusedBy("NotNow"); } };
+  const { pilots, session, handle } = await selected({ answers }, JOURNAL_PAIRS);
+  whole = journalWith(missionOf(3008416), missionOf(3008417));
+  session.notify("OnAgentMissionChange", ["reset", null]);
+  await settled();
+  assert.deepEqual([journalAsked(session), journalStates(await pilots.journalKept(WHO, handle)).length, session.binds], [["GetMyJournalDetails", "GetMyJournalDetails"], 2, []]);
+  // An agent's own answer refused: the reading the notice set going fails quietly, the agent is marked no longer, and
+  // what was kept is what is read, with nothing asked again.
+  session.notify("OnAgentMissionChange", ["accepted", 3008416]);
+  await settled();
+  const asked = session.boundCalls.length;
+  assert.deepEqual([journalStates(await pilots.journalKept(WHO, handle)).length, session.boundCalls.length - asked, journalAsked(session).length], [2, 0, 2]);
+  // The whole journal refused when it is wanted: the reader is refused, and the next reader asks again.
+  refuse = true;
+  session.notify("OnAgentMissionChange", ["reset", null]);
+  await settled();
+  await rejects(pilots.journalKept(WHO, handle), "CALL_REFUSED");
+  refuse = false;
+  assert.equal(journalStates(await pilots.journalKept(WHO, handle)).length, 2);
+  // An answer that is no journal is nothing kept: the reader is told so, and may ask as it used to.
+  let answer = 7;
+  const none = await selected({ answers: { "agentMgr.GetMyJournalDetails": () => answer, "bound:GetMyJournalDetails": journalWith(missionOf(3008416, 2)) } }, JOURNAL_PAIRS);
+  assert.equal(await none.pilots.journalKept(WHO, none.handle), null);
+  // A mission changes while none is kept: the whole journal is read, and that is all that reading does. The agent
+  // stays marked, and is asked for its own part by the reading after.
+  answer = journalWith(missionOf(3008416));
+  none.session.notify("OnAgentMissionChange", ["accepted", 3008416]);
+  await settled();
+  assert.deepEqual([journalAsked(none.session).length, none.session.boundCalls.length], [3, 0]);
+  assert.deepEqual([journalStates(await none.pilots.journalKept(WHO, none.handle)), none.session.boundCalls.map((call) => call.method)], [[[2, 3008416, 1]], ["GetMyJournalDetails"]]);
+  // A connection lost under a reading ends the session, as anywhere.
+  const lost = await selected({ answers: { "agentMgr.GetMyJournalDetails": journalWith() } }, JOURNAL_PAIRS);
+  lost.session.notify("OnAgentMissionChange", ["reset", null]);
+  lost.session.call = async () => { throw sessionError("CONNECTION_LOST"); };
+  await rejects(lost.pilots.journalKept(WHO, lost.handle), "SESSION_NOT_FOUND");
+  assert.equal(lost.pilots.size, 0);
+});
+
+test("an agent has one object, whoever asks on it: the BFF's handle and the journal's own reading share the moniker", async () => {
+  const answers = { "agentMgr.GetMyJournalDetails": journalWith(missionOf(3008416)), "bound:GetMyJournalDetails": journalWith(missionOf(3008416, 2)), "bound:DoAction": "talked" };
+  const { pilots, session, handle } = await selected({ answers }, JOURNAL_PAIRS);
+  // The BFF talks to the agent first: its handle's moniker binds, carrying the talk.
+  const agent = (await pilots.bindObject("agentMgr", "MachoBindObject", [3008416], null, WHO, handle)).boundHandle;
+  await pilots.callBoundMethod("agentMgr", "DoAction", [null], null, WHO, handle, agent);
+  session.notify("OnAgentMissionChange", ["accepted", 3008416]);
+  await settled();
+  // The journal's reading goes to that object: nothing more is bound.
+  assert.deepEqual([session.binds, session.carried, session.boundCalls.map((call) => [call.objectID, call.method])], [[{ service: "agentMgr", params: 3008416 }], ["DoAction"], [["N=1:1", "DoAction"], ["N=1:1", "GetMyJournalDetails"]]]);
+  // Asked on at the same moment by the BFF's handle and by the journal's reading, an agent not yet bound is bound once.
+  const both = await selected({ answers }, JOURNAL_PAIRS);
+  const held = (await both.pilots.bindObject("agentMgr", "MachoBindObject", [3008416], null, WHO, both.handle)).boundHandle;
+  const talking = both.pilots.callBoundMethod("agentMgr", "DoAction", [null], null, WHO, both.handle, held);
+  both.session.notify("OnAgentMissionChange", ["accepted", 3008416]);
+  await talking;
+  await both.pilots.journalKept(WHO, both.handle);
+  assert.deepEqual([both.session.binds.length, both.session.boundCalls.map((call) => call.objectID)], [1, ["N=1:1", "N=1:1"]]);
+  // A second handle for the same agent is the same object too; another agent's is its own.
+  const again = (await pilots.bindObject("agentMgr", "MachoBindObject", [3008416], null, WHO, handle)).boundHandle;
+  const other = (await pilots.bindObject("agentMgr", "MachoBindObject", [3008417], null, WHO, handle)).boundHandle;
+  await pilots.callBoundMethod("agentMgr", "DoAction", [null], null, WHO, handle, again);
+  await pilots.callBoundMethod("agentMgr", "DoAction", [null], null, WHO, handle, other);
+  assert.deepEqual([session.binds.map((bind) => bind.params), session.boundCalls.slice(2).map((call) => call.objectID)], [[3008416, 3008417], ["N=1:1", "N=1:2"]]);
+  // The other way about: the journal's reading binds the moniker, and the BFF's handle asked for after uses what it bound.
+  const first = await selected({ answers }, JOURNAL_PAIRS);
+  first.session.notify("OnAgentMissionChange", ["accepted", 3008416]);
+  await settled();
+  const later = (await first.pilots.bindObject("agentMgr", "MachoBindObject", [3008416], null, WHO, first.handle)).boundHandle;
+  await first.pilots.callBoundMethod("agentMgr", "DoAction", [null], null, WHO, first.handle, later);
+  assert.deepEqual([first.session.binds.length, first.session.carried, first.session.boundCalls.map((call) => [call.objectID, call.method])], [1, ["GetMyJournalDetails"], [["N=1:1", "GetMyJournalDetails"], ["N=1:1", "DoAction"]]]);
+  // The server lets the object go: the handles for it are forgotten, and the agent's moniker binds again by its next call.
+  first.session.notify("OnMachoObjectDisconnect", [Buffer.from("N=1:1"), 1065450, null]);
+  await rejects(first.pilots.callBoundMethod("agentMgr", "DoAction", [null], null, WHO, first.handle, later), "BOUND_HANDLE_NOT_FOUND");
+  first.session.notify("OnAgentMissionChange", ["quit", 3008416]);
+  await settled();
+  assert.deepEqual([first.session.binds.length, first.session.carried.at(-1), first.session.boundCalls.at(-1).objectID], [2, "GetMyJournalDetails", "N=1:2"]);
 });
 
 test("with godma not primed there is no entry to give, and the ship is still said", async () => {

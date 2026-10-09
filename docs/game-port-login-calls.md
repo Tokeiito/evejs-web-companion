@@ -10,8 +10,8 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 
 | The game port | Kinds | Calls | Meaning |
 |---|---|---|---|
-| at login | 17 | 22 | The game port asks this at login too. |
-| by a feature | 18 | 24 | A feature of the web client asks this when it is wanted, in a form read against the client's. |
+| at login | 18 | 23 | The game port asks this at login too. |
+| by a feature | 17 | 23 | A feature of the web client asks this when it is wanted, in a form read against the client's. |
 | by a route | 15 | 16 | The BFF has a route that can ask this. It has not been read against the client's. |
 | never | 50 | 55 | Nothing of ours asks this. |
 
@@ -69,7 +69,7 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `seasonManager.get_season_data_for_character` | 1 | never |
 | `corpRegistry.GetEveOwners` (inferred) | 1 | by a route |
 | `securityMgr.get_modified_systems` | 1 | never |
-| `agentMgr.GetMyJournalDetails` | 1 | by a feature |
+| `agentMgr.GetMyJournalDetails` | 1 | at login |
 | `achievementTrackerMgr.GetCompletedAchievementsAndClientEventCount` | 1 | never |
 | `fighterMgr.GetFightersForShip` | 1 | never |
 | `charMgr.GetSettingsInfo` | 1 | by a route |

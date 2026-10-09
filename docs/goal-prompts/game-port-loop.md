@@ -95,6 +95,8 @@ offered, see `README.md` there), `scripts/capture-game-frames.js`
 answer each got: the pattern for a fixture that sets what a store keeps beside the server's own
 later answer), `scripts/record-standings-session.js` and `scripts/record-skills-session.js` (one
 session each, with a GM's changes: the same pattern for a store one pilot fills),
+`scripts/record-journal-session.js` (a mission taken through its states by its agent's buttons,
+the server's questions answered yes),
 `scripts/login-calls-report.js` (a login read out of the server's own log, the
 retail client's set beside the game port's: `docs/game-port-login-calls.md`; the logs of real
 clients on this server are `eve.js/_local/logs/direct-tcp-real-client-*.stdout.log`, docked, and

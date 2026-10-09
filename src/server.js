@@ -13004,6 +13004,15 @@ app.get("/api/bridge/journal", requireAuth, async (req, res, next) => {
     return;
   }
   try {
+    // journal.py reads the journal once and keeps it, and after a mission changes asks that mission's agent for its
+    // part. The game port keeps it the same way (pilots.js journalKept). With none kept it is asked for, as before.
+    if (gamePortPilots && isGamePortHandle(held.bridgeSessionID)) {
+      const kept = await heldRequest(held, req.webSessionID, false, () => gamePortPilots.journalKept({ userid: held.accountID }, held.bridgeSessionID));
+      if (kept !== null) {
+        res.json({ ok: true, result: kept });
+        return;
+      }
+    }
     const outcome = await heldTopLevelCall(
       held,
       req.webSessionID,

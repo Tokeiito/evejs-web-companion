@@ -176,6 +176,17 @@ but for two. Tranquility's recording has the last two one after the other. The g
 saves by name on `skillMgr` with a list, as before. The page's "Stop training" saves an empty
 queue; the client's Pause is `AbortTraining` and keeps the queue.
 
+**The agents' journal, 2026-10-09.** The client's journal service asks
+`agentMgr.GetMyJournalDetails()` once and keeps the answer. `OnAgentMissionChange(state, agentID)`
+marks the agent (with no agent, the journal is forgotten), and the next reading asks each marked
+agent's own moniker for `GetMyJournalDetails()`, takes that agent's first mission out of what is
+kept and puts the answer at the end of both lists. A Tranquility recording of a mission accepted
+and quit has four such readings, all on the one object the agent's talk was on. The transport
+does the same (`src/gamePort/pilotJournal.js`): the journal read when a character is chosen, the
+agent asked at once after each notice, and one object for an agent whoever asks on it, the BFF's
+handle or the journal's own reading (`agents.GetAgentMoniker`). On the game port the Journal
+route answers from what is kept.
+
 **The customs export's call shape.** `src/piCustomsExport.js` binds `invbroker` with the office ID
 and calls `ImportExportWithPlanet` on that. The client goes through `invCache`: it binds the
 broker for a location, asks it for the office's inventory, and calls that. eve.js accepts both.
