@@ -397,6 +397,22 @@ export function unwrapLong(value: unknown): bigint | null {
 }
 
 /**
+ * Read a retail boolean. Accepts true and false, and a bare 1 and 0; null for
+ * anything else (including absent/null fields).
+ *
+ * A BOOL column of a packed row is a bit on the wire, and the game port gives
+ * it as the boolean it is. The web gateway prints the server's own value for
+ * the column, which is 0 or 1 (a corporation member's `blockRoles`, seen
+ * 2026-10-09). Reading both here is what lets one decoder serve either.
+ */
+export function unwrapBool(value: unknown): boolean | null {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  return value === 1 ? true : value === 0 ? false : null;
+}
+
+/**
  * Unwrap a retail real (a double) to a number. Accepts the {type:"real"}
  * wrapper with a finite number value and bare finite numbers; null for
  * anything else (including absent/null fields). eve.js sends ISK money this

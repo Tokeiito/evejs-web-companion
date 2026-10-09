@@ -29,7 +29,14 @@ const TOLERATED = new Set([
   "real-form",
   // readPackedRow reads a row by `fields` or by `values` against `columns`.
   "packedrow-form",
+  // unwrapBool reads a boolean and a bare 0 or 1 alike. Only for a BOOL column of a packed row: the wire carries
+  // a bit there, and the gateway prints the server's own value for it.
+  "bool-form",
 ]);
+/** blue's DBTYPE_BOOL, as a packed row's descriptor names a column's type. */
+const DBTYPE_BOOL = 11;
+/** The boolean a BOOL column's cell stands for, spelt either way; null for anything else. */
+const bit = (value) => (typeof value === "boolean" ? value : value === 1 ? true : value === 0 ? false : null);
 const MOVED = new Set(["value", "count"]);
 
 const isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -208,12 +215,22 @@ function compare(gateway, wire, path = "$", differences = []) {
       if (rowA.form === "values" && !Array.isArray(wire.values)) note("packedrow-form");
       if (rowA.form === "fields" && !isObject(wire.fields)) note("packedrow-form");
       const names = new Set([...Object.keys(rowA.cells), ...Object.keys(rowB.cells)]);
+      // The columns the row's own descriptor says are booleans.
+      const booleans = new Set((Array.isArray(gateway.columns) ? gateway.columns : []).filter((column) => Array.isArray(column) && column[1] === DBTYPE_BOOL).map((column) => column[0]));
       for (const name of names) {
         if (!(name in rowA.cells) || !(name in rowB.cells)) {
           if (differences.length < 400) differences.push({ path: `${path}.${name}`, kind: "keys", gateway: sample(rowA.cells[name]), wire: sample(rowB.cells[name]) });
           continue;
         }
-        compare(rowA.cells[name], rowB.cells[name], `${path}.${name}`, differences);
+        const [cellA, cellB] = [rowA.cells[name], rowB.cells[name]];
+        if (booleans.has(name) && typeof cellA !== typeof cellB && bit(cellA) !== null && bit(cellB) !== null) {
+          // One boolean spelt two ways, and perhaps not the same boolean.
+          for (const kind of bit(cellA) === bit(cellB) ? ["bool-form"] : ["bool-form", "value"]) {
+            if (differences.length < 400) differences.push({ path: `${path}.${name}`, kind, gateway: sample(cellA), wire: sample(cellB) });
+          }
+          continue;
+        }
+        compare(cellA, cellB, `${path}.${name}`, differences);
       }
       return differences;
     }

@@ -190,3 +190,28 @@ test("the plan accounts for every read the gateway allows, once", () => {
   assert.deepEqual(reads.filter((read) => read.pair === "invbroker.List").map((read) => read.key), ["invbroker.List (station hangar)", "invbroker.List (ship cargo)"]);
   assert.equal(new Set(reads.map((read) => read.key)).size, reads.length, "every read has its own key");
 });
+
+// A BOOL column of a packed row is a bit on the wire, and the game port has it as true or false. The gateway
+// prints the server's own value for it, 0 or 1. The page's shared reader for a boolean takes either.
+
+test("a packed row's BOOL column spelt as a boolean on one side and as 0 or 1 on the other is one value in two spellings", () => {
+  const BOOL = 11;
+  const columns = [["characterID", 3], ["blockRoles", BOOL], ["titleMask", 3]];
+  const row = (blockRoles, titleMask = 0) => ({ type: "packedrow", header: null, columns, fields: { characterID: 7, blockRoles, titleMask }, values: [7, blockRoles, titleMask] });
+  assert.deepEqual([kinds(row(0), row(false)), verdict(row(0), row(false))], [["bool-form"], "tolerated"]);
+  assert.deepEqual(kinds(row(1), row(true)), ["bool-form"]);
+  assert.deepEqual(kinds(row(true), row(1)), ["bool-form"]);
+  // The gateway's row by its values alone, as it prints one.
+  assert.deepEqual(kinds({ type: "packedrow", header: null, columns, values: [7, 0, 0] }, row(false)), ["bool-form"]);
+  // Two spellings of two different values: the value moved as well.
+  assert.deepEqual(kinds(row(1), row(false)).sort(), ["bool-form", "value"]);
+  // The same on both sides is no difference at all, spelt either way.
+  assert.deepEqual([kinds(row(false), row(false)), kinds(row(0), row(0))], [[], []]);
+  // A number that is no 0 or 1 is no boolean, and a boolean against 0 in a column that is not BOOL is no spelling of it.
+  assert.deepEqual([kinds(row(2), row(true)), verdict(row(2), row(true))], [["shape"], "divergent"]);
+  assert.deepEqual(kinds(row(0, 0), row(0, false)), ["shape"]);
+  // Nothing on one side is nothing, whichever side and however the other spells its boolean.
+  assert.deepEqual([kinds(row(0), row(null)), kinds(row(null), row(false)), kinds(row(null), row(1)), kinds(row(true), row(null))], [["null-vs-value"], ["null-vs-value"], ["null-vs-value"], ["null-vs-value"]]);
+  // Outside a packed row there is no column to say what a value is.
+  assert.deepEqual(kinds({ blockRoles: 0 }, { blockRoles: false }), ["shape"]);
+});

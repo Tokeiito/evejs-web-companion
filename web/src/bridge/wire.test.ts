@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { readKeyVal, readPlainJsonField, unwrapLong, unwrapReal, type JsonValue } from "./wire.ts";
+import { readKeyVal, readPlainJsonField, unwrapBool, unwrapLong, unwrapReal, type JsonValue } from "./wire.ts";
 
 test("plain JSON fields are read directly without treating the envelope as util.KeyVal", () => {
   const result: JsonValue = { type: "list", items: [7, 8] };
@@ -24,6 +24,15 @@ test("plain JSON reader rejects arrays/null and never descends into util.KeyVal"
   assert.equal(readPlainJsonField([], "ok"), undefined);
   assert.equal(readPlainJsonField(keyVal, "ok"), undefined);
   assert.equal(readKeyVal(keyVal, "ok"), true);
+});
+
+test("unwrapBool reads a boolean or a bare 0 or 1 and rejects everything else", () => {
+  assert.deepEqual([unwrapBool(true), unwrapBool(false)], [true, false]);
+  // The web gateway prints a packed row's BOOL column as the server holds it.
+  assert.deepEqual([unwrapBool(1), unwrapBool(0)], [true, false]);
+  for (const other of [2, -1, 0.5, "1", "true", "", null, undefined, [], {}, { type: "long", value: "1" }, Number.NaN]) {
+    assert.equal(unwrapBool(other), null, JSON.stringify(other));
+  }
 });
 
 test("unwrapReal reads a real wrapper or a bare number and rejects everything else", () => {
