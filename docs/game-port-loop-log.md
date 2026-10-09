@@ -6242,3 +6242,121 @@ count nothing here yet (assets, contracts).
 18. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
     client's own map is in.
 19. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
+
+## 2026-10-09 — the wallet's reads, and the corporation registry
+
+Commit `f04ba71`, pushed. From the ledger's unread pairs (item 5 of the last list), taken ahead
+of the avoidance list's window: six entries have gone to routes and their settings, and the
+plan's own remaining work is the calls on the wire.
+
+**What the retail client does.**
+
+- **The corporation registry is never asked by name.** `sm.RemoteSvc('corpRegistry')` appears
+  nowhere in the client. Every call is on a moniker, `Moniker('corpRegistry', session.corpid)`
+  (`eveMoniker.GetCorpRegistry`), which the corp service binds once and binds again when the
+  pilot's corporation changes (`base_corporation.py` 137 to 148). Its session check is on the
+  corporation, not on where the pilot is.
+- **The wallet's activity is one read**: `account.GetTransactions(accountingKeyCash, year,
+  month, False)` (`accountsvc.py` 116), four positional arguments, the last a bool, with None
+  for this month. The client lists it as "Transactions". Its "Market Transactions" are another
+  read altogether, `marketProxy.CharGetTransactions`.
+- **`account.GetJournal` is a call the client never makes.** The server has a handler for it and
+  answers the same entries as a Rowset.
+- `account.GetCashBalance(0)`, `account.GetEntryTypes()`, `account.GetWalletDivisionsInfo()`
+  and `officeManager.GetMyCorporationsOffices()` are asked as the BFF asked them.
+
+**What the BFF and the page did.** Asked the registry by name, in some forty routes, reads and
+writes. Asked for the journal and for the transactions both, the transactions with a number
+where the client sends a bool; and the page listed the same activity twice, the second time
+under "Market transactions".
+
+**What was built.**
+
+- On the game port every `corpRegistry` call goes out on the registry's moniker: bound with
+  the session's corporation, kept through a move, dropped when the corporation changes. One
+  change in the transport, for every route that asks it.
+- The wallet route asks what the client asks: no journal, and the transactions with False.
+  Whatever a route says for that argument, the transport sends a bool.
+- The page lists the wallet's activity once, from the transactions. The decoder for the
+  journal's Rowset is gone, its tests moved onto the same entries as the client's read
+  answers them.
+- Six more pairs have entries in `src/gamePort/retailCalls.js`.
+
+**Proof.**
+
+- Tests: 5 new, and the wallet's own brought into line. 23 ways of breaking it tried; one
+  survived a first pass (the test moved a ship's object by a bind of its own, which the kept
+  moniker has no part in) and the test now makes a call on the moniker either side of the
+  move. All are caught.
+- Suite: 9537 tests, 9513 pass, 0 fail, 24 skipped, 0 todo.
+- **On both transports, by script,** as Test Two: the wallet answered in 13 ms with nine
+  entries, each with the twelve fields the client's read has, seven division names, and no
+  error; the journal is no longer among the answer's fields.
+- **The server's own log of the game-port pass** (eve.js `e066a81e9`, with another session's
+  uncommitted edits in the checkout): `account GetCashBalance`, `GetWalletDivisionsInfo`,
+  `GetTransactions` with four arguments and `GetEntryTypes`; then
+  `corpRegistry MachoBindObject`, "bound object registered", and `GetCorporation` twice on that
+  one object. No `GetJournal` anywhere in the log.
+- **The transport's own ledger for that BFF**: `corpRegistry.GetCorporation` five calls,
+  all counted as reshaped (asked by name, made on the moniker); the four `account` pairs and
+  `officeManager.GetMyCorporationsOffices` all counted as the client's.
+- **In the browser, on the game port:** the Wallet window drew the balance and one list,
+  "Recent activity", with the entries; no "Market transactions"; nothing failed.
+
+**A test run that did not end.** A new test sent its pilot into space and left it there; the
+file passed and never exited, and the command behind it was put in the background, which this
+loop must not leave. It was found and stopped within the iteration (no test process was left),
+the test now moves its pilot between two stations, and the brief says how to run such a file.
+
+**Not done.**
+
+- The ledger's report (`docs/game-port-call-ledger.md`) is not made again: it wants the same
+  pass and walk it was made from.
+- Whether the client's corp service makes each of the registry's calls the BFF makes, and
+  with what arguments, pair by pair: the forty are on the right object now, and only
+  `GetCorporation` has been read.
+- The explicit `Unbind` the client gives the old registry when the corporation changes.
+- The wallet's "Market Transactions" tab, and the transactions the client derives from one
+  (`GetDerivedTransactions`: the corporation's tax and the security tax, shown as lines of
+  their own).
+- When the client asks for the divisions at all: the route asks with every wallet read.
+
+### Next
+
+1. The ledger made again from a pass and a walk, and its unread pairs, most called first:
+   `dogmaIM.GetAllInfo` and the other dogma reads, `contractProxy`, `charMgr`.
+2. The corporation registry's other calls, each set beside the client's.
+3. Phase 3's writes, feature by feature, each set beside what the client sends.
+4. The wallet's "Market Transactions", and the lines the client derives from a transaction.
+5. The avoidance list's own window, and a route plotted again when a setting changes under it.
+6. Around a place's name, the last of it: the outlaw's warning (the pilot's own security
+   status). The agent's own window's steps, if the client's say how far.
+7. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+   own counts on it, with the push doing the work as it does for Remove Offer.
+8. The agent's cards above its own window, where the client's window has its own header.
+9. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+10. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+    codes not done.
+11. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+12. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+13. Small, in Ready Fit: the capacity the client never asks for; the window following a change
+    of pilot.
+14. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+15. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+16. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+17. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions); the client's own map, to set beside this server's.
+18. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+19. Other things asked once beside the store, and other panels' effects, looked at for the
+    faults of earlier entries.
+20. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
+    client's own map is in.
+21. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.

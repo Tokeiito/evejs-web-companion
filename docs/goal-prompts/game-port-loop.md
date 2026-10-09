@@ -211,6 +211,12 @@ Take these defaults, and list each under "For the operator" in the log so they c
   it had just set and stopped the panel ("effect_update_depth_exceeded"); the other asked for a thing
   once and never again after the store forgot it. Any unit that adds or changes an effect is looked at
   in the browser, through the change that makes it run again.
+- **A test that sends a pilot into space must bring it back, or the file never ends.** In
+  `test/gamePortPilots.test.js` a session change that gives the pilot a solar system starts its space
+  (timers and all); a test that leaves it there passes and then the file hangs, and so does the whole
+  suite behind it. Move a pilot between stations to test what a move does. Run a file you have added
+  to with a limit (`timeout 200 node --test --test-timeout=15000 <file>`), and check afterwards that no
+  test process is left (`Get-CimInstance Win32_Process` for node with `--test`): one was, on 2026-10-09.
 - **A native module of the client's can be run and asked.** What a script hands to a module with no
   source among the scripts (`pyEvePathfinder` is `bin64/_pyevepathfinder.dll`, loaded by
   `blue.LoadExtension`) loads in the client's own Python with `imp.load_dynamic('_name', path)`
