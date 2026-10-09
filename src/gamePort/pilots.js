@@ -56,7 +56,7 @@ const { GamePortSession } = require("./session");
 const { connectTcp, gameEndpoint } = require("./tcp");
 const { notificationToBridgeJson, sessionChangeToBridgeJson, wireToBridgeJson } = require("./bridgeJson");
 const { GAME_PORT_HANDLE_PREFIX } = require("../pilotTransport");
-const { createCallLedger, retailForm, retailNeeds } = require("./retailCalls");
+const { createCallLedger, madeAfresh, retailForm, retailNeeds } = require("./retailCalls");
 const { createPilotSpace } = require("./pilotSpace");
 const { createPilotClock } = require("./pilotClock");
 const { EFFECT_CATEGORY, EFFECT_ONLINE, createPilotDogma } = require("./pilotDogma");
@@ -793,6 +793,8 @@ function createGamePortPilots({
     session.onSessionChange((changes) => {
       // A new place, or a new ship: what dogma said of the old one is not about this one.
       if (LOCATION_ATTRIBUTES.some((name) => name in changes) || "shipid" in changes) entry.dogmaLoaded = null;
+      // gameui.GetShipAccess: the ship's moniker it keeps is for the ship the pilot is in.
+      if ("shipid" in changes) entry.monikers.delete("ship");
       // scanSvc.OnSessionChanged: another system, ship or structure, and the scanner knows of no probes.
       if (["solarsystemid", "shipid", "structureid"].some((name) => name in changes)) entry.scanner.flush();
       // base_corporation.GetCorpRegistry: another corporation, another registry.
@@ -1408,6 +1410,10 @@ function createGamePortPilots({
    * CharGetDogmaLocation for `dogmaIM`), for its corporation, or its skill handler.
    */
   async function monikerCall(entry, service, method, args, kwargs = null) {
+    if (madeAfresh(service, method, { dockedInStation: attribute(entry, "stationid") !== null })) {
+      // A Moniker the client makes for the one call: it binds carrying the call, and is not kept.
+      return (await entry.session.bind(service, monikerParams(entry, service, undefined), [method, args, kwargs])).result;
+    }
     if (service !== SKILL_HANDLER) {
       return keptCall(entry, entry.monikers, service, service, () => monikerParams(entry, service, undefined), method, args, kwargs);
     }

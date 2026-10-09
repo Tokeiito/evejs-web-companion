@@ -69,7 +69,21 @@ const MONIKER_SERVICES = Object.freeze({
   corpRegistry: new Set(),
   // skillsvc.GetSkillHandler: the moniker skillMgr2.GetMySkillHandler answers, kept. On this server it names this service.
   skillHandler: new Set(),
+  // crimewatchSvc: eveMoniker.CharGetCrimewatchLocation(), made at every use.
+  crimewatch: new Set(),
 });
+
+/** shipConfigSvc.py 51: eveMoniker.GetShipAccess().GetShipConfiguration(shipID), a Moniker of its own each time. */
+const OWN_SHIP_MONIKER = new Set(["GetShipConfiguration"]);
+/**
+ * Whether the client makes a new Moniker for this call, which binds carrying it and is not kept, or calls one it
+ * keeps. All of crimewatch's are made anew (crimewatchSvc.py: CharGetCrimewatchLocation().Method(...) at each use).
+ * The ship's go through gameui.GetShipAccess (gameui.py 228), which makes a new one each time while the session
+ * has a station and keeps one otherwise for as long as the system, the ship and the character are the same; a
+ * service that makes its own does so wherever the pilot is.
+ */
+const madeAfresh = (service, method, { dockedInStation = false } = {}) =>
+  service === "crimewatch" || (service === "ship" && (dockedInStation || OWN_SHIP_MONIKER.has(method)));
 /**
  * The services the client reaches with sm.ProxySvc(name): every one in the decompiled client, and none
  * of them is asked any other way. Such a call is addressed to the client's proxy node
@@ -133,6 +147,7 @@ const ofAnOpenedEvent = (args) => (args[0] > 0 && args[1] !== null && args[1] !=
   ? { status: "same" }
   : { status: "differs", note: "The client asks this of an event the pilot has opened, by the event's ID and its owner's (eventInfo.eventID, eventInfo.ownerID). It never asks of no event, nor without the owner." });
 const CONTRACT_PANELS = "eve/client/script/ui/shared/neocom/contracts/contractPanels.py";
+const CRIMEWATCH_SVC = "eve/client/script/ui/services/crimewatchSvc.py";
 /** contractPanels.py RESULTS_PER_PAGE. */
 const CONTRACTS_PER_PAGE = 100;
 /**
@@ -489,6 +504,11 @@ const RETAIL_CALLS = Object.freeze({
     note: "ProxySvc('contractProxy').GetContractListForOwner(ownerID, status, contractType, issuedBy, num=100, startContractID=...): the My Contracts panel's list, asked when the panel opens and when its button is pressed, for the status its filter is on. Recorded on Tranquility as (charID, 0, None, None), num=100, startContractID=None.",
     shape: ownersContracts,
   }),
+  "crimewatch.GetClientStates": same(`${CRIMEWATCH_SVC}:89`, "CharGetCrimewatchLocation().GetClientStates(), no arguments, on a moniker made for the call. Recorded on Tranquility as the call a bind of crimewatch carried."),
+  "crimewatch.SetSafetyLevel": same(`${CRIMEWATCH_SVC}:343`, "CharGetCrimewatchLocation().SetSafetyLevel(safetyLevel)"),
+  "crimewatch.GetMySecurityStatus": same(`${CRIMEWATCH_SVC}:592`, "CharGetCrimewatchLocation().GetMySecurityStatus(), no arguments: asked once and kept. Recorded on Tranquility as the call a bind of crimewatch carried."),
+  "crimewatch.GetCharacterSecurityStatus": same(`${CRIMEWATCH_SVC}:596`, "CharGetCrimewatchLocation().GetCharacterSecurityStatus(charID)"),
+  "crimewatch.GetSecurityStatusTransactions": same(`${CRIMEWATCH_SVC}:603`, "CharGetCrimewatchLocation().GetSecurityStatusTransactions(), no arguments"),
   "skillMgr2.GetMySkillHandler": same(`${SKILL_SVC}:130`, "session.ConnectToRemoteService('skillMgr2').GetMySkillHandler(), no arguments: asked once and the moniker it answers kept."),
   "skillHandler.GetSkills": same(`${SKILL_SVC}:136`, "GetSkillHandler().GetSkills(), no arguments"),
   "skillHandler.GetAllSkills": same(`${SKILL_SVC}:142`, "GetSkillHandler().GetAllSkills(), no arguments"),
@@ -607,4 +627,4 @@ function createCallLedger() {
   };
 }
 
-module.exports = { CONTRACT_SEARCH_KEYWORDS, MONIKER_SERVICES, PROXY_SERVICES, REPEATS, RETAIL_CALLS, createCallLedger, list, madeOnMoniker, retailForm, retailNeeds };
+module.exports = { CONTRACT_SEARCH_KEYWORDS, MONIKER_SERVICES, PROXY_SERVICES, REPEATS, RETAIL_CALLS, createCallLedger, list, madeAfresh, madeOnMoniker, retailForm, retailNeeds };

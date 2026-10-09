@@ -8,7 +8,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { CONTRACT_SEARCH_KEYWORDS, MONIKER_SERVICES, PROXY_SERVICES, REPEATS, RETAIL_CALLS, createCallLedger, list, madeOnMoniker, retailForm, retailNeeds } = require("../src/gamePort/retailCalls");
+const { CONTRACT_SEARCH_KEYWORDS, MONIKER_SERVICES, PROXY_SERVICES, REPEATS, RETAIL_CALLS, createCallLedger, list, madeAfresh, madeOnMoniker, retailForm, retailNeeds } = require("../src/gamePort/retailCalls");
 const { keywordOrder } = require("../src/gamePort/py27");
 const contract = require("../contracts/evejs-web-bridge-contract.json");
 
@@ -295,6 +295,8 @@ test("everything of ship, dogmaIM, corpRegistry and the skill handler is made on
     corpRegistry: [],
     // Nor its skill handler: every read of it is a call on the moniker skillMgr2 answered.
     skillHandler: [],
+    // Nor crimewatch: each use makes a moniker for where the pilot is and calls it.
+    crimewatch: [],
   });
   assert.deepEqual([madeOnMoniker("corpRegistry", "GetCorporation"), madeOnMoniker("corpRegistry", "AddBulletin"), madeOnMoniker("corpRegistry", "MachoBindObject")], [true, true, false]);
   assert.deepEqual([madeOnMoniker("ship", "Undock"), madeOnMoniker("dogmaIM", "GetTargets"), madeOnMoniker("ship", "SomethingNobodyRead"), madeOnMoniker("dogmaIM", "Overload")], [true, true, true, true]);
@@ -604,6 +606,29 @@ test("an owner's contracts are asked for as the My Contracts panel asks: owner, 
   for (const args of [[], [null, 0], [7], [7, null]]) {
     const nobody = form("contractProxy.GetContractListForOwner", args, null);
     assert.deepEqual([nobody.status, /owner and a status/.test(nobody.note)], ["differs", true], JSON.stringify(args));
+  }
+});
+
+test("which calls the client makes on a Moniker of their own: all of crimewatch's, and the ship's while docked in a station or where a service makes its own", () => {
+  // crimewatchSvc.py: every use is eveMoniker.CharGetCrimewatchLocation().Method(...). Recorded on Tranquility at
+  // login as two binds of crimewatch, each carrying its call.
+  for (const method of ["GetClientStates", "GetMySecurityStatus", "SetSafetyLevel", "SomethingNobodyRead"]) {
+    assert.deepEqual([madeAfresh("crimewatch", method), madeAfresh("crimewatch", method, { dockedInStation: true })], [true, true], method);
+  }
+  // gameui.GetShipAccess (gameui.py 228): a new one each time while the session has a station, and one kept otherwise.
+  for (const method of ["Undock", "LeaveShip", "LaunchDrones", "SomethingNobodyRead"]) {
+    assert.deepEqual([madeAfresh("ship", method, { dockedInStation: true }), madeAfresh("ship", method, { dockedInStation: false }), madeAfresh("ship", method)], [true, false, false], method);
+  }
+  // shipConfigSvc.py 51 makes its own wherever the pilot is.
+  assert.deepEqual([madeAfresh("ship", "GetShipConfiguration"), madeAfresh("ship", "GetShipConfiguration", { dockedInStation: true })], [true, true]);
+  // The ones the client keeps, and services that have no moniker at all.
+  for (const [service, method] of [["dogmaIM", "GetAllInfo"], ["corpRegistry", "GetCorporation"], ["skillHandler", "GetImplants"], ["station", "GetGuests"], ["toString", "x"]]) {
+    assert.deepEqual([madeAfresh(service, method), madeAfresh(service, method, { dockedInStation: true })], [false, false], service);
+  }
+  // crimewatch's calls are made on its moniker, and five of them are set beside the client's.
+  for (const [method, args, line] of [["GetClientStates", [], 89], ["SetSafetyLevel", [1], 343], ["GetMySecurityStatus", [], 592], ["GetCharacterSecurityStatus", [140000002], 596], ["GetSecurityStatusTransactions", [], 603]]) {
+    const call = form(`crimewatch.${method}`, args);
+    assert.deepEqual([call.status, call.args, call.kwargs, call.moniker, call.source.endsWith(`crimewatchSvc.py:${line}`)], ["same", args, null, true, true], method);
   }
 });
 

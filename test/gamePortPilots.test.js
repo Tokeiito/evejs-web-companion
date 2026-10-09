@@ -2192,16 +2192,12 @@ test("undock is made as the client makes it: on the ship object bound for the st
   assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:2", method: "Undock", args: [SHIP, false], kwargs: { onlineModules: { type: "dict", entries: [[19, FITTED_MODULE]] } } });
   assert.deepEqual(pilots.callLedger().find((row) => row.pair === "ship.Undock").statuses, { reshaped: 1 });
 
-  // Asked again (the contraband question answered, say): the same two objects, and godma is not primed again.
+  // Asked again (the contraband question answered, say): while the pilot is docked in a station gameui makes the ship's
+  // moniker anew each time, so the ship is bound again, carrying the call. Godma's dogma location is kept, and not primed again.
   await pilots.callMethod("ship", "Undock", [SHIP, true], { onlineModules: [] }, FIELDS, handle);
-  assert.equal(session.binds.length, 2);
-  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:2", method: "Undock", args: [SHIP, true], kwargs: { onlineModules: { type: "dict", entries: [[19, FITTED_MODULE]] } } });
+  assert.deepEqual([session.binds.length, session.binds.at(-1), session.carried], [3, { service: "ship", params: [STATION, 15] }, ["GetAllInfo", "Undock", "Undock"]]);
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:3", method: "Undock", args: [SHIP, true], kwargs: { onlineModules: { type: "dict", entries: [[19, FITTED_MODULE]] } } });
   assert.equal(session.boundCalls.filter((call) => call.method === "GetAllInfo").length, 1);
-
-  // The server lets the ship object go: the next call binds another.
-  session.notify("OnMachoObjectDisconnect", [Buffer.from("N=1:2"), 0, 0]);
-  await pilots.callMethod("ship", "Undock", [SHIP, false], null, FIELDS, handle);
-  assert.deepEqual([session.binds.length, session.binds.at(-1), session.boundCalls.at(-1).objectID], [3, { service: "ship", params: [STATION, 15] }, "N=1:3"]);
 });
 
 test("a module whose online effect is not running is not among the online modules, and with no dogma the tally says the call differs", async () => {
@@ -2314,15 +2310,15 @@ test("whatever is asked of ship or dogmaIM by name is made on the moniker, read 
   // One nobody has read against the client: still on the moniker, with its arguments as the BFF spelt them.
   await pilots.callMethod("dogmaIM", "Overload", [7, 3175], null, FIELDS, handle);
   assert.deepEqual(made(), { objectID: "N=1:1", method: "Overload", args: [7, 3175], kwargs: null });
-  // The ship's: its own moniker, and what the pilot knows filled in.
+  // The ship's: its own moniker, made anew for each call while the pilot is docked in a station, and what the pilot knows filled in.
   await pilots.callMethod("ship", "GetShipConfiguration", [], null, FIELDS, handle);
   assert.deepEqual(session.binds.at(-1), { service: "ship", params: [STATION, 15] });
   assert.deepEqual(made(), { objectID: "N=1:2", method: "GetShipConfiguration", args: [SHIP], kwargs: null });
   await pilots.callMethod("ship", "LaunchDrones", [[[11, 1]], PILOT, false], null, FIELDS, handle);
-  assert.deepEqual(made(), { objectID: "N=1:2", method: "LaunchDrones", args: [{ type: "list", items: [[11, 1]] }, null, false], kwargs: null });
+  assert.deepEqual(made(), { objectID: "N=1:3", method: "LaunchDrones", args: [{ type: "list", items: [[11, 1]] }, null, false], kwargs: null });
   await pilots.callMethod("ship", "LeaveShip", [SHIP], null, FIELDS, handle);
-  assert.deepEqual(made(), { objectID: "N=1:2", method: "LeaveShip", args: [SHIP], kwargs: null });
-  assert.equal(session.binds.length, 2, "one object for each service");
+  assert.deepEqual(made(), { objectID: "N=1:4", method: "LeaveShip", args: [SHIP], kwargs: null });
+  assert.deepEqual(session.binds.map((bind) => bind.service), ["dogmaIM", "ship", "ship", "ship"], "one object for the dogma location, and one for each call of the ship's");
   assert.deepEqual(byName(), [], "nothing of either was asked by the service's name");
 
   // The few the client asks by name are asked by name; so is everything of every other service.
@@ -2679,7 +2675,7 @@ test("the registry's moniker is the corporation's: kept when the pilot moves, bo
   const { pilots, session, handle } = await selected({}, REGISTRY_PAIRS);
   const ask = () => pilots.callMethod("corpRegistry", "GetCorporation", [], null, FIELDS, handle);
   await ask();
-  // A ship's moniker is for the place, and goes with it; the registry's does not. (Another station, so the pilot stays docked.)
+  // A ship's moniker is for the place (and, docked in a station, for the one call); the registry's is neither. (Another station, so the pilot stays docked.)
   const leave = () => pilots.callMethod("ship", "LeaveShip", [SHIP], null, FIELDS, handle);
   await leave();
   await leave();
@@ -2687,7 +2683,7 @@ test("the registry's moniker is the corporation's: kept when the pilot moves, bo
   session.change({ stationid: [STATION, 60000004] });
   await leave();
   await ask();
-  assert.deepEqual(session.binds.map((bind) => [bind.service, bind.params]), [["corpRegistry", 1000044], ["ship", [STATION, 15]], ["ship", [60000004, 15]]]);
+  assert.deepEqual(session.binds.map((bind) => [bind.service, bind.params]), [["corpRegistry", 1000044], ["ship", [STATION, 15]], ["ship", [STATION, 15]], ["ship", [60000004, 15]]]);
   // Another corporation: another registry.
   session.attributes.corpid = 98000001;
   session.change({ corpid: [1000044, 98000001] });
@@ -3008,6 +3004,87 @@ test("a Moniker binds once at a time: a call that finds it binding waits for the
   const [refused, after] = [again("GetCharacterBaseAttributes"), again("GetDroneDamageStates")];
   await rejects(refused, "CALL_REFUSED");
   assert.deepEqual([await after, refusing.session.carried], ["bound by GetDroneDamageStates", ["GetCharacterBaseAttributes", "GetDroneDamageStates"]]);
+});
+
+// ── the monikers the client makes afresh ─────────────────────────────────────
+//
+// Not every Moniker is kept. crimewatchSvc makes one for each call (eveMoniker.CharGetCrimewatchLocation().X()),
+// and gameui.GetShipAccess makes a new ship's one each time while the session has a station, keeping one otherwise
+// for as long as the system, the ship and the character are the same. A Moniker made for one call binds carrying
+// it. Recorded on Tranquility at login: crimewatch bound twice and ship twice, each bind with its call and nothing
+// asked of any of the four objects after; and in this server's log of a retail client, crimewatch bound four times.
+
+const CRIME_PAIRS = { allowed: new Set(["crimewatch.GetClientStates", "crimewatch.GetMySecurityStatus", "crimewatch.SetSafetyLevel", "ship.LeaveShip", "ship.LaunchDrones", "ship.GetShipConfiguration", "ship.Undock", "corpRegistry.GetCorporation"]) };
+/** A pilot left in space, with a park that moves only when a test says so. */
+async function selectedInSpace(pilotOptions) {
+  const built = build(IN_SPACE, { ...handTicked().options, ...pilotOptions });
+  const outcome = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  return { ...built, handle: outcome.bridgeSessionID };
+}
+
+test("every call of crimewatch is on a Moniker of its own: bound for the one call, carrying it, and never by name", async () => {
+  const { pilots, session, handle } = await selected({ answers: { "bound:GetClientStates": "states", "bound:GetMySecurityStatus": 0.5 } }, CRIME_PAIRS);
+  session.calls.length = 0;
+  const states = await pilots.callMethod("crimewatch", "GetClientStates", [], null, FIELDS, handle);
+  const status = await pilots.callMethod("crimewatch", "GetMySecurityStatus", [], null, FIELDS, handle);
+  await pilots.callMethod("crimewatch", "SetSafetyLevel", [1], null, FIELDS, handle);
+  await pilots.callMethod("crimewatch", "GetClientStates", [], null, FIELDS, handle);
+  assert.deepEqual([states.result, status.result], ["states", 0.5]);
+  assert.deepEqual(session.binds, Array(4).fill({ service: "crimewatch", params: [STATION, 15] }));
+  assert.deepEqual(session.carried, ["GetClientStates", "GetMySecurityStatus", "SetSafetyLevel", "GetClientStates"]);
+  // Four objects, one call each, and nothing asked of the service by its name.
+  assert.deepEqual(session.boundCalls.map((call) => [call.objectID, call.method, call.args]), [["N=1:1", "GetClientStates", []], ["N=1:2", "GetMySecurityStatus", []], ["N=1:3", "SetSafetyLevel", [1]], ["N=1:4", "GetClientStates", []]]);
+  assert.deepEqual(session.calls, []);
+  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "crimewatch.GetClientStates").statuses, { reshaped: 2 });
+  // In space it is the solar system's.
+  const flying = await selectedInSpace(CRIME_PAIRS);
+  await flying.pilots.callMethod("crimewatch", "GetClientStates", [], null, FIELDS, flying.handle);
+  assert.deepEqual([flying.session.binds.filter((bind) => bind.service === "crimewatch"), flying.session.carried.at(-1)], [[{ service: "crimewatch", params: [SYSTEM, 5] }], "GetClientStates"]);
+});
+
+test("the ship's Moniker is made anew for each call while the pilot is docked in a station", async () => {
+  const { pilots, session, handle } = await selected(undefined, CRIME_PAIRS);
+  await pilots.callMethod("ship", "LeaveShip", [SHIP], null, FIELDS, handle);
+  await pilots.callMethod("ship", "LeaveShip", [SHIP], null, FIELDS, handle);
+  await pilots.callMethod("ship", "GetShipConfiguration", [], null, FIELDS, handle);
+  assert.deepEqual(session.binds, Array(3).fill({ service: "ship", params: [STATION, 15] }));
+  assert.deepEqual(session.carried, ["LeaveShip", "LeaveShip", "GetShipConfiguration"]);
+  assert.deepEqual(session.boundCalls.map((call) => [call.objectID, call.method, call.args]), [["N=1:1", "LeaveShip", [SHIP]], ["N=1:2", "LeaveShip", [SHIP]], ["N=1:3", "GetShipConfiguration", [SHIP]]]);
+});
+
+test("in space the ship's Moniker is kept while the ship is the same, and shipConfigSvc's own call still makes its own", async () => {
+  const { pilots, session, handle } = await selectedInSpace(CRIME_PAIRS);
+  const ships = () => session.binds.filter((bind) => bind.service === "ship").length;
+  const drones = () => pilots.callMethod("ship", "LaunchDrones", [[[11, 1]], PILOT, false], null, FIELDS, handle);
+  await drones();
+  await drones();
+  // Bound by the first, which it carried; the second went to the object.
+  assert.deepEqual([ships(), session.binds.find((bind) => bind.service === "ship"), session.carried.filter((method) => method === "LaunchDrones").length], [1, { service: "ship", params: [SYSTEM, 5] }, 1]);
+  const kept = session.boundCalls.filter((call) => call.method === "LaunchDrones").map((call) => call.objectID);
+  assert.deepEqual([kept.length, kept[0] === kept[1]], [2, true]);
+  // The configuration read makes a moniker of its own, and leaves the kept one as it is.
+  await pilots.callMethod("ship", "GetShipConfiguration", [], null, FIELDS, handle);
+  await drones();
+  assert.deepEqual([ships(), session.carried.at(-1), session.boundCalls.at(-1).objectID === kept[0]], [2, "GetShipConfiguration", true]);
+  // A change of the session that is neither the ship nor the place leaves it kept.
+  session.attributes.fleetid = 77;
+  session.change({ fleetid: [null, 77] });
+  await drones();
+  assert.deepEqual([ships(), session.boundCalls.at(-1).objectID === kept[0]], [2, true]);
+  // Another ship: gameui lets its moniker go, and the next call makes and binds a new one. The other monikers the
+  // client keeps are not the ship's, and stay: the corporation's registry is not bound again.
+  await pilots.callMethod("corpRegistry", "GetCorporation", [], null, FIELDS, handle);
+  const registries = () => session.binds.filter((bind) => bind.service === "corpRegistry").length;
+  session.attributes.shipid = SHIP + 500;
+  session.change({ shipid: [SHIP, SHIP + 500] });
+  await drones();
+  await drones();
+  await pilots.callMethod("corpRegistry", "GetCorporation", [], null, FIELDS, handle);
+  assert.deepEqual([ships(), registries(), session.boundCalls.filter((call) => call.method === "LaunchDrones").at(-1).objectID === kept[0]], [3, 1, false]);
+  // The server lets that object go: the next call binds another.
+  session.notify("OnMachoObjectDisconnect", [Buffer.from(session.boundCalls.filter((call) => call.method === "LaunchDrones").at(-1).objectID), 0, 0]);
+  await drones();
+  assert.deepEqual([ships(), session.carried.at(-1)], [4, "LaunchDrones"]);
 });
 
 // ── the skill handler ────────────────────────────────────────────────────────
