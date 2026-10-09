@@ -65,6 +65,7 @@ const { createPilotFleet } = require("./pilotFleet");
 const { createPilotStandings } = require("./pilotStandings");
 const { createPilotSkills } = require("./pilotSkills");
 const { createPilotJournal } = require("./pilotJournal");
+const { createKeptReads } = require("./keptReads");
 const { buildSkillSheet } = require("./skillSheet");
 const { projectFlight, projectSpace } = require("./spaceProjection");
 const { MODE: BALL_MODE } = require("./destiny/state");
@@ -153,13 +154,7 @@ const AGGRESSION_SETTINGS = "GetAggressionSettings";
  */
 const BOUND_BEFORE_USE = new Set(["corpRegistry", "allianceRegistry"]);
 const NOTIFICATION_MGR = "notificationMgr";
-/**
- * What changes the notifications the client's notification service keeps: the server's word of one received,
- * deleted or brought back, and the pilot's own marking and deleting of them. The client works each into its three
- * lists (notificationSvc.py). Here the lists are forgotten at any of them, and asked for when next wanted.
- */
-const NOTIFICATION_NOTICES = new Set(["OnNotificationReceived", "OnNotificationDeleted", "OnNotificationUndeleted"]);
-const NOTIFICATION_WRITES = new Set(["MarkGroupAsProcessed", "MarkAllAsProcessed", "MarkAsProcessed", "DeleteGroupNotifications", "DeleteAllNotifications", "DeleteNotifications"]);
+const CALENDAR_PROXY = "calendarProxy";
 /**
  * What a read of the notification manager's is kept as, for the three the client's notification service keeps:
  * all of them from the first (allNotifications: GetAllNotifications(fromID=0), as its notification window asks
@@ -171,6 +166,36 @@ function notificationKeptAs(method, form) {
   if (method === "GetAllNotifications") return form.kwargs && form.kwargs.fromID === 0 ? "all" : null;
   if (method === "GetUnprocessed") return "unread";
   return method === "GetByGroupID" ? `group:${form.args[0]}` : null;
+}
+/** What a read of the calendar's is kept as: a month's events, by the month (calendar.events[(month, year)]: GetEventList(month, year)). */
+const calendarKeptAs = (method, form) => (method === "GetEventList" ? `${form.args[1]}-${form.args[0]}` : null);
+/**
+ * The answers a service of the client's keeps until something changes them, by the service they are asked of
+ * (keptReads.js). `keptAs` says what a read is kept as, or null for one that is not kept. What changes them is
+ * the server's word (`notices`) and the pilot's own writes, by the service each is made on (`writes`). The
+ * client works each change into what it keeps (notificationSvc.py, eveCalendarsvc.py). Here everything kept of
+ * the service is forgotten at any of them, and asked for when it is next wanted.
+ */
+const KEPT_UNTIL_CHANGED = Object.freeze({
+  // notificationSvc: one received, deleted or brought back, and the pilot's own marking and deleting.
+  [NOTIFICATION_MGR]: Object.freeze({
+    keptAs: notificationKeptAs,
+    notices: new Set(["OnNotificationReceived", "OnNotificationDeleted", "OnNotificationUndeleted"]),
+    writes: Object.freeze({ notificationMgr: new Set(["MarkGroupAsProcessed", "MarkAllAsProcessed", "MarkAsProcessed", "DeleteGroupNotifications", "DeleteAllNotifications", "DeleteNotifications"]) }),
+  }),
+  // calendar: an event made, changed or taken away, by anyone or by the pilot. Another corporation or alliance
+  // forgets them too (calendar.OnSessionChanged), which the session's change sees to.
+  [CALENDAR_PROXY]: Object.freeze({
+    keptAs: calendarKeptAs,
+    notices: new Set(["OnNewCalendarEvent", "OnEditCalendarEvent", "OnRemoveCalendarEvent"]),
+    writes: Object.freeze({ calendarMgr: new Set(["CreatePersonalEvent", "CreateCorporationEvent", "CreateAllianceEvent", "EditPersonalEvent", "EditCorporationEvent", "EditAllianceEvent", "DeleteEvent"]) }),
+  }),
+});
+/** calendar.FetchNextEvents: the month of a time and the month after it, each as [month, year], December's next being January's (GetBrowsedMonth). */
+function monthAndNext(ms) {
+  const now = new Date(ms);
+  const [month, year] = [now.getUTCMonth() + 1, now.getUTCFullYear()];
+  return [[month, year], month === 12 ? [1, year + 1] : [month + 1, year]];
 }
 /** The name the BFF asks the skill handler's reads by. What they are bound by is what the handler's own moniker says. */
 const SKILL_HANDLER = "skillHandler";
@@ -915,14 +940,8 @@ function createGamePortPilots({
       agents: new Map(),
       /** agents.allAgents: this pilot's own asking for the table of agents, once it has asked; over when it is answered. */
       agentsAsked: null,
-      /**
-       * notificationSvc's lists as the server answered them, by what each is kept as (notificationKeptAs); how many
-       * times they have been forgotten, so that an answer on its way when they were is not kept; and the reads of
-       * them, one after another.
-       */
-      notificationsKept: new Map(),
-      notificationsForgotten: 0,
-      notificationsWork: Promise.resolve(),
+      /** What the client's services keep until it changes, as the server answered it, by the service asked (KEPT_UNTIL_CHANGED). */
+      kept: Object.fromEntries(Object.keys(KEPT_UNTIL_CHANGED).map((service) => [service, createKeptReads()])),
       /** crimewatchSvc.corpAggressionSettings: the corporation's aggression settings as last answered or told, or null; and the askings of them, one after another. */
       aggression: null,
       corpWork: Promise.resolve(),
@@ -946,7 +965,7 @@ function createGamePortPilots({
       entry.standings.feed(notification);
       afterSkillNotice(entry, entry.skills.feed(notification));
       afterCorporationNotice(entry, notification);
-      if (NOTIFICATION_NOTICES.has(notification.method)) forgetNotifications(entry);
+      for (const [service, keeper] of Object.entries(KEPT_UNTIL_CHANGED)) if (keeper.notices.has(notification.method)) entry.kept[service].forget();
       // A mission changed: what the client shows of its missions is drawn again from the journal, which reads it again.
       if (entry.journal.feed(notification)) journalUpToDate(entry);
       record(entry, notificationToBridgeJson(notification));
@@ -963,6 +982,8 @@ function createGamePortPilots({
       }
       // scanSvc.OnSessionChanged: another system, ship or structure, and the scanner knows of no probes.
       if (["solarsystemid", "shipid", "structureid"].some((name) => name in changes)) entry.scanner.flush();
+      // calendar.OnSessionChanged: in another corporation or alliance the months of events kept are not its.
+      if ("corpid" in changes || "allianceid" in changes) entry.kept[CALENDAR_PROXY].forget();
       // all_cso.OnSessionChanged: another alliance, another moniker, made and bound at once; no alliance, none.
       if ("allianceid" in changes) {
         entry.monikers.delete(ALLIANCE_REGISTRY);
@@ -1032,8 +1053,14 @@ function createGamePortPilots({
       await addressBookRead(entry);
       // bco_applications: the pilot's own applications, which the client asks for once.
       await corporationAsk(entry, "GetMyApplications").catch(() => {});
+      // contracts.NeocomBlink: what of the pilot's contracts wants attention, asked once the notifications are ready.
+      await asks(entry, "contractProxy", "GetLoginInfo").catch(() => {});
       // notificationUI._NotificationProvider: all the pilot's notifications, from the first, for the notification window.
-      await notificationRead(entry, "GetAllNotifications", shape(NOTIFICATION_MGR, "GetAllNotifications", [], { fromID: 0 }, contextFor(entry))).catch(() => {});
+      await keptRead(entry, NOTIFICATION_MGR, "GetAllNotifications", shape(NOTIFICATION_MGR, "GetAllNotifications", [], { fromID: 0 }, contextFor(entry))).catch(() => {});
+      // calendar.GetEventsNextXMonths: this month's events and the next's, by the server's clock, a month at a time.
+      for (const monthAndYear of monthAndNext(session.serverNow())) {
+        await keptRead(entry, CALENDAR_PROXY, "GetEventList", shape(CALENDAR_PROXY, "GetEventList", monthAndYear, null, contextFor(entry))).catch(() => {});
+      }
       // agents.__GetAllAgents: the table of agents is asked for as a character is chosen. The choosing does not wait
       // on it, so it is asked for last: a call sent right behind it was answered 50 to 80 ms late (2026-10-09).
       agentsKnown(entry);
@@ -1096,9 +1123,9 @@ function createGamePortPilots({
       return { service, method, result: agentsTable, notifications: drain(entry) };
     }
     const form = shape(service, method, args, kwargs, contextFor(entry));
-    // What the client's notification service keeps is its to answer, and is noted where it is asked for.
-    if (service === NOTIFICATION_MGR && notificationKeptAs(method, form) !== null) {
-      const kept = await run(entry, service, method, () => notificationRead(entry, method, form));
+    // What a service of the client's keeps until it changes is that service's to answer, and is noted where it is asked for.
+    if (Object.hasOwn(KEPT_UNTIL_CHANGED, service) && KEPT_UNTIL_CHANGED[service].keptAs(method, form) !== null) {
+      const kept = await run(entry, service, method, () => keptRead(entry, service, method, form));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
     // Asked of the service by name and made on its moniker: the arguments may be the client's as they stand, the call was not.
@@ -1111,8 +1138,10 @@ function createGamePortPilots({
     const result = await run(entry, service, method, async () => (form.moniker
       ? monikerCall(entry, service, method, argumentsToWire(form.args), form.kwargs)
       : byName(entry.session, service, method, form))).finally(() => {
-      // The pilot's own marking or deleting of notifications, done or refused: what was kept of them may not be so.
-      if (service === NOTIFICATION_MGR && NOTIFICATION_WRITES.has(method)) forgetNotifications(entry);
+      // One of the pilot's own writes that changes what a service keeps, done or refused: what was kept may not be so.
+      for (const [reads, keeper] of Object.entries(KEPT_UNTIL_CHANGED)) {
+        if (Object.hasOwn(keeper.writes, service) && keeper.writes[service].has(method)) entry.kept[reads].forget();
+      }
     });
     return {
       service,
@@ -1122,30 +1151,21 @@ function createGamePortPilots({
     };
   }
 
-  // ── the notifications as they are kept ────────────────────────────────────
+  // ── what the client's services keep until it changes ──────────────────────
 
-  /**
-   * One of the notification service's three reads: answered from what is kept, and asked for where nothing is.
-   * The reads go one after another, so that two that find nothing kept ask once. An answer is kept unless the
-   * lists were forgotten while it was on its way: it may be from before what forgot them.
-   */
-  function notificationRead(entry, method, form) {
-    const keptAs = notificationKeptAs(method, form);
-    const reading = entry.notificationsWork.then(async () => {
-      if (entry.notificationsKept.has(keptAs)) return entry.notificationsKept.get(keptAs);
-      ledger.note(NOTIFICATION_MGR, method, form);
-      const forgotten = entry.notificationsForgotten;
-      const answer = await byName(entry.session, NOTIFICATION_MGR, method, form);
-      if (forgotten === entry.notificationsForgotten) entry.notificationsKept.set(keptAs, answer);
-      return answer;
+  /** A read a service keeps the answer of (KEPT_UNTIL_CHANGED): answered from what is kept, and asked for, and noted, where nothing is. */
+  function keptRead(entry, service, method, form) {
+    return entry.kept[service].read(KEPT_UNTIL_CHANGED[service].keptAs(method, form), () => {
+      ledger.note(service, method, form);
+      return byName(entry.session, service, method, form);
     });
-    entry.notificationsWork = reading.catch(() => {});
-    return reading;
   }
 
-  function forgetNotifications(entry) {
-    entry.notificationsKept.clear();
-    entry.notificationsForgotten += 1;
+  /** One of the client's own askings of a service by its name, with nothing: noted as it is sent. */
+  function asks(entry, service, method) {
+    const form = shape(service, method, [], null, contextFor(entry));
+    ledger.note(service, method, form);
+    return byName(entry.session, service, method, form);
   }
 
   /**
@@ -2140,19 +2160,15 @@ function createGamePortPilots({
    * window of the page reads a contact yet.
    */
   async function addressBookRead(entry) {
-    const byName = (service, method) => {
-      ledger.note(service, method, shape(service, method, [], null, contextFor(entry)));
-      return entry.session.call(service, method, [], null);
-    };
     const ofTheAlliance = (method) => {
       ledger.note(ALLIANCE_REGISTRY, method, shape(ALLIANCE_REGISTRY, method, [], null, contextFor(entry)));
       return keptCall(entry, entry.monikers, ALLIANCE_REGISTRY, ALLIANCE_REGISTRY, () => monikerParams(entry, ALLIANCE_REGISTRY, undefined), method, [], null);
     };
     await Promise.all([
-      byName("charMgr", "GetContactList"),
+      asks(entry, "charMgr", "GetContactList"),
       ...(inNpcCorporation(entry) ? [] : [corporationAsk(entry, "GetCorporateContacts")]),
       ...(attribute(entry, "allianceid") === null ? [] : [ofTheAlliance("GetAllianceContacts")]),
-      byName("onlineStatus", "GetInitialState"),
+      asks(entry, "onlineStatus", "GetInitialState"),
     ].map((asked) => asked.catch(() => {})));
   }
 

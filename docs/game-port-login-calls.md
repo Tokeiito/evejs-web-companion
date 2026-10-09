@@ -10,8 +10,8 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 
 | The game port | Kinds | Calls | Meaning |
 |---|---|---|---|
-| at login | 27 | 32 | The game port asks this at login too. |
-| by a feature | 13 | 19 | A feature of the web client asks this when it is wanted, in a form read against the client's. |
+| at login | 29 | 35 | The game port asks this at login too. |
+| by a feature | 11 | 16 | A feature of the web client asks this when it is wanted, in a form read against the client's. |
 | by a route | 10 | 11 | The BFF has a route that can ask this. It has not been read against the client's. |
 | never | 50 | 55 | Nothing of ours asks this. |
 
@@ -115,11 +115,11 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `userSvc.GetMultiCharactersTrainingSlots` | 1 | never |
 | `ProjectDiscovery.is_enabled` | 1 | never |
 | `skillHandler.CheckAndSendNotifications` (inferred) | 1 | at login |
-| `contractProxy.GetLoginInfo` | 1 | by a feature |
+| `contractProxy.GetLoginInfo` | 1 | at login |
 | `skillHandler.GetSkillHistory` (inferred) | 1 | at login |
 | `notificationMgr.GetAllNotifications` | 1 | at login |
 | `config.GetMultiOwnersEx` | 2 | never |
-| `calendarProxy.GetEventList` | 2 | by a feature |
+| `calendarProxy.GetEventList` | 2 | at login |
 | `insurgencySolarsystem.GetAllVisibleCampaigns` | 1 | never |
 | `eventLog.LogClientStats` | 1 | never |
 | `air_npe.get_air_npe_state` | 1 | never |

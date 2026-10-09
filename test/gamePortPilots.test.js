@@ -48,8 +48,8 @@ const CHOSEN_ASKS = [
   "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler", "agentMgr.GetMyJournalDetails",
   "charMgr.GetContactList", "onlineStatus.GetInitialState", "notificationMgr.GetAllNotifications", "agentMgr.GetAgents",
 ];
-/** What a choosing sends last, by name or on an object, after the corporation's reads and the address book's. */
-const CHOSEN_LAST = ["GetMyApplications", "GetAllNotifications", "GetAgents"];
+/** What a choosing sends last, by name, at the proxy node or on an object, after the corporation's reads and the address book's. */
+const CHOSEN_LAST = ["GetMyApplications", "GetLoginInfo", "GetAllNotifications", "GetEventList", "GetEventList", "GetAgents"];
 /** The last `count` things a choosing sent before those, and those. */
 const sentLast = (session, count) => session.sent.slice(-(count + CHOSEN_LAST.length));
 
@@ -101,6 +101,7 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
     async proxyCall(service, method, args = [], kwargs = null) {
       if (session.closed) throw sessionError("CONNECTION_CLOSED");
       session.proxyCalls.push({ service, method, args, kwargs });
+      session.sent.push(method);
       const key = `${service}.${method}`;
       const answer = key in answers ? answers[key] : null;
       return typeof answer === "function" ? answer(args, kwargs) : answer;
@@ -146,7 +147,7 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
     setNodeOfAddress(service, bindParams, nodeID) { session.nodes.push([service, bindParams, nodeID]); },
     proxyCalls: [],
     boundCalls: [],
-    /** The method of every call, by name or on an object, in the order they were sent. */
+    /** The method of every call, by name, at the proxy node or on an object, in the order they were sent. */
     sent: [],
     objects: 0,
     registries: 0,
@@ -1204,8 +1205,8 @@ test("the transport keeps a tally of what it called and how each compared with t
   // One pair nobody has read against the client is on this allowlist, so that every kind of status is tallied.
   const { pilots, handle } = await selected({}, { allowed: new Set(["invbroker.GetInventory", "invbroker.MachoBindObject", "invbroker.GetCapacity", "invbroker.List", "invbroker.Add", "station.GetGuests", "someService.SomeMethod"]) });
   const { boundHandle } = await pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, handle);
-  await pilots.callBoundMethod("invbroker", "GetCapacity", [4], null, WHO, handle, boundHandle);
-  await pilots.callBoundMethod("invbroker", "GetCapacity", [4], null, WHO, handle, boundHandle);
+  // Three times, which is once more than a choosing asks anything.
+  for (let time = 0; time < 3; time += 1) await pilots.callBoundMethod("invbroker", "GetCapacity", [4], null, WHO, handle, boundHandle);
   await pilots.callBoundMethod("invbroker", "List", [4], null, WHO, handle, boundHandle);
   await pilots.callBoundMethod("invbroker", "Add", [1, STATION], { flag: 5 }, WHO, handle, boundHandle);
   await pilots.callMethod("station", "GetGuests", [], null, WHO, handle);
@@ -1213,7 +1214,7 @@ test("the transport keeps a tally of what it called and how each compared with t
   await rejects(pilots.callMethod("machoNet", "GetTime", [], null, WHO, handle), "CALL_NOT_ALLOWED");
   const tally = Object.fromEntries(pilots.callLedger().map((row) => [row.pair, row.statuses]));
   assert.deepEqual(tally, {
-    "invbroker.GetCapacity": { "web-only": 2 },
+    "invbroker.GetCapacity": { "web-only": 3 },
     "charUnboundMgr.GetCharacterLockType": { same: 1 },
     "charUnboundMgr.GetCharacterSelectionData": { same: 1 },
     "charUnboundMgr.SelectCharacterID": { same: 1 },
@@ -1224,6 +1225,8 @@ test("the transport keeps a tally of what it called and how each compared with t
     "agentMgr.GetMyJournalDetails": { same: 1 },
     "agentMgr.GetAgents": { same: 1 },
     "notificationMgr.GetAllNotifications": { same: 1 },
+    "contractProxy.GetLoginInfo": { same: 1 },
+    "calendarProxy.GetEventList": { same: 2 },
     "charMgr.GetContactList": { same: 1 },
     "onlineStatus.GetInitialState": { same: 1 },
     "corpRegistry.GetAggressionSettings": { same: 1 },
@@ -3094,6 +3097,108 @@ test("the notifications that cannot be read at the choosing are asked for when t
   assert.deepEqual([built.session.sent.at(-1), built.pilots.size], ["GetAllNotifications", 0]);
 });
 
+// ── the calendar's months, and the contracts' login figures ──────────────────
+
+/** The client's calendar's own writes that change an event, each with something to send; and two that change none. */
+const CALENDAR_WRITES = ["CreatePersonalEvent", "CreateCorporationEvent", "CreateAllianceEvent", "EditPersonalEvent", "EditCorporationEvent", "EditAllianceEvent", "DeleteEvent"];
+const CALENDAR_PAIRS = { allowed: new Set(["calendarProxy.GetEventList", "contractProxy.GetLoginInfo", "notificationMgr.GetAllNotifications", "calendarMgr.SendEventResponse", "calendarMgr.UpdateEventParticipants", ...CALENDAR_WRITES.map((method) => `calendarMgr.${method}`), "someService.GetEventList", "someService.DeleteEvent", "station.GetGuests"]) };
+/** A calendar that answers a month's events with the month, the year, and the count of times that month was asked for. */
+function calendarAnswers(more = {}) {
+  const times = {};
+  return { "calendarProxy.GetEventList": ([month, year]) => ({ type: "list", items: [month, year, times[`${year}-${month}`] = (times[`${year}-${month}`] || 0) + 1] }), ...more };
+}
+const atTheProxy = (session) => session.proxyCalls.map((call) => [`${call.service}.${call.method}`, call.args, call.kwargs]);
+/** The stand-in's clock is in November 2023 unless a test says. */
+const [NOVEMBER, DECEMBER] = [[11, 2023], [12, 2023]];
+
+test("a character chosen has what of its contracts wants attention asked for, and this month's events and the next's, which are kept", async () => {
+  const { pilots, session, handle } = await selected({ answers: calendarAnswers({ "contractProxy.GetLoginInfo": () => ({ type: "list", items: ["figures"] }) }) }, CALENDAR_PAIRS);
+  const month = async (monthAndYear) => (await pilots.callMethod("calendarProxy", "GetEventList", monthAndYear, null, FIELDS, handle)).result.items;
+  // contracts.NeocomBlink and calendar.GetEventsNextXMonths: each at the client's proxy node, the months by the server's clock.
+  assert.deepEqual(atTheProxy(session), [["contractProxy.GetLoginInfo", [], null], ["calendarProxy.GetEventList", NOVEMBER, null], ["calendarProxy.GetEventList", DECEMBER, null]]);
+  assert.deepEqual([ledgerOf(pilots, "contractProxy.GetLoginInfo"), ledgerOf(pilots, "calendarProxy.GetEventList")], [
+    [{ same: 1 }, "eve/client/script/ui/shared/neocom/contracts/contracts.py:191"], [{ same: 2 }, "eve/client/script/ui/services/eveCalendarsvc.py:239"],
+  ]);
+  // calendar.events[(month, year)]: a month read again is what was answered then, with nothing asked.
+  assert.deepEqual([await month(NOVEMBER), await month(DECEMBER), await month(NOVEMBER)], [[11, 2023, 1], [12, 2023, 1], [11, 2023, 1]]);
+  assert.deepEqual([session.proxyCalls.length, ledgerOf(pilots, "calendarProxy.GetEventList")[0]], [3, { same: 2 }]);
+  // Another month is asked for when it is first wanted, and kept. The same month of another year is another month.
+  assert.deepEqual([await month([1, 2024]), await month([1, 2024]), await month([11, 2024])], [[1, 2024, 1], [1, 2024, 1], [11, 2024, 1]]);
+  assert.deepEqual([atTheProxy(session).slice(3), ledgerOf(pilots, "calendarProxy.GetEventList")[0]], [[["calendarProxy.GetEventList", [1, 2024], null], ["calendarProxy.GetEventList", [11, 2024], null]], { same: 4 }]);
+  // The contracts' figures the client asks for once and keeps nowhere: a read of them through the BFF asks.
+  await pilots.callMethod("contractProxy", "GetLoginInfo", [], null, FIELDS, handle);
+  assert.deepEqual([atTheProxy(session).at(-1), ledgerOf(pilots, "contractProxy.GetLoginInfo")[0]], [["contractProxy.GetLoginInfo", [], null], { same: 2 }]);
+  // A read of the same name on another service is that service's own.
+  await pilots.callMethod("someService", "GetEventList", NOVEMBER, null, FIELDS, handle);
+  assert.deepEqual([session.calls.at(-1).service, ledgerOf(pilots, "someService.GetEventList")[0]], ["someService", { unchecked: 1 }]);
+
+  // In December the month after is January of the next year.
+  const december = await selected({ serverNow: Date.UTC(2026, 11, 15, 12), answers: calendarAnswers() }, CALENDAR_PAIRS);
+  assert.deepEqual(atTheProxy(december.session).slice(1), [["calendarProxy.GetEventList", [12, 2026], null], ["calendarProxy.GetEventList", [1, 2027], null]]);
+});
+
+test("the months of events kept are forgotten when an event is made, changed or taken away, and in another corporation or alliance", async () => {
+  let refuse = false;
+  const { pilots, session, handle } = await selected({ ...IN_AN_ALLIANCE, answers: calendarAnswers({ "calendarMgr.DeleteEvent": () => { if (refuse) throw refusedBy("NotNow"); return null; } }) }, CALENDAR_PAIRS);
+  const read = async (monthAndYear) => (await pilots.callMethod("calendarProxy", "GetEventList", monthAndYear, null, FIELDS, handle)).result.items[2];
+  const both = () => Promise.all([read(NOVEMBER), read(DECEMBER)]);
+  assert.deepEqual(await both(), [1, 1]);
+  let asked = 1;
+  const forgets = async (what, change) => {
+    await change();
+    asked += 1;
+    assert.deepEqual([await both(), await both()], [[asked, asked], [asked, asked]], what);
+  };
+  const keeps = async (what, change) => {
+    await change();
+    assert.deepEqual(await both(), [asked, asked], what);
+  };
+  // The server's word of an event: calendar.OnNewCalendarEvent, OnEditCalendarEvent, OnRemoveCalendarEvent.
+  for (const notice of ["OnNewCalendarEvent", "OnEditCalendarEvent", "OnRemoveCalendarEvent"]) await forgets(notice, () => session.notify(notice, [7, PILOT]));
+  // A notice of something else, the notifications' among them, leaves the months kept.
+  await keeps("another notice", () => { session.notify("OnNotificationReceived", [1]); session.notify("OnCalendarSomethingElse", [1]); });
+  // The pilot's own making, changing and deleting of an event, each of the client's seven, done or refused.
+  for (const write of CALENDAR_WRITES) await forgets(write, () => pilots.callMethod("calendarMgr", write, [7], null, FIELDS, handle));
+  refuse = true;
+  await forgets("a deleting refused", () => rejects(pilots.callMethod("calendarMgr", "DeleteEvent", [7], null, FIELDS, handle), "CALL_REFUSED"));
+  // An answer to an invitation and a change of who is invited change no event; nor does another service's write of the name.
+  await keeps("an answer to an invitation", () => pilots.callMethod("calendarMgr", "SendEventResponse", [7, PILOT, 1], null, FIELDS, handle));
+  await keeps("who is invited", () => pilots.callMethod("calendarMgr", "UpdateEventParticipants", [7, [], []], null, FIELDS, handle));
+  await keeps("another service's", () => pilots.callMethod("someService", "DeleteEvent", [7], null, FIELDS, handle));
+  // calendar.OnSessionChanged: in another corporation, or another alliance, the events are other events.
+  await forgets("another corporation", async () => { session.attributes.corpid = 98000002; session.change({ corpid: [98000001, 98000002] }); await settled(); });
+  await forgets("another alliance", async () => { session.attributes.allianceid = ALLIANCE + 1; session.change({ allianceid: [ALLIANCE, ALLIANCE + 1] }); await settled(); });
+  // Another station is neither.
+  await keeps("another station", async () => { session.attributes.stationid = 60000004; session.change({ stationid: [STATION, 60000004] }); await settled(); });
+  // What forgets the months leaves the notifications kept, and what forgets those leaves the months.
+  const notifications = () => session.calls.filter((call) => call.service === "notificationMgr").length;
+  const allOfThem = () => pilots.callMethod("notificationMgr", "GetAllNotifications", [0], null, FIELDS, handle);
+  await allOfThem();
+  const before = notifications();
+  session.notify("OnNewCalendarEvent", [8, PILOT]);
+  await allOfThem();
+  assert.equal(notifications(), before);
+});
+
+test("the calendar's months and the contracts' figures that cannot be read at the choosing leave it none the worse", async () => {
+  // The contracts' figures refused, and this month's events: the next month's are asked for all the same.
+  let refuse = true;
+  const { pilots, session, handle, outcome } = await selected({ answers: calendarAnswers({
+    "contractProxy.GetLoginInfo": () => { throw refusedBy("NotNow"); },
+    "calendarProxy.GetEventList": ([month, year]) => { if (refuse && month === 11) throw refusedBy("NotNow"); return { type: "list", items: [month, year, "answered"] }; },
+  }) }, CALENDAR_PAIRS);
+  assert.deepEqual([outcome.session.characterID, sentLast(session, 0)], [PILOT, CHOSEN_LAST]);
+  // What was not read is asked for when it is wanted: a refusal then is the caller's, and an answer is kept.
+  const november = () => pilots.callMethod("calendarProxy", "GetEventList", NOVEMBER, null, FIELDS, handle).then((answer) => answer.result.items);
+  await rejects(november(), "CALL_REFUSED");
+  refuse = false;
+  assert.deepEqual([await november(), await november(), session.proxyCalls.filter((call) => call.method === "GetEventList").map((call) => call.args[0])], [[11, 2023, "answered"], [11, 2023, "answered"], [11, 12, 11, 11]]);
+  // A connection lost under them is the choosing lost, as one lost anywhere in it is: no session is handed out.
+  const built = build({ answers: { "calendarProxy.GetEventList": () => { built.session.drop(); throw sessionError("CONNECTION_CLOSED"); } } }, CALENDAR_PAIRS);
+  await rejects(built.pilots.selectCharacter([PILOT, null, true], null, FIELDS), "SESSION_SELECT_FAILED", /closed the connection/);
+  assert.deepEqual([built.session.sent.at(-1), built.pilots.size], ["GetEventList", 0]);
+});
+
 // ── the alliance's registry ──────────────────────────────────────────────────
 
 const ALLIANCE = 99000001;
@@ -3204,6 +3309,7 @@ test("a service the client reaches through its proxy is called at the proxy node
   const pairs = { allowed: new Set(["contractProxy.GetLoginInfo", "contractProxy.SearchContracts", "marketProxy.GetCharOrders", "account.GetCashBalance", "calendarMgr.GetResponsesForCharacter", "calendarProxy.GetEventList"]) };
   const { pilots, session, handle } = await selected({ answers: { "contractProxy.GetLoginInfo": 41, "account.GetCashBalance": 42 } }, pairs);
   session.calls.length = 0;
+  session.proxyCalls.length = 0;
   const viaProxy = await pilots.callMethod("contractProxy", "GetLoginInfo", [], null, FIELDS, handle);
   await pilots.callMethod("marketProxy", "GetCharOrders", [], null, FIELDS, handle);
   const byName = await pilots.callMethod("account", "GetCashBalance", [0], null, FIELDS, handle);
@@ -3217,8 +3323,8 @@ test("a service the client reaches through its proxy is called at the proxy node
   assert.deepEqual([viaProxy.result, byName.result], [41, 42]);
   assert.deepEqual(session.proxyCalls[2].args, [10, 2026]);
   assert.equal(Object.keys(session.proxyCalls[3].kwargs).length, 26);
-  // Addressing a call is the transport's own business: the ledger counts the call as it was spelt.
-  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "contractProxy.GetLoginInfo").statuses, { same: 1 });
+  // Addressing a call is the transport's own business: the ledger counts the call as it was spelt. (Once at the choosing, once here.)
+  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "contractProxy.GetLoginInfo").statuses, { same: 2 });
 });
 
 test("the account's own connection addresses a call the same way: the proxy's services at the proxy node", async () => {

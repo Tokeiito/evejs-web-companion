@@ -272,6 +272,29 @@ done or refused, all three lists are forgotten and asked for when next wanted, w
 changes its lists in place. An answer on its way when they are forgotten is handed on and not
 kept. All of them from a later notification is another list, asked each time.
 
+**The calendar's months and the contracts' login figures, 2026-10-09.** The client's calendar
+service keeps a month's events once it has asked for them (`calendarProxy.GetEventList(month,
+year)`, at the proxy node), for the session. Its minute timer asks for this month and the next
+soon after a character is chosen (`GetEventsNextXMonths`): a recorded Tranquility login has the
+two as calls 186 and 187. It works the server's `OnNewCalendarEvent`, `OnEditCalendarEvent` and
+`OnRemoveCalendarEvent` into the months it keeps, puts a personal event of its own making into
+them itself (the server does not tell a pilot of its own), and forgets every month when the
+session's corporation or alliance changes. Its contracts service asks
+`contractProxy.GetLoginInfo()` once, when the notification window is ready, to raise its own
+notices of contracts that want attention, and keeps nothing of it.
+
+On the game port the transport asks for the contracts' figures, then the notifications, then the
+two months by the server's clock, as a pilot is chosen. The months are kept, and a read of a kept
+month through the BFF is answered from what is kept; another month is asked for when first
+wanted and kept. As with the notifications, the months are forgotten rather than changed in
+place: at any of the three notices, after any of the pilot's own makings, changings and deletings
+of an event (seven writes on `calendarMgr`), done or refused, and in another corporation or
+alliance. The contracts' figures are asked for and not kept: the page's Contracts window asks
+for them again each time it opens, which is the page's own way.
+
+The notifications' lists and the calendar's months are kept by one helper,
+`src/gamePort/keptReads.js`: answers kept until something changes them.
+
 **The customs export's call shape.** `src/piCustomsExport.js` binds `invbroker` with the office ID
 and calls `ImportExportWithPlanet` on that. The client goes through `invCache`: it binds the
 broker for a location, asks it for the office's inventory, and calls that. eve.js accepts both.
