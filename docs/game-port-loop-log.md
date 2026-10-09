@@ -4908,3 +4908,147 @@ operator's section.
     inside messages.
 14. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
     for ship restrictions, divisions for an agent's header).
+
+---
+
+## 2026-10-09 — the journal's Read Details: a mission's page, as the client's job board shows one
+
+Commit `935f839`, pushed. Item 1 of the last list.
+
+**What the retail client does.** Read Details, and a double click on a journal line, opens the
+mission in the job board (the last entry has why). The page is
+`jobboard/client/features/agent_missions/page.py`, drawn from a job (`job.py`) that holds an
+`evemissions.client.mission.Mission`.
+
+- **One read of the server**, as the page is built and again whenever its job is marked out of
+  date: `GetMissionObjectiveInfo(ignoreLocateCheck=True)` on the agent's bound object
+  (`job.py` 389 to 413). An answer about another mission, or none, changes nothing
+  (`mission.py` 166).
+- **The words come from the client's own record** of the mission: its name; its briefing, or
+  what the agent says on offering while it is an offer and the mission has such words; the
+  extra information, only when it has a body (`job.py` 126 to 157). Each is filled with the
+  mission's keywords, asked of the agent once, and the agent's own IDs (`job.py` 378), then
+  tidied (`agentinteraction/textutils.py` `fix_text`).
+- **The order** (`page.py` 34 to 76): when it expires; a warning when it matters to standings;
+  the agent and its corporation; the briefing; the objectives; the ship it needs; the
+  collateral, for an offer only; what the agent hands over; rewards, with the bonus inside
+  them; a banner about reduced rewards in high security; the extra information.
+- **Objectives are steps** (`mission.py` 218 to 304, `agentinteraction/objectivesteps.py`). A
+  transport is cargo, pick-up, drop-off; a fetch is cargo and drop-off; an agent to see is
+  one step; then the dungeons, in a group of their own. Each group has one line above it,
+  its last step's. Beside a step's title is how far its place is: this station, this solar
+  system, or so many jumps.
+- **The state** beside the title (`job.py` 338): expired before offered, completed after.
+- **What changes it** (`provider.py` 79, fed by the journal's `OnAgentMissionChanged`,
+  `journal.py` 183): `completed` and `accepted` give the job that state and mark it out of
+  date; `modified`, `dungeon_moved`, `failed` and `offer_expired` only mark it; `offered`,
+  `declined`, `offer_declined`, `offer_removed`, `quit` and `reset` remove the job. A change
+  of ship or of station marks every job out of date (`provider.py` 74).
+
+**What the page did.** A journal line could start a conversation or remove an offer. A
+mission could be read only by opening its agent's window, which talks to the agent.
+
+**What was built.**
+
+- `GET /api/bridge/agents/:agentID/mission-objectives`: the read, with the keyword.
+- `web/src/bridge/missionPage.ts`: the page as plain text in the client's order and words.
+- The flow: Read Details makes the read, asks for the mission's keywords and for the
+  client's record (each once for a mission), and keeps the page in the store. A mission
+  change or a change of ship or station reads again or closes the page, by the rules above.
+- The panel: "Read Details" first on each journal line, as it is first in the client's menu,
+  and the page, with the client's "Start Conversation" button and a Close of this page's own.
+
+**Proof.**
+
+- Tests: 45 new (27 on the page, 11 on the flow, 5 on the panel, 2 on the BFF). 172 ways of
+  breaking it. Twelve got through at first:
+  - three checks that did nothing and were taken out (a mission "active" beside "offered or
+    accepted", "is it a solar system" beside "is it the pilot's", a line set and then always
+    overwritten);
+  - eight things no test looked at, each now tested (the record's keys by name; the record's
+    name before the journal's; "there" being where the session is; research that rounds to
+    nothing beside pay; one agent's answer landing on another agent's page; the note about
+    having no client appearing before that is known; the two groups' order; one breakage
+    run against the wrong test file);
+  - **one that no test here can see**: which agent the page's "Start Conversation" opens. It
+    is in a click handler, and the panel's tests draw without clicking. Seen live, below.
+- Suite: 9422 tests, 9398 pass, 0 fail, 24 skipped, 0 todo. `tsc` clean; the panel has no
+  `svelte-check` errors.
+- **In the browser, on the game port**, eve.js `e066a81e9`, as Test Two. The words are the
+  client's, so what is recorded is shape, marks and numbers:
+
+  | what was done | what was seen |
+  |---|---|
+  | the journal line of the station's courier agent, its mission on offer | three buttons in the client's order and words: Read Details, Start Conversation with the agent, Remove Offer |
+  | Read Details | requests: `keywords?contentID=2156`, `mission-objectives`, `client-data/missions/2156`, all 200. The mission's name, "Offered", "Expires in 6d 8h 57m 47s"; a briefing of 668 characters in 3 lines with no tag or brace left in it; "Transport these goods:" over ○ Cargo "1 x Encoded Data Chip (0.1 m³)", ✓ Pickup Location "This station", ○ Drop-off Location; Rewards 13,800.00 ISK and 49 LP; Bonus Rewards 17,000.00 ISK. The agent's window stayed shut. |
+  | the server's log | `GetMissionKeywords` with one argument, then `GetMissionObjectiveInfo` with none, both on the agent's bound object |
+  | Start Conversation on the page | the window of that agent opened, with Accept, Decline and Defer; the page stayed |
+  | Accept | `mission-objectives` read again; "Offered" gone; the journal line lost Remove Offer |
+  | Load package into ship, in the window | the page unchanged (the server says nothing); Close, Read Details: one read of the agent, the record and the keywords not asked for again, and ✓ Cargo |
+  | Quit in the window, and Yes to the server's question | the page closed; nothing more read for it |
+  | a fighting mission offered by an agent in the next system, Read Details on its line | its name, "Offered", a briefing of 426 characters; the agent's own 75 characters over ○ Location Ono; Rewards 65,000.00 ISK and 87 LP; Bonus Rewards 80,000.00 ISK |
+  | Remove Offer on that line | the page closed, the journal emptied |
+
+- **The two transports, side by side**, by script from the same copy of the store: the read
+  answers the same on both once the gateway's wrapping and the bonus's running time are
+  taken off. On this server it also answers the same as the window's read with no keyword.
+- **The staging was undone**: the store was put back, and the offer is in the journal.
+
+**A defect found live and fixed before the commit.** The time left did not run down: its
+clock was started again by anything at all the agents' store was told, and something tells it
+something more often than the clock struck. It now hangs only on whether a page is open, and
+was seen to move ("…58m 53s", then "…58m 43s" nine seconds later). No test saw this, and none
+here can: the panel's tests do not run effects.
+
+**Not seen.** That `ignoreLocateCheck` is on the wire. The BFF's test pins that it is handed
+to the game port, and other calls' keywords are known to go out; the server's log prints a
+call's arguments by count and not its keywords, and this server does not read the keyword.
+
+**Seen on the way.**
+
+- **This server never reads `ignoreLocateCheck`.** What Tranquility does differently with it
+  the recordings would say; not looked up.
+- **The expiry on the page is the journal line's as it was when the page opened.** After
+  Accept it still showed the offer's. The client's job keeps the time it was made with too
+  (`provider.py` 91 gives it a state and nothing else), until its jobs are made again; when
+  that is was not followed through.
+- **The push arrives twice** still, so the page read the agent twice on Accept (item 2 below).
+
+**Not done.** The agent's and its corporation's cards on the page (level, division, standing,
+faction). How many jumps away a place is. The security rating before a place's name.
+"Objectives Complete" as the state, which the client has from its own tracker. A ship's
+packaged size as cargo. The ship restrictions panel. The reduced-rewards banner. The bonus's
+countdown. A blueprint's properties. What an alpha clone is paid. The client's short written
+interval: the time left is in this page's own short form, as it already was on the journal's
+line.
+
+### Next
+
+1. A push the page's own call caused, taken once: the stream's copy and the answer's told
+   apart. It now costs a second read of the agent each time, as well as of the journal.
+2. The agent's cards: its level, its division's name (the client's built data), its
+   corporation and faction, the pilot's effective standing with it. They belong on the
+   mission's page and above the agent's window both.
+3. The client's short written interval (`FormatTimeIntervalShortWritten`), for the journal's
+   line, the page's time left and the bonus's countdown.
+4. Around a place's name: the security rating before it, the low-security warning, how many
+   jumps away it is (the page has no route of its own yet), and the reduced-rewards banner.
+5. The ledger's unread pairs, most called first: the inventory and wallet reads, then the
+   writes on `ship` and `dogmaIM`.
+6. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+7. Phase 3's writes, feature by feature, each set beside what the client sends.
+8. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+9. Small, in space: an overview row's speed columns the client's way; the bar the client
+   fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+10. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+11. Small, in Ready Fit: the capacity the client never asks for; the window following a change
+    of pilot.
+12. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+13. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+14. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions, divisions for an agent's card).
