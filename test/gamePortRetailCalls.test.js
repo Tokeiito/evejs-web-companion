@@ -1061,3 +1061,76 @@ test("an order repriced goes out with the order's number first and the rest as t
   assert.match(long.note, /nine/);
   assert.deepEqual([form("marketProxy.ModifyCharOrder", nine("x")).status, form("marketProxy.ModifyCharOrder", nine("x")).args], ["differs", nine("x")]);
 });
+
+// quote.py 302, CancelOrder(order.orderID, order.regionID), and marketsvc.py 285, ModifyOrder(order, newPrice): both
+// off the row the client has of the order, in its list of the pilot's own orders. The row below has the columns and
+// the kinds of value this server's list has off a game-port session; the numbers are made up.
+
+const ORDER_ROW = Object.freeze({ orderID: 77n, typeID: 34, charID: 140000002, regionID: 10000002, stationID: 60003760, range: -1, bid: 1, price: 0.01, volEntered: 1, volRemaining: 1, issueDate: 134360517603990000n, minVolume: 1, contraband: 0, duration: 1, isCorp: 0, solarSystemID: 30000142, escrow: 0.01 });
+/** A session whose kept list of the pilot's orders has that one order. */
+const ordersHeld = (row = ORDER_ROW) => ({ ownOrder: (orderID) => (BigInt(orderID) === 77n ? row : null) });
+const without = (name) => Object.fromEntries(Object.entries(ORDER_ROW).filter(([column]) => column !== name));
+
+test("an order taken down goes out as the client's: the ID and the region off the order's own row", () => {
+  const cancelled = withContext("marketProxy.CancelCharOrder", ["77", 0], null, ordersHeld());
+  assert.deepEqual([cancelled.status, cancelled.args, cancelled.kwargs], ["reshaped", [77n, 10000002], null]);
+  assert.match(cancelled.source, /marketsvc\.py:282$/);
+  // Whatever region the caller named, the client's is the row's.
+  assert.deepEqual(withContext("marketProxy.CancelCharOrder", [77, 10000033], null, ordersHeld()).args, [77n, 10000002]);
+  // Sent as the client sends it already: the same call.
+  assert.deepEqual([withContext("marketProxy.CancelCharOrder", [77n, 10000002], null, ordersHeld()).status, withContext("marketProxy.CancelCharOrder", [77n, 10000002], null, ordersHeld()).args], ["same", [77n, 10000002]]);
+  // An order the kept list has not, or a row that names no region: as the call came, with the ID a number, and noted.
+  for (const context of [ordersHeld(without("regionID")), { ownOrder: () => null }, {}, undefined]) {
+    const unheld = withContext("marketProxy.CancelCharOrder", ["77", 0], null, context);
+    assert.deepEqual([unheld.status, unheld.args], ["differs", [77, 0]]);
+    assert.match(unheld.note, /region/);
+    assert.deepEqual([withContext("marketProxy.CancelCharOrder", ["77", 10000002], null, context).status, withContext("marketProxy.CancelCharOrder", ["77", 10000002], null, context).args], ["reshaped", [77, 10000002]]);
+  }
+  // More than the client's two is not the client's call as it stands.
+  assert.deepEqual([withContext("marketProxy.CancelCharOrder", [77n, 10000002, 5], null, ordersHeld()).status, withContext("marketProxy.CancelCharOrder", [77n, 10000002, 5], null, ordersHeld()).args], ["reshaped", [77n, 10000002]]);
+  // An order held under another ID is not this one's row.
+  assert.deepEqual(withContext("marketProxy.CancelCharOrder", ["78", 0], null, ordersHeld()).args, [78, 0]);
+  // Both calls want the pilot's orders read first, where the session holds none.
+  assert.deepEqual([retailNeeds("marketProxy", "CancelCharOrder"), retailNeeds("marketProxy", "ModifyCharOrder")], ["orders", "orders"]);
+});
+
+test("an order repriced goes out as the client's nine: the new price, and the rest off the order's own row", () => {
+  const clients = [77n, 0.02, 1, 60003760, 30000142, 0.01, -1, 1, 134360517603990000n];
+  // The BFF's route has the ID as text, a bool for the side, where the pilot is for the station, and nought for the date.
+  const repriced = withContext("marketProxy.ModifyCharOrder", ["77", 0.02, true, 60000004, 30000001, 5, 32767, 9, 0], null, ordersHeld());
+  assert.deepEqual([repriced.status, repriced.args, repriced.kwargs], ["reshaped", clients, null]);
+  assert.match(repriced.source, /marketsvc\.py:288$/);
+  // The order and a price are enough: the client's other seven are the row's.
+  assert.deepEqual(withContext("marketProxy.ModifyCharOrder", ["77", 0.02], null, ordersHeld()).args, clients);
+  assert.deepEqual([withContext("marketProxy.ModifyCharOrder", clients, null, ordersHeld()).status, withContext("marketProxy.ModifyCharOrder", clients, null, ordersHeld()).args], ["same", clients]);
+  // No new price is no reprice, whatever the row has.
+  const priceless = withContext("marketProxy.ModifyCharOrder", ["77"], null, ordersHeld());
+  assert.deepEqual([priceless.status, priceless.args], ["differs", [77]]);
+  // A row short of one of the seven is not made up for: the call as it came.
+  for (const name of ["bid", "stationID", "solarSystemID", "price", "range", "volRemaining", "issueDate"]) {
+    const short = withContext("marketProxy.ModifyCharOrder", ["77", 0.02, true, 60000004, 30000001, 5, 32767, 9, 0], null, ordersHeld(without(name)));
+    assert.deepEqual([short.status, short.args], ["differs", [77, 0.02, true, 60000004, 30000001, 5, 32767, 9, 0]], name);
+  }
+  for (const context of [{ ownOrder: () => null }, {}, undefined]) {
+    assert.equal(withContext("marketProxy.ModifyCharOrder", ["77", 0.02, true, 60000004, 30000001, 5, 32767, 9, 0], null, context).status, "differs");
+  }
+});
+
+test("the market's other three of the walk: a type's book as the client asks it, its history asked in one half, and a buy order without the fee the client names", () => {
+  const book = form("marketProxy.GetOrders", [34]);
+  assert.deepEqual([book.status, book.args], ["same", [34]]);
+  assert.match(book.source, /marketsvc\.py:734$/);
+  const history = RETAIL_CALLS["marketProxy.GetNewPriceHistory"];
+  assert.equal(history.status, "differs");
+  assert.match(history.note, /GetOldPriceHistory/);
+  // marketsvc.py 266: nine, the last the broker's fee the client's window showed. The BFF's route has none to name.
+  const nine = [60003760, 34, 0.01, 1, -1, 1, 1, false];
+  const feeless = form("marketProxy.PlaceBuyOrder", [...nine, null]);
+  assert.deepEqual([feeless.status, feeless.args], ["differs", [...nine, null]]);
+  assert.match(feeless.note, /fee/);
+  assert.match(feeless.source, /marketsvc\.py:266$/);
+  assert.deepEqual([form("marketProxy.PlaceBuyOrder", [...nine, 0.03]).status, form("marketProxy.PlaceBuyOrder", [...nine, 0.03]).args], ["same", [...nine, 0.03]]);
+  // Not the client's nine at all.
+  assert.equal(form("marketProxy.PlaceBuyOrder", nine).status, "differs");
+  assert.equal(form("marketProxy.PlaceBuyOrder", [...nine, 0.03, 1]).status, "differs");
+});

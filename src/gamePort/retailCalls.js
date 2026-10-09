@@ -62,6 +62,12 @@ function orderNumber(value) {
   return BigInt(value);
 }
 
+/** The order's own row in the pilot's orders the session keeps, by the columns' names: null where there is none, or no such order in it. */
+const ownOrderRow = (context, orderID) => (context && typeof context.ownOrder === "function" ? context.ownOrder(orderID) ?? null : null);
+
+/** Whether two lists of arguments are the same values in the same kinds: the call is the client's as it stands. */
+const sameValues = (one, other) => one.length === other.length && one.every((value, at) => value === other[at]);
+
 const same = (source, note) => Object.freeze({ status: "same", source, note });
 const reshaped = (source, shape, note) => Object.freeze({ status: "reshaped", source, shape, note });
 const differs = (source, note) => Object.freeze({ status: "differs", source, note });
@@ -685,25 +691,47 @@ const RETAIL_CALLS = Object.freeze({
   "marketProxy.GetCharOrders": same(`${MARKET_QUOTE}:389`, "GetMarketProxy().GetCharOrders(), no arguments"),
   "marketProxy.GetMarketOrderHistory": same(`${MARKET_QUOTE}:395`, "GetMarketProxy().GetMarketOrderHistory(), no arguments"),
   "marketProxy.GetCharEscrow": same(`${MARKET_QUOTE}:401`, "GetMarketProxy().GetCharEscrow(), no arguments"),
-  "marketProxy.CancelCharOrder": Object.freeze({
+  "marketProxy.GetOrders": same(`${MARKET_QUOTE}:734`, "GetMarketProxy().GetOrders(typeID): a type's book, which the object cache keeps and OnOwnOrdersChanged names"),
+  "marketProxy.GetNewPriceHistory": differs(`${MARKET_QUOTE}:339`, "The client asks a type's history in two halves, GetOldPriceHistory(typeID) and GetNewPriceHistory(typeID), and joins them. The BFF's route asks for the new half alone."),
+  "marketProxy.PlaceBuyOrder": Object.freeze({
     status: "same",
-    source: `${MARKET_QUOTE}:282`,
-    note: "GetMarketProxy().CancelCharOrder(orderID, regionID): the order's own ID, a number off its row, and the region the order is in.",
-    shape: ([given, ...rest], kwargs) => {
-      const orderID = orderNumber(given);
-      if (orderID === null) return { args: [given, ...rest], kwargs, status: "differs", note: "The client names an order by the number its row has. This is no order's number." };
-      const args = [orderID, ...rest];
-      if (!(typeof rest[0] === "number" && Number.isSafeInteger(rest[0]) && rest[0] > 0)) return { args, kwargs, status: "differs", note: "The client names the region the order is in. This call names none." };
-      return orderID === given ? { args, kwargs } : { args, kwargs, status: "reshaped" };
+    source: `${MARKET_QUOTE}:266`,
+    note: "GetMarketProxy().PlaceBuyOrder(stationID, typeID, price, quantity, orderRange, minVolume, duration, useCorp, expectedBrokersFee): nine, the last the broker's fee the client's window showed (buyThisTypeWindow.py 701).",
+    shape: (args, kwargs) => {
+      if (args.length !== 9) return { args, kwargs, status: "differs", note: "The client sends nine, the last of them the broker's fee its window showed." };
+      return typeof args[8] === "number" ? { args, kwargs } : { args, kwargs, status: "differs", note: "The client names the broker's fee its window showed, and the server may hold the order to it. This call names none." };
     },
   }),
-  "marketProxy.ModifyCharOrder": Object.freeze({
+  "marketProxy.CancelCharOrder": needing(Object.freeze({
+    status: "same",
+    source: `${MARKET_QUOTE}:282`,
+    note: "GetMarketProxy().CancelCharOrder(order.orderID, order.regionID) (quote.py 302): both off the order's own row in the pilot's orders, which the client has before it touches one.",
+    shape: ([given, ...rest], kwargs, context) => {
+      const orderID = orderNumber(given);
+      if (orderID === null) return { args: [given, ...rest], kwargs, status: "differs", note: "The client names an order by the number its row has. This is no order's number." };
+      const row = ownOrderRow(context, orderID);
+      if (row && row.regionID !== undefined) {
+        const clients = [row.orderID, row.regionID];
+        return sameValues(clients, [given, ...rest]) ? { args: clients, kwargs } : { args: clients, kwargs, status: "reshaped" };
+      }
+      const args = [orderID, ...rest];
+      if (!(typeof rest[0] === "number" && Number.isSafeInteger(rest[0]) && rest[0] > 0)) return { args, kwargs, status: "differs", note: "The client names the region the order is in, off the order's row. This call names none, and the order is in no list of the pilot's orders the session holds." };
+      return orderID === given ? { args, kwargs } : { args, kwargs, status: "reshaped" };
+    },
+  }), "orders"),
+  "marketProxy.ModifyCharOrder": needing(Object.freeze({
     status: "same",
     source: `${MARKET_QUOTE}:288`,
     note: "GetMarketProxy().ModifyCharOrder(order.orderID, newPrice, order.bid, order.stationID, order.solarSystemID, order.price, order.range, order.volRemaining, order.issueDate): nine, all but the new price off the order's own row.",
-    shape: ([given, ...rest], kwargs) => {
+    shape: ([given, ...rest], kwargs, context) => {
       const orderID = orderNumber(given);
       if (orderID === null) return { args: [given, ...rest], kwargs, status: "differs", note: "The client names an order by the number its row has. This is no order's number." };
+      const row = ownOrderRow(context, orderID);
+      const sevenOfTheRow = row ? ["bid", "stationID", "solarSystemID", "price", "range", "volRemaining", "issueDate"].map((name) => row[name]) : [];
+      if (rest.length >= 1 && sevenOfTheRow.length === 7 && sevenOfTheRow.every((value) => value !== undefined)) {
+        const clients = [row.orderID, rest[0], ...sevenOfTheRow];
+        return sameValues(clients, [given, ...rest]) ? { args: clients, kwargs } : { args: clients, kwargs, status: "reshaped" };
+      }
       const args = [orderID, ...rest];
       if (rest.length !== 8) return { args, kwargs, status: "differs", note: "The client sends nine: the order's number, the new price, and seven more off the order's row." };
       const issued = rest[7];
@@ -712,7 +740,7 @@ const RETAIL_CALLS = Object.freeze({
       }
       return orderID === given ? { args, kwargs } : { args, kwargs, status: "reshaped" };
     },
-  }),
+  }), "orders"),
   "marketProxy.CharGetTransactions": Object.freeze({
     status: "same",
     source: "eve/client/script/ui/shared/marketSvc.py:23",

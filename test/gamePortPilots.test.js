@@ -5737,6 +5737,70 @@ test("beside one of the pilot's own calls the client's code names cached calls a
   assert.deepEqual(named, [["calendarMgr", "GetResponsesToEvent", [{ type: "long", value: "9001" }, session.attributes.charid]]]);
 });
 
+// marketQuote.GetMyOrders: the client has the pilot's own orders off its object cache, and takes an order down or
+// reprices it with what that order's row has (quote.py 302, marketsvc.py 285). The list below is this server's off
+// a game-port session, in shape and in the kinds of value: a Rowset, its names some text and some bytes, an order's
+// ID and its date of issue longs. The numbers are made up.
+
+const ORDER_COLUMNS = ["orderID", "typeID", "charID", "regionID", "stationID", "range", "bid", "price", "volEntered", "volRemaining", Buffer.from("issueDate"), "minVolume", "contraband", "duration", Buffer.from("isCorp"), "solarSystemID", Buffer.from("escrow")];
+const ordersRowset = (...lines) => ({
+  type: "object",
+  name: Buffer.from("eve.common.script.sys.rowset.Rowset"),
+  args: { type: "dict", entries: [["header", { type: "list", items: ORDER_COLUMNS }], [Buffer.from("columns"), { type: "list", items: ORDER_COLUMNS }], ["RowClass", { type: "token", value: "util.Row" }], ["lines", { type: "list", items: lines.map((line) => ({ type: "list", items: line })) }]] },
+});
+const ORDER_LINE = [77n, 34, 140000002, 10000002, 60003760, -1, 1, 0.01, 1, 1, 134360517603990000n, 1, 0, 1, 0, 30000142, 0.01];
+const MARKET_PAIRS = new Set(["marketProxy.GetCharOrders", "marketProxy.CancelCharOrder", "marketProxy.ModifyCharOrder"]);
+/** The market's calls, which the client makes of the proxy (sm.ProxySvc), in the order they were sent. */
+const marketCalls = (session) => session.proxyCalls.filter((call) => call.service === "marketProxy").map((call) => [call.method, call.args]);
+
+test("an order is taken down and repriced with what its own row has in the pilot's orders the session keeps", async () => {
+  const { pilots, session, handle } = await selected({}, { allowed: MARKET_PAIRS });
+  withObjectCache(session, { "marketProxy.GetCharOrders.[]": ordersRowset([78n, 35, 140000002, 10000033, 60000004, 5, 0, 9.5, 3, 2, 5n, 1, 0, 3, 0, 30000001, 0], ORDER_LINE) });
+  await pilots.callMethod("marketProxy", "ModifyCharOrder", ["77", 0.02, true, 60000004, 30000001, 5, 32767, 9, 0], null, WHO, handle);
+  await pilots.callMethod("marketProxy", "CancelCharOrder", ["77", 0], null, WHO, handle);
+  assert.deepEqual(marketCalls(session), [
+    ["ModifyCharOrder", [77n, 0.02, 1, 60003760, 30000142, 0.01, -1, 1, 134360517603990000n]],
+    ["CancelCharOrder", [77n, 10000002]],
+  ]);
+  const ledger = Object.fromEntries(pilots.callLedger().filter((row) => row.pair.startsWith("marketProxy.")).map((row) => [row.pair, row.statuses]));
+  assert.deepEqual(ledger, { "marketProxy.ModifyCharOrder": { reshaped: 1 }, "marketProxy.CancelCharOrder": { reshaped: 1 } });
+  // The other order of the list, by its own row.
+  await pilots.callMethod("marketProxy", "CancelCharOrder", [78, 0], null, WHO, handle);
+  assert.deepEqual(marketCalls(session).at(-1), ["CancelCharOrder", [78n, 10000033]]);
+  // A list whose names all came as bytes is read the same: which names are text is the wire's affair.
+  const bytes = ordersRowset(ORDER_LINE);
+  bytes.args.entries = bytes.args.entries.map(([name, value]) => [Buffer.from(String(name)), String(name) === "header" ? { type: "list", items: value.items.map((column) => Buffer.from(String(column))) } : value]);
+  withObjectCache(session, { "marketProxy.GetCharOrders.[]": bytes });
+  await pilots.callMethod("marketProxy", "ModifyCharOrder", [77, 0.03], null, WHO, handle);
+  assert.deepEqual(marketCalls(session).at(-1), ["ModifyCharOrder", [77n, 0.03, 1, 60003760, 30000142, 0.01, -1, 1, 134360517603990000n]]);
+});
+
+test("with no orders kept, the pilot's orders are asked for first, as the client has them before it touches one; an order not among them goes out as it came", async () => {
+  let refuse = false;
+  const cached = { held: null };
+  const built = await selected({ answers: { "marketProxy.GetCharOrders": () => { if (refuse) throw refusedBy("NotNow"); cached.held = ordersRowset(ORDER_LINE); return cached.held; } } }, { allowed: MARKET_PAIRS });
+  const { pilots, session, handle } = built;
+  // The session's cache, keeping the pilot's orders once they have been answered, as the real one does.
+  session.cachedMethodCall = (service, method) => (service === "marketProxy" && method === "GetCharOrders" && cached.held ? { result: cached.held } : null);
+  refuse = true;
+  await pilots.callMethod("marketProxy", "CancelCharOrder", ["77", 0], null, WHO, handle);
+  assert.deepEqual(marketCalls(session), [["GetCharOrders", []], ["CancelCharOrder", [77, 0]]], "the asking refused: the call as it came");
+  refuse = false;
+  session.proxyCalls.length = 0;
+  await pilots.callMethod("marketProxy", "CancelCharOrder", ["77", 0], null, WHO, handle);
+  await pilots.callMethod("marketProxy", "ModifyCharOrder", ["77", 0.02], null, WHO, handle);
+  assert.deepEqual(marketCalls(session), [
+    ["GetCharOrders", []],
+    ["CancelCharOrder", [77n, 10000002]],
+    ["ModifyCharOrder", [77n, 0.02, 1, 60003760, 30000142, 0.01, -1, 1, 134360517603990000n]],
+  ], "asked once, and kept");
+  // The asking is the client's own, and counted as one.
+  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "marketProxy.GetCharOrders").statuses, { same: 2 });
+  // An order that is not the pilot's, or not open any more: nothing to read it off.
+  await pilots.callMethod("marketProxy", "CancelCharOrder", ["79", 0], null, WHO, handle);
+  assert.deepEqual(marketCalls(session).at(-1), ["CancelCharOrder", [79, 0]]);
+});
+
 test("another corporation: the session forgets the pilot's employment record, as the client's corporation window has it", async () => {
   const { session } = await withContainers();
   const { named } = withObjectCache(session);

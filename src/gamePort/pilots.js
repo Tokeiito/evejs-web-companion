@@ -205,6 +205,29 @@ const KEPT_UNTIL_CHANGED = Object.freeze({
  */
 const INVENTORY_LISTINGS = new Set(["List", "ListByFlags"]);
 const ITEM_NOTICES = new Set(["OnItemChange", "OnItemsChanged"]);
+const MARKET_PROXY = "marketProxy";
+const OWN_ORDERS = "GetCharOrders";
+
+/** A whole number as a BigInt, a number or a long off the wire; null for anything else. */
+function wholeOf(value) {
+  if (typeof value === "bigint") return value;
+  return typeof value === "number" && Number.isSafeInteger(value) ? BigInt(value) : null;
+}
+
+/**
+ * One line of a Rowset off the wire (header, lines), by the whole number one column has: its values by the
+ * columns' names, each as it came. Null where it is no Rowset with that column, or no line has that number.
+ */
+function rowsetLine(rowset, column, wanted) {
+  const entries = rowset && rowset.type === "object" && rowset.args && Array.isArray(rowset.args.entries) ? rowset.args.entries : [];
+  const part = (name) => (entries.find((entry) => Array.isArray(entry) && textOf(entry[0]) === name) ?? [])[1];
+  const header = itemsOf(part("header")).map(textOf);
+  const at = header.indexOf(column);
+  const number = wholeOf(wanted);
+  if (at === -1 || number === null) return null;
+  const line = itemsOf(part("lines")).map(itemsOf).find((values) => wholeOf(values[at]) === number);
+  return line ? Object.fromEntries(header.map((name, index) => [name, line[index]])) : null;
+}
 /** The dogma location's calls that lock and unlock: a write each, and no container's contents are changed by one. */
 const TARGETING = new Set(["AddTarget", "CancelAddTarget", "RemoveTarget", "RemoveTargets", "ClearTargets"]);
 /**
@@ -1167,6 +1190,7 @@ function createGamePortPilots({
     assertAllowed(service, method);
     // What the client has to hand before it makes this call: godma primed for the ship, which it is from the moment it has one,
     // and anything just fitted answered for.
+    if (retailNeeds(service, method) === "orders") await ownOrdersRead(entry);
     if (retailNeeds(service, method) === "dogma") {
       await shipReadings(entry, whereabouts(entry));
       await entry.itemWork;
@@ -1236,6 +1260,30 @@ function createGamePortPilots({
       result: wireToBridgeJson(result === undefined ? null : result),
       notifications: drain(entry),
     };
+  }
+
+  // ── the pilot's own market orders, as the object cache has them ──────────
+
+  /**
+   * marketQuote.GetMyOrders: GetMarketProxy().GetCharOrders(), which the client's object cache keeps for the run and
+   * OnOwnOrdersChanged names. One order of that list by its ID, as its row has it by the columns' names (each value
+   * as it came off the wire): null where the session keeps no list, or the order is not in it.
+   */
+  function ownOrderOf(entry, orderID) {
+    const kept = typeof entry.session.cachedMethodCall === "function" ? entry.session.cachedMethodCall(MARKET_PROXY, OWN_ORDERS, []) : null;
+    return kept ? rowsetLine(kept.result, "orderID", orderID) : null;
+  }
+
+  /**
+   * The pilot's orders asked for where the session keeps none, as the client has them before it takes one down or
+   * reprices it: both are done from its list of them. Noted as the client's own asking. A refusal is not this
+   * call's to tell: the order then goes out as it came.
+   */
+  async function ownOrdersRead(entry) {
+    if (typeof entry.session.cachedMethodCall !== "function" || entry.session.cachedMethodCall(MARKET_PROXY, OWN_ORDERS, [])) return;
+    const form = shape(MARKET_PROXY, OWN_ORDERS, [], null, contextFor(entry));
+    ledger.note(MARKET_PROXY, OWN_ORDERS, form);
+    await byName(entry.session, MARKET_PROXY, OWN_ORDERS, form).catch(() => {});
   }
 
   // ── an attribute's value, from what godma holds ──────────────────────────
@@ -2129,6 +2177,8 @@ function createGamePortPilots({
       },
       // invCache: the item as a listing has it.
       stackSize: (itemID) => stackSizeOf(entry, itemID),
+      // marketQuote.GetMyOrders: one of the pilot's own orders, as its row has it.
+      ownOrder: (orderID) => ownOrderOf(entry, orderID),
       effectName: (itemID) => defaultEffectName(typeOf(itemID)),
       effectTargeted: (itemID, effectName) => effectTargeted(typeOf(itemID), effectName),
       effectRepeats: (itemID, effectName) => effectRepeats(typeOf(itemID), effectName),
