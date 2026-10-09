@@ -274,6 +274,11 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **What the parity tool calls moved is a reading, not a fact.** It prints a `moved?` line for
   each value it puts down to time passing between its two reads, with both values: read them.
   A clock is a clock; a count of none against two is not.
+- **A test that puts a pilot in space must use the park that moves by hand.** In
+  `test/gamePortPilots.test.js`, `selected({ inSpace: true })` makes a real park with a real
+  timer, and the test process then never ends: a run sat until its own time limit killed it
+  (2026-10-09). Build with `handTicked().options` (`selectedInSpace` does it), and give every
+  `node --test` a `timeout` in front of it.
 - **Do not run this repository's whole suite while a sub-agent runs eve.js's tests.** On
   2026-10-09 a full run beside one had two tests cancelled (the two HTTP provisioning tests,
   each over five seconds); both passed alone and in the next full run. The cause was not

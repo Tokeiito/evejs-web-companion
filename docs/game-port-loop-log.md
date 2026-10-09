@@ -8107,3 +8107,141 @@ showed the implants from it and nothing else. The BFF's other skill reads went t
     client's own map is in.
 32. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
 33. A wreck opened with its type said: no capacity, as the client has none for one.
+
+## 2026-10-09 — the monikers the client makes afresh
+
+Commit `939b8f6`, pushed. Item 1 of the last list.
+
+**What the retail client does.** Not every Moniker is one it keeps.
+
+- `crimewatchSvc.py` makes one at every use: `eveMoniker.CharGetCrimewatchLocation().Method(...)`,
+  at each of its nine calls (89 to 603), and the security office's one the same way.
+- The ship's goes through `gameui.GetShipAccess` (`gameui.py` 228) for most of what is asked
+  of a ship. That makes a new one each time while the session has a station, and keeps one
+  otherwise for as long as the system, the ship and the character are the same.
+  `shipConfigSvc.py` 51 makes its own for the configuration read, wherever the pilot is.
+- A Moniker made for one call binds carrying it (the last entry).
+- **Recorded on Tranquility at login:** `crimewatch` bound twice (`GetClientStates`,
+  `GetMySecurityStatus`) and `ship` twice (`GetDirtTimestamp`), each bind with its call, and
+  nothing asked of any of the four objects after.
+- **This server's log of a retail client** (2026-10-06): `crimewatch` asked for once and
+  bound four times; `ship` bound twice while docked, each carrying `Board`.
+
+**What the transport did.** Kept one ship object for a place and made every call of the
+ship's on it; asked `crimewatch` by its name.
+
+**What was built.**
+
+- The registry says which calls are made on a Moniker of their own: all of `crimewatch`'s,
+  the ship's while the pilot is docked in a station, and the ship's configuration read
+  anywhere. `crimewatch` is among the services reached through a moniker, and five of its
+  calls are set beside the client's lines.
+- The transport binds for each such call, the call riding along, and keeps nothing. In
+  space the ship's moniker is kept, and let go of when the ship changes.
+
+**Proof.**
+
+- Tests: 4 new (1 on the registry, 3 on the transport). Three older tests said one ship
+  object served a pilot docked in a station, which is not what the client does; each now
+  says a bind for each call. What one of them said of a kept object the server lets go is
+  said now where one is kept, in space. 23 ways of breaking it tried. Three survived a
+  first pass: one changes nothing (a pilot who is somewhere has a station or a solar system
+  and not both), and two led to cases added. The rest are caught.
+- A run of the transport's tests did not end and was killed by its own limit: my new tests
+  had put a pilot in space with a real park (the brief has it). No test process left behind.
+- Suite: 9639 tests, 9615 pass, 0 fail, 0 cancelled, 24 skipped.
+- **The server's own log** (eve.js `603ae3d3d`, with other sessions' uncommitted edits in
+  the checkout), for crimewatch's four reads and the ship's configuration each asked twice
+  through the game port, docked: `crimewatch` asked for once and bound eight times; `ship`
+  asked for once and bound twice, each "nested call: GetShipConfiguration". None of the
+  five reads came by name or as a call on an object; the server handled each twice.
+- **On both transports, by script:** 12 identical, 6 tolerated, 2 moved (two clocks),
+  2 divergent, as before.
+- **In the browser, on the game port:** all 25 windows drew with no failure in any.
+- The ledger, from that pass, those reads and the browser's read of all 22 panels: 61
+  pairs, none the client never makes, none unchecked, none differing.
+
+**Not seen working.**
+
+- The ship's moniker kept in space, and let go of at a change of ship: tests only.
+- An undock or a leaving of the ship on the game port since the change: tests only.
+- A pilot docked in a structure, where by the client's own test the ship's moniker is kept.
+
+**Not done.**
+
+- **What becomes of an object a dropped Moniker bound.** The client lets it go some seconds
+  after (`moniker.py` 101). The transport says nothing of it to the server. Not looked into.
+- The other ship monikers the client keeps: the dogma location's own, which boards a ship
+  (`clientDogmaLocation.py` 304); the ship configuration window's.
+- A Moniker's session check (`SetSessionCheck`), which refuses a call once the pilot has
+  left the place it was made for.
+- The BFF's own two-step binds.
+
+### Next
+
+1. The BFF's own two-step binds (the Fitting window's dogma route, `charMgr`,
+   `fleetObjectHandler`, the agents'), each made when its first call comes and with it.
+2. A login set beside the recording's, call by call: what the client asks before anything
+   is opened, and in what order (the skill handler's nine among them).
+3. What becomes of a bound object the client has done with: read in the client, looked for
+   in the recordings, and done so.
+4. Around the skill handler: the implants asked once and kept; the Skills panel from the
+   handler; the handler's other reads; boosters and jump clones on the sheet.
+5. Around the contracts: "Offered to you" from the owner's list; the corporation's lists;
+   a rowset read where a server answers one; the search with something staged for each of
+   its filters, on both transports; what the sub-agent left in the server (the operator's
+   section). And the same fault elsewhere in the server: a search of its services for a
+   keyword read as a plain property, with no helper in the file, names two more
+   (`seasonManagerService.js`, `dungeonService.js`). Neither was read.
+6. Around a fitted module: the recording read past `SetModuleOnline`'s answer, and this
+   server's fit set beside it; the recording of ammunition loaded while docked, and charges
+   in slots as godma holds them; the Fitting panel's cargo figure after a module's state
+   changes; a refusal to put one online shown as the client shows it; the dogma route
+   answered from godma's priming instead of its own `GetAllInfo`.
+7. Something staged for every list route that has only been compared empty (the market's
+   orders, the mail, the calendar, the fleet, the corporation's hangars), and the parity
+   pass read again.
+8. The Fleet panel asking nothing of a fleet's object while the pilot is in no fleet.
+9. A ship with several modules fitted and a hold with a packaged ship in it, staged: the
+   Fitting window's figures and the client's sums, each set beside the server's.
+10. The walk in space: undocked, every panel and the space view, the store put aside first
+    and put back after; its unread pairs read; the ship's moniker seen kept.
+11. The routes that answer from the store, listed, and each set beside what the client asks.
+12. The standings the client's way: `GetNPCNPCStandings`, and asked once at the session's
+    change and kept, with the server's notices keeping them right.
+13. The corporation registry's other calls, each set beside the client's.
+14. Phase 3's writes, feature by feature, each set beside what the client sends, each
+    looked for in every folder of the recordings first.
+15. The wallet's "Market Transactions", and the lines the client derives from a transaction.
+16. The avoidance list's own window, and a route plotted again when a setting changes under it.
+17. Around a place's name, the last of it: the outlaw's warning (the pilot's own security
+    status). The agent's own window's steps, if the client's say how far.
+18. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+    own counts on it, with the push doing the work as it does for Remove Offer.
+19. The agent's cards above its own window, where the client's window has its own header.
+20. The scanner the client's way: results kept from the server's word, a probe's destination
+    and range kept here and sent with the scan.
+21. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+    codes not done.
+22. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+23. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+24. Small, in Ready Fit: the window following a change of pilot.
+25. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+26. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+27. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+28. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions); the client's own map, to set beside this server's.
+29. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+30. Other things asked once beside the store, and other panels' effects, looked at for the
+    faults of earlier entries.
+31. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
+    client's own map is in.
+32. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
+33. A wreck opened with its type said: no capacity, as the client has none for one.
