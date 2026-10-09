@@ -316,6 +316,12 @@ Take these defaults, and list each under "For the operator" in the log so they c
   "Offer to buy…", the two number inputs and the select in `section.bulk`, "Check this order…",
   "Yes, place this buy order"; then "Your orders", "Take it down…", "Yes, take this order
   down". The pilot's "GO TO FIRST PILOT" dialog has to be answered first.
+- **Both BFFs run the code they were started on.** A change to a route's answer shows through
+  the game-port BFF once that is restarted, and through the gateway BFF only when that is
+  restarted too: a field I had added read as nothing through it, where the new code says
+  none. `restart-bffgp.sh` and `restart-bffgw.sh` in the scratchpad restart each. And the
+  page is served from its build: run `npm run build:web` before a browser check of a change
+  to `web/src`.
 - **A script's own game-port session keeps cached answers and has nothing to name them.** The
   naming on a notice is the transport's (`pilots.js`), not the session's. A script that writes
   and reads again through a bare `GamePortSession` gets the answer from before the write: mine
