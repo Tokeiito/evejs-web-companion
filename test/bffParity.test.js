@@ -55,7 +55,19 @@ test("spellings the readers take either of are tolerated, and a spelling they do
 });
 
 test("data that moved between the two reads is 'moved'", () => {
-  assert.equal(judge(ok({ serverNowMs: 1 }), ok({ serverNowMs: 2 })).verdict, "moved");
+  assert.equal(judge(ok({ balance: 1 }), ok({ balance: 2 })).verdict, "moved");
+});
+
+test("the server's clock at a read, and a time the server measured its own answer to take, are not data: they differ every time, and are left out", () => {
+  // Two reads a second apart read the clock a second apart.
+  assert.equal(judge(ok({ skills: { serverNowMs: 1791572707422, total: 3 } }), ok({ skills: { serverNowMs: 1791572708614, total: 3 } })).verdict, "identical");
+  assert.equal(judge(ok({ serverNowMs: 1 }), ok({ serverNowMs: 2 })).verdict, "identical");
+  // A search answers how long it took beside what it found.
+  const searched = (searchTime, found) => ok({ browse: { result: { type: "object", name: "util.KeyVal", args: { searchTime, contracts: found } } } });
+  assert.equal(judge(searched("0", [1]), searched("10000", [1])).verdict, "identical");
+  // What it found is data all the same.
+  assert.equal(judge(searched("0", [1]), searched("10000", [2])).verdict, "moved");
+  assert.deepEqual(withoutVolatile({ serverNowMs: 5, browse: { searchTime: 7, found: 1 } }), { browse: { found: 1 } });
 });
 
 test("fields that differ on every request by design are left out of the comparison", () => {
@@ -148,4 +160,36 @@ test("a pilot in no fleet is the same answer on both transports, however each co
   assert.notEqual(judge(inFleet("hello"), inFleet("goodbye"), "/api/bridge/bound-fleet").verdict, "identical");
   assert.notEqual(judge(inFleet("hello"), notAsked, "/api/bridge/bound-fleet").verdict, "identical");
   assert.notEqual(judge(refused("FleetNotInFleet"), notAsked, "/api/bridge/assets").verdict, "identical");
+});
+
+// The gateway hands on the server's own {type:"tuple"} where the server built one, and the game port has every
+// tuple off the wire as an array. Where the page's reader takes either, the two answers read the same.
+
+const tuple = (...items) => ({ type: "tuple", items });
+const listed = (...items) => ({ type: "list", items });
+
+test("a tuple spelt two ways is tolerated where the page's reader takes either, and nowhere else", () => {
+  // The journal: the answer is a tuple of two lists, each row of which is a tuple (agents.ts decodeJournal).
+  const journalOnGateway = ok({ result: tuple(listed(tuple(1, 0, "Courier")), listed()) });
+  const journalOnGamePort = ok({ result: [listed([1, 0, "Courier"]), listed()] });
+  const journal = judge(journalOnGateway, journalOnGamePort, "/api/bridge/journal");
+  assert.deepEqual([journal.verdict, journal.detail], ["tolerated", "tuple-read-either-way ×2"]);
+  // Industry: each activity of a facility has a tuple of its lists of modifiers (industry.ts decodeFacilities).
+  const facilities = (spelt) => ok({ facilities: { result: listed({ type: "object", name: "util.KeyVal", args: { facilityID: 7, activities: { 1: spelt([[0.98, null, null, null, 5]], []), 8: spelt([], []) } } }) } });
+  const industry = judge(facilities((...lists) => tuple(...lists)), facilities((...lists) => lists), "/api/bridge/industry");
+  assert.deepEqual([industry.verdict, industry.detail], ["tolerated", "tuple-read-either-way ×2"]);
+
+  // The same two answers on a route with no such reader, and on none, are divergent as before.
+  assert.equal(judge(journalOnGateway, journalOnGamePort, "/api/bridge/wallet").verdict, "divergent");
+  assert.equal(judge(journalOnGateway, journalOnGamePort).verdict, "divergent");
+  // A tuple spelt two ways somewhere else in the journal's answer, or in a facility's, is still divergent.
+  assert.equal(judge(ok({ result: tuple(listed(), listed()), other: tuple(1) }), ok({ result: [listed(), listed()], other: [1] }), "/api/bridge/journal").verdict, "divergent");
+  assert.equal(judge(ok({ result: tuple(listed(tuple(1, tuple(2))), listed()) }), ok({ result: [listed([1, [2]]), listed()] }), "/api/bridge/journal").verdict, "divergent");
+  assert.equal(judge(ok({ facilities: { result: listed({ type: "object", name: "util.KeyVal", args: { tax: tuple(1) } }) } }), ok({ facilities: { result: listed({ type: "object", name: "util.KeyVal", args: { tax: [1] } }) } }), "/api/bridge/industry").verdict, "divergent");
+  // Something that is no tuple at all where the tuple should be is no spelling of it.
+  assert.equal(judge(ok({ result: tuple(listed(), listed()) }), ok({ result: "refused" }), "/api/bridge/journal").verdict, "divergent");
+  // And it is the spelling alone that is taken either way: a row that says something else has moved.
+  const moved = judge(ok({ result: tuple(listed(tuple(1, 0, "Courier")), listed()) }), ok({ result: [listed([2, 0, "Courier"]), listed()] }), "/api/bridge/journal");
+  assert.equal(moved.verdict, "tolerated");
+  assert.match(moved.detail, /value ×1/);
 });

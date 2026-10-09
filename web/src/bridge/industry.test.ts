@@ -469,4 +469,15 @@ test("a facility keeps its own time and material modifiers per activity, as the 
   // Listed with nothing to say: no entry.
   assert.equal(facility.modifiers.copying, undefined);
   assert.deepEqual(facility.activities, ["manufacturing", "copying", "invention"]);
+
+  // The game port has each of those tuples as a plain array, off the wire. It reads the same.
+  const bare = keyVal({
+    facilityID: 1035000000001,
+    activities: dict([
+      [1, [[[0.85, null, null, null, 7]], [[0.99, null, 0, null, 7], [0.976, 18, null, null, 8]], [[0.97, null, null, null, 7]], [], [], []] as unknown as JsonValue],
+      [8, [[[0.98, null, null, null, 5]], [], [[0.04, null, null, null, 4]], [], [], []] as unknown as JsonValue],
+      [5, [] as unknown as JsonValue],
+    ]),
+  });
+  assert.deepEqual(decodeFacilities(list([bare]))[0], facility);
 });

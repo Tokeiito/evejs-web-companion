@@ -66,8 +66,14 @@ const DOCKED_ROUTES = [
   "/api/bridge/provisioning/options",
 ];
 
-/** Fields that are different on every request by design, wherever they appear. */
-const VOLATILE = new Set(["droneRecoveryCheckID", "sampledAtMs", "serverTimeMs", "readAtMs", "checkedAtMs", "nowMs", "generatedAt"]);
+/**
+ * Fields that are different on every request by design, wherever they appear. Most are a clock read at the
+ * request. `serverNowMs` is the server's own clock at the read, which two reads a second apart read a second
+ * apart; `searchTime` is how long the server took over a search, which it answers beside what it found (the
+ * contracts' search), and is 0 one time and a millisecond the next. Neither is data that moved: left in, the
+ * first made two routes read "moved" on every pass, and the second a third route now and then.
+ */
+const VOLATILE = new Set(["droneRecoveryCheckID", "sampledAtMs", "serverTimeMs", "serverNowMs", "readAtMs", "checkedAtMs", "nowMs", "generatedAt", "searchTime"]);
 
 function withoutVolatile(value) {
   if (Array.isArray(value)) return value.map(withoutVolatile);
@@ -232,6 +238,21 @@ const AS_THE_PAGE_READS = Object.freeze({
   "/api/bridge/bound-fleet": fleetShown,
 });
 
+/**
+ * Where the page's reader takes a tuple spelt either way, by route and by where in the answer. The gateway hands
+ * on the server's own {type:"tuple"} where the server built one; the game port has every tuple off the wire as
+ * an array. No shared reader takes both (scripts/parity-compare.js), so a tuple spelt two ways is divergent
+ * unless the one reader that meets it does. These do, each with a test of its own that says so. Anywhere else,
+ * and in any other route, it is divergent still.
+ */
+const TUPLES_READ_EITHER_WAY = Object.freeze({
+  // web/src/bridge/agents.ts, decodeJournal and decodeJournalRow (seqItems): the answer, and each row of its two lists.
+  "/api/bridge/journal": /^\$\.result(\[[01]\]\.items\[\d+\])?$/,
+  // web/src/bridge/industry.ts, decodeFacilities (tupleItems): an activity's lists of modifiers.
+  "/api/bridge/industry": /^\$\.facilities\.result\.items\[\d+\]\.args\.activities\.\d+$/,
+});
+const READ_EITHER_WAY = "tuple-read-either-way";
+
 function judge(gatewayAnswer, gamePortAnswer, route = null) {
   if (gatewayAnswer.status !== gamePortAnswer.status) {
     return { verdict: "status differs", detail: `${gatewayAnswer.status} against ${gamePortAnswer.status}: ${JSON.stringify(gamePortAnswer.payload).slice(0, 200)}` };
@@ -255,7 +276,11 @@ function judge(gatewayAnswer, gamePortAnswer, route = null) {
     if (reckoned.own.test(difference.path)) difference.kind = "client-reckoned";
     else if (reckoned.under.test(difference.path)) difference.kind = "reckoned-differently";
   }
-  const settled = (difference) => MOVED.has(difference.kind) || TOLERATED.has(difference.kind) || difference.kind === "gained" || difference.kind === "client-reckoned";
+  const eitherWay = route === null ? undefined : TUPLES_READ_EITHER_WAY[route];
+  for (const difference of eitherWay ? differences : []) {
+    if (difference.kind === "tuple-form" && eitherWay.test(difference.path)) difference.kind = READ_EITHER_WAY;
+  }
+  const settled = (difference) => MOVED.has(difference.kind) || TOLERATED.has(difference.kind) || difference.kind === "gained" || difference.kind === "client-reckoned" || difference.kind === READ_EITHER_WAY;
   const verdict = differences.length === 0 ? "identical"
     : differences.every((difference) => MOVED.has(difference.kind)) ? "moved"
       : differences.every(settled) ? "tolerated"
