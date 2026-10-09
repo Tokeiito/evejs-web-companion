@@ -7197,3 +7197,111 @@ same for every one (a Badger with a cargo hold; a Reaper with a cargo hold and a
 27. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
     client's own map is in.
 28. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
+
+## 2026-10-09 — the mining holds, reckoned as the client reckons them
+
+Commit `6eecc7e`, pushed. Item 1 of the last list, the half of it that the bots ask.
+
+**What the retail client does.** Nothing new to read: a hold's capacity is never asked of the
+server (`invCache.py` 1224, `godma.py` 871), and each hold's contents are one `List(flag=...)`
+(`invCache.py` 1138), which is what the route already asked beside each `GetCapacity`.
+
+**What was built.** On the game port the mining holds' route lists each hold the hull has and
+asks nothing else. A hold's size is godma's, or the type's where godma was not told of it;
+what is used is summed from the hold's own List; which holds the hull has comes from the
+client's own table. A hold that cannot be reckoned is asked about by itself, and off the game
+port, or with no client to read, every hold is asked about as before.
+
+**Proof.**
+
+- Tests: 2 new. 11 ways of breaking it tried, all caught; one check that could not be made to
+  matter was taken out first.
+- Suite: 9585 tests, 9561 pass, 0 fail, 0 cancelled, 24 skipped, 0 todo. No test process left
+  behind.
+- **A hull with an ore hold, staged and boarded** (`/gmships` as Test Two, a ship of type
+  48648 boarded; the store put aside first and put back after: one row in the hangar and one
+  in the cargo again, the journal `[1,0]`). Its mining holds and its bays read through both
+  check BFFs: the five holds the same on both (an ore hold of 2,400 m³ and a cargo of 50 m³,
+  nothing in either; no gas, ice or asteroid hold), and all twenty-seven bays the same. This
+  is the ship being flown, so its sizes on the game port are godma's.
+- **The server's own log of the game port for that reading** (eve.js `e066a81e9`, with
+  another session's uncommitted edits in the checkout): two `List` calls for the holds and
+  one `ListByFlags` for the bays. No `GetCapacity`.
+- **On both transports, by script** (`scripts/bff-parity.js`): 11 identical, 7 tolerated,
+  2 moved, 2 divergent, as before.
+
+**A test I took for broken, and was not.** A run of the mining tests showed one cancelled
+after thirty seconds, with this entry's change and without it. It waits out a boarding that
+never settles, 45 seconds by design, and it was my own 15-second limit on the run that
+cancelled it; the suite, which has no such limit, passes it. The brief says so now, and to
+read `cancelled` beside `fail`: my earlier totals in this log did not print it.
+
+**Not seen working.**
+
+- **In the browser.** The page shows the mining holds in space and to its bots; Test Two is
+  docked in a hauler. The route was read by script.
+- A hold with something in it, on a mining hull: the staged hull's were empty.
+
+**Not done.**
+
+- **A container's capacity.** The last `GetCapacity` the BFF sends. The client reckons it
+  from the container's type (`evetypes.GetCapacity`; for a plastic wrap, whatever is in it;
+  for a wreck there is no capacity at all, `invControllers.py` 1636), and the route is given
+  only the container's ID. Its six callers in the page each have the row the container came
+  from, with its type; none passes it. An office is opened by the same route, and the client's
+  figure for one is the station's.
+- The ledger's document is as the last entry left it: nothing this entry changed is in the
+  pass or the walk it was made from.
+
+### Next
+
+1. A container's capacity the client's way: its type handed to the route by each of the
+   page's callers, the wrap and the wreck and the office by their own rules.
+2. The rest of the web client's own calls: `dogmaIM.ShipGetInfo` and `ShipOnlineModules`
+   (the flight status read), `contractProxy.GetMyCurrentContractList`
+   (`GetContractListForOwner`), `charMgr.GetCloneInfo` (`jumpCloneSvc.GetCloneState` on
+   its moniker, godma's implants).
+3. A ship with modules fitted and a hold with a packaged ship in it, staged: the Fitting
+   window's figures and the client's sums, each set beside the server's.
+4. The Fleet panel asking nothing of a fleet's object while the pilot is in no fleet.
+5. The walk in space: undocked, every panel and the space view, the store put aside first
+   and put back after; its unread pairs read.
+6. The routes that answer from the store, listed, and each set beside what the client asks.
+7. The standings the client's way: `GetNPCNPCStandings`, and asked once at the session's
+   change and kept, with the server's notices keeping them right.
+8. Two couriers staged, for the contract search's sort and filters; the corporation's
+   expired list beside the pilot's own; the summary asked once and kept.
+9. The corporation registry's other calls, each set beside the client's.
+10. Phase 3's writes, feature by feature, each set beside what the client sends.
+11. The wallet's "Market Transactions", and the lines the client derives from a transaction.
+12. The avoidance list's own window, and a route plotted again when a setting changes under it.
+13. Around a place's name, the last of it: the outlaw's warning (the pilot's own security
+    status). The agent's own window's steps, if the client's say how far.
+14. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+    own counts on it, with the push doing the work as it does for Remove Offer.
+15. The agent's cards above its own window, where the client's window has its own header.
+16. The scanner the client's way: results kept from the server's word, a probe's destination
+    and range kept here and sent with the scan.
+17. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+    codes not done.
+18. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+19. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+20. Small, in Ready Fit: the window following a change of pilot.
+21. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+22. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+23. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+24. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions); the client's own map, to set beside this server's.
+25. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+26. Other things asked once beside the store, and other panels' effects, looked at for the
+    faults of earlier entries.
+27. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
+    client's own map is in.
+28. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
