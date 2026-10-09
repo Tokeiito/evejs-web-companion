@@ -190,6 +190,16 @@ function createPilotSkills() {
       if (name === "queue") return queue ? { type: "list", items: [...queue] } : undefined;
       return kept.get(name);
     },
+    /**
+     * skillsvc.MyEffectiveSkillLevelsByID().get(typeID, 0): a skill's level in effect, the larger of the level
+     * trained and the level lent (CharacterSkillEntry.effectiveSkillLevel). Nought for a skill the pilot has
+     * not; null where no skills are kept.
+     */
+    effectiveLevel(typeID) {
+      if (!skills) return null;
+      const fields = skills.has(typeID) ? skillFields(skills.get(typeID).entry) : null;
+      return fields ? Math.max(number(fields[1]) ?? 0, number(fields[4]) ?? 0) : 0;
+    },
     /** The type in training by the queue as it is kept, or null (skillInTraining). */
     inTraining: () => skillInTraining(queue ? { items: queue } : null),
     /** The server pushes a notification: what the transport is then to do, each thing once. */

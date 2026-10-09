@@ -75,23 +75,32 @@ const wholeAndPositive = (value) => typeof value === "number" && Number.isSafeIn
  *          officeID=..., delta=..., rawBrokerFeePercentage=...)
  *
  * with officeID None for an item that is not in a corporation's office. A route gives one as a plain object with
- * what it knows of it, which is no value the wire has. Answers { item, whole }: the util.KeyVal, its fields in the
- * order the client's Python keeps the keywords of such a call (py27.js constructorKeywordOrder), and whether it has
- * all eight. The two the window works out, delta and rawBrokerFeePercentage, are not made up where a route has
- * none. An item that is the client's KeyVal already is answered as it is. Null for what is no item of a sale.
+ * what it knows of it, which is no value the wire has. Answers { item, has, rate }: the util.KeyVal, its fields in
+ * the order the client's Python keeps the keywords of such a call (py27.js constructorKeywordOrder); which of the
+ * eight it has; and its broker's fee rate, where it has one. Of the two the window works out, the fee rate is
+ * `rateAt(stationID)` where a route gave none and it can be worked out; delta is not made up. An item that is
+ * the client's KeyVal already is answered as it is. Null for what is no item of a sale.
  */
-function saleItem(given) {
+function saleItem(given, rateAt = () => null) {
   if (!given || typeof given !== "object" || Array.isArray(given)) return null;
   if (given.type === "object") {
-    const names = given.args && Array.isArray(given.args.entries) ? given.args.entries.map(([name]) => name) : [];
-    return { item: given, whole: SALE_ITEM.every((name) => names.includes(name)) };
+    const entries = given.args && Array.isArray(given.args.entries) ? given.args.entries : [];
+    const rate = entries.find(([name]) => name === "rawBrokerFeePercentage");
+    return { item: given, has: entries.map(([name]) => name), rate: rate ? rate[1] : null };
   }
   if (given.type !== undefined || given.itemID === undefined || given.itemID === null) return null;
   if (!wholeAndPositive(given.stationID) || !wholeAndPositive(given.typeID) || !wholeAndPositive(given.quantity)) return null;
   if (typeof given.price !== "number" || !Number.isFinite(given.price) || given.price <= 0) return null;
-  const fields = { ...given, price: Math.round(given.price * 100) / 100, officeID: given.officeID ?? null };
+  const rate = given.rawBrokerFeePercentage ?? rateAt(given.stationID) ?? undefined;
+  const fields = { ...given, price: Math.round(given.price * 100) / 100, officeID: given.officeID ?? null, rawBrokerFeePercentage: rate };
   const written = SALE_ITEM.filter((name) => fields[name] !== undefined);
-  return { item: keyVal(constructorKeywordOrder(written).map((name) => [name, fields[name]])), whole: written.length === SALE_ITEM.length };
+  return { item: keyVal(constructorKeywordOrder(written).map((name) => [name, fields[name]])), has: written, rate: rate ?? null };
+}
+
+/** The broker's fee rate at a station as the client would work it out, where whoever shapes the call can: a number, or null. */
+function brokersFeeOf(context, stationID) {
+  const rate = context && typeof context.brokersFee === "function" ? context.brokersFee(stationID) : null;
+  return typeof rate === "number" && Number.isFinite(rate) ? rate : null;
 }
 
 /** The order's own row in the pilot's orders the session keeps, by the columns' names: null where there is none, or no such order in it. */
@@ -725,35 +734,43 @@ const RETAIL_CALLS = Object.freeze({
   "marketProxy.GetCharEscrow": same(`${MARKET_QUOTE}:401`, "GetMarketProxy().GetCharEscrow(), no arguments"),
   "marketProxy.GetOrders": same(`${MARKET_QUOTE}:734`, "GetMarketProxy().GetOrders(typeID): a type's book, which the object cache keeps and OnOwnOrdersChanged names"),
   "marketProxy.GetNewPriceHistory": differs(`${MARKET_QUOTE}:339`, "The client asks a type's history in two halves, GetOldPriceHistory(typeID) and GetNewPriceHistory(typeID), and joins them. The BFF's route asks for the new half alone."),
-  "marketProxy.PlaceBuyOrder": Object.freeze({
+  "marketProxy.PlaceBuyOrder": needing(Object.freeze({
     status: "same",
     source: `${MARKET_QUOTE}:266`,
     note: "GetMarketProxy().PlaceBuyOrder(stationID, typeID, price, quantity, orderRange, minVolume, duration, useCorp, expectedBrokersFee): nine, the last the broker's fee the client's window showed (buyThisTypeWindow.py 701).",
-    shape: (args, kwargs) => {
+    shape: (args, kwargs, context) => {
       if (args.length !== 9) return { args, kwargs, status: "differs", note: "The client sends nine, the last of them the broker's fee its window showed." };
-      return typeof args[8] === "number" ? { args, kwargs } : { args, kwargs, status: "differs", note: "The client names the broker's fee its window showed, and the server may hold the order to it. This call names none." };
+      if (typeof args[8] === "number") return { args, kwargs };
+      const rate = brokersFeeOf(context, args[0]);
+      return rate === null
+        ? { args, kwargs, status: "differs", note: "The client names the broker's fee rate its window showed, and the server holds the order to it. This call names none, and it could not be worked out for this station." }
+        : { args: [...args.slice(0, 8), rate], kwargs, status: "reshaped" };
     },
-  }),
-  "marketProxy.PlaceMultiSellOrder": Object.freeze({
+  }), "fee"),
+  "marketProxy.PlaceMultiSellOrder": needing(Object.freeze({
     status: "same",
     source: `${MARKET_QUOTE}:276`,
     note: "GetMarketProxy().PlaceMultiSellOrder(itemList, useCorp, duration, expectedBrokersFee) (sellMulti.py 462): a list of the items, each a util.KeyVal of eight fields (sellMulti.py 501), and the broker's fee rate the window showed, or None for a sale at once.",
-    shape: (args, kwargs) => {
-      const [given, useCorp, duration, fee] = args;
+    shape: (args, kwargs, context) => {
+      const [given, useCorp, duration, named] = args;
       const listed = Array.isArray(given) ? given : given && given.type === "list" && Array.isArray(given.items) ? given.items : null;
-      const items = listed ? listed.map(saleItem) : [];
+      const items = listed ? listed.map((item) => saleItem(item, (stationID) => brokersFeeOf(context, stationID))) : [];
       if (args.length !== 4 || items.length === 0 || items.includes(null)) {
         return { args, kwargs, status: "differs", note: "The client sends four: a list of the items, each a util.KeyVal, whether it is for the corporation, for how long, and the broker's fee rate. This is not that." };
       }
-      const asGiven = !Array.isArray(given) && items.every(({ item }, at) => item === listed[at]);
+      // sellMulti.py 444: for an order that stands, the rate the call names is the first item's.
+      const fee = duration !== 0 && typeof named !== "number" && typeof items[0].rate === "number" ? items[0].rate : named;
+      const asGiven = !Array.isArray(given) && fee === named && items.every(({ item }, at) => item === listed[at]);
       const shaped = asGiven ? args : [{ type: "list", items: items.map(({ item }) => item) }, useCorp, duration, fee];
-      if (!items.every(({ whole }) => whole)) {
-        return { args: shaped, kwargs, status: "differs", note: "The client's item has eight fields. These lack the two its window works out: how far the price is from the type's average (delta), and the broker's fee rate (rawBrokerFeePercentage)." };
+      const lacking = SALE_ITEM.filter((name) => items.some(({ has }) => !has.includes(name)));
+      if (lacking.length > 0) {
+        const what = { delta: "how far the price is from the type's average (delta)", rawBrokerFeePercentage: "the broker's fee rate (rawBrokerFeePercentage)" };
+        return { args: shaped, kwargs, status: "differs", note: `The client's item has eight fields. These lack what its window works out: ${lacking.map((name) => what[name] ?? name).join(", and ")}.` };
       }
       if (duration !== 0 && typeof fee !== "number") return { args: shaped, kwargs, status: "differs", note: "For an order that stands, the client names the broker's fee rate its window showed. This call names none." };
       return asGiven ? { args, kwargs } : { args: shaped, kwargs, status: "reshaped" };
     },
-  }),
+  }), "fee"),
   "marketProxy.CancelCharOrder": needing(Object.freeze({
     status: "same",
     source: `${MARKET_QUOTE}:282`,

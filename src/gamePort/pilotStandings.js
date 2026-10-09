@@ -164,6 +164,15 @@ function createPilotStandings({ characterID, corporationID }) {
       if (notification.method === "OnStandingSet") standingSet(notification.args);
       else if (notification.method === "OnStandingsModified") standingsModified(notification.args);
     },
+    /**
+     * standingSvc.GetStanding(fromID, session.charid), for an NPC: the standing it has to the character, or the
+     * neutral nought where it has none (standingsvc.py 154). Null where no standings are kept.
+     */
+    toCharacter(fromID) {
+      if (!char) return null;
+      const from = number(fromID);
+      return from !== null && isNPC(from) ? standingIn(char, from) ?? 0.0 : 0.0;
+    },
     /** Whether a character's standings are kept. */
     get loaded() { return char !== null; },
     /** self.npccharstandings, as GetCharStandings would be read now. Null with none kept. */

@@ -9,6 +9,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { GamePortPilotError, argumentsToWire, boundObjectID, createGamePortPilots } = require("../src/gamePort/pilots");
+const { brokersFeeRate } = require("../src/gamePort/brokerFee");
 const { GAME_PORT_HANDLE_PREFIX, PILOT_FUNCTIONS } = require("../src/pilotTransport");
 const { createPilotSpace } = require("../src/gamePort/pilotSpace");
 const undockRecording = require("./fixtures/destinyUndock.json");
@@ -5799,6 +5800,69 @@ test("with no orders kept, the pilot's orders are asked for first, as the client
   // An order that is not the pilot's, or not open any more: nothing to read it off.
   await pilots.callMethod("marketProxy", "CancelCharOrder", ["79", 0], null, WHO, handle);
   assert.deepEqual(marketCalls(session).at(-1), ["CancelCharOrder", [79, 0]]);
+});
+
+// marketsvc.GetBrokersFeeCommissionFromStationID: the broker's fee rate the client names with an order, worked out
+// from the pilot's Broker Relations in effect and the standings the station's owner and its faction have to the
+// pilot (src/gamePort/brokerFee.js). The standings are a real server's answer; the skills are the stand-in's.
+
+const FEE_PAIRS = new Set(["marketProxy.PlaceBuyOrder", "marketProxy.PlaceMultiSellOrder"]);
+const BROKER_RELATIONS = 3446;
+/** A station of the corporation 1000002, of the faction 500001: both have standings to the pilot in the recorded answer. */
+const ownedStation = (stationID) => (stationID === 60003760 ? { ownerID: 1000002, factionID: 500001 } : stationID === 60000004 ? { ownerID: 98000000, factionID: null } : null);
+const buyOrder = (stationID, fee = null) => [stationID, 34, 0.01, 1, -1, 1, 1, false, fee];
+const lastMarketCall = (session) => session.proxyCalls.filter((call) => call.service === "marketProxy").at(-1);
+
+test("a buy order goes out with the broker's fee rate worked out from the pilot's skill and the owner's standings; a sale's item and call with it too", async () => {
+  // Broker Relations trained to 2 and lent at 3: the level in effect is 3.
+  const skills = skillsOf(skillOf(BROKER_RELATIONS, 2, 2829, 2, 3), skillOf(3300, 4, 45255));
+  const { pilots, session, handle } = await selected({ answers: { ...STANDING_ANSWERS, ...handlerAnswers({ "bound:GetSkills": skills }) } }, { allowed: FEE_PAIRS, stationOwner: ownedStation });
+  const rate = brokersFeeRate({ brokerRelations: 3, factionToCharStanding: -3.978, corpToCharStanding: 1.069 });
+  assert.ok(rate > 0.02 && rate < 0.03, String(rate));
+  await pilots.callMethod("marketProxy", "PlaceBuyOrder", buyOrder(60003760), null, WHO, handle);
+  assert.deepEqual(lastMarketCall(session).args, buyOrder(60003760, rate));
+  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "marketProxy.PlaceBuyOrder").statuses, { reshaped: 1 });
+  await pilots.callMethod("marketProxy", "PlaceMultiSellOrder", [[{ itemID: 9001, typeID: 34, stationID: 60003760, price: 5.5, quantity: 2 }], false, 1, null], null, WHO, handle);
+  const [items, , , fee] = lastMarketCall(session).args;
+  assert.deepEqual([fee, items.items[0].args.entries.find(([name]) => name === "rawBrokerFeePercentage")[1]], [rate, rate]);
+  // A station whose owner is no NPC: no standing counts, and the skill does.
+  await pilots.callMethod("marketProxy", "PlaceBuyOrder", buyOrder(60000004), null, WHO, handle);
+  assert.equal(lastMarketCall(session).args[8], brokersFeeRate({ brokerRelations: 3, factionToCharStanding: 0.0, corpToCharStanding: 0.0 }));
+  // What is no station the game's data has (a structure): not worked out here, and the order goes as it came.
+  await pilots.callMethod("marketProxy", "PlaceBuyOrder", buyOrder(1030000000001), null, WHO, handle);
+  assert.equal(lastMarketCall(session).args[8], null);
+  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "marketProxy.PlaceBuyOrder").statuses, { reshaped: 2, differs: 1 });
+});
+
+test("a pilot with no Broker Relations and an owner with no standing to it pays the base rate; with its skills not to be had, no rate is named", async () => {
+  const none = await selected({ answers: { ...STANDING_ANSWERS, ...handlerAnswers() } }, { allowed: FEE_PAIRS, stationOwner: () => ({ ownerID: 1000099, factionID: 500099 }) });
+  await none.pilots.callMethod("marketProxy", "PlaceBuyOrder", buyOrder(60003760), null, WHO, none.handle);
+  assert.equal(lastMarketCall(none.session).args[8], 0.03);
+  // An owner the game's data gives no faction: the owner's own standing alone.
+  const factionless = await selected({ answers: { ...STANDING_ANSWERS, ...handlerAnswers() } }, { allowed: FEE_PAIRS, stationOwner: () => ({ ownerID: 1000002, factionID: null }) });
+  await factionless.pilots.callMethod("marketProxy", "PlaceBuyOrder", buyOrder(60003760), null, WHO, factionless.handle);
+  assert.equal(lastMarketCall(factionless.session).args[8], brokersFeeRate({ brokerRelations: 0, factionToCharStanding: 0.0, corpToCharStanding: 1.069 }));
+  // An owner that is no NPC, whatever faction the data gives it: neither standing counts (marketsvc.py 746).
+  const players = await selected({ answers: { ...STANDING_ANSWERS, ...handlerAnswers() } }, { allowed: FEE_PAIRS, stationOwner: () => ({ ownerID: 98000000, factionID: 500001 }) });
+  await players.pilots.callMethod("marketProxy", "PlaceBuyOrder", buyOrder(60003760), null, WHO, players.handle);
+  assert.equal(lastMarketCall(players.session).args[8], 0.03);
+  // Broker Relations trained to 4 and lent at nothing: the level trained is the one in effect.
+  const trained = await selected({ answers: { ...STANDING_ANSWERS, ...handlerAnswers({ "bound:GetSkills": skillsOf(skillOf(BROKER_RELATIONS, 4, 45255, 2)) }) } }, { allowed: FEE_PAIRS, stationOwner: () => ({ ownerID: 1000099, factionID: 500099 }) });
+  await trained.pilots.callMethod("marketProxy", "PlaceBuyOrder", buyOrder(60003760), null, WHO, trained.handle);
+  assert.equal(lastMarketCall(trained.session).args[8], brokersFeeRate({ brokerRelations: 4, factionToCharStanding: 0.0, corpToCharStanding: 0.0 }));
+  // Skills that could not be read when the pilot was chosen are asked for again before the order goes: the client has them by then.
+  let asked = 0;
+  const late = await selected({ answers: { ...STANDING_ANSWERS, ...handlerAnswers({ "bound:GetSkills": () => { asked += 1; if (asked === 1) throw refusedBy("NotNow"); return skillsOf(skillOf(BROKER_RELATIONS, 1, 250, 2)); } }) } }, { allowed: FEE_PAIRS, stationOwner: () => ({ ownerID: 1000099, factionID: 500099 }) });
+  await late.pilots.callMethod("marketProxy", "PlaceBuyOrder", buyOrder(60003760), null, WHO, late.handle);
+  assert.deepEqual([asked, lastMarketCall(late.session).args[8]], [2, brokersFeeRate({ brokerRelations: 1, factionToCharStanding: 0.0, corpToCharStanding: 0.0 })]);
+  // No skills answered (the stand-in has no skill handler to ask): the rate cannot be worked out, and none is named.
+  const skilless = await selected({ answers: STANDING_ANSWERS }, { allowed: FEE_PAIRS, stationOwner: ownedStation });
+  await skilless.pilots.callMethod("marketProxy", "PlaceBuyOrder", buyOrder(60003760), null, WHO, skilless.handle);
+  assert.equal(lastMarketCall(skilless.session).args[8], null);
+  // No standings answered: the same.
+  const unknown = await selected({ answers: handlerAnswers() }, { allowed: FEE_PAIRS, stationOwner: ownedStation });
+  await unknown.pilots.callMethod("marketProxy", "PlaceBuyOrder", buyOrder(60003760), null, WHO, unknown.handle);
+  assert.equal(lastMarketCall(unknown.session).args[8], null);
 });
 
 test("another corporation: the session forgets the pilot's employment record, as the client's corporation window has it", async () => {

@@ -68,6 +68,7 @@ const { createPilotJournal } = require("./pilotJournal");
 const { createKeptReads } = require("./keptReads");
 const { isBridgeWritePair } = require("../bridgeCallPolicy");
 const { namedAfterCall, namedOnNotice, namedOnSessionChange } = require("./cachedCallsNamed");
+const { brokersFeeRate } = require("./brokerFee");
 const { TARGETS, TARGETERS, createPilotTargets } = require("./pilotTargets");
 const { buildSkillSheet } = require("./skillSheet");
 const { projectFlight, projectSpace } = require("./spaceProjection");
@@ -206,6 +207,8 @@ const KEPT_UNTIL_CHANGED = Object.freeze({
 const INVENTORY_LISTINGS = new Set(["List", "ListByFlags"]);
 const ITEM_NOTICES = new Set(["OnItemChange", "OnItemsChanged"]);
 const MARKET_PROXY = "marketProxy";
+/** invconst.typeBrokerRelations. */
+const TYPE_BROKER_RELATIONS = 3446;
 const OWN_ORDERS = "GetCharOrders";
 
 /** A whole number as a BigInt, a number or a long off the wire; null for anything else. */
@@ -490,6 +493,17 @@ function defaultTypeNames(typeID) {
   const type = require("../staticData").getType(typeID);
   return type ? { name: String(type.name ?? ""), groupName: String(type.groupName ?? "") } : null;
 }
+/** A station's { ownerID, factionID } from the game's static data; null for what is no station there. */
+function defaultStationOwner(stationID) {
+  // eslint-disable-next-line global-require
+  const staticData = require("../staticData");
+  const station = staticData.getStation(stationID);
+  const ownerID = station ? positive(station.corporationID) : null;
+  if (ownerID === null) return null;
+  const corporation = staticData.getCorporation(ownerID);
+  return { ownerID, factionID: corporation ? positive(corporation.factionID) : null };
+}
+
 function defaultTypeGroup(typeID) {
   // eslint-disable-next-line global-require
   const type = require("../staticData").getType(typeID);
@@ -596,6 +610,8 @@ function createGamePortPilots({
   // A type's dogma attribute and its group, for the scanner: a probe's range steps, and whether a launcher's charge is a probe.
   typeAttribute = defaultTypeAttribute,
   typeGroup = defaultTypeGroup,
+  // A station's owner and that owner's faction, for the broker's fee: cfg.stations and get_corporation_faction_id on the retail client.
+  stationOwner = defaultStationOwner,
   typeNames = defaultTypeNames,
   // A type's dogma effects, for naming the one a module is switched on by and saying whether it repeats.
   typeEffects = defaultTypeEffects,
@@ -1191,6 +1207,7 @@ function createGamePortPilots({
     // What the client has to hand before it makes this call: godma primed for the ship, which it is from the moment it has one,
     // and anything just fitted answered for.
     if (retailNeeds(service, method) === "orders") await ownOrdersRead(entry);
+    if (retailNeeds(service, method) === "fee") await feeInputsRead(entry);
     if (retailNeeds(service, method) === "dogma") {
       await shipReadings(entry, whereabouts(entry));
       await entry.itemWork;
@@ -1284,6 +1301,41 @@ function createGamePortPilots({
     const form = shape(MARKET_PROXY, OWN_ORDERS, [], null, contextFor(entry));
     ledger.note(MARKET_PROXY, OWN_ORDERS, form);
     await byName(entry.session, MARKET_PROXY, OWN_ORDERS, form).catch(() => {});
+  }
+
+  // ── the broker's fee rate, as the client works it out ────────────────────
+
+  /**
+   * marketsvc.GetBrokersFeeCommissionFromStationID (161): the broker's fee rate at a station, from the pilot's
+   * Broker Relations in effect and the standings the station's owner and its faction have to the pilot, where the
+   * owner is an NPC (brokerFee.js). Null where it cannot be worked out here: what is no station of the game's data
+   * (a structure's rate is asked of the server), or the pilot's skills or standings are not kept.
+   *
+   * Not lowered for a system the militias have upgraded: the client asks the war's manager for that, and this
+   * server does not lower its own rate for it either.
+   */
+  function brokersFeeAt(entry, stationID) {
+    const station = stationOwner(positive(stationID));
+    if (!station) return null;
+    // marketsvc.FactionAndCorpToCharStandings (745): an owner that is no NPC has no standing that counts, nor has its faction.
+    const npc = station.ownerID > MAX_SYSTEM_ITEM && station.ownerID < MIN_PLAYER_OWNER;
+    const sums = {
+      brokerRelations: entry.skills.effectiveLevel(TYPE_BROKER_RELATIONS),
+      factionToCharStanding: npc ? entry.standings.toCharacter(station.factionID) : 0.0,
+      corpToCharStanding: npc ? entry.standings.toCharacter(station.ownerID) : 0.0,
+    };
+    // A skill's level or a standing that is not known is null: no rate is made of a guess.
+    return Object.values(sums).every((value) => typeof value === "number") ? brokersFeeRate(sums) : null;
+  }
+
+  /**
+   * What the rate is worked out from, read where it is not kept: the pilot's skills, as its skill service has them
+   * from the first thing that wants them, and its standings, which are read when it is chosen. Neither failing is
+   * this call's to tell: the order then names no rate.
+   */
+  async function feeInputsRead(entry) {
+    if (!entry.skills.has("skills")) await skillRead(entry, "GetSkills", []).catch(() => {});
+    if (!entry.standings.loaded) await (entry.standingsWork ?? refreshStandings(entry));
   }
 
   // ── an attribute's value, from what godma holds ──────────────────────────
@@ -2179,6 +2231,8 @@ function createGamePortPilots({
       stackSize: (itemID) => stackSizeOf(entry, itemID),
       // marketQuote.GetMyOrders: one of the pilot's own orders, as its row has it.
       ownOrder: (orderID) => ownOrderOf(entry, orderID),
+      // marketQuote.GetBrokersFeeCommissionFromStationID: the rate the client names with an order there.
+      brokersFee: (stationID) => brokersFeeAt(entry, stationID),
       effectName: (itemID) => defaultEffectName(typeOf(itemID)),
       effectTargeted: (itemID, effectName) => effectTargeted(typeOf(itemID), effectName),
       effectRepeats: (itemID, effectName) => effectRepeats(typeOf(itemID), effectName),

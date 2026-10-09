@@ -1168,9 +1168,14 @@ test("a sale's items go out as the client's: a list of util.KeyVal, each with it
 test("a sale at once names no fee, as the client names none; an order that stands with no fee named is not the client's", () => {
   const atOnce = form("marketProxy.PlaceMultiSellOrder", [[WHOLE_ITEM], false, 0, null]);
   assert.deepEqual([atOnce.status, atOnce.args], ["reshaped", [{ type: "list", items: [EIGHT] }, false, 0, null]]);
-  const standing = form("marketProxy.PlaceMultiSellOrder", [[WHOLE_ITEM], false, 3, null]);
-  assert.deepEqual([standing.status, standing.args], ["differs", [{ type: "list", items: [EIGHT] }, false, 3, null]]);
-  assert.match(standing.note, /fee/);
+  // An order that stands names the rate its first item has (sellMulti.py 444), where the call named none.
+  const standing = form("marketProxy.PlaceMultiSellOrder", [[WHOLE_ITEM, { ...WHOLE_ITEM, rawBrokerFeePercentage: 0.5 }], false, 3, null]);
+  assert.deepEqual([standing.status, standing.args[3]], ["reshaped", 0.03]);
+  // An item whose rate is no number has none to name: the call is not the client's.
+  const rateless = saleKeyVal(EIGHT.args.entries.map(([name, value]) => [name, name === "rawBrokerFeePercentage" ? null : value]));
+  const unnamed = form("marketProxy.PlaceMultiSellOrder", [{ type: "list", items: [rateless] }, false, 3, null]);
+  assert.deepEqual([unnamed.status, unnamed.args], ["differs", [{ type: "list", items: [rateless] }, false, 3, null]]);
+  assert.match(unnamed.note, /fee/);
 });
 
 test("what is no list of a sale's items goes out as it came, and is not the client's call", () => {
@@ -1191,4 +1196,50 @@ test("what is no list of a sale's items goes out as it came, and is not the clie
     assert.deepEqual([answer.status, answer.args], ["differs", given], JSON.stringify(given));
     assert.match(answer.note, /four/);
   }
+});
+
+// The broker's fee rate (src/gamePort/brokerFee.js): a buy order's ninth argument, a sale's fourth for an order that
+// stands, and each sale item's rawBrokerFeePercentage. The BFF's routes name none. Where the transport can work it
+// out for the station (context.brokersFee), the registry names it as the client does.
+
+const feeKnown = (rate = 0.0251) => ({ brokersFee: (stationID) => (stationID === 60003760 ? rate : null) });
+
+test("a buy order with no fee named goes out with the rate the client would name, where it can be worked out for the station", () => {
+  const nine = [60003760, 34, 0.01, 1, -1, 1, 1, false];
+  const named = withContext("marketProxy.PlaceBuyOrder", [...nine, null], null, feeKnown());
+  assert.deepEqual([named.status, named.args], ["reshaped", [...nine, 0.0251]]);
+  // A rate named already is not worked out again.
+  assert.deepEqual([withContext("marketProxy.PlaceBuyOrder", [...nine, 0.03], null, feeKnown()).status, withContext("marketProxy.PlaceBuyOrder", [...nine, 0.03], null, feeKnown()).args], ["same", [...nine, 0.03]]);
+  // A station it cannot be worked out for, or nothing to work it out with: as the call came, and noted.
+  for (const context of [feeKnown(null), { brokersFee: () => null }, {}, undefined]) {
+    const unnamed = withContext("marketProxy.PlaceBuyOrder", [60000004, ...nine.slice(1), null], null, context);
+    assert.deepEqual([unnamed.status, unnamed.args], ["differs", [60000004, ...nine.slice(1), null]]);
+    assert.match(unnamed.note, /fee/);
+  }
+  // A rate of nought is a rate.
+  assert.deepEqual(withContext("marketProxy.PlaceBuyOrder", [...nine, null], null, feeKnown(0)).args[8], 0);
+  assert.equal(retailNeeds("marketProxy", "PlaceBuyOrder"), "fee");
+  assert.equal(retailNeeds("marketProxy", "PlaceMultiSellOrder"), "fee");
+});
+
+test("a sale's items are given the fee rate of their station, and an order that stands names the first item's", () => {
+  const withRate = (rate) => saleKeyVal([["itemID", 9988400109051], ["typeID", 34], ["rawBrokerFeePercentage", rate], ["price", 987654.32], ["stationID", 60003760], ["officeID", null], ["quantity", 1]]);
+  // The route's item, with the rate worked out: seven fields, in the order the client's Python keeps those seven.
+  const standing = withContext("marketProxy.PlaceMultiSellOrder", [[ROUTES_ITEM], false, 1, null], null, feeKnown());
+  assert.deepEqual(standing.args, [{ type: "list", items: [withRate(0.0251)] }, false, 1, 0.0251]);
+  // Still short of the client's eight by the one its window works out from the type's average price.
+  assert.equal(standing.status, "differs");
+  assert.match(standing.note, /delta/);
+  assert.doesNotMatch(standing.note, /rawBrokerFeePercentage/);
+  // A sale at once: the items have the rate, and the call names none, as the client names none.
+  assert.deepEqual(withContext("marketProxy.PlaceMultiSellOrder", [[ROUTES_ITEM], false, 0, null], null, feeKnown()).args, [{ type: "list", items: [withRate(0.0251)] }, false, 0, null]);
+  // With the delta given too, it is the client's call, the fee named for it.
+  const whole = withContext("marketProxy.PlaceMultiSellOrder", [[{ ...ROUTES_ITEM, delta: -0.25 }], false, 1, null], null, feeKnown(0.03));
+  assert.deepEqual([whole.status, whole.args], ["reshaped", [{ type: "list", items: [EIGHT] }, false, 1, 0.03]]);
+  // A rate given with an item, or with the call, is not worked out again.
+  assert.deepEqual(withContext("marketProxy.PlaceMultiSellOrder", [[WHOLE_ITEM], false, 1, 0.5], null, feeKnown(0.0251)).args, [{ type: "list", items: [EIGHT] }, false, 1, 0.5]);
+  // Where it cannot be worked out, the item and the call go without, as before.
+  const without = withContext("marketProxy.PlaceMultiSellOrder", [[ROUTES_ITEM], false, 1, null], null, feeKnown(null));
+  assert.deepEqual([without.status, without.args], ["differs", [{ type: "list", items: [SIX] }, false, 1, null]]);
+  assert.match(without.note, /rawBrokerFeePercentage/);
 });
