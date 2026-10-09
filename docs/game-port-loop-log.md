@@ -4592,3 +4592,97 @@ shape, on both transports' spellings. Nothing is worded or shown yet.
     of pilot.
 13. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
     a fixed ball's collision shapes and the partition's order.
+
+---
+
+## 2026-10-09 — the objectives pane, for a mission of any kind
+
+Commit `62a51a3`, pushed. The other half of the last entry: what was read is now laid out.
+
+**What the retail client does** is in the last entry: one answer, written out in a fixed
+order. Three more things it does that this needed:
+
+- A bonus's time left is a label's `{[timeinterval]timeRemaining.writtenForm, to=minute}`,
+  which is `FormatTimeIntervalWritten` from years down to what the tag says
+  (`timeIntervalPropertyHandler.py`, 46 to 68).
+- An amount of ISK is `FmtISK`, the label `UI/Util/FmtIsk` with two decimals
+  (`eveFormat.py` 24 and 63); anything else is so many of an item, `UI/Common/QuantityAndItem`
+  (`_ProcessTypeAndQuantity`, 245).
+- A mission's line in the journal has "Start Conversation with" its agent in its menu, wherever
+  the agent is (`missionentry.py` 64).
+
+**What the page did.** A table of its own for a courier, in its own words, and nothing for any
+other mission. An agent could only be talked to from the list of the station's agents.
+
+**What was built.**
+
+- The pane (`web/src/bridge/missionObjectivePane.ts`), as blocks of plain text in the
+  client's order and words, each row with the mark the client draws beside it. It is drawn
+  when the client's words are to hand. Without them a courier keeps the page's own table.
+- A courier's two package buttons sit beside its transport objective, and not on an offer.
+- A label's written interval is written as the client writes one.
+- Each journal line has the client's "Start Conversation with" button.
+
+**Proof.**
+
+- Tests: 24 new. 84 ways of breaking it; seven got through at first and each is closed with
+  a test (a transport that starts and ends in one place, a thing to bring that is not
+  aboard, a place with no ID, the page's own table beside the pane, a pane with no window,
+  and two about words that are not to hand).
+- Suite: 9358 tests, 9334 pass, 0 fail, 24 skipped, 0 todo.
+- **In the browser, on the game port**, eve.js `e066a81e9`, as Test Two. The words are the
+  client's, so what is recorded is the pane's shape, its marks and its numbers:
+
+  | what was done | the pane |
+  |---|---|
+  | a fighting mission on offer from an agent in the next system, its window opened from its journal line | heading "…Objectives"; overview; "Objective" with the agent's own 75 characters for the dungeon; ○ Location Ono; Rewards: 65,000.00 ISK, 87 Loyalty Points; Bonus Rewards: 80,000.00 ISK within "2 hours" |
+  | Accept | the same, the bonus within "1 hour and 59 minutes"; under what the agent says, when the mission expires |
+  | `/missioncomplete` in the GM console, nothing touched in the window | the game master's note; heading "…Objectives Complete"; ✓ Location Ono |
+  | the station's courier agent clicked, its mission on offer | "Transport Objective": ✓ Pickup Location (the station the pilot is docked in), ○ Drop-off Location, ○ Cargo "1 x Encoded Data Chip" with its size; the offer's note; Rewards 13,800.00 ISK and 49 Loyalty Points; Bonus Rewards 17,000.00 ISK |
+  | Accept | the two package buttons beside the transport, and no note |
+  | Load package into ship | the pane as it was; laid out again by clicking the agent: ✓ Cargo |
+
+- **The staging was undone**: the store was put back, and the level 4 agent again says the
+  pilot's standings are too low.
+
+**Seen on the way.**
+
+- **The dungeon's words were not struck through when it was over.** The server marked it with
+  `objectiveCompleted` (the ✓) and sent no `completionStatus`, which is what the client's pane
+  strikes by. This is the difference read from the code in the last entry, now seen. Whether
+  Tranquility sends `completionStatus` the recordings would say; not looked up.
+- **Loading the package does not change the pane** until it is laid out again: the server
+  says `modified` only when a mission's completion changes. The client's pane is as old as
+  its layout too.
+
+**Not done.** The security rating before a place's name; the warning about low security on
+the way; the banner about reduced payouts in high security; the links to a dungeon's ship
+restrictions; a blueprint's properties after its name; a heraldry agent's own loyalty points.
+The journal's other two menu entries, Read Details and Remove Offer.
+
+### Next
+
+1. A special interaction drawn as the client draws one; messages inside messages.
+2. A push the page's own call caused, taken once: the stream's copy and the answer's told
+   apart.
+3. The journal line's other entries: `agentMgr.RemoveOfferFromJournal` on the agent's bound
+   object, and the mission's details.
+4. The agent's header: its division, its place (read already, and not shown), the pilot's
+   effective standing with it, and loyalty points.
+5. Around the pane: the security rating before a place's name and the low-security warning
+   (the page has no security for a system that is not its own); the reduced-payouts banner.
+6. The ledger's unread pairs, most called first: the inventory and wallet reads, then the
+   writes on `ship` and `dogmaIM`.
+7. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+8. Phase 3's writes, feature by feature, each set beside what the client sends.
+9. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+10. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+11. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+12. Small, in Ready Fit: the capacity the client never asks for; the window following a change
+    of pilot.
+13. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
