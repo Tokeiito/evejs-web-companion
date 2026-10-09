@@ -5676,3 +5676,111 @@ brief says to ask the tool for a label's markup before making one.
     for ship restrictions).
 15. When there is a recording of it: a courier's agent talked to again where the pilot
     accepted, before the package has gone anywhere (the operator's section).
+
+## 2026-10-09 — the banner about reduced rewards, and what is asked once
+
+Commit `6f8b7a3`, pushed. Item 1 of the last list, in part.
+
+**What the retail client does.** The job board's page of a mission
+(`jobboard/client/features/agent_missions/page.py` 63 to 71), after the rewards and before the
+extra information:
+
+- takes the agent from its agents service; a career agent (type 12) gets nothing more;
+- for any other agent asks where it is: `agents.GetSolarSystemOfAgent`, which is one
+  `agentMgr.GetSolarSystemOfAgent(agentID)` to the server for each agent, kept from then on
+  (`agents.py` 799 to 802). It asks whatever the mission pays;
+- if that system is of the safest class, which is a security of 0.95 or above as the system
+  was made (`eveuniverse/security.py`), and the mission pays ISK as a reward or as a bonus,
+  shows an information banner with `UI/Agents/StandardMission/SecurityTaxMessage`.
+
+The old details window words the same thing differently (two labels and a percentage,
+`agentDialogueUtil.py` 379 to 389); with the job board on, that window is never built. The
+agent's own window (`agentinteraction`) has no such banner.
+
+**What the page did.** No banner, and it never asked where the agent is.
+
+**What was built.**
+
+- `GET /api/bridge/agents/:agentID/solar-system` on the BFF: the one call, its answer passed on
+  as it came. Each ask goes to the server; it is the page that keeps the answer, as the
+  client's service does.
+- The page's model (`web/src/bridge/missionPage.ts`): `pageAgentToLocate` (the agent it asks
+  about, or none), `pageSystemIDs` (the systems whose security it is drawn with, now the
+  agent's too), and `reducedRewards`, the banner's words or nothing.
+- The store keeps each agent's system by the agent's ID (`agents.agentSolarSystems`).
+- The panel draws the banner after the bonus and before the extra information.
+
+**A defect of mine, found by reading and set right.** What the page asks once — a mission's
+keywords and an agent's record, both from earlier units — was remembered in a set beside
+the store. Selecting a pilot empties what the store holds of agents, and the set did not
+know. On the same flow, the next pilot's page (or the same pilot's, selected again) had no
+agent cards and its text went unfilled, for good. Now a thing is "asked" while an ask for it
+is on its way or the store holds an answer, and nothing is remembered anywhere else. The
+test for it was written first and watched to fail.
+
+**Proof.**
+
+- Tests: 7 new. 50 ways of breaking it tried; one survived the first pass (the record's ask
+  and the system's ask sharing one list of what is on its way), and a test for it was added.
+  All are caught.
+- Suite: 9498 tests, 9474 pass, 0 fail, 24 skipped, 0 todo.
+- **By script, on both transports**, eve.js `e066a81e9`, as Test Two: the server places the
+  courier's agent (3008416) in 30002780, another (3011895) in 30002779, and an ID that is no
+  agent's nowhere (null); the client has the banner's label (24 characters).
+- **In the browser, on the game port,** the courier on offer (agent in a system of 0.7): no
+  banner; one ask for where the agent is; one request for security, the agent's system being
+  one of the mission's own.
+- **Staged, for the banner** (the store copied first and put back after; the journal is back
+  at one offer): no courier agent is in a system of the safest class in this server's data
+  (the highest is 0.949794), so a level 1 agent that is (3020239, in 30100038, security 1.0)
+  was asked for a mission, which pays 65,000 ISK and a bonus of 80,000. Its page showed the
+  banner, 24 characters of the client's words, last after the rewards and the bonus; one
+  ask for where the agent is and one for that system's security. Opening both pages again
+  asked for none of it again.
+- **The pilot taken offline and brought back in the same tab:** the page asked for the
+  agent's record, the mission's keywords and the agent's system again, and had its cards,
+  its filled text and its banner. This does not show the defect above being set right: the
+  tab makes a new flow for a pilot brought back, so the old code would have asked again here
+  too. The flow that selects twice is covered by the test only.
+
+**Seen, not followed.** The banner says rewards are reduced there. The only security tax in
+the eve.js server's source is on bounties (`bountyRuntime.js`); whether this server pays a
+mission's ISK reduced in such a system was not measured, and no recording of it is to hand.
+
+**Not done.** The percentage the client works out and never shows (20). The banner's icon
+and its colours. A system whose class the server has changed for a time (the client does not
+use that here either).
+
+### Next
+
+1. Around a place's name, the rest: how many jumps away it is, by the client's safe route
+   (a route solver that takes the security penalty); the outlaw's warning (the pilot's own
+   security status).
+2. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+   own counts on it, with the push doing the work as it does for Remove Offer.
+3. The agent's cards above its own window, where the client's window has its own header.
+4. The ledger's unread pairs, most called first: the inventory and wallet reads, then the
+   writes on `ship` and `dogmaIM`.
+5. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+6. Phase 3's writes, feature by feature, each set beside what the client sends.
+7. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+8. Small, in space: an overview row's speed columns the client's way; the bar the client
+   fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+9. Small, before a character is chosen: selecting on the account's own connection; the count
+   of names checked.
+10. Small, in Ready Fit: the capacity the client never asks for; the window following a change
+    of pilot.
+11. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+12. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+13. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+14. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions).
+15. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+16. Other things asked once beside the store, looked at for the same fault as this entry's.
