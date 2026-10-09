@@ -426,6 +426,17 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **The BFF runs one write per pilot at a time** (`CHARACTER_IN_USE`). Anything that must get
   through while a write is waiting on the server, as an answer to its question must, has to be
   let past that gate in `src/server.js`, and tested with a write in flight.
+- **A call sent right behind the table of agents is answered late.** Measured 2026-10-09 in the
+  server's log: the call after `agentMgr.GetAgents` was answered 50 to 80 ms after it came in
+  (the registry's resolve 82 ms; the same resolve 1 ms when sent before the table, and under
+  1 ms two seconds after login). Why was not looked into. What the choosing waits for is asked
+  before the table.
+- **A read added to the choosing on a bound object renumbers the transport tests' objects**
+  (`N=1:<n>`) and lengthens their lists of binds: some thirty tests said so at once. The
+  stand-in in `test/gamePortPilots.test.js` counts the corporation's registries apart
+  (`N=2:<n>`) and `build()` takes the choosing's bind and calls of the registry out of the
+  session's lists into `session.registryAtChoosing`. Do the same for the next service a
+  choosing binds.
 - **A fact offered in support of a decision is still a claim.** Two went into the log unchecked
   on 2026-10-08, in a paragraph arguing for a design, and both were wrong. One route call or one
   grep would have caught each.

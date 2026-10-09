@@ -644,6 +644,10 @@ const RETAIL_CALLS = Object.freeze({
       ? { args: [accountKey, year, month, isCorp], kwargs }
       : { args: [accountKey, year, month, Boolean(isCorp)], kwargs, status: "reshaped" }),
   }),
+  "corpRegistry.GetAggressionSettings": same("eve/client/script/ui/services/crimewatchSvc.py:615", "GetCorpRegistry().GetAggressionSettings(), no arguments, on the corporation's moniker: asked when the session's corporation changes, the choosing of a character among them, and kept"),
+  "corpRegistry.RegisterNewAggressionSettings": same("eve/client/script/ui/shared/neocom/corporation/corp_ui_home.py:634", "GetCorpRegistry().RegisterNewAggressionSettings(not isFFEnabled): the one bool, on the corporation's moniker. What it answers is for the window that asked: the settings the client keeps change by the server's notice"),
+  "corpRegistry.GetEveOwners": same(`${CORP_SVC}/bco_members.py:136`, "GetCorpRegistry().GetEveOwners(), no arguments, on the corporation's moniker: asked when the session's corporation changes, for its members' names"),
+  "corpRegistry.GetMyApplications": same(`${CORP_SVC}/bco_applications.py:72`, "GetCorpRegistry().GetMyApplications(), no arguments, on the corporation's moniker: asked once by the client, which keeps the list and works it over at each OnCorporationApplicationChanged"),
   "corpRegistry.GetCorporation": same(`${CORP_SVC}/bco_corporations.py:49`, "GetCorpRegistry().GetCorporation(), no arguments, on the corporation's moniker"),
   "officeManager.GetMyCorporationsOffices": same(`${CORP_SVC}/officeManager.py:41`, "RemoteSvc('officeManager').GetMyCorporationsOffices(), no arguments"),
   "dogmaIM.LaunchProbes": same(`${SCAN_SVC}:494`, "LaunchProbes(moduleID, numProbes)"),

@@ -195,6 +195,29 @@ is chosen, without the choosing waiting on it, and one copy is kept for all pilo
 gateway's form: what the last to ask was answered. A read of the table through the BFF is
 answered from that copy. Measured: 88 to 95 ms a read of the Agents route before, 1 to 5 after.
 
+**The corporation's registry at login, 2026-10-09.** As its character is chosen the client binds
+`Moniker('corpRegistry', session.corpid)`, with no call, and three of its services ask what it
+bound, each with nothing:
+
+- `crimewatchSvc` asks `GetAggressionSettings()` and keeps the answer. It asks again when the
+  session's corporation changes, and takes the server's `OnCorpAggressionSettingsChange(settings)`
+  for what it keeps. A director's own change (`RegisterNewAggressionSettings(bool)`, the button in
+  the corporation window) answers that window only: what `crimewatchSvc` keeps changes by the
+  notice.
+- the corporation service's members ask `GetEveOwners()`, which primes the client's names and is
+  kept by nothing else. Again when the corporation changes.
+- its applications ask `GetMyApplications()` once and keep the list, which the client then works
+  over itself at each `OnCorporationApplicationChanged(corpID, applicantID, applicationID, row)`.
+
+On the game port the transport asks the same three as a pilot is chosen and waits for them, 6 ms
+on this machine, and asks the first two again when the pilot's corporation changes. They are asked
+before the table of agents: sent right behind it, the first of them was answered 82 ms after it
+reached the server, and 1 ms when sent before. The settings are kept as the client keeps them, and
+a read of them through the BFF is answered from what is kept. The applications are not kept: a
+read of them asks the server each time, because the BFF's pilot-training onboarding reads a
+trainee's applications straight after an officer's change to them, on another connection, where a
+kept list could be a notice behind.
+
 **The customs export's call shape.** `src/piCustomsExport.js` binds `invbroker` with the office ID
 and calls `ImportExportWithPlanet` on that. The client goes through `invCache`: it binds the
 broker for a location, asks it for the office's inventory, and calls that. eve.js accepts both.

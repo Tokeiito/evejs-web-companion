@@ -40,6 +40,10 @@ const boundObject = (id) => ({ type: "substruct", value: { type: "substream", va
 const sessionError = (code, message = code, refusal = null) => Object.assign(new Error(message), { code, refusal });
 const refusedBy = (key, reason = key) => sessionError("GAME_CALL_REFUSED", `refused: ${reason}`, { className: "eveexceptions.UserError", key, values: {}, reason });
 
+/** The node the stand-in's corporation registries live on, and whether a call was made on one of them. */
+const REGISTRY_NODE = 2;
+const onRegistry = (call) => call.objectID.startsWith(`N=${REGISTRY_NODE}:`);
+
 /**
  * A stand-in GamePortSession. `answers` maps "service.method" to a value or to
  * a function of the arguments; a function may throw. Selecting puts the
@@ -65,6 +69,7 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
     async call(service, method, args = [], kwargs = null) {
       if (session.closed) throw sessionError("CONNECTION_CLOSED");
       session.calls.push({ service, method, args, kwargs });
+      session.sent.push(method);
       const key = `${service}.${method}`;
       if (key === "charUnboundMgr.SelectCharacterID" && !(key in answers)) {
         if (comesOnline) {
@@ -89,6 +94,8 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
     /**
      * A Moniker's bind: answers "N=1:<n>", counting up. The call that came with it, if one did, is answered as a
      * call on the new object is, and is listed among the bound calls with them: `carried` says how each bind went.
+     * A corporation's registry lives on a node of its own and is counted apart, "N=2:<n>": every choosing binds
+     * one, and the count of the rest is what a test caused.
      */
     async bind(service, params, call = null) {
       if (session.closed) throw sessionError("CONNECTION_CLOSED");
@@ -96,14 +103,16 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
       session.carried.push(call === null ? null : call[0]);
       const answer = answers[`bind:${service}`];
       if (typeof answer === "function") return answer(params, call);
-      session.objects += 1;
-      const objectID = `N=1:${session.objects}`;
-      return { objectID, nodeID: 1, result: call === null ? null : await session.callBound(objectID, call[0], call[1], call[2]) };
+      const [nodeID, counted] = service === "corpRegistry" ? [REGISTRY_NODE, "registries"] : [1, "objects"];
+      session[counted] += 1;
+      const objectID = `N=${nodeID}:${session[counted]}`;
+      return { objectID, nodeID, result: call === null ? null : await session.callBound(objectID, call[0], call[1], call[2]) };
     },
     /** A call on a bound object. The inventory managers hand back another bound object. */
     async callBound(objectID, method, args = [], kwargs = null) {
       if (session.closed) throw sessionError("CONNECTION_CLOSED");
       session.boundCalls.push({ objectID, method, args, kwargs });
+      session.sent.push(method);
       const key = `bound:${method}`;
       if (key in answers) return typeof answers[key] === "function" ? answers[key](args, kwargs, objectID) : answers[key];
       if (method === "GetInventory" || method === "GetInventoryFromId") {
@@ -123,7 +132,10 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
     setNodeOfAddress(service, bindParams, nodeID) { session.nodes.push([service, bindParams, nodeID]); },
     proxyCalls: [],
     boundCalls: [],
+    /** The method of every call, by name or on an object, in the order they were sent. */
+    sent: [],
     objects: 0,
+    registries: 0,
     onNotification(listener) { listeners.notification.add(listener); return () => listeners.notification.delete(listener); },
     onSessionChange(listener) { listeners.sessionChange.add(listener); return () => listeners.sessionChange.delete(listener); },
     onClose(listener) { listeners.close.add(listener); return () => listeners.close.delete(listener); },
@@ -184,6 +196,23 @@ function build(sessionOptions = {}, pilotOptions = {}) {
     releaseSettleMs: 300,
     ...pilotOptions,
   });
+  // Every choosing binds the corporation's registry and asks it its three. That bind and those calls are taken
+  // out of the session's lists and kept as its `registryAtChoosing`, so that the lists hold what a test caused
+  // and the choosing's other binds, as they did before the choosing bound a registry.
+  const select = pilots.selectCharacter;
+  pilots.selectCharacter = async (...given) => {
+    const outcome = await select(...given);
+    const session = made[made.length - 1];
+    const ofRegistry = session.binds.map((bind) => bind.service === "corpRegistry");
+    // Empties the list, puts back what is not `taken`, and answers what is.
+    const take = (list, taken) => list.splice(0, list.length).reduce((aside, item, index) => { (taken(item, index) ? aside : list).push(item); return aside; }, []);
+    session.registryAtChoosing = {
+      carried: take(session.carried, (method, index) => ofRegistry[index]),
+      binds: take(session.binds, (bind, index) => ofRegistry[index]),
+      boundCalls: take(session.boundCalls, onRegistry),
+    };
+    return outcome;
+  };
   return { pilots, made, get session() { return made[made.length - 1]; } };
 }
 
@@ -1174,6 +1203,9 @@ test("the transport keeps a tally of what it called and how each compared with t
     "skillMgr2.GetMySkillHandler": { same: 1 },
     "agentMgr.GetMyJournalDetails": { same: 1 },
     "agentMgr.GetAgents": { same: 1 },
+    "corpRegistry.GetAggressionSettings": { same: 1 },
+    "corpRegistry.GetEveOwners": { same: 1 },
+    "corpRegistry.GetMyApplications": { same: 1 },
     "invbroker.Add": { differs: 1 },
     "invbroker.GetInventory": { reshaped: 1 },
     "invbroker.List": { reshaped: 1 },
@@ -2695,11 +2727,12 @@ test("the corporation registry is asked on its moniker, bound for the pilot's co
   session.calls.length = 0;
   await pilots.callMethod("corpRegistry", "GetCorporation", [], null, FIELDS, handle);
   await pilots.callMethod("corpRegistry", "GetShareholders", [98000001], null, FIELDS, handle);
-  // Moniker('corpRegistry', session.corpid): bound once, and both calls made on what it bound.
-  assert.deepEqual(session.binds, [{ service: "corpRegistry", params: 1000044 }]);
+  // Moniker('corpRegistry', session.corpid): bound once, as the character was chosen, and both calls made on what it bound.
+  assert.deepEqual([session.registryAtChoosing.binds, session.binds], [[{ service: "corpRegistry", params: 1000044 }], []]);
+  const registry = session.registryAtChoosing.boundCalls[0].objectID;
   assert.deepEqual(session.boundCalls.map((call) => [call.objectID, call.method, call.args, call.kwargs]), [
-    [session.boundCalls[0].objectID, "GetCorporation", [], null],
-    [session.boundCalls[0].objectID, "GetShareholders", [98000001], null],
+    [registry, "GetCorporation", [], null],
+    [registry, "GetShareholders", [98000001], null],
   ]);
   // Nothing was asked of the service by its name.
   assert.deepEqual(session.calls.filter((call) => call.service === "corpRegistry"), []);
@@ -2719,15 +2752,147 @@ test("the registry's moniker is the corporation's: kept when the pilot moves, bo
   session.change({ stationid: [STATION, 60000004] });
   await leave();
   await ask();
-  assert.deepEqual(session.binds.map((bind) => [bind.service, bind.params]), [["corpRegistry", 1000044], ["ship", [STATION, 15]], ["ship", [STATION, 15]], ["ship", [60000004, 15]]]);
-  // Another corporation: another registry.
+  // The registry was bound as the character was chosen, and not again.
+  assert.deepEqual(session.registryAtChoosing.binds, [{ service: "corpRegistry", params: 1000044 }]);
+  assert.deepEqual(session.binds.map((bind) => [bind.service, bind.params]), [["ship", [STATION, 15]], ["ship", [STATION, 15]], ["ship", [60000004, 15]]]);
+  // Another corporation: another registry, bound once by whatever is asked of it first.
   session.attributes.corpid = 98000001;
   session.change({ corpid: [1000044, 98000001] });
   await ask();
-  assert.deepEqual(session.binds.filter((bind) => bind.service === "corpRegistry"), [{ service: "corpRegistry", params: 1000044 }, { service: "corpRegistry", params: 98000001 }]);
+  await settled();
+  assert.deepEqual(session.binds.filter((bind) => bind.service === "corpRegistry"), [{ service: "corpRegistry", params: 98000001 }]);
   const objects = session.boundCalls.filter((call) => call.method === "GetCorporation").map((call) => call.objectID);
-  assert.equal(objects[0], objects[1]);
+  assert.deepEqual([objects[0], objects[1]], [session.registryAtChoosing.boundCalls[0].objectID, objects[0]]);
   assert.notEqual(objects[1], objects[2]);
+});
+
+// What the client's services ask of the registry as their character is chosen, in the order of a recorded login.
+const REGISTRY_READS = ["GetAggressionSettings", "GetEveOwners", "GetMyApplications"];
+const REGISTRY_KEPT_PAIRS = { allowed: new Set([...REGISTRY_PAIRS.allowed, ...REGISTRY_READS.map((method) => `corpRegistry.${method}`), "corpRegistry.RegisterNewAggressionSettings", "someService.GetAggressionSettings"]) };
+/** A corporation's aggression settings and a pilot's applications in the server's form, with a made-up number to tell one answer from another. */
+const aggressionOf = (enableAfter) => ({ type: "object", name: "crimewatch.corp_aggression.settings.AggressionSettings", args: { type: "dict", entries: [["_enableAfter", enableAfter], ["_disableAfter", null]] } });
+const applicationsOf = (applicationID) => ({ type: "dict", entries: [[applicationID, { type: "list", items: [applicationID, 98000001, PILOT] }]] });
+/** A registry that answers the settings and the applications with the count of times each was asked. */
+function registryAnswers(more = {}) {
+  const times = {};
+  const counted = (method, answer) => () => answer(times[method] = (times[method] || 0) + 1);
+  return { "bound:GetAggressionSettings": counted("GetAggressionSettings", aggressionOf), "bound:GetMyApplications": counted("GetMyApplications", applicationsOf), "bound:GetEveOwners": { type: "list", items: [] }, ...more };
+}
+const registryRead = async (pilots, handle, method, who = FIELDS) => (await pilots.callMethod("corpRegistry", method, [], null, who, handle)).result;
+/** What was asked of a registry after the choosing. */
+const registryCalls = (session) => session.boundCalls.filter(onRegistry).map((call) => call.method);
+
+test("a character chosen has its corporation's registry bound, and asked what the client's services ask of it then", async () => {
+  const { pilots, session } = await selected({}, REGISTRY_KEPT_PAIRS);
+  const { binds, carried, boundCalls } = session.registryAtChoosing;
+  // Moniker('corpRegistry', session.corpid), bound for its own sake; then the three on what it bound, each with nothing.
+  assert.deepEqual([binds, carried], [[{ service: "corpRegistry", params: 1000044 }], [null]]);
+  assert.deepEqual(boundCalls, REGISTRY_READS.map((method) => ({ objectID: "N=2:1", method, args: [], kwargs: null })));
+  // The choosing waits for them, and not for the table of agents, which is asked for behind them.
+  assert.deepEqual(session.sent.slice(-4), [...REGISTRY_READS, "GetAgents"]);
+  // Nothing was asked of the service by its name, and each is in the ledger as the client's own call.
+  assert.deepEqual(session.calls.filter((call) => call.service === "corpRegistry"), []);
+  assert.deepEqual(REGISTRY_READS.map((method) => ledgerOf(pilots, `corpRegistry.${method}`)), [
+    [{ same: 1 }, "eve/client/script/ui/services/crimewatchSvc.py:615"],
+    [{ same: 1 }, "eve/client/script/ui/services/corporation/bco_members.py:136"],
+    [{ same: 1 }, "eve/client/script/ui/services/corporation/bco_applications.py:72"],
+  ]);
+});
+
+test("the corporation's aggression settings are answered from what is kept, and its members' names and the pilot's applications are asked for each time", async () => {
+  const { pilots, session, handle } = await selected({ answers: registryAnswers() }, REGISTRY_KEPT_PAIRS);
+  // Read at the choosing: answered as the server answered then, with nothing asked and nothing more in the ledger.
+  assert.deepEqual([await registryRead(pilots, handle, "GetAggressionSettings"), await registryRead(pilots, handle, "GetAggressionSettings")], [aggressionOf(1), aggressionOf(1)]);
+  assert.deepEqual([registryCalls(session), session.binds, ledgerOf(pilots, "corpRegistry.GetAggressionSettings")[0]], [[], [], { same: 1 }]);
+  // The members' names prime the client's names and are kept by nobody: asked each time, on the same object, and
+  // in the ledger as asked for by name.
+  await registryRead(pilots, handle, "GetEveOwners");
+  await registryRead(pilots, handle, "GetEveOwners");
+  assert.deepEqual([registryCalls(session), session.binds, ledgerOf(pilots, "corpRegistry.GetEveOwners")[0]], [["GetEveOwners", "GetEveOwners"], [], { same: 1, reshaped: 2 }]);
+  assert.deepEqual(session.boundCalls.map((call) => call.objectID), ["N=2:1", "N=2:1"]);
+  // The pilot's applications are the client's to keep, and are not kept here: each read is the server's answer then.
+  assert.deepEqual([await registryRead(pilots, handle, "GetMyApplications"), await registryRead(pilots, handle, "GetMyApplications")], [applicationsOf(2), applicationsOf(3)]);
+  assert.deepEqual([registryCalls(session).slice(2), ledgerOf(pilots, "corpRegistry.GetMyApplications")[0]], [["GetMyApplications", "GetMyApplications"], { same: 1, reshaped: 2 }]);
+  // A read of the same name on another service is that service's own, asked and noted as any call is.
+  await pilots.callMethod("someService", "GetAggressionSettings", [], null, FIELDS, handle);
+  assert.deepEqual([session.calls.at(-1).service, ledgerOf(pilots, "someService.GetAggressionSettings")[0]], ["someService", { unchecked: 1 }]);
+  // Another account's session reads nothing.
+  await assert.rejects(pilots.callMethod("corpRegistry", "GetAggressionSettings", [], null, { userid: 9 }, handle), (error) => error.code === "SESSION_NOT_FOUND");
+});
+
+test("the server's word of the corporation's aggression settings is what is kept, and a director's own change is not", async () => {
+  const { pilots, session, handle } = await selected({ answers: registryAnswers({ "bound:RegisterNewAggressionSettings": aggressionOf(90) }) }, REGISTRY_KEPT_PAIRS);
+  // crimewatchSvc.OnCorpAggressionSettingsChange(aggressionSettings): they are what the server says.
+  session.notify("OnCorpAggressionSettingsChange", [aggressionOf(77)]);
+  assert.deepEqual(await registryRead(pilots, handle, "GetAggressionSettings"), aggressionOf(77));
+  // Another notice of the corporation's changes nothing kept.
+  session.notify("OnCorporationChanged", [aggressionOf(78)]);
+  session.notify("OnCorporationApplicationChanged", [98000001, PILOT, 5, null]);
+  assert.deepEqual([await registryRead(pilots, handle, "GetAggressionSettings"), registryCalls(session)], [aggressionOf(77), []]);
+  // corp_ui_home's button, RegisterNewAggressionSettings(bool), on the registry: what it answers is for the window
+  // that asked. What crimewatchSvc keeps changes by the server's notice, and not by the call.
+  const pressed = await pilots.callMethod("corpRegistry", "RegisterNewAggressionSettings", [true], null, FIELDS, handle);
+  assert.deepEqual([pressed.result, session.boundCalls.at(-1)], [aggressionOf(90), { objectID: "N=2:1", method: "RegisterNewAggressionSettings", args: [true], kwargs: null }]);
+  assert.deepEqual(ledgerOf(pilots, "corpRegistry.RegisterNewAggressionSettings"), [{ reshaped: 1 }, "eve/client/script/ui/shared/neocom/corporation/corp_ui_home.py:634"]);
+  assert.deepEqual(await registryRead(pilots, handle, "GetAggressionSettings"), aggressionOf(77));
+  // A notice that says nothing leaves nothing kept: the settings are asked for when they are next wanted, and kept.
+  session.notify("OnCorpAggressionSettingsChange", null);
+  assert.deepEqual([await registryRead(pilots, handle, "GetAggressionSettings"), await registryRead(pilots, handle, "GetAggressionSettings")], [aggressionOf(2), aggressionOf(2)]);
+  assert.deepEqual([registryCalls(session), ledgerOf(pilots, "corpRegistry.GetAggressionSettings")[0]], [["RegisterNewAggressionSettings", "GetAggressionSettings"], { same: 2 }]);
+});
+
+test("in another corporation its registry is bound and asked its settings and its members' names, and not the pilot's applications", async () => {
+  const { pilots, session, handle } = await selected({ answers: registryAnswers() }, REGISTRY_KEPT_PAIRS);
+  // crimewatchSvc.ProcessSessionChange and bco_members.OnSessionChanged: at once, with nothing having asked.
+  session.attributes.corpid = 98000001;
+  session.change({ corpid: [1000044, 98000001] });
+  await settled();
+  assert.deepEqual([session.binds, session.carried], [[{ service: "corpRegistry", params: 98000001 }], [null]]);
+  assert.deepEqual(session.boundCalls.map((call) => [call.objectID, call.method, call.args]), [["N=2:2", "GetAggressionSettings", []], ["N=2:2", "GetEveOwners", []]]);
+  // The settings kept are the new corporation's.
+  assert.deepEqual(await registryRead(pilots, handle, "GetAggressionSettings"), aggressionOf(2));
+  assert.deepEqual([session.boundCalls.length, ledgerOf(pilots, "corpRegistry.GetAggressionSettings")[0], ledgerOf(pilots, "corpRegistry.GetMyApplications")[0]], [2, { same: 2 }, { same: 1 }]);
+  // A read that comes while the new corporation's are being made waits for theirs, and asks nothing itself.
+  session.attributes.corpid = 98000002;
+  session.change({ corpid: [98000001, 98000002] });
+  assert.deepEqual(await registryRead(pilots, handle, "GetAggressionSettings"), aggressionOf(3));
+  await settled();
+  assert.deepEqual(session.boundCalls.slice(2).map((call) => [call.objectID, call.method]), [["N=2:3", "GetAggressionSettings"], ["N=2:3", "GetEveOwners"]]);
+  // The session's corporation gone, as a session winding down has it: nothing is bound, and nothing asked.
+  session.attributes.corpid = null;
+  session.change({ corpid: [98000002, null] });
+  await settled();
+  assert.deepEqual([session.binds.length, session.boundCalls.length], [2, 4]);
+});
+
+test("the settings that cannot be read at the choosing are asked for when they are wanted, and the choosing is none the worse", async () => {
+  let refuse = true;
+  const { pilots, session, handle, outcome } = await selected({ answers: registryAnswers({ "bound:GetAggressionSettings": () => { if (refuse) throw refusedBy("NotNow"); return aggressionOf(5); } }) }, REGISTRY_KEPT_PAIRS);
+  // Each fails for itself: the two after it were asked.
+  assert.deepEqual([outcome.session.characterID, session.registryAtChoosing.boundCalls.map((call) => call.method)], [PILOT, REGISTRY_READS]);
+  // What was not read is asked for when it is wanted, a refusal then is the caller's, and an answer is kept.
+  await rejects(registryRead(pilots, handle, "GetAggressionSettings"), "CALL_REFUSED");
+  refuse = false;
+  assert.deepEqual([await registryRead(pilots, handle, "GetAggressionSettings"), await registryRead(pilots, handle, "GetAggressionSettings")], [aggressionOf(5), aggressionOf(5)]);
+  assert.deepEqual(registryCalls(session), ["GetAggressionSettings", "GetAggressionSettings"]);
+  // In another corporation whose settings cannot be read, the last corporation's are not answered for its own.
+  refuse = true;
+  session.attributes.corpid = 98000001;
+  session.change({ corpid: [1000044, 98000001] });
+  await settled();
+  await rejects(registryRead(pilots, handle, "GetAggressionSettings"), "CALL_REFUSED");
+  // Two at once that find none kept ask once.
+  let first = true;
+  const lost = await selected({ answers: registryAnswers({ "bound:GetAggressionSettings": () => { if (first) { first = false; throw refusedBy("NotNow"); } return aggressionOf(9); } }) }, REGISTRY_KEPT_PAIRS);
+  const [one, two] = await Promise.all([registryRead(lost.pilots, lost.handle, "GetAggressionSettings"), registryRead(lost.pilots, lost.handle, "GetAggressionSettings")]);
+  assert.deepEqual([one, two, registryCalls(lost.session)], [aggressionOf(9), aggressionOf(9), ["GetAggressionSettings"]]);
+  // A registry that cannot be bound: each of the three tries it for itself, as each of the client's services would, and the choosing stands.
+  const unbound = await selected({ answers: { "bind:corpRegistry": () => { throw sessionError("RESOLVE_FAILED", "corpRegistry could not say where its object lives."); } } }, REGISTRY_KEPT_PAIRS);
+  assert.deepEqual([unbound.outcome.session.characterID, unbound.session.registryAtChoosing.binds.length, unbound.session.registryAtChoosing.boundCalls], [PILOT, 3, []]);
+  // A connection lost in the middle of them is the choosing lost, as one lost anywhere in it is: no session is handed out.
+  const built = build({ answers: { "bound:GetEveOwners": () => { built.session.drop(); throw sessionError("CONNECTION_CLOSED"); } } }, REGISTRY_KEPT_PAIRS);
+  await rejects(built.pilots.selectCharacter([PILOT, null, true], null, FIELDS), "SESSION_SELECT_FAILED", /closed the connection/);
+  assert.deepEqual([built.session.boundCalls.filter(onRegistry).map((call) => call.method), built.pilots.size], [["GetAggressionSettings", "GetEveOwners"], 0]);
 });
 
 test("the wallet's transactions go out with a bool for whose they are, however the BFF said it", async () => {
@@ -3010,8 +3175,10 @@ test("the corporation's registry is bound for its own sake, with no call, and th
   const { pilots, session, handle } = await selected(undefined, REGISTRY_PAIRS);
   await pilots.callMethod("corpRegistry", "GetCorporation", [], null, FIELDS, handle);
   await pilots.callMethod("corpRegistry", "GetShareholders", [98000001], null, FIELDS, handle);
-  assert.deepEqual([session.binds, session.carried], [[{ service: "corpRegistry", params: 1000044 }], [null]]);
-  assert.deepEqual(session.boundCalls.map((call) => [call.objectID, call.method, call.args]), [["N=1:1", "GetCorporation", []], ["N=1:1", "GetShareholders", [98000001]]]);
+  // The bind was the choosing's, and carried none of what the choosing went on to ask.
+  assert.deepEqual([session.registryAtChoosing.binds, session.registryAtChoosing.carried, session.registryAtChoosing.boundCalls[0].method], [[{ service: "corpRegistry", params: 1000044 }], [null], "GetAggressionSettings"]);
+  assert.deepEqual([session.binds, session.carried], [[], []]);
+  assert.deepEqual(session.boundCalls.map((call) => [call.objectID, call.method, call.args]), [["N=2:1", "GetCorporation", []], ["N=2:1", "GetShareholders", [98000001]]]);
 });
 
 test("a Moniker binds once at a time: a call that finds it binding waits for the object; after a bind that failed, the next call binds for itself", async () => {
@@ -3110,7 +3277,7 @@ test("in space the ship's Moniker is kept while the ship is the same, and shipCo
   // Another ship: gameui lets its moniker go, and the next call makes and binds a new one. The other monikers the
   // client keeps are not the ship's, and stay: the corporation's registry is not bound again.
   await pilots.callMethod("corpRegistry", "GetCorporation", [], null, FIELDS, handle);
-  const registries = () => session.binds.filter((bind) => bind.service === "corpRegistry").length;
+  const registries = () => session.registryAtChoosing.binds.length + session.binds.filter((bind) => bind.service === "corpRegistry").length;
   session.attributes.shipid = SHIP + 500;
   session.change({ shipid: [SHIP, SHIP + 500] });
   await drones();

@@ -134,6 +134,12 @@ const LOCATION_ATTRIBUTES = ["stationid", "structureid", "solarsystemid", "locat
  * kept through a move and bound afresh when the corporation changes.
  */
 const CORPORATION_SERVICES = new Set(["corpRegistry"]);
+const CORP_REGISTRY = "corpRegistry";
+/**
+ * The registry's read whose answer is kept as the client keeps it: the corporation's aggression settings
+ * (crimewatchSvc.corpAggressionSettings). Asked when the client asks, and from then on answered from what is kept.
+ */
+const AGGRESSION_SETTINGS = "GetAggressionSettings";
 /**
  * Monikers the client binds for their own sake before it calls anything on them: base_corporation.GetCorpRegistry
  * makes the corporation's and calls Bind() on it, which sends MachoBindObject(params, None). Any other binds when
@@ -883,6 +889,9 @@ function createGamePortPilots({
       agents: new Map(),
       /** agents.allAgents: this pilot's own asking for the table of agents, once it has asked; over when it is answered. */
       agentsAsked: null,
+      /** crimewatchSvc.corpAggressionSettings: the corporation's aggression settings as last answered or told, or null; and the askings of them, one after another. */
+      aggression: null,
+      corpWork: Promise.resolve(),
       /** Questions the server has asked and the user has not answered yet, by ID. */
       questions: new Map(),
       ended: false,
@@ -902,6 +911,7 @@ function createGamePortPilots({
       afterFleetNotice(entry, entry.fleetKept.feed(notification));
       entry.standings.feed(notification);
       afterSkillNotice(entry, entry.skills.feed(notification));
+      afterCorporationNotice(entry, notification);
       // A mission changed: what the client shows of its missions is drawn again from the journal, which reads it again.
       if (entry.journal.feed(notification)) journalUpToDate(entry);
       record(entry, notificationToBridgeJson(notification));
@@ -921,6 +931,10 @@ function createGamePortPilots({
       // base_corporation.GetCorpRegistry: another corporation, another registry.
       if ("corpid" in changes) {
         for (const service of CORPORATION_SERVICES) entry.monikers.delete(service);
+        // crimewatchSvc.ProcessSessionChange and bco_members.OnSessionChanged: in another corporation, its aggression
+        // settings and its members' names are read at once. (The choosing of the character reads them itself.)
+        entry.aggression = null;
+        if (changes.corpid[1] && sessions.has(entry.handle)) corporationRead(entry, false);
         // standingsvc.ProcessSessionChange: in another corporation the standings are read again. (The choosing of
         // the character reads them itself, once the character is on the session.)
         if (changes.corpid[1] && sessions.has(entry.handle)) refreshStandings(entry);
@@ -972,7 +986,10 @@ function createGamePortPilots({
       await primeSkills(entry);
       // journal._UpdateMissionDataFull: a character chosen has its agents' journal read, for the missions it is on.
       await journalUpToDate(entry).catch(() => {});
-      // agents.__GetAllAgents: the table of agents is asked for as a character is chosen. The choosing does not wait on it.
+      // crimewatchSvc, bco_members and bco_applications: the corporation's registry is bound and asked its three.
+      await corporationRead(entry, true);
+      // agents.__GetAllAgents: the table of agents is asked for as a character is chosen. The choosing does not wait
+      // on it, so it is asked for last: a call sent right behind it was answered 50 to 80 ms late (2026-10-09).
       agentsKnown(entry);
     } catch (error) {
       session.close();
@@ -1035,7 +1052,8 @@ function createGamePortPilots({
     const form = shape(service, method, args, kwargs, contextFor(entry));
     // Asked of the service by name and made on its moniker: the arguments may be the client's as they stand, the call was not.
     // What the client's skill services keep is noted where it is asked for, which is not every time it is wanted (skillRead).
-    if (!(service === SKILL_HANDLER && Object.hasOwn(SKILL_KEPT, method))) {
+    const keptByAService = (service === SKILL_HANDLER && Object.hasOwn(SKILL_KEPT, method)) || (service === CORP_REGISTRY && method === AGGRESSION_SETTINGS);
+    if (!keptByAService) {
       ledger.note(service, method, form.moniker && form.status === "same" ? { ...form, status: "reshaped" } : form);
     }
     // A call the client makes on a service's moniker is made on the object bound for where the pilot is.
@@ -1564,6 +1582,8 @@ function createGamePortPilots({
       // A Moniker the client makes for the one call: it binds carrying the call, and is not kept.
       return (await entry.session.bind(service, monikerParams(entry, service, undefined), [method, args, kwargs])).result;
     }
+    // crimewatchSvc.GetCorpAggressionSettings: the settings as they are kept, asked for where none are.
+    if (service === CORP_REGISTRY && method === AGGRESSION_SETTINGS) return corporationDoes(entry, () => entry.aggression ?? aggressionRefreshed(entry));
     if (service !== SKILL_HANDLER) {
       return keptCall(entry, entry.monikers, service, service, () => monikerParams(entry, service, undefined), method, args, kwargs);
     }
@@ -1963,6 +1983,52 @@ function createGamePortPilots({
     const kept = { has: () => object.objectID !== null, get: () => object.objectID, set: (key, objectID) => { object.objectID = objectID; } };
     // An object several handles name is bound once: its own name, where it has one, is what its binding is known by.
     return keptCall(entry, kept, object.key ?? handle, object.service, () => object.params, method, args, kwargs);
+  }
+
+  // ── the corporation's registry, as the client's services ask and keep it ──
+
+  /** One of the client's own askings of the corporation's registry: noted as it is sent, with nothing, on the corporation's moniker. */
+  function corporationAsk(entry, method) {
+    ledger.note(CORP_REGISTRY, method, shape(CORP_REGISTRY, method, [], null, contextFor(entry)));
+    return keptCall(entry, entry.monikers, CORP_REGISTRY, CORP_REGISTRY, () => monikerParams(entry, CORP_REGISTRY, undefined), method, [], null);
+  }
+
+  /** crimewatchSvc.RefreshCorpAggressionSettings: the settings asked for, and kept as answered. */
+  async function aggressionRefreshed(entry) {
+    entry.aggression = await corporationAsk(entry, AGGRESSION_SETTINGS);
+    return entry.aggression;
+  }
+
+  /** What asks for the settings or reads them kept, one after another, so that what one keeps the next finds kept. Fails as `work` fails, for whoever waits on it. */
+  function corporationDoes(entry, work) {
+    const doing = entry.corpWork.then(work);
+    entry.corpWork = doing.catch(() => {});
+    return doing;
+  }
+
+  /**
+   * What the client's services ask of the corporation's registry when the session's corporation changes, the
+   * choosing of a character among them: its aggression settings (crimewatchSvc.ProcessSessionChange), which
+   * are kept, and its members' names (bco_members.OnSessionChanged, which primes the client's names with them
+   * and keeps nothing else). A character chosen is also asked for its own applications, as the client asks for
+   * them once (bco_applications). The order is Tranquility's recording of a login. Each fails for itself.
+   *
+   * The applications are not kept here, though the client keeps them and works its list over at each
+   * OnCorporationApplicationChanged: the BFF's own flows read one pilot's applications straight after another
+   * pilot's change to them, on another connection, where a kept list could be a notice behind.
+   */
+  function corporationRead(entry, chosen) {
+    return corporationDoes(entry, async () => {
+      await aggressionRefreshed(entry).catch(() => {});
+      for (const method of ["GetEveOwners", ...(chosen ? ["GetMyApplications"] : [])]) {
+        await corporationAsk(entry, method).catch(() => {});
+      }
+    });
+  }
+
+  /** crimewatchSvc.OnCorpAggressionSettingsChange(aggressionSettings): the settings are what the server says. */
+  function afterCorporationNotice(entry, notification) {
+    if (notification.method === "OnCorpAggressionSettingsChange") entry.aggression = Array.isArray(notification.args) ? notification.args[0] : null;
   }
 
   // ── the agents' table, and the agents' journal as it is kept ──────────────

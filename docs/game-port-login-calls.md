@@ -10,9 +10,9 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 
 | The game port | Kinds | Calls | Meaning |
 |---|---|---|---|
-| at login | 19 | 24 | The game port asks this at login too. |
-| by a feature | 16 | 22 | A feature of the web client asks this when it is wanted, in a form read against the client's. |
-| by a route | 15 | 16 | The BFF has a route that can ask this. It has not been read against the client's. |
+| at login | 24 | 29 | The game port asks this at login too. |
+| by a feature | 14 | 20 | A feature of the web client asks this when it is wanted, in a form read against the client's. |
+| by a route | 12 | 13 | The BFF has a route that can ask this. It has not been read against the client's. |
 | never | 50 | 55 | Nothing of ours asks this. |
 
 ## Before a character is chosen
@@ -61,13 +61,13 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `skillHandler.MachoBindObject` | 1 | at login |
 | `crimewatch.MachoResolveObject` | 1 | by a feature |
 | `crimewatch.MachoBindObject` | 2 | by a feature |
-| `corpRegistry.MachoResolveObject` | 1 | by a feature |
-| `corpRegistry.MachoBindObject` | 1 | by a feature |
-| `corpRegistry.GetAggressionSettings` (inferred) | 1 | by a route |
+| `corpRegistry.MachoResolveObject` | 1 | at login |
+| `corpRegistry.MachoBindObject` | 1 | at login |
+| `corpRegistry.GetAggressionSettings` (inferred) | 1 | at login |
 | `standingMgr.GetNPCNPCStandings` | 1 | at login |
 | `standingMgr.GetCharStandings` | 1 | at login |
 | `seasonManager.get_season_data_for_character` | 1 | never |
-| `corpRegistry.GetEveOwners` (inferred) | 1 | by a route |
+| `corpRegistry.GetEveOwners` (inferred) | 1 | at login |
 | `securityMgr.get_modified_systems` | 1 | never |
 | `agentMgr.GetMyJournalDetails` | 1 | at login |
 | `achievementTrackerMgr.GetCompletedAchievementsAndClientEventCount` | 1 | never |
@@ -111,7 +111,7 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `shipKillCounter.GetItemKillCountPlayer` | 1 | never |
 | `shipCosmeticsMgr.GetEnabledCosmetics` | 1 | never |
 | `userSvc.GetRedeemTokens` | 1 | never |
-| `corpRegistry.GetMyApplications` (inferred) | 1 | by a route |
+| `corpRegistry.GetMyApplications` (inferred) | 1 | at login |
 | `userSvc.GetMultiCharactersTrainingSlots` | 1 | never |
 | `ProjectDiscovery.is_enabled` | 1 | never |
 | `skillHandler.CheckAndSendNotifications` (inferred) | 1 | at login |
