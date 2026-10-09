@@ -516,10 +516,32 @@ The server answered None to each, the order's price was the new one, and its two
 "Modified" and "Cancelled".
 
 Three more of the market's calls are in the registry. A type's book, `GetOrders(typeID)`, is
-the client's as it stands. Its price history is not: the client asks two halves,
-`GetOldPriceHistory` and `GetNewPriceHistory`, and the BFF's route asks the new one alone. A
-buy order is not: the client's ninth argument is the broker's fee its window showed
-(`buyThisTypeWindow.py` 701), and the route sends none.
+the client's as it stands. Its price history was not: the client asks two halves,
+`GetOldPriceHistory` and `GetNewPriceHistory`, and the BFF's route asked the new one alone
+(both since the paragraph below). A buy order was not: the client's ninth argument is the
+broker's fee its window showed (`buyThisTypeWindow.py` 701), and the route sent none (worked
+out since the fee's paragraph).
+
+**A type's price history, 2026-10-09.** `marketsvc.GetPriceHistory` (333) asks
+`GetOldPriceHistory(typeID)` and `GetNewPriceHistory(typeID)` and joins them with
+`GetHistoryRowList` (344):
+
+1. The old half's days, in order. Where the day after the last one taken is not the next
+   day of the half, a row is put in for each day between, at the average of the day before,
+   with 2 for the quantity and 2 for the orders.
+2. The same from the last day of the old half up to yesterday's midnight.
+3. The new half as it came; or, where it is empty, one row for now at the last average with
+   nothing traded.
+
+It counts from now, not from the first day, so nothing is filled in before the old half
+begins. And the new half goes last whatever its days are. This server puts every day but the
+last in the old half and the last alone in the new, and its history for Tritanium ends on 8
+September: the client's join of that is the old half, a month of days filled in, and then the
+new half's one day, out of order.
+
+The BFF's Market read asks both halves and hands both on, and the page joins them so
+(`market.ts` `joinPriceHistory`). A history's day is named by the game's calendar, which is
+UTC.
 
 **A sale, 2026-10-09.** `PlaceMultiSellOrder(itemList, useCorp, duration, expectedBrokersFee)`
 (`marketsvc.py` 276, called at `sellMulti.py` 462). The list's items are each a `util.KeyVal`
