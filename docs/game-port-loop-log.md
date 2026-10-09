@@ -4686,3 +4686,105 @@ The journal's other two menu entries, Read Details and Remove Offer.
     of pilot.
 13. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
     a fixed ball's collision shapes and the partition's order.
+
+---
+
+## 2026-10-09 — the journal's Remove Offer, asked of the agent's own object
+
+Commit `1d30adc`, pushed. Item 3 of the last list, its first half. Item 1 was passed over:
+this server sends no special interaction and no message inside a message, so neither could be
+seen working.
+
+**What the retail client does.**
+
+- An offer's line in the journal has "Remove Offer" in its menu; a mission that was accepted
+  does not (`missionentry.py` 65). The words are the label `UI/Agents/Commands/RemoveOffer`.
+- It is one call, `GetAgentMoniker(agentID).RemoveOfferFromJournal()`, with no arguments, on
+  the agent's bound object (`missionentry.py` 75, `agents.py` 782 to 783). Nothing is read
+  after it.
+- The server then says `OnAgentMissionChange("offer_removed", agentID)`. That closes the
+  agent's window if it is open (`agents.py` 688) and outdates the journal (`journal.py` 168).
+
+**What the page did.** Nothing: it had no way to remove an offer. The BFF had a route for it,
+`/api/bridge/agent/journal/remove-offer`, which asked `agentMgr` by the service's name with
+no agent. EveJS takes the agent from the object the call was made on
+(`agentMgrService.js` 1141), and a call by name is made on none. What that route did to a
+journal was not measured before it was replaced.
+
+**What was built.**
+
+- `POST /api/bridge/agents/:agentID/remove-offer`: binds the agent as the conversation routes
+  do, makes the call with no arguments, and answers with what the server pushed because of
+  it. The old route is gone.
+- The registry has the call as "same".
+- An offer's journal line has the button, in the client's words when they are to hand. The
+  click is the call and nothing else; the server's `offer_removed` does the rest, through what
+  the page already did with that push.
+
+**Proof.**
+
+- Tests: 6 new. 19 ways of breaking it, each caught by a test in the end. A `?? null` on the
+  route's answer turned out to do nothing and was taken out.
+- Suite: 9364 tests, 9340 pass, 0 fail, 24 skipped, 0 todo. `tsc` clean.
+- **In the browser, on the game port**, eve.js `e066a81e9`, as Test Two, the agent's window
+  open on its offer and "Remove Offer" pressed on the journal line:
+
+  | what was read | value |
+  |---|---|
+  | the page's requests | `agents/3008416/remove-offer` 200, then `journal` 200 twice |
+  | the agent's window | closed; no objectives pane; no error |
+  | the journal | no offers |
+  | the server's log | `[PKT] IN … RemoveOfferFromJournal() callID=71` at 00:54:39.138, `[PKT] OUT OnAgentMissionChange` one millisecond later, then `GetMyJournalDetails` twice |
+
+  This is the first time the window has been seen closing on `offer_removed`; until now only
+  a test said it did. The journal is read twice because the push arrives twice (item 2 below).
+
+- **The two transports, side by side**, by script from the same copy of the store:
+
+  | | game port | gateway |
+  |---|---|---|
+  | journal before | 1 offer | 1 offer |
+  | the removal | 200, null, one push `("offer_removed", 3008416)` | the same bytes |
+  | journal after | no offers | no offers |
+  | the removal again | 200, null, no push | the same bytes |
+
+  The journals are the same once the gateway's tuple wrapping is taken off, which the page
+  already does.
+
+- **The staging was undone**: the store was put back after each run, and the offer is in the
+  journal again.
+
+**Seen on the way.** Removing an offer that is not there answers as removing one that is: 200
+and null, and no push. The page shows no error for it, and neither would the client.
+
+**Not done.** The journal's Read Details, which opens the mission's details window
+(`agentMgr.GetMissionJournalInfo`). Whether the agent offers the same mission again after its
+offer is removed was not looked at.
+
+### Next
+
+1. The journal line's last entry, Read Details: the mission's details as the client lays them
+   out.
+2. A push the page's own call caused, taken once: the stream's copy and the answer's told
+   apart.
+3. The agent's header: its division, its place (read already, and not shown), the pilot's
+   effective standing with it, and loyalty points.
+4. Around the pane: the security rating before a place's name and the low-security warning
+   (the page has no security for a system that is not its own); the reduced-payouts banner.
+5. The ledger's unread pairs, most called first: the inventory and wallet reads, then the
+   writes on `ship` and `dogmaIM`.
+6. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+7. Phase 3's writes, feature by feature, each set beside what the client sends.
+8. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+9. Small, in space: an overview row's speed columns the client's way; the bar the client
+   fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+10. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+11. Small, in Ready Fit: the capacity the client never asks for; the window following a change
+    of pilot.
+12. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+13. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
