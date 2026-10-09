@@ -18588,6 +18588,24 @@ function decodeCapacityReading(result) {
   return capacity === null && used === null ? null : { capacity, used };
 }
 
+/**
+ * One hold's capacity as the retail client reckons it (shipHoldsAsTheClient):
+ * its size by godma or the type, and what is used of it summed from its own
+ * List. Where either cannot be had, the server is asked, as before.
+ */
+async function reckonedHoldCapacity(own, flag, listed, asked) {
+  const size = await own.capacity(flag);
+  if (size === null) return asked();
+  let answer;
+  try {
+    answer = await listed;
+  } catch {
+    return asked();
+  }
+  const used = usedOfListed(answer.result, flag, own.packaged);
+  return used === null ? asked() : { result: capacityAnswer(Number(size), used) };
+}
+
 // Read the ship's mining holds. Every hold in the ladder is read independently
 // (Promise.allSettled) so one that the hull does not have — or one whose read
 // fails — never blanks the rest, and a hold that answers nothing at all is
@@ -18611,15 +18629,20 @@ app.get("/api/bridge/ship/ore-hold", requireAuth, async (req, res, next) => {
       ? miningHoldsCarriedByHull(flight.shipTypeID)
       : null;
     const spec = cargoBindSpec(held, shipID);
+    // ⚠ THE RETAIL CLIENT NEVER ASKS HOW FULL A HOLD IS (invCache.py 1224,
+    // godma.py 871). On the game port a hold's capacity is reckoned as the
+    // client reckons it, and the server is asked for the hold's List alone.
+    const own = await shipHoldsAsTheClient(held, req.webSessionID, Number(shipID));
     // A hold the hull's type does not carry is not read: it answers what the
     // server would (nothing in it, no capacity), and costs the server nothing.
+    const carries = (hold) => (own ? own.has(hold.flag) !== false : carried === null || carried.has(hold.key));
     const settled = await Promise.allSettled(
-      MINING_HOLDS.flatMap((hold) => carried === null || carried.has(hold.key)
-        ? [
-          boundCall(held, req.webSessionID, spec, "List", [hold.flag], null),
-          boundCall(held, req.webSessionID, spec, "GetCapacity", [hold.flag], null),
-        ]
-        : [null, null]),
+      MINING_HOLDS.flatMap((hold) => {
+        if (!carries(hold)) return [null, null];
+        const listed = boundCall(held, req.webSessionID, spec, "List", [hold.flag], null);
+        const asked = () => boundCall(held, req.webSessionID, spec, "GetCapacity", [hold.flag], null);
+        return [listed, own ? reckonedHoldCapacity(own, hold.flag, listed, asked) : asked()];
+      }),
     );
     for (const entry of settled) {
       if (entry.status === "rejected" && entry.reason && entry.reason.code === "SESSION_NOT_FOUND") {

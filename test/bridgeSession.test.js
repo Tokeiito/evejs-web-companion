@@ -1146,10 +1146,13 @@ const bayHolds = (flags = BAY_FLAGS) => ({
 // Two hulls: the one being flown (a miner: cargo, drones and an ore hold), and one in the hangar (a carrier of ships:
 // cargo, a ship maintenance bay and a fleet hangar).
 const BAY_TYPES = {
-  77002: { groupID: 901, volume: 16500, capacity: 400, attributes: { 3805: 400, 3887: 25, 3934: 5000 } },
+  // 1556 is the ore hold's capacity as the server pairs it, which the mining holds' route goes by off the game port.
+  77002: { groupID: 901, volume: 16500, capacity: 400, attributes: { 3805: 400, 3887: 25, 3934: 5000, 1556: 5000 } },
   77003: { groupID: 902, volume: 92000, capacity: 900, attributes: { 3805: 899, 3701: 1, 3890: 1000000, 3702: 1, 3955: 10000 } },
   // A ship built of parts: no drone capacity of its own, and no capacity among its type's fields.
   77004: { groupID: 963001, volume: 5000, capacity: null, attributes: { 3805: 111 } },
+  // A hull whose type has no size for anything, its cargo included.
+  77006: { groupID: 901, volume: 16500, capacity: null, attributes: {} },
   // A hull that says it has a ship maintenance bay and whose type has no size for one.
   77005: { groupID: 902, volume: 92000, capacity: 700, attributes: { 3805: 700, 3701: 1 } },
 };
@@ -1288,6 +1291,73 @@ test("one bay that cannot be reckoned is asked about by itself, and the rest are
   assert.deepEqual(dark.capacityCalls, []);
   assert.deepEqual([dark.bays.cargo.capacity, dark.bays.cargo.items, dark.bays.cargo.error], [{ capacity: 410, used: null }, null, "CALL_REFUSED"]);
   assert.deepEqual([dark.bays.ore.capacity, dark.bays.ore.error], [{ capacity: 5000, used: null }, "CALL_REFUSED"]);
+});
+
+// ── The mining holds (GET /api/bridge/ship/ore-hold) ─────────────────────────
+
+/** A game-port pilot flying ship 9001 of type 77002 (cargo, drones, an ore hold), asking for its mining holds. */
+async function miningHoldsOnGamePort({ constants = { ...holdConstants(), holdAttributes: async () => bayHolds() }, godma = { 3805: 410 }, flying = { shipID: 9001, typeID: 77002 }, contents = SHIP_ROWS, failing = null, transport = "gameport" } = {}) {
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  const gateway = fakeGateway();
+  const backend = transport === "gameport" ? gamePort : gateway;
+  backend.readFlightStatus = async () => ({ flight: { docked: true, inSpace: false, stationID: SELECT_SESSION_ECHO.stationID, solarSystemID: SELECT_SESSION_ECHO.solarSystemID, shipID: 9001, shipTypeID: 77002 }, notifications: [] });
+  backend.bindObject = async (service, method, args) => ({ boundHandle: `${method}:${args[0]}`, notifications: [] });
+  const calls = [];
+  backend.callBoundMethod = async (service, method, args) => {
+    calls.push({ method, flag: args[0] });
+    if (method === "List") {
+      if (failing === args[0]) throw Object.assign(new Error("Refused"), { code: "CALL_REFUSED" });
+      return { service, method, result: { type: "list", items: contents.filter((row) => !row.fields || row.fields.flagID === args[0]) }, notifications: [] };
+    }
+    // GetCapacity: the server's own, marked.
+    return { service, method, result: { type: "object", name: "util.KeyVal", args: { type: "dict", entries: [["capacity", { 5: 777, 134: 5001 }[args[0]] ?? 0], ["used", 7]] } }, notifications: [] };
+  };
+  const attributes = [];
+  if (flying) gamePort.ship = async () => flying;
+  gamePort.shipAttribute = async (attributeID) => { attributes.push(attributeID); return godma[attributeID] ?? null; };
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => transport, staticData: { ...bayStatics(), getTypeDogma: (typeID) => (BAY_TYPES[typeID] ? { attributes: BAY_TYPES[typeID].attributes } : null) }, clientConstants: constants });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const answer = await apiRequest(baseUrl, "/api/bridge/ship/ore-hold");
+  assert.equal(answer.response.status, 200, JSON.stringify(answer.payload));
+  const holds = Object.fromEntries(answer.payload.holds.map((hold) => [hold.key, hold]));
+  const named = (method) => calls.filter((call) => call.method === method).map((call) => call.flag).sort((a, b) => a - b);
+  return { holds, lists: named("List"), capacities: named("GetCapacity"), attributes };
+}
+
+test("on the game port the mining holds are reckoned as the client reckons them: a List for each the hull has, and no capacity asked", async () => {
+  const { holds, lists, capacities, attributes } = await miningHoldsOnGamePort();
+  // The hull's type has an ore hold and, as every ship, its cargo: those two are listed, and that is all that is asked.
+  assert.deepEqual([lists, capacities], [[5, 134], []]);
+  // The cargo's size as godma has it; the ore hold's, which godma was not told of, as the type has it.
+  assert.deepEqual([holds.cargo.present, holds.cargo.capacity, holds.cargo.error], [true, { capacity: 410, used: 3 }, null]);
+  assert.deepEqual([holds.ore.present, holds.ore.capacity, holds.ore.error], [true, { capacity: 5000, used: 85 }, null]);
+  assert.deepEqual(holds.ore.items.map((item) => [item.itemID, item.typeID, item.quantity]), [[9102, 77011, 40], [9103, 77010, 500]]);
+  // The three this hull has not: not there, nothing in them, and nothing asked about them.
+  for (const key of ["gas", "ice", "asteroid"]) assert.deepEqual([holds[key].present, holds[key].capacity, holds[key].items, holds[key].error], [false, { capacity: 0, used: 0 }, [], null], key);
+  assert.deepEqual(attributes.sort(), [3805, 3934]);
+});
+
+test("a mining hold that cannot be reckoned is asked about by itself, and where the client's way cannot be followed all are asked as before", async () => {
+  // Something in the ore hold whose volume nobody here knows: the server says how full that one is.
+  const unknown = await miningHoldsOnGamePort({ contents: [...SHIP_ROWS, holdRow({ itemID: 9104, flagID: 134, typeID: 77999 })] });
+  assert.deepEqual([unknown.capacities, unknown.holds.ore.capacity, unknown.holds.cargo.capacity], [[134], { capacity: 5001, used: 7 }, { capacity: 410, used: 3 }]);
+  // A hold's List not answering: its capacity is still the server's to give, and the hold says what went wrong.
+  const dark = await miningHoldsOnGamePort({ failing: 134 });
+  assert.deepEqual([dark.capacities, dark.holds.ore.capacity, dark.holds.ore.items, dark.holds.ore.error, dark.holds.cargo.capacity], [[134], { capacity: 5001, used: 7 }, null, "CALL_REFUSED", { capacity: 410, used: 3 }]);
+  // A hold with no size to be found, in godma or on the type: that hold is the server's to say.
+  const sizeless = await miningHoldsOnGamePort({ flying: { shipID: 9001, typeID: 77006 }, godma: {} });
+  assert.deepEqual([sizeless.lists, sizeless.capacities, sizeless.holds.cargo.capacity], [[5], [5], { capacity: 777, used: 7 }]);
+  // A hold the client's own table has not is still read, and asked about.
+  const partial = await miningHoldsOnGamePort({ constants: { ...holdConstants(), holdAttributes: async () => bayHolds([5, 135, 181, 182]) } });
+  assert.deepEqual([partial.lists, partial.capacities, partial.holds.ore.capacity, partial.holds.cargo.capacity], [[5, 134], [134], { capacity: 5001, used: 7 }, { capacity: 410, used: 3 }]);
+  // No client to read from, a transport that cannot say what is flown, or the gateway: the holds the hull's type
+  // carries are each listed and asked about, as they were.
+  const fromServer = [[5, 134], [5, 134], { capacity: 777, used: 7 }, { capacity: 5001, used: 7 }];
+  const asIs = (reading) => [reading.lists, reading.capacities, reading.holds.cargo.capacity, reading.holds.ore.capacity];
+  assert.deepEqual(asIs(await miningHoldsOnGamePort({ constants: { packagedVolumes: async () => null, holdAttributes: async () => null } })), fromServer);
+  assert.deepEqual(asIs(await miningHoldsOnGamePort({ flying: null })), fromServer);
+  const onGateway = await miningHoldsOnGamePort({ transport: "gateway" });
+  assert.deepEqual([asIs(onGateway), onGateway.attributes], [fromServer, []]);
 });
 
 // ── The Fitting window's dogma (GET /api/bridge/bound-dogma) ─────────────────
