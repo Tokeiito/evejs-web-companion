@@ -238,6 +238,9 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **The server's log stamps an outgoing client call late.** `[PKT] OUT agents YesNo()
   client-call` carried the time the answer arrived, seconds after the question was on the page.
   Do not time the server by that line; time what the client saw.
+- **The server's log is kept by the hour.** `server.log` has the hour now; the hours before are
+  `server.<date>_<hour>.log` beside it. A check that straddles the hour is in two files, and a
+  search of `server.log` alone finds a session with no login.
 - **A breakage that was "not tried" proves nothing.** `scripts/break-and-check.js` says NOT TRIED
   when the text to find is not in the file, and a shell heredoc halves the backslashes in a list
   of them, so a regular expression is never found. Write breakage lists with the Write tool, and
