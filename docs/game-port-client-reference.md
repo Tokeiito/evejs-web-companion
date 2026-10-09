@@ -575,6 +575,13 @@ Not done: a structure, whose base the client asks of the server
 of a warzone system, which the client asks of the war's manager. This server lowers its own
 rate for neither.
 
+The page shows the fee at that rate. The BFF's Market read says the rate for the station the
+pilot is docked at (`brokersFeeRate`: a number on the game port, none through the gateway), and
+the order form works the fee out as `BrokerFeeProvider.GetBrokerFeeInfo` does for a new order:
+the order's value at the rate, and the smallest fee there is where that comes to no more. An
+offer to buy 1000 Tritanium at 50 ISK showed 1,479.02 ISK, and the server charged 51,479.02:
+the 50,000.00 set aside and that fee.
+
 **The order of a KeyVal's fields on the wire.** `utillib.KeyVal(a=1, b=2)` keeps its keywords
 as the instance's own dict, so its fields go out in that dict's order. That is not the order
 written, and not the order a plain function's keywords are in. A class is not a plain
