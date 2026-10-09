@@ -521,6 +521,48 @@ the client's as it stands. Its price history is not: the client asks two halves,
 buy order is not: the client's ninth argument is the broker's fee its window showed
 (`buyThisTypeWindow.py` 701), and the route sends none.
 
+**A sale, 2026-10-09.** `PlaceMultiSellOrder(itemList, useCorp, duration, expectedBrokersFee)`
+(`marketsvc.py` 276, called at `sellMulti.py` 462). The list's items are each a `util.KeyVal`
+the sale window makes with eight keywords (`sellMulti.py` 501):
+
+| Keyword | What it is |
+|---|---|
+| `stationID`, `typeID` | whole numbers |
+| `itemID` | the stack's |
+| `price` | rounded to the hundredth |
+| `quantity` | a whole number |
+| `officeID` | None, or the office for an item in a corporation's hangar |
+| `delta` | how far the price is from the type's average, as a fraction of it |
+| `rawBrokerFeePercentage` | the broker's fee rate the window worked out for the station |
+
+The fourth argument is that same fee rate for an order that stands, and None for a sale at
+once.
+
+The BFF's route gave an item as a plain object. The wire has no such value, and nothing could
+be sold on the game port. The registry now makes each item the client's KeyVal. A route has no
+`delta` and no fee rate, and they are not made up: the item goes out with six fields and the
+call is noted as differing.
+
+**The order of a KeyVal's fields on the wire.** `utillib.KeyVal(a=1, b=2)` keeps its keywords
+as the instance's own dict, so its fields go out in that dict's order. That is not the order
+written, and not the order a plain function's keywords are in. A class is not a plain
+function: the interpreter collects the keywords off its stack, last one first, and the
+class's `__init__` is given them from that dict (`py27.js` `constructorKeywordOrder`). The
+client's own Python, asked for the sale's eight:
+
+| Made by | Order |
+|---|---|
+| Written | `stationID, typeID, itemID, price, quantity, officeID, delta, rawBrokerFeePercentage` |
+| A plain function's keywords | `itemID, typeID, rawBrokerFeePercentage, price, delta, stationID, officeID, quantity` |
+| The KeyVal | `itemID, typeID, rawBrokerFeePercentage, price, officeID, stationID, delta, quantity` |
+| The KeyVal of the six a route has | `itemID, typeID, price, stationID, officeID, quantity` |
+
+The fixture of the client's Python has this for each of its 409 keyword sets
+(`constructed`), and the model agrees with every one. The other KeyVals the registry makes (a
+scanner's probes) have their fields in the order the registry lists them. Those are KeyVals the
+server sent and the client changed, so their order is the one they came in, and that has not
+been looked at.
+
 **The formations, asked for once, 2026-10-09.** `michelle.AddBallpark` asks
 `sm.RemoteSvc('beyonce').GetFormations()` each time it makes a ballpark (`michelle.py` 324). The
 answer is a cached method call's, and the client's object cache answers every asking after the
