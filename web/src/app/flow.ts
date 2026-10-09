@@ -1169,7 +1169,8 @@ export interface AppFlow {
   loadSkills(): Promise<void>;
   /**
    * R28 — save the WHOLE queue. Adding, removing and reordering are all this
-   * one call, exactly as the server models it. `[]` pauses training.
+   * one call, exactly as the server models it, and so is starting a paused
+   * queue again: the queue saved as it stands. `[]` empties it.
    *
    * `context` is the skill the player was acting on; it is used only to word a
    * refusal ("Gunnery needs another skill first"), because the server's refusal
@@ -1180,6 +1181,11 @@ export interface AppFlow {
     label: string,
     context?: string,
   ): Promise<void>;
+  /**
+   * Pause training as the retail client does: the skill in training stops and
+   * the queue is kept. What lands in the store is the sheet re-read after it.
+   */
+  pauseSkillTraining(): Promise<void>;
   /**
    * Spend unallocated skill points into one skill. What was actually spent is
    * read from the server's new free-SP total, never from what was asked for.
@@ -6127,6 +6133,28 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // "saved" message can never be on screen next to a stale queue.
     applySkillSheet(result.skills);
     store.apply({ type: "skills/action", action: label });
+  }
+
+  async function pauseSkillTraining(): Promise<void> {
+    let result;
+    try {
+      result = await api.pauseSkillTraining(callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({
+        type: "skills/action-error",
+        message: `Training could not be paused: ${errorWords(error)}`,
+      });
+      // Whether it stopped or not is the server's to say: read it again.
+      await loadSkills().catch(() => {});
+      return;
+    }
+    applySkillSheet(result.skills);
+    store.apply({ type: "skills/action", action: "Paused training" });
   }
 
   /**
@@ -13851,6 +13879,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadPlanets,
     selectColony,
     saveSkillQueue,
+    pauseSkillTraining,
     applyFreeSkillPoints,
 
     startSpacePolling,

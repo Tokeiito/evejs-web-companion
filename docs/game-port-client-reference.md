@@ -295,6 +295,23 @@ for them again each time it opens, which is the page's own way.
 The notifications' lists and the calendar's months are kept by one helper,
 `src/gamePort/keptReads.js`: answers kept until something changes them.
 
+**Training paused, 2026-10-09.** The client's queue panel pauses with one call,
+`skillHandler.AbortTraining()`, made only while a skill is in training (`skillQueuePanelNew.py`
+`PauseTraining`, `skillsvc.py` `AbortTrain`). The server stops the skill and says so with
+`OnServerSkillsChanged`, its event `OnSkillQueuePausedServer`: the client then takes the start and
+the end off every entry of the queue it keeps, and keeps the entries. It does not ask for the
+queue again, so an entry's starting points stay what they were when the queue was last saved; the
+skill's own row has the points it stopped at. Its start button saves the queue as it stands,
+`SaveNewQueue(queue, activate=True)`. One Tranquility recording has the pause and the save after.
+
+The page's "Stop training" used to save an empty queue, which threw the queue away. It now pauses
+as the client does (the BFF's `/api/bridge/skills/abort-training`, then the sheet read again), a
+paused queue is shown as paused with its skills still on it, and "Start training" saves the queue
+as it stands. On the game port the pause goes to the skill handler's object and the kept queue is
+stopped by the server's notice. Measured on this server: a pause with nothing in training is
+answered and changes nothing. The gateway's sheet marks a paused queue's first skill as in
+training; the game port's marks none.
+
 **The names of owners, 2026-10-09.** The client names a character, a corporation, an alliance or a
 faction from `cfg.eveowners`. NPCs' owners are in its own built data. For any other it asks the
 server, `config.GetMultiOwnersEx(a list of IDs)` by name (`carbon/common/script/sys/cfg.py`,

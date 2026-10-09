@@ -102,6 +102,8 @@ interface SceneOptions {
   }[];
   readonly queue?: null;
   readonly loaded?: boolean;
+  /** A queue the server has stopped: its skills still on it, none with a start or an end. */
+  readonly paused?: boolean;
 }
 
 /** The sheet the panel reads, with every instant expressed against NOW. */
@@ -150,10 +152,10 @@ function sceneStore(options: SceneOptions) {
         options.queue === null
           ? null
           : {
-              active: entries.length > 0,
+              active: entries.length > 0 && !options.paused,
               maxEntries: 150,
               endTimeMs:
-                entries.length > 0
+                entries.length > 0 && !options.paused
                   ? NOW + (entries.at(-1)!.offsetHours + entries.at(-1)!.lengthHours) * HOUR
                   : null,
               entries: entries.map((entry) => ({
@@ -161,9 +163,9 @@ function sceneStore(options: SceneOptions) {
                 toLevel: entry.toLevel,
                 startSP: entry.startSP,
                 destinationSP: entry.destinationSP,
-                startTimeMs: NOW + entry.offsetHours * HOUR,
-                endTimeMs: NOW + (entry.offsetHours + entry.lengthHours) * HOUR,
-                skillPointsPerMinute: entry.rate,
+                startTimeMs: options.paused ? null : NOW + entry.offsetHours * HOUR,
+                endTimeMs: options.paused ? null : NOW + (entry.offsetHours + entry.lengthHours) * HOUR,
+                skillPointsPerMinute: options.paused ? 0 : entry.rate,
               })),
             },
       // The panel's "now" is Date.now() + this. Date.now() is pinned to a
@@ -259,6 +261,42 @@ test("nothing training says so plainly instead of showing an empty bar", () => {
   const { text } = scene();
   assert.match(text, /Nothing is training/);
   assert.match(text, /The queue is empty/);
+});
+
+const TWO_QUEUED = [
+  { typeID: GUNNERY, toLevel: 3, startSP: 1414, destinationSP: 8000, offsetHours: 0, lengthHours: 1, rate: 110 },
+  { typeID: INDUSTRY, toLevel: 2, startSP: 250, destinationSP: 1414, offsetHours: 1, lengthHours: 1, rate: 0 },
+];
+/** Whether the page has a button with exactly these words on it. */
+const buttonNamed = (body: string, label: string): boolean =>
+  [...body.matchAll(/<button[^>]*>([\s\S]*?)<\/button>/g)].some((match) => visibleText(match[1]!).trim() === label);
+
+test("a paused queue says it is paused, keeps its skills listed, and offers to start it again", () => {
+  const { body, text } = scene({ queueEntries: TWO_QUEUED, paused: true });
+  assert.match(text, /Training is paused/);
+  assert.match(text, /Nothing on the queue is training while it is paused/);
+  // The queue is still there to read and to rearrange.
+  assert.match(body, /aria-label="Move Gunnery later"/);
+  assert.match(body, /aria-label="Take Industry off the queue"/);
+  // Each skill on it says it is paused, where a finishing time would be: none is "not known".
+  assert.equal((body.match(/<td data-label="Finishes"[^>]*>paused<\/td>/g) ?? []).length, 2);
+  assert.equal(/not known/.test(text), false);
+  // It is not "nothing training, add something", and it has no finishing time to give.
+  assert.equal(/Nothing is training\./.test(text), false);
+  assert.equal(/finishes/.test(text), false);
+  assert.deepEqual([buttonNamed(body, "Start training"), buttonNamed(body, "Pause training")], [true, false]);
+});
+
+test("a queue that is training offers to pause it, and an empty queue offers neither", () => {
+  const training = scene({ queueEntries: TWO_QUEUED });
+  assert.deepEqual([buttonNamed(training.body, "Pause training"), buttonNamed(training.body, "Start training")], [true, false]);
+  assert.equal(/Training is paused/.test(training.text), false);
+  assert.match(training.text, /Everything on the queue finishes/);
+  // Each skill on it says when it finishes, and none says it is paused.
+  const finishes = [...training.body.matchAll(/<td data-label="Finishes"[^>]*>([^<]*)<\/td>/g)].map((match) => match[1]!);
+  assert.deepEqual([finishes.length, finishes.every((words) => /from now/.test(words))], [2, true]);
+  const empty = scene();
+  assert.deepEqual([buttonNamed(empty.body, "Pause training"), buttonNamed(empty.body, "Start training")], [false, false]);
 });
 
 test("a queue that could not be READ is not a queue that is empty", () => {

@@ -5274,9 +5274,19 @@ export async function getSkills(options: ApiOptions = {}): Promise<SkillsResult>
 }
 
 /**
+ * Pause training as the retail client's queue panel does (skillHandler.AbortTraining): the skill in training
+ * stops and the queue stays as it is, with no start or end to any entry. Saving the queue sets it going again.
+ * Answers the sheet as the server has it afterwards.
+ */
+export async function pauseSkillTraining(options: ApiOptions = {}): Promise<SkillsResult> {
+  await postJson("/api/bridge/skills/abort-training", { confirm: true }, options);
+  return getSkills(options);
+}
+
+/**
  * Save the whole training queue (skillMgr.SaveNewQueue).
  *
- * Sending [] pauses training. The server validates the list as a WHOLE and
+ * Sending [] empties the queue. The server validates the list as a WHOLE and
  * refuses all of it with one of eleven public codes if any part is wrong — the
  * refusal arrives as a BridgeCallError whose message is that bare code, which
  * bridge/skills.ts turns into a sentence.

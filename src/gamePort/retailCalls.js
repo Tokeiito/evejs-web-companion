@@ -624,6 +624,7 @@ const RETAIL_CALLS = Object.freeze({
   "skillHandler.GetSkills": same(`${SKILL_SVC}:136`, "GetSkillHandler().GetSkills(), no arguments"),
   "skillHandler.GetAllSkills": same(`${SKILL_SVC}:142`, "GetSkillHandler().GetAllSkills(), no arguments"),
   "skillHandler.GetAttributes": same(`${SKILL_SVC}:224`, "GetSkillHandler().GetAttributes(), no arguments"),
+  "skillHandler.AbortTraining": same(`${SKILL_SVC}:796`, "GetSkillHandler().AbortTraining(), no arguments: the queue panel's pause, pressed while a skill is in training. The queue is kept, and the server's OnServerSkillsChanged says it is paused"),
   "skillHandler.GetSkillHistory": reshaped(
     `${SKILL_SVC}:363`,
     (args, kwargs) => (args.length === 1 && args[0] > 0 ? { args, kwargs, status: "same" } : { args: [SKILL_HISTORY_ASKED], kwargs }),

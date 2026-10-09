@@ -54,6 +54,7 @@ function makeFakeFetch(
 function sheetBody(
   entries: readonly { typeID: number; toLevel: number }[],
   serverNowMs = 1_784_617_000_000,
+  paused = false,
 ): unknown {
   return {
     ok: true,
@@ -71,7 +72,7 @@ function sheetBody(
           rank: 1,
           skillPoints: 45255,
           levelSkillPoints: [250, 1414, 8000, 45255, 256000],
-          inTraining: entries[0]?.typeID === GUNNERY,
+          inTraining: !paused && entries[0]?.typeID === GUNNERY,
         },
         {
           typeID: SURGICAL,
@@ -95,18 +96,19 @@ function sheetBody(
         },
       ],
       queue: {
-        active: entries.length > 0,
+        active: entries.length > 0 && !paused,
         maxEntries: 150,
-        endTimeMs: entries.length > 0 ? serverNowMs + entries.length * 3_600_000 : null,
+        endTimeMs: entries.length > 0 && !paused ? serverNowMs + entries.length * 3_600_000 : null,
         entries: entries.map((entry, index) => ({
           queuePosition: index,
           typeID: entry.typeID,
           toLevel: entry.toLevel,
           startSP: 0,
           destinationSP: 1000,
-          startTimeMs: serverNowMs + index * 3_600_000,
-          endTimeMs: serverNowMs + (index + 1) * 3_600_000,
-          skillPointsPerMinute: index === 0 ? 30 : 0,
+          // A paused queue's entries have no start and no end, and nothing trains at any rate.
+          startTimeMs: paused ? null : serverNowMs + index * 3_600_000,
+          endTimeMs: paused ? null : serverNowMs + (index + 1) * 3_600_000,
+          skillPointsPerMinute: index === 0 && !paused ? 30 : 0,
         })),
       },
     },
@@ -197,7 +199,7 @@ test("adding, removing and reordering are ONE call: save the whole list", async 
     [SURGICAL, GUNNERY],
   );
 
-  await flow.saveSkillQueue([], "Stopped training", "your queue");
+  await flow.saveSkillQueue([], "Emptied the queue", "your queue");
   assert.deepEqual(store.get().skills.queue?.entries, []);
   assert.equal(store.get().skills.queue?.active, false);
 
@@ -206,6 +208,57 @@ test("adding, removing and reordering are ONE call: save the whole list", async 
     new Set(requests.filter((request) => request.method === "POST").map((r) => r.path)),
     new Set(["/api/bridge/skills/queue"]),
   );
+});
+
+test("pausing asks the server to stop the skill in training and re-reads: the queue is KEPT, and starting is a save of it", async () => {
+  const store = createClientStore();
+  const queue = [{ typeID: GUNNERY, toLevel: 5 }, { typeID: SURGICAL, toLevel: 1 }];
+  let paused = false;
+  const { fetch, requests } = makeFakeFetch((path, method) => {
+    if (path === "/api/bridge/skills/abort-training" && method === "POST") {
+      paused = true;
+      return { status: 200, body: { ok: true, applied: true, result: null, notifications: [] } };
+    }
+    if (path === "/api/bridge/skills/queue" && method === "POST") paused = false;
+    return { status: 200, body: sheetBody(queue, undefined, paused) };
+  });
+  const flow = createAppFlow(store, { fetch });
+  await flow.loadSkills();
+  requests.length = 0;
+
+  await flow.pauseSkillTraining();
+  // The retail client's pause: one call that stops the skill in training, confirmed, and the sheet read again.
+  assert.deepEqual(requests.map((request) => [request.method, request.path]), [
+    ["POST", "/api/bridge/skills/abort-training"],
+    ["GET", "/api/bridge/skills"],
+  ]);
+  assert.deepEqual(requests[0]!.body, { confirm: true });
+  // What is on screen is the server's: every skill still queued, none of them training, no end in sight.
+  const kept = store.get().skills.queue!;
+  assert.deepEqual([kept.active, kept.endTimeMs, kept.entries.map((entry) => [entry.typeID, entry.toLevel, entry.startTimeMs, entry.endTimeMs])], [
+    false, null, [[GUNNERY, 5, null, null], [SURGICAL, 1, null, null]],
+  ]);
+  assert.equal(store.get().skills.lastAction, "Paused training");
+
+  // Starting again is the queue saved as it stands.
+  requests.length = 0;
+  await flow.saveSkillQueue(queue, "Started training", "your queue");
+  const started = requests.at(0)!;
+  assert.deepEqual([started.path, started.body.entries, store.get().skills.queue?.active], ["/api/bridge/skills/queue", queue, true]);
+});
+
+test("a pause the server will not make says so, and re-reads so nothing looks paused", async () => {
+  const store = createClientStore();
+  const queue = [{ typeID: GUNNERY, toLevel: 5 }];
+  const { fetch, requests } = makeFakeFetch((path, method) => (path === "/api/bridge/skills/abort-training" && method === "POST"
+    ? { status: 409, body: { ok: false, error: "CALL_REFUSED", message: "NotNow" } }
+    : { status: 200, body: sheetBody(queue) }));
+  const flow = createAppFlow(store, { fetch });
+  await flow.loadSkills();
+  requests.length = 0;
+  await flow.pauseSkillTraining();
+  assert.match(store.get().skills.actionError ?? "", /could not be paused/);
+  assert.deepEqual([requests.map((request) => request.path), store.get().skills.queue?.active], [["/api/bridge/skills/abort-training", "/api/bridge/skills"], true]);
 });
 
 test("what lands in the store is the RE-READ sheet, not the edit we asked for", async () => {

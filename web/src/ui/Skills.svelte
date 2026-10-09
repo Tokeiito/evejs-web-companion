@@ -198,8 +198,19 @@
     );
   }
 
+  /** A queue with skills on it and none of them training: paused, as the retail client's queue can be. */
+  const paused = $derived(queue !== null && !queue.active && queue.entries.length > 0);
+
+  // The retail client's queue panel pauses by asking the server to stop the
+  // skill in training (AbortTraining). The queue is kept, and what the server
+  // then says of it is what is shown.
   async function pauseTraining(): Promise<void> {
-    await run(() => flow.saveSkillQueue([], "Stopped training", "your queue"));
+    await run(() => flow.pauseSkillTraining());
+  }
+
+  // Its start button saves the queue as it stands, which sets it going.
+  async function startTraining(): Promise<void> {
+    await run(() => flow.saveSkillQueue(currentEntries(), "Started training", "your queue"));
   }
 
   function finishText(endTimeMs: number | null): string {
@@ -290,6 +301,10 @@
     <p class="error">
       Your training queue could not be read, so what you are learning is unknown.
     </p>
+  {:else if paused}
+    <p class="empty">
+      Training is paused. Your queue is kept as it is: start it again when you are ready.
+    </p>
   {:else if training === null}
     <p class="empty">
       Nothing is training. Pick a skill below and add it to the queue.
@@ -326,8 +341,10 @@
   <header class="panel-head">
     <h2>Up next</h2>
     <span class="controls">
-      {#if (queue?.entries.length ?? 0) > 0}
-        <button type="button" disabled={busy} onclick={pauseTraining}>Stop training</button>
+      {#if paused}
+        <button type="button" disabled={busy} onclick={startTraining}>Start training</button>
+      {:else if (queue?.entries.length ?? 0) > 0}
+        <button type="button" disabled={busy} onclick={pauseTraining}>Pause training</button>
       {/if}
     </span>
   </header>
@@ -337,8 +354,12 @@
     <p class="empty">The queue is empty.</p>
   {:else}
     <p class="note">
-      {queue.entries.length} of {queue.maxEntries} places used. Everything on the
-      queue finishes {finishText(queue.endTimeMs)}.
+      {queue.entries.length} of {queue.maxEntries} places used.
+      {#if paused}
+        Nothing on the queue is training while it is paused.
+      {:else}
+        Everything on the queue finishes {finishText(queue.endTimeMs)}.
+      {/if}
     </p>
     <div class="table-wrap overflow-x-auto">
       <table class="guests reflow">
@@ -360,7 +381,7 @@
                 </span>
               </td>
               <td data-label="To">{romanLevel(entry.toLevel)}</td>
-              <td data-label="Finishes" class="num">{finishText(entry.endTimeMs)}</td>
+              <td data-label="Finishes" class="num">{paused ? "paused" : finishText(entry.endTimeMs)}</td>
               <td data-label="Order">
                 <span class="queue-controls">
                   <button

@@ -4829,6 +4829,13 @@ test("with a skill in training the sheet asks for the character's attributes as 
   // Again: nothing asked, and the points are the clock's.
   session.serverNowMs += 60_000;
   assert.deepEqual([sheetRows(await pilots.skillSheet(WHO, handle))[0], handlerCalls(session, asked).length], [[3300, 4, 45255 + 93, true], 4]);
+  // The queue panel's pause, skills.AbortTrain: AbortTraining() on the handler, with nothing, and nothing asked after it.
+  const before = session.boundCalls.length;
+  await pilots.callMethod("skillHandler", "AbortTraining", [], null, FIELDS, handle);
+  assert.deepEqual([session.boundCalls.slice(before).map((call) => [call.method, call.args, call.kwargs]), session.calls.filter((call) => call.method === "AbortTraining")], [[["AbortTraining", [], null]], []]);
+  assert.deepEqual(ledgerOf(pilots, "skillHandler.AbortTraining"), [{ reshaped: 1 }, "eve/client/script/ui/services/skillsvc.py:796"]);
+  // The call itself stops nothing kept: the queue is stopped by the server's word of it, as the client's is.
+  assert.equal((await pilots.skillSheet(WHO, handle)).queue.active, true);
   // The queue stopped by the server: nothing is in training, and the points are the entry's.
   session.notify("OnSkillQueuePausedServer", []);
   const stopped = await pilots.skillSheet(WHO, handle);
