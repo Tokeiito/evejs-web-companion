@@ -349,6 +349,15 @@ Take these defaults, and list each under "For the operator" in the log so they c
   (`MobileWorkspace`: one panel at a time, the ship's line in `HudBar`). For the desktop
   layout (the floating windows over the tactical view) set a size with `resize_window`
   (1280 by 860 worked) and reload the page; put it back with the "desktop" preset after.
+- **`window.confirm` answers false in the hidden pane**, so a button that asks first (Form
+  fleet, Leave fleet) sends nothing when clicked. Set `window.confirm = () => true` in the
+  page before the click, in the same call or one before it.
+- **The page opens again whatever windows were open**, so choosing a pilot in the desktop
+  layout reads every panel that was left open: one login is a read of them all, and the
+  ledger of it is as wide.
+- **Two pilots can be driven at once by script** (accounts `test` and `test2`, both on the
+  game port with the override): that is how an invite, an acceptance and a second member's
+  view were checked. Log both out before the store goes back.
 - **Show-info for a thing on grid opens from the tactical view**: a right click on its
   bracket, then "Show info". The brackets are on a canvas; send `contextmenu` events across
   it a few pixels apart until the menu appears, and read which thing was picked from the
