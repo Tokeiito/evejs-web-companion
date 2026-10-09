@@ -323,6 +323,46 @@ holds again when the server says an item changed, and a mining laser's cycle is 
 The client asks nothing there. To match it the notices have to be worked into what is kept, as
 its cache does, and that is not done.
 
+**The object cache, for a service's method calls, 2026-10-09.** Where the server answers a
+service's method with a `CachedMethodCallResult`, the client's object cache keeps the answer
+(`objectCaching.py`). The result carries what the server says of the method's answers: a
+`versionCheck`, and perhaps a `sessionInfo`. The first such word for a method holds for the run
+(`CacheMethodCall`). The answer is kept by the service, the method, the session's value of
+`sessionInfo` if there is one, and the arguments. A later call of the same finds it
+(`PerformCachedMethodCall`) and asks `__ShouldVersionCheck`:
+
+| `versionCheck` | The kept answer is used without asking |
+|---|---|
+| `never` | always |
+| `run` (and no word) | for the rest of the run |
+| a time (`5 minutes`, `1 hour`, ...: `__versionchecktimes__`), or a number of 100 ns | until it is that old, by its own stamp |
+| `utcmidnight`, `utcmidnight_or_3hours` | until it is as old as is left to the first UTC midnight after the run began, or three hours if that is less |
+| `always`, or None | never |
+
+The client's log says "returning a cached result" where the cache answered. Across the
+Tranquility recordings that is `agentMgr.GetMessagesForEpicArcMissions` 800 times,
+`shipKillCounter.GetItemKillCountPlayer` 61, `fwWarzoneSolarsystem.GetAllWarzonesOccupationStates`
+55, `beyonce.GetFormations` 43, `structureDirectory.GetStructureMapData` 42, and a dozen more.
+The server tells the client when an answer has changed by calling
+`objectCaching.InvalidateCachedMethodCall(service, method, *args)` or
+`InvalidateCachedMethodCalls` on it.
+
+The game-port session opened such an answer and kept nothing of it: every call was sent. It now
+keeps and answers as above (`session.js` `cachedMethodCall`), for a call by a service's name or
+to the proxy's node, and forgets what the server names in either of its two calls. This server
+marks some three dozen methods as cached. Read twice in one session, a docked pilot's routes cost
+29 calls the second time before and 26 after: `account.GetEntryTypes`,
+`marketProxy.GetCharOrders` and `marketProxy.GetMarketOrderHistory` were answered by the cache.
+
+Not as the client does it:
+
+- **A check with the server.** When an answer is due one, the client sends the call with the
+  version it holds (`machoVersion`) and may be told `CacheOK`. Here the call is sent afresh.
+- **One of the pilot's own writes forgets every answer kept.** The client's own code names the
+  cached calls a write of its changes, and the server names the rest.
+- A bound object's cached answers, and the server's naming of several calls by a part of their
+  arguments, are not kept or matched.
+
 **The formations, asked for once, 2026-10-09.** `michelle.AddBallpark` asks
 `sm.RemoteSvc('beyonce').GetFormations()` each time it makes a ballpark (`michelle.py` 324). The
 answer is a cached method call's, and the client's object cache answers every asking after the

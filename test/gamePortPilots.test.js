@@ -5409,7 +5409,7 @@ test("the ship is already flying an order when its own ball says so, and the pil
 // from then on goes by the server's OnItemChange. A whole mining mission recorded on Tranquility has twelve List
 // calls, one for each container and flag. The BFF's routes list a container each time they want it.
 
-const LIST_PAIRS = new Set(["dogmaIM.MachoBindObject", "dogmaIM.List", "invbroker.GetInventory", "invbroker.GetInventoryFromId", "invbroker.MachoBindObject", "invbroker.List", "invbroker.ListByFlags", "invbroker.Add", "invbroker.GetCapacity", "station.GetGuests", "slash.SlashCmd", "dogmaIM.AddTarget", "beyonce.CmdStop"]);
+const LIST_PAIRS = new Set(["stationSvc.GetStation", "dogmaIM.MachoBindObject", "dogmaIM.List", "invbroker.GetInventory", "invbroker.GetInventoryFromId", "invbroker.MachoBindObject", "invbroker.List", "invbroker.ListByFlags", "invbroker.Add", "invbroker.GetCapacity", "station.GetGuests", "slash.SlashCmd", "dogmaIM.AddTarget", "beyonce.CmdStop"]);
 /** A docked pilot with its hangar and its ship bound. Each listing the server answers is a different one, so that what was kept can be told from what was asked for again. */
 async function withContainers(answers = {}) {
   let answered = 0;
@@ -5641,4 +5641,37 @@ test("formations the server refused are not kept: the park goes on without them,
   refuse = false;
   assert.deepEqual([(await pilots.callMethod("beyonce", "GetFormations", [], null, WHOSE, handle)).result, formationsAsked(session)], [FORMATIONS_AS_JSON, 3]);
   assert.deepEqual([(await pilots.callMethod("beyonce", "GetFormations", [], null, WHOSE, handle)).result, formationsAsked(session)], [FORMATIONS_AS_JSON, 3]);
+});
+
+// ── beside the session's object cache ────────────────────────────────────────
+//
+// The session keeps what the server marks as cached, as the client's object cache does (session.js
+// cachedMethodCall). A call it answers is not sent, so the transport does not count it; and what the pilot
+// writes may have changed any of it, so a write forgets it all.
+
+test("a call the session's object cache answers is not sent and not counted; one of the pilot's own writes forgets what the cache holds", async () => {
+  const { pilots, session, handle, hangar } = await withContainers();
+  const cached = new Map([["stationSvc.GetStation.[60003760]", { type: "list", items: [7] }]]);
+  let forgotten = 0;
+  session.cachedMethodCall = (service, method, args) => { const kept = cached.get(`${service}.${method}.${JSON.stringify(args)}`); return kept === undefined ? null : { result: kept }; };
+  session.forgetCachedMethodCalls = () => { forgotten += 1; cached.clear(); };
+  const sent = () => session.calls.filter((call) => call.service === "stationSvc").length;
+  const station = (...args) => pilots.callMethod("stationSvc", "GetStation", args, null, WHO, handle);
+  // Answered by the cache: as the server answered it, with nothing sent and nothing counted.
+  assert.deepEqual([(await station(60003760)).result, sent(), pilots.callLedger().some((row) => row.pair === "stationSvc.GetStation")], [{ type: "list", items: [7] }, 0, false]);
+  // Not in the cache: sent, and counted.
+  await station(60000004);
+  assert.deepEqual([sent(), pilots.callLedger().find((row) => row.pair === "stationSvc.GetStation").calls], [1, 1]);
+  // A read, an order to the engines and a lock forget nothing; a write does, by name or on an object, done or refused.
+  await pilots.callMethod("station", "GetGuests", [], null, WHO, handle);
+  await pilots.callMethod("beyonce", "CmdStop", [], null, WHO, handle);
+  await pilots.callMethod("dogmaIM", "AddTarget", [9001], null, WHO, handle);
+  assert.equal(forgotten, 0);
+  await pilots.callMethod("slash", "SlashCmd", ["/giveitem 34 1"], null, WHO, handle);
+  assert.equal(forgotten, 1);
+  await pilots.callBoundMethod("invbroker", "Add", [1, STATION], { flag: 5 }, WHO, handle, hangar);
+  assert.equal(forgotten, 2);
+  // What was cached is asked of the server now.
+  await station(60003760);
+  assert.equal(sent(), 2);
 });

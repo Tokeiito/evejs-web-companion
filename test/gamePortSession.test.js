@@ -499,6 +499,8 @@ test("a cached object is fetched again only when its checksum changed and ours i
 
   const { session, transport } = await loggedIn(context);
   const ask = async (answerStamp, answerChecksum) => {
+    // The method's own answer is kept by the object cache too (below); forgotten here, so that each asking is sent.
+    session.forgetCachedMethodCalls();
     const before = transport.sent.length;
     const answer = session.call("corporationSvc", "GetAllCorpMedals", [1000035]);
     transport.deliver(withVersion(lastCall(transport).packet.source.callID, answerStamp, answerChecksum));
@@ -1069,4 +1071,154 @@ test("two binds of one address at once, carrying the same call, are one bind, an
   const [first, second] = await Promise.all(binds);
   assert.deepEqual([first.objectID, second.objectID, text(first.result), text(second.result)], ["N=65450:31", "N=65450:31", "the state", "the state"]);
   assert.deepEqual(callsSince(transport, before).map(([, method]) => method), ["MachoResolveObject", "MachoBindObject"]);
+});
+
+// ── cached method calls: objectCaching ───────────────────────────────────────
+//
+// A service's method the server answers with a CachedMethodCallResult is kept by the client's object cache, by
+// the service, the method and the arguments, for as long as the answer's own details say (objectCaching.py). A
+// Tranquility recording has "returning a cached result" in the client's log wherever the cache answered.
+
+const FILETIME_EPOCH = 116444736000000000n;
+const CACHED_RESULT = Buffer.from("carbon.common.script.net.objectCaching.CachedMethodCallResult");
+/** For details that say nothing of a version check at all. */
+const NO_WORD = Symbol("no word of a version check");
+/** A CachedMethodCallResult as the server sends one: what it says of the method's answers, the answer inline, and its version. */
+const cachedResult = (value, { versionCheck = "run", sessionInfo = null, stamp = 0n } = {}) => ({
+  type: "object",
+  name: CACHED_RESULT,
+  args: [
+    { type: "dict", entries: [...(versionCheck === NO_WORD ? [] : [[Buffer.from("versionCheck"), typeof versionCheck === "string" ? Buffer.from(versionCheck) : versionCheck]]), ...(sessionInfo === null ? [] : [[Buffer.from("sessionInfo"), Buffer.from(sessionInfo)]])] },
+    marshalEncode(value),
+    [stamp, 7],
+  ],
+});
+/** A session whose clock a test moves, and a way to ask it something and answer what it sends. */
+async function cachingSession(context) {
+  const clock = { ms: 1_000_000 };
+  const { session, transport } = await loggedIn(context, { session: { now: () => clock.ms } });
+  const stampNow = () => BigInt(Math.trunc(session.serverNow())) * 10000n + FILETIME_EPOCH;
+  /** Ask, and if a call went out answer it with `answer`. Says what came back, and whether the server was asked. */
+  const ask = async (how, service, method, args, answer) => {
+    const before = transport.sent.length;
+    const asking = how === "bound" ? session.callBound("N=65450:9", method, args) : session[how](service, method, args);
+    await settle();
+    const sent = transport.sent.length - before;
+    if (sent > 0) transport.deliver(callResponse(lastCall(transport).packet.source.callID, answer));
+    return [await asking, sent];
+  };
+  return { session, transport, clock, stampNow, ask };
+}
+
+test("a service's method the server marks as cached is asked for once in a run, by its arguments, and whatever asks again is answered from that", { timeout: 5000 }, async (context) => {
+  const { session, ask } = await cachingSession(context);
+  assert.equal(session.cachedMethodCall("beyonce", "GetFormations", []), null, "nothing is kept before it is asked");
+  assert.deepEqual(await ask("call", "beyonce", "GetFormations", [], cachedResult([1, 2])), [[1, 2], 1]);
+  assert.deepEqual(await ask("call", "beyonce", "GetFormations", [], cachedResult([3, 4])), [[1, 2], 0]);
+  assert.deepEqual(session.cachedMethodCall("beyonce", "GetFormations", []), { result: [1, 2] });
+  // Other arguments, another method and another service are each their own.
+  assert.deepEqual(await ask("call", "stationSvc", "GetStation", [60003760], cachedResult(5)), [5, 1]);
+  assert.deepEqual(await ask("call", "stationSvc", "GetStation", [60000004], cachedResult(6)), [6, 1]);
+  assert.deepEqual(await ask("call", "stationSvc", "GetStation", [60003760], cachedResult(7)), [5, 0]);
+  assert.deepEqual(await ask("call", "stationSvc", "GetStations", [60003760], cachedResult(8)), [8, 1]);
+  assert.deepEqual(await ask("call", "map", "GetStation", [60003760], cachedResult(9)), [9, 1]);
+  // A whole number is the same argument however it is spelt.
+  assert.deepEqual(await ask("call", "stationSvc", "GetStation", [60003760n], cachedResult(10)), [5, 0]);
+  // Asked of the proxy's node, it is the same service's method.
+  assert.deepEqual(await ask("proxyCall", "beyonce", "GetFormations", [], cachedResult([3, 4])), [[1, 2], 0]);
+  // An answer that is no CachedMethodCallResult is not kept, and nor is a bound object's that is one.
+  assert.deepEqual([await ask("call", "account", "GetCashBalance", [], 11), await ask("call", "account", "GetCashBalance", [], 12)], [[11, 1], [12, 1]]);
+  assert.deepEqual([await ask("bound", null, "List", [], cachedResult(13)), await ask("bound", null, "List", [], cachedResult(14))], [[13, 1], [14, 1]]);
+});
+
+test("how long a cached answer is good for is what the server said of the method the first time: never, always, the run, or a time", { timeout: 5000 }, async (context) => {
+  const { clock, stampNow, ask } = await cachingSession(context);
+  const twice = async (method, details, answers = [1, 2]) => [await ask("call", "svc", method, [], cachedResult(answers[0], details())), await ask("call", "svc", method, [], cachedResult(answers[1], details()))];
+  assert.deepEqual(await twice("Never", () => ({ versionCheck: "never" })), [[1, 1], [1, 0]]);
+  assert.deepEqual(await twice("Run", () => ({ versionCheck: "run" })), [[1, 1], [1, 0]]);
+  assert.deepEqual(await twice("NoWord", () => ({ versionCheck: NO_WORD })), [[1, 1], [1, 0]], "no word of it is 'run'");
+  assert.deepEqual(await twice("Always", () => ({ versionCheck: "always" })), [[1, 1], [2, 1]]);
+  assert.deepEqual(await twice("NotAtAll", () => ({ versionCheck: null })), [[1, 1], [2, 1]], "a version check of None is not kept");
+  assert.deepEqual(await twice("Unheard", () => ({ versionCheck: "a fortnight" })), [[1, 1], [2, 1]], "a time the client has no word for is not used");
+  // The client's word of three: its own, the proxy's and the server's.
+  assert.deepEqual(await twice("Three", () => ({ versionCheck: [Buffer.from("run"), null, null] })), [[1, 1], [1, 0]]);
+
+  // A time: good for that long from the answer's own stamp.
+  const timed = () => ({ versionCheck: "5 minutes", stamp: stampNow() });
+  assert.deepEqual(await ask("call", "svc", "Timed", [], cachedResult(1, timed())), [1, 1]);
+  clock.ms += 4 * 60 * 1000 + 59 * 1000;
+  assert.deepEqual(await ask("call", "svc", "Timed", [], cachedResult(2, timed())), [1, 0]);
+  clock.ms += 1000;
+  assert.deepEqual(await ask("call", "svc", "Timed", [], cachedResult(3, timed())), [3, 1], "five minutes old: asked again, and the new answer kept");
+  clock.ms += 60 * 1000;
+  assert.deepEqual(await ask("call", "svc", "Timed", [], cachedResult(4, timed())), [3, 0]);
+  // A number of 100 ns is a time too.
+  assert.deepEqual(await ask("call", "svc", "Counted", [], cachedResult(1, { versionCheck: 20_000_000, stamp: stampNow() })), [1, 1]);
+  clock.ms += 1999;
+  assert.deepEqual(await ask("call", "svc", "Counted", [], cachedResult(2, { versionCheck: 20_000_000, stamp: stampNow() })), [1, 0]);
+  clock.ms += 1;
+  assert.deepEqual(await ask("call", "svc", "Counted", [], cachedResult(2, { versionCheck: 20_000_000, stamp: stampNow() })), [2, 1]);
+  // What the server said the first time holds: a later answer that says otherwise does not change it.
+  assert.deepEqual(await ask("call", "svc", "Always", [], cachedResult(5, { versionCheck: "never" })), [5, 1]);
+  assert.deepEqual(await ask("call", "svc", "Always", [], cachedResult(6, { versionCheck: "never" })), [6, 1]);
+});
+
+test("an answer good until midnight is good until the first UTC midnight after the run began, or for three hours if that is sooner", { timeout: 5000 }, async (context) => {
+  const { session, clock, stampNow, ask } = await cachingSession(context);
+  const DAY_MS = 86_400_000;
+  // The run begins nine hours before a midnight, by the session's own reckoning of the server's clock.
+  clock.ms += (DAY_MS - (Math.trunc(session.serverNow()) % DAY_MS)) - 9 * 3_600_000;
+  const midnight = () => ({ versionCheck: "utcmidnight", stamp: stampNow() });
+  const sooner = () => ({ versionCheck: "utcmidnight_or_3hours", stamp: stampNow() });
+  assert.deepEqual([await ask("call", "svc", "Midnight", [], cachedResult(1, midnight())), await ask("call", "svc", "Sooner", [], cachedResult(1, sooner()))], [[1, 1], [1, 1]]);
+  // Two hours on: both good. (Good for nine hours less its age, and for three hours.)
+  clock.ms += 2 * 3_600_000;
+  assert.deepEqual([await ask("call", "svc", "Midnight", [], cachedResult(2, midnight())), await ask("call", "svc", "Sooner", [], cachedResult(2, sooner()))], [[1, 0], [1, 0]]);
+  // Three hours old: the one that ends sooner is asked again; the other is good for as long as is left to midnight, which is six hours.
+  clock.ms += 3_600_000;
+  assert.deepEqual([await ask("call", "svc", "Midnight", [], cachedResult(3, midnight())), await ask("call", "svc", "Sooner", [], cachedResult(3, sooner()))], [[1, 0], [3, 1]]);
+  // Four and a half hours old with four and a half to go: as old as there is left, and asked again.
+  clock.ms += 1.5 * 3_600_000;
+  assert.deepEqual(await ask("call", "svc", "Midnight", [], cachedResult(4, midnight())), [4, 1]);
+  // With less than three hours to midnight, the one that ends sooner ends at midnight too: got with two hours to go, it is good for one.
+  clock.ms += 2.5 * 3_600_000;
+  assert.deepEqual(await ask("call", "svc", "Late", [], cachedResult(1, sooner())), [1, 1]);
+  clock.ms += 59 * 60_000;
+  assert.deepEqual(await ask("call", "svc", "Late", [], cachedResult(2, sooner())), [1, 0]);
+  clock.ms += 60_000;
+  assert.deepEqual(await ask("call", "svc", "Late", [], cachedResult(3, sooner())), [3, 1]);
+});
+
+test("an answer the server says to keep by something of the session's is kept by its value, and is another's when that changes", { timeout: 5000 }, async (context) => {
+  const { session, ask } = await cachingSession(context);
+  session.attributes.corpid = 98000000;
+  const byCorporation = (value) => cachedResult(value, { sessionInfo: "corpid" });
+  assert.deepEqual(await ask("call", "corpmgr", "GetAssetInventory", [4], byCorporation(1)), [1, 1]);
+  assert.deepEqual(await ask("call", "corpmgr", "GetAssetInventory", [4], byCorporation(2)), [1, 0]);
+  session.attributes.corpid = 98000001;
+  assert.deepEqual(await ask("call", "corpmgr", "GetAssetInventory", [4], byCorporation(3)), [3, 1]);
+  session.attributes.corpid = 98000000;
+  assert.deepEqual(await ask("call", "corpmgr", "GetAssetInventory", [4], byCorporation(4)), [1, 0], "back in the first, its answer is still held");
+});
+
+test("the server's word that a cached answer has changed forgets that one; forgetting them all forgets only the answers", { timeout: 5000 }, async (context) => {
+  const { session, transport, ask } = await cachingSession(context);
+  const prime = async () => [await ask("call", "stationSvc", "GetStation", [60003760], cachedResult(1)), await ask("call", "stationSvc", "GetStation", [60000004], cachedResult(2)), await ask("call", "beyonce", "GetFormations", [], cachedResult(3))];
+  await prime();
+  // objectCaching.InvalidateCachedMethodCall(service, method, *args), called on the client by the server.
+  transport.deliver(serverCall("objectCaching", "InvalidateCachedMethodCall", [Buffer.from("stationSvc"), Buffer.from("GetStation"), 60003760]));
+  await settle();
+  assert.deepEqual([await ask("call", "stationSvc", "GetStation", [60003760], cachedResult(4)), await ask("call", "stationSvc", "GetStation", [60000004], cachedResult(5)), await ask("call", "beyonce", "GetFormations", [], cachedResult(6))], [[4, 1], [2, 0], [3, 0]]);
+  // InvalidateCachedMethodCalls([(service, method, args), ...]).
+  transport.deliver(serverCall("objectCaching", "InvalidateCachedMethodCalls", [{ type: "list", items: [[Buffer.from("stationSvc"), Buffer.from("GetStation"), [60000004]], [Buffer.from("beyonce"), Buffer.from("GetFormations"), []], [Buffer.from("never"), Buffer.from("Heard"), []]] }]));
+  await settle();
+  assert.deepEqual([await ask("call", "stationSvc", "GetStation", [60003760], cachedResult(7)), await ask("call", "stationSvc", "GetStation", [60000004], cachedResult(8)), await ask("call", "beyonce", "GetFormations", [], cachedResult(9))], [[4, 0], [8, 1], [9, 1]]);
+  // By hand, for a session's own keeper: by the same three, or all at once.
+  session.invalidateCachedMethodCalls([["beyonce", "GetFormations", []]]);
+  assert.deepEqual(await ask("call", "beyonce", "GetFormations", [], cachedResult(10)), [10, 1]);
+  // What the server first said of a method's answers outlives the forgetting: one it said to check always is not kept because a later answer says never.
+  await ask("call", "svc", "Checked", [], cachedResult(1, { versionCheck: "always" }));
+  session.forgetCachedMethodCalls();
+  assert.deepEqual([await ask("call", "stationSvc", "GetStation", [60003760], cachedResult(11)), await ask("call", "stationSvc", "GetStation", [60003760], cachedResult(12))], [[11, 1], [11, 0]], "asked again, and kept again as the server first said");
+  assert.deepEqual([await ask("call", "svc", "Checked", [], cachedResult(2, { versionCheck: "never" })), await ask("call", "svc", "Checked", [], cachedResult(3, { versionCheck: "never" }))], [[2, 1], [3, 1]]);
 });

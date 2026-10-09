@@ -62,6 +62,14 @@ const LONGEST_TIMER_MS = 2 ** 31 - 1;
 const HANDSHAKE_TIMEOUT_MS = 20_000;
 /** FILETIME ticks (100ns) between 1601 and 1970. */
 const FILETIME_EPOCH_OFFSET = 116444736000000000n;
+/** objectCaching.__versionchecktimes__: how long an answer is good for, by what the server calls the time, in 100 ns. */
+const [SECOND, MINUTE, HOUR, DAY] = [10_000_000n, 600_000_000n, 36_000_000_000n, 864_000_000_000n];
+const VERSION_CHECK_TIMES = new Map([
+  ["year", 360n * DAY], ["6 months", 180n * DAY], ["3 months", 90n * DAY], ["month", 30n * DAY], ["week", 7n * DAY], ["day", DAY],
+  ["12 hours", 12n * HOUR], ["6 hours", 6n * HOUR], ["3 hours", 3n * HOUR], ["2 hours", 2n * HOUR], ["1 hour", HOUR],
+  ["30 minutes", 30n * MINUTE], ["15 minutes", 15n * MINUTE], ["5 minutes", 5n * MINUTE], ["1 minute", MINUTE],
+  ["30 seconds", 30n * SECOND], ["15 seconds", 15n * SECOND], ["5 seconds", 5n * SECOND], ["1 second", SECOND],
+]);
 
 /**
  * What the retail client prints when it runs the function the server sends at
@@ -213,6 +221,13 @@ function stateOfClass(value, suffix) {
   return name && name.endsWith(suffix) ? value.args : null;
 }
 
+/** A value with each whole number spelt one way, so that 5 and 5n make one key. */
+const canonical = (value) => (Array.isArray(value) ? value.map(canonical)
+  : typeof value === "bigint" && value >= BigInt(Number.MIN_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : value);
+
+/** A tuple's or a list's items, however the codec spells it; none for anything else. */
+const itemsOfSequence = (value) => (Array.isArray(value) ? value : value && Array.isArray(value.items) ? value.items : []);
+
 /** A value as a string that is the same for equal values: a cache key. */
 function keyOf(value) {
   return JSON.stringify(value, (key, entry) => {
@@ -302,6 +317,12 @@ class GamePortSession {
     this.callsOut = new Map();
     /** Cached objects fetched so far, by object ID: {stamp, checksum, value}. */
     this.cachedObjects = new Map();
+    /** objectCaching.methodCallCachingDetails: what the server said of a method's answers, by "service.method": {versionCheck, sessionInfo}. */
+    this.methodCallDetails = new Map();
+    /** objectCaching.cachedMethodCalls: an answer by service, method, the session's value it is kept by, and arguments: {result, stamp}. */
+    this.cachedMethodCalls = new Map();
+    /** objectCaching.runid: when this run began, as the client reckons time. Set when it is first wanted. */
+    this.runStarted = null;
 
     /** What the server told us at login (GPS.py's `response`). */
     this.loginResponse = null;
@@ -490,11 +511,15 @@ class GamePortSession {
 
   /** sm.RemoteSvc(service).method(*args, **kwargs) */
   call(service, method, args = [], kwargs = null) {
+    const kept = this.cachedMethodCall(service, method, args);
+    if (kept) return Promise.resolve(kept.result);
     return this._call({ destination: anyAddress(service), boundObject: null, service, method, args, kwargs });
   }
 
   /** sm.ProxySvc(service).method(*args, **kwargs): addressed to our proxy node. */
   proxyCall(service, method, args = [], kwargs = null) {
+    const kept = this.cachedMethodCall(service, method, args);
+    if (kept) return Promise.resolve(kept.result);
     return this._call({ destination: nodeAddress(this.proxyNodeID, service), boundObject: null, service, method, args, kwargs });
   }
 
@@ -607,7 +632,15 @@ class GamePortSession {
         reject(error);
       }
     });
-    return answered.then((result) => this._unwrapCachedResult(result));
+    return answered.then((result) => this._answered({ boundObject, service, method, args }, result));
+  }
+
+  /** What a call answers its caller: the answer, with a cached one opened, and kept if it is a service's own. */
+  async _answered({ boundObject, service, method, args }, value) {
+    const state = stateOfClass(value, "objectCaching.CachedMethodCallResult");
+    const result = await this._unwrapCachedResult(value);
+    if (state && boundObject === null) this._cacheMethodCall(service, method, args, state, result);
+    return result;
   }
 
   /** Give a call this long, from now, to be answered. */
@@ -638,6 +671,94 @@ class GamePortSession {
     if (!state) return value;
     const reference = stateOfClass(state[1], "cachedObject.CachedObject");
     return reference ? this.fetchCachedObject(state[1]) : unpickle(state[1]);
+  }
+
+  /** The client's clock now, as it reckons time: 100 ns since 1601. */
+  _filetimeNow() {
+    return BigInt(Math.trunc(this.serverNow())) * 10000n + FILETIME_EPOCH_OFFSET;
+  }
+
+  /** What an answer of a service's method is kept as: the service, the method, the session's value the server said to keep it by, and the arguments. */
+  _methodCallKey(service, method, args, details) {
+    const by = details.sessionInfo === null ? [] : [this.attributes[details.sessionInfo] ?? null];
+    return keyOf(canonical([service, method, ...by, ...(Array.isArray(args) ? args : [])]));
+  }
+
+  /**
+   * objectCaching.CacheMethodCall: a service's method answered with a CachedMethodCallResult, whose state is
+   * (details, result, version). What the server says of the method's answers the first time is what holds for
+   * the run. The answer is kept unless the details say it is not to be (a version check of None).
+   */
+  _cacheMethodCall(service, method, args, [details, , version], result) {
+    const pair = `${service}.${method}`;
+    if (!this.methodCallDetails.has(pair)) {
+      const entries = new Map((details && Array.isArray(details.entries) ? details.entries : []).map(([name, entry]) => [text(name), entry]));
+      // A version check may be one word, or three: the client's, the proxy's and the server's.
+      const check = entries.has("versionCheck") ? entries.get("versionCheck") : "run";
+      const own = Array.isArray(check) ? check[0] : check;
+      this.methodCallDetails.set(pair, { versionCheck: own === null ? null : text(own) ?? integer(own), sessionInfo: text(entries.get("sessionInfo")) ?? null });
+    }
+    const said = this.methodCallDetails.get(pair);
+    if (said.versionCheck === null) return;
+    const stamp = BigInt(integer(Array.isArray(version) ? version[0] : null) ?? 0);
+    this.runStarted ??= this._filetimeNow();
+    this.cachedMethodCalls.set(this._methodCallKey(service, method, args, said), { result, stamp });
+  }
+
+  /**
+   * objectCaching.__ShouldVersionCheck: whether an answer kept is to be checked with the server before it is
+   * used again. Never, always, not within the run it was got in, or once it is older than the server said it
+   * is good for; the two that end at midnight end at the first UTC midnight after the run began.
+   */
+  _shouldVersionCheck({ versionCheck }, { stamp }) {
+    if (versionCheck === "never" || versionCheck === "run") return false;
+    if (versionCheck === "always") return true;
+    const now = this._filetimeNow();
+    let maxAge;
+    if (versionCheck === "utcmidnight" || versionCheck === "utcmidnight_or_3hours") {
+      this.runStarted ??= now;
+      const untilMidnight = (this.runStarted / DAY + 1n) * DAY - now;
+      maxAge = versionCheck === "utcmidnight" || untilMidnight < 3n * HOUR ? untilMidnight : 3n * HOUR;
+    } else if (typeof versionCheck === "number") {
+      maxAge = BigInt(versionCheck);
+    } else if (VERSION_CHECK_TIMES.has(versionCheck)) {
+      maxAge = VERSION_CHECK_TIMES.get(versionCheck);
+    } else {
+      return true; // a time the client has no word for: it would not use the answer
+    }
+    return maxAge <= now - stamp;
+  }
+
+  /**
+   * objectCaching.PerformCachedMethodCall: what the object cache answers a call of a service's method with,
+   * without asking the server ("returning a cached result", in the client's log). {result} for an answer kept
+   * and still good; null for a method the server has not marked as cached, an answer not kept, and one that is
+   * due a check with the server.
+   *
+   * Not done as the client does it: a check with the server. The client sends the call with the version it holds
+   * and may be told its copy is good (CacheOK). Here an answer due a check is asked for afresh.
+   */
+  cachedMethodCall(service, method, args = []) {
+    const said = this.methodCallDetails.get(`${service}.${method}`);
+    if (!said || said.versionCheck === null) return null;
+    const kept = this.cachedMethodCalls.get(this._methodCallKey(service, method, args, said));
+    return kept && !this._shouldVersionCheck(said, kept) ? { result: kept.result } : null;
+  }
+
+  /**
+   * objectCaching.InvalidateCachedMethodCalls: each of [service, method, args] is forgotten, so that it is asked
+   * for when next wanted. The server calls this on the client when it knows an answer has changed.
+   */
+  invalidateCachedMethodCalls(calls) {
+    for (const [service, method, args] of calls) {
+      const said = this.methodCallDetails.get(`${text(service)}.${text(method)}`);
+      if (said) this.cachedMethodCalls.delete(this._methodCallKey(text(service), text(method), itemsOfSequence(args), said));
+    }
+  }
+
+  /** Every answer kept is forgotten. What the server said of each method's answers is not. */
+  forgetCachedMethodCalls() {
+    this.cachedMethodCalls.clear();
   }
 
   /**
@@ -974,6 +1095,13 @@ class GamePortSession {
       // How long the server says it will wait for the answer (the packet's machoTimeout), when it says.
       timeoutSeconds: integer(dictGet(packet.oob, "machoTimeout")) ?? null,
     };
+    // objectCaching's own two are the session's to act on, whoever answers the call: the cache is here.
+    if (call.service === "objectCaching" && call.method === "InvalidateCachedMethodCall") {
+      const [service, method, ...args] = itemsOfSequence(call.args);
+      this.invalidateCachedMethodCalls([[service, method, args]]);
+    } else if (call.service === "objectCaching" && call.method === "InvalidateCachedMethodCalls") {
+      this.invalidateCachedMethodCalls(itemsOfSequence(itemsOfSequence(call.args)[0]).map(itemsOfSequence));
+    }
     const report = (outcome) => this._emit("clientCall", { ...call, answered: false, answer: undefined, error: null, ...outcome });
     if (call.service === null || call.method === null || typeof this.clientCalls !== "function") {
       report({});

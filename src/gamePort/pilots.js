@@ -1197,6 +1197,12 @@ function createGamePortPilots({
       });
       return { service, method, result: wireToBridgeJson(kept), notifications: drain(entry) };
     }
+    // objectCaching.PerformCachedMethodCall: what the server marked as cached is answered from its first answer
+    // for as long as the client would keep it. Nothing is sent, and nothing is counted.
+    if (!form.moniker && typeof entry.session.cachedMethodCall === "function") {
+      const kept = entry.session.cachedMethodCall(service, method, argumentsToWire(form.args));
+      if (kept) return { service, method, result: wireToBridgeJson(kept.result === undefined ? null : kept.result), notifications: drain(entry) };
+    }
     // Asked of the service by name and made on its moniker: the arguments may be the client's as they stand, the call was not.
     // What the client's skill services keep is noted where it is asked for, which is not every time it is wanted (skillRead).
     const keptByAService = (service === SKILL_HANDLER && Object.hasOwn(SKILL_KEPT, method)) || (service === CORP_REGISTRY && method === AGGRESSION_SETTINGS);
@@ -1213,7 +1219,7 @@ function createGamePortPilots({
       for (const [reads, keeper] of Object.entries(KEPT_UNTIL_CHANGED)) {
         if (Object.hasOwn(keeper.writes, service) && keeper.writes[service].has(method)) entry.kept[reads].forget();
       }
-      if (mayChangeContents(service, method)) entry.listings.forget();
+      if (mayChangeContents(service, method)) forgetWhatAWriteMayChange(entry);
     });
     // targetMgr._LockTarget: (flag, targets) with no flag set says the lock is made already, and the client adds the target itself.
     if (service === "dogmaIM" && method === "AddTarget" && itemsOf(result).length > 0 && !itemsOf(result)[0]) entry.targets.added(form.args[0]);
@@ -1237,6 +1243,18 @@ function createGamePortPilots({
     // Null from godma is "nothing held": of the item, or of that attribute of it.
     const value = entry.dogma.attribute(args[0], args[1]);
     return typeof value === "number" ? value : undefined;
+  }
+
+  /**
+   * One of the pilot's own writes, done or refused, may have changed what a container lists and what the server
+   * marked as cached: the listings kept are forgotten, and so is every answer the session's object cache holds
+   * (session.js cachedMethodCall). The client forgets less: its own code names the cached calls a write of its
+   * own changes, and the server names the rest. Forgetting them all asks again for what had not changed, and
+   * never answers with what had.
+   */
+  function forgetWhatAWriteMayChange(entry) {
+    entry.listings.forget();
+    if (typeof entry.session.forgetCachedMethodCalls === "function") entry.session.forgetCachedMethodCalls();
   }
 
   // ── what the ship has locked, as it is kept ──────────────────────────────
@@ -2532,14 +2550,14 @@ function createGamePortPilots({
     try {
       result = await run(entry, service, method, () => (listing ? entry.listings.read(listingKeptAs(boundHandle, form), sent) : sent()));
     } catch (error) {
-      if (mayChangeContents(service, method)) entry.listings.forget();
+      if (mayChangeContents(service, method)) forgetWhatAWriteMayChange(entry);
       // The session's own word for a bind the server answered without an object: the gateway's, for a bind.
       if (/ did not return a bound object\.| could not say where its object lives\./.test(error.message)) {
         throw fail("BOUND_NO_OBJECT", `${service}.MachoBindObject did not return a bound object.`);
       }
       throw error;
     }
-    if (mayChangeContents(service, method)) entry.listings.forget();
+    if (mayChangeContents(service, method)) forgetWhatAWriteMayChange(entry);
     if (service === "scanMgr") afterScanManagerCall(entry, method, form.args, result);
     if (service === "dogmaIM") afterGroupingCall(entry, method, form.args, result);
     if (service === "beyonce") afterMovementCall(entry, method, form.args, kwargs);
