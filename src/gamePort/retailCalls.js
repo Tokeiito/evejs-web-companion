@@ -45,6 +45,8 @@
 // so the list of what still needs reading is measured rather than guessed.
 // `shape` may also decide the status from the arguments it is given.
 
+const { constructorKeywordOrder } = require("./py27");
+
 /** A Python list, from a JS array (which would go out as a tuple) or from one already wrapped. */
 const list = (value) => (Array.isArray(value) ? { type: "list", items: value } : value);
 
@@ -60,6 +62,36 @@ function orderNumber(value) {
   const number = Number(value);
   if (Number.isSafeInteger(number)) return number > 0 ? number : null;
   return BigInt(value);
+}
+
+/** The eight keywords a sale's item is made with, in the order the client's window writes them (sellMulti.py 501). */
+const SALE_ITEM = Object.freeze(["stationID", "typeID", "itemID", "price", "quantity", "officeID", "delta", "rawBrokerFeePercentage"]);
+const wholeAndPositive = (value) => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+
+/**
+ * sellMulti.py 483, GetValidatedItem: one item of a sale, as the window makes it,
+ *
+ *   KeyVal(stationID=int(...), typeID=int(...), itemID=..., price=round(price, 2), quantity=int(qty),
+ *          officeID=..., delta=..., rawBrokerFeePercentage=...)
+ *
+ * with officeID None for an item that is not in a corporation's office. A route gives one as a plain object with
+ * what it knows of it, which is no value the wire has. Answers { item, whole }: the util.KeyVal, its fields in the
+ * order the client's Python keeps the keywords of such a call (py27.js constructorKeywordOrder), and whether it has
+ * all eight. The two the window works out, delta and rawBrokerFeePercentage, are not made up where a route has
+ * none. An item that is the client's KeyVal already is answered as it is. Null for what is no item of a sale.
+ */
+function saleItem(given) {
+  if (!given || typeof given !== "object" || Array.isArray(given)) return null;
+  if (given.type === "object") {
+    const names = given.args && Array.isArray(given.args.entries) ? given.args.entries.map(([name]) => name) : [];
+    return { item: given, whole: SALE_ITEM.every((name) => names.includes(name)) };
+  }
+  if (given.type !== undefined || given.itemID === undefined || given.itemID === null) return null;
+  if (!wholeAndPositive(given.stationID) || !wholeAndPositive(given.typeID) || !wholeAndPositive(given.quantity)) return null;
+  if (typeof given.price !== "number" || !Number.isFinite(given.price) || given.price <= 0) return null;
+  const fields = { ...given, price: Math.round(given.price * 100) / 100, officeID: given.officeID ?? null };
+  const written = SALE_ITEM.filter((name) => fields[name] !== undefined);
+  return { item: keyVal(constructorKeywordOrder(written).map((name) => [name, fields[name]])), whole: written.length === SALE_ITEM.length };
 }
 
 /** The order's own row in the pilot's orders the session keeps, by the columns' names: null where there is none, or no such order in it. */
@@ -700,6 +732,26 @@ const RETAIL_CALLS = Object.freeze({
     shape: (args, kwargs) => {
       if (args.length !== 9) return { args, kwargs, status: "differs", note: "The client sends nine, the last of them the broker's fee its window showed." };
       return typeof args[8] === "number" ? { args, kwargs } : { args, kwargs, status: "differs", note: "The client names the broker's fee its window showed, and the server may hold the order to it. This call names none." };
+    },
+  }),
+  "marketProxy.PlaceMultiSellOrder": Object.freeze({
+    status: "same",
+    source: `${MARKET_QUOTE}:276`,
+    note: "GetMarketProxy().PlaceMultiSellOrder(itemList, useCorp, duration, expectedBrokersFee) (sellMulti.py 462): a list of the items, each a util.KeyVal of eight fields (sellMulti.py 501), and the broker's fee rate the window showed, or None for a sale at once.",
+    shape: (args, kwargs) => {
+      const [given, useCorp, duration, fee] = args;
+      const listed = Array.isArray(given) ? given : given && given.type === "list" && Array.isArray(given.items) ? given.items : null;
+      const items = listed ? listed.map(saleItem) : [];
+      if (args.length !== 4 || items.length === 0 || items.includes(null)) {
+        return { args, kwargs, status: "differs", note: "The client sends four: a list of the items, each a util.KeyVal, whether it is for the corporation, for how long, and the broker's fee rate. This is not that." };
+      }
+      const asGiven = !Array.isArray(given) && items.every(({ item }, at) => item === listed[at]);
+      const shaped = asGiven ? args : [{ type: "list", items: items.map(({ item }) => item) }, useCorp, duration, fee];
+      if (!items.every(({ whole }) => whole)) {
+        return { args: shaped, kwargs, status: "differs", note: "The client's item has eight fields. These lack the two its window works out: how far the price is from the type's average (delta), and the broker's fee rate (rawBrokerFeePercentage)." };
+      }
+      if (duration !== 0 && typeof fee !== "number") return { args: shaped, kwargs, status: "differs", note: "For an order that stands, the client names the broker's fee rate its window showed. This call names none." };
+      return asGiven ? { args, kwargs } : { args: shaped, kwargs, status: "reshaped" };
     },
   }),
   "marketProxy.CancelCharOrder": needing(Object.freeze({

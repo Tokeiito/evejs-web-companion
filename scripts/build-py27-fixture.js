@@ -90,7 +90,9 @@ const pyUnicode = (value) => `u'${[...value].map((char) => `\\u${char.charCodeAt
 function keywordCases() {
   const next = generator(8675309);
   const real = ["passive", "machoTimeout", "flag", "qty", "locationID", "ownerID", "itemID", "typeID", "force", "name"];
-  const sets = [["passive"], ["machoTimeout"], ["flag", "qty"], ["passive", "machoTimeout"], real.slice(0, 5), real];
+  // The eight a sale's item is made with (sellMulti.py 501), and the six and five of them a route has.
+  const sale = ["stationID", "typeID", "itemID", "price", "quantity", "officeID", "delta", "rawBrokerFeePercentage"];
+  const sets = [["passive"], ["machoTimeout"], ["flag", "qty"], ["passive", "machoTimeout"], real.slice(0, 5), real, sale, sale.slice(0, 6), sale.slice(0, 5)];
   for (let index = 0; index < 400; index += 1) {
     const count = 1 + next(7);
     const keys = new Set();
@@ -190,10 +192,15 @@ function snippet(sets) {
     "            call = (call[0], call[1], c2)",
     "        return chr(31).join(call[2].keys())",
     "mw = MonikerWrap()",
+    // A class called with keywords that keeps them as its own __dict__, as utillib.KeyVal does: the fields of the
+    // instance go to the wire in that dict's order.
+    "class Kept:",
+    "    def __init__(self, first=None, **kw):",
+    "        self.__dict__ = kw",
   );
   for (const keys of keywordCases()) {
     const call = `(1, ${keys.map((key) => `${key}=0`).join(", ")})`;
-    lines.push(`out('kw ' + w0${call} + chr(30) + w1${call} + chr(30) + w2${call} + chr(30) + function0${call} + chr(30) + mw${call})`);
+    lines.push(`out('kw ' + w0${call} + chr(30) + w1${call} + chr(30) + w2${call} + chr(30) + function0${call} + chr(30) + mw${call} + chr(30) + chr(31).join(Kept${call}.__dict__.keys()))`);
   }
   for (const hex of CRC_INPUTS) {
     lines.push(`out('crc ${hex} %d' % binascii.crc_hqx(binascii.unhexlify('${hex}'), 0))`);
@@ -254,10 +261,11 @@ function main(argv = process.argv.slice(2)) {
     } else if (kind === "kw") {
       // The same call made on an object with __call__ whose keywords then pass
       // through no, one and two more functions, and made on a plain function.
-      const [object0, object1, object2, viaFunction, moniker] = rest.split(String.fromCharCode(30)).map((order) => order.split(SEPARATOR));
+      const [object0, object1, object2, viaFunction, moniker, constructed] = rest.split(String.fromCharCode(30)).map((order) => order.split(SEPARATOR));
       // And made on a Moniker that is not bound yet, where the call goes with the bind: none left is one empty name.
       const viaMoniker = moniker.filter((name) => name !== "");
-      fixture.keywords.push({ written: keywordSets[fixture.keywords.length], viaObject: [object0, object1, object2], viaFunction, viaMoniker });
+      // And given to a class that keeps them as its instance's own fields.
+      fixture.keywords.push({ written: keywordSets[fixture.keywords.length], viaObject: [object0, object1, object2], viaFunction, viaMoniker, constructed });
     } else if (kind === "fold") {
       fixture.caseFolds.push(rest.split(" "));
     } else if (kind === "literal" || kind === "inserted") {

@@ -215,6 +215,21 @@ function keywordOrder(written, { via = "function", hops = 0, added = ["machoVers
   return sent.keys();
 }
 
+/**
+ * The order of the fields of an instance made by calling its class with keywords, where the class keeps them as
+ * the instance's own: utillib.KeyVal(a=1, b=2), whose __init__(self, dictLikeObject=None, **kw) has
+ * self.__dict__ = kw. A class is not a plain function, so the interpreter collects the keywords off its stack,
+ * last one first, and __init__'s **kw is filled from that dict's order. The instance goes to the wire with its
+ * fields in the order of kw.
+ */
+function constructorKeywordOrder(written) {
+  const collected = new Dict();
+  for (const key of [...written].reverse()) collected.set(key);
+  const kept = new Dict();
+  for (const key of collected.keys()) kept.set(key);
+  return kept.keys();
+}
+
 /** moniker.py Bind's localKeywords: what a call's keywords say to the client itself, and are not sent. */
 const MONIKER_LOCAL_KEYWORDS = new Set(["machoTimeout", "noCallThrottling"]);
 
@@ -235,4 +250,4 @@ function monikerKeywordOrder(written) {
   return sent.keys();
 }
 
-module.exports = { Dict, dictOrder, hashKey, hashLong, hashString, keywordOrder, monikerKeywordOrder, orderEntries };
+module.exports = { Dict, constructorKeywordOrder, dictOrder, hashKey, hashLong, hashString, keywordOrder, monikerKeywordOrder, orderEntries };

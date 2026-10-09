@@ -24,6 +24,7 @@ const { GamePortSession, GamePortError } = require("../src/gamePort/session");
 const { TYPE, buildPacket, clientAddress, nodeAddress, parsePacket, text, dictGet } = require("../src/gamePort/packets");
 const { caseFold, cryptoHash, passwordHash } = require("../src/gamePort/placebo");
 const { monikerKeywordOrder } = require("../src/gamePort/py27");
+const { retailForm } = require("../src/gamePort/retailCalls");
 const { converse, recordingSessionOptions } = require("../scripts/capture-game-frames");
 const fixture = require("./fixtures/gamePortFrames.json");
 const oracle = require("./fixtures/py27Oracle.json");
@@ -1229,6 +1230,29 @@ test("the server's word that a cached answer has changed forgets that one; what 
   assert.deepEqual(await ask("call", "stationSvc", "GetStation", [9007199254740993n], cachedResult(24)), [23, 0], "and one past what a number holds exactly");
   assert.deepEqual([await ask("call", "stationSvc", "GetStation", [60003760], cachedResult(11)), await ask("call", "stationSvc", "GetStation", [60003760], cachedResult(12))], [[11, 1], [11, 0]], "asked again, and kept again as the server first said");
   assert.deepEqual([await ask("call", "svc", "Checked", [], cachedResult(2, { versionCheck: "never" })), await ask("call", "svc", "Checked", [], cachedResult(3, { versionCheck: "never" }))], [[2, 1], [3, 1]]);
+});
+
+// A sale's items (the registry's marketProxy.PlaceMultiSellOrder): what the transport hands the session is put on the
+// wire by the real marshal here, and read back. As the BFF's route gave them, a plain object each, they could not
+// be put on the wire at all.
+
+test("a sale's items, shaped as the client's, go to the wire: a list of util.KeyVal, the fields of each in its own order", { timeout: 5000 }, async (context) => {
+  const { session, transport } = await loggedIn(context);
+  const routes = [[{ itemID: 9988400109051, typeID: 34, stationID: 60003760, price: 987654.32, quantity: 1 }], false, 1, null];
+  // As it came, there is no putting it on the wire.
+  await assert.rejects(session.proxyCall("marketProxy", "PlaceMultiSellOrder", routes), /Cannot marshal value/);
+  const form = retailForm("marketProxy", "PlaceMultiSellOrder", routes, null, {});
+  session.proxyCall("marketProxy", "PlaceMultiSellOrder", form.args).catch(() => {});
+  await settle();
+  const sent = lastCall(transport);
+  assert.equal(sent.method, "PlaceMultiSellOrder");
+  const [items, useCorp, duration, fee] = sent.args;
+  assert.deepEqual([useCorp, duration, fee], [false, 1, null]);
+  assert.equal(items.type, "list");
+  const [item] = items.items;
+  assert.equal(text(item.name), "util.KeyVal");
+  assert.deepEqual(item.args.entries.map(([name, value]) => [text(name), typeof value === "bigint" ? Number(value) : value]),
+    [["itemID", 9988400109051], ["typeID", 34], ["price", 987654.32], ["stationID", 60003760], ["officeID", null], ["quantity", 1]]);
 });
 
 // The check with the server (ServiceCallGPCS.RemoteServiceCallWithoutTheStars): an answer held that is due a check

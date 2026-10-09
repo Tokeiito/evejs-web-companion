@@ -8,7 +8,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { Dict, dictOrder, hashKey, keywordOrder, monikerKeywordOrder } = require("../src/gamePort/py27");
+const { Dict, constructorKeywordOrder, dictOrder, hashKey, keywordOrder, monikerKeywordOrder } = require("../src/gamePort/py27");
 const oracle = require("./fixtures/py27Oracle.json");
 
 /** "s:name" -> "name"; "i:123" -> 123, or a BigInt when a number would lose digits. */
@@ -64,6 +64,19 @@ test("a call's keywords go out in the client's order, by either of its two call 
     assert.deepEqual(keywordOrder(written, { via: "object", hops: 1 }), viaObject[1], `object+1: ${written}`);
     assert.deepEqual(keywordOrder(written, { via: "object", hops: 2 }), viaObject[2], `object+2: ${written}`);
   }
+});
+
+test("the fields of an instance made by calling its class with keywords are in the order the client's Python keeps them", () => {
+  assert.ok(oracle.keywords.every(({ constructed }) => Array.isArray(constructed)));
+  for (const { written, constructed } of oracle.keywords) assert.deepEqual(constructorKeywordOrder(written), constructed, `constructed: ${written}`);
+  // The eight a sale's item is made with (sellMulti.py 501), which is why this is here.
+  const sale = oracle.keywords.find(({ written }) => written.join() === "stationID,typeID,itemID,price,quantity,officeID,delta,rawBrokerFeePercentage");
+  assert.deepEqual(sale.constructed, ["itemID", "typeID", "rawBrokerFeePercentage", "price", "officeID", "stationID", "delta", "quantity"]);
+  // It is not the order written, and not a plain function's order either: both are told apart from it.
+  assert.ok(oracle.keywords.filter(({ written, constructed }) => written.join() !== constructed.join()).length > 50);
+  const functions = (written) => { const dict = new Dict(); for (const key of written) dict.set(key); return dict.keys(); };
+  assert.ok(oracle.keywords.filter(({ written, constructed }) => functions(written).join() !== constructed.join()).length > 5);
+  assert.notDeepEqual(functions(sale.written), sale.constructed);
 });
 
 test("the two call paths, and the number of layers, really do change the order", () => {

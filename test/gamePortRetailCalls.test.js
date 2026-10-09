@@ -1134,3 +1134,61 @@ test("the market's other three of the walk: a type's book as the client asks it,
   assert.equal(form("marketProxy.PlaceBuyOrder", nine).status, "differs");
   assert.equal(form("marketProxy.PlaceBuyOrder", [...nine, 0.03, 1]).status, "differs");
 });
+
+// sellMulti.py 462, SellMulti(self.sellItemList, useCorp, duration, expectedBrokerFeePercentage), each item made at
+// 501: KeyVal(stationID=..., typeID=..., itemID=..., price=..., quantity=..., officeID=..., delta=...,
+// rawBrokerFeePercentage=...). The BFF's route gave an item as a plain object, which cannot be put on the wire at
+// all: nothing could be sold on the game port. The orders of the fields below are the client's own Python's
+// (test/fixtures/py27Oracle.json, "constructed").
+
+const saleKeyVal = (entries) => ({ type: "object", name: "util.KeyVal", args: { type: "dict", entries } });
+const ROUTES_ITEM = { itemID: 9988400109051, typeID: 34, stationID: 60003760, price: 987654.32, quantity: 1 };
+const SIX = saleKeyVal([["itemID", 9988400109051], ["typeID", 34], ["price", 987654.32], ["stationID", 60003760], ["officeID", null], ["quantity", 1]]);
+const WHOLE_ITEM = { ...ROUTES_ITEM, officeID: null, delta: -0.25, rawBrokerFeePercentage: 0.03 };
+const EIGHT = saleKeyVal([["itemID", 9988400109051], ["typeID", 34], ["rawBrokerFeePercentage", 0.03], ["price", 987654.32], ["officeID", null], ["stationID", 60003760], ["delta", -0.25], ["quantity", 1]]);
+
+test("a sale's items go out as the client's: a list of util.KeyVal, each with its fields in the order its Python keeps them", () => {
+  // The BFF's route: one item with the five it knows, and no fee. Sent so that the server can read it, and noted for what it lacks.
+  const routes = form("marketProxy.PlaceMultiSellOrder", [[ROUTES_ITEM], false, 1, null]);
+  assert.deepEqual([routes.status, routes.args, routes.kwargs], ["differs", [{ type: "list", items: [SIX] }, false, 1, null], null]);
+  assert.match(routes.note, /delta/);
+  assert.match(routes.note, /rawBrokerFeePercentage/);
+  assert.match(routes.source, /marketsvc\.py:276$/);
+  // The item in whole, and the fee named: the client's call, made from what a route gave.
+  const whole = form("marketProxy.PlaceMultiSellOrder", [[WHOLE_ITEM, WHOLE_ITEM], false, 1, 0.03]);
+  assert.deepEqual([whole.status, whole.args], ["reshaped", [{ type: "list", items: [EIGHT, EIGHT] }, false, 1, 0.03]]);
+  // As the client sends it already.
+  const clients = [{ type: "list", items: [EIGHT] }, false, 1, 0.03];
+  assert.deepEqual([form("marketProxy.PlaceMultiSellOrder", clients).status, form("marketProxy.PlaceMultiSellOrder", clients).args], ["same", clients]);
+  // The window's own numbers: a station and a type as whole numbers, a price to the hundredth, an item in an office named with the office.
+  const rounded = form("marketProxy.PlaceMultiSellOrder", [[{ ...WHOLE_ITEM, price: 1.239, officeID: 77 }], false, 1, 0.03]).args[0].items[0].args.entries;
+  assert.deepEqual([rounded.find(([name]) => name === "price")[1], rounded.find(([name]) => name === "officeID")[1]], [1.24, 77]);
+});
+
+test("a sale at once names no fee, as the client names none; an order that stands with no fee named is not the client's", () => {
+  const atOnce = form("marketProxy.PlaceMultiSellOrder", [[WHOLE_ITEM], false, 0, null]);
+  assert.deepEqual([atOnce.status, atOnce.args], ["reshaped", [{ type: "list", items: [EIGHT] }, false, 0, null]]);
+  const standing = form("marketProxy.PlaceMultiSellOrder", [[WHOLE_ITEM], false, 3, null]);
+  assert.deepEqual([standing.status, standing.args], ["differs", [{ type: "list", items: [EIGHT] }, false, 3, null]]);
+  assert.match(standing.note, /fee/);
+});
+
+test("what is no list of a sale's items goes out as it came, and is not the client's call", () => {
+  for (const given of [
+    [[], false, 1, null],
+    [["x"], false, 1, null],
+    [[{ typeID: 34, stationID: 60003760, price: 5, quantity: 1 }], false, 1, null],
+    [[{ ...ROUTES_ITEM, quantity: 0 }], false, 1, null],
+    [[{ ...ROUTES_ITEM, price: "dear" }], false, 1, null],
+    [[{ ...ROUTES_ITEM, stationID: 1.5 }], false, 1, null],
+    [[ROUTES_ITEM, null], false, 1, null],
+    [ROUTES_ITEM, false, 1, null],
+    [[ROUTES_ITEM], false, 1],
+    [[ROUTES_ITEM], false, 1, null, 5],
+    [],
+  ]) {
+    const answer = form("marketProxy.PlaceMultiSellOrder", given);
+    assert.deepEqual([answer.status, answer.args], ["differs", given], JSON.stringify(given));
+    assert.match(answer.note, /four/);
+  }
+});
