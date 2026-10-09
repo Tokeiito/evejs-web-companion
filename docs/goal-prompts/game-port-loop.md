@@ -448,6 +448,14 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A change to the page is in the browser only after `npm run build:web`**: the BFF serves the built
   page (`public/dist`, which git ignores). The build checks the page's types, its tests' too, and
   `npm test` does not: a test that passes can still fail the build.
+- **A search's line is not the function it is in.** A listing put `if (ball.speedFraction ===
+  0.0) ball.speedFraction = 1.0` sixteen lines under `followBall(`, and I wrote that a follow
+  restarts a stopped ball. The line is in the function after it. Read the function before
+  writing what it does.
+- **A route test that fails before the change and after it is testing the stand-in.** A flight
+  route answers 409 until the page's check for lost drones is acknowledged
+  (`/api/bridge/drone-recovery/ready`), and that check reads the space snapshot. Print the
+  answer's body before believing a failure.
 - **Sort a walk's ledger by its calls.** A pair's status says its form is the client's. It does
   not say the client sends it that often: the page read the locked targets once a second, each
   reading a `GetTargets` the client sends once in a flight, and the ledger had it as "same",
