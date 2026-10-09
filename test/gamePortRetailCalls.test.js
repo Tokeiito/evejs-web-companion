@@ -1331,3 +1331,37 @@ test("a fitting for a ship whose type is not known, or that is no seven argument
   const odd = withContext("invbroker.FitFitting", [FIT_SHIP, null, { x: [9001], 483: ["y", 9002, 0], 484: "z", 485: [] }, 60003760, { a: 483, 27: "b", 28: 484 }, { 34: 0, q: 5, 35: 2 }, false], null, inThatShip);
   assert.deepEqual([odd.args[2], odd.args[4], odd.args[5]], [fitItems([483, fitSet(9002)]), fitKeyVal({ modules: fitDict([28, 484]) }), fitDict([35, 2])]);
 });
+
+// clientPlanet.py 412 and 448: remoteHandler.UserLaunchCommodities(commandPinID, commoditiesToLaunch) and
+// remoteHandler.UserTransferCommodities(path, commodities), on the planet's own object. The commodities are a dict
+// of quantities by type and the path a list of pins. The BFF's routes gave the commodities as a plain object,
+// which cannot be put on the wire: nothing could be launched from a colony, or moved in one, on the game port.
+
+test("a colony's commodities are launched and moved as dicts of quantities by type, and a path is a list of pins", () => {
+  const launched = form("planetMgr.UserLaunchCommodities", [1054656331534, { 2268: 100, 2073: 5, 9848: 3 }]);
+  // In the order a dict has them, which for these three is not the order of their numbers.
+  assert.deepEqual([launched.status, launched.args, launched.kwargs], ["reshaped", [1054656331534, fitDict([9848, 3], [2073, 5], [2268, 100])], null]);
+  assert.match(launched.source, /clientPlanet\.py:412$/);
+  const moved = form("planetMgr.UserTransferCommodities", [[1054656331535, 1054656331534], { 2268: 50 }]);
+  assert.deepEqual([moved.status, moved.args], ["reshaped", [{ type: "list", items: [1054656331535, 1054656331534] }, fitDict([2268, 50])]]);
+  assert.match(moved.source, /clientPlanet\.py:448$/);
+  // As the client sends them already: the same calls.
+  const clientsLaunch = [1054656331534, fitDict([2268, 100])];
+  assert.deepEqual([form("planetMgr.UserLaunchCommodities", clientsLaunch).status, form("planetMgr.UserLaunchCommodities", clientsLaunch).args], ["same", clientsLaunch]);
+  const clientsMove = [{ type: "list", items: [1054656331535, 1054656331534] }, fitDict([2268, 50])];
+  assert.deepEqual([form("planetMgr.UserTransferCommodities", clientsMove).status, form("planetMgr.UserTransferCommodities", clientsMove).args], ["same", clientsMove]);
+});
+
+test("what is no quantity of a type is left out of a colony's commodities, and a call that is not the client's two arguments goes as it came", () => {
+  assert.deepEqual(form("planetMgr.UserLaunchCommodities", [7, { 2268: 0, x: 5, 2073: "y", 9848: 3 }]).args, [7, fitDict([9848, 3])]);
+  for (const [pair, given] of [["planetMgr.UserLaunchCommodities", [7]], ["planetMgr.UserLaunchCommodities", [7, {}, 1]], ["planetMgr.UserTransferCommodities", [[1, 2]]], ["planetMgr.UserTransferCommodities", []]]) {
+    const answer = form(pair, given);
+    assert.deepEqual([answer.status, answer.args], ["differs", given], `${pair} ${JSON.stringify(given)}`);
+    assert.match(answer.note, /two/);
+  }
+  // The client's own dict with a path that came as an array: the path is made a list.
+  const halfway = form("planetMgr.UserTransferCommodities", [[1054656331535, 1054656331534], fitDict([2268, 50])]);
+  assert.deepEqual([halfway.status, halfway.args], ["reshaped", [{ type: "list", items: [1054656331535, 1054656331534] }, fitDict([2268, 50])]]);
+  // A path that is no list of pins is sent as it came, with the commodities made a dict all the same.
+  assert.deepEqual(form("planetMgr.UserTransferCommodities", ["x", { 2268: 5 }]).args, ["x", fitDict([2268, 5])]);
+});

@@ -252,6 +252,7 @@ const EVE_MISC = "eve/client/script/util/eveMisc.py";
 const DRONE_FUNCTIONS = "eve/client/script/ui/services/menuSvcExtras/droneFunctions.py";
 const SHIP_CONFIG = "eve/client/script/ui/services/shipConfigSvc.py";
 const FITTING_SVC = "eve/client/script/environment/fittingSvc.py";
+const CLIENT_PLANET = "eve/client/script/environment/planet/clientPlanet.py";
 const CC_SVC = "eve/client/script/ui/services/ccSvc.py";
 const CC_STEPS = "eve/client/script/ui/login/charcreation/steps";
 const ACCOUNT_SVC = "eve/client/script/ui/services/accountsvc.py";
@@ -562,6 +563,27 @@ const RETAIL_CALLS = Object.freeze({
     `${INV_CACHE}:1224`,
     "The client works a capacity out itself: the attribute from dogma or the type, and the volume of what List returned. It never asks the server.",
   ),
+  "planetMgr.UserLaunchCommodities": Object.freeze({
+    status: "same",
+    source: `${CLIENT_PLANET}:412`,
+    note: "remoteHandler.UserLaunchCommodities(commandPinID, commoditiesToLaunch), on the planet's own object: the commodities a dict of quantities by type.",
+    shape: (args, kwargs) => {
+      if (args.length !== 2) return { args, kwargs, status: "differs", note: "The client sends two: the command center's pin, and a dict of the quantities to launch by type." };
+      const commodities = quantitiesByType(args[1]);
+      return commodities === args[1] ? { args, kwargs } : { args: [args[0], commodities], kwargs, status: "reshaped" };
+    },
+  }),
+  "planetMgr.UserTransferCommodities": Object.freeze({
+    status: "same",
+    source: `${CLIENT_PLANET}:448`,
+    note: "remoteHandler.UserTransferCommodities(path, commodities), on the planet's own object: the path a list of pins from the one the commodities leave to the one they reach, the commodities a dict of quantities by type.",
+    shape: (args, kwargs) => {
+      if (args.length !== 2) return { args, kwargs, status: "differs", note: "The client sends two: the path, a list of pins, and a dict of the quantities to move by type." };
+      const path = list(args[0]);
+      const commodities = quantitiesByType(args[1]);
+      return path === args[0] && commodities === args[1] ? { args, kwargs } : { args: [path, commodities], kwargs, status: "reshaped" };
+    },
+  }),
   "invbroker.FitFitting": needing(Object.freeze({
     status: "same",
     source: `${FITTING_SVC}:618`,

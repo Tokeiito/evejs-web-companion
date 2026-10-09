@@ -653,6 +653,25 @@ the call on the manager. No saved fitting could be applied on the game port. The
 makes the three, the ship's type is godma's, and the transport makes the call on the ship's
 inventory.
 
+**A colony's commodities launched and moved, 2026-10-09.** Both on the planet's own object
+(`clientPlanet.py` 412 and 448):
+
+| Call | Arguments |
+|---|---|
+| `UserLaunchCommodities(commandPinID, commoditiesToLaunch)` | the command center's pin; a dict of the quantities to launch by type |
+| `UserTransferCommodities(path, commodities)` | a list of pins, from the one the commodities leave to the one they reach; a dict of the quantities to move by type |
+
+No recording has either on the wire: one note in the recordings' archive names the second, to
+say the walk it describes did not use it. Both are from the client's source. The dicts are in
+the order the client's Python keeps the types, which is not the order of their numbers (for
+2073, 2268 and 9848 it is 9848, 2073, 2268).
+
+The BFF's routes gave the commodities as a plain object, which the wire has no form for.
+Nothing could be launched from a colony, or moved in one, on the game port. The registry makes
+the dict, and the path a list. This server answers a move with two times (the colony's, and
+when the pin the commodities left may send again: five minutes on) and a launch with one (when
+it was made); it refuses a second launch inside a minute.
+
 **The order of a KeyVal's fields on the wire.** `utillib.KeyVal(a=1, b=2)` keeps its keywords
 as the instance's own dict, so its fields go out in that dict's order. That is not the order
 written, and not the order a plain function's keywords are in. A class is not a plain
