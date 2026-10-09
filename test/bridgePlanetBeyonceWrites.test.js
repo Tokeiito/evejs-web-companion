@@ -415,3 +415,96 @@ test("R103 write routes refuse without a held bridge session", async () => {
   }
   assert.equal(gateway.calls.boundCall.length, 0, "no dispatch without a held session");
 });
+
+// --- the customs office's transfer, on the pilot's own session ----------------
+//
+// importExportUI.py 383 and 549: at a customs office the client asks the system's orbital registry for the
+// office's tax rate, and sends a launchpad's goods up with ImportExportWithPlanet on the office's own inventory,
+// naming that rate. The BFF's route does the two on the session the pilot holds.
+
+const OFFICE_ID = 1200040009077;
+const LAUNCHPAD_PIN_ID = 1054656331535;
+
+/** A gateway in space whose orbital registry answers this for an office's tax rate. */
+function gatewayAtAnOffice(taxRate = { type: "real", value: 0.05 }, inSpace = true) {
+  const gateway = fakeGateway({ inSpace });
+  gateway.asked = [];
+  gateway.callMethod = async (service, method, args, kwargs) => {
+    gateway.asked.push([service, method, args, kwargs]);
+    return { service, method, result: taxRate, notifications: [] };
+  };
+  return gateway;
+}
+
+const exportBody = (more = {}) => ({ officeID: OFFICE_ID, pinID: LAUNCHPAD_PIN_ID, commodities: { 2268: 200, 2073: 5 }, confirm: true, ...more });
+
+test("POST /api/bridge/planet/customs/export asks the office's tax rate, then sends the launchpad's goods up on the office's own inventory", async () => {
+  const gateway = gatewayAtAnOffice();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  gateway.asked.length = 0;
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/planet/customs/export", { method: "POST", body: exportBody() });
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.deepEqual([payload.ok, payload.applied, payload.taxRate], [true, true, 0.05]);
+  assert.equal(JSON.stringify(payload).includes("handle:"), false, "bound handle must never reach the browser");
+
+  // The rate first, of the registry, with the office and nothing else.
+  assert.deepEqual(gateway.asked, [["planetOrbitalRegistryBroker", "GetTaxRate", [OFFICE_ID], null]]);
+  // The office's inventory bound as any item's is.
+  const bind = gateway.calls.bind.find((made) => made.service === "invbroker");
+  assert.deepEqual([bind.method, bind.args, bind.kwargs], ["GetInventoryFromId", [OFFICE_ID], { passive: 0 }]);
+  // Then the transfer on it: the pin, nothing coming down, the goods going up, and the rate the registry answered.
+  const sent = gateway.calls.boundCall.filter((call) => call.service === "invbroker");
+  assert.deepEqual(sent.map((call) => [call.method, call.args, call.kwargs]), [["ImportExportWithPlanet", [LAUNCHPAD_PIN_ID, {}, { 2268: 200, 2073: 5 }, 0.05], null]]);
+  assert.match(sent[0].boundHandle, /^handle:invbroker:GetInventoryFromId/);
+  assert.equal(sent[0].bridgeSessionID, BRIDGE_SESSION_ID);
+});
+
+test("the customs export reads a rate the game port answers as a plain number, and one of nought", async () => {
+  for (const [rate, read] of [[0.05, 0.05], [0, 0], [{ type: "real", value: 0 }, 0]]) {
+    const gateway = gatewayAtAnOffice(rate);
+    const { baseUrl } = await startTestServer({ gateway });
+    await selectOnServer(baseUrl);
+    const { response, payload } = await apiRequest(baseUrl, "/api/bridge/planet/customs/export", { method: "POST", body: exportBody() });
+    assert.equal(response.status, 200, JSON.stringify(rate));
+    assert.equal(payload.taxRate, read, JSON.stringify(rate));
+    assert.equal(gateway.calls.boundCall.at(-1).args[3], read, JSON.stringify(rate));
+  }
+});
+
+test("the customs export refuses without confirm, without an office, a pin or goods, and docked: nothing is asked or sent", async () => {
+  const gateway = gatewayAtAnOffice();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  gateway.asked.length = 0;
+  const before = gateway.calls.boundCall.length;
+  const post = (body) => apiRequest(baseUrl, "/api/bridge/planet/customs/export", { method: "POST", body });
+
+  const unconfirmed = await post(exportBody({ confirm: undefined }));
+  assert.deepEqual([unconfirmed.response.status, unconfirmed.payload.error], [400, "CONFIRMATION_REQUIRED"]);
+  for (const more of [{ officeID: 0 }, { officeID: "x" }, { pinID: 0 }, { pinID: -3 }, { commodities: {} }, { commodities: null }, { commodities: [2268] }, { commodities: { 2268: 0 } }, { commodities: { x: 5 } }, { commodities: { 2268: 1.5 } }]) {
+    const { response, payload } = await post(exportBody(more));
+    assert.deepEqual([response.status, payload.error], [400, "EXPORT_INVALID"], JSON.stringify(more));
+  }
+  assert.deepEqual([gateway.asked, gateway.calls.boundCall.length], [[], before]);
+
+  // Docked, the client has no customs office to open.
+  const dockedGateway = gatewayAtAnOffice(undefined, false);
+  const docked = await startTestServer({ gateway: dockedGateway });
+  await selectOnServer(docked.baseUrl);
+  dockedGateway.asked.length = 0;
+  const refused = await apiRequest(docked.baseUrl, "/api/bridge/planet/customs/export", { method: "POST", body: exportBody() });
+  assert.deepEqual([refused.response.status, refused.payload.error], [409, "NOT_IN_SPACE"]);
+  assert.deepEqual([dockedGateway.asked, dockedGateway.calls.boundCall.filter((call) => call.service === "invbroker")], [[], []]);
+});
+
+test("an office that names no tax rate takes nothing: the pilot may not use it, and the transfer is not sent", async () => {
+  // GetTaxRate answers None for a pilot the office's owner does not let in (importExportUI.py 377: access denied).
+  const gateway = gatewayAtAnOffice(null);
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/planet/customs/export", { method: "POST", body: exportBody() });
+  assert.deepEqual([response.status, payload.error], [409, "CUSTOMS_ACCESS_DENIED"]);
+  assert.deepEqual(gateway.calls.boundCall.filter((call) => call.service === "invbroker"), []);
+});

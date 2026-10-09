@@ -11447,6 +11447,73 @@ app.post("/api/bridge/planet/commodities/transfer", requireAuth, async (req, res
   await dispatchBoundPlanetWrite(req, res, next, planetID, "UserTransferCommodities", [path, commodities]);
 });
 
+// The customs office's transfer, on the pilot's own session, as the client makes
+// it at an office (importExportUI.py 383 and 549): the office's tax rate asked
+// of the system's orbital registry, then ImportExportWithPlanet(spaceportPinID,
+// importData, exportData, taxRate) on the office's own inventory, naming that
+// rate. This route sends goods UP only: nothing comes down.
+//
+// ⚠ IN SPACE ONLY. The client opens a customs office where it is, and its
+// registry moniker is for the system the session is in space in. A docked
+// pilot has neither, and is refused here though this server would take it.
+//
+// ⚠ THE GAME PORT CARRIES IT; THE WEB GATEWAY DOES NOT. The gateway's list has
+// no ImportExportWithPlanet, so through it the server refuses the call.
+//
+// ⚠ SCOPE: the server resolves the colony from the SESSION character and the
+// pin (getColonyByPin(characterID, pin)), checks the office is that colony's
+// planet's, and debits the session character's wallet. A pin or an office that
+// is not the pilot's own to use moves nothing.
+app.post("/api/bridge/planet/customs/export", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This sends those commodities up into the customs office and charges its export tax. Confirm to continue.")) {
+    return;
+  }
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const officeID = Number(body.officeID);
+  const pinID = Number(body.pinID);
+  // A list's entries are named from nought, which is no type, so a list is refused below with the rest.
+  const given = body.commodities && typeof body.commodities === "object" ? Object.entries(body.commodities) : [];
+  const whole = (value) => Number.isSafeInteger(value) && value > 0;
+  const commodities = {};
+  for (const [typeID, quantity] of given) commodities[typeID] = quantity;
+  if (!whole(officeID) || !whole(pinID) || given.length === 0 || !given.every(([typeID, quantity]) => /^\d+$/.test(typeID) && whole(Number(typeID)) && whole(quantity))) {
+    res.status(400).json({ ok: false, error: "EXPORT_INVALID", message: "A customs office, a launchpad and a whole quantity of each commodity are required." });
+    return;
+  }
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (!requireInSpace(res, before.flight)) {
+      return;
+    }
+    // The office states its own rate, and the server holds what is sent
+    // against it (TaxChanged), so it is asked now, as the client's window does.
+    const asked = await heldTopLevelCall(held, req.webSessionID, "planetOrbitalRegistryBroker", "GetTaxRate", [officeID], null);
+    const answered = asked.result && typeof asked.result === "object" && asked.result.type === "real" ? asked.result.value : asked.result;
+    if (typeof answered !== "number" || !Number.isFinite(answered)) {
+      // None: the office's owner does not let this pilot use it.
+      res.status(409).json({ ok: false, error: "CUSTOMS_ACCESS_DENIED", message: "This customs office named no tax rate: its owner does not let this pilot use it." });
+      return;
+    }
+    const outcome = await boundCall(held, req.webSessionID, containerBindSpec(officeID), "ImportExportWithPlanet", [pinID, {}, commodities, answered], null);
+    res.json({
+      ok: true,
+      applied: true,
+      taxRate: answered,
+      result: outcome.result ?? null,
+      notifications: [...asked.notifications, ...outcome.notifications],
+    });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID, held);
+    }
+    next(error);
+  }
+});
+
 // ⚠ ABANDONS THE COLONY. UserAbandonPlanet() — PERMANENTLY DESTROYS the caller's
 // colony on the bound planet: all structures lost, cannot be recovered. Owner is
 // forced to the session char server-side (only your OWN colony can be abandoned).

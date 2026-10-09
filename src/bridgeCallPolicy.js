@@ -98,6 +98,9 @@ const FEATURE_WRITE_METHODS = freezeMethodMap({
   // any measure, and listing it here is what keeps the generic /api/bridge/call
   // route from being a second, unconfirmed way to fire one.
   slash: ["SlashCmd"],
+  // The customs office's transfer (taxed, and it moves a colony's goods). The
+  // game port carries it; the web gateway's list has not got it.
+  invbroker: ["ImportExportWithPlanet"],
 });
 
 function flattenMethodMap(methodsByService) {

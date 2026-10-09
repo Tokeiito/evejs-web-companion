@@ -56,7 +56,7 @@ const { GamePortSession } = require("./session");
 const { connectTcp, gameEndpoint } = require("./tcp");
 const { notificationToBridgeJson, sessionChangeToBridgeJson, wireToBridgeJson } = require("./bridgeJson");
 const { GAME_PORT_HANDLE_PREFIX } = require("../pilotTransport");
-const { ON_AN_ANSWERED_OBJECT, createCallLedger, madeAfresh, retailForm, retailNeeds } = require("./retailCalls");
+const { GAME_PORT_ONLY_CALLS, ON_AN_ANSWERED_OBJECT, createCallLedger, madeAfresh, retailForm, retailNeeds } = require("./retailCalls");
 const { createPilotSpace } = require("./pilotSpace");
 const { createPilotClock } = require("./pilotClock");
 const { EFFECT_CATEGORY, EFFECT_ONLINE, createPilotDogma, rowFields } = require("./pilotDogma");
@@ -605,7 +605,7 @@ function createGamePortPilots({
   createSession = (transport) => new GamePortSession({ transport, provisionalWaitLimitMs: PROVISIONAL_WAIT_LIMIT_MS }),
   passwordFor = () => "",
   isOnline = null,
-  allowed = new Set(contract.gatewayAllowlist.pairs),
+  allowed = new Set([...contract.gatewayAllowlist.pairs, ...GAME_PORT_ONLY_CALLS]),
   shape = retailForm,
   selectSettleMs = 5000,
   releaseSettleMs = 5000,
@@ -1990,6 +1990,8 @@ function createGamePortPilots({
         return attribute(entry, "solarsystemid") === null ? undefined : attribute(entry, "solarsystemid2");
       case "beyonce": // GetBallPark
         return attribute(entry, "solarsystemid") ?? undefined;
+      case "planetOrbitalRegistryBroker": // GetPlanetOrbitalRegistry(session.solarsystemid): in space only
+        return attribute(entry, "solarsystemid") ?? undefined;
       case "reprocessingSvc": // GetReprocessingManager
         return attribute(entry, "structureid") ?? attribute(entry, "stationid") ?? undefined;
       case "corpRegistry": // GetCorpRegistry: Moniker('corpRegistry', session.corpid)
@@ -2274,6 +2276,8 @@ function createGamePortPilots({
       characterID: entry.characterID,
       corporationID: attribute(entry, "corpid"),
       allianceID: attribute(entry, "allianceid"),
+      // session.solarsystemid: the system the pilot is in space in, and none while docked.
+      solarSystemID: attribute(entry, "solarsystemid"),
       onlineModules: () => {
         const shipID = attribute(entry, "shipid");
         return entry.dogmaLoaded && shipID !== null ? entry.dogma.onlineModules(shipID) : null;

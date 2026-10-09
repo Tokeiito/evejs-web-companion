@@ -5984,3 +5984,59 @@ test("a saved fitting is applied on the ship's own inventory, which the location
   const ledger = Object.fromEntries(pilots.callLedger().filter((row) => /FitFitting|GetInventoryFromId/.test(row.pair)).map((row) => [row.pair, Object.keys(row.statuses)]));
   assert.deepEqual(ledger, { "invbroker.GetInventoryFromId": ["reshaped"], "invbroker.FitFitting": ["reshaped"] });
 });
+
+// At a customs office (importExportUI.py 383, 549): the office's tax rate asked of the system's orbital registry on
+// a Moniker made for that call, bound by session.solarsystemid and carrying it; and the goods sent on the office's
+// own inventory, which invCache asks the manager for where the pilot is. Tranquility's recording of an export has
+// the registry bound three times, each time with the call.
+
+const CUSTOMS_PAIRS = { allowed: undefined };
+/** A pilot left in space on the transport's own list of calls, with these answers beside the choosing's. */
+async function atCustomsOffice(answers = {}) {
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, ...answers } }, { ...handTicked().options, ...CUSTOMS_PAIRS });
+  const outcome = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  return { ...built, handle: outcome.bridgeSessionID };
+}
+const OFFICE = 1200040176368;
+const LAUNCHPAD = 1054656331535;
+
+test("a customs office's tax rate is asked on a Moniker made for the call, bound by the system the pilot is in space in", async () => {
+  const { pilots, session, handle } = await atCustomsOffice({ "bound:GetTaxRate": 0.05 });
+  session.calls.length = 0;
+  const before = session.binds.length;
+  const first = await pilots.callMethod("planetOrbitalRegistryBroker", "GetTaxRate", [OFFICE], null, FIELDS, handle);
+  await pilots.callMethod("planetOrbitalRegistryBroker", "GetTaxRate", [OFFICE], null, FIELDS, handle);
+  assert.equal(first.result, 0.05);
+  // Two Monikers, each bound by the system and carrying its call; nothing asked by the service's name.
+  assert.deepEqual(session.binds.slice(before), Array(2).fill({ service: "planetOrbitalRegistryBroker", params: SYSTEM }));
+  assert.deepEqual(session.carried.slice(-2), ["GetTaxRate", "GetTaxRate"]);
+  assert.deepEqual(session.boundCalls.slice(-2).map((call) => [call.method, call.args]), [["GetTaxRate", [OFFICE]], ["GetTaxRate", [OFFICE]]]);
+  assert.deepEqual(session.calls.filter((call) => call.service === "planetOrbitalRegistryBroker"), []);
+  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "planetOrbitalRegistryBroker.GetTaxRate").statuses, { reshaped: 2 });
+});
+
+test("docked, a customs office's tax rate is no call of the client's: it goes by name, and the ledger says it is the web's", async () => {
+  const { pilots, session, handle } = await selected(undefined, CUSTOMS_PAIRS);
+  session.calls.length = 0;
+  const before = session.binds.length;
+  await pilots.callMethod("planetOrbitalRegistryBroker", "GetTaxRate", [OFFICE], null, FIELDS, handle);
+  assert.deepEqual(session.calls.map((call) => [call.service, call.method, call.args]), [["planetOrbitalRegistryBroker", "GetTaxRate", [OFFICE]]]);
+  assert.equal(session.binds.length, before);
+  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "planetOrbitalRegistryBroker.GetTaxRate").statuses, { "web-only": 1 });
+});
+
+test("a launchpad's goods go up on the office's own inventory, in the client's form, though the gateway's list has no such call", async () => {
+  const { pilots, session, handle } = await atCustomsOffice();
+  const { boundHandle } = await pilots.bindObject("invbroker", "GetInventoryFromId", [OFFICE], { passive: 0 }, FIELDS, handle);
+  const office = session.boundCalls.at(-1);
+  assert.deepEqual([office.method, office.args], ["GetInventoryFromId", [OFFICE, 0]]);
+  const answer = await pilots.callBoundMethod("invbroker", "ImportExportWithPlanet", [LAUNCHPAD, {}, { 2268: 200, 2073: 5, 9848: 3 }, 0.05], null, FIELDS, handle, boundHandle);
+  assert.equal(answer.method, "ImportExportWithPlanet");
+  const sent = session.boundCalls.at(-1);
+  // On the object the manager answered for the office, not on the manager.
+  assert.notEqual(sent.objectID, office.objectID);
+  assert.deepEqual([sent.method, sent.args, sent.kwargs], ["ImportExportWithPlanet", [LAUNCHPAD, { type: "dict", entries: [] }, { type: "dict", entries: [[9848, 3], [2073, 5], [2268, 200]] }, 0.05], null]);
+  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "invbroker.ImportExportWithPlanet").statuses, { reshaped: 1 });
+  // A pair on neither list is still refused.
+  await assert.rejects(pilots.callBoundMethod("invbroker", "NoSuchThing", [], null, FIELDS, handle, boundHandle), (error) => error.code === "CALL_NOT_ALLOWED");
+});

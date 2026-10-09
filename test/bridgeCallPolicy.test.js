@@ -47,8 +47,8 @@ test("the generic-call write policy covers the complete canonical plumbing inven
 
 test("the write policy adds every pre-sweep and post-sweep write without duplicates", () => {
   assert.equal(EARLIER_WRITE_PAIR_KEYS.length, 49);
-  assert.deepEqual(FEATURE_WRITE_PAIR_KEYS, ["repairSvc.RepairItems", "officeManager.RentOffice", "skillHandler.PurchaseSkills", "slash.SlashCmd"]);
-  assert.equal(BRIDGE_WRITE_PAIR_KEYS.length, 354);
+  assert.deepEqual(FEATURE_WRITE_PAIR_KEYS, ["repairSvc.RepairItems", "officeManager.RentOffice", "skillHandler.PurchaseSkills", "slash.SlashCmd", "invbroker.ImportExportWithPlanet"]);
+  assert.equal(BRIDGE_WRITE_PAIR_KEYS.length, 355);
   assert.equal(new Set(BRIDGE_WRITE_PAIR_KEYS).size, BRIDGE_WRITE_PAIR_KEYS.length);
 
   assert.equal(isBridgeWritePair("charUnboundMgr", "SelectCharacterID"), true);

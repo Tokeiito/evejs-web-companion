@@ -195,9 +195,27 @@ const MONIKER_SERVICES = Object.freeze({
   // The alliance service's moniker for the session's alliance (all_cso.GetMoniker: eveMoniker.GetAlliance(), bound
   // when it is made). What is asked about any alliance by its ID is asked of the service by name.
   allianceRegistry: new Set(["GetAlliancePublicInfo", "GetRankedAlliances", "GetEmploymentRecord", "GetAllianceMembers", "GetDaysInAlliance", "GetAllianceMembersOlderThan"]),
+  // eveMoniker.GetPlanetOrbitalRegistry(session.solarsystemid): Moniker('planetOrbitalRegistryBroker', solarSystemID),
+  // made where it is wanted and not kept (importExportUI.py 383, infosvc.py 2066).
+  planetOrbitalRegistryBroker: new Set(),
 });
-/** Monikers for something a session may not have, by what it is in the call's context: the client cannot make one without it (eveMoniker.GetAlliance raises). */
-const MONIKER_NEEDS = Object.freeze({ allianceRegistry: "allianceID" });
+/**
+ * Monikers for something a session may not have, by what it is in the call's context: the client cannot make one
+ * without it (eveMoniker.GetAlliance raises), or makes one for nothing (a system's, with session.solarsystemid None
+ * while docked). Each with where the client's moniker is made, and what the ledger says of a call made without it.
+ */
+const MONIKER_NEEDS = Object.freeze({
+  allianceRegistry: Object.freeze({
+    has: "allianceID",
+    source: "eve/common/script/net/eveMoniker.py:171",
+    note: "The client asks this on a moniker it cannot make while its session has no alliance, and so does not ask it at all.",
+  }),
+  planetOrbitalRegistryBroker: Object.freeze({
+    has: "solarSystemID",
+    source: "eve/common/script/net/eveMoniker.py:219",
+    note: "The client asks this on a moniker for the system its session is in space in, at a customs office. Docked it has no such system, and does not ask.",
+  }),
+});
 
 /** shipConfigSvc.py 51: eveMoniker.GetShipAccess().GetShipConfiguration(shipID), a Moniker of its own each time. */
 const OWN_SHIP_MONIKER = new Set(["GetShipConfiguration"]);
@@ -209,7 +227,7 @@ const OWN_SHIP_MONIKER = new Set(["GetShipConfiguration"]);
  * service that makes its own does so wherever the pilot is.
  */
 const madeAfresh = (service, method, { dockedInStation = false } = {}) =>
-  service === "crimewatch" || (service === "ship" && (dockedInStation || OWN_SHIP_MONIKER.has(method)));
+  service === "crimewatch" || service === "planetOrbitalRegistryBroker" || (service === "ship" && (dockedInStation || OWN_SHIP_MONIKER.has(method)));
 /**
  * The services the client reaches with sm.ProxySvc(name): every one in the decompiled client, and none
  * of them is asked any other way. Such a call is addressed to the client's proxy node
@@ -228,6 +246,13 @@ const PROXY_SERVICES = Object.freeze(new Set([
  * transport makes it (pilots.js): cfg.eveowners' priming, for the names of players' owners.
  */
 const TRANSPORT_OWN_CALLS = Object.freeze(["config.GetMultiOwnersEx"]);
+
+/**
+ * Calls the game port carries that the web gateway's list has not got: a pilot on the game port may make them, and
+ * through the gateway they are refused. The customs office's transfer is the client's own call at an office
+ * (importExportUI.py 549), and the gateway never had it.
+ */
+const GAME_PORT_ONLY_CALLS = Object.freeze(["invbroker.ImportExportWithPlanet"]);
 
 /**
  * Calls the client makes on an object that another call answered, where no moniker is: the system's scan manager,
@@ -255,6 +280,7 @@ const DRONE_FUNCTIONS = "eve/client/script/ui/services/menuSvcExtras/droneFuncti
 const SHIP_CONFIG = "eve/client/script/ui/services/shipConfigSvc.py";
 const FITTING_SVC = "eve/client/script/environment/fittingSvc.py";
 const CLIENT_PLANET = "eve/client/script/environment/planet/clientPlanet.py";
+const IMPORT_EXPORT = "eve/client/script/ui/shared/planet/importExportUI.py";
 const CC_SVC = "eve/client/script/ui/services/ccSvc.py";
 const CC_STEPS = "eve/client/script/ui/login/charcreation/steps";
 const ACCOUNT_SVC = "eve/client/script/ui/services/accountsvc.py";
@@ -565,6 +591,19 @@ const RETAIL_CALLS = Object.freeze({
     `${INV_CACHE}:1224`,
     "The client works a capacity out itself: the attribute from dogma or the type, and the volume of what List returned. It never asks the server.",
   ),
+  "planetOrbitalRegistryBroker.GetTaxRate": same(`${IMPORT_EXPORT}:383`, "eveMoniker.GetPlanetOrbitalRegistry(session.solarsystemid).GetTaxRate(officeID), on a Moniker made for the call, which binds carrying it. Recorded on Tranquility so, three times in one export."),
+  "invbroker.ImportExportWithPlanet": Object.freeze({
+    status: "same",
+    source: `${IMPORT_EXPORT}:549`,
+    note: "customsOfficeInventory.ImportExportWithPlanet(spaceportPinID, importData, exportData, taxRate), on the office's own inventory (invCache.GetInventoryFromId): what comes down a dict of quantities by the item in the office, what goes up a dict of quantities by type, and the rate the registry answered. Recorded on Tranquility with the quantity a float, as its colony's pins hold them; this server's pins hold whole numbers.",
+    shape: (args, kwargs) => {
+      if (args.length !== 4 || !Number.isFinite(args[3])) {
+        return { args, kwargs, status: "differs", note: "The client sends four: the launchpad's pin, what comes down, what goes up, and the tax rate the office's registry answered." };
+      }
+      const [down, up] = [quantitiesByType(args[1]), quantitiesByType(args[2])];
+      return down === args[1] && up === args[2] ? { args, kwargs } : { args: [args[0], down, up, args[3]], kwargs, status: "reshaped" };
+    },
+  }),
   "planetMgr.GetPlanetsForChar": judged("eve/client/script/environment/planetSvc.py:67", sentWithNothing,
     "sm.RemoteSvc('planetMgr').GetPlanetsForChar(), by name and with nothing: recorded on Tranquility so. The client asks once and keeps the answer, changing it itself as a colony's pins change; the BFF asks at every read."),
   "planetMgr.GetMyLaunchesDetails": judged("eve/client/script/ui/shared/planet/planetUISvc.py:172", sentWithNothing,
@@ -996,9 +1035,10 @@ function retailForm(service, method, args, kwargs, context = {}) {
   const proxy = PROXY_SERVICES.has(service);
   // A call for a moniker the client cannot make, its session lacking what the moniker is for: the client asks
   // nothing. What the BFF asks all the same goes as it was given, by the service's name.
-  const lacking = Object.hasOwn(MONIKER_NEEDS, service) && !(context ?? {})[MONIKER_NEEDS[service]];
+  const needs = Object.hasOwn(MONIKER_NEEDS, service) ? MONIKER_NEEDS[service] : null;
+  const lacking = needs !== null && !(context ?? {})[needs.has];
   const made = (form) => (form.moniker && lacking
-    ? { ...given, status: "web-only", source: "eve/common/script/net/eveMoniker.py:171", note: "The client asks this on a moniker it cannot make while its session has no alliance, and so does not ask it at all.", moniker: false, proxy }
+    ? { ...given, status: "web-only", source: needs.source, note: needs.note, moniker: false, proxy }
     : form);
   if (!entry) return made({ ...given, status: "unchecked", source: null, note: null, moniker, proxy });
   if (typeof entry.shape !== "function") return made({ ...given, status: entry.status, source: entry.source, note: entry.note ?? null, moniker, proxy });
@@ -1040,4 +1080,4 @@ function createCallLedger() {
   };
 }
 
-module.exports = { CONTRACT_SEARCH_KEYWORDS, MONIKER_SERVICES, ON_AN_ANSWERED_OBJECT, PROXY_SERVICES, REPEATS, RETAIL_CALLS, TRANSPORT_OWN_CALLS, createCallLedger, list, madeAfresh, madeOnMoniker, retailForm, retailNeeds };
+module.exports = { CONTRACT_SEARCH_KEYWORDS, GAME_PORT_ONLY_CALLS, MONIKER_SERVICES, ON_AN_ANSWERED_OBJECT, PROXY_SERVICES, REPEATS, RETAIL_CALLS, TRANSPORT_OWN_CALLS, createCallLedger, list, madeAfresh, madeOnMoniker, retailForm, retailNeeds };

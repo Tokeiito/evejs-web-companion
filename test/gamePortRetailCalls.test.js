@@ -8,7 +8,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { CONTRACT_SEARCH_KEYWORDS, MONIKER_SERVICES, PROXY_SERVICES, REPEATS, RETAIL_CALLS, createCallLedger, list, madeAfresh, madeOnMoniker, retailForm, retailNeeds } = require("../src/gamePort/retailCalls");
+const { CONTRACT_SEARCH_KEYWORDS, GAME_PORT_ONLY_CALLS, MONIKER_SERVICES, PROXY_SERVICES, REPEATS, RETAIL_CALLS, createCallLedger, list, madeAfresh, madeOnMoniker, retailForm, retailNeeds } = require("../src/gamePort/retailCalls");
 const { keywordOrder } = require("../src/gamePort/py27");
 const contract = require("../contracts/evejs-web-bridge-contract.json");
 
@@ -98,7 +98,8 @@ test("list() wraps an array and leaves anything else", () => {
 });
 
 test("every entry names a pair the web client may call, a status, and where it was read", () => {
-  const allowed = new Set(contract.gatewayAllowlist.pairs);
+  // The gateway's list, and what the game port carries beside it.
+  const allowed = new Set([...contract.gatewayAllowlist.pairs, ...GAME_PORT_ONLY_CALLS]);
   const clientRoot = path.resolve(__dirname, "..", "..", "eve.js", "tools", "ClientCodeGrabber", "Latest");
   const haveClient = fs.existsSync(clientRoot);
   for (const [pair, entry] of Object.entries(RETAIL_CALLS)) {
@@ -319,6 +320,8 @@ test("everything of ship, dogmaIM, corpRegistry and the skill handler is made on
     crimewatch: [],
     // The alliance's registry is asked by name about any alliance by its ID; all else is asked of the moniker for the session's own.
     allianceRegistry: ["GetAllianceMembers", "GetAllianceMembersOlderThan", "GetAlliancePublicInfo", "GetDaysInAlliance", "GetEmploymentRecord", "GetRankedAlliances"],
+    // Nor a system's orbital registry: each use at a customs office makes a moniker for the system and calls it.
+    planetOrbitalRegistryBroker: [],
   });
   assert.deepEqual([madeOnMoniker("corpRegistry", "GetCorporation"), madeOnMoniker("corpRegistry", "AddBulletin"), madeOnMoniker("corpRegistry", "MachoBindObject")], [true, true, false]);
   assert.deepEqual([madeOnMoniker("ship", "Undock"), madeOnMoniker("dogmaIM", "GetTargets"), madeOnMoniker("ship", "SomethingNobodyRead"), madeOnMoniker("dogmaIM", "Overload")], [true, true, true, true]);
@@ -333,7 +336,7 @@ test("everything of ship, dogmaIM, corpRegistry and the skill handler is made on
     const [service, method] = pair.split(".");
     // On the moniker for every pair of those services but the ones the client asks by the service's name. (For a
     // pilot in an alliance: one in none has no moniker for an alliance's registry.)
-    assert.equal(retailForm(service, method, [], null, { allianceID: 99000001 }).moniker, Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method), pair);
+    assert.equal(retailForm(service, method, [], null, { allianceID: 99000001, solarSystemID: 30002780 }).moniker, Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method), pair);
   }
 });
 
@@ -1385,4 +1388,61 @@ test("a pilot's colonies and launches are asked of the planet manager by name, w
   const removed = form("planetMgr.DeleteLaunch", [1000001]);
   assert.deepEqual([removed.status, removed.args, removed.kwargs], ["same", [1000001], null]);
   assert.match(removed.source, /journal.py:464$/);
+});
+
+// importExportUI.py 383 and 549, and eveMoniker.py 219. At a customs office the client asks the system's orbital
+// registry for the office's tax rate, on a Moniker it makes for that call, and sends goods up or down with
+// ImportExportWithPlanet on the office's own inventory, naming the rate it was told. Tranquility's recording of an
+// export has both: MachoBindObject(30034971, ('GetTaxRate', (officeID,), {})) three times over, and
+// ImportExportWithPlanet(pinID, {}, {2398: 100.0}, 0.20000000149011612) on the inventory GetInventoryFromId answered.
+
+test("a customs office's tax rate is asked of the system's orbital registry, on a Moniker made for the call, and only in space", () => {
+  const OFFICE = 1200040176368;
+  const asked = retailForm("planetOrbitalRegistryBroker", "GetTaxRate", [OFFICE], null, { solarSystemID: 30002780 });
+  assert.deepEqual([asked.status, asked.args, asked.kwargs, asked.moniker], ["same", [OFFICE], null, true]);
+  assert.match(asked.source, /importExportUI\.py:383$/);
+  assert.match(asked.note, /Tranquility/);
+  assert.deepEqual([madeOnMoniker("planetOrbitalRegistryBroker", "GetTaxRate"), madeAfresh("planetOrbitalRegistryBroker", "GetTaxRate"), madeAfresh("planetOrbitalRegistryBroker", "GetTaxRate", { dockedInStation: true })], [true, true, true]);
+  // Docked, the session has no system to make the Moniker for (session.solarsystemid is None): the client asks
+  // nothing. What the BFF asks all the same goes by name, and is the web's alone.
+  for (const context of [{}, { solarSystemID: null }, undefined]) {
+    const docked = retailForm("planetOrbitalRegistryBroker", "GetTaxRate", [OFFICE], null, context);
+    assert.deepEqual([docked.status, docked.args, docked.moniker], ["web-only", [OFFICE], false]);
+    assert.match(docked.source, /eveMoniker\.py:219$/);
+    assert.match(docked.note, /space/);
+  }
+  // An alliance's moniker still says what it wants in its own words.
+  const noAlliance = retailForm("allianceRegistry", "GetRelationships", [], null, { solarSystemID: 30002780 });
+  assert.deepEqual([noAlliance.status, noAlliance.moniker], ["web-only", false]);
+  assert.match(noAlliance.note, /alliance/);
+  assert.match(noAlliance.source, /eveMoniker\.py:171$/);
+});
+
+test("what goes up into a customs office, and comes down from one, goes as the client sends it", () => {
+  const PIN = 1054656331535;
+  const up = form("invbroker.ImportExportWithPlanet", [PIN, {}, { 2268: 200, 2073: 5, 9848: 3 }, 0.05]);
+  // The goods a dict of quantities by type, in the order a dict has them; what comes down a dict too, empty here.
+  assert.deepEqual([up.status, up.args, up.kwargs], ["reshaped", [PIN, fitDict(), fitDict([9848, 3], [2073, 5], [2268, 200]), 0.05], null]);
+  assert.match(up.source, /importExportUI\.py:549$/);
+  // What comes down is named by its item in the office.
+  const down = form("invbroker.ImportExportWithPlanet", [PIN, { 9988400109060: 40 }, {}, 0.05]);
+  assert.deepEqual([down.status, down.args], ["reshaped", [PIN, fitDict([9988400109060, 40]), fitDict(), 0.05]]);
+  // As the client sends it already: the same call.
+  const clients = [PIN, fitDict(), fitDict([2268, 200]), 0.2];
+  assert.deepEqual([form("invbroker.ImportExportWithPlanet", clients).status, form("invbroker.ImportExportWithPlanet", clients).args], ["same", clients]);
+  // Half the client's: one dict made, the other left.
+  assert.deepEqual(form("invbroker.ImportExportWithPlanet", [PIN, fitDict(), { 2268: 1 }, 0]).args, [PIN, fitDict(), fitDict([2268, 1]), 0]);
+  assert.deepEqual(form("invbroker.ImportExportWithPlanet", [PIN, { 77: 1 }, fitDict(), 0]).status, "reshaped");
+  // Not the client's four, or with no rate to name: it goes as it came, and says what is missing.
+  for (const given of [[PIN, {}, { 2268: 1 }], [PIN, {}, { 2268: 1 }, 0.05, 1], [PIN, {}, { 2268: 1 }, null], [PIN, {}, { 2268: 1 }, "0.05"], [PIN, {}, { 2268: 1 }, Number.NaN]]) {
+    const answer = form("invbroker.ImportExportWithPlanet", given);
+    assert.deepEqual([answer.status, answer.args], ["differs", given], JSON.stringify(given));
+    assert.match(answer.note, /tax rate/);
+  }
+});
+
+test("the game port carries the customs office's transfer, which the web gateway's list has not got", () => {
+  assert.deepEqual(GAME_PORT_ONLY_CALLS, ["invbroker.ImportExportWithPlanet"]);
+  // When the gateway's list gains one of these, it is the gateway's too, and comes off this list.
+  for (const pair of GAME_PORT_ONLY_CALLS) assert.equal(contract.gatewayAllowlist.pairs.includes(pair), false, pair);
 });

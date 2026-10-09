@@ -728,8 +728,8 @@
     ]
   },
   "bffWritePolicy": {
-    "count": 354,
-    "sha256": "9d4cf270c5a9ddde1db109b4b13c3e9f7a58083f10877eae8573586a6bfbfdf8",
+    "count": 355,
+    "sha256": "6575581c6c3de0ad06f1f758794994e86ddacea5501aa6339d47a1993de4668f",
     "pairs": [
       "LPStoreMgr.TakeOfferForCharacter",
       "LPStoreMgr.TakeOfferForCorporation",
@@ -969,6 +969,7 @@
       "invbroker.DeliverToCorpMember",
       "invbroker.DestroyFitting",
       "invbroker.FitFitting",
+      "invbroker.ImportExportWithPlanet",
       "invbroker.MultiAdd",
       "invbroker.MultiMerge",
       "invbroker.SetLabel",
