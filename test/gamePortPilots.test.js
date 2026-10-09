@@ -45,7 +45,7 @@ const refusedBy = (key, reason = key) => sessionError("GAME_CALL_REFUSED", `refu
  * a function of the arguments; a function may throw. Selecting puts the
  * character on the session as the server's session change does.
  */
-function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesOnline = true, inSpace = false, handshakeAnswer = null, corpid = 1000044 } = {}) {
+function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesOnline = true, inSpace = false, handshakeAnswer = null, corpid = 1000044, serverNow = 1_700_000_000_000 } = {}) {
   const listeners = { notification: new Set(), sessionChange: new Set(), close: new Set(), clientCall: new Set() };
   const session = {
     attributes: {},
@@ -112,6 +112,9 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
       }
       return null;
     },
+    /** The server's clock as the session's last synchronising has it, in milliseconds: a test may move it on. */
+    serverNowMs: serverNow,
+    serverNow() { return session.serverNowMs; },
     binds: [],
     /** For each bind, in order: the method of the call it carried, or null for a bind that carried none. */
     carried: [],
@@ -4139,6 +4142,95 @@ test("the skill handler's object is the character's wherever it is: kept when th
   const asked = session.boundCalls.length;
   assert.deepEqual(typesOf(await skillRead(pilots, handle, "GetSkills")), [[3300, 4], [3327, 3]]);
   assert.equal(session.boundCalls.length, asked);
+});
+
+// ── the Skills window's sheet ────────────────────────────────────────────────
+//
+// pilots.js skillSheet: the sheet made from what the client's skill services keep (skillSheet.js), with what is
+// not kept asked for as the client's windows would ask.
+
+const queuedSkill = (typeID, toLevel, position, start, end) => ({
+  type: "object", name: Buffer.from("utillib.KeyVal"),
+  args: { type: "dict", entries: [[Buffer.from("trainingStartSP"), 45255], [Buffer.from("queuePosition"), position], [Buffer.from("trainingTypeID"), typeID], [Buffer.from("trainingDestinationSP"), 256000], [Buffer.from("trainingEndTime"), end], [Buffer.from("trainingStartTime"), start], [Buffer.from("trainingToLevel"), toLevel]] },
+});
+/** 2026-10-09T13:29:15Z as the server counts time, and as this machine does. */
+const QUEUE_START = 134360261550000000n;
+const QUEUE_START_MS = Number((QUEUE_START - 116444736000000000n) / 10000n);
+const TRAINING = { "bound:GetSkillQueueAndFreePoints": [{ type: "list", items: [queuedSkill(3300, 5, 0, QUEUE_START, QUEUE_START + 36_000_000_000n)] }, 0] };
+/** Pilot options for a sheet: the skill handler's pairs, and what the client knows of a type without asking. */
+const SHEET = { ...SKILL_PAIRS, typeNames: (typeID) => ({ name: `Skill ${typeID}`, groupName: "A group" }), typeAttribute: (typeID, attributeID) => ({ 180: 165, 181: 164 })[attributeID] ?? null };
+const sheetRows = (sheet) => sheet.skills.map((row) => [row.typeID, row.level, row.skillPoints, row.inTraining]);
+
+test("the Skills window's sheet is made from what is kept, and asks only for what the client's window would ask", async () => {
+  const { pilots, session, handle } = await selected({ answers: handlerAnswers({ "bound:GetFreeSkillPoints": 700 }), serverNow: QUEUE_START_MS + 120_000 }, SHEET);
+  const asked = session.boundCalls.length;
+  const sheet = await pilots.skillSheet(WHO, handle);
+  assert.deepEqual([sheet.characterID, sheet.characterName, sheet.serverNowMs, sheet.queueWarning], [PILOT, "Test Pilot", QUEUE_START_MS + 120_000, null]);
+  assert.deepEqual(sheetRows(sheet), [[3300, 4, 45255, false], [3327, 3, 8000, false]]);
+  assert.deepEqual(sheet.skills[0], { typeID: 3300, name: "Skill 3300", groupName: "A group", level: 4, rank: 1, skillPoints: 45255, levelSkillPoints: [250, 1415, 8000, 45255, 256000], inTraining: false });
+  // The total is of the list with the lapsed (three skills) and the free points.
+  assert.deepEqual([sheet.totalSkillPoints, sheet.freeSkillPoints, sheet.queue], [45255 + 8000 + 250 + 700, 700, { active: false, entries: [], endTimeMs: null, maxEntries: 150 }]);
+  // The lists and the queue were read at the choosing. The free points were not kept by it (the queue came with none),
+  // and are asked for once. Nothing is in training, so the attributes are not wanted.
+  assert.deepEqual(handlerCalls(session, asked), ["GetFreeSkillPoints"]);
+  await pilots.skillSheet(WHO, handle);
+  assert.deepEqual(handlerCalls(session, asked), ["GetFreeSkillPoints"]);
+  // What the server says afterwards is in the next sheet, with nothing asked.
+  session.notify("OnServerSkillsChanged", [skillsOf(skillOf(3300, 5, 256000), skillOf(3402, 2, 1415)), null, 7n]);
+  session.notify("OnFreeSkillPointsChanged", [0]);
+  const later = await pilots.skillSheet(WHO, handle);
+  assert.deepEqual([sheetRows(later), later.totalSkillPoints, handlerCalls(session, asked)], [[[3300, 5, 256000, false], [3327, 3, 8000, false], [3402, 2, 1415, false]], 256000 + 8000 + 1415, ["GetFreeSkillPoints"]]);
+  // Another account's session reads nothing.
+  await assert.rejects(pilots.skillSheet({ userid: 9 }, handle), (error) => error.code === "SESSION_NOT_FOUND");
+});
+
+test("with a skill in training the sheet asks for the character's attributes as the client does, once, and reckons the skill's points from them", async () => {
+  const { pilots, session, handle } = await selected({ answers: handlerAnswers(TRAINING), serverNow: QUEUE_START_MS + 120_000 }, SHEET);
+  const asked = session.boundCalls.length;
+  const sheet = await pilots.skillSheet(WHO, handle);
+  // skillsvc.GetCharacterAttributes: the boosters and the implants again, then the attributes. 21 and half of 20 a minute, for two minutes.
+  assert.deepEqual(handlerCalls(session, asked), ["GetFreeSkillPoints", "GetBoosters", "GetImplants", "GetAttributes"]);
+  assert.deepEqual(sheet.queue, {
+    active: true,
+    entries: [{ queuePosition: 0, typeID: 3300, toLevel: 5, startSP: 45255, destinationSP: 256000, startTimeMs: QUEUE_START_MS, endTimeMs: QUEUE_START_MS + 3_600_000, skillPointsPerMinute: 31 }],
+    endTimeMs: QUEUE_START_MS + 3_600_000,
+    maxEntries: 150,
+  });
+  assert.deepEqual(sheetRows(sheet), [[3300, 4, 45255 + 62, true], [3327, 3, 8000, false]]);
+  // Again: nothing asked, and the points are the clock's.
+  session.serverNowMs += 60_000;
+  assert.deepEqual([sheetRows(await pilots.skillSheet(WHO, handle))[0], handlerCalls(session, asked).length], [[3300, 4, 45255 + 93, true], 4]);
+  // The queue stopped by the server: nothing is in training, and the points are the entry's.
+  session.notify("OnSkillQueuePausedServer", []);
+  const stopped = await pilots.skillSheet(WHO, handle);
+  assert.deepEqual([stopped.queue.active, stopped.queue.entries.map((entry) => [entry.startTimeMs, entry.endTimeMs, entry.skillPointsPerMinute]), sheetRows(stopped)[0]], [false, [[null, null, 0]], [3300, 4, 45255, false]]);
+  // A sheet first asked for with nothing in training, and then with something: the attributes are asked for then.
+  const idle = await selected({ answers: handlerAnswers(), serverNow: QUEUE_START_MS }, SHEET);
+  await idle.pilots.skillSheet(WHO, idle.handle);
+  idle.session.notify("OnNewSkillQueueSaved", [TRAINING["bound:GetSkillQueueAndFreePoints"][0]]);
+  const from = idle.session.boundCalls.length;
+  assert.equal((await idle.pilots.skillSheet(WHO, idle.handle)).queue.entries[0].skillPointsPerMinute, 31);
+  assert.deepEqual(handlerCalls(idle.session, from), ["GetBoosters", "GetImplants", "GetAttributes"]);
+});
+
+test("a sheet for a pilot whose reads at the choosing could not be made asks for them, and fails as its reads fail", async () => {
+  let refuse = true;
+  const answers = handlerAnswers({ ...TRAINING, "bound:GetBoosters": () => { if (refuse) throw refusedBy("NotNow"); return { type: "dict", entries: [] }; } });
+  const { pilots, session, handle } = await selected({ answers, serverNow: QUEUE_START_MS }, SHEET);
+  // The choosing read the skills and stopped at the boosters: no queue, no list with the lapsed.
+  assert.deepEqual(handlerCalls(session), ["GetSkills", "GetBoosters"]);
+  // The sheet asks for the list, the queue (PrimeSkillQueue) and the free points; the queue has a skill in training, so
+  // the attributes are wanted, and the boosters before them are refused: the sheet is refused, as the client's window would fail.
+  await rejects(pilots.skillSheet(WHO, handle), "CALL_REFUSED");
+  assert.deepEqual(handlerCalls(session, 2), ["GetAllSkills", "GetSkillQueueAndFreePoints", "GetFreeSkillPoints", "GetBoosters"]);
+  refuse = false;
+  const sheet = await pilots.skillSheet(WHO, handle);
+  assert.deepEqual([sheet.queue.active, sheet.queue.entries[0].skillPointsPerMinute, handlerCalls(session, 6)], [true, 31, ["GetBoosters", "GetImplants", "GetAttributes"]]);
+  assert.deepEqual(ledgerOf(pilots, "skillHandler.GetSkillQueueAndFreePoints"), [{ same: 1 }, "eve/client/script/ui/services/skillQueueSvc.py:117"]);
+  // A connection lost under it ends the session, as anywhere.
+  const lost = await selected({ answers: handlerAnswers({ "bound:GetFreeSkillPoints": () => { throw sessionError("CONNECTION_LOST"); } }) }, SHEET);
+  await rejects(lost.pilots.skillSheet(WHO, lost.handle), "SESSION_NOT_FOUND");
+  assert.equal(lost.pilots.size, 0);
 });
 
 test("with godma not primed there is no entry to give, and the ship is still said", async () => {

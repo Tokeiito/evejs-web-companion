@@ -155,6 +155,18 @@ what is kept where the client's service would answer from what it keeps, and ask
 it would ask once. With those the report is 17 kinds of the client's 100 at login, 18 by a feature,
 15 by a route only, 50 by nothing of ours.
 
+**The Skills window's sheet, 2026-10-09.** On the game port the page's sheet is made from what is
+kept (`src/gamePort/skillSheet.js`), each figure the way the client's windows make it: a level's
+points from the rank (`characterskills/util.py`), the skill in training from the queue's first
+entry, its points from the entry kept plus the time since the queue began at the pilot's rate
+(`skillQueueSvc.GetEstimatedSkillPointsTrained`), the rate from the character's attributes, the
+total from every skill's points and the free points. The attributes are asked for when a skill is
+first found in training, as the client's reckoning asks for them. The web gateway's own sheet, a
+snapshot no retail client asks for, is read on the gateway alone. That reckoning needs the skill
+list to hold the points a training skill had when the queue's first entry began: see the log's
+entry "the Skills window from what is kept" for what this server answered there and what
+Tranquility's recordings say.
+
 **The customs export's call shape.** `src/piCustomsExport.js` binds `invbroker` with the office ID
 and calls `ImportExportWithPlanet` on that. The client goes through `invCache`: it binds the
 broker for a location, asks it for the office's inventory, and calls that. eve.js accepts both.

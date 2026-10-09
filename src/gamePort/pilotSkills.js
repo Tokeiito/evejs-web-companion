@@ -64,6 +64,15 @@ const skillFields = (entry) => (entry && Array.isArray(entry.header) && Array.is
 /** One field of a queue entry (a KeyVal), or undefined. */
 const queueField = (entry, name) => (isKeyVal(entry) ? (entry.args.entries.find(([key]) => text(key) === name) ?? [])[1] : undefined);
 
+/**
+ * skillQueueSvc.SkillInTraining: the type of the queue's first entry, where that entry has an end. Null with an
+ * empty queue, a stopped one, or none. `queue` is the queue as it is read back here: a list of entries.
+ */
+function skillInTraining(queue) {
+  const head = queue && Array.isArray(queue.items) ? queue.items[0] : undefined;
+  return queueField(head, "trainingEndTime") ? number(queueField(head, "trainingTypeID")) : null;
+}
+
 function createPilotSkills() {
   /** skillsvc's myskills and mySkillsIncludingLapsed: typeID -> { entry, timeStamp }, or null where not read. */
   let skills = null;
@@ -181,6 +190,8 @@ function createPilotSkills() {
       if (name === "queue") return queue ? { type: "list", items: [...queue] } : undefined;
       return kept.get(name);
     },
+    /** The type in training by the queue as it is kept, or null (skillInTraining). */
+    inTraining: () => skillInTraining(queue ? { items: queue } : null),
     /** The server pushes a notification: what the transport is then to do, each thing once. */
     feed(notification) {
       const args = Array.isArray(notification.args) ? notification.args : [];
@@ -192,4 +203,4 @@ function createPilotSkills() {
   };
 }
 
-module.exports = { createPilotSkills };
+module.exports = { createPilotSkills, skillInTraining };

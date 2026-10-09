@@ -83,10 +83,13 @@ Consult in this order. When two disagree, a recording of the real thing settles 
    the top folder alone missed the one recording of a module being fitted, which showed a call
    the reading of the code had missed. Reading the bytes:
    a dict entry's value is written BEFORE its key; `\x01` is None, `\x07` is -1, `/\x05`
-   and five bytes is a long.
+   and five bytes is a long. An answer too large is not in a recording at all (it reads
+   `LARGE PAYLOAD` and a size; a pilot's whole skill list is one): what a server sends there is
+   then worked out, not read, and is written down so.
 
 Tools already built for this: `scripts/recordings/` (read the Tranquility recordings: decode a
-file's lines, tally what agents offered, see `README.md` there), `scripts/capture-game-frames.js`
+file's lines, list the calls made on a bound object and what answered each, tally what agents
+offered, see `README.md` there), `scripts/capture-game-frames.js`
 (record a conversation as a fixture), `scripts/record-game-port.js` (record any client),
 `scripts/record-fleet-session.js` (two real sessions through a fleet's life, every notice and
 answer each got: the pattern for a fixture that sets what a store keeps beside the server's own

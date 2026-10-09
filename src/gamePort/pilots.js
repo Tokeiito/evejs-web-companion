@@ -64,6 +64,7 @@ const { MAX_PROBES, createPilotScanner } = require("./pilotScanner");
 const { createPilotFleet } = require("./pilotFleet");
 const { createPilotStandings } = require("./pilotStandings");
 const { createPilotSkills } = require("./pilotSkills");
+const { buildSkillSheet } = require("./skillSheet");
 const { projectFlight, projectSpace } = require("./spaceProjection");
 const { MODE: BALL_MODE } = require("./destiny/state");
 const contract = require("../../contracts/evejs-web-bridge-contract.json");
@@ -377,6 +378,12 @@ function defaultTypeEffects(typeID) {
 }
 /** const.attributeDisallowRepeatingActivation: a module that is set off once each time. */
 const ATTRIBUTE_DISALLOW_REPEATING = 1014;
+/** A type's name and its group's, as the static data has them: what the client knows of a type without asking. */
+function defaultTypeNames(typeID) {
+  // eslint-disable-next-line global-require
+  const type = require("../staticData").getType(typeID);
+  return type ? { name: String(type.name ?? ""), groupName: String(type.groupName ?? "") } : null;
+}
 function defaultTypeGroup(typeID) {
   // eslint-disable-next-line global-require
   const type = require("../staticData").getType(typeID);
@@ -483,6 +490,7 @@ function createGamePortPilots({
   // A type's dogma attribute and its group, for the scanner: a probe's range steps, and whether a launcher's charge is a probe.
   typeAttribute = defaultTypeAttribute,
   typeGroup = defaultTypeGroup,
+  typeNames = defaultTypeNames,
   // A type's dogma effects, for naming the one a module is switched on by and saying whether it repeats.
   typeEffects = defaultTypeEffects,
   // The client's own services, for the calls the server makes to it, and a word about each call once it is over.
@@ -850,6 +858,8 @@ function createGamePortPilots({
       /** The pilot's skills as the client's skill services keep them (pilotSkills.js), and what is being asked for them, one thing after another. */
       skills: createPilotSkills(),
       skillsWork: Promise.resolve(),
+      /** The character's name, as the selection screen's row had it. */
+      characterName: "",
       /** Questions the server has asked and the user has not answered yet, by ID. */
       questions: new Map(),
       ended: false,
@@ -912,6 +922,7 @@ function createGamePortPilots({
       }
       row = selectionRow(wireToBridgeJson(await session.call("charUnboundMgr", "GetCharacterSelectionData", [])), characterID);
       if (!row) throw fail("CALL_REFUSED", "That character is not on this account.");
+      entry.characterName = String(keyValField(row, "characterName") || "");
       const lockType = await session.call("charUnboundMgr", "GetCharacterLockType", [characterID]);
       if (lockType !== null && lockType !== undefined) {
         throw fail("CALL_REFUSED", LOCK_REFUSALS.get(Number(lockType)) ?? "CharacterLocked");
@@ -1574,6 +1585,38 @@ function createGamePortPilots({
     }).catch(() => {});
   }
 
+  /**
+   * The Skills window's sheet, made from what the client's skill services keep (skillSheet.js), in the form the
+   * web gateway's sheet is in. What is not kept is asked for as the client's windows would ask: the two lists,
+   * the queue and the free points (skillsvc.GetFreeSkillPoints), and, where a skill is in training, the
+   * character's attributes, which its points so far are reckoned from (skillQueueSvc.GetEstimatedSkillPointsTrained
+   * reads skillsvc.GetCharacterAttributes: the boosters, the implants and the attributes).
+   */
+  async function skillSheet(sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    return run(entry, SKILL_HANDLER, "GetSkills", () => skillsDoes(entry, async () => {
+      const skills = await skillRead(entry, "GetSkills", []);
+      const allSkills = await skillRead(entry, "GetAllSkills", []);
+      // skillQueueSvc.PrimeSkillQueue, where the choosing's own asking of it could not be made.
+      if (!entry.skills.has("queue")) await skillAsk(entry, "GetSkillQueueAndFreePoints");
+      const freeSkillPoints = await skillRead(entry, "GetFreeSkillPoints", []);
+      const attributes = entry.skills.inTraining() === null ? entry.skills.read("attributes") ?? null : await skillRead(entry, "GetAttributes", []);
+      return buildSkillSheet({
+        characterID: entry.characterID,
+        characterName: entry.characterName,
+        skills,
+        allSkills,
+        queue: entry.skills.read("queue"),
+        freeSkillPoints,
+        attributes,
+        now: () => entry.session.serverNow(),
+        typeName: (typeID) => typeNames(typeID)?.name,
+        typeGroupName: (typeID) => typeNames(typeID)?.groupName,
+        typeAttribute,
+      });
+    }));
+  }
+
   /** What the client's skill service does after a notice that only the transport can do (pilotSkills.js feed). */
   function afterSkillNotice(entry, next) {
     for (const what of next) {
@@ -1999,6 +2042,7 @@ function createGamePortPilots({
     fleet,
     fleetKept,
     standingsKept,
+    skillSheet,
     shipInfo,
     shipAttribute,
     shutdown,

@@ -20422,8 +20422,27 @@ droneOrderRoute("/api/bridge/drones/recall", "CmdReturnBay", { needsTarget: fals
 // before it writes, so the only honest answer to "did the edit take" is the
 // re-read below — which comes back through the gateway's snapshot of
 // skillQueueRuntime, the same authority the save wrote to.
-async function answerWithSkillSheet(res, account, characterID, extra = {}) {
-  const skills = await gateway.getSkills(account.accountID, characterID);
+/**
+ * A pilot's skill sheet. On the game port it is made from what the client's skill services keep of the skill
+ * handler's answers, kept right by the server's notices (pilots.js skillSheet): the gateway's own sheet is a
+ * snapshot no retail client asks for. Where that cannot be made, and on the gateway, it is the gateway's.
+ */
+async function skillSheetFor(account, characterID, held = null, webSessionID = null) {
+  if (held && gamePortPilots && isGamePortHandle(held.bridgeSessionID)) {
+    try {
+      return await gamePortPilots.skillSheet({ userid: held.accountID }, held.bridgeSessionID);
+    } catch (error) {
+      if (error && error.code === "SESSION_NOT_FOUND") {
+        forgetBridgeSession(webSessionID, held);
+        throw error;
+      }
+    }
+  }
+  return gateway.getSkills(account.accountID, characterID);
+}
+
+async function answerWithSkillSheet(res, account, characterID, extra = {}, held = null, webSessionID = null) {
+  const skills = await skillSheetFor(account, characterID, held, webSessionID);
   if (!skills) {
     res.status(404).json({
       ok: false,
@@ -20694,7 +20713,7 @@ app.get("/api/bridge/skills", requireAuth, async (req, res, next) => {
     return;
   }
   try {
-    await answerWithSkillSheet(res, req.account, held.characterID);
+    await answerWithSkillSheet(res, req.account, held.characterID, {}, held, req.webSessionID);
   } catch (error) {
     next(error);
   }
@@ -20760,7 +20779,7 @@ app.post("/api/bridge/skills/queue", requireAuth, async (req, res, next) => {
     );
     await answerWithSkillSheet(res, req.account, held.characterID, {
       notifications: outcome.notifications,
-    });
+    }, held, req.webSessionID);
   } catch (error) {
     next(error);
   }
