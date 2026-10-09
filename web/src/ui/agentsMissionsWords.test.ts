@@ -72,12 +72,22 @@ function panel(options: {
   times?: { declineTime: bigint | null; expirationTime: bigint | null } | null;
   cantReplay?: number | null;
   special?: boolean;
+  /** Where the pilot was selected, and what its flight status has said since (neither: nothing is known of where it is). */
+  online?: { stationID: number | null; structureID: number | null; solarSystemID: number | null };
+  flight?: { docked: boolean; stationID: number | null; structureID: number | null; solarSystemID: number | null };
   /** A mission's page held by the store, whether the client's words for it are to hand, and whether the BFF has a client at all. */
   page?: Record<string, unknown>;
   pageWords?: boolean;
   noClient?: boolean;
 }): string {
   const store = createClientStore();
+  // Coming online first: it clears what the last pilot's agents held.
+  if (options.online !== undefined) {
+    store.apply({ type: "character/online", character: { characterID: 140000002, characterName: "Test Two", corporationID: 1000002, ...options.online }, station: null } as never);
+  }
+  if (options.flight !== undefined) {
+    store.apply({ type: "flight/status", status: { inSpace: !options.flight.docked, shipID: 1, shipTypeID: 606, shipIsCapsule: false, shipMode: null, shipSpeedFraction: null, ...options.flight } } as never);
+  }
   store.apply({ type: "names/resolved", entries: { [`agent:${AGENT}`]: "Antaken Kamola", "agent:3009999": "Some Other Agent", "system:30002780": "Muvolailen" } });
   store.apply({
     type: "agents/journal",
@@ -302,6 +312,8 @@ const PAGE_TEMPLATES: Record<string, string> = {
   [PAGE_LABELS.isk]: "{[numeric]amount, useGrouping, decimalPlaces=2} ISK",
   [PAGE_LABELS.quantityAndItem]: "{[numeric]quantity, useGrouping} x {[item]item.name}",
   [PAGE_LABELS.startConversation]: "Have a word",
+  [PAGE_LABELS.thisStation]: "Right here",
+  [PAGE_LABELS.thisSolarSystem]: "In this system",
   "#900260": "The Made-Up Errand",
   "#900954": "The briefing itself.",
   "#900955": "Bring it to {[location]objectiveLocationSystemID.name},\r\n<b>{[character]agentID.name}</b> says.<br>Soon.<br><br>",
@@ -484,4 +496,33 @@ test("a mission with something to carry and somewhere to fight has the carrying 
   ]) as never);
   const page = pageOf(panel({ words: true, pageWords: true, talking: false, page: { missionState: 2, expirationTime: null, objectives: both } })) as string;
   assert.match(text(page), /To do Carry these: ✓ Load 1 x type 2595 ✓ From station 60000004 ○ To station 60000019 Destroy them ✓ Place system 30002779$/);
+});
+
+// --- where the pilot is, for the marks beside a mission's objectives -------------------
+
+test("the marks go by where the pilot is now: selected in the pick-up's station, and then undocked from it", () => {
+  const selected = { stationID: 60000004, structureID: null, solarSystemID: 30002780 };
+  const steps = (flight?: { docked: boolean; stationID: number | null; structureID: number | null; solarSystemID: number | null }) => {
+    const page = pageOf(panel({ words: true, pageWords: true, talking: false, online: selected, ...(flight ? { flight } : {}), page: { objectives: decodeObjectives(COURIER_OFFERED_GATEWAY) } })) as string;
+    return [...page.matchAll(/<li class="mission-step[^"]*">([\s\S]*?)<\/li>/g)].map((match) => text(match[1] as string));
+  };
+  // Docked where it was selected, with no flight status read yet.
+  assert.deepEqual(steps(), ["○ Load 1 x type 2595 (0.1 m3)", "✓ From Right here station 60000004", "○ To station 60000019"]);
+  // The flight status agrees.
+  assert.deepEqual(steps({ docked: true, stationID: 60000004, structureID: null, solarSystemID: 30002780 })[1], "✓ From Right here station 60000004");
+  // Undocked: the pick-up is not done any more, and its station is in this system.
+  assert.deepEqual(steps({ docked: false, stationID: null, structureID: null, solarSystemID: 30002780 }), ["○ Load 1 x type 2595 (0.1 m3)", "○ From In this system station 60000004", "○ To station 60000019"]);
+  // Docked at the drop-off without the package: nothing is done there either.
+  assert.deepEqual(steps({ docked: true, stationID: 60000019, structureID: null, solarSystemID: 30002778 }), ["○ Load 1 x type 2595 (0.1 m3)", "○ From station 60000004", "○ To Right here station 60000019"]);
+});
+
+test("the agent window's pane goes by where the pilot is now too", () => {
+  const selected = { stationID: 60000004, structureID: null, solarSystemID: 30002780 };
+  const marks = (flight?: { docked: boolean; stationID: number | null; structureID: number | null; solarSystemID: number | null }) => {
+    const pane = paneOf(panel({ words: true, paneWords: true, talking: true, buttons: [3, 9], online: selected, ...(flight ? { flight } : {}), objectives: decodeObjectives(COURIER_OFFERED_GATEWAY) })) as string;
+    return [...pane.matchAll(/<span class="mission-mark ([a-z]+)"/g)].map((match) => match[1]);
+  };
+  // Pick-up, drop-off, cargo.
+  assert.deepEqual(marks(), ["done", "open", "open"]);
+  assert.deepEqual(marks({ docked: false, stationID: null, structureID: null, solarSystemID: 30002780 }), ["open", "open", "open"]);
 });

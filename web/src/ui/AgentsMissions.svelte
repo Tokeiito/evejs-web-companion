@@ -25,6 +25,7 @@
   import type { MissionMessage } from "../bridge/missionObjectives.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { questionMarkup, questionText, wordsLabels, wordsNameRefs, type ClientWording } from "../bridge/questions.ts";
+  import { sessionPlace } from "../bridge/sessionPlace.ts";
   import { PAGE_WORD_LABELS, missionPage, pageMessageIDs, pageNameRefs, type MissionPage, type MissionPageInput, type PagePanel, type PageRewards, type PageSteps, type StepState } from "../bridge/missionPage.ts";
   import { filetimeOf, journalRowAsks, journalRowText, journalRowWords } from "../bridge/journalWords.ts";
 
@@ -41,6 +42,10 @@
   const words = store.words;
   // svelte-ignore state_referenced_locally
   const station = store.station;
+  // svelte-ignore state_referenced_locally
+  const flight = store.flight;
+  // Where the pilot's session is now: the marks beside a mission's objectives go by it (bridge/sessionPlace.ts).
+  const place = $derived(sessionPlace($flight.status, $station.online));
 
   let busy = $state(false);
   let error = $state("");
@@ -299,12 +304,11 @@
     if (objectives === null || agentID === null) {
       return [];
     }
-    const online = $station.online;
     return objectivePane(objectives, {
       templates: $words.templates,
       nameOf: nameWithAgents,
       // session.locationid: the station (or structure) the pilot is in, or the solar system it is flying in.
-      locationID: online?.stationID ?? online?.structureID ?? online?.solarSystemID ?? null,
+      locationID: place.locationID,
       // The mission's name is its message with nothing filled in, as the pane's own GetByMessageID has it.
       messageText: (messageID) => (hasWords(`#${messageID}`) ? questionText({ label: null, parameters: null, text: null, messageID }, saysName, { templates: $words.templates }) : null),
       say: (message) => sayOfMission(agentID, message),
@@ -395,14 +399,13 @@
     if (held === null || pageInput === null) {
       return null;
     }
-    const online = $station.online;
     const client = pageClient(held.agentID, held.contentID);
     const page = missionPage(pageInput, {
       templates: $words.templates,
       nameOf: nameWithAgents,
-      locationID: online?.stationID ?? online?.structureID ?? online?.solarSystemID ?? null,
-      stationID: online?.stationID ?? null,
-      solarSystemID: online?.solarSystemID ?? null,
+      locationID: place.locationID,
+      stationID: place.stationID,
+      solarSystemID: place.solarSystemID,
       now: filetimeOf(pageClock),
       // The mission's name is its message with nothing filled in.
       messageText: (messageID) => (hasWords(`#${messageID}`) ? questionText(byNumber(messageID), nameWithAgents, { templates: $words.templates }) : null),
