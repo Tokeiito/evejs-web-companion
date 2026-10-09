@@ -20,7 +20,7 @@
   import { panelErrorWords } from "../bridge/refusals.ts";
   import { AGENT_MISSION_STATE, offerOpen } from "../bridge/agents.ts";
   import { MISSION_TIME_WORD_LABELS, missionTimeShown, missionTimeText } from "../bridge/missionTime.ts";
-  import { INTERVAL_WORD_LABELS } from "../bridge/timeInterval.ts";
+  import { INTERVAL_WORD_LABELS, SHORT_INTERVAL_WORD_LABELS } from "../bridge/timeInterval.ts";
   import { PANE_WORD_LABELS, objectivePane, paneMessageIDs, paneNameRefs, type PaneBlock, type PaneMark } from "../bridge/missionObjectivePane.ts";
   import type { MissionMessage } from "../bridge/missionObjectives.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
@@ -258,7 +258,8 @@
     const asks = [...journal.active, ...journal.offered].flatMap((mission) => journalRowAsks(journalRowWords(mission, now)));
     const labels = wordsLabels(asks);
     if (labels.length > 0) {
-      flow.requestWords(labels);
+      // A line's time left is a short written interval, which has labels of its own.
+      flow.requestWords([...labels, ...SHORT_INTERVAL_WORD_LABELS]);
     }
   });
 

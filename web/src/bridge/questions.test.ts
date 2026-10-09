@@ -541,3 +541,21 @@ test("the names a dialog's words need are the ones its typed values name, whiche
     ["system:30002780", "owner:500001"],
   );
 });
+
+test("an interval in a label is written the client's way when its words for one are to hand, short or long", () => {
+  const HOUR = 36_000_000_000;
+  const templates: Record<string, string | null> = {
+    "UI/Made/Up/Short": "Left: {[timeinterval]left.shortWrittenForm}",
+    "UI/Made/Up/Long": "Left: {[timeinterval]left.writtenForm, to=minute}",
+    "/Carbon/UI/Common/WrittenDateTimeQuantityShort/Hour": "{[numeric]value} hrs",
+    "/Carbon/UI/Common/WrittenDateTimeQuantity/Hour": '{[numeric]units} {[numeric]units-> "hour", "hours"}',
+  };
+  const say = (label: string, given: Record<string, string | null>) =>
+    questionText({ label, parameters: { type: "dict", entries: [["left", { type: "long", value: String(5 * HOUR) }]] }, text: null }, () => "", { templates: given });
+  assert.equal(say("UI/Made/Up/Short", templates), "Left: 5 hrs");
+  assert.equal(say("UI/Made/Up/Long", templates), "Left: 5 hours");
+  // Without the client's words for the unit, this page's own short form.
+  const none = { "UI/Made/Up/Short": templates["UI/Made/Up/Short"]!, "UI/Made/Up/Long": templates["UI/Made/Up/Long"]! };
+  assert.equal(say("UI/Made/Up/Short", none), "Left: 5h");
+  assert.equal(say("UI/Made/Up/Long", none), "Left: 5h");
+});

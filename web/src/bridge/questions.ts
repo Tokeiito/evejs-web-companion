@@ -35,6 +35,7 @@ import {
   type TemplateArguments,
 } from "./clientWords.ts";
 import type { JsonValue } from "./wire.ts";
+import { intervalWriter, shortIntervalWriter } from "./timeInterval.ts";
 
 /**
  * The retail client's own text, when the page has it: its templates by label
@@ -272,7 +273,15 @@ function argumentsFor(words: QuestionWords, client: ClientWording, nameOf: NameO
 export function questionMarkup(words: QuestionWords, nameOf: NameOf, client: ClientWording): string | null {
   const key = wordsKey(words);
   const template = key !== null ? client.templates[key] : null;
-  return typeof template === "string" ? formatTemplate(template, argumentsFor(words, client, nameOf), { nameOf, playerID: client.playerID ?? null }) : null;
+  // An interval in a label is written the client's way when the client's words for one are to hand.
+  return typeof template === "string"
+    ? formatTemplate(template, argumentsFor(words, client, nameOf), {
+        nameOf,
+        playerID: client.playerID ?? null,
+        writeInterval: intervalWriter(client.templates),
+        writeShortInterval: shortIntervalWriter(client.templates),
+      })
+    : null;
 }
 
 /**

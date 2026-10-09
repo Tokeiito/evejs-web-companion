@@ -302,6 +302,22 @@ test("an interval's written form is the caller's to write, from and to as the ta
   assert.deepEqual(asked, []);
   // With nobody to write it, or when it cannot be written, the page's short form stands in.
   assert.equal(formatTemplate("{[timeinterval]t.writtenForm, to=minute}", { t: 3 * HOUR }, { nameOf: () => "" }), "3h");
+  // The short written form has a writer of its own, asked the same way, and is not the other's business.
+  const short: Array<[bigint, string | null, string | null]> = [];
+  const both = {
+    nameOf: () => "",
+    writeInterval: () => "three hours",
+    writeShortInterval: (ticks: bigint, from: string | null, to: string | null) => { short.push([ticks, from, to]); return "3hrs"; },
+  };
+  assert.equal(formatTemplate("In {[timeinterval]t.shortWrittenForm, from=day, to=second}.", { t: 3 * HOUR }, both), "In 3hrs.");
+  assert.equal(formatTemplate("{[timeinterval]t.shortWrittenForm}", { t: 3 * HOUR + 0.5 }, both), "3hrs");
+  assert.deepEqual(short, [[BigInt(3 * HOUR), "day", "second"], [BigInt(3 * HOUR), null, null]]);
+  assert.equal(formatTemplate("{[timeinterval]t.writtenForm}", { t: 3 * HOUR }, both), "three hours");
+  // Without a writer for it, or with one that has no words, the short form is this page's own.
+  assert.equal(formatTemplate("{[timeinterval]t.shortWrittenForm}", { t: 3 * HOUR }, { nameOf: () => "", writeInterval: () => "three hours" }), "3h");
+  assert.equal(formatTemplate("{[timeinterval]t.shortWrittenForm}", { t: 3 * HOUR }, { nameOf: () => "", writeShortInterval: () => null }), "3h");
+  // A tag that asks for neither form gets neither writer.
+  assert.equal(formatTemplate("{[timeinterval]t}", { t: 3 * HOUR }, both), "3h");
   assert.equal(formatTemplate("{[timeinterval]t.writtenForm, to=minute}", { t: 3 * HOUR }, { nameOf: () => "", writeInterval: () => null }), "3h");
   // No interval given: nothing, and nothing is asked.
   assert.equal(formatTemplate("[{[timeinterval]t.writtenForm}]", {}, context), "[]");

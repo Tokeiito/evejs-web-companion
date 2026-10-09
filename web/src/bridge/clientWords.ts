@@ -50,6 +50,8 @@ export interface FormatContext {
    * names none. Without it, or when it answers null, such a tag is written in this page's short form.
    */
   readonly writeInterval?: (ticks: bigint, from: string | null, to: string | null) => string | null;
+  /** The same for a tag that asks for an interval's short written form ("6d 8h 57m"). */
+  readonly writeShortInterval?: (ticks: bigint, from: string | null, to: string | null) => string | null;
 }
 
 /** A message's arguments by name: what the server sent with the label, and what the client adds. */
@@ -277,10 +279,10 @@ function renderToken(token: TemplateToken, args: TemplateArguments, context: For
     }
     case "timeinterval": {
       const value = numberOf(given);
-      // timeIntervalPropertyHandler: writtenForm is FormatTimeIntervalWritten, from and to as the tag sets them.
-      const written = value !== null && token.property === "writtenForm" && context.writeInterval
-        ? context.writeInterval(BigInt(Math.trunc(value)), token.settings.from ?? null, token.settings.to ?? null)
-        : null;
+      // timeIntervalPropertyHandler: writtenForm is FormatTimeIntervalWritten and shortWrittenForm is
+      // FormatTimeIntervalShortWritten, from and to as the tag sets them.
+      const writer = token.property === "writtenForm" ? context.writeInterval : token.property === "shortWrittenForm" ? context.writeShortInterval : undefined;
+      const written = value !== null && writer ? writer(BigInt(Math.trunc(value)), token.settings.from ?? null, token.settings.to ?? null) : null;
       text = value === null ? "" : written ?? formatInterval(value);
       break;
     }

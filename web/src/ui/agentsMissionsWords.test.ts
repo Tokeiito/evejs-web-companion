@@ -75,6 +75,8 @@ function panel(options: {
   /** Where the pilot was selected, and what its flight status has said since (neither: nothing is known of where it is). */
   online?: { stationID: number | null; structureID: number | null; solarSystemID: number | null };
   flight?: { docked: boolean; stationID: number | null; structureID: number | null; solarSystemID: number | null };
+  /** Whether the client's words for a short written interval are to hand. */
+  intervalWords?: boolean;
   /** What the client's agents service knows of the page's agent. */
   agentRecord?: Record<string, unknown> | null;
   /** The pilot's standings and skills as read, each as [id, value] pairs. */
@@ -157,7 +159,7 @@ function panel(options: {
     store.apply({ type: "words/loaded", available: false, templates: {} });
   }
   if (options.words === true) {
-    const templates = { ...TEMPLATES, ...(options.paneWords ? PANE_TEMPLATES : {}), ...(options.pageWords ? PAGE_TEMPLATES : {}) };
+    const templates = { ...TEMPLATES, ...(options.paneWords ? PANE_TEMPLATES : {}), ...(options.pageWords ? PAGE_TEMPLATES : {}), ...(options.intervalWords ? SHORT_INTERVAL_TEMPLATES : {}) };
     store.apply({ type: "words/loaded", available: true, templates: Object.fromEntries(Object.entries(templates).filter(([key]) => !(options.without ?? []).includes(key))) });
   } else if (options.words === "none of them") {
     // Asked for, and the client has no text for any of it.
@@ -341,6 +343,13 @@ const PAGE_TEMPLATES: Record<string, string> = {
   "#900955": "Bring it to {[location]objectiveLocationSystemID.name},\r\n<b>{[character]agentID.name}</b> says.<br>Soon.<br><br>",
   "#900956": "One more thing",
   "#900957": "Mind the <i>gate</i>.",
+};
+// Made up, and unlike this page's own short form on purpose, so the two can be told apart.
+const SHORT_INTERVAL_TEMPLATES: Record<string, string> = {
+  "/Carbon/UI/Common/WrittenDateTimeQuantityShort/Day": "{[numeric]value} dys",
+  "/Carbon/UI/Common/WrittenDateTimeQuantityShort/Hour": "{[numeric]value} hrs",
+  "/Carbon/UI/Common/WrittenDateTimeQuantityShort/Minute": "{[numeric]value} mns",
+  "/Carbon/UI/Common/WrittenDateTimeQuantityShort/DateTimeShortWritten2Elements": "{value1} and {value2}",
 };
 const PAGE_RECORD = { nameID: 900260, messages: { [PAGE_MESSAGES.briefing]: 900954, [PAGE_MESSAGES.offered]: 900955, [PAGE_MESSAGES.extraHeader]: 900956, [PAGE_MESSAGES.extraBody]: 900957 } };
 const pageOf = (body: string): string | null => body.match(/<section class="mission-page">([\s\S]*?)<\/section>/)?.[1] ?? null;
@@ -590,4 +599,17 @@ test("the corporation's card begins with the pilot's effective standing, from th
   for (const options of [{ standings: [[1000002, 3.5]] as const }, { skillLevels: [[3359, 4]] as const }, {}]) {
     assert.equal(text(card(options)), "A Made-Up Company A Made-Up State");
   }
+});
+
+// --- the time left, the client's short way --------------------------------------------------
+
+test("the journal's line and the mission's page write the time left the client's short way when its words are to hand", () => {
+  const body = panel({ words: true, pageWords: true, intervalWords: true, talking: false, page: {} });
+  // (The page's words are loaded too here, and one of them is the journal's own word for an offer.)
+  assert.deepEqual(journalLines(body).map((line) => line.split(" · ").pop()), ["Ends at 2026.10.10 15:30", "Goes in 5 hrs"]);
+  assert.match(text(pageOf(body) as string), /Have a word Close Goes in 5 hrs$/);
+  // Without them, this page's own short form, as before.
+  const own = panel({ words: true, pageWords: true, talking: false, page: {} });
+  assert.deepEqual(journalLines(own).map((line) => line.split(" · ").pop()), ["Ends at 2026.10.10 15:30", "Goes in 5h"]);
+  assert.match(text(pageOf(own) as string), /Goes in 5h$/);
 });

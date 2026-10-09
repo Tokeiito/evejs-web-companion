@@ -11,6 +11,7 @@ import {
 import { decodeObjectives, type MissionObjectives } from "./missionObjectives.ts";
 import { COURIER_OFFERED_GATEWAY, ENCOUNTER_ACCEPTED_GATEWAY, ENCOUNTER_OFFERED_GATEWAY } from "./missionObjectives.fixtures.ts";
 import type { JsonValue } from "./wire.ts";
+import { INTERVAL_LABELS, SHORT_INTERVAL_WORD_LABELS } from "./timeInterval.ts";
 
 const L = PAGE_LABELS;
 const TEMPLATES: Record<string, string> = {
@@ -128,7 +129,9 @@ test("the messages the page words are the record's name, briefing, offer and ext
 });
 
 test("every label the page uses is asked for", () => {
-  assert.deepEqual([...PAGE_WORD_LABELS].sort(), Object.values(L).sort());
+  // Its own, and those its time left is written with.
+  assert.deepEqual([...PAGE_WORD_LABELS].sort(), [...Object.values(L), ...SHORT_INTERVAL_WORD_LABELS].sort());
+  assert.ok(PAGE_WORD_LABELS.includes("/Carbon/UI/Common/WrittenDateTimeQuantityShort/Hour"));
   assert.ok(PAGE_WORD_LABELS.includes("UI/Chat/StartConversationAgent"));
   assert.ok(PAGE_WORD_LABELS.includes("UI/Agents/AgentEntry/Level"));
   assert.ok(PAGE_WORD_LABELS.includes("UI/Agents/Dialogue/EffectiveStanding"));
@@ -270,6 +273,18 @@ test("when it expires: the time left, for an offer or a mission under way, and n
   assert.equal(expires({ missionState: 1, expirationTime: NOW - 1n }), null);
   assert.equal(expires({ missionState: 1, expirationTime: null }), null);
   assert.equal(expires({ missionState: 1, expirationTime: 0n }), null);
+});
+
+test("the time left is written the client's short way when its words for an interval are to hand, and this page's way without them", () => {
+  const ASKS = "Goes in {[timeinterval]expirationTime.shortWrittenForm}";
+  const units = { [INTERVAL_LABELS.shortPart("day")]: "{[numeric]value} days", [INTERVAL_LABELS.shortPart("hour")]: "{[numeric]value} hrs", [INTERVAL_LABELS.shortPart("second")]: "{[numeric]value} secs", [INTERVAL_LABELS.shortElements(2)]: "{value1}, {value2}", [INTERVAL_LABELS.shortElements(3)]: "{value1}, {value2}, {value3}" };
+  const expires = (left: bigint, templates: Record<string, string>) => missionPage(input({ missionState: 1, expirationTime: NOW + left }), context({ templates: { ...templates, [L.offerExpiresIn]: ASKS } })).expires;
+  assert.equal(expires(2n * 24n * HOUR + 5n * HOUR, units), "Goes in 2 days, 5 hrs");
+  // Rounded up to the second, as the client rounds.
+  assert.equal(expires(5n * HOUR + 1n, units), "Goes in 5 hrs, 1 secs");
+  // A unit the client's words are not to hand for: this page's own short form, whole.
+  assert.equal(expires(5n * HOUR + 3n * 600_000_000n, units), "Goes in 5h 3m");
+  assert.equal(expires(2n * 24n * HOUR + 5n * HOUR, {}), "Goes in 2d 5h");
 });
 
 test("a mission that matters to standings says so, whether the journal or the objectives say it does", () => {

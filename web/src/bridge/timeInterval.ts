@@ -14,6 +14,11 @@
 // unit; one stands alone; more are joined with the list delimiter, and the last with the list form's
 // "and". (Japanese and Korean join differently; this does the others.)
 //
+// FormatTimeIntervalShortWritten (153 to 166) is the short way, "6d 8h 57m": the interval is first rounded
+// UP to a whole number of its last unit, divided the same way, and each unit that is not nought is
+// written with the client's short label for it. None at all is the last unit, at nought. One stands
+// alone; more are set side by side by the label for that many.
+//
 // The labels' text is the client's and is read from its install at run time (the words store). With
 // any of the labels an interval needs not to be had, nothing is written and the caller says so.
 
@@ -45,6 +50,7 @@ const TICKS: Readonly<Record<TimePart, bigint>> = {
 };
 
 const WRITTEN = "/Carbon/UI/Common/WrittenDateTimeQuantity";
+const SHORT_WRITTEN = "/Carbon/UI/Common/WrittenDateTimeQuantityShort";
 const named = (part: TimePart): string => part[0]!.toUpperCase() + part.slice(1);
 
 export const INTERVAL_LABELS = Object.freeze({
@@ -56,6 +62,10 @@ export const INTERVAL_LABELS = Object.freeze({
   listForm: `${WRITTEN}/ListForm`,
   delimiter: "UI/Common/Formatting/ListGenericDelimiter",
   shortAmount: "/Carbon/UI/Common/Formatting/ShortAmountTime",
+  /** Each takes `value`, and writes the number with the unit's letter. */
+  shortPart: (part: TimePart): string => `${SHORT_WRITTEN}/${named(part)}`,
+  /** Takes value1 to value<count>: that many short parts side by side, for two to seven of them. */
+  shortElements: (count: number): string => `${SHORT_WRITTEN}/DateTimeShortWritten${count}Elements`,
 });
 
 /** Every label an interval may need, for asking the words store. */
@@ -67,20 +77,26 @@ export const INTERVAL_WORD_LABELS: readonly string[] = [
   INTERVAL_LABELS.shortAmount,
 ];
 
+/** Every label a short written interval may need. */
+export const SHORT_INTERVAL_WORD_LABELS: readonly string[] = [
+  ...TIME_PARTS.map(INTERVAL_LABELS.shortPart),
+  ...[2, 3, 4, 5, 6, 7].map(INTERVAL_LABELS.shortElements),
+];
+
 type Templates = Readonly<Record<string, string | null | undefined>>;
 
 /**
  * _FormatTimeIntervalGetParts: the interval divided greedily over the units from `showFrom` to `showTo`.
- * What is left under the last unit is dropped. Null for what the client refuses: a negative interval, or
- * a last unit larger than the first.
+ * What is left under the last unit is dropped, or with `roundUp` counts as one more of it. Null for what
+ * the client refuses: a negative interval, or a last unit larger than the first.
  */
-export function intervalParts(value: bigint, showFrom: TimePart, showTo: TimePart): ReadonlyArray<readonly [TimePart, bigint]> | null {
+export function intervalParts(value: bigint, showFrom: TimePart, showTo: TimePart, roundUp = false): ReadonlyArray<readonly [TimePart, bigint]> | null {
   const from = TIME_PARTS.indexOf(showFrom);
   const to = TIME_PARTS.indexOf(showTo);
   if (value < 0n || to < from) {
     return null;
   }
-  let left = value;
+  let left = roundUp && value % TICKS[showTo] > 0n ? value + TICKS[showTo] : value;
   return TIME_PARTS.slice(from, to + 1).map((part) => {
     const count = left / TICKS[part];
     left -= count * TICKS[part];
@@ -125,6 +141,34 @@ export function writtenInterval(value: bigint, showTo: TimePart, templates: Temp
 }
 
 /**
+ * FormatTimeIntervalShortWritten(value, showFrom, showTo): the interval the short way, in the client's
+ * words, or null when the client would refuse the interval or its words for it are not to hand.
+ */
+export function shortWrittenInterval(value: bigint, templates: Templates, showFrom: TimePart = "year", showTo: TimePart = "second"): string | null {
+  const parts = intervalParts(value, showFrom, showTo, true);
+  if (parts === null) {
+    return null;
+  }
+  const words = (label: string, args: Record<string, string | number>): string | null => {
+    const template = templates[label];
+    return typeof template === "string" ? plainText(formatTemplate(template, args, { nameOf: () => "" })) : null;
+  };
+  // Every unit that is not nought; and if all of them are, the last one, at nought.
+  const shown = parts.filter(([, count]) => count > 0n);
+  const written: string[] = [];
+  for (const [part, count] of shown.length > 0 ? shown : parts.slice(-1)) {
+    const text = words(INTERVAL_LABELS.shortPart(part), { value: Number(count) });
+    if (text === null) {
+      return null;
+    }
+    written.push(text);
+  }
+  return written.length === 1
+    ? written[0]!
+    : words(INTERVAL_LABELS.shortElements(written.length), Object.fromEntries(written.map((text, index) => [`value${index + 1}`, text])));
+}
+
+/**
  * For a label's {[timeinterval]x.writtenForm, from=…, to=…} (timeIntervalPropertyHandler._GetWrittenForm):
  * the interval written from `from` (years, unless the tag says) down to `to` (seconds, unless it says).
  * Null for a unit the client does not have, as for words that are not to hand.
@@ -136,6 +180,17 @@ export function intervalWriter(templates: Templates): (ticks: bigint, from: stri
     const showFrom = part(from, "year");
     const showTo = part(to, "second");
     return showFrom === null || showTo === null ? null : writtenInterval(ticks, showTo, templates, showFrom);
+  };
+}
+
+/** The same for {[timeinterval]x.shortWrittenForm, from=…, to=…} (timeIntervalPropertyHandler._GetShortWrittenForm). */
+export function shortIntervalWriter(templates: Templates): (ticks: bigint, from: string | null, to: string | null) => string | null {
+  const part = (name: string | null, otherwise: TimePart): TimePart | null =>
+    name === null ? otherwise : (TIME_PARTS as readonly string[]).includes(name) ? (name as TimePart) : null;
+  return (ticks, from, to) => {
+    const showFrom = part(from, "year");
+    const showTo = part(to, "second");
+    return showFrom === null || showTo === null ? null : shortWrittenInterval(ticks, templates, showFrom, showTo);
   };
 }
 

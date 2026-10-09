@@ -24,11 +24,12 @@
 // blank unless the pilot is there; the security rating before a place's name; "Objectives Complete" as the state (the client
 // has it from its own tracker); a ship's packaged size as cargo; the ship restrictions panel; the
 // reduced-rewards banner; the bonus's countdown; a blueprint's properties; what an alpha clone is paid.
-// The time left is written in this page's own short form: the client's short written interval is not done.
+// The bonus's countdown is the one time on the client's page that is not written here.
 
 import { formatTemplate, plainText, QUANTITY_AND_ITEM } from "./clientWords.ts";
 import type { AgentRecord } from "./agents.ts";
 import { effectiveStandingWithAgent } from "./effectiveStanding.ts";
+import { SHORT_INTERVAL_WORD_LABELS, shortIntervalWriter } from "./timeInterval.ts";
 import { AGENT_MISSION_STATE_FAILED, TYPE_CREDITS, type MissionCargo, type MissionItem, type MissionLocation, type MissionMessage, type MissionObjectives } from "./missionObjectives.ts";
 import type { NameKind } from "../store/names.ts";
 
@@ -86,8 +87,8 @@ export const PAGE_LABELS = Object.freeze({
   startConversation: "UI/Chat/StartConversationAgent",
 });
 
-/** Every label the page may need, for asking the words store. */
-export const PAGE_WORD_LABELS: readonly string[] = Object.values(PAGE_LABELS);
+/** Every label the page may need, for asking the words store: its own, and those its time left is written with. */
+export const PAGE_WORD_LABELS: readonly string[] = [...Object.values(PAGE_LABELS), ...SHORT_INTERVAL_WORD_LABELS];
 
 /** The keys of a mission's messages in the client's record that the page reads (job.py 143 to 157). */
 export const PAGE_MESSAGES = Object.freeze({
@@ -340,8 +341,10 @@ export function pageNameRefs(input: MissionPageInput): Array<{ kind: NameKind; i
 export function missionPage(input: MissionPageInput, context: PageContext): MissionPage {
   const words = (label: string, args: Record<string, string | number> = {}): string | null => {
     const template = context.templates[label];
-    return typeof template === "string" ? plainText(formatTemplate(template, args, { nameOf: context.nameOf })) : null;
+    return typeof template === "string" ? plainText(formatTemplate(template, args, { nameOf: context.nameOf, writeShortInterval })) : null;
   };
+  // The time left is a label's short written interval.
+  const writeShortInterval = shortIntervalWriter(context.templates);
   const record = input.record;
   const objectives = input.objectives;
   const missionState = pageMissionState(input);
