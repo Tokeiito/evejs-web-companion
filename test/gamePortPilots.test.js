@@ -1103,13 +1103,15 @@ test("a service's call is reshaped by the same registry as a bound object's", as
 });
 
 test("the transport keeps a tally of what it called and how each compared with the retail client", async () => {
-  const { pilots, handle } = await selected();
+  // One pair nobody has read against the client is on this allowlist, so that every kind of status is tallied.
+  const { pilots, handle } = await selected({}, { allowed: new Set(["invbroker.GetInventory", "invbroker.MachoBindObject", "invbroker.GetCapacity", "invbroker.List", "invbroker.Add", "station.GetGuests", "someService.SomeMethod"]) });
   const { boundHandle } = await pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, handle);
   await pilots.callBoundMethod("invbroker", "GetCapacity", [4], null, WHO, handle, boundHandle);
   await pilots.callBoundMethod("invbroker", "GetCapacity", [4], null, WHO, handle, boundHandle);
   await pilots.callBoundMethod("invbroker", "List", [4], null, WHO, handle, boundHandle);
   await pilots.callBoundMethod("invbroker", "Add", [1, STATION], { flag: 5 }, WHO, handle, boundHandle);
   await pilots.callMethod("station", "GetGuests", [], null, WHO, handle);
+  await pilots.callMethod("someService", "SomeMethod", [], null, WHO, handle);
   await rejects(pilots.callMethod("machoNet", "GetTime", [], null, WHO, handle), "CALL_NOT_ALLOWED");
   const tally = Object.fromEntries(pilots.callLedger().map((row) => [row.pair, row.statuses]));
   assert.deepEqual(tally, {
@@ -1120,7 +1122,8 @@ test("the transport keeps a tally of what it called and how each compared with t
     "invbroker.Add": { differs: 1 },
     "invbroker.GetInventory": { reshaped: 1 },
     "invbroker.List": { reshaped: 1 },
-    "station.GetGuests": { unchecked: 1 },
+    "station.GetGuests": { same: 1 },
+    "someService.SomeMethod": { unchecked: 1 },
   });
   assert.equal(pilots.callLedger()[0].pair, "invbroker.GetCapacity", "most called first");
 });

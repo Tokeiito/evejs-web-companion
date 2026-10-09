@@ -1018,6 +1018,75 @@ test("a pilot in an NPC corporation is asked for its own standings alone; in a p
   }
 });
 
+// ── The Fitting window's dogma (GET /api/bridge/bound-dogma) ─────────────────
+
+test("the Fitting window's snapshot is one read of dogma, the one godma makes: all info", async () => {
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  const bound = [];
+  const calls = [];
+  gamePort.bindObject = async (service, method, args) => { bound.push({ service, method, args }); return { boundHandle: "bound-dogma", notifications: [] }; };
+  gamePort.callBoundMethod = async (service, method, args, kwargs, sessionFields, bridgeSessionID, handle) => {
+    calls.push({ service, method, args, kwargs, handle });
+    return { service, method, result: { type: "tuple", items: [method] }, notifications: [] };
+  };
+  const { baseUrl } = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gameport" });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+
+  const dogma = await apiRequest(baseUrl, "/api/bridge/bound-dogma");
+  assert.equal(dogma.response.status, 200, JSON.stringify(dogma.payload));
+  // godma.py 2409: GetDogmaLM().GetAllInfo(...). The page reads nothing else of this answer, and the client asks
+  // none of the rest when its fitting window opens: an item with no ID and the drones' damage with no drones it never asks at all.
+  assert.deepEqual(calls.map((call) => [call.service, call.method, call.handle]), [["dogmaIM", "GetAllInfo", "bound-dogma"]]);
+  assert.deepEqual(Object.keys(dogma.payload.reads), ["GetAllInfo"]);
+  assert.deepEqual(dogma.payload.reads.GetAllInfo, { result: { type: "tuple", items: ["GetAllInfo"] } });
+  assert.equal(bound.length, 1);
+});
+
+test("the dogma read's own failure is told in its place, not as the route's", async () => {
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  gamePort.bindObject = async () => ({ boundHandle: "bound-dogma", notifications: [] });
+  gamePort.callBoundMethod = async () => { throw Object.assign(new Error("Refused"), { code: "CALL_REFUSED" }); };
+  const { baseUrl } = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gameport" });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const dogma = await apiRequest(baseUrl, "/api/bridge/bound-dogma");
+  assert.equal(dogma.response.status, 200);
+  assert.deepEqual(dogma.payload.reads, { GetAllInfo: { error: "CALL_REFUSED", message: "Refused" } });
+});
+
+// ── A corporation's assets (GET /api/bridge/corp-assets) ─────────────────────
+
+test("a corporation's assets are searched only when a search is asked for", async () => {
+  const asked = async (query) => {
+    const calls = [];
+    const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+    gamePort.callMethod = async (service, method, args, kwargs) => {
+      calls.push({ service, method, args, kwargs });
+      return { service, method, result: { type: "list", items: [method] }, notifications: [] };
+    };
+    const { baseUrl } = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gameport" });
+    await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+    calls.length = 0;
+    const answer = await apiRequest(baseUrl, `/api/bridge/corp-assets${query}`);
+    assert.equal(answer.response.status, 200, JSON.stringify(answer.payload));
+    return { payload: answer.payload, corpmgr: calls.filter((call) => call.service === "corpmgr") };
+  };
+  // The page's own two readings: where the offices are, and what is in one. corp_ui_accounts.py 752: the
+  // client asks SearchAssets when the pilot presses Search, and at no other time.
+  const offices = await asked("?which=offices");
+  assert.deepEqual(offices.corpmgr.map((call) => call.method), ["GetAssetInventory"]);
+  assert.deepEqual([offices.payload.search, offices.payload.errors.search], [null, null]);
+  assert.deepEqual(offices.payload.inventory, { type: "list", items: ["GetAssetInventory"] });
+  const office = await asked("?which=offices&locationID=60000004");
+  assert.deepEqual(office.corpmgr.map((call) => call.method).sort(), ["GetAssetInventory", "GetAssetInventoryForLocation"]);
+  // A search names a filter, even one that is nought: the client's Search pressed with nothing set.
+  for (const [query, filters] of [["?which=offices&typeID=34", [0, 0, 34, 0]], ["?which=offices&minimumQuantity=0", [0, 0, 0, 0]], ["?which=offices&categoryID=6", [6, 0, 0, 0]], ["?which=offices&groupID=25", [0, 25, 0, 0]], ["?which=offices&categoryID=6&groupID=25&typeID=34&minimumQuantity=3", [6, 25, 34, 3]]]) {
+    const search = await asked(query);
+    assert.deepEqual(search.corpmgr.map((call) => call.method).sort(), ["GetAssetInventory", "SearchAssets"], query);
+    assert.deepEqual(search.corpmgr.find((call) => call.method === "SearchAssets").args, ["offices", ...filters], query);
+    assert.deepEqual(search.payload.search, { type: "list", items: ["SearchAssets"] }, query);
+  }
+});
+
 // ── Where an agent is (GET /api/bridge/agents/:agentID/solar-system) ─────────
 
 test("which solar system an agent is in is asked of the server as the client asks it, and passed on as it came", async () => {

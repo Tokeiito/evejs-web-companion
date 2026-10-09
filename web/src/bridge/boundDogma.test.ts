@@ -541,6 +541,18 @@ test("decodeBoundDogma carries a per-read error through and never throws", () =>
   assert.equal(dogma.characterAttributes.error, null);
 });
 
+test("the envelope the route gives, all info alone, decodes the ship and its modules with nothing else asked", () => {
+  // Since 2026-10-09 the route asks GetAllInfo and no more, as the retail client's godma does.
+  const dogma = decodeBoundDogma({ ok: true, characterID: CHAR_ID, reads: { GetAllInfo: { result: getAllInfoResult() } } });
+  assert.equal(dogma.allInfo.error, null);
+  assert.equal(dogma.allInfo.value?.activeShipID, SHIP_ITEM_ID);
+  assert.deepEqual(dogma.allInfo.value, decodeBoundDogma(envelope()).allInfo.value);
+  // What was not asked is empty, and not a failure.
+  assert.deepEqual([dogma.itemInfo.value, dogma.itemInfo.error, dogma.locationInfo.value, dogma.attributeValue.value], [null, null, null, null]);
+  assert.deepEqual([dogma.targeters.value, dogma.layerDamageValues.value, dogma.requiredSkillLevels.value, dogma.attributeDescription.value], [[], [], [], []]);
+  for (const cell of Object.values(dogma)) assert.equal(cell.error, null);
+});
+
 test("decodeBoundDogma tolerates a missing/empty envelope", () => {
   const dogma = decodeBoundDogma(null);
   assert.equal(dogma.allInfo.value, null);

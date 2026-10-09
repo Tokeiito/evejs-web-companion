@@ -2166,31 +2166,19 @@ app.get("/api/bridge/bound-skills", requireAuth, async (req, res, next) => {
 // (no items requested) are legitimate states, never a blanking failure — each
 // read carries its own {result} or {error, message}. Returns the raw result
 // envelopes for web/src/bridge/boundDogma.ts; NO UI consumes this yet.
+//
+// ⚠ ONE READ, SINCE 2026-10-09. The Fitting window opens this route and reads
+// GetAllInfo out of it and nothing else, and GetAllInfo is the one read the
+// retail client's godma makes of the dogma location (godma.py 2409). The route
+// used to ask ten more with every opening: an item with no ID and the drones'
+// damage with no drones, which the client never asks so, and seven the client
+// never asks at all. They are still allowlisted, and still decodable
+// (web/src/bridge/boundDogma.ts), for whatever comes to need one with a real
+// item to ask about; this route does not ask them for nothing.
 const DOGMA_BOUND_READS = Object.freeze([
-  // GetAllInfo(getCharInfo, getShipInfo, getStructureInfo) — the full ship+char+
-  // module snapshot; [] defaults getCharInfo/getShipInfo true (whole bootstrap).
+  // GetAllInfo(primeCharacter, primeShip, primeStructure): the whole ship, character
+  // and module snapshot. Asked with none, the game port sends godma's first priming.
   ["GetAllInfo", []],
-  // ItemGetInfo(itemID) — [] resolves to the session's OWN active ship (the
-  // handler's _getShipID(session) default); a future UI passes a real itemID.
-  ["ItemGetInfo", []],
-  ["GetTargeters", []],
-  ["GetDroneSettingAttributes", []],
-  ["GetCharacterAttributes", []],
-  // GetRequiredSkillLevels(typeID) — STATIC type metadata; typeID 0 legitimately
-  // returns an empty dict (a UI supplies the inspected type's id).
-  ["GetRequiredSkillLevels", []],
-  // GetLayerDamageValuesByItems([itemIDs]) — [[]] requests no items -> empty dict
-  // (a UI supplies the in-bay drone / module itemIDs).
-  ["GetLayerDamageValuesByItems", [[]]],
-  // QueryAllAttributesForItem(itemID) — [] -> the own active ship's attribute dict.
-  ["QueryAllAttributesForItem", []],
-  // QueryAttributeValue(itemID, attributeID) — [0, 4]: itemID 0 falls back to the
-  // own ship, attribute 4 = mass, so this returns a real scalar float.
-  ["QueryAttributeValue", [0, 4]],
-  // FullyDescribeAttribute(itemID, attributeID, reason) — [0, 4, ""]: own ship,
-  // attribute 4, empty reason -> a human-readable debug string list.
-  ["FullyDescribeAttribute", [0, 4, ""]],
-  ["GetLocationInfo", []],
 ]);
 
 app.get("/api/bridge/bound-dogma", requireAuth, async (req, res, next) => {
@@ -14171,7 +14159,9 @@ app.get("/api/bridge/corp", requireAuth, async (req, res, next) => {
 //   • GetAssetInventoryForLocation(corpID, locationID, which) -> ⚠ ONLY when
 //     ?locationID= is given; the ITEMS at one location.
 //   • SearchAssets(which, categoryID, groupID, typeID, minimumQuantity) -> matching
-//     LOCATIONS. ⚠ corporationID comes from the SESSION in the handler, not args.
+//     LOCATIONS. ⚠ ONLY when the request names one of the four filters; without
+//     one, `search` is null with no error. ⚠ corporationID comes from the SESSION
+//     in the handler, not args.
 // corporationID defaults to the session corp. ⚠ Farmer's player corp 98000001 may
 // have SPARSE corp assets — an empty CRowset is a legitimate "no corp assets"
 // state, not a failure. Location / item / type ids stay data (R7d).
@@ -14196,13 +14186,18 @@ async function answerCorpAssets(held, call, req, res, next) {
   const typeID = nonNegativeIntQuery(req.query.typeID, 0);
   const minimumQuantity = nonNegativeIntQuery(req.query.minimumQuantity, 0);
   const wantLocation = locationID > 0;
+  // corp_ui_accounts.py 752: the client asks SearchAssets when the pilot presses Search, and at no
+  // other time. Here a search is a request that names one of its filters, even as nought.
+  const wantSearch = ["categoryID", "groupID", "typeID", "minimumQuantity"].some((name) => req.query[name] !== undefined);
   try {
     const [inventory, locationInventory, search] = await Promise.allSettled([
       call("GetAssetInventory", [corporationID, which]),
       wantLocation
         ? call("GetAssetInventoryForLocation", [corporationID, locationID, which])
         : Promise.resolve({ result: null }),
-      call("SearchAssets", [which, categoryID, groupID, typeID, minimumQuantity]),
+      wantSearch
+        ? call("SearchAssets", [which, categoryID, groupID, typeID, minimumQuantity])
+        : Promise.resolve({ result: null }),
     ]);
     for (const outcome of [inventory, locationInventory, search]) {
       if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {

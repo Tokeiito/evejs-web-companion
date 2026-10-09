@@ -115,6 +115,7 @@ const CONTRACT_SEARCH_KEYWORDS = Object.freeze([
   "searchHint", "sortBy", "sortDir", "startNum",
 ]);
 const INDUSTRY = "eve/client/script/industry";
+const CORP_ASSETS = "eve/client/script/ui/shared/neocom/corporation/corp_ui_accounts.py";
 const MAIL_SERVICES = "eve/client/script/ui/services/mail";
 const FLEET_SVC = "eve/client/script/parklife/fleetSvc.py";
 /** A read of one character, which the client always names: the pilot's own, when the route named none. */
@@ -378,6 +379,30 @@ const RETAIL_CALLS = Object.freeze({
   "agentMgr.GetMyJournalDetails": same(`${JOURNAL_WINDOW}:312`, "RemoteSvc('agentMgr').GetMyJournalDetails(), no arguments"),
   "standingMgr.GetCharStandings": same(`${STANDING_SVC}:119`, "RemoteSvc('standingMgr').GetCharStandings(), no arguments"),
   "standingMgr.GetCorpStandings": same(`${STANDING_SVC}:126`, "RemoteSvc('standingMgr').GetCorpStandings(), no arguments, and only for a pilot whose corporation is not an NPC one (118)"),
+  // ── a station, its guests, the map's stations, a structure ────────────────
+  "stationSvc.GetStationItemBits": same("eve/client/script/ui/station/base.py:575", "RemoteSvc('stationSvc').GetStationItemBits(), no arguments, when the station's own item is not known"),
+  "station.GetGuests": same("eve/client/script/ui/station/base.py:103", "RemoteSvc('station').GetGuests(), no arguments, once for a station and kept"),
+  "map.GetStationInfo": same("eve/client/script/ui/services/uisvc.py:246", "RemoteSvc('map').GetStationInfo(), no arguments"),
+  "structureDirectory.GetStructureInfo": same("eve/client/script/ui/services/structure/structureDirectory.py:38", "RemoteSvc('structureDirectory').GetStructureInfo(structureID), kept by structure"),
+
+  // ── an agent's place and a mission's keywords ─────────────────────────────
+  "agentMgr.GetSolarSystemOfAgent": same(`${AGENTS}:801`, "RemoteSvc('agentMgr').GetSolarSystemOfAgent(agentID), kept by agent"),
+  "agentMgr.GetMissionKeywords": same(`${AGENTS}:633`, "GetAgentMoniker(agentID).GetMissionKeywords(contentID), on the agent's own object"),
+
+  // ── a corporation's assets ────────────────────────────────────────────────
+  "corpmgr.GetAssetInventory": same(`${CORP_ASSETS}:100`, "RemoteSvc('corpmgr').GetAssetInventory(session.corpid, which)"),
+  "corpmgr.GetAssetInventoryForLocation": same(`${CORP_ASSETS}:423`, "RemoteSvc('corpmgr').GetAssetInventoryForLocation(session.corpid, locationID, which)"),
+  "corpmgr.SearchAssets": Object.freeze({
+    status: "same",
+    source: `${CORP_ASSETS}:752`,
+    note: "RemoteSvc('corpmgr').SearchAssets(which, itemCategoryID, itemGroupID, itemTypeID, qty): five positional, and a filter that is not set is None, never nought. Asked when the pilot presses Search.",
+    shape: (args, kwargs) => {
+      const set = (value) => (typeof value === "number" && value > 0 ? value : null);
+      const sent = [args[0] || null, set(args[1]), set(args[2]), set(args[3]), set(args[4])];
+      return args.length === sent.length && sent.every((value, index) => value === args[index]) ? { args, kwargs } : { args: sent, kwargs, status: "reshaped" };
+    },
+  }),
+
   // ── a character: its sheet, its stations ──────────────────────────────────
   "charMgr.GetPublicInfo3": Object.freeze({
     status: "same",

@@ -105,22 +105,22 @@ test("the ledger tallies each pair by how it compared, most called first", () =>
   ledger.note("invbroker", "Add", form("invbroker.Add", [1, 2], { flag: 5, qty: 1 }));
   ledger.note("invbroker", "Add", form("invbroker.Add", [1, 2], { flag: 5 }));
   ledger.note("invbroker", "Add", form("invbroker.Add", [1, 2], { flag: 5, qty: 1 }));
-  ledger.note("station", "GetGuests", retailForm("station", "GetGuests", [], null));
+  ledger.note("someService", "SomeMethod", retailForm("someService", "SomeMethod", [], null));
   const rows = ledger.rows();
   assert.deepEqual(rows.map((row) => [row.pair, row.calls, row.statuses]), [
     ["invbroker.Add", 3, { same: 2, differs: 1 }],
     ["invbroker.GetCapacity", 3, { "web-only": 3 }],
-    ["station.GetGuests", 1, { unchecked: 1 }],
+    ["someService.SomeMethod", 1, { unchecked: 1 }],
   ]);
   assert.match(rows[0].note, /always sends qty/, "the note is the difference, whenever it was seen, not the description");
   rows[0].statuses.x = 1;
   assert.equal(ledger.rows()[0].statuses.x, undefined, "a copy, not the tally itself");
   // Most called first; a tie goes by name.
-  ledger.note("station", "GetGuests", retailForm("station", "GetGuests", [], null));
-  ledger.note("station", "GetGuests", retailForm("station", "GetGuests", [], null));
-  ledger.note("station", "GetGuests", retailForm("station", "GetGuests", [], null));
-  ledger.note("station", "GetGuests", retailForm("station", "GetGuests", [], null));
-  assert.deepEqual(ledger.rows().map((row) => row.pair), ["station.GetGuests", "invbroker.Add", "invbroker.GetCapacity"]);
+  ledger.note("someService", "SomeMethod", retailForm("someService", "SomeMethod", [], null));
+  ledger.note("someService", "SomeMethod", retailForm("someService", "SomeMethod", [], null));
+  ledger.note("someService", "SomeMethod", retailForm("someService", "SomeMethod", [], null));
+  ledger.note("someService", "SomeMethod", retailForm("someService", "SomeMethod", [], null));
+  assert.deepEqual(ledger.rows().map((row) => row.pair), ["someService.SomeMethod", "invbroker.Add", "invbroker.GetCapacity"]);
 });
 
 // ── the report ───────────────────────────────────────────────────────────────
@@ -136,8 +136,8 @@ test("the report lists each pair under the worst status it was seen with, and co
   ledger.note("invbroker", "Add", form("invbroker.Add", [1, 2], { flag: 5, qty: 1 }));
   ledger.note("invbroker", "Add", form("invbroker.Add", [1, 2], { flag: 5 }));
   ledger.note("invbroker", "List", form("invbroker.List", [5]));
-  ledger.note("station", "GetGuests", retailForm("station", "GetGuests", [], null));
-  ledger.note("station", "GetGuests", retailForm("station", "GetGuests", [], null));
+  ledger.note("someService", "SomeMethod", retailForm("someService", "SomeMethod", [], null));
+  ledger.note("someService", "SomeMethod", retailForm("someService", "SomeMethod", [], null));
   const text = report(ledger.rows(), { what: "a test", generatedOn: "2026-10-08" });
   assert.match(text, /^# Game-port call ledger\n/);
   assert.match(text, /on 2026-10-08, from a test\./);
@@ -147,7 +147,7 @@ test("the report lists each pair under the worst status it was seen with, and co
   assert.match(text, /\| reshaped \| 1 \| 1 \|/);
   assert.match(text, /\| same \| 0 \| 0 \|/);
   assert.match(text, /\| \*\*total\*\* \| \*\*4\*\* \| \*\*8\*\* \|/);
-  assert.match(text, /## unchecked \(1\)\n\n`station\.GetGuests` ×2\n/);
+  assert.match(text, /## unchecked \(1\)\n\n`someService\.SomeMethod` ×2\n/);
   assert.match(text, /\| `invbroker\.Add` \| 2 \| `eve\/client\/script\/environment\/invControllers\.py:213` \| The client always sends qty/);
   assert.equal(text.includes("## same"), false, "an empty group has no section");
 });
@@ -682,4 +682,38 @@ test("the ledger's last pass left no pair unread", () => {
     "fleetObjectHandler.GetMotd", "fleetObjectHandler.GetWings", "industryManager.GetJobCounts", "industryManager.GetJobsByOwner", "mailMgr.SyncMail",
     "notificationMgr.GetAllNotifications", "notificationMgr.GetByGroupID", "notificationMgr.GetUnprocessed",
   ]) assert.ok(Object.hasOwn(RETAIL_CALLS, pair), pair);
+});
+
+test("what a walk through the page's panels asks, set beside the client's", () => {
+  for (const [pair, args] of [
+    ["corpmgr.GetAssetInventory", [98000000, "offices"]],
+    ["corpmgr.GetAssetInventoryForLocation", [98000000, 60000004, "offices"]],
+    ["corpmgr.SearchAssets", ["offices", null, null, null, null]],
+    ["corpmgr.SearchAssets", ["offices", 6, null, 34, 10]],
+    ["agentMgr.GetMissionKeywords", [57959]],
+    ["agentMgr.GetSolarSystemOfAgent", [3008416]],
+    ["map.GetStationInfo", []],
+    ["station.GetGuests", []],
+    ["stationSvc.GetStationItemBits", []],
+    ["structureDirectory.GetStructureInfo", [1030000000001]],
+  ]) {
+    const answer = form(pair, args);
+    assert.deepEqual([answer.status, answer.args, answer.kwargs, answer.proxy], ["same", args, null, false], pair);
+    assert.match(answer.source, /\.py:\d+$/, pair);
+  }
+  // A filter of the search that is not set is None in the client, never nought; what is asked of stays first.
+  for (const [given, sent] of [
+    [["offices", 0, 0, 0, 0], ["offices", null, null, null, null]],
+    [["offices", 0, 25, 0, 3], ["offices", null, 25, null, 3]],
+    [["deliveries"], ["deliveries", null, null, null, null]],
+    [["offices", undefined, null, -1, "x"], ["offices", null, null, null, null]],
+    [[], [null, null, null, null, null]],
+    [["", 6, 0, 0, 0], [null, 6, null, null, null]],
+    // A filter is a whole number or it is None: text is not one. And the call has five arguments, no more.
+    [["offices", "6", 25, 0, 0], ["offices", null, 25, null, null]],
+    [["offices", null, null, null, null, 7], ["offices", null, null, null, null]],
+  ]) {
+    const answer = form("corpmgr.SearchAssets", given);
+    assert.deepEqual([answer.status, answer.args], ["reshaped", sent], JSON.stringify(given));
+  }
 });
