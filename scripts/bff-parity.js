@@ -244,10 +244,11 @@ async function main() {
       }
       process.exitCode = 1;
     }
-    if (process.env.BFF_PARITY_SHOW_MOVED && verdict === "moved") {
-      for (const difference of differences.slice(0, 6)) {
-        console.log(`     ${difference.path} ${difference.kind}: ${JSON.stringify(difference.gateway).slice(0, 110)} | ${JSON.stringify(difference.wire).slice(0, 110)}`);
-      }
+    // What is put down to the data having moved between the two reads is shown each time, whatever the verdict:
+    // that is a reading of the difference, and only the two values say whether it is the right one. With four
+    // contracts staged, a search that found none on one transport and two on the other was counted as moved.
+    for (const difference of differences.filter((entry) => MOVED.has(entry.kind)).slice(0, 4)) {
+      console.log(`     moved? ${difference.path} ${difference.kind}: ${JSON.stringify(difference.gateway).slice(0, 90)} | ${JSON.stringify(difference.wire).slice(0, 90)}`);
     }
   }
   console.log(Object.entries(counts).map(([verdict, count]) => `${count} ${verdict}`).join(", "));

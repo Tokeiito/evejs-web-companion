@@ -1628,3 +1628,106 @@ test("an agent's record without a client to read has its row and nothing of the 
   assert.deepEqual(found.payload.agent, { agentID: 3008416, agentTypeID: 2, divisionID: 22, level: 1, stationID: 60000004, corporationID: 1000002, factionID: null, divisionNameID: null });
   assert.equal(reads, 2);
 });
+
+// ── The pilot's own contracts on the Contracts route ─────────────────────────
+//
+// The client's My Contracts panel lists an owner's contracts by status (contractPanels.py 419, and recorded on
+// Tranquility): GetContractListForOwner(ownerID, status, None, None, num=100, startContractID=None). It never asks
+// GetMyCurrentContractList. The page's two lists, what the pilot issued and what the pilot took on, are among the
+// owner's outstanding and in-progress contracts, which is what the route asks for on the game port.
+
+const ME = 7;
+const contractRow = (contractID, { issuerID = 0, acceptorID = 0, assigneeID = 0, status = 0 } = {}) =>
+  ({ type: "object", name: "util.KeyVal", args: { type: "dict", entries: [["contractID", contractID], ["status", status], ["issuerID", issuerID], ["acceptorID", acceptorID], ["assigneeID", assigneeID]] } });
+const contractItems = (contractID) => [contractID, { type: "list", items: [{ type: "object", name: "util.KeyVal", args: { type: "dict", entries: [["contractID", contractID]] } }] }];
+const contractBundle = (rows, items = rows.map((row) => contractItems(row.args.entries[0][1]))) =>
+  ({ type: "object", name: "util.KeyVal", args: { type: "dict", entries: [["contracts", { type: "list", items: rows }], ["items", { type: "dict", entries: items }]] } });
+/** The owner's contracts as the server has them: issued by the pilot (two still waiting, one taken by someone), taken on by the pilot, offered to the pilot. */
+const WAITING = [contractRow(31, { issuerID: ME }), contractRow(34, { issuerID: 99, assigneeID: ME }), contractRow(36, { issuerID: ME })];
+const UNDER_WAY = [contractRow(32, { issuerID: ME, acceptorID: 55, status: 1 }), contractRow(35, { issuerID: 99, acceptorID: ME, status: 1 })];
+
+/** A pilot opening the Contracts panel; on the game port unless told otherwise. Says what was asked of the contract proxy and what the route answered. */
+async function contractsRoute({ transport = "gameport", byStatus = { 0: contractBundle(WAITING), 1: contractBundle(UNDER_WAY) }, failing = () => false } = {}) {
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  const gateway = fakeGateway();
+  const backend = transport === "gameport" ? gamePort : gateway;
+  const asked = [];
+  backend.callMethod = async (service, method, args, kwargs) => {
+    asked.push([`${service}.${method}`, args, kwargs ?? null]);
+    if (failing(method, args)) throw Object.assign(new Error("refused"), { code: "CALL_REFUSED" });
+    // The server's own answers to the page's old calls, marked so that they are known for the server's.
+    if (method === "GetMyCurrentContractList") return { service, method, result: contractBundle([contractRow(args[0] ? 902 : 901, { issuerID: ME })]), notifications: [] };
+    if (method === "GetContractListForOwner") return { service, method, result: byStatus[args[1]], notifications: [] };
+    return { service, method, result: null, notifications: [] };
+  };
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => transport });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: ME } });
+  asked.length = 0;
+  const answer = await apiRequest(baseUrl, "/api/bridge/contracts");
+  assert.equal(answer.response.status, 200, JSON.stringify(answer.payload));
+  const ids = (list) => (list.result === null ? null : list.result.args.entries[0][1].items.map((row) => row.args ? row.args.entries[0][1] : row.fields.contractID));
+  const itemIDs = (list) => list.result.args.entries[1][1].entries.map(([contractID]) => contractID);
+  return { payload: answer.payload, mine: asked.filter(([pair]) => /GetContractListForOwner|GetMyCurrentContractList/.test(pair)), ids, itemIDs };
+}
+
+test("on the game port the pilot's own contracts are asked for as the client's My Contracts panel asks, and the page's two lists are drawn from them", async () => {
+  const { payload, mine, ids, itemIDs } = await contractsRoute();
+  assert.equal(payload.characterID, ME);
+  // The owner's outstanding, then the owner's in progress: no type, issued to or by, a hundred from the first.
+  assert.deepEqual(mine, [
+    ["contractProxy.GetContractListForOwner", [ME, 0, null, null], { num: 100, startContractID: null }],
+    ["contractProxy.GetContractListForOwner", [ME, 1, null, null], { num: 100, startContractID: null }],
+  ]);
+  // What the pilot issued, waiting or under way, newest first; what the pilot took on. One only offered to the pilot is in neither.
+  assert.deepEqual([ids(payload.outstanding), ids(payload.accepted)], [[36, 32, 31], [35]]);
+  assert.deepEqual([payload.outstanding.error, payload.accepted.error], [null, null]);
+  // Each list has the items of its own contracts and no others.
+  assert.deepEqual([itemIDs(payload.outstanding).sort(), itemIDs(payload.accepted)], [[31, 32, 36], [35]]);
+  // The answer is the form the page reads a list in.
+  assert.deepEqual(payload.accepted.result, contractBundle([UNDER_WAY[1]]));
+});
+
+test("the owner's contracts as packed rows are read the same, and an owner with none has two empty lists", async () => {
+  const packed = (contractID, fields) => ({ type: "packedrow", columns: [], fields: { contractID, issuerID: 0, acceptorID: 0, ...fields }, values: [] });
+  // One of them with no items listed for it, as a contract with nothing in it has none: its list has no entry for it.
+  const rows = await contractsRoute({ byStatus: {
+    0: contractBundle([packed(41, { issuerID: { type: "long", value: String(ME) } }), packed(43, { issuerID: ME })], [contractItems(41)]),
+    1: contractBundle([packed(42, { acceptorID: ME })], [contractItems(42)]),
+  } });
+  assert.deepEqual([rows.ids(rows.payload.outstanding), rows.ids(rows.payload.accepted)], [[43, 41], [42]]);
+  assert.deepEqual(rows.payload.outstanding.result.args.entries[1], ["items", { type: "dict", entries: [contractItems(41)] }]);
+  const none = await contractsRoute({ byStatus: { 0: contractBundle([]), 1: contractBundle([]) } });
+  assert.deepEqual([none.payload.outstanding, none.payload.accepted], [{ result: contractBundle([]), error: null }, { result: contractBundle([]), error: null }]);
+  // An answer that lists contracts and no items at all is read for its contracts.
+  const bare = { type: "object", name: "util.KeyVal", args: { type: "dict", entries: [["contracts", { type: "list", items: [contractRow(61, { issuerID: ME })] }]] } };
+  const itemless = await contractsRoute({ byStatus: { 0: bare, 1: contractBundle([]) } });
+  assert.deepEqual([itemless.ids(itemless.payload.outstanding), itemless.itemIDs(itemless.payload.outstanding), itemless.payload.outstanding.error], [[61], [], null]);
+});
+
+test("when either of the owner's lists is refused or cannot be read, both of the page's lists say so, and the rest of the panel is answered", async () => {
+  // Either one alone: what the pilot issued may be in either, so neither of the page's lists is whole without both.
+  for (const status of [0, 1]) {
+    const refused = await contractsRoute({ failing: (method, args) => method === "GetContractListForOwner" && args[1] === status });
+    assert.deepEqual([refused.payload.outstanding, refused.payload.accepted], [{ result: null, error: "CALL_REFUSED" }, { result: null, error: "CALL_REFUSED" }], String(status));
+    assert.deepEqual([refused.payload.expired.error, refused.payload.summary.error, refused.payload.browse.error], [null, null, null]);
+  }
+  // An answer with no list of contracts in it, one whose list is something else, and a row that is not a row:
+  // an empty list would say the pilot has no contracts, which nothing here knows.
+  const noList = { type: "object", name: "util.KeyVal", args: { type: "dict", entries: [["items", { type: "dict", entries: [] }]] } };
+  const oddList = { type: "object", name: "util.KeyVal", args: { type: "dict", entries: [["contracts", { type: "object", name: "carbon.common.script.sys.crowset.CRowset", args: null }], ["items", { type: "dict", entries: [] }]] } };
+  for (const odd of [null, noList, oddList, contractBundle([contractRow(51, { issuerID: ME }), "x"], [])]) {
+    for (const byStatus of [{ 0: odd, 1: contractBundle(UNDER_WAY) }, { 0: contractBundle(WAITING), 1: odd }]) {
+      const unread = await contractsRoute({ byStatus });
+      assert.deepEqual([unread.payload.outstanding, unread.payload.accepted], [{ result: null, error: "READ_FAILED" }, { result: null, error: "READ_FAILED" }], JSON.stringify(odd));
+    }
+  }
+});
+
+test("on the gateway the pilot's own contracts are asked of the server as before", async () => {
+  const { payload, mine, ids } = await contractsRoute({ transport: "gateway" });
+  assert.deepEqual(mine, [
+    ["contractProxy.GetMyCurrentContractList", [false, false], null],
+    ["contractProxy.GetMyCurrentContractList", [true, false], null],
+  ]);
+  assert.deepEqual([ids(payload.outstanding), ids(payload.accepted)], [[901], [902]]);
+});

@@ -12083,6 +12083,74 @@ const CONTRACTS_PAGE_SIZE = 100;
  */
 const ASSIGNED_CONTRACT_LIMIT = 50;
 
+/** appConst.py conStatusOutstanding and conStatusInProgress; contractPanels.py RESULTS_PER_PAGE. */
+const CONTRACT_STATUS_OUTSTANDING = 0;
+const CONTRACT_STATUS_IN_PROGRESS = 1;
+const OWN_CONTRACTS_PER_PAGE = 100;
+
+/** One field of a contract's row, in either of the forms a row comes in; undefined for what is not a row. */
+function contractRowField(row, name) {
+  return row && row.type === "packedrow" && row.fields ? row.fields[name] : readMailKeyVal(row, name);
+}
+
+/**
+ * The page's two lists of the pilot's own contracts, drawn from the two the client's My Contracts panel asks
+ * for: the owner's outstanding and the owner's in progress, each of which lists every contract the owner is a
+ * party to. What the pilot issued is the first and what the pilot took on the second, each newest first and
+ * with the items of its own contracts, in the form the server answers a list in. Null when either answer
+ * cannot be read: an empty list would say the pilot has none.
+ */
+function ownContractLists(characterID, answers) {
+  const rows = [];
+  const itemsOf = new Map();
+  for (const answer of answers) {
+    const contracts = readMailKeyVal(answer, "contracts");
+    if (!contracts || !Array.isArray(contracts.items)) {
+      return null;
+    }
+    for (const row of contracts.items) {
+      const contractID = mailNumber(contractRowField(row, "contractID"));
+      if (!(contractID > 0)) {
+        return null;
+      }
+      rows.push({ contractID, row });
+    }
+    const listed = readMailKeyVal(answer, "items");
+    for (const entry of (listed && listed.entries) || []) {
+      itemsOf.set(mailNumber(entry[0]), entry);
+    }
+  }
+  rows.sort((left, right) => right.contractID - left.contractID);
+  const listOf = (party) => {
+    const kept = rows.filter(({ row }) => mailNumber(contractRowField(row, party)) === characterID);
+    return {
+      ...answers[0],
+      args: {
+        type: "dict",
+        entries: [
+          ["contracts", { type: "list", items: kept.map(({ row }) => row) }],
+          ["items", { type: "dict", entries: kept.map(({ contractID }) => itemsOf.get(contractID)).filter(Boolean) }],
+        ],
+      },
+    };
+  };
+  return [listOf("issuerID"), listOf("acceptorID")];
+}
+
+/** Those two lists as settled reads, like the two they stand in for: each failed with what failed either of the owner's. */
+function ownContractsSettled(characterID, first, second) {
+  const failed = [first, second].find((entry) => entry.status === "rejected");
+  if (failed) {
+    return [failed, failed];
+  }
+  const lists = ownContractLists(characterID, [first.value.result, second.value.result]);
+  if (!lists) {
+    const unread = { status: "rejected", reason: { code: "READ_FAILED" } };
+    return [unread, unread];
+  }
+  return lists.map((result) => ({ status: "fulfilled", value: { result } }));
+}
+
 function contractsListEmpty(result) {
   const contracts = readMailKeyVal(result, "contracts");
   return !contracts || !Array.isArray(contracts.items) || contracts.items.length === 0;
@@ -12129,8 +12197,15 @@ app.get("/api/bridge/contracts", requireAuth, async (req, res, next) => {
     return;
   }
   const page = Math.max(0, Number(req.query.page) || 0);
+  // contractPanels.py 419: the client lists an owner's contracts by status and never asks GetMyCurrentContractList.
+  // On the game port the pilot's own are asked for its way, the outstanding and the ones in progress.
+  const asTheClient = Boolean(gamePortPilots && isGamePortHandle(held.bridgeSessionID));
+  const ownersWith = (status) => heldTopLevelCall(
+    held, req.webSessionID, "contractProxy", "GetContractListForOwner",
+    [held.characterID, status, null, null], { num: OWN_CONTRACTS_PER_PAGE, startContractID: null },
+  );
   try {
-    const [browse, outstanding, accepted, expired, summary] = await Promise.allSettled([
+    const [browse, first, second, expired, summary] = await Promise.allSettled([
       // ⚠ KWARGS-ONLY: no positional args at all, or the filters are dropped.
       heldTopLevelCall(held, req.webSessionID, "contractProxy", "SearchContracts", [], {
         contractType: CONTRACT_TYPE_COURIER,
@@ -12139,10 +12214,10 @@ app.get("/api/bridge/contracts", requireAuth, async (req, res, next) => {
       }),
       // (isAccepted, forCorp). Neither names an owner — the character comes
       // from the session, so there is nothing here to point elsewhere.
-      heldTopLevelCall(
+      asTheClient ? ownersWith(CONTRACT_STATUS_OUTSTANDING) : heldTopLevelCall(
         held, req.webSessionID, "contractProxy", "GetMyCurrentContractList", [false, false], null,
       ),
-      heldTopLevelCall(
+      asTheClient ? ownersWith(CONTRACT_STATUS_IN_PROGRESS) : heldTopLevelCall(
         held, req.webSessionID, "contractProxy", "GetMyCurrentContractList", [true, false], null,
       ),
       heldTopLevelCall(
@@ -12153,6 +12228,7 @@ app.get("/api/bridge/contracts", requireAuth, async (req, res, next) => {
       ),
     ]);
 
+    const [outstanding, accepted] = asTheClient ? ownContractsSettled(Number(held.characterID), first, second) : [first, second];
     const settled = [browse, outstanding, accepted, expired, summary];
     for (const entry of settled) {
       if (entry.status === "rejected" && entry.reason && entry.reason.code === "SESSION_NOT_FOUND") {

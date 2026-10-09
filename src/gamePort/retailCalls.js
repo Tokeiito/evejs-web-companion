@@ -130,6 +130,22 @@ const ofTheCharacter = (args, kwargs, context) => {
 const ofAnOpenedEvent = (args) => (args[0] > 0 && args[1] !== null && args[1] !== undefined
   ? { status: "same" }
   : { status: "differs", note: "The client asks this of an event the pilot has opened, by the event's ID and its owner's (eventInfo.eventID, eventInfo.ownerID). It never asks of no event, nor without the owner." });
+const CONTRACT_PANELS = "eve/client/script/ui/shared/neocom/contracts/contractPanels.py";
+/** contractPanels.py RESULTS_PER_PAGE. */
+const CONTRACTS_PER_PAGE = 100;
+/**
+ * MyContractsPanel._GetContractsToShow: whose, in what state, of what type and issued to or by, then by name how
+ * many to a page and the contract the page starts at. None is "all" for a filter and "the first" for the page.
+ */
+function ownersContracts(args, kwargs) {
+  const [ownerID, status, contractType, issuedBy] = args;
+  if (ownerID === null || ownerID === undefined || status === null || status === undefined) {
+    return { args, kwargs, status: "differs", note: "The client always names an owner and a status. This call leaves one of them out, and goes as it was given." };
+  }
+  const sent = { args: [ownerID, status, contractType ?? null, issuedBy ?? null], kwargs: { num: CONTRACTS_PER_PAGE, startContractID: kwargs.startContractID ?? null } };
+  const whole = args.length === 4 && Object.keys(kwargs).length === 2 && kwargs.num === CONTRACTS_PER_PAGE && "startContractID" in kwargs;
+  return whole ? sent : { ...sent, status: "reshaped" };
+}
 /** contractscommon.py: auctions and item exchanges searched together, and the sorts by date created and by price. */
 const CONTYPE_AUCTION_AND_ITEM_EXCHANGE = 10;
 const CONTRACT_SORT_ID = 0;
@@ -465,6 +481,17 @@ const RETAIL_CALLS = Object.freeze({
   }),
   "contractProxy.GetLoginInfo": same(`${CONTRACTS_SVC}:191`, "GetContractProxySvc().GetLoginInfo(), no arguments. The client asks once, when its notifications are ready, for the Neocom's blink; the page asks with every opening of its panel."),
   "contractProxy.GetMyExpiredContractList": same(`${CONTRACTS_SVC}:748`, "ProxySvc('contractProxy').GetMyExpiredContractList(False), and (True) for the corporation's straight after: the client asks the two together and keeps them."),
+  "contractProxy.GetContractListForOwner": Object.freeze({
+    status: "same",
+    source: `${CONTRACT_PANELS}:419`,
+    note: "ProxySvc('contractProxy').GetContractListForOwner(ownerID, status, contractType, issuedBy, num=100, startContractID=...): the My Contracts panel's list, asked when the panel opens and when its button is pressed, for the status its filter is on. Recorded on Tranquility as (charID, 0, None, None), num=100, startContractID=None.",
+    shape: ownersContracts,
+  }),
+  "contractProxy.GetContract": judged(
+    `${CONTRACTS_SVC}:336`,
+    (args) => (args.length === 1 && args[0] > 0 ? { status: "same" } : { status: "differs", note: "The client names the one contract and nothing else: GetContract(contractID)." }),
+    "GetContractProxySvc().GetContract(contractID): one contract in full, which the client keeps for five minutes. Recorded on Tranquility with the ID alone.",
+  ),
   "contractProxy.GetMyCurrentContractList": webOnly(`${CONTRACTS_SVC}:784`, "The client's contracts service has a wrapper for this that nothing in the client calls. Its My Contracts panel lists with GetContractListForOwner(ownerID, status, contractType, issuedBy, num=100, startContractID=...) (contractPanels.py 419)."),
   "marketProxy.GetCharOrders": same(`${MARKET_QUOTE}:389`, "GetMarketProxy().GetCharOrders(), no arguments"),
   "marketProxy.GetMarketOrderHistory": same(`${MARKET_QUOTE}:395`, "GetMarketProxy().GetMarketOrderHistory(), no arguments"),

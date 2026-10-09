@@ -571,8 +571,49 @@ test("a contract search goes out with the client's twenty-six keywords, in the o
   }
 
   // On the wire: the order the client's own Python gives these keywords and machoVersion
-  // (a service's method, the dict copied, machoVersion added), asked of the client's python27.dll.
+  // (a service's method, the dict copied, machoVersion added), asked of the client's python27.dll. A recording of
+  // the client searching on Tranquility ("Open and Search Contract") has the twenty-seven in this same order.
   assert.deepEqual(keywordOrder(Object.keys(asked.kwargs)), ["itemTypeName", "itemCategoryID", "issuerID", "excludeNoBuyout", "securityClasses", "endLocationID", "availability", "machoVersion", "maxReward", "minVolume", "startNum", "itemTypes", "itemGroupID", "excludeTrade", "maxCollateral", "description", "excludeMultiple", "sortBy", "maxVolume", "contractType", "minPrice", "minReward", "sortDir", "searchHint", "maxPrice", "minCollateral", "locationID"]);
+});
+
+test("an owner's contracts are asked for as the My Contracts panel asks: owner, status, type, issued to or by, then a hundred from the first by name", () => {
+  // contractPanels.py 419, and a recording of the client on Tranquility: (charID, 0, None, None) with num=100 and
+  // startContractID=None, asked of the proxy.
+  const asked = form("contractProxy.GetContractListForOwner", [140000002, 0, null, null], { num: 100, startContractID: null });
+  assert.deepEqual([asked.status, asked.args, asked.kwargs, asked.proxy, asked.moniker], ["same", [140000002, 0, null, null], { num: 100, startContractID: null }, true, false]);
+  assert.match(asked.source, /contractPanels\.py:419$/);
+  // The recording's own order on the wire, machoVersion among them.
+  assert.deepEqual(keywordOrder(Object.keys(asked.kwargs)), ["num", "machoVersion", "startContractID"]);
+  // Asked with less, or otherwise, it goes as the client's: the two filters None, a hundred to the page, from the first.
+  for (const [args, kwargs, sent] of [
+    [[7, 1], null, [[7, 1, null, null], { num: 100, startContractID: null }]],
+    [[7, 1, 3, false], { startContractID: 55 }, [[7, 1, 3, false], { num: 100, startContractID: 55 }]],
+    [[7, 4, null, true], { num: 50, startContractID: null }, [[7, 4, null, true], { num: 100, startContractID: null }]],
+    [[7, 0, null, null], { num: 100 }, [[7, 0, null, null], { num: 100, startContractID: null }]],
+    [[7, 0, null, null], { num: 100, forCorp: true }, [[7, 0, null, null], { num: 100, startContractID: null }]],
+    [[7, 0, null, null], { num: 100, startContractID: null, forCorp: true }, [[7, 0, null, null], { num: 100, startContractID: null }]],
+    [[7, 0, null, null, 9], { num: 100, startContractID: null }, [[7, 0, null, null], { num: 100, startContractID: null }]],
+  ]) {
+    const odd = form("contractProxy.GetContractListForOwner", args, kwargs);
+    assert.deepEqual([odd.status, odd.args, odd.kwargs], ["reshaped", ...sent], JSON.stringify([args, kwargs]));
+    assert.deepEqual(Object.keys(odd.kwargs), ["num", "startContractID"]);
+  }
+  // The client always names whose and in what state.
+  for (const args of [[], [null, 0], [7], [7, null]]) {
+    const nobody = form("contractProxy.GetContractListForOwner", args, null);
+    assert.deepEqual([nobody.status, /owner and a status/.test(nobody.note)], ["differs", true], JSON.stringify(args));
+  }
+});
+
+test("one contract in full is asked for by its ID, as the client's contracts service asks", () => {
+  // contracts.py 336, and recorded on Tranquility as GetContract(contractID) with nothing else, asked of the proxy.
+  const asked = form("contractProxy.GetContract", [233598633]);
+  assert.deepEqual([asked.status, asked.args, asked.kwargs, asked.proxy], ["same", [233598633], null, true]);
+  assert.match(asked.source, /contracts.py:336$/);
+  for (const args of [[], [null], [0], [233598633, true]]) {
+    const odd = form("contractProxy.GetContract", args);
+    assert.deepEqual([odd.status, odd.args, /names the one contract/.test(odd.note)], ["differs", args, true], JSON.stringify(args));
+  }
 });
 
 test("the contracts' own lists, the market's and the calendar's reads, set beside the client's", () => {
