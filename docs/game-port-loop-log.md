@@ -4512,3 +4512,83 @@ agent says, in the client's words or not at all.
     of pilot.
 12. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
     a fixed ball's collision shapes and the partition's order.
+
+---
+
+## 2026-10-09 — a mission's objectives, read whole
+
+Commit `579306d`, pushed. Half a unit: the reading. The laying out is next.
+
+**What the retail client does.** The window's right-hand pane is built from one answer,
+`agentMgr GetMissionObjectiveInfo`, by `agentDialogueUtil.GetMissionObjectiveHTML` (282 to 407),
+in this order:
+
+1. a warning when the mission matters to standings (`importantStandings`);
+2. a heading with the mission's name, by its state: failed (`missionState` 3), finished
+   (`completionStatus` above 0), or neither;
+3. a line of overview, then each objective: `transport` (pickup, dropoff, cargo), `fetch`
+   (where to bring it, what), `agent` (whom to report to, where), and then each of
+   `dungeons`: its heading (optional or not), the agent's words for it or the stock ones,
+   struck through with "completed" or "failed" once it is over, its place, and its
+   restrictions on ships;
+4. a warning about low security on the way (`locations`);
+5. granted items, rewards (items, ISK, loyalty points, research points), bonus rewards with
+   the time left to earn each, a banner about reduced payouts in high security, collateral,
+   and a further heading and text of the mission's own (`missionExtra`).
+
+The marks beside a transport's rows go by where the pilot is and whether the cargo is aboard
+(`_ProcessObjectiveEntry`, 30 to 97); a dungeon's by its `objectiveCompleted`.
+
+**What the page did.** It read a courier's transport objective and its ISK out of that answer
+and nothing else. A mission of any other kind had a conversation and no objectives.
+
+**What was built.** `web/src/bridge/missionObjectives.ts` reads the whole answer into one
+shape, on both transports' spellings. Nothing is worded or shown yet.
+
+**Proof.**
+
+- Tests: 11 new, against answers recorded from the server through both BFFs (a courier on
+  offer; a fighting mission on offer and accepted) and made-up ones for what those lack. 50
+  ways of breaking it; two got through at first and each is closed with a test.
+- Suite: 9334 tests, 9310 pass, 0 fail, 24 skipped, 0 todo.
+- **Not seen in the page**: there is nothing to see until the pane is laid out.
+- **The staging was undone**: standings were raised and a mission requested and accepted on
+  a copy of the store, and the store was put back.
+
+**Found on the way.**
+
+- The level 4 security agent at Test Two's station offers nothing: the server has fighting
+  missions for levels 1 and 2 only. Not a defect to hand off; it is the server's own list.
+- A dungeon that is over is marked `completed: 1` by the server, where the client's pane
+  looks for `completionStatus` (`_ProcessDungeonData`, 102). Read from the code on both
+  sides and not run; the recordings of Tranquility would say which name is sent.
+
+### Next
+
+1. The objectives pane, laid out from what is now read, in the client's order and words:
+   the heading by state, the overview, each objective and dungeon with its marks, then
+   granted items, rewards, bonus rewards and collateral; a courier's two package buttons
+   kept beside its transport objective. Seen live with the fighting mission (the brief says
+   how to get one). Left for after: the security warning, the reduced-payouts banner, the
+   restrictions' links.
+2. A special interaction drawn as the client draws one; messages inside messages.
+3. A push the page's own call caused, taken once: the stream's copy and the answer's told
+   apart.
+4. `agentMgr.RemoveOfferFromJournal` on the agent's bound object, and a way to press it.
+5. The agent's header: its division, its place (read already, and not shown), the pilot's
+   effective standing with it, and loyalty points.
+6. The ledger's unread pairs, most called first: the inventory and wallet reads, then the
+   writes on `ship` and `dogmaIM`.
+7. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+8. Phase 3's writes, feature by feature, each set beside what the client sends.
+9. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+10. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+11. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+12. Small, in Ready Fit: the capacity the client never asks for; the window following a change
+    of pilot.
+13. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.

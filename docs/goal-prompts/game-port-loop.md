@@ -272,6 +272,13 @@ Take these defaults, and list each under "For the operator" in the log so they c
   the BFF's GM route, into the station hangar.
 - **The page's Ready Fit window keeps the pilot it was opened for.** After switching pilots,
   press "Refresh sources" before looking for a fitting in it.
+- **A mission that is not a courier, for a test pilot.** A security agent offers nothing unless
+  the server has a mission for its level, and it has them for levels 1 and 2 only
+  (`eve.js/server/src/config/productionMissionPolicy.json`): the level 4 agent at Test Two's
+  station answers a request with its greeting again. A level 1 security agent will talk from
+  afar: 3011895 (in Ono, next door) offered a fighting mission to Test Two once
+  `/maxagentstandings` had been run in the GM console. The loop's scratch folder has that state
+  saved (`store.sh restore staged-objectives`, then put the clean one back).
 - **A script that selects a pilot cannot just log out.** `POST /api/logout` answers 409
   `DRONE_RECOVERY_PENDING` until the script has said the pilot's drones are accounted for, as
   the page does: `POST /api/bridge/drone-recovery/ready {checkID}` with the
