@@ -445,6 +445,9 @@ Take these defaults, and list each under "For the operator" in the log so they c
   travel on different connections, and the kept copy can be a notice behind.
   `src/trainingOnboarding.js` reads a trainee's applications that way, so they are asked for
   each time.
+- **A change to the page is in the browser only after `npm run build:web`**: the BFF serves the built
+  page (`public/dist`, which git ignores). The build checks the page's types, its tests' too, and
+  `npm test` does not: a test that passes can still fail the build.
 - **A fact offered in support of a decision is still a claim.** Two went into the log unchecked
   on 2026-10-08, in a paragraph arguing for a design, and both were wrong. One route call or one
   grep would have caught each.
