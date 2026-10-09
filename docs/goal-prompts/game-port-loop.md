@@ -205,6 +205,13 @@ Take these defaults, and list each under "For the operator" in the log so they c
   markup, which the tool names too (its tags and its entities): a fixture of mine with a space
   where the real label has `&nbsp;` passed every test and drew the entity on the page. The
   client's label parser is CCP's own and open (`trinity/trinity/Tr2LabelTextParser.cpp`).
+- **A native module of the client's can be run and asked.** What a script hands to a module with no
+  source among the scripts (`pyEvePathfinder` is `bin64/_pyevepathfinder.dll`, loaded by
+  `blue.LoadExtension`) loads in the client's own Python with `imp.load_dynamic('_name', path)`
+  (`scripts/py27-oracle.py`; `itertools`, `math` and `imp` are there, `random` is not). Give it
+  made-up input the way the client's script gives it the real thing, and measure: the autopilot's
+  route was learned this way (`scripts/build-autopilot-fixture.js`). Vary the order things are told
+  to it before trusting an answer: some of its answers go by that order.
 - **What the client knows without asking the server** is mostly in its built data
   (`res:/staticdata/<name>.fsdbinary`), which only the client's own loader can read
   (`bin64/<name>Loader.pyd`). `python scripts/client-built-data.py "<client>\tq\bin64" <name>Loader

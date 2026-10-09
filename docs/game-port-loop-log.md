@@ -5784,3 +5784,135 @@ use that here either).
     accepted, before the package has gone anywhere (the operator's section); and a mission
     paid in a system of the safest class, for whether its ISK is reduced.
 16. Other things asked once beside the store, looked at for the same fault as this entry's.
+
+## 2026-10-09 — how many jumps away a place is, by the client's autopilot route
+
+Commit `f350fec`, pushed. Item 1 of the last list, in part.
+
+**What the retail client does.** Beside each place on a mission's page
+(`agentinteraction/objectivesteps.py` 149 to 164): this station; this solar system; or
+`UI/Agents/StandardMission/JumpsAway` with the jumps from the pilot's system to the place's,
+and `UI/Generic/NoGateToGateRoute` where there is no route. The jumps are
+`clientPathfinderService.GetAutopilotJumpCount`: the route its autopilot would plot, with
+the pilot's settings. Left as they come (`evePathfinder/stateinterface.py`,
+`pathfinderconst.py`) those are the "safe" route type, a penalty of 50 on the slider, which
+the pathfinder is given as exp(0.15 x 50), and two avoided systems, Jita and Zarzakh, with
+avoiding on. A system is nought jumps from itself; there is no route to or from a system
+outside known space.
+
+The route itself is plotted by a native module, `pyEvePathfinder`
+(`bin64/_pyevepathfinder.dll`), with no source among the client's scripts.
+
+**How it was learned.** The module loads in the client's own Python
+(`imp.load_dynamic`), and takes a map the way `evePathfinder/eveMapWrapper.py` gives it one.
+Run over made-up maps, it showed:
+
+- a least-cost flood from the start. To enter a system costs 0.9 where its security is 0.45
+  or above; the penalty where it is above nought and below 0.45; twice the penalty at nought
+  or below. Found by which of two ways it took as one of them was made longer, to a
+  hundredth of a jump;
+- the sums are kept in single precision and so is the penalty; the 0.9 is not. Of nine ways
+  of doing the arithmetic this is the only one that gives the module's answer in all sixteen
+  cases of two low-security systems set against one null-security system, which cost the same
+  on paper and differ by a jump;
+- an avoided system is never entered, unless it is where the route ends; a route may start in
+  one;
+- one flood answers for every system it reaches (7,017 read from floods run for another goal,
+  none different), as the client's own cache of floods needs;
+- **where two routes cost it exactly the same and differ in jumps, its answer goes by the order
+  it was told of the map's jumps in.** The same map shuffled gives another answer. In a
+  made-up map of six systems, 240 of the 720 orders of its jumps gave one answer and 480 the
+  other, whatever order the systems were made in. No simple rule for it was found, and none
+  is followed here.
+
+Inside the limits of the other route types a system's cost was measured to vary with its
+security (about 0.93 for low security, more for null, by how far below nought). That was not
+followed through: only the safe type is built.
+
+**What the page did.** Said "this station" or "this solar system", and nothing for anywhere
+else. Its own route solver (`web/src/nav/routeSolver.ts`) is the shortest way, through Jita
+or low security alike.
+
+**What was built.**
+
+- `web/src/nav/autopilotRoute.ts`: the flood, as measured. A system costs the same to enter
+  from anywhere, so the first way found into it is a cheapest one; the breakage pass showed
+  the first version carried ten lines it had no need of, and they are gone.
+- `scripts/build-autopilot-fixture.js` and `test/fixtures/autopilotRoute.json`: the module's
+  own answers over 131 made-up maps, 2,468 pairs. Each map is put to it in eight orders, and a
+  pair whose answer changes with the order is left out (28 were).
+- `GET /api/map/graph` carries each system's security. The page works the counts out from the
+  map it already reads for its route solver (read once, and now by one read however many ask
+  at once), and keeps them by "from:to" beside its names. Nothing is asked of the game server,
+  as the client asks nothing.
+- The mission's page says them, from where the pilot is now.
+
+**Proof.**
+
+- Tests: 10 new. 90 ways of breaking it tried: of the 14 that survived a first pass, ten were
+  lines the flood did not need, three called for a better test (a made-up map on which the
+  safe way and the short way were the same length could not tell the settings apart), and one
+  changes nothing that can be seen. All that can be caught are.
+- Suite: 9508 tests, 9484 pass, 0 fail, 24 skipped, 0 todo.
+- **Against the client's own pathfinder over this server's whole map** (5,268 systems, 13,978
+  jumps), with the settings as they come: 23,945 pairs from 400 systems, of every kind of
+  security at either end. One differs: a null-security pair for which the client's own answer
+  changes (21 jumps or 19) when the same map is put to it in another order.
+- **In the browser, on the game port,** as Test Two, docked in Muvolailen: the courier's
+  pick-up says this station and its drop-off, in Tasabeshi, "3 jumps", which is the client's
+  pathfinder's answer for that pair. (Jita is next door to Muvolailen, and the route goes
+  round it.) The map was read once.
+- **Staged** (the store copied first and put back after; the journal is back at one offer):
+  the low-security courier of two entries ago. Both its places said "29 jumps"; the client's
+  pathfinder says 29 for each.
+
+**Not seen, and not known.**
+
+- The map here is this server's. That the client's own (`cfg.mapSystemCache`,
+  `cfg.mapJumpCache`) has the same systems, jumps and security was not checked.
+- The order the client tells its pathfinder of the jumps in, which settles the ties above.
+- When the last check ran, another session had uncommitted edits to three files of the eve.js
+  checkout (fitting and dogma). Whether the server I started had read them I do not know;
+  nothing here touches fitting.
+
+**Not done.** The other route types and the pilot's own settings (there is nowhere to set
+them here). The pilot's other avoidance lists; jump gates; systems the server has locked; a
+security the server has changed. The agent's own window, whose steps may say the same. The
+page's travel autopilot still flies the shortest way, not this one.
+
+### Next
+
+1. The page's travel autopilot by the client's route (it has the route solver's and this one's
+   maps already); the agent's own window's steps, if the client's say how far.
+2. Around a place's name, the last of it: the outlaw's warning (the pilot's own security
+   status).
+3. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+   own counts on it, with the push doing the work as it does for Remove Offer.
+4. The agent's cards above its own window, where the client's window has its own header.
+5. The ledger's unread pairs, most called first: the inventory and wallet reads, then the
+   writes on `ship` and `dogmaIM`.
+6. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+7. Phase 3's writes, feature by feature, each set beside what the client sends.
+8. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+9. Small, in space: an overview row's speed columns the client's way; the bar the client
+   fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+10. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+11. Small, in Ready Fit: the capacity the client never asks for; the window following a change
+    of pilot.
+12. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+13. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+14. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+15. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions); the client's own map, to set beside this server's.
+16. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+17. Other things asked once beside the store, looked at for the fault of two entries ago.
+18. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
+    client's own map is in.
