@@ -34304,8 +34304,8 @@ reference it could not fetch.
 
 **What was done.** The read is out of the scanner's loading, and the "Formation reference"
 readout out of the Scanner window, with the slice's field, the view, the decoder nothing
-else used, and their tests. 454 lines out and 18 in. The route stands; nothing of the
-page's asks it.
+else used, and their tests. 455 lines out and 19 in, by the commit's own count. The route
+stands; nothing of the page's asks it.
 
 **Proof.**
 
