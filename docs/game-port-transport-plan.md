@@ -637,9 +637,10 @@ gateway found rocks: the game port's snapshot had none of the mining fields the 
 on an asteroid's row. That is mended (`428af02`: a rock says what it yields, which is its own
 type), and a bot has since mined on the game port as through the gateway (8692 units of ore
 against 8690 in the same time). The two transports' rows were then read side by side, and
-three more gaps of the kind found, none built yet: a drone's row does not say whose the drone
-is or what it is doing, a ship's does not say what kind of NPC it is, and none says a ship is
-a compression facility. The default waits for those.
+three more gaps of the kind found: a drone's row did not say whose the drone is or what it is
+doing (mended, `2fbf14f`, with a launch that answered before its drones were in the park), a
+ship's does not say what kind of NPC it is, and none says a ship is a compression facility.
+The default waits for the last two.
 
 Not yet measured: the structure directory's reads, a fleet's parking and delivery checks, a
 training pilot's corporation fittings, the fleet's companions, the Factory and the training

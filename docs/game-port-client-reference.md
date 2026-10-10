@@ -1185,6 +1185,19 @@ as null (`spaceProjection.js`). The web client's bots tell a rock by those field
 the first was there no bot on the game port could mine. At one belt of 121 rocks the two
 transports agreed on every rock's type, group and yield.
 
+**A drone, 2026-10-10.** michelle's park keeps a table of the pilot's drones
+(`stateByDroneID`): for each, its owner, the ship controlling it, its activity state, its type,
+the controller's owner and its target. A whole state's `droneState` fills it (`Park.SetState`,
+970), and `OnDroneStateChange` changes it (1496): on Tranquility an entry of a ballpark
+update, a list of the seven, in each of nine recordings; on this server that and a notice of
+its own. A drone that is neither the session's character's nor controlled by the session's
+ship is taken out of the table. So a client knows these things of its own drones only. The
+game port's park keeps the table the same way, and a drone's row in the space snapshot says
+`controllerID`, `controllerOwnerID`, `droneActivity` and `targetEntityID` from it, or null
+where the park was not told; the gateway says them of every drone. A launched drone comes
+with the ballpark update after `ship.LaunchDrones` has answered, so the BFF's launch route
+waits for it on the game port.
+
 **The map's stations, 2026-10-10.** `map.GetStationInfo()` is asked once by the client's UI
 service and kept for the client's life (`uisvc.py` 246), and by five other callers through the
 object cache. On the game port the first asking is answered with a cached reference, which

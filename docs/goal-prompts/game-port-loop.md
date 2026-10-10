@@ -747,6 +747,15 @@ Take these defaults, and list each under "For the operator" in the log so they c
   makers.** The rock's was one of four gaps in the space snapshot's rows; the other three were
   found in ten minutes by setting `projectSpaceEntity` (eve.js,
   `evejsWebGatewayRuntime.js`) beside `projectEntity` (`spaceProjection.js`), not by walking.
+- **On the game port, what a call changes in space is not there when the call answers.** The
+  gateway reads the server's scene; a pilot on the game port reads its own park, which the
+  next ballpark update changes. A route that calls and then reads the snapshot to say what
+  happened (a launch, a scoop, a jettison) reads the park from before. The launch waits for
+  its drones (`DRONE_ARRIVAL_WAIT_MS` in `src/server.js`); look at each route of that shape.
+- **Drones for Test Two:** after `fit-stage.js`, `node drone-stage.js <scratch> <bff> test2
+  140000002` gives two Hobgoblin I and puts them in the Venture's bay; `drone-walk.js`
+  undocks, launches them and prints each drone's row. A pilot who logs off in space with
+  drones out has none on grid when it comes back.
 - A test's "watched to fail" can be had after the fact, once the work is committed: put the source file back to the commit
   before (`git show HEAD~1:<file> > <file>`), run the test, and restore it with `git checkout
   HEAD -- <file>`. Check `git status` is clean after.
