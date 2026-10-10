@@ -74,6 +74,9 @@ const EVEJS_REFUSAL_VOCABULARY: readonly string[] = [
   "NotEnoughCapacitorForOnline",
   // invbroker Add/MultiAdd — reachable via the docked hangar→ship-hold move.
   "NotEnoughCargoSpace",
+  // invbroker.ImportExportWithPlanet: the customs office's export tax, charged
+  // from the wallet (planetMgrService throwNotEnoughMoney).
+  "NotEnoughMoney",
   "TargetNotWithinRangeGeneric",
   "TargetTooFar",
   "TargetingAttemptCancelled",
