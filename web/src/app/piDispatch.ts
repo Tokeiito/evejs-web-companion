@@ -297,7 +297,11 @@ export function piHaulBotDoc(
       "ticked colonies' launchpads up into their customs offices first; this lap launches what their command centres " +
       "hold, boards a ship parked at the starting station that has a planetary hold, empties the customs offices and " +
       "collects the launches in each colony's system, flies back, unloads and gets back into the earlier ship.",
-    home: startingStation(),
+    // The Deliver-to station, when one is picked, is home: a run that starts in
+    // space docks there to board, delivers there and comes back there (flow.ts
+    // resolves the starting station to it). Without one, home is where the run
+    // starts, and in space the character's home station.
+    home: delivery ?? startingStation(),
     interrupts: [],
     program,
   };
