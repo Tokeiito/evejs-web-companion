@@ -9,6 +9,7 @@
 // The client draws each as a dial. Here each is its word and what is left of it. The words are this page's own.
 
 import type { CrimewatchClientStates } from "../bridge/boundCrimewatch.ts";
+import { SECURITY_CLASS, securityClass } from "../bridge/systemSecurity.ts";
 
 /** The clock's 100 ns ticks at the start of Unix time. */
 const FILETIME_OF_UNIX_EPOCH = 116444736000000000n;
@@ -110,17 +111,75 @@ export function timerText(timer: CrimewatchTimerView): string {
   return `${timer.word} ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
+/** crimewatch/const.py: shipSafetyLevelNone, shipSafetyLevelPartial and shipSafetyLevelFull. */
+export type SafetyLevel = 0 | 1 | 2;
+
 export interface SafetyBadge {
-  readonly level: 0 | 1 | 2;
+  readonly level: SafetyLevel;
   readonly word: string;
   readonly tone: "none" | "partial" | "full";
 }
 
-/** The ship's safety level in a word (crimewatch/const.py: shipSafetyLevelNone, Partial, Full); null for what is no level. */
-export function safetyBadge(states: CrimewatchClientStates | null): SafetyBadge | null {
-  const level = states?.safetyLevel;
-  return level === 2 ? { level, word: "Full", tone: "full" }
-    : level === 1 ? { level, word: "Partial", tone: "partial" }
-      : level === 0 ? { level, word: "None", tone: "none" }
-        : null;
+/** The three levels in the order the client's selector has them (shipSafetyButton.construct_buttons), each with what it lets the ship do. */
+const SAFETY_LEVELS: ReadonlyArray<readonly [SafetyLevel, string, SafetyBadge["tone"], string]> = [
+  [0, "None", "none", "The ship refuses nothing."],
+  [1, "Partial", "partial", "The ship refuses what would make you a criminal."],
+  [2, "Full", "full", "The ship refuses what would make you a suspect or a criminal."],
+];
+
+/**
+ * Whether the safety level is held at Full where the pilot is (crimewatchSvc.IsSafetyLockedToFullLevel): in a
+ * solar system of the safest class of security. `security` is the system's own; null, while it is not known,
+ * holds nothing. The client's other cause, a structure controlled in high security, is nothing this page does.
+ */
+export function safetyLockedToFull(security: number | null): boolean {
+  return security !== null && securityClass(security) === SECURITY_CLASS.safe;
+}
+
+/**
+ * The ship's safety level in a word; null for what is no level. Where the level is held at Full, Full is the
+ * level whatever crimewatch said (crimewatchSvc._UpdateSafetyLevel).
+ */
+export function safetyBadge(states: CrimewatchClientStates | null, lockedToFull = false): SafetyBadge | null {
+  const said = states?.safetyLevel;
+  const row = SAFETY_LEVELS.find(([level]) => level === said);
+  if (row === undefined) {
+    return null;
+  }
+  const [level, word, tone] = lockedToFull ? SAFETY_LEVELS[2]! : row;
+  return { level, word, tone };
+}
+
+/** One of the selector's three buttons. */
+export interface SafetyChoice extends SafetyBadge {
+  /** What this level lets the ship do, in this page's words. */
+  readonly says: string;
+  /** The level now. */
+  readonly selected: boolean;
+  /** Not to be pressed (SecurityButton.IsLocked): every level but Full, where the level is held at Full. */
+  readonly locked: boolean;
+  /** Lower than the level now: the client wants a second press, on a button to confirm. */
+  readonly confirms: boolean;
+}
+
+/** The selector's buttons for a ship at this level: None, Partial, Full. */
+export function safetyChoices(current: SafetyLevel, lockedToFull: boolean): SafetyChoice[] {
+  return SAFETY_LEVELS.map(([level, word, tone, says]) => ({
+    level, word, tone, says,
+    selected: level === current,
+    locked: lockedToFull && level !== 2,
+    confirms: level < current,
+  }));
+}
+
+/**
+ * What a press of one of the selector's buttons does (shipSafetyButton.OnSecurityButtonClick): nothing where the
+ * button is locked, and nothing while a level waits to be confirmed; a level lower than the one now waits for a
+ * second press; any other is set at once, the level now among them.
+ */
+export function safetyPress(choice: SafetyChoice, confirming: SafetyLevel | null): "nothing" | "confirm" | "set" {
+  if (choice.locked || confirming !== null) {
+    return "nothing";
+  }
+  return choice.confirms ? "confirm" : "set";
 }

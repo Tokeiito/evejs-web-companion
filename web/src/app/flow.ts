@@ -201,6 +201,7 @@ import {
 // and where does it go", so a stargate row can offer a jump.
 import { buildGateLinks, type GateLink } from "../space/gateLinks.ts";
 import { CRIMEWATCH_NOTICES, CRIMEWATCH_SESSION_NAMES } from "../space/crimewatch.ts";
+import type { SafetyLevel } from "../space/crimewatch.ts";
 import type { AgentFinderRow } from "../store/types.ts";
 import {
   AUTOPILOT_WARP_MIN_RANGE_M,
@@ -691,6 +692,12 @@ export interface AppFlow {
   rentStationOffice(cost: number): Promise<void>;
   /** Give up the corporation's office here. The server's notice lists the offices again. */
   giveUpStationOffice(): Promise<void>;
+  /**
+   * Set the ship's safety level (crimewatchSvc.SetSafetyLevel). Once the server has taken it, it is the level the
+   * page shows, with nothing read after, as the client keeps the level it set. A refusal is thrown, and the
+   * level shown is left as it was.
+   */
+  setSafetyLevel(level: SafetyLevel): Promise<void>;
   /**
    * WHERE the corporation has offices, and what its divisions are called —
    * answered for every station at once, from wherever the ship is. The Bot
@@ -2776,6 +2783,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const crimewatch = await api.loadCrimewatch(callOptions);
     if (store.station.get().online?.characterID === characterID) {
       store.apply({ type: "flight/crimewatch", crimewatch });
+    }
+  }
+
+  // crimewatchSvc.SetSafetyLevel: the client sets the level at the server and
+  // from then on has it as the level, asking crimewatch nothing. So here: the
+  // level set goes into what was last read. With nothing read there is
+  // nothing to put it into, and the read on its way says it. A set that
+  // answers after the pilot has gone from this page is thrown by the guard
+  // every request of a pilot's has (SESSION_REQUEST_RETIRED), so what is
+  // changed here is this pilot's.
+  async function setSafetyLevel(level: SafetyLevel): Promise<void> {
+    await api.setSafetyLevel(level, callOptions);
+    const crimewatch = store.flight.get().crimewatch;
+    if (crimewatch !== null) {
+      store.apply({ type: "flight/crimewatch", crimewatch: { ...crimewatch, states: { ...crimewatch.states, safetyLevel: level } } });
     }
   }
 
@@ -13578,6 +13600,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     quoteStationOffice,
     rentStationOffice,
     giveUpStationOffice,
+    setSafetyLevel,
     loadCorpOffices,
 
     selectCorpDivision(division) {

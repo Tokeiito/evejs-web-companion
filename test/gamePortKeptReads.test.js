@@ -80,3 +80,39 @@ test("everything kept can be read as it was answered, and nothing once it is for
   reads.forget();
   assert.deepEqual(reads.answers(), []);
 });
+
+test("what is kept is amended with nothing asked, and where nothing is kept there is nothing to amend", async () => {
+  const reads = createKeptReads();
+  const { asked, ask } = counted();
+  await reads.read("all", ask("all"));
+  await reads.read("unread", ask("unread"));
+  await reads.amend("all", (kept) => `${kept}, amended`);
+  assert.deepEqual([await reads.read("all", ask("all")), await reads.read("unread", ask("unread")), asked], ["all 1, amended", "unread 1", ["all", "unread"]]);
+  // Nothing is kept as this: nothing is made of nothing, and the next read asks.
+  const made = [];
+  await reads.amend("other", (kept) => { made.push(kept); return "made up"; });
+  assert.deepEqual([made, await reads.read("other", ask("other"))], [[], "other 1"]);
+  // After everything is forgotten there is nothing to amend either.
+  reads.forget();
+  await reads.amend("all", () => "made up");
+  assert.equal(await reads.read("all", ask("all")), "all 2");
+});
+
+test("an amendment takes its turn behind a read begun before it, and comes before one begun after", async () => {
+  const reads = createKeptReads();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const first = reads.read("all", async () => { await gate; return "answered"; });
+  const amended = reads.amend("all", (kept) => `${kept}, then amended`);
+  const after = reads.read("all", async () => "asked again");
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  // The read begun before is answered as the server answered it; what is kept is that answer amended.
+  assert.deepEqual([await first, await amended, await after], ["answered", undefined, "answered, then amended"]);
+  // A read that failed leaves nothing kept, and the amendment behind it does nothing and does not fail.
+  const failing = reads.read("unread", async () => { throw new Error("no"); });
+  const behind = reads.amend("unread", () => "made up");
+  await assert.rejects(failing, /no/);
+  await behind;
+  assert.equal(await reads.read("unread", async () => "asked"), "asked");
+});

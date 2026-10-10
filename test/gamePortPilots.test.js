@@ -6784,7 +6784,7 @@ test("crimewatch's states are asked again as the client asks: at a change of pla
   assert.equal(asked.status, 1);
 });
 
-test("the states kept are let go at the server's word of a timer, a flag or an engagement, and at the pilot's own safety level", async () => {
+test("the states kept are let go at the server's word of a timer, a flag or an engagement", async () => {
   const { asked, answers } = crimewatchAnswers();
   const { pilots, session, handle } = await selected({ answers: { ...answers, "bound:SetSafetyLevel": () => 1 } }, CRIME_PAIRS);
   const states = async () => (await pilots.callMethod("crimewatch", "GetClientStates", [], null, FIELDS, handle)).result.items[1];
@@ -6799,17 +6799,63 @@ test("the states kept are let go at the server's word of a timer, a flag or an e
   session.notify("OnSecurityStatusUpdate", [1.5]);
   session.notify("OnItemChange", [1, 2]);
   assert.deepEqual([await states(), asked.states], [expected, expected]);
-  // crimewatchSvc.SetSafetyLevel: the level is what the pilot set, which the states kept do not say.
+  // crimewatchSvc.SetSafetyLevel lets nothing go: the client keeps the level it set and asks nothing (the next test).
   await pilots.callMethod("crimewatch", "SetSafetyLevel", [1], null, FIELDS, handle);
-  assert.deepEqual([await states(), await states(), asked.states], [expected + 1, expected + 1, expected + 1]);
+  assert.deepEqual([await states(), await states(), asked.states], [expected, expected, expected]);
   // With something beside it the read is no call of the client's: sent each time, on a Moniker of its own.
   await pilots.callMethod("crimewatch", "GetClientStates", [1], null, FIELDS, handle);
   await pilots.callMethod("crimewatch", "GetClientStates", [1], null, FIELDS, handle);
-  assert.equal(asked.states, expected + 3);
+  assert.equal(asked.states, expected + 2);
   // And so with a keyword beside it; what is kept is left as it is.
   await pilots.callMethod("crimewatch", "GetClientStates", [], { all: true }, FIELDS, handle);
   await pilots.callMethod("crimewatch", "GetClientStates", [], { all: true }, FIELDS, handle);
-  assert.deepEqual([asked.states, await states(), asked.states], [expected + 5, expected + 1, expected + 5]);
+  assert.deepEqual([asked.states, await states(), asked.states], [expected + 4, expected, expected + 4]);
+});
+
+/** Crimewatch's states in the four places the client reads (crimewatchSvc.py 96), with the safety level given, and a count of the asking. */
+function statesOfFour(level) {
+  const asked = { states: 0, sets: [] };
+  const timers = [[100, null], [200, null], [400, null], [300, null], [500, null]];
+  const of = (safetyLevel) => [timers, "engagements", "flagged", safetyLevel];
+  const refusing = { now: false };
+  const answers = {
+    "bound:GetClientStates": () => { asked.states += 1; return of(level); },
+    "bound:GetMySecurityStatus": 0.5,
+    "bound:SetSafetyLevel": (args) => { if (refusing.now) throw refusedBy("NotNow"); asked.sets.push(args[0]); return args[0]; },
+  };
+  return { asked, answers, of, refusing };
+}
+
+test("a safety level the pilot set is the level the states kept say from then on, and crimewatch is asked nothing after it", async () => {
+  const { asked, answers, of, refusing } = statesOfFour(2);
+  const { pilots, session, handle } = await selected({ answers }, CRIME_PAIRS);
+  const states = async () => (await pilots.callMethod("crimewatch", "GetClientStates", [], null, FIELDS, handle)).result;
+  assert.deepEqual(await states(), of(2));
+  // crimewatchSvc.SetSafetyLevel (343 to 345): set at the server, then kept as the level the client has.
+  await pilots.callMethod("crimewatch", "SetSafetyLevel", [1], null, FIELDS, handle);
+  assert.deepEqual([await states(), await states(), asked], [of(1), of(1), { states: 1, sets: [1] }]);
+  await pilots.callMethod("crimewatch", "SetSafetyLevel", [0], null, FIELDS, handle);
+  assert.deepEqual([await states(), asked], [of(0), { states: 1, sets: [1, 0] }]);
+  // Each was sent on a Moniker of its own, as the choosing's two reads were, and no read was sent after either.
+  assert.deepEqual(carriedByCrimewatch(session), ["GetClientStates", "GetMySecurityStatus", "SetSafetyLevel", "SetSafetyLevel"]);
+  // A level the server refused is not the level: the client keeps it on the line after the call, which a refusal never reaches.
+  refusing.now = true;
+  await assert.rejects(pilots.callMethod("crimewatch", "SetSafetyLevel", [2], null, FIELDS, handle));
+  assert.deepEqual([await states(), asked], [of(0), { states: 1, sets: [1, 0] }]);
+  refusing.now = false;
+  // With nothing kept there is nothing to amend: the next read asks, and what the server says then is what is kept.
+  session.notify("OnWeaponsTimerUpdate", [100, null]);
+  await pilots.callMethod("crimewatch", "SetSafetyLevel", [1], null, FIELDS, handle);
+  assert.deepEqual([await states(), await states(), asked], [of(2), of(2), { states: 2, sets: [1, 0, 1] }]);
+});
+
+test("states kept in another form than the client's four places say no level, and are left as they are when one is set", async () => {
+  for (const kept of [[1, 2, 2], [1, 2, 3, 2, 5], { type: "list", items: [1, 2, 3, 2] }, "states", null]) {
+    let asked = 0;
+    const { pilots, handle } = await selected({ answers: { "bound:GetClientStates": () => { asked += 1; return kept; }, "bound:GetMySecurityStatus": 0.5, "bound:SetSafetyLevel": 1 } }, CRIME_PAIRS);
+    await pilots.callMethod("crimewatch", "SetSafetyLevel", [1], null, FIELDS, handle);
+    assert.deepEqual([(await pilots.callMethod("crimewatch", "GetClientStates", [], null, FIELDS, handle)).result, asked], [kept, 1], JSON.stringify(kept));
+  }
 });
 
 test("the security status is what the server last said of it, and is asked for where none is had", async () => {

@@ -23,18 +23,34 @@ interface PushSource {
   close(): void;
 }
 
-/** A pilot online with its live channel open. `answer` is what the crimewatch read answers now. */
-async function online() {
+/**
+ * A pilot online with its live channel open. `answer` is what the crimewatch read answers now. `sets` is what
+ * the safety level was asked to be set to, each as it was sent; `setFails` refuses the next, and `setHold` keeps
+ * its answer back.
+ */
+async function online(from: { fail?: boolean } = {}) {
   const store = createClientStore();
-  const state: { answer: unknown; fail: boolean; hold: Promise<void> | null } = { answer: { ok: true, serverNowMs: Date.now() + 5000, clientStates: statesWith(2) }, fail: false, hold: null };
+  const state: { answer: unknown; fail: boolean; hold: Promise<void> | null; setFails: boolean; setHold: Promise<void> | null } = {
+    answer: { ok: true, serverNowMs: Date.now() + 5000, clientStates: statesWith(2) }, fail: from.fail === true, hold: null, setFails: false, setHold: null,
+  };
   let reads = 0;
+  const sets: Array<{ level?: unknown; confirm?: unknown }> = [];
   const fetchImpl = (async (input: unknown, init?: { method?: string; body?: unknown }) => {
     const path = String(input);
     const body = init && typeof init.body === "string" ? JSON.parse(init.body) : {};
     let status = 200;
     let answer: unknown = { ok: true };
     if (path === "/api/bridge/select") {
-      answer = { ok: true, character: { characterID: PILOT, characterName: "Test Pilot", stationID: 60003760, structureID: null, solarSystemID: 30000142, corporationID: 1000044 }, droneRecoveryCheckID: "check-1" };
+      answer = { ok: true, character: { characterID: body.characterID, characterName: "Test Pilot", stationID: 60003760, structureID: null, solarSystemID: 30000142, corporationID: 1000044 }, droneRecoveryCheckID: "check-1" };
+    } else if (path === "/api/bridge/safety/set-level") {
+      sets.push(body);
+      if (state.setHold) await state.setHold;
+      if (state.setFails) {
+        status = 409;
+        answer = { ok: false, error: "SESSION_CHANGE_IN_PROGRESS", message: "The session is changing place." };
+      } else {
+        answer = { ok: true, applied: true, result: body.level, notifications: [] };
+      }
     } else if (path === "/api/bridge/crimewatch") {
       reads += 1;
       if (state.hold) await state.hold;
@@ -72,7 +88,7 @@ async function online() {
     await new Promise((resolve) => setTimeout(resolve, 25));
   };
   const shown = () => store.flight.get().crimewatch;
-  return { store, state, push, shown, reads: () => reads };
+  return { store, flow, state, push, shown, reads: () => reads, sets };
 }
 
 test("a pilot that comes online has crimewatch's states read, with the server's clock beside them", async () => {
@@ -147,4 +163,53 @@ test("a read that answers after the pilot has gone offline is not shown", async 
   release();
   await new Promise((resolve) => setTimeout(resolve, 25));
   assert.equal(shown(), null);
+});
+
+// ── the safety level set ─────────────────────────────────────────────────────
+//
+// crimewatchSvc.SetSafetyLevel (343 to 345): the client sets the level at the server, then has it as the level and
+// tells its button so. It asks crimewatch nothing after. A refusal is raised before the line that keeps it.
+
+test("a safety level set from the page is sent once, and is the level shown from then on with crimewatch not read again", async () => {
+  const { flow, shown, reads, sets } = await online();
+  const before = shown();
+  await flow.setSafetyLevel(1);
+  assert.deepEqual([sets, reads(), shown()?.states.safetyLevel], [[{ level: 1, confirm: true }], 1, 1]);
+  // Nothing else of what was read is changed.
+  assert.deepEqual([shown()?.states.timers, shown()?.clockOffsetMs], [before?.states.timers, before?.clockOffsetMs]);
+  await flow.setSafetyLevel(0);
+  await flow.setSafetyLevel(2);
+  assert.deepEqual([sets.map((sent) => sent.level), reads(), shown()?.states.safetyLevel], [[1, 0, 2], 1, 2]);
+});
+
+test("a level the server refused is thrown to who set it, and the level shown is left as it was", async () => {
+  const { flow, state, shown, reads, sets } = await online();
+  state.setFails = true;
+  await assert.rejects(flow.setSafetyLevel(0), /changing place/);
+  assert.deepEqual([sets.length, reads(), shown()?.states.safetyLevel], [1, 1, 2]);
+  // The next one, taken, is shown.
+  state.setFails = false;
+  await flow.setSafetyLevel(0);
+  assert.deepEqual([sets.length, shown()?.states.safetyLevel], [2, 0]);
+});
+
+test("a level set before crimewatch was ever read has nothing to go into, and one answered after another pilot came online is thrown away", async () => {
+  const unread = await online({ fail: true });
+  assert.equal(unread.shown(), null);
+  await unread.flow.setSafetyLevel(1);
+  assert.deepEqual([unread.sets.length, unread.shown()], [1, null]);
+  // The set is on its way; the pilot goes, and another comes online on this page and has its own states read.
+  const { store, flow, state, shown } = await online();
+  let release: () => void = () => {};
+  state.setHold = new Promise<void>((resolve) => { release = resolve; });
+  const setting = flow.setSafetyLevel(0);
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  store.apply({ type: "character/offline" } as never);
+  await flow.selectCharacter(PILOT + 1);
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(shown()?.states.safetyLevel, 2);
+  release();
+  // The flow throws every answer that comes for a pilot who has gone; the pilot now online keeps its own level.
+  await assert.rejects(setting, /retired pilot session/);
+  assert.equal(shown()?.states.safetyLevel, 2);
 });

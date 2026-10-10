@@ -4952,6 +4952,55 @@
   .state-badge.safety-none { color: var(--color-danger); border-color: var(--color-danger); }
   .state-badge.crime-timer { color: var(--color-warn); border-color: var(--color-warn); font-variant-numeric: tabular-nums; }
   .state-badge.crime-criminal { color: var(--color-danger); border-color: var(--color-danger); }
+  /* In space the safety level is a button, and the selector opens beneath it:
+   * three levels, each with what it lets the ship do beside it.
+   *
+   * The selector is a popover, in the browser's top layer: the page's floating
+   * windows are in a layer above the whole workspace, and a menu raised only
+   * within the header opened underneath them. Its place is set on it as it
+   * opens (SafetyChooser.svelte). No `display` here: the browser hides a
+   * popover that is shut by its own, and a rule of ours would undo that. */
+  button.state-badge { background: transparent; font-family: inherit; cursor: pointer; }
+  .safety-chooser { display: inline-flex; }
+  .safety-pop {
+    position: fixed;
+    inset: auto;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    overflow: visible;
+  }
+  .safety-menu {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    width: max-content;
+    max-width: min(26rem, 90vw);
+    padding: 0.6rem;
+    background: var(--color-panel);
+    border: 1px solid var(--color-line);
+  }
+  .safety-row { display: flex; align-items: center; gap: 0.5rem; }
+  .safety-choice {
+    flex: 0 0 5.5rem;
+    min-height: 32px;
+    background: transparent;
+    border: 1px solid currentColor;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .safety-choice.safety-full { color: var(--color-good); }
+  .safety-choice.safety-partial { color: var(--color-warn); }
+  .safety-choice.safety-none { color: var(--color-danger); }
+  .safety-choice[aria-pressed="true"] { outline: 2px solid currentColor; outline-offset: 1px; }
+  .safety-choice:disabled { opacity: 0.45; cursor: default; }
+  .safety-confirm,
+  .safety-cancel { min-height: 32px; }
+  .safety-says,
+  .safety-note { margin: 0; color: var(--color-muted); font-size: 0.8rem; }
+  .safety-error { margin: 0; color: var(--color-danger); font-size: 0.85rem; }
 
   /* ============================================ locked-target cards (R71) --
    * EVE's target brackets: a round dial per locked target — the thing's picture

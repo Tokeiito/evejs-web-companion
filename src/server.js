@@ -9862,16 +9862,23 @@ app.post("/api/bridge/clones/ship/cancel", requireAuth, async (req, res, next) =
 
 // WB-CRIME (crimewatch) ------------------------------------------------------
 
-// SetSafetyLevel(level) — sets the character's weapons-safety flag (session-
-// scoped; safe-ish and reversible, but confirm-gated for consistency).
+/** crimewatch/const.py: shipSafetyLevelNone, shipSafetyLevelPartial and shipSafetyLevelFull. */
+const SHIP_SAFETY_LEVELS = new Set([0, 1, 2]);
+
+// SetSafetyLevel(level): the ship's safety level, set as the client's safety button sets it
+// (crimewatchSvc.SetSafetyLevel: the one level, on crimewatch's Moniker). The client asks nothing after: it
+// keeps the level it set, and on the game port so does the transport. What is no level is refused here, and
+// not sent as the fullest one: the page would go on believing it had set what it asked for.
 app.post("/api/bridge/safety/set-level", requireAuth, async (req, res, next) => {
   if (!requireWriteConfirmation(req, res, "This changes your weapons safety setting. Confirm to continue.")) {
     return;
   }
-  const level = Number((req.body || {}).level);
-  await dispatchBridgeWrite(req, res, next, "crimewatch", "SetSafetyLevel", [
-    Number.isFinite(level) ? level : 2,
-  ]);
+  const level = (req.body || {}).level;
+  if (!SHIP_SAFETY_LEVELS.has(level)) {
+    res.status(400).json({ ok: false, error: "INVALID_SAFETY_LEVEL", message: "A safety level is 0 (none), 1 (partial) or 2 (full)." });
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "crimewatch", "SetSafetyLevel", [level]);
 });
 
 // --- R96 Phase-4 top-level WRITES — corpRegistry batch A ---------------------

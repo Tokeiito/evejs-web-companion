@@ -255,6 +255,25 @@ test("R95 SetSafetyLevel forwards the level as the sole positional arg", async (
   assert.deepEqual(call.args, [1]);
 });
 
+test("each of the three safety levels is sent as it was asked for, and what is no level is refused and not sent", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  const sent = () => gateway.calls.topLevel.filter((call) => call.method === "SetSafetyLevel").map((call) => call.args);
+  // crimewatch/const.py: none, partial and full.
+  for (const level of [0, 1, 2]) {
+    const { response, payload } = await apiRequest(baseUrl, "/api/bridge/safety/set-level", { method: "POST", body: { level, confirm: true } });
+    assert.deepEqual([response.status, payload.ok, payload.applied], [200, true, true], String(level));
+  }
+  assert.deepEqual(sent(), [[0], [1], [2]]);
+  // Anything else is refused. It is not sent as the fullest level: the page would believe it had set what it asked for.
+  for (const body of [{}, { level: null }, { level: "1" }, { level: 3 }, { level: -1 }, { level: 1.5 }, { level: true }, { level: [1] }]) {
+    const { response, payload } = await apiRequest(baseUrl, "/api/bridge/safety/set-level", { method: "POST", body: { ...body, confirm: true } });
+    assert.deepEqual([response.status, payload.ok, payload.error], [400, false, "INVALID_SAFETY_LEVEL"], JSON.stringify(body));
+  }
+  assert.deepEqual(sent(), [[0], [1], [2]]);
+});
+
 test("R95 clone/name write forwards [cloneID, name] on jumpCloneSvc", async () => {
   const gateway = fakeGateway();
   const { baseUrl } = await startTestServer({ gateway });

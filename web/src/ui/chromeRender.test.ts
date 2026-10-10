@@ -34,6 +34,7 @@ const { render } = await import("svelte/server");
 const { createClientStore } = await import("../store/clientStore.ts");
 const HudBar = (await import("./HudBar.svelte")).default;
 const WorkspaceHeader = (await import("./WorkspaceHeader.svelte")).default;
+const SafetyMenu = (await import("./SafetyMenu.svelte")).default;
 const Neocom = (await import("./Neocom.svelte")).default;
 const PanelHost = (await import("./PanelHost.svelte")).default;
 const TargetBracket = (await import("./TargetBracket.svelte")).default;
@@ -841,18 +842,43 @@ function withCrimewatch(store: unknown, timers: unknown[], safetyLevel: number):
 const QUIET_TIMERS = [[100, null], [200, null], [400, null], [300, null], [500, null]];
 const badges = (body: string) => [...body.matchAll(/<span class="state-badge ([^"]*)"[^>]*>([\s\S]*?)<\/span>/g)].map((match) => [match[1], visibleText(match[2] ?? "").replace(/\s+/g, " ").trim()]);
 
-test("in space the header says the ship's safety level in a word", () => {
+/** The header's safety buttons: each one's classes, whether its selector is open, and its words. */
+const safetyButtons = (body: string) => [...body.matchAll(/<button type="button" class="state-badge ([^"]*)" aria-haspopup="true" aria-expanded="(true|false)"[^>]*>([\s\S]*?)<\/button>/g)]
+  .map((match) => [match[1], match[2], visibleText(match[3] ?? "").replace(/\s+/g, " ").trim()]);
+
+test("in space the header says the ship's safety level in a word, on the button that opens its selector", () => {
   for (const [level, word, tone] of [[2, "Full", "full"], [1, "Partial", "partial"], [0, "None", "none"]] as const) {
-    const said = badges(renderHeader(withCrimewatch(inSpaceStore(), QUIET_TIMERS, level), false)).filter(([classes]) => classes?.includes("safety"));
-    assert.deepEqual(said, [[`safety safety-${tone}`, `Safety ${word}`]], word);
+    const body = renderHeader(withCrimewatch(inSpaceStore(), QUIET_TIMERS, level), false);
+    assert.deepEqual(safetyButtons(body), [[`safety safety-${tone}`, "false", `Safety ${word}`]], word);
+    // The selector is shut until the button is pressed: none of its levels is on the page.
+    assert.doesNotMatch(body, /safety-menu|safety-choice/);
+    // What the button opens is a popover of the browser's, which it names by its id: without the two agreeing
+    // a press opens nothing. A popover is in the browser's top layer, over the page's floating windows, and one
+    // that is "auto" shuts at a press elsewhere.
+    const named = /popovertarget="([^"]+)"/.exec(body)?.[1] ?? "";
+    assert.notEqual(named, "", "the button names no popover");
+    assert.ok(body.includes(`<div id="${named}" popover="auto" class="safety-pop"`), `no popover of that name: ${named}`);
   }
+});
+
+test("in a system of the safest class of security the header says Full, whatever crimewatch said", () => {
+  // crimewatchSvc._UpdateSafetyLevel: held at Full there. The fixtures' system is Jita, whose security is below that class.
+  const held = withCrimewatch(inSpaceStore(), QUIET_TIMERS, 0);
+  (held as { apply(event: unknown): void }).apply({ type: "names/system-security", security: { [SYSTEM_ID]: 1 } });
+  assert.deepEqual(safetyButtons(renderHeader(held, false)), [["safety safety-full", "false", "Safety Full"]]);
+  const jita = withCrimewatch(inSpaceStore(), QUIET_TIMERS, 0);
+  (jita as { apply(event: unknown): void }).apply({ type: "names/system-security", security: { [SYSTEM_ID]: 0.9459, [SYSTEM_ID + 1]: 1 } });
+  assert.deepEqual(safetyButtons(renderHeader(jita, false)), [["safety safety-none", "false", "Safety None"]]);
 });
 
 test("⚠ docked there is no safety level to say, and before crimewatch is read nothing is said of it at all", () => {
   // The client's safety button is on the ship's HUD, which a docked pilot has none of.
   assert.deepEqual(badges(renderHeader(withCrimewatch(dockedStore(), QUIET_TIMERS, 2), true)).filter(([classes]) => /safety|crime/.test(classes ?? "")), []);
+  assert.deepEqual(safetyButtons(renderHeader(withCrimewatch(dockedStore(), QUIET_TIMERS, 2), true)), []);
+  assert.doesNotMatch(visibleText(renderHeader(withCrimewatch(dockedStore(), QUIET_TIMERS, 2), true)), /Safety/);
   // Not read yet is not "no safety": nothing is shown, in space or docked.
   assert.deepEqual(badges(renderHeader(inSpaceStore(), false)).filter(([classes]) => /safety|crime/.test(classes ?? "")), []);
+  assert.deepEqual(safetyButtons(renderHeader(inSpaceStore(), false)), []);
   assert.doesNotMatch(visibleText(renderHeader(inSpaceStore(), false)), /Safety/);
 });
 
@@ -878,4 +904,59 @@ test("a timer whose cause goes on is said by its word alone, and a timer is coun
   (store as { apply(event: unknown): void }).apply({ type: "flight/crimewatch", crimewatch: { states: decodeClientStates([[[102, filetimeIn(90_000)], [200, null], [400, null], [300, null], [500, null]], { type: "dict", entries: [] }, [aCrimeSet(), aCrimeSet()], 2] as never), clockOffsetMs: 60_000 } });
   const ahead = badges(renderHeader(store, false)).filter(([classes]) => classes?.includes("crime-timer"));
   assert.match(ahead[0]?.[1] ?? "", /^Weapons 0:(29|30)$/);
+});
+
+// ── the safety selector ──────────────────────────────────────────────────────
+//
+// shipSafetyButton.SafetyLevelSelector: None, Partial and Full, the level now marked. A lower level waits for a
+// second press on a button to confirm, and nothing else answers while it waits. Where the level is held at Full
+// the two others cannot be pressed. The selector here is rendered as it stands in each state; what a press does
+// is the chooser's, and is looked at in the browser.
+
+const { safetyChoices } = await import("../space/crimewatch.ts");
+function renderSafetyMenu(current: 0 | 1 | 2, more: { confirming?: 0 | 1 | 2 | null; setting?: boolean; lockedToFull?: boolean; error?: string } = {}): string {
+  const lockedToFull = more.lockedToFull === true;
+  return render(SafetyMenu as never, { props: {
+    choices: safetyChoices(current, lockedToFull), confirming: more.confirming ?? null, setting: more.setting === true, lockedToFull, error: more.error ?? "",
+    onpress() {}, onconfirm() {}, oncancel() {},
+  } } as never).body;
+}
+/** The selector's rows: each level's word, whether it is the level now, whether it can be pressed, and what is beside it. */
+const safetyRows = (body: string) => [...body.matchAll(/<div class="safety-row">([\s\S]*?)<\/div>/g)].map((match) => {
+  const row = match[1] ?? "";
+  const choice = /<button type="button" class="safety-choice safety-(\w+)" aria-pressed="(true|false)"( disabled)?[^>]*>([\s\S]*?)<\/button>/.exec(row);
+  const beside = [...row.matchAll(/<button type="button" class="safety-(confirm|cancel)"( disabled)?[^>]*>([\s\S]*?)<\/button>/g)].map((button) => [button[1], button[2] === undefined, visibleText(button[3] ?? "").trim()]);
+  const says = /<span class="safety-says">([\s\S]*?)<\/span>/.exec(row);
+  return { tone: choice?.[1], now: choice?.[2] === "true", pressable: choice?.[3] === undefined, word: visibleText(choice?.[4] ?? "").trim(), beside, says: says ? visibleText(says[1] ?? "").trim() : null };
+});
+
+test("the safety selector has None, Partial and Full, the level now marked, and each with what it lets the ship do", () => {
+  const rows = safetyRows(renderSafetyMenu(2));
+  assert.deepEqual(rows.map((row) => [row.word, row.tone, row.now, row.pressable, row.beside]), [["None", "none", false, true, []], ["Partial", "partial", false, true, []], ["Full", "full", true, true, []]]);
+  for (const row of rows) assert.match(row.says ?? "", /^The ship refuses /);
+  assert.deepEqual(safetyRows(renderSafetyMenu(0)).map((row) => row.now), [true, false, false]);
+  // Nothing is held, nothing went wrong: no note and no alert.
+  assert.doesNotMatch(renderSafetyMenu(2), /safety-note|role="alert"/);
+});
+
+test("a level waiting to be confirmed has the two buttons beside it, and no level can be pressed while it waits", () => {
+  const rows = safetyRows(renderSafetyMenu(2, { confirming: 0 }));
+  assert.deepEqual(rows.map((row) => [row.word, row.pressable, row.beside]), [
+    ["None", false, [["confirm", true, "Confirm None"], ["cancel", true, "Cancel"]]], ["Partial", false, []], ["Full", false, []],
+  ]);
+  // The two buttons stand where the level's own line was; the other levels keep theirs.
+  assert.deepEqual(rows.map((row) => row.says === null), [true, false, false]);
+  // While the server is asked, nothing can be pressed, and the button says so.
+  const asking = safetyRows(renderSafetyMenu(2, { confirming: 1, setting: true }));
+  assert.deepEqual(asking.map((row) => [row.pressable, row.beside]), [[false, []], [false, [["confirm", false, "Setting…"], ["cancel", false, "Cancel"]]], [false, []]]);
+  // A level set at once has no button to confirm it, and nothing can be pressed while it is asked either.
+  assert.deepEqual(safetyRows(renderSafetyMenu(0, { setting: true })).map((row) => [row.pressable, row.beside]), [[false, []], [false, []], [false, []]]);
+});
+
+test("where the level is held at Full only Full can be pressed, and the selector says why; a refusal is said as an alert", () => {
+  const held = renderSafetyMenu(2, { lockedToFull: true });
+  assert.deepEqual(safetyRows(held).map((row) => [row.word, row.pressable]), [["None", false], ["Partial", false], ["Full", true]]);
+  assert.match(visibleText(held), /holds the safety at Full/);
+  const refused = renderSafetyMenu(2, { error: "The session is changing place." });
+  assert.match(refused, /<p class="safety-error" role="alert">The session is changing place\.<\/p>/);
 });

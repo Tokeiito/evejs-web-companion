@@ -214,6 +214,7 @@ const CRIMEWATCH = "crimewatch";
 const CLIENT_STATES = "GetClientStates";
 const OWN_SECURITY_STATUS = "GetMySecurityStatus";
 /** Whether a call is one of crimewatchSvc's two kept reads, asked as the client asks it: with nothing. */
+const SET_SAFETY_LEVEL = "SetSafetyLevel";
 const keptOfCrimewatch = (service, method, form) => service === CRIMEWATCH && (method === CLIENT_STATES || method === OWN_SECURITY_STATUS) && form.args.length === 0 && form.kwargs === null;
 /**
  * The server's word that something the client states say has changed, each of which crimewatchSvc works into
@@ -1444,10 +1445,10 @@ function createGamePortPilots({
       ? monikerCall(entry, service, method, argumentsToWire(form.args), form.kwargs)
       : byName(entry.session, service, method, form))).finally(() => {
       forgetKeptAfter(entry, service, method);
-      // crimewatchSvc.SetSafetyLevel: the level is what the pilot set, done or refused, and the states kept do not say so.
-      if (service === CRIMEWATCH && method === "SetSafetyLevel") entry.clientStates.forget();
       if (mayChangeContents(service, method)) entry.listings.forget();
     });
+    // crimewatchSvc.SetSafetyLevel (343 to 345): once the server has taken the level, it is the level the client has.
+    if (service === CRIMEWATCH && method === SET_SAFETY_LEVEL) await safetyLevelSet(entry, form.args[0]);
     // What the client's own code names beside this call, which it does once the call is done (a refusal threw above).
     forgetNamed(entry, namedAfterCall(service, method, argumentsToWire(form.args), entry.session.attributes));
     // targetMgr._LockTarget: (flag, targets) with no flag set says the lock is made already, and the client adds the target itself.
@@ -1714,6 +1715,14 @@ function createGamePortPilots({
   }
 
   /** One of crimewatchSvc's two kept reads: what is kept, or asked for where nothing is. */
+  /**
+   * crimewatchSvc.SetSafetyLevel: the client sets the level at the server, keeps it as the level it has, and asks
+   * crimewatch nothing. The states kept say it in their fourth place, after the timers, the engagements and who is
+   * flagged (GetClientStates, 96); what is kept in another form says no level, and is left as it is.
+   */
+  const safetyLevelSet = (entry, level) => entry.clientStates.amend(CLIENT_STATES, (states) => (
+    Array.isArray(states) && states.length === 4 ? [states[0], states[1], states[2], level] : states));
+
   const crimewatchKept = (entry, method) => (method === CLIENT_STATES
     ? entry.clientStates.read(method, () => crimewatchAsked(entry, method))
     : securityStatusRead(entry));

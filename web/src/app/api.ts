@@ -34,7 +34,7 @@ import {
 } from "./transport.ts";
 import type { JsonValue } from "../bridge/wire.ts";
 import { decodeClientStates } from "../bridge/boundCrimewatch.ts";
-import type { CrimewatchReading } from "../space/crimewatch.ts";
+import type { CrimewatchReading, SafetyLevel } from "../space/crimewatch.ts";
 import { decodeLaunchDetails, type LaunchDetail } from "../bridge/piColonies.ts";
 import type { MinerTrainingRead, StageFittingSelection, TrainingCharacter, QueueReview, QueueApplyOutcome } from "../training/types.ts";
 import type {
@@ -838,6 +838,14 @@ export async function loadCrimewatch(options: ApiOptions = {}): Promise<Crimewat
     throw new Error("Crimewatch did not say what the pilot's timers are.");
   }
   return { states: decodeClientStates(data.clientStates), clockOffsetMs: serverNowMs - Date.now() };
+}
+
+/**
+ * Set the ship's safety level, as the client's safety button does. The server's answer says nothing the client
+ * reads: the level set is the level from then on.
+ */
+export async function setSafetyLevel(level: SafetyLevel, options: ApiOptions = {}): Promise<void> {
+  await postJson("/api/bridge/safety/set-level", { level, confirm: true }, options);
 }
 
 /**
