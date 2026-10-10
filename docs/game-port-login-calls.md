@@ -10,8 +10,8 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 
 | The game port | Kinds | Calls | Meaning |
 |---|---|---|---|
-| at login | 34 | 40 | The game port asks this at login too. |
-| by a feature | 9 | 15 | A feature of the web client asks this when it is wanted, in a form read against the client's. |
+| at login | 36 | 43 | The game port asks this at login too. |
+| by a feature | 7 | 12 | A feature of the web client asks this when it is wanted, in a form read against the client's. |
 | by a route | 10 | 11 | The BFF has a route that can ask this. It has not been read against the client's. |
 | never | 47 | 51 | Nothing of ours asks this. |
 
@@ -59,8 +59,8 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `skillMgr2.GetMySkillHandler` | 1 | at login |
 | `skillHandler.MachoResolveObject` | 1 | at login |
 | `skillHandler.MachoBindObject` | 1 | at login |
-| `crimewatch.MachoResolveObject` | 1 | by a feature |
-| `crimewatch.MachoBindObject` | 2 | by a feature |
+| `crimewatch.MachoResolveObject` | 1 | at login |
+| `crimewatch.MachoBindObject` | 2 | at login |
 | `corpRegistry.MachoResolveObject` | 1 | at login |
 | `corpRegistry.MachoBindObject` | 1 | at login |
 | `corpRegistry.GetAggressionSettings` (inferred) | 1 | at login |

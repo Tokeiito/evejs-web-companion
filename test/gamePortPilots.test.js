@@ -64,6 +64,8 @@ const sentLast = (session, count) => session.sent.slice(-(count + CHOSEN_LAST.le
 
 /** The node the stand-in's corporation registries live on, and whether a call was made on one of them. */
 const REGISTRY_NODE = 2;
+/** The node the stand-in's crimewatch objects live on. */
+const CRIMEWATCH_NODE = 3;
 const onRegistry = (call) => call.objectID.startsWith(`N=${REGISTRY_NODE}:`);
 
 /**
@@ -124,6 +126,19 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
      */
     async bind(service, params, call = null) {
       if (session.closed) throw sessionError("CONNECTION_CLOSED");
+      // Crimewatch's Monikers are made for one call each, and every choosing makes some. They are listed and
+      // counted apart (session.crimewatch, "N=3:<n>"), so that the binds and the objects of the rest are what a
+      // test caused. The call each carried is among `sent` with every other.
+      if (service === "crimewatch") {
+        session.crimewatchObjects += 1;
+        const objectID = `N=${CRIMEWATCH_NODE}:${session.crimewatchObjects}`;
+        const [method, args, kwargs] = call === null ? [null, null, null] : call;
+        session.crimewatch.push({ objectID, params, method, args, kwargs });
+        if (call === null) return { objectID, nodeID: CRIMEWATCH_NODE, result: null };
+        session.sent.push(method);
+        const answer = `bound:${method}` in answers ? answers[`bound:${method}`] : null;
+        return { objectID, nodeID: CRIMEWATCH_NODE, result: await (typeof answer === "function" ? answer(args, kwargs, objectID) : answer) };
+      }
       session.binds.push({ service, params });
       session.carried.push(call === null ? null : call[0]);
       const answer = answers[`bind:${service}`];
@@ -161,6 +176,9 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
     sent: [],
     objects: 0,
     registries: 0,
+    /** Crimewatch's Monikers, each with the call it carried: { objectID, params, method, args, kwargs }. */
+    crimewatch: [],
+    crimewatchObjects: 0,
     onNotification(listener) { listeners.notification.add(listener); return () => listeners.notification.delete(listener); },
     onSessionChange(listener) { listeners.sessionChange.add(listener); return () => listeners.sessionChange.delete(listener); },
     onClose(listener) { listeners.close.add(listener); return () => listeners.close.delete(listener); },
@@ -1255,6 +1273,9 @@ test("the transport keeps a tally of what it called and how each compared with t
     "invbroker.Add": { differs: 1 },
     "invbroker.GetInventory": { reshaped: 1 },
     "invbroker.List": { reshaped: 1 },
+    // Crimewatch's states and the pilot's security status, at the choosing.
+    "crimewatch.GetClientStates": { same: 1 },
+    "crimewatch.GetMySecurityStatus": { same: 1 },
     // The lobby's four at the choosing. This stand-in answers no guests, which is nothing to keep: asked again here.
     "officeManager.GetMyCorporationsOffices": { same: 1 },
     "stationSvc.GetStationItemBits": { same: 1 },
@@ -3737,7 +3758,7 @@ test("a Moniker binds once at a time: a call that finds it binding waits for the
 // it. Recorded on Tranquility at login: crimewatch bound twice and ship twice, each bind with its call and nothing
 // asked of any of the four objects after; and in this server's log of a retail client, crimewatch bound four times.
 
-const CRIME_PAIRS = { allowed: new Set(["crimewatch.GetClientStates", "crimewatch.GetMySecurityStatus", "crimewatch.SetSafetyLevel", "ship.LeaveShip", "ship.LaunchDrones", "ship.GetShipConfiguration", "ship.Undock", "corpRegistry.GetCorporation"]) };
+const CRIME_PAIRS = { allowed: new Set(["crimewatch.GetClientStates", "crimewatch.GetMySecurityStatus", "crimewatch.SetSafetyLevel", "crimewatch.GetSecurityStatusTransactions", "ship.LeaveShip", "ship.LaunchDrones", "ship.GetShipConfiguration", "ship.Undock", "corpRegistry.GetCorporation"]) };
 /** A pilot left in space, with a park that moves only when a test says so. */
 async function selectedInSpace(pilotOptions) {
   const built = build(IN_SPACE, { ...handTicked().options, ...pilotOptions });
@@ -3747,22 +3768,23 @@ async function selectedInSpace(pilotOptions) {
 
 test("every call of crimewatch is on a Moniker of its own: bound for the one call, carrying it, and never by name", async () => {
   const { pilots, session, handle } = await selected({ answers: { "bound:GetClientStates": "states", "bound:GetMySecurityStatus": 0.5 } }, CRIME_PAIRS);
+  const ofCrimewatch = () => session.crimewatch.map((made) => [made.objectID, made.method, made.args, made.kwargs]);
+  // The choosing asked the client's states and the pilot's security status, each on a Moniker of its own.
+  assert.deepEqual(ofCrimewatch(), [["N=3:1", "GetClientStates", [], null], ["N=3:2", "GetMySecurityStatus", [], null]]);
   session.calls.length = 0;
-  const states = await pilots.callMethod("crimewatch", "GetClientStates", [], null, FIELDS, handle);
-  const status = await pilots.callMethod("crimewatch", "GetMySecurityStatus", [], null, FIELDS, handle);
+  // A write, and a read the service does not keep: each on another Moniker, bound for the one call and carrying it.
   await pilots.callMethod("crimewatch", "SetSafetyLevel", [1], null, FIELDS, handle);
-  await pilots.callMethod("crimewatch", "GetClientStates", [], null, FIELDS, handle);
-  assert.deepEqual([states.result, status.result], ["states", 0.5]);
-  assert.deepEqual(session.binds, Array(4).fill({ service: "crimewatch", params: [STATION, 15] }));
-  assert.deepEqual(session.carried, ["GetClientStates", "GetMySecurityStatus", "SetSafetyLevel", "GetClientStates"]);
-  // Four objects, one call each, and nothing asked of the service by its name.
-  assert.deepEqual(session.boundCalls.map((call) => [call.objectID, call.method, call.args]), [["N=1:1", "GetClientStates", []], ["N=1:2", "GetMySecurityStatus", []], ["N=1:3", "SetSafetyLevel", [1]], ["N=1:4", "GetClientStates", []]]);
-  assert.deepEqual(session.calls, []);
-  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "crimewatch.GetClientStates").statuses, { reshaped: 2 });
+  await pilots.callMethod("crimewatch", "GetSecurityStatusTransactions", [], null, FIELDS, handle);
+  await pilots.callMethod("crimewatch", "GetSecurityStatusTransactions", [], null, FIELDS, handle);
+  // Five Monikers, each for where the pilot is, and one call on each.
+  assert.deepEqual(session.crimewatch.map((made) => made.params), Array(5).fill([STATION, 15]));
+  assert.deepEqual(ofCrimewatch().slice(2), [["N=3:3", "SetSafetyLevel", [1], null], ["N=3:4", "GetSecurityStatusTransactions", [], null], ["N=3:5", "GetSecurityStatusTransactions", [], null]]);
+  // Nothing was asked of the service by its name, and nothing of an object bound for anything else.
+  assert.deepEqual([session.calls, session.boundCalls.filter((call) => /Safety|Security|ClientStates/.test(call.method))], [[], []]);
+  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "crimewatch.GetSecurityStatusTransactions").statuses, { reshaped: 2 });
   // In space it is the solar system's.
   const flying = await selectedInSpace(CRIME_PAIRS);
-  await flying.pilots.callMethod("crimewatch", "GetClientStates", [], null, FIELDS, flying.handle);
-  assert.deepEqual([flying.session.binds.filter((bind) => bind.service === "crimewatch"), flying.session.carried.at(-1)], [[{ service: "crimewatch", params: [SYSTEM, 5] }], "GetClientStates"]);
+  assert.deepEqual(flying.session.crimewatch[0].params, [SYSTEM, 5]);
 });
 
 test("the ship's Moniker is made anew for each call while the pilot is docked in a station", async () => {
@@ -4538,6 +4560,7 @@ test("a change of corporation has the standings read again, and standings that c
 const HANDLE_PAIRS = { allowed: new Set([
   "fleetObjectHandler.MachoBindObject", "fleetObjectHandler.GetInitState", "fleetObjectHandler.GetWings",
   "agentMgr.MachoBindObject", "agentMgr.DoAction", "ship.MachoBindObject", "ship.Board", "crimewatch.MachoBindObject", "crimewatch.GetClientStates",
+  "crimewatch.GetMySecurityStatus", "crimewatch.GetSecurityStatusTransactions",
 ]) };
 
 test("a moniker the BFF asks for is made and not bound: its first call goes with the bind, and the calls after to the object", async () => {
@@ -4564,19 +4587,28 @@ test("a moniker the BFF asks for is made and not bound: its first call goes with
 });
 
 test("where the client makes a Moniker for each call, a moniker the BFF asks for is made anew for each too", async () => {
-  const { pilots, session, handle } = await selected({ answers: { "bound:Board": ([shipID]) => `aboard ${shipID}` } }, HANDLE_PAIRS);
+  const { pilots, session, handle } = await selected({ answers: { "bound:Board": ([shipID]) => `aboard ${shipID}`, "bound:GetClientStates": "states", "bound:GetMySecurityStatus": 0.25 } }, HANDLE_PAIRS);
   const ship = await pilots.bindObject("ship", "MachoBindObject", [[STATION, 15]], null, WHO, handle);
   const first = await pilots.callBoundMethod("ship", "Board", [SHIP + 1], null, WHO, handle, ship.boundHandle);
   const second = await pilots.callBoundMethod("ship", "Board", [SHIP + 2], null, WHO, handle, ship.boundHandle);
   // Each answer is its own call's, come back with the bind.
   assert.deepEqual([first.result, second.result], [`aboard ${SHIP + 1}`, `aboard ${SHIP + 2}`]);
   const crime = await pilots.bindObject("crimewatch", "MachoBindObject", [], null, WHO, handle);
-  await pilots.callBoundMethod("crimewatch", "GetClientStates", [], null, WHO, handle, crime.boundHandle);
-  await pilots.callBoundMethod("crimewatch", "GetClientStates", [], null, WHO, handle, crime.boundHandle);
-  // Docked in a station: a bind for each call of the ship's, and for each of crimewatch's anywhere.
-  assert.deepEqual(session.binds.map((bind) => bind.service), ["ship", "ship", "crimewatch", "crimewatch"]);
-  assert.deepEqual(session.carried, ["Board", "Board", "GetClientStates", "GetClientStates"]);
-  assert.deepEqual(session.boundCalls.map((call) => call.objectID), ["N=1:1", "N=1:2", "N=1:3", "N=1:4"]);
+  await pilots.callBoundMethod("crimewatch", "GetSecurityStatusTransactions", [], null, WHO, handle, crime.boundHandle);
+  await pilots.callBoundMethod("crimewatch", "GetSecurityStatusTransactions", [], null, WHO, handle, crime.boundHandle);
+  // Docked in a station: a bind for each call of the ship's, and for each of crimewatch's anywhere. (The
+  // stand-in lists crimewatch's apart: its first two are the choosing's.)
+  assert.deepEqual(session.binds.map((bind) => bind.service), ["ship", "ship"]);
+  assert.deepEqual(session.carried, ["Board", "Board"]);
+  assert.deepEqual(session.boundCalls.map((call) => call.objectID), ["N=1:1", "N=1:2"]);
+  assert.deepEqual(session.crimewatch.slice(2).map((made) => [made.objectID, made.method]), [["N=3:3", "GetSecurityStatusTransactions"], ["N=3:4", "GetSecurityStatusTransactions"]]);
+  // What crimewatch's service keeps is answered from there on a handle too: no Moniker is made for it.
+  const states = await pilots.callBoundMethod("crimewatch", "GetClientStates", [], null, WHO, handle, crime.boundHandle);
+  const status = await pilots.callBoundMethod("crimewatch", "GetMySecurityStatus", [], null, WHO, handle, crime.boundHandle);
+  assert.deepEqual([states.result, status.result, session.crimewatch.length], ["states", 0.25, 4]);
+  // With something beside it the read is no call of the client's, and a Moniker is made for it.
+  await pilots.callBoundMethod("crimewatch", "GetClientStates", [1], null, WHO, handle, crime.boundHandle);
+  assert.deepEqual([session.crimewatch.length, session.crimewatch.at(-1).args], [5, [1]]);
 });
 
 test("a moniker whose bind finds no object says so at the call that made it bind, and the next call binds again", async () => {
@@ -6688,4 +6720,124 @@ test("a pilot that docks has the station's item and its guests asked, and not wh
   session.change({ shipid: [SHIP, SHIP + 1] });
   await settled();
   assert.equal(lobbyCalls(session).length, 6);
+});
+
+// ── crimewatch, as the client's crimewatch service asks it ───────────────────
+//
+// crimewatchSvc.py. ProcessSessionChange (94): with 'locationid' or 'charid' in the change, GetClientStates, for
+// the combat timers, the engagements and who is flagged. OnSessionChanged (116): in space, with 'solarsystemid'
+// or 'shipid' in the change, GetClientStates again, for the safety level. GetMySecurityStatus (590): asked while
+// there is none, and from then on what OnSecurityStatusUpdate says. Each on a Moniker made for the call. The
+// server's log of a retail client logging in docked has the states once and the status once; of one logging in
+// in space, the states twice and the status once.
+
+/** Crimewatch that answers its client states with the count of times it was asked, and a security status. */
+function crimewatchAnswers(asked = { states: 0, status: 0 }) {
+  return { asked, answers: {
+    "bound:GetClientStates": () => { asked.states += 1; return { type: "list", items: ["states", asked.states] }; },
+    "bound:GetMySecurityStatus": () => { asked.status += 1; return 0.5; },
+  } };
+}
+const carriedByCrimewatch = (session) => session.crimewatch.map((made) => made.method);
+
+test("a character chosen in a station has crimewatch asked its states once and its security status once, and both are kept", async () => {
+  const { asked, answers } = crimewatchAnswers();
+  const { pilots, session, handle } = await selected({ answers }, CRIME_PAIRS);
+  assert.deepEqual([carriedByCrimewatch(session), asked], [["GetClientStates", "GetMySecurityStatus"], { states: 1, status: 1 }]);
+  assert.deepEqual([ledgerOf(pilots, "crimewatch.GetClientStates")[0], ledgerOf(pilots, "crimewatch.GetMySecurityStatus")[0]], [{ same: 1 }, { same: 1 }]);
+  // What is read of either after is what was answered then, with nothing asked and nothing bound.
+  const states = async () => (await pilots.callMethod("crimewatch", "GetClientStates", [], null, FIELDS, handle)).result.items[1];
+  const status = async () => (await pilots.callMethod("crimewatch", "GetMySecurityStatus", [], null, FIELDS, handle)).result;
+  assert.deepEqual([await states(), await states(), await status(), await status(), asked, carriedByCrimewatch(session).length], [1, 1, 0.5, 0.5, { states: 1, status: 1 }, 2]);
+});
+
+test("a character chosen in space has crimewatch asked its states twice, for its timers and for its safety level", async () => {
+  const { asked, answers } = crimewatchAnswers();
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, ...answers } }, { ...handTicked().options, ...CRIME_PAIRS });
+  const outcome = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  assert.deepEqual([carriedByCrimewatch(built.session), asked], [["GetClientStates", "GetClientStates", "GetMySecurityStatus"], { states: 2, status: 1 }]);
+  // The later of the two is what is kept.
+  assert.equal((await built.pilots.callMethod("crimewatch", "GetClientStates", [], null, FIELDS, outcome.bridgeSessionID)).result.items[1], 2);
+});
+
+test("crimewatch's states are asked again as the client asks: at a change of place, and in space at a change of system or ship", async () => {
+  const { asked, answers } = crimewatchAnswers();
+  const { session } = await selected({ answers }, CRIME_PAIRS);
+  const after = async (changes, attributes = {}) => {
+    Object.assign(session.attributes, attributes);
+    session.change(changes);
+    await settled();
+    await settled();
+    return asked.states;
+  };
+  // Docked: another corporation or another ship is no change of place.
+  assert.equal(await after({ corpid: [1000044, 98000001] }, { corpid: 98000001 }), 1);
+  assert.equal(await after({ shipid: [SHIP, SHIP + 1] }, { shipid: SHIP + 1 }), 1);
+  // Undocking: the place changes (ProcessSessionChange), and the pilot is in space in another system than none (OnSessionChanged).
+  assert.equal(await after({ stationid: [STATION, null], locationid: [STATION, SYSTEM], solarsystemid: [null, SYSTEM] }, { stationid: null, locationid: SYSTEM, solarsystemid: SYSTEM }), 3);
+  assert.deepEqual(session.crimewatch.at(-1).params, [SYSTEM, 5]);
+  // In space, another ship: once, for the safety level.
+  assert.equal(await after({ shipid: [SHIP + 1, SHIP + 2] }, { shipid: SHIP + 2 }), 4);
+  // Docking: the place changes, and the pilot is not in space.
+  assert.equal(await after({ stationid: [null, STATION], locationid: [SYSTEM, STATION], solarsystemid: [SYSTEM, null] }, { stationid: STATION, locationid: STATION, solarsystemid: null }), 5);
+  // The security status was asked once, at the choosing, and never again.
+  assert.equal(asked.status, 1);
+});
+
+test("the states kept are let go at the server's word of a timer, a flag or an engagement, and at the pilot's own safety level", async () => {
+  const { asked, answers } = crimewatchAnswers();
+  const { pilots, session, handle } = await selected({ answers: { ...answers, "bound:SetSafetyLevel": () => 1 } }, CRIME_PAIRS);
+  const states = async () => (await pilots.callMethod("crimewatch", "GetClientStates", [], null, FIELDS, handle)).result.items[1];
+  let expected = 1;
+  for (const notice of ["OnWeaponsTimerUpdate", "OnPvpTimerUpdate", "OnNpcTimerUpdate", "OnCriminalTimerUpdate", "OnDisapprovalTimerUpdate", "OnSystemCriminalFlagUpdates", "OnSystemDisapprovalFlagUpdates",
+    "OnCrimewatchEngagementCreated", "OnCrimewatchEngagementEnded", "OnCrimewatchEngagementStartTimeout", "OnCrimewatchEngagementStopTimeout"]) {
+    session.notify(notice, [100, null]);
+    expected += 1;
+    assert.deepEqual([await states(), await states(), asked.states], [expected, expected, expected], notice);
+  }
+  // Another notice leaves them kept.
+  session.notify("OnSecurityStatusUpdate", [1.5]);
+  session.notify("OnItemChange", [1, 2]);
+  assert.deepEqual([await states(), asked.states], [expected, expected]);
+  // crimewatchSvc.SetSafetyLevel: the level is what the pilot set, which the states kept do not say.
+  await pilots.callMethod("crimewatch", "SetSafetyLevel", [1], null, FIELDS, handle);
+  assert.deepEqual([await states(), await states(), asked.states], [expected + 1, expected + 1, expected + 1]);
+  // With something beside it the read is no call of the client's: sent each time, on a Moniker of its own.
+  await pilots.callMethod("crimewatch", "GetClientStates", [1], null, FIELDS, handle);
+  await pilots.callMethod("crimewatch", "GetClientStates", [1], null, FIELDS, handle);
+  assert.equal(asked.states, expected + 3);
+  // And so with a keyword beside it; what is kept is left as it is.
+  await pilots.callMethod("crimewatch", "GetClientStates", [], { all: true }, FIELDS, handle);
+  await pilots.callMethod("crimewatch", "GetClientStates", [], { all: true }, FIELDS, handle);
+  assert.deepEqual([asked.states, await states(), asked.states], [expected + 5, expected + 1, expected + 5]);
+});
+
+test("the security status is what the server last said of it, and is asked for where none is had", async () => {
+  const { asked, answers } = crimewatchAnswers();
+  const { pilots, session, handle } = await selected({ answers }, CRIME_PAIRS);
+  const status = async () => (await pilots.callMethod("crimewatch", "GetMySecurityStatus", [], null, FIELDS, handle)).result;
+  // crimewatchSvc.OnSecurityStatusUpdate(newSecurityStatus): what it says is the status from then on.
+  session.notify("OnSecurityStatusUpdate", [-1.25]);
+  assert.deepEqual([await status(), await status(), asked.status], [-1.25, -1.25, 1]);
+  session.notify("OnSecurityStatusUpdate", [0]);
+  assert.deepEqual([await status(), asked.status], [0, 1]);
+  // A notice that says no number leaves it as it was.
+  session.notify("OnSecurityStatusUpdate", []);
+  session.notify("OnSecurityStatusUpdate", ["x"]);
+  session.notify("OnSecurityStatusUpdate", [null, 2.5]);
+  assert.deepEqual([await status(), asked.status], [0, 1]);
+  // A status that could not be read at the choosing is asked for when it is wanted, and then kept.
+  let refuse = true;
+  const other = { status: 0 };
+  const later = await selected({ answers: { "bound:GetMySecurityStatus": () => { other.status += 1; if (refuse) throw refusedBy("NotNow"); return 4.5; } } }, CRIME_PAIRS);
+  refuse = false;
+  const read = async () => (await later.pilots.callMethod("crimewatch", "GetMySecurityStatus", [], null, FIELDS, later.handle)).result;
+  assert.deepEqual([await read(), await read(), other.status], [4.5, 4.5, 2]);
+});
+
+test("crimewatch's reads at a choosing fail each for itself, and the choosing does not fail with them", async () => {
+  const refusing = await selected({ answers: { "bound:GetClientStates": () => { throw refusedBy("NotNow"); }, "bound:GetMySecurityStatus": 0.5 } }, CRIME_PAIRS);
+  assert.deepEqual([typeof refusing.outcome.bridgeSessionID, carriedByCrimewatch(refusing.session)], ["string", ["GetClientStates", "GetMySecurityStatus"]]);
+  const other = await selected({ answers: { "bound:GetClientStates": "states", "bound:GetMySecurityStatus": () => { throw refusedBy("NotNow"); } } }, CRIME_PAIRS);
+  assert.deepEqual([typeof other.outcome.bridgeSessionID, carriedByCrimewatch(other.session)], ["string", ["GetClientStates", "GetMySecurityStatus"]]);
 });

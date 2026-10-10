@@ -209,6 +209,22 @@ const changesAColony = (service, method) => (service === PLANET_MGR && COLONY_WR
  * it, which is no call of the client's and is asked as it came.
  */
 const planetKeptAs = (method, form) => (form.args.length > 0 ? null : method === "GetPlanetsForChar" ? "colonies" : method === "GetMyLaunchesDetails" ? "launches" : null);
+const CRIMEWATCH = "crimewatch";
+/** crimewatchSvc's two reads that it keeps: its client states (the timers, the engagements, who is flagged, the safety level), and the pilot's own security status. */
+const CLIENT_STATES = "GetClientStates";
+const OWN_SECURITY_STATUS = "GetMySecurityStatus";
+/** Whether a call is one of crimewatchSvc's two kept reads, asked as the client asks it: with nothing. */
+const keptOfCrimewatch = (service, method, form) => service === CRIMEWATCH && (method === CLIENT_STATES || method === OWN_SECURITY_STATUS) && form.args.length === 0 && form.kwargs === null;
+/**
+ * The server's word that something the client states say has changed, each of which crimewatchSvc works into
+ * what it holds (crimewatchSvc.py 222 to 288). Here the states kept are let go at any of them, and asked for when
+ * they are next wanted.
+ */
+const CLIENT_STATE_NOTICES = new Set([
+  "OnWeaponsTimerUpdate", "OnPvpTimerUpdate", "OnNpcTimerUpdate", "OnCriminalTimerUpdate", "OnDisapprovalTimerUpdate",
+  "OnSystemCriminalFlagUpdates", "OnSystemDisapprovalFlagUpdates",
+  "OnCrimewatchEngagementCreated", "OnCrimewatchEngagementEnded", "OnCrimewatchEngagementStartTimeout", "OnCrimewatchEngagementStopTimeout",
+]);
 const OFFICE_MANAGER = "officeManager";
 /**
  * The read of the station's own office object that the client's office manager keeps (officeManager.offices,
@@ -1105,6 +1121,9 @@ function createGamePortPilots({
       station: createPilotStation(),
       /** The corporations with offices where the pilot is docked, as the station's office object answered (STATION_OFFICES). */
       stationOffices: createKeptReads(),
+      /** crimewatchSvc's client states as last answered (CLIENT_STATES), and the pilot's security status (mySecurityStatus): undefined while none is had. */
+      clientStates: createKeptReads(),
+      securityStatus: undefined,
       /** Whether the office's item was primed on the Moniker for where the pilot is docked (PRIME_OFFICE): its answer, kept while docked there. */
       officePrimed: createKeptReads(),
       stationWork: Promise.resolve(),
@@ -1146,6 +1165,10 @@ function createGamePortPilots({
       entry.targets.feed(notification);
       // station/base.py: a pilot arrived in the station, or left it.
       entry.station.feed(notification);
+      // crimewatchSvc: a timer, a flag or an engagement changed, and the states kept do not say so.
+      if (CLIENT_STATE_NOTICES.has(notification.method)) entry.clientStates.forget();
+      // crimewatchSvc.OnSecurityStatusUpdate(newSecurityStatus): the status is what the server says.
+      if (notification.method === "OnSecurityStatusUpdate" && typeof notification.args?.[0] === "number") entry.securityStatus = notification.args[0];
       // officeManager.OnOfficeRentalChange (71): an office rented or given up, whoever's, and the station's are not as kept.
       if (notification.method === "OnOfficeRentalChange") entry.stationOffices.forget();
       // invCache.OnItemChange: an item changed, and what a container lists may not be so any more.
@@ -1172,6 +1195,9 @@ function createGamePortPilots({
       if ("shipid" in changes) entry.monikers.delete("ship");
       // station/base.py OnSessionChanged and ProcessSessionChange: out of a station, its guests and its item are let go.
       if ("stationid" in changes) entry.station.left();
+      // crimewatchSvc.ProcessSessionChange and OnSessionChanged: the states asked for at a change of place, and
+      // in space at a change of system or ship. (The choosing of the character asks them itself.)
+      if (sessions.has(entry.handle)) clientStatesAtAChange(entry, changes);
       // station/base.py: arrived in a station, the lobby asks for the station's item and its guests. (The choosing
       // of the character asks them itself.)
       if ("stationid" in changes && sessions.has(entry.handle)) lobbyRead(entry);
@@ -1259,6 +1285,10 @@ function createGamePortPilots({
       await primeSkills(entry);
       // journal._UpdateMissionDataFull: a character chosen has its agents' journal read, for the missions it is on.
       await journalUpToDate(entry).catch(() => {});
+      // crimewatchSvc: the client's states, as a character on the session and a system under it each ask them; and
+      // the pilot's own security status, which the client asks for once.
+      await clientStatesAtAChange(entry, { charid: [null, characterID], ...(attribute(entry, "solarsystemid") === null ? {} : { solarsystemid: [null, attribute(entry, "solarsystemid")] }) });
+      await securityStatusRead(entry).catch(() => {});
       // crimewatchSvc and bco_members: the corporation's registry is bound, and asked its settings and its members' names.
       await corporationRead(entry);
       // addressbook.GetContacts: the pilot's contacts, its corporation's, and who of the watched is online.
@@ -1371,6 +1401,12 @@ function createGamePortPilots({
       const kept = await run(entry, service, method, () => stationRead(entry, service, method, form));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
+    // crimewatchSvc's client states and the pilot's security status are that service's to answer, where they are
+    // asked as the client asks them: with nothing.
+    if (keptOfCrimewatch(service, method, form)) {
+      const kept = await run(entry, service, method, () => crimewatchKept(entry, method));
+      return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
+    }
     // The corporations with offices where a pilot is docked are the client's office manager's to answer, where
     // they are asked as the client asks them: of the station's own object, with nothing.
     if (service === OFFICE_MANAGER && method === STATION_OFFICES && form.moniker && form.args.length === 0 && form.kwargs === null) {
@@ -1408,6 +1444,8 @@ function createGamePortPilots({
       ? monikerCall(entry, service, method, argumentsToWire(form.args), form.kwargs)
       : byName(entry.session, service, method, form))).finally(() => {
       forgetKeptAfter(entry, service, method);
+      // crimewatchSvc.SetSafetyLevel: the level is what the pilot set, done or refused, and the states kept do not say so.
+      if (service === CRIMEWATCH && method === "SetSafetyLevel") entry.clientStates.forget();
       if (mayChangeContents(service, method)) entry.listings.forget();
     });
     // What the client's own code names beside this call, which it does once the call is done (a refusal threw above).
@@ -1650,6 +1688,40 @@ function createGamePortPilots({
     entry.planetReads.set(keptAs, record);
     record.answer.catch(() => { if (entry.planetReads.get(keptAs) === record) entry.planetReads.delete(keptAs); });
     return record.answer;
+  }
+
+  /** One of crimewatchSvc's own askings, with nothing, on a Moniker made for the call (eveMoniker.CharGetCrimewatchLocation()): noted as it is sent. */
+  function crimewatchAsked(entry, method) {
+    ledger.note(CRIMEWATCH, method, shape(CRIMEWATCH, method, [], null, contextFor(entry)));
+    return monikerCall(entry, CRIMEWATCH, method, [], null);
+  }
+
+  /**
+   * crimewatchSvc.ProcessSessionChange (94) and OnSessionChanged (116): the client's states asked for where the
+   * change has the place or the character in it, and again where the pilot is in space and the change has the
+   * system or the ship in it. Each asking's answer is what is kept from then on. Each fails for itself.
+   */
+  async function clientStatesAtAChange(entry, changes) {
+    const asked = () => entry.clientStates.read(CLIENT_STATES, () => crimewatchAsked(entry, CLIENT_STATES)).catch(() => {});
+    if ("locationid" in changes || "charid" in changes) {
+      entry.clientStates.forget();
+      await asked();
+    }
+    if (attribute(entry, "solarsystemid") !== null && ("solarsystemid" in changes || "shipid" in changes)) {
+      entry.clientStates.forget();
+      await asked();
+    }
+  }
+
+  /** One of crimewatchSvc's two kept reads: what is kept, or asked for where nothing is. */
+  const crimewatchKept = (entry, method) => (method === CLIENT_STATES
+    ? entry.clientStates.read(method, () => crimewatchAsked(entry, method))
+    : securityStatusRead(entry));
+
+  /** crimewatchSvc.GetMySecurityStatus (590): asked for while there is none, and kept. */
+  async function securityStatusRead(entry) {
+    if (entry.securityStatus === undefined) entry.securityStatus = await crimewatchAsked(entry, OWN_SECURITY_STATUS);
+    return entry.securityStatus;
   }
 
   /**
@@ -2909,6 +2981,11 @@ function createGamePortPilots({
     if (service === "dogmaIM" && method === "QueryAttributeValue") {
       const held = attributeHeld(entry, form.args);
       if (held !== undefined) return { service, method, result: held, notifications: drain(entry) };
+    }
+    // What crimewatch's service keeps is its to answer on a Moniker's handle too.
+    if (keptOfCrimewatch(service, method, form)) {
+      const kept = await run(entry, service, method, () => crimewatchKept(entry, method));
+      return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
     /** The call itself, noted as it is sent. */
     const sent = async () => {
