@@ -440,6 +440,20 @@ Take these defaults, and list each under "For the operator" in the log so they c
   frames before choosing a pilot, and read `performance.getEntriesByType("resource")` for
   what went over HTTP. The first run of a thing in the browser is where its faults are: the
   socket's tests all passed while ten sockets stood open on the page.
+- **A route moved into the page (Phase 6b), as the wallet was:** find what the client's own
+  service asks and keeps (the recordings, then its code); write that asking once under
+  `web/src/bridge/`, each call by `api.bridgeAsk(callOptions)`; have the flow use it and
+  leave the route standing; answer the flow's tests call by call from the same things
+  described; and set the route beside the page's own asking, live, on both transports, for
+  pilots of more than one corporation (`wallet-compare.mjs <repo> <scratch> <bff> <account>
+  <characterID>` is the pattern: it imports the page's TypeScript and asks through
+  `/api/bridge/call`). Reading the client for a route is where the route's own faults show:
+  the wallet's divisions had the hangar's names.
+- **Through the gateway a cached call's answer carries the time it was made.** Two askings of
+  `account.GetEntryTypes` differ in one leaf, call against call. A side-by-side that finds
+  one such difference has found the clock.
+- **The hangar's row for a pilot is where it was last seen**, and a store put back under it
+  does not tell it. Log the pilot in to see where it is, or ask its flight status.
 - **A thing kept "once" is to be tried with several asking at once.** A mark set when the
   answer is in lets everyone through who comes while the asking is out. The page asks
   thirty things together at a login now; a test of a once-only asking makes three or five

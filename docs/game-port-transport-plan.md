@@ -745,7 +745,16 @@ as over HTTP, row for row. The socket is now what the page uses unless a browser
 otherwise (`evejs-web-transport:v1` = `http` in its local storage is the way back).
 
 Not yet: a pilot in the background has no pushes either way; the routes' HTTP carriage
-goes last, and is the operator's to see first. Of the phase's "done when", "no
+goes last, and is the operator's to see first.
+
+**6b begun, 2026-10-10** (`2764849`): the first feature's orchestration is out of its
+route. The page's wallet asked `GET /api/bridge/wallet`, and the route made five calls of
+the server; the page now makes those calls itself, by the generic call, from TypeScript
+the hosted bots share (`web/src/bridge/walletReads.ts`), as the client's wallet and
+account services make them. The route stands and nothing of the page's asks it. Set side
+by side on both transports, the route and the page's own asking answer the same. One
+route of the bridge's is done this way; the count of those still asked by the page is
+6b's measure. Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.
 Of 6a's four things, three are carried by the socket or in process, each with a way back
 (the routes' operations, the pushes, the hosted bots), and the cap is lifted for what is
