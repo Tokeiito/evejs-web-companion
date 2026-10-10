@@ -44,7 +44,7 @@ import { describeRefusal } from "../bridge/refusals.ts";
  * still in this tick's snapshot it is `unreachable` (close the distance); if it
  * has left the snapshot too, it is `gone`.
  */
-export type RefusalKind = "refused" | "unreachable" | "gone" | "no-room";
+export type RefusalKind = "refused" | "unreachable" | "gone" | "no-room" | "no-funds";
 
 /**
  * The marker a caller puts in front of a "nothing I am carrying will fit"
@@ -156,6 +156,11 @@ export function classifyRefusal(raw: string, stillOnGrid: boolean | null): Refus
   // reads as a bot that has hung.
   if (text.includes(NO_ROOM_CODE)) {
     return "no-room";
+  }
+  // A PROPERTY OF THE WALLET, the same way: the next launchpad's tax is paid
+  // from the same balance that just could not pay this one.
+  if (/NotEnoughMoney/.test(text)) {
+    return "no-funds";
   }
   if (!/FakeItemNotFound/i.test(text)) {
     return "refused";
@@ -323,4 +328,17 @@ export function shipHasNoRoom(
   }
   const prefix = `${stepID ?? NO_STEP_ID}:${actionKind}:`;
   return records.some((record) => record.kind === "no-room" && record.key.startsWith(prefix));
+}
+
+/** Whether this step's `actionKind` was refused because the wallet could not pay. */
+export function pilotCannotPay(
+  records: readonly RefusalRecord[] | null | undefined,
+  stepID: string | null,
+  actionKind: string,
+): boolean {
+  if (!records) {
+    return false;
+  }
+  const prefix = `${stepID ?? NO_STEP_ID}:${actionKind}:`;
+  return records.some((record) => record.kind === "no-funds" && record.key.startsWith(prefix));
 }

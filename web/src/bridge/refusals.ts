@@ -211,6 +211,9 @@ const SERVER_REFUSALS: Readonly<Record<string, string>> = Object.freeze({
   // beyonce `_throwWarpFailureUserError` — WARP_DISRUPTED_BY_BUBBLE.
   WarpDisrupted:
     "Something is holding your ship in place, so it cannot warp.",
+  // The wallet could not cover a charge, e.g. a customs office's export tax.
+  NotEnoughMoney:
+    "You do not have enough ISK to pay for that.",
 });
 
 /**

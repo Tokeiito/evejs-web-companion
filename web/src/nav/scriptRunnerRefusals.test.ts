@@ -666,7 +666,7 @@ test("collect-customs: a launchpad the server refuses is tried five times and le
     }),
     (action) => {
       if (action.kind === "exportCustoms") {
-        if (action.pinID === 501) return "CALL_REFUSED: NotEnoughMoney";
+        if (action.pinID === 501) return "CALL_REFUSED: CannotLaunchCommoditiesNotFound";
         world.office += Object.values(action.commodities).reduce((total, quantity) => total + quantity, 0);
         world.pads.set(action.pinID, []);
       }
@@ -683,4 +683,34 @@ test("collect-customs: a launchpad the server refuses is tried five times and le
   assert.equal(issued.filter((action) => action.kind === "collectCustoms").length, 1);
   assert.deepEqual([world.office, world.pads.get(501)!.length, world.pads.get(502)!.length], [0, 1, 0]);
   assert.notEqual(runner.getStatus(), "error");
+});
+
+test("collect-customs: a launchpad the wallet cannot pay the tax on stops the run at once, saying why", async () => {
+  const { state, registry } = withMarker();
+  const world = { pads: new Map<number, [number, number][]>([[501, [[2390, 24260]]], [502, [[2073, 50]]]]) };
+  // Home is reached at once, so the stop lands as a pause carrying its reason.
+  const arrived: HomeTravelDecider = () => ({
+    action: { kind: "wait" }, why: "Stopped.", phase: "Heading home", armed: false, outcome: { kind: "done" }, nextMem: {},
+  });
+  const { issued, run, runner } = rig(
+    [customsStep, marker],
+    () => calm({
+      snapshot: space([customsOffice()]),
+      customsOffices: [{ officeID: CUSTOMS_OFFICE, stacks: 0, units: 0 }],
+      colonies: [{ planetID: CUSTOMS_PLANET, planetName: null, extractors: [], pins: [...world.pads].map(([pinID, contents]) => ({
+        pinID, kind: "launchpad" as const, usedM3: null, capacityM3: null, lastLaunchAtMs: null,
+        contents: contents.map(([typeID, quantity]) => ({ typeID, quantity })),
+      })) }],
+    }),
+    (action) => (action.kind === "exportCustoms" ? "CALL_REFUSED: NotEnoughMoney" : null),
+    registry,
+    [],
+    arrived,
+  );
+  await run(200);
+  assert.equal(state.reached, false, "the program does not move on");
+  // One refusal is the answer: neither launchpad is asked again.
+  assert.equal(issued.filter((action) => action.kind === "exportCustoms").length, 1);
+  assert.equal(runner.getStatus(), "paused");
+  assert.match(runner.snapshot().pauseReason ?? "", /not have enough ISK to pay the customs office's export tax/);
 });

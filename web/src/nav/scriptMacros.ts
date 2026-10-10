@@ -61,7 +61,7 @@ import { AGENT_BUTTON } from "../bridge/agents.ts";
 import { FREIGHT_BAYS, planLootTransfers, preferredBays } from "../bridge/bayRouting.ts";
 import { preferredResources } from "./resourcePriority.ts";
 import { holdFreeM3 } from "../bridge/holdFit.ts";
-import { isUnreachable, NO_STEP_ID, refusalFor, refusalTargets, shipHasNoRoom, shouldSetAside } from "./refusalLedger.ts";
+import { isUnreachable, NO_STEP_ID, refusalFor, refusalTargets, pilotCannotPay, shipHasNoRoom, shouldSetAside } from "./refusalLedger.ts";
 import { movableRows, pickedRows, type KeepRule } from "../bridge/keepAboard.ts";
 import { FALLBACK_CONTROL_RANGE_M } from "./kiteBand.ts";
 import {
@@ -5881,6 +5881,15 @@ const collectCustoms: MacroDecider = (step, obs, mem) => {
   }
   if (shipHasNoRoom(obs.refusals, step.id, "collectCustoms")) {
     return tick(WAIT, "Nothing aboard will take any more, so it is time to unload.", phase, { kind: "done" });
+  }
+  // ⚠ THE TAX IS PAID FROM THE PILOT'S WALLET, AND ONE REFUSAL IS THE ANSWER.
+  // Every launchpad's export is charged from the same balance, so asking again,
+  // or at the next office, only repeats the refusal. The run stops and says so.
+  if (pilotCannotPay(obs.refusals, step.id, "exportCustoms")) {
+    return tick(WAIT, "Not enough ISK to pay the customs office's export tax.", phase, {
+      kind: "blocked",
+      reason: "This pilot does not have enough ISK to pay the customs office's export tax. Add ISK to its wallet and start the haul again.",
+    });
   }
   const offices = customsOfficesOnGrid(snapshot);
   if (offices.length === 0) {
