@@ -2,6 +2,7 @@
 
 const { WebSocket } = require("ws");
 const { createXmppChatSession } = require("./evejsXmppChat");
+const { createGatewayLedger } = require("./gatewayLedger");
 
 const DEFAULT_GATEWAY_BASE_URL = "http://127.0.0.1:26002/_evejs-web/v1";
 const DEFAULT_TIMEOUT_MS = 1500;
@@ -779,32 +780,41 @@ function openSessionEventStream(options = {}) {
   };
 }
 
+/**
+ * A tally of every call made through this client: what this process really asks the web gateway, by function
+ * and, for a call or a bind, by pair (src/gatewayLedger.js). The plan's cutover is read off it.
+ */
+const gatewayLedger = createGatewayLedger();
+
 module.exports = {
   EveGatewayError,
-  openSessionEventStream,
-  // Bridge surface (the live path): the retail call tuple, bound objects, the
-  // persistent session, flight status, and chat.
-  callMethod,
-  bindObject,
-  callBoundMethod,
-  selectCharacter,
-  releaseBridgeSession,
-  readFlightStatus,
-  readScannerState,
-  readSpaceSnapshot,
-  createChatSession,
-  // The four v1 reads the auth/health surface still needs (goal R9b): account
-  // lookup + the character list for login, the one-row snapshot the
-  // /api/bridge/select ownership check reads, and gateway status for
-  // /api/health. Every other v1 read helper went with the legacy routes.
-  getAccount,
-  createAccount,
-  listCharacters,
-  getSnapshot,
-  getStatus,
-  getGatewayHealth,
-  // R28: the skill sheet + queue, resolved server-side (see getSkills above).
-  getSkills,
-  getCharacterStatus,
-  saveOfflineSkillQueue,
+  gatewayLedger,
+  ...gatewayLedger.counted({
+    openSessionEventStream,
+    // Bridge surface (the live path): the retail call tuple, bound objects, the
+    // persistent session, flight status, and chat.
+    callMethod,
+    bindObject,
+    callBoundMethod,
+    selectCharacter,
+    releaseBridgeSession,
+    readFlightStatus,
+    readScannerState,
+    readSpaceSnapshot,
+    createChatSession,
+    // The four v1 reads the auth/health surface still needs (goal R9b): account
+    // lookup + the character list for login, the one-row snapshot the
+    // /api/bridge/select ownership check reads, and gateway status for
+    // /api/health. Every other v1 read helper went with the legacy routes.
+    getAccount,
+    createAccount,
+    listCharacters,
+    getSnapshot,
+    getStatus,
+    getGatewayHealth,
+    // R28: the skill sheet + queue, resolved server-side (see getSkills above).
+    getSkills,
+    getCharacterStatus,
+    saveOfflineSkillQueue,
+  }),
 };

@@ -161,6 +161,10 @@ const mutationFence = createPilotMutationFence({ heldSessions: { values: () => b
 // gateway client: a test gets one only by handing one in. A value there that
 // is not a transport stops the server starting.
 const accountGateway = options.eveGatewayClient || eveGatewayClient;
+// What this BFF asks the web gateway is tallied in the gateway client itself (src/gatewayLedger.js): the
+// measure of the plan's cutover. A test's stand-in for the gateway is not the gateway, and has no tally.
+const gatewayLedger = options.eveGatewayClient ? null : eveGatewayClient.gatewayLedger;
+app.locals.gatewayLedger = gatewayLedger;
 const pilotSetting = options.pilotTransportFor ? null : pilotTransportSetting(options.env || process.env);
 const someoneOnGamePort = pilotSetting !== null &&
   (pilotSetting.fallback === "gameport" || [...pilotSetting.overrides.values()].includes("gameport"));
@@ -239,6 +243,9 @@ const industryPlans =
 // bridgeSessionID the gateway minted, held server-side only. The browser
 // never sees the handle; it just gets its character/station state back.
 const bridgeSessions = options.bridgeSessionStore || new Map();
+// The tally says of a read of one character whether that character was online here then: a read the plan
+// keeps on the gateway for pilots who are offline is another matter when the pilot is online.
+gatewayLedger?.watch({ isOnline: (characterID) => [...bridgeSessions.values()].some((held) => Number(held && held.characterID) === characterID) });
 // Short-lived operation reservations, not a second owner registry. They close
 // the await gap between browser select/release and a hosted handoff.
 const characterOperations = new Map();
