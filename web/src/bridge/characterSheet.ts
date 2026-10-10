@@ -147,11 +147,34 @@ export function decodeCharacterDescription(
 export function decodeHomeStationID(
   result: JsonValue | null | undefined,
 ): number | null {
+  // homestation.types.StationData, as the home station service answers: the station is its `id`.
+  const station = stationData(result);
+  if (station !== null) {
+    const id = toInt(station.get("id"));
+    return id > 0 ? id : null;
+  }
   if (!isKeyValValue(result)) {
     return null;
   }
   const stationID = toInt(readKeyVal(result, "stationID"));
   return stationID > 0 ? stationID : null;
+}
+
+/**
+ * A homestation.types.StationData as the generic call hands it on: an object of that class whose own fields are
+ * `id`, `type_id`, `solar_system_id` and `is_fallback`. Its fields by name, or null for what is none.
+ */
+function stationData(result: JsonValue | null | undefined): ReadonlyMap<JsonValue, JsonValue> | null {
+  if (typeof result !== "object" || result === null || Array.isArray(result) || (result as { type?: unknown }).type !== "objectex2") {
+    return null;
+  }
+  // Its header is ((the class), the fields).
+  const header = (result as { header?: unknown }).header;
+  const named = Array.isArray(header) ? (header[0] as readonly ({ value?: unknown } | null)[] | undefined)?.[0] : undefined;
+  if (named?.value !== "homestation.types.StationData") {
+    return null;
+  }
+  return new Map(dictEntries((header as JsonValue[])[1]));
 }
 
 /** The `[key, value]` pairs of a marshaled `{type:"dict", entries:[...]}`. */

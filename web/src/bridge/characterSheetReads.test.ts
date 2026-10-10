@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 
 import type { Ask } from "./ask.ts";
 import { ATTRIBUTE_IMPLANTNESS, createCharacterSheetReads, type TypeAttributes } from "./characterSheetReads.ts";
-import { decodeCloneSummary } from "./characterSheet.ts";
+import { decodeCloneSummary, decodeHomeStationID } from "./characterSheet.ts";
 import type { JsonValue } from "./wire.ts";
 
 const failing = (code: string | undefined, more: Record<string, unknown> = {}): Error => Object.assign(new Error("it failed"), code === undefined ? more : { code, ...more });
@@ -19,7 +19,9 @@ const dict = (entries: readonly (readonly [JsonValue, JsonValue])[]): JsonValue 
 const PUBLIC: JsonValue = { type: "list", items: [keyVal([["characterID", 140000005], ["characterName", "Farmer"]])] };
 const HOME: JsonValue = keyVal([["stationID", 60015249]]);
 const IMPLANTS: JsonValue = dict([[1, keyVal([["typeID", 9941], ["itemID", 990000001]])], [2, keyVal([["typeID", 9899]])], [3, keyVal([["typeID", 9941]])]]);
-const ANSWERS: Record<string, JsonValue> = { GetPublicInfo3: PUBLIC, GetCharacterDescription: "a bio", GetHomeStationRow: HOME, GetImplants: dict([]) };
+/** homestation.types.StationData, as the home station service answers and the generic call hands it on. */
+const STATION: JsonValue = { type: "objectex2", header: [[{ type: "token", value: "homestation.types.StationData" }], dict([["is_fallback", false], ["solar_system_id", 30000142], ["id", 60015249], ["type_id", 52678]])], list: [], dict: [] };
+const ANSWERS: Record<string, JsonValue> = { GetPublicInfo3: PUBLIC, GetCharacterDescription: "a bio", get_home_station: STATION, GetHomeStationRow: HOME, GetImplants: dict([]) };
 
 /** An asking the test answers, with what was asked kept in order. */
 function asking(answers: Record<string, JsonValue | (() => JsonValue)>): { ask: Ask; asked: string[] } {
@@ -42,8 +44,10 @@ test("the sheet is read with the client's own calls: the character named where t
   const { ask, asked } = asking(ANSWERS);
   const statics = staticData({});
   const reads = await createCharacterSheetReads(ask, statics.typeAttributes).read({ characterID: 140000005 });
-  assert.deepEqual(asked, ["charMgr.GetPublicInfo3(140000005)", "charMgr.GetCharacterDescription(140000005)", "charMgr.GetHomeStationRow()", "skillHandler.GetImplants()"]);
-  assert.deepEqual([reads.publicInfo, reads.description, reads.homeStation, reads.errors], [PUBLIC, "a bio", HOME, { publicInfo: null, description: null, homeStation: null, cloneInfo: null }]);
+  // The home station by the home station service's own call, as the client's sheet has it: the row is not asked for.
+  assert.deepEqual(asked, ["charMgr.GetPublicInfo3(140000005)", "charMgr.GetCharacterDescription(140000005)", "home_station.get_home_station()", "skillHandler.GetImplants()"]);
+  assert.deepEqual([reads.publicInfo, reads.description, reads.homeStation, reads.errors], [PUBLIC, "a bio", STATION, { publicInfo: null, description: null, homeStation: null, cloneInfo: null }]);
+  assert.equal(decodeHomeStationID(reads.homeStation), 60015249);
   // No implants is a clean clone, a real answer, with nothing asked of the static data.
   assert.deepEqual([implantsOf(reads), statics.asked], [[], []]);
   // A read answered with nothing at all is an answer of nothing, and no failure.
@@ -90,7 +94,7 @@ test("an answer that is not implants is the clone's own failure, and never an em
 test("each of the four fails by itself, with why; and what is nobody's own failure fails the whole sheet", async () => {
   const statics = staticData({});
   const one = (method: string, failure: unknown) => createCharacterSheetReads(asking({ ...ANSWERS, [method]: () => { throw failure; } }).ask, statics.typeAttributes).read({ characterID: 140000005 });
-  const fields: Record<string, "publicInfo" | "description" | "homeStation" | "cloneInfo"> = { GetPublicInfo3: "publicInfo", GetCharacterDescription: "description", GetHomeStationRow: "homeStation", GetImplants: "cloneInfo" };
+  const fields: Record<string, "publicInfo" | "description" | "homeStation" | "cloneInfo"> = { GetPublicInfo3: "publicInfo", GetCharacterDescription: "description", get_home_station: "homeStation", GetImplants: "cloneInfo" };
   for (const [method, field] of Object.entries(fields)) {
     const reads = await one(method, failing("CALL_REFUSED"));
     assert.deepEqual([reads[field], reads.errors], [null, { publicInfo: null, description: null, homeStation: null, cloneInfo: null, [field]: "CALL_REFUSED" }], method);
@@ -104,4 +108,26 @@ test("each of the four fails by itself, with why; and what is nobody's own failu
   // The BFF not reached for the static data is nobody's own failure either.
   const unreached = failing("BRIDGE_NETWORK_ERROR");
   await assert.rejects(createCharacterSheetReads(asking({ ...ANSWERS, GetImplants: IMPLANTS }).ask, async () => { throw unreached; }).read({ characterID: 140000005 }), (error) => error === unreached);
+});
+
+test("where the home station service's call is not carried, the home station is read by the row; any other failure is the home station's own", async () => {
+  const statics = staticData({});
+  // The web gateway's list has not got the call: the row is asked for, and is the answer.
+  const refused = asking({ ...ANSWERS, get_home_station: () => { throw failing("CALL_NOT_ALLOWED", { status: 403 }); } });
+  const reads = await createCharacterSheetReads(refused.ask, statics.typeAttributes).read({ characterID: 140000005 });
+  assert.deepEqual(refused.asked.filter((call) => /ome/.test(call)), ["home_station.get_home_station()", "charMgr.GetHomeStationRow()"]);
+  assert.deepEqual([reads.homeStation, reads.errors.homeStation, decodeHomeStationID(reads.homeStation)], [HOME, null, 60015249]);
+  // The row failing too is the home station's failure, with the row's why.
+  const both = asking({ ...ANSWERS, get_home_station: () => { throw failing("CALL_NOT_ALLOWED"); }, GetHomeStationRow: () => { throw failing("EVE_GATEWAY_TIMEOUT"); } });
+  const neither = await createCharacterSheetReads(both.ask, statics.typeAttributes).read({ characterID: 140000005 });
+  assert.deepEqual([neither.homeStation, neither.errors.homeStation, neither.description], [null, "EVE_GATEWAY_TIMEOUT", "a bio"]);
+  // Refused for anything else, the row is not asked for in its place.
+  for (const code of ["CALL_REFUSED", "CALL_FAILED", "READ_FAILED"]) {
+    const other = asking({ ...ANSWERS, get_home_station: () => { throw failing(code); } });
+    const failed = await createCharacterSheetReads(other.ask, statics.typeAttributes).read({ characterID: 140000005 });
+    assert.deepEqual([failed.homeStation, failed.errors.homeStation, other.asked.includes("charMgr.GetHomeStationRow()")], [null, code, false], code);
+  }
+  // The pilot gone while the row was asked for fails the whole sheet, as anywhere.
+  const lost = failing("SESSION_NOT_FOUND");
+  await assert.rejects(createCharacterSheetReads(asking({ ...ANSWERS, get_home_station: () => { throw failing("CALL_NOT_ALLOWED"); }, GetHomeStationRow: () => { throw lost; } }).ask, statics.typeAttributes).read({ characterID: 140000005 }), (error) => error === lost);
 });

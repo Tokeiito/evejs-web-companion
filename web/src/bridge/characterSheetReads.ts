@@ -9,8 +9,10 @@
 //
 //   charMgr.GetPublicInfo3(characterID)           characterInfoWindow.py 194: the character named
 //   charMgr.GetCharacterDescription(characterID)  charsheet/bioPanel.py 28: session.charid
-//   charMgr.GetHomeStationRow()                   neocom/charactersheet.py 59: the character sheet's service,
-//                                                 with nothing, kept by it until the session is reset
+//   home_station.get_home_station()               homestation/client/service.py 67: the home station service,
+//                                                 with nothing, which the sheet reads
+//                                                 (characterOverviewElements.py 88); kept by it until the
+//                                                 server says the home station is another
 //   skillHandler.GetImplants()                    skillsvc.py 967: the implants in the pilot's head, which the
 //                                                 sheet lists (charsheet/implantsBoostersPanel.py 40)
 //
@@ -22,11 +24,12 @@
 // not said here on either transport. A type's slot is asked of the BFF's static
 // data, once for a type.
 //
-// NOT AS THE CLIENT YET. The client's own sheet shows the home station from
-// another service of the server's, RemoteSvc('home_station').get_home_station()
-// (homestation/client/service.py; characterOverviewElements.py 88), kept until
-// the server says it changed. GetHomeStationRow is the call its map and its
-// market quote read the home station by. Nothing carries the first yet.
+// THE HOME STATION. The game port carries the home station service's call, and
+// its transport keeps the answer as that service keeps it (src/gamePort/pilots.js).
+// The web gateway's list has not got it. There the home station is read by
+// charMgr.GetHomeStationRow() (neocom/charactersheet.py 59), which is the call
+// the client's map and its market quote read it by: the same station, in a row
+// of another form. bridge/characterSheet.ts reads either.
 //
 // THE ROUTE STILL STANDS (src/server.js). Nothing of the page's asks it now.
 
@@ -92,6 +95,16 @@ export function createCharacterSheetReads(ask: Ask, typeAttributes: TypeAttribut
     return keyVal([["implants", { type: "dict", entries: implants.map(([key, typeID]) => [key, keyVal([["typeID", typeID], ["slot", slots.get(typeID) ?? 0]])]) } as unknown as JsonValue]]);
   }
 
+  /** The home station as the client's sheet asks for it; where that is not carried, by the row its map reads. */
+  async function homeStation(): Promise<JsonValue> {
+    try {
+      return await ask("home_station", "get_home_station", []);
+    } catch (error) {
+      if (failureCode(error) !== "CALL_NOT_ALLOWED") throw error;
+      return ask("charMgr", "GetHomeStationRow", []);
+    }
+  }
+
   return {
     /**
      * The four reads, asked together and each failing by itself. Fails as a whole only for what fails a whole
@@ -102,7 +115,7 @@ export function createCharacterSheetReads(ask: Ask, typeAttributes: TypeAttribut
       const reads = await Promise.allSettled([
         ask("charMgr", "GetPublicInfo3", named),
         ask("charMgr", "GetCharacterDescription", named),
-        ask("charMgr", "GetHomeStationRow", []),
+        homeStation(),
         ask("skillHandler", "GetImplants", []).then(cloneOfImplants),
       ]);
       for (const each of reads) {

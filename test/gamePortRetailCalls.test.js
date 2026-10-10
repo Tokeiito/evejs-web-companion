@@ -1524,7 +1524,11 @@ test("the game port carries the customs office's transfer, the station's offices
     "officeManager.GetPriceQuote", "officeManager.HasCorpImpoundedItems", "officeManager.PrimeOfficeItem", "officeManager.RentOffice", "officeManager.UnrentOffice",
     "subscriptionMgr.GetCloneGrade",
     "skillHandler.GetSkillQueueAndFreePoints",
+    "home_station.get_home_station",
   ]);
+  // homestation/client/service.py 67: self.remote.get_home_station(), of the service by its name, with nothing.
+  const home = retailForm("home_station", "get_home_station", [], null);
+  assert.deepEqual([home.status, home.source, home.args, home.kwargs, home.moniker, home.proxy], ["same", "homestation/client/service.py:67", [], null, false, false]);
   // skillQueueSvc.py 117: self.skills.GetSkillHandler().GetSkillQueueAndFreePoints(), on the handler's moniker and with nothing.
   const queue = retailForm("skillHandler", "GetSkillQueueAndFreePoints", [], null);
   assert.deepEqual([queue.status, queue.source, queue.args, queue.kwargs, queue.moniker], ["same", "eve/client/script/ui/services/skillQueueSvc.py:117", [], null, true]);

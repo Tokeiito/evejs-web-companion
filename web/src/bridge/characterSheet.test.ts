@@ -152,6 +152,20 @@ test("decodeHomeStationID reads only the station id (name comes from /api/names)
   assert.equal(decodeHomeStationID(HOME_STATION), 60015249);
   assert.equal(decodeHomeStationID(null), null);
   assert.equal(decodeHomeStationID(keyval([["typeID", 92885]])), null);
+  // homestation.types.StationData, as the home station service answers (recorded on Tranquility; this server's
+  // answer through the generic call, 2026-10-10): the station is its `id`.
+  const stationData = (name: string, fields: readonly (readonly [string, JsonValue])[]): JsonValue =>
+    ({ type: "objectex2", header: [[{ type: "token", value: name }], { type: "dict", entries: fields as unknown as JsonValue }], list: [], dict: [] });
+  const fields: readonly (readonly [string, JsonValue])[] = [["is_fallback", false], ["solar_system_id", 30000142], ["id", 60003760], ["type_id", 52678]];
+  assert.equal(decodeHomeStationID(stationData("homestation.types.StationData", fields)), 60003760);
+  // A station of none, or an object of another class with the same fields, is no home station.
+  assert.equal(decodeHomeStationID(stationData("homestation.types.StationData", [["id", 0], ["type_id", 52678]])), null);
+  assert.equal(decodeHomeStationID(stationData("homestation.types.StationData", [["type_id", 52678]])), null);
+  assert.equal(decodeHomeStationID(stationData("homestation.types.StationCandidateData", fields)), null);
+  assert.equal(decodeHomeStationID({ type: "objectex1", header: [[{ type: "token", value: "homestation.types.StationData" }], { type: "dict", entries: fields as unknown as JsonValue }], list: [], dict: [] }), null);
+  assert.equal(decodeHomeStationID({ type: "objectex2", header: [{ type: "token", value: "homestation.types.StationData" }, { type: "dict", entries: fields as unknown as JsonValue }], list: [], dict: [] }), null);
+  assert.equal(decodeHomeStationID({ type: "objectex2", list: [], dict: [] }), null);
+  for (const header of [[], [null], [[]], [[null]], [5], ["homestation.types.StationData"]] as JsonValue[]) assert.equal(decodeHomeStationID({ type: "objectex2", header, list: [], dict: [] }), null, JSON.stringify(header));
 });
 
 // --- GetCloneInfo (KeyVal with dict clones/implants) ------------------------

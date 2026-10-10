@@ -282,6 +282,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // Phase 6b), and is answered from what the transport keeps. The gateway's list has not got it: through the
   // gateway the sheet is the gateway's own.
   "skillHandler.GetSkillQueueAndFreePoints",
+  // The home station as the client's own service asks for it, which its Character Sheet reads. The gateway's list
+  // has charMgr's row and not this.
+  "home_station.get_home_station",
 ]);
 
 /**
@@ -819,6 +822,7 @@ const RETAIL_CALLS = Object.freeze({
   "onlineStatus.GetInitialState": same("eve/client/script/ui/shared/comtool/onlineStatus.py:79", "RemoteSvc('onlineStatus').GetInitialState(), no arguments: asked once (Prime), as the character is chosen, and kept by contact"),
   "onlineStatus.GetOnlineStatus": same("eve/client/script/ui/shared/comtool/onlineStatus.py:56", "RemoteSvc('onlineStatus').GetOnlineStatus(charID), for a character the kept state does not have, and kept"),
   "onlineStatus.Prime": webOnly("eve/client/script/ui/shared/comtool/onlineStatus.py:74", "The client never asks this of the server. Prime is its own service's method, which asks GetInitialState() once."),
+  "home_station.get_home_station": same("homestation/client/service.py:67", "RemoteSvc('home_station').get_home_station(), no arguments: asked once and kept, until the server says the home station changed or was moved from its structure, or the pilot's corporation changes. Recorded on Tranquility at a login and after OnHomeStationChanged"),
   "charMgr.GetHomeStationRow": same("eve/client/script/ui/shared/neocom/charactersheet.py:59", "RemoteSvc('charMgr').GetHomeStationRow(), no arguments, asked once and kept until the session is reset"),
   "charMgr.GetHomeStation": webOnly("eve/client/script/ui/shared/neocom/charactersheet.py:59", "The client never asks this of charMgr: its character sheet's service asks GetHomeStationRow()."),
   "charMgr.GetCloneInfo": webOnly("eve/client/script/ui/services/clonejumpsvc.py:76", "The client never asks this. Its jump clones, their implants and the time of the last jump come from GetCloneState() on the jumpCloneSvc moniker for where the pilot is; the implants in the pilot's head are what its skill handler answers GetImplants() with (skillsvc.py 967), which godma's 'implants' of the character hands on."),

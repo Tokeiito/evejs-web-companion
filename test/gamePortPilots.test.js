@@ -7251,3 +7251,78 @@ test("the pilot's clock is the server's as its session has it, in whole millisec
   assert.throws(() => pilots.serverNowMs({ userid: 9 }, handle), (error) => error.code === "SESSION_NOT_FOUND");
   assert.throws(() => pilots.serverNowMs(WHO, "gp:nobody"), (error) => error.code === "SESSION_NOT_FOUND");
 });
+
+// ── the home station, as the client's home station service keeps it ──────────
+//
+// homestation/client/service.py: the service asks the server's for the home station once (67) and keeps it, until
+// OnHomeStationChanged (163) or OnHomeStationMovedFromStructure (168), or 'corpid' in a session change (173).
+// Recorded on Tranquility: asked at a login, and again at once after OnHomeStationChanged.
+
+const HOME_PAIRS = { allowed: new Set(["home_station.get_home_station", "home_station.get_next_remote_change_time"]) };
+const stationData = (id) => ({ type: "objectex2", header: [[{ type: "token", value: "homestation.types.StationData" }], { type: "dict", entries: [[Buffer.from("is_fallback"), false], [Buffer.from("solar_system_id"), 30000142], [Buffer.from("id"), id], [Buffer.from("type_id"), 52678]] }], list: [], dict: [] });
+const homeCalls = (session) => session.calls.filter((call) => call.service === "home_station").map((call) => [call.method, call.args, call.kwargs]);
+const homeOf = (answer) => Object.fromEntries(answer.result.header[1].entries).id;
+
+test("the home station is asked of its service once and kept, and let go when the server says it is another", async () => {
+  let home = 60003760;
+  const { pilots, session, handle } = await selected({ answers: { "home_station.get_home_station": () => stationData(home), "home_station.get_next_remote_change_time": null } }, HOME_PAIRS);
+  const ask = (args = [], kwargs = null) => pilots.callMethod("home_station", "get_home_station", args, kwargs, FIELDS, handle);
+  // Nothing of it is asked at the choosing: it is asked when something first wants it.
+  assert.deepEqual(homeCalls(session), []);
+  const first = await ask();
+  // In the gateway's form: an object of the service's own class, its fields by name.
+  assert.deepEqual([first.service, first.method, first.result.type, first.result.header[0][0].value, homeOf(first)], ["home_station", "get_home_station", "objectex2", "homestation.types.StationData", 60003760]);
+  // (Its fields' names are text, as JSON has them, and not the bytes they came as.)
+  assert.deepEqual(first.result.header[1].entries, [["is_fallback", false], ["solar_system_id", 30000142], ["id", 60003760], ["type_id", 52678]]);
+  // Three at once, and again: one call, by the service's name and with nothing, counted once as the client's own.
+  await Promise.all([ask(), ask(), ask()]);
+  assert.deepEqual([homeCalls(session), ledgerOf(pilots, "home_station.get_home_station")], [[["get_home_station", [], null]], [{ same: 1 }, "homestation/client/service.py:67"]]);
+
+  // The server says the home station is another: what is kept is let go, and the next asking asks.
+  home = 60014779;
+  session.notify("OnHomeStationChanged", [60014779]);
+  const changed = await ask();
+  assert.equal(homeOf(changed), 60014779);
+  // And what the server said is handed on with the answer, as with any call's.
+  assert.deepEqual(changed.notifications.map((notification) => notification.method), ["OnHomeStationChanged"]);
+  await ask();
+  assert.equal(homeCalls(session).length, 2);
+  // Moved from its structure: the same.
+  home = 60003760;
+  session.notify("OnHomeStationMovedFromStructure", []);
+  assert.deepEqual([homeOf(await ask()), homeOf(await ask()), homeCalls(session).length], [60003760, 60003760, 3]);
+  // The pilot's corporation changes, to another or to none: the same. Any other change of the session: kept.
+  home = 60014779;
+  session.change({ fleetrole: [null, 1], wingid: [null, 7] });
+  assert.deepEqual([homeOf(await ask()), homeCalls(session).length], [60003760, 3]);
+  session.attributes.corpid = PLAYER_CORP;
+  session.change({ corpid: [1000044, PLAYER_CORP] });
+  assert.deepEqual([homeOf(await ask()), homeCalls(session).length], [60014779, 4]);
+  home = 60003760;
+  session.attributes.corpid = null;
+  session.change({ corpid: [PLAYER_CORP, null] });
+  assert.deepEqual([homeOf(await ask()), homeCalls(session).length], [60003760, 5]);
+  // Another notice is not the service's: kept.
+  session.notify("OnStandingSet", [1000125, PILOT, 3.5]);
+  await ask();
+  assert.equal(homeCalls(session).length, 5);
+  // Asked with anything, it is not the service's own asking: sent, and not kept.
+  await ask([60003760]);
+  await ask([], { anything: 1 });
+  await ask();
+  assert.deepEqual(homeCalls(session).slice(5), [["get_home_station", [60003760], null], ["get_home_station", [], { anything: 1 }]]);
+  // Another call of the same service, were the game port to carry one, is not this one: asked each time.
+  for (let asking = 0; asking < 2; asking += 1) await pilots.callMethod("home_station", "get_next_remote_change_time", [], null, FIELDS, handle);
+  assert.deepEqual(homeCalls(session).slice(7).map(([method]) => method), ["get_next_remote_change_time", "get_next_remote_change_time"]);
+});
+
+test("a home station that could not be read is not kept, and another account's session cannot read it", async () => {
+  let refuse = true;
+  const { pilots, session, handle } = await selected({ answers: { "home_station.get_home_station": () => { if (refuse) throw refusedBy("NotNow"); return stationData(60003760); } } }, HOME_PAIRS);
+  await rejects(pilots.callMethod("home_station", "get_home_station", [], null, FIELDS, handle), "CALL_REFUSED");
+  refuse = false;
+  assert.equal(homeOf(await pilots.callMethod("home_station", "get_home_station", [], null, FIELDS, handle)), 60003760);
+  await pilots.callMethod("home_station", "get_home_station", [], null, FIELDS, handle);
+  assert.equal(homeCalls(session).length, 2);
+  await assert.rejects(pilots.callMethod("home_station", "get_home_station", [], null, { userid: 9 }, handle), (error) => error.code === "SESSION_NOT_FOUND");
+});

@@ -389,6 +389,14 @@ const SKILL_LOGIN_READS = Object.freeze([
   ["CheckAndSendNotifications", []],
   ["GetSkillHistory", [10]],
 ]);
+/**
+ * The client's home station service (homestation/client/service.py): it asks the server's for the home station
+ * once and keeps it, until one of its notices says otherwise or the pilot's corporation changes.
+ */
+const HOME_STATION = "home_station";
+const GET_HOME_STATION = "get_home_station";
+/** OnHomeStationChanged(newHomeStationID) and OnHomeStationMovedFromStructure(): the station kept is not the home any more. */
+const HOME_STATION_NOTICES = new Set(["OnHomeStationChanged", "OnHomeStationMovedFromStructure"]);
 /** skillQueueSvc.PrimeSkillQueue's read: (the queue, the free points). The queue service keeps the queue. */
 const SKILL_QUEUE_READ = "GetSkillQueueAndFreePoints";
 /** Whether a call of the handler's is the queue service's own read, as it asks it: with nothing. */
@@ -1144,6 +1152,8 @@ function createGamePortPilots({
       officePrimed: createKeptReads(),
       /** The account service's static data (ACCOUNT_STATIC), kept for as long as the character is. */
       accountStatic: createKeptReads(),
+      /** The home station as the client's home station service keeps it (GET_HOME_STATION). */
+      homeStation: createKeptReads(),
       /** godma's priming that is out now, and the ship in a place it is for: whoever wants the ship's readings meanwhile waits for it. */
       dogmaPriming: null,
       stationWork: Promise.resolve(),
@@ -1192,6 +1202,8 @@ function createGamePortPilots({
       if (notification.method === "OnSubscriptionChangedServer" && typeof notification.args?.[0] === "number") entry.cloneGrade = notification.args[0];
       // crimewatchSvc.OnSecurityStatusUpdate(newSecurityStatus): the status is what the server says.
       if (notification.method === "OnSecurityStatusUpdate" && typeof notification.args?.[0] === "number") entry.securityStatus = notification.args[0];
+      // home_station (163, 168): the home station changed, or was moved from its structure. What is kept is let go.
+      if (HOME_STATION_NOTICES.has(notification.method)) entry.homeStation.forget();
       // officeManager.OnOfficeRentalChange (71): an office rented or given up, whoever's, and the station's are not as kept.
       if (notification.method === "OnOfficeRentalChange") entry.stationOffices.forget();
       // invCache.OnItemChange: an item changed, and what a container lists may not be so any more.
@@ -1240,6 +1252,8 @@ function createGamePortPilots({
       if ("corpid" in changes || "allianceid" in changes) entry.kept[CALENDAR_PROXY].forget();
       // officeManager.OnSessionChanged: in another corporation the offices kept are not its.
       if ("corpid" in changes) entry.kept[OFFICE_MANAGER].forget();
+      // home_station.OnSessionChanged (173): 'corpid' in change, and the home station kept is let go.
+      if ("corpid" in changes) entry.homeStation.forget();
       // all_cso.OnSessionChanged: another alliance, another moniker, made and bound at once; no alliance, none.
       if ("allianceid" in changes) {
         entry.monikers.delete(ALLIANCE_REGISTRY);
@@ -1463,6 +1477,14 @@ function createGamePortPilots({
       if (entry.standings.loaded) {
         return { service, method, result: wireToBridgeJson(entry.standings[STANDINGS_KEPT[method]]()), notifications: drain(entry) };
       }
+    }
+    // The home station service's read: asked once and kept, until the server says the home station is another.
+    if (service === HOME_STATION && method === GET_HOME_STATION && form.args.length === 0 && form.kwargs === null) {
+      const kept = await run(entry, service, method, () => entry.homeStation.read(method, () => {
+        ledger.note(service, method, form);
+        return byName(entry.session, service, method, form);
+      }));
+      return { service, method, result: wireToBridgeJson(kept), notifications: drain(entry) };
     }
     // The account service's static data: asked once and kept, however many windows want it and however many at once.
     if (service === ACCOUNT && ACCOUNT_STATIC.has(method)) {
