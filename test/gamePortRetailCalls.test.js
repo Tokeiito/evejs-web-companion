@@ -1525,6 +1525,7 @@ test("the game port carries the customs office's transfer, the station's offices
     "subscriptionMgr.GetCloneGrade",
     "skillHandler.GetSkillQueueAndFreePoints",
     "home_station.get_home_station",
+    "skillHandler.SaveNewQueue",
   ]);
   // homestation/client/service.py 67: self.remote.get_home_station(), of the service by its name, with nothing.
   const home = retailForm("home_station", "get_home_station", [], null);
@@ -1555,4 +1556,50 @@ test("a planet's colony and what the planet carries are asked of the planet's ow
     assert.match(named.note, /nothing/, method);
   }
   assert.match(form("planetMgr.GetPlanetInfo", []).note, /Tranquility/);
+});
+
+test("a queue's saving is the client's when it is the whole queue by place and says whether it is to be started, and nothing else", () => {
+  const queue = (...places) => ({ type: "dict", entries: places });
+  const save = (args, kwargs) => retailForm("skillHandler", "SaveNewQueue", args, kwargs);
+  // skillQueueSvc.py 152, 153: {idx: (typeID, toLevel)} and activate=activate, on the handler's moniker.
+  for (const [args, kwargs] of [
+    [[queue([0, [3300, 5]], [1, [3327, 4]])], { activate: true }],
+    [[queue([0, [3300, 5]])], { activate: false }],
+    [[queue()], { activate: true }],
+  ]) {
+    const made = save(args, kwargs);
+    assert.deepEqual([made.status, made.source, made.args, made.kwargs, made.moniker, made.proxy], ["same", "eve/client/script/ui/services/skillQueueSvc.py:153", args, kwargs, true, false], JSON.stringify([args, kwargs]));
+  }
+  // Anything else goes as it came, and is counted as differing from the client's.
+  const whole = queue([0, [3300, 5]], [1, [3327, 4]]);
+  for (const [args, kwargs, why] of [
+    [[whole], null, "nothing said of starting"],
+    [[whole], {}, "nothing said of starting"],
+    [[whole], { activate: 1 }, "starting said with a number"],
+    [[whole], { activate: true, more: 1 }, "another keyword"],
+    [[whole, 1], { activate: true }, "a second argument"],
+    [[], { activate: true }, "no queue"],
+    [[null], { activate: true }, "nothing for the queue"],
+    [[[[3300, 5]]], { activate: true }, "a list for the queue"],
+    [[{ type: "list", items: [[3300, 5]] }], { activate: true }, "a list for the queue"],
+    [[{ type: "dict" }], { activate: true }, "a dict with no entries to read"],
+    [[{ entries: [[0, [3300, 5]]] }], { activate: true }, "entries, in what is no dict"],
+    [[{ type: "list", entries: [[0, [3300, 5]]] }], { activate: true }, "entries, in what says it is a list"],
+    [[{ type: "dict", entries: [null] }], { activate: true }, "a place that is nothing"],
+    [[queue([0, "35"])], { activate: true }, "a place whose skill and level are two letters"],
+    [[queue([1, [3300, 5]])], { activate: true }, "places not from nought"],
+    [[queue([1, [3327, 4]], [0, [3300, 5]])], { activate: true }, "places out of order"],
+    [[queue([0, [3300, 5]], [0, [3327, 4]])], { activate: true }, "a place twice"],
+    [[queue([0, [3300]])], { activate: true }, "no level"],
+    [[queue([0, [3300, 5, 1]])], { activate: true }, "a third thing in a place"],
+    [[queue([0, [3300, "5"]])], { activate: true }, "a level as text"],
+    [[queue([0, [3300.5, 5]])], { activate: true }, "a type that is no whole number"],
+    [[queue([0, 3300])], { activate: true }, "a place that is no pair"],
+    [[queue([0, [3300, 5], 7])], { activate: true }, "an entry of three"],
+    [[queue(["0", [3300, 5]])], { activate: true }, "a place as text"],
+  ]) {
+    const made = save(args, kwargs);
+    assert.deepEqual([made.status, made.args, made.moniker], ["differs", args, true], why);
+    assert.match(made.note, /whole queue/, why);
+  }
 });

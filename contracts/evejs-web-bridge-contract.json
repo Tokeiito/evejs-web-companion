@@ -728,8 +728,8 @@
     ]
   },
   "bffWritePolicy": {
-    "count": 356,
-    "sha256": "b65e4627eb6f8f0b5953983d4b1fca89820a2f32e0b62140a1c051c79ce81432",
+    "count": 357,
+    "sha256": "547e8d15dd4c44aaee52d75355fb55f79e8e80f893f1b73331d1afb2e9fa1231",
     "pairs": [
       "LPStoreMgr.TakeOfferForCharacter",
       "LPStoreMgr.TakeOfferForCorporation",
@@ -1067,6 +1067,7 @@
       "skillHandler.InjectSkillIntoBrain",
       "skillHandler.InjectSkillpoints",
       "skillHandler.PurchaseSkills",
+      "skillHandler.SaveNewQueue",
       "skillHandler.SplitSkillInjector",
       "skillMgr.SaveNewQueue",
       "slash.SlashCmd",
@@ -1090,7 +1091,11 @@
     ]
   },
   "boundary": {
-    "genericBridgeAllowsWrites": false,
+    "genericBridgeAllowsWrites": true,
+    "genericBridgeWrites": [
+      "skillHandler.AbortTraining",
+      "skillHandler.SaveNewQueue"
+    ],
     "browserSessionFields": [
       "languageID",
       "languageId",

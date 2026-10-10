@@ -4,10 +4,13 @@
 // for itself (bridge/walletReads.ts, bridge/standingsReads.ts), it asks the same way, through this: the generic
 // call (bridge/callMethod.ts), with a flow's own token, and so on the pilot's socket. `api.bridgeAsk` makes one.
 
-import type { JsonValue } from "./wire.ts";
+import type { CallKwargs, JsonValue } from "./wire.ts";
 
-/** One call of the server's, by its service and method, answered with its result. Fails as the call fails. */
-export type Ask = (service: string, method: string, args: readonly JsonValue[]) => Promise<JsonValue>;
+/**
+ * One call of the server's, by its service and method, answered with its result. Fails as the call fails.
+ * `kwargs` are the call's keywords, where the client's call has any.
+ */
+export type Ask = (service: string, method: string, args: readonly JsonValue[], kwargs?: CallKwargs) => Promise<JsonValue>;
 
 /** Why a call failed, in the code its failure carries. */
 export function failureCode(reason: unknown): string {

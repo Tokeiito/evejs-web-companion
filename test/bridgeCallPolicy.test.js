@@ -47,8 +47,8 @@ test("the generic-call write policy covers the complete canonical plumbing inven
 
 test("the write policy adds every pre-sweep and post-sweep write without duplicates", () => {
   assert.equal(EARLIER_WRITE_PAIR_KEYS.length, 49);
-  assert.deepEqual(FEATURE_WRITE_PAIR_KEYS, ["repairSvc.RepairItems", "officeManager.RentOffice", "officeManager.UnrentOffice", "skillHandler.PurchaseSkills", "slash.SlashCmd", "invbroker.ImportExportWithPlanet"]);
-  assert.equal(BRIDGE_WRITE_PAIR_KEYS.length, 356);
+  assert.deepEqual(FEATURE_WRITE_PAIR_KEYS, ["repairSvc.RepairItems", "officeManager.RentOffice", "officeManager.UnrentOffice", "skillHandler.PurchaseSkills", "skillHandler.SaveNewQueue", "slash.SlashCmd", "invbroker.ImportExportWithPlanet"]);
+  assert.equal(BRIDGE_WRITE_PAIR_KEYS.length, 357);
   assert.equal(new Set(BRIDGE_WRITE_PAIR_KEYS).size, BRIDGE_WRITE_PAIR_KEYS.length);
 
   assert.equal(isBridgeWritePair("charUnboundMgr", "SelectCharacterID"), true);
@@ -94,7 +94,10 @@ test("browser session projection retains only explicit language preferences", ()
 
 test("the writes the page makes itself are writes, each named once, and the first is the pause of training", () => {
   const { BRIDGE_WRITE_PAIR_KEYS, PAGE_WRITE_PAIR_KEYS, isBridgeWritePair, isPageWritePair } = require("../src/bridgeCallPolicy");
-  assert.deepEqual(PAGE_WRITE_PAIR_KEYS, ["skillHandler.AbortTraining"]);
+  assert.deepEqual(PAGE_WRITE_PAIR_KEYS, ["skillHandler.AbortTraining", "skillHandler.SaveNewQueue"]);
+  // The queue's saving is the client's own call, on its skill handler. The gateway's save of a queue is another
+  // pair, a write as it always was, and its route's alone.
+  assert.deepEqual([isBridgeWritePair("skillMgr", "SaveNewQueue"), isPageWritePair("skillMgr", "SaveNewQueue")], [true, false]);
   assert.equal(new Set(PAGE_WRITE_PAIR_KEYS).size, PAGE_WRITE_PAIR_KEYS.length);
   for (const pair of PAGE_WRITE_PAIR_KEYS) {
     const [service, method] = pair.split(".");

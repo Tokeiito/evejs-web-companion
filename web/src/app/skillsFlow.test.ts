@@ -50,6 +50,12 @@ function makeFakeFetch(
   return { fetch: fakeFetch, requests };
 }
 
+/** The queue a save by the page's own call names: each place's skill and level, in order. */
+function savedPlaces(body: Record<string, unknown>): { typeID: number; toLevel: number }[] {
+  const places = ((body.args as { entries: [number, [number, number]][] }[])[0]!).entries;
+  return places.map(([, [typeID, toLevel]]) => ({ typeID, toLevel }));
+}
+
 /** The sheet envelope the BFF returns, with a queue we control. */
 function sheetBody(
   entries: readonly { typeID: number; toLevel: number }[],
@@ -164,8 +170,10 @@ test("adding, removing and reordering are ONE call: save the whole list", async 
   const store = createClientStore();
   let queue: { typeID: number; toLevel: number }[] = [];
   const { fetch, requests } = makeFakeFetch((path, method, body) => {
-    if (path === "/api/bridge/skills/queue" && method === "POST") {
-      queue = (body.entries as { typeID: number; toLevel: number }[]) ?? [];
+    // The save is the page's own call, a write it says it means (bridge/skillWrites.ts): the whole queue by place.
+    if (path === "/api/bridge/call" && body.service === "skillHandler" && body.method === "SaveNewQueue") {
+      queue = savedPlaces(body);
+      return { status: 200, body: { ok: true, service: "skillHandler", method: "SaveNewQueue", result: null, notifications: [] } };
     }
     return { status: 200, body: sheetBody(queue) };
   });
@@ -183,12 +191,18 @@ test("adding, removing and reordering are ONE call: save the whole list", async 
     "Added Surgical Strike I",
     "Surgical Strike",
   );
-  assert.deepEqual(requests.at(-1)!.body.entries, [
-    { typeID: GUNNERY, toLevel: 5 },
-    { typeID: SURGICAL, toLevel: 1 },
-  ]);
+  assert.deepEqual(requests.at(-2)!.body, {
+    service: "skillHandler",
+    method: "SaveNewQueue",
+    args: [{ type: "dict", entries: [[0, [GUNNERY, 5]], [1, [SURGICAL, 1]]] }],
+    kwargs: { activate: true },
+    pilot: true,
+    confirm: true,
+  });
+  // And the sheet read again after it, which is what lands.
+  assert.deepEqual([requests.at(-1)!.method, requests.at(-1)!.path], ["GET", "/api/bridge/skills"]);
 
-  // Reorder, then remove — same route, same shape, every time.
+  // Reorder, then remove — same call, same shape, every time.
   await flow.saveSkillQueue(
     [{ typeID: SURGICAL, toLevel: 1 }, { typeID: GUNNERY, toLevel: 5 }],
     "Moved Surgical Strike up",
@@ -203,11 +217,12 @@ test("adding, removing and reordering are ONE call: save the whole list", async 
   assert.deepEqual(store.get().skills.queue?.entries, []);
   assert.equal(store.get().skills.queue?.active, false);
 
-  // Exactly one route for every one of those edits.
+  // Exactly one call for every one of those edits, and never the queue's route.
   assert.deepEqual(
-    new Set(requests.filter((request) => request.method === "POST").map((r) => r.path)),
-    new Set(["/api/bridge/skills/queue"]),
+    requests.filter((request) => request.method === "POST").map((r) => [r.path, r.body.method]),
+    [1, 2, 3, 4].map(() => ["/api/bridge/call", "SaveNewQueue"]),
   );
+  assert.deepEqual(savedPlaces(requests.filter((request) => request.method === "POST").at(-1)!.body), []);
 });
 
 test("pausing asks the server to stop the skill in training and re-reads: the queue is KEPT, and starting is a save of it", async () => {
@@ -220,7 +235,10 @@ test("pausing asks the server to stop the skill in training and re-reads: the qu
       paused = true;
       return { status: 200, body: { ok: true, service: "skillHandler", method: "AbortTraining", result: null, notifications: [] } };
     }
-    if (path === "/api/bridge/skills/queue" && method === "POST") paused = false;
+    if (path === "/api/bridge/call" && body.service === "skillHandler" && body.method === "SaveNewQueue") {
+      paused = false;
+      return { status: 200, body: { ok: true, service: "skillHandler", method: "SaveNewQueue", result: null, notifications: [] } };
+    }
     return { status: 200, body: sheetBody(queue, undefined, paused) };
   });
   const flow = createAppFlow(store, { fetch });
@@ -246,7 +264,7 @@ test("pausing asks the server to stop the skill in training and re-reads: the qu
   requests.length = 0;
   await flow.saveSkillQueue(queue, "Started training", "your queue");
   const started = requests.at(0)!;
-  assert.deepEqual([started.path, started.body.entries, store.get().skills.queue?.active], ["/api/bridge/skills/queue", queue, true]);
+  assert.deepEqual([started.path, started.body.method, savedPlaces(started.body), started.body.kwargs, store.get().skills.queue?.active], ["/api/bridge/call", "SaveNewQueue", queue, { activate: true }, true]);
 });
 
 test("a pause the server will not make says so, and re-reads so nothing looks paused", async () => {
@@ -268,10 +286,9 @@ test("what lands in the store is the RE-READ sheet, not the edit we asked for", 
   // ⚠ The server accepts the call and stores something DIFFERENT (here: it
   // dropped the second entry). A client that believed its own request would
   // now show a queue that does not exist.
-  const { fetch } = makeFakeFetch(() => ({
-    status: 200,
-    body: sheetBody([{ typeID: GUNNERY, toLevel: 5 }]),
-  }));
+  const { fetch } = makeFakeFetch((path, method, body) => (path === "/api/bridge/call"
+    ? { status: 200, body: { ok: true, service: body.service, method: body.method, result: null, notifications: [] } }
+    : { status: 200, body: sheetBody([{ typeID: GUNNERY, toLevel: 5 }]) }));
   const flow = createAppFlow(store, { fetch });
 
   await flow.saveSkillQueue(
@@ -293,8 +310,8 @@ test("a refusal becomes player language AND re-reads, so nothing looks applied",
   const paths: string[] = [];
   const { fetch } = makeFakeFetch((path, method) => {
     paths.push(`${method} ${path}`);
-    if (path === "/api/bridge/skills/queue") {
-      // Exactly what the BFF passes through for a refused save: the gateway's
+    if (path === "/api/bridge/call") {
+      // Exactly what the BFF passes through for a refused save: a
       // CALL_REFUSED carrying the server's bare code as the message.
       return {
         status: 409,
@@ -326,7 +343,7 @@ test("a refusal becomes player language AND re-reads, so nothing looks applied",
   assert.deepEqual(skills.queue?.entries, []);
   assert.equal(skills.lastAction, null, "a refused edit is not an action taken");
   assert.deepEqual(paths, [
-    "POST /api/bridge/skills/queue",
+    "POST /api/bridge/call",
     "GET /api/bridge/skills",
   ]);
 });
@@ -387,10 +404,12 @@ interface PilotBff {
   /** What the handler's reads answer now; `null` for the queue's is the web gateway, which does not carry it. */
   queue: unknown[] | null;
   paused: boolean;
-  /** Why a read fails, by its method. */
-  fails: Record<string, readonly [number, string]>;
+  /** Why a call fails, by its method: the status, the code, and the message where it is not the usual one. */
+  fails: Record<string, readonly [number, string, string?]>;
   /** Whether an answer says the server's clock. */
   saysClock: boolean;
+  /** False where a test does not count the static data's asking in what was asked. */
+  countsStatic?: boolean;
 }
 
 /** A BFF with a pilot chosen: the generic call for the skill handler, the static data, the route, and the pause. */
@@ -401,13 +420,21 @@ function pilotBff(state: PilotBff): { fetch: typeof fetch; asked: () => string[]
     }
     if (path === "/api/bridge/call" && body.service === "skillHandler") {
       const failure = state.fails[String(body.method)];
-      if (failure) return { status: failure[0], body: { ok: false, error: failure[1], message: `${String(body.method)} failed.` } };
+      if (failure) return { status: failure[0], body: { ok: false, error: failure[1], message: failure[2] ?? `${String(body.method)} failed.` } };
+      // The queue's saving: the handler's own call, which the game port carries and the web gateway does not.
+      if (body.method === "SaveNewQueue") {
+        if (state.queue === null) return { status: 403, body: { ok: false, error: "CALL_NOT_ALLOWED", message: "skillHandler.SaveNewQueue is not on the web-call allowlist." } };
+        const places = ((body.args as { entries: [number, [number, number]][] }[])[0]!).entries;
+        state.queue = places.map(([, [typeID, toLevel]]) => queueEntry(typeID, toLevel, BROWSER_NOW + SERVER_AHEAD - 60_000, BROWSER_NOW + SERVER_AHEAD + 3_600_000));
+        state.paused = false;
+        return { status: 200, body: { ok: true, service: body.service, method: body.method, result: null, notifications: [] } };
+      }
       // The pause: the handler's own call, which either transport carries.
       if (body.method === "AbortTraining") {
         state.paused = true;
         return { status: 200, body: { ok: true, service: body.service, method: body.method, result: null, notifications: [] } };
       }
-      const queue = (state.queue ?? []).map((entry) => (state.paused ? queueEntry(AFTERBURNER, 4, null, null) : entry));
+      const queue = (state.queue ?? []).map((entry) => (state.paused ? queueEntry(AFTERBURNER, 4, null, null) : entry)) as unknown[];
       const answers: Record<string, unknown> = {
         GetSkillQueueAndFreePoints: [{ type: "list", items: queue }, 0],
         GetSkills: skillsDict(skillEntry(GUNNERY, 4, 45255), skillEntry(AFTERBURNER, 3, 8000)),
@@ -426,6 +453,8 @@ function pilotBff(state: PilotBff): { fetch: typeof fetch; asked: () => string[]
     }
     if (path === "/api/types/dogma") return { status: 200, body: { ok: true, attributes: { [AFTERBURNER]: { 180: 166, 181: 164 } } } };
     if (path === "/api/bridge/skills") return { status: 200, body: sheetBody([{ typeID: GUNNERY, toLevel: 5 }]) };
+    // The route's save, which answers the route's sheet of what it saved.
+    if (path === "/api/bridge/skills/queue") return { status: 200, body: sheetBody(body.entries as { typeID: number; toLevel: number }[]) };
     // (What else a choosing asks by the generic call is answered with nothing.)
     if (path === "/api/bridge/call") return { status: 200, body: { ok: true, service: body.service, method: body.method, result: null, notifications: [] } };
     return { status: 200, body: { ok: true } };
@@ -433,6 +462,8 @@ function pilotBff(state: PilotBff): { fetch: typeof fetch; asked: () => string[]
   /** What was asked for the sheet, in order: the handler's reads by their names, and the routes by their paths. */
   const asked = () => made.requests
     .filter((request) => (request.path === "/api/bridge/call" && request.body.service === "skillHandler") || /^\/api\/(names|types\/dogma|bridge\/skills)/.test(request.path))
+    // (A type's names and attributes are asked for once and kept: whether they are asked here is another test's.)
+    .filter((request) => !/^\/api\/(names|types\/dogma)/.test(request.path) || state.countsStatic !== false)
     .map((request) => (request.path === "/api/bridge/call" ? String(request.body.method) : `${request.method} ${request.path}`));
   return { fetch: made.fetch, asked, requests: made.requests };
 }
@@ -556,3 +587,69 @@ test("a pause re-reads the sheet as it is read at any time: by the page's own re
   assert.deepEqual(gateway.asked(), ["AbortTraining", "GetSkillQueueAndFreePoints", "GET /api/bridge/skills"]);
   assert.equal(gatewayStore.get().skills.lastAction, "Paused training");
 });
+
+test("with a pilot chosen a queue is saved by the page's own call, and the sheet after it is the page's own: no route of the skills' is asked", () => atBrowserNow(async () => {
+  const store = createClientStore();
+  const state: PilotBff = { queue: [], paused: false, fails: {}, saysClock: true, countsStatic: false };
+  const { fetch, asked, requests } = pilotBff(state);
+  const flow = createAppFlow(store, { fetch, eventSource: noStream });
+  await flow.selectCharacter(140000002);
+  await flow.loadSkills();
+  assert.deepEqual(store.get().skills.queue?.entries, []);
+  requests.length = 0;
+
+  await flow.saveSkillQueue([{ typeID: AFTERBURNER, toLevel: 4 }, { typeID: GUNNERY, toLevel: 5 }], "Added Gunnery V to the queue", "Gunnery");
+  // The client's own save, as a pilot's and as a write the page means; then the sheet's reads, with the
+  // attributes, a skill being in training now.
+  assert.deepEqual(requests.find((request) => request.body.method === "SaveNewQueue")?.body, {
+    service: "skillHandler",
+    method: "SaveNewQueue",
+    args: [{ type: "dict", entries: [[0, [AFTERBURNER, 4]], [1, [GUNNERY, 5]]] }],
+    kwargs: { activate: true },
+    pilot: true,
+    confirm: true,
+  });
+  assert.deepEqual(asked(), ["SaveNewQueue", "GetSkillQueueAndFreePoints", "GetSkills", "GetAllSkills", "GetFreeSkillPoints", "GetAttributes"]);
+  assert.deepEqual(requests.filter((request) => request.path.startsWith("/api/bridge/skills")), []);
+  const skills = store.get().skills;
+  assert.deepEqual([skills.queue?.active, skills.queue?.entries.map((entry) => [entry.typeID, entry.toLevel]), skills.lastAction, skills.actionError], [true, [[AFTERBURNER, 4], [GUNNERY, 5]], "Added Gunnery V to the queue", null]);
+}));
+
+test("through the web gateway the handler's save is not carried: the page asks, is told so with nothing saved, and the route saves and answers its sheet", async () => {
+  const store = createClientStore();
+  const { fetch, asked, requests } = pilotBff({ queue: null, paused: false, fails: {}, saysClock: false });
+  const flow = createAppFlow(store, { fetch, eventSource: noStream });
+  await flow.selectCharacter(140000002);
+  requests.length = 0;
+  await flow.saveSkillQueue([{ typeID: SURGICAL, toLevel: 1 }, { typeID: GUNNERY, toLevel: 5 }], "Added Gunnery V to the queue", "Gunnery");
+  assert.deepEqual(asked(), ["SaveNewQueue", "POST /api/bridge/skills/queue"]);
+  assert.deepEqual(requests.find((request) => request.path === "/api/bridge/skills/queue")?.body, { entries: [{ typeID: SURGICAL, toLevel: 1 }, { typeID: GUNNERY, toLevel: 5 }] });
+  // The route's sheet is what lands, as it did before.
+  const skills = store.get().skills;
+  assert.deepEqual([skills.queue?.entries.map((entry) => [entry.typeID, entry.toLevel]), skills.lastAction, skills.actionError], [[[SURGICAL, 1], [GUNNERY, 5]], "Added Gunnery V to the queue", null]);
+});
+
+test("a save the server refuses by the page's own call is said in the player's words, is not asked of the route, and the sheet is read again", () => atBrowserNow(async () => {
+  const store = createClientStore();
+  const state: PilotBff = { queue: [queueEntry(AFTERBURNER, 4, BROWSER_NOW, BROWSER_NOW + 3_600_000)], paused: false, fails: { SaveNewQueue: [409, "CALL_REFUSED", "QueueCannotPlaceSkillBeforeRequirements"] }, saysClock: true, countsStatic: false };
+  const { fetch, asked, requests } = pilotBff(state);
+  const flow = createAppFlow(store, { fetch, eventSource: noStream });
+  await flow.selectCharacter(140000002);
+  requests.length = 0;
+  await flow.saveSkillQueue([{ typeID: SURGICAL, toLevel: 1 }], "Added Surgical Strike I", "Surgical Strike");
+  const skills = store.get().skills;
+  assert.equal(skills.actionError, "Surgical Strike needs another skill trained first. Put the skill it depends on ahead of it in the queue.");
+  // A refusal is the server's answer to the save: the route is not asked to save it instead.
+  assert.deepEqual(asked().filter((each) => each.includes("/api/bridge/skills")), []);
+  assert.deepEqual(asked().slice(0, 2), ["SaveNewQueue", "GetSkillQueueAndFreePoints"]);
+  // What is on screen is the server's queue, and no action is said to have been taken.
+  assert.deepEqual([skills.queue?.entries.map((entry) => [entry.typeID, entry.toLevel]), skills.lastAction], [[[AFTERBURNER, 4]], null]);
+
+  // The pilot's session gone under the save is said as it is anywhere: the pilot is offline, and whoever asked is told.
+  const lostStore = createClientStore();
+  const lost = pilotBff({ queue: [], paused: false, fails: { SaveNewQueue: [404, "SESSION_NOT_FOUND"] }, saysClock: true });
+  const lostFlow = createAppFlow(lostStore, { fetch: lost.fetch, eventSource: noStream });
+  await lostFlow.selectCharacter(140000002);
+  await assert.rejects(lostFlow.saveSkillQueue([], "Emptied the queue", "your queue"), (error: { code?: string }) => error.code === "SESSION_NOT_FOUND");
+  assert.deepEqual([lostStore.station.get().online, lost.asked().includes("POST /api/bridge/skills/queue")], [null, false]);
+}));

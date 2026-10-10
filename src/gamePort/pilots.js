@@ -2475,6 +2475,8 @@ function createGamePortPilots({
     // What the client's skill services keep is theirs to answer. Anything else of the handler's is asked of it.
     if (Object.hasOwn(SKILL_KEPT, method)) return skillsDoes(entry, () => skillRead(entry, method, args));
     if (isSkillQueueRead(method, args, kwargs)) return skillsDoes(entry, () => skillQueueRead(entry));
+    // skillQueueSvc.CommitTransaction: the save, with what the client's queue service and panel do around it.
+    if (method === "SaveNewQueue") return skillsDoes(entry, () => saveOnHandler(entry, args, kwargs));
     return onSkillHandler(entry, method, args, kwargs);
   }
 
@@ -2595,25 +2597,40 @@ function createGamePortPilots({
    * does: the queue cut where it would train for longer than a queue may (TrimQueue), an alpha clone's levels
    * refused before anything is sent, and the save made again unstarted where the server refuses an alpha's queue
    * for its size.
+   *
+   * The same save asked for by the handler's name (the page's own, the plan's Phase 6b) is made the same way:
+   * monikerCall hands it to saveOnHandler, which is the three steps above.
    */
   async function saveSkillQueue(entries, sessionFields = {}, bridgeSessionID = undefined) {
     const entry = held(bridgeSessionID, sessionFields);
     return run(entry, SKILL_HANDLER, "SaveNewQueue", () => skillsDoes(entry, async () => {
-      if (entries.length > 0) await skillRead(entry, "GetAttributes", []);
       const queueInfo = { type: "dict", entries: entries.map(([typeID, toLevel], position) => [position, [typeID, toLevel]]) };
-      await skillHandlerMoniker(entry);
-      ledger.note(SKILL_HANDLER, "SaveNewQueue", SKILL_OWN.SaveNewQueue);
-      let asksAgain = true;
-      try {
-        const result = await onSkillHandler(entry, "SaveNewQueue", [queueInfo], { activate: true });
-        return { service: SKILL_HANDLER, method: "SaveNewQueue", result: wireToBridgeJson(result === undefined ? null : result), notifications: drain(entry) };
-      } catch (error) {
-        asksAgain = !NO_NEW_QUEUE_TRANSACTION.has(String(error && error.refusal && error.refusal.key));
-        throw error;
-      } finally {
-        if (asksAgain) await skillAsk(entry, "GetSkillQueueAndFreePoints").catch(() => {});
-      }
+      const result = await saveOnHandler(entry, [queueInfo], { activate: true }, () => ledger.note(SKILL_HANDLER, "SaveNewQueue", SKILL_OWN.SaveNewQueue));
+      return { service: SKILL_HANDLER, method: "SaveNewQueue", result: wireToBridgeJson(result === undefined ? null : result), notifications: drain(entry) };
     }));
+  }
+
+  /**
+   * SaveNewQueue on the handler, with what the client's queue service and its panel do before and after it.
+   * `args` and `kwargs` are the save's own, as they go on the wire: the queue by place, and `activate`.
+   * The attributes are read only for a save that says it starts the queue, of a queue with something on it: an
+   * unstarted queue is not trimmed (CommitTransaction 149), an empty one has nothing to reckon, and a save that
+   * does not say is not the client's. `sent` is called once there is a handler to save on, before the save goes.
+   */
+  async function saveOnHandler(entry, args, kwargs, sent = () => {}) {
+    const queued = Array.isArray(args[0]?.entries) ? args[0].entries.length : 0;
+    if (queued > 0 && kwargs?.activate === true) await skillRead(entry, "GetAttributes", []);
+    await skillHandlerMoniker(entry);
+    sent();
+    let asksAgain = true;
+    try {
+      return await onSkillHandler(entry, "SaveNewQueue", args, kwargs);
+    } catch (error) {
+      asksAgain = !NO_NEW_QUEUE_TRANSACTION.has(String(error && error.refusal && error.refusal.key));
+      throw error;
+    } finally {
+      if (asksAgain) await skillAsk(entry, "GetSkillQueueAndFreePoints").catch(() => {});
+    }
   }
 
   /** What the client's skill service does after a notice that only the transport can do (pilotSkills.js feed). */

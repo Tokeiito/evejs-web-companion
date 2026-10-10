@@ -2418,10 +2418,10 @@ export function bridgeDo(options: ApiOptions = {}, clock?: (serverNowMs: number)
 }
 
 function asking(options: ApiOptions, clock: ((serverNowMs: number) => void) | undefined, write: boolean): Ask {
-  return async (service, method, args) => {
+  return async (service, method, args, kwargs = null) => {
     const notificationSink = options.captureNotificationSink?.();
     // (The options are read as they stand now: a flow's token is another one after another pilot is chosen.)
-    const outcome = await callMethod(service, method, args, null, { ...options, pilot: true, ...(write ? { confirm: true } : {}) });
+    const outcome = await callMethod(service, method, args, kwargs, { ...options, pilot: true, ...(write ? { confirm: true } : {}) });
     if (outcome.serverNowMs !== null) clock?.(outcome.serverNowMs);
     notificationSink?.(outcome.notifications as unknown as readonly JsonValue[]);
     return outcome.result;
@@ -5350,7 +5350,9 @@ export async function getSkills(options: ApiOptions = {}): Promise<SkillsResult>
 // its route (POST /api/bridge/skills/abort-training), on 2026-10-10.
 
 /**
- * Save the whole training queue (skillMgr.SaveNewQueue).
+ * Save the whole training queue by its route (skillMgr.SaveNewQueue), which answers the route's sheet. The page
+ * saves a queue itself, with the client's own call, where its pilot's transport carries that
+ * (bridge/skillWrites.ts; the plan's Phase 6b). This is asked where it does not: through the web gateway.
  *
  * Sending [] empties the queue. The server validates the list as a WHOLE and
  * refuses all of it with one of eleven public codes if any part is wrong — the

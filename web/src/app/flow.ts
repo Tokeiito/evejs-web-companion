@@ -99,7 +99,7 @@ import { readStandings, standingComposition, standingHistory } from "../bridge/s
 import { createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
 import { createCharacterSheetReads } from "../bridge/characterSheetReads.ts";
 import { readJournal } from "../bridge/journalReads.ts";
-import { pauseTraining } from "../bridge/skillWrites.ts";
+import { pauseTraining, saveQueue, type QueuePlace } from "../bridge/skillWrites.ts";
 import { readClientStates } from "../bridge/crimewatchReads.ts";
 import { readCloneGrade } from "../bridge/cloneGradeReads.ts";
 import { decodeClientStates } from "../bridge/boundCrimewatch.ts";
@@ -6307,9 +6307,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     label: string,
     context = "that skill",
   ): Promise<void> {
-    let result;
+    let raw: JsonValue;
     try {
-      result = await api.saveSkillQueue(entries, callOptions);
+      raw = await saveQueueAndRead(entries);
     } catch (error) {
       if (isSessionLost(error)) {
         stopLiveStream();
@@ -6331,10 +6331,19 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await loadSkills().catch(() => {});
       return;
     }
-    // The BFF's re-read IS the confirmation. Landing the sheet first means the
-    // "saved" message can never be on screen next to a stale queue.
-    applySkillSheet(result.skills);
+    // The sheet read after the save IS the confirmation. Landing it first means
+    // the "saved" message can never be on screen next to a stale queue.
+    applySkillSheet(raw);
     store.apply({ type: "skills/action", action: label });
+  }
+
+  /**
+   * A queue saved, and the sheet as it then is. The page makes the client's own call where its pilot's transport
+   * carries it (bridge/skillWrites.ts) and reads its sheet again as it reads it at any time. Where the call is
+   * not carried, which is the web gateway, nothing was saved by it, and the route saves and answers its own sheet.
+   */
+  async function saveQueueAndRead(entries: readonly QueuePlace[]): Promise<JsonValue> {
+    return (await saveQueue(bridgeDo, entries)) ? readSkillSheetRaw() : (await api.saveSkillQueue(entries, callOptions)).skills;
   }
 
   async function pauseSkillTraining(): Promise<void> {

@@ -50,6 +50,8 @@ function buildContract() {
     "gateway allowlist",
   );
   const writePairs = sortedUnique(policy.BRIDGE_WRITE_PAIR_KEYS, "BFF write policy");
+  // The writes the generic call makes: the page's own, for a held pilot, when the page says it means them.
+  const pageWrites = sortedUnique(policy.PAGE_WRITE_PAIR_KEYS, "the page's own writes");
   // The BFF's defensive write denylist also includes methods the gateway
   // currently refuses. Keep the two inventories independent: adding a deny
   // classification must never require expanding the game's allowlist.
@@ -70,7 +72,8 @@ function buildContract() {
       pairs: writePairs,
     },
     boundary: {
-      genericBridgeAllowsWrites: false,
+      genericBridgeAllowsWrites: pageWrites.length > 0,
+      genericBridgeWrites: pageWrites,
       browserSessionFields: [...policy.SAFE_BROWSER_SESSION_FIELDS],
     },
   };

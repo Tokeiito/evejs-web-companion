@@ -23,10 +23,59 @@
 // of a held pilot's is under. `api.bridgeDo` is that asking.
 //
 // THE ROUTE STILL STANDS (src/server.js). Nothing of the page's asks it now.
+//
+// THE QUEUE SAVED, the second. Until 2026-10-10 every change of the queue was
+// POST /api/bridge/skills/queue, which checked each entry's shape, saved, and
+// answered the route's sheet. The client's queue service saves a queue with one
+// call, on the skill handler (skillQueueSvc.CommitTransaction):
+//
+//   skillHandler.SaveNewQueue({place: (typeID, toLevel)}, activate=...)
+//                                  skillQueueSvc.py 153: the whole queue, each entry by its place from
+//                                  nought, and whether it is to be started. Recorded on Tranquility,
+//                                  with the queue asked for again after it.
+//
+// What the service and its panel do around that call (the attributes read to
+// reckon a started queue's times, the queue asked for afresh afterwards) is the
+// transport's, which keeps what the client's services keep (src/gamePort/pilots.js,
+// saveOnHandler). The page then reads its sheet as it reads it at any time.
+//
+// WHERE THE CALL IS NOT CARRIED, which is the web gateway (its list has skillMgr's
+// save, a call of its own, and not the handler's), the call is refused with
+// CALL_NOT_ALLOWED and nothing is saved: the flow then asks the route, which
+// still stands for that.
+//
+// NOT AS THE CLIENT YET. This says `activate: true` for every save, as the route
+// did on the game port. The client's panel says True at its start button and,
+// for a queue it saves because it was changed, whether a skill is in training
+// (skillQueuePanelNew.SaveSkillQueue, SaveQueueOnClose): a paused queue changed
+// stays paused there, and is started here.
 
-import type { Ask } from "./ask.ts";
+import { failureCode, type Ask } from "./ask.ts";
 
 /** The queue panel's Pause: the skill in training stops, and the queue stays as it is. Fails as the call fails. */
 export async function pauseTraining(act: Ask): Promise<void> {
   await act("skillHandler", "AbortTraining", []);
+}
+
+/** One place of a queue: a skill, and the level it is to be trained to. */
+export interface QueuePlace {
+  readonly typeID: number;
+  readonly toLevel: number;
+}
+
+/**
+ * The whole queue saved, in the order given, and started. An empty list empties the queue. The server judges
+ * the list as a whole and refuses all of it if any part is wrong.
+ *
+ * Answers whether the save was made: false where the pilot's transport does not carry the call, and then
+ * nothing was saved. Fails as the call fails otherwise.
+ */
+export async function saveQueue(act: Ask, queue: readonly QueuePlace[]): Promise<boolean> {
+  try {
+    await act("skillHandler", "SaveNewQueue", [{ type: "dict", entries: queue.map((place, at) => [at, [place.typeID, place.toLevel]]) }], { activate: true });
+  } catch (error) {
+    if (failureCode(error) === "CALL_NOT_ALLOWED") return false;
+    throw error;
+  }
+  return true;
 }

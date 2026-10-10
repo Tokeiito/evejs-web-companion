@@ -178,6 +178,18 @@ const priceForOwnCorporation = (args, kwargs, context) => (args.length === 1 && 
 const rentAtThePrice = (args, kwargs) => (args.length === 1 && Object.keys(kwargs).length === 0 && isAPrice(args[0])
   ? {}
   : { status: "differs", note: "The client rents with the one price it was quoted, and nothing else." });
+/**
+ * skillQueueSvc.CommitTransaction (152, 153): the whole queue as one dict of place to (typeID, toLevel), the places
+ * from nought in order, and `activate` said and nothing else.
+ */
+const queueByPlace = (args, kwargs) => {
+  const queue = args.length === 1 && args[0]?.type === "dict" && Array.isArray(args[0].entries) ? args[0].entries : null;
+  const whole = queue !== null && queue.every((entry, place) => Array.isArray(entry) && entry.length === 2 && entry[0] === place &&
+    Array.isArray(entry[1]) && entry[1].length === 2 && entry[1].every((value) => Number.isSafeInteger(value)));
+  return whole && Object.keys(kwargs).length === 1 && typeof kwargs.activate === "boolean"
+    ? {}
+    : { status: "differs", note: "The client sends the whole queue as one dict, each entry (typeID, toLevel) by its place from nought, and says whether it is to be started." };
+};
 /** A judge for a call the client sends with nothing: no argument, and no keyword. */
 const sentWithNothing = (args, kwargs) => (args.length === 0 && Object.keys(kwargs).length === 0 ? {} : { status: "differs", note: "The client sends nothing with this call." });
 const reshaped = (source, shape, note) => Object.freeze({ status: "reshaped", source, shape, note });
@@ -285,6 +297,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // The home station as the client's own service asks for it, which its Character Sheet reads. The gateway's list
   // has charMgr's row and not this.
   "home_station.get_home_station",
+  // The queue's saving as the client's queue service makes it, on the handler. The page makes it by name (the
+  // plan's Phase 6b). The gateway's list has skillMgr's save and not this: through the gateway the route saves.
+  "skillHandler.SaveNewQueue",
 ]);
 
 /**
@@ -907,6 +922,11 @@ const RETAIL_CALLS = Object.freeze({
   "skillHandler.GetAllSkills": same(`${SKILL_SVC}:142`, "GetSkillHandler().GetAllSkills(), no arguments"),
   "skillHandler.GetAttributes": same(`${SKILL_SVC}:224`, "GetSkillHandler().GetAttributes(), no arguments"),
   "skillHandler.AbortTraining": same(`${SKILL_SVC}:796`, "GetSkillHandler().AbortTraining(), no arguments: the queue panel's pause, pressed while a skill is in training. The queue is kept, and the server's OnServerSkillsChanged says it is paused"),
+  "skillHandler.SaveNewQueue": judged(
+    "eve/client/script/ui/services/skillQueueSvc.py:153",
+    queueByPlace,
+    "GetSkillHandler().SaveNewQueue({place: (typeID, toLevel)}, activate=activate): the whole queue, and whether it is to be started. The queue panel's start says True; its save of a changed queue says whether a skill is in training. Recorded on Tranquility, with the queue asked for again after it.",
+  ),
   "skillHandler.GetSkillHistory": reshaped(
     `${SKILL_SVC}:363`,
     (args, kwargs) => (args.length === 1 && args[0] > 0 ? { args, kwargs, status: "same" } : { args: [SKILL_HISTORY_ASKED], kwargs }),

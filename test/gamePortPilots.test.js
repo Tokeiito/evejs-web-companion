@@ -5049,6 +5049,101 @@ test("a queue the server refuses is refused with the server's word, and the queu
   assert.equal(lost.pilots.size, 0);
 });
 
+test("a queue's saving asked for by the handler's name is made as the route's is: the attributes, the save on the handler, and the queue again", async () => {
+  const SAVES = { ...SHEET, allowed: new Set([...SHEET.allowed, "skillHandler.SaveNewQueue"]) };
+  const QUEUE = { type: "dict", entries: [[0, [3300, 5]], [1, [3327, 4]]] };
+  /** A pilot whose server saves a queue and says so before it answers, as this server and Tranquility do. */
+  const pilot = async () => {
+    let queue = [{ type: "list", items: [] }, 0];
+    let tell = () => {};
+    const answers = handlerAnswers({ "bound:GetSkillQueueAndFreePoints": () => queue, "bound:SaveNewQueue": () => { queue = TRAINING["bound:GetSkillQueueAndFreePoints"]; tell(); return null; } });
+    const made = await selected({ answers, serverNow: QUEUE_START_MS + 60_000 }, SAVES);
+    tell = () => made.session.notify("OnNewSkillQueueSaved", [queue[0]]);
+    return made;
+  };
+  const sentOf = (session, from) => session.boundCalls.slice(from).map((call) => [call.objectID, call.method, call.args, call.kwargs]);
+
+  const { pilots, session, handle } = await pilot();
+  const asked = session.boundCalls.length;
+  const saved = await pilots.callMethod("skillHandler", "SaveNewQueue", [QUEUE], { activate: true }, FIELDS, handle);
+  // Answered as any call is: what the save answered, and what the server said while it was made.
+  assert.deepEqual([saved.service, saved.method, saved.result, saved.notifications.map((notice) => notice.method)], ["skillHandler", "SaveNewQueue", null, ["OnNewSkillQueueSaved"]]);
+  // skillQueueSvc.TrimQueue's attributes (the boosters and the implants before them), the save, the panel's new transaction.
+  assert.deepEqual(session.boundCalls.slice(asked).map((call) => call.method), ["GetBoosters", "GetImplants", "GetAttributes", "SaveNewQueue", "GetSkillQueueAndFreePoints"]);
+  const save = session.boundCalls.find((call) => call.method === "SaveNewQueue");
+  assert.deepEqual([save.objectID, save.args, save.kwargs], ["N=1:1", [QUEUE], { activate: true }]);
+  assert.deepEqual(session.calls.filter((call) => call.method === "SaveNewQueue"), [], "not by name, on any service");
+  // Asked of the handler by its name and made on its moniker: the client's call, reshaped.
+  assert.deepEqual(ledgerOf(pilots, "skillHandler.SaveNewQueue"), [{ reshaped: 1 }, "eve/client/script/ui/services/skillQueueSvc.py:153"]);
+  // The queue the new transaction was answered is the queue kept.
+  const then = session.boundCalls.length;
+  const sheet = await pilots.skillSheet(WHO, handle);
+  assert.deepEqual([sheet.queue.active, sheet.queue.entries.map((entry) => [entry.typeID, entry.toLevel]), handlerCalls(session, then)], [true, [[3300, 5]], ["GetFreeSkillPoints"]]);
+
+  // The route's way, for another pilot the same: the same calls on the same object with the same things, to a frame.
+  const other = await pilot();
+  const from = other.session.boundCalls.length;
+  await other.pilots.saveSkillQueue([[3300, 5], [3327, 4]], WHO, other.handle);
+  assert.deepEqual(sentOf(other.session, from), sentOf(session, asked).slice(0, 5));
+
+  // A queue that is not to be started is not trimmed: no attributes are read for it. Nor for an empty one.
+  for (const [queue, kwargs] of [[QUEUE, { activate: false }], [{ type: "dict", entries: [] }, { activate: true }]]) {
+    const unstarted = await pilot();
+    const at = unstarted.session.boundCalls.length;
+    await unstarted.pilots.callMethod("skillHandler", "SaveNewQueue", [queue], kwargs, FIELDS, unstarted.handle);
+    assert.deepEqual(sentOf(unstarted.session, at).map((sent) => sent.slice(1)), [["SaveNewQueue", [queue], kwargs], ["GetSkillQueueAndFreePoints", [], null]], JSON.stringify(kwargs));
+  }
+  // What is not the client's save goes as it came, and is counted as differing: nothing is read for it first.
+  const odd = await pilot();
+  const oddFrom = odd.session.boundCalls.length;
+  await odd.pilots.callMethod("skillHandler", "SaveNewQueue", [[[3300, 5]]], null, FIELDS, odd.handle);
+  assert.deepEqual([sentOf(odd.session, oddFrom).map((sent) => sent.slice(1)), ledgerOf(odd.pilots, "skillHandler.SaveNewQueue")[0]], [[["SaveNewQueue", [[[3300, 5]]], null], ["GetSkillQueueAndFreePoints", [], null]], { differs: 1 }]);
+  await odd.pilots.callMethod("skillHandler", "SaveNewQueue", [], null, FIELDS, odd.handle);
+  assert.deepEqual(sentOf(odd.session, oddFrom).slice(2).map((sent) => sent.slice(1)), [["SaveNewQueue", [], null], ["GetSkillQueueAndFreePoints", [], null]]);
+  // Nor for a queue saved with nothing said of starting it, or with something that is not True or False.
+  for (const kwargs of [null, { activate: 1 }, { start: true }]) {
+    const unsaid = await pilot();
+    const at = unsaid.session.boundCalls.length;
+    await unsaid.pilots.callMethod("skillHandler", "SaveNewQueue", [QUEUE], kwargs, FIELDS, unsaid.handle);
+    assert.deepEqual([sentOf(unsaid.session, at).map((sent) => sent.slice(1)), ledgerOf(unsaid.pilots, "skillHandler.SaveNewQueue")[0]], [[["SaveNewQueue", [QUEUE], kwargs], ["GetSkillQueueAndFreePoints", [], null]], { differs: 1 }], JSON.stringify(kwargs));
+  }
+});
+
+test("a queue's saving by the handler's name is refused with the server's word, asks again as the panel would, and is on no list it was not put on", async () => {
+  const SAVES = { ...SHEET, allowed: new Set([...SHEET.allowed, "skillHandler.SaveNewQueue"]) };
+  const QUEUE = { type: "dict", entries: [[0, [3300, 5]]] };
+  let refusal = "QueueTooLong";
+  const answers = handlerAnswers({ "bound:SaveNewQueue": () => { throw refusedBy(refusal); } });
+  const { pilots, session, handle } = await selected({ answers }, SAVES);
+  await skillRead(pilots, handle, "GetAttributes");
+  const asked = session.boundCalls.length;
+  const refused = await pilots.callMethod("skillHandler", "SaveNewQueue", [QUEUE], { activate: true }, FIELDS, handle).then(() => null, (error) => error);
+  assert.deepEqual([refused.code, refused.message, refused.refusal.key], ["CALL_REFUSED", "QueueTooLong", "QueueTooLong"]);
+  // The panel rolls its change back and opens a new transaction: the queue is asked for.
+  assert.deepEqual(session.boundCalls.slice(asked).map((call) => call.method), ["SaveNewQueue", "GetSkillQueueAndFreePoints"]);
+  // After these two it opens none, and asks for nothing.
+  for (const key of ["UserAlreadyHasSkillInTraining", "SkillInQueueRequiresOmegaCloneState"]) {
+    refusal = key;
+    const from = session.boundCalls.length;
+    await rejects(pilots.callMethod("skillHandler", "SaveNewQueue", [QUEUE], { activate: true }, FIELDS, handle), "CALL_REFUSED");
+    assert.deepEqual(session.boundCalls.slice(from).map((call) => call.method), ["SaveNewQueue"], key);
+  }
+  // The asking after a save failing is no failure of the save.
+  const flaky = await selected({ answers: handlerAnswers({ "bound:SaveNewQueue": null }) }, SAVES);
+  let asks = 0;
+  flaky.session.callBound = ((original) => async (objectID, method, args, kwargs) => {
+    if (method === "GetSkillQueueAndFreePoints" && (asks += 1)) throw refusedBy("NotNow");
+    return original(objectID, method, args, kwargs);
+  })(flaky.session.callBound);
+  assert.equal((await flaky.pilots.callMethod("skillHandler", "SaveNewQueue", [{ type: "dict", entries: [] }], { activate: true }, FIELDS, flaky.handle)).result, null);
+  assert.equal(asks, 1);
+  // Where the list of calls has not got it, it is not made: by any name.
+  const without = await selected({ answers: handlerAnswers() }, SHEET);
+  const before = without.session.boundCalls.length + without.session.calls.length;
+  await rejects(without.pilots.callMethod("skillHandler", "SaveNewQueue", [QUEUE], { activate: true }, FIELDS, without.handle), "CALL_NOT_ALLOWED");
+  assert.equal(without.session.boundCalls.length + without.session.calls.length, before);
+});
+
 // ── the agents' journal ──────────────────────────────────────────────────────
 //
 // journal.py: the whole journal is asked for once and kept; a mission's change marks its agent, whose own part is

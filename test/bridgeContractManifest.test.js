@@ -15,7 +15,11 @@ test("the shared bridge manifest pins the web write boundary", () => {
   assert.deepEqual(actual, manifest.bffWritePolicy.pairs);
   assert.equal(manifest.bffWritePolicy.count, actual.length);
   assert.equal(manifest.bffWritePolicy.sha256, digest(actual));
-  assert.equal(manifest.boundary.genericBridgeAllowsWrites, false);
+  // The generic call makes the page's own writes, for a held pilot and when the page says it means them, and
+  // no other (bridgeCallPolicy.js, PAGE_WRITE_PAIR_KEYS). The manifest names which: each a write of the policy's.
+  assert.deepEqual(manifest.boundary.genericBridgeWrites, [...policy.PAGE_WRITE_PAIR_KEYS].sort());
+  assert.deepEqual(manifest.boundary.genericBridgeWrites.filter((pair) => !actual.includes(pair)), []);
+  assert.equal(manifest.boundary.genericBridgeAllowsWrites, policy.PAGE_WRITE_PAIR_KEYS.length > 0);
   assert.deepEqual(manifest.boundary.browserSessionFields, policy.SAFE_BROWSER_SESSION_FIELDS);
 });
 

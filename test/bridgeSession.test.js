@@ -1108,6 +1108,38 @@ test("a write is made by the generic call only as the page makes one: a pilot's,
   assert.deepEqual([routed.service, routed.method, routed.args, routed.kwargs, routed.bridgeSessionID], [sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID]);
 });
 
+test("the queue's saving is a write of the page's own: its queue and its keyword go as they were sent, and a transport that does not carry it says so", async () => {
+  let carried = true;
+  const gateway = fakeGateway();
+  gateway.callMethod = ((made) => async (...given) => {
+    if (!carried) throw new gatewayClient.EveGatewayError("skillHandler.SaveNewQueue is not on the web-call allowlist.", { code: "CALL_NOT_ALLOWED", statusCode: 403 });
+    return made(...given);
+  })(gateway.callMethod);
+  const { baseUrl } = await startTestServer({ gateway });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const queue = { type: "dict", entries: [[0, [3300, 5]], [1, [3327, 4]]] };
+  const save = (more) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "skillHandler", method: "SaveNewQueue", args: [queue], kwargs: { activate: true }, ...more } });
+  const before = gateway.calls.call.length;
+  // A write, as the pause is: refused unless it is said to be a pilot's and to be meant.
+  for (const more of [{}, { pilot: true }, { confirm: true }]) {
+    const refused = await save(more);
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+  }
+  assert.equal(gateway.calls.call.length, before);
+  const made = await save({ pilot: true, confirm: true });
+  assert.deepEqual([made.response.status, made.payload.service, made.payload.method, made.payload.result], [200, "skillHandler", "SaveNewQueue", null]);
+  const sent = gateway.calls.call.at(-1);
+  assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["skillHandler", "SaveNewQueue", [queue], { activate: true }, BRIDGE_SESSION_ID, { userid: 4 }]);
+  // The web gateway's list has not got the handler's save. Its refusal is handed on as it is, with nothing
+  // saved, and the pilot is still held: the page then asks the route, which saves as it always did.
+  carried = false;
+  const sentBefore = gateway.calls.call.length;
+  const refused = await save({ pilot: true, confirm: true });
+  assert.deepEqual([refused.response.status, refused.payload.error, gateway.calls.call.length], [403, "CALL_NOT_ALLOWED", sentBefore]);
+  carried = true;
+  assert.deepEqual([(await save({ pilot: true, confirm: true })).response.status, gateway.calls.call.at(-1).bridgeSessionID], [200, BRIDGE_SESSION_ID]);
+});
+
 test("the page's own write is under the checks every write of a held pilot's is under, and is made as its route makes it", async () => {
   const gateway = fakeGateway();
   const { baseUrl, app } = await startTestServer({ gateway });

@@ -92,7 +92,9 @@ const FEATURE_WRITE_METHODS = freezeMethodMap({
   officeManager: ["RentOffice", "UnrentOffice"],
   // Direct acquisition belongs only to the reviewed Factory route. Keep the
   // generic bridge closed even if a future runtime allowlist grows.
-  skillHandler: ["PurchaseSkills"],
+  // SaveNewQueue is the client's own saving of a queue, on its skill handler (skillQueueSvc.py 153). The game
+  // port carries it; the web gateway's list has skillMgr's and not this.
+  skillHandler: ["PurchaseSkills", "SaveNewQueue"],
   // ⚠⚠ THE GM CONSOLE. slash.SlashCmd runs any of this world's ~150 chat
   // commands — /giveitem, /gmships, /giveskill, /npc, /suicide. It is a WRITE by
   // any measure, and listing it here is what keeps the generic /api/bridge/call
@@ -141,8 +143,12 @@ function isBridgeWritePair(service, method) {
  * is not on it is made by its route alone, as before.
  *
  *   skillHandler.AbortTraining   the queue panel's Pause. Its route confirmed and called, with nothing.
+ *   skillHandler.SaveNewQueue    the queue saved whole. Its route (POST /api/bridge/skills/queue) checked the
+ *                                entries' shape, saved, and answered the sheet: the page spells the queue and
+ *                                reads its own sheet after. The handler saves the session's own character's
+ *                                queue and takes no one's name. Carried on the game port alone.
  */
-const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining"]);
+const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue"]);
 const pageWritePairKeySet = new Set(PAGE_WRITE_PAIR_KEYS);
 for (const pair of PAGE_WRITE_PAIR_KEYS) {
   if (!bridgeWritePairKeySet.has(pair)) throw new Error(`${pair} is among the page's writes and is no write.`);
