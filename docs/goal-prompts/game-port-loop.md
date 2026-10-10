@@ -440,6 +440,14 @@ Take these defaults, and list each under "For the operator" in the log so they c
   frames before choosing a pilot, and read `performance.getEntriesByType("resource")` for
   what went over HTTP. The first run of a thing in the browser is where its faults are: the
   socket's tests all passed while ten sockets stood open on the page.
+- **A thing kept "once" is to be tried with several asking at once.** A mark set when the
+  answer is in lets everyone through who comes while the asking is out. The page asks
+  thirty things together at a login now; a test of a once-only asking makes three or five
+  of them in one `Promise.all` and counts what was sent. `keptReads.js` is the transport's
+  own means for a thing asked once and kept, and takes its askers one at a time.
+- **A page loaded twice asks the selection screen's data twice.** A pass that is to be set
+  beside another is given the same number of page loads: set the browser's storage on one
+  page and start the pass's count at the next load, for every pass alike.
 - **Keep a run's ledgers, not their totals.** After each pass of a run that is to be set
   beside another, copy `bffgp-data/call-ledger.json`, `gateway-ledger.json` and both logs
   aside under the pass's name before anything is restarted. Two ledgers are compared call

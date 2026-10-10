@@ -738,12 +738,19 @@ cold start with the page set to the socket. Set beside a pass over HTTP it made 
 `account.GetEntryTypes`); the socket is not made the page's default until that is found
 and mended.
 
-Not yet: the page's setting is off unless set, and a pilot in the background has no pushes
-either way; the routes' HTTP carriage goes last. Of the phase's "done when", "no
+**The default, 2026-10-10** (`1ebaa67`, `bc9dbd3`): the two kinds of call were the
+transport's own once-only askings, once only for askers that came one after another;
+mended, the same run makes the same 93 kinds of call and the same 248 calls on the socket
+as over HTTP, row for row. The socket is now what the page uses unless a browser is told
+otherwise (`evejs-web-transport:v1` = `http` in its local storage is the way back).
+
+Not yet: a pilot in the background has no pushes either way; the routes' HTTP carriage
+goes last, and is the operator's to see first. Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.
-Of 6a's four things, three are carried by the socket or in process behind a way back (the
-routes' operations, the pushes, the hosted bots) and the cap is lifted for what is
-carried; what is left of 6a is the default and the taking away.
+Of 6a's four things, three are carried by the socket or in process, each with a way back
+(the routes' operations, the pushes, the hosted bots), and the cap is lifted for what is
+carried; what is left of 6a is the taking away. 6b is next: a feature's orchestration
+moved out of its route into TypeScript the page and the hosted bots share.
 
 ---
 
