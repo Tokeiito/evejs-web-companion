@@ -688,6 +688,19 @@ Can run in parallel with the phases above; it touches a different hop.
   (browser speaks machoNet through a relay) a relocation, not a rewrite.
 - **Done when:** no `/api/bridge/*` HTTP route remains and no `EventSource` is opened.
 
+**Status 2026-10-10: begun.** The BFF serves the socket at `/api/socket` beside its routes
+(`src/pilotSocket.js`, `fa2f060`). A tab says hello with its web session's token, in a frame,
+and then sends operations: a method, a path and a body, answered by id with the route's own
+status and answer. An operation is its route run in this process (`dispatchInProcess`), so
+all of the BFF's routes are operations at once and none was rewritten; asked over HTTP and on
+the socket, a route answers the same (set side by side in the tests for each shape of route,
+and live for a chosen pilot's reads). Twenty-four reads asked at once on one socket were all
+answered, where the page allows itself four over HTTP.
+
+Not yet: the page does not open the socket, the pushed notices are not on it, and hosted
+bots still ask over loopback HTTP. Those are the next slices, in that order; the routes'
+HTTP carriage goes last.
+
 ---
 
 ## 4. Risks

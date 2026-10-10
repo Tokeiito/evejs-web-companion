@@ -423,6 +423,16 @@ Take these defaults, and list each under "For the operator" in the log so they c
   and LOCK (`.target-card` loses `acquiring` when it has locked, some twenty seconds),
   the station's row and DOCK, and "Log out". `ab-stage.js` fits the afterburner Test Two's
   Badger needs for it.
+- **A test that waits on a socket bounds its wait.** A `node --test` that never ends is moved
+  to the background and stays there; mine did, twice. Give every wait a deadline, run a new
+  socket test under `--test-timeout` the first time, and if one is left running stop it by
+  its own command line (`Get-CimInstance Win32_Process` filtered on the test file's name),
+  never by killing every `node`: the server and both BFFs are `node` too.
+- **A request made in process** (`dispatchInProcess`, `src/pilotSocket.js`) wants a real
+  stream where its connection would be, one that says it is readable, and `complete` set:
+  the body parser skips a request it takes for finished, and Node takes an incomplete one
+  for cut off. `socket-walk.js <repo> <bff> <account> <id>` asks a running BFF over a real
+  socket and sets each read beside the same over HTTP.
 - **Every pilot of every account, chosen in turn:** `every-pilot.js <scratch> <bff>
   <store.sqlite> [accounts]` (save the store first; a login brings a pilot online).
 - **Both BFFs run the code they were started on.** A change to a route's answer shows through
