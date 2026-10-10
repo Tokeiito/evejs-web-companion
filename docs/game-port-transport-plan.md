@@ -631,9 +631,16 @@ Where the two reads of one character are asked, read 2026-10-10:
 | `skills` | `skillSheetFor`, the gateway's branch | the held pilot when it is the gateway's; on the game port the sheet is made from the skill handler's kept answers |
 | `skills` | `/api/roster/training`, `/api/roster/planets`, mining preparation, the training queue's review and read | a pilot of the account that nobody need be flying |
 
+Three hosted bots were then run for pilots on the game port, with the same result in the
+tally. One of them, the mining cycle, found every belt empty where the same bot through the
+gateway found rocks: the game port's snapshot had none of the mining fields the gateway's has
+on an asteroid's row. That is mended (`428af02`: a rock says what it yields, which is its own
+type), and is why the default has not been changed yet: a bot is to mine a hold full on the
+game port first.
+
 Not yet measured: the structure directory's reads, a fleet's parking and delivery checks, a
-training pilot's corporation fittings, the hosted bots, the Factory and the training flows.
-The default is still `gateway`. The steps are at the head of the loop log's "Next".
+training pilot's corporation fittings, the fleet's companions, the Factory and the training
+flows. The default is still `gateway`. The steps are at the head of the loop log's "Next".
 
 ### Phase 6 — Browser ↔ BFF over one WebSocket (large, mechanical; independent of 0–5)
 

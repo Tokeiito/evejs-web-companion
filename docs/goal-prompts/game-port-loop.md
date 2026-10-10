@@ -725,6 +725,19 @@ Take these defaults, and list each under "For the operator" in the log so they c
   or change a scratch copy with the Edit tool and copy it in.
 - **Take the store's copy before a walk that moves a pilot, even one that stages nothing.** I
   undocked and docked Test Pilot for a measure with none taken.
+- **A saved bot is run on the server from a script by the page's own start.** `node
+  bot-run.mjs <repo> <bff> <account> <characterID> <scriptID> [minutes] [seconds to watch]` in
+  the scratch folder imports `web/src/bots/startRun.ts`, prints the approval the page would
+  ask for, makes the grant, starts the bot, prints each change of its state, and stops it when
+  the time is up. A start with no grant is refused (`BOT_GRANT_REQUIRED`).
+  `botscripts-list.js` lists a BFF's saved bots. Save the store first: a bot moves its pilot.
+- **Run the same thing through both BFFs before believing either.** "Belt empty" four times
+  read as an empty system until the same bot through the gateway found a rock at the first
+  belt. A difference between the transports is a fault of ours until shown otherwise.
+- **Every live check in space had been at a station or a gate.** Nothing had been to a belt on
+  the game port, and no test had a rock in it, so a snapshot with no rock a bot could use
+  passed everything. When a feature works on things of a kind (rocks, wrecks, drones, clouds),
+  go where one is.
 - A test's "watched to fail" can be had after the fact, once the work is committed: put the source file back to the commit
   before (`git show HEAD~1:<file> > <file>`), run the test, and restore it with `git checkout
   HEAD -- <file>`. Check `git status` is clean after.

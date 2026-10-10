@@ -1175,6 +1175,16 @@ page reads `GET /api/bridge/crimewatch` at each notice still; on the game port t
 answered from what is kept. A timer is started for a check with the GM's
 `/cwatch <npc|weapon|pvp|suspect|disapproval> <seconds>`, in space.
 
+**A rock, 2026-10-10.** A client knows an asteroid by its slim item: its type, its group, the
+Asteroid category and a name. The type is the ore a laser takes from it. Which belt it is of
+is not sent to a client, and how much is left in it comes from a survey scan
+(`miningScanMgr`), not from the ballpark. The gateway's space snapshot has all three on an
+asteroid's row, from the server's own scene (`miningYieldTypeID`, `beltID`,
+`remainingQuantity`); the game port's has the first as the rock's own type and the other two
+as null (`spaceProjection.js`). The web client's bots tell a rock by those fields, so until
+the first was there no bot on the game port could mine. At one belt of 121 rocks the two
+transports agreed on every rock's type, group and yield.
+
 **The map's stations, 2026-10-10.** `map.GetStationInfo()` is asked once by the client's UI
 service and kept for the client's life (`uisvc.py` 246), and by five other callers through the
 object cache. On the game port the first asking is answered with a cached reference, which
