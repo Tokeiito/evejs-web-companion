@@ -141,6 +141,16 @@ function projectEntity(park, ball, slim, ego, placed) {
     row.npcEntityType = null;
     row.compressionFacility = null;
   }
+  // What there is to mine. A client knows a rock by its slim item's type, and that type is the ore a laser takes
+  // from it: this server stamps an asteroid's slim item with the type it yields (asteroidService.js), whatever it
+  // is drawn as. Which belt a rock is of, a client is never sent. How much is left in it, a client learns from a
+  // survey scan (miningScanMgr) and not from the ballpark: null is "not known", which the mining bots read as
+  // such. The gateway reports all three from the server's own scene, on an asteroid's row and no other.
+  if (kind === "asteroid") {
+    row.miningYieldTypeID = row.typeID;
+    row.beltID = null;
+    row.remainingQuantity = null;
+  }
   // importExportUI.py 94: which planet a customs office is, from the office's own slim item.
   if (kind === "orbital") row.planetID = positive(slim.get("planetID"));
   return row;

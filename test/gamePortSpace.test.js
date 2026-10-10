@@ -11,7 +11,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { BIND_TRIES, FRAME_MS, createPilotSpace, rebaseDelta } = require("../src/gamePort/pilotSpace");
-const { CATEGORY, checkWarpDestination, healthOf, kindOf, projectFlight, projectSpace } = require("../src/gamePort/spaceProjection");
+const { CATEGORY, checkWarpDestination, healthOf, kindOf, projectEntity, projectFlight, projectSpace } = require("../src/gamePort/spaceProjection");
 const { Ballpark } = require("../src/gamePort/destiny/ballpark");
 const { Park } = require("../src/gamePort/destiny/park");
 const { MODE } = require("../src/gamePort/destiny/state");
@@ -733,4 +733,38 @@ test("a customs office's row says which planet it is, as its slim item does, and
   for (const office of offices) assert.ok(planets.has(office.planetID), `office ${office.itemID} names planet ${office.planetID}`);
   assert.equal(new Set(offices.map((office) => office.planetID)).size, 8);
   assert.deepEqual(space.entities.filter((row) => row.kind !== "orbital" && "planetID" in row), []);
+});
+
+// The mining bots, and the overview's rocks, know something to mine by the mining fields of its row
+// (web/src/nav/miningBotLoop.ts, isMineableRock). The gateway puts them on an asteroid's row from the server's own
+// scene. A pilot on the game port had none, and its bots found every belt empty (seen live 2026-10-10: the same
+// bot at the same belt said "Belt empty" on the game port and "Approaching a rock" on the gateway).
+//
+// The rock is one of 121 at a belt of Muvolailen, as the game-port BFF's snapshot had it that day; through the
+// gateway's BFF the same rock had the same type, group and yield, and a belt and a quantity besides.
+const ROCK = { itemID: 5020570318849, typeID: 17464, groupID: 460, name: "Scordite III-Grade", radius: 500 };
+
+test("a rock's row says what a laser takes from it, which is its own type; its belt and what is left are not a client's to know", () => {
+  const park = undockedPark();
+  const slim = (fields) => new Map(Object.entries(fields));
+  park.ballpark.addBall({ id: ROCK.itemID, x: 4e4, radius: ROCK.radius });
+  park.slimItems.set(ROCK.itemID, slim({ itemID: BigInt(ROCK.itemID), typeID: ROCK.typeID, groupID: ROCK.groupID, categoryID: 25, name: ROCK.name, ownerID: 1 }));
+  // And a rock whose type is not said: it yields nothing a bot could name.
+  park.ballpark.addBall({ id: ROCK.itemID + 1, x: 5e4, radius: 900 });
+  park.slimItems.set(ROCK.itemID + 1, slim({ itemID: BigInt(ROCK.itemID + 1), groupID: ROCK.groupID, categoryID: 25 }));
+  const space = projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID });
+  const rock = space.entities.find((row) => row.itemID === ROCK.itemID);
+  assert.deepEqual([rock.kind, rock.typeID, rock.groupID, rock.categoryID, rock.name, rock.radius], ["asteroid", ROCK.typeID, ROCK.groupID, 25, ROCK.name, ROCK.radius]);
+  assert.deepEqual([rock.miningYieldTypeID, rock.beltID, rock.remainingQuantity], [ROCK.typeID, null, null]);
+  const untyped = space.entities.find((row) => row.itemID === ROCK.itemID + 1);
+  assert.deepEqual([untyped.kind, untyped.typeID, untyped.miningYieldTypeID, untyped.beltID, untyped.remainingQuantity], ["asteroid", null, null, null, null]);
+  // The three are an asteroid's and no other row's, as on the gateway: not the pilot's ship's, a station's or a belt's.
+  const others = space.entities.filter((row) => row.kind !== "asteroid");
+  // (The recorded grid at Jita's undock: 95 things, and no rock among them.)
+  assert.equal(others.length, 95);
+  assert.deepEqual(others.filter((row) => "miningYieldTypeID" in row || "beltID" in row || "remainingQuantity" in row), []);
+  // A row is made in projectEntity: the same of the one ball.
+  const ball = park.ballpark.ball(ROCK.itemID);
+  const row = projectEntity(park, ball, park.slimItems.get(ROCK.itemID), park.ego, (each) => ({ p: each.newPos, v: each.newVel }));
+  assert.deepEqual([row.kind, row.miningYieldTypeID, row.beltID, row.remainingQuantity], ["asteroid", ROCK.typeID, null, null]);
 });
