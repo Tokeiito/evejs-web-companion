@@ -771,7 +771,10 @@ the page's list only when the way back through the gateway is. The Character She
 route is the first off it whole (`a684b32`): its reads are carried by both transports,
 and the page asks them the same way on either. 139 named now, 49 of them reads. Its home
 station is asked as the client's own sheet asks it (`ba37865`): of the home station
-service, which the game port carries and the transport keeps as that service keeps it. Of the phase's "done when", "no
+service, which the game port carries and the transport keeps as that service keeps it.
+The agents' journal is the second route off the list whole (`5c2e1f1`): one call, asked
+by the page, answered on the game port from the journal the transport keeps. 138 named
+now, 48 of them reads. Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.
 Of 6a's four things, three are carried by the socket or in process, each with a way back
 (the routes' operations, the pushes, the hosted bots), and the cap is lifted for what is

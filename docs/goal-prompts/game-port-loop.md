@@ -490,7 +490,14 @@ Take these defaults, and list each under "For the operator" in the log so they c
   each read by `/api/bridge/call`. Hold the browser's clock still for anything worked from
   the server's (`atBrowserNow` in `web/src/app/skillsFlow.test.ts`).
 - **A read no test reaches is not moved.** Find who calls it and write the test first. The
-  drone range's read of the skill levels was moved, found untested, and put back.
+  drone range's read of the skill levels was moved, found untested, and put back. A bot's
+  reading can be reached: start the bot through the flow over a faked BFF and watch what
+  its first reading asks (`web/src/app/missionBotJournalFlow.test.ts`).
+- **When a route's read becomes a call, its tests name the read by the call**, not by the old
+  path: a stand-in that turns the generic call for it into a name of its own
+  (`JOURNAL_READ` and `asRead` in `web/src/app/agentsFlow.test.ts`), and that leaves a request
+  of the old route with its own path, which nothing answers. A stand-in that answered the
+  call under the route's name would pass a flow that had gone back to the route.
 - **The gateway BFF's page** (`http://127.0.0.1:26511/`) has the account `test2` signed in since
   2026-10-10 and opens with no windows: open one by its button. One pilot, one transport:
   log it out of the other page first.
