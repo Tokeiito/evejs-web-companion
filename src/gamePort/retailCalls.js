@@ -168,6 +168,16 @@ const ownOrderRow = (context, orderID) => (context && typeof context.ownOrder ==
 const sameValues = (one, other) => one.length === other.length && one.every((value, at) => value === other[at]);
 
 const same = (source, note) => Object.freeze({ status: "same", source, note });
+/** A whole number that is not below nought, as a price is. */
+const isAPrice = (value) => Number.isSafeInteger(value) && value >= 0;
+/** officeManager.GetPriceQuote (114): self.station.GetPriceQuote(session.corpid), and nothing else. */
+const priceForOwnCorporation = (args, kwargs, context) => (args.length === 1 && Object.keys(kwargs).length === 0 && args[0] === context.corporationID
+  ? {}
+  : { status: "differs", note: "The client asks the price with the session's corporation, and nothing else." });
+/** officeManager.RentOffice (117): self.station.RentOffice(cost), the price it was quoted. */
+const rentAtThePrice = (args, kwargs) => (args.length === 1 && Object.keys(kwargs).length === 0 && isAPrice(args[0])
+  ? {}
+  : { status: "differs", note: "The client rents with the one price it was quoted, and nothing else." });
 /** A judge for a call the client sends with nothing: no argument, and no keyword. */
 const sentWithNothing = (args, kwargs) => (args.length === 0 && Object.keys(kwargs).length === 0 ? {} : { status: "differs", note: "The client sends nothing with this call." });
 const reshaped = (source, shape, note) => Object.freeze({ status: "reshaped", source, shape, note });
@@ -261,7 +271,12 @@ const TRANSPORT_OWN_CALLS = Object.freeze(["config.GetMultiOwnersEx"]);
  * through the gateway they are refused. The customs office's transfer is the client's own call at an office
  * (importExportUI.py 549), and the gateway never had it.
  */
-const GAME_PORT_ONLY_CALLS = Object.freeze(["invbroker.ImportExportWithPlanet", "officeManager.GetCorporationsWithOffices", "officeManager.GetEmptyOfficeCount"]);
+const GAME_PORT_ONLY_CALLS = Object.freeze([
+  "invbroker.ImportExportWithPlanet", "officeManager.GetCorporationsWithOffices", "officeManager.GetEmptyOfficeCount",
+  // The lobby's buttons, on the station's own office object. (The BFF's list of writes names the renting; the
+  // gateway's list of what it will carry has none of these.)
+  "officeManager.GetPriceQuote", "officeManager.HasCorpImpoundedItems", "officeManager.PrimeOfficeItem", "officeManager.RentOffice", "officeManager.UnrentOffice",
+]);
 
 /**
  * Calls the client makes on an object that another call answered, where no moniker is: the system's scan manager,
@@ -1014,6 +1029,11 @@ const RETAIL_CALLS = Object.freeze({
   "corpRegistry.GetCorporation": same(`${CORP_SVC}/bco_corporations.py:49`, "GetCorpRegistry().GetCorporation(), no arguments, on the corporation's moniker"),
   "officeManager.GetCorporationsWithOffices": judged(`${CORP_SVC}/officeManager.py:34`, sentWithNothing, "Moniker('officeManager', stationID).GetCorporationsWithOffices(), no arguments, while it has none for where the session is docked; let go at any OnOfficeRentalChange (71) and out of the station or structure (58, 66); the transport keeps it so (pilots.js, stationOffices). Recorded on Tranquility after an office was rented and after one was given up."),
   "officeManager.GetEmptyOfficeCount": judged(`${CORP_SVC}/officeManager.py:136`, sentWithNothing, "Moniker('officeManager', stationID).GetEmptyOfficeCount(), no arguments, each time the lobby's offices are listed; not asked in a structure (133). Recorded on Tranquility beside the corporations with offices."),
+  "officeManager.GetPriceQuote": judged(`${CORP_SVC}/officeManager.py:114`, priceForOwnCorporation, "Moniker('officeManager', stationID).GetPriceQuote(session.corpid), as the lobby's rent button is pressed (dockedUI/offices.py). Recorded on Tranquility: answered a long."),
+  "officeManager.RentOffice": judged(`${CORP_SVC}/officeManager.py:117`, rentAtThePrice, "Moniker('officeManager', stationID).RentOffice(cost), the price GetPriceQuote answered, once the player has said yes to it. Recorded on Tranquility: answered None, after the server's two notices of the office."),
+  "officeManager.UnrentOffice": judged(`${CORP_SVC}/officeManager.py:122`, sentWithNothing, "Moniker('officeManager', stationID).UnrentOffice(), no arguments, once the player has said yes; the client names the corporation's assets there for its object cache first (121). Recorded on Tranquility: answered None."),
+  "officeManager.PrimeOfficeItem": judged(`${CORP_SVC}/officeManager.py:108`, sentWithNothing, "Moniker('officeManager', stationID).PrimeOfficeItem(), no arguments, once for a Moniker, where the corporation has an office in the station (106: isPrimed); the transport asks it once so (pilots.js, officePrimed). Recorded on Tranquility after an office was rented."),
+  "officeManager.HasCorpImpoundedItems": judged(`${CORP_SVC}/officeManager.py:143`, sentWithNothing, "Moniker('officeManager', stationID).HasCorpImpoundedItems(), no arguments, where a player's corporation has no office in the station (139 to 142). Recorded on Tranquility after an office was given up."),
   "officeManager.GetMyCorporationsOffices": same(`${CORP_SVC}/officeManager.py:41`, "RemoteSvc('officeManager').GetMyCorporationsOffices(), no arguments, while it has none; let go at OnOfficeRentalChange of the session's corporation (72) and in another corporation (62); the transport keeps it so (pilots.js, KEPT_UNTIL_CHANGED)"),
   "dogmaIM.LaunchProbes": same(`${SCAN_SVC}:494`, "LaunchProbes(moduleID, numProbes)"),
   "ship.Undock": needing(reshaped(`${STATION_SVC}:498`, undocking, "GetShipAccess().Undock(shipID, ignoreContraband, onlineModules={flagID: moduleID}), on the ship object bound for the station"), "dogma"),

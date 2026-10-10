@@ -158,6 +158,7 @@ import type {
   SlotFamily,
   SpaceSnapshot,
   SpaceVector,
+  StationOfficeQuote,
   StationStatic,
 } from "../store/types.ts";
 import {
@@ -683,6 +684,12 @@ export interface AppFlow {
   loadCorpHangar(): Promise<void>;
   /** The lobby's offices where the pilot is docked, listed when the player asks for them. */
   loadStationOffices(): Promise<void>;
+  /** What an office here costs the pilot's corporation, asked as the rent button is pressed. */
+  quoteStationOffice(): Promise<StationOfficeQuote>;
+  /** Rent an office here at the price the player was shown. The server's notice lists the offices again. */
+  rentStationOffice(cost: number): Promise<void>;
+  /** Give up the corporation's office here. The server's notice lists the offices again. */
+  giveUpStationOffice(): Promise<void>;
   /**
    * WHERE the corporation has offices, and what its divisions are called —
    * answered for every station at once, from wherever the ship is. The Bot
@@ -2773,6 +2780,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       listingStationOffices = false;
     }
   }
+
+  // dockedUI/offices.py, _rent_office and _unrent_office: the price asked,
+  // the player asked, and the one call sent. Neither lists anything after:
+  // the server says the office changed, and that lists them.
+  const quoteStationOffice = (): Promise<StationOfficeQuote> => api.quoteStationOffice(callOptions);
+  const rentStationOffice = (cost: number): Promise<void> => api.rentStationOffice(cost, callOptions);
+  const giveUpStationOffice = (): Promise<void> => api.giveUpStationOffice(callOptions);
 
   async function loadCorpHangar(): Promise<void> {
     let reads: Awaited<ReturnType<typeof api.loadCorpHangar>>;
@@ -13540,6 +13554,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     loadCorpHangar,
     loadStationOffices,
+    quoteStationOffice,
+    rentStationOffice,
+    giveUpStationOffice,
     loadCorpOffices,
 
     selectCorpDivision(division) {

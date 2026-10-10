@@ -115,8 +115,21 @@ test("the notices with a row are the ones read out of the client", () => {
   ]);
   assert.deepEqual(Object.keys(NAMED_AFTER_CALL).sort(), [
     "bountyProxy.AddToBounty", "bountyProxy.CancelSellKillRight", "bountyProxy.SellKillRight",
-    "calendarMgr.SendEventResponse", "calendarMgr.UpdateEventParticipants", "structureAssetSafety.MoveSafetyWrapToStructure",
+    "calendarMgr.SendEventResponse", "calendarMgr.UpdateEventParticipants", "officeManager.UnrentOffice", "structureAssetSafety.MoveSafetyWrapToStructure",
   ]);
+});
+
+test("beside an office given up: the corporation's assets where the session is docked, in a station or a structure", () => {
+  // officeManager.py 121: InvalidateCachedMethodCall('corpmgr', 'GetAssetInventoryForLocation', session.corpid,
+  // session.stationid or session.structureid, 'offices').
+  const assets = (where) => [["corpmgr", "GetAssetInventoryForLocation", [98000001, where, "offices"]]];
+  assert.deepEqual(namedAfterCall("officeManager", "UnrentOffice", [], { corpid: 98000001, stationid: 60003760, structureid: null }), assets(60003760));
+  assert.deepEqual(namedAfterCall("officeManager", "UnrentOffice", [], { corpid: 98000001, stationid: null, structureid: 1052851966475n }), assets(1052851966475n));
+  // In neither, there is no such call to forget.
+  assert.deepEqual(namedAfterCall("officeManager", "UnrentOffice", [], { corpid: 98000001, stationid: null, structureid: null }), []);
+  assert.deepEqual(namedAfterCall("officeManager", "UnrentOffice", [], { corpid: 98000001 }), []);
+  // Renting names nothing.
+  assert.deepEqual(namedAfterCall("officeManager", "RentOffice", [10000], { corpid: 98000001, stationid: 60003760 }), []);
 });
 
 test("beside one of the pilot's own calls: what the client's function names once the call is done", () => {

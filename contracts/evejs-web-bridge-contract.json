@@ -728,8 +728,8 @@
     ]
   },
   "bffWritePolicy": {
-    "count": 355,
-    "sha256": "6575581c6c3de0ad06f1f758794994e86ddacea5501aa6339d47a1993de4668f",
+    "count": 356,
+    "sha256": "b65e4627eb6f8f0b5953983d4b1fca89820a2f32e0b62140a1c051c79ce81432",
     "pairs": [
       "LPStoreMgr.TakeOfferForCharacter",
       "LPStoreMgr.TakeOfferForCorporation",
@@ -1018,6 +1018,7 @@
       "notificationMgr.MarkAsProcessed",
       "notificationMgr.MarkGroupAsProcessed",
       "officeManager.RentOffice",
+      "officeManager.UnrentOffice",
       "petitioner.CancelPetition",
       "petitioner.CreatePetition",
       "petitioner.PetitionerChat",

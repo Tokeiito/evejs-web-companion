@@ -833,6 +833,8 @@ test("flight status while docked is the gateway's, with the ship's type as godma
   assert.deepEqual(flight, {
     inSpace: false, docked: true, solarSystemID: SYSTEM, stationID: STATION, structureID: null,
     shipID: SHIP, shipTypeID: 588, shipIsCapsule: false, shipMode: null, shipSpeedFraction: null,
+    // And what the gateway does not say: the roles the session has in its corporation, which the BFF keeps for itself.
+    corpRole: "0",
   });
   assert.deepEqual(notifications, []);
   // Godma is primed once for a ship in a place, as the client primes it, not once per poll; and the ship is
@@ -6497,4 +6499,91 @@ test("in space the station's office object is not the client's to ask, and an as
   await ask("GetCorporationsWithOffices");
   assert.deepEqual([binds(), session.calls.filter((call) => call.method === "GetCorporationsWithOffices").length], [[STATION], 2]);
   assert.equal(ledgerOf(pilots, WITH_OFFICES)[0]["web-only"], 2);
+});
+
+// ── an office rented and given up ────────────────────────────────────────────
+
+const RENTING_PAIRS = { allowed: new Set([OFFICES, WITH_OFFICES, FREE_OFFICES, "officeManager.GetPriceQuote", "officeManager.RentOffice", "officeManager.UnrentOffice", "officeManager.PrimeOfficeItem", "officeManager.HasCorpImpoundedItems", "station.GetGuests"]) };
+/** A docked pilot of a player's corporation whose station's office object quotes 10,000 and counts what it is asked. */
+async function atTheOffices(sessionOptions = {}) {
+  const asked = { primed: 0, impounded: 0 };
+  const chosen = await selected({ corpid: OWN_CORPORATION, ...sessionOptions, answers: {
+    "bound:GetPriceQuote": () => 10000,
+    "bound:RentOffice": () => null,
+    "bound:UnrentOffice": () => null,
+    "bound:PrimeOfficeItem": () => { asked.primed += 1; return null; },
+    "bound:HasCorpImpoundedItems": () => { asked.impounded += 1; return false; },
+    "bound:GetCorporationsWithOffices": () => ({ type: "list", items: [] }),
+    [OFFICES]: () => ({ type: "list", items: [] }),
+  } }, RENTING_PAIRS);
+  const ask = async (method, args = [], kwargs = null) => (await chosen.pilots.callMethod("officeManager", method, args, kwargs, FIELDS, chosen.handle)).result;
+  const onObjects = () => chosen.session.boundCalls.filter((call) => /Office|Quote|Impounded/.test(call.method)).map((call) => [call.objectID, call.method, call.args, call.kwargs]);
+  const binds = () => chosen.session.binds.filter((bind) => bind.service === "officeManager").map((bind) => bind.params);
+  return { ...chosen, asked, ask, onObjects, binds };
+}
+
+test("an office's price, its renting and its giving up are asked of the station's own object, as the client sends them", async () => {
+  const { pilots, session, ask, onObjects, binds } = await atTheOffices();
+  assert.equal(await ask("GetPriceQuote", [OWN_CORPORATION]), 10000);
+  assert.equal(await ask("RentOffice", [10000]), null);
+  assert.equal(await ask("UnrentOffice"), null);
+  const [[object]] = onObjects();
+  // One Moniker for the station, bound by the first call, and every call on what it bound.
+  assert.deepEqual(binds(), [STATION]);
+  assert.deepEqual(onObjects(), [[object, "GetPriceQuote", [OWN_CORPORATION], null], [object, "RentOffice", [10000], null], [object, "UnrentOffice", [], null]]);
+  assert.equal(session.calls.filter((call) => call.service === "officeManager").length, 0);
+  assert.deepEqual([ledgerOf(pilots, "officeManager.GetPriceQuote"), ledgerOf(pilots, "officeManager.RentOffice"), ledgerOf(pilots, "officeManager.UnrentOffice")], [
+    [{ reshaped: 1 }, `${OFFICE_MANAGER_SOURCE}:114`], [{ reshaped: 1 }, `${OFFICE_MANAGER_SOURCE}:117`], [{ reshaped: 1 }, `${OFFICE_MANAGER_SOURCE}:122`],
+  ]);
+  // A price asked for another corporation is no call of the client's, and is sent as it is asked.
+  await ask("GetPriceQuote", [OWN_CORPORATION + 1]);
+  assert.deepEqual([onObjects().at(-1), ledgerOf(pilots, "officeManager.GetPriceQuote")[0]], [[object, "GetPriceQuote", [OWN_CORPORATION + 1], null], { differs: 1, reshaped: 1 }]);
+});
+
+test("the office's item is primed once for a station's Moniker, and the impound is asked each time", async () => {
+  const { session, asked, ask, binds } = await atTheOffices();
+  // officeManager.GetCorpOfficeAtLocation (106): PrimeOfficeItem once for a Moniker (isPrimed), whatever is rented or given up since.
+  await ask("PrimeOfficeItem");
+  await ask("PrimeOfficeItem");
+  session.notify("OnOfficeRentalChange", [OWN_CORPORATION, 7]);
+  await ask("PrimeOfficeItem");
+  assert.equal(asked.primed, 1);
+  // officeManager.HasCorpImpoundedItemsAtStation (143): asked of the station each time.
+  await ask("HasCorpImpoundedItems");
+  await ask("HasCorpImpoundedItems");
+  assert.equal(asked.impounded, 2);
+  // Another station is another Moniker, not primed yet.
+  session.attributes.stationid = 60000004;
+  session.change({ stationid: [STATION, 60000004] });
+  await settled();
+  await ask("PrimeOfficeItem");
+  await ask("PrimeOfficeItem");
+  assert.deepEqual([asked.primed, binds()], [2, [STATION, 60000004]]);
+  // With something beside it, it is no call of the client's: sent each time.
+  await ask("PrimeOfficeItem", [1]);
+  await ask("PrimeOfficeItem", [1]);
+  await ask("PrimeOfficeItem", [], { all: true });
+  await ask("PrimeOfficeItem", [], { all: true });
+  assert.equal(asked.primed, 6);
+  // Out of the station there is no Moniker to prime: what is asked all the same goes by the service's name, each time.
+  session.attributes.stationid = null;
+  session.change({ stationid: [60000004, null] });
+  await settled();
+  await ask("PrimeOfficeItem");
+  await ask("PrimeOfficeItem");
+  assert.deepEqual([asked.primed, binds(), session.calls.filter((call) => call.method === "PrimeOfficeItem").length], [6, [STATION, 60000004], 2]);
+});
+
+test("the roles a pilot's session has in its corporation are said with its flight's status, as the session has them", async () => {
+  const { pilots, session, handle } = await atTheOffices();
+  const roles = async () => (await pilots.readFlightStatus(handle, FIELDS)).flight.corpRole;
+  // The server's session change for a character chosen names none here: no role is no role.
+  assert.equal(await roles(), "0");
+  // session.corprole, a 64-bit mask: as its digits, which no number of the page's could hold.
+  session.attributes.corprole = 9223369906550996879n;
+  session.change({ corprole: [0n, 9223369906550996879n] });
+  await settled();
+  assert.equal(await roles(), "9223369906550996879");
+  session.attributes.corprole = 562949953421313;
+  assert.equal(await roles(), "562949953421313");
 });

@@ -4134,6 +4134,28 @@ app.get("/api/bridge/corp-offices", requireAuth, async (req, res, next) => {
   }
 });
 
+/** appConst.corpRoleDirector and corpRoleCanRentOffice, the two the retail lobby's office buttons go by. */
+const CORP_ROLE_DIRECTOR = 1n;
+const CORP_ROLE_CAN_RENT_OFFICE = 562949953421312n;
+/** appConst.rentalPeriodOffice: the days an office's rent pays for. */
+const OFFICE_RENTAL_DAYS = 30;
+
+/**
+ * Whether the held session has every bit of a role in its corporation (baseController._HasRole:
+ * session.corprole & role == role). False where the transport has not said what roles the session has.
+ */
+function heldHasCorpRole(held, role) {
+  return typeof held.corpRole === "string" && /^\d+$/.test(held.corpRole) && (BigInt(held.corpRole) & role) === role;
+}
+
+/** idCheckers.IsNPCCorporation: inventorycommon.const minNPCCorporation to maxNPCCorporation. */
+const isNpcCorporationID = (corporationID) => Number(corporationID) >= 1000000 && Number(corporationID) <= 1999999;
+
+/** Whether the held pilot's corporation has an office where it is docked (officeManager.GetCorpOfficeAtLocation). */
+async function hasCorpOfficeAt(held, webSessionID, stationID) {
+  return (await readCorpOffices(held, webSessionID)).some((office) => office.stationID === stationID);
+}
+
 /** A whole number off a number or a wire long; null for anything else. */
 function wholeWireNumber(value) {
   const number = typeof value === "number" ? value : value && value.type === "long" ? Number(value.value) : NaN;
@@ -4167,8 +4189,19 @@ app.get("/api/bridge/station/offices", requireAuth, async (req, res, next) => {
       return;
     }
     if (!(Boolean(gamePortPilots) && isGamePortHandle(held.bridgeSessionID))) {
-      res.json({ ok: true, available: false, stationID, corporationIDs: [], freeOffices: null });
+      res.json({ ok: true, available: false, stationID, corporationIDs: [], freeOffices: null, ownOffice: false, impounded: false, canRent: false, canGiveUp: false });
       return;
+    }
+    // The lobby's buttons first, as the client loads them (offices.py, _load_buttons): whether the corporation
+    // has an office here, which primes the office's item (officeManager.py 106; the transport sends that once
+    // for the station's Moniker); and where it has none, whether a player's corporation has items impounded
+    // (139 to 143).
+    const ownOffice = await hasCorpOfficeAt(held, req.webSessionID, stationID);
+    let impounded = false;
+    if (ownOffice) {
+      await heldTopLevelCall(held, req.webSessionID, "officeManager", "PrimeOfficeItem", [], null);
+    } else if (!isNpcCorporationID(held.corporationID)) {
+      impounded = (await heldTopLevelCall(held, req.webSessionID, "officeManager", "HasCorpImpoundedItems", [], null)).result === true;
     }
     const corporations = await heldTopLevelCall(held, req.webSessionID, "officeManager", "GetCorporationsWithOffices", [], null);
     const free = held.structureID
@@ -4182,7 +4215,112 @@ app.get("/api/bridge/station/offices", requireAuth, async (req, res, next) => {
       // A set has no order of its own: by ID here, and by name on the page.
       corporationIDs: corporationIDs.sort((left, right) => left - right),
       freeOffices: free !== null && free >= 0 ? free : null,
+      ownOffice,
+      impounded,
+      // baseController.CanRent and CanUnrent: the renting role, and a director.
+      canRent: heldHasCorpRole(held, CORP_ROLE_CAN_RENT_OFFICE),
+      canGiveUp: heldHasCorpRole(held, CORP_ROLE_DIRECTOR),
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * The station whose office object a held pilot's rent, price or giving up is asked of; or null, with the answer
+ * already sent saying why there is none. In a structure the client's lobby has the same buttons; here they are
+ * not built, and the structure's services are not this BFF's to offer.
+ */
+async function officeStationOf(req, res, held) {
+  await readHeldFlight(held, req.webSessionID);
+  const stationID = inventoryLocationID(held);
+  const refuse = (error, message) => { res.status(409).json({ ok: false, error, message }); return null; };
+  if (!stationID) return refuse("NOT_DOCKED", "An office is rented or given up while docked in the station.");
+  if (!(Boolean(gamePortPilots) && isGamePortHandle(held.bridgeSessionID))) {
+    return refuse("OFFICES_NOT_ON_THIS_TRANSPORT", "This pilot's connection does not carry a station's offices.");
+  }
+  if (held.structureID) return refuse("OFFICE_IN_A_STRUCTURE", "An office in a structure is not rented or given up from here.");
+  return stationID;
+}
+
+/** A pilot without the role is answered as the client answers it: with no button. */
+function refuseWithoutOfficeRole(res, held, role, message) {
+  if (heldHasCorpRole(held, role)) return false;
+  res.status(403).json({ ok: false, error: "OFFICE_ROLE_MISSING", message });
+  return true;
+}
+
+/**
+ * GET /api/bridge/station/office/quote — what an office in this station costs the pilot's corporation, for thirty
+ * days (appConst.rentalPeriodOffice). The retail lobby asks it as its rent button is pressed, of the station's
+ * own office object and for the session's corporation (officeManager.py 114), and shows it before anything is
+ * paid.
+ */
+app.get("/api/bridge/station/office/quote", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) return;
+  try {
+    const stationID = await officeStationOf(req, res, held);
+    if (!stationID || refuseWithoutOfficeRole(res, held, CORP_ROLE_CAN_RENT_OFFICE, "Renting an office takes the role that may rent one.")) return;
+    const quoted = await heldTopLevelCall(held, req.webSessionID, "officeManager", "GetPriceQuote", [Number(held.corporationID) || 0], null);
+    const cost = wholeWireNumber(quoted.result);
+    if (cost === null || cost < 0) {
+      res.status(502).json({ ok: false, error: "OFFICE_PRICE_UNREADABLE", message: "The station did not say what an office costs." });
+      return;
+    }
+    res.json({ ok: true, stationID, cost, days: OFFICE_RENTAL_DAYS });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/bridge/station/office/rent { cost, confirm: true } — rent the corporation an office in this station,
+ * at the price the player was shown, as the retail lobby does once the player has said yes
+ * (officeManager.py 117: RentOffice(cost) on the station's own office object). The server takes the rent from
+ * the corporation's wallet and says the office changed; nothing here says so in its place.
+ */
+app.post("/api/bridge/station/office/rent", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Rent your corporation an office in this station, and pay its rent from the corporation's wallet?")) return;
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) return;
+  try {
+    const stationID = await officeStationOf(req, res, held);
+    if (!stationID || refuseWithoutOfficeRole(res, held, CORP_ROLE_CAN_RENT_OFFICE, "Renting an office takes the role that may rent one.")) return;
+    const cost = (req.body || {}).cost;
+    if (typeof cost !== "number" || !Number.isSafeInteger(cost) || cost < 0) {
+      res.status(400).json({ ok: false, error: "INVALID_OFFICE_PRICE", message: "The rent goes with the price that was quoted." });
+      return;
+    }
+    if (await hasCorpOfficeAt(held, req.webSessionID, stationID)) {
+      res.status(409).json({ ok: false, error: "OFFICE_ALREADY_RENTED", message: "Your corporation has an office in this station already." });
+      return;
+    }
+    await heldTopLevelCall(held, req.webSessionID, "officeManager", "RentOffice", [cost], null);
+    res.json({ ok: true, stationID });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/bridge/station/office/give-up { confirm: true } — give up the corporation's office in this station, as
+ * the retail lobby does once the player has said yes (officeManager.py 122: UnrentOffice() on the station's own
+ * office object).
+ */
+app.post("/api/bridge/station/office/give-up", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Give up your corporation's office in this station?")) return;
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) return;
+  try {
+    const stationID = await officeStationOf(req, res, held);
+    if (!stationID || refuseWithoutOfficeRole(res, held, CORP_ROLE_DIRECTOR, "Giving up an office takes a director.")) return;
+    if (!await hasCorpOfficeAt(held, req.webSessionID, stationID)) {
+      res.status(409).json({ ok: false, error: "NO_OFFICE_HERE", message: "Your corporation has no office in this station." });
+      return;
+    }
+    await heldTopLevelCall(held, req.webSessionID, "officeManager", "UnrentOffice", [], null);
+    res.json({ ok: true, stationID });
   } catch (error) {
     next(error);
   }
@@ -17277,7 +17415,11 @@ async function readHeldFlight(held, webSessionID) {
     // until a full re-login. Adopt a real docked station here; leave the last
     // station in place while in space (agents/inventory are docked-only). The
     // active ship is owned by the board flow, so it is not synced here.
-    const flight = outcome && outcome.flight ? outcome.flight : {};
+    // The roles the session has in its corporation, where the transport says them (the game port does, as the
+    // digits of session.corprole; the gateway does not). Kept here for the routes that go by them, and left out
+    // of what the page is handed.
+    const { corpRole = null, ...flight } = outcome && outcome.flight ? outcome.flight : {};
+    held.corpRole = corpRole;
     if (flight.docked === true && Number(flight.stationID) > 0) {
       held.stationID = Number(flight.stationID);
       held.structureID = null;

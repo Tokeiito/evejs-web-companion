@@ -2571,48 +2571,106 @@ test("a gateway pilot's colonies are still read from the gateway's snapshot, in 
 
 // ── the lobby's offices where a pilot is docked ─────────────────────────────
 //
-// dockedUI/offices.py: the lobby lists the corporations with an office in the station
-// (officeManager.GetCorporationsWithOffices) and says how many offices are free (GetNumberOfUnrentedOffices),
-// each asked of the station's own office object. The gateway's list has neither.
+// dockedUI/offices.py: the lobby loads its buttons, then its list. The buttons go by the roles on the session, by
+// whether the corporation has an office in the station (officeManager.GetCorpOfficeAtLocation, which primes the
+// office's item once for the station's Moniker) and, where it has none, by whether it has items impounded there.
+// The list is the corporations with an office in the station and how many offices are free. Each is asked of the
+// station's own office object but the corporation's own offices. The gateway's list has none of them.
 
 const aSet = (...items) => ({ type: "objectex1", header: [{ type: "token", value: "__builtin__.set" }, [{ type: "list", items }]], list: [], dict: [] });
 const STRUCTURE_DOCKED_AT = 1052851966475;
+const HERE = SELECT_SESSION_ECHO.stationID;
+// appConst.corpRoleDirector, corpRoleCanRentOffice, and a chief executive's mask as this server's session has it.
+const [ROLE_DIRECTOR, ROLE_CAN_RENT, ROLE_CEO] = ["1", "562949953421312", "9223369906550996879"];
+const ownOfficesAt = (...stationIDs) => ({ list: stationIDs.map((stationID, index) => ({ type: "packedrow", fields: { officeID: 9000 + index, stationID } })) });
 
-/** A game port whose station's office object answers this for the corporations with offices, and this for the offices free. */
-function gamePortWithOffices(corporations, free, { dockedAt = { stationID: SELECT_SESSION_ECHO.stationID, structureID: null }, docked = true } = {}) {
+/**
+ * A game port whose pilot is docked, with these roles in this corporation; whose corporation has offices in these
+ * stations; and whose station's office object answers the corporations with offices, the offices free, whether
+ * the corporation has items impounded, and a price. An Error in place of an answer is thrown.
+ */
+function gamePortWithOffices(corporations, free, { dockedAt = { stationID: HERE, structureID: null }, docked = true, corpRole = "0", corporationID = SELECT_SESSION_ECHO.corporationID, ownOffices = [], impounded = false, quote = 10000, rent = null, giveUp = null } = {}) {
+  const answers = { GetCorporationsWithOffices: corporations, GetEmptyOfficeCount: free, HasCorpImpoundedItems: impounded, PrimeOfficeItem: null, GetPriceQuote: quote, RentOffice: rent, UnrentOffice: giveUp };
   const gamePort = fakeGateway({
     async selectCharacter() {
-      return { bridgeSessionID: GAME_PORT_SESSION_ID, service: "charUnboundMgr", method: "SelectCharacterID", result: null, notifications: [], session: { ...SELECT_SESSION_ECHO, ...dockedAt } };
+      return { bridgeSessionID: GAME_PORT_SESSION_ID, service: "charUnboundMgr", method: "SelectCharacterID", result: null, notifications: [], session: { ...SELECT_SESSION_ECHO, ...dockedAt, corporationID } };
     },
     async readFlightStatus() {
-      return { flight: { docked, inSpace: !docked, ...(docked ? dockedAt : { stationID: null, structureID: null }), solarSystemID: SELECT_SESSION_ECHO.solarSystemID, shipID: SELECT_SESSION_ECHO.shipID }, notifications: [] };
+      return { flight: { docked, inSpace: !docked, ...(docked ? dockedAt : { stationID: null, structureID: null }), solarSystemID: SELECT_SESSION_ECHO.solarSystemID, shipID: SELECT_SESSION_ECHO.shipID, corpRole: gamePort.corpRole }, notifications: [] };
     },
     async callMethod(service, method, args, kwargs, sessionFields, bridgeSessionID) {
       gamePort.asked.push([service, method, args, kwargs, bridgeSessionID]);
-      const answer = service === "officeManager" && method === "GetCorporationsWithOffices" ? corporations : service === "officeManager" && method === "GetEmptyOfficeCount" ? free : null;
+      const answer = service !== "officeManager" ? null : method === "GetMyCorporationsOffices" ? ownOfficesAt(...gamePort.ownOffices) : answers[method] ?? null;
       if (answer instanceof Error) throw answer;
       return { service, method, result: answer, notifications: [] };
     },
   });
-  gamePort.asked = [];
+  Object.assign(gamePort, { asked: [], corpRole, ownOffices });
   return gamePort;
 }
 const askedOfTheOffices = (backend) => backend.asked.filter(([service]) => service === "officeManager").map(([service, method, args, kwargs, handle]) => [method, args, kwargs, handle]);
-async function officesRoute(gamePort, gateway = fakeGateway(), transport = "gameport") {
+const methodsAsked = (backend) => askedOfTheOffices(backend).map(([method]) => method);
+/** A pilot chosen on a test server, with what the choosing asked forgotten. */
+async function atTheLobby(gamePort, gateway = fakeGateway(), transport = "gameport") {
   const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => transport });
   await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
   gamePort.asked.length = 0;
-  return apiRequest(baseUrl, "/api/bridge/station/offices");
+  return baseUrl;
 }
+const officesRoute = async (gamePort, gateway, transport) => apiRequest(await atTheLobby(gamePort, gateway, transport), "/api/bridge/station/offices");
+const NO_BUTTONS = { ownOffice: false, impounded: false, canRent: false, canGiveUp: false };
+const refusedBy = (code) => Object.assign(new Error(`The game server refused: ${code}.`), { code: "EVE_GATEWAY_CALL_FAILED", statusCode: 502 });
 
-test("a game-port pilot's station offices are read as the lobby reads them: the corporations with offices, then the offices free", async () => {
+test("a game-port pilot's station offices are read as the lobby reads them: its buttons' facts, then the corporations with offices, then the offices free", async () => {
   const gamePort = gamePortWithOffices(aSet(98000003, 98000000, 1000035), 17);
   const { response, payload } = await officesRoute(gamePort);
   assert.equal(response.status, 200, JSON.stringify(payload));
   // The corporations in the order of their IDs: a set has none of its own.
-  assert.deepEqual(payload, { ok: true, available: true, stationID: SELECT_SESSION_ECHO.stationID, corporationIDs: [1000035, 98000000, 98000003], freeOffices: 17 });
-  // Each asked by the service's name on the pilot's own session, with nothing: the transport makes them on the station's object.
-  assert.deepEqual(askedOfTheOffices(gamePort), [["GetCorporationsWithOffices", [], null, GAME_PORT_SESSION_ID], ["GetEmptyOfficeCount", [], null, GAME_PORT_SESSION_ID]]);
+  assert.deepEqual(payload, { ok: true, available: true, stationID: HERE, corporationIDs: [1000035, 98000000, 98000003], freeOffices: 17, ...NO_BUTTONS });
+  // Each asked by the service's name on the pilot's own session, with nothing: the transport makes all but the
+  // first on the station's object. A player's corporation with no office here is asked about its impounded items.
+  assert.deepEqual(askedOfTheOffices(gamePort), [
+    ["GetMyCorporationsOffices", [], null, GAME_PORT_SESSION_ID], ["HasCorpImpoundedItems", [], null, GAME_PORT_SESSION_ID],
+    ["GetCorporationsWithOffices", [], null, GAME_PORT_SESSION_ID], ["GetEmptyOfficeCount", [], null, GAME_PORT_SESSION_ID],
+  ]);
+});
+
+test("the lobby's buttons go by the corporation's office here, its impounded items, and the roles on the session", async () => {
+  // An office here: its item is primed, and nothing is asked of impounded items (officeManager.py 106, 141).
+  const withOffice = gamePortWithOffices(aSet(98000000), 5, { ownOffices: [60000004, HERE], corpRole: ROLE_CEO });
+  const rented = await officesRoute(withOffice);
+  assert.deepEqual([rented.payload.ownOffice, rented.payload.impounded, rented.payload.canRent, rented.payload.canGiveUp], [true, false, true, true]);
+  assert.deepEqual(methodsAsked(withOffice), ["GetMyCorporationsOffices", "PrimeOfficeItem", "GetCorporationsWithOffices", "GetEmptyOfficeCount"]);
+  // An office somewhere else is no office here.
+  const elsewhere = await officesRoute(gamePortWithOffices(aSet(), 5, { ownOffices: [60000004], impounded: true, corpRole: ROLE_CAN_RENT }));
+  assert.deepEqual([elsewhere.payload.ownOffice, elsewhere.payload.impounded, elsewhere.payload.canRent, elsewhere.payload.canGiveUp], [false, true, true, false]);
+  // baseController._HasRole: every bit of the role. A director without the renting role may give up and not rent.
+  const director = await officesRoute(gamePortWithOffices(aSet(), 5, { corpRole: ROLE_DIRECTOR }));
+  assert.deepEqual([director.payload.canRent, director.payload.canGiveUp], [false, true]);
+  // What is no mask is no role.
+  for (const corpRole of [undefined, null, "", "x", "-1", 3]) {
+    const { payload } = await officesRoute(gamePortWithOffices(aSet(), 5, { corpRole }));
+    assert.deepEqual([payload.canRent, payload.canGiveUp], [false, false], String(corpRole));
+  }
+  // An NPC corporation has nothing impounded, and is not asked (officeManager.py 139), at either end of their IDs.
+  for (const corporationID of [1000000, 1000044, 1999999]) {
+    const npc = gamePortWithOffices(aSet(), 5, { corporationID, impounded: true });
+    assert.deepEqual([(await officesRoute(npc)).payload.impounded, methodsAsked(npc)], [false, ["GetMyCorporationsOffices", "GetCorporationsWithOffices", "GetEmptyOfficeCount"]], String(corporationID));
+  }
+  for (const corporationID of [999999, 2000000]) {
+    const player = gamePortWithOffices(aSet(), 5, { corporationID, impounded: true });
+    assert.deepEqual([(await officesRoute(player)).payload.impounded, methodsAsked(player).includes("HasCorpImpoundedItems")], [true, true], String(corporationID));
+  }
+});
+
+test("the page is handed the flight's status without the roles on the session", async () => {
+  const gamePort = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CEO });
+  const baseUrl = await atTheLobby(gamePort);
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/status");
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.equal(payload.flight.docked, true);
+  assert.equal("corpRole" in payload.flight, false);
+  assert.doesNotMatch(JSON.stringify(payload), /9223369906550996879/);
 });
 
 test("the station's offices are read from whatever form the answers come in, and what is no number is left out", async () => {
@@ -2631,27 +2689,129 @@ test("in a structure the offices free are not asked for, as the client asks for 
   const gamePort = gamePortWithOffices(aSet(98000000), 5, { dockedAt: { stationID: null, structureID: STRUCTURE_DOCKED_AT } });
   const { response, payload } = await officesRoute(gamePort);
   assert.equal(response.status, 200, JSON.stringify(payload));
-  assert.deepEqual(payload, { ok: true, available: true, stationID: STRUCTURE_DOCKED_AT, corporationIDs: [98000000], freeOffices: null });
-  assert.deepEqual(askedOfTheOffices(gamePort), [["GetCorporationsWithOffices", [], null, GAME_PORT_SESSION_ID]]);
+  assert.deepEqual(payload, { ok: true, available: true, stationID: STRUCTURE_DOCKED_AT, corporationIDs: [98000000], freeOffices: null, ...NO_BUTTONS });
+  assert.deepEqual(methodsAsked(gamePort), ["GetMyCorporationsOffices", "HasCorpImpoundedItems", "GetCorporationsWithOffices"]);
 });
 
 test("a pilot in space has no station's offices, and a gateway pilot is told the read is not its transport's, with nothing asked", async () => {
   const inSpace = gamePortWithOffices(aSet(98000000), 5, { docked: false });
   const flying = await officesRoute(inSpace);
   assert.deepEqual([flying.response.status, flying.payload.error, askedOfTheOffices(inSpace)], [409, "NOT_DOCKED", []]);
-  // Through the gateway: the gateway's list has neither read.
+  // Through the gateway: the gateway's list has none of these reads.
   const gateway = fakeGateway({ async callMethod(service, method) { gateway.asked.push([service, method]); return { service, method, result: null, notifications: [] }; } });
   gateway.asked = [];
   const gamePort = gamePortWithOffices(aSet(98000000), 5);
   const { response, payload } = await officesRoute(gamePort, gateway, "gateway");
   assert.equal(response.status, 200, JSON.stringify(payload));
-  assert.deepEqual(payload, { ok: true, available: false, stationID: SELECT_SESSION_ECHO.stationID, corporationIDs: [], freeOffices: null });
+  assert.deepEqual(payload, { ok: true, available: false, stationID: HERE, corporationIDs: [], freeOffices: null, ...NO_BUTTONS });
   assert.deepEqual([askedOfTheOffices(gamePort), gateway.asked.filter(([service]) => service === "officeManager")], [[], []]);
 });
 
 test("a station's offices that cannot be read are an error, not a station with none", async () => {
-  const refused = Object.assign(new Error("The game server refused officeManager.GetCorporationsWithOffices."), { code: "EVE_GATEWAY_CALL_FAILED", statusCode: 502 });
-  const { response, payload } = await officesRoute(gamePortWithOffices(refused, 5));
+  const { response, payload } = await officesRoute(gamePortWithOffices(refusedBy("GetCorporationsWithOffices"), 5));
   assert.equal(response.ok, false, JSON.stringify(payload));
   assert.equal(payload.ok, false);
+});
+
+// ── an office rented and given up ────────────────────────────────────────────
+//
+// dockedUI/offices.py: _rent_office asks the price (officeManager.GetPriceQuote, for the session's corporation),
+// asks the player, and rents at that price; _unrent_office asks the player and gives the office up. The rent button
+// is there for a pilot with the renting role whose corporation has no office in the station, and the other for a
+// director whose corporation has one.
+
+const quoteRoute = async (gamePort) => apiRequest(await atTheLobby(gamePort), "/api/bridge/station/office/quote");
+const rentRoute = async (gamePort, body) => apiRequest(await atTheLobby(gamePort), "/api/bridge/station/office/rent", { method: "POST", body });
+const giveUpRoute = async (gamePort, body) => apiRequest(await atTheLobby(gamePort), "/api/bridge/station/office/give-up", { method: "POST", body });
+const ownCorporation = SELECT_SESSION_ECHO.corporationID;
+
+test("the price of an office is asked for the pilot's own corporation, of a pilot who may rent one", async () => {
+  const gamePort = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CAN_RENT, quote: { type: "long", value: "100113" } });
+  const { response, payload } = await quoteRoute(gamePort);
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  // appConst.rentalPeriodOffice: thirty days.
+  assert.deepEqual(payload, { ok: true, stationID: HERE, cost: 100113, days: 30 });
+  assert.deepEqual(askedOfTheOffices(gamePort), [["GetPriceQuote", [ownCorporation], null, GAME_PORT_SESSION_ID]]);
+  // A price of nought is a price.
+  assert.equal((await quoteRoute(gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CAN_RENT, quote: 0 }))).payload.cost, 0);
+  // What is no price is not handed on as one.
+  for (const quote of [null, "cheap", -5, 10.5]) {
+    const unreadable = await quoteRoute(gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CAN_RENT, quote }));
+    assert.deepEqual([unreadable.response.status, unreadable.payload.error], [502, "OFFICE_PRICE_UNREADABLE"], String(quote));
+  }
+  // Without the renting role there is no button in the client, and nothing is asked here.
+  const director = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_DIRECTOR });
+  const refused = await quoteRoute(director);
+  assert.deepEqual([refused.response.status, refused.payload.error, askedOfTheOffices(director)], [403, "OFFICE_ROLE_MISSING", []]);
+});
+
+test("an office is rented at the price the player was shown, once the player has said yes", async () => {
+  const gamePort = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CAN_RENT, ownOffices: [60000004] });
+  const baseUrl = await atTheLobby(gamePort);
+  const rent = (body) => apiRequest(baseUrl, "/api/bridge/station/office/rent", { method: "POST", body });
+  // Not said yes to: nothing is asked.
+  const unconfirmed = await rent({ cost: 10000 });
+  assert.deepEqual([unconfirmed.response.status, unconfirmed.payload.error, askedOfTheOffices(gamePort)], [400, "CONFIRMATION_REQUIRED", []]);
+  const { response, payload } = await rent({ cost: 10000, confirm: true });
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.deepEqual(payload, { ok: true, stationID: HERE });
+  // The corporation's offices looked at first, then the rent, with the price alone.
+  assert.deepEqual(askedOfTheOffices(gamePort), [["GetMyCorporationsOffices", [], null, GAME_PORT_SESSION_ID], ["RentOffice", [10000], null, GAME_PORT_SESSION_ID]]);
+  // A price that is no price is refused before anything is asked.
+  for (const cost of [undefined, null, "10000", -1, 10.5, Number.MAX_SAFE_INTEGER + 2]) {
+    gamePort.asked.length = 0;
+    const bad = await rent({ cost, confirm: true });
+    assert.deepEqual([bad.response.status, bad.payload.error, methodsAsked(gamePort)], [400, "INVALID_OFFICE_PRICE", []], String(cost));
+  }
+});
+
+test("an office is not rented by a pilot without the role, where the corporation has one already, or in a structure", async () => {
+  const noRole = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_DIRECTOR });
+  const refused = await rentRoute(noRole, { cost: 10000, confirm: true });
+  assert.deepEqual([refused.response.status, refused.payload.error, methodsAsked(noRole)], [403, "OFFICE_ROLE_MISSING", []]);
+  const already = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CEO, ownOffices: [HERE] });
+  const again = await rentRoute(already, { cost: 10000, confirm: true });
+  assert.deepEqual([again.response.status, again.payload.error, methodsAsked(already)], [409, "OFFICE_ALREADY_RENTED", ["GetMyCorporationsOffices"]]);
+  const structure = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CEO, dockedAt: { stationID: null, structureID: STRUCTURE_DOCKED_AT } });
+  for (const call of [() => rentRoute(structure, { cost: 10000, confirm: true }), () => giveUpRoute(structure, { confirm: true }), () => quoteRoute(structure)]) {
+    const inStructure = await call();
+    assert.deepEqual([inStructure.response.status, inStructure.payload.error], [409, "OFFICE_IN_A_STRUCTURE"]);
+  }
+  assert.deepEqual(methodsAsked(structure), []);
+  // In space, and through the gateway, there is no station's office object to ask.
+  const inSpace = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CEO, docked: false });
+  assert.deepEqual([(await rentRoute(inSpace, { cost: 10000, confirm: true })).payload.error, (await giveUpRoute(inSpace, { confirm: true })).payload.error, (await quoteRoute(inSpace)).payload.error], ["NOT_DOCKED", "NOT_DOCKED", "NOT_DOCKED"]);
+  const viaGateway = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CEO });
+  const gatewayBase = await atTheLobby(viaGateway, fakeGateway(), "gateway");
+  for (const [path, options] of [["/api/bridge/station/office/quote", {}], ["/api/bridge/station/office/rent", { method: "POST", body: { cost: 1, confirm: true } }], ["/api/bridge/station/office/give-up", { method: "POST", body: { confirm: true } }]]) {
+    const answered = await apiRequest(gatewayBase, path, options);
+    assert.deepEqual([answered.response.status, answered.payload.error], [409, "OFFICES_NOT_ON_THIS_TRANSPORT"], path);
+  }
+  assert.deepEqual(methodsAsked(viaGateway), []);
+});
+
+test("an office is given up by a director whose corporation has one here, once the player has said yes", async () => {
+  const gamePort = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_DIRECTOR, ownOffices: [HERE] });
+  const baseUrl = await atTheLobby(gamePort);
+  const giveUp = (body) => apiRequest(baseUrl, "/api/bridge/station/office/give-up", { method: "POST", body });
+  const unconfirmed = await giveUp({});
+  assert.deepEqual([unconfirmed.response.status, unconfirmed.payload.error, askedOfTheOffices(gamePort)], [400, "CONFIRMATION_REQUIRED", []]);
+  const { response, payload } = await giveUp({ confirm: true });
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.deepEqual(payload, { ok: true, stationID: HERE });
+  assert.deepEqual(askedOfTheOffices(gamePort), [["GetMyCorporationsOffices", [], null, GAME_PORT_SESSION_ID], ["UnrentOffice", [], null, GAME_PORT_SESSION_ID]]);
+  // Without the director's role, and where the corporation has no office here, there is no button in the client.
+  const renter = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CAN_RENT, ownOffices: [HERE] });
+  const noRole = await giveUpRoute(renter, { confirm: true });
+  assert.deepEqual([noRole.response.status, noRole.payload.error, methodsAsked(renter)], [403, "OFFICE_ROLE_MISSING", []]);
+  const none = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_DIRECTOR, ownOffices: [60000004] });
+  const nothing = await giveUpRoute(none, { confirm: true });
+  assert.deepEqual([nothing.response.status, nothing.payload.error, methodsAsked(none)], [409, "NO_OFFICE_HERE", ["GetMyCorporationsOffices"]]);
+});
+
+test("a rent or a giving up the server refuses is an error, and is not said to be done", async () => {
+  const rent = await rentRoute(gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CEO, rent: refusedBy("NotEnoughMoney") }), { cost: 10000, confirm: true });
+  assert.deepEqual([rent.response.ok, rent.payload.ok], [false, false], JSON.stringify(rent.payload));
+  const giveUp = await giveUpRoute(gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CEO, ownOffices: [HERE], giveUp: refusedBy("CrpAccessDenied") }), { confirm: true });
+  assert.deepEqual([giveUp.response.ok, giveUp.payload.ok], [false, false], JSON.stringify(giveUp.payload));
 });

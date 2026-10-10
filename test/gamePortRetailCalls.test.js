@@ -1426,7 +1426,38 @@ test("a station's offices are asked of the office manager's Moniker for where th
   // The corporation's own offices are asked by name wherever the pilot is.
   for (const context of [DOCKED, {}]) assert.deepEqual([retailForm("officeManager", "GetMyCorporationsOffices", [], null, context).status, retailForm("officeManager", "GetMyCorporationsOffices", [], null, context).moniker], ["same", false]);
   // The gateway's list has neither read of the station's object: the game port alone carries them.
-  assert.deepEqual(GAME_PORT_ONLY_CALLS.filter((pair) => pair.startsWith("officeManager.")), ["officeManager.GetCorporationsWithOffices", "officeManager.GetEmptyOfficeCount"]);
+  assert.deepEqual(GAME_PORT_ONLY_CALLS.filter((pair) => pair.startsWith("officeManager.")).slice(0, 2), ["officeManager.GetCorporationsWithOffices", "officeManager.GetEmptyOfficeCount"]);
+});
+
+test("an office is rented and given up on the station's own object: the price for the session's corporation, the rent with that price, the rest with nothing", () => {
+  // officeManager.py 114, 117, 122, 108, 143. Tranquility's recording of an office rented has, on the bound
+  // object, GetPriceQuote(98838096), the corporation's ID, answered 100113; then RentOffice(100113), answered
+  // None. The recording of one given up has UnrentOffice(), answered None, and HasCorpImpoundedItems() after it.
+  const SOURCE = "eve/client/script/ui/services/corporation/officeManager.py";
+  const OWN = { dockedAt: 60003760, corporationID: 98000001 };
+  const asked = (method, args, kwargs = null, context = OWN) => { const made = retailForm("officeManager", method, args, kwargs, context); return [made.status, made.args, made.kwargs, made.moniker, made.source]; };
+  assert.deepEqual(asked("GetPriceQuote", [98000001]), ["same", [98000001], null, true, `${SOURCE}:114`]);
+  assert.deepEqual(asked("RentOffice", [10000]), ["same", [10000], null, true, `${SOURCE}:117`]);
+  assert.deepEqual(asked("RentOffice", [0]), ["same", [0], null, true, `${SOURCE}:117`]);
+  for (const [method, line] of [["UnrentOffice", 122], ["PrimeOfficeItem", 108], ["HasCorpImpoundedItems", 143]]) {
+    assert.deepEqual(asked(method, []), ["same", [], null, true, `${SOURCE}:${line}`], method);
+    assert.equal(asked(method, [60003760])[0], "differs", method);
+    assert.equal(asked(method, [], { all: true })[0], "differs", method);
+  }
+  // The price is asked for the corporation the session is in, and for no other; with that one thing, and no keyword.
+  for (const args of [[98000002], [], [98000001, 1], ["98000001"], [null]]) assert.equal(asked("GetPriceQuote", args)[0], "differs", JSON.stringify(args));
+  assert.equal(asked("GetPriceQuote", [98000001], { all: true })[0], "differs");
+  assert.equal(asked("GetPriceQuote", [98000001], null, { dockedAt: 60003760 })[0], "differs");
+  assert.match(retailForm("officeManager", "GetPriceQuote", [98000002], null, OWN).note, /session's corporation/);
+  // The rent goes with the one price, a whole number that is not below nought.
+  for (const args of [[], [10000, 1], ["10000"], [10000.5], [-1], [null]]) assert.equal(asked("RentOffice", args)[0], "differs", JSON.stringify(args));
+  assert.equal(asked("RentOffice", [10000], { all: true })[0], "differs");
+  assert.match(retailForm("officeManager", "RentOffice", [], null, OWN).note, /price/);
+  // In space the client's office manager has no station, and asks none of them.
+  for (const [method, args] of [["GetPriceQuote", [98000001]], ["RentOffice", [10000]], ["UnrentOffice", []], ["PrimeOfficeItem", []], ["HasCorpImpoundedItems", []]]) {
+    const inSpace = retailForm("officeManager", method, args, null, { corporationID: 98000001 });
+    assert.deepEqual([inSpace.status, inSpace.moniker], ["web-only", false], method);
+  }
 });
 
 test("a customs office's tax rate is asked of the system's orbital registry, on a Moniker made for the call, and only in space", () => {
@@ -1475,7 +1506,10 @@ test("what goes up into a customs office, and comes down from one, goes as the c
 });
 
 test("the game port carries the customs office's transfer and the station's offices, which the web gateway's list has not got", () => {
-  assert.deepEqual(GAME_PORT_ONLY_CALLS, ["invbroker.ImportExportWithPlanet", "officeManager.GetCorporationsWithOffices", "officeManager.GetEmptyOfficeCount"]);
+  assert.deepEqual(GAME_PORT_ONLY_CALLS, [
+    "invbroker.ImportExportWithPlanet", "officeManager.GetCorporationsWithOffices", "officeManager.GetEmptyOfficeCount",
+    "officeManager.GetPriceQuote", "officeManager.HasCorpImpoundedItems", "officeManager.PrimeOfficeItem", "officeManager.RentOffice", "officeManager.UnrentOffice",
+  ]);
   // When the gateway's list gains one of these, it is the gateway's too, and comes off this list.
   for (const pair of GAME_PORT_ONLY_CALLS) assert.equal(contract.gatewayAllowlist.pairs.includes(pair), false, pair);
 });

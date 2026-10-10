@@ -25,12 +25,15 @@ interface PushSource {
 /** A docked pilot online with its live channel open. `answer` is what the offices read answers now; `hold` keeps an answer back until it is let go. */
 async function docked() {
   const store = createClientStore();
-  const state: { answer: unknown; fail: boolean; hold: Promise<void> | null } = {
+  const state: { answer: unknown; fail: boolean; hold: Promise<void> | null; quote: unknown; refuse: string | null } = {
     answer: { ok: true, available: true, stationID: STATION, corporationIDs: [98000000, 98000003], freeOffices: 17 },
     fail: false,
     hold: null,
+    quote: { ok: true, stationID: STATION, cost: 10000, days: 30 },
+    refuse: null,
   };
   let reads = 0;
+  const sent: Array<[string, unknown]> = [];
   const fetchImpl = (async (input: unknown, init?: { method?: string; body?: unknown }) => {
     const path = String(input);
     const body = init && typeof init.body === "string" ? JSON.parse(init.body) : {};
@@ -47,6 +50,17 @@ async function docked() {
         answer = { ok: false, error: "EVE_GATEWAY_UNREACHABLE", message: "The game server is unreachable." };
       } else {
         answer = answered;
+      }
+    } else if (path === "/api/bridge/station/office/quote") {
+      sent.push([path, null]);
+      answer = state.quote;
+    } else if (path === "/api/bridge/station/office/rent" || path === "/api/bridge/station/office/give-up") {
+      sent.push([path, body]);
+      if (state.refuse) {
+        status = 502;
+        answer = { ok: false, error: "EVE_GATEWAY_CALL_FAILED", message: state.refuse };
+      } else {
+        answer = { ok: true, stationID: STATION };
       }
     } else if (path === "/api/bridge/call") {
       answer = { ok: true, service: body.service, method: body.method, result: null, notifications: [] };
@@ -86,10 +100,11 @@ async function docked() {
     await new Promise((resolve) => setTimeout(resolve, 25));
   };
   const shown = () => store.station.get().offices;
-  return { store, flow, state, push, pushTogether, shown, reads: () => reads };
+  return { store, flow, state, push, pushTogether, shown, reads: () => reads, sent };
 }
 
 const OFFICE = { type: "long", value: "1054657764826" };
+const NO_BUTTONS = { ownOffice: false, impounded: false, canRent: false, canGiveUp: false };
 
 test("the lobby's offices are listed when the player asks, and again at each office rented or given up there", async () => {
   const { flow, state, push, shown, reads } = await docked();
@@ -97,15 +112,15 @@ test("the lobby's offices are listed when the player asks, and again at each off
   await push("OnOfficeRentalChange", [CORPORATION, OFFICE]);
   assert.deepEqual([shown(), reads()], [null, 0]);
   await flow.loadStationOffices();
-  assert.deepEqual([shown(), reads()], [{ available: true, corporationIDs: [98000000, 98000003], freeOffices: 17 }, 1]);
+  assert.deepEqual([shown(), reads()], [{ available: true, corporationIDs: [98000000, 98000003], freeOffices: 17, ...NO_BUTTONS }, 1]);
   // Another corporation rents an office here: the lobby lists them again, whoever's the office is.
   state.answer = { ok: true, available: true, stationID: STATION, corporationIDs: [98000000, 98000003, 98000005], freeOffices: 16 };
   await push("OnOfficeRentalChange", [98000005, OFFICE]);
-  assert.deepEqual([shown(), reads()], [{ available: true, corporationIDs: [98000000, 98000003, 98000005], freeOffices: 16 }, 2]);
+  assert.deepEqual([shown(), reads()], [{ available: true, corporationIDs: [98000000, 98000003, 98000005], freeOffices: 16, ...NO_BUTTONS }, 2]);
   // And the pilot's own gives one up.
   state.answer = { ok: true, available: true, stationID: STATION, corporationIDs: [98000003, 98000005], freeOffices: 17 };
   await push("OnOfficeRentalChange", [CORPORATION, OFFICE]);
-  assert.deepEqual([shown(), reads()], [{ available: true, corporationIDs: [98000003, 98000005], freeOffices: 17 }, 3]);
+  assert.deepEqual([shown(), reads()], [{ available: true, corporationIDs: [98000003, 98000005], freeOffices: 17, ...NO_BUTTONS }, 3]);
   // Another notice lists nothing.
   await push("OnOfficeSomethingElse", [CORPORATION, OFFICE]);
   await push("OnCharNowInStation", [[140000001, 1000044, null, null]]);
@@ -117,16 +132,23 @@ test("what the read answers is taken for what it says and no more", async () => 
   // A pilot whose transport does not carry the read.
   state.answer = { ok: true, available: false, stationID: STATION, corporationIDs: [], freeOffices: null };
   await flow.loadStationOffices();
-  assert.deepEqual(shown(), { available: false, corporationIDs: [], freeOffices: null });
+  assert.deepEqual(shown(), { available: false, corporationIDs: [], freeOffices: null, ...NO_BUTTONS });
   // What is no corporation is left out, and a count that is no whole number is no count.
   state.answer = { ok: true, available: true, stationID: STATION, corporationIDs: [98000003, "x", null, 0, -2, 2.5, 98000000], freeOffices: "many" };
   await flow.loadStationOffices();
-  assert.deepEqual(shown(), { available: true, corporationIDs: [98000003, 98000000], freeOffices: null });
+  assert.deepEqual(shown(), { available: true, corporationIDs: [98000003, 98000000], freeOffices: null, ...NO_BUTTONS });
   for (const [freeOffices, expected] of [[0, 0], [-1, null], [1.5, null], [undefined, null]] as const) {
     state.answer = { ok: true, available: true, stationID: STATION, corporationIDs: "none", freeOffices };
     await flow.loadStationOffices();
-    assert.deepEqual(shown(), { available: true, corporationIDs: [], freeOffices: expected }, String(freeOffices));
+    assert.deepEqual(shown(), { available: true, corporationIDs: [], freeOffices: expected, ...NO_BUTTONS }, String(freeOffices));
   }
+  // The buttons' facts are each what the answer says outright, and nothing else is yes.
+  state.answer = { ok: true, available: true, stationID: STATION, corporationIDs: [], freeOffices: 3, ownOffice: true, impounded: true, canRent: true, canGiveUp: true };
+  await flow.loadStationOffices();
+  assert.deepEqual(shown(), { available: true, corporationIDs: [], freeOffices: 3, ownOffice: true, impounded: true, canRent: true, canGiveUp: true });
+  state.answer = { ok: true, available: true, stationID: STATION, corporationIDs: [], freeOffices: 3, ownOffice: "yes", impounded: 1, canRent: {}, canGiveUp: null };
+  await flow.loadStationOffices();
+  assert.deepEqual(shown(), { available: true, corporationIDs: [], freeOffices: 3, ...NO_BUTTONS });
 });
 
 test("a read that fails leaves what was shown, and one that answers after the pilot has gone elsewhere is not shown", async () => {
@@ -159,7 +181,7 @@ test("told twice of one office, of the station and of the corporation, the page 
   await flow.loadStationOffices();
   state.answer = { ok: true, available: true, stationID: STATION, corporationIDs: [98000003], freeOffices: 18 };
   await pushTogether(["OnOfficeRentalChange", [98000000, OFFICE]], ["OnOfficeRentalChange", [98000000, OFFICE]]);
-  assert.deepEqual([shown(), reads()], [{ available: true, corporationIDs: [98000003], freeOffices: 18 }, 2]);
+  assert.deepEqual([shown(), reads()], [{ available: true, corporationIDs: [98000003], freeOffices: 18, ...NO_BUTTONS }, 2]);
   // Once that listing is done, the next notice lists again.
   await push("OnOfficeRentalChange", [98000000, OFFICE]);
   assert.equal(reads(), 3);
@@ -169,4 +191,37 @@ test("told twice of one office, of the station and of the corporation, the page 
   state.fail = false;
   await push("OnOfficeRentalChange", [98000000, OFFICE]);
   assert.equal(reads(), 5);
+});
+
+// ── an office rented and given up ────────────────────────────────────────────
+//
+// dockedUI/offices.py: the rent button asks the price, asks the player, and rents at that price; the other asks the
+// player and gives the office up. Neither lists anything itself: the server's notice of the office does.
+
+test("an office's price is asked as the button is pressed, and the rent goes with the price the player was shown", async () => {
+  const { flow, state, sent, reads } = await docked();
+  await flow.loadStationOffices();
+  assert.deepEqual(await flow.quoteStationOffice(), { cost: 10000, days: 30 });
+  assert.deepEqual(sent, [["/api/bridge/station/office/quote", null]]);
+  await flow.rentStationOffice(10000);
+  assert.deepEqual(sent.at(-1), ["/api/bridge/station/office/rent", { cost: 10000, confirm: true }]);
+  // Nothing is listed again by the rent: the notice does that.
+  assert.equal(reads(), 1);
+  // A price of nought is a price; what is no price is not handed on as one.
+  state.quote = { ok: true, stationID: STATION, cost: 0, days: 30 };
+  assert.deepEqual(await flow.quoteStationOffice(), { cost: 0, days: 30 });
+  for (const quote of [{ ok: true, cost: "10000", days: 30 }, { ok: true, cost: -1, days: 30 }, { ok: true, cost: 10.5, days: 30 }, { ok: true, days: 30 }, { ok: true, cost: 100, days: 0 }, { ok: true, cost: 100 }]) {
+    state.quote = quote;
+    await assert.rejects(flow.quoteStationOffice(), /did not say what an office costs/, JSON.stringify(quote));
+  }
+});
+
+test("an office is given up with the player's yes, and a rent or a giving up that is refused says why", async () => {
+  const { flow, state, sent, reads } = await docked();
+  await flow.loadStationOffices();
+  await flow.giveUpStationOffice();
+  assert.deepEqual([sent, reads()], [[["/api/bridge/station/office/give-up", { confirm: true }]], 1]);
+  state.refuse = "Your corporation's wallet has too little for the rent.";
+  await assert.rejects(flow.rentStationOffice(10000), /too little for the rent/);
+  await assert.rejects(flow.giveUpStationOffice(), /too little for the rent/);
 });

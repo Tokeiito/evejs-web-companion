@@ -216,6 +216,11 @@ const OFFICE_MANAGER = "officeManager";
  */
 const STATION_OFFICES = "GetCorporationsWithOffices";
 /**
+ * The call the client makes once for a station's Moniker, where its corporation has an office there
+ * (officeManager.GetCorpOfficeAtLocation, 106: the Moniker's isPrimed).
+ */
+const PRIME_OFFICE = "PrimeOfficeItem";
+/**
  * What a read of the office manager's is kept as: the offices the pilot's corporation rents, wherever they are
  * (officeManager.corp_offices: GetMyCorporationsOffices(), officeManager.py 41), asked with nothing. Null for any
  * other read, and for one with something sent beside it, which is no call of the client's and is asked as it came.
@@ -1100,6 +1105,8 @@ function createGamePortPilots({
       station: createPilotStation(),
       /** The corporations with offices where the pilot is docked, as the station's office object answered (STATION_OFFICES). */
       stationOffices: createKeptReads(),
+      /** Whether the office's item was primed on the Moniker for where the pilot is docked (PRIME_OFFICE): its answer, kept while docked there. */
+      officePrimed: createKeptReads(),
       stationWork: Promise.resolve(),
       /** What each container bound for the BFF lists, as the server answered, until something may have changed it (INVENTORY_LISTINGS). */
       listings: createKeptReads(),
@@ -1166,7 +1173,10 @@ function createGamePortPilots({
       // station/base.py OnSessionChanged and ProcessSessionChange: out of a station, its guests and its item are let go.
       if ("stationid" in changes) entry.station.left();
       // officeManager.DoSessionChanging and OnSessionChanged (58, 66): another station or structure, or none, and its offices are not this one's.
-      if ("stationid" in changes || "structureid" in changes) entry.stationOffices.forget();
+      if ("stationid" in changes || "structureid" in changes) {
+        entry.stationOffices.forget();
+        entry.officePrimed.forget();
+      }
       // fleetSvc.ProcessSessionChange: in no fleet, there is no fleet's object.
       if ("fleetid" in changes) {
         entry.fleetKept.sessionChanged();
@@ -1361,6 +1371,14 @@ function createGamePortPilots({
     if (service === OFFICE_MANAGER && method === STATION_OFFICES && form.moniker && form.args.length === 0 && form.kwargs === null) {
       const kept = await run(entry, service, method, () => entry.stationOffices.read(method, () => {
         // Asked of the service by name and made on its moniker, as any call of a moniker's is noted.
+        ledger.note(service, method, form.status === "same" ? { ...form, status: "reshaped" } : form);
+        return monikerCall(entry, service, method, [], null);
+      }));
+      return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
+    }
+    // The office's item is primed once for a station's Moniker, whatever is rented or given up there since.
+    if (service === OFFICE_MANAGER && method === PRIME_OFFICE && form.moniker && form.args.length === 0 && form.kwargs === null) {
+      const kept = await run(entry, service, method, () => entry.officePrimed.read(method, () => {
         ledger.note(service, method, form.status === "same" ? { ...form, status: "reshaped" } : form);
         return monikerCall(entry, service, method, [], null);
       }));
@@ -1874,6 +1892,10 @@ function createGamePortPilots({
         shipID: place.shipID,
         shipTypeID: ship ? ship.typeID : null,
         shipIsCapsule: ship ? ship.isCapsule : null,
+        // session.corprole: the roles the pilot has in its corporation, as the server's session has them now. The
+        // client's lobby reads its buttons off it (dockedUI/controllers/baseController.py, _HasRole). A 64-bit
+        // mask, so as its digits. The BFF keeps it for itself and hands the page none of it.
+        corpRole: String(wholeOf(entry.session.attributes.corprole) ?? 0n),
         // Movement is the pilot's own ball in its ballpark; nothing to say when docked or before the state has come.
         ...(place.inSpace && entry.space && entry.space.park.validState ? projectFlight(entry.space.park) : { shipMode: null, shipSpeedFraction: null }),
       },

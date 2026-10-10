@@ -41,6 +41,7 @@ import type {
   InventoryPlace,
   OnlineCharacterState,
   SlotFamily,
+  StationOfficeQuote,
   StationOffices,
   StationStatic,
   QuestionAnswer,
@@ -836,7 +837,35 @@ export async function loadStationOffices(options: ApiOptions = {}): Promise<Stat
     available: data.available === true,
     corporationIDs: listed.filter((id): id is number => typeof id === "number" && Number.isSafeInteger(id) && id > 0),
     freeOffices: typeof free === "number" && Number.isSafeInteger(free) && free >= 0 ? free : null,
+    ownOffice: data.ownOffice === true,
+    impounded: data.impounded === true,
+    canRent: data.canRent === true,
+    canGiveUp: data.canGiveUp === true,
   };
+}
+
+/**
+ * What an office in this station costs the pilot's corporation, asked as the
+ * retail lobby asks it when its rent button is pressed. An answer that is no
+ * price is an error: the player is never shown a price nobody quoted.
+ */
+export async function quoteStationOffice(options: ApiOptions = {}): Promise<StationOfficeQuote> {
+  const data = await getJson("/api/bridge/station/office/quote", options);
+  const { cost, days } = data;
+  if (typeof cost !== "number" || !Number.isSafeInteger(cost) || cost < 0 || typeof days !== "number" || !Number.isSafeInteger(days) || days <= 0) {
+    throw new Error("The station did not say what an office costs.");
+  }
+  return { cost, days };
+}
+
+/** Rent the corporation an office in this station at the price the player was shown and said yes to. */
+export async function rentStationOffice(cost: number, options: ApiOptions = {}): Promise<void> {
+  await postJson("/api/bridge/station/office/rent", { cost, confirm: true }, options);
+}
+
+/** Give up the corporation's office in this station, the player having said yes. */
+export async function giveUpStationOffice(options: ApiOptions = {}): Promise<void> {
+  await postJson("/api/bridge/station/office/give-up", { confirm: true }, options);
 }
 
 /**

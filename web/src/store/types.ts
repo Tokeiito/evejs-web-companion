@@ -93,6 +93,19 @@ export interface StationOffices {
   readonly corporationIDs: readonly number[];
   /** Null where there is no count: a structure has none. */
   readonly freeOffices: number | null;
+  /** Whether the pilot's corporation has an office here. */
+  readonly ownOffice: boolean;
+  /** Whether the pilot's corporation, with no office here, has items impounded here. */
+  readonly impounded: boolean;
+  /** The retail lobby's two checks of the session's roles: the renting role, and a director. */
+  readonly canRent: boolean;
+  readonly canGiveUp: boolean;
+}
+
+/** What an office in the station costs the pilot's corporation, and the days that pays for. */
+export interface StationOfficeQuote {
+  readonly cost: number;
+  readonly days: number;
 }
 
 /** One docked guest from station.GetGuests: (charID, corp, alliance, warFaction). */

@@ -89,7 +89,7 @@ const EARLIER_WRITE_METHODS = freezeMethodMap({
 
 const FEATURE_WRITE_METHODS = freezeMethodMap({
   repairSvc: ["RepairItems"],
-  officeManager: ["RentOffice"],
+  officeManager: ["RentOffice", "UnrentOffice"],
   // Direct acquisition belongs only to the reviewed Factory route. Keep the
   // generic bridge closed even if a future runtime allowlist grows.
   skillHandler: ["PurchaseSkills"],

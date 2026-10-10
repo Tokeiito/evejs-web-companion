@@ -137,7 +137,8 @@ interface Scene {
   readonly container?: boolean;
   readonly guests?: boolean;
   /** The lobby's offices as the store has them once listed; left out, they were never listed. */
-  readonly offices?: { readonly available: boolean; readonly corporationIDs: readonly number[]; readonly freeOffices: number | null };
+  readonly offices?: { readonly available: boolean; readonly corporationIDs: readonly number[]; readonly freeOffices: number | null;
+    readonly ownOffice?: boolean; readonly impounded?: boolean; readonly canRent?: boolean; readonly canGiveUp?: boolean };
   readonly names?: boolean;
   readonly actionError?: string;
   readonly hangarError?: string;
@@ -185,7 +186,7 @@ function panel(options: Scene = {}): string {
     } as never);
   }
   if (options.offices) {
-    store.apply({ type: "station/offices", offices: options.offices } as never);
+    store.apply({ type: "station/offices", offices: { ownOffice: false, impounded: false, canRent: false, canGiveUp: false, ...options.offices } } as never);
   }
   if (options.loaded !== false) {
     store.apply({
@@ -854,4 +855,46 @@ test("a corporation whose name is not known yet is a dash, never its number", ()
   const block = officesBlock(panel({ names: false, offices: { available: true, corporationIDs: [OFFICE_CORP_ELYSIAN], freeOffices: 3 } }));
   assert.match(block, /1 rented · 3 free/);
   assert.doesNotMatch(block, /98000000/);
+});
+
+// ── the lobby's buttons ──────────────────────────────────────────────────────
+//
+// dockedUI/offices.py, _load_buttons: the rent button for a pilot who may rent whose corporation has no office in
+// the station; the other for a director whose corporation has one. A button the retail lobby would not show is
+// not on the page.
+
+/** The buttons of the Offices block, by their words. */
+function officeButtons(body: string): string[] {
+  const services = locationView(body, "services");
+  const from = services.slice(services.indexOf("stn-offices-head"));
+  // The block is the last thing in its section; what follows the section is not the block's.
+  const block = from.slice(0, from.includes("</section>") ? from.indexOf("</section>") : from.length);
+  return [...block.matchAll(/<button[^>]*>([\s\S]*?)<\/button>/g)].map((match) => visibleText(match[1] ?? "").replace(/\s+/g, " ").trim()).filter((words) => words !== "↻");
+}
+const listed = (more: object) => panel({ offices: { available: true, corporationIDs: [OFFICE_CORP_ELYSIAN], freeOffices: 17, ...more } });
+
+test("the rent button is there for a pilot who may rent, whose corporation has no office here", () => {
+  assert.deepEqual(officeButtons(listed({ canRent: true, canGiveUp: true, ownOffice: false })), ["Rent an office"]);
+  // With an office here already there is nothing to rent; without the role there is no button.
+  assert.deepEqual(officeButtons(listed({ canRent: true, ownOffice: true })), []);
+  assert.deepEqual(officeButtons(listed({ canRent: false, ownOffice: false })), []);
+});
+
+test("the giving up button is there for a director whose corporation has an office here", () => {
+  assert.deepEqual(officeButtons(listed({ canGiveUp: true, canRent: true, ownOffice: true })), ["Give up the office"]);
+  assert.deepEqual(officeButtons(listed({ canGiveUp: true, ownOffice: false })), []);
+  assert.deepEqual(officeButtons(listed({ canGiveUp: false, ownOffice: true })), []);
+});
+
+test("⚠ no office button is on the page before the offices are listed, or where the read is not the connection's", () => {
+  assert.deepEqual(officeButtons(panel()), []);
+  assert.deepEqual(officeButtons(panel({ offices: { available: false, corporationIDs: [], freeOffices: null, canRent: true, canGiveUp: true, ownOffice: true } })), []);
+});
+
+test("the block says whether the pilot's corporation has an office here, and when it has items impounded", () => {
+  assert.match(officesBlock(listed({ ownOffice: true })), /Your corporation has an office here/);
+  const none = officesBlock(listed({ ownOffice: false }));
+  assert.doesNotMatch(none, /Your corporation has an office here|impounded/);
+  assert.match(officesBlock(listed({ ownOffice: false, impounded: true })), /Your corporation has items impounded here/);
+  assert.doesNotMatch(officesBlock(listed({ ownOffice: true, impounded: false })), /impounded/);
 });
