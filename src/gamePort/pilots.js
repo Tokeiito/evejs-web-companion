@@ -66,6 +66,7 @@ const { createPilotStandings } = require("./pilotStandings");
 const { createPilotSkills } = require("./pilotSkills");
 const { createPilotJournal } = require("./pilotJournal");
 const { createKeptReads } = require("./keptReads");
+const { createPilotStation } = require("./pilotStation");
 const { isBridgeWritePair } = require("../bridgeCallPolicy");
 const { namedAfterCall, namedOnNotice, namedOnSessionChange } = require("./cachedCallsNamed");
 const { brokersFeeRate } = require("./brokerFee");
@@ -172,6 +173,13 @@ function notificationKeptAs(method, form) {
   if (method === "GetUnprocessed") return "unread";
   return method === "GetByGroupID" ? `group:${form.args[0]}` : null;
 }
+/**
+ * The two reads the client's station service answers from what it keeps, for a pilot docked in a station
+ * (pilotStation.js): the station's guests, and its own item.
+ */
+const STATION_KEPT = new Set(["station.GetGuests", "stationSvc.GetStationItemBits"]);
+/** A list or a tuple off the wire. */
+const isAList = (value) => Array.isArray(value) || Boolean(value && value.type === "list" && Array.isArray(value.items));
 const PLANET_MGR = "planetMgr";
 const PLANET_INFO = "GetPlanetInfo";
 /**
@@ -1063,6 +1071,9 @@ function createGamePortPilots({
       kept: Object.fromEntries(Object.keys(KEPT_UNTIL_CHANGED).map((service) => [service, createKeptReads()])),
       /** The two reads of a planet's own object that are kept by the planet, each as { at, answer } (planetRead). */
       planetReads: new Map(),
+      /** The station the pilot is docked in, as the client's station service keeps it; and its askings, one after another. */
+      station: createPilotStation(),
+      stationWork: Promise.resolve(),
       /** What each container bound for the BFF lists, as the server answered, until something may have changed it (INVENTORY_LISTINGS). */
       listings: createKeptReads(),
       /** marketQuote.GetAveragePrice for the items of the sale being made, by type (saleAveragesRead). */
@@ -1099,6 +1110,8 @@ function createGamePortPilots({
       afterSkillNotice(entry, entry.skills.feed(notification));
       afterCorporationNotice(entry, notification);
       entry.targets.feed(notification);
+      // station/base.py: a pilot arrived in the station, or left it.
+      entry.station.feed(notification);
       // invCache.OnItemChange: an item changed, and what a container lists may not be so any more.
       if (ITEM_NOTICES.has(notification.method)) entry.listings.forget();
       // What the client's own services tell its object cache to forget on this notice.
@@ -1119,6 +1132,8 @@ function createGamePortPilots({
       }
       // gameui.GetShipAccess: the ship's moniker it keeps is for the ship the pilot is in.
       if ("shipid" in changes) entry.monikers.delete("ship");
+      // station/base.py OnSessionChanged and ProcessSessionChange: out of a station, its guests and its item are let go.
+      if ("stationid" in changes) entry.station.left();
       // fleetSvc.ProcessSessionChange: in no fleet, there is no fleet's object.
       if ("fleetid" in changes) {
         entry.fleetKept.sessionChanged();
@@ -1298,6 +1313,13 @@ function createGamePortPilots({
         return targetsRead(entry, method);
       });
       return { service, method, result: wireToBridgeJson(kept), notifications: drain(entry) };
+    }
+    // The guests of the station a pilot is docked in, and the station's own item, are the client's station
+    // service's to answer, where they are asked as the client asks them. (For a pilot in no station nothing is
+    // ever had, and each asking is sent.)
+    if (STATION_KEPT.has(`${service}.${method}`) && form.args.length === 0 && form.kwargs === null) {
+      const kept = await run(entry, service, method, () => stationRead(entry, service, method, form));
+      return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
     // objectCaching.PerformCachedMethodCall: what the server marked as cached is answered from its first answer
     // for as long as the client would keep it. Nothing is sent, and nothing is counted.
@@ -1516,6 +1538,33 @@ function createGamePortPilots({
     }));
     entry.ownersWork = priming.catch(() => {});
     return priming;
+  }
+
+  // ── the station, as the client's station service keeps it ────────────────
+
+  /**
+   * station/base.py GetGuests (99) and GetStationItem (573): answered from what is kept for the station the pilot
+   * is in, and asked for, and noted, where nothing is. One reading at a time, so that two that find nothing kept
+   * ask once. An answer that is no list is handed on as it came with nothing kept of it, and so is one that came
+   * after the pilot had left that station.
+   */
+  function stationRead(entry, service, method, form) {
+    const ofGuests = service === "station";
+    const reading = entry.stationWork.then(async () => {
+      const stationID = attribute(entry, "stationid");
+      if (ofGuests ? entry.station.guestsKnown(stationID) : entry.station.itemKnown(stationID)) {
+        return ofGuests ? { type: "list", items: entry.station.guestsRead() } : entry.station.itemRead();
+      }
+      ledger.note(service, method, form);
+      const answered = await byName(entry.session, service, method, form);
+      if (isAList(answered) && attribute(entry, "stationid") === stationID) {
+        if (ofGuests) entry.station.guestsReceived(stationID, answered);
+        else entry.station.itemReceived(answered);
+      }
+      return answered;
+    });
+    entry.stationWork = reading.catch(() => {});
+    return reading;
   }
 
   // ── what the client's services keep until it changes ──────────────────────

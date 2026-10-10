@@ -6194,3 +6194,99 @@ test("a kept colony is asked for again after the server's word of a change, and 
   await pilots.callBoundMethod("invbroker", "ImportExportWithPlanet", [1054656331535, {}, { 2268: 1 }, 0.05], null, FIELDS, handle, boundHandle);
   assert.deepEqual(await read(), { info: colonies + 2, resources: 1 });
 });
+
+// station/base.py: the guests of the station a pilot is docked in are asked for once (GetGuests, 99) and from then
+// on are what the server says of each pilot who arrives or leaves (OnCharNowInStation, OnCharNoLongerInStation);
+// the station's own item is asked for while the one had is not this station's (GetStationItem, 573). Both are let
+// go when the pilot leaves the station. The answers and the notices below are in the shapes this server sent a
+// game-port pilot on 2026-10-10: a guest is [charID, corpID, allianceID, warFactionID], nought where there is none.
+
+const STATION_PAIRS = { allowed: new Set(["station.GetGuests", "stationSvc.GetStationItemBits"]) };
+const aGuest = (charID, corpID = 1000044, allianceID = 0) => [charID, corpID, allianceID, 0];
+const STATION_ITEM = [1000035, STATION, 14, 52678];
+function stationAnswers(more = {}) {
+  const asked = { guests: 0, item: 0 };
+  return { asked, answers: {
+    "station.GetGuests": () => { asked.guests += 1; return { type: "list", items: [aGuest(PILOT)] }; },
+    "stationSvc.GetStationItemBits": () => { asked.item += 1; return [...STATION_ITEM]; },
+    ...more,
+  } };
+}
+const guestsOf = async (pilots, handle, args = []) => (await pilots.callMethod("station", "GetGuests", args, null, FIELDS, handle)).result;
+const itemOf = async (pilots, handle) => (await pilots.callMethod("stationSvc", "GetStationItemBits", [], null, FIELDS, handle)).result;
+
+test("a docked pilot's guests are asked for once, and are then what the server said of who arrived and who left", async () => {
+  const { asked, answers } = stationAnswers();
+  const { pilots, session, handle } = await selected({ answers }, STATION_PAIRS);
+  assert.deepEqual([await guestsOf(pilots, handle), await guestsOf(pilots, handle)], Array(2).fill({ type: "list", items: [aGuest(PILOT)] }));
+  assert.equal(asked.guests, 1);
+  session.notify("OnCharNowInStation", [aGuest(140000003, 98000000, 99000000)]);
+  assert.deepEqual((await guestsOf(pilots, handle)).items, [aGuest(PILOT), aGuest(140000003, 98000000, 99000000)]);
+  session.notify("OnCharNoLongerInStation", [aGuest(140000003, 98000000, 99000000)]);
+  assert.deepEqual((await guestsOf(pilots, handle)).items, [aGuest(PILOT)]);
+  // Asked once in all, and noted once, where it was asked.
+  assert.deepEqual([asked.guests, session.calls.filter((call) => call.service === "station").length, ledgerOf(pilots, "station.GetGuests")[0]], [1, 1, { same: 1 }]);
+  // The notices still reach the page with the answers.
+  session.notify("OnCharNowInStation", [aGuest(140000004)]);
+  const told = await pilots.callMethod("station", "GetGuests", [], null, FIELDS, handle);
+  assert.deepEqual([told.notifications.map((notification) => notification.method), told.result.items.length], [["OnCharNowInStation"], 2]);
+  // With something sent beside it, it is no call of the client's: asked as it came, each time, and nothing kept of it.
+  await guestsOf(pilots, handle, [7]);
+  await guestsOf(pilots, handle, [7]);
+  assert.equal(asked.guests, 3);
+});
+
+test("two readings at once of guests not yet had ask once", async () => {
+  const { asked, answers } = stationAnswers();
+  const { pilots, handle } = await selected({ answers }, STATION_PAIRS);
+  const both = await Promise.all([guestsOf(pilots, handle), guestsOf(pilots, handle)]);
+  assert.deepEqual([both.map((answer) => answer.items), asked.guests], [[[aGuest(PILOT)], [aGuest(PILOT)]], 1]);
+});
+
+test("the station's own item is asked for once while the pilot is in that station", async () => {
+  const { asked, answers } = stationAnswers();
+  const { pilots, handle } = await selected({ answers }, STATION_PAIRS);
+  assert.deepEqual([await itemOf(pilots, handle), await itemOf(pilots, handle), asked.item], [STATION_ITEM, STATION_ITEM, 1]);
+  assert.deepEqual(ledgerOf(pilots, "stationSvc.GetStationItemBits")[0], { same: 1 });
+  // An item that is another station's is no answer to keep: asked again.
+  const other = stationAnswers({ "stationSvc.GetStationItemBits": () => { other.asked.item += 1; return [1000035, 60008494, 14, 52678]; } });
+  const elsewhere = await selected({ answers: other.answers }, STATION_PAIRS);
+  await itemOf(elsewhere.pilots, elsewhere.handle);
+  await itemOf(elsewhere.pilots, elsewhere.handle);
+  assert.equal(other.asked.item, 2);
+});
+
+test("leaving the station lets the guests and the item go; in space each asking is sent; docked again each is asked for once", async () => {
+  const { asked, answers } = stationAnswers();
+  const { pilots, session, handle } = await selected({ answers }, STATION_PAIRS);
+  await guestsOf(pilots, handle);
+  await itemOf(pilots, handle);
+  session.notify("OnCharNowInStation", [aGuest(140000003)]);
+  // Undocked: the session has no station.
+  session.attributes.stationid = null;
+  session.change({ stationid: [STATION, null] });
+  await guestsOf(pilots, handle);
+  await guestsOf(pilots, handle);
+  await itemOf(pilots, handle);
+  assert.deepEqual(asked, { guests: 3, item: 2 });
+  // Docked again, in the same station: asked for afresh, and the guest who had arrived before is not remembered.
+  session.attributes.stationid = STATION;
+  session.change({ stationid: [null, STATION] });
+  assert.deepEqual([(await guestsOf(pilots, handle)).items, (await guestsOf(pilots, handle)).items], [[aGuest(PILOT)], [aGuest(PILOT)]]);
+  await itemOf(pilots, handle);
+  await itemOf(pilots, handle);
+  assert.deepEqual(asked, { guests: 4, item: 3 });
+});
+
+test("an answer that is no list is handed on as it came with nothing kept, and a refusal keeps nothing", async () => {
+  let answer = null;
+  let refuse = false;
+  let asked = 0;
+  const { pilots, handle } = await selected({ answers: { "station.GetGuests": () => { asked += 1; if (refuse) throw refusedBy("NotNow"); return answer; } } }, STATION_PAIRS);
+  assert.deepEqual([await guestsOf(pilots, handle), await guestsOf(pilots, handle), asked], [null, null, 2]);
+  refuse = true;
+  await assert.rejects(guestsOf(pilots, handle), (error) => error.code === "CALL_REFUSED");
+  refuse = false;
+  answer = { type: "list", items: [aGuest(PILOT)] };
+  assert.deepEqual([(await guestsOf(pilots, handle)).items, (await guestsOf(pilots, handle)).items, asked], [[aGuest(PILOT)], [aGuest(PILOT)], 4]);
+});

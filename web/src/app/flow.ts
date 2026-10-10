@@ -2049,6 +2049,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       talkToOpenAgentAgain();
       return;
     }
+    if (method === "OnCharNowInStation" || method === "OnCharNoLongerInStation") {
+      // station/base.py: the client's own list of guests changes at each. The
+      // page takes it as word that the list changed, and reads the list again.
+      void getStationGuests(callOptions)
+        .then((guests) => store.apply({ type: "station/guests", guests }))
+        .catch(() => {});
+      return;
+    }
     if (method !== null && fleetSnapshotNotifications.has(method)) {
       // The notification is an invalidation, never the roster authority. A
       // coalesced, single-flight bound read below replaces the full snapshot.
