@@ -11,7 +11,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { BIND_TRIES, FRAME_MS, createPilotSpace, rebaseDelta } = require("../src/gamePort/pilotSpace");
-const { CATEGORY, checkWarpDestination, healthOf, kindOf, projectEntity, projectFlight, projectSpace } = require("../src/gamePort/spaceProjection");
+const { CATEGORY, checkWarpDestination, healthOf, kindOf, npcKindOf, projectEntity, projectFlight, projectSpace } = require("../src/gamePort/spaceProjection");
 const { Ballpark } = require("../src/gamePort/destiny/ballpark");
 const { Park } = require("../src/gamePort/destiny/park");
 const { MODE } = require("../src/gamePort/destiny/state");
@@ -580,6 +580,85 @@ test("what is at a gate, by kind, is what the gateway's snapshot of the same gat
   // A billboard is nobody's ship: it carries none of a ship's fields.
   const billboard = projectSpace(far.park, { solarSystemID: far.system, shipID: jumpTrip.shipID }).entities.find((row) => row.kind === "billboard");
   assert.deepEqual([billboard.isNpc, billboard.mode, billboard.categoryID, billboard.groupID], [undefined, undefined, 11, 323]);
+});
+
+// ── what kind of ship nobody is flying ───────────────────────────────────────
+//
+// The gateway says "concord", "npc" or "drifter" of such a ship, from the server's own record of it. A client is
+// sent the ship's type, so its group, and the slim item's hostile_response_threshold: above nought the ship is
+// hostile whatever the pilot's standing (npcs/client/entitystandings.py). The recorded trip has the law at both
+// its gates, as this server sent it: customs officials at Jita's (group 446, thresholds -11 and -11) and CONCORD
+// at Perimeter's (groups 301 and 182, thresholds -11 and 11).
+
+test("the ships nobody flies at the two recorded gates are the law's, told from each one's group and the threshold sent with it", () => {
+  const [out, far] = replayTrip();
+  const ships = (each) => projectSpace(each.park, { solarSystemID: each.system, shipID: jumpTrip.shipID }).entities.filter((row) => row.kind === "ship");
+  const sent = (each, row) => {
+    const slim = [...each.park.slimItems.values()].find((one) => Number(one.get("itemID")) === row.itemID);
+    return [row.groupID, slim.get("hostile_response_threshold") ?? null, slim.get("friendly_response_threshold") ?? null, row.isNpc, row.npcEntityType];
+  };
+  const tally = (each) => {
+    const counted = {};
+    for (const row of ships(each)) counted[sent(each, row).join(" ")] = (counted[sent(each, row).join(" ")] ?? 0) + 1;
+    return counted;
+  };
+  // Jita's Perimeter gate: eight customs officials, and the pilot's own ship, which is nobody's NPC.
+  assert.deepEqual(tally(out), { "446 -11 -11 true concord": 8, "237   false ": 1 });
+  // Perimeter's Jita gate: five of CONCORD's own group and two of the police's.
+  assert.deepEqual(tally(far), { "301 -11 11 true concord": 5, "182 -11 11 true concord": 2, "237   false ": 1 });
+  const own = ships(out).find((row) => row.itemID === jumpTrip.shipID);
+  assert.deepEqual([own.isNpc, own.npcEntityType], [false, null]);
+});
+
+test("a ship nobody flies is the law's only if it is of the law's groups and not sent as hostile; a drifter is told by its group", () => {
+  const park = undockedPark();
+  const slim = (fields) => new Map(Object.entries(fields));
+  let next = 9000000000100;
+  const kindOfShip = (fields) => {
+    next += 1;
+    park.ballpark.addBall({ id: next, isFree: true, mass: 1e6, x: 1e3 + (next % 100) * 500, maxVelocity: 250 });
+    park.slimItems.set(next, slim({ itemID: BigInt(next), categoryID: 11, ownerID: 1000125, ...fields }));
+    const row = projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID }).entities.find((each) => each.itemID === next);
+    return [row.kind, row.isNpc, row.npcEntityType];
+  };
+  // The law, as this server and Tranquility send it: CONCORD, the police, the customs officials, a faction's navy.
+  for (const groupID of [301, 182, 446, 288]) {
+    assert.deepEqual(kindOfShip({ typeID: 3863, groupID, hostile_response_threshold: -11, friendly_response_threshold: 11 }), ["ship", true, "concord"], `group ${groupID}`);
+  }
+  // A pirate (a Guristas frigate's group), sent as hostile; and one sent with no threshold at all.
+  assert.deepEqual(kindOfShip({ typeID: 23707, groupID: 550, hostile_response_threshold: 11, friendly_response_threshold: 11 }), ["ship", true, "npc"]);
+  assert.deepEqual(kindOfShip({ typeID: 23707, groupID: 550 }), ["ship", true, "npc"]);
+  // A ship of a CONCORD type that the server sends as hostile, as it does one put out from its catalogue: not the law.
+  assert.deepEqual(kindOfShip({ typeID: 3863, groupID: 301, hostile_response_threshold: 11, friendly_response_threshold: 11 }), ["ship", true, "npc"]);
+  // Of the law's groups with no threshold sent, or one of nought: not sent as hostile, so the law's.
+  assert.deepEqual(kindOfShip({ typeID: 3863, groupID: 301 }), ["ship", true, "concord"]);
+  assert.deepEqual(kindOfShip({ typeID: 3863, groupID: 301, hostile_response_threshold: 0 }), ["ship", true, "concord"]);
+  // Not hostile, and not of the law's groups (the ORE mining fleet's Venture, sent with -5 and 5): the gateway's word for it is "npc".
+  assert.deepEqual(kindOfShip({ typeID: 42533, groupID: 1764, hostile_response_threshold: -5, friendly_response_threshold: 5 }), ["ship", true, "npc"]);
+  // A Drifter Battleship, whatever is sent with it.
+  assert.deepEqual(kindOfShip({ typeID: 34495, groupID: 1310, hostile_response_threshold: 11, friendly_response_threshold: 11 }), ["ship", true, "drifter"]);
+  assert.deepEqual(kindOfShip({ typeID: 34495, groupID: 1310 }), ["ship", true, "drifter"]);
+  // A ship somebody is flying has no such kind, whatever its slim item carries.
+  assert.deepEqual(kindOfShip({ typeID: 587, groupID: 25, categoryID: 6, ownerID: 140000009, charID: 140000009, hostile_response_threshold: -11 }), ["ship", false, null]);
+
+  // A player's hull that an NPC owns is nobody's to fly either: the ORE mining fleet's Hulk, as this server sends
+  // it (the Hulk's own type, of the Ship category, owned by the ORE corporation, thresholds -5 and 5).
+  const hulk = { typeID: 22544, groupID: 543, categoryID: 6, hostile_response_threshold: -5, friendly_response_threshold: 5 };
+  assert.deepEqual(kindOfShip({ ...hulk, ownerID: 1000129 }), ["ship", true, "npc"]);
+  // The owners a client takes for an NPC: above the system's own, below the players' (idCheckers.IsNPC).
+  assert.deepEqual([9999, 10000, 500014, 3008416, 89999999, 90000000, 98000001, 140000009].map((ownerID) => kindOfShip({ ...hulk, ownerID })[1]), [false, true, true, true, true, false, false, false]);
+  // With no owner said, or the system's, a player's hull is not taken for an NPC's.
+  assert.deepEqual([kindOfShip({ ...hulk, ownerID: null }), kindOfShip({ ...hulk, ownerID: 1 })], [["ship", false, null], ["ship", false, null]]);
+  // A structure an NPC corporation owns is not a ship nobody flies.
+  next += 1;
+  park.ballpark.addBall({ id: next, x: 8e5, radius: 5000 });
+  park.slimItems.set(next, slim({ itemID: BigInt(next), typeID: 35832, groupID: 1657, categoryID: 65, ownerID: 1000125, corpID: 1000125 }));
+  const structure = projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID }).entities.find((each) => each.itemID === next);
+  assert.deepEqual([structure.kind, structure.isNpc, structure.npcEntityType], ["structure", false, null]);
+
+  // The same, asked of the table itself.
+  assert.deepEqual([npcKindOf(301), npcKindOf(301, null), npcKindOf(301, -11), npcKindOf(301, 0), npcKindOf(301, 0.5), npcKindOf(301, 11)], ["concord", "concord", "concord", "concord", "npc", "npc"]);
+  assert.deepEqual([npcKindOf(550), npcKindOf(550, -11), npcKindOf(550, 11), npcKindOf(1310), npcKindOf(1310, -11), npcKindOf(null), npcKindOf(null, -11)], ["npc", "npc", "npc", "drifter", "drifter", "npc", "npc"]);
 });
 
 test("a new system arrives in two pieces: everything fixed in it, then the gate's own grid two ticks later", () => {

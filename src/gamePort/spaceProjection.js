@@ -104,6 +104,37 @@ function healthOf(damageState, secondsSince) {
 }
 
 /**
+ * What kind of ship nobody is flying, in the gateway's words: the law's ("concord"), a drifter, or anything else
+ * ("npc": the pirates, and what a mission sends). The gateway has it from the server's own record of the ship.
+ * A client is sent two things it can tell by.
+ *
+ * The type's group: its overview keeps a table of NPC groups with the police's, CONCORD's, the customs
+ * officials' and the faction navies' apart from the pirates' and the missions' (eve/client/script/parklife/
+ * state.py, GetNPCGroups; inventorycommon/const.py's groupPoliceDrone, groupConcordDrone, groupCustomsOfficial,
+ * groupFactionDrone and groupDrifterBattleship).
+ *
+ * And the slim item's `hostile_response_threshold`: above nought the ship is hostile whatever the pilot's
+ * standing (npcs/client/entitystandings.py, is_npc_hostile). Tranquility sends 11 with a pirate and -11 with
+ * the law, and so does this server.
+ *
+ * The law's word is kept for a ship of the law's groups that is not sent as hostile. The group alone is not
+ * enough: this server can put out a ship of a CONCORD type that it calls an NPC and sends as hostile, and the
+ * group would call it the law. Told this way the word is the server's own for each of its NPC profiles but a
+ * Drifter Battleship's, which the server calls an NPC.
+ */
+/** idCheckers.IsNPC: an owner above the system's own (inventorycommon/const.py maxSystemItem) and below the players' (minPlayerOwner). */
+const MAX_SYSTEM_ITEM = 9999;
+const MIN_PLAYER_OWNER = 90000000;
+const isNpcOwner = (ownerID) => typeof ownerID === "number" && ownerID > MAX_SYSTEM_ITEM && ownerID < MIN_PLAYER_OWNER;
+
+const LAW_GROUPS = new Set([182, 301, 446, 288]);
+const DRIFTER_GROUPS = new Set([1310]);
+const npcKindOf = (groupID, hostileThreshold = null) => {
+  if (DRIFTER_GROUPS.has(groupID)) return "drifter";
+  return LAW_GROUPS.has(groupID) && !(hostileThreshold > 0) ? "concord" : "npc";
+};
+
+/**
  * A drone's activity state in the gateway's word for it (appConst.py: entityIdle, entityCombat, entityMining,
  * entityApproaching, entityDeparting, entityPursuit, entitySalvaging). A state with no word is "could not tell",
  * never idle.
@@ -143,9 +174,11 @@ function projectEntity(park, ball, slim, ego, placed) {
     row.targetEntityID = (ball.mode === MODE.FOLLOW || ball.mode === MODE.ORBIT) && ball.followId > 0 ? number(ball.followId) : null;
     // Another ship's capacitor is not sent to a client; the pilot's own comes from dogma (projectSpace's `readings`).
     row.capacitorRatio = null;
-    // A ship of the Entity category is one nobody is flying.
-    row.isNpc = categoryID === CATEGORY.ENTITY;
-    row.npcEntityType = null;
+    // A ship of the Entity category is one nobody is flying. So is a player's hull that an NPC owns (this server
+    // flies the ORE mining fleet's Hulk as one): the client takes a thing for an NPC's by its owner (state.py 778,
+    // overviewWindow.py 968).
+    row.isNpc = categoryID === CATEGORY.ENTITY || (categoryID === CATEGORY.SHIP && isNpcOwner(row.ownerID));
+    row.npcEntityType = row.isNpc ? npcKindOf(groupID, number(slim.get("hostile_response_threshold"))) : null;
     row.compressionFacility = null;
   }
   // A drone in space: which ship is flying it, whose that ship is, what it is doing, and on what. A client is
@@ -288,4 +321,4 @@ function projectFlight(park) {
   return { shipMode: MODE_NAME[ball.mode] ?? null, shipSpeedFraction: ball.speedFraction };
 }
 
-module.exports = { CATEGORY, GROUP, checkWarpDestination, healthOf, kindOf, projectEntity, projectFlight, projectSpace };
+module.exports = { CATEGORY, GROUP, checkWarpDestination, healthOf, kindOf, npcKindOf, projectEntity, projectFlight, projectSpace };
