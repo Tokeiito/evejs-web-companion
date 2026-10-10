@@ -1131,12 +1131,29 @@ in high security (`IsSafetyAlphaLocked`).
 | A lower level | a second press, on a confirm button | the same, with a Cancel beside it |
 | Held at Full in the safest class | Full shown, the others locked | the same, by the map's security for the system |
 | Held at Full controlling a structure | yes | not done: the page controls none |
-| None locked for an alpha clone | yes | not done: nothing of ours asks the clone's grade |
+| None locked for an alpha clone | yes | the same, by the clone's grade asked at login (below); a gateway pilot has no grade here and is locked out of nothing by it |
 
 No system of this server's data is at 0.95 or above (the highest is 0.949794), so the level
 held at Full has been seen in tests only. Whether the client's own table of systems
 (`res:/staticdata/systems.static`, which is where its `cfg.mapSystemCache` is from) has any
 was not read.
+
+**The clone's grade, 2026-10-10.** `gameui.OnSessionChanged` (449), with `userid` in the
+change, primes the client's clone grade service: `sm.RemoteSvc('subscriptionMgr')
+.GetCloneGrade()`, by the service's name and with nothing (`omega/client/clone_grade_svc.py`
+125). The answer is 0, an alpha clone's, or 1, an omega's (`clonegrade/const.py`). It is
+kept and asked again only where there is none (113); `OnSubscriptionChangedServer(new_state)`
+is the grade from then on (243). No recording has the call (they begin after the login); this
+server's log of a retail client's login has it as the call before
+`charUnboundMgr.GetCharacterSelectionData`.
+
+The transport asks it there, on each pilot's own connection, keeps it, and takes the notice's
+word (`pilots.js`, `cloneGradeRead`). The web gateway's list has no call of the subscription
+manager's: the pair is on the game port's own list, and a gateway pilot has no grade. The page
+reads `GET /api/bridge/clone-grade` once as a pilot comes online and keeps it
+(`store.station.cloneGrade`). What goes by it so far is the safety selector's None button.
+This server sends no `OnSubscriptionChangedServer`. For a check, the server answers an
+alpha's grade when started with `EVE_CLONE_GRADE=alpha`.
 
 **Crimewatch's notices, 2026-10-10.** Each changes one thing the service keeps, and nothing
 is asked after it (`crimewatchSvc.py` 222 to 288).

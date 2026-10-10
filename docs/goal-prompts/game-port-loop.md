@@ -697,6 +697,18 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **The same walk on the code before and on the code after, printed and compared,** shows
   what a change of keeping did and did not alter: `diff` of the two printouts with the times
   taken out. The walk made before the change is also where the fixture comes from.
+- **The server is an alpha clone's with one variable.** `EVE_CLONE_GRADE=alpha bash store.sh save
+  <label>` in the scratch folder saves the store and starts EveJS answering an alpha's grade
+  to every account (the start script hands on the shell's environment); `env -u EVE_CLONE_GRADE
+  bash store.sh restore <label>` puts both back. `GET /api/bridge/clone-grade` through the
+  game-port BFF says which it is.
+- **A call the login makes before the character selection is listed apart in the transport's
+  tests** (`session.gradeAsks` in the stand-in of `test/gamePortPilots.test.js`, with how many
+  calls by name went before it). Some thirty tests hold `session.calls` to the selection's
+  three and what follows: put the next such call apart too, with a line saying why.
+- **A render on the server never opens a popover or a menu.** What a component hands to a
+  child it only draws once opened is held by no render test: say so in the log, keep those
+  lines to plain handing-on, and see them work in the browser.
 - A test's "watched to fail" can be had after the fact, once the work is committed: put the source file back to the commit
   before (`git show HEAD~1:<file> > <file>`), run the test, and restore it with `git checkout
   HEAD -- <file>`. Check `git status` is clean after.

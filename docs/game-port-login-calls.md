@@ -10,10 +10,10 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 
 | The game port | Kinds | Calls | Meaning |
 |---|---|---|---|
-| at login | 36 | 43 | The game port asks this at login too. |
+| at login | 37 | 44 | The game port asks this at login too. |
 | by a feature | 7 | 12 | A feature of the web client asks this when it is wanted, in a form read against the client's. |
 | by a route | 10 | 11 | The BFF has a route that can ask this. It has not been read against the client's. |
-| never | 47 | 51 | Nothing of ours asks this. |
+| never | 46 | 50 | Nothing of ours asks this. |
 
 ## Before a character is chosen
 
@@ -26,7 +26,7 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `air_npe.is_air_npe_enabled` | 1 | never |
 | `invbroker.GetItemDescriptor` | 1 | by a route |
 | `raffleProxy.AmIBanned` | 1 | never |
-| `subscriptionMgr.GetCloneGrade` | 1 | never |
+| `subscriptionMgr.GetCloneGrade` | 1 | at login |
 | `charUnboundMgr.GetCharacterSelectionData` | 2 | at login |
 | `config.GetMultiOwnersEx` | 1 | by a feature |
 | `loginCampaignManager.get_client_campaign_state` | 1 | never |
