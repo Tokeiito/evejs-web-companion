@@ -714,6 +714,42 @@ test("a ship that is compressing says how far it reaches and which lists it take
   assert.deepEqual(compressionFacilityOf(dict([[0, 66000], [334n, 20000n]])), { rangeMeters: 66000, typeListIDs: [334] });
 });
 
+// ── an ice site and an ore anomaly ───────────────────────────────────────────
+//
+// Set beside the gateway's rows on the same grids (Halaima, 2026-10-10): the same number of rows on each, and the
+// rocks the same field for field but for what is left in them, which a client is not told. Ice is a rock to both:
+// a chunk of White Glaze is an asteroid that yields its own type. The words differ for a site's furniture only,
+// where the gateway has the server's own names and a client has the slim item's category and group: the ice
+// field's anchor and its marker are of the asteroid belt's group, and an anomaly's marker and its scenery are
+// plain celestials. The types and groups here are the rows' own; the slim items are made up round them.
+
+test("at an ice site and an ore anomaly: ice is a rock that yields its own type, and the site's furniture is told by its group", () => {
+  const park = undockedPark();
+  const slim = (fields) => new Map(Object.entries(fields));
+  let next = 9000000000300;
+  const rowOf = (fields) => {
+    next += 1;
+    park.ballpark.addBall({ id: next, x: 4e4 + (next % 100) * 1e3, radius: 900 });
+    park.slimItems.set(next, slim({ itemID: BigInt(next), ownerID: 1, ...fields }));
+    return projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID }).entities.find((row) => row.itemID === next);
+  };
+  const mining = (row) => [row.kind, row.miningYieldTypeID, row.beltID, row.remainingQuantity];
+  const none = (row) => ["miningYieldTypeID" in row, "beltID" in row, "remainingQuantity" in row];
+
+  // A chunk of White Glaze, and a rock of an ore anomaly (Omber): the gateway's rows say the same, with what is left.
+  assert.deepEqual(mining(rowOf({ typeID: 16265, groupID: 465, categoryID: 25 })), ["asteroid", 16265, null, null]);
+  assert.deepEqual(mining(rowOf({ typeID: 1227, groupID: 469, categoryID: 25 })), ["asteroid", 1227, null, null]);
+
+  // The ice field's anchor and its objective marker (the gateway: "iceFieldAnchor", "siteObjectiveMarker").
+  const anchor = rowOf({ typeID: 17774, groupID: 9, categoryID: 2, name: "White Glaze Belt" });
+  assert.deepEqual([anchor.kind, anchor.groupID, anchor.name, none(anchor)], ["asteroidBelt", 9, "White Glaze Belt", [false, false, false]]);
+  // An anomaly's own marker, and a piece of its scenery (the gateway: "universeAnomalySite" or "siteObjectiveMarker", and "siteEnvironmentProp").
+  const marker = rowOf({ typeID: 28356, groupID: 885, categoryID: 2, name: "Halaima Asteroid Cluster" });
+  assert.deepEqual([marker.kind, marker.groupID, none(marker)], ["celestial", 885, [false, false, false]]);
+  const scenery = rowOf({ typeID: 23753, groupID: 226, categoryID: 2 });
+  assert.deepEqual([scenery.kind, scenery.name, none(scenery)], ["celestial", null, [false, false, false]]);
+});
+
 test("a new system arrives in two pieces: everything fixed in it, then the gate's own grid two ticks later", () => {
   const [, far, home] = replayTrip();
   assert.deepEqual(far.counts, [[0, 53], [2, 89]]);
