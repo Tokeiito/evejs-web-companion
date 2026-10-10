@@ -5996,15 +5996,38 @@ const collectCustoms: MacroDecider = (step, obs, mem) => {
 // run's board exactly as refit-ship notes it, so board-previous-ship goes back.
 const boardPlanetaryHauler: MacroDecider = (_step, obs, mem, board) => {
   const phase = "Changing ships";
-  if (obs.flightStatus?.docked !== true) {
-    return tick(WAIT, "Not docked - ships are changed in a station.", phase, {
-      kind: "blocked",
-      reason: "Dock where your planetary hauler is parked first.",
-    });
-  }
-  const hangar = obs.stationHangar ?? null;
   const activeShipID = obs.activeShipID ?? null;
   const haulers = obs.planetaryHaulerShipIDs ?? null;
+  // ⚠ IN SPACE, THE SHIP FLOWN DECIDES. A hauler already out hauls from where
+  // it is; any other hull flies home and docks, and the hauler parked there is
+  // boarded on the tick after. Home is the run's (flow.ts resolves a run that
+  // starts in space to the bot's home or the character's home station).
+  if (obs.flightStatus?.docked !== true) {
+    if (activeShipID === null || haulers === null) {
+      const blindChecks = (num(mem, "blindChecks") ?? 0) + 1;
+      if (blindChecks > MAX_BLOCK_ATTEMPTS * 2) {
+        return tick(WAIT, "The ship's holds could not be read.", phase, {
+          kind: "blocked",
+          reason: "The ship's holds could not be read, so the bot cannot tell whether it is a planetary hauler.",
+        });
+      }
+      return tick(WAIT, "Reading the ship's holds.", phase, ACTING, false, { ...mem, blindChecks });
+    }
+    if (haulers.includes(activeShipID)) {
+      return tick(WAIT, "This ship has a planetary hold, so it hauls from here.", phase, { kind: "done" });
+    }
+    const homeMem = (mem["home"] as MacroMemory | undefined) ?? {};
+    const home = scriptTravelHome(obs, homeMem);
+    if (home.outcome.kind === "done") {
+      // Stopped short of a station: travel says so only when there is nothing to fly.
+      return tick(WAIT, "Not docked - ships are changed in a station.", phase, {
+        kind: "blocked",
+        reason: "Dock where your planetary hauler is parked first.",
+      });
+    }
+    return { ...home, phase: home.outcome.kind === "blocked" ? home.phase : "Flying home to board the hauler", nextMem: { ...mem, home: home.nextMem } };
+  }
+  const hangar = obs.stationHangar ?? null;
   if (hangar === null || activeShipID === null || haulers === null) {
     const blindChecks = (num(mem, "blindChecks") ?? 0) + 1;
     if (blindChecks > MAX_BLOCK_ATTEMPTS * 2) {

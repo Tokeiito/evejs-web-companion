@@ -11837,11 +11837,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // Which parked hulls have a planetary hold, for the block that boards
           // one. One capacity read per ship, asked BY NAME, and only while that
           // block runs. A known hauler can be boarded despite other failed
-          // reads; proving none is parked requires every hull's answer.
-          if (macro === "board-planetary-hauler" && stationHangar !== null && activeShipID !== null) {
+          // reads; proving none is parked requires every hull's answer. In space
+          // there is no hangar, and the one hull asked is the ship flown: a
+          // hauler already out can haul from where it is.
+          if (macro === "board-planetary-hauler" && activeShipID !== null) {
             const shipIDs = [...new Set([
               activeShipID,
-              ...stationHangar.filter((row) => row.categoryID === 6 && row.singleton).map((row) => row.itemID),
+              ...(stationHangar ?? []).filter((row) => row.categoryID === 6 && row.singleton).map((row) => row.itemID),
             ])];
             const reads = await Promise.all(shipIDs.map(async (shipID) => {
               try {
@@ -12849,8 +12851,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return; // a newer start / a stop / a panic superseded us during the read
     }
     // Resolve "starting station" from a FRESH flight read. If the bot starts in
-    // space there is no station to bind, and emergency travel will pause with an
-    // honest refusal instead of claiming the exposed ship is safely docked.
+    // space there is no station it started from, so it stands for the bot's own
+    // home when that names a station, else the character's home station
+    // (charMgr.GetHomeStation): a run that starts out in space docks there to
+    // board, delivers there and comes back there. Only when neither is known
+    // does emergency travel pause with an honest refusal instead of claiming
+    // the exposed ship is safely docked.
     let startStatus = store.flight.get().status;
     try {
       startStatus = decodeFlightStatus((await api.getFlightStatus(callOptions)).flight);
@@ -12861,7 +12867,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (gen !== customBotGeneration) {
       return;
     }
-    const startingStationID = startStatus !== null && startStatus.docked ? startStatus.stationID : null;
+    let startingStationID = startStatus !== null && startStatus.docked ? startStatus.stationID : null;
+    if (startingStationID === null && startStatus !== null) {
+      startingStationID = resolveStationRef(doc.home, null);
+      if (startingStationID === null) {
+        try {
+          // The character sheet's own read of it (bridge/characterSheetReads.ts).
+          startingStationID = decodeHomeStationID(await bridgeAsk("charMgr", "GetHomeStationRow", []));
+        } catch {
+          // Unread stays null: the honest pause below, never a guessed station.
+        }
+      }
+      if (gen !== customBotGeneration) {
+        return;
+      }
+    }
     // Which conditions this doc actually tests — decided ONCE, so observe pays only
     // for the per-tick reads a bot really needs (the wallet, the local roster, the
     // cargo hold). See scriptWatchedConditionKinds.
