@@ -34,6 +34,21 @@
 //
 // Not here: the formations GetFormations answers with (they feed the FORMATION
 // mode, which is not ported).
+//
+// NOT THE CLIENT'S: a drone of the pilot's own that is in the park with no
+// state of its own (park.stateByDroneID) for DRONE_STATE_GRACE_MS. The client
+// learns its drones from the state's drone rows and from OnDroneStateChange,
+// and only those; a drone that misses both stays in space unrecallable, and
+// CmdReconnectToDrones does not help, because the server reconnects only a
+// drone nobody controls. Seen 2026-10-10: five drones launched on landing,
+// owned and controlled by the pilot's ship on the server, absent from the
+// park's states for the whole fight; UpdateStateRequest brought all five back.
+// So a pilot's space asks for the whole state once for each such drone.
+
+/** How long a drone of the pilot's may be in the park with no state before the whole state is asked for. */
+const DRONE_STATE_GRACE_MS = 5000;
+/** invCategories: Drone. */
+const CATEGORY_DRONE = 18;
 
 const { Ballpark } = require("./destiny/ballpark");
 const { Park } = require("./destiny/park");
@@ -78,6 +93,7 @@ function createPilotSpace({
   onPost = null,
   // michelle.AddBallpark's own asking for the formations; a pilot's transport gives it one that asks the server once.
   askFormations = () => session.call("beyonce", "GetFormations", []),
+  now = () => Date.now(),
 } = {}) {
   let timer = null;
   let released = false;
@@ -99,7 +115,42 @@ function createPilotSpace({
   const ownClock = simTime === null ? new SimClock(Date.now()) : null;
   const readClock = simTime ?? (() => ownClock.frame(Date.now()));
   /** One frame: the park is shown the clock, and steps if a second of it has gone by. */
-  const frame = () => guard("tick", () => park.onTick(readClock()));
+  const frame = () => {
+    guard("tick", () => park.onTick(readClock()));
+    guard("drone state", lostDrones);
+  };
+
+  // The pilot's drones the park has no state for: since when, and those the whole state was already asked for.
+  let strayedSince = null;
+  const askedFor = new Set();
+  /** The pilot's own drones in the park (its slim items) that have no state of their own. */
+  function statelessDrones() {
+    const charID = Number(session.attributes?.charid);
+    if (!park.validState || !Number.isFinite(charID) || !park.slimItems) return [];
+    const stray = [];
+    for (const [id, slim] of park.slimItems) {
+      if (Number(slim.get("categoryID")) !== CATEGORY_DRONE || Number(slim.get("ownerID")) !== charID) continue;
+      if (park.ballpark.balls.has(id) && !park.stateByDroneID.has(id)) stray.push(id);
+    }
+    return stray;
+  }
+  /** See "NOT THE CLIENT'S" above: a drone that stays stateless past the grace asks once for the whole state. */
+  function lostDrones() {
+    // A drone that has its state again, or has gone, may be asked for again if it strays again.
+    for (const id of askedFor) if (!park.slimItems?.has(id) || park.stateByDroneID.has(id)) askedFor.delete(id);
+    const stray = statelessDrones().filter((id) => !askedFor.has(id));
+    if (stray.length === 0) {
+      strayedSince = null;
+      return;
+    }
+    strayedSince ??= now();
+    if (now() - strayedSince < DRONE_STATE_GRACE_MS || remotePark === null) return;
+    for (const id of stray) askedFor.add(id);
+    strayedSince = null;
+    park.requestReset();
+    // Told as the park's other troubles are, so that each time it happens is on record.
+    onError(new Error(`${stray.length} of the pilot's drones in space had no state for ${DRONE_STATE_GRACE_MS} ms (${stray.join(", ")}); the whole state was asked for again`), "drone state");
+  }
   const guard = (what, action) => {
     try {
       action();
