@@ -59,6 +59,13 @@ disposable.** Closing a tab closes that client — the server never keeps drivin
   pilot through. `EVEJS_PILOT_TRANSPORT=gateway` puts every pilot back on the gateway;
   `EVEJS_PILOT_TRANSPORT_OVERRIDES="name=gateway"` does it for one account. The plan and
   where it stands: [`docs/game-port-transport-plan.md`](docs/game-port-transport-plan.md).
+- **One socket for each pilot in a tab.** Once a pilot's session is under way, the page's
+  requests for it and the server's pushes to it go on one WebSocket to the BFF
+  (`/api/socket`), each request the same route it would be over HTTP. The routes and the
+  event stream still stand, and are what the page falls back to when a socket cannot be
+  had. To make one browser use them for everything, as it did: in its console,
+  `localStorage.setItem("evejs-web-transport:v1", "http")`, and reload; `removeItem` to go
+  back.
 - **Bridge-only.** Every read and every mutation goes through `POST /api/bridge/*` (the
   retail call tuple, bound objects, the persistent session, flight, chat) or the
   login-gated read-only static routes (`/api/map/*`, `/api/names`, `/api/agents/find`)

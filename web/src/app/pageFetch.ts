@@ -6,11 +6,17 @@
 // three sites that ask: `requestJson` (app/api.ts), `callMethod`
 // (bridge/callMethod.ts) and the fleet's fenced fetch (app/flow.ts).
 //
-// ⚠ IT IS A SETTING, AND HTTP IS WHAT IT IS UNLESS SAID. The routes still stand
-// over HTTP, and so does the event stream; with the setting on, the socket
-// carries the requests and the pushed notices in their place. Set `evejs-web-transport:v1` to "socket" in this
-// browser's local storage and reload to have requests carried on it; remove
-// the key, or set anything else, to go back.
+// ⚠ THE SOCKET IS WHAT IT IS UNLESS SAID, AND HTTP IS THE WAY BACK. A pilot's
+// requests and its pushed notices go on its socket. The routes still stand over
+// HTTP, and so does the event stream: they carry what the socket cannot (a
+// request with no token, a session's first two), everything while a socket is
+// not to be had, and all of it where this browser is told so. To tell it: set
+// `evejs-web-transport:v1` to "http" in this browser's local storage and
+// reload; remove the key to go back to the socket.
+//
+// (Until 2026-10-10 it was the other way about: HTTP unless the key said
+// "socket". The brief's whole run then passed on the socket, making of the
+// server the calls it makes over HTTP; docs/game-port-loop-log.md.)
 //
 // ⚠ NOT IN NODE. The hosted bots run this same code in the BFF's process
 // (src/botHost.js) with a fetch of their own, and there is no page there: with
@@ -23,12 +29,12 @@ export const TRANSPORT_SETTING_KEY = "evejs-web-transport:v1";
 
 export type PageTransport = "socket" | "http";
 
-/** What the setting says. Storage that cannot be read (a private window, a test) says HTTP. */
+/** What the setting says: the socket, unless it says "http". Storage that cannot be read (a private window) says nothing. */
 export function transportSetting(storage: Pick<Storage, "getItem"> | null = pageStorage()): PageTransport {
   try {
-    return storage?.getItem(TRANSPORT_SETTING_KEY) === "socket" ? "socket" : "http";
+    return storage?.getItem(TRANSPORT_SETTING_KEY) === "http" ? "http" : "socket";
   } catch {
-    return "http";
+    return "socket";
   }
 }
 

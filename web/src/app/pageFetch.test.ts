@@ -1,21 +1,21 @@
-// Which way the page's requests go (app/pageFetch.ts): over HTTP unless this browser has been set to the socket.
+// Which way the page's requests go (app/pageFetch.ts): on the tab's socket unless this browser has been told HTTP.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
 import { TRANSPORT_SETTING_KEY, pageCarries, pageFetch, socketAddress, socketOver, socketTransport, transportSetting } from "./pageFetch.ts";
 
-const storing = (value: string | null) => ({ getItem: (key: string) => (key === TRANSPORT_SETTING_KEY ? value : "socket") });
+const storing = (value: string | null) => ({ getItem: (key: string) => (key === TRANSPORT_SETTING_KEY ? value : "http") });
 
-test("the setting is HTTP unless it says socket, in so many letters", () => {
+test("the page is on the socket unless the setting says http, in so many letters", () => {
   assert.equal(TRANSPORT_SETTING_KEY, "evejs-web-transport:v1");
-  assert.equal(transportSetting(storing("socket")), "socket");
-  for (const other of [null, "", "http", "Socket", "socket ", "1", "true"]) assert.equal(transportSetting(storing(other)), "http", JSON.stringify(other));
-  // No storage to read, or storage that will not be read (a private window): HTTP.
-  assert.equal(transportSetting(null), "http");
-  assert.equal(transportSetting({ getItem: () => { throw new Error("storage is not allowed here"); } }), "http");
+  assert.equal(transportSetting(storing("http")), "http");
+  for (const other of [null, "", "socket", "Http", "http ", "0", "false"]) assert.equal(transportSetting(storing(other)), "socket", JSON.stringify(other));
+  // No storage to read, or storage that will not be read (a private window): nothing is said, so the socket.
+  assert.equal(transportSetting(null), "socket");
+  assert.equal(transportSetting({ getItem: () => { throw new Error("storage is not allowed here"); } }), "socket");
   // Only its own key is read.
-  assert.equal(transportSetting({ getItem: (key: string) => (key === "something-else" ? "socket" : null) }), "http");
+  assert.equal(transportSetting({ getItem: (key: string) => (key === "something-else" ? "http" : null) }), "socket");
 });
 
 test("the socket is at the page's own host, secure where the page is", () => {

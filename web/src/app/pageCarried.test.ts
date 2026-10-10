@@ -1,5 +1,6 @@
-// The page's own requests with the page set to the socket (app/pageFetch.ts): what goes on the socket's open
-// line waits for no lane (app/transport.ts), and everything else still does.
+// The page's own requests on the tab's socket, which is where they go unless the browser is told otherwise
+// (app/pageFetch.ts): what goes on the socket's open line waits for no lane (app/transport.ts), and everything
+// else still does. The setting starts here as it starts in a browser: with nothing said.
 //
 // This file stands a page up in Node: a `location`, a local storage that holds the setting, a `WebSocket` and a
 // `fetch` the test answers by hand. The requests are made with the page's own two fetch sites, `requestJson`
@@ -57,7 +58,7 @@ class PageEventSource {
   }
 }
 
-let setting: string | null = "socket";
+let setting: string | null = null;
 /** What went over HTTP and has not been answered yet. */
 const waiting: { path: unknown; answer: () => void }[] = [];
 let fetched = 0;
@@ -143,12 +144,12 @@ test("with the page set to the socket, what goes on its open line waits for no l
   assert.deepEqual([lanes(), handed], [[MAX_IN_FLIGHT, 3, 0], []]);
 
   // And a page told to go back goes back at its next request: over HTTP, in turn, though the socket is still open.
-  setting = null;
+  setting = "http";
   const back = loadCloneGrade(mine);
   const backCall = callMethod("skillMgr", "GetSkillQueue", [], null, mine);
   await tick();
   assert.deepEqual([lanes(), socket.sent.length, fetched], [[MAX_IN_FLIGHT, 5, 0], 4, 2 + MAX_IN_FLIGHT]);
-  setting = "socket";
+  setting = null;
 
   // Everything asked is answered in the end, and nothing is left holding anything.
   for (let turn = 0; turn < 20 && (bridgeLane.inFlight() > 0 || bridgeLane.queued() > 0); turn += 1) {
@@ -233,11 +234,11 @@ test("with the page set to the socket, a pilot's pushed notices come on it and n
   subscribeBridgeEvents(handlers("signed out")).close();
   assert.deepEqual([PageSocket.made.length, PageEventSource.made.length - tokenless, PageEventSource.made.at(-1)!.url], [made + 2, 1, "/api/bridge/events"]);
 
-  // And a page not set to the socket opens its event stream, as it always has.
-  setting = null;
+  // And a page told to use HTTP opens its event stream, as it always did.
+  setting = "http";
   const before = PageEventSource.made.length;
   subscribeBridgeEvents(handlers("http"), { token: "T12" }).close();
-  setting = "socket";
+  setting = null;
   assert.deepEqual([PageEventSource.made.length - before, PageEventSource.made.at(-1)!.url, PageSocket.made.length], [1, "/api/bridge/events?access_token=T12", made + 2]);
   socketTransport()?.close();
 });
