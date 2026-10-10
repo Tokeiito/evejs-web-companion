@@ -1446,3 +1446,21 @@ test("the game port carries the customs office's transfer, which the web gateway
   // When the gateway's list gains one of these, it is the gateway's too, and comes off this list.
   for (const pair of GAME_PORT_ONLY_CALLS) assert.equal(contract.gatewayAllowlist.pairs.includes(pair), false, pair);
 });
+
+// clientPlanet.py 83 and 644: planetInfo = self.remoteHandler.GetPlanetInfo() and
+// self.remoteHandler.GetPlanetResourceInfo(), on the planet's own object (eveMoniker.GetPlanet(planetID)), each
+// with nothing. Tranquility's recordings have the first riding the bind: MachoBindObject(40344202,
+// ('GetPlanetInfo', (), {})).
+
+test("a planet's colony and what the planet carries are asked of the planet's own object, with nothing", () => {
+  for (const [method, line] of [["GetPlanetInfo", 83], ["GetPlanetResourceInfo", 644]]) {
+    const asked = form(`planetMgr.${method}`, []);
+    assert.deepEqual([asked.status, asked.args, asked.kwargs], ["same", [], null], method);
+    assert.match(asked.source, new RegExp(`clientPlanet\\.py:${line}$`), method);
+    // With the planet named again beside it, as an older route of the BFF's does, it is not the client's call.
+    const named = form(`planetMgr.${method}`, [40176368]);
+    assert.deepEqual([named.status, named.args], ["differs", [40176368]], method);
+    assert.match(named.note, /nothing/, method);
+  }
+  assert.match(form("planetMgr.GetPlanetInfo", []).note, /Tranquility/);
+});

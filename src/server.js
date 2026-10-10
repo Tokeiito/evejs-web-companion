@@ -63,6 +63,7 @@ const { createBotLogStore } = require("./botLogStore");
 // colony's launchpad goods into its customs office (src/piCustomsExport.js).
 const { GameClient } = require("./gameClient");
 const { runCustomsExport, planCustomsExports } = require("./piCustomsExport");
+const { colonyRowOf, planetIDsOf, resourceRecordOf } = require("./planetInfoColony");
 const {
   isBridgeWritePair,
   pickSafeBrowserSessionFields,
@@ -21380,6 +21381,41 @@ function projectPlanetResources(staticDataSource, record) {
     });
 }
 
+/**
+ * A held pilot's colonies as the retail client reads them: the planets it has
+ * colonies on asked of the planet manager (planetSvc.GetMyPlanets), then each
+ * planet's own object asked for its colony (clientPlanet.PreparePlanet:
+ * GetPlanetInfo) and for what the planet carries (GetPlanetResourceInfo), each
+ * with nothing. The answers are made into the stored row the snapshot's colonies
+ * are (src/planetInfoColony.js), so that the page is answered in one form.
+ *
+ * A planet the manager lists on which the pilot has no colony any more answers
+ * its own facts alone, and is left out. The manager answering no list at all is
+ * "not read", which is not "no colonies".
+ */
+async function coloniesAsTheClientReads(held, webSessionID) {
+  const listed = await heldTopLevelCall(held, webSessionID, "planetMgr", "GetPlanetsForChar", [], null);
+  const planetIDs = planetIDsOf(listed.result);
+  if (planetIDs === null) {
+    return { coloniesReadable: false, colonies: [] };
+  }
+  const colonies = [];
+  for (const planetID of planetIDs) {
+    // The colony first: it is what binds the planet's object, as in the client.
+    const row = colonyRowOf((await boundCall(held, webSessionID, planetBindSpec(planetID), "GetPlanetInfo", [], null)).result);
+    if (row === null) {
+      continue;
+    }
+    const carried = await boundCall(held, webSessionID, planetBindSpec(planetID), "GetPlanetResourceInfo", [], null);
+    colonies.push({ ...projectColony(staticData, row), resources: projectPlanetResources(staticData, resourceRecordOf(carried.result)) });
+  }
+  colonies.sort((left, right) => (
+    String(left.planetName || "").localeCompare(String(right.planetName || ""))
+    || left.planetID - right.planetID
+  ));
+  return { coloniesReadable: true, colonies };
+}
+
 // The server's own classification of planetary goods: category 42 is Planetary
 // Resources (what an extractor pulls up), 43 Planetary Commodities (everything
 // a factory makes). By category, never by a list of item ids.
@@ -21479,6 +21515,13 @@ app.get("/api/bridge/planets", requireAuth, async (req, res, next) => {
     return;
   }
   try {
+    // A pilot on the game port: its colonies as the retail client reads them, on
+    // the pilot's own session and not from the gateway's snapshot of the store.
+    if (Boolean(gamePortPilots) && isGamePortHandle(held.bridgeSessionID)) {
+      const { coloniesReadable, colonies } = await coloniesAsTheClientReads(held, req.webSessionID);
+      res.json({ ok: true, characterID: held.characterID, serverNowMs: Date.now(), coloniesReadable, colonies });
+      return;
+    }
     const snapshot = await gateway.getSnapshot(req.account.accountID, held.characterID);
     if (!snapshot) {
       res.status(404).json({

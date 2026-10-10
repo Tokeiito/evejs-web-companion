@@ -208,6 +208,13 @@ const CLIENT_RECKONED = Object.freeze({
     // standings; the gateway keeps neither and says none.
     own: /^\$\.brokersFeeRate$/,
   }),
+  "/api/bridge/planets": Object.freeze({
+    under: /^\$\.colonies\[\d+\]\.lastSimulatedAtMs$/,
+    // clientPlanet.PreparePlanet: the game port asks the planet's own object for its colony, and the server reckons
+    // the colony up to now as it answers (currentSimTime). The gateway's snapshot has the stored row, as it was
+    // last reckoned.
+    own: /^\$\.colonies\[\d+\]\.lastSimulatedAtMs$/,
+  }),
 });
 
 /**

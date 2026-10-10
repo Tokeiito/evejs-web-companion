@@ -173,6 +173,27 @@ function notificationKeptAs(method, form) {
   return method === "GetByGroupID" ? `group:${form.args[0]}` : null;
 }
 const PLANET_MGR = "planetMgr";
+const PLANET_INFO = "GetPlanetInfo";
+/**
+ * The two reads of a planet's own object that are kept by the planet (planetRead): its colony, which
+ * clientPlanet.PreparePlanet asks for when the planet is first wanted (clientPlanet.py 83), and what the planet
+ * carries (clientPlanet.py 644).
+ */
+const PLANET_READS = new Set([PLANET_INFO, "GetPlanetResourceInfo"]);
+/**
+ * How long a colony is kept as it was answered. The client keeps a planet's colony for as long as it has the
+ * planet, and reckons what the colony makes by itself (the colony's own simulation); it asks again only when the
+ * server says the planet's state changed. Nothing here reckons a colony, so what is kept is let go after a
+ * minute, and asked for when it is next wanted: more often than the client asks, and never more than a minute
+ * behind what a colony has made.
+ */
+const PLANET_INFO_KEPT_MS = 60_000;
+/** The server's word that a colony is not as it was: planetSvc.OnMajorPlanetStateUpdate, and the pins it says to look at again. */
+const COLONY_NOTICES = new Set(["OnMajorPlanetStateUpdate", "OnRefreshPins"]);
+/** The pilot's own calls on a planet's object that change its colony or what a pin holds. */
+const COLONY_WRITES = new Set(["UserUpdateNetwork", "UserLaunchCommodities", "UserTransferCommodities", "UserAbandonPlanet"]);
+/** Whether one of the pilot's own calls on an object may have changed a colony: those, and goods sent between a launchpad and a customs office. */
+const changesAColony = (service, method) => (service === PLANET_MGR && COLONY_WRITES.has(method)) || (service === "invbroker" && method === "ImportExportWithPlanet");
 /**
  * What a read of the planet manager's is kept as: the pilot's colonies (planetSvc.colonizationData:
  * GetPlanetsForChar(), planetSvc.py 65) and its launches (planetUISvc.launchsRowSet: GetMyLaunchesDetails(),
@@ -1040,6 +1061,8 @@ function createGamePortPilots({
       ownersWork: Promise.resolve(),
       /** What the client's services keep until it changes, as the server answered it, by the service asked (KEPT_UNTIL_CHANGED). */
       kept: Object.fromEntries(Object.keys(KEPT_UNTIL_CHANGED).map((service) => [service, createKeptReads()])),
+      /** The two reads of a planet's own object that are kept by the planet, each as { at, answer } (planetRead). */
+      planetReads: new Map(),
       /** What each container bound for the BFF lists, as the server answered, until something may have changed it (INVENTORY_LISTINGS). */
       listings: createKeptReads(),
       /** marketQuote.GetAveragePrice for the items of the sale being made, by type (saleAveragesRead). */
@@ -1081,6 +1104,7 @@ function createGamePortPilots({
       // What the client's own services tell its object cache to forget on this notice.
       forgetNamed(entry, namedOnNotice(notification.method, notification.args, entry.session.attributes));
       for (const [service, keeper] of Object.entries(KEPT_UNTIL_CHANGED)) if (keeper.notices.has(notification.method)) entry.kept[service].forget();
+      if (COLONY_NOTICES.has(notification.method)) forgetColonies(entry);
       // A mission changed: what the client shows of its missions is drawn again from the journal, which reads it again.
       if (entry.journal.feed(notification)) journalUpToDate(entry);
       record(entry, notificationToBridgeJson(notification));
@@ -1495,6 +1519,26 @@ function createGamePortPilots({
   }
 
   // ── what the client's services keep until it changes ──────────────────────
+
+  /**
+   * A read of a planet's own object that is kept by the planet: answered from what is kept, and asked for, and
+   * noted, where nothing is. A colony kept longer than PLANET_INFO_KEPT_MS is asked for again. One that could not
+   * be asked is not kept.
+   */
+  function planetRead(entry, object, method, ask) {
+    const keptAs = `${method}:${JSON.stringify(object.params)}`;
+    const kept = entry.planetReads.get(keptAs);
+    if (kept && (method !== PLANET_INFO || now() - kept.at < PLANET_INFO_KEPT_MS)) return kept.answer;
+    const record = { at: now(), answer: ask() };
+    entry.planetReads.set(keptAs, record);
+    record.answer.catch(() => { if (entry.planetReads.get(keptAs) === record) entry.planetReads.delete(keptAs); });
+    return record.answer;
+  }
+
+  /** Every colony kept is forgotten, and asked for when it is next wanted. What a planet carries stays. */
+  function forgetColonies(entry) {
+    for (const keptAs of [...entry.planetReads.keys()]) if (keptAs.startsWith(`${PLANET_INFO}:`)) entry.planetReads.delete(keptAs);
+  }
 
   /** One of the pilot's own writes that changes what a service keeps, done or refused, by name or on an object: what was kept may not be so. */
   function forgetKeptAfter(entry, service, method) {
@@ -2740,12 +2784,15 @@ function createGamePortPilots({
     };
     // What a container lists is the inventory cache's to answer: asked for, and noted, only where nothing is kept.
     const listing = service === "invbroker" && INVENTORY_LISTINGS.has(method);
+    // A planet's colony and what the planet carries are kept by the planet, where they are asked as the client asks them.
+    const ofAPlanet = service === PLANET_MGR && PLANET_READS.has(method) && object.params !== undefined && form.args.length === 0;
     let result;
     try {
-      result = await run(entry, service, method, () => (listing ? entry.listings.read(listingKeptAs(boundHandle, form), sent) : sent()));
+      result = await run(entry, service, method, () => (listing ? entry.listings.read(listingKeptAs(boundHandle, form), sent) : ofAPlanet ? planetRead(entry, object, method, sent) : sent()));
     } catch (error) {
       if (mayChangeContents(service, method)) entry.listings.forget();
       forgetKeptAfter(entry, service, method);
+      if (changesAColony(service, method)) forgetColonies(entry);
       // The session's own word for a bind the server answered without an object: the gateway's, for a bind.
       if (/ did not return a bound object\.| could not say where its object lives\./.test(error.message)) {
         throw fail("BOUND_NO_OBJECT", `${service}.MachoBindObject did not return a bound object.`);
@@ -2754,6 +2801,7 @@ function createGamePortPilots({
     }
     if (mayChangeContents(service, method)) entry.listings.forget();
     forgetKeptAfter(entry, service, method);
+    if (changesAColony(service, method)) forgetColonies(entry);
     if (service === "scanMgr") afterScanManagerCall(entry, method, form.args, result);
     if (service === "dogmaIM") afterGroupingCall(entry, method, form.args, result);
     if (service === "beyonce") afterMovementCall(entry, method, form.args, kwargs);

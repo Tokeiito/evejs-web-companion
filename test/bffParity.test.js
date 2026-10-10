@@ -215,3 +215,21 @@ test("the broker's fee rate the game port works out and the gateway cannot is th
   assert.equal(judge(read(null), read(0.0295803), "/api/bridge/wallet").verdict, "divergent");
   assert.equal(judge(read(null, { stationID: null }), read(0.03, { stationID: 60003760 }), "/api/bridge/market").verdict, "divergent");
 });
+
+// The colonies read: on the game port the server reckons a colony up to now when the client asks for it
+// (GetPlanetInfo's currentSimTime), and the gateway's snapshot has the stored row as it was last reckoned.
+
+test("how far a colony is reckoned up to differs between the client's read and the stored row, and nothing else of a colony is excused by it", () => {
+  const read = (reckonedAt, more = {}) => ok({ ok: true, characterID: 140000002, coloniesReadable: true, colonies: [{ planetID: 40176368, lastSimulatedAtMs: reckonedAt, commandCenterLevel: 0, pins: [{ pinID: 501, contents: [] }], ...more }] });
+  const apart = judge(read(1791591963076), read(1791591978898), "/api/bridge/planets");
+  assert.deepEqual([apart.verdict, apart.detail], ["tolerated", "client-reckoned ×1"]);
+  assert.equal(judge(read(1791591963076), read(1791591963076), "/api/bridge/planets").verdict, "identical");
+  // Another route's field of that name is a value that moved, as before.
+  assert.equal(judge(read(1791591963076), read(1791591978898), "/api/bridge/pi-colonies").verdict, "moved");
+  // Another field of a colony is not the client's reckoning: a number that differs is still listed as one that
+  // moved, to be read, and what a pin holds differing is still listed beside the reckoning.
+  const level = judge(read(1, { commandCenterLevel: 0 }), read(1, { commandCenterLevel: 2 }), "/api/bridge/planets");
+  assert.deepEqual([level.verdict, level.detail], ["moved", "value ×1"]);
+  const held = judge(read(1, { pins: [{ pinID: 501, contents: [] }] }), read(2, { pins: [{ pinID: 501, contents: [{ typeID: 2268, quantity: 5 }] }] }), "/api/bridge/planets");
+  assert.equal(held.detail, "client-reckoned ×1, count ×1");
+});

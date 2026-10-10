@@ -2437,3 +2437,134 @@ test("through the gateway the Market read says no broker's fee rate, and the gam
   assert.equal(payload.brokersFeeRate, null);
   assert.deepEqual(asked, []);
 });
+
+// ── a held pilot's colonies, as the client reads them ────────────────────────
+//
+// planetSvc.GetMyPlanets and clientPlanet.PreparePlanet: the planets the pilot has colonies on, asked of the planet
+// manager, and each planet's colony and resources asked of the planet's own object. For a pilot on the game port
+// the route asks those; for one on the gateway it reads the gateway's snapshot of the store, as before.
+
+const COLONY_COLUMNS = [["solarSystemID", 3], ["planetID", 3], ["typeID", 3], ["numberOfPins", 3], ["celestialIndex", 3]];
+const coloniesRowset = (...planetIDs) => ({ type: "objectex2", header: [], list: planetIDs.map((planetID) => ({ type: "packedrow", columns: COLONY_COLUMNS, values: [30002780, planetID, 2016, 2, 1] })), dict: [] });
+const wireKeyVal = (entries) => ({ type: "object", name: "util.KeyVal", args: { type: "dict", entries } });
+const wirePin = (id, typeID, contents, more = []) => wireKeyVal([["id", id], ["latitude", 1.2], ["longitude", 1.2], ["ownerID", 7], ["lastRunTime", { type: "long", value: "134358891481580000" }], ["typeID", typeID], ["contents", { type: "dict", entries: contents }], ["state", 0], ...more]);
+const wireColony = (planetID, pins) => wireKeyVal([["planetID", planetID], ["solarSystemID", 30002780], ["planetTypeID", 2016], ["radius", 2150000], ["celestialIndex", 1], ["ownerID", 7],
+  ["pins", { type: "list", items: pins }], ["links", { type: "list", items: [wireKeyVal([["typeID", 2280], ["endpoint1", 501], ["endpoint2", 502], ["level", 0]])] }], ["routes", { type: "list", items: [] }], ["level", 3], ["currentSimTime", { type: "long", value: "134360648051900000" }]]);
+
+/** The static data the colony projection reads. */
+const colonyStatics = () => ({
+  ...fakeStaticData(),
+  getType: (typeID) => ({ 2524: { groupID: 1027, capacity: 500 }, 2544: { groupID: 1030, capacity: 10000 }, 2268: { volume: 0.005 }, 2073: { volume: 0.005 } })[typeID] || null,
+  getPlanetName: (planetID) => `Planet ${planetID}`,
+  getSolarSystemName: () => "Muvolailen",
+  getPlanetSchematicName: () => null,
+});
+/** A gateway whose snapshot of the store has a colony table with nothing in it, and counts its readings. */
+function gatewayWithSnapshot() {
+  const gateway = fakeGateway({ async getSnapshot() { gateway.snapshots += 1; return { planetRuntimeState: { coloniesByKey: {} } }; } });
+  gateway.snapshots = 0;
+  return gateway;
+}
+
+/** A game port whose planet manager answers these planets, and whose planets' objects answer these colonies. */
+function gamePortWithColonies(colonies, planets = coloniesRowset(...colonies.keys())) {
+  const gamePort = fakeGateway({
+    async selectCharacter() {
+      return { bridgeSessionID: GAME_PORT_SESSION_ID, service: "charUnboundMgr", method: "SelectCharacterID", result: null, notifications: [], session: { ...SELECT_SESSION_ECHO } };
+    },
+    async callMethod(service, method, args, kwargs, sessionFields, bridgeSessionID) {
+      gamePort.asked.push([service, method, args, kwargs, bridgeSessionID]);
+      return { service, method, result: service === "planetMgr" && method === "GetPlanetsForChar" ? planets : null, notifications: [] };
+    },
+    async bindObject(service, method, args) {
+      gamePort.bound.push([service, method, args]);
+      return { boundHandle: `handle:${service}:${JSON.stringify(args)}`, service, method, notifications: [] };
+    },
+    async callBoundMethod(service, method, args, kwargs, sessionFields, bridgeSessionID, boundHandle) {
+      gamePort.onObjects.push([service, method, args, kwargs, boundHandle]);
+      const planetID = Number((String(boundHandle).match(/\[(\d+)\]/) || [])[1]);
+      if (method === "GetPlanetInfo") return { service, method, result: colonies.get(planetID) ?? null, notifications: [] };
+      if (method === "GetPlanetResourceInfo") return { service, method, result: { type: "dict", entries: [[2268, 101], [2073, 87]] }, notifications: [] };
+      return { service, method, result: null, notifications: [] };
+    },
+  });
+  Object.assign(gamePort, { asked: [], bound: [], onObjects: [] });
+  return gamePort;
+}
+
+test("a game-port pilot's colonies are read as the client reads them: the planets of the planet manager, each colony of its planet's own object", async () => {
+  const colonies = new Map([
+    [40176368, wireColony(40176368, [wirePin(501, 2524, [], [["lastLaunchTime", 0]]), wirePin(502, 2544, [[2268, 200], [2073, 50]], [["lastLaunchTime", { type: "long", value: "134360000500000000" }]])])],
+    [40176369, wireColony(40176369, [wirePin(601, 2524, [[2268, 9]], [["lastLaunchTime", 0]])])],
+  ]);
+  const gateway = gatewayWithSnapshot();
+  const gamePort = gamePortWithColonies(colonies, coloniesRowset(40176369, 40176368));
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => "gameport", staticData: colonyStatics() });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  gamePort.asked.length = 0;
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/planets");
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.deepEqual([payload.ok, payload.characterID, payload.coloniesReadable, typeof payload.serverNowMs], [true, 7, true, "number"]);
+  // The planets asked of the manager by name, with nothing.
+  assert.deepEqual(gamePort.asked.filter(([service]) => service === "planetMgr").map(([service, method, args, kwargs, handle]) => [method, args, kwargs, handle]), [["GetPlanetsForChar", [], null, GAME_PORT_SESSION_ID]]);
+  // Each planet's object bound by the planet, and asked its colony first, then what the planet carries, each with nothing.
+  // In the order the manager listed them.
+  assert.deepEqual(gamePort.bound.filter(([service]) => service === "planetMgr"), [["planetMgr", "MachoBindObject", [40176369]], ["planetMgr", "MachoBindObject", [40176368]]]);
+  assert.deepEqual(gamePort.onObjects.map(([service, method, args, kwargs, handle]) => [method, args, kwargs, handle]), [
+    ["GetPlanetInfo", [], null, "handle:planetMgr:[40176369]"], ["GetPlanetResourceInfo", [], null, "handle:planetMgr:[40176369]"],
+    ["GetPlanetInfo", [], null, "handle:planetMgr:[40176368]"], ["GetPlanetResourceInfo", [], null, "handle:planetMgr:[40176368]"],
+  ]);
+  // The gateway's snapshot was not read.
+  assert.equal(gateway.snapshots, 0);
+  // What the page is answered is the colony, in the form the snapshot's had, and in the order of the planets' names.
+  assert.deepEqual(payload.colonies.map((colony) => [colony.planetID, colony.solarSystemID, colony.planetTypeID, colony.commandCenterLevel, colony.lastSimulatedAtMs !== null, colony.linkCount]), [
+    [40176368, 30002780, 2016, 3, true, 1], [40176369, 30002780, 2016, 3, true, 1],
+  ]);
+  const [first] = payload.colonies;
+  assert.deepEqual(first.pins.map((pin) => [pin.pinID, pin.typeID, pin.contents.map((item) => [item.typeID, item.quantity]), pin.lastLaunchAtMs === null]), [
+    [501, 2524, [], true],
+    [502, 2544, [[2268, 200], [2073, 50]], false],
+  ]);
+  assert.deepEqual(first.links, [{ endpoint1: 501, endpoint2: 502, level: 0 }]);
+  assert.deepEqual(first.resources.map((resource) => [resource.typeID, resource.quality]), [[2268, 101], [2073, 87]]);
+});
+
+test("a game-port pilot with no colonies has none, and a planet manager that answered no list is said to be unread", async () => {
+  const none = gamePortWithColonies(new Map());
+  const first = await startTestServer({ gateway: fakeGateway(), gamePortPilots: none, pilotTransportFor: () => "gameport", staticData: colonyStatics() });
+  await apiRequest(first.baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const empty = await apiRequest(first.baseUrl, "/api/bridge/planets");
+  assert.deepEqual([empty.response.status, empty.payload.coloniesReadable, empty.payload.colonies], [200, true, []]);
+  assert.deepEqual(none.onObjects, []);
+
+  const unanswered = gamePortWithColonies(new Map(), null);
+  const second = await startTestServer({ gateway: fakeGateway(), gamePortPilots: unanswered, pilotTransportFor: () => "gameport", staticData: colonyStatics() });
+  await apiRequest(second.baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const unread = await apiRequest(second.baseUrl, "/api/bridge/planets");
+  assert.deepEqual([unread.response.status, unread.payload.coloniesReadable, unread.payload.colonies], [200, false, []]);
+});
+
+test("a planet the manager lists that has no colony of the pilot's on it is left out, and the rest are answered", async () => {
+  // GetPlanetInfo answers a planet's own facts alone where the pilot has nothing built.
+  const bare = wireKeyVal([["planetID", 40176369], ["solarSystemID", 30002780], ["planetTypeID", 2016], ["radius", 2150000], ["celestialIndex", 2]]);
+  const gamePort = gamePortWithColonies(new Map([[40176369, bare], [40176368, wireColony(40176368, [wirePin(501, 2524, [], [["lastLaunchTime", 0]])])]]));
+  const { baseUrl } = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gameport", staticData: colonyStatics() });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const { payload } = await apiRequest(baseUrl, "/api/bridge/planets");
+  assert.deepEqual([payload.coloniesReadable, payload.colonies.map((colony) => colony.planetID)], [true, [40176368]]);
+  // What a planet with no colony carries is not asked for.
+  assert.deepEqual(gamePort.onObjects.map(([service, method, args, kwargs, handle]) => [method, handle]), [
+    ["GetPlanetInfo", "handle:planetMgr:[40176369]"], ["GetPlanetInfo", "handle:planetMgr:[40176368]"], ["GetPlanetResourceInfo", "handle:planetMgr:[40176368]"],
+  ]);
+});
+
+test("a gateway pilot's colonies are still read from the gateway's snapshot, in a process that has a game port", async () => {
+  const gamePort = gamePortWithColonies(new Map([[40176368, wireColony(40176368, [])]]));
+  const gateway = gatewayWithSnapshot();
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => "gateway", staticData: colonyStatics() });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/planets");
+  assert.deepEqual([response.status, payload.coloniesReadable, payload.colonies, gateway.snapshots], [200, true, [], 1]);
+  assert.deepEqual([gamePort.asked.filter(([service]) => service === "planetMgr"), gamePort.onObjects], [[], []]);
+});

@@ -6106,3 +6106,91 @@ test("the kept colonies and launches are asked for again after the server's word
   await pilots.callBoundMethod("planetMgr", "UserLaunchCommodities", [1054656331534, { 2268: 1 }], null, FIELDS, handle, boundHandle);
   assert.deepEqual(await both(), { colonies: 7, launches: 7 });
 });
+
+// clientPlanet.PreparePlanet (clientPlanet.py 83): a planet's colony is asked of the planet's own object when the
+// client first wants the planet, and kept. The client then goes by its own reckoning of what the colony makes,
+// and asks again when the server says the planet's state changed (planetSvc.OnMajorPlanetStateUpdate re-inits
+// the planet). The transport reckons nothing: it keeps the answer for a while, and forgets it at the server's
+// word of a change and at the pilot's own. What a planet carries does not change, and is kept.
+
+const COLONY_PAIRS = { allowed: new Set(["planetMgr.MachoBindObject", "planetMgr.UserAbandonPlanet", "planetMgr.GetPlanetInfo", "planetMgr.GetPlanetResourceInfo", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "planetMgr.UserTransferCommodities", "planetMgr.GetProgramResultInfo", "invbroker.GetInventoryFromId", "invbroker.ImportExportWithPlanet"]) };
+const COLONY_PLANET = 40176368;
+const OTHER_PLANET = 40176369;
+
+/** A docked pilot with a clock a test moves, and a planet's object to ask. */
+async function withAColony(more = {}) {
+  const clock = { ms: 1_000_000 };
+  const asked = { info: 0, resources: 0 };
+  const answers = { "bound:GetPlanetInfo": () => `colony ${asked.info += 1}`, "bound:GetPlanetResourceInfo": () => `resources ${asked.resources += 1}`, ...more };
+  const { pilots, session, handle } = await selected({ answers }, { ...COLONY_PAIRS, now: () => clock.ms });
+  const planet = async (planetID) => (await pilots.bindObject("planetMgr", "MachoBindObject", [planetID], null, FIELDS, handle)).boundHandle;
+  const on = async (boundHandle, method, args = []) => (await pilots.callBoundMethod("planetMgr", method, args, null, FIELDS, handle, boundHandle)).result;
+  return { pilots, session, handle, clock, asked, planet, on };
+}
+
+test("a planet's colony is asked of the planet's own object once and kept for a minute; what the planet carries is kept", async () => {
+  const { pilots, session, clock, asked, planet, on } = await withAColony();
+  const here = await planet(COLONY_PLANET);
+  assert.deepEqual([await on(here, "GetPlanetInfo"), await on(here, "GetPlanetInfo"), await on(here, "GetPlanetResourceInfo"), await on(here, "GetPlanetResourceInfo"), await on(here, "GetPlanetInfo")],
+    ["colony 1", "colony 1", "resources 1", "resources 1", "colony 1"]);
+  // The first rode the planet's bind, and nothing was asked by the service's name.
+  assert.deepEqual([session.binds.filter((bind) => bind.service === "planetMgr"), session.carried.includes("GetPlanetInfo"), session.calls.filter((call) => call.service === "planetMgr")], [[{ service: "planetMgr", params: COLONY_PLANET }], true, []]);
+  // Noted where it was asked: once each.
+  assert.deepEqual([ledgerOf(pilots, "planetMgr.GetPlanetInfo")[0], ledgerOf(pilots, "planetMgr.GetPlanetResourceInfo")[0]], [{ same: 1 }, { same: 1 }]);
+  // Another handle on the same planet is the same planet's.
+  const again = await planet(COLONY_PLANET);
+  assert.equal(await on(again, "GetPlanetInfo"), "colony 1");
+  // Another planet is another's.
+  const there = await planet(OTHER_PLANET);
+  assert.deepEqual([await on(there, "GetPlanetInfo"), await on(there, "GetPlanetInfo"), await on(here, "GetPlanetInfo")], ["colony 2", "colony 2", "colony 1"]);
+  // A minute on, less a moment: still kept. At the minute: asked again, and kept again. What the planet carries stays.
+  clock.ms += 59_999;
+  assert.equal(await on(here, "GetPlanetInfo"), "colony 1");
+  clock.ms += 1;
+  assert.deepEqual([await on(here, "GetPlanetInfo"), await on(here, "GetPlanetInfo"), await on(here, "GetPlanetResourceInfo")], ["colony 3", "colony 3", "resources 1"]);
+  // Two at once that find nothing kept ask once.
+  clock.ms += 60_000;
+  assert.deepEqual(await Promise.all([on(here, "GetPlanetInfo"), on(here, "GetPlanetInfo")]), ["colony 4", "colony 4"]);
+  // With the planet named beside it, it is no call of the client's: asked as it came each time, and not kept.
+  assert.deepEqual([await on(here, "GetPlanetInfo", [COLONY_PLANET]), await on(here, "GetPlanetInfo", [COLONY_PLANET]), await on(here, "GetPlanetInfo")], ["colony 5", "colony 6", "colony 4"]);
+  assert.deepEqual(asked, { info: 6, resources: 1 });
+  // Nothing else asked of a planet's object is kept, though it be asked with nothing: each asking is sent.
+  await on(there, "UserAbandonPlanet");
+  await on(there, "UserAbandonPlanet");
+  assert.equal(session.boundCalls.filter((call) => call.method === "UserAbandonPlanet").length, 2);
+});
+
+test("a kept colony is asked for again after the server's word of a change, and after the pilot's own change to a colony or sending of goods", async () => {
+  let refuse = false;
+  const { pilots, session, handle, asked, planet, on } = await withAColony({ "bound:UserUpdateNetwork": () => { if (refuse) throw refusedBy("NotNow"); return null; } });
+  const here = await planet(COLONY_PLANET);
+  const read = async () => { await on(here, "GetPlanetInfo"); await on(here, "GetPlanetInfo"); await on(here, "GetPlanetResourceInfo"); return { ...asked }; };
+  assert.deepEqual(await read(), { info: 1, resources: 1 });
+  // A notice that is none of the planet's leaves it kept.
+  session.notify("OnPILaunchesChange", []);
+  session.notify("OnPlanetSomethingElse", [COLONY_PLANET]);
+  assert.deepEqual(await read(), { info: 1, resources: 1 });
+  // planetSvc.OnMajorPlanetStateUpdate, and the pins the server says to look at again.
+  let colonies = 1;
+  for (const [notice, args] of [["OnMajorPlanetStateUpdate", [COLONY_PLANET]], ["OnRefreshPins", [[1054656331534]]]]) {
+    session.notify(notice, args);
+    colonies += 1;
+    assert.deepEqual(await read(), { info: colonies, resources: 1 }, notice);
+  }
+  // The pilot's own, on the planet's object: a change to the colony, a launch, goods moved between pins. Not a read.
+  for (const [write, args] of [["UserUpdateNetwork", [[]]], ["UserLaunchCommodities", [1054656331534, { 2268: 1 }]], ["UserTransferCommodities", [[1054656331535, 1054656331534], { 2268: 1 }]]]) {
+    await on(here, write, args);
+    colonies += 1;
+    assert.deepEqual(await read(), { info: colonies, resources: 1 }, write);
+  }
+  await on(here, "GetProgramResultInfo", [1, 2268, [], 0.01]);
+  assert.deepEqual(await read(), { info: colonies, resources: 1 });
+  // Refused, a change may still have changed something.
+  refuse = true;
+  await assert.rejects(on(here, "UserUpdateNetwork", [[]]));
+  assert.deepEqual(await read(), { info: colonies + 1, resources: 1 });
+  // And goods sent up from a launchpad through a customs office, which is the office's inventory's call.
+  const { boundHandle } = await pilots.bindObject("invbroker", "GetInventoryFromId", [1200040176368], { passive: 0 }, FIELDS, handle);
+  await pilots.callBoundMethod("invbroker", "ImportExportWithPlanet", [1054656331535, {}, { 2268: 1 }, 0.05], null, FIELDS, handle, boundHandle);
+  assert.deepEqual(await read(), { info: colonies + 2, resources: 1 });
+});
