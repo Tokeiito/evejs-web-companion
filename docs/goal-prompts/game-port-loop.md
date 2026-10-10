@@ -385,6 +385,14 @@ Take these defaults, and list each under "For the operator" in the log so they c
   `docker exec <name> node scripts/doctor.js` is the first thing to read. Remove the
   container (`docker rm -f -v`) and the image after. The operator's own image
   (`evejs-web-poc-local`) and volume (`evejs-web-poc-data`) are not to be touched.
+- **A fleet with a second pilot handed to the host as a companion:** `companion-walk.mjs <repo>
+  <bff> <commander account> <id> <companion account> <id> <out.json>` (the page's own setup
+  and grant; Test Pilot and Test Three are both docked at Jita). As of 2026-10-10 the start
+  is refused on both transports ("Join a fleet first"), so it gets no further than that.
+- **Read the tally after every live run, whatever the run was for.** The companion's run
+  failed at its start and still showed a read of an online pilot that no earlier walk had
+  made: a start asked by the session that holds the pilot. `ledger-show.js
+  <bff>-data/gateway-ledger.json` takes a second.
 - **Every pilot of every account, chosen in turn:** `every-pilot.js <scratch> <bff>
   <store.sqlite> [accounts]` (save the store first; a login brings a pilot online).
 - **Both BFFs run the code they were started on.** A change to a route's answer shows through
