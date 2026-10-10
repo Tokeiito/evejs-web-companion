@@ -113,6 +113,50 @@ test("the bind is tried again a second later, ten times at most", async () => {
   assert.equal(gone.session.asked.filter((line) => line.startsWith("bind")).length, 2);
 });
 
+test("a drone of the pilot's left in space with no state asks once for the whole state, and again only if it strays again", async () => {
+  const clock = { ms: 0 };
+  const { session, space, state } = handTicked({}, { now: () => clock.ms });
+  session.attributes = { charid: 90000001, shipid: undock.shipID };
+  await space.start();
+  for (const notification of notifications(undock)) space.feed(notification);
+  state.tick();
+  state.sim += 1;
+  state.frame();
+  assert.equal(space.park.validState, true);
+  const asks = () => session.asked.filter((line) => line.endsWith("UpdateStateRequest")).length;
+  const slim = (fields) => new Map(Object.entries(fields));
+  // Three drones in space: the pilot's without a state, the pilot's with one, and somebody else's.
+  const [lost, kept, theirs] = [9100000000001, 9100000000002, 9100000000003];
+  for (const [id, ownerID] of [[lost, 90000001], [kept, 90000001], [theirs, 90000002]]) {
+    space.park.ballpark.addBall({ id, isFree: true, mass: 5000, x: id % 10 });
+    space.park.slimItems.set(id, slim({ itemID: BigInt(id), typeID: 2454, groupID: 100, categoryID: 18, ownerID }));
+  }
+  space.park.OnDroneStateChange(kept, 90000001, undock.shipID, 0, 2454, 90000001, null);
+  // Within the grace a state may still be on its way: nothing is asked.
+  state.frame();
+  clock.ms = 4999;
+  state.frame();
+  assert.equal(asks(), 0);
+  // Past it, the whole state, once, and on record.
+  clock.ms = 5000;
+  state.frame();
+  assert.equal(asks(), 1);
+  assert.deepEqual(state.errors.map(([what]) => what), ["drone state"]);
+  assert.match(state.errors[0][1], new RegExp(`^1 of the pilot's drones .*\\(${lost}\\)`));
+  space.park.validState = true; // as if the state that was asked for had come, without the drone in it
+  clock.ms = 60000;
+  state.frame();
+  assert.equal(asks(), 1, "the same drone does not ask again");
+  // Given its state, then losing it again, it may ask again.
+  space.park.OnDroneStateChange(lost, 90000001, undock.shipID, 0, 2454, 90000001, null);
+  state.frame();
+  space.park.stateByDroneID.delete(lost);
+  state.frame();
+  clock.ms = 65000;
+  state.frame();
+  assert.equal(asks(), 2);
+});
+
 test("a park is fed the session's ballpark updates and nothing else, and steps when ticked", async () => {
   const { space, state } = handTicked();
   await space.start();
