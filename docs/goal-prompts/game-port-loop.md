@@ -459,6 +459,17 @@ Take these defaults, and list each under "For the operator" in the log so they c
   `routes-survey.js <repo> [list]` counts the routes the page still names.
 - **The page's clock** is `serverNowMs` on a pilot's answer of the generic call, on the game
   port only: the server's clock as the pilot's session has it.
+- **Something the BFF makes, made again in the page's TypeScript, is proved by making both
+  from one kept state** at every point of a recorded session
+  (`test/gamePortSkillSheet.test.js`): the BFF's given the state as it came off the wire,
+  the page's given each read through `wireToBridgeJson`. What cannot come off the wire as
+  such cannot be written there, and is tested in the page's own test, where its form can.
+  Then live, leaf by leaf: `skills-compare.mjs <repo> <scratch> <bff> <account> <characterID>
+  [typeID toLevel]`. The clock's leaf differs, being read at two moments.
+- **A number that came as JSON is finite.** A check for it in the page's TypeScript guards
+  nothing; two breakages have survived such checks.
+- **After `store.sh`, the game port.** It opens a little after the web gateway answers, and a
+  pilot chosen in between is refused as unreachable. `store.sh` waits for both now.
 - **After a route is moved, read the game port's ledger for its calls** (`call-ledger.json` in the
   check BFF's data folder). A call the route made unchecked is still unchecked when the page
   makes it: the standings' two details were. Set it against the client's spelling in
