@@ -29969,9 +29969,10 @@ notices).
 
 **Proof.**
 
-- 6 new tests of the keeping and one of the flow hearing the notices; two of the earlier
-  ones say more. 33 ways of breaking it were tried, four of a file at a time: all caught
-  (a thirty-fourth in my list broke nothing, an unused name).
+- 5 new tests of the keeping (one of them in place of an earlier one, which it says more
+  than) and one of the flow hearing the notices; two of the earlier ones say more. 32 ways
+  of breaking it were tried, four of a file at a time: all caught (a thirty-third in my
+  list broke nothing, an unused name).
 - With the sources of the commit before, 8 fail. Suite: 10178 tests, 10154 pass, 0 fail,
   0 cancelled, 24 skipped.
 - **In the browser** (the default, the game port; Test Two docked, its Wallet and Corp Wallet
