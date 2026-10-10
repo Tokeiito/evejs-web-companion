@@ -47,9 +47,10 @@ test("custom courier turn-in forwards exactly the required split to the BFF and 
       agentID: AGENT, name: "Courier Agent", agentTypeID: 2, divisionID: 22, level: 1,
       corporationID: 1000002, stationID: STATION_ID, stationName: "Destination", solarSystemID: SOLAR_SYSTEM_ID,
     }] };
-    if (path === "/api/bridge/journal") result = { ok: true, result: tuple([
+    // The journal, read by the page's own call (bridge/journalReads.ts).
+    if (path === "/api/bridge/call" && body.service === "agentMgr" && body.method === "GetMyJournalDetails") result = { ok: true, service: body.service, method: body.method, result: tuple([
       list(accepted && !completed ? [tuple([2, 0, "Courier", 1, AGENT, null, list([]), 0, 0, 7])] : []), list([]),
-    ]) };
+    ]), notifications: [] };
     if (path === `/api/bridge/agents/${AGENT}/action`) {
       if (body.actionID === 816) accepted = true;
       if (body.actionID === 821) completed = true;

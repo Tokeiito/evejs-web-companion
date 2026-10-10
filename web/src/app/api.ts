@@ -2250,11 +2250,9 @@ export async function loadBriefing(
   };
 }
 
-/** The mission journal (agentMgr.GetMyJournalDetails; raw, decoded in the flow). */
-export async function loadJournal(options: ApiOptions = {}): Promise<JsonValue> {
-  const data = await getJson("/api/bridge/journal", options);
-  return data.result ?? null;
-}
+// The mission journal is read by the page itself, with the client's own call
+// (bridge/journalReads.ts; the plan's Phase 6b). Until 2026-10-10 it was one
+// route's (GET /api/bridge/journal).
 
 // --- R6a Agent Finder (static agent reference data) ------------------------
 // The Agent Finder lists agents from the static agentAuthority reference table

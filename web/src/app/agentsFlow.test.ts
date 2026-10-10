@@ -116,10 +116,23 @@ const BRIEFING_RESPONSE = {
   errors: { briefing: null, objective: null, location: null },
 };
 
+/**
+ * The journal's read, as these tests name it: agentMgr.GetMyJournalDetails() asked by the generic call as a pilot's,
+ * with nothing, which is how the page reads the journal (bridge/journalReads.ts). The route the page read until
+ * 2026-10-10 is not this: a request of it keeps its own path, and nothing here answers it.
+ */
+const JOURNAL_READ = "agentMgr.GetMyJournalDetails()";
+const asRead = (path: string, body: Record<string, unknown>): string =>
+  (path === "/api/bridge/call" && body.service === "agentMgr" && body.method === "GetMyJournalDetails" && JSON.stringify(body.args) === "[]" && body.kwargs === null && body.pilot === true ? JOURNAL_READ : path);
+
+/** What that call answers, in the generic call's own envelope. */
 function journalResponse(active: readonly unknown[]) {
   return {
     ok: true,
+    service: "agentMgr",
+    method: "GetMyJournalDetails",
     result: { type: "tuple", items: [{ type: "list", items: active }, { type: "list", items: [] }] },
+    notifications: [],
   };
 }
 
@@ -139,9 +152,9 @@ function makeFakeFetch(
 ): { fetch: typeof fetch; requests: Recorded[] } {
   const requests: Recorded[] = [];
   const fakeFetch = (async (input: unknown, init?: { method?: string; body?: unknown }) => {
-    const path = String(input);
     const method = (init && init.method) || "GET";
     const body = init && typeof init.body === "string" ? JSON.parse(init.body) : {};
+    const path = asRead(String(input), body);
     requests.push({ path, method, body });
     let outcome: { status: number; body: unknown };
     try {
@@ -217,7 +230,7 @@ test("accepting a courier posts DoAction(accept) then pulls the briefing and jou
     if (path === "/api/bridge/agents/3008416/briefing") {
       return { status: 200, body: BRIEFING_RESPONSE };
     }
-    if (path === "/api/bridge/journal") {
+    if (path === JOURNAL_READ) {
       return { status: 200, body: journalResponse([ACTIVE_MISSION_ROW]) };
     }
     throw new Error(`unexpected ${path} ${JSON.stringify(body)}`);
@@ -230,7 +243,7 @@ test("accepting a courier posts DoAction(accept) then pulls the briefing and jou
   const action = requests.find((r) => r.path === "/api/bridge/agents/3008416/action");
   assert.deepEqual(action!.body, { actionID: 816 });
   assert.ok(requests.some((r) => r.path === "/api/bridge/agents/3008416/briefing"));
-  assert.ok(requests.some((r) => r.path === "/api/bridge/journal"));
+  assert.ok(requests.some((r) => r.path === JOURNAL_READ));
 
   const agents = store.agents.get();
   // Briefing shows the courier cargo / destination / reward / time bonus.
@@ -275,7 +288,7 @@ test("declining clears the briefing and refreshes the journal", async () => {
         },
       };
     }
-    if (path === "/api/bridge/journal") {
+    if (path === JOURNAL_READ) {
       return { status: 200, body: journalResponse([]) };
     }
     throw new Error(`unexpected ${path}`);
@@ -285,7 +298,7 @@ test("declining clears the briefing and refreshes the journal", async () => {
   await flow.chooseAction(3008416, { actionID: 817, buttonType: 9, label: "Decline" });
 
   assert.equal(store.agents.get().briefing, null, "the stale briefing is cleared");
-  assert.ok(requests.some((r) => r.path === "/api/bridge/journal"));
+  assert.ok(requests.some((r) => r.path === JOURNAL_READ));
   assert.equal(store.agents.get().journal!.active.length, 0);
 });
 
@@ -376,7 +389,7 @@ test("completing a courier posts DoAction(complete), clears the briefing, and pu
     if (path === "/api/bridge/rewards") {
       return { status: 200, body: REWARDS_RESPONSE };
     }
-    if (path === "/api/bridge/journal") {
+    if (path === JOURNAL_READ) {
       return { status: 200, body: journalResponse([]) };
     }
     throw new Error(`unexpected ${path}`);
@@ -390,7 +403,7 @@ test("completing a courier posts DoAction(complete), clears the briefing, and pu
   const action = requests.find((r) => r.path === "/api/bridge/agents/3008416/action");
   assert.deepEqual(action!.body, { actionID: 819 });
   assert.ok(requests.some((r) => r.path === "/api/bridge/rewards"), "rewards pulled");
-  assert.ok(requests.some((r) => r.path === "/api/bridge/journal"), "journal pulled");
+  assert.ok(requests.some((r) => r.path === JOURNAL_READ), "journal pulled");
 
   const agents = store.agents.get();
   assert.equal(agents.briefing, null, "the briefing is cleared after completion");
@@ -574,7 +587,7 @@ test("R35 predicate 1: a REFUSED Complete keeps the briefing and pulls no reward
     if (path === "/api/bridge/agents/3008416/action") {
       return { status: 200, body: refusedCompleteConversation() };
     }
-    if (path === "/api/bridge/journal") {
+    if (path === JOURNAL_READ) {
       return { status: 200, body: journalResponse([ACTIVE_MISSION_ROW]) };
     }
     if (path === "/api/bridge/rewards") {
@@ -610,7 +623,7 @@ test("R35 predicate 1: a SUCCESSFUL Complete (missionCompleted true) still clear
     if (path === "/api/bridge/rewards") {
       return { status: 200, body: REWARDS_RESPONSE };
     }
-    if (path === "/api/bridge/journal") {
+    if (path === JOURNAL_READ) {
       return { status: 200, body: journalResponse([]) };
     }
     throw new Error(`unexpected ${path}`);
@@ -778,7 +791,7 @@ async function talking(answers: Record<string, ReturnType<typeof conversationWit
       if (!answer) throw new Error(`no answer for action ${String(body.actionID)}`);
       return { status: 200, body: answer };
     }
-    if (path === "/api/bridge/journal") {
+    if (path === JOURNAL_READ) {
       return { status: 200, body: journalResponse([]) };
     }
     throw new Error(`unexpected ${path}`);
@@ -800,7 +813,7 @@ test("opening an agent's window presses Request Mission at once, as the client's
   // The briefing's times are kept with the layout.
   assert.deepEqual(store.agents.get().missionTimes, { declineTime: null, expirationTime: 134295222004640000n });
   // One layout, of what came of the press: the briefing read once, after both. Then the journal, which the press changed.
-  assert.deepEqual(requests.map((request) => request.path.split("/").at(-1)), ["action", "action", "briefing", "journal"]);
+  assert.deepEqual(requests.map((request) => request.path.split("/").at(-1)), ["action", "action", "briefing", JOURNAL_READ]);
   assert.notEqual(store.agents.get().journal, null);
   const agents = store.agents.get();
   assert.deepEqual(agents.conversation!.actions.map((action) => action.buttonType), [3, 9]);
@@ -840,14 +853,14 @@ test("the opening press is for an agent with nothing else to do: not a locator, 
   await silent.flow.openConversation(3008416);
   assert.deepEqual(silent.pressed(), [null]);
   // With nothing pressed, nothing changed, and the journal is not read again.
-  assert.equal(silent.requests.some((request) => request.path === "/api/bridge/journal"), false);
+  assert.equal(silent.requests.some((request) => request.path === JOURNAL_READ), false);
 });
 
 test("the briefing and the objectives are read for every layout, whatever was pressed", async () => {
   const { store, flow, requests } = await talking({ 818: conversationWith([[816, 3], [817, 9]]) });
   // Defer: not an accept, a decline or a completion.
   await flow.chooseAction(3008416, { actionID: 818, buttonType: 10, label: "Defer" });
-  assert.deepEqual(requests.map((request) => request.path.split("/").at(-1)), ["action", "briefing", "journal"]);
+  assert.deepEqual(requests.map((request) => request.path.split("/").at(-1)), ["action", "briefing", JOURNAL_READ]);
   assert.equal(store.agents.get().briefing!.cargoTypeID, 3814);
 });
 
@@ -919,8 +932,8 @@ async function listening(
     busyCode: "SESSION_CHANGE_IN_PROGRESS" | "CHARACTER_IN_USE";
   } = { hold: null, holdAction: null, journalHold: null, failAction: false, sessionGone: false, failJournal: false, busyFor: 0, busyCode: "SESSION_CHANGE_IN_PROGRESS" };
   const fetchImpl = (async (input: unknown, init?: { method?: string; body?: unknown }) => {
-    const path = String(input);
     const body = init && typeof init.body === "string" ? JSON.parse(init.body) : {};
+    const path = asRead(String(input), body);
     requests.push({ path, method: (init && init.method) || "GET", body });
     let status = 200;
     let answer: unknown = { ok: true };
@@ -958,7 +971,7 @@ async function listening(
       }
     } else if (/\/briefing$/.test(path)) {
       answer = BRIEFING_RESPONSE;
-    } else if (path === "/api/bridge/journal") {
+    } else if (path === JOURNAL_READ) {
       if (state.journalHold) await state.journalHold;
       if (state.failJournal) {
         status = 502;
@@ -1000,8 +1013,8 @@ async function listening(
   };
   /** What was asked about agents and the journal, each by its last word (and the action pressed), sorted. */
   const asked = () => requests
-    .filter((request) => request.path.startsWith("/api/bridge/agents/") || request.path === "/api/bridge/journal")
-    .map((request) => (request.path.endsWith("/action") ? `${request.path.split("/").at(-2)}:action:${String(request.body.actionID)}` : request.path.split("/").at(-1) ?? ""))
+    .filter((request) => request.path.startsWith("/api/bridge/agents/") || request.path === JOURNAL_READ)
+    .map((request) => (request.path === JOURNAL_READ ? "journal" : request.path.endsWith("/action") ? `${request.path.split("/").at(-2)}:action:${String(request.body.actionID)}` : request.path.split("/").at(-1) ?? ""))
     .sort();
   return { store, flow, requests, push, asked, state };
 }
@@ -1350,7 +1363,7 @@ test("each layout keeps what its own briefing says of time, whatever the last ac
     if (path === "/api/bridge/agents") return { status: 200, body: AGENTS_RESPONSE };
     if (path === "/api/bridge/agents/3008416/action") return { status: 200, body: answers[String(body.actionID)]! };
     if (path === "/api/bridge/agents/3008416/briefing") return { status: 200, body: briefingAnswer };
-    if (path === "/api/bridge/journal") return { status: 200, body: journalResponse([]) };
+    if (path === JOURNAL_READ) return { status: 200, body: journalResponse([]) };
     throw new Error(`unexpected ${path}`);
   });
   const flow = createAppFlow(store, { fetch });
@@ -1400,7 +1413,7 @@ test("each layout keeps the mission's objectives, and an action that ends the mi
     if (path === "/api/bridge/agents") return { status: 200, body: AGENTS_RESPONSE };
     if (path === "/api/bridge/agents/3008416/action") return { status: 200, body: answers[String(body.actionID)]! };
     if (path === "/api/bridge/agents/3008416/briefing") return { status: 200, body: reads };
-    if (path === "/api/bridge/journal") return { status: 200, body: journalResponse([]) };
+    if (path === JOURNAL_READ) return { status: 200, body: journalResponse([]) };
     throw new Error(`unexpected ${path}`);
   });
   const flow = createAppFlow(store, { fetch });
@@ -1724,7 +1737,7 @@ test("an answer for one agent's mission is not written to another agent's page, 
   const held = new Promise<void>((resolve) => { release = resolve; });
   const { store, flow } = await listening({ null: ACCEPTED }, {
     routes: async (path) => {
-      if (path === "/api/bridge/journal") return [200, journalResponse([ACTIVE_MISSION_ROW, second])];
+      if (path === JOURNAL_READ) return [200, journalResponse([ACTIVE_MISSION_ROW, second])];
       if (path === "/api/bridge/agents/3008416/mission-objectives") {
         await held;
         return [200, { ok: true, objective: pageAnswer(3), notifications: [] }];
@@ -1758,7 +1771,7 @@ async function withAnsweredPush(cursor: { epoch: string; sequence: number } | nu
     routes: (path) => (/\/remove-offer$/.test(path) ? [200, { ok: true, result: null, notifications: [drained] }] : undefined),
   });
   /** How often the journal has been read since the page loaded: once for each push acted on. */
-  const journalReads = () => made.requests.filter((request) => request.path === "/api/bridge/journal").length;
+  const journalReads = () => made.requests.filter((request) => request.path === JOURNAL_READ).length;
   const settle = () => new Promise((resolve) => setTimeout(resolve, 25));
   return { ...made, journalReads, settle };
 }
@@ -2152,4 +2165,21 @@ test("the jumps on the autopilot's route are worked out here from the map, read 
   assert.equal(reads(), 2);
   // What was held before is still there.
   assert.equal(held()["30000001:30000004"], 3);
+});
+
+test("the journal is read by the page's own call, agentMgr.GetMyJournalDetails with nothing, as a pilot's; the route is not read", async () => {
+  const store = createClientStore();
+  const { fetch, requests } = makeFakeFetch((path) => {
+    if (path === JOURNAL_READ) return { status: 200, body: journalResponse([ACTIVE_MISSION_ROW]) };
+    throw new Error(`unexpected ${path}`);
+  });
+  const flow = createAppFlow(store, { fetch });
+  await flow.loadJournal();
+  assert.deepEqual(requests.map((request) => [request.method, request.path, request.body]), [["POST", JOURNAL_READ, { service: "agentMgr", method: "GetMyJournalDetails", args: [], kwargs: null, pilot: true }]]);
+  assert.equal(store.agents.get().journal?.active.length, 1);
+  // A call of the same name asked any other way is not the journal's read, and neither is the route.
+  assert.deepEqual([asRead("/api/bridge/journal", {}), asRead("/api/bridge/call", { service: "agentMgr", method: "GetMyJournalDetails", args: [3008416], kwargs: null, pilot: true }), asRead("/api/bridge/call", { service: "agentMgr", method: "GetMyJournalDetails", args: [], kwargs: null })], ["/api/bridge/journal", "/api/bridge/call", "/api/bridge/call"]);
+  // The read failing fails the reading, with the call's own code.
+  const failing = makeFakeFetch(() => ({ status: 502, body: { ok: false, error: "EVE_GATEWAY_UNREACHABLE", message: "The game server is unreachable." } }));
+  await assert.rejects(createAppFlow(createClientStore(), { fetch: failing.fetch }).loadJournal(), (error: { code?: string }) => error.code === "EVE_GATEWAY_UNREACHABLE");
 });

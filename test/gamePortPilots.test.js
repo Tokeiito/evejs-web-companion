@@ -7326,3 +7326,53 @@ test("a home station that could not be read is not kept, and another account's s
   assert.equal(homeCalls(session).length, 2);
   await assert.rejects(pilots.callMethod("home_station", "get_home_station", [], null, { userid: 9 }, handle), (error) => error.code === "SESSION_NOT_FOUND");
 });
+
+// ── the journal, asked for by name ───────────────────────────────────────────
+//
+// The page reads the journal by asking for it itself (web/src/bridge/journalReads.ts). Every window of the
+// client's that wants it reads the journal service, which asks once and keeps it (journal.py 290).
+
+test("the journal, asked for by name, is answered from the journal as it is kept, made right first: nothing is sent for what is kept", async () => {
+  const { pilots, session, handle } = await selected({ answers: { "agentMgr.GetMyJournalDetails": journalWith(missionOf(3008416), missionOf(3008417, 2, 7)), "bound:GetMyJournalDetails": journalWith(missionOf(3008416, 2, 1)) } }, JOURNAL_PAIRS);
+  const ask = (args = [], kwargs = null) => pilots.callMethod("agentMgr", "GetMyJournalDetails", args, kwargs, FIELDS, handle);
+  assert.deepEqual(journalAsked(session), ["GetMyJournalDetails"]);
+  const first = await ask();
+  // In the form the call answers in, which is the form the route is handed: (the missions, the research).
+  assert.deepEqual([first.service, first.method, journalStates(first.result), first.result[1], first.result], ["agentMgr", "GetMyJournalDetails", [[1, 3008416, 1], [2, 3008417, 7]], { type: "list", items: [] }, await pilots.journalKept(WHO, handle)]);
+  assert.deepEqual(first.result[0].items[0][5], { type: "long", value: "134365346460600000" });
+  // Three at once, and again: nothing is sent, and nothing more is counted than the choosing's own asking.
+  await Promise.all([ask(), ask(), ask()]);
+  assert.deepEqual([journalAsked(session), session.binds, ledgerOf(pilots, "agentMgr.GetMyJournalDetails")[0]], [["GetMyJournalDetails"], [], { same: 1 }]);
+  // A mission changes: the next asking has its agent asked for its own part, on the agent's own moniker, and
+  // what it answers is in the answer. The whole is not asked for again.
+  session.notify("OnAgentMissionChange", ["accepted", 3008416]);
+  const after = await ask();
+  assert.deepEqual([journalStates(after.result), journalAsked(session), session.boundCalls.map((call) => call.method)], [[[2, 3008417, 7], [2, 3008416, 1]], ["GetMyJournalDetails"], ["GetMyJournalDetails"]]);
+  // And what the server said is handed on with the answer, as with any call's.
+  assert.deepEqual(after.notifications.map((notification) => notification.method), ["OnAgentMissionChange"]);
+  // Asked with anything, it is not the journal service's asking: sent by name, as any call is.
+  await ask([3008416]);
+  await ask([], { anything: 1 });
+  assert.deepEqual(session.calls.filter((call) => call.service === "agentMgr" && call.method === "GetMyJournalDetails").slice(1).map((call) => [call.args, call.kwargs]), [[[3008416], null], [[], { anything: 1 }]]);
+
+  // A call of that name on another service is that service's own, and is not answered with the journal.
+  const other = await selected({ answers: { "agentMgr.GetMyJournalDetails": journalWith(missionOf(3008416)), "someService.GetMyJournalDetails": "someone else's" } }, { allowed: new Set([...JOURNAL_PAIRS.allowed, "someService.GetMyJournalDetails"]) });
+  assert.equal((await other.pilots.callMethod("someService", "GetMyJournalDetails", [], null, FIELDS, other.handle)).result, "someone else's");
+  assert.equal(other.session.calls.filter((call) => call.service === "someService").length, 1);
+});
+
+test("where no journal is kept the journal asked for by name is asked of the server, and what cannot be read fails the asking", async () => {
+  // What the server answers is no journal: nothing is kept, the service's own reading has asked once, and the
+  // call goes on as any call does, handing on what the server says.
+  const odd = await selected({ answers: { "agentMgr.GetMyJournalDetails": "no journal" } }, JOURNAL_PAIRS);
+  const before = journalAsked(odd.session).length;
+  assert.equal((await odd.pilots.callMethod("agentMgr", "GetMyJournalDetails", [], null, FIELDS, odd.handle)).result, "no journal");
+  assert.equal(journalAsked(odd.session).length, before + 2);
+  // A journal that cannot be read: the asking fails as the reading fails, and the next one asks again.
+  let refuse = true;
+  const late = await selected({ answers: { "agentMgr.GetMyJournalDetails": () => { if (refuse) throw refusedBy("NotNow"); return journalWith(missionOf(3008416)); } } }, JOURNAL_PAIRS);
+  await rejects(late.pilots.callMethod("agentMgr", "GetMyJournalDetails", [], null, FIELDS, late.handle), "CALL_REFUSED");
+  refuse = false;
+  assert.deepEqual(journalStates((await late.pilots.callMethod("agentMgr", "GetMyJournalDetails", [], null, FIELDS, late.handle)).result), [[1, 3008416, 1]]);
+  await assert.rejects(late.pilots.callMethod("agentMgr", "GetMyJournalDetails", [], null, { userid: 9 }, late.handle), (error) => error.code === "SESSION_NOT_FOUND");
+});

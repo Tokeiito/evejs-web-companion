@@ -98,6 +98,7 @@ import { createWalletReads } from "../bridge/walletReads.ts";
 import { readStandings, standingComposition, standingHistory } from "../bridge/standingsReads.ts";
 import { createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
 import { createCharacterSheetReads } from "../bridge/characterSheetReads.ts";
+import { readJournal } from "../bridge/journalReads.ts";
 import {
   classifyStandingKind,
   decodeStandingCompositions,
@@ -4359,7 +4360,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // --- R4 Agents & Missions ------------------------------------------------
 
   async function loadJournal(): Promise<void> {
-    const result = await api.loadJournal(callOptions);
+    const result = await readJournal(bridgeAsk);
     store.apply({ type: "agents/journal", journal: decodeJournal(result) });
   }
 
@@ -8237,7 +8238,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         return briefing;
       },
       getJournal: async () => {
-        const journal = decodeJournal(await api.loadJournal(callOptions));
+        const journal = decodeJournal(await readJournal(bridgeAsk));
         store.apply({ type: "agents/journal", journal });
         return journal;
       },
@@ -11722,7 +11723,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         if (macro !== null && (MISSION_MACROS.has(macro) || CARGO_MACROS.has(macro))) {
           if (MISSION_MACROS.has(macro)) {
             try {
-              journal = decodeJournal(await api.loadJournal(callOptions));
+              journal = decodeJournal(await readJournal(bridgeAsk));
               store.apply({ type: "agents/journal", journal });
             } catch {
               journal = null;

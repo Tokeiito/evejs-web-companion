@@ -48,7 +48,8 @@ async function findWithinTwoJumps(t: { mock: { timers: { enable(options: unknown
       if (path === "/api/bridge/script/observation") result = { ok: true, bay: [], inSpace: [], space: { inSpace: false, solarSystemID: SOLAR_SYSTEM_ID, shipID: SHIP_ID, ship: null, entities: [] } };
       if (path === "/api/map/graph") result = GRAPH;
       if (path.startsWith("/api/agents/find")) result = { ok: true, kind: "courier", level: 1, total: 1, capped: false, agents: [{ agentID: AGENT, name: "Courier Agent", agentTypeID: 2, divisionID: 22, level: 1, corporationID: 1000002, stationID: 60000999, stationName: "Far Station", solarSystemID: FAR }] };
-      if (path === "/api/bridge/journal") result = { ok: true, result: tuple([list([]), list([])]) };
+      // The journal, read by the page's own call (bridge/journalReads.ts).
+      if (path === "/api/bridge/call" && body.service === "agentMgr" && body.method === "GetMyJournalDetails") result = { ok: true, service: body.service, method: body.method, result: tuple([list([]), list([])]), notifications: [] };
       return new Response(JSON.stringify(result), { headers: { "content-type": "application/json" } });
     },
   });

@@ -1478,6 +1478,15 @@ function createGamePortPilots({
         return { service, method, result: wireToBridgeJson(entry.standings[STANDINGS_KEPT[method]]()), notifications: drain(entry) };
       }
     }
+    // The journal service's reading (journal.py 290): the whole asked for once and kept, a changed mission's agent
+    // asked for its own part. Asked for by name, as the page asks when it shows the journal, it is answered from
+    // the journal as it is kept, made right first. Where no journal is kept (what the server answered was none),
+    // the call goes on as any call does.
+    if (service === "agentMgr" && method === "GetMyJournalDetails" && form.args.length === 0 && form.kwargs === null) {
+      await run(entry, service, method, () => journalUpToDate(entry));
+      const journal = entry.journal.read();
+      if (journal) return { service, method, result: wireToBridgeJson(journal), notifications: drain(entry) };
+    }
     // The home station service's read: asked once and kept, until the server says the home station is another.
     if (service === HOME_STATION && method === GET_HOME_STATION && form.args.length === 0 && form.kwargs === null) {
       const kept = await run(entry, service, method, () => entry.homeStation.read(method, () => {
