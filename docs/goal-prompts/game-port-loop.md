@@ -466,6 +466,18 @@ Take these defaults, and list each under "For the operator" in the log so they c
   such cannot be written there, and is tested in the page's own test, where its form can.
   Then live, leaf by leaf: `skills-compare.mjs <repo> <scratch> <bff> <account> <characterID>
   [typeID toLevel]`. The clock's leaf differs, being read at two moments.
+- **A flow's test that chooses no pilot tests the route's way.** With nobody chosen the flow
+  reads a route where it has one (the skills' sheet does); the page's own asking is reached
+  only after `flow.selectCharacter`, with the stand-in answering `/api/bridge/select` and
+  each read by `/api/bridge/call`. Hold the browser's clock still for anything worked from
+  the server's (`atBrowserNow` in `web/src/app/skillsFlow.test.ts`).
+- **A read no test reaches is not moved.** Find who calls it and write the test first. The
+  drone range's read of the skill levels was moved, found untested, and put back.
+- **The gateway BFF's page** (`http://127.0.0.1:26511/`) has the account `test2` signed in since
+  2026-10-10 and opens with no windows: open one by its button. One pilot, one transport:
+  log it out of the other page first.
+- **A countdown is seen to tick** by reading it until it changes; a minute's display wants up
+  to a minute. The bar beside it moves at every reading.
 - **A number that came as JSON is finite.** A check for it in the page's TypeScript guards
   nothing; two breakages have survived such checks.
 - **After `store.sh`, the game port.** It opens a little after the web gateway answers, and a
