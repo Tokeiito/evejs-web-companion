@@ -730,6 +730,14 @@ event stream is read as the route writes it. `EVEJS_HOSTED_BOT_REACH=loopback` h
 over HTTP as they did. On the game port the starter mining bot ran the same both ways, and
 in process the BFF had no connection to itself.
 
+**The bound, and the whole run on the socket, 2026-10-10** (`c996cd6`): a socket runs 32
+operations at once, has 512 more wait their turn, and says of one past that that it was
+not run, which sends the page to HTTP for it. The brief's whole run passed twice from a
+cold start with the page set to the socket. Set beside a pass over HTTP it made the same
+93 kinds of call and nine more calls, of two kinds (`dogmaIM.GetAllInfo`,
+`account.GetEntryTypes`); the socket is not made the page's default until that is found
+and mended.
+
 Not yet: the page's setting is off unless set, and a pilot in the background has no pushes
 either way; the routes' HTTP carriage goes last. Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.

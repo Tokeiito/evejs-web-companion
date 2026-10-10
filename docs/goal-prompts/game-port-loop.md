@@ -439,6 +439,20 @@ Take these defaults, and list each under "For the operator" in the log so they c
   frames before choosing a pilot, and read `performance.getEntriesByType("resource")` for
   what went over HTTP. The first run of a thing in the browser is where its faults are: the
   socket's tests all passed while ten sockets stood open on the page.
+- **Keep a run's ledgers, not their totals.** After each pass of a run that is to be set
+  beside another, copy `bffgp-data/call-ledger.json`, `gateway-ledger.json` and both logs
+  aside under the pass's name before anything is restarted. Two ledgers are compared call
+  by call in a line of Node (each row has `pair`, `calls`, `statuses`); totals said "nine
+  more" and could not say of what.
+- **The whole run in fewer calls:** one that logs in and reads the windows; one that presses
+  the four mission buttons; a poll of nine three-second looks at the header, called until
+  it says DOCKED (some seven calls); "Complete Mission" and the wallet's Refresh; undock,
+  the module and LOCK; the lock awaited and the module off; the station's row, DOCK, and
+  "Log out". A probe set before the pilot is chosen counts frames, HTTP requests,
+  `EventSource`s, and what was refused, by path.
+- **Two sides of a closing are not done at once.** A tab that has seen its socket close may
+  be a moment ahead of the BFF's own end of it: a test that acts on "it is closed" waits
+  for the BFF's count of sockets to fall.
 - **Whether the BFF is talking to itself:** rows of `netstat -ano` whose foreign address is
   the BFF's own port and whose owning process is the BFF's (`awk -v p=<pid> '$1=="TCP" &&
   $3=="127.0.0.1:26510" && $5==p'`). With hosted bots in process there are none; over
