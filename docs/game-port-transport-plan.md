@@ -697,9 +697,19 @@ the socket, a route answers the same (set side by side in the tests for each sha
 and live for a chosen pilot's reads). Twenty-four reads asked at once on one socket were all
 answered, where the page allows itself four over HTTP.
 
-Not yet: the page does not open the socket, the pushed notices are not on it, and hosted
-bots still ask over loopback HTTP. Those are the next slices, in that order; the routes'
-HTTP carriage goes last.
+**The page's end, 2026-10-10** (`a69d228`): a fetch of `fetch`'s own shape that sends a request
+as an operation on the socket and answers with a `Response` (`web/src/app/socketFetch.ts`),
+and one place that says which way the page's requests go (`web/src/app/pageFetch.ts`): HTTP
+unless this browser's local storage has `evejs-web-transport:v1` set to `socket`. HTTP is
+the way back for what cannot be carried, while a socket is down, and for what the BFF did
+not run. A socket is for a session that stays: given at a token's third request, closed at
+its logout and when idle. In the browser with the setting on, a login with 25 windows open
+made 45 requests over HTTP where it makes 128, and sent 92 frames; an undock and a docking
+went as frames.
+
+Not yet: the cap of four requests still holds for what is carried, the pushed notices are
+not on the socket, the setting is off unless set, and hosted bots still ask over loopback
+HTTP. Those are the next slices, in that order; the routes' HTTP carriage goes last.
 
 ---
 

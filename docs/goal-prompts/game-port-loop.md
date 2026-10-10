@@ -433,6 +433,12 @@ Take these defaults, and list each under "For the operator" in the log so they c
   the body parser skips a request it takes for finished, and Node takes an incomplete one
   for cut off. `socket-walk.js <repo> <bff> <account> <id>` asks a running BFF over a real
   socket and sets each read beside the same over HTTP.
+- **The page on the socket, for a check:** in the page, `localStorage.setItem(
+  "evejs-web-transport:v1", "socket")` and reload (take it off again after, and say so). To
+  see what goes which way from a script in the page: wrap `WebSocket.prototype.send` to count
+  frames before choosing a pilot, and read `performance.getEntriesByType("resource")` for
+  what went over HTTP. The first run of a thing in the browser is where its faults are: the
+  socket's tests all passed while ten sockets stood open on the page.
 - **Every pilot of every account, chosen in turn:** `every-pilot.js <scratch> <bff>
   <store.sqlite> [accounts]` (save the store first; a login brings a pilot online).
 - **Both BFFs run the code they were started on.** A change to a route's answer shows through
