@@ -607,6 +607,17 @@ events, not frames.
   implementation of `PilotSession`, and the pilot pairs from the bridge contract.
 - **Done when:** the only gateway routes the BFF calls are the account-level ones in 2.3.
 
+**Status 2026-10-10: begun, with its measure.** The gateway client tallies every call made
+through it (`src/gatewayLedger.js`), and each row is classed against 2.3;
+`scripts/gateway-ledger-report.js` writes a walk's tally as
+[`game-port-gateway-ledger.md`](game-port-gateway-ledger.md). The first measure, a pilot on the
+game port through a login with 25 windows open, an undock and a docking, and the parity tool's
+34 routes: nothing of the pilot's own went to the web gateway (the same 34 routes through the
+gateway were 147 calls of a held pilot's). What stood in the report was the `/snapshot` read,
+which 2.3 does not name. Not yet measured: the calls made as a pilot who is not logged in, the
+hosted bots, the Factory and the training flows. The default is still `gateway`. The steps are
+at the head of the loop log's "Next".
+
 ### Phase 6 — Browser ↔ BFF over one WebSocket (large, mechanical; independent of 0–5)
 
 Can run in parallel with the phases above; it touches a different hop.

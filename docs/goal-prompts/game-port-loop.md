@@ -709,6 +709,22 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A render on the server never opens a popover or a menu.** What a component hands to a
   child it only draws once opened is held by no render test: say so in the log, keep those
   lines to plain handing-on, and see them work in the browser.
+- **"Next" is not the plan.** By 2026-10-10 the log's Next had sixty-one items, all of them a
+  feature's calls, and neither of the plan's two unfinished phases (the cutover and the one
+  WebSocket), though both are conditions of "done". At the start of an iteration read the
+  plan's "Done when" lines and their status as well as Next, and keep the plan's next
+  unfinished phase at the head of Next.
+- **What the BFF asks the web gateway is tallied** (`src/gatewayLedger.js`), and is the measure
+  of the cutover. A check BFF writes it to `<name>-data/gateway-ledger.json` every two seconds;
+  `ledger-show.js <file>` in the scratch folder prints it by kind, and `node
+  scripts/gateway-ledger-report.js <file> "<what was walked>"` writes
+  `docs/game-port-gateway-ledger.md`. Restart the BFF for an empty tally. A row under `pilot`
+  on the game-port BFF is a held pilot's call that went to the gateway: news.
+- **A patch through a shell heredoc that has backticks in it is mangled** (again, 2026-10-10:
+  the script failed to parse, and nothing was changed). Write the script with the Write tool,
+  or change a scratch copy with the Edit tool and copy it in.
+- **Take the store's copy before a walk that moves a pilot, even one that stages nothing.** I
+  undocked and docked Test Pilot for a measure with none taken.
 - A test's "watched to fail" can be had after the fact, once the work is committed: put the source file back to the commit
   before (`git show HEAD~1:<file> > <file>`), run the test, and restore it with `git checkout
   HEAD -- <file>`. Check `git status` is clean after.
