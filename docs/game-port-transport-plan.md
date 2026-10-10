@@ -779,8 +779,13 @@ through the gateway. The scanner's read of the ballpark's formations was no read
 client's scanner at all, and is gone with its readout (`964c083`). The first write
 followed (`836fff6`): the pause of training, made by the generic call when it is said to
 be a pilot's (`pilot`), said to be meant (`confirm`) and on the BFF's list of the page's
-own writes; any other write is refused there as before. 134 named now, 45 of them reads
-and 89 writes. Of the phase's "done when", "no
+own writes; any other write is refused there as before. The queue's save
+followed (`cea56d7`), by the client's own call on the skill handler, which the game port
+alone carries: through the gateway the page is refused, with nothing saved, and asks the
+route. The page's 89 writes were sized then: 7 are a confirmation and one call by name,
+36 a call on an object the BFF binds and holds (10 of them flight commands), 4 moves
+between places, 5 no writes at all, and 37 more than any of those. 134 named now, 45 of
+them reads and 89 writes. Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.
 Of 6a's four things, three are carried by the socket or in process, each with a way back
 (the routes' operations, the pushes, the hosted bots), and the cap is lifted for what is

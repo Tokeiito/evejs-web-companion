@@ -364,7 +364,8 @@ Take these defaults, and list each under "For the operator" in the log so they c
   the bytes, not the note.
 - **A pair added to the BFF's write list changes a generated file.** `node
   scripts/build-bridge-contract.js --write` rewrites `contracts/evejs-web-bridge-contract.json`,
-  and a test holds the two together. Read the diff: it should be the pair and nothing else.
+  and a test holds the two together. Read the diff: it should be the pair and nothing else. A pair put on the page's own writes
+  (`PAGE_WRITE_PAIR_KEYS`) changes it too: the manifest names those (`genericBridgeWrites`).
 - **eve.js's tests run through its own runner**, from that repository's root:
   `npm run test:isolated -- server/tests/<file>.test.js`. A bare `node --test` of one refuses
   to open the store and reads as one failed test.
@@ -471,6 +472,19 @@ Take these defaults, and list each under "For the operator" in the log so they c
   such cannot be written there, and is tested in the page's own test, where its form can.
   Then live, leaf by leaf: `skills-compare.mjs <repo> <scratch> <bff> <account> <characterID>
   [typeID toLevel]`. The clock's leaf differs, being read at two moments.
+- **The page's writes by kind are in `writes-survey.js <repo> all`.** Of 89, seven are a
+  confirmation and one call by name; most of the rest are calls on an object the BFF binds.
+  Size a write there before naming it next.
+- **A write the pilot's transport does not carry answers false, and the flow asks the route**,
+  as a read not carried answers null (`saveQueue`, `readSkillSheet`). A refusal by
+  `CALL_NOT_ALLOWED` means nothing was made, so asking the route after it is safe; no other
+  failure is taken so.
+- **Read the panel that calls a service, and not the service alone.** The transport's saving
+  of a queue was built from `skillQueueSvc` and says `activate=True`; the panel that calls it
+  says True only at its start button.
+- **A patch script of several files stops at the first find that is wrong, with the files
+  before it written.** Take each find from the file as it is (grep it), not from memory, and
+  finish from the file it stopped at in a second script.
 - **A write is moved by the generic call's three sayings, and only after its handler is read.**
   The page says `pilot` and `confirm`, and the pair goes on `PAGE_WRITE_PAIR_KEYS`
   (`src/bridgeCallPolicy.js`); the page's side is `api.bridgeDo` and a module beside the
