@@ -113,8 +113,11 @@ test("loadWallet decodes the personal balance and the named corp divisions", asy
     "account.GetWalletDivisionsInfo()",
     "corpRegistry.GetCorporation()",
   ]);
-  // Read again, as when the window is opened again: the entry kinds are not asked for twice.
+  // Read again, as when another of its windows opens: everything is had, and nothing is asked.
   await flow.loadWallet();
+  assert.equal(asked.length, 5);
+  // The window's own Refresh asks the server again, for all but the entry kinds.
+  await flow.loadWallet({ fresh: true });
   assert.deepEqual([asked.length, asked.filter((each) => each === "account.GetEntryTypes()").length], [9, 1]);
 });
 
@@ -301,4 +304,67 @@ test("a call the page makes for itself hands on what came with its answer, to wh
   // With nobody listening, it is just the answer.
   const quiet = bridgeAsk({ fetch: (async () => ({ ok: true, status: 200, async json() { return { ok: true, service: "s", method: "m", result: "r", notifications: [{ method: "OnX" }] }; } })) as unknown as typeof fetch });
   assert.equal(await quiet("s", "m", []), "r");
+});
+
+// --- the server's word that an account changed --------------------------------
+
+test("the balance on show moves by the server's word alone: OnAccountChange, with the transactions read again and nothing else", async () => {
+  const store = createClientStore();
+  const asked: string[] = [];
+  const wallet = walletFetch({ cash: 1000, divisions: { type: "list", items: [] }, transactions: { type: "list", items: [] } }, asked);
+  const sources: Array<{ onmessage: ((event: { data: string }) => void) | null; onopen: (() => void) | null; onerror: (() => void) | null; close(): void }> = [];
+  const flow = createAppFlow(store, {
+    fetch: (async (input: unknown, init?: RequestInit) => {
+      if (String(input) === "/api/bridge/select") {
+        return { ok: true, status: 200, async json() { return { ok: true, character: { characterID: 7, characterName: "Test Pilot", stationID: 60003760, structureID: null, solarSystemID: 30000142, corporationID: 98000000 }, station: null, notifications: [] }; } };
+      }
+      return wallet(input as RequestInfo, init);
+    }) as unknown as typeof fetch,
+    eventSource: () => {
+      const source = { onmessage: null, onopen: null, onerror: null, close() {} };
+      sources.push(source);
+      return source;
+    },
+  });
+  await flow.selectCharacter(7);
+  const walletAsked = (): string[] => asked.filter((each) => /^(account|corpRegistry)\./.test(each));
+  const pushed = (sequence: number, method: string, args: unknown[]): void => sources[0]!.onmessage?.({ data: JSON.stringify({
+    source: "evejs-web-gateway", apiVersion: 1, type: "event", cursor: { epoch: "e1", sequence }, event: { kind: "notification", notification: { kind: "client", method, args } },
+  }) });
+  const settle = async (): Promise<void> => { for (let turn = 0; turn < 20; turn += 1) await new Promise<void>((resolve) => setImmediate(resolve)); };
+
+  // Told before the wallet has been read at all: nothing is drawn, and nothing is asked.
+  pushed(1, "OnAccountChange", ["cash", 7, 900]);
+  await settle();
+  assert.deepEqual([store.wallet.get().loaded, walletAsked().length], [false, 0]);
+
+  await flow.loadWallet();
+  // (The word that came before the wallet was read stands: the pilot's ISK is what the server said.)
+  assert.equal(store.wallet.get().cashBalance, "900");
+  const before = walletAsked().length;
+
+  // The server says the pilot's ISK is now this. The wallet on show says so, with only the transactions asked for.
+  pushed(2, "OnAccountChange", ["cash", 7, 31700.5]);
+  await settle();
+  assert.equal(store.wallet.get().cashBalance, "31700.5");
+  assert.deepEqual(walletAsked().slice(before), ["account.GetTransactions(1000,null,null,false)"]);
+
+  // Another pilot's ISK is not this one's; and the same word heard twice is acted on once.
+  pushed(3, "OnAccountChange", ["cash", 8, 5]);
+  pushed(3, "OnAccountChange", ["cash", 7, 5]);
+  await settle();
+  assert.equal(store.wallet.get().cashBalance, "31700.5");
+
+  // One of the pilot's corporation's accounts: its divisions are asked for again, and its ISK is not the pilot's.
+  const mark = walletAsked().length;
+  pushed(4, "OnAccountChange", ["cash2", 98000000, 77]);
+  await settle();
+  assert.deepEqual(walletAsked().slice(mark).sort(), ["account.GetTransactions(1000,null,null,false)", "account.GetWalletDivisionsInfo()"]);
+  assert.equal(store.wallet.get().cashBalance, "31700.5");
+  // The corporation itself changed: its row is asked for when the wallet is next read, and not before.
+  pushed(5, "OnCorporationChanged", [98000000, {}]);
+  await settle();
+  assert.equal(walletAsked().length, mark + 2);
+  await flow.loadWallet();
+  assert.deepEqual(walletAsked().slice(mark + 2), ["corpRegistry.GetCorporation()"]);
 });

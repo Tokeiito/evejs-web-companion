@@ -42,12 +42,13 @@
     }
   }
 
+  // The button asks the server again; the window opening takes what is kept (bridge/walletReads.ts).
   function refresh(): void {
-    void run(() => flow.loadWallet());
+    void run(() => flow.loadWallet({ fresh: true }));
   }
 
   onMount(() => {
-    refresh();
+    void run(() => flow.loadWallet());
   });
 
   // The player-authored division name, or a plain "Division N" fallback — never

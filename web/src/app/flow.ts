@@ -993,7 +993,8 @@ export interface AppFlow {
    * R50 — the Wallet + Corp Wallet tabs: the personal ISK balance and the
    * corporation division balances, in one pull. Both tabs call this on mount.
    */
-  loadWallet(): Promise<void>;
+  /** `fresh`: asked of the server again, as the window's own Refresh asks; otherwise from what is kept (bridge/walletReads.ts). */
+  loadWallet(how?: { readonly fresh?: boolean }): Promise<void>;
   /**
    * R55 — the Standings page: the character's own standings and the
    * corporation's, in one pull, with every entity id resolved to a name.
@@ -2047,6 +2048,25 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (missionChange !== null) {
       onMissionChange(missionChange);
       return;
+    }
+    // walletSvc.OnAccountChange and accountsvc.OnAccountChange (accountKey, ownerID, balance): the server's word
+    // that an account changed, and what is in it now. The pilot's ISK is that from then on with nothing asked,
+    // the transactions kept are out of date, and a wallet that has been read is drawn again: from what is
+    // kept, asking only for what is not.
+    if (method === "OnAccountChange") {
+      const online = store.station.get().online;
+      walletReads.accountChanged(args[0], args[1], (args[2] ?? null) as JsonValue, {
+        characterID: online?.characterID ?? null,
+        corporationID: online?.corporationID ?? null,
+      });
+      if (store.wallet.get().loaded) {
+        void loadWallet().catch(() => {});
+      }
+      return;
+    }
+    // bco_corporations.OnCorporationChanged: the corporation's own row is not what was kept.
+    if (method === "OnCorporationChanged") {
+      walletReads.corporationChanged();
     }
     // standingsvc keeps the pilot's standings as the server changes them (OnStandingSet, OnStandingsModified),
     // from what the notification itself says and without reading again. So does this, once they have been
@@ -4620,8 +4640,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // the reason in `corpError`. A SUCCESSFUL corp read decodes to a list — which
   // may be empty, and an empty list is the real "this corporation has no wallet
   // divisions" answer. The two must not collapse into one another.
-  async function loadWallet(): Promise<void> {
-    const reads = await walletReads.read();
+  async function loadWallet(how: { readonly fresh?: boolean } = {}): Promise<void> {
+    const reads = await walletReads.read(how);
     const corpFailed = reads.errors.divisions !== null;
     const corpError = [
       reads.errors.divisions ? `corp wallet: ${reads.errors.divisions}` : null,

@@ -47,12 +47,14 @@
     }
   }
 
+  // The button asks the server again. The window opening takes what the wallet's services have kept
+  // (bridge/walletReads.ts), which the server's own word keeps right, and asks only for what they have not.
   function refresh(): void {
-    void run(() => flow.loadWallet());
+    void run(() => flow.loadWallet({ fresh: true }));
   }
 
   onMount(() => {
-    refresh();
+    void run(() => flow.loadWallet());
   });
 
   // A retail FILETIME (100 ns ticks since 1601) as a plain date + time. Never

@@ -67,35 +67,129 @@ test("the wallet is read with the client's own calls, each asked as the client a
   });
 });
 
-test("the kinds of a wallet entry are asked once and kept, however many want them and however many at once", async () => {
-  let fails = false;
-  let asks = 0;
-  const { ask, asked } = asking({ ...ANSWERS, "account.GetEntryTypes": () => { asks += 1; if (fails) throw failing("CALL_TIMEOUT"); return { type: "list", items: [["a kind"]] }; } });
-  const wallet = createWalletReads(ask);
-  const count = (pair: string): number => asked.filter((each) => each.startsWith(pair)).length;
-  // Three windows at once: one asking for the kinds, and three for everything else.
+const WHOSE = { characterID: 140000002, corporationID: 98000001 };
+const count = (asked: readonly string[], pair: string): number => asked.filter((each) => each.startsWith(pair)).length;
+/** How many times each of the five has been asked, in the order: the ISK, the divisions, the corporation, the transactions, the kinds. */
+const counts = (asked: readonly string[]): number[] =>
+  ["account.GetCashBalance", "account.GetWalletDivisionsInfo", "corpRegistry.GetCorporation", "account.GetTransactions", "account.GetEntryTypes"].map((pair) => count(asked, pair));
+
+test("several windows that want the wallet together ask for each thing once, and one that opens after asks for nothing", async () => {
+  const { ask, asked } = asking(ANSWERS);
+  const wallet = createWalletReads(ask, { now: () => 1_000_000 });
+  // Three windows at once, as at a login.
   const three = await Promise.all([wallet.read(), wallet.read(), wallet.read()]);
-  assert.deepEqual([count("account.GetEntryTypes"), count("account.GetCashBalance"), count("account.GetTransactions")], [1, 3, 3]);
-  for (const each of three) assert.deepEqual(each.entryTypes, { type: "list", items: [["a kind"]] });
+  assert.deepEqual(counts(asked), [1, 1, 1, 1, 1]);
+  for (const each of three) assert.deepEqual(JSON.parse(JSON.stringify(each)), JSON.parse(JSON.stringify(three[0])));
+  assert.deepEqual([three[0]!.cash, three[0]!.entryTypes], [1000165000, { type: "list", items: [["a kind"]] }]);
+  // A window opened later: everything is had.
   await wallet.read();
-  assert.deepEqual([count("account.GetEntryTypes"), count("account.GetCashBalance")], [1, 4]);
-
-  // Another pilot: what was kept was the last one's, and is asked for again.
+  assert.deepEqual(counts(asked), [1, 1, 1, 1, 1]);
+  // Asked for afresh, as the window's own button asks: everything again but the kinds, which do not change.
+  await wallet.read({ fresh: true });
+  assert.deepEqual(counts(asked), [2, 2, 2, 2, 1]);
+  await wallet.read({ fresh: false });
+  await wallet.read({});
+  assert.deepEqual(counts(asked), [2, 2, 2, 2, 1]);
+  // Another pilot: what was kept was the last one's, all of it.
   wallet.forget();
   await wallet.read();
-  assert.equal(count("account.GetEntryTypes"), 2);
+  assert.deepEqual(counts(asked), [3, 3, 3, 3, 2]);
+});
 
-  // An asking that fails is not kept: those that asked together are each told, and the next read asks again.
-  wallet.forget();
-  fails = true;
-  const failed = await Promise.all([wallet.read(), wallet.read()]);
-  assert.deepEqual(failed.map((each) => [each.entryTypes, each.errors.entryTypes]), [[null, "CALL_TIMEOUT"], [null, "CALL_TIMEOUT"]]);
-  assert.equal(asks, 3);
-  fails = false;
-  assert.deepEqual((await wallet.read()).errors.entryTypes, null);
-  assert.equal(asks, 4);
+test("the pilot's ISK is what the server says it is, from the moment it says so, with nothing asked", async () => {
+  const { ask, asked } = asking(ANSWERS);
+  const wallet = createWalletReads(ask, { now: () => 1_000_000 });
+  assert.equal((await wallet.read()).cash, 1000165000);
+  // OnAccountChange('cash', charID, balance), as the server sends it for the pilot's own ISK.
+  wallet.accountChanged("cash", 140000002, 1000195800.5, WHOSE);
+  const after = await wallet.read();
+  assert.equal(after.cash, 1000195800.5);
+  // accountsvc.OnAccountChange: the transactions kept are out of date, and are asked for again. Nothing else is.
+  assert.deepEqual(counts(asked), [1, 1, 1, 2, 1]);
+  // The owner said as the server may say it (a long is a string of digits on the wire's other spelling).
+  wallet.accountChanged("cash", "140000002", { type: "long", value: "7" }, WHOSE);
+  assert.deepEqual((await wallet.read()).cash, { type: "long", value: "7" });
+
+  // What is not the pilot's own ISK changes nothing of it: another character's, a corporation's first account
+  // (which has the same name), another account of the pilot's that is no ISK, and a balance of nothing.
+  for (const [accountKey, ownerID, balance] of [["cash", 140000003, 1], ["cash", 98000001, 2], ["cash2", 140000002, 3], ["aur", 140000002, 4], ["cash", 140000002, null], [1000, 140000002, 5]] as const) {
+    wallet.accountChanged(accountKey, ownerID, balance, WHOSE);
+    assert.deepEqual((await wallet.read()).cash, { type: "long", value: "7" }, JSON.stringify([accountKey, ownerID, balance]));
+  }
+  assert.equal(count(asked, "account.GetCashBalance"), 1);
+  // Each of them was still the server's word that an account changed: the transactions were asked for again each time.
+  assert.equal(count(asked, "account.GetTransactions"), 3 + 6);
+  // A pilot not yet known to be anyone has no ISK of its own to be told of.
+  const nobody = createWalletReads(asking(ANSWERS).ask);
+  await nobody.read();
+  nobody.accountChanged("cash", 140000002, 9, { characterID: null, corporationID: null });
+  assert.equal((await nobody.read()).cash, 1000165000);
+});
+
+test("the server's word of the ISK is kept over an asking that was still out when it came", async () => {
+  const out: Array<(value: JsonValue) => void> = [];
+  const { ask } = asking({ ...ANSWERS, "account.GetCashBalance": () => new Promise<JsonValue>((answer) => out.push(answer)) });
+  const wallet = createWalletReads(ask);
+  const first = wallet.read();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(out.length, 1);
+  wallet.accountChanged("cash", 140000002, 200, WHOSE);
+  out[0]!(100);
+  // Who asked is answered with what it asked for; what is kept is the server's later word.
+  assert.equal((await first).cash, 100);
+  assert.equal((await wallet.read()).cash, 200);
+  assert.equal(out.length, 1);
+});
+
+test("the corporation's divisions are kept five minutes, and forgotten when one of its accounts changes", async () => {
+  let clock = 1_000_000;
+  const { ask, asked } = asking(ANSWERS);
+  const wallet = createWalletReads(ask, { now: () => clock });
+  const divisions = (): number => count(asked, "account.GetWalletDivisionsInfo");
   await wallet.read();
-  assert.equal(asks, 4);
+  clock += 5 * 60_000 - 1;
+  await wallet.read();
+  assert.equal(divisions(), 1);
+  // accountsvc.py 135: good for five minutes.
+  clock += 1;
+  await wallet.read();
+  assert.equal(divisions(), 2);
+  clock += 60_000;
+  await wallet.read();
+  assert.equal(divisions(), 2);
+  // One of the corporation's seven accounts changed: asked for again when next wanted.
+  for (const [index, accountKey] of ["cash", "cash2", "cash7"].entries()) {
+    wallet.accountChanged(accountKey, 98000001, 5, WHOSE);
+    await wallet.read();
+    assert.equal(divisions(), 3 + index, accountKey);
+  }
+  // Another corporation's, a character's, an account that is none of the seven, a balance of nothing, and a
+  // pilot in no corporation that is known: the divisions kept stand.
+  for (const [accountKey, ownerID, balance, whose] of [["cash2", 98000002, 5, WHOSE], ["cash", 140000002, 5, WHOSE], ["cash8", 98000001, 5, WHOSE], ["cash2", 98000001, null, WHOSE],
+    ["cash2", 98000001, 5, { characterID: 140000002, corporationID: null }]] as const) {
+    wallet.accountChanged(accountKey, ownerID, balance, whose);
+    await wallet.read();
+    assert.equal(divisions(), 5, JSON.stringify([accountKey, ownerID, balance]));
+  }
+  // The corporation itself changed: its row is asked for again, and nothing else.
+  const before = counts(asked);
+  wallet.corporationChanged();
+  await wallet.read();
+  assert.deepEqual(counts(asked), [before[0], before[1], before[2]! + 1, before[3], before[4]]);
+});
+
+test("an asking that fails is not kept: those that asked together are each told, and the next read asks again", async () => {
+  for (const [pair, key] of [["account.GetCashBalance", "cash"], ["account.GetWalletDivisionsInfo", "divisions"], ["corpRegistry.GetCorporation", "corp"], ["account.GetTransactions", "transactions"], ["account.GetEntryTypes", "entryTypes"]] as const) {
+    let fails = true;
+    let asks = 0;
+    const wallet = createWalletReads(asking({ ...ANSWERS, [pair]: () => { asks += 1; if (fails) throw failing("CALL_TIMEOUT"); return (ANSWERS as Record<string, JsonValue>)[pair]!; } }).ask, { now: () => 1_000_000 });
+    const failed = await Promise.all([wallet.read(), wallet.read()]);
+    assert.deepEqual([failed.map((each) => each.errors[key]), asks], [["CALL_TIMEOUT", "CALL_TIMEOUT"], 1], pair);
+    fails = false;
+    assert.deepEqual([(await wallet.read()).errors[key], asks], [null, 2], pair);
+    await wallet.read();
+    assert.equal(asks, 2, pair);
+  }
 });
 
 test("an asking for the kinds from before the pilot changed, failing late, does not take away what was asked for since", async () => {
@@ -143,10 +237,19 @@ test("each read fails by itself, with why; and a session that is lost is said, w
   }
 });
 
-test("the pilot's own ISK alone is one call", async () => {
+test("the pilot's own ISK alone is one call, asked of the server each time: a guard's asking, kept by nobody", async () => {
   const { ask, asked } = asking(ANSWERS);
-  assert.equal(await createWalletReads(ask).cash(), 1000165000);
+  const wallet = createWalletReads(ask);
+  assert.equal(await wallet.cash(), 1000165000);
   assert.deepEqual(asked, ["account.GetCashBalance(0)"]);
+  // Asked again each time, whatever the server has said since and whatever a window has kept.
+  wallet.accountChanged("cash", 140000002, 5, WHOSE);
+  assert.equal(await wallet.cash(), 1000165000);
+  await wallet.read();
+  assert.equal(await wallet.cash(), 1000165000);
+  assert.equal(count(asked, "account.GetCashBalance"), 3);
+  // And what a guard was answered is not what a window is shown: that is still the server's word.
+  assert.equal((await wallet.read()).cash, 5);
   await assert.rejects(createWalletReads(asking({ "account.GetCashBalance": () => { throw failing("CALL_REFUSED"); } }).ask).cash(), /it failed/);
 });
 
