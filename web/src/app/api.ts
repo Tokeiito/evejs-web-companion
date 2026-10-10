@@ -2420,12 +2420,17 @@ export type { RawWalletReads } from "../bridge/walletReads.ts";
  * call's result; the notifications that came with it are handed on, as a
  * route's answer's are. It is asked as a pilot's call: where the BFF holds no
  * pilot for the session it says so, as the route this asking stands in for did.
+ *
+ * `clock` is told the server's clock where an answer says it (wire.ts,
+ * `serverNowMs`: a pilot on the game port). A route's sheet came with the time
+ * it was made at; what the page makes itself it makes from this.
  */
-export function bridgeAsk(options: ApiOptions = {}): Ask {
+export function bridgeAsk(options: ApiOptions = {}, clock?: (serverNowMs: number) => void): Ask {
   return async (service, method, args) => {
     const notificationSink = options.captureNotificationSink?.();
     // (The options are read as they stand now: a flow's token is another one after another pilot is chosen.)
     const outcome = await callMethod(service, method, args, null, { ...options, pilot: true });
+    if (outcome.serverNowMs !== null) clock?.(outcome.serverNowMs);
     notificationSink?.(outcome.notifications as unknown as readonly JsonValue[]);
     return outcome.result;
   };
@@ -5382,6 +5387,10 @@ function readSkills(data: Record<string, JsonValue>): SkillsResult {
   };
 }
 
+/**
+ * The route's sheet (GET /api/bridge/skills). The page makes the sheet itself where its pilot's transport carries
+ * the reads (bridge/skillReads.ts; the plan's Phase 6b). This is read where it does not: through the web gateway.
+ */
 export async function getSkills(options: ApiOptions = {}): Promise<SkillsResult> {
   return readSkills(await getJson("/api/bridge/skills", options));
 }
@@ -5389,11 +5398,10 @@ export async function getSkills(options: ApiOptions = {}): Promise<SkillsResult>
 /**
  * Pause training as the retail client's queue panel does (skillHandler.AbortTraining): the skill in training
  * stops and the queue stays as it is, with no start or end to any entry. Saving the queue sets it going again.
- * Answers the sheet as the server has it afterwards.
+ * Whoever paused reads the sheet afterwards, as it reads it at any time (the flow's own reading).
  */
-export async function pauseSkillTraining(options: ApiOptions = {}): Promise<SkillsResult> {
+export async function pauseSkillTraining(options: ApiOptions = {}): Promise<void> {
   await postJson("/api/bridge/skills/abort-training", { confirm: true }, options);
-  return getSkills(options);
 }
 
 /**

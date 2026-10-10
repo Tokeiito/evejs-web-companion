@@ -1514,29 +1514,40 @@ async function withMissionPage() {
         if (page.standingsFail) throw new TypeError("fetch failed");
         return [200, { ok: true, service: body.service, method: body.method, result: body.method === "GetCharStandings" ? STANDINGS_ROWSET : null, notifications: [] }];
       }
+      // The pilot's skills, asked by the page itself (bridge/skillReads.ts): nothing queued, and no skills.
+      if (path === "/api/bridge/call" && body.service === "skillHandler") {
+        const none = { type: "dict", entries: [] };
+        const answers: Record<string, unknown> = { GetSkillQueueAndFreePoints: [{ type: "list", items: [] }, 0], GetSkills: none, GetAllSkills: none, GetFreeSkillPoints: 0 };
+        return [200, { ok: true, service: body.service, method: body.method, result: answers[String(body.method)] ?? null, notifications: [] }];
+      }
       return undefined;
     },
   });
   /** What was asked for the page, in the order it was asked. */
   const pageAsked = () => made.requests.map((request) => request.path).filter((path) => /mission-objectives|client-data|keywords/.test(path));
   /** The calls made of the standings' service, each as service.method(args). */
-  const standingsAsked = () => made.requests.filter((request) => request.path === "/api/bridge/call" && request.body.service === "standingMgr")
+  const callsOf = (service: string) => made.requests.filter((request) => request.path === "/api/bridge/call" && request.body.service === service)
     .map((request) => `${String(request.body.service)}.${String(request.body.method)}(${JSON.stringify(request.body.args).slice(1, -1)})`);
-  return { ...made, page, pageAsked, standingsAsked };
+  const standingsAsked = () => callsOf("standingMgr");
+  /** The calls made of the skill handler, the same way. */
+  const skillsAsked = () => callsOf("skillHandler");
+  return { ...made, page, pageAsked, standingsAsked, skillsAsked };
 }
 
 test("Read Details opens the mission's page: one read of the agent's object, the mission's keywords, and the client's own record", async () => {
-  const { store, flow, requests, pageAsked, standingsAsked } = await withMissionPage();
+  const { store, flow, requests, pageAsked, standingsAsked, skillsAsked } = await withMissionPage();
   await flow.openMissionDetails(3008416);
   await until(() => store.agents.get().missionPage?.record != null);
   assert.deepEqual(pageAsked().sort(), ["/api/bridge/agents/3008416/keywords?contentID=1382", "/api/bridge/agents/3008416/mission-objectives", "/api/client-data/missions/1382"]);
   // Reads, all of them: nothing is asked of the agent that changes anything. (Names are asked for by POST, and change
-  // nothing; so is the page's own call for the pilot's standings, which the generic call would refuse were it a write.)
+  // nothing; so are the page's own calls for the pilot's standings and skills, which the generic call would refuse were they writes.)
   const unread = (path: string): boolean => path !== "/api/names" && path !== "/api/bridge/call";
   assert.deepEqual([...new Set(requests.filter((request) => unread(request.path)).map((request) => request.method))], ["GET"]);
   assert.deepEqual(requests.filter((request) => request.method !== "GET").map((request) => request.path).filter(unread), []);
-  assert.deepEqual(requests.filter((request) => request.path === "/api/bridge/call").map((request) => `${String(request.body.service)}.${String(request.body.method)}`), ["standingMgr.GetCharStandings"]);
+  assert.deepEqual([...new Set(requests.filter((request) => request.path === "/api/bridge/call").map((request) => String(request.body.service)))].sort(), ["skillHandler", "standingMgr"]);
   assert.deepEqual(standingsAsked(), ["standingMgr.GetCharStandings()"]);
+  await until(() => skillsAsked().length === 4);
+  assert.deepEqual(skillsAsked(), ["skillHandler.GetSkillQueueAndFreePoints()", "skillHandler.GetSkills()", "skillHandler.GetAllSkills()", "skillHandler.GetFreeSkillPoints()"]);
   // And what the client's agents service knows of the agent, for its card.
   assert.deepEqual(requests.map((request) => request.path).filter((path) => path.endsWith("/record")), ["/api/bridge/agents/3008416/record"]);
   const held = store.agents.get().missionPage;
@@ -1852,14 +1863,15 @@ test("what the client knows of an agent is asked for once, kept by its ID, and a
 });
 
 test("opening a mission's page reads the pilot's standings and skills if they have not been read, and not again once they have", async () => {
-  const { store, flow, requests, standingsAsked } = await withMissionPage();
+  const { store, flow, requests, standingsAsked, skillsAsked } = await withMissionPage();
   const reads = (path: string) => requests.filter((request) => request.path === path).length;
   assert.equal(store.standings.get().loaded, false);
   await flow.openMissionDetails(3008416);
-  await until(() => store.standings.get().loaded);
+  await until(() => store.standings.get().loaded && store.skills.get().loaded);
   // The character's, and not its corporation's: an NPC corporation's standings are none (standingsvc.py 118).
   assert.deepEqual(standingsAsked(), ["standingMgr.GetCharStandings()"]);
-  assert.equal(reads("/api/bridge/skills"), 1);
+  // The skills by the page's own reads, each once, and not by the route.
+  assert.deepEqual([skillsAsked().length, new Set(skillsAsked()).size, reads("/api/bridge/skills")], [4, 4, 0]);
   assert.deepEqual(store.standings.get().char, [{ fromID: 1000002, standing: 3.5 }, { fromID: 3008416, standing: -0.5 }]);
   // Opened again: the standings are held, and are not read again.
   flow.closeMissionDetails();

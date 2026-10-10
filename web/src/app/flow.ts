@@ -96,6 +96,7 @@ import {
 } from "../bridge/wallet.ts";
 import { createWalletReads } from "../bridge/walletReads.ts";
 import { readStandings, standingComposition, standingHistory } from "../bridge/standingsReads.ts";
+import { createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
 import {
   classifyStandingKind,
   decodeStandingCompositions,
@@ -1685,7 +1686,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // What the page asks of the server for itself, in place of a route (the plan's Phase 6b): one call at a time,
   // by the generic call, as this pilot.
-  const bridgeAsk = api.bridgeAsk(callOptions);
+  // The server's clock as the page has it: how far ahead of the browser's the last of this pilot's answers said it
+  // was. A retail client's own clock is kept set by its connection; the page is told with its answers. Null until
+  // one has said, and through the web gateway none does: then the browser's own is all there is. (It is the
+  // server's clock, whichever pilot's answer said it: it is not forgotten when another pilot is chosen.)
+  let serverClockAheadMs: number | null = null;
+  const bridgeAsk = api.bridgeAsk(callOptions, (serverNowMs) => {
+    serverClockAheadMs = serverNowMs - Date.now();
+  });
+  const serverNow = (): number => Date.now() + (serverClockAheadMs ?? 0);
+  // What a client knows of a skill's type without asking the server, asked of the static data once and kept.
+  const skillTypeFacts = createSkillTypeFacts({
+    // (A type's name is the static data's, and is answered or is none: only a structure's can be left unanswered.)
+    names: async (items) => (await api.resolveNames(items, callOptions)).names,
+    typeAttributes: (typeIDs, attributeIDs) => api.fetchTypeDogma(typeIDs, attributeIDs, callOptions),
+  });
   // The wallet's reads, asked call by call as the client's wallet and account services ask them
   // (bridge/walletReads.ts), with what those services keep kept for this pilot.
   const walletReads = createWalletReads(bridgeAsk);
@@ -6236,10 +6251,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     });
   }
 
+  /**
+   * The Skills window's sheet, in the form the route's is in. The page makes it from the reads it asks for itself,
+   * as the client's skill and queue services ask them (bridge/skillReads.ts). Where the pilot's transport does not
+   * carry the queue's read, which is the web gateway, there is none to be made here and the route's is read; and
+   * so it is with nobody chosen, whose sheet it would be the route's to refuse.
+   */
+  async function readSkillSheetRaw(): Promise<JsonValue> {
+    const online = store.station.get().online;
+    const made = online === null
+      ? null
+      : await readSkillSheet(bridgeAsk, { characterID: online.characterID, characterName: online.characterName, typeFacts: skillTypeFacts, now: serverNow });
+    return made ?? (await api.getSkills(callOptions)).skills;
+  }
+
   async function loadSkills(): Promise<void> {
-    let result;
+    let raw: JsonValue;
     try {
-      result = await api.getSkills(callOptions);
+      raw = await readSkillSheetRaw();
     } catch (error) {
       if (isSessionLost(error)) {
         stopLiveStream();
@@ -6252,7 +6281,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       });
       return;
     }
-    applySkillSheet(result.skills);
+    applySkillSheet(raw);
   }
 
   async function saveSkillQueue(
@@ -6291,9 +6320,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   async function pauseSkillTraining(): Promise<void> {
-    let result;
+    let raw: JsonValue;
     try {
-      result = await api.pauseSkillTraining(callOptions);
+      await api.pauseSkillTraining(callOptions);
+      // Whether it stopped is the server's to say: the sheet read again, as it is read at any time.
+      raw = await readSkillSheetRaw();
     } catch (error) {
       if (isSessionLost(error)) {
         stopLiveStream();
@@ -6308,7 +6339,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await loadSkills().catch(() => {});
       return;
     }
-    applySkillSheet(result.skills);
+    applySkillSheet(raw);
     store.apply({ type: "skills/action", action: "Paused training" });
   }
 
@@ -9801,6 +9832,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // integers, it runs on a timer behind a bot that is already paying for a
       // grid read every tick, and the gateway is the shared thing everything else
       // on this account is queued behind.
+      //
+      // (Still the route's sheet, where the Skills window's is the page's own
+      // since 2026-10-10 (readSkillSheetRaw): no test reaches this read, and it
+      // is not moved until one does.)
       const answer = await api.getSkills(callOptions);
       const rows =
         answer.skills === null ? [] : decodeSkillSheet(answer.skills, Date.now()).skills;
