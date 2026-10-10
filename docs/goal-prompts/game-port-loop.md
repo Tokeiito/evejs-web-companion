@@ -649,6 +649,17 @@ Take these defaults, and list each under "For the operator" in the log so they c
   it (`CHOSEN_ASKS`, `CHOSEN_LAST`); the rest count one service's calls and want the new one
   let through. A stand-in that holds back the first answer of something now asked at the
   choosing hangs the choosing: hold back the second.
+- **Never put a time limit round the breakage tool.** `break-and-check.js` puts the source back
+  when it ends, and a tool that is killed does not end: a `timeout 590` round it left one
+  breakage in `pilots.js`. A breakage that hangs a choosing costs up to two minutes, so thirty
+  can outlast one command: give the tool at most four of a file at a time
+  (`pairs.slice(n, n + 4)`), compare `git diff --stat` before and after every part, and if they
+  differ, match the source against the list (each `find` must be there once) to see which is
+  left.
+- A bind the choosing of a character now makes shifts every test that holds a session to its
+  exact binds and objects. The transport's stand-in session lists and counts apart what every
+  choosing binds (the corporation registry's objects, crimewatch's Monikers): put a new one
+  there, with a line saying why, rather than telling fifty tests of it.
 - A test's "watched to fail" can be had after the fact: put the source file back to the commit
   before (`git show HEAD~1:<file> > <file>`), run the test, and restore it with `git checkout
   HEAD -- <file>`. Check `git status` is clean after.

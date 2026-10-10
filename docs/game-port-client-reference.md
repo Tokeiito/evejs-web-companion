@@ -1081,6 +1081,29 @@ ship's stance buttons list among others (`shipstance.py` 27). `GetAvailableTurre
 three callers, the achievements' and the tutorial's (`achievements/client/eventHandler.py`
 427). Which caller asked each at the login is not in the recording.
 
+**Crimewatch, 2026-10-10.** The client's crimewatch service
+(`eve/client/script/ui/services/crimewatchSvc.py`) asks on a Moniker made for each call
+(`eveMoniker.CharGetCrimewatchLocation()`, bound by where the pilot is, the call riding the
+bind):
+
+| Call | When the client makes it | What it keeps |
+|---|---|---|
+| `GetClientStates()` | `ProcessSessionChange` (94): the change has `locationid` or `charid` in it | the five combat timers, the engagements, who is flagged; each then changed by its own notice (222 to 288) |
+| `GetClientStates()` | `OnSessionChanged` (116): the pilot is in space and the change has `solarsystemid` or `shipid` in it | the safety level; then what the pilot sets (342) |
+| `GetMySecurityStatus()` | 590, while it has none | the status; then what `OnSecurityStatusUpdate` says (598) |
+
+By those rules: once at a docked login, twice at a login in space, twice at an undock or a
+jump, once at a docking, once at a change of ship in space; the status once. The server's logs
+of a retail client logging in docked and in space have the first two counts, and a walk on
+the game port the undock's and the docking's. Tranquility's recording has the answer: `((weapons, pvp, npc, criminal, disapproval), engagements, (criminals, suspects),
+safetyLevel)`, each timer a `(state, expiry)`.
+
+The transport asks at the same moments (`pilots.js`, `clientStatesAtAChange`,
+`securityStatusRead`). It keeps the states as last answered, and lets them go at any of the
+eleven notices and at the pilot's own `SetSafetyLevel`, where the client works each into what
+it holds: a read after one of those asks again. The security status it keeps as the client
+does. Nothing of the page shows either yet.
+
 **The map's stations, 2026-10-10.** `map.GetStationInfo()` is asked once by the client's UI
 service and kept for the client's life (`uisvc.py` 246), and by five other callers through the
 object cache. On the game port the first asking is answered with a cached reference, which
