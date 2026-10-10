@@ -270,6 +270,18 @@ test("only a launchpad is sent up: what a command center, a storage or a factory
   assert.deepEqual(t.action, { kind: "collectCustoms", officeID: OFFICE_A });
 });
 
+test("an export the wallet cannot pay stops the run on the first refusal, saying why", () => {
+  const t = collect(step, obs({
+    snapshot: snapshot([office(OFFICE_A, 1000, { planetID: PLANET_A })]),
+    customsOffices: [holding(OFFICE_A, 300)],
+    colonies: [colony(PLANET_A, [pin(501, "launchpad", [[2390, 24260]])])],
+    refusals: [{ ...refused("exportCustoms", 501, 1), kind: "no-funds" as const }],
+  }), {}, NB);
+  assert.equal(t.outcome.kind, "blocked");
+  assert.match(t.outcome.kind === "blocked" ? t.outcome.reason : "", /not have enough ISK to pay the customs office's export tax/);
+  assert.equal(t.action.kind, "wait");
+});
+
 test("an office whose planet is not said, another planet's office, and colonies not read: nothing is sent up", () => {
   const pads = [colony(PLANET_A, [pin(501, "launchpad", [[2268, 200]])])];
   const at = (planetID: number | null | undefined, colonies: ScriptObservation["colonies"], units: number) => collect(step, obs({
