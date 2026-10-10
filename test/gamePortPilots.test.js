@@ -47,10 +47,18 @@ const refusedBy = (key, reason = key) => sessionError("GAME_CALL_REFUSED", `refu
  */
 const CHOSEN_ASKS = [
   "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler", "agentMgr.GetMyJournalDetails",
-  "charMgr.GetContactList", "onlineStatus.GetInitialState", "notificationMgr.GetAllNotifications", "agentMgr.GetAgents",
+  "charMgr.GetContactList", "onlineStatus.GetInitialState",
+  // The stand-in's pilot is chosen in a station: its lobby's four.
+  "officeManager.GetMyCorporationsOffices", "stationSvc.GetStationItemBits", "station.GetGuests", "map.GetStationInfo",
+  "notificationMgr.GetAllNotifications", "agentMgr.GetAgents",
 ];
-/** What a choosing sends last, by name, at the proxy node or on an object, after the corporation's reads and the address book's. */
-const CHOSEN_LAST = ["GetMyApplications", "GetLoginInfo", "GetAllNotifications", "GetEventList", "GetEventList", "GetAgents"];
+/** The lobby's four reads of a pilot chosen in a station, as a choosing sends them. */
+const CHOSEN_LOBBY = ["GetMyCorporationsOffices", "GetStationItemBits", "GetGuests", "GetStationInfo"];
+/**
+ * What a choosing in a station sends last, by name, at the proxy node or on an object, after the corporation's
+ * reads and the address book's: the lobby's four, and the rest.
+ */
+const CHOSEN_LAST = [...CHOSEN_LOBBY, "GetMyApplications", "GetLoginInfo", "GetAllNotifications", "GetEventList", "GetEventList", "GetAgents"];
 /** The last `count` things a choosing sent before those, and those. */
 const sentLast = (session, count) => session.sent.slice(-(count + CHOSEN_LAST.length));
 
@@ -273,6 +281,12 @@ test("select logs in as the account and makes the retail client's three calls, i
     // are asked of the registry, and not at all of an NPC corporation, which the stand-in pilot's is.)
     "charMgr.GetContactList",
     "onlineStatus.GetInitialState",
+    // And, chosen in a station, what the client's lobby asks as it comes up: the offices its corporation rents,
+    // the station's own item and its guests, and the map's stations.
+    "officeManager.GetMyCorporationsOffices",
+    "stationSvc.GetStationItemBits",
+    "station.GetGuests",
+    "map.GetStationInfo",
     // And all its notifications, as the client's notification window asks for them.
     "notificationMgr.GetAllNotifications",
     // And the table of agents, as the client's agents service asks for it. The choosing does not wait on that one.
@@ -369,9 +383,10 @@ test("a pilot left in space is selected in space and given a ballpark as the cli
   assert.deepEqual([outcome.session.stationID, outcome.session.solarSystemID], [null, SYSTEM]);
   // michelle.AddBallpark: the formations are asked for, the park starts to tick, and the ballpark is bound for the system.
   const first = await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, outcome.bridgeSessionID);
+  // In space there is no lobby, and none of its four reads.
   assert.deepEqual(session.calls.map((call) => `${call.service}.${call.method}`), [
     "charUnboundMgr.GetCharacterSelectionData", "charUnboundMgr.GetCharacterLockType", "charUnboundMgr.SelectCharacterID",
-    ...CHOSEN_ASKS, "beyonce.GetFormations",
+    ...CHOSEN_ASKS.filter((pair) => !CHOSEN_LOBBY.includes(pair.split(".")[1])), "beyonce.GetFormations",
   ]);
   assert.deepEqual(session.binds, [{ service: "beyonce", params: SYSTEM }]);
   assert.deepEqual([hand.parks.length, typeof hand.parks[0].tick, hand.parks[0].stopped], [1, "function", false]);
@@ -1202,7 +1217,8 @@ test("a service's call is reshaped by the same registry as a bound object's", as
   await pilots.callMethod("station", "GetGuests", [7, 8], null, WHO, handle);
   assert.deepEqual(session.calls.at(-1), { service: "station", method: "GetGuests", args: [{ type: "list", items: [7, 8] }], kwargs: { where: 1 } });
   assert.deepEqual(asked.at(-1), ["station", "GetGuests", [7, 8], null]);
-  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "station.GetGuests").statuses, { reshaped: 1 });
+  // Once here, and once at the choosing, whose asking of the guests the same registry shaped.
+  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "station.GetGuests").statuses, { reshaped: 2 });
 });
 
 test("the transport keeps a tally of what it called and how each compared with the retail client", async () => {
@@ -1239,7 +1255,11 @@ test("the transport keeps a tally of what it called and how each compared with t
     "invbroker.Add": { differs: 1 },
     "invbroker.GetInventory": { reshaped: 1 },
     "invbroker.List": { reshaped: 1 },
-    "station.GetGuests": { same: 1 },
+    // The lobby's four at the choosing. This stand-in answers no guests, which is nothing to keep: asked again here.
+    "officeManager.GetMyCorporationsOffices": { same: 1 },
+    "stationSvc.GetStationItemBits": { same: 1 },
+    "station.GetGuests": { same: 2 },
+    "map.GetStationInfo": { same: 1 },
     "someService.SomeMethod": { unchecked: 1 },
   });
   assert.equal(pilots.callLedger()[0].pair, "invbroker.GetCapacity", "most called first");
@@ -5670,7 +5690,7 @@ function withObjectCache(session, held = {}) {
 test("a call the session's object cache answers is not sent and not counted; a write the client names nothing beside forgets none of it", async () => {
   const { pilots, session, handle, hangar, list } = await withContainers();
   const { named } = withObjectCache(session, { "stationSvc.GetStation.[60003760]": { type: "list", items: [7] } });
-  const sent = () => session.calls.filter((call) => call.service === "stationSvc").length;
+  const sent = () => session.calls.filter((call) => call.service === "stationSvc" && call.method === "GetStation").length;
   const station = (...args) => pilots.callMethod("stationSvc", "GetStation", args, null, WHO, handle);
   // Answered by the cache: as the server answered it, with nothing sent and nothing counted.
   assert.deepEqual([(await station(60003760)).result, sent(), pilots.callLedger().some((row) => row.pair === "stationSvc.GetStation")], [{ type: "list", items: [7] }, 0, false]);
@@ -5694,7 +5714,7 @@ test("a call the session's object cache answers is not sent and not counted; a w
 test("on a notice the client's code names cached calls on, the session forgets those; on any other notice, none", async () => {
   const { pilots, session, handle } = await withContainers();
   const { named } = withObjectCache(session, { "stationSvc.GetStation.[60003760]": 1, "stationSvc.GetStation.[60000004]": 2 });
-  const sent = () => session.calls.filter((call) => call.service === "stationSvc").length;
+  const sent = () => session.calls.filter((call) => call.service === "stationSvc" && call.method === "GetStation").length;
   const station = (...args) => pilots.callMethod("stationSvc", "GetStation", args, null, WHO, handle);
   session.notify("OnItemChange", [1, 2]);
   session.notify("OnSomethingElse", [60003760]);
@@ -6255,7 +6275,8 @@ test("the station's own item is asked for once while the pilot is in that statio
   const elsewhere = await selected({ answers: other.answers }, STATION_PAIRS);
   await itemOf(elsewhere.pilots, elsewhere.handle);
   await itemOf(elsewhere.pilots, elsewhere.handle);
-  assert.equal(other.asked.item, 2);
+  // At the choosing, and at each of the two readings.
+  assert.equal(other.asked.item, 3);
 });
 
 test("leaving the station lets the guests and the item go; in space each asking is sent; docked again each is asked for once", async () => {
@@ -6285,12 +6306,13 @@ test("an answer that is no list is handed on as it came with nothing kept, and a
   let refuse = false;
   let asked = 0;
   const { pilots, handle } = await selected({ answers: { "station.GetGuests": () => { asked += 1; if (refuse) throw refusedBy("NotNow"); return answer; } } }, STATION_PAIRS);
-  assert.deepEqual([await guestsOf(pilots, handle), await guestsOf(pilots, handle), asked], [null, null, 2]);
+  // Asked at the choosing, and at each reading after: none of the three answers was a list to keep.
+  assert.deepEqual([await guestsOf(pilots, handle), await guestsOf(pilots, handle), asked], [null, null, 3]);
   refuse = true;
   await assert.rejects(guestsOf(pilots, handle), (error) => error.code === "CALL_REFUSED");
   refuse = false;
   answer = { type: "list", items: [aGuest(PILOT)] };
-  assert.deepEqual([(await guestsOf(pilots, handle)).items, (await guestsOf(pilots, handle)).items, asked], [[aGuest(PILOT)], [aGuest(PILOT)], 4]);
+  assert.deepEqual([(await guestsOf(pilots, handle)).items, (await guestsOf(pilots, handle)).items, asked], [[aGuest(PILOT)], [aGuest(PILOT)], 5]);
 });
 
 // ── the offices the pilot's corporation rents ────────────────────────────────
@@ -6380,20 +6402,22 @@ test("an answer on its way when an office changes is handed on and not kept, and
     times += 1;
     if (refuse) throw refusedBy("NotNow");
     const answer = { type: "list", items: [times] };
-    return times === 1 ? new Promise((resolve) => { release = () => resolve(answer); }) : answer;
+    // The choosing asks first, and is answered at once. The asking after it is the one held back.
+    return times === 2 ? new Promise((resolve) => { release = () => resolve(answer); }) : answer;
   } } }, OFFICE_PAIRS);
   const offices = async () => (await pilots.callMethod("officeManager", "GetMyCorporationsOffices", [], null, FIELDS, handle)).result.items[0];
+  session.notify("OnOfficeRentalChange", [OWN_CORPORATION, 7]);
   const first = offices();
   await settled();
-  // The office changes while the first answer is on its way: that answer may be from before it.
+  // The office changes while that answer is on its way: the answer may be from before it.
   session.notify("OnOfficeRentalChange", [OWN_CORPORATION, 7]);
   release();
-  assert.deepEqual([await first, await offices(), await offices()], [1, 2, 2]);
+  assert.deepEqual([await first, await offices(), await offices()], [2, 3, 3]);
   refuse = true;
   session.notify("OnOfficeRentalChange", [OWN_CORPORATION, 7]);
   await rejects(offices(), "CALL_REFUSED");
   refuse = false;
-  assert.deepEqual([await offices(), await offices(), times], [4, 4, 4]);
+  assert.deepEqual([await offices(), await offices(), times], [5, 5, 5]);
 });
 
 // ── the offices of the station a pilot is docked in ─────────────────────────
@@ -6531,7 +6555,8 @@ test("an office's price, its renting and its giving up are asked of the station'
   // One Moniker for the station, bound by the first call, and every call on what it bound.
   assert.deepEqual(binds(), [STATION]);
   assert.deepEqual(onObjects(), [[object, "GetPriceQuote", [OWN_CORPORATION], null], [object, "RentOffice", [10000], null], [object, "UnrentOffice", [], null]]);
-  assert.equal(session.calls.filter((call) => call.service === "officeManager").length, 0);
+  // By the service's name, the corporation's own offices at the choosing and nothing else.
+  assert.deepEqual(session.calls.filter((call) => call.service === "officeManager").map((call) => call.method), ["GetMyCorporationsOffices"]);
   assert.deepEqual([ledgerOf(pilots, "officeManager.GetPriceQuote"), ledgerOf(pilots, "officeManager.RentOffice"), ledgerOf(pilots, "officeManager.UnrentOffice")], [
     [{ reshaped: 1 }, `${OFFICE_MANAGER_SOURCE}:114`], [{ reshaped: 1 }, `${OFFICE_MANAGER_SOURCE}:117`], [{ reshaped: 1 }, `${OFFICE_MANAGER_SOURCE}:122`],
   ]);
@@ -6586,4 +6611,81 @@ test("the roles a pilot's session has in its corporation are said with its fligh
   assert.equal(await roles(), "9223369906550996879");
   session.attributes.corprole = 562949953421313;
   assert.equal(await roles(), "562949953421313");
+});
+
+// ── the lobby's reads, as a pilot is chosen docked ────────────────────────────
+//
+// A retail client docked in a station has its lobby up from the first. The server's log of one logging in docked
+// has, with nothing opened: officeManager.GetMyCorporationsOffices, stationSvc.GetStationItemBits,
+// station.GetGuests and map.GetStationInfo, each once. The log of one logging in in space has none of the four.
+
+const LOBBY_READS = ["officeManager.GetMyCorporationsOffices", "stationSvc.GetStationItemBits", "station.GetGuests", "map.GetStationInfo"];
+const LOBBY_PAIRS = { allowed: new Set(LOBBY_READS) };
+/** Answers for the lobby's four, each counting how often it was asked. */
+function lobbyAnswers(asked, more = {}) {
+  const counted = (pair, answer) => [pair, () => { asked[pair] = (asked[pair] || 0) + 1; return answer(); }];
+  return Object.fromEntries([
+    counted("officeManager.GetMyCorporationsOffices", () => ({ type: "list", items: [] })),
+    counted("stationSvc.GetStationItemBits", () => [1000035, STATION, 14, 52678]),
+    counted("station.GetGuests", () => ({ type: "list", items: [aGuest(PILOT)] })),
+    counted("map.GetStationInfo", () => "stations"),
+    ...Object.entries(more),
+  ]);
+}
+const lobbyCalls = (session) => session.calls.map((call) => `${call.service}.${call.method}`).filter((pair) => LOBBY_READS.includes(pair));
+
+test("a pilot chosen in a station has the lobby's four reads asked, each once and as the client sends it, and kept", async () => {
+  const asked = {};
+  const { pilots, session, handle } = await selected({ answers: lobbyAnswers(asked) }, LOBBY_PAIRS);
+  // The corporation's offices first, then the station's own item and its guests, then the map's stations.
+  assert.deepEqual(lobbyCalls(session), LOBBY_READS);
+  for (const call of session.calls.filter((each) => LOBBY_READS.includes(`${each.service}.${each.method}`))) assert.deepEqual([call.args, call.kwargs], [[], null], call.method);
+  assert.deepEqual(LOBBY_READS.map((pair) => ledgerOf(pilots, pair)[0]), Array(4).fill({ same: 1 }));
+  // What the page reads of the first three after is what was answered then, with nothing asked.
+  const read = async (pair) => (await pilots.callMethod(...pair.split("."), [], null, FIELDS, handle)).result;
+  assert.deepEqual((await read("station.GetGuests")).items, [aGuest(PILOT)]);
+  assert.deepEqual(await read("stationSvc.GetStationItemBits"), [1000035, STATION, 14, 52678]);
+  assert.deepEqual((await read("officeManager.GetMyCorporationsOffices")).items, []);
+  assert.deepEqual([asked["station.GetGuests"], asked["stationSvc.GetStationItemBits"], asked["officeManager.GetMyCorporationsOffices"], lobbyCalls(session).length], [1, 1, 1, 4]);
+});
+
+test("a pilot chosen in space is asked none of the lobby's reads", async () => {
+  const asked = {};
+  const built = build({ ...IN_SPACE, answers: lobbyAnswers(asked) }, { ...handTicked().options, ...LOBBY_PAIRS });
+  await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  assert.deepEqual([lobbyCalls(built.session), asked], [[], {}]);
+});
+
+test("each of the lobby's reads fails for itself, and the choosing does not fail with it", async () => {
+  for (const failing of LOBBY_READS) {
+    const asked = {};
+    const { session, outcome } = await selected({ answers: lobbyAnswers(asked, { [failing]: () => { throw refusedBy("NotNow"); } }) }, LOBBY_PAIRS);
+    assert.equal(typeof outcome.bridgeSessionID, "string", failing);
+    // The other three were asked all the same, and in their order.
+    assert.deepEqual(lobbyCalls(session), LOBBY_READS, failing);
+  }
+});
+
+test("a pilot that docks has the station's item and its guests asked, and not what the client has already", async () => {
+  const asked = {};
+  const { session } = await selected({ answers: lobbyAnswers(asked) }, LOBBY_PAIRS);
+  // Undocked, then docked in another station (base.py: the item is not this station's, and the guests were let go).
+  session.attributes.stationid = null;
+  session.change({ stationid: [STATION, null] });
+  await settled();
+  assert.equal(lobbyCalls(session).length, 4);
+  // An office of its corporation changes meanwhile: the offices kept are let go, and docking is no asking for them.
+  session.notify("OnOfficeRentalChange", [1000044, 7]);
+  session.attributes.stationid = 60000004;
+  session.change({ stationid: [null, 60000004] });
+  await settled();
+  await settled();
+  assert.deepEqual(lobbyCalls(session).slice(4), ["stationSvc.GetStationItemBits", "station.GetGuests"]);
+  // The corporation's offices and the map's stations are kept across stations: neither is asked again.
+  assert.deepEqual([asked["officeManager.GetMyCorporationsOffices"], asked["map.GetStationInfo"]], [1, 1]);
+  // A change that is not an arrival in a station asks nothing: another corporation, another ship.
+  session.attributes.shipid = SHIP + 1;
+  session.change({ shipid: [SHIP, SHIP + 1] });
+  await settled();
+  assert.equal(lobbyCalls(session).length, 6);
 });

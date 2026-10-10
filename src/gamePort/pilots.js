@@ -1172,6 +1172,9 @@ function createGamePortPilots({
       if ("shipid" in changes) entry.monikers.delete("ship");
       // station/base.py OnSessionChanged and ProcessSessionChange: out of a station, its guests and its item are let go.
       if ("stationid" in changes) entry.station.left();
+      // station/base.py: arrived in a station, the lobby asks for the station's item and its guests. (The choosing
+      // of the character asks them itself.)
+      if ("stationid" in changes && sessions.has(entry.handle)) lobbyRead(entry);
       // officeManager.DoSessionChanging and OnSessionChanged (58, 66): another station or structure, or none, and its offices are not this one's.
       if ("stationid" in changes || "structureid" in changes) {
         entry.stationOffices.forget();
@@ -1260,6 +1263,8 @@ function createGamePortPilots({
       await corporationRead(entry);
       // addressbook.GetContacts: the pilot's contacts, its corporation's, and who of the watched is online.
       await addressBookRead(entry);
+      // The lobby of a docked client is up from the first: its reads are asked as the character is chosen in a station.
+      await lobbyRead(entry, { chosen: true });
       // bco_applications: the pilot's own applications, which the client asks for once.
       await corporationAsk(entry, "GetMyApplications").catch(() => {});
       // contracts.NeocomBlink: what of the pilot's contracts wants attention, asked once the notifications are ready.
@@ -1645,6 +1650,24 @@ function createGamePortPilots({
     entry.planetReads.set(keptAs, record);
     record.answer.catch(() => { if (entry.planetReads.get(keptAs) === record) entry.planetReads.delete(keptAs); });
     return record.answer;
+  }
+
+  /**
+   * What a docked client's lobby asks as it comes up, on the pilot's own session and as the client sends each.
+   * As a character is chosen in a station: the offices its corporation rents (officeManager.corp_offices), the
+   * station's own item and its guests (station/base.py GetStationItem, GetGuests), and the map's stations
+   * (uisvc.GetStation), in the order the server's log of a retail client logging in docked has them. As a pilot
+   * docks: the item and the guests, the other two being the client's still. A pilot in no station is asked none.
+   * Each is kept as its own service keeps it, so that what the page reads of them after is answered from here;
+   * and each fails for itself.
+   */
+  async function lobbyRead(entry, { chosen = false } = {}) {
+    if (attribute(entry, "stationid") === null) return;
+    const form = (service, method) => shape(service, method, [], null, contextFor(entry));
+    if (chosen) await keptRead(entry, OFFICE_MANAGER, "GetMyCorporationsOffices", form(OFFICE_MANAGER, "GetMyCorporationsOffices")).catch(() => {});
+    await stationRead(entry, "stationSvc", "GetStationItemBits", form("stationSvc", "GetStationItemBits")).catch(() => {});
+    await stationRead(entry, "station", "GetGuests", form("station", "GetGuests")).catch(() => {});
+    if (chosen) await asks(entry, "map", "GetStationInfo").catch(() => {});
   }
 
   /** Every colony kept is forgotten, and asked for when it is next wanted. What a planet carries stays. */
