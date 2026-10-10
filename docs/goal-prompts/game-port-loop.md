@@ -457,8 +457,13 @@ Take these defaults, and list each under "For the operator" in the log so they c
   then the game port's own list (`GAME_PORT_ONLY_CALLS`) is where it goes, the gateway's
   being `eve.js`'s. What a unit needs of the BFF first is a unit of its own.
   `routes-survey.js <repo> [list]` counts the routes the page still names.
-- **The page's clock** is `serverNowMs` on a pilot's answer of the generic call, on the game
-  port only: the server's clock as the pilot's session has it.
+- **The page's clock** is `serverNowMs` on a pilot's answer of the generic call: on the game
+  port the server's clock as the pilot's session has it, through the gateway the BFF's
+  own. A route that put a time beside its answer is moved by reading the clock the
+  call's own answer has just said (`serverNow()` in `web/src/app/flow.ts`).
+- **Run the whole suite before calling a unit's tests done.** A test elsewhere may list what
+  a flow asks at some moment (`web/src/app/flow.test.ts` lists every generic call made at
+  the choosing of a pilot), and a read moved to the page's own call is one more in it.
 - **Something the BFF makes, made again in the page's TypeScript, is proved by making both
   from one kept state** at every point of a recorded session
   (`test/gamePortSkillSheet.test.js`): the BFF's given the state as it came off the wire,
