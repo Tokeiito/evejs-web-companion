@@ -6,6 +6,7 @@
 
 import { getCharacterSelectionData } from "../bridge/characterSelection.ts";
 import { setSessionToken } from "./sessionToken.ts";
+import { pageFetch } from "./pageFetch.ts";
 import {
   getStationGuests,
   getStationInfoCached,
@@ -3839,7 +3840,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       () => api.inviteToFleet(characterID, assertCurrent ? { ...callOptions, fetch: (input, init) => {
         // The shared transport lane may queue this action. Fence the actual
         // dispatch, before a hosted fetch can capture a newer generation.
-        assertCurrent(); return (callOptions.fetch ?? globalThis.fetch)(input, init);
+        assertCurrent(); return (callOptions.fetch ?? pageFetch())(input, init);
       } } : callOptions, expectedFleetID),
       "ready",
     );

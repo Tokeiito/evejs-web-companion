@@ -8,6 +8,7 @@
 // identity to the logged-in account.
 
 import { sessionAuthHeaders, tokenAuthHeaders } from "../app/sessionToken.ts";
+import { pageFetch } from "../app/pageFetch.ts";
 import {
   TransportQueueError,
   bridgeLane,
@@ -119,7 +120,8 @@ export async function callMethod<TResult = JsonValue>(
   kwargs: CallKwargs = null,
   options: CallMethodOptions = {},
 ): Promise<BridgeCallOutcome<TResult>> {
-  const doFetch = options.fetch ?? globalThis.fetch;
+  // Over HTTP, or on the tab's socket where the page is set to (app/pageFetch.ts). A fetch handed in is used as it is.
+  const doFetch = options.fetch ?? pageFetch();
   const assertCurrent = options.captureRequestGuard?.();
   const authHeaders = "token" in options ? tokenAuthHeaders(options.token) : sessionAuthHeaders();
   const credentials = "token" in options ? "omit" : "same-origin";

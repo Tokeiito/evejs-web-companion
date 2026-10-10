@@ -32,6 +32,7 @@ import {
   bridgeLane,
   type RequestPriority,
 } from "./transport.ts";
+import { pageFetch } from "./pageFetch.ts";
 import type { JsonValue } from "../bridge/wire.ts";
 import { decodeClientStates } from "../bridge/boundCrimewatch.ts";
 import type { CrimewatchReading, SafetyLevel } from "../space/crimewatch.ts";
@@ -159,7 +160,8 @@ async function requestJson(
   init: RequestInit,
   options: ApiOptions,
 ): Promise<Record<string, JsonValue>> {
-  const doFetch = options.fetch ?? globalThis.fetch;
+  // Over HTTP, or on the tab's socket where the page is set to (app/pageFetch.ts). A fetch handed in is used as it is.
+  const doFetch = options.fetch ?? pageFetch();
   const notificationSink = options.captureNotificationSink?.();
   const assertCurrent = options.captureRequestGuard?.();
   const authHeaders = "token" in options ? tokenAuthHeaders(options.token) : sessionAuthHeaders();
