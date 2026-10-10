@@ -97,6 +97,7 @@ import {
 import { createWalletReads } from "../bridge/walletReads.ts";
 import { readStandings, standingComposition, standingHistory } from "../bridge/standingsReads.ts";
 import { createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
+import { createCharacterSheetReads } from "../bridge/characterSheetReads.ts";
 import {
   classifyStandingKind,
   decodeStandingCompositions,
@@ -1701,6 +1702,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     names: async (items) => (await api.resolveNames(items, callOptions)).names,
     typeAttributes: (typeIDs, attributeIDs) => api.fetchTypeDogma(typeIDs, attributeIDs, callOptions),
   });
+  // The Character Sheet's reads, asked call by call as the client's windows ask them (bridge/characterSheetReads.ts).
+  const characterSheetReads = createCharacterSheetReads(bridgeAsk, (typeIDs, attributeIDs) => api.fetchTypeDogma(typeIDs, attributeIDs, callOptions));
   // The wallet's reads, asked call by call as the client's wallet and account services ask them
   // (bridge/walletReads.ts), with what those services keep kept for this pilot.
   const walletReads = createWalletReads(bridgeAsk);
@@ -4779,10 +4782,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     store.apply({ type: "standings/detail-cleared" });
   }
 
-  // R56 — the Character Sheet page. One pull carries four independent charMgr
-  // reads (public info, description, home station, clone info); each half is
-  // independent on the BFF (Promise.allSettled) and keeps its own error here, so
-  // a failed clone read never blanks the identity, and vice versa.
+  // R56 — the Character Sheet page. Four independent reads, asked by the page
+  // itself as the client's windows ask them (bridge/characterSheetReads.ts: the
+  // public info, the description, the home station, and the implants the clone
+  // on show is made of); each keeps its own error here, so a failed clone read
+  // never blanks the identity, and vice versa.
   //
   // ⚠ R7d: every id is resolved to a name. corporationID / allianceID (from the
   // public info), the home stationID and every implant typeID are asked for
@@ -4790,7 +4794,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // null) degrades to "Unknown …" in the page — never the number. bloodline /
   // race / ancestry carry no name path and are not decoded at all.
   async function loadCharacterSheet(): Promise<void> {
-    const reads = await api.loadCharacterSheet(callOptions);
+    const reads = await characterSheetReads.read({ characterID: store.station.get().online?.characterID ?? null });
     const identity = reads.errors.publicInfo
       ? null
       : decodeCharacterIdentity(reads.publicInfo);

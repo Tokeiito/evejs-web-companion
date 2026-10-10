@@ -1,7 +1,11 @@
-// loadCharacterSheet (goal R56) against the raw /api/bridge/character-sheet
-// envelope. The BFF ships four independent charMgr reads (public info,
-// description, home station, clone info) as raw retail shapes; the flow decodes
-// them and — the crux — RESOLVES every id to a name through /api/names.
+// loadCharacterSheet (goal R56), with the page asking for the sheet itself.
+//
+// Until 2026-10-10 the flow read one route (GET /api/bridge/character-sheet),
+// which made four calls. It now makes the calls (bridge/characterSheetReads.ts):
+// the character's public info and its bio, each naming the character; the home
+// station; and the implants in its head, which the clone on show is made of,
+// each in the slot the static data has for its type. The flow decodes them and —
+// the crux — RESOLVES every id to a name through /api/names.
 //
 // ⚠ R7d is the invariant under test: the flow must ask /api/names for the
 // corporation, the alliance (when present), the home station and EVERY implant
@@ -25,14 +29,13 @@ function keyval(entries: readonly (readonly [string, JsonValue])[]): JsonValue {
     args: { type: "dict", entries: entries as JsonValue },
   };
 }
-function longVal(value: string): JsonValue {
-  return { type: "long", value };
-}
 function dict(entries: readonly (readonly [JsonValue, JsonValue])[]): JsonValue {
   return { type: "dict", entries: entries as JsonValue };
 }
 
-// The real GetPublicInfo3 (list of one KeyVal); alliance/implants overridable.
+const PILOT = 140000005;
+
+// The real GetPublicInfo3 (list of one KeyVal); alliance/corporation overridable.
 function publicInfo(
   over: { allianceID?: JsonValue; corporationID?: number } = {},
 ): JsonValue {
@@ -40,7 +43,7 @@ function publicInfo(
     type: "list",
     items: [
       keyval([
-        ["characterID", 140000005],
+        ["characterID", PILOT],
         ["characterName", "Farmer"],
         ["corporationID", over.corporationID ?? 98000001],
         ["allianceID", over.allianceID ?? null],
@@ -55,80 +58,91 @@ const HOME_STATION: JsonValue = keyval([
   ["name", "Manifest V - AIR Laboratories Trade Center"],
 ]);
 
-const CLONE_CLEAN: JsonValue = keyval([
-  ["homeStationID", 60015249],
-  ["cloneStationID", 60015249],
-  ["clones", dict([])],
-  ["implants", dict([])],
-  ["timeLastJump", longVal("0")],
+/** skillHandler.GetImplants as the server answers it: each implant by its type, under the server's own key. */
+const IMPLANTS_NONE: JsonValue = dict([]);
+const IMPLANTS: JsonValue = dict([
+  [1, keyval([["typeID", 9941], ["itemID", 990000001]])],
+  [2, keyval([["typeID", 9899], ["itemID", 990000002]])],
 ]);
-
-const CLONE_WITH_IMPLANTS: JsonValue = keyval([
-  ["homeStationID", 60015249],
-  ["cloneStationID", 60015249],
-  ["clones", dict([])],
-  [
-    "implants",
-    dict([
-      [1, keyval([["typeID", 9941], ["slot", 1]])],
-      [2, keyval([["typeID", 9899], ["slot", 6]])],
-    ]),
-  ],
-  ["timeLastJump", longVal("0")],
-]);
+/** What the static data has for each implant type's slot (dogma attribute 331). */
+const SLOTS: Record<number, number> = { 9941: 1, 9899: 6 };
 
 interface SheetBody {
   readonly publicInfo?: JsonValue;
   readonly description?: JsonValue;
   readonly homeStation?: JsonValue;
-  readonly cloneInfo?: JsonValue;
-  readonly errors?: Record<string, string | null>;
+  readonly implants?: JsonValue;
+  /** Why a call fails, by its method. */
+  readonly errors?: Record<string, readonly [number, string]>;
+}
+interface Asked {
+  readonly path: string;
+  readonly body: Record<string, unknown>;
 }
 
-// A fetch answering /api/bridge/character-sheet and /api/names. The names route
-// captures the request refs and, unless an id is in `unnameable`, echoes a name.
+// A fetch answering the choosing of a pilot, the sheet's four calls by the generic call, the static data's
+// attributes, and /api/names. The names route captures the request refs and, unless an id is in `unnameable`,
+// echoes a name. With nobody chosen a pilot's call is refused, as the BFF refuses it.
 function sheetFetch(
   body: SheetBody,
   nameRequests: { kind: string; id: number }[] = [],
   unnameable: ReadonlySet<number> = new Set(),
+  asked: Asked[] = [],
 ): typeof fetch {
+  let chosen = false;
+  const answers: Record<string, JsonValue> = {
+    GetPublicInfo3: body.publicInfo ?? null,
+    GetCharacterDescription: body.description ?? null,
+    GetHomeStationRow: body.homeStation ?? null,
+    GetImplants: body.implants ?? null,
+  };
+  const json = (status: number, payload: unknown) => ({ ok: status >= 200 && status < 300, status, async json() { return payload; } });
   return (async (input: unknown, init?: { body?: string }) => {
     const url = String(input);
+    const sent = init && init.body ? JSON.parse(init.body) : {};
+    asked.push({ path: url, body: sent });
     if (url === "/api/names") {
-      const parsed = init && init.body ? JSON.parse(init.body) : { items: [] };
       const names: Record<string, string | null> = {};
-      for (const item of parsed.items ?? []) {
+      for (const item of sent.items ?? []) {
         nameRequests.push({ kind: String(item.kind), id: Number(item.id) });
         names[`${item.kind}:${item.id}`] = unnameable.has(Number(item.id))
           ? null
           : `Name ${item.id}`;
       }
-      return { ok: true, status: 200, async json() { return { ok: true, names, unresolved: [] }; } };
+      return json(200, { ok: true, names, unresolved: [] });
     }
-    if (url.startsWith("/api/bridge/character-sheet")) {
-      return {
-        ok: true,
-        status: 200,
-        async json() {
-          return {
-            ok: true,
-            publicInfo: body.publicInfo ?? null,
-            description: body.description ?? null,
-            homeStation: body.homeStation ?? null,
-            cloneInfo: body.cloneInfo ?? null,
-            errors: {
-              publicInfo: null,
-              description: null,
-              homeStation: null,
-              cloneInfo: null,
-              ...(body.errors ?? {}),
-            },
-          };
-        },
-      };
+    if (url === "/api/bridge/select") {
+      chosen = true;
+      return json(200, { ok: true, character: { characterID: PILOT, characterName: "Farmer", stationID: 60015249, structureID: null, solarSystemID: 30000142, corporationID: 98000001 }, station: null, notifications: [] });
     }
-    return { ok: true, status: 200, async json() { return { ok: true }; } };
+    if (url === "/api/bridge/call") {
+      if (sent.pilot === true && !chosen) return json(409, { ok: false, error: "NO_LIVE_SESSION", message: "No pilot is selected." });
+      const failure = body.errors?.[String(sent.method)];
+      if (failure) return json(failure[0], { ok: false, error: failure[1], message: `${String(sent.method)} failed.` });
+      return json(200, { ok: true, service: sent.service, method: sent.method, result: answers[String(sent.method)] ?? null, notifications: [] });
+    }
+    if (url === "/api/types/dogma") {
+      return json(200, { ok: true, attributes: Object.fromEntries((sent.typeIDs as number[]).map((typeID) => [typeID, typeID in SLOTS ? { 331: SLOTS[typeID] } : {}])) });
+    }
+    return json(200, { ok: true });
   }) as unknown as typeof fetch;
+}
+
+const noStream = () => ({ onmessage: null, onopen: null, onerror: null, close() {} });
+/** The sheet's own calls, each as service.method(args), in the order they were asked. */
+const sheetCalls = (asked: readonly Asked[]): string[] => asked
+  .filter((request) => request.path === "/api/bridge/call" && (request.body.service === "charMgr" || request.body.method === "GetImplants"))
+  .map((request) => `${String(request.body.service)}.${String(request.body.method)}(${JSON.stringify(request.body.args).slice(1, -1)})`);
+
+/** A flow with the pilot chosen, as the page has whenever the sheet is on show. */
+async function withPilot(body: SheetBody, nameRequests: { kind: string; id: number }[] = [], unnameable: ReadonlySet<number> = new Set()) {
+  const store = createClientStore();
+  const asked: Asked[] = [];
+  const flow = createAppFlow(store, { fetch: sheetFetch(body, nameRequests, unnameable, asked), eventSource: noStream });
+  await flow.selectCharacter(PILOT);
+  asked.length = 0;
+  nameRequests.length = 0;
+  return { store, flow, asked };
 }
 
 /** Let the queued name-resolution microtask + its fetch settle. */
@@ -138,17 +152,20 @@ async function settle(): Promise<void> {
 }
 
 test("loadCharacterSheet decodes identity, bio, home station and a clean clone", async () => {
-  const store = createClientStore();
-  const flow = createAppFlow(store, {
-    fetch: sheetFetch({
-      publicInfo: publicInfo(),
-      description: "Character created via EveJS Elysian",
-      homeStation: HOME_STATION,
-      cloneInfo: CLONE_CLEAN,
-    }),
+  const { store, flow, asked } = await withPilot({
+    publicInfo: publicInfo(),
+    description: "Character created via EveJS Elysian",
+    homeStation: HOME_STATION,
+    implants: IMPLANTS_NONE,
   });
 
   await flow.loadCharacterSheet();
+
+  // The client's own calls: the character named where the client names it, the rest with nothing. Each is asked
+  // as a pilot's call; the route is not read, and with no implants nothing is asked of the static data.
+  assert.deepEqual(sheetCalls(asked), [`charMgr.GetPublicInfo3(${PILOT})`, `charMgr.GetCharacterDescription(${PILOT})`, "charMgr.GetHomeStationRow()", "skillHandler.GetImplants()"]);
+  assert.deepEqual(asked.filter((request) => request.path === "/api/bridge/call").map((request) => request.body.pilot), [true, true, true, true]);
+  assert.deepEqual(asked.map((request) => request.path).filter((path) => path.startsWith("/api/bridge/character-sheet") || path === "/api/types/dogma"), []);
 
   const sheet = store.characterSheet.get();
   assert.equal(sheet.loaded, true);
@@ -161,22 +178,31 @@ test("loadCharacterSheet decodes identity, bio, home station and a clean clone",
   // A clean clone is [] implants — a real answer, not a failure.
   assert.deepEqual(sheet.clone?.implants, []);
   assert.equal(sheet.cloneError, null);
+  // What only charMgr.GetCloneInfo says, which the client's sheet never asks, is not said.
+  assert.deepEqual([sheet.clone?.jumpCloneCount, sheet.clone?.homeStationID, sheet.clone?.cloneStationID], [null, null, null]);
+});
+
+test("the clone on show is the implants the skill handler answers, each in the slot the static data has for its type", async () => {
+  const { store, flow, asked } = await withPilot({ publicInfo: publicInfo(), description: "hi", homeStation: HOME_STATION, implants: IMPLANTS });
+  await flow.loadCharacterSheet();
+  // The two types' slots, asked for once, by the attribute the client sorts its implants by.
+  assert.deepEqual(asked.filter((request) => request.path === "/api/types/dogma").map((request) => request.body), [{ typeIDs: [9941, 9899], attributeIDs: [331] }]);
+  assert.deepEqual(store.characterSheet.get().clone?.implants, [{ typeID: 9941, slot: 1 }, { typeID: 9899, slot: 6 }]);
+  // Read again: the calls again, and nothing of the static data, which does not change.
+  asked.length = 0;
+  await flow.loadCharacterSheet();
+  assert.deepEqual([sheetCalls(asked).length, asked.filter((request) => request.path === "/api/types/dogma").length], [4, 0]);
+  assert.deepEqual(store.characterSheet.get().clone?.implants, [{ typeID: 9941, slot: 1 }, { typeID: 9899, slot: 6 }]);
 });
 
 test("R7d: loadCharacterSheet asks /api/names for corp, alliance, station and every implant type", async () => {
-  const store = createClientStore();
   const nameRequests: { kind: string; id: number }[] = [];
-  const flow = createAppFlow(store, {
-    fetch: sheetFetch(
-      {
-        publicInfo: publicInfo({ allianceID: 99000001 }),
-        description: "hi",
-        homeStation: HOME_STATION,
-        cloneInfo: CLONE_WITH_IMPLANTS,
-      },
-      nameRequests,
-    ),
-  });
+  const { flow } = await withPilot({
+    publicInfo: publicInfo({ allianceID: 99000001 }),
+    description: "hi",
+    homeStation: HOME_STATION,
+    implants: IMPLANTS,
+  }, nameRequests);
 
   await flow.loadCharacterSheet();
   await settle();
@@ -190,15 +216,12 @@ test("R7d: loadCharacterSheet asks /api/names for corp, alliance, station and ev
 });
 
 test("R7d: a player corp that resolves to null is cached as a definitive unknown (never the id)", async () => {
-  const store = createClientStore();
-  const flow = createAppFlow(store, {
-    // 98000001 is a player corp: /api/names answers null for it.
-    fetch: sheetFetch(
-      { publicInfo: publicInfo(), description: "", homeStation: HOME_STATION, cloneInfo: CLONE_CLEAN },
-      [],
-      new Set([98000001]),
-    ),
-  });
+  // 98000001 is a player corp: /api/names answers null for it.
+  const { store, flow } = await withPilot(
+    { publicInfo: publicInfo(), description: "", homeStation: HOME_STATION, implants: IMPLANTS_NONE },
+    [],
+    new Set([98000001]),
+  );
 
   await flow.loadCharacterSheet();
   await settle();
@@ -211,37 +234,40 @@ test("R7d: a player corp that resolves to null is cached as a definitive unknown
 });
 
 test("loadCharacterSheet: a FAILED clone read leaves clone null with cloneError; identity survives", async () => {
-  const store = createClientStore();
-  const flow = createAppFlow(store, {
-    fetch: sheetFetch({
-      publicInfo: publicInfo(),
-      description: "bio",
-      homeStation: HOME_STATION,
-      cloneInfo: null,
-      errors: { cloneInfo: "READ_FAILED" },
-    }),
-  });
+  // The call refused, and an answer that is no implants: each is the clone's own failure, with why.
+  for (const [body, why] of [
+    [{ errors: { GetImplants: [502, "CALL_REFUSED"] } }, /your clone: CALL_REFUSED/],
+    [{ implants: "none to speak of" }, /your clone: READ_FAILED/],
+    [{ implants: dict([[1, keyval([["itemID", 990000001]])]]) }, /your clone: READ_FAILED/],
+  ] as const) {
+    const { store, flow } = await withPilot({ publicInfo: publicInfo(), description: "bio", homeStation: HOME_STATION, implants: IMPLANTS_NONE, ...body } as SheetBody);
 
+    await flow.loadCharacterSheet();
+
+    const sheet = store.characterSheet.get();
+    // ⚠ null, NOT an empty clone — a failed read must never look like a clean clone.
+    assert.equal(sheet.clone, null);
+    assert.match(sheet.cloneError ?? "", why);
+    // The identity read survived the clone-side failure.
+    assert.equal(sheet.identity?.characterName, "Farmer");
+    assert.equal(sheet.identityError, null);
+  }
+});
+
+test("each of the other reads fails by itself too, with why, and the rest are on show", async () => {
+  const { store, flow } = await withPilot({ publicInfo: publicInfo(), description: "bio", homeStation: HOME_STATION, implants: IMPLANTS, errors: { GetPublicInfo3: [502, "CALL_REFUSED"], GetHomeStationRow: [504, "EVE_GATEWAY_TIMEOUT"] } });
   await flow.loadCharacterSheet();
-
   const sheet = store.characterSheet.get();
-  // ⚠ null, NOT an empty clone — a failed read must never look like a clean clone.
-  assert.equal(sheet.clone, null);
-  assert.match(sheet.cloneError ?? "", /READ_FAILED/);
-  // The identity read survived the clone-side failure.
-  assert.equal(sheet.identity?.characterName, "Farmer");
-  assert.equal(sheet.identityError, null);
+  assert.deepEqual([sheet.loaded, sheet.identity, sheet.identityError, sheet.homeStationID, sheet.homeStationError], [true, null, "your character info: CALL_REFUSED", null, "your home station: EVE_GATEWAY_TIMEOUT"]);
+  assert.deepEqual([sheet.description, sheet.descriptionError, sheet.clone?.implants.length, sheet.cloneError], ["bio", null, 2, null]);
 });
 
 test("loadCharacterSheet keeps an empty bio ('') distinct from a failed bio read", async () => {
-  const store = createClientStore();
-  const flow = createAppFlow(store, {
-    fetch: sheetFetch({
-      publicInfo: publicInfo(),
-      description: "",
-      homeStation: HOME_STATION,
-      cloneInfo: CLONE_CLEAN,
-    }),
+  const { store, flow } = await withPilot({
+    publicInfo: publicInfo(),
+    description: "",
+    homeStation: HOME_STATION,
+    implants: IMPLANTS_NONE,
   });
 
   await flow.loadCharacterSheet();
@@ -250,4 +276,26 @@ test("loadCharacterSheet keeps an empty bio ('') distinct from a failed bio read
   // "" is a real empty bio; null would mean unread/failed.
   assert.equal(sheet.description, "");
   assert.equal(sheet.descriptionError, null);
+
+  const failed = await withPilot({ publicInfo: publicInfo(), description: "", homeStation: HOME_STATION, implants: IMPLANTS_NONE, errors: { GetCharacterDescription: [502, "CALL_REFUSED"] } });
+  await failed.flow.loadCharacterSheet();
+  assert.deepEqual([failed.store.characterSheet.get().description, failed.store.characterSheet.get().descriptionError], [null, "your bio: CALL_REFUSED"]);
+});
+
+test("with nobody chosen there is no sheet: the BFF says there is no pilot, and nothing is landed", async () => {
+  const store = createClientStore();
+  const asked: Asked[] = [];
+  const flow = createAppFlow(store, { fetch: sheetFetch({ publicInfo: publicInfo(), description: "bio", homeStation: HOME_STATION, implants: IMPLANTS_NONE }, [], new Set(), asked), eventSource: noStream });
+  await assert.rejects(flow.loadCharacterSheet(), (error: { code?: string }) => error.code === "NO_LIVE_SESSION");
+  // Asked with no one named, since there is no one; and the BFF is what refuses.
+  assert.deepEqual(sheetCalls(asked), ["charMgr.GetPublicInfo3()", "charMgr.GetCharacterDescription()", "charMgr.GetHomeStationRow()", "skillHandler.GetImplants()"]);
+  assert.equal(store.characterSheet.get().loaded, false);
+});
+
+test("the pilot's session gone fails the whole sheet, whichever read met it", async () => {
+  for (const method of ["GetPublicInfo3", "GetImplants"]) {
+    const { store, flow } = await withPilot({ publicInfo: publicInfo(), description: "bio", homeStation: HOME_STATION, implants: IMPLANTS_NONE, errors: { [method]: [404, "SESSION_NOT_FOUND"] } });
+    await assert.rejects(flow.loadCharacterSheet(), (error: { code?: string }) => error.code === "SESSION_NOT_FOUND", method);
+    assert.equal(store.characterSheet.get().loaded, false, method);
+  }
 });

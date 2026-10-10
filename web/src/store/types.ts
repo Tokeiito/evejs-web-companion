@@ -1480,8 +1480,9 @@ export interface CloneSummary {
 
 /**
  * The Character Sheet page (goal R56): who the character is, where home is, and
- * their clone. Four independent BFF reads (/api/bridge/character-sheet), each
- * with its own error so one failure never blanks the rest.
+ * their clone. Four independent reads, each asked by its own call
+ * (bridge/characterSheetReads.ts), each with its own error so one failure never
+ * blanks the rest.
  *
  * ⚠ empty vs failed, per field. `identity`/`clone` are null while unread OR when
  * that read FAILED (the reason rides in the matching `*Error`). `description` is
