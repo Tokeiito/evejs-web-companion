@@ -1024,13 +1024,16 @@ test("a call's answer for a pilot on the game port says the server's clock as th
     assert.deepEqual([untold.response.status, Object.hasOwn(untold.payload, "serverNowMs")], [200, false], String(cannot));
   }
 
-  // A pilot through the gateway has no such session: the game port's clock is not asked, and none is said.
+  // A pilot through the gateway has no such session: the game port's clock is not asked, and the clock said is
+  // the BFF's own, which is what its routes put beside an answer.
   clock = () => 5;
   const before = clockAsked.length;
   const throughGateway = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gateway" });
   await apiRequest(throughGateway.baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const asked = Date.now();
   const gatewayAnswer = await call(throughGateway.baseUrl);
-  assert.deepEqual([gatewayAnswer.response.status, Object.hasOwn(gatewayAnswer.payload, "serverNowMs"), clockAsked.length], [200, false, before]);
+  assert.deepEqual([gatewayAnswer.response.status, clockAsked.length], [200, before]);
+  assert.ok(gatewayAnswer.payload.serverNowMs >= asked && gatewayAnswer.payload.serverNowMs <= Date.now(), String(gatewayAnswer.payload.serverNowMs));
   // Nor an account's call, with no pilot held.
   const nobody = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gameport" });
   const account = await apiRequest(nobody.baseUrl, "/api/bridge/call", { method: "POST", body: { service: "map", method: "GetStationInfo" } });

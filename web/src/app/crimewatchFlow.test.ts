@@ -28,14 +28,16 @@ interface PushSource {
  * the safety level was asked to be set to, each as it was sent; `setFails` refuses the next, and `setHold` keeps
  * its answer back.
  */
-async function online(from: { fail?: boolean; grade?: unknown } = {}) {
+async function online(from: { fail?: boolean; grade?: { result: unknown } | "not carried" | "fails" } = {}) {
   const store = createClientStore();
   const state: { answer: unknown; fail: boolean; hold: Promise<void> | null; setFails: boolean; setHold: Promise<void> | null; grade: unknown } = {
     answer: { ok: true, serverNowMs: Date.now() + 5000, clientStates: statesWith(2) }, fail: from.fail === true, hold: null, setFails: false, setHold: null,
-    grade: "grade" in from ? from.grade : { ok: true, available: true, cloneGrade: 1 },
+    grade: "grade" in from ? from.grade : { result: 1 },
   };
   let reads = 0;
   let gradeReads = 0;
+  /** The two reads as the page asked them: each a call of its pilot's, by the generic call. */
+  const asked: Record<string, unknown>[] = [];
   const sets: Array<{ level?: unknown; confirm?: unknown }> = [];
   const fetchImpl = (async (input: unknown, init?: { method?: string; body?: unknown }) => {
     const path = String(input);
@@ -53,22 +55,31 @@ async function online(from: { fail?: boolean; grade?: unknown } = {}) {
       } else {
         answer = { ok: true, applied: true, result: body.level, notifications: [] };
       }
-    } else if (path === "/api/bridge/clone-grade") {
+    } else if (path === "/api/bridge/call" && body.service === "subscriptionMgr" && body.method === "GetCloneGrade") {
+      // clone_grade_svc's own call, asked by the page (bridge/cloneGradeReads.ts).
       gradeReads += 1;
-      if (state.grade === null) {
+      asked.push(body);
+      if (state.grade === "fails") {
         status = 502;
         answer = { ok: false, error: "EVE_GATEWAY_UNREACHABLE", message: "The game server is unreachable." };
+      } else if (state.grade === "not carried") {
+        status = 403;
+        answer = { ok: false, error: "CALL_NOT_ALLOWED", message: "subscriptionMgr.GetCloneGrade is not on the web-call allowlist." };
       } else {
-        answer = state.grade;
+        answer = { ok: true, service: body.service, method: body.method, result: (state.grade as { result: unknown }).result, notifications: [] };
       }
-    } else if (path === "/api/bridge/crimewatch") {
+    } else if (path === "/api/bridge/call" && body.service === "crimewatch" && body.method === "GetClientStates") {
+      // crimewatchSvc's own call, asked by the page (bridge/crimewatchReads.ts). The states are the call's result,
+      // and the clock is what the answer says beside it, where it says one.
       reads += 1;
+      asked.push(body);
       if (state.hold) await state.hold;
       if (state.fail) {
         status = 502;
         answer = { ok: false, error: "EVE_GATEWAY_UNREACHABLE", message: "The game server is unreachable." };
       } else {
-        answer = state.answer;
+        const said = state.answer as { serverNowMs?: unknown; clientStates?: unknown };
+        answer = { ok: true, service: body.service, method: body.method, result: said.clientStates, notifications: [], ...("serverNowMs" in said ? { serverNowMs: said.serverNowMs } : {}) };
       }
     } else if (path === "/api/bridge/call") {
       answer = { ok: true, service: body.service, method: body.method, result: null, notifications: [] };
@@ -98,12 +109,14 @@ async function online(from: { fail?: boolean; grade?: unknown } = {}) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   };
   const shown = () => store.flight.get().crimewatch;
-  return { store, flow, state, push, shown, reads: () => reads, sets, grade: () => store.station.get().cloneGrade, gradeReads: () => gradeReads };
+  return { store, flow, state, push, shown, reads: () => reads, sets, grade: () => store.station.get().cloneGrade, gradeReads: () => gradeReads, asked };
 }
 
 test("a pilot that comes online has crimewatch's states read, with the server's clock beside them", async () => {
-  const { shown, reads } = await online();
+  const { shown, reads, asked } = await online();
   assert.equal(reads(), 1);
+  // Both reads of the choosing are the client's own calls, each with nothing, asked as a pilot's.
+  assert.deepEqual(asked.map((body) => [body.service, body.method, body.args, body.kwargs, body.pilot]).sort(), [["crimewatch", "GetClientStates", [], null, true], ["subscriptionMgr", "GetCloneGrade", [], null, true]]);
   const reading = shown();
   assert.ok(reading !== null);
   assert.deepEqual([reading.states.safetyLevel, reading.states.timers.map((timer) => timer.state)], [2, [100, 200, 400, 300, 500]]);
@@ -154,11 +167,28 @@ test("a read that fails, or that says no states, leaves what was shown", async (
   await push("OnWeaponsTimerUpdate", [100, null]);
   assert.deepEqual([shown(), reads()], [first, 2]);
   state.fail = false;
-  for (const answer of [{ ok: true }, { ok: true, serverNowMs: Date.now(), clientStates: null }, { ok: true, serverNowMs: "now", clientStates: statesWith(0) }, { ok: true, clientStates: statesWith(0) }]) {
+  for (const answer of [{}, { serverNowMs: Date.now() + 5000, clientStates: null }, { serverNowMs: Date.now() + 5000, clientStates: "none" }, { serverNowMs: Date.now() + 5000, clientStates: { type: "list", items: statesWith(0) } }]) {
     state.answer = answer;
     await push("OnWeaponsTimerUpdate", [100, null]);
     assert.deepEqual(shown(), first, JSON.stringify(answer).slice(0, 60));
   }
+});
+
+test("states that come with no clock said are shown all the same, counted against the clock the page last had", async () => {
+  const { state, push, shown } = await online();
+  // The first read said the server was five seconds ahead. One that says nothing of the time, or what is no time:
+  for (const answer of [{ clientStates: statesWith(0) }, { serverNowMs: "now", clientStates: statesWith(1) }]) {
+    state.answer = answer;
+    await push("OnWeaponsTimerUpdate", [100, null]);
+    const reading = shown();
+    assert.ok(reading !== null);
+    assert.equal(reading.states.safetyLevel, (answer.clientStates as unknown[])[3]);
+    assert.ok(reading.clockOffsetMs > 4800 && reading.clockOffsetMs <= 5000, String(reading.clockOffsetMs));
+  }
+  // And one that says the clocks agree now is counted against that.
+  state.answer = { serverNowMs: Date.now(), clientStates: statesWith(2) };
+  await push("OnWeaponsTimerUpdate", [100, null]);
+  assert.ok(Math.abs(shown()?.clockOffsetMs ?? 9999) < 200, String(shown()?.clockOffsetMs));
 });
 
 test("a read that answers after the pilot has gone offline is not shown", async () => {
@@ -230,7 +260,7 @@ test("a level set before crimewatch was ever read has nothing to go into, and on
 // from then on (243), with nothing asked. The BFF's transport asks at the pilot's login; the page reads it once.
 
 test("a pilot that comes online has its clone grade read once, and the server's notice is the grade from then on", async () => {
-  const alpha = await online({ grade: { ok: true, available: true, cloneGrade: 0 } });
+  const alpha = await online({ grade: { result: 0 } });
   assert.deepEqual([alpha.grade(), alpha.gradeReads()], [0, 1]);
   await alpha.push("OnSubscriptionChangedServer", [1]);
   assert.deepEqual([alpha.grade(), alpha.gradeReads()], [1, 1]);
@@ -249,14 +279,14 @@ test("a pilot that comes online has its clone grade read once, and the server's 
 });
 
 test("a pilot whose connection carries no clone grade, or whose read fails, has none; and the notice still says one", async () => {
-  // The web gateway's pilot: the BFF answers that it has none to give.
-  const gateway = await online({ grade: { ok: true, available: false, cloneGrade: null } });
+  // The web gateway's pilot: its transport does not carry the call, and the page is told so.
+  const gateway = await online({ grade: "not carried" });
   assert.deepEqual([gateway.grade(), gateway.gradeReads()], [null, 1]);
   // A read that fails leaves none, and the pilot is online all the same.
-  const failed = await online({ grade: null });
+  const failed = await online({ grade: "fails" });
   assert.deepEqual([failed.grade(), failed.gradeReads(), failed.store.station.get().online?.characterID], [null, 1, PILOT]);
   await failed.push("OnSubscriptionChangedServer", [0]);
   assert.equal(failed.grade(), 0);
   // An answer that says neither grade is none.
-  for (const cloneGrade of [2, "0", true]) assert.equal((await online({ grade: { ok: true, available: true, cloneGrade } })).grade(), null, String(cloneGrade));
+  for (const cloneGrade of [2, "0", true, null]) assert.equal((await online({ grade: { result: cloneGrade } })).grade(), null, String(cloneGrade));
 });

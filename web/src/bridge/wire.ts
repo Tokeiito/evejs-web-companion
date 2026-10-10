@@ -57,8 +57,9 @@ export interface BridgeCallSuccessBody<TResult = JsonValue> {
   readonly result: TResult;
   readonly notifications: readonly BridgeNotification[];
   /**
-   * The server's clock as the pilot's session has it, in milliseconds, where the pilot is on the game port. A
-   * retail client reads its own clock, which its connection keeps set; the page is told with each answer.
+   * The server's clock, in milliseconds, with a pilot's answer: as the pilot's session has it on the game port,
+   * and the BFF's own through the web gateway. A retail client reads its own clock, which its connection keeps
+   * set; the page is told with each answer.
    */
   readonly serverNowMs?: number;
 }

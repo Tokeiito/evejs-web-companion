@@ -99,6 +99,9 @@ import { readStandings, standingComposition, standingHistory } from "../bridge/s
 import { createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
 import { createCharacterSheetReads } from "../bridge/characterSheetReads.ts";
 import { readJournal } from "../bridge/journalReads.ts";
+import { readClientStates } from "../bridge/crimewatchReads.ts";
+import { readCloneGrade } from "../bridge/cloneGradeReads.ts";
+import { decodeClientStates } from "../bridge/boundCrimewatch.ts";
 import {
   classifyStandingKind,
   decodeStandingCompositions,
@@ -1690,8 +1693,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // by the generic call, as this pilot.
   // The server's clock as the page has it: how far ahead of the browser's the last of this pilot's answers said it
   // was. A retail client's own clock is kept set by its connection; the page is told with its answers. Null until
-  // one has said, and through the web gateway none does: then the browser's own is all there is. (It is the
-  // server's clock, whichever pilot's answer said it: it is not forgotten when another pilot is chosen.)
+  // one has said: then the browser's own is all there is. (It is the server's clock, whichever pilot's answer
+  // said it: it is not forgotten when another pilot is chosen. Through the web gateway it is the BFF's own.)
   let serverClockAheadMs: number | null = null;
   const bridgeAsk = api.bridgeAsk(callOptions, (serverNowMs) => {
     serverClockAheadMs = serverNowMs - Date.now();
@@ -2837,9 +2840,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // and again at each notice and each change of place or ship. A read that
   // answers for a pilot no longer online here is not shown, and one that fails
   // leaves what was shown.
+  //
+  // The read is the service's own call, made by the page (bridge/crimewatchReads.ts).
+  // An answer with no states in it is an error: nothing is shown of a read that
+  // said nothing. Beside the states goes how far the server's clock is ahead of
+  // the browser's, which that answer has just said.
   async function loadCrimewatch(): Promise<void> {
     const characterID = store.station.get().online?.characterID ?? null;
-    const crimewatch = await api.loadCrimewatch(callOptions);
+    const answered = await readClientStates(bridgeAsk);
+    if (!Array.isArray(answered)) {
+      throw new Error("Crimewatch did not say what the pilot's timers are.");
+    }
+    const crimewatch = { states: decodeClientStates(answered), clockOffsetMs: serverNow() - Date.now() };
     if (store.station.get().online?.characterID === characterID) {
       store.apply({ type: "flight/crimewatch", crimewatch });
     }
@@ -2847,9 +2859,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // clone_grade_svc: the client asks the account's clone grade as it logs in,
   // and keeps it. The BFF's transport asked it at the pilot's login; the page
-  // reads it once as the pilot comes online. A read that fails leaves none.
+  // reads it once as the pilot comes online, with the service's own call
+  // (bridge/cloneGradeReads.ts). A read that fails leaves none, and so does a
+  // transport that does not carry the call (the web gateway).
   async function loadCloneGrade(): Promise<void> {
-    store.apply({ type: "character/clone-grade", cloneGrade: await api.loadCloneGrade(callOptions) });
+    store.apply({ type: "character/clone-grade", cloneGrade: cloneGradeOf(await readCloneGrade(bridgeAsk)) });
   }
 
   // crimewatchSvc.SetSafetyLevel: the client sets the level at the server and

@@ -4,13 +4,13 @@
 //
 // This file stands a page up in Node: a `location`, a local storage that holds the setting, a `WebSocket` and a
 // `fetch` the test answers by hand. The requests are made with the page's own two fetch sites, `requestJson`
-// (app/api.ts, by way of `loadCloneGrade`) and `callMethod` (bridge/callMethod.ts), on the page's one lane. It
+// (app/api.ts, by way of `loadSavedFittings`) and `callMethod` (bridge/callMethod.ts), on the page's one lane. It
 // has a file to itself because the page it stands up is the process's.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { loadCloneGrade, subscribeBridgeEvents } from "./api.ts";
+import { loadSavedFittings, subscribeBridgeEvents } from "./api.ts";
 import { TRANSPORT_SETTING_KEY, socketTransport } from "./pageFetch.ts";
 import { clearSessionToken, setSessionToken } from "./sessionToken.ts";
 import { MAX_IN_FLIGHT, bridgeLane } from "./transport.ts";
@@ -87,34 +87,34 @@ test("with the page set to the socket, what goes on its open line waits for no l
   // A session's first two requests go over HTTP, each on a lane; its third opens its socket, and waits on a
   // lane while the socket is made: a socket that never opens leaves it to HTTP, which needs one.
   for (let i = 0; i < 2; i += 1) {
-    const early = loadCloneGrade(mine);
+    const early = loadSavedFittings(mine);
     await tick();
     assert.deepEqual([lanes(), PageSocket.made.length], [[1, 0, 0], 0]);
     answerHttp();
     await early;
   }
-  const third = loadCloneGrade(mine);
+  const third = loadSavedFittings(mine);
   await tick();
   assert.deepEqual([lanes(), PageSocket.made.length, fetched], [[1, 0, 0], 1, 2]);
   const socket = PageSocket.made[0]!;
   assert.equal(socket.url, "ws://127.0.0.1:26500/api/socket");
   socket.onopen?.({});
   socket.say({ hello: { ok: true } });
-  assert.deepEqual(socket.frames(), [{ hello: { token: "T1" } }, { id: 1, method: "GET", path: "/api/bridge/clone-grade" }]);
+  assert.deepEqual(socket.frames(), [{ hello: { token: "T1" } }, { id: 1, method: "GET", path: "/api/bridge/fittings" }]);
   socket.say({ id: 1, status: 200, body: { ok: true } });
   await third;
   assert.deepEqual(lanes(), [0, 0, 0]);
 
   // Every lane taken by requests that cannot be carried (nobody's session: no token), and one more waiting.
-  const overHttp = Array.from({ length: MAX_IN_FLIGHT + 1 }, () => loadCloneGrade(nobody));
+  const overHttp = Array.from({ length: MAX_IN_FLIGHT + 1 }, () => loadSavedFittings(nobody));
   await tick();
   assert.deepEqual([lanes(), fetched], [[MAX_IN_FLIGHT, 1, 0], 2 + MAX_IN_FLIGHT]);
 
   // A read and a call of the session's, asked now: each is on the socket before the asking returns.
-  const read = loadCloneGrade(mine);
+  const read = loadSavedFittings(mine);
   const call = callMethod("skillMgr", "GetSkillQueue", [], null, mine);
   assert.deepEqual(socket.frames().slice(2), [
-    { id: 2, method: "GET", path: "/api/bridge/clone-grade" },
+    { id: 2, method: "GET", path: "/api/bridge/fittings" },
     { id: 3, method: "POST", path: "/api/bridge/call", body: { service: "skillMgr", method: "GetSkillQueue", args: [], kwargs: null } },
   ]);
   assert.deepEqual([lanes(), fetched], [[MAX_IN_FLIGHT, 1, 2], 2 + MAX_IN_FLIGHT], "no lane taken, nothing over HTTP, and the one waiting still waits");
@@ -126,7 +126,7 @@ test("with the page set to the socket, what goes on its open line waits for no l
 
   // A fetch handed in is not the page's, whatever the page is set to: it takes its turn for a lane.
   const handed: unknown[] = [];
-  const own = loadCloneGrade({
+  const own = loadSavedFittings({
     ...mine,
     fetch: (async (input: unknown) => {
       handed.push(input);
@@ -145,7 +145,7 @@ test("with the page set to the socket, what goes on its open line waits for no l
 
   // And a page told to go back goes back at its next request: over HTTP, in turn, though the socket is still open.
   setting = "http";
-  const back = loadCloneGrade(mine);
+  const back = loadSavedFittings(mine);
   const backCall = callMethod("skillMgr", "GetSkillQueue", [], null, mine);
   await tick();
   assert.deepEqual([lanes(), socket.sent.length, fetched], [[MAX_IN_FLIGHT, 5, 0], 4, 2 + MAX_IN_FLIGHT]);
@@ -157,7 +157,7 @@ test("with the page set to the socket, what goes on its open line waits for no l
     await tick();
   }
   await Promise.all([...overHttp, own, ownCall, back, backCall]);
-  assert.deepEqual([lanes(), handed, socket.sent.length], [[0, 0, 0], ["/api/bridge/clone-grade", "/api/bridge/call"], 4]);
+  assert.deepEqual([lanes(), handed, socket.sent.length], [[0, 0, 0], ["/api/bridge/fittings", "/api/bridge/call"], 4]);
   socketTransport()?.close();
 });
 

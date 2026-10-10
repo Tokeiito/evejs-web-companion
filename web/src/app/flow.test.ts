@@ -243,11 +243,16 @@ test("selectCharacter brings the character online and runs the three docked read
   const dockedReads = requests
     .filter((request) => request.path === "/api/bridge/call")
     .map((request) => `${request.body.service}.${request.body.method}`);
+  // The three docked reads; and beside them what the choosing reads of the pilot itself, each by the page's own
+  // call since 2026-10-10 where it was a route's: its crimewatch states and its clone's grade.
   assert.deepEqual(dockedReads.slice(1).sort(), [
+    "crimewatch.GetClientStates",
     "map.GetStationInfo",
     "station.GetGuests",
     "stationSvc.GetStationItemBits",
+    "subscriptionMgr.GetCloneGrade",
   ]);
+  assert.deepEqual(requests.map((request) => request.path).filter((path) => path === "/api/bridge/crimewatch" || path === "/api/bridge/clone-grade"), []);
   // The browser never handles the bridgeSessionID: no request body carries one.
   assert.ok(requests.every((request) => !("bridgeSessionID" in request.body)));
 });

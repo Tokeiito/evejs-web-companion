@@ -1005,13 +1005,17 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
 });
 
 /**
- * The server's clock as a pilot on the game port has it, to go with an answer: `{ serverNowMs }`, or nothing where
- * there is no such pilot or its session cannot say. A retail client's clock is kept set by its own connection. The
- * page has no connection of its own, and what it works out from the time (a skill in training, a countdown) it
- * works out from this, told with each of its pilot's answers (the plan's Phase 6b).
+ * The server's clock, to go with a pilot's answer: `{ serverNowMs }`. A retail client's clock is kept set by its own
+ * connection. The page has no connection of its own, and what it works out from the time (a skill in training, a
+ * countdown) it works out from this, told with each of its pilot's answers (the plan's Phase 6b).
+ *
+ * For a pilot on the game port it is the clock as that pilot's session has it; nothing where the session cannot
+ * say. Through the web gateway there is no such session, and it is the BFF's own clock, which is what the routes
+ * that put a time beside their answers put there. With no pilot held, nothing.
  */
 function pilotClock(held) {
-  if (!held || !isGamePortHandle(held.bridgeSessionID)) return {};
+  if (!held) return {};
+  if (!isGamePortHandle(held.bridgeSessionID)) return { serverNowMs: Date.now() };
   try {
     const serverNowMs = gamePortPilots.serverNowMs({ userid: held.accountID }, held.bridgeSessionID);
     return Number.isFinite(serverNowMs) ? { serverNowMs } : {};
