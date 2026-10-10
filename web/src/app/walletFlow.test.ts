@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 
 import { createClientStore } from "../store/clientStore.ts";
 import { createAppFlow } from "./flow.ts";
+import { bridgeAsk } from "./api.ts";
 import type { JsonValue } from "../bridge/wire.ts";
 
 function keyVal(entries: ReadonlyArray<readonly [string, JsonValue]>): JsonValue {
@@ -262,4 +263,42 @@ test("loadWallet: a FAILED read of the activity leaves it null and says why", as
   assert.match(wallet.journalError ?? "", /READ_FAILED/);
   // The personal balance survived the failure.
   assert.equal(wallet.cashBalance, "42");
+});
+
+// --- the asking itself -------------------------------------------------------
+
+test("a call the page makes for itself hands on what came with its answer, to whoever was listening when it was asked", async () => {
+  const heard: unknown[] = [];
+  let listeners = 0;
+  const sent: Array<{ url: string; body: unknown; token: string | null }> = [];
+  const answers: Array<() => unknown> = [
+    () => ({ ok: true, service: "account", method: "GetCashBalance", result: 42, notifications: [{ method: "OnAccountChange" }, { method: "OnItemChange" }] }),
+    () => ({ ok: true, service: "account", method: "GetCashBalance", result: 43 }),
+    () => ({ ok: false, error: "CALL_REFUSED", message: "Not now." }),
+  ];
+  const ask = bridgeAsk({
+    token: "the-pilot's",
+    fetch: (async (input: unknown, init?: RequestInit) => {
+      sent.push({ url: String(input), body: JSON.parse(String(init?.body)), token: (init?.headers as Record<string, string>).authorization ?? null });
+      const body = answers.shift()!();
+      return { ok: (body as { ok: boolean }).ok, status: (body as { ok: boolean }).ok ? 200 : 409, async json() { return body; } };
+    }) as unknown as typeof fetch,
+    // Taken when the call is asked, as a route's request takes it: what answers a retired pilot's call is not the next pilot's.
+    captureNotificationSink: () => {
+      const listener = (listeners += 1);
+      return (notifications) => heard.push([listener, notifications]);
+    },
+  });
+  assert.equal(await ask("account", "GetCashBalance", [0]), 42);
+  assert.deepEqual(sent, [{ url: "/api/bridge/call", body: { service: "account", method: "GetCashBalance", args: [0], kwargs: null }, token: "Bearer the-pilot's" }]);
+  assert.deepEqual(heard, [[1, [{ method: "OnAccountChange" }, { method: "OnItemChange" }]]]);
+  // An answer with nothing beside it hands on nothing, and says so.
+  assert.equal(await ask("account", "GetCashBalance", [0]), 43);
+  assert.deepEqual(heard[1], [2, []]);
+  // A call that fails fails for who asked, with its code, and hands on nothing.
+  await assert.rejects(ask("account", "GetCashBalance", [0]), (error) => (error as { code?: string }).code === "CALL_REFUSED");
+  assert.deepEqual([heard.length, listeners], [2, 3]);
+  // With nobody listening, it is just the answer.
+  const quiet = bridgeAsk({ fetch: (async () => ({ ok: true, status: 200, async json() { return { ok: true, service: "s", method: "m", result: "r", notifications: [{ method: "OnX" }] }; } })) as unknown as typeof fetch });
+  assert.equal(await quiet("s", "m", []), "r");
 });
