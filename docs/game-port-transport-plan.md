@@ -657,10 +657,21 @@ as it loads. With no pilot held, an account on the game port is refused a pilot'
 the BFF itself (`d6d3de5`), which closes the one case the tally showed of the second open
 question in section 5.
 
+**Status 2026-10-10, later still.** Measured on the default since: the training reads (the
+same on both transports), an ice site and an ore anomaly (the same but for what is left in a
+rock), and three more reads of a pilot who is online here taken off the gateway (a bot's
+start, a flown pilot's skills, and whose a character is, which now asks the account's own
+list). The whole run the loop's brief names for "done" passed twice from a cold server
+start, in the browser, on the game port: login, the docked windows, a courier mission
+accepted, a three-jump autopilot to its drop-off, the mission completed, a target locked and
+a module cycled, and logging off, with nothing of a pilot's sent to the web gateway.
+
 Not yet measured: the structure directory's reads, a fleet's parking and delivery checks, a
-training pilot's corporation fittings, the fleet's companions, the Factory and the training
-flows; and both in containers. The removals wait for the operator to have run on the
-default. The steps are at the head of the loop log's "Next".
+training pilot's corporation fittings, a fleet companion flying, the Factory's corporation
+onboarding; and both in containers. One read of an online pilot is left, the roster's
+planetary board and stock, and is the operator's to rule on (the loop log, 2026-10-10). The
+removals wait for the operator to have run on the default. The steps are at the head of the
+loop log's "Next".
 
 ### Phase 6 — Browser ↔ BFF over one WebSocket (large, mechanical; independent of 0–5)
 

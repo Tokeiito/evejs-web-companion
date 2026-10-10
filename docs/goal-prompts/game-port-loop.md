@@ -413,6 +413,16 @@ Take these defaults, and list each under "For the operator" in the log so they c
   snapshot's row against the account's list, for each character of the server's), and it
   also showed the one place they differ: what is said of a character that is not the
   account's. `owner-live.js` asks the routes that check it, with the pilot flown elsewhere.
+- **The brief's whole run, by the page's own buttons** (it passed twice on 2026-10-10; the
+  log's entry has the steps). What made it quick the second time: one call that reads the
+  docked windows by title (`.win-body`, the title in its parent; the inventory is not a
+  window but `section.stn-view`); one that presses "Start Conversation with …", "Accept",
+  "Load package into ship" and "Set autopilot to dropoff" in turn (the last undocks and
+  starts the route by itself); a poll of the Travel window's STATE until the header says
+  DOCKED; "Complete Mission"; then undock, the module by pointer events, a sentry gun's row
+  and LOCK (`.target-card` loses `acquiring` when it has locked, some twenty seconds),
+  the station's row and DOCK, and "Log out". `ab-stage.js` fits the afterburner Test Two's
+  Badger needs for it.
 - **Every pilot of every account, chosen in turn:** `every-pilot.js <scratch> <bff>
   <store.sqlite> [accounts]` (save the store first; a login brings a pilot online).
 - **Both BFFs run the code they were started on.** A change to a route's answer shows through
