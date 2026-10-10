@@ -707,9 +707,18 @@ its logout and when idle. In the browser with the setting on, a login with 25 wi
 made 45 requests over HTTP where it makes 128, and sent 92 frames; an undock and a docking
 went as frames.
 
-Not yet: the cap of four requests still holds for what is carried, the pushed notices are
-not on the socket, the setting is off unless set, and hosted bots still ask over loopback
-HTTP. Those are the next slices, in that order; the routes' HTTP carriage goes last.
+**The cap lifted for what is carried, 2026-10-10** (`ab125f2`): the page's cap of four
+requests at once is for the browser's connections, so a request that goes on the socket's
+open line is started as it is asked and holds no lane (`web/src/app/transport.ts`). What
+goes over HTTP keeps its turn, and so does a request asked while its socket is being made.
+In the browser a login had 32 requests outstanding at once where it had 5; the times were
+close (479 to 521 ms against 525 to 797 ms over HTTP, the BFF and the server on loopback).
+There is no bound on what one socket has running at once; whether there should be is for
+the slice that takes the HTTP carriage away.
+
+Not yet: the pushed notices are not on the socket, the setting is off unless set, and
+hosted bots still ask over loopback HTTP. Those are the next slices, in that order; the
+routes' HTTP carriage goes last.
 
 ---
 

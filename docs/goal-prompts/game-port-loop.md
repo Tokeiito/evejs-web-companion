@@ -439,6 +439,20 @@ Take these defaults, and list each under "For the operator" in the log so they c
   frames before choosing a pilot, and read `performance.getEntriesByType("resource")` for
   what went over HTTP. The first run of a thing in the browser is where its faults are: the
   socket's tests all passed while ten sockets stood open on the page.
+- **A login timed in the page:** `login-probe.js` in the scratchpad, pasted into the page
+  after a reload and before a pilot is chosen; `await window.__measure()` clicks the pilot's
+  hangar row and says the requests over HTTP, the frames, the most outstanding at once and
+  the time from the click to the last answer. It wraps `window.fetch` and
+  `WebSocket.prototype.send`, so it counts whichever way the page is set. Run it more than
+  once each way before saying one way is quicker: one run over HTTP took 797 ms and the
+  next 525.
+- **The breakage tool matches on LF** whatever line endings the source has: write the text
+  to find with `\n`. And do not take `file`, `sed` or `od` in Git Bash at their word
+  about a file's line endings; count `\r\n` in Node.
+- **A test that stands a page up in Node** (`web/src/app/pageCarried.test.ts`): a
+  `location`, a `localStorage`, a `WebSocket` and a `fetch` defined on `globalThis` in
+  a file of its own, since they are the process's. It is how the page's own fetch sites are
+  tested with the setting on.
 - **Every pilot of every account, chosen in turn:** `every-pilot.js <scratch> <bff>
   <store.sqlite> [accounts]` (save the store first; a login brings a pilot online).
 - **Both BFFs run the code they were started on.** A change to a route's answer shows through
