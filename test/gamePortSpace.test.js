@@ -143,7 +143,8 @@ test("a drone of the pilot's left in space with no state asks once for the whole
   assert.equal(asks(), 1);
   assert.deepEqual(state.errors.map(([what]) => what), ["drone state"]);
   assert.match(state.errors[0][1], new RegExp(`^1 of the pilot's drones .*\\(${lost}\\)`));
-  space.park.validState = true; // as if the state that was asked for had come, without the drone in it
+  // The park is not thrown away while the answer is on its way: an answer that never comes leaves the pilot flying.
+  assert.equal(space.park.validState, true);
   clock.ms = 60000;
   state.frame();
   assert.equal(asks(), 1, "the same drone does not ask again");
