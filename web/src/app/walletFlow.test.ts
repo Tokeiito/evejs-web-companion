@@ -293,7 +293,8 @@ test("a call the page makes for itself hands on what came with its answer, to wh
     },
   });
   assert.equal(await ask("account", "GetCashBalance", [0]), 42);
-  assert.deepEqual(sent, [{ url: "/api/bridge/call", body: { service: "account", method: "GetCashBalance", args: [0], kwargs: null }, token: "Bearer the-pilot's" }]);
+  // It is asked as a pilot's call: with no pilot held the BFF says so, and does not take it for the account's.
+  assert.deepEqual(sent, [{ url: "/api/bridge/call", body: { service: "account", method: "GetCashBalance", args: [0], kwargs: null, pilot: true }, token: "Bearer the-pilot's" }]);
   assert.deepEqual(heard, [[1, [{ method: "OnAccountChange" }, { method: "OnItemChange" }]]]);
   // An answer with nothing beside it hands on nothing, and says so.
   assert.equal(await ask("account", "GetCashBalance", [0]), 43);

@@ -957,6 +957,11 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
     });
     return;
   }
+  // A call the page makes for a pilot, in place of a route that needed one held (the plan's Phase 6b): with none
+  // held it is refused as that route refused, and is not taken for the account's.
+  if (body.pilot === true && !requireHeldBridgeSession(req, res)) {
+    return;
+  }
   const clientSessionFields = pickSafeBrowserSessionFields(body.session);
   // When this web session holds a persistent bridge session (goal R2), every
   // bridge call runs on that live session — one web login is one client

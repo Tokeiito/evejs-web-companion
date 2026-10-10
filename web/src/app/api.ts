@@ -7,7 +7,7 @@
 // in its cookie-session store and attaches it to bridge calls itself.
 
 import { BridgeCallError, callMethod } from "../bridge/callMethod.ts";
-import type { Ask } from "../bridge/walletReads.ts";
+import type { Ask } from "../bridge/ask.ts";
 import { decodeBoundDogma, type BoundDogma } from "../bridge/boundDogma.ts";
 import { observeDeferredShutdown } from "../bridge/moduleShutdown.ts";
 import { decodeNameValidation, decodeValidRandomName } from "../bridge/charAccount.ts";
@@ -2418,65 +2418,24 @@ export type { RawWalletReads } from "../bridge/walletReads.ts";
  * One call of the server's, asked by the generic route (bridge/callMethod.ts)
  * with a flow's own options: its token, its fetch, its guard. The answer is the
  * call's result; the notifications that came with it are handed on, as a
- * route's answer's are.
+ * route's answer's are. It is asked as a pilot's call: where the BFF holds no
+ * pilot for the session it says so, as the route this asking stands in for did.
  */
 export function bridgeAsk(options: ApiOptions = {}): Ask {
   return async (service, method, args) => {
     const notificationSink = options.captureNotificationSink?.();
-    const outcome = await callMethod(service, method, args, null, options);
+    // (The options are read as they stand now: a flow's token is another one after another pilot is chosen.)
+    const outcome = await callMethod(service, method, args, null, { ...options, pilot: true });
     notificationSink?.(outcome.notifications as unknown as readonly JsonValue[]);
     return outcome.result;
   };
 }
 
 // --- R55 Standings ----------------------------------------------------------
-// One pull carries the character's own standings (standingMgr.GetCharStandings)
-// and the corporation's (standingMgr.GetCorpStandings). Passing `fromID` also
-// asks for that entity's drill-down — the standing HISTORY
-// (GetStandingTransactions) and the per-member COMPOSITION
-// (GetStandingCompositions). All raw retail shapes, decoded in
-// web/src/bridge/standings.ts.
-
-export interface RawStandingsReads {
-  readonly char: JsonValue;
-  readonly corp: JsonValue;
-  /** Echoed selected entity for the drill-down; null on the base read. */
-  readonly fromID: number | null;
-  readonly transactions: JsonValue;
-  readonly compositions: JsonValue;
-  readonly errors: {
-    readonly char: string | null;
-    readonly corp: string | null;
-    readonly transactions: string | null;
-    readonly compositions: string | null;
-  };
-}
-
-/** The character + corporation standings (and, when `fromID` is given, that
- *  entity's history + composition). Raw retail shapes, decoded in the flow. */
-export async function loadStandings(
-  fromID: number | null = null,
-  options: ApiOptions = {},
-): Promise<RawStandingsReads> {
-  const query = fromID && fromID > 0 ? `?fromID=${encodeURIComponent(String(fromID))}` : "";
-  const data = await getJson(`/api/bridge/standings${query}`, options);
-  const errors = (data.errors ?? {}) as Record<string, JsonValue>;
-  const errorText = (key: string): string | null =>
-    typeof errors[key] === "string" ? (errors[key] as string) : null;
-  return {
-    char: data.char ?? null,
-    corp: data.corp ?? null,
-    fromID: asNumberOrNull(data.fromID),
-    transactions: data.transactions ?? null,
-    compositions: data.compositions ?? null,
-    errors: {
-      char: errorText("char"),
-      corp: errorText("corp"),
-      transactions: errorText("transactions"),
-      compositions: errorText("compositions"),
-    },
-  };
-}
+// The standings' reads are made by the page itself, call by call, as the
+// client's standings service and its panel make them (bridge/standingsReads.ts;
+// the plan's Phase 6b). Until 2026-10-10 they were one route's
+// (GET /api/bridge/standings).
 
 // --- R56 Character Sheet ----------------------------------------------------
 // One pull carries four independent charMgr reads: GetPublicInfo3 (identity),

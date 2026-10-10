@@ -235,6 +235,12 @@ test("each read fails by itself, with why; and a session that is lost is said, w
   for (const pair of Object.keys(ANSWERS)) {
     await assert.rejects(one(pair, lost), (error) => error === lost, pair);
   }
+  // So is whatever else is nobody's own failure (bridge/ask.ts): the BFF holding no pilot, the BFF not reached, the
+  // flow moved on to another pilot. A route's request failed as a whole for each of them.
+  for (const code of ["NO_LIVE_SESSION", "BRIDGE_NETWORK_ERROR", "SESSION_REQUEST_RETIRED"]) {
+    const gone = failing(code);
+    await assert.rejects(one("account.GetTransactions", gone), (error) => error === gone, code);
+  }
 });
 
 test("the pilot's own ISK alone is one call, asked of the server each time: a guard's asking, kept by nobody", async () => {

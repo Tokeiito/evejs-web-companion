@@ -42,10 +42,10 @@
 //
 // THE ROUTE STILL STANDS (src/server.js). Nothing of the page's asks it now.
 
+import { failsTheReading, failureCode as codeOf, type Ask } from "./ask.ts";
 import type { JsonValue } from "./wire.ts";
 
-/** One call of the server's, by its service and method, answered with its result. Fails as the call fails. */
-export type Ask = (service: string, method: string, args: readonly JsonValue[]) => Promise<JsonValue>;
+export type { Ask } from "./ask.ts";
 
 /** The wallet's five reads as the server answered them, each with why it failed where it did (decoded in bridge/wallet.ts). */
 export interface RawWalletReads {
@@ -66,8 +66,9 @@ export interface RawWalletReads {
 
 export interface WalletReads {
   /**
-   * The whole wallet, from what is kept and by asking for what is not, each read failing by itself. Fails only
-   * where the pilot's session is lost. `fresh`: everything but the entry kinds is asked for again.
+   * The whole wallet, from what is kept and by asking for what is not, each read failing by itself. Fails as a
+   * whole only for what fails a whole reading (bridge/ask.ts). `fresh`: everything but the entry kinds is asked
+   * for again.
    */
   read(how?: { readonly fresh?: boolean }): Promise<RawWalletReads>;
   /** The pilot's own ISK and nothing else, asked of the server now. */
@@ -92,7 +93,6 @@ export interface WalletDeps {
 const ACCOUNTING_KEY_CASH = 1000;
 /** A corporation has seven wallet divisions. */
 const CORP_DIVISION_COUNT = 7;
-const SESSION_NOT_FOUND = "SESSION_NOT_FOUND";
 /** accountsvc.py 135: the corporation's divisions are good for five minutes. */
 const DIVISIONS_KEPT_MS = 5 * 60_000;
 /** The server's names for the accounts it says have changed (walletSvc.py 82): a character's ISK is the first; a corporation has all seven. */
@@ -127,12 +127,6 @@ function keptOnce(askIt: () => Promise<JsonValue>): Kept {
       held = Promise.resolve(value);
     },
   };
-}
-
-/** Why a read failed, in the code its failure carries. */
-function codeOf(reason: unknown): string {
-  const code = reason !== null && typeof reason === "object" ? (reason as { code?: unknown }).code : undefined;
-  return typeof code === "string" && code !== "" ? code : "READ_FAILED";
 }
 
 /**
@@ -197,9 +191,10 @@ export function createWalletReads(ask: Ask, deps: WalletDeps = {}): WalletReads 
         kinds.read(),
       ]);
       const reads = [balance, divisions, corporation, transactions, entryTypes];
-      // No read can make up for a session that is lost: said, so that the page goes back to choosing a pilot.
+      // No read can make up for a pilot that is gone, or for a BFF that was not reached (bridge/ask.ts): said,
+      // so that the page goes back to choosing a pilot, or tries again.
       for (const each of reads) {
-        if (each.status === "rejected" && codeOf(each.reason) === SESSION_NOT_FOUND) throw each.reason;
+        if (each.status === "rejected" && failsTheReading(each.reason)) throw each.reason;
       }
       const value = (each: PromiseSettledResult<JsonValue>): JsonValue => (each.status === "fulfilled" ? each.value ?? null : null);
       const failure = (each: PromiseSettledResult<JsonValue>): string | null => (each.status === "rejected" ? codeOf(each.reason) : null);

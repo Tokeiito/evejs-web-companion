@@ -33,6 +33,11 @@ export interface BridgeCallRequestBody {
   readonly args: CallArgs;
   readonly kwargs: CallKwargs;
   readonly session?: SessionFields;
+  /**
+   * The call is a pilot's: one the page makes in place of a route that needed a pilot held. With none held, the
+   * BFF says so (NO_LIVE_SESSION), as that route did, and does not take the call for the account's.
+   */
+  readonly pilot?: true;
 }
 
 // --- Response envelopes ----------------------------------------------------

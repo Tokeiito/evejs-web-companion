@@ -95,6 +95,7 @@ import {
   normalizeDivisionNames,
 } from "../bridge/wallet.ts";
 import { createWalletReads } from "../bridge/walletReads.ts";
+import { readStandings, standingComposition, standingHistory } from "../bridge/standingsReads.ts";
 import {
   classifyStandingKind,
   decodeStandingCompositions,
@@ -1682,9 +1683,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
   };
 
+  // What the page asks of the server for itself, in place of a route (the plan's Phase 6b): one call at a time,
+  // by the generic call, as this pilot.
+  const bridgeAsk = api.bridgeAsk(callOptions);
   // The wallet's reads, asked call by call as the client's wallet and account services ask them
   // (bridge/walletReads.ts), with what those services keep kept for this pilot.
-  const walletReads = createWalletReads(api.bridgeAsk(callOptions));
+  const walletReads = createWalletReads(bridgeAsk);
 
   let pilotRecoveryEnabled = options.browserPilotRecovery === true;
   const recoverySignal = createSignal<DroneRecoveryState>({ phase: pilotRecoveryEnabled ? "checking" : "ready", reason: null });
@@ -4681,7 +4685,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // resolved to a name through /api/names. The `agent` kind is asked for
   // explicitly: the generic `owner` kind does not resolve agents.
   async function loadStandings(): Promise<void> {
-    const reads = await api.loadStandings(null, callOptions);
+    const online = store.station.get().online;
+    const reads = await readStandings(bridgeAsk, { characterID: online?.characterID ?? null, corporationID: online?.corporationID ?? null });
     const charFailed = reads.errors.char !== null;
     const corpFailed = reads.errors.corp !== null;
     const char = charFailed ? null : decodeCharStandings(reads.char);
@@ -4706,8 +4711,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // R55 — the drill-down for one selected entity. A char row shows its standing
   // HISTORY (GetStandingTransactions); a corp row shows the per-member breakdown
-  // (GetStandingCompositions). The BFF issues both for the fromID; the panel
-  // reads the one matching `scope`. A composition's ownerID is a corp member, so
+  // (GetStandingCompositions). The one the row wants is asked for, of the pilot
+  // or of its corporation, as the client's panel asks (standingsPanel.py 86); the
+  // route asked for both. A composition's ownerID is a corp member, so
   // it is resolved as a name too (R7d), degrading to "Unknown entity".
   async function loadStandingDetail(
     fromID: number,
@@ -4716,9 +4722,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (!(fromID > 0)) {
       return;
     }
-    let reads: Awaited<ReturnType<typeof api.loadStandings>>;
+    const online = store.station.get().online;
+    const toID = scope === "char" ? online?.characterID ?? null : online?.corporationID ?? null;
+    let read: JsonValue;
     try {
-      reads = await api.loadStandings(fromID, callOptions);
+      if (toID === null) {
+        throw new Error(scope === "char" ? "No pilot is chosen." : "The pilot's corporation is not known.");
+      }
+      read = scope === "char" ? await standingHistory(bridgeAsk, fromID, toID) : await standingComposition(bridgeAsk, fromID, toID);
     } catch (error) {
       if (isSessionLost(error)) {
         throw error;
@@ -4727,24 +4738,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         type: "standings/detail-error",
         fromID,
         scope,
-        message: errorWords(error),
+        // A call that failed says why by its code, as the route said of a read; anything else in its own words.
+        message: error instanceof BridgeCallError ? error.code : errorWords(error),
       });
       return;
     }
-    const failed =
-      scope === "char" ? reads.errors.transactions : reads.errors.compositions;
-    if (failed !== null) {
-      store.apply({ type: "standings/detail-error", fromID, scope, message: failed });
-      return;
-    }
-    const compositions =
-      scope === "corp" ? decodeStandingCompositions(reads.compositions) : null;
+    const compositions = scope === "corp" ? decodeStandingCompositions(read) : null;
     store.apply({
       type: "standings/detail",
       fromID,
       scope,
-      transactions:
-        scope === "char" ? decodeStandingTransactions(reads.transactions) : null,
+      transactions: scope === "char" ? decodeStandingTransactions(read) : null,
       compositions,
     });
     // Name a composition's corp-member owners (R7d): they are player characters,

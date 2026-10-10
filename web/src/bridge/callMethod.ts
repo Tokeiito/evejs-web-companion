@@ -54,6 +54,8 @@ export interface CallMethodOptions {
   /** R92 — lane priority; defaults to "read". See app/transport.ts. */
   readonly priority?: RequestPriority;
   readonly captureRequestGuard?: () => () => void;
+  /** The call is a pilot's (wire.ts, BridgeCallRequestBody.pilot): with no pilot held it is refused as NO_LIVE_SESSION. */
+  readonly pilot?: boolean;
 }
 
 /** Client-side (non-server) failure codes, alongside the wire's BridgeErrorCode set. */
@@ -131,6 +133,7 @@ export async function callMethod<TResult = JsonValue>(
     args,
     kwargs,
     ...(options.session ? { session: options.session } : {}),
+    ...(options.pilot === true ? { pilot: true as const } : {}),
   };
 
   let response: Response;

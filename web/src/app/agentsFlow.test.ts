@@ -902,7 +902,7 @@ interface PushSource {
 async function listening(
   answers: Record<string, ReturnType<typeof conversationWith>>,
   /** `routes` answers a path before anything here does: [status, body], or undefined to leave it to what is here. */
-  options: { journal?: boolean; routes?: (path: string) => Promise<[number, unknown] | undefined> | [number, unknown] | undefined } = {},
+  options: { journal?: boolean; routes?: (path: string, body: Record<string, unknown>) => Promise<[number, unknown] | undefined> | [number, unknown] | undefined } = {},
 ) {
   const store = createClientStore();
   const requests: Recorded[] = [];
@@ -924,7 +924,7 @@ async function listening(
     requests.push({ path, method: (init && init.method) || "GET", body });
     let status = 200;
     let answer: unknown = { ok: true };
-    const routed = options.routes ? await options.routes(path) : undefined;
+    const routed = options.routes ? await options.routes(path, body) : undefined;
     if (routed !== undefined) {
       [status, answer] = routed;
     } else if (path === "/api/bridge/call") {
@@ -1497,7 +1497,7 @@ async function withMissionPage() {
     standingsFail: false,
   };
   const made = await listening({ null: ACCEPTED }, {
-    routes: async (path) => {
+    routes: async (path, body) => {
       if (/\/mission-objectives$/.test(path)) {
         if (page.hold) await page.hold;
         return page.objectiveFails ? [409, { ok: false, error: "CALL_REFUSED", message: "The agent has nothing to say of it." }] : [200, { ok: true, agentID: 3008416, objective: page.objective, notifications: [] }];
@@ -1507,27 +1507,36 @@ async function withMissionPage() {
       }
       if (/\/keywords\?/.test(path)) return [200, { ok: true, keywords: { type: "dict", entries: [["objectiveQuantity", 1]] }, notifications: [] }];
       if (/\/record$/.test(path)) return page.agentFails ? [502, { ok: false, error: "UNREACHABLE", message: "No answer." }] : [200, { ok: true, agent: page.agent }];
-      if (path === "/api/bridge/standings") {
-        return page.standingsFail
-          ? [502, { ok: false, error: "UNREACHABLE", message: "No answer." }]
-          : [200, { ok: true, char: STANDINGS_ROWSET, corp: null, transactions: null, compositions: null, errors: { char: null, corp: null, transactions: null, compositions: null } }];
+      // The pilot's standings, asked by the page itself (bridge/standingsReads.ts). The pilot is in an NPC
+      // corporation, so its corporation's are not asked for at all.
+      if (path === "/api/bridge/call" && body.service === "standingMgr") {
+        // (Failing, the BFF is not reached at all: the reading fails as a whole, as the route's request did.)
+        if (page.standingsFail) throw new TypeError("fetch failed");
+        return [200, { ok: true, service: body.service, method: body.method, result: body.method === "GetCharStandings" ? STANDINGS_ROWSET : null, notifications: [] }];
       }
       return undefined;
     },
   });
   /** What was asked for the page, in the order it was asked. */
   const pageAsked = () => made.requests.map((request) => request.path).filter((path) => /mission-objectives|client-data|keywords/.test(path));
-  return { ...made, page, pageAsked };
+  /** The calls made of the standings' service, each as service.method(args). */
+  const standingsAsked = () => made.requests.filter((request) => request.path === "/api/bridge/call" && request.body.service === "standingMgr")
+    .map((request) => `${String(request.body.service)}.${String(request.body.method)}(${JSON.stringify(request.body.args).slice(1, -1)})`);
+  return { ...made, page, pageAsked, standingsAsked };
 }
 
 test("Read Details opens the mission's page: one read of the agent's object, the mission's keywords, and the client's own record", async () => {
-  const { store, flow, requests, pageAsked } = await withMissionPage();
+  const { store, flow, requests, pageAsked, standingsAsked } = await withMissionPage();
   await flow.openMissionDetails(3008416);
   await until(() => store.agents.get().missionPage?.record != null);
   assert.deepEqual(pageAsked().sort(), ["/api/bridge/agents/3008416/keywords?contentID=1382", "/api/bridge/agents/3008416/mission-objectives", "/api/client-data/missions/1382"]);
-  // Reads, all of them: nothing is asked of the agent that changes anything. (Names are asked for by POST, and change nothing.)
-  assert.deepEqual([...new Set(requests.filter((request) => request.path !== "/api/names").map((request) => request.method))], ["GET"]);
-  assert.deepEqual(requests.filter((request) => request.method !== "GET").map((request) => request.path).filter((path) => path !== "/api/names"), []);
+  // Reads, all of them: nothing is asked of the agent that changes anything. (Names are asked for by POST, and change
+  // nothing; so is the page's own call for the pilot's standings, which the generic call would refuse were it a write.)
+  const unread = (path: string): boolean => path !== "/api/names" && path !== "/api/bridge/call";
+  assert.deepEqual([...new Set(requests.filter((request) => unread(request.path)).map((request) => request.method))], ["GET"]);
+  assert.deepEqual(requests.filter((request) => request.method !== "GET").map((request) => request.path).filter(unread), []);
+  assert.deepEqual(requests.filter((request) => request.path === "/api/bridge/call").map((request) => `${String(request.body.service)}.${String(request.body.method)}`), ["standingMgr.GetCharStandings"]);
+  assert.deepEqual(standingsAsked(), ["standingMgr.GetCharStandings()"]);
   // And what the client's agents service knows of the agent, for its card.
   assert.deepEqual(requests.map((request) => request.path).filter((path) => path.endsWith("/record")), ["/api/bridge/agents/3008416/record"]);
   const held = store.agents.get().missionPage;
@@ -1843,24 +1852,25 @@ test("what the client knows of an agent is asked for once, kept by its ID, and a
 });
 
 test("opening a mission's page reads the pilot's standings and skills if they have not been read, and not again once they have", async () => {
-  const { store, flow, requests } = await withMissionPage();
+  const { store, flow, requests, standingsAsked } = await withMissionPage();
   const reads = (path: string) => requests.filter((request) => request.path === path).length;
   assert.equal(store.standings.get().loaded, false);
   await flow.openMissionDetails(3008416);
   await until(() => store.standings.get().loaded);
-  assert.equal(reads("/api/bridge/standings"), 1);
+  // The character's, and not its corporation's: an NPC corporation's standings are none (standingsvc.py 118).
+  assert.deepEqual(standingsAsked(), ["standingMgr.GetCharStandings()"]);
   assert.equal(reads("/api/bridge/skills"), 1);
   assert.deepEqual(store.standings.get().char, [{ fromID: 1000002, standing: 3.5 }, { fromID: 3008416, standing: -0.5 }]);
   // Opened again: the standings are held, and are not read again.
   flow.closeMissionDetails();
   await flow.openMissionDetails(3008416);
   await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(reads("/api/bridge/standings"), 1);
+  assert.equal(standingsAsked().length, 1);
 });
 
 test("told the pilot's standings changed, the flow changes what it holds from what it was told, and reads nothing", async () => {
-  const { store, flow, requests, push } = await withMissionPage();
-  const reads = () => requests.filter((request) => request.path === "/api/bridge/standings").length;
+  const { store, flow, push, standingsAsked } = await withMissionPage();
+  const reads = () => standingsAsked().length;
   // Before they have been read there is nothing to change.
   await push("OnStandingSet", [1000002, LISTENING_PILOT, 4.0]);
   assert.equal(store.standings.get().char, null);
@@ -1888,8 +1898,8 @@ test("told the pilot's standings changed, the flow changes what it holds from wh
 });
 
 test("standings that could not be read leave the page as it is, and are tried again when it is next opened", async () => {
-  const { store, flow, requests, page } = await withMissionPage();
-  const reads = () => requests.filter((request) => request.path === "/api/bridge/standings").length;
+  const { store, flow, page, standingsAsked } = await withMissionPage();
+  const reads = () => standingsAsked().length;
   page.standingsFail = true;
   await flow.openMissionDetails(3008416);
   await until(() => reads() === 1);

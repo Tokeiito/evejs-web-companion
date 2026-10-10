@@ -1401,8 +1401,8 @@ export interface StandingTransaction {
 }
 
 /**
- * The Standings page (goal R55). Two lists read from one BFF pull
- * (/api/bridge/standings): the character's own standings toward NPC entities
+ * The Standings page (goal R55). Two lists, each read with its own call
+ * (bridge/standingsReads.ts): the character's own standings toward NPC entities
  * (standingMgr.GetCharStandings) and the character's CORPORATION's standings
  * (standingMgr.GetCorpStandings). Each keeps its own error so one failed read
  * never blanks the other. A `fromID` is ALWAYS resolved to a name (R7d) — the

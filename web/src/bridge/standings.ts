@@ -1,7 +1,8 @@
 // Standings reads decoded to plain rows (goal R55).
 //
-// GET /api/bridge/standings returns the raw retail-shaped reads the retail
-// standings panel issues (eve/client/.../neocom/charsheet/standingsPanel):
+// The page asks for them itself (bridge/standingsReads.ts), as the retail
+// standings service and its panel ask
+// (eve/client/.../neocom/charsheet/standingsPanel):
 //   • standingMgr.GetCharStandings — "NPCs to my character"
 //   • standingMgr.GetCorpStandings — "NPCs to my corporation"
 //   • standingMgr.GetStandingTransactions(fromID, toID) — a char row's HISTORY

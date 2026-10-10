@@ -584,6 +584,19 @@ test("the agents' table and journal, and the standings, are asked with nothing, 
   }
 });
 
+test("a standing's detail is asked of an entity and of whose standing it is: two IDs, as the client asks, and anything else is said to differ", () => {
+  for (const [method, line] of [["GetStandingTransactions", 178], ["GetStandingCompositions", 283]]) {
+    const form = retailForm("standingMgr", method, [500001, 140000005], null);
+    assert.deepEqual([form.status, form.args, form.kwargs, form.moniker, form.source], ["same", [500001, 140000005], null, false, `eve/client/script/ui/services/standingsvc.py:${line}`], method);
+    // One ID, three, one that is no ID, or a keyword: sent as given, and not counted as the client's.
+    for (const [args, kwargs] of [[[500001], null], [[500001, 140000005, 1], null], [[500001, "140000005"], null], [[0, 140000005], null], [[500001, 1.5], null], [[500001, 140000005], { toID: 1 }]]) {
+      const odd = retailForm("standingMgr", method, args, kwargs);
+      assert.deepEqual([odd.status, odd.args, odd.kwargs], ["differs", args, kwargs], `${method} ${JSON.stringify([args, kwargs])}`);
+      assert.match(odd.note, /two IDs/);
+    }
+  }
+});
+
 test("the services the client reaches with sm.ProxySvc are called at its proxy node, and no others", () => {
   // Every sm.ProxySvc('<name>') of the decompiled client. A service among them is asked no other way.
   assert.deepEqual([...PROXY_SERVICES].sort(), ["XmppChatMgr", "alert", "bountyProxy", "calendarProxy", "clientStatLogger", "contractProxy", "corpRecProxy", "eventLog", "fleetProxy", "machoNet", "marketProxy", "pingService", "raffleProxy", "search"]);

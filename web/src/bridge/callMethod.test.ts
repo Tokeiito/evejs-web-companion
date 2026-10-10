@@ -185,3 +185,15 @@ test("non-JSON and malformed envelopes reject with BRIDGE_BAD_RESPONSE", async (
       error instanceof BridgeCallError && error.code === "BRIDGE_BAD_RESPONSE",
   );
 });
+
+test("a call made for a pilot says it is one, and no other call does", async () => {
+  const { fetch, requests } = stubFetch(() => jsonResponse({ ok: true, service: "account", method: "GetCashBalance", result: 42, notifications: [] }));
+  await callMethod("account", "GetCashBalance", [0], null, { fetch, pilot: true });
+  await callMethod("account", "GetCashBalance", [0], null, { fetch, pilot: false });
+  await callMethod("account", "GetCashBalance", [0], null, { fetch });
+  assert.deepEqual(requests.map((request) => request.body), [
+    { service: "account", method: "GetCashBalance", args: [0], kwargs: null, pilot: true },
+    { service: "account", method: "GetCashBalance", args: [0], kwargs: null },
+    { service: "account", method: "GetCashBalance", args: [0], kwargs: null },
+  ]);
+});

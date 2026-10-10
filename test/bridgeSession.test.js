@@ -970,6 +970,35 @@ test("an agent's record is its row of the agents table, with its corporation's f
   assert.equal(calls.filter((call) => call.method === "GetAgents").length, 1);
 });
 
+// ── A call the page makes for a pilot (POST /api/bridge/call, pilot: true) ───
+
+test("a call said to be a pilot's is refused where no pilot is held, as a route that needed one refused; held, it is made on the pilot's session", async () => {
+  const gateway = fakeGateway();
+  const accountCalls = [];
+  gateway.accountCall = async (service, method) => { accountCalls.push(`${service}.${method}`); return { service, method, result: "the account's", notifications: [] }; };
+  const { baseUrl } = await startTestServer({ gateway });
+  const call = (more) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "account", method: "GetCashBalance", args: [0], kwargs: null, ...more } });
+
+  // No pilot: the page's own call for one is told so, with the route's own words, and nothing is asked of anything.
+  const refused = await call({ pilot: true });
+  const route = await apiRequest(baseUrl, "/api/bridge/wallet");
+  assert.deepEqual([refused.response.status, refused.payload], [route.response.status, route.payload]);
+  assert.deepEqual([refused.response.status, refused.payload.error], [409, "NO_LIVE_SESSION"]);
+  assert.deepEqual(accountCalls, []);
+  // Not said to be a pilot's, it is the account's call, as before. Only `true` says it.
+  for (const more of [{}, { pilot: false }, { pilot: "yes" }, { pilot: 1 }]) assert.equal((await call(more)).response.status, 200, JSON.stringify(more));
+  assert.equal(accountCalls.length, 4);
+
+  // A pilot held: made on its session.
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const before = gateway.calls.call.length;
+  const made = await call({ pilot: true });
+  assert.equal(made.response.status, 200, JSON.stringify(made.payload));
+  assert.equal(accountCalls.length, 4);
+  assert.equal(gateway.calls.call.length, before + 1);
+  assert.deepEqual([gateway.calls.call.at(-1).service, gateway.calls.call.at(-1).method], ["account", "GetCashBalance"]);
+});
+
 // ── The wallet (GET /api/bridge/wallet) ──────────────────────────────────────
 
 test("the wallet reads what the retail client reads: no journal by any other call, and the transactions with False for the pilot's own", async () => {

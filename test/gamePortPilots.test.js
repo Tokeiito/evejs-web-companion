@@ -7134,3 +7134,58 @@ test("where godma cannot be primed again, the snapshot is still given and the sh
   assert.equal(asked(), 3);
   assert.deepEqual(hand.errors, []);
 });
+
+// ── the standings' two lists, asked for by name ──────────────────────────────
+//
+// The page shows the standings by asking for them itself (web/src/bridge/standingsReads.ts). The client's panel
+// reads its standings service, which asked when the character was chosen and does not ask again.
+
+test("the character's standings and its corporation's, asked for by name, are answered from what is kept: nothing is sent", async () => {
+  const pairs = { allowed: new Set(["standingMgr.GetCharStandings", "standingMgr.GetCorpStandings"]) };
+  const { pilots, session, handle } = await selected({ answers: STANDING_ANSWERS, corpid: PLAYER_CORP }, pairs);
+  const ask = (method, args = []) => pilots.callMethod("standingMgr", method, args, null, WHOSE, handle);
+  assert.deepEqual(standingCalls(session), ["GetNPCNPCStandings", "GetCharStandings", "GetCorpStandings"]);
+  const kept = await pilots.standingsKept(WHO, handle);
+  const [char, corp] = [await ask("GetCharStandings"), await ask("GetCorpStandings")];
+  // The same thing the route is handed, in the same form; and three at once are three answers of one keeping.
+  assert.deepEqual([char.result, corp.result], [kept.char, kept.corp]);
+  assert.deepEqual([char.service, char.method, standingRows(char.result), standingRows(corp.result)], ["standingMgr", "GetCharStandings", CHAR_ROWS, CORP_ROWS]);
+  await Promise.all([ask("GetCharStandings"), ask("GetCharStandings"), ask("GetCorpStandings")]);
+  assert.deepEqual(standingCalls(session), ["GetNPCNPCStandings", "GetCharStandings", "GetCorpStandings"]);
+  assert.deepEqual(["GetCharStandings", "GetCorpStandings"].map((method) => ledgerOf(pilots, `standingMgr.${method}`)[0]), [{ same: 1 }, { same: 1 }]);
+  // What the server has said since is in the answer, with nothing asked.
+  session.notify("OnStandingSet", [1000125, PILOT, 3.5]);
+  const after = await ask("GetCharStandings");
+  assert.equal(new Map(standingRows(after.result)).get(1000125), 3.5);
+  assert.equal(standingCalls(session).length, 3);
+  // And what it said is handed on with the answer, as with any call's.
+  assert.deepEqual(after.notifications.map((notification) => notification.method), ["OnStandingSet"]);
+  // Asked with anything, it is not the service's own asking: sent, as any call is.
+  await ask("GetCharStandings", [1]);
+  await pilots.callMethod("standingMgr", "GetCorpStandings", [], { anything: 1 }, WHOSE, handle);
+  assert.deepEqual(standingCalls(session).slice(3), ["GetCharStandings", "GetCorpStandings"]);
+
+  // A pilot in an NPC corporation: its corporation's are none, and are not asked of the server by this either.
+  const npc = await selected({ answers: STANDING_ANSWERS }, pairs);
+  assert.equal((await npc.pilots.callMethod("standingMgr", "GetCorpStandings", [], null, WHOSE, npc.handle)).result, null);
+  assert.deepEqual(standingCalls(npc.session), ["GetNPCNPCStandings", "GetCharStandings"]);
+  // It joins a player's corporation, and the standings are read again: asked for meanwhile, the answer waits for
+  // that reading and is of it.
+  npc.session.attributes.corpid = PLAYER_CORP;
+  npc.session.change({ corpid: [1000044, PLAYER_CORP] });
+  assert.deepEqual(standingRows((await npc.pilots.callMethod("standingMgr", "GetCorpStandings", [], null, WHOSE, npc.handle)).result), CORP_ROWS);
+  assert.deepEqual(standingCalls(npc.session).slice(2), ["GetNPCNPCStandings", "GetCharStandings", "GetCorpStandings"]);
+});
+
+test("where nothing of the standings is kept, they are asked of the server as any call is", async () => {
+  const pairs = { allowed: new Set(["standingMgr.GetCharStandings", "standingMgr.GetCorpStandings"]) };
+  let fails = true;
+  const { pilots, session, handle } = await selected({ answers: { ...STANDING_ANSWERS, "standingMgr.GetCharStandings": (...given) => { if (fails) throw sessionError("CALL_TIMEOUT", "standingMgr.GetCharStandings got no answer"); return typeof STANDING_ANSWERS["standingMgr.GetCharStandings"] === "function" ? STANDING_ANSWERS["standingMgr.GetCharStandings"](...given) : STANDING_ANSWERS["standingMgr.GetCharStandings"]; } } }, pairs);
+  // The reading at the choosing failed: nothing is kept.
+  assert.equal(await pilots.standingsKept(WHO, handle), null);
+  const before = standingCalls(session).length;
+  fails = false;
+  const asked = await pilots.callMethod("standingMgr", "GetCharStandings", [], null, WHOSE, handle);
+  assert.deepEqual(standingRows(asked.result), CHAR_ROWS);
+  assert.equal(standingCalls(session).length, before + 1);
+});

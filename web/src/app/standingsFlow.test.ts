@@ -1,8 +1,11 @@
-// loadStandings + loadStandingDetail (goal R55) against the raw
-// /api/bridge/standings envelope. The BFF ships the character's own standings
-// (standingMgr.GetCharStandings) and the corporation's
-// (standingMgr.GetCorpStandings) as raw retail Rowsets; the flow decodes them and
+// loadStandings + loadStandingDetail (goal R55). The page asks the standings'
+// calls itself, by the generic call (bridge/standingsReads.ts; the plan's Phase
+// 6b): the character's own standings (standingMgr.GetCharStandings) and the
+// corporation's (standingMgr.GetCorpStandings), raw retail Rowsets; and for an
+// entity opened, its history or its composition. The flow decodes them and
 // — the crux — RESOLVES every entity `fromID` to a name by its classified kind.
+// Each test describes the answers and their failures; the stand-in for the BFF
+// answers each call from that.
 //
 // ⚠ R7d is the invariant under test: the flow must ask /api/names for each
 // fromID under the RIGHT kind (faction / corporation / agent by id range). An
@@ -93,20 +96,46 @@ const CHAR_ROWS: ReadonlyArray<readonly [number, number]> = [
 interface StandingsBody {
   readonly char?: JsonValue;
   readonly corp?: JsonValue;
-  readonly fromID?: number | null;
   readonly transactions?: JsonValue;
   readonly compositions?: JsonValue;
+  /** Why each call fails, where it does. */
   readonly errors?: Record<string, string | null>;
+  /** The pilot the session is of, once one is chosen. */
+  readonly pilot?: { readonly characterID: number; readonly corporationID: number | null };
 }
 
-// A fetch that answers /api/bridge/standings (base + drill-down) and captures the
-// /api/names request bodies so the classification can be asserted.
+const PILOT = { characterID: 140000005, corporationID: 98000001 };
+
+// A fetch that answers the standings' four calls by the generic call, and the choosing of a pilot; it captures
+// the /api/names request bodies so the classification can be asserted, and what was asked of the standings' service.
 function standingsFetch(
   body: StandingsBody,
   nameRequests: { kind: string; id: number }[] = [],
+  asked: string[] = [],
 ): typeof fetch {
+  const answers: Record<string, readonly [JsonValue, string | null | undefined]> = {
+    GetCharStandings: [body.char ?? null, body.errors?.char],
+    GetCorpStandings: [body.corp ?? null, body.errors?.corp],
+    GetStandingTransactions: [body.transactions ?? null, body.errors?.transactions],
+    GetStandingCompositions: [body.compositions ?? null, body.errors?.compositions],
+  };
   return (async (input: unknown, init?: { body?: string }) => {
     const url = String(input);
+    if (url === "/api/bridge/select") {
+      const pilot = body.pilot ?? PILOT;
+      return { ok: true, status: 200, async json() { return { ok: true, character: { characterID: pilot.characterID, characterName: "A Pilot", stationID: 60003760, structureID: null, solarSystemID: 30000142, corporationID: pilot.corporationID }, station: null, notifications: [] }; } };
+    }
+    if (url === "/api/bridge/call") {
+      const call = JSON.parse(init?.body ?? "{}") as { service: string; method: string; args: JsonValue[] };
+      if (call.service === "standingMgr") {
+        asked.push(`${call.method}(${JSON.stringify(call.args).slice(1, -1)})`);
+        const [result, failure] = answers[call.method] ?? [null, "CALL_NOT_ALLOWED"];
+        return failure
+          ? { ok: false, status: 502, async json() { return { ok: false, error: failure, message: `${call.method} failed.` }; } }
+          : { ok: true, status: 200, async json() { return { ok: true, service: call.service, method: call.method, result, notifications: [] }; } };
+      }
+      return { ok: true, status: 200, async json() { return { ok: true, service: call.service, method: call.method, result: null, notifications: [] }; } };
+    }
     if (url === "/api/names") {
       const parsed = init && init.body ? JSON.parse(init.body) : { items: [] };
       for (const item of parsed.items ?? []) {
@@ -118,29 +147,6 @@ function standingsFetch(
         names[`${item.kind}:${item.id}`] = `Name ${item.id}`;
       }
       return { ok: true, status: 200, async json() { return { ok: true, names, unresolved: [] }; } };
-    }
-    if (url.startsWith("/api/bridge/standings")) {
-      return {
-        ok: true,
-        status: 200,
-        async json() {
-          return {
-            ok: true,
-            char: body.char ?? null,
-            corp: body.corp ?? null,
-            fromID: body.fromID ?? null,
-            transactions: body.transactions ?? null,
-            compositions: body.compositions ?? null,
-            errors: {
-              char: null,
-              corp: null,
-              transactions: null,
-              compositions: null,
-              ...(body.errors ?? {}),
-            },
-          };
-        },
-      };
     }
     return { ok: true, status: 200, async json() { return { ok: true }; } };
   }) as unknown as typeof fetch;
@@ -154,11 +160,16 @@ async function settle(): Promise<void> {
 
 test("loadStandings decodes char + corp standings", async () => {
   const store = createClientStore();
+  const asked: string[] = [];
   const flow = createAppFlow(store, {
-    fetch: standingsFetch({ char: standingsRowset(CHAR_ROWS), corp: standingsRowset([[500001, 1.445]]) }),
+    fetch: standingsFetch({ char: standingsRowset(CHAR_ROWS), corp: standingsRowset([[500001, 1.445]]) }, [], asked),
+    eventSource: () => ({ onmessage: null, onopen: null, onerror: null, close() {} }),
   });
+  await flow.selectCharacter(PILOT.characterID);
 
   await flow.loadStandings();
+  // Asked as the client's standings service asks, with nothing: the two lists, and of no route of the standings' own.
+  assert.deepEqual(asked.slice().sort(), ["GetCharStandings()", "GetCorpStandings()"]);
 
   const standings = store.standings.get();
   assert.equal(standings.loaded, true);
@@ -233,13 +244,18 @@ test("loadStandings: a SUCCESSFUL empty read is [] (a real 'no standings')", asy
 
 test("a pilot in an NPC corporation: its corporation's standings, never asked for, are none and not unread", async () => {
   // standingsvc.py 118: the client asks for the pilot's own alone and takes the corporation's to be {}.
-  // The BFF answers that corp as null with no error.
+  // So does the page: the corporation's are not asked for, and are none with no error.
   const store = createClientStore();
+  const asked: string[] = [];
   const flow = createAppFlow(store, {
-    fetch: standingsFetch({ char: standingsRowset(CHAR_ROWS), corp: null }),
+    // (Were the corporation's asked for, this stand-in would answer a list with something in it.)
+    fetch: standingsFetch({ char: standingsRowset(CHAR_ROWS), corp: standingsRowset([[500001, 9.9]]), pilot: { characterID: 140000002, corporationID: 1000044 } }, [], asked),
+    eventSource: () => ({ onmessage: null, onopen: null, onerror: null, close() {} }),
   });
+  await flow.selectCharacter(140000002);
 
   await flow.loadStandings();
+  assert.deepEqual(asked, ["GetCharStandings()"]);
 
   const standings = store.standings.get();
   assert.equal(standings.char?.length, 3);
@@ -248,11 +264,20 @@ test("a pilot in an NPC corporation: its corporation's standings, never asked fo
 
 test("loadStandingDetail(char) decodes the standing HISTORY (transactions)", async () => {
   const store = createClientStore();
+  const asked: string[] = [];
   const flow = createAppFlow(store, {
-    fetch: standingsFetch({ fromID: 1000030, transactions: REAL_TRANSACTIONS }),
+    fetch: standingsFetch({ transactions: REAL_TRANSACTIONS, compositions: REAL_COMPOSITIONS }, [], asked),
+    eventSource: () => ({ onmessage: null, onopen: null, onerror: null, close() {} }),
   });
+  // Before a pilot is chosen there is nobody whose history it would be: said, and nothing asked.
+  await flow.loadStandingDetail(1000030, "char");
+  assert.deepEqual([store.standings.get().detailError, asked], ["No pilot is chosen.", []]);
+  await flow.selectCharacter(PILOT.characterID);
 
   await flow.loadStandingDetail(1000030, "char");
+  // standingsPanel.py 86: the character's row asks for the history, of the entity with the character, and for
+  // nothing else.
+  assert.deepEqual(asked, ["GetStandingTransactions(1000030,140000005)"]);
 
   const standings = store.standings.get();
   assert.equal(standings.detailFromID, 1000030);
@@ -264,13 +289,34 @@ test("loadStandingDetail(char) decodes the standing HISTORY (transactions)", asy
   assert.equal(standings.compositions, null);
 });
 
+test("an entity's detail that cannot be read says why by its call's code; a corporation's row asks nothing where no corporation is known", async () => {
+  const store = createClientStore();
+  const asked: string[] = [];
+  const flow = createAppFlow(store, {
+    fetch: standingsFetch({ errors: { transactions: "CALL_REFUSED" }, compositions: REAL_COMPOSITIONS, pilot: { characterID: 140000002, corporationID: null } }, [], asked),
+    eventSource: () => ({ onmessage: null, onopen: null, onerror: null, close() {} }),
+  });
+  await flow.selectCharacter(140000002);
+
+  await flow.loadStandingDetail(1000030, "char");
+  // As the route said of a read that failed: the code, and not the words that came with it.
+  assert.deepEqual([store.standings.get().detailError, asked], ["CALL_REFUSED", ["GetStandingTransactions(1000030,140000002)"]]);
+  await flow.loadStandingDetail(1000030, "corp");
+  assert.deepEqual([store.standings.get().detailError, asked.length], ["The pilot's corporation is not known.", 1]);
+});
+
 test("loadStandingDetail(corp) decodes the per-member COMPOSITION", async () => {
   const store = createClientStore();
+  const asked: string[] = [];
   const flow = createAppFlow(store, {
-    fetch: standingsFetch({ fromID: 1000030, compositions: REAL_COMPOSITIONS }),
+    fetch: standingsFetch({ transactions: REAL_TRANSACTIONS, compositions: REAL_COMPOSITIONS }, [], asked),
+    eventSource: () => ({ onmessage: null, onopen: null, onerror: null, close() {} }),
   });
+  await flow.selectCharacter(PILOT.characterID);
 
   await flow.loadStandingDetail(1000030, "corp");
+  // The corporation's row asks for the composition, of the entity with the corporation, and for nothing else.
+  assert.deepEqual(asked, ["GetStandingCompositions(1000030,98000001)"]);
 
   const standings = store.standings.get();
   assert.equal(standings.detailScope, "corp");

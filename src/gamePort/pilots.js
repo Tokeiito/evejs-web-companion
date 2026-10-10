@@ -232,6 +232,14 @@ const STATION_OFFICES = "GetCorporationsWithOffices";
  * (officeManager.GetCorpOfficeAtLocation, 106: the Moniker's isPrimed).
  */
 const PRIME_OFFICE = "PrimeOfficeItem";
+const STANDING_MGR = "standingMgr";
+/**
+ * What the client's standings service asks for when the character is chosen and keeps right from the server's
+ * notices (standingsvc.py 111): the character's standings and its corporation's. Asked for again by name, as the
+ * page asks when it shows them, they are answered from what is kept (refreshStandings): the client's panel reads
+ * its service, and its service does not ask twice.
+ */
+const STANDINGS_KEPT = Object.freeze({ GetCharStandings: "char", GetCorpStandings: "corp" });
 const ACCOUNT = "account";
 /**
  * What the client's account service asks for once and keeps (svc.account GetStaticData, accountsvc.py 86: kept in
@@ -1445,6 +1453,13 @@ function createGamePortPilots({
         return monikerCall(entry, service, method, [], null);
       }));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
+    }
+    // The standings service's two lists: answered from what is kept, where anything is. Nothing is sent, and nothing is counted.
+    if (service === STANDING_MGR && Object.hasOwn(STANDINGS_KEPT, method) && form.args.length === 0 && form.kwargs === null) {
+      await entry.standingsWork;
+      if (entry.standings.loaded) {
+        return { service, method, result: wireToBridgeJson(entry.standings[STANDINGS_KEPT[method]]()), notifications: drain(entry) };
+      }
     }
     // The account service's static data: asked once and kept, however many windows want it and however many at once.
     if (service === ACCOUNT && ACCOUNT_STATIC.has(method)) {
