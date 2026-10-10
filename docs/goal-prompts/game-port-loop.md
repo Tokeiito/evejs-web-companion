@@ -466,6 +466,17 @@ Take these defaults, and list each under "For the operator" in the log so they c
   such cannot be written there, and is tested in the page's own test, where its form can.
   Then live, leaf by leaf: `skills-compare.mjs <repo> <scratch> <bff> <account> <characterID>
   [typeID toLevel]`. The clock's leaf differs, being read at two moments.
+- **What a window shows is asked as that window asks it, which is not always the service a
+  route was written against.** The Character Sheet's route read the home station by
+  `charMgr.GetHomeStationRow`, which is the client's map's and market's call; the client's
+  sheet asks another service altogether. Find every caller of a call in the client, and
+  then find what the window itself reads: the two can differ.
+- **A read every transport carries needs no way back**, and its route comes off the page's
+  list whole. Ask each of a route's reads by name on the gateway BFF too
+  (`charsheet-probe.js` is the pattern) before writing a fallback.
+- **A pilot staged with implants**: `implant-stage.js <scratch> <bff> <account> <characterID>
+  <typeID...>` (9899 and 9941 are two, of slots 1 and 2). Save the store first. No test
+  pilot has one otherwise.
 - **A flow's test that chooses no pilot tests the route's way.** With nobody chosen the flow
   reads a route where it has one (the skills' sheet does); the page's own asking is reached
   only after `flow.selectCharacter`, with the stand-in answering `/api/bridge/select` and

@@ -767,7 +767,9 @@ routes under `/api/bridge` are named by the page's code, 50 of them reads. The s
 making and its reads are in the page's TypeScript (`96c0a09`) and agree with the BFF's, and
 the Skills window reads the sheet the page makes (`889150f`). The route is still named by
 the page, for the gateway, for one read of a bot's, and behind the writes: a route is off
-the page's list only when the way back through the gateway is. Of the phase's "done when", "no
+the page's list only when the way back through the gateway is. The Character Sheet's
+route is the first off it whole (`a684b32`): its reads are carried by both transports,
+and the page asks them the same way on either. 139 named now, 49 of them reads. Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.
 Of 6a's four things, three are carried by the socket or in process, each with a way back
 (the routes' operations, the pushes, the hosted bots), and the cap is lifted for what is
