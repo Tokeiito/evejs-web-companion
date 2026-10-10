@@ -680,6 +680,12 @@ nothing, and both recorded on Tranquility so:
 | `planetMgr.GetPlanetsForChar()` | `planetSvc.py` 67 | asked once; the client changes its own copy as a colony's pins change |
 | `planetMgr.GetMyLaunchesDetails()` | `planetUISvc.py` 172 | asked once; asked again after `OnPILaunchesChange`, or when its window reloads |
 
+The transport keeps both (`pilots.js`, `KEPT_UNTIL_CHANGED`). It forgets both at
+`OnPILaunchesChange`, at `OnMajorPlanetStateUpdate`, after the pilot's own `DeleteLaunch`, and
+after its `UserUpdateNetwork` on a planet's object, and asks for each when it is next wanted.
+That asks for the colonies more often than the client does, which changes its own copy, and
+never later.
+
 The launches come as a `CRowset` whose row descriptor Tranquility sent as `launchID` int32,
 `solarSystemID` int32, `itemID` int64, `ownerID` int32, `planetID` int32, `status` uint8,
 `launchTime` a file time, and `x`, `y`, `z` doubles. The recordings have empty lists only, so no
@@ -920,8 +926,18 @@ Not the client's yet:
   rate by the service's name, and binds `invbroker` with the office's ID. This server takes
   both.
 - The page reads an office as it reads any container, with one `List`, not the window's four
-  reads. And the collecting block reads every office in the system on every tick, from
-  wherever the ship is. A client opens the office it is at.
+  reads. And the collecting block reads every office in the system on every tick, where the
+  client reads an office when its window is opened and goes by the server's word of each item
+  after.
+
+**Where the client can open that window from.** Wherever the ballpark has the office's slim
+item: the window wants nothing else (`importExportUI.py` 90). This server's ballpark has every
+office of the system from the undock on: its own recording of one has eight. It is opened from the office's own menu in space
+(`menusvc.py` 1806), from the Planets window's list of colonies (`coloniesPanel.py` 206), and
+from a launchpad in the planet's view (`LaunchpadContainer.py` 29). The recording's pilot was
+at the office. I wrote on 2026-10-09 that the client makes the transfer at the office: that is
+what the recording has, not what the client requires. Whether Tranquility's server takes the
+transfer from across the system is in no recording.
 
 **Asking with a cached version.** When the client already holds an answer, it sends that answer's
 version as `machoVersion`, and the server can reply "still good" instead of the answer. We always

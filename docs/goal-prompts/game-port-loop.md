@@ -344,6 +344,15 @@ Take these defaults, and list each under "For the operator" in the log so they c
   ended before the store is put back. `haul-stage.sh` stages a colony's two pins with the
   server stopped, and `gm-run.js` gives the pilot the hauler (`/giveskill me 3340 1`,
   `/giveitem 655 1`).
+- **Before writing that the client cannot do a thing, find every caller of what does it.** I
+  wrote that the client makes a customs transfer "at the office". The one recording has the
+  pilot there. The client's window has three callers, two of them from the planet's windows,
+  and wants only that the office be in the ballpark. `grep -rn "<function>"` over the
+  decompiled client, and read each caller, before a recording's one case becomes a rule.
+- **The gateway answers before the game port does, after a restart.** `store.sh` and the
+  staging scripts wait for the gateway. A select through the game-port BFF fifteen seconds
+  after one answered 502, "the game server is unreachable"; eight seconds later it went
+  through. Wait a little longer, or try again, before taking it for a fault.
 - **A byte in a recording's marshal is an opcode before it is a number.** `` is the integer
   nought, `	` one, `` minus one, `` None, `$` an empty tuple, `,` a tuple of two,
   `/` a long with its length after it, `
