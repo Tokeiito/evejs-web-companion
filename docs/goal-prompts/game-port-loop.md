@@ -615,6 +615,17 @@ Take these defaults, and list each under "For the operator" in the log so they c
   there. The GM's `/tr me <stationID>` puts a pilot in a station. Save the store first.
 - A pilot the page holds cannot also be a script's: the write that the page is to be seen
   answering comes from another pilot's session, so stage the two into the same station.
+- A test of the transport that puts a pilot in space (`solarsystemid` on the stand-in's
+  session) sets the ballpark's clock going, and the test file then never ends: every test
+  passes and `node --test` hangs. To take a pilot out of a station, change `stationid` alone.
+  Run a test file under `timeout 150 node --test --test-timeout=20000 ...` so that a hang
+  ends by itself, and stop a run that went to the background.
+- A notice told to two audiences comes twice (`OnOfficeRentalChange`: by station, and by
+  corporation). Count in the recording what the client asks after it before letting the page
+  ask at each telling: the lobby's offices were asked for once there, and twice by the page.
+- A service becomes one whose calls go to a bound object by a line in `MONIKER_SERVICES`. Every
+  other call of that service goes there too from then on, read or not: look at what the
+  BFF's routes send of it first (`grep -n '"<service>"' src/server.js`).
 - A test's "watched to fail" can be had after the fact: put the source file back to the commit
   before (`git show HEAD~1:<file> > <file>`), run the test, and restore it with `git checkout
   HEAD -- <file>`. Check `git status` is clean after.

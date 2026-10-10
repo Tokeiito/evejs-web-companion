@@ -1007,8 +1007,38 @@ offices once, and on the station's object for `PrimeOfficeItem` (after renting) 
 office the ninth.
 
 The transport keeps the first list the same way (`pilots.js`, `KEPT_UNTIL_CHANGED`): let go at
-the notice where it names the session's corporation, and in another corporation. Nothing of
-ours asks for the second list, or rents an office.
+the notice where it names the session's corporation, and in another corporation.
+
+**The lobby's offices, 2026-10-10.** The station's object is bound as Tranquility's recordings
+have it (`Receiving Corp Roles.txt`): `officeManager.MachoResolveObject(stationID)` for the
+node, then `MachoBindObject(stationID, (first call))` there, the ID bare. The client keeps the
+Moniker while the session is docked there. On it, as recorded:
+
+| Call | Answer on Tranquility |
+|---|---|
+| `GetCorporationsWithOffices()` | a `__builtin__.set` of corporation IDs (16, then 17 with the office rented) |
+| `GetEmptyOfficeCount()` | a whole number (8) |
+| `HasCorpImpoundedItems()` | False |
+| `PrimeOfficeItem()` | None |
+
+The lobby's Offices tab (`dockedUI/offices.py`) asks the first two when it is shown, and again
+at each `OnOfficeRentalChanged`, whoever's the office; it does not load again while it is
+loading, and the recordings have the notice twice with the two reads once. In a structure it
+asks for no count (`officeManager.py` 133).
+
+The transport binds the same Moniker for where the pilot is docked, keeps the corporations
+until any `OnOfficeRentalChange` or the pilot is elsewhere (`pilots.js`, `stationOffices`), and
+asks for the count each time. The BFF's `GET /api/bridge/station/offices` hands both to the
+page for a pilot on the game port; the gateway's list has neither read. The page lists them
+when the player asks and at each notice after, one listing at a time. Nothing of ours rents an
+office, or asks the lobby's other four (`PrimeOfficeItem`, `HasCorpImpoundedItems`,
+`GetPriceQuote`, `GetImpoundReleasePrice`).
+
+**The map's stations, 2026-10-10.** `map.GetStationInfo()` is asked once by the client's UI
+service and kept for the client's life (`uisvc.py` 246), and by five other callers through the
+object cache. On the game port the first asking is answered with a cached reference, which
+the transport fetches once (`objectCaching.GetCachableObject`); later askings on that session
+are answered from what it holds, with nothing sent.
 
 **Asking with a cached version.** When the client already holds an answer, it sends that answer's
 version as `machoVersion`, and the server can reply "still good" instead of the answer. We always
