@@ -756,6 +756,21 @@ Take these defaults, and list each under "For the operator" in the log so they c
   140000002` gives two Hobgoblin I and puts them in the Venture's bay; `drone-walk.js`
   undocks, launches them and prints each drone's row. A pilot who logs off in space with
   drones out has none on grid when it comes back.
+- **A rule read out of the client is set beside the server's own data before it is believed.**
+  A live check sees what the server happens to put in front of the pilot. The NPC kinds were
+  the same on both transports at two gates and wrong for 142 of the server's 5794 profiles,
+  which a script that walked `listNpcProfiles()` (`eve.js/server/src/space/npc/npcData.js`)
+  showed in a second. Where the server has a table of every case, walk the table.
+- **An NPC put out for a check:** undock, warp to a planet (away from a station's and a gate's
+  guns), then `/npc 1 <profileID>` through `/api/bridge/gm/slash`; `npc-spawn-walk.js` does
+  the whole of it and prints each ship's row. The ship put out goes for the pilot, so read
+  the snapshot at once, and put the store back after. `test/fixtures/destinyJump.json` has
+  fifteen of the law's ships with their slim items as this server sent them.
+- **The page has "Log out" only while docked.** A browser check that ends in space docks first.
+  A hostile ship put out beside the pilot kept it from warping off (2026-10-10), so put one
+  out last, and if the pilot cannot dock: remove `evejs-web-online-pilots:v1` from the page's
+  `sessionStorage`, put the store back, restart both BFFs, load the page again and read that
+  nobody is in ("In client 0").
 - A test's "watched to fail" can be had after the fact, once the work is committed: put the source file back to the commit
   before (`git show HEAD~1:<file> > <file>`), run the test, and restore it with `git checkout
   HEAD -- <file>`. Check `git status` is clean after.

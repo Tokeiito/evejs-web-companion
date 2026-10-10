@@ -1198,6 +1198,24 @@ where the park was not told; the gateway says them of every drone. A launched dr
 with the ballpark update after `ship.LaunchDrones` has answered, so the BFF's launch route
 waits for it on the game port.
 
+**A ship nobody flies, 2026-10-10.** A client is not told the server's word for an NPC. It
+has three things. The type's group: the overview's table of NPC groups (`state.py`,
+`GetNPCGroups`) keeps the police's (182), CONCORD's (301), the customs officials' (446) and
+the faction navies' (288) apart from the pirates' and the missions'. The slim item's
+`hostile_response_threshold` and `friendly_response_threshold`
+(`npcs/client/entitystandings.py`): a threshold above nought is hostile whatever the pilot's
+standing (`is_npc_hostile`), and otherwise the standing between the ship's faction and the
+pilot is set against it; an attack on one that is not hostile is asked about first
+(`consider.py`, 69). And the owner: one above the system's own (9999) and below the players'
+(90000000) is an NPC (`idCheckers.IsNPC`), which is how the overview and the state service
+know a thing is not a player's (`overviewWindow.py` 968, `state.py` 778). Tranquility sends 11
+and 11 with a pirate, -11 with the law (27 recordings); this server the same, and -5 and 5
+with the ORE mining fleet. An NPC's slim item carries no name. The game port's row says
+"concord" of a ship of the law's four groups not sent as hostile, "drifter" of a Drifter
+Battleship (group 1310), and "npc" of any other; that is the server's own word for every one
+of its NPC profiles but the drifters'. The group alone is not: this server's catalogue puts
+out ships of CONCORD's types that it calls NPCs and sends as hostile.
+
 **The map's stations, 2026-10-10.** `map.GetStationInfo()` is asked once by the client's UI
 service and kept for the client's life (`uisvc.py` 246), and by five other callers through the
 object cache. On the game port the first asking is answered with a cached reference, which
