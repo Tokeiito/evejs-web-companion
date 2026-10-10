@@ -25,6 +25,7 @@ const { createPilotMutationFence } = require("./pilotMutationFence");
 const { createPilotTransport, isGamePortHandle, pilotTransportSetting } = require("./pilotTransport");
 const { createGamePortPilots } = require("./gamePort/pilots");
 const { gameEndpoint } = require("./gamePort/tcp");
+const { attachPilotSocket } = require("./pilotSocket");
 const { registerProvisioningRoutes } = require("./provisioningRoutes");
 const { createFactorySkills } = require("./factorySkills");
 const { createTrainingOnboarding } = require("./trainingOnboarding");
@@ -187,6 +188,9 @@ const gamePortPilots = options.gamePortPilots !== undefined
     })
     : null;
 app.locals.gamePortPilots = gamePortPilots;
+// What a socket's hello is checked by (src/pilotSocket.js): whether a token is a web session's. Each operation
+// carried on the socket is then authenticated by its own route, as over HTTP.
+app.locals.verifySessionToken = (token) => (options.webAuth || webAuth).verifySessionToken(token);
 const gateway = mutationFence.wrap(createPilotTransport({
   gateway: accountGateway,
   gamePort: gamePortPilots,
@@ -25449,6 +25453,20 @@ function startServer(options = {}) {
       void appToStart.locals.botHost?.resume().catch((error) => console.error(error));
     }
   });
+  // One socket for a tab, carrying the routes' operations with no HTTP hop of their own (the plan's Phase 6a;
+  // src/pilotSocket.js). It stands beside the routes: a tab that never opens it is served as before.
+  const pilotSocket = attachPilotSocket(server, appToStart, {
+    verify: (token) => appToStart.locals.verifySessionToken?.(token),
+    onError: (error) => console.warn(`[pilot-socket] ${error && error.message}`),
+  });
+  server.pilotSocket = pilotSocket;
+  // An open socket is a connection, and a server that is closing waits for every connection to end: left open,
+  // the tabs' sockets would keep it from ever having closed. They are closed as the closing begins.
+  const closeServer = server.close.bind(server);
+  server.close = (callback) => {
+    void pilotSocket.close();
+    return closeServer(callback);
+  };
   // A pilot on the game port is a connection held by this process. When the
   // server stops, each is closed, which logs the pilot off as a closed client would.
   server.on("close", () => appToStart.locals.gamePortPilots?.shutdown?.());
