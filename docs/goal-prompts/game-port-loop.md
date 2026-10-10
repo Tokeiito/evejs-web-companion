@@ -393,6 +393,11 @@ Take these defaults, and list each under "For the operator" in the log so they c
   failed at its start and still showed a read of an online pilot that no earlier walk had
   made: a start asked by the session that holds the pilot. `ledger-show.js
   <bff>-data/gateway-ledger.json` takes a second.
+- **A read made of the account is measured twice: with nobody flying the pilot, and with the
+  pilot flown in another web session of the same BFF.** Only the second shows a read of an
+  online pilot in the tally. `training-walk.js <scratch> <bff> <account> <id> <out.json>` does
+  both for Pilot Training's reads and prints a digest of each answer; `roster-flown.js` reads
+  the hangar's roster rows with one pilot flown.
 - **Every pilot of every account, chosen in turn:** `every-pilot.js <scratch> <bff>
   <store.sqlite> [accounts]` (save the store first; a login brings a pilot online).
 - **Both BFFs run the code they were started on.** A change to a route's answer shows through
