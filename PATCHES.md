@@ -4,7 +4,7 @@ Every branch carried on top of `vendor`, in the order it is merged into `main`. 
 authority: a patch not listed here is lost on the next rebuild, and a patch listed here is one
 somebody has decided is still needed. See `CLAUDE.md` for the workflow.
 
-**Vendor:** `origin/master` at `6edc7e5` (2026-10-07, PR #110 merged). `main` as it ran before the last sync is tag `custom/2026-10-07`.
+**Vendor:** `origin/master` at `add5118` (2026-10-10, PR #111 merged). `main` as it ran before the last sync is tag `custom/2026-10-10`.
 
 The `On main` column is a cache of `git branch --merged main`; if the two disagree, ancestry wins.
 
@@ -13,7 +13,13 @@ The `On main` column is a cache of `git branch --merged main`; if the two disagr
 | 1 | `local/tooling` | This workflow: `CLAUDE.md`, this manifest, and the Claude Code hooks registered in `.claude/settings.local.json` -- `guard-live-bot.sh` (refuses restarts that would kill running bots) and `rebuild-when-stale.sh`, each with its test | `CLAUDE.md`, `PATCHES.md`, `.claude/hooks/` | never | yes |
 | 2 | `local/deploy` | The hive release pipeline: a `release/*` tag on Gitea builds and pushes the image and moves `deploy/prod`, which Portainer polls; `compose.hive.yaml` joins the evej stack's network and volume as externals | `.gitea/workflows/release.yaml`, `compose.hive.yaml`, `docs/DEPLOYMENT.md` | never | yes |
 | 3 | `fix/companion-persist-bridge-sessions` | A BFF restart releases the pilots the previous process held. The bridge handles lived only in memory, so every restart left each selected pilot online at the gateway (`retail_client`) until its 30-minute idle TTL, and hosted Start refused them all ("A web session is flying this character"). The held map now mirrors handle/account/character to `data/bridge-sessions.json`; `startServer` releases those before resuming bots. Seen live 2026-10-04: five pilots refused after the 08:22 rebuild. Upstream #91 reworked held-session release on selection but still keeps the map only in memory, so the restart leak stands. | `src/bridgeSessionJournal.js` (new), `src/server.js`, `src/bridgeSessionJournal.test.js`, `test/bridgeSessionRestart.test.js` | not yet (verify live first) | yes |
-| 4 | `fix/companion-station-search-no-pilot` | The station picker says what to do when its search is refused. `/api/map/find` is login-gated and the login is a pilot coming online; a tab with no pilot online rides the shared cookie, which expires after `sessionTtlMs` (12 h), so the search answered 401 and the picker said "Could not search just now - try again", which no retry fixes. Seen live 2026-10-07 on the PI haul Deliver to search (DevTools: 401; one pilot online fixed it). A 401 now says a pilot must be online in this tab; other failures keep the retry wording. | `web/src/ui/StationPicker.svelte`, `web/src/ui/stationSearchFailure.ts` (new), test | [#111](https://github.com/rrfarmer/evejs-web-companion/pull/111) (open; new message not yet seen live) | yes |
+| 4 | `fix/companion-pi-haul-final-products` | The PI Haul sends up only what a colony makes. Both export paths (the Haul button's game-port hop, `planCustomsExports`, and the run's `collect-customs` block) sent EVERYTHING on a colony's launchpads up into the customs office. A colony with no extractors (launchpad as its only store) keeps the imports its factories run on there, so a haul exported the factories' feed with the product. A type that a route on the colony delivers into a factory is now an input and stays on the planet; a launchpad holding only inputs counts as empty. | `src/piCustomsExport.js`, `web/src/bridge/colonyRoutes.ts`, `web/src/nav/scriptMacros.ts`, `web/src/nav/scriptConditions.ts`, `web/src/app/flow.ts`, tests | not yet (verify live first) | yes |
+
+## Retired 2026-10-10 (fifteenth sync): upstream merged row 4
+
+Upstream merged PR #111 as a true merge, so the branch is an ancestor of `vendor` and is retired outright.
+
+- `fix/companion-station-search-no-pilot` -- [#111](https://github.com/rrfarmer/evejs-web-companion/pull/111)
 
 ## Retired 2026-10-07 (fourteenth sync): upstream merged rows 4-6
 
