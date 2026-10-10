@@ -723,10 +723,19 @@ each frame on, so the route is unchanged and still says who may listen. The `Eve
 is the way back, opened if the socket is not to be had. In the browser a login, an undock,
 a docking and a logout had the same frames in the same numbers both ways.
 
-Not yet: the setting is off unless set, a pilot in the background has no pushes either
-way, and hosted bots still ask over loopback HTTP, which is the next slice; the routes'
-HTTP carriage goes last. Of the phase's "done when", "no `EventSource` is opened" holds
-with the setting on and the socket up, and not otherwise.
+**The hosted bots, 2026-10-10** (`f6327fa`): a hosted bot asks the BFF in the BFF's own
+process. The bot host is handed a fetch that runs each request through the app where it is
+and answers with a `Response` made of the route's answer (`src/inProcessFetch.js`); the
+event stream is read as the route writes it. `EVEJS_HOSTED_BOT_REACH=loopback` has them ask
+over HTTP as they did. On the game port the starter mining bot ran the same both ways, and
+in process the BFF had no connection to itself.
+
+Not yet: the page's setting is off unless set, and a pilot in the background has no pushes
+either way; the routes' HTTP carriage goes last. Of the phase's "done when", "no
+`EventSource` is opened" holds with the setting on and the socket up, and not otherwise.
+Of 6a's four things, three are carried by the socket or in process behind a way back (the
+routes' operations, the pushes, the hosted bots) and the cap is lifted for what is
+carried; what is left of 6a is the default and the taking away.
 
 ---
 

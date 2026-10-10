@@ -439,6 +439,21 @@ Take these defaults, and list each under "For the operator" in the log so they c
   frames before choosing a pilot, and read `performance.getEntriesByType("resource")` for
   what went over HTTP. The first run of a thing in the browser is where its faults are: the
   socket's tests all passed while ten sockets stood open on the page.
+- **Whether the BFF is talking to itself:** rows of `netstat -ano` whose foreign address is
+  the BFF's own port and whose owning process is the BFF's (`awk -v p=<pid> '$1=="TCP" &&
+  $3=="127.0.0.1:26510" && $5==p'`). With hosted bots in process there are none; over
+  loopback (`EVEJS_HOSTED_BOT_REACH=loopback`; `restart-bffgp-loopback.sh` in the
+  scratchpad) there were five or six for one bot.
+- **A hosted bot run for a check:** `fit-stage.js <bff> test2 140000002` (a Venture with two
+  miners, through the BFF's routes; save the store first and again after staging, so that
+  a second run starts from the same place), then `bot-run.mjs <repo> <bff> test2 140000002
+  starter-mine-haul-cycle 15 150`.
+- **A restart writes over the BFF's logs.** Copy `bffgp.out.log` and `bffgp.err.log` aside
+  before restarting if a run's are to be set beside another's; their size is not what is in
+  them.
+- **Ask it both ways of the same app.** The test that set an answer over HTTP beside the
+  same answer in process found the one that differs (a path no route has); tests of the new
+  way alone had passed.
 - **What a page is pushed, and which way:** `push-probe.js` in the scratchpad, pasted into
   the page after a reload and before a pilot is chosen; `window.__push` then holds the
   event stream's frames by kind as they come on a socket and by an `EventSource`, each
