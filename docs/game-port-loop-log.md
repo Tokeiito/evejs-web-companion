@@ -26973,9 +26973,9 @@ been given a socket that nothing closed. So a socket is for a session that stays
   back.
 - **A token's third request, not its first.** It costs a staying session two requests over
   HTTP, and saves a handshake for every session that is made for one question.
-- **A request cut off is not retried over HTTP**, even a read. A read could be; telling
-  reads from writes by their method is not safe enough here (some of the BFF's writes are
-  asked for with GET-shaped helpers and some reads with POST), so nothing is.
+- **A request cut off is not retried over HTTP**, even a read. A read could be, but a
+  request's method does not say which it is here: many of the BFF's reads are POSTs (the
+  generic call, the names). So nothing is retried.
 
 
 ### Next
