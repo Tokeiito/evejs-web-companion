@@ -1060,6 +1060,27 @@ moved, impounded items released (`GetImpoundReleasePrice`, `GetItemsFromImpound`
 This server answers `RentOffice` True (False where nothing was rented, by its code), and its
 price as a plain number. The client uses neither answer for anything but the price's value.
 
+**The lobby at a docked login, 2026-10-10.** The server's log of a retail client logging in
+docked in a station, with nothing opened, has four reads that the log of one logging in in
+space has none of: `officeManager.GetMyCorporationsOffices`, `stationSvc.GetStationItemBits`,
+`station.GetGuests` and `map.GetStationInfo` (with the `objectCaching.GetCachableObject` behind
+it), in that order among themselves. The transport asks them as a character is chosen in a
+station (`pilots.js`, `lobbyRead`), and the item and the guests again as a pilot docks, where
+the client's are another station's or let go; the other two the client has still. Each is
+kept as its own service keeps it. Tranquility's recording of a login in a structure has the
+corporation's offices asked too; the transport asks nothing there until a route does.
+
+The same login's inventory, which the transport does not ask for by itself (Tranquility's
+`Logging in then renaming ship.txt`, in order): `invbroker.MachoBindObject((stationID, 15),
+('GetInventoryFromId', (shipID, 1), {}))`; on the manager, `GetInventoryFromId(charID, 1)`,
+and `GetSelfInvItem()` on what it answers; on the ship's inventory,
+`GetAvailableTurretSlots()` and `GetSelfInvItem()`; `invbroker.GetItemDescriptor()` by name; a
+second bind carrying `GetInventory(10004, None)`; on the hangar, `List(flag=4)` and
+`GetSelfInvItem()`; on the ship's inventory, `List(flag=156)`, the hidden modifiers, which the
+ship's stance buttons list among others (`shipstance.py` 27). `GetAvailableTurretSlots` has
+three callers, the achievements' and the tutorial's (`achievements/client/eventHandler.py`
+427). Which caller asked each at the login is not in the recording.
+
 **The map's stations, 2026-10-10.** `map.GetStationInfo()` is asked once by the client's UI
 service and kept for the client's life (`uisvc.py` 246), and by five other callers through the
 object cache. On the game port the first asking is answered with a cached reference, which

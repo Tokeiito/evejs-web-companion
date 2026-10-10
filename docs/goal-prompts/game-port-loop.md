@@ -638,6 +638,17 @@ Take these defaults, and list each under "For the operator" in the log so they c
   taken off in `readHeldFlight` before the page sees it (`corpRole`).
 - Run the whole suite before the live check, not after it. The files I had touched were green
   and a list test elsewhere was red, unseen until the staging was undone.
+- The login report is made again in two steps, both in the scratch folder: `login-only.js <bff>
+  <account> <characterID> <server log> 8` prints the server log's lines for a bare login, and
+  `login-report.js <repo> <eve.js logs dir> <from> <to>` writes the report from them (the
+  retail log's own lines, 278 to 743, are in it). A scratch folder that has neither: the retail
+  log is `direct-tcp-real-client-20260809-163920.stdout.log`, learnt from with
+  `server.2026-10-06_15.log`. Do it away from the turn of the hour, when the server's log rolls.
+- A call added to the choosing of a character breaks the transport's tests that count a
+  choosing's calls. Two lists at the top of `test/gamePortPilots.test.js` hold most of them to
+  it (`CHOSEN_ASKS`, `CHOSEN_LAST`); the rest count one service's calls and want the new one
+  let through. A stand-in that holds back the first answer of something now asked at the
+  choosing hangs the choosing: hold back the second.
 - A test's "watched to fail" can be had after the fact: put the source file back to the commit
   before (`git show HEAD~1:<file> > <file>`), run the test, and restore it with `git checkout
   HEAD -- <file>`. Check `git status` is clean after.
