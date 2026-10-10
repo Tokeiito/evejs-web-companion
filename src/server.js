@@ -3315,6 +3315,31 @@ function decodeDivisionNames(result) {
 }
 
 /**
+ * The names of a corporation's WALLET divisions, by ordinal, from the same row. As the client names them
+ * (bco_corporations.py GetDivisionNames, 138): the second to the seventh by `walletDivision2` to
+ * `walletDivision7`, and the first by no column, since it is the master wallet and has the client's own word.
+ * `division1` to `division7` are the hangar's (decodeDivisionNames), and were read for the wallet's until
+ * 2026-10-10. The page works this out for itself now (web/src/bridge/walletReads.ts); this is the route's.
+ */
+function decodeWalletDivisionNames(result) {
+  const entries =
+    result && result.type === "object" && result.args && Array.isArray(result.args.entries)
+      ? result.args.entries
+      : [];
+  const header = (entries.find(([key]) => key === "header") || [])[1];
+  const line = (entries.find(([key]) => key === "line") || [])[1];
+  const names = (header && header.items) || [];
+  const values = (line && line.items) || [];
+  const byDivision = {};
+  for (let division = 1; division <= CORP_DIVISION_COUNT; division += 1) {
+    const index = division === 1 ? -1 : names.indexOf(`walletDivision${division}`);
+    const value = index >= 0 ? values[index] : null;
+    byDivision[division] = typeof value === "string" && value.trim() !== "" ? value : null;
+  }
+  return byDivision;
+}
+
+/**
  * Resolve the corporation's office at the docked station.
  *
  * ⚠ IDENTITY. An office carries three separately allocated ids: officeID (where
@@ -13647,7 +13672,7 @@ app.get("/api/bridge/wallet", requireAuth, async (req, res, next) => {
       // division FLAG number is never shown.
       divisionNames:
         corporation.status === "fulfilled"
-          ? decodeDivisionNames(corporation.value.result)
+          ? decodeWalletDivisionNames(corporation.value.result)
           : {},
       // R54 raw ledger shapes (decoded in web/src/bridge/wallet.ts).
       transactions: settledValue(transactions),

@@ -1000,6 +1000,26 @@ test("the wallet reads what the retail client reads: no journal by any other cal
   assert.deepEqual(Object.keys(wallet.payload.errors).sort(), ["cash", "corp", "divisions", "entryTypes", "transactions"]);
 });
 
+test("the wallet's divisions are named by the corporation's wallet columns, as the client names them: never by its hangar's, and the first by none", async () => {
+  const header = [];
+  const line = [];
+  for (let division = 1; division <= 7; division += 1) {
+    header.push(`division${division}`, `walletDivision${division}`);
+    line.push(`Hangar ${division}`, { 1: "not the corporation's to name", 2: "Payroll", 3: "  ", 5: "Ships" }[division] ?? null);
+  }
+  const row = { type: "object", name: "util.Row", args: { type: "dict", entries: [["header", { type: "list", items: header }], ["line", { type: "list", items: line }]] } };
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  let corporation = row;
+  gamePort.callMethod = async (service, method) => ({ service, method, result: method === "GetCorporation" ? corporation : null, notifications: [] });
+  const { baseUrl } = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gameport" });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  // bco_corporations.py GetDivisionNames (138): 9 to 14 are walletDivision2 to walletDivision7, and 8 is the master wallet's own word.
+  assert.deepEqual((await apiRequest(baseUrl, "/api/bridge/wallet")).payload.divisionNames, { 1: null, 2: "Payroll", 3: null, 4: null, 5: "Ships", 6: null, 7: null });
+  // What is no such row names nothing.
+  corporation = null;
+  assert.deepEqual((await apiRequest(baseUrl, "/api/bridge/wallet")).payload.divisionNames, { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null, 7: null });
+});
+
 // ── Standings (GET /api/bridge/standings) ────────────────────────────────────
 
 test("a pilot in an NPC corporation is asked for its own standings alone; in a player's corporation, for the corporation's too", async () => {

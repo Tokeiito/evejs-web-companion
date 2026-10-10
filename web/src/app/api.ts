@@ -7,6 +7,7 @@
 // in its cookie-session store and attaches it to bridge calls itself.
 
 import { BridgeCallError, callMethod } from "../bridge/callMethod.ts";
+import type { Ask } from "../bridge/walletReads.ts";
 import { decodeBoundDogma, type BoundDogma } from "../bridge/boundDogma.ts";
 import { observeDeferredShutdown } from "../bridge/moduleShutdown.ts";
 import { decodeNameValidation, decodeValidRandomName } from "../bridge/charAccount.ts";
@@ -2406,48 +2407,25 @@ export async function loadRewards(options: ApiOptions = {}): Promise<RawRewardRe
 }
 
 // --- R50 Wallet + Corp Wallet ----------------------------------------------
-// One pull for both tabs: the personal balance (account.GetCashBalance) and the
-// corporation division balances (account.GetWalletDivisionsInfo), plus the
-// server-side-resolved division NAMES (corpRegistry.GetCorporation). Amounts are
-// raw retail shapes decoded in web/src/bridge/wallet.ts.
+// The wallet's reads are made by the page itself, call by call, as the client's
+// wallet and account services make them (bridge/walletReads.ts; the plan's
+// Phase 6b). Until 2026-10-10 they were one route's (GET /api/bridge/wallet).
+// What is here is the asking they are made with.
 
-export interface RawWalletReads {
-  readonly cash: JsonValue;
-  readonly divisions: JsonValue;
-  /** Division ordinal (1..7) -> player-authored name, resolved by the BFF. */
-  readonly divisionNames: JsonValue;
-  // R54 — the personal ledger: the journal (a Rowset), the transactions (a
-  // list<KeyVal>), and the ref-type -> label static map (a cached list). All raw.
-  readonly transactions: JsonValue;
-  readonly entryTypes: JsonValue;
-  readonly errors: {
-    readonly cash: string | null;
-    readonly divisions: string | null;
-    readonly corp: string | null;
-    readonly transactions: string | null;
-    readonly entryTypes: string | null;
-  };
-}
+export type { RawWalletReads } from "../bridge/walletReads.ts";
 
-/** The personal + corp-division wallet reads plus the ledger (raw; decoded in the flow). */
-export async function loadWallet(options: ApiOptions = {}): Promise<RawWalletReads> {
-  const data = await getJson("/api/bridge/wallet", options);
-  const errors = (data.errors ?? {}) as Record<string, JsonValue>;
-  const errorText = (key: string): string | null =>
-    typeof errors[key] === "string" ? (errors[key] as string) : null;
-  return {
-    cash: data.cash ?? null,
-    divisions: data.divisions ?? null,
-    divisionNames: data.divisionNames ?? {},
-    transactions: data.transactions ?? null,
-    entryTypes: data.entryTypes ?? null,
-    errors: {
-      cash: errorText("cash"),
-      divisions: errorText("divisions"),
-      corp: errorText("corp"),
-      transactions: errorText("transactions"),
-      entryTypes: errorText("entryTypes"),
-    },
+/**
+ * One call of the server's, asked by the generic route (bridge/callMethod.ts)
+ * with a flow's own options: its token, its fetch, its guard. The answer is the
+ * call's result; the notifications that came with it are handed on, as a
+ * route's answer's are.
+ */
+export function bridgeAsk(options: ApiOptions = {}): Ask {
+  return async (service, method, args) => {
+    const notificationSink = options.captureNotificationSink?.();
+    const outcome = await callMethod(service, method, args, null, options);
+    notificationSink?.(outcome.notifications as unknown as readonly JsonValue[]);
+    return outcome.result;
   };
 }
 

@@ -94,6 +94,7 @@ import {
   decodeTransactions as decodeWalletTransactions,
   normalizeDivisionNames,
 } from "../bridge/wallet.ts";
+import { createWalletReads } from "../bridge/walletReads.ts";
 import {
   classifyStandingKind,
   decodeStandingCompositions,
@@ -1679,6 +1680,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       };
     },
   };
+
+  // The wallet's reads, asked call by call as the client's wallet and account services ask them
+  // (bridge/walletReads.ts), with what those services keep kept for this pilot.
+  const walletReads = createWalletReads(api.bridgeAsk(callOptions));
 
   let pilotRecoveryEnabled = options.browserPilotRecovery === true;
   const recoverySignal = createSignal<DroneRecoveryState>({ phase: pilotRecoveryEnabled ? "checking" : "ready", reason: null });
@@ -4616,7 +4621,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // may be empty, and an empty list is the real "this corporation has no wallet
   // divisions" answer. The two must not collapse into one another.
   async function loadWallet(): Promise<void> {
-    const reads = await api.loadWallet(callOptions);
+    const reads = await walletReads.read();
     const corpFailed = reads.errors.divisions !== null;
     const corpError = [
       reads.errors.divisions ? `corp wallet: ${reads.errors.divisions}` : null,
@@ -11539,7 +11544,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         let walletBalance: ScriptObservation["walletBalance"] = null;
         if (walletWatched) {
           try {
-            const cash = decodeCashBalance((await api.loadWallet(callOptions)).cash);
+            // The pilot's own ISK is one call of the wallet service's (walletSvc.py 41), and that is all a watch wants.
+            const cash = decodeCashBalance(await walletReads.cash());
             walletBalance = cash === null ? null : Number(cash);
           } catch {
             walletBalance = null;
@@ -13443,6 +13449,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // A refused switch leaves the previous pilot held. Keep its recovery
       // proof and live state until the server actually selects the new one.
       const result = await api.selectCharacter(characterID, callOptions);
+      // accountsvc.ProcessSessionChange: another character, and what the account service kept was the last one's.
+      walletReads.forget();
       requestGeneration++;
       recoveryGeneration++;
       recoveryTask = null;

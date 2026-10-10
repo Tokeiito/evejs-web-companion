@@ -1,7 +1,10 @@
-// loadWallet (goal R50) against the raw /api/bridge/wallet envelope. The BFF
-// ships the personal balance (account.GetCashBalance) and the corp division
-// balances (account.GetWalletDivisionsInfo) as raw retail shapes, plus the
-// server-resolved division names; the flow decodes them into the wallet slice.
+// loadWallet (goal R50). The page asks the wallet's five calls itself, by the
+// generic call (bridge/walletReads.ts; the plan's Phase 6b): the personal balance
+// (account.GetCashBalance), the corp division balances
+// (account.GetWalletDivisionsInfo), the corporation's own row for their names,
+// the transactions and the entry kinds. The flow decodes them into the wallet
+// slice. Each test describes a wallet as the five answers and their failures;
+// the stand-in for the BFF answers each call from that.
 //
 // ⚠ The invariant under test is empty-vs-failed: a FAILED corp read leaves
 // corpDivisions null (with a corpError); a SUCCESSFUL empty read makes it [].
@@ -24,29 +27,66 @@ function divisionsList(rows: ReadonlyArray<readonly [number, JsonValue]>): JsonV
   };
 }
 
-function walletFetch(body: unknown): typeof fetch {
-  return (async (input: unknown) => ({
-    ok: true,
-    status: 200,
-    async json() {
-      return String(input) === "/api/bridge/wallet" ? body : { ok: true };
-    },
-  })) as unknown as typeof fetch;
+/** A corporation's own row (corpRegistry.GetCorporation, a util.Row) with these wallet divisions named, and its hangar's named otherwise. */
+function corporationRow(walletNames: Record<number, string>): JsonValue {
+  const header: string[] = [];
+  const line: JsonValue[] = [];
+  for (let division = 1; division <= 7; division += 1) {
+    header.push(`division${division}`, `walletDivision${division}`);
+    line.push(`Hangar ${division}`, walletNames[division] ?? null);
+  }
+  return { type: "object", name: "util.Row", args: { type: "dict", entries: [["header", { type: "list", items: header }], ["line", { type: "list", items: line }]] } };
+}
+
+interface WalletAnswers {
+  readonly cash?: JsonValue;
+  readonly divisions?: JsonValue;
+  /** The corporation's own names for its wallet divisions, by ordinal. */
+  readonly divisionNames?: Record<number, string>;
+  readonly transactions?: JsonValue;
+  readonly entryTypes?: JsonValue;
+  /** Why each call fails, where it does. */
+  readonly errors?: Partial<Record<"cash" | "divisions" | "corp" | "transactions" | "entryTypes", string | null>>;
+}
+
+/** The BFF's generic call, answering the wallet's five calls from a wallet described; and what was asked of it. */
+function walletFetch(wallet: WalletAnswers, asked: string[] = []): typeof fetch {
+  const errors = wallet.errors ?? {};
+  const answers: Record<string, readonly [JsonValue, string | null | undefined]> = {
+    "account.GetCashBalance": [wallet.cash ?? null, errors.cash],
+    "account.GetWalletDivisionsInfo": [wallet.divisions ?? null, errors.divisions],
+    "corpRegistry.GetCorporation": [corporationRow(wallet.divisionNames ?? {}), errors.corp],
+    "account.GetTransactions": [wallet.transactions ?? null, errors.transactions],
+    "account.GetEntryTypes": [wallet.entryTypes ?? null, errors.entryTypes],
+  };
+  return (async (input: unknown, init?: RequestInit) => {
+    if (String(input) !== "/api/bridge/call") {
+      asked.push(String(input));
+      return { ok: true, status: 200, async json() { return { ok: true }; } };
+    }
+    const { service, method, args } = JSON.parse(String(init?.body)) as { service: string; method: string; args: JsonValue[] };
+    asked.push(`${service}.${method}(${JSON.stringify(args).slice(1, -1)})`);
+    const [result, failure] = answers[`${service}.${method}`] ?? [null, "CALL_NOT_ALLOWED"];
+    return failure
+      ? { ok: false, status: 502, async json() { return { ok: false, error: failure, message: `${service}.${method} failed.` }; } }
+      : { ok: true, status: 200, async json() { return { ok: true, service, method, result, notifications: [] }; } };
+  }) as unknown as typeof fetch;
 }
 
 test("loadWallet decodes the personal balance and the named corp divisions", async () => {
   const store = createClientStore();
+  const asked: string[] = [];
   const flow = createAppFlow(store, {
     fetch: walletFetch({
-      ok: true,
       cash: 1000165000,
       divisions: divisionsList([
         [1000, 500000000],
         [1001, 0],
+        [1002, 5],
       ]),
-      divisionNames: { 1: "Master Wallet", 2: "" },
+      divisionNames: { 1: "not the corporation's to name", 2: "Payroll", 3: "" },
       errors: { cash: null, divisions: null, corp: null },
-    }),
+    }, asked),
   });
 
   await flow.loadWallet();
@@ -57,17 +97,30 @@ test("loadWallet decodes the personal balance and the named corp divisions", asy
   assert.equal(wallet.cashError, null);
   assert.equal(wallet.corpError, null);
   assert.deepEqual(wallet.corpDivisions, [
-    { key: 1000, division: 1, name: "Master Wallet", balance: "500000000" },
-    // Blank name -> null (the panel shows "Division 2"); 0 ISK is a real balance.
-    { key: 1001, division: 2, name: null, balance: "0" },
+    // The first is the master wallet, which the client names itself and no corporation does: the panel has its word.
+    { key: 1000, division: 1, name: null, balance: "500000000" },
+    // The corporation's own name for its second wallet division, and never its second hangar's.
+    { key: 1001, division: 2, name: "Payroll", balance: "0" },
+    // Blank name -> null (the panel shows "Division 3"); 5 ISK is a real balance.
+    { key: 1002, division: 3, name: null, balance: "5" },
   ]);
+  // Asked as the client's own services ask, by the generic call, and of no route of the wallet's own.
+  assert.deepEqual(asked.slice().sort(), [
+    "account.GetCashBalance(0)",
+    "account.GetEntryTypes()",
+    "account.GetTransactions(1000,null,null,false)",
+    "account.GetWalletDivisionsInfo()",
+    "corpRegistry.GetCorporation()",
+  ]);
+  // Read again, as when the window is opened again: the entry kinds are not asked for twice.
+  await flow.loadWallet();
+  assert.deepEqual([asked.length, asked.filter((each) => each === "account.GetEntryTypes()").length], [9, 1]);
 });
 
 test("loadWallet: a FAILED corp read leaves corpDivisions null and sets corpError", async () => {
   const store = createClientStore();
   const flow = createAppFlow(store, {
     fetch: walletFetch({
-      ok: true,
       cash: 42,
       divisions: null,
       divisionNames: {},
@@ -90,7 +143,6 @@ test("loadWallet: a SUCCESSFUL empty divisions list is [] (a real 'no divisions'
   const store = createClientStore();
   const flow = createAppFlow(store, {
     fetch: walletFetch({
-      ok: true,
       cash: 0,
       divisions: { type: "list", items: [] },
       divisionNames: {},
@@ -110,10 +162,9 @@ test("loadWallet: a failed personal read carries its own error, corp unaffected"
   const store = createClientStore();
   const flow = createAppFlow(store, {
     fetch: walletFetch({
-      ok: true,
       cash: null,
-      divisions: divisionsList([[1000, 7]]),
-      divisionNames: { 1: "Master Wallet" },
+      divisions: divisionsList([[1001, 7]]),
+      divisionNames: { 2: "Payroll" },
       errors: { cash: "READ_FAILED", divisions: null, corp: null },
     }),
   });
@@ -124,7 +175,7 @@ test("loadWallet: a failed personal read carries its own error, corp unaffected"
   assert.equal(wallet.cashBalance, null);
   assert.equal(wallet.cashError, "READ_FAILED");
   assert.deepEqual(wallet.corpDivisions, [
-    { key: 1000, division: 1, name: "Master Wallet", balance: "7" },
+    { key: 1001, division: 2, name: "Payroll", balance: "7" },
   ]);
 });
 
@@ -154,7 +205,6 @@ test("loadWallet decodes the wallet's activity, read as the client reads it, wit
   const store = createClientStore();
   const flow = createAppFlow(store, {
     fetch: walletFetch({
-      ok: true,
       cash: 115789452720,
       divisions: null,
       divisionNames: {},
@@ -181,7 +231,7 @@ test("loadWallet: a wallet with no activity is an empty list, not a failed read"
   const store = createClientStore();
   const flow = createAppFlow(store, {
     fetch: walletFetch({
-      ok: true, cash: 42, divisions: null, divisionNames: {}, transactions: { type: "list", items: [] }, entryTypes: null,
+      cash: 42, divisions: null, divisionNames: {}, transactions: { type: "list", items: [] }, entryTypes: null,
       errors: { cash: null, divisions: null, corp: null, transactions: null, entryTypes: null },
     }),
   });
@@ -195,7 +245,6 @@ test("loadWallet: a FAILED read of the activity leaves it null and says why", as
   const store = createClientStore();
   const flow = createAppFlow(store, {
     fetch: walletFetch({
-      ok: true,
       cash: 42,
       divisions: null,
       divisionNames: {},
