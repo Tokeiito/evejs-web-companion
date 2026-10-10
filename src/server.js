@@ -890,7 +890,7 @@ const provisioningCenter = require("./provisioningCenter").registerProvisioningC
 
 const trainingEquipment = require("./trainingEquipment").createTrainingEquipment({ center: provisioningCenter,
   async readQualification(account, input) {
-    return (await readMinerPilot({ store, gateway, data: staticData, account, ...input })).read;
+    return (await readMinerPilot({ store, gateway, data: staticData, account, readSkills: accountSkillSheet, ...input })).read;
   } });
 for (const action of ["review", "apply", "recover"]) app.post(`/api/pilot-training/equipment/${action}`, requireTrainingAuth, async (req, res, next) => {
   try { res.json({ ok: true, [action === "review" ? "review" : "outcome"]: await trainingEquipment[action](req.account, req.body || {}, req.webSessionID) }); }
@@ -901,7 +901,7 @@ const miningPreparation = options.miningPreparation || require("./miningPreparat
   store, readDefinitions: (accountID,input) => require("./provisioningRoutes").readProvisioningDefinitions({
     store,gateway,data:staticData,accountID,providerCharacterID:input.providerCharacterID,supplyPolicy:input.supplyPolicy }),
   engine: replenishment, data: staticData, bots: () => botHost.listAll(),
-  readSkills: (accountID, characterID) => gateway.getSkills(accountID, characterID),
+  readSkills: (accountID, characterID) => accountSkillSheet(accountID, characterID),
   currentRun: operationID => miningOperations.runtimeFor(operationID)?.operationRunID ||
     botHost.listAll().find(b=>b.operationID===operationID && !b.endedAt)?.operationRunID,
   adapterFor(record) {
@@ -20916,6 +20916,29 @@ async function skillSheetFor(account, characterID, held = null, webSessionID = n
   return gateway.getSkills(account.accountID, characterID);
 }
 
+/**
+ * A pilot's skill sheet for a read the ACCOUNT makes of it: the hangar's roster, Pilot Training, mining
+ * preparation. Such a read does not come from the web session that is flying the pilot, and may be of a pilot
+ * nobody is flying.
+ *
+ * The web gateway's `skills` is the plan's for a pilot who is not online (docs/game-port-transport-plan.md, 2.3).
+ * A pilot of this account that is online on this BFF on the game port has a session that keeps what the client's
+ * skill services keep, and the sheet is made from that, as the pilot's own Skills window has it (skillSheetFor).
+ * If that session cannot say, the gateway is asked, as it was before.
+ */
+async function accountSkillSheet(accountID, characterID) {
+  const flown = [...bridgeSessions.values()].find((held) => held &&
+    Number(held.characterID) === Number(characterID) && Number(held.accountID) === Number(accountID)) || null;
+  if (flown && gamePortPilots && isGamePortHandle(flown.bridgeSessionID)) {
+    try {
+      return await gamePortPilots.skillSheet({ userid: flown.accountID }, flown.bridgeSessionID);
+    } catch {
+      // The pilot's session went, or could not make a sheet: the read is the account's, and falls to the gateway.
+    }
+  }
+  return gateway.getSkills(accountID, characterID);
+}
+
 async function answerWithSkillSheet(res, account, characterID, extra = {}, held = null, webSessionID = null) {
   const skills = await skillSheetFor(account, characterID, held, webSessionID);
   if (!skills) {
@@ -20998,7 +21021,7 @@ app.get("/api/roster/training", requireAuth, async (req, res, next) => {
       characterIDs.map(async (characterID) => {
         let skills = null;
         try {
-          skills = await gateway.getSkills(req.account.accountID, characterID);
+          skills = await accountSkillSheet(req.account.accountID, characterID);
         } catch (error) {
           // Not ours, not there, or the gateway stumbled. Say nothing about this
           // pilot; the client keeps the row it had.
@@ -21055,7 +21078,7 @@ app.get("/api/pilot-training/qualification", requireTrainingAuth, async (req, re
     if (raw.length > 8192) throw Object.assign(new Error("Configuration too large."), { statusCode: 400 });
     let configurations;
     try { configurations = JSON.parse(raw); } catch { throw Object.assign(new Error("Invalid configuration."), { statusCode: 400 }); }
-    const { read } = await readMinerPilot({ store, gateway, data: staticData, account: req.account,
+    const { read } = await readMinerPilot({ store, gateway, data: staticData, account: req.account, readSkills: accountSkillSheet,
       characterID, configurations, role: req.query.role, targetStage: req.query.targetConfigurationID || null });
     const sourceText = String(req.query.equipmentSource || '{"kind":"hangar"}');
     if (sourceText.length > 512) throw Object.assign(new Error("Invalid physical source."), { statusCode: 400 });
@@ -21084,7 +21107,7 @@ app.get("/api/pilot-training/miner", requireTrainingAuth, async (req, res, next)
         return;
       }
     }
-    const { read } = await readMinerPilot({ store, gateway, data: staticData, account: req.account, characterID, selections, targetStage: req.query.targetStage ?? null });
+    const { read } = await readMinerPilot({ store, gateway, data: staticData, account: req.account, readSkills: accountSkillSheet, characterID, selections, targetStage: req.query.targetStage ?? null });
     res.json({ ok: true, ...read });
   } catch (error) {
     next(error);
@@ -21891,7 +21914,7 @@ app.get("/api/roster/planets", requireAuth, async (req, res, next) => {
         const corporationID = Number(character && character.corporationID) || 0;
         let skills = null;
         try {
-          skills = await gateway.getSkills(req.account.accountID, characterID);
+          skills = await accountSkillSheet(req.account.accountID, characterID);
         } catch (error) {
           // The colonies still stand; only the slot count goes unknown.
           void error;

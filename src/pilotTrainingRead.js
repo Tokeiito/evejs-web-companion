@@ -8,7 +8,7 @@ function trainingError(code, message = code, statusCode = 409) {
 }
 
 async function readMinerPilot({ store, gateway, data, account, characterID, selections, targetStage = null, sheet: providedSheet,
-  configurations, role = "MINER" }) {
+  configurations, role = "MINER", readSkills = (accountID, id) => gateway.getSkills(accountID, id) }) {
   const generic = configurations !== undefined;
   const config = require("./trainingConfigurations");
   const definitions = generic ? config.configurationStages(role, configurations) : training.STAGES;
@@ -23,7 +23,9 @@ async function readMinerPilot({ store, gateway, data, account, characterID, sele
   if (library.status === "NOT_OWNED") throw trainingError("CHARACTER_NOT_FOUND", "Account does not own this pilot.", 404);
   if (library.status !== "READY") throw trainingError("CORPORATION_FITTINGS_UNAVAILABLE", "Corporation fitting authority is unavailable.", 503);
   const fittings = fittingAuthority.resolveStageFittings(definitions, library.fittings, selections, library.corporationID);
-  const sheet = providedSheet === undefined ? await gateway.getSkills(account.accountID, characterID) : providedSheet;
+  // Whoever asks says where a pilot's skills are read (the BFF reads a pilot that is online on the game port from
+  // its own session); left unsaid, they are the gateway's.
+  const sheet = providedSheet === undefined ? await readSkills(account.accountID, characterID) : providedSheet;
   if (!sheet) throw trainingError("SKILL_STATE_UNAVAILABLE", "Skill state is unreadable.", 503);
   let report;
   try {

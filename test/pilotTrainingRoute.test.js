@@ -17,9 +17,21 @@ const fit = { type: "object", name: "util.KeyVal", args: { type: "dict", entries
 const corpLibrary = { type: "object", name: { type: "rawstr", value: "carbon.common.script.net.objectCaching.CachedMethodCallResult" },
   args: [{}, { type: "substream", value: { type: "dict", entries: [[7, fit]] } }] };
 
-function app({ structurePilot = false, gatewayCall = null } = {}) {
+/** The static data the training read needs, small enough to read. */
+function dataStub() {
   const equipment = new Set([32880, 89240, 17480, 22542, 578, 444, 439, 483,
     2464, 10246, 2046, 31370, 31752, 3829, 17482, 31790, 31754, 15508]);
+  return {
+    getType: (id) => equipment.has(id) || id > 0 ? { typeID: id, categoryID: [32880,89240,17480].includes(id) ? 6 : 7 } : null,
+    getStation: (id) => id === 60010825 ? { stationName:"Test home", solarSystemID:30004504 } : null,
+    getSolarSystemName: (id) => id === 30001401 ? "Nonni" : null,
+    findMapLocations: () => ({ matches: [], capped: false }),
+    getSkillType: (id) => ({ typeID: id, name: `Skill ${id}` }),
+    getTypeDogma: (id) => ({ attributes: [32880, 89240, 17480].includes(id) ? { 182: 3386, 277: 3 } : {} }),
+  };
+}
+
+function app({ structurePilot = false, gatewayCall = null } = {}) {
   return createApp({
     webAuth: {
       createSessionToken: () => "test-token",
@@ -50,17 +62,41 @@ function app({ structurePilot = false, gatewayCall = null } = {}) {
       },
       async saveSkillQueue() { throw new Error("A qualification read must not save a queue."); },
     },
-    staticData: {
-      getType: (id) => equipment.has(id) || id > 0 ? { typeID: id, categoryID: [32880,89240,17480].includes(id) ? 6 : 7 } : null,
-      getStation: (id) => id === 60010825 ? { stationName:"Test home", solarSystemID:30004504 } : null,
-      getSolarSystemName: (id) => id === 30001401 ? "Nonni" : null,
-      findMapLocations: () => ({ matches: [], capped: false }),
-      getSkillType: (id) => ({ typeID: id, name: `Skill ${id}` }),
-      getTypeDogma: (id) => ({ attributes: [32880, 89240, 17480].includes(id) ? { 182: 3386, 277: 3 } : {} }),
-    },
+    staticData: dataStub(),
     errorLogger() {},
   });
 }
+
+// The BFF reads a pilot that is online on the game port from that pilot's own session (accountSkillSheet in
+// src/server.js) and hands the training read the way to ask; told nothing, the read asks the gateway, as before.
+test("the training read takes a pilot's skills from whoever it is told to ask, and from the gateway when told nothing", async () => {
+  const { readMinerPilot } = require("../src/pilotTrainingRead");
+  const store = { async listCharactersForAccount() { return [{ accountID: ACCOUNT.accountID, characterID: CHARACTER_ID, characterName: "Test Miner", corporationID: CORP, corporationName: "Mining Corp" }]; } };
+  const asked = [];
+  const sheet = (totalSkillPoints) => ({ characterName: "Test Miner", serverNowMs: 1_800_000_000_000, totalSkillPoints, skills: [], queue: { active: false, entries: [] } });
+  const gateway = {
+    async getSkills(accountID, id) { asked.push(["the gateway", accountID, id]); return sheet(1); },
+    async callMethod() { return { result: corpLibrary }; },
+  };
+  const input = { store, gateway, data: dataStub(), account: ACCOUNT, characterID: CHARACTER_ID, selections: {} };
+
+  const told = await readMinerPilot({ ...input, readSkills: async (accountID, id) => { asked.push(["whoever was named", accountID, id]); return sheet(2); } });
+  assert.deepEqual(asked, [["whoever was named", ACCOUNT.accountID, CHARACTER_ID]]);
+  assert.equal(told.sheet.totalSkillPoints, 2);
+
+  asked.length = 0;
+  const untold = await readMinerPilot(input);
+  assert.deepEqual(asked, [["the gateway", ACCOUNT.accountID, CHARACTER_ID]]);
+  assert.equal(untold.sheet.totalSkillPoints, 1);
+
+  // A sheet handed in is the sheet, and nobody is asked.
+  asked.length = 0;
+  const handed = await readMinerPilot({ ...input, sheet: sheet(3), readSkills: async () => { asked.push(["whoever was named"]); return sheet(2); } });
+  assert.deepEqual([asked, handed.sheet.totalSkillPoints], [[], 3]);
+
+  // No sheet to be had is the read's own refusal, whoever was asked.
+  await assert.rejects(readMinerPilot({ ...input, readSkills: async () => null }), (error) => error.code === "SKILL_STATE_UNAVAILABLE");
+});
 
 test("training routes read only account-owned pilots without selecting a gameplay session", async (t) => {
   const server = app().listen(0, "127.0.0.1");

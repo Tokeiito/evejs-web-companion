@@ -79,12 +79,19 @@ function gatewayResponse(body = {}) {
   };
 }
 
+/** Somebody else, signed in to the same BFF in another web session: for what one account must not learn of another's pilot. */
+const OTHER_ACCOUNT = { username: "somebody-else", accountID: 5, role: "0", banned: false };
+const OTHER_TOKEN = "another-signed-login-cookie";
+
 function fakeAuth() {
   return {
     createSessionToken() {
       return COOKIE_TOKEN;
     },
     verifySessionToken(token) {
+      if (token === OTHER_TOKEN) {
+        return { username: OTHER_ACCOUNT.username, accountID: OTHER_ACCOUNT.accountID, sessionID: "another-web-session" };
+      }
       return token === COOKIE_TOKEN
         ? {
           username: ACCOUNT.username,
@@ -102,6 +109,7 @@ function fakeAuth() {
 function fakeStore(overrides = {}) {
   return {
     async getAccount(username) {
+      if (username === OTHER_ACCOUNT.username) return { ...OTHER_ACCOUNT };
       return username === ACCOUNT.username ? { ...ACCOUNT } : null;
     },
     async listCharactersForAccount(accountID) {
@@ -2125,6 +2133,61 @@ test("on the game port the Skills sheet is the transport's own, made from what i
   assert.equal(lost.answer.response.status, 404);
   const next = await apiRequest(lost.baseUrl, "/api/bridge/skills");
   assert.equal(next.response.status >= 400 && next.response.status !== 404, true);
+});
+
+// A read the ACCOUNT makes of a pilot's skills (the hangar's roster of who is training what) is not the pilot's own
+// Skills window, and may be of a pilot nobody is flying. For one that is online here on the game port the sheet is
+// still that pilot's session's; the gateway's `skills` is for a pilot who is not online.
+
+test("the roster's read of a pilot's training is that pilot's own session's while it is flown here on the game port, and the gateway's otherwise", async () => {
+  const training = (baseUrl, ids) => apiRequest(baseUrl, `/api/roster/training?characterIDs=${ids}`);
+  const queued = (sheet, skillName) => ({ ...sheet, skills: [{ typeID: 3300, name: skillName }], queue: { ...sheet.queue, active: true, entries: [{ typeID: 3300, toLevel: 5, endTimeMs: 99 }] } });
+  const row = (characterID, skillName) => ({ characterID, skillTypeID: 3300, skillName, toLevel: 5, endsAtMs: 99 });
+
+  // Pilot 7 is flown on the game port by this account; pilot 8 is the account's too and nobody is flying it.
+  const flown = await skillsRoute({ sheet: () => queued(SHEET_KEPT, "kept") });
+  flown.gatewayRead.length = 0;
+  flown.sheetAsked.length = 0;
+  const gatewaySheets = [];
+  const both = await training(flown.baseUrl, "7,8");
+  assert.equal(both.response.status, 200);
+  // (The stand-in gateway answers the same sheet for anyone: an idle queue, so a row with nothing training.)
+  assert.deepEqual(both.payload.training, [row(7, "kept"), { characterID: 8, skillTypeID: null, skillName: null, toLevel: null, endsAtMs: null }]);
+  assert.deepEqual(flown.sheetAsked, [{ sessionFields: { userid: 4 }, bridgeSessionID: GAME_PORT_SESSION_ID }]);
+  assert.deepEqual(flown.gatewayRead, [[4, 8]], "the gateway is asked of the pilot nobody is flying, and of no other");
+  void gatewaySheets;
+
+  // The pilot's session cannot make a sheet: the read is the account's, and the gateway is asked instead.
+  let broken = false;
+  const failing = await skillsRoute({ sheet: () => { if (broken) throw Object.assign(new Error("gone"), { code: "SESSION_NOT_FOUND", statusCode: 404 }); return SHEET_KEPT; } });
+  broken = true;
+  failing.gatewayRead.length = 0;
+  failing.sheetAsked.length = 0;
+  const fallen = await training(failing.baseUrl, "7");
+  assert.equal(fallen.response.status, 200);
+  assert.deepEqual([fallen.payload.training.map((each) => each.characterID), failing.sheetAsked.length, failing.gatewayRead], [[7], 1, [[4, 7]]]);
+  // And the web session that flies the pilot still holds it: a roster's read forgets nobody. (The pilot's own
+  // Skills window, asked once the session can say again, is answered from it.)
+  broken = false;
+  const own = await apiRequest(failing.baseUrl, "/api/bridge/skills");
+  assert.deepEqual([own.response.status, own.payload.skills], [200, SHEET_KEPT]);
+
+  // Another account asking of that pilot is not answered from the pilot's session: whose a pilot is, is the
+  // gateway's to say, and it is asked as that account.
+  const asOther = { authenticated: false, headers: { cookie: `evejs_web_poc=${OTHER_TOKEN}` } };
+  flown.gatewayRead.length = 0;
+  flown.sheetAsked.length = 0;
+  const pried = await apiRequest(flown.baseUrl, "/api/roster/training?characterIDs=7", asOther);
+  assert.equal(pried.response.status, 200);
+  assert.deepEqual([flown.sheetAsked, flown.gatewayRead], [[], [[OTHER_ACCOUNT.accountID, 7]]]);
+  assert.notDeepEqual(pried.payload.training, [row(7, "kept")]);
+
+  // A pilot flown through the gateway is read from the gateway, as before.
+  const onGateway = await skillsRoute({ transport: "gateway", sheet: () => queued(SHEET_KEPT, "kept") });
+  onGateway.gatewayRead.length = 0;
+  onGateway.sheetAsked.length = 0;
+  await training(onGateway.baseUrl, "7");
+  assert.deepEqual([onGateway.gatewayRead, onGateway.sheetAsked], [[[4, 7]], []]);
 });
 
 test("on the gateway a queue is saved by name, as before: started unless it is empty", async () => {
