@@ -449,6 +449,21 @@ Take these defaults, and list each under "For the operator" in the log so they c
   <characterID>` is the pattern: it imports the page's TypeScript and asks through
   `/api/bridge/call`). Reading the client for a route is where the route's own faults show:
   the wallet's divisions had the hangar's names.
+- **After a route is moved, read the game port's ledger for its calls** (`call-ledger.json` in the
+  check BFF's data folder). A call the route made unchecked is still unchecked when the page
+  makes it: the standings' two details were. Set it against the client's spelling in
+  `src/gamePort/retailCalls.js` in the same unit, with every caller in the client found.
+  And read what the transport already keeps of the feature before writing any keeping in
+  the page: the standings' two lists were the transport's, and the page's asking is
+  answered from them.
+- **A read made of several calls fails as a whole for what is nobody's own failure**
+  (`failsTheReading` in `web/src/bridge/ask.ts`): the pilot gone, the BFF holding none, the
+  BFF not reached, the flow moved on, the web session not known. Anything the server
+  answered one call with is that read's own. A flow test that has "the read fails" answer
+  with a status is testing the second; one that throws from its fetch is testing the first.
+- **A side-by-side that differs says at which leaves** (`standings-compare.mjs <repo> <scratch>
+  <bff> <account> <characterID>` counts them): one leaf of a cached call's answer is the
+  clock.
 - **Something done to a pilot from outside, with its page open:** the page holds the pilot,
   so a script cannot be it too. Have a pilot of another account do it, through its own
   session on the same BFF (`give-cash.js <scratch> <bff> <account> <characterID> <toID>
