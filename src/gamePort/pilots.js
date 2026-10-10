@@ -232,6 +232,13 @@ const STATION_OFFICES = "GetCorporationsWithOffices";
  * (officeManager.GetCorpOfficeAtLocation, 106: the Moniker's isPrimed).
  */
 const PRIME_OFFICE = "PrimeOfficeItem";
+const ACCOUNT = "account";
+/**
+ * What the client's account service asks for once and keeps (svc.account GetStaticData, accountsvc.py 86: kept in
+ * `self.data` until the character changes): the names of a wallet entry's kinds. On Tranquility it was asked once
+ * while the wallet's transactions were asked three times (Archive/Open Wallet - Plex - Corp Wallet - Corp Transfers).
+ */
+const ACCOUNT_STATIC = new Set(["GetEntryTypes"]);
 /**
  * What a read of the office manager's is kept as: the offices the pilot's corporation rents, wherever they are
  * (officeManager.corp_offices: GetMyCorporationsOffices(), officeManager.py 41), asked with nothing. Null for any
@@ -1124,6 +1131,10 @@ function createGamePortPilots({
       cloneGrade: undefined,
       /** Whether the office's item was primed on the Moniker for where the pilot is docked (PRIME_OFFICE): its answer, kept while docked there. */
       officePrimed: createKeptReads(),
+      /** The account service's static data (ACCOUNT_STATIC), kept for as long as the character is. */
+      accountStatic: createKeptReads(),
+      /** godma's priming that is out now, and the ship in a place it is for: whoever wants the ship's readings meanwhile waits for it. */
+      dogmaPriming: null,
       stationWork: Promise.resolve(),
       /** What each container bound for the BFF lists, as the server answered, until something may have changed it (INVENTORY_LISTINGS). */
       listings: createKeptReads(),
@@ -1432,6 +1443,14 @@ function createGamePortPilots({
       const kept = await run(entry, service, method, () => entry.officePrimed.read(method, () => {
         ledger.note(service, method, form.status === "same" ? { ...form, status: "reshaped" } : form);
         return monikerCall(entry, service, method, [], null);
+      }));
+      return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
+    }
+    // The account service's static data: asked once and kept, however many windows want it and however many at once.
+    if (service === ACCOUNT && ACCOUNT_STATIC.has(method)) {
+      const kept = await run(entry, service, method, () => entry.accountStatic.read(method, () => {
+        ledger.note(service, method, form);
+        return byName(entry.session, service, method, form);
       }));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
@@ -1954,29 +1973,44 @@ function createGamePortPilots({
   async function shipReadings(entry, place) {
     const loadedFor = primedFor(entry, place);
     if (entry.dogmaLoaded !== loadedFor) {
-      try {
-        // godma.GetDogmaLM: the dogma location bound for where the pilot is, kept and asked everything of.
-        ledger.note("dogmaIM", "GetAllInfo", DOGMA_AS_GODMA_PRIMES);
-        // primeCharacter, primeShip, primeStructure: a character and a ship, and no structure.
-        const allInfo = await monikerCall(entry, "dogmaIM", "GetAllInfo", [true, true, null]);
-        entry.dogma.clear();
-        entry.dogma.loadAllInfo(allInfo);
-        entry.dogmaLoaded = loadedFor;
-        if (entry.targetsOwed) targetsRefreshed(entry).catch(() => {});
-        // The ship's own row, as the server gave it: what ShipGetInfo would answer, were it asked.
-        const rows = keyValField(wireToBridgeJson(allInfo), "shipInfo");
-        const own = rows && Array.isArray(rows.entries) ? rows.entries.find(([itemID]) => positive(itemID) === place.shipID) : null;
-        entry.shipRow = own ? own[1] : null;
-      } catch (error) {
-        const mapped = toPilotError(error, "dogmaIM", "GetAllInfo");
-        if (mapped.code === "SESSION_NOT_FOUND") {
-          end(entry, "connection_closed");
-          throw mapped;
-        }
-        return null; // the snapshot is still worth having; the readings say unknown
+      // Once for a ship in a place means once however many want its readings while the asking is out: the client
+      // has one godma, and one priming of it. Each of them waits for the one answer.
+      if (!entry.dogmaPriming || entry.dogmaPriming.for !== loadedFor) {
+        const priming = { for: loadedFor, done: null };
+        priming.done = primeGodma(entry, place, loadedFor).finally(() => {
+          if (entry.dogmaPriming === priming) entry.dogmaPriming = null;
+        });
+        entry.dogmaPriming = priming;
       }
+      if (!(await entry.dogmaPriming.done)) return null; // the snapshot is still worth having; the readings say unknown
     }
     return entry.dogma.shipReadings(place.shipID);
+  }
+
+  /** The asking itself. True where godma is primed for the ship in the place; false where dogma could not be asked; fails where the session is lost. */
+  async function primeGodma(entry, place, loadedFor) {
+    try {
+      // godma.GetDogmaLM: the dogma location bound for where the pilot is, kept and asked everything of.
+      ledger.note("dogmaIM", "GetAllInfo", DOGMA_AS_GODMA_PRIMES);
+      // primeCharacter, primeShip, primeStructure: a character and a ship, and no structure.
+      const allInfo = await monikerCall(entry, "dogmaIM", "GetAllInfo", [true, true, null]);
+      entry.dogma.clear();
+      entry.dogma.loadAllInfo(allInfo);
+      entry.dogmaLoaded = loadedFor;
+      if (entry.targetsOwed) targetsRefreshed(entry).catch(() => {});
+      // The ship's own row, as the server gave it: what ShipGetInfo would answer, were it asked.
+      const rows = keyValField(wireToBridgeJson(allInfo), "shipInfo");
+      const own = rows && Array.isArray(rows.entries) ? rows.entries.find(([itemID]) => positive(itemID) === place.shipID) : null;
+      entry.shipRow = own ? own[1] : null;
+      return true;
+    } catch (error) {
+      const mapped = toPilotError(error, "dogmaIM", "GetAllInfo");
+      if (mapped.code === "SESSION_NOT_FOUND") {
+        end(entry, "connection_closed");
+        throw mapped;
+      }
+      return false;
+    }
   }
 
   /**

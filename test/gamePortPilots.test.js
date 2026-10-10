@@ -7012,3 +7012,125 @@ test("crimewatch's reads at a choosing fail each for itself, and the choosing do
   const other = await selected({ answers: { "bound:GetClientStates": "states", "bound:GetMySecurityStatus": () => { throw refusedBy("NotNow"); } } }, CRIME_PAIRS);
   assert.deepEqual([typeof other.outcome.bridgeSessionID, carriedByCrimewatch(other.session)], ["string", ["GetClientStates", "GetMySecurityStatus"]]);
 });
+
+// ── what a client asks once, asked once however many want it together ────────
+//
+// The page asks the BFF many things at once (on the tab's socket, thirty at a login), and several of them want
+// the same thing of the server underneath. A retail client has one godma and one account service: each asks once.
+
+test("godma is primed once for a ship in a place however many want the ship's readings at once", async () => {
+  let asking = 0;
+  let fails = false;
+  const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": () => { asking += 1; if (fails) throw new Error("not now"); return shipAllInfo(); } } });
+  const asked = () => session.boundCalls.filter((call) => call.method === "GetAllInfo").length;
+  // Five at once, of three kinds: one asking, and each has what it wanted.
+  const together = await Promise.all([pilots.shipInfo(FIELDS, handle), pilots.shipInfo(FIELDS, handle), pilots.readFlightStatus(handle), pilots.readFlightStatus(handle), pilots.shipInfo(FIELDS, handle)]);
+  assert.deepEqual([asked(), asking], [1, 1]);
+  assert.deepEqual(together.map((each) => (each.row ? "row" : each.flight ? "flight" : "nothing")), ["row", "row", "flight", "flight", "row"]);
+  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "dogmaIM.GetAllInfo").calls, 1);
+  // And none after, while the ship and the place are the same.
+  await Promise.all([pilots.shipInfo(FIELDS, handle), pilots.readFlightStatus(handle)]);
+  assert.equal(asked(), 1);
+
+  // Another ship: once more, for however many.
+  session.attributes.shipid = 77;
+  session.change({ shipid: [SHIP, 77] });
+  await Promise.all([pilots.shipInfo(FIELDS, handle), pilots.shipInfo(FIELDS, handle), pilots.readFlightStatus(handle)]);
+  assert.equal(asked(), 2);
+
+  // Dogma not answering for a ship: each of those who asked together is told there is nothing, of the one asking;
+  // and it is asked again when next wanted, since nothing was primed.
+  session.attributes.shipid = 555;
+  session.change({ shipid: [77, 555] });
+  fails = true;
+  const nothing = await Promise.all([pilots.shipInfo(FIELDS, handle), pilots.shipInfo(FIELDS, handle), pilots.shipInfo(FIELDS, handle)]);
+  assert.deepEqual(nothing, Array.from({ length: 3 }, () => ({ shipID: 555, row: null, online: [] })));
+  assert.equal(asked(), 3);
+  fails = false;
+  assert.ok((await pilots.shipInfo(FIELDS, handle)).row === null || asked() === 4);
+  assert.equal(asked(), 4);
+});
+
+test("a ship that changes while godma is being primed is primed for itself, and those who asked of each wait for their own", async () => {
+  const waiting = [];
+  const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": () => new Promise((resolve) => waiting.push(() => resolve(shipAllInfo()))) } });
+  const asked = () => session.boundCalls.filter((call) => call.method === "GetAllInfo").length;
+  /** Waits, for a bounded while, until this many askings are out. */
+  const out = async (count) => {
+    for (let turn = 0; turn < 500 && waiting.length < count; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+    return waiting.length;
+  };
+  const first = [pilots.shipInfo(FIELDS, handle), pilots.shipInfo(FIELDS, handle)];
+  assert.equal(await out(1), 1);
+  // The pilot is in another ship before the first asking is answered: what is out is of the old one.
+  session.attributes.shipid = 77;
+  session.change({ shipid: [SHIP, 77] });
+  const second = [pilots.shipInfo(FIELDS, handle), pilots.shipInfo(FIELDS, handle)];
+  // The old ship's is answered; the new ship's goes out then, once for the two that want it.
+  waiting[0]();
+  assert.equal(await out(2), 2);
+  // One more wants the new ship's while its priming is out, the old one's having just ended: it waits for the same.
+  const third = pilots.shipInfo(FIELDS, handle);
+  await new Promise((resolve) => setImmediate(resolve));
+  waiting[1]();
+  await Promise.all([...first, ...second, third]);
+  assert.equal(asked(), 2);
+  // Primed for the ship the pilot is in now: nothing more is asked.
+  await pilots.shipInfo(FIELDS, handle);
+  assert.equal(asked(), 2);
+});
+
+test("the names of a wallet entry's kinds are asked of the account service once, however many want them and however many at once", async () => {
+  const pairs = { allowed: new Set(["account.GetEntryTypes", "account.GetCashBalance"]) };
+  let fails = false;
+  const { pilots, session, handle } = await selected({ answers: {
+    "account.GetEntryTypes": () => { if (fails) throw sessionError("CALL_TIMEOUT", "account.GetEntryTypes got no answer"); return { type: "list", items: [["a kind"]] }; },
+    "account.GetCashBalance": 12,
+  } }, pairs);
+  const asked = (method) => session.calls.filter((call) => call.service === "account" && call.method === method).length;
+  const ask = (method, args = []) => pilots.callMethod("account", method, args, null, WHOSE, handle);
+  const three = await Promise.all([ask("GetEntryTypes"), ask("GetEntryTypes"), ask("GetEntryTypes")]);
+  assert.equal(asked("GetEntryTypes"), 1);
+  assert.deepEqual(three.map((each) => each.result), Array.from({ length: 3 }, () => ({ type: "list", items: [["a kind"]] })));
+  await ask("GetEntryTypes");
+  assert.equal(asked("GetEntryTypes"), 1);
+  assert.equal(pilots.callLedger().find((row) => row.pair === "account.GetEntryTypes").calls, 1);
+  // What the service does not keep is asked each time.
+  await Promise.all([ask("GetCashBalance", [0]), ask("GetCashBalance", [0])]);
+  assert.equal(asked("GetCashBalance"), 2);
+
+  // An asking that fails is kept as nothing: each who asked is told, and the next asks again.
+  const other = await selected({ answers: { "account.GetEntryTypes": () => { if (fails) throw sessionError("CALL_TIMEOUT", "account.GetEntryTypes got no answer"); return { type: "list", items: [] }; } } }, pairs);
+  fails = true;
+  const failed = await Promise.allSettled([other.pilots.callMethod("account", "GetEntryTypes", [], null, WHOSE, other.handle), other.pilots.callMethod("account", "GetEntryTypes", [], null, WHOSE, other.handle)]);
+  assert.deepEqual(failed.map((each) => each.status), ["rejected", "rejected"]);
+  fails = false;
+  assert.deepEqual((await other.pilots.callMethod("account", "GetEntryTypes", [], null, WHOSE, other.handle)).result, { type: "list", items: [] });
+});
+
+test("where godma cannot be primed again, the snapshot is still given and the ship's readings say unknown: never the ones from before", async () => {
+  const hand = handTicked();
+  let fails = false;
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": () => { if (fails) throw new Error("not now"); return shipAllInfo(); } } },
+    { ...hand.options, now: () => DOGMA_T_MS, effectCategory: () => null });
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
+  for (const update of recordedUpdates.slice(0, 5)) built.session.notify("DoDestinyUpdate", update.args);
+  hand.parks[0].tick();
+  const asked = () => built.session.boundCalls.filter((call) => call.method === "GetAllInfo").length;
+  const ship = async () => (await built.pilots.readSpaceSnapshot(handle)).space.ship;
+  const primed = await ship();
+  assert.ok(Math.abs(primed.capacitorRatio - 0.4) < 1e-12);
+  assert.equal(primed.shieldCapacity, 175);
+  // The server says the ship anew (the same one), and dogma does not answer for it: three ask at once, of one asking.
+  built.session.change({ shipid: [SHIP, SHIP] });
+  fails = true;
+  const unknown = await Promise.all([ship(), ship(), ship()]);
+  assert.equal(asked(), 2);
+  for (const each of unknown) assert.deepEqual([each.capacitorRatio, each.shieldCapacity, each.armorCapacity, each.hullCapacity], [null, null, null, null]);
+  // Answered when next wanted: the readings are back.
+  fails = false;
+  assert.equal((await ship()).shieldCapacity, 175);
+  assert.equal(asked(), 3);
+  assert.deepEqual(hand.errors, []);
+});
