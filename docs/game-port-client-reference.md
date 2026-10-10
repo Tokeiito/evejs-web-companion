@@ -1030,9 +1030,35 @@ The transport binds the same Moniker for where the pilot is docked, keeps the co
 until any `OnOfficeRentalChange` or the pilot is elsewhere (`pilots.js`, `stationOffices`), and
 asks for the count each time. The BFF's `GET /api/bridge/station/offices` hands both to the
 page for a pilot on the game port; the gateway's list has neither read. The page lists them
-when the player asks and at each notice after, one listing at a time. Nothing of ours rents an
-office, or asks the lobby's other four (`PrimeOfficeItem`, `HasCorpImpoundedItems`,
-`GetPriceQuote`, `GetImpoundReleasePrice`).
+when the player asks and at each notice after, one listing at a time.
+
+**The lobby's buttons, 2026-10-10.** `dockedUI/offices.py` loads its buttons before its list
+(`_load_buttons`), by three things:
+
+| What | How the client knows | What it asks |
+|---|---|---|
+| may rent; may give up | `session.corprole & role == role` (`baseController.py` 50): `corpRoleCanRentOffice` (2^49) to rent, `corpRoleDirector` (1) to give up | nothing |
+| the corporation has an office here | `officeManager.GetCorpOfficeAtLocation()` (99): its kept list of the corporation's offices | `PrimeOfficeItem()` once for the station's Moniker, where it has one (106) |
+| items impounded | `HasCorpImpoundedItemsAtStation()` (138): no for an NPC corporation, no with an office here | else `HasCorpImpoundedItems()` |
+
+To rent (`_rent_office`): `GetPriceQuote(session.corpid)` on the station's object, a question
+with the price and thirty days (`appConst.rentalPeriodOffice`), then `RentOffice(cost)` with
+the price as it was answered. To give up (`_unrent_office`): a question, with a warning where
+the office's hangars hold anything, then `UnrentOffice()`, the client first naming
+`corpmgr.GetAssetInventoryForLocation(corpid, stationID, 'offices')` for its object cache.
+Tranquility's recordings have the price answered as a long (100113), and both `RentOffice` and
+`UnrentOffice` answered None, each after the server's two notices of the office. After the
+notices the lobby asks, in order: the corporation's offices, `PrimeOfficeItem` or
+`HasCorpImpoundedItems`, the corporations with offices, the count free.
+
+On the game port the BFF asks the same, in that order (`GET /api/bridge/station/offices`,
+`GET .../office/quote`, `POST .../office/rent`, `POST .../office/give-up`), in a station. The
+roles come to it with the transport's flight status (`corpRole`, the digits of
+`session.corprole`) and go no further. Not built: an office in a structure, the headquarters
+moved, impounded items released (`GetImpoundReleasePrice`, `GetItemsFromImpound`).
+
+This server answers `RentOffice` True (False where nothing was rented, by its code), and its
+price as a plain number. The client uses neither answer for anything but the price's value.
 
 **The map's stations, 2026-10-10.** `map.GetStationInfo()` is asked once by the client's UI
 service and kept for the client's life (`uisvc.py` 246), and by five other callers through the

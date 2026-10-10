@@ -626,6 +626,18 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - A service becomes one whose calls go to a bound object by a line in `MONIKER_SERVICES`. Every
   other call of that service goes there too from then on, read or not: look at what the
   BFF's routes send of it first (`grep -n '"<service>"' src/server.js`).
+- The contract file has two lists: what the gateway will carry (`gatewayAllowlist.pairs`) and
+  what the BFF counts as a write (`bffWritePolicy.pairs`). A pair on the second alone is not
+  carried by the gateway, and for the game port goes on `GAME_PORT_ONLY_CALLS`. Look in the
+  file before writing which list has a pair: I wrote the wrong one of `officeManager.RentOffice`.
+- A new write: `FEATURE_WRITE_METHODS` in `src/bridgeCallPolicy.js`, then `node
+  scripts/build-bridge-contract.js --write`, then `test/bridgeCallPolicy.test.js`, which lists
+  the feature writes and counts all of them.
+- The pilot interface is the gateway client's nine functions, and a test holds it to them.
+  What the BFF needs of a game-port session beside them rides the flight's status and is
+  taken off in `readHeldFlight` before the page sees it (`corpRole`).
+- Run the whole suite before the live check, not after it. The files I had touched were green
+  and a list test elsewhere was red, unseen until the staging was undone.
 - A test's "watched to fail" can be had after the fact: put the source file back to the commit
   before (`git show HEAD~1:<file> > <file>`), run the test, and restore it with `git checkout
   HEAD -- <file>`. Check `git status` is clean after.
