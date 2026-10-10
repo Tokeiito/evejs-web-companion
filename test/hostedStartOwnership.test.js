@@ -27,7 +27,7 @@ const grant = { scriptRev: 1, riskClasses: [], maxRuntimeMinutes: 10 };
 const idle = { status: "idle", phase: null, why: null, startError: null };
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 
-async function harness(t, { factory = "forbidden", mcc = false } = {}) {
+async function harness(t, { factory = "forbidden", mcc = false, reach = null } = {}) {
   const botScript=mcc?{...script,doc:{program:[
     {kind:"macro",macro:"mine-at-belt",args:{belt:{kind:"belt",belt:{mode:"nearest"}}}},
     {kind:"macro",macro:"deliver-ore",args:{}}]}}:script;
@@ -140,9 +140,19 @@ async function harness(t, { factory = "forbidden", mcc = false } = {}) {
       prepareOperation: record => behavior.prepareOperation ? behavior.prepareOperation(record) : options.prepareOperation(record),
       isCharacterHeld: async (...args) => { probes.push(args); if (probeHook) await probeHook(args); return ownershipProbe(...args); } });
   };
-  let app;
+  // The server first, so that the BFF can be told its own address before it is made: a hosted bot's requests are
+  // run in process for the address the BFF knows itself by (src/inProcessFetch.js), as they are in the BFF proper.
+  let app = null;
+  const server = require("node:http").createServer((req, res) => app(req, res));
+  /** What a hosted bot asked over HTTP: every request of a host's carries its claim. */
+  const hostedOverHttp = [];
+  server.on("request", req => { if (req.headers["x-evejs-bot-claim"]) hostedOverHttp.push(req.url); });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const reachBefore = process.env.EVEJS_HOSTED_BOT_REACH;
+  if (reach) process.env.EVEJS_HOSTED_BOT_REACH = reach;
   try {
-    app = createApp({ webAuth, eveGatewayClient: gateway, errorLogger() {},
+    app = createApp({ botHostBaseUrl: baseUrl, webAuth, eveGatewayClient: gateway, errorLogger() {},
       eveStore: { getAccount: async name => name === account.username ? account : null,
         getCharacterForAccount: async (id, pilot) => {
           if (behavior.characterLookupHook) await behavior.characterLookupHook();
@@ -152,14 +162,18 @@ async function harness(t, { factory = "forbidden", mcc = false } = {}) {
       ...(mcc?{staticData:{...require("../src/staticData"),getType:id=>({100:{categoryID:6,groupID:25},200:{categoryID:7,groupID:54}})[id],getTypeName:id=>`Type ${id}`,
         getSolarSystem:id=>({solarSystemID:id,solarSystemName:"Stock system"})}}:{}),
       botScriptStore: { get: id => id === script.scriptID ? botScript : null, list: () => [botScript] } });
-  } finally { hostModule.createBotHost = makeHost; }
+  } catch (error) {
+    server.close();
+    throw error;
+  } finally {
+    hostModule.createBotHost = makeHost;
+    if (reachBefore === undefined) delete process.env.EVEJS_HOSTED_BOT_REACH; else process.env.EVEJS_HOSTED_BOT_REACH = reachBefore;
+  }
   const reservationMap = operations;
   const originalStart = app.locals.botHost.start;
   app.locals.botHost.start = input => { starts.push(input); return originalStart({ ...input, beforeStart: owner => {
     hosted.secret = owner.claimSecret; return input.beforeStart?.(owner);
   } }); };
-  const server = app.listen(0, "127.0.0.1"); await once(server, "listening");
-  baseUrl = `http://127.0.0.1:${server.address().port}`;
   const token = webAuth.createSessionToken(account), caller = webAuth.verifySessionToken(token).sessionID;
   async function post(route, body, credential = token, headers = {}) {
     const response = await fetch(`${baseUrl}${route}`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${credential}`, ...headers }, body: JSON.stringify(body || {}) });
@@ -169,7 +183,7 @@ async function harness(t, { factory = "forbidden", mcc = false } = {}) {
     behavior.releaseUncertain = false; behavior.retailBusy = false; probeHook = null;
     await app.locals.botHost.stopAll(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
   });
-  return { app, calls, sessions, probes, starts, behavior, hosted, startupRuns, reservations: reservationMap, caller, token,
+  return { app, calls, sessions, probes, starts, behavior, hosted, startupRuns, reservations: reservationMap, caller, token, hostedOverHttp,
     async browser(credential = token) {
       const selected = await post("/api/bridge/select", { characterID }, credential);
       assert.equal(selected.status, 200);
@@ -312,6 +326,30 @@ test("public Start permits its exact private reservation through the real host o
   assert.equal("probeReservation" in result.body.bot, false);
   assert.equal((await h.stop(result.body.bot.botID)).status, 200);
   assert.equal(h.sessions.size, 0); assert.equal(h.app.locals.botHost.claimedBy(characterID), null);
+});
+
+test("a hosted bot asks the BFF where it is: its requests reach the routes, and none of them comes in at the server's door", async t => {
+  const h = await harness(t), result = await h.start();
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  assert.equal(result.body.bot.status, "running");
+  // Its select was run by the route: the gateway was asked, and the pilot is held by the BFF.
+  assert.equal(h.calls.filter(([name]) => name === "select").length, 1);
+  assert.equal(h.app.locals.bridgeSessions.size, 1);
+  assert.deepEqual(h.hostedOverHttp, []);
+  assert.equal((await h.stop(result.body.bot.botID)).status, 200);
+  assert.equal(h.sessions.size, 0);
+  assert.deepEqual(h.hostedOverHttp, []);
+});
+
+test("set to loopback, a hosted bot asks the BFF over HTTP as it did", async t => {
+  const h = await harness(t, { reach: "loopback" }), result = await h.start();
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  assert.equal(result.body.bot.status, "running");
+  assert.equal(h.app.locals.bridgeSessions.size, 1);
+  assert.ok(h.hostedOverHttp.includes("/api/bridge/select"), JSON.stringify(h.hostedOverHttp));
+  assert.equal((await h.stop(result.body.bot.botID)).status, 200);
+  assert.equal(h.sessions.size, 0);
+  assert.ok(h.hostedOverHttp.includes("/api/logout"), JSON.stringify(h.hostedOverHttp));
 });
 
 for (const changed of [false, true]) test(`stock custody boundary: same-run reacquisition refuses, custody changed after probe=${changed}`, async t => {

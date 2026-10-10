@@ -100,11 +100,13 @@ function noConnection(remoteAddress) {
 /**
  * Run one request through an Express app in this process, with no connection made.
  *
- *   dispatchInProcess(app, { method, path, headers, body, remoteAddress })
+ *   dispatchInProcess(app, { method, path, headers, body, rawBody, remoteAddress })
  *     -> { status, headers, body }      body: what the route sent, as a Buffer
  *
  * `body`, where given, is sent as JSON and read by the app's own body parser, so
- * its limit and its refusals are the app's. A path no route has answers 404, as
+ * its limit and its refusals are the app's. `rawBody` is a body sent as it is
+ * (text, or bytes), under the content type the headers give it: what a caller
+ * that already has its request written out wants (src/inProcessFetch.js). A path no route has answers 404, as
  * it would over HTTP. What a route throws is answered by the app's own error
  * handler; only something thrown outside of every handler rejects.
  */
@@ -155,13 +157,16 @@ function dispatchInProcess(app, request = {}) {
 /** A request and the response it will be answered on, made of what an operation says and with no connection. */
 function requestInProcess(request) {
   const method = String(request.method || "GET").toUpperCase();
-  const payload = request.body === undefined || request.body === null ? null : Buffer.from(JSON.stringify(request.body), "utf8");
+  const raw = request.rawBody !== undefined && request.rawBody !== null;
+  const payload = raw
+    ? Buffer.from(request.rawBody)
+    : request.body === undefined || request.body === null ? null : Buffer.from(JSON.stringify(request.body), "utf8");
   const headers = { host: "in-process" };
   for (const [name, value] of Object.entries(request.headers || {})) {
     if (typeof value === "string") headers[name.toLowerCase()] = value;
   }
   if (payload) {
-    headers["content-type"] = "application/json";
+    if (!raw) headers["content-type"] = "application/json";
     headers["content-length"] = String(payload.length);
   } else {
     delete headers["content-type"];
@@ -184,11 +189,11 @@ function requestInProcess(request) {
 /**
  * Run a request whose route answers for as long as it is listened to, in this process: the event stream.
  *
- *   streamInProcess(app, { method, path, headers, remoteAddress }, { onHead(status), onChunk(buffer), onEnd(), onError(error) })
+ *   streamInProcess(app, { method, path, headers, remoteAddress }, { onHead(status, headers), onChunk(buffer), onEnd(), onError(error) })
  *     -> { close() }
  *
- * `onHead` is said once, with the route's status, before the first of what it
- * writes. `onChunk` is each thing the route writes, as it writes it. `onEnd` is
+ * `onHead` is said once, with the route's status and its headers, before the
+ * first of what it writes. `onChunk` is each thing the route writes, as it writes it. `onEnd` is
  * said once, when the route ends its answer; a path no route has ends with 404,
  * and something thrown outside of every handler with 500 (and `onError`).
  *
@@ -201,10 +206,18 @@ function streamInProcess(app, request = {}, handlers = {}) {
   const { req, res } = requestInProcess(request);
   let headSaid = false;
   let over = false;
+  // Headers handed straight to `writeHead` are written out and not kept where they can be read back: kept here.
+  const written = {};
+  const writeHead = res.writeHead;
+  res.writeHead = (...given) => {
+    const named = given.find((each) => each !== null && typeof each === "object" && !Array.isArray(each));
+    Object.assign(written, named);
+    return writeHead.apply(res, given);
+  };
   const head = () => {
     if (headSaid) return;
     headSaid = true;
-    handlers.onHead?.(res.statusCode);
+    handlers.onHead?.(res.statusCode, { ...written, ...res.getHeaders() });
   };
   const take = (chunk, encoding) => {
     if (over || chunk === undefined || chunk === null || typeof chunk === "function") return;

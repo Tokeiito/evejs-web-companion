@@ -249,6 +249,7 @@ EVEJS_PILOT_TRANSPORT=gameport # where a chosen pilot's session is held: gamepor
 EVEJS_PILOT_TRANSPORT_OVERRIDES= # single accounts, e.g. "alice=gateway,bob=gameport"
 EVEJS_GAME_HOST=               # the game port's host; default: the gateway's own host
 EVEJS_GAME_PORT=26000
+EVEJS_HOSTED_BOT_REACH=inprocess # how hosted bots ask this BFF: inprocess (default) or loopback (HTTP, as before)
 ```
 
 `npm run doctor` checks the game port as well as the gateway, and says which one is shut.

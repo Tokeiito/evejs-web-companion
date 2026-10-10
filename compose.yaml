@@ -53,6 +53,10 @@ services:
       EVEJS_PILOT_TRANSPORT_OVERRIDES: ${EVEJS_PILOT_TRANSPORT_OVERRIDES:-}
       EVEJS_GAME_HOST: ${EVEJS_GAME_HOST:-}
       EVEJS_GAME_PORT: ${EVEJS_GAME_PORT:-}
+      # How the bots this BFF hosts ask it things: in its own process (the
+      # default), or over loopback HTTP as they did (loopback), which is the
+      # way back. Unset arrives empty, which is the default.
+      EVEJS_HOSTED_BOT_REACH: ${EVEJS_HOSTED_BOT_REACH:-}
     extra_hosts:
       # Docker Desktop already provides this name; the line is what makes the
       # file work on native Linux Docker as well.

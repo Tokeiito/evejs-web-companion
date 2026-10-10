@@ -26,6 +26,7 @@ const { createPilotTransport, isGamePortHandle, pilotTransportSetting } = requir
 const { createGamePortPilots } = require("./gamePort/pilots");
 const { gameEndpoint } = require("./gamePort/tcp");
 const { attachPilotSocket } = require("./pilotSocket");
+const { createInProcessFetch, hostedBotReach } = require("./inProcessFetch");
 const { registerProvisioningRoutes } = require("./provisioningRoutes");
 const { createFactorySkills } = require("./factorySkills");
 const { createTrainingOnboarding } = require("./trainingOnboarding");
@@ -337,13 +338,18 @@ async function isCharacterHeld(characterID, callerSessionID = null, preparationO
 const accountCache = options.accountCache || createAccountCache();
 const errorLogger = options.errorLogger || ((error) => console.error(error));
 // Server-side bot host (see src/botHost.js): runs the browser bot stack in
-// THIS process, driving the routes below over loopback as just another
-// session, so a bot outlives the tab (or phone) that started it.
+// THIS process, driving the routes below as just another session, so a bot
+// outlives the tab (or phone) that started it. Its requests are run through
+// this app where it is, with no connection made (src/inProcessFetch.js; the
+// plan's Phase 6a); EVEJS_HOSTED_BOT_REACH=loopback has them made over loopback
+// HTTP to `baseUrl` as they were.
+const botHostBaseUrl = options.botHostBaseUrl || `http://127.0.0.1:${config.port}`;
 const botHost =
   options.botHost ||
   botHostModule.createBotHost({
     webAuth: auth,
-    baseUrl: options.botHostBaseUrl || `http://127.0.0.1:${config.port}`,
+    baseUrl: botHostBaseUrl,
+    fetch: options.botHostFetch || (hostedBotReach(process.env) === "loopback" ? undefined : createInProcessFetch(app, { baseUrl: botHostBaseUrl })),
     // Durable roster: running bots are mirrored here and startServer calls
     // botHost.resume() once listening, so a BFF restart brings them back.
     persistPath: path.join(config.dataDir, "server-bots.json"),
@@ -25435,6 +25441,9 @@ function startServer(options = {}) {
       } else {
         console.log(`Pilot transport: ${said} (pilots log in through the web gateway)`);
       }
+      console.log(hostedBotReach(process.env) === "loopback"
+        ? "Hosted bots: EVEJS_HOSTED_BOT_REACH=loopback (they ask this BFF over HTTP, as before)"
+        : "Hosted bots: ask this BFF in its own process (EVEJS_HOSTED_BOT_REACH=loopback is the way back)");
     }
     // The ready-made starter bots go into the library once, on first boot.
     // Deliberately here and not from a read: the store's reads never write, and

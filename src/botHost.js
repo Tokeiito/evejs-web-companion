@@ -6,9 +6,14 @@
 // closes (or a phone locks its screen) and the ship sits. This module runs the
 // SAME bot stack — clientStore + appFlow + scriptRunner, imported unchanged
 // from web/src via Node's TypeScript type-stripping — inside the BFF process,
-// driving the BFF's own HTTP surface over loopback. The browser becomes a
-// remote control: start/stop/inspect from any device, and disconnecting
-// changes nothing.
+// driving the BFF's own HTTP surface. The browser becomes a remote control:
+// start/stop/inspect from any device, and disconnecting changes nothing.
+//
+// A bot asks the BFF with the `fetch` the host is given. The BFF gives it one
+// that runs each request through the app in this process, with no connection
+// made (src/inProcessFetch.js); given none, the host uses the world's fetch
+// over loopback to `baseUrl`, which is what it always did and is the way back
+// (EVEJS_HOSTED_BOT_REACH=loopback).
 //
 // Architecturally a server bot is just ANOTHER SESSION (the R107 multibox
 // work): its flow holds its own session token, its select lands in the same
@@ -217,6 +222,9 @@ const { createHostedEventSource } = require("./hostedEventSource");
 function createBotHost(options) {
   const auth = options.webAuth;
   const baseUrl = options.baseUrl;
+  // How a bot's requests reach the BFF. Read at each request where none is handed in: the world's fetch is the
+  // world's to replace.
+  const reach = typeof options.fetch === "function" ? options.fetch : (input, init) => globalThis.fetch(input, init);
   // Injected from server.js: is ANY held bridge session flying this character?
   const isCharacterHeld = options.isCharacterHeld || (() => false);
   const logError = options.errorLogger || (() => {});
@@ -1112,7 +1120,7 @@ function createBotHost(options) {
         const headers = new Headers(init && init.headers);
         headers.set(BOT_HEADER, secret);
         const pending = (async () => {
-          const response = await globalThis.fetch(input, { ...init, headers });
+          const response = await reach(input, { ...init, headers });
           if (!response.ok && record.recoveryEnabled) {
             const body = await response.clone().json().catch(() => null);
             if (["SESSION_NOT_FOUND", "NO_LIVE_SESSION"].includes(body?.error)) {
