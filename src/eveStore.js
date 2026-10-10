@@ -111,27 +111,35 @@ async function listCharactersForAccount(accountID, options = {}) {
     .sort((left, right) => left.characterName.localeCompare(right.characterName));
 }
 
-// Ownership check for POST /api/bridge/select: the account signing in must own
-// the character it asks the bridge to select. Reads the one `characters` row
-// out of the gateway snapshot; returns null when the row is missing or belongs
-// to a different account.
+// Ownership check, first made for POST /api/bridge/select: the account signing
+// in must own the character it asks the bridge to select. Returns the account's
+// own character, or null when it has none of that id.
+//
+// It is answered from the account's own list of characters. It used to read the
+// one `characters` row out of the gateway's snapshot of that character, which
+// names a pilot: asked of a pilot who is online on this BFF, that is a read the
+// plan's cutover means the BFF to stop making (docs/game-port-transport-plan.md,
+// Phase 5), and the list says the same of every character (set side by side
+// for each of this server's, 2026-10-10). A character that is not the account's
+// is null here; the snapshot's read threw the gateway's refusal instead.
+//
+// A snapshot the caller already has may still be handed in, and is read as it was.
 async function getCharacterForAccount(accountID, characterID, options = {}) {
   const numericAccountID = Number(accountID || 0);
   const numericCharacterID = Number(characterID || 0);
   if (!numericAccountID || !numericCharacterID) {
     return null;
   }
-  const snapshot = options.snapshot || await eveGatewayClient.getSnapshot(
-    numericAccountID,
-    numericCharacterID,
-  );
-  const characters = snapshot && typeof snapshot === "object" && snapshot.characters
-    && typeof snapshot.characters === "object"
-    ? snapshot.characters
-    : {};
-  const record = characters[String(numericCharacterID)] || null;
-  const character = normalizeCharacter(numericCharacterID, record);
-  return character && character.accountID === numericAccountID ? character : null;
+  if (options.snapshot) {
+    const characters = typeof options.snapshot === "object" && options.snapshot.characters
+      && typeof options.snapshot.characters === "object"
+      ? options.snapshot.characters
+      : {};
+    const character = normalizeCharacter(numericCharacterID, characters[String(numericCharacterID)] || null);
+    return character && character.accountID === numericAccountID ? character : null;
+  }
+  const own = await listCharactersForAccount(numericAccountID);
+  return own.find((character) => character.characterID === numericCharacterID) || null;
 }
 
 async function getStatus(options = {}) {
