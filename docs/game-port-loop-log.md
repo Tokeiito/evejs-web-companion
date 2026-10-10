@@ -28228,7 +28228,7 @@ Nothing of the game's protocol is in this unit: it is how the BFF's own bots rea
 
   | | in process (the default) | `EVEJS_HOSTED_BOT_REACH=loopback` |
   | --- | --- | --- |
-  | the BFF's connections to itself | 0 in each of 38 samples | 5 or 6 in 33 of 39 samples; 2, 3, 4 and 7 once each; 0 in the first two |
+  | the BFF's connections to itself | 0 in each of 38 samples | 5 or 6 in 33 of 39 samples; 2, 3, 4 and 7 once each; 0 in the first, before the bot had started, and in the last, after it was stopped |
   | Leaving the station | 2 s after the start | 2 s |
   | Flying to the belt | 4 s | 4 s |
   | In warp | 10 s | 10 s |
