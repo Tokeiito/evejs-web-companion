@@ -471,6 +471,13 @@ Take these defaults, and list each under "For the operator" in the log so they c
   `charMgr.GetHomeStationRow`, which is the client's map's and market's call; the client's
   sheet asks another service altogether. Find every caller of a call in the client, and
   then find what the window itself reads: the two can differ.
+- **A call of a service the client asks by its name, kept by that service**, is carried and
+  kept in three places: the game port's own list and its entry (`src/gamePort/retailCalls.js`),
+  a `createKeptReads()` on the pilot's entry read in `callMethod`, and its forgetting where
+  the notices are fed and where a session change is worked (`home_station.get_home_station`
+  is the pattern, in `src/gamePort/pilots.js`). A test of the answer reads a field's name as
+  JSON has it, not by a lookup that bytes and text both satisfy, and asks for the
+  notifications that came with it: both were survivors.
 - **A read every transport carries needs no way back**, and its route comes off the page's
   list whole. Ask each of a route's reads by name on the gateway BFF too
   (`charsheet-probe.js` is the pattern) before writing a fallback.
