@@ -25,9 +25,14 @@
 // function this seam adds: for an account on the game port it is made there,
 // logged in as the client logs in, and for any other it is the gateway's
 // `callMethod` on a session that names the account and nothing else, exactly
-// as before. Every other call with no session handle is the BFF asking the
-// gateway to act as a pilot who is not logged in, which the retail protocol
-// cannot do: those stay the gateway's.
+// as before. For an account on the game port nothing else is an account's
+// call: the retail client has no pilot's call to make before a pilot is chosen,
+// so the seam refuses it rather than have the gateway make it as nobody.
+//
+// What the BFF itself asks the gateway as a pilot who is not logged in (an
+// offline pilot's structure access, a training pilot's corporation) does not
+// come through `accountCall`: those are the gateway's own `callMethod`, with
+// no session handle, and stay the gateway's (the plan's section 2.3).
 //
 // The plan is docs/game-port-transport-plan.md, Phase 3.
 
@@ -71,6 +76,18 @@ const TRANSPORTS = new Set(["gateway", "gameport"]);
 
 /** The service the retail client asks before a character is chosen (charUnboundMgr: "unbound" is "no character yet"). */
 const ACCOUNT_SERVICES = new Set(["charUnboundMgr"]);
+
+/**
+ * A call the seam will not make. The code and the status are the web gateway's
+ * own for a call it refuses, so the page reads the two refusals the same way.
+ */
+function notAllowed(message) {
+  const error = new Error(message);
+  error.name = "PilotTransportError";
+  error.code = "CALL_NOT_ALLOWED";
+  error.statusCode = 403;
+  return error;
+}
 
 function isGamePortHandle(handle) {
   return typeof handle === "string" && handle.startsWith(GAME_PORT_HANDLE_PREFIX);
@@ -167,16 +184,26 @@ function createPilotTransport({ gateway, gamePort = null, transportFor = () => "
    * name says which transport the account is on; the gateway is never told it.
    * `fields` is what else the gateway's session is told (how the browser wants
    * things shown), and is the gateway's alone.
+   *
+   * For an account on the game port only the selection screen's services are
+   * asked (ACCOUNT_SERVICES), there. Anything else is refused here: before the
+   * cutover it went to the gateway, which made the call as a session naming the
+   * account and no character. A game port that cannot make an account's call at
+   * all leaves the account to the gateway, as an account on the gateway is.
    */
   const accountCall = (service, method, args, kwargs, account = {}) => {
     const accountID = Number(account && account.accountID) || null;
     const userName = String((account && account.userName) || "");
-    const onGamePort = ACCOUNT_SERVICES.has(service) && typeof gamePort.accountCall === "function" &&
+    const onGamePort = typeof gamePort.accountCall === "function" &&
       transportFor({ accountID, characterID: null, userName }) === "gameport";
     const shown = account && account.fields && typeof account.fields === "object" ? account.fields : {};
-    return onGamePort
-      ? gamePort.accountCall(service, method, args, kwargs, { userid: accountID, userName })
-      : gateway.callMethod(service, method, args, kwargs, { ...shown, userid: accountID });
+    if (!onGamePort) {
+      return gateway.callMethod(service, method, args, kwargs, { ...shown, userid: accountID });
+    }
+    if (!ACCOUNT_SERVICES.has(service)) {
+      return Promise.reject(notAllowed(`${service}.${method} needs a pilot: with none chosen, an account asks only what the selection screen asks.`));
+    }
+    return gamePort.accountCall(service, method, args, kwargs, { userid: accountID, userName });
   };
   /**
    * getSelectTransport({ accountID, characterID, userName }) -> "gateway" | "gameport"

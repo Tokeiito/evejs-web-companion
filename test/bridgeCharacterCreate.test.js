@@ -627,10 +627,25 @@ test("with the account on the game port, the hangar's roster is asked there as t
   assert.equal(gateway.calls.callMethod.length, 0);
 });
 
-test("anything else asked with no pilot held stays the gateway's, though the account is on the game port", async () => {
+test("anything else asked with no pilot held is refused for an account on the game port, and nobody is asked", async () => {
   const gateway = fakeGateway();
   const gamePort = fakeGamePort();
   const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: onGamePort });
+  const { response, payload } = await rosterCall(baseUrl, { service: "corpRegistry", method: "GetTitles", session: { languageID: "DE" } });
+
+  // The web gateway's own answer to a call it refuses: the page reads the two the same.
+  assert.equal(response.status, 403);
+  assert.deepEqual([payload.ok, payload.error], [false, "CALL_NOT_ALLOWED"]);
+  assert.match(payload.message, /^corpRegistry\.GetTitles needs a pilot/);
+  assert.equal(gamePort.calls.accountCall.length, 0);
+  assert.equal(gamePort.calls.callMethod.length, 0);
+  assert.equal(gateway.calls.callMethod.length, 0, "the gateway is not asked to make a pilot's call as nobody");
+});
+
+test("the same asked with no pilot held by an account on the gateway is the gateway's, as before", async () => {
+  const gateway = fakeGateway();
+  const gamePort = fakeGamePort();
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => "gateway" });
   const { response } = await rosterCall(baseUrl, { service: "corpRegistry", method: "GetTitles", session: { languageID: "DE" } });
 
   assert.equal(response.status, 200);

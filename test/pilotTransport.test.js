@@ -234,15 +234,32 @@ test("for an account on the gateway it is the gateway's call, on a session that 
   assert.equal(gamePort.calls.length, 0);
 });
 
-test("only what the retail client asks before a character is chosen is asked on the game port", () => {
+test("only what the retail client asks before a character is chosen is asked for an account on the game port; the rest is refused, and nobody is asked", async () => {
   assert.deepEqual([...ACCOUNT_SERVICES], ["charUnboundMgr"]);
   const gateway = recorder("gateway");
   const gamePort = withAccountCall();
-  const seam = createPilotTransport({ gateway, gamePort, transportFor: () => "gameport" });
-  // A read the BFF makes for a pilot who is not logged in: the retail protocol has no such thing.
-  seam.accountCall("corpRegistry", "GetTitles", [], null, { accountID: 4, userName: "test" });
-  assert.deepEqual(gateway.calls.map((call) => [call.name, call.args]), [["callMethod", ["corpRegistry", "GetTitles", [], null, { userid: 4 }]]]);
+  const seam = createPilotTransport({ gateway, gamePort, transportFor: byName });
+  // A pilot's call with no pilot chosen: the retail client has none to make, and the gateway is not asked to make it as nobody.
+  const refused = seam.accountCall("corpRegistry", "GetTitles", [], null, { accountID: 4, userName: "test", fields: { languageID: "DE" } });
+  assert.ok(refused instanceof Promise, "refused as a failed call is, not thrown at the caller");
+  await assert.rejects(refused, (error) => {
+    // The web gateway's own code and status for a call it refuses.
+    assert.deepEqual([error.code, error.statusCode], ["CALL_NOT_ALLOWED", 403]);
+    assert.match(error.message, /^corpRegistry\.GetTitles needs a pilot/);
+    return true;
+  });
+  assert.deepEqual([gateway.calls.length, gamePort.calls.length], [0, 0]);
+  // The same from an account on the gateway is the gateway's to answer, as it was.
+  assert.deepEqual(seam.accountCall("corpRegistry", "GetTitles", [], null, { accountID: 9, userName: "rrfarmer", fields: { languageID: "DE" } }), { via: "gateway" });
+  assert.deepEqual(gateway.calls.map((call) => [call.name, call.args]), [["callMethod", ["corpRegistry", "GetTitles", [], null, { languageID: "DE", userid: 9 }]]]);
   assert.equal(gamePort.calls.length, 0);
+});
+
+test("with a game port that cannot make an account's call, the account is the gateway's for everything", () => {
+  const gateway = recorder("gateway");
+  const seam = createPilotTransport({ gateway, gamePort: recorder("gameport"), transportFor: () => "gameport" });
+  assert.deepEqual(seam.accountCall("corpRegistry", "GetTitles", [], null, { accountID: 4, userName: "test" }), { via: "gateway" });
+  assert.deepEqual(gateway.calls.map((call) => [call.name, call.args]), [["callMethod", ["corpRegistry", "GetTitles", [], null, { userid: 4 }]]]);
 });
 
 test("a game port that cannot make the account's call leaves it to the gateway", () => {
