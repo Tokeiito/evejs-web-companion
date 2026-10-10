@@ -181,7 +181,10 @@ The retail protocol only sees the logged-in character. Management needs more:
 
 - **eve.js gateway, account-level only:** `health`, `status`, `accounts`, `account`,
   `account/create`, `characters`, `character-status`, `skills` and `skill-queue` for offline
-  pilots, `character-control/*`.
+  pilots, `character-control/*`. And `snapshot` for a pilot who is not online (added
+  2026-10-10, each call site read: the select's check that the account owns the character, the
+  roster's planetary boards and the customs haul's plan; one character's row, colonies and
+  goods out of the store, which no other route has).
 - **BFF app API (~115 routes):** web login, bot host, mining/PI/industry plans, pilot training,
   provisioning, and static data (map graph, types, names, icons, market reference).
 - **eve.js gateway, a call made as a pilot who is not logged in** (`callMethod` with no session
@@ -610,13 +613,27 @@ events, not frames.
 **Status 2026-10-10: begun, with its measure.** The gateway client tallies every call made
 through it (`src/gatewayLedger.js`), and each row is classed against 2.3;
 `scripts/gateway-ledger-report.js` writes a walk's tally as
-[`game-port-gateway-ledger.md`](game-port-gateway-ledger.md). The first measure, a pilot on the
-game port through a login with 25 windows open, an undock and a docking, and the parity tool's
-34 routes: nothing of the pilot's own went to the web gateway (the same 34 routes through the
-gateway were 147 calls of a held pilot's). What stood in the report was the `/snapshot` read,
-which 2.3 does not name. Not yet measured: the calls made as a pilot who is not logged in, the
-hosted bots, the Factory and the training flows. The default is still `gateway`. The steps are
-at the head of the loop log's "Next".
+[`game-port-gateway-ledger.md`](game-port-gateway-ledger.md). The measure so far, on a game-port
+BFF: the parity tool's 34 routes, a pilot in the browser through a login with 25 windows open,
+an undock and a docking, and five reads made with no pilot chosen. Nothing of a pilot's own
+went to the web gateway (the same 34 routes through the gateway were 147 calls of a held
+pilot's), and no read of an online pilot. The calls made as a pilot who is not logged in were
+the corporation's reads of the training settings, which 2.3 names, and one sent on purpose
+through `/api/bridge/call` with no pilot held (see the second open question in section 5).
+
+Where the two reads of one character are asked, read 2026-10-10:
+
+| Read | Asked by | Of whom |
+|---|---|---|
+| `snapshot` | the select's ownership check (`eveStore.getCharacterForAccount`), and the structure searches' check of a pilot chosen there | a pilot not yet chosen |
+| `snapshot` | `/api/roster/planets`, `/api/roster/stock`, the customs haul's plan | each pilot a board lists, or the one hauled for |
+| `snapshot` | `/api/bridge/planets`, the gateway's branch | the held pilot when it is the gateway's; on the game port the route reads the colonies as the client does |
+| `skills` | `skillSheetFor`, the gateway's branch | the held pilot when it is the gateway's; on the game port the sheet is made from the skill handler's kept answers |
+| `skills` | `/api/roster/training`, `/api/roster/planets`, mining preparation, the training queue's review and read | a pilot of the account that nobody need be flying |
+
+Not yet measured: the structure directory's reads, a fleet's parking and delivery checks, a
+training pilot's corporation fittings, the hosted bots, the Factory and the training flows.
+The default is still `gateway`. The steps are at the head of the loop log's "Next".
 
 ### Phase 6 — Browser ↔ BFF over one WebSocket (large, mechanical; independent of 0–5)
 
