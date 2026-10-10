@@ -97,7 +97,6 @@
 
 <ScannerCenter
   scan={$scanner.scan}
-  formations={$scanner.formations}
   names={{ typeNames }}
   {actions}
   onRefresh={() => flow.loadScanner()}

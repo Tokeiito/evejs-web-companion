@@ -4,10 +4,8 @@
   // scanner slice or active-probe geometry, so absent action bindings remain
   // visibly unavailable instead of being guessed from an empty object.
   import type { ScanFullState } from "../bridge/boundSmallServices.ts";
-  import type { FormationsResult } from "../bridge/formations.ts";
   import {
     SCANNER_ACTION_IDS,
-    buildScannerFormationView,
     buildScannerSitesView,
     scannerActionAvailability,
     type ScannerActionBindings,
@@ -19,20 +17,13 @@
   interface Props {
     readonly scan: ScannerDataState<ScanFullState>;
     readonly names?: ScannerNameCatalog;
-    readonly formations?: ScannerDataState<FormationsResult>;
     readonly actions?: ScannerActionBindings;
     readonly onRefresh?: () => void | Promise<void>;
   }
 
-  const DEFAULT_FORMATIONS: ScannerDataState<FormationsResult> = {
-    status: "unavailable",
-    reason: "Formation data has not been supplied to this panel.",
-  };
-
   let {
     scan,
     names = {},
-    formations = DEFAULT_FORMATIONS,
     actions = {},
     onRefresh,
   }: Props = $props();
@@ -42,7 +33,6 @@
   let actionError = $state("");
 
   const siteView = $derived(buildScannerSitesView(scan, names));
-  const formationView = $derived(buildScannerFormationView(formations));
   const actionRows = $derived(
     SCANNER_ACTION_IDS.map((id) => scannerActionAvailability(id, actions)),
   );
@@ -308,24 +298,6 @@
       </div>
     {/if}
   </section>
-
-  <section class="panel inner formation-reference">
-    <h3>Formation reference</h3>
-    {#if formationView.status === "loading"}
-      <p class="note">{formationView.message}</p>
-    {:else if formationView.status === "unavailable"}
-      <p class="note">{formationView.message}</p>
-    {:else if formationView.status === "empty"}
-      <p class="empty">{formationView.message}</p>
-    {:else}
-      <ul class="plain-list compact-list">
-        {#each formationView.names as formationName (formationName)}
-          <li><strong>{formationName || "Unnamed formation"}</strong></li>
-        {/each}
-      </ul>
-      <p class="note">{formationView.message}</p>
-    {/if}
-  </section>
 </section>
 
 <style>
@@ -379,8 +351,7 @@
     flex-wrap: wrap;
     gap: 0.3rem 0.65rem;
   }
-  .probe-controls,
-  .formation-reference {
+  .probe-controls {
     margin-top: 0.8rem;
   }
   .action-grid {

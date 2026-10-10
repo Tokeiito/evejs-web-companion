@@ -5031,12 +5031,6 @@ export async function loadBoundSmallServices(
   return getJson("/api/bridge/bound-small-services", options);
 }
 
-/** Static formation reference result (often an honest proxy-cache reference). */
-export async function loadScannerFormations(options: ApiOptions = {}): Promise<JsonValue> {
-  const data = await getJson("/api/bridge/formations", options);
-  return data.formations ?? null;
-}
-
 function scannerVector(value: JsonValue | undefined): readonly [number, number, number] {
   if (!Array.isArray(value)) {
     return [0, 0, 0];

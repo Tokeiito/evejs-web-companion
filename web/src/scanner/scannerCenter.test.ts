@@ -7,10 +7,8 @@ import type {
   ScanFullState,
   ScanSite,
 } from "../bridge/boundSmallServices.ts";
-import type { FormationsResult } from "../bridge/formations.ts";
 import {
   SCANNER_ACTION_IDS,
-  buildScannerFormationView,
   buildScannerSitesView,
   scannerActionAvailability,
   scannerStateFromBoundRead,
@@ -209,30 +207,3 @@ test("valid bindings enable actions and only launch carries consumptive confirma
   assert.equal(scannerActionAvailability("reconnect", actions).confirmation, null);
 });
 
-test("formation view reports the live cache-fetch gap and never implies an apply action", () => {
-  const unresolved: FormationsResult = {
-    formations: [],
-    cacheReference: { objectId: null, nodeId: 65450, version: 1n },
-  };
-  const gap = buildScannerFormationView({ status: "ready", value: unresolved });
-  assert.equal(gap.status, "unavailable");
-  assert.match(gap.message, /no cache-fetch route/i);
-
-  const inline: FormationsResult = {
-    formations: [
-      { name: "Diamond", points: [] },
-      { name: "Arrow", points: [] },
-    ],
-    cacheReference: null,
-  };
-  const ready = buildScannerFormationView({ status: "ready", value: inline });
-  assert.equal(ready.status, "ready");
-  assert.deepEqual(ready.names, ["Diamond", "Arrow"]);
-  assert.match(ready.message, /no supported route applies them/i);
-
-  const empty = buildScannerFormationView({
-    status: "ready",
-    value: { formations: [], cacheReference: null },
-  });
-  assert.equal(empty.status, "empty");
-});

@@ -391,7 +391,6 @@ const INITIAL_SCANNER: ScannerCenterState = Object.freeze({
   loading: false,
   solarSystemID: null,
   scan: Object.freeze({ status: "loading" }),
-  formations: Object.freeze({ status: "loading" }),
   operations: Object.freeze({ status: "loading" }),
   refreshedAtMs: null,
 });
@@ -1586,7 +1585,6 @@ export function createClientStore(): ClientStore {
           loading: false,
           solarSystemID: event.solarSystemID,
           scan: event.scan,
-          formations: event.formations,
           operations: event.operations,
           refreshedAtMs: event.refreshedAtMs,
         });

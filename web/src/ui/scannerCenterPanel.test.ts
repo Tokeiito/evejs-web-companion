@@ -4,7 +4,6 @@ import { readFileSync } from "node:fs";
 import { register } from "node:module";
 
 import type { ScanFieldValue, ScanFullState, ScanSite } from "../bridge/boundSmallServices.ts";
-import type { FormationsResult } from "../bridge/formations.ts";
 import type { ScannerActionBindings, ScannerDataState } from "../scanner/scannerCenter.ts";
 
 register("./svelteSsrHook.ts", import.meta.url);
@@ -41,7 +40,6 @@ function visibleText(body: string): string {
 
 function scene(options: {
   scan: ScannerDataState<ScanFullState>;
-  formations?: ScannerDataState<FormationsResult>;
   actions?: ScannerActionBindings;
   names?: {
     typeNames?: Readonly<Record<number, string>>;
@@ -171,45 +169,10 @@ test("only supplied, prerequisite-complete action bindings become enabled", () =
   }
 });
 
-test("formation reference distinguishes unresolved cache data, empty, and inline names", () => {
-  const unresolved = scene({
-    scan: { status: "ready", value: state() },
-    formations: {
-      status: "ready",
-      value: {
-        formations: [],
-        cacheReference: { objectId: null, nodeId: 65450, version: 1n },
-      },
-    },
-  }).text;
-  assert.match(unresolved, /no cache-fetch route/i);
-
-  const empty = scene({
-    scan: { status: "ready", value: state() },
-    formations: {
-      status: "ready",
-      value: { formations: [], cacheReference: null },
-    },
-  }).text;
-  assert.match(empty, /No formation shapes were reported/i);
-
-  const inline = scene({
-    scan: { status: "ready", value: state() },
-    formations: {
-      status: "ready",
-      value: {
-        formations: [
-          { name: "Diamond", points: [] },
-          { name: "Arrow", points: [] },
-        ],
-        cacheReference: null,
-      },
-    },
-  }).text;
-  assert.match(inline, /Diamond/);
-  assert.match(inline, /Arrow/);
-  assert.match(inline, /no supported route applies them to probes/i);
-  assert.doesNotMatch(inline, /Apply formation/i);
+test("the scanner shows nothing of the ballpark's formations, which the client's scanner has no readout of", () => {
+  const shown = scene({ scan: { status: "ready", value: state() } });
+  assert.doesNotMatch(shown.text, /formation/i);
+  assert.doesNotMatch(SOURCE, /formation/i);
 });
 
 test("the component is callback-only and launch uses an explicit two-step confirmation surface", () => {

@@ -22,7 +22,6 @@ test("Scanner starts unloaded without claiming the current system is empty", () 
   assert.equal(scanner.loading, false);
   assert.equal(scanner.solarSystemID, null);
   assert.equal(scanner.scan.status, "loading");
-  assert.equal(scanner.formations.status, "loading");
 });
 
 test("scanner/loading preserves the last authoritative result", () => {
@@ -31,10 +30,6 @@ test("scanner/loading preserves the last authoritative result", () => {
     type: "scanner/loaded",
     solarSystemID: SYSTEM_A,
     scan: { status: "ready", value: emptyScan },
-    formations: {
-      status: "ready",
-      value: { formations: [], cacheReference: null },
-    },
     operations: unavailableOperations,
     refreshedAtMs: 100,
   });
@@ -54,16 +49,12 @@ test("Scanner stores partial availability without collapsing failure into empty"
     type: "scanner/loaded",
     solarSystemID: SYSTEM_A,
     scan: { status: "unavailable", reason: "Scanner data could not be read." },
-    formations: {
-      status: "ready",
-      value: { formations: [], cacheReference: null },
-    },
     operations: unavailableOperations,
     refreshedAtMs: 200,
   });
   const scanner = store.get().scanner;
   assert.equal(scanner.scan.status, "unavailable");
-  assert.equal(scanner.formations.status, "ready");
+  assert.equal(scanner.operations.status, "unavailable");
 });
 
 test("offline, logout and explicit clear discard character-specific Scanner state", () => {
@@ -77,10 +68,6 @@ test("offline, logout and explicit clear discard character-specific Scanner stat
       type: "scanner/loaded",
       solarSystemID: SYSTEM_A,
       scan: { status: "ready", value: emptyScan },
-      formations: {
-        status: "ready",
-        value: { formations: [], cacheReference: null },
-      },
       operations: unavailableOperations,
       refreshedAtMs: 300,
     });
@@ -97,7 +84,6 @@ test("a confirmed solar-system change clears old scanner rows synchronously", ()
     type: "scanner/loaded",
     solarSystemID: SYSTEM_A,
     scan: { status: "ready", value: emptyScan },
-    formations: { status: "ready", value: { formations: [], cacheReference: null } },
     operations: unavailableOperations,
     refreshedAtMs: 400,
   });

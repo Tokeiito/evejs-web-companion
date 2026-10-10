@@ -12,7 +12,6 @@ import type {
   ScanFullState,
   ScanSite,
 } from "../bridge/boundSmallServices.ts";
-import type { FormationsResult } from "../bridge/formations.ts";
 import type { JsonValue } from "../bridge/wire.ts";
 import { SITE_KIND_LABELS, siteKind } from "./siteKind.ts";
 
@@ -304,47 +303,6 @@ export function buildScannerSitesView(
     status: totalSites === 0 ? "empty" : "ready",
     groups,
     totalSites,
-  };
-}
-
-export type ScannerFormationView =
-  | { readonly status: "loading"; readonly names: readonly []; readonly message: string }
-  | { readonly status: "unavailable"; readonly names: readonly []; readonly message: string }
-  | { readonly status: "empty"; readonly names: readonly []; readonly message: string }
-  | { readonly status: "ready"; readonly names: readonly string[]; readonly message: string };
-
-/**
- * Formation data is honest about the live proxyCache gap. Even decoded inline
- * shapes are reference-only: no supported route applies a probe formation.
- */
-export function buildScannerFormationView(
-  state: ScannerDataState<FormationsResult>,
-): ScannerFormationView {
-  if (state.status === "loading") {
-    return { status: "loading", names: [], message: "Loading formation reference data…" };
-  }
-  if (state.status === "unavailable") {
-    return { status: "unavailable", names: [], message: state.reason };
-  }
-  if (state.value.formations.length > 0) {
-    return {
-      status: "ready",
-      names: state.value.formations.map((formation) => formation.name),
-      message: "Formation shapes are reference data only; no supported route applies them to probes.",
-    };
-  }
-  if (state.value.cacheReference !== null) {
-    return {
-      status: "unavailable",
-      names: [],
-      message:
-        "Formation shapes are behind an object-cache reference, and the companion has no cache-fetch route to read them.",
-    };
-  }
-  return {
-    status: "empty",
-    names: [],
-    message: "No formation shapes were reported.",
   };
 }
 

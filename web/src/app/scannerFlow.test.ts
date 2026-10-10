@@ -41,9 +41,6 @@ test("loadScanner keeps a successful empty current-system scan distinct from una
     if (url === "/api/bridge/scan-full-state") {
       return json(scanEnvelope({ result: [emptyDict, emptyDict, emptyDict, emptyDict] }));
     }
-    if (url === "/api/bridge/formations") {
-      return json({ ok: true, formations: null });
-    }
     if (url === "/api/bridge/scanner/state") return json(operationsEnvelope());
     throw new Error(`unexpected fetch: ${url}`);
   };
@@ -52,7 +49,6 @@ test("loadScanner keeps a successful empty current-system scan distinct from una
   await createAppFlow(store, { fetch }).loadScanner();
 
   assert.deepEqual(calls.sort(), [
-    "/api/bridge/formations",
     "/api/bridge/scan-full-state",
     "/api/bridge/scanner/state",
   ]);
@@ -65,17 +61,16 @@ test("loadScanner keeps a successful empty current-system scan distinct from una
     assert.deepEqual(scanner.scan.value.anomalies, []);
     assert.deepEqual(scanner.scan.value.signatures, []);
   }
-  assert.equal(scanner.formations.status, "ready");
+  // The client's scanner asks nothing of the ballpark's formations, and neither does this: a request of the
+  // route that read them, or a call for them, would have been an unexpected fetch above.
+  assert.equal("formations" in scanner, false);
 });
 
-test("a failed GetFullState arm stays unavailable while formation data remains useful", async () => {
+test("a failed GetFullState arm stays unavailable while the probes' state remains useful", async () => {
   const fetch: typeof globalThis.fetch = async (input) => {
     const url = String(input);
     if (url === "/api/bridge/scan-full-state") {
       return json(scanEnvelope({ error: "CALL_REFUSED", message: "scanner offline" }));
-    }
-    if (url === "/api/bridge/formations") {
-      return json({ ok: true, formations: [["Diamond", [[0, 1, 2]]]] });
     }
     if (url === "/api/bridge/scanner/state") return json(operationsEnvelope());
     throw new Error(`unexpected fetch: ${url}`);
@@ -86,10 +81,7 @@ test("a failed GetFullState arm stays unavailable while formation data remains u
 
   const scanner = store.get().scanner;
   assert.equal(scanner.scan.status, "unavailable");
-  assert.equal(scanner.formations.status, "ready");
-  if (scanner.formations.status === "ready") {
-    assert.equal(scanner.formations.value.formations[0]?.name, "Diamond");
-  }
+  assert.equal(scanner.operations.status, "ready");
 });
 
 test("probe reconnect confirms the write and always follows it with authoritative reads", async () => {
@@ -107,9 +99,6 @@ test("probe reconnect confirms the write and always follows it with authoritativ
     if (url === "/api/bridge/scan-full-state") {
       return json(scanEnvelope({ result: [emptyDict, emptyDict, emptyDict, emptyDict] }));
     }
-    if (url === "/api/bridge/formations") {
-      return json({ ok: true, formations: null });
-    }
     if (url === "/api/bridge/scanner/state") return json(operationsEnvelope());
     throw new Error(`unexpected fetch: ${url}`);
   };
@@ -125,8 +114,7 @@ test("probe reconnect confirms the write and always follows it with authoritativ
   assert.deepEqual(
     calls.slice(1).map((call) => call.url).sort(),
     [
-      "/api/bridge/formations",
-      "/api/bridge/scan-full-state",
+        "/api/bridge/scan-full-state",
       "/api/bridge/scanner/state",
     ],
   );
@@ -152,7 +140,6 @@ test("launch, analyze, and recover use no-input product routes and re-read after
       if (url === "/api/bridge/scan-full-state") {
         return json(scanEnvelope({ result: [emptyDict, emptyDict, emptyDict, emptyDict] }));
       }
-      if (url === "/api/bridge/formations") return json({ ok: true, formations: null });
       if (url === "/api/bridge/scanner/state") return json(operationsEnvelope());
       throw new Error(`unexpected fetch: ${url}`);
     };
@@ -163,7 +150,7 @@ test("launch, analyze, and recover use no-input product routes and re-read after
       method: "POST",
       body: { confirm: true },
     });
-    assert.equal(calls.length, 4, "one write plus all three scanner reads");
+    assert.deepEqual(calls.slice(1).map((call) => call.url).sort(), ["/api/bridge/scan-full-state", "/api/bridge/scanner/state"], "one write, then the scanner's two reads");
   }
 });
 

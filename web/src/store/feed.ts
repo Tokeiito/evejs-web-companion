@@ -381,7 +381,6 @@ export type FeedEvent =
       readonly type: "scanner/loaded";
       readonly solarSystemID: number | null;
       readonly scan: ScannerCenterState["scan"];
-      readonly formations: ScannerCenterState["formations"];
       readonly operations: ScannerCenterState["operations"];
       readonly refreshedAtMs: number;
     }

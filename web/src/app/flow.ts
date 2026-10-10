@@ -323,7 +323,6 @@ import {
   type DroneRangeSkillReading,
 } from "../nav/droneControlRange.ts";
 import { decodeBoundSmallServices, decodeFullState } from "../bridge/boundSmallServices.ts";
-import { decodeFormations } from "../bridge/formations.ts";
 import { scannerStateFromBoundRead } from "../scanner/scannerCenter.ts";
 import { siteKind } from "../scanner/siteKind.ts";
 import { decodeFittings } from "../bridge/fittings.ts";
@@ -822,7 +821,7 @@ export interface AppFlow {
    * current-month calendar data and the existing mailbox unread count.
    */
   loadActivity(): Promise<void>;
-  /** Refresh current-system scan sites and the independent formation reference. */
+  /** Refresh current-system scan sites and the probes' state. */
   loadScanner(): Promise<void>;
   /** Launch every probe EveJS currently says is safe to launch. */
   launchScannerProbes(): Promise<void>;
@@ -3557,14 +3556,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const assertCurrent = callOptions.captureRequestGuard?.();
     const generation = ++scannerLoadGeneration;
     store.apply({ type: "scanner/loading" });
-    const [scanResult, formationsResult, operationsResult] = await Promise.allSettled([
+    // (The client's scanner asks nothing of the ballpark's formations, beyonce.GetFormations: michelle asks for
+    // those as the ballpark is made (michelle.py 324), and so does the transport. Until 2026-10-10 this read
+    // them by a route of their own, for a readout the client's scanner has not got.)
+    const [scanResult, operationsResult] = await Promise.allSettled([
       api.loadScanFullStateEnvelope(callOptions),
-      api.loadScannerFormations(callOptions),
       api.loadScannerOperations(callOptions),
     ] as const);
     assertCurrent?.();
 
-    for (const result of [scanResult, formationsResult, operationsResult]) {
+    for (const result of [scanResult, operationsResult]) {
       if (result.status === "rejected" && isSessionLost(result.reason)) {
         stopLiveStream();
         store.apply({ type: "character/offline" });
@@ -3577,12 +3578,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       : {
           status: "unavailable" as const,
           reason: "Scanner data could not be read from the live session.",
-        };
-    const formations = formationsResult.status === "fulfilled"
-      ? { status: "ready" as const, value: decodeFormations(formationsResult.value) }
-      : {
-          status: "unavailable" as const,
-          reason: "Formation reference data could not be read from the live session.",
         };
     const operations = operationsResult.status === "fulfilled"
       ? { status: "ready" as const, value: operationsResult.value }
@@ -3625,7 +3620,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       type: "scanner/loaded",
       solarSystemID,
       scan,
-      formations,
       operations,
       refreshedAtMs: Date.now(),
     });

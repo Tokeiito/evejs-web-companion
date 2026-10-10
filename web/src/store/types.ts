@@ -18,7 +18,6 @@ import type {
 } from "../bridge/fleetCenter.ts";
 import type { ShipStats } from "../bridge/shipStats.ts";
 import type { ScanFullState } from "../bridge/boundSmallServices.ts";
-import type { FormationsResult } from "../bridge/formations.ts";
 import type {
   ScannerDataState,
   ScannerOperationsSnapshot,
@@ -954,7 +953,6 @@ export interface ScannerCenterState {
   /** System whose authoritative scan produced `scan`; null before a successful read. */
   readonly solarSystemID: number | null;
   readonly scan: ScannerDataState<ScanFullState>;
-  readonly formations: ScannerDataState<FormationsResult>;
   readonly operations: ScannerDataState<ScannerOperationsSnapshot>;
   readonly refreshedAtMs: number | null;
 }
