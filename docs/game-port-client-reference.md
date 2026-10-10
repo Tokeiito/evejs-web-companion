@@ -1102,7 +1102,15 @@ The transport asks at the same moments (`pilots.js`, `clientStatesAtAChange`,
 `securityStatusRead`). It keeps the states as last answered, and lets them go at any of the
 eleven notices and at the pilot's own `SetSafetyLevel`, where the client works each into what
 it holds: a read after one of those asks again. The security status it keeps as the client
-does. Nothing of the page shows either yet.
+does.
+
+A timer's state is its kind's idle state (weapons 100, PvP 200, criminal 300, NPC 400,
+disapproval 500), one above while its cause goes on, two above while it counts down to its
+expiry, three and more where it is inherited (`crimewatch/const.py`); the criminal's odd
+states are the criminal's and its even ones the suspect's. The safety level is 0, 1 or 2:
+none, partial, full. The page reads the states through `GET /api/bridge/crimewatch`, at the
+same moments, and its workspace header says the safety level in space and every running timer
+anywhere, in words, counted to the server's clock (`web/src/space/crimewatch.ts`).
 
 **The map's stations, 2026-10-10.** `map.GetStationInfo()` is asked once by the client's UI
 service and kept for the client's life (`uisvc.py` 246), and by five other callers through the

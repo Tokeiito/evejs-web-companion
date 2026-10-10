@@ -660,7 +660,15 @@ Take these defaults, and list each under "For the operator" in the log so they c
   exact binds and objects. The transport's stand-in session lists and counts apart what every
   choosing binds (the corporation registry's objects, crimewatch's Monikers): put a new one
   there, with a line saying why, rather than telling fifty tests of it.
-- A test's "watched to fail" can be had after the fact: put the source file back to the commit
+- **Putting a source file back to an earlier commit destroys what is not committed in it.**
+  `git show HEAD:<file> > <file>` followed by `git checkout HEAD -- <file>` gives back the
+  commit's file, not yours: I lost seven files' uncommitted work that way and had it back only
+  because every change had been made by a script kept in the scratch folder. Check a test
+  against the code as it was only after the work is committed (`HEAD~1`), or copy the files
+  aside first. And keep making changes by script: it is what made the loss an hour's and not a
+  day's. A lost page can be checked against the last build: `sha1sum public/dist/assets/*`
+  before and after building again.
+- A test's "watched to fail" can be had after the fact, once the work is committed: put the source file back to the commit
   before (`git show HEAD~1:<file> > <file>`), run the test, and restore it with `git checkout
   HEAD -- <file>`. Check `git status` is clean after.
 
