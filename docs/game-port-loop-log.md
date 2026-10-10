@@ -25778,8 +25778,8 @@ so that it never names a pilot who is online here.
 a pilot's choosing, a bot's start, two structure access checks, the customs haul's plan, a
 provisioning check and the fleet's three parking and delivery checks. It read the web
 gateway's snapshot of the one character and took that character's row out of it, whoever
-was flying the pilot. Yesterday's mend took one of the nine out of the way for a pilot the
-caller holds; the other eight still named an online pilot whenever one was asked about.
+was flying the pilot. An earlier mend of today's (`6b99d53`) took one of the nine out of the
+way for a pilot the caller holds; the other eight still named an online pilot whenever one was asked about.
 
 **Measured before building.** For each of this server's eight characters, the row that read
 gives was set beside the same character's entry in the account's own list of characters
