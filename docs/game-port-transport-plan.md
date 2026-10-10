@@ -775,7 +775,9 @@ service, which the game port carries and the transport keeps as that service kee
 The agents' journal is the second route off the list whole (`5c2e1f1`): one call, asked
 by the page, answered on the game port from the journal the transport keeps. Crimewatch's
 states and the clone's grade followed (`e21134c`), and with them the clock for a pilot
-through the gateway. 136 named now, 46 of them reads. Of the phase's "done when", "no
+through the gateway. The scanner's read of the ballpark's formations was no read of the
+client's scanner at all, and is gone with its readout (`964c083`). 135 named now, 45 of
+them reads and 90 writes; no write has been moved yet. Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.
 Of 6a's four things, three are carried by the socket or in process, each with a way back
 (the routes' operations, the pushes, the hosted bots), and the cap is lifted for what is

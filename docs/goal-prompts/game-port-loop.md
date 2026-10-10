@@ -471,6 +471,11 @@ Take these defaults, and list each under "For the operator" in the log so they c
   such cannot be written there, and is tested in the page's own test, where its form can.
   Then live, leaf by leaf: `skills-compare.mjs <repo> <scratch> <bff> <account> <characterID>
   [typeID toLevel]`. The clock's leaf differs, being read at two moments.
+- **A read may be no read of its window's at all.** Find every caller of the call in the
+  client before moving it: `beyonce.GetFormations` has one, the ballpark's making, and the
+  page's scanner was asking it for a readout the client's scanner has not got. Then the
+  right move is to take the read out, and what showed it, and to say so in the log as a
+  thing removed.
 - **What a window shows is asked as that window asks it, which is not always the service a
   route was written against.** The Character Sheet's route read the home station by
   `charMgr.GetHomeStationRow`, which is the client's map's and market's call; the client's
