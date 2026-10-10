@@ -16,7 +16,7 @@ const express = require("express");
 const { WebSocket } = require("ws");
 
 process.env.EVEJS_WEB_POC_DATA_DIR ??= fs.mkdtempSync(path.join(os.tmpdir(), "pilot-socket-"));
-const { CLOSE, MAX_FRAME_BYTES, SOCKET_PATH, attachPilotSocket, dispatchInProcess, isOperationPath } = require("../src/pilotSocket");
+const { CLOSE, MAX_FRAME_BYTES, MAX_RUNNING, MAX_WAITING, SOCKET_PATH, attachPilotSocket, dispatchInProcess, isOperationPath } = require("../src/pilotSocket");
 
 const TOKEN = "a-web-session-token";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -51,6 +51,13 @@ function smallApp() {
     await sleep(60);
     res.json({ ok: true, slow: true });
   });
+  // A route that is at work until the test lets it finish.
+  const gates = new Map();
+  app.get("/api/gate/:name", requireAuth, async (req, res) => {
+    seen.push(["gate", req.params.name]);
+    await new Promise((resolve) => gates.set(req.params.name, resolve));
+    res.json({ ok: true, gate: req.params.name });
+  });
   app.get("/api/throws", requireAuth, () => {
     throw Object.assign(new Error("The route's own refusal."), { code: "CALL_REFUSED", statusCode: 409 });
   });
@@ -63,11 +70,11 @@ function smallApp() {
     const status = Number.isFinite(error && (error.statusCode ?? error.status)) ? error.statusCode ?? error.status : 500;
     res.status(status).json({ ok: false, error: error.code || error.type || "SERVER_ERROR", message: error.message });
   });
-  return { app, seen };
+  return { app, seen, gates };
 }
 
 async function served(t, attach = {}) {
-  const { app, seen } = smallApp();
+  const { app, seen, gates } = smallApp();
   const server = http.createServer(app);
   const errors = [];
   const socket = attachPilotSocket(server, app, { verify: (token) => token === TOKEN, onError: (error) => errors.push(error), ...attach });
@@ -79,7 +86,7 @@ async function served(t, attach = {}) {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   });
-  return { app, seen, server, socket, errors, port, base: `http://127.0.0.1:${port}`, wsUrl: `ws://127.0.0.1:${port}${SOCKET_PATH}` };
+  return { app, seen, gates, server, socket, errors, port, base: `http://127.0.0.1:${port}`, wsUrl: `ws://127.0.0.1:${port}${SOCKET_PATH}` };
 }
 
 /** Over HTTP, as a tab asks today. */
@@ -364,4 +371,102 @@ test("the BFF serves the socket beside its routes: a tab's operation there is th
   // (The server's own count of them falls as each closing is done, a moment after the tab has seen its end.)
   for (let waited = 0; waited < 500 && server.pilotSocket.sockets() > 0; waited += 10) await sleep(10);
   assert.equal(server.pilotSocket.sockets(), 0);
+});
+
+// ── how much of a socket's is at work at once ────────────────────────────────
+
+test("a socket has so many operations at work at once and so many more waiting their turn; one asked past that is said not to have been run", async (t) => {
+  assert.deepEqual([MAX_RUNNING, MAX_WAITING], [32, 512]);
+  const { wsUrl, seen, gates, errors } = await served(t, { maxRunning: 2, maxWaiting: 2 });
+  const tab = await opened(wsUrl);
+  await tab.said((frame) => frame.hello);
+  const ask = (id, name) => tab.ws.send(JSON.stringify({ id, method: "GET", path: `/api/gate/${name}` }));
+  const tooMany = (id) => ({ id, error: { code: "TOO_MANY", message: "This socket has too many operations waiting already; this one was not run." } });
+  for (const [id, name] of [[1, "a"], [2, "b"], [3, "c"], [4, "d"], [5, "e"]]) ask(id, name);
+  // Two are at work, two wait, and the fifth is answered at once: it was not run.
+  assert.deepEqual(await tab.said((frame) => frame.id === 5), tooMany(5));
+  assert.ok(await tab.until(() => seen.length === 2));
+  await sleep(40);
+  assert.deepEqual(seen, [["gate", "a"], ["gate", "b"]]);
+
+  // One finishes: the first that was waiting is run, and there is room for one more to wait.
+  gates.get("b")();
+  assert.deepEqual(await tab.said((frame) => frame.id === 2), { id: 2, status: 200, body: { ok: true, gate: "b" } });
+  assert.ok(await tab.until(() => seen.length === 3));
+  assert.deepEqual(seen[2], ["gate", "c"]);
+  ask(6, "f");
+  ask(7, "g");
+  assert.deepEqual(await tab.said((frame) => frame.id === 7), tooMany(7));
+  await sleep(40);
+  assert.equal(seen.length, 3, "what waits has not reached its route");
+
+  // Each that finishes gives its turn to the next, in the order they were asked.
+  gates.get("a")();
+  assert.ok(await tab.until(() => seen.length === 4));
+  gates.get("c")();
+  assert.ok(await tab.until(() => seen.length === 5));
+  assert.deepEqual(seen.slice(3), [["gate", "d"], ["gate", "f"]]);
+  gates.get("d")();
+  gates.get("f")();
+  for (const [id, name] of [[1, "a"], [3, "c"], [4, "d"], [6, "f"]]) {
+    assert.deepEqual(await tab.said((frame) => frame.id === id), { id, status: 200, body: { ok: true, gate: name } });
+  }
+  // Nothing is left at work: the bound's worth can be asked again, and neither e nor g was ever run.
+  ask(8, "h");
+  ask(9, "i");
+  assert.ok(await tab.until(() => seen.length === 7));
+  gates.get("h")();
+  gates.get("i")();
+  assert.ok(await tab.said((frame) => frame.id === 9));
+  assert.deepEqual(seen.map(([, name]) => name).join(""), "abcdfhi");
+  assert.deepEqual(errors, []);
+});
+
+test("what was waiting its turn is not run for a tab that has gone, and a turn is given up by an operation that fails as by one that is answered", async (t) => {
+  const { wsUrl, seen, gates, socket: served_ } = await served(t, { maxRunning: 1, maxWaiting: 5 });
+  const tab = await opened(wsUrl);
+  await tab.said((frame) => frame.hello);
+  // A route that refuses, and one no route has, each give their turn up.
+  tab.ws.send(JSON.stringify({ id: 1, method: "GET", path: "/api/throws" }));
+  tab.ws.send(JSON.stringify({ id: 2, method: "GET", path: "/api/no-such-route" }));
+  tab.ws.send(JSON.stringify({ id: 3, method: "GET", path: "/api/gate/a" }));
+  tab.ws.send(JSON.stringify({ id: 4, method: "GET", path: "/api/gate/b" }));
+  assert.deepEqual([(await tab.said((frame) => frame.id === 1)).status, (await tab.said((frame) => frame.id === 2)).status], [409, 404]);
+  assert.ok(await tab.until(() => seen.length === 1));
+  assert.deepEqual(seen, [["gate", "a"]]);
+  // The tab goes with one at work and one waiting: the one at work finishes, and the other is never run.
+  tab.ws.close();
+  assert.ok(await tab.closing());
+  // (The BFF's end of the closing is done a moment after the tab has seen its own.)
+  for (let waited = 0; waited < 500 && served_.sockets() > 0; waited += 5) await sleep(5);
+  assert.equal(served_.sockets(), 0);
+  gates.get("a")();
+  await sleep(80);
+  assert.deepEqual(seen, [["gate", "a"]]);
+
+  // Something thrown outside of every handler gives its turn up too.
+  let asked = 0;
+  const app = (req, res) => {
+    asked += 1;
+    if (asked === 1) throw new Error("outside of every handler");
+    res.statusCode = 200;
+    res.end(JSON.stringify({ ok: true, asked }));
+  };
+  const server = http.createServer(app);
+  const failures = [];
+  const socket = attachPilotSocket(server, app, { verify: (token) => token === TOKEN, onError: (error) => failures.push(error.message), maxRunning: 1 });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(async () => {
+    await socket.close();
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  });
+  const other = await opened(`ws://127.0.0.1:${server.address().port}${SOCKET_PATH}`);
+  await other.said((frame) => frame.hello);
+  other.ws.send(JSON.stringify({ id: 1, method: "GET", path: "/api/x" }));
+  other.ws.send(JSON.stringify({ id: 2, method: "GET", path: "/api/y" }));
+  assert.equal((await other.said((frame) => frame.id === 1)).status, 500);
+  assert.deepEqual(await other.said((frame) => frame.id === 2), { id: 2, status: 200, body: { ok: true, asked: 2 } });
+  assert.deepEqual(failures, ["outside of every handler"]);
 });

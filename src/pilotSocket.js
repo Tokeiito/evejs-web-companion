@@ -38,6 +38,18 @@
 // A reply is matched to its request by `id`, which is the browser's to choose.
 // Replies come as their routes finish, not in the order asked.
 //
+// A SOCKET'S OPERATIONS ARE BOUNDED. Over HTTP a tab could have the BFF doing
+// four things at once and no more: the page's own cap, kept for the browser's
+// six connections. A socket has neither, and a page that asked without end
+// would have the BFF, and the server behind it, doing all of it at once. So a
+// socket runs so many operations at once (MAX_RUNNING); one asked past that
+// waits its turn, in the order asked (up to MAX_WAITING of them); and one asked
+// past that is answered at once with an error frame, which says it was not
+// run, and which the page takes as its word to ask over HTTP instead, where the
+// old cap holds.
+//
+//   BFF -> browser   { "id": 9, "error": { "code": "TOO_MANY", "message": "..." } }
+//
 // THE PUSHED NOTICES ARE THE EVENT STREAM'S, ON THE SOCKET. The BFF's event
 // stream (GET /api/bridge/events, Server-Sent Events) is a route like the rest,
 // except that it answers for as long as it is listened to. Asked for on the
@@ -68,6 +80,9 @@ const EVENTS_PATH = "/api/bridge/events";
 /** The routes' own bodies are held to 64 KB (express.json in src/server.js); a frame is the body and a little more. */
 const MAX_FRAME_BYTES = 256 * 1024;
 const HELLO_WAIT_MS = 10_000;
+/** A login with every window open was seen to ask for 32 things at once (docs/game-port-loop-log.md, 2026-10-10). */
+const MAX_RUNNING = 32;
+const MAX_WAITING = 512;
 const METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 /** Closing codes of this socket's own (4000 to 4999 are an application's). */
 const CLOSE = Object.freeze({ HELLO_EXPECTED: 4400, NOT_AUTHENTICATED: 4401 });
@@ -295,7 +310,7 @@ function replyBody(buffer) {
 /**
  * Serve the socket on an HTTP server that serves `app`.
  *
- *   attachPilotSocket(server, app, { verify, onError, helloWaitMs })
+ *   attachPilotSocket(server, app, { verify, onError, helloWaitMs, maxRunning, maxWaiting })
  *     -> { path, sockets(), close() }
  *
  * `verify(token)` says whether a token is a web session's (truthy) or not. It
@@ -305,6 +320,8 @@ function attachPilotSocket(server, app, options = {}) {
   const verify = typeof options.verify === "function" ? options.verify : () => false;
   const onError = typeof options.onError === "function" ? options.onError : () => {};
   const helloWaitMs = Number.isFinite(options.helloWaitMs) ? options.helloWaitMs : HELLO_WAIT_MS;
+  const maxRunning = Number.isFinite(options.maxRunning) ? options.maxRunning : MAX_RUNNING;
+  const maxWaiting = Number.isFinite(options.maxWaiting) ? options.maxWaiting : MAX_WAITING;
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES });
 
   const onUpgrade = (request, socket, head) => {
@@ -331,6 +348,25 @@ function attachPilotSocket(server, app, options = {}) {
     };
     const waiting = setTimeout(() => ws.close(CLOSE.HELLO_EXPECTED, "hello expected"), helloWaitMs);
     waiting.unref?.();
+    /** Operations of this socket at work now, and those asked past the bound, in the order asked. */
+    let running = 0;
+    const turns = [];
+    const run = (id, request) => {
+      running += 1;
+      dispatchInProcess(app, request)
+        .then(
+          (answer) => say({ id, status: answer.status, body: replyBody(answer.body) }),
+          (error) => {
+            onError(error);
+            say({ id, status: 500, body: { ok: false, error: "SERVER_ERROR", message: "The operation failed outside of its route." } });
+          },
+        )
+        .finally(() => {
+          running -= 1;
+          const next = turns.shift();
+          if (next) run(next.id, next.request);
+        });
+    };
     /** The event stream attached to this socket, where there is one. */
     let events = null;
     const letEventsGo = () => {
@@ -367,6 +403,8 @@ function attachPilotSocket(server, app, options = {}) {
     ws.on("close", () => {
       clearTimeout(waiting);
       letEventsGo();
+      // What was waiting its turn is not run for a tab that has gone.
+      turns.length = 0;
     });
     ws.on("error", (error) => onError(error));
     ws.on("message", (data, isBinary) => {
@@ -417,19 +455,10 @@ function attachPilotSocket(server, app, options = {}) {
         say({ id, error: { code: "NOT_AN_OPERATION", message: "Only the BFF's own API is carried, and the event stream is not an operation." } });
         return;
       }
-      dispatchInProcess(app, {
-        method,
-        path: frame.path,
-        body: method === "GET" ? undefined : frame.body,
-        headers: { authorization: `Bearer ${token}` },
-        remoteAddress,
-      }).then(
-        (answer) => say({ id, status: answer.status, body: replyBody(answer.body) }),
-        (error) => {
-          onError(error);
-          say({ id, status: 500, body: { ok: false, error: "SERVER_ERROR", message: "The operation failed outside of its route." } });
-        },
-      );
+      const request = { method, path: frame.path, body: method === "GET" ? undefined : frame.body, headers: { authorization: `Bearer ${token}` }, remoteAddress };
+      if (running < maxRunning) run(id, request);
+      else if (turns.length < maxWaiting) turns.push({ id, request });
+      else say({ id, error: { code: "TOO_MANY", message: "This socket has too many operations waiting already; this one was not run." } });
     });
   }
 
@@ -446,4 +475,4 @@ function attachPilotSocket(server, app, options = {}) {
   };
 }
 
-module.exports = { CLOSE, EVENTS_PATH, MAX_FRAME_BYTES, SOCKET_PATH, attachPilotSocket, dispatchInProcess, eventFrames, isOperationPath, streamInProcess };
+module.exports = { CLOSE, EVENTS_PATH, MAX_FRAME_BYTES, MAX_RUNNING, MAX_WAITING, SOCKET_PATH, attachPilotSocket, dispatchInProcess, eventFrames, isOperationPath, streamInProcess };
