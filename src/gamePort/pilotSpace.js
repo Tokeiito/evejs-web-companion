@@ -43,10 +43,16 @@
 // drone nobody controls. Seen 2026-10-10: five drones launched on landing,
 // owned and controlled by the pilot's ship on the server, absent from the
 // park's states for the whole fight; UpdateStateRequest brought all five back.
-// So a pilot's space asks for the whole state once for each such drone.
+// So a pilot's space asks for the whole state for each such drone, and asks
+// again while the answer leaves it out: seen 2026-10-10 20:39, an answer with
+// no drone rows at all while the server held eighteen controlled drones in the
+// bubble; the same question two minutes later was answered in full.
 
 /** How long a drone of the pilot's may be in the park with no state before the whole state is asked for. */
 const DRONE_STATE_GRACE_MS = 5000;
+/** How long after asking it is asked again, while the drone still has no state; and how many times in all. */
+const DRONE_STATE_RETRY_MS = 15000;
+const DRONE_STATE_ASKS = 3;
 /** invCategories: Drone. */
 const CATEGORY_DRONE = 18;
 
@@ -120,9 +126,8 @@ function createPilotSpace({
     guard("drone state", lostDrones);
   };
 
-  // The pilot's drones the park has no state for: since when, and those the whole state was already asked for.
-  let strayedSince = null;
-  const askedFor = new Set();
+  // The pilot's drones the park has no state for, each with since when, and how often and when last the whole state was asked for.
+  const strays = new Map();
   /** The pilot's own drones in the park (its slim items) that have no state of their own. */
   function statelessDrones() {
     const charID = Number(session.attributes?.charid);
@@ -134,26 +139,33 @@ function createPilotSpace({
     }
     return stray;
   }
-  /** See "NOT THE CLIENT'S" above: a drone that stays stateless past the grace asks once for the whole state. */
+  /** See "NOT THE CLIENT'S" above: a drone stateless past the grace asks for the whole state, and asks again while it stays so. */
   function lostDrones() {
-    // A drone that has its state again, or has gone, may be asked for again if it strays again.
-    for (const id of askedFor) if (!park.slimItems?.has(id) || park.stateByDroneID.has(id)) askedFor.delete(id);
-    const stray = statelessDrones().filter((id) => !askedFor.has(id));
-    if (stray.length === 0) {
-      strayedSince = null;
-      return;
+    const stray = new Set(statelessDrones());
+    // A drone that has its state again, or has gone, starts over if it strays again.
+    for (const id of strays.keys()) if (!stray.has(id)) strays.delete(id);
+    const at = now();
+    const due = [];
+    for (const id of stray) {
+      if (!strays.has(id)) strays.set(id, { since: at, asks: 0, askedAt: null });
+      const each = strays.get(id);
+      if (each.asks >= DRONE_STATE_ASKS) continue;
+      if (each.asks === 0 ? at - each.since >= DRONE_STATE_GRACE_MS : at - each.askedAt >= DRONE_STATE_RETRY_MS) due.push(id);
     }
-    strayedSince ??= now();
-    if (now() - strayedSince < DRONE_STATE_GRACE_MS || remotePark === null) return;
-    for (const id of stray) askedFor.add(id);
-    strayedSince = null;
+    if (due.length === 0 || remotePark === null) return;
+    for (const id of due) {
+      const each = strays.get(id);
+      each.asks += 1;
+      each.askedAt = at;
+    }
     // ⚠ ASKED FOR, NOT RESET. Park.RequestReset would also mark the park invalid until the state comes, and
     // every update meanwhile is dropped; seen 2026-10-10 20:01, two pilots blind for minutes when the answer
     // did not come. The park the pilot has is good but for these drones: it keeps flying on it, and the
     // state replaces it whenever the server sends one.
     park.requestState();
     // Told as the park's other troubles are, so that each time it happens is on record.
-    onError(new Error(`${stray.length} of the pilot's drones in space had no state for ${DRONE_STATE_GRACE_MS} ms (${stray.join(", ")}); the whole state was asked for again`), "drone state");
+    const asks = Math.max(...due.map((id) => strays.get(id).asks));
+    onError(new Error(`${due.length} of the pilot's drones in space had no state (${due.join(", ")}); the whole state was asked for (ask ${asks} of ${DRONE_STATE_ASKS})`), "drone state");
   }
   const guard = (what, action) => {
     try {

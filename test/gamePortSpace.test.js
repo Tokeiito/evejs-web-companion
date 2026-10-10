@@ -137,25 +137,34 @@ test("a drone of the pilot's left in space with no state asks once for the whole
   clock.ms = 4999;
   state.frame();
   assert.equal(asks(), 0);
-  // Past it, the whole state, once, and on record.
+  // Past it, the whole state, and on record.
   clock.ms = 5000;
   state.frame();
   assert.equal(asks(), 1);
   assert.deepEqual(state.errors.map(([what]) => what), ["drone state"]);
-  assert.match(state.errors[0][1], new RegExp(`^1 of the pilot's drones .*\\(${lost}\\)`));
+  assert.match(state.errors[0][1], new RegExp(`^1 of the pilot's drones .*\\(${lost}\\).*ask 1 of 3`));
   // The park is not thrown away while the answer is on its way: an answer that never comes leaves the pilot flying.
   assert.equal(space.park.validState, true);
-  clock.ms = 60000;
+  // An answer that leaves the drone out is asked again, 15 s on, three times in all and no more.
+  clock.ms = 19999;
   state.frame();
-  assert.equal(asks(), 1, "the same drone does not ask again");
-  // Given its state, then losing it again, it may ask again.
+  assert.equal(asks(), 1);
+  clock.ms = 20000;
+  state.frame();
+  clock.ms = 35000;
+  state.frame();
+  assert.equal(asks(), 3);
+  clock.ms = 120000;
+  state.frame();
+  assert.equal(asks(), 3, "three asks, then it stops");
+  // Given its state, then losing it again, it starts over.
   space.park.OnDroneStateChange(lost, 90000001, undock.shipID, 0, 2454, 90000001, null);
   state.frame();
   space.park.stateByDroneID.delete(lost);
   state.frame();
-  clock.ms = 65000;
+  clock.ms = 125000;
   state.frame();
-  assert.equal(asks(), 2);
+  assert.equal(asks(), 4);
 });
 
 test("a park is fed the session's ballpark updates and nothing else, and steps when ticked", async () => {
