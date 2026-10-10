@@ -680,7 +680,31 @@ nothing, and both recorded on Tranquility so:
 | `planetMgr.GetPlanetsForChar()` | `planetSvc.py` 67 | asked once; the client changes its own copy as a colony's pins change |
 | `planetMgr.GetMyLaunchesDetails()` | `planetUISvc.py` 172 | asked once; asked again after `OnPILaunchesChange`, or when its window reloads |
 
-The transport keeps both (`pilots.js`, `KEPT_UNTIL_CHANGED`). It forgets both at
+**A planet's colony, 2026-10-10.** The client asks the planet's own object, and nothing else:
+
+| Call | Where the client makes it | What it keeps |
+|---|---|---|
+| `GetPlanetInfo()` | `clientPlanet.py` 83, as the planet is first wanted | the colony, for as long as it has the planet; it reckons what the colony makes by itself, and asks again when the server says the planet's state changed (`OnMajorPlanetStateUpdate`) |
+| `GetPlanetResourceInfo()` | `clientPlanet.py` 644, where it shows what a planet carries | |
+
+Tranquility's recordings have the first riding the planet's bind: `MachoBindObject(planetID,
+('GetPlanetInfo', (), {}))`. The answer is a KeyVal: the planet's own facts, and for a pilot
+with a colony there its pins, links, routes, level and `currentSimTime`, the time the server
+has reckoned the colony up to. This server reckons a colony up to now as it answers.
+
+For a pilot on the game port the BFF's read of the pilot's colonies (`/api/bridge/planets`)
+asks those, and makes the answers into the row its colony projection reads
+(`src/planetInfoColony.js`): a pin's `id` is the row's `pinID`, and a time is a long where
+the row has its digits. It was answered from the web gateway's snapshot of the store before,
+on either transport, and still is for a pilot on the gateway.
+
+The transport keeps a colony by its planet for a minute (`pilots.js`, `planetRead`), since
+nothing here reckons a colony as the client does. It forgets every colony at
+`OnMajorPlanetStateUpdate` and `OnRefreshPins`, and after the pilot's own change to a colony,
+launch, moving of goods between pins, or sending of goods through a customs office. What a
+planet carries it keeps.
+
+The transport keeps both lists (`pilots.js`, `KEPT_UNTIL_CHANGED`). It forgets both at
 `OnPILaunchesChange`, at `OnMajorPlanetStateUpdate`, after the pilot's own `DeleteLaunch`, and
 after its `UserUpdateNetwork` on a planet's object, and asks for each when it is next wanted.
 That asks for the colonies more often than the client does, which changes its own copy, and

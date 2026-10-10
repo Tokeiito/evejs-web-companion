@@ -289,10 +289,12 @@ Take these defaults, and list each under "For the operator" in the log so they c
   between the two test pilots (`contracts-stage.js` in the scratchpad shows how: give items,
   `/api/bridge/contracts/create` and `accept` through the gateway BFF), a search differed and
   a server defect was behind it. Stage what a list route lists before trusting a pass of it.
-- **What a pass of the parity tool reads when nothing is wrong** (since 2026-10-09, as Test Two,
-  docked): 21 identical, 13 tolerated, nothing moved, nothing divergent, and the tool exits 0.
+- **What a pass of the parity tool reads when nothing is wrong** (since 2026-10-10, as Test Two,
+  docked): 20 identical, 14 tolerated, nothing moved, nothing divergent, and the tool exits 0.
+  (It was 21 and 13 until the colonies route was read as the client reads it: that row is
+  tolerated now, for the time a colony is reckoned up to.)
   Anything else is news: read it. The count is that pilot's. As Test Pilot, who is in no
-  alliance, two passes read 23 identical, 10 tolerated and 1 moved (2026-10-09): the alliance's
+  alliance, two passes read 23 identical, 10 tolerated and 1 moved (2026-10-09, before that): the alliance's
   reads are refused alike on both transports, and `/api/bridge/flight/status` had a notice in
   the game port's answer both times. I took the other pilot's count for a fault and spent a
   while finding out it was not: say which pilot a pass was of.
