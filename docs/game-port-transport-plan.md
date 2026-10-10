@@ -635,8 +635,11 @@ Three hosted bots were then run for pilots on the game port, with the same resul
 tally. One of them, the mining cycle, found every belt empty where the same bot through the
 gateway found rocks: the game port's snapshot had none of the mining fields the gateway's has
 on an asteroid's row. That is mended (`428af02`: a rock says what it yields, which is its own
-type), and is why the default has not been changed yet: a bot is to mine a hold full on the
-game port first.
+type), and a bot has since mined on the game port as through the gateway (8692 units of ore
+against 8690 in the same time). The two transports' rows were then read side by side, and
+three more gaps of the kind found, none built yet: a drone's row does not say whose the drone
+is or what it is doing, a ship's does not say what kind of NPC it is, and none says a ship is
+a compression facility. The default waits for those.
 
 Not yet measured: the structure directory's reads, a fleet's parking and delivery checks, a
 training pilot's corporation fittings, the fleet's companions, the Factory and the training

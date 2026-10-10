@@ -738,6 +738,15 @@ Take these defaults, and list each under "For the operator" in the log so they c
   the game port, and no test had a rock in it, so a snapshot with no rock a bot could use
   passed everything. When a feature works on things of a kind (rocks, wrecks, drones, clouds),
   go where one is.
+- **A mining ship for Test Two is one script away.** `cd <scratch> && node fit-stage.js <bff>
+  test2 140000002` gives a Venture, boards it and fits two Miner I and an afterburner through
+  the BFF's own routes. Save the store before it, and the staged state after it under another
+  label, and restore the staged one before each transport's run. `ore-read.js` reads the ore
+  hold after a run; five minutes of two lasers is some 870 m³.
+- **When one field of the gateway's answer is found missing from ours, read the whole of both
+  makers.** The rock's was one of four gaps in the space snapshot's rows; the other three were
+  found in ten minutes by setting `projectSpaceEntity` (eve.js,
+  `evejsWebGatewayRuntime.js`) beside `projectEntity` (`spaceProjection.js`), not by walking.
 - A test's "watched to fail" can be had after the fact, once the work is committed: put the source file back to the commit
   before (`git show HEAD~1:<file> > <file>`), run the test, and restore it with `git checkout
   HEAD -- <file>`. Check `git status` is clean after.
