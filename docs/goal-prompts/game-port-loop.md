@@ -449,6 +449,16 @@ Take these defaults, and list each under "For the operator" in the log so they c
   <characterID>` is the pattern: it imports the page's TypeScript and asks through
   `/api/bridge/call`). Reading the client for a route is where the route's own faults show:
   the wallet's divisions had the hangar's names.
+- **Something done to a pilot from outside, with its page open:** the page holds the pilot,
+  so a script cannot be it too. Have a pilot of another account do it, through its own
+  session on the same BFF (`give-cash.js <scratch> <bff> <account> <characterID> <toID>
+  <amount>` gives ISK). Count what the page then asks with a probe set before the pilot
+  was chosen; what the server pushed is in the same probe.
+- **What a service of the client's keeps, the page keeps the same way** (`keptOnce` in
+  `web/src/bridge/walletReads.ts`): asked once, those that want it together waiting for the
+  one asking, an asking that fails not kept, and the server's notice either putting the
+  new thing in or letting the old go. Where the client works a change in and that is more
+  than the unit, let it go and ask again: sooner than the client, never behind it.
 - **Through the gateway a cached call's answer carries the time it was made.** Two askings of
   `account.GetEntryTypes` differ in one leaf, call against call. A side-by-side that finds
   one such difference has found the clock.

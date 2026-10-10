@@ -754,7 +754,9 @@ the hosted bots share (`web/src/bridge/walletReads.ts`), as the client's wallet 
 account services make them. The route stands and nothing of the page's asks it. Set side
 by side on both transports, the route and the page's own asking answer the same. One
 route of the bridge's is done this way; the count of those still asked by the page is
-6b's measure. Of the phase's "done when", "no
+6b's measure. The wallet is also kept as the client's services keep it (`1d27f12`): the
+pilot's ISK asked for once and then what the server's `OnAccountChange` says, the
+transactions until that word, the divisions five minutes. Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.
 Of 6a's four things, three are carried by the socket or in process, each with a way back
 (the routes' operations, the pushes, the hosted bots), and the cap is lifted for what is
