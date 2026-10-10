@@ -685,6 +685,18 @@ Take these defaults, and list each under "For the operator" in the log so they c
   class of security cannot be seen live here.
 - **`git diff --stat` does not see a new file.** After a breakage pass over one, compare it
   with its copy in the scratch folder (keep one: write a new file there and copy it in).
+- **A combat timer is one GM command away, in space.** `/cwatch npc 40` (or `weapon`, `pvp`,
+  `suspect`, `disapproval`; `/cwatch clear` ends them all; `/cwatch status` says them) through
+  `POST /api/bridge/gm/slash`. The server tells a pilot in space of each timer and of each
+  ending, and a docked pilot of nothing. The reply's own seconds are not the timer's (it said
+  53 for 40): time what the notice says. `cwatch-walk.js` in the scratch folder undocks a
+  pilot, runs a list of them and prints each notice and the route's answer after it.
+- **A promise nobody waits for must not be able to fail.** Node ends the process at a
+  rejection nobody handles, and the BFF with it. What a notice sets going at the transport is
+  not awaited: `keptReads.amend` catches what its change throws, and lets the answer go.
+- **The same walk on the code before and on the code after, printed and compared,** shows
+  what a change of keeping did and did not alter: `diff` of the two printouts with the times
+  taken out. The walk made before the change is also where the fixture comes from.
 - A test's "watched to fail" can be had after the fact, once the work is committed: put the source file back to the commit
   before (`git show HEAD~1:<file> > <file>`), run the test, and restore it with `git checkout
   HEAD -- <file>`. Check `git status` is clean after.

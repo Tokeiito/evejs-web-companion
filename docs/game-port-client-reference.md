@@ -1099,10 +1099,10 @@ the game port the undock's and the docking's. Tranquility's recording has the an
 safetyLevel)`, each timer a `(state, expiry)`.
 
 The transport asks at the same moments (`pilots.js`, `clientStatesAtAChange`,
-`securityStatusRead`). It keeps the states as last answered, and lets them go at any of the
-eleven notices, where the client works each into what it holds: a read after one of those asks
-again. The pilot's own `SetSafetyLevel` it works in as the client does (below). The security
-status it keeps as the client does.
+`securityStatusRead`). It keeps the states as last answered, and works each of the eleven
+notices into them as the client's service does, with nothing asked after one. The pilot's own
+`SetSafetyLevel` it works in as well (both below). The security status it keeps as the client
+does.
 
 A timer's state is its kind's idle state (weapons 100, PvP 200, criminal 300, NPC 400,
 disapproval 500), one above while its cause goes on, two above while it counts down to its
@@ -1137,6 +1137,26 @@ No system of this server's data is at 0.95 or above (the highest is 0.949794), s
 held at Full has been seen in tests only. Whether the client's own table of systems
 (`res:/staticdata/systems.static`, which is where its `cfg.mapSystemCache` is from) has any
 was not read.
+
+**Crimewatch's notices, 2026-10-10.** Each changes one thing the service keeps, and nothing
+is asked after it (`crimewatchSvc.py` 222 to 288).
+
+| Notice | Carries | What the client does | On Tranquility | This server |
+|---|---|---|---|---|
+| `OnWeaponsTimerUpdate`, `OnPvpTimerUpdate`, `OnNpcTimerUpdate`, `OnCriminalTimerUpdate`, `OnDisapprovalTimerUpdate` | `(state, expiryTime)` | that timer is in that state until that time | the NPC one, 86 times in 17 files: by `charid`, as `(400, None)`, `(401, None)`, `(402, a long)` | by `charid`, as `(x02, a long)` and `(x00, None)`; to a pilot in space only |
+| `OnSystemCriminalFlagUpdates` | `(newIdles, newSuspects, newCriminals)` | the idle forgotten, then the criminals, then the suspects (`UpdateSuspectsAndCriminals`, 195) | 9 times in 6 files: by `solarsystemid2`, three sets | by `solarsystemid2`, three tuples |
+| `OnCrimewatchEngagementCreated`, `...StartTimeout` | `(otherCharID, timeout)` | the engagement with that pilot ends then | not recorded | by `clientID` |
+| `OnCrimewatchEngagementStopTimeout` | `(otherCharID)` | it goes on with no end (`crimewatchEngagementTimeoutOngoing`, -1) | not recorded | not seen |
+| `OnCrimewatchEngagementEnded` | `(otherCharID)` | it is gone | not recorded | by `clientID` |
+| `OnSystemDisapprovalFlagUpdates` | `(newIdles, newNaughty)` | who is disapproved of, which `GetClientStates` does not say | not recorded | by `clientID`, two tuples |
+
+The transport works each into the states it keeps (`src/gamePort/crimewatchStates.js`), in
+the form the states came in, reading the flags' three as sets, tuples or lists. Set beside the
+server's own answers through a walk of fourteen notices, what it keeps was the same after
+each. States or a notice in a form it does not read are let go, and the next read asks. The
+page reads `GET /api/bridge/crimewatch` at each notice still; on the game port that is
+answered from what is kept. A timer is started for a check with the GM's
+`/cwatch <npc|weapon|pvp|suspect|disapproval> <seconds>`, in space.
 
 **The map's stations, 2026-10-10.** `map.GetStationInfo()` is asked once by the client's UI
 service and kept for the client's life (`uisvc.py` 246), and by five other callers through the
