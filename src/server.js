@@ -991,6 +991,7 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
       method: outcome.method,
       result: outcome.result,
       notifications: outcome.notifications,
+      ...pilotClock(heldBridgeSession),
     });
   } catch (error) {
     // The gateway reaped or lost the persistent session (TTL expiry, retail
@@ -1002,6 +1003,22 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
     next(error);
   }
 });
+
+/**
+ * The server's clock as a pilot on the game port has it, to go with an answer: `{ serverNowMs }`, or nothing where
+ * there is no such pilot or its session cannot say. A retail client's clock is kept set by its own connection. The
+ * page has no connection of its own, and what it works out from the time (a skill in training, a countdown) it
+ * works out from this, told with each of its pilot's answers (the plan's Phase 6b).
+ */
+function pilotClock(held) {
+  if (!held || !isGamePortHandle(held.bridgeSessionID)) return {};
+  try {
+    const serverNowMs = gamePortPilots.serverNowMs({ userid: held.accountID }, held.bridgeSessionID);
+    return Number.isFinite(serverNowMs) ? { serverNowMs } : {};
+  } catch {
+    return {};
+  }
+}
 
 // Drop a held bridge session from the BFF's map. Every site that forgets a
 // handle goes through here so the R10 push stream is torn down with it: a

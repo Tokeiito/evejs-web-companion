@@ -278,6 +278,10 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   "officeManager.GetPriceQuote", "officeManager.HasCorpImpoundedItems", "officeManager.PrimeOfficeItem", "officeManager.RentOffice", "officeManager.UnrentOffice",
   // The account's clone grade, which the client asks as it logs in. The gateway's list has nothing of the subscription manager's.
   "subscriptionMgr.GetCloneGrade",
+  // The queue service's priming. The page asks for it by name to make the Skills window's sheet itself (the plan's
+  // Phase 6b), and is answered from what the transport keeps. The gateway's list has not got it: through the
+  // gateway the sheet is the gateway's own.
+  "skillHandler.GetSkillQueueAndFreePoints",
 ]);
 
 /**
@@ -910,6 +914,7 @@ const RETAIL_CALLS = Object.freeze({
   "skillHandler.GetBoosters": same(`${SKILL_SVC}:962`, "GetSkillHandler().GetBoosters(), no arguments: asked once and kept. Recorded on Tranquility as the call the handler's bind carried."),
   "skillHandler.GetImplants": same(`${SKILL_SVC}:967`, "GetSkillHandler().GetImplants(), no arguments: the implants in the pilot's head, asked once and kept (godma's 'implants' of the character is this). Recorded on Tranquility at login."),
   "skillHandler.GetSkillPoints": same(`${SKILL_SVC}:989`, "GetSkillHandler().GetSkillPoints(), no arguments"),
+  "skillHandler.GetSkillQueueAndFreePoints": same("eve/client/script/ui/services/skillQueueSvc.py:117", "GetSkillHandler().GetSkillQueueAndFreePoints(), no arguments: the queue service's priming (PrimeSkillQueue), asked once; the queue is kept, and kept right by the server's notices"),
   "contractProxy.GetContract": judged(
     `${CONTRACTS_SVC}:336`,
     (args) => (args.length === 1 && args[0] > 0 ? { status: "same" } : { status: "differs", note: "The client names the one contract and nothing else: GetContract(contractID)." }),

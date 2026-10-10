@@ -30,6 +30,8 @@ export interface BridgeCallOutcome<TResult = JsonValue> {
   readonly method: string;
   readonly result: TResult;
   readonly notifications: readonly BridgeNotification[];
+  /** The server's clock when this was answered, in milliseconds, where the answer said (wire.ts); else null. */
+  readonly serverNowMs: number | null;
 }
 
 export interface CallMethodOptions {
@@ -221,5 +223,7 @@ export async function callMethod<TResult = JsonValue>(
     method: data.method,
     result: (data.result === undefined ? null : data.result) as TResult,
     notifications: Array.isArray(data.notifications) ? data.notifications : [],
+    // (A number that came as JSON is a finite one.)
+    serverNowMs: typeof data.serverNowMs === "number" ? data.serverNowMs : null,
   };
 }

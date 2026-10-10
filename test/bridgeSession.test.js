@@ -999,6 +999,44 @@ test("a call said to be a pilot's is refused where no pilot is held, as a route 
   assert.deepEqual([gateway.calls.call.at(-1).service, gateway.calls.call.at(-1).method], ["account", "GetCashBalance"]);
 });
 
+test("a call's answer for a pilot on the game port says the server's clock as that pilot's session has it, and no other answer does", async () => {
+  const clockAsked = [];
+  let clock = () => 1_791_636_526_391;
+  const gamePort = fakeGateway({
+    async selectCharacter() {
+      return { bridgeSessionID: GAME_PORT_SESSION_ID, service: "charUnboundMgr", method: "SelectCharacterID", result: null, notifications: [], session: { ...SELECT_SESSION_ECHO } };
+    },
+  });
+  gamePort.serverNowMs = (sessionFields, bridgeSessionID) => { clockAsked.push({ sessionFields, bridgeSessionID }); return clock(); };
+  const call = (baseUrl) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "station", method: "GetGuests", args: [], kwargs: null, pilot: true } });
+  const onGamePort = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gameport" });
+  await apiRequest(onGamePort.baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+
+  const told = await call(onGamePort.baseUrl);
+  assert.deepEqual([told.response.status, told.payload.serverNowMs], [200, 1_791_636_526_391]);
+  // Asked of the pilot's own session, under the pilot's own account. The handle never reaches the browser.
+  assert.deepEqual(clockAsked, [{ sessionFields: { userid: 4 }, bridgeSessionID: GAME_PORT_SESSION_ID }]);
+  assert.equal(JSON.stringify(told.payload).includes(GAME_PORT_SESSION_ID), false);
+  // A session that cannot say, or says what is no time: the answer is as it was, with no clock.
+  for (const cannot of [() => { throw Object.assign(new Error("gone"), { code: "SESSION_NOT_FOUND" }); }, () => NaN, () => undefined, () => "1791636526391"]) {
+    clock = cannot;
+    const untold = await call(onGamePort.baseUrl);
+    assert.deepEqual([untold.response.status, Object.hasOwn(untold.payload, "serverNowMs")], [200, false], String(cannot));
+  }
+
+  // A pilot through the gateway has no such session: the game port's clock is not asked, and none is said.
+  clock = () => 5;
+  const before = clockAsked.length;
+  const throughGateway = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gateway" });
+  await apiRequest(throughGateway.baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const gatewayAnswer = await call(throughGateway.baseUrl);
+  assert.deepEqual([gatewayAnswer.response.status, Object.hasOwn(gatewayAnswer.payload, "serverNowMs"), clockAsked.length], [200, false, before]);
+  // Nor an account's call, with no pilot held.
+  const nobody = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gameport" });
+  const account = await apiRequest(nobody.baseUrl, "/api/bridge/call", { method: "POST", body: { service: "map", method: "GetStationInfo" } });
+  assert.deepEqual([account.response.status, Object.hasOwn(account.payload, "serverNowMs"), clockAsked.length], [200, false, before]);
+});
+
 // ── The wallet (GET /api/bridge/wallet) ──────────────────────────────────────
 
 test("the wallet reads what the retail client reads: no journal by any other call, and the transactions with False for the pilot's own", async () => {

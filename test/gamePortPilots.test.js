@@ -7189,3 +7189,65 @@ test("where nothing of the standings is kept, they are asked of the server as an
   assert.deepEqual(standingRows(asked.result), CHAR_ROWS);
   assert.equal(standingCalls(session).length, before + 1);
 });
+
+// ── the queue, asked for by name; and the pilot's clock ──────────────────────
+//
+// The page makes the Skills window's sheet itself (the plan's Phase 6b), and for that asks for the queue as the
+// client's queue service does (skillQueueSvc.PrimeSkillQueue). That service asks once and keeps the queue.
+
+const QUEUE_PAIRS = { allowed: new Set([...SKILL_PAIRS.allowed, "skillHandler.GetSkillQueueAndFreePoints"]) };
+/** A kept queue's entries as [type, to level], out of the gateway's form. */
+const queueEntries = (answer) => answer[0].items.map((entry) => { const fields = new Map(entry.args.entries); return [fields.get("trainingTypeID"), fields.get("trainingToLevel")]; });
+
+test("the queue, asked for by name, is answered from what the queue service keeps, with the free points as they are kept", async () => {
+  const first = queuedSkill(3300, 5, 0, QUEUE_START, QUEUE_START + 36_000_000_000n);
+  const { pilots, session, handle } = await selected({ answers: handlerAnswers({ "bound:GetSkillQueueAndFreePoints": [{ type: "list", items: [first] }, 5000] }) }, QUEUE_PAIRS);
+  const asked = session.boundCalls.length;
+  const kept = await skillRead(pilots, handle, "GetSkillQueueAndFreePoints");
+  // In the form the handler answers in: (the queue, the free points).
+  assert.deepEqual([kept.length, kept[0].type, queueEntries(kept), kept[1]], [2, "list", [[3300, 5]], 5000]);
+  // Three at once, and again: nothing is sent, and nothing more is counted than the choosing's own asking.
+  await Promise.all([1, 2, 3].map(() => skillRead(pilots, handle, "GetSkillQueueAndFreePoints")));
+  assert.deepEqual([handlerCalls(session, asked), ledgerOf(pilots, "skillHandler.GetSkillQueueAndFreePoints")[0]], [[], { same: 1 }]);
+  // What the server says afterwards is in the answer.
+  session.notify("OnNewSkillQueueSaved", [{ type: "list", items: [queuedSkill(3327, 4, 0, QUEUE_START, QUEUE_START + 1n), first] }]);
+  session.notify("OnFreeSkillPointsChanged", [7]);
+  const after = await skillRead(pilots, handle, "GetSkillQueueAndFreePoints");
+  assert.deepEqual([queueEntries(after), after[1], handlerCalls(session, asked)], [[[3327, 4], [3300, 5]], 7, []]);
+  // Asked with anything, it is not the queue service's asking: sent, as any call is, and counted as made by name.
+  await skillRead(pilots, handle, "GetSkillQueueAndFreePoints", [1]);
+  await pilots.callMethod("skillHandler", "GetSkillQueueAndFreePoints", [], { anything: 1 }, FIELDS, handle);
+  assert.deepEqual(session.boundCalls.slice(asked).map((call) => [call.method, call.args, call.kwargs]), [["GetSkillQueueAndFreePoints", [1], null], ["GetSkillQueueAndFreePoints", [], { anything: 1 }]]);
+  assert.deepEqual(ledgerOf(pilots, "skillHandler.GetSkillQueueAndFreePoints")[0], { same: 1, reshaped: 2 });
+
+  // No free points came with the queue, and none are kept: none is what is answered.
+  const none = await selected({ answers: handlerAnswers() }, QUEUE_PAIRS);
+  assert.deepEqual(await skillRead(none.pilots, none.handle, "GetSkillQueueAndFreePoints"), [{ type: "list", items: [] }, 0]);
+  assert.equal(handlerCalls(none.session).filter((call) => call === "GetSkillQueueAndFreePoints").length, 1);
+});
+
+test("where no queue is kept, the queue asked for by name is asked of the handler, as the queue service would, and then kept", async () => {
+  let refuse = true;
+  const answers = handlerAnswers({ "bound:GetSkillQueueAndFreePoints": () => { if (refuse) throw refusedBy("NotNow"); return [{ type: "list", items: [queuedSkill(3300, 5, 0, QUEUE_START, QUEUE_START + 1n)] }, 3]; } });
+  const { pilots, session, handle } = await selected({ answers }, QUEUE_PAIRS);
+  // The choosing's own asking was refused: the rest of the login's reads were left, and no queue is kept.
+  await rejects(skillRead(pilots, handle, "GetSkillQueueAndFreePoints"), "CALL_REFUSED");
+  refuse = false;
+  const asked = session.boundCalls.length;
+  // Three want it together: one asking, and the other two find it kept.
+  const [answered, second, third] = await Promise.all([1, 2, 3].map(() => skillRead(pilots, handle, "GetSkillQueueAndFreePoints")));
+  assert.deepEqual([queueEntries(answered), answered[1], queueEntries(second), third[1]], [[[3300, 5]], 3, [[3300, 5]], 3]);
+  assert.deepEqual(handlerCalls(session, asked), ["GetSkillQueueAndFreePoints"]);
+  // Kept now: asked for again, nothing is sent, and the free points that came with it are kept too.
+  assert.deepEqual((await skillRead(pilots, handle, "GetSkillQueueAndFreePoints"))[1], 3);
+  assert.deepEqual(handlerCalls(session, asked), ["GetSkillQueueAndFreePoints"]);
+});
+
+test("the pilot's clock is the server's as its session has it, in whole milliseconds, and its own account's alone", async () => {
+  const { pilots, session, handle } = await selected({ answers: handlerAnswers(), serverNow: QUEUE_START_MS + 120_000.75 }, QUEUE_PAIRS);
+  assert.equal(pilots.serverNowMs(WHO, handle), QUEUE_START_MS + 120_000);
+  session.serverNowMs += 60_000;
+  assert.equal(pilots.serverNowMs(WHO, handle), QUEUE_START_MS + 180_000);
+  assert.throws(() => pilots.serverNowMs({ userid: 9 }, handle), (error) => error.code === "SESSION_NOT_FOUND");
+  assert.throws(() => pilots.serverNowMs(WHO, "gp:nobody"), (error) => error.code === "SESSION_NOT_FOUND");
+});

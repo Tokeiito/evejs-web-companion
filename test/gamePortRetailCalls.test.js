@@ -1523,7 +1523,11 @@ test("the game port carries the customs office's transfer, the station's offices
     "invbroker.ImportExportWithPlanet", "officeManager.GetCorporationsWithOffices", "officeManager.GetEmptyOfficeCount",
     "officeManager.GetPriceQuote", "officeManager.HasCorpImpoundedItems", "officeManager.PrimeOfficeItem", "officeManager.RentOffice", "officeManager.UnrentOffice",
     "subscriptionMgr.GetCloneGrade",
+    "skillHandler.GetSkillQueueAndFreePoints",
   ]);
+  // skillQueueSvc.py 117: self.skills.GetSkillHandler().GetSkillQueueAndFreePoints(), on the handler's moniker and with nothing.
+  const queue = retailForm("skillHandler", "GetSkillQueueAndFreePoints", [], null);
+  assert.deepEqual([queue.status, queue.source, queue.args, queue.kwargs, queue.moniker], ["same", "eve/client/script/ui/services/skillQueueSvc.py:117", [], null, true]);
   // clone_grade_svc.py 125: sm.RemoteSvc('subscriptionMgr').GetCloneGrade(), by the service's name and with nothing.
   const grade = RETAIL_CALLS["subscriptionMgr.GetCloneGrade"];
   assert.deepEqual([grade.status, grade.source, MONIKER_SERVICES.subscriptionMgr, PROXY_SERVICES.has("subscriptionMgr")], ["same", "omega/client/clone_grade_svc.py:125", undefined, false]);

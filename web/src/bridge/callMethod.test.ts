@@ -197,3 +197,11 @@ test("a call made for a pilot says it is one, and no other call does", async () 
     { service: "account", method: "GetCashBalance", args: [0], kwargs: null },
   ]);
 });
+
+test("an answer that says the server's clock has it handed on, and one that does not, or says what is no time, has none", async () => {
+  const answering = (more: Record<string, unknown>) => stubFetch(() => jsonResponse({ ok: true, service: "skillHandler", method: "GetSkills", result: null, notifications: [], ...more })).fetch;
+  assert.equal((await callMethod("skillHandler", "GetSkills", [], null, { fetch: answering({ serverNowMs: 1_791_636_526_391 }) })).serverNowMs, 1_791_636_526_391);
+  for (const more of [{}, { serverNowMs: null }, { serverNowMs: "1791636526391" }, { serverNowMs: [1_791_636_526_391] }]) {
+    assert.equal((await callMethod("skillHandler", "GetSkills", [], null, { fetch: answering(more) })).serverNowMs, null, JSON.stringify(more));
+  }
+});

@@ -389,6 +389,10 @@ const SKILL_LOGIN_READS = Object.freeze([
   ["CheckAndSendNotifications", []],
   ["GetSkillHistory", [10]],
 ]);
+/** skillQueueSvc.PrimeSkillQueue's read: (the queue, the free points). The queue service keeps the queue. */
+const SKILL_QUEUE_READ = "GetSkillQueueAndFreePoints";
+/** Whether a call of the handler's is the queue service's own read, as it asks it: with nothing. */
+const isSkillQueueRead = (method, args, kwargs) => method === SKILL_QUEUE_READ && args.length === 0 && kwargs === null;
 const MONIKER_CLASS = "carbon.common.script.net.moniker.Moniker";
 
 /**
@@ -762,7 +766,6 @@ function createGamePortPilots({
   const AGENTS_OWN_JOURNAL = Object.freeze({ status: "same", source: "eve/client/script/ui/shared/neocom/journal.py:325", note: null });
   /** What the client asks of its skill handler of its own accord that the web client never asks, and where each is asked. */
   const SKILL_OWN = Object.freeze({
-    GetSkillQueueAndFreePoints: Object.freeze({ status: "same", source: "eve/client/script/ui/services/skillQueueSvc.py:117", note: null }),
     CheckAndSendNotifications: Object.freeze({ status: "same", source: "notifications/client/development/skillHistoryProvider.py:26", note: null }),
     // CommitTransaction: skillHandler.SaveNewQueue(queueInfo, activate=activate). The web client's pair for it is skillMgr's, by name.
     SaveNewQueue: Object.freeze({ status: "same", source: "eve/client/script/ui/services/skillQueueSvc.py:153", note: null }),
@@ -1477,7 +1480,8 @@ function createGamePortPilots({
     }
     // Asked of the service by name and made on its moniker: the arguments may be the client's as they stand, the call was not.
     // What the client's skill services keep is noted where it is asked for, which is not every time it is wanted (skillRead).
-    const keptByAService = (service === SKILL_HANDLER && Object.hasOwn(SKILL_KEPT, method)) || (service === CORP_REGISTRY && method === AGGRESSION_SETTINGS);
+    const keptByAService = (service === SKILL_HANDLER && (Object.hasOwn(SKILL_KEPT, method) || isSkillQueueRead(method, form.args, form.kwargs))) ||
+      (service === CORP_REGISTRY && method === AGGRESSION_SETTINGS);
     if (!keptByAService) {
       ledger.note(service, method, ON_AN_ANSWERED_OBJECT.has(`${service}.${method}`)
         ? { ...form, status: "differs", note: "Asked of the service by its name. The client asks the object another call answered." }
@@ -2438,6 +2442,7 @@ function createGamePortPilots({
     }
     // What the client's skill services keep is theirs to answer. Anything else of the handler's is asked of it.
     if (Object.hasOwn(SKILL_KEPT, method)) return skillsDoes(entry, () => skillRead(entry, method, args));
+    if (isSkillQueueRead(method, args, kwargs)) return skillsDoes(entry, () => skillQueueRead(entry));
     return onSkillHandler(entry, method, args, kwargs);
   }
 
@@ -2476,6 +2481,16 @@ function createGamePortPilots({
     return skillAsk(entry, method, name === "history" ? args : []);
   }
 
+  /**
+   * The queue service's read, asked for by name: the queue as it is kept and the free points as they are kept, in
+   * the form the handler answers in. Asked of the handler where no queue is kept (PrimeSkillQueue), and what it
+   * answers then handed on as it came.
+   */
+  async function skillQueueRead(entry) {
+    if (!entry.skills.has("queue")) return skillAsk(entry, SKILL_QUEUE_READ);
+    return [entry.skills.read("queue"), entry.skills.read("freeSkillPoints") ?? 0];
+  }
+
   /** The skill services' askings one after another, so that what one keeps the next finds kept. Fails as `work` fails, for whoever waits on it; nobody need. */
   function skillsDoes(entry, work) {
     const doing = entry.skillsWork.then(work);
@@ -2491,6 +2506,14 @@ function createGamePortPilots({
     return skillsDoes(entry, async () => {
       for (const [method, args] of SKILL_LOGIN_READS) await skillAsk(entry, method, args);
     }).catch(() => {});
+  }
+
+  /**
+   * The server's clock as this pilot's session has it (session.js serverNow), in whole milliseconds. It is what the
+   * pilot's own client would read off its clock: the session's connection keeps it set.
+   */
+  function serverNowMs(sessionFields = {}, bridgeSessionID = undefined) {
+    return Math.trunc(held(bridgeSessionID, sessionFields).session.serverNow());
   }
 
   /**
@@ -3201,6 +3224,7 @@ function createGamePortPilots({
     standingsKept,
     brokersFeeRate: brokersFeeRateFor,
     skillSheet,
+    serverNowMs,
     saveSkillQueue,
     journalKept,
     ownersNamed,
