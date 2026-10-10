@@ -986,6 +986,30 @@ This server keeps, for each docked pilot, which guests it has told that pilot of
 arrival is sent only for a pilot not in it. So a list asked for once and changed by the
 notices stays the list the server holds.
 
+**A corporation's offices, 2026-10-10.** The client's office manager keeps two lists
+(`eve/client/script/ui/services/corporation/officeManager.py`):
+
+| Call | When the client makes it | What lets it go |
+|---|---|---|
+| `officeManager.GetMyCorporationsOffices()`, by name | 41, while it has none | `OnOfficeRentalChange(corporationID, officeID)` where the corporation is the session's (72); the session's corporation changing (62) |
+| `GetCorporationsWithOffices()`, on `Moniker('officeManager', stationID)` | 34, while it has none | any `OnOfficeRentalChange` (71); the session's station or structure changing (58, 66) |
+
+It asks the rest on the station's object each time: `PrimeOfficeItem()` (108),
+`GetPriceQuote(corpid)` (114), `RentOffice(cost)` (117), `UnrentOffice()` (122),
+`GetEmptyOfficeCount()` (136), `HasCorpImpoundedItems()` (143). It lets nothing go at its own
+renting: the server's notice does that.
+
+Tranquility's recordings of an office rented and of one given up have the notice twice, once
+addressed by `stationid` and once by `corpid`. After it the client asks for its corporation's
+offices once, and on the station's object for `PrimeOfficeItem` (after renting) or
+`HasCorpImpoundedItems` (after giving up), `GetCorporationsWithOffices` and
+`GetEmptyOfficeCount`. An office's row has eleven values, the station the second and the
+office the ninth.
+
+The transport keeps the first list the same way (`pilots.js`, `KEPT_UNTIL_CHANGED`): let go at
+the notice where it names the session's corporation, and in another corporation. Nothing of
+ours asks for the second list, or rents an office.
+
 **Asking with a cached version.** When the client already holds an answer, it sends that answer's
 version as `machoVersion`, and the server can reply "still good" instead of the answer. We always
 send 1, so the server always answers in full. (What comes back is handled; see below.)

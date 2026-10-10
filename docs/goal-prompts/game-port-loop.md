@@ -607,6 +607,14 @@ Take these defaults, and list each under "For the operator" in the log so they c
   (fixed, eve.js `3cdc14973`). The page read both as "none", so nothing of ours showed it. Read
   through the game-port BFF, a list comes as `{type: "list"}` and a tuple as a plain array:
   that is how a tuple sent where Tranquility sends a list is seen.
+- Staging for a corporation: Elysian Industries (98000000) has Test Three for its CEO and Test
+  Two for a member, one office (Jita), and an empty wallet. An office in Jita costs 10,000:
+  the CEO gives the corporation the ISK first (`account.GiveCash(corporationID, amount,
+  reason)`). No route of the BFF rents an office or gives one up: a script's own game-port
+  session sends `officeManager.RentOffice` and `UnrentOffice` by name, as the pilot docked
+  there. The GM's `/tr me <stationID>` puts a pilot in a station. Save the store first.
+- A pilot the page holds cannot also be a script's: the write that the page is to be seen
+  answering comes from another pilot's session, so stage the two into the same station.
 - A test's "watched to fail" can be had after the fact: put the source file back to the commit
   before (`git show HEAD~1:<file> > <file>`), run the test, and restore it with `git checkout
   HEAD -- <file>`. Check `git status` is clean after.
