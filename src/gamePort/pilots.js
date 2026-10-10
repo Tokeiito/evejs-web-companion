@@ -172,6 +172,14 @@ function notificationKeptAs(method, form) {
   if (method === "GetUnprocessed") return "unread";
   return method === "GetByGroupID" ? `group:${form.args[0]}` : null;
 }
+const PLANET_MGR = "planetMgr";
+/**
+ * What a read of the planet manager's is kept as: the pilot's colonies (planetSvc.colonizationData:
+ * GetPlanetsForChar(), planetSvc.py 65) and its launches (planetUISvc.launchsRowSet: GetMyLaunchesDetails(),
+ * planetUISvc.py 170), each asked with nothing. Null for any other read, and for one with something sent beside
+ * it, which is no call of the client's and is asked as it came.
+ */
+const planetKeptAs = (method, form) => (form.args.length > 0 ? null : method === "GetPlanetsForChar" ? "colonies" : method === "GetMyLaunchesDetails" ? "launches" : null);
 /** What a read of the calendar's is kept as: a month's events, by the month (calendar.events[(month, year)]: GetEventList(month, year)). */
 const calendarKeptAs = (method, form) => (method === "GetEventList" ? `${form.args[1]}-${form.args[0]}` : null);
 /**
@@ -194,6 +202,15 @@ const KEPT_UNTIL_CHANGED = Object.freeze({
     keptAs: calendarKeptAs,
     notices: new Set(["OnNewCalendarEvent", "OnEditCalendarEvent", "OnRemoveCalendarEvent"]),
     writes: Object.freeze({ calendarMgr: new Set(["CreatePersonalEvent", "CreateCorporationEvent", "CreateAllianceEvent", "EditPersonalEvent", "EditCorporationEvent", "EditAllianceEvent", "DeleteEvent"]) }),
+  }),
+  // planetSvc and planetUISvc: the launches changed (OnPILaunchesChange, at which the client forgets them), a
+  // planet's state changed (OnMajorPlanetStateUpdate, at which the client changes its own list of colonies), the
+  // pilot removed a launch (journal.py 465: the launches asked afresh), or changed a colony's network, which is
+  // done on the planet's own object and at which the client changes its own count of the colony's pins.
+  [PLANET_MGR]: Object.freeze({
+    keptAs: planetKeptAs,
+    notices: new Set(["OnPILaunchesChange", "OnMajorPlanetStateUpdate"]),
+    writes: Object.freeze({ planetMgr: new Set(["DeleteLaunch", "UserUpdateNetwork"]) }),
   }),
 });
 /**
@@ -1276,10 +1293,7 @@ function createGamePortPilots({
     const result = await run(entry, service, method, async () => (form.moniker
       ? monikerCall(entry, service, method, argumentsToWire(form.args), form.kwargs)
       : byName(entry.session, service, method, form))).finally(() => {
-      // One of the pilot's own writes that changes what a service keeps, done or refused: what was kept may not be so.
-      for (const [reads, keeper] of Object.entries(KEPT_UNTIL_CHANGED)) {
-        if (Object.hasOwn(keeper.writes, service) && keeper.writes[service].has(method)) entry.kept[reads].forget();
-      }
+      forgetKeptAfter(entry, service, method);
       if (mayChangeContents(service, method)) entry.listings.forget();
     });
     // What the client's own code names beside this call, which it does once the call is done (a refusal threw above).
@@ -1481,6 +1495,13 @@ function createGamePortPilots({
   }
 
   // ── what the client's services keep until it changes ──────────────────────
+
+  /** One of the pilot's own writes that changes what a service keeps, done or refused, by name or on an object: what was kept may not be so. */
+  function forgetKeptAfter(entry, service, method) {
+    for (const [reads, keeper] of Object.entries(KEPT_UNTIL_CHANGED)) {
+      if (Object.hasOwn(keeper.writes, service) && keeper.writes[service].has(method)) entry.kept[reads].forget();
+    }
+  }
 
   /** A read a service keeps the answer of (KEPT_UNTIL_CHANGED): answered from what is kept, and asked for, and noted, where nothing is. */
   function keptRead(entry, service, method, form) {
@@ -2724,6 +2745,7 @@ function createGamePortPilots({
       result = await run(entry, service, method, () => (listing ? entry.listings.read(listingKeptAs(boundHandle, form), sent) : sent()));
     } catch (error) {
       if (mayChangeContents(service, method)) entry.listings.forget();
+      forgetKeptAfter(entry, service, method);
       // The session's own word for a bind the server answered without an object: the gateway's, for a bind.
       if (/ did not return a bound object\.| could not say where its object lives\./.test(error.message)) {
         throw fail("BOUND_NO_OBJECT", `${service}.MachoBindObject did not return a bound object.`);
@@ -2731,6 +2753,7 @@ function createGamePortPilots({
       throw error;
     }
     if (mayChangeContents(service, method)) entry.listings.forget();
+    forgetKeptAfter(entry, service, method);
     if (service === "scanMgr") afterScanManagerCall(entry, method, form.args, result);
     if (service === "dogmaIM") afterGroupingCall(entry, method, form.args, result);
     if (service === "beyonce") afterMovementCall(entry, method, form.args, kwargs);

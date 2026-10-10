@@ -605,9 +605,9 @@ const RETAIL_CALLS = Object.freeze({
     },
   }),
   "planetMgr.GetPlanetsForChar": judged("eve/client/script/environment/planetSvc.py:67", sentWithNothing,
-    "sm.RemoteSvc('planetMgr').GetPlanetsForChar(), by name and with nothing: recorded on Tranquility so. The client asks once and keeps the answer, changing it itself as a colony's pins change; the BFF asks at every read."),
+    "sm.RemoteSvc('planetMgr').GetPlanetsForChar(), by name and with nothing: recorded on Tranquility so. The client asks once and keeps the answer, changing it itself as a colony's pins change; the transport keeps it so, and asks again where the client would change it (pilots.js)."),
   "planetMgr.GetMyLaunchesDetails": judged("eve/client/script/ui/shared/planet/planetUISvc.py:172", sentWithNothing,
-    "sm.RemoteSvc('planetMgr').GetMyLaunchesDetails(), by name and with nothing: recorded on Tranquility so. The client asks once and keeps the answer until the server says the launches changed (OnPILaunchesChange) or its window asks afresh; the BFF asks at every read."),
+    "sm.RemoteSvc('planetMgr').GetMyLaunchesDetails(), by name and with nothing: recorded on Tranquility so. The client asks once and keeps the answer until the server says the launches changed (OnPILaunchesChange) or its window asks afresh; the transport keeps it so (pilots.js)."),
   "planetMgr.DeleteLaunch": same("eve/client/script/ui/shared/neocom/journal.py:464", "sm.RemoteSvc('planetMgr').DeleteLaunch(launchID), by name: Remove on a launch in the journal's list, which the client then asks for afresh. No recording has one."),
   "planetMgr.UserLaunchCommodities": Object.freeze({
     status: "same",

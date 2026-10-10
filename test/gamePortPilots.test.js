@@ -6040,3 +6040,69 @@ test("a launchpad's goods go up on the office's own inventory, in the client's f
   // A pair on neither list is still refused.
   await assert.rejects(pilots.callBoundMethod("invbroker", "NoSuchThing", [], null, FIELDS, handle, boundHandle), (error) => error.code === "CALL_NOT_ALLOWED");
 });
+
+// planetSvc.GetMyPlanets (planetSvc.py 65) and planetUISvc.GetLaunches (planetUISvc.py 170): the pilot's colonies
+// and its launches are each asked for once and kept. The launches are forgotten at the server's OnPILaunchesChange
+// and asked afresh after the pilot removes one (journal.py 465). The colonies the client changes itself as a
+// planet's state changes (OnMajorPlanetStateUpdate) and as its own changes to a colony are submitted. A haul's
+// collecting of launches asked for each sixteen times, once every two seconds.
+
+const PLANET_PAIRS = { allowed: new Set(["planetMgr.GetPlanetsForChar", "planetMgr.GetMyLaunchesDetails", "planetMgr.DeleteLaunch", "planetMgr.MachoBindObject", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities"]) };
+function planetAnswers(more = {}) {
+  const asked = { colonies: 0, launches: 0 };
+  return { asked, answers: { "planetMgr.GetPlanetsForChar": () => `colonies ${asked.colonies += 1}`, "planetMgr.GetMyLaunchesDetails": () => `launches ${asked.launches += 1}`, ...more } };
+}
+
+test("a pilot's colonies and launches are asked for once and kept, as the client's planet services keep them", async () => {
+  const { asked, answers } = planetAnswers();
+  const { pilots, session, handle } = await selected({ answers }, PLANET_PAIRS);
+  const read = async (method, args = []) => (await pilots.callMethod("planetMgr", method, args, null, FIELDS, handle)).result;
+  assert.deepEqual([await read("GetPlanetsForChar"), await read("GetPlanetsForChar"), await read("GetMyLaunchesDetails"), await read("GetMyLaunchesDetails"), await read("GetPlanetsForChar")],
+    ["colonies 1", "colonies 1", "launches 1", "launches 1", "colonies 1"]);
+  assert.deepEqual(asked, { colonies: 1, launches: 1 });
+  // Noted where it was asked, which is once each.
+  assert.deepEqual([ledgerOf(pilots, "planetMgr.GetPlanetsForChar")[0], ledgerOf(pilots, "planetMgr.GetMyLaunchesDetails")[0]], [{ same: 1 }, { same: 1 }]);
+  // Two at once that find nothing kept ask once.
+  session.notify("OnPILaunchesChange", []);
+  assert.deepEqual(await Promise.all([read("GetMyLaunchesDetails"), read("GetMyLaunchesDetails")]), ["launches 2", "launches 2"]);
+  // A read with something sent beside it is no call of the client's, and is asked as it came each time.
+  assert.deepEqual([await read("GetMyLaunchesDetails", [PILOT]), await read("GetMyLaunchesDetails", [PILOT])], ["launches 3", "launches 4"]);
+});
+
+test("the kept colonies and launches are asked for again after the server's word of a change, the pilot's own removing of a launch, and its change to a colony", async () => {
+  let refuse = false;
+  let refuseChange = false;
+  const { asked, answers } = planetAnswers({
+    "planetMgr.DeleteLaunch": () => { if (refuse) throw refusedBy("NotNow"); return null; },
+    "bound:UserUpdateNetwork": () => { if (refuseChange) throw refusedBy("NotNow"); return null; },
+  });
+  const { pilots, session, handle } = await selected({ answers }, PLANET_PAIRS);
+  const read = async (method) => (await pilots.callMethod("planetMgr", method, [], null, FIELDS, handle)).result;
+  const both = async () => { await read("GetPlanetsForChar"); await read("GetMyLaunchesDetails"); await read("GetPlanetsForChar"); await read("GetMyLaunchesDetails"); return { ...asked }; };
+  assert.deepEqual(await both(), { colonies: 1, launches: 1 });
+  // A notice that is none of the planet services' leaves them kept.
+  session.notify("OnPlanetSomethingElse", [40009077]);
+  assert.deepEqual(await both(), { colonies: 1, launches: 1 });
+  // planetUISvc.OnPILaunchesChange and planetSvc.OnMajorPlanetStateUpdate.
+  session.notify("OnPILaunchesChange", []);
+  assert.deepEqual(await both(), { colonies: 2, launches: 2 });
+  session.notify("OnMajorPlanetStateUpdate", [40009077, true]);
+  assert.deepEqual(await both(), { colonies: 3, launches: 3 });
+  // journal.DeleteLaunchEntry: the launch removed, done or refused, and the launches asked afresh.
+  await pilots.callMethod("planetMgr", "DeleteLaunch", [910000000], null, FIELDS, handle);
+  assert.deepEqual(await both(), { colonies: 4, launches: 4 });
+  refuse = true;
+  await assert.rejects(pilots.callMethod("planetMgr", "DeleteLaunch", [910000000], null, FIELDS, handle));
+  assert.deepEqual(await both(), { colonies: 5, launches: 5 });
+  // A change to a colony, made on the planet's own object: the client changes its own count of the colony's pins.
+  const { boundHandle } = await pilots.bindObject("planetMgr", "MachoBindObject", [40009077], null, FIELDS, handle);
+  await pilots.callBoundMethod("planetMgr", "UserUpdateNetwork", [[]], null, FIELDS, handle, boundHandle);
+  assert.deepEqual(await both(), { colonies: 6, launches: 6 });
+  // Refused, it may still have changed something: asked again all the same.
+  refuseChange = true;
+  await assert.rejects(pilots.callBoundMethod("planetMgr", "UserUpdateNetwork", [[]], null, FIELDS, handle, boundHandle));
+  assert.deepEqual(await both(), { colonies: 7, launches: 7 });
+  // A launch from a colony changes neither by itself: the server's notice is what says the launches changed.
+  await pilots.callBoundMethod("planetMgr", "UserLaunchCommodities", [1054656331534, { 2268: 1 }], null, FIELDS, handle, boundHandle);
+  assert.deepEqual(await both(), { colonies: 7, launches: 7 });
+});
