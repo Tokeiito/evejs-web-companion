@@ -479,12 +479,27 @@ Take these defaults, and list each under "For the operator" in the log so they c
   as a read not carried answers null (`saveQueue`, `readSkillSheet`). A refusal by
   `CALL_NOT_ALLOWED` means nothing was made, so asking the route after it is safe; no other
   failure is taken so.
-- **Read the panel that calls a service, and not the service alone.** The transport's saving
-  of a queue was built from `skillQueueSvc` and says `activate=True`; the panel that calls it
-  says True only at its start button.
+- **Read every caller of a call before saying what the client sends with it.** The panel's own
+  two saves of a queue say whether a skill is in training, and that was written down as what a
+  change of the queue does (`cea56d7`). Every adding, removing and moving goes through the
+  service's `OnClientQueueModified`, which says otherwise (`bcf13d5`). `grep` the method
+  across the whole client, list the callers in the log, and say which the page's button is
+  the counterpart of. A claim about the client is held to this as a build is.
+- **A test whose stand-in holds an answer back says how long it will wait**
+  (`test(name, { timeout: 5000 }, …)`). One that did not hung a run for 400 seconds, and
+  would hang the breakage tool, which is not to be time-limited from outside. Run a new test
+  file once by itself with `--test-timeout` before it joins a longer command.
+- **A script that stages is not a read.** After a restore, confirm with a probe that only
+  reads (`write-start.js <bff> <account> <characterID> read`), and keep the store's copy
+  until that is done.
+- **An account's extra training slots are in the store's `accounts` rows.**
+  `slots-store.js <repo> <a COPY of the store> clear <accountID>` clears them in a copy,
+  which `store.sh restore <label>` puts in; `slots-live.js <bff> <account> <characterID>
+  stage <otherCharacterID>` then sets another character training and saves a queue each way.
 - **A patch script of several files stops at the first find that is wrong, with the files
   before it written.** Take each find from the file as it is (grep it), not from memory, and
-  finish from the file it stopped at in a second script.
+  finish from the file it stopped at in a second script. Better, have the script look for
+  every find of every file before it writes any (`slots1.js` in the scratchpad is the form).
 - **A write is moved by the generic call's three sayings, and only after its handler is read.**
   The page says `pilot` and `confirm`, and the pair goes on `PAGE_WRITE_PAIR_KEYS`
   (`src/bridgeCallPolicy.js`); the page's side is `api.bridgeDo` and a module beside the
