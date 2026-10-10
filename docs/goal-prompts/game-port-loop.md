@@ -439,6 +439,18 @@ Take these defaults, and list each under "For the operator" in the log so they c
   frames before choosing a pilot, and read `performance.getEntriesByType("resource")` for
   what went over HTTP. The first run of a thing in the browser is where its faults are: the
   socket's tests all passed while ten sockets stood open on the page.
+- **What a page is pushed, and which way:** `push-probe.js` in the scratchpad, pasted into
+  the page after a reload and before a pilot is chosen; `window.__push` then holds the
+  event stream's frames by kind as they come on a socket and by an `EventSource`, each
+  `EventSource` made, and what the page sent about the stream. A request that goes on a
+  socket is not a `fetch`, so a probe that wraps `fetch` does not count it (the health
+  poll, with the setting on). To take the socket from under the page, keep the socket the
+  `events` frame was sent on and call its `close()`.
+- **A patch is a script written to a file, every time**, however small. A heredoc halves a
+  doubled backslash: a `\\n` meant for a string in the file being patched went in as a line
+  break, and the test file no longer loaded.
+- **The breakage tool runs the tests unbroken first** and refuses if they fail ("NOT TRIED
+  any of N"). Before it did, a test file that did not load "caught" every breakage.
 - **A login timed in the page:** `login-probe.js` in the scratchpad, pasted into the page
   after a reload and before a pilot is chosen; `await window.__measure()` clicks the pilot's
   hangar row and says the requests over HTTP, the frames, the most outstanding at once and

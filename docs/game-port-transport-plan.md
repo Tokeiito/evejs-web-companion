@@ -716,9 +716,17 @@ close (479 to 521 ms against 525 to 797 ms over HTTP, the BFF and the server on 
 There is no bound on what one socket has running at once; whether there should be is for
 the slice that takes the HTTP carriage away.
 
-Not yet: the pushed notices are not on the socket, the setting is off unless set, and
-hosted bots still ask over loopback HTTP. Those are the next slices, in that order; the
-routes' HTTP carriage goes last.
+**The pushed notices, 2026-10-10** (`7d85247`): where the page is set to the socket, a
+pilot's live channel is its socket and no `EventSource` is opened. The BFF runs its event
+stream route in this process for as long as the page listens (`streamInProcess`) and hands
+each frame on, so the route is unchanged and still says who may listen. The `EventSource`
+is the way back, opened if the socket is not to be had. In the browser a login, an undock,
+a docking and a logout had the same frames in the same numbers both ways.
+
+Not yet: the setting is off unless set, a pilot in the background has no pushes either
+way, and hosted bots still ask over loopback HTTP, which is the next slice; the routes'
+HTTP carriage goes last. Of the phase's "done when", "no `EventSource` is opened" holds
+with the setting on and the socket up, and not otherwise.
 
 ---
 
