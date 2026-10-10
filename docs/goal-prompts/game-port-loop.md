@@ -602,6 +602,14 @@ Take these defaults, and list each under "For the operator" in the log so they c
   in this loop a cause went into a commit message and the log and had to be taken back.
 - The web client in a browser tab selects its pilot again when it loses the session. Log the tab
   out before a script selects the same character, or the two take it from each other.
+- Set each place of the server's answer beside the recording's, not only its form. EveJS sent
+  a nought for a station guest's missing alliance and war faction where Tranquility sends None
+  (fixed, eve.js `3cdc14973`). The page read both as "none", so nothing of ours showed it. Read
+  through the game-port BFF, a list comes as `{type: "list"}` and a tuple as a plain array:
+  that is how a tuple sent where Tranquility sends a list is seen.
+- A test's "watched to fail" can be had after the fact: put the source file back to the commit
+  before (`git show HEAD~1:<file> > <file>`), run the test, and restore it with `git checkout
+  HEAD -- <file>`. Check `git status` is clean after.
 
 ## When to stop
 

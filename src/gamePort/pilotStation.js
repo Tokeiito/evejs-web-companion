@@ -6,13 +6,13 @@
  *
  * Its guests: asked for once for a station (GetGuests, 99: while no list was received, or the list received was
  * another station's), and from then on changed by the server's word of each pilot who arrives or leaves
- * (OnCharNowInStation, 85; OnCharNoLongerInStation, 92). A guest is (charID, corpID, allianceID, warFactionID),
+ * (OnCharNowInStation, 86; OnCharNoLongerInStation, 93). A guest is (charID, corpID, allianceID, warFactionID),
  * as the answer lists one and as each notice carries one.
  *
  * Its own item: (ownerID, itemID, operationID, stationTypeID), asked for while there is none or its itemID is not
  * the station the session is in (GetStationItem, 573; HasInvalidStationItem, 586).
  *
- * Both are let go when the pilot leaves the station (OnSessionChanged, ProcessSessionChange, 74 to 82).
+ * Both are let go when the pilot leaves the station (OnSessionChanged, 74; ProcessSessionChange, 81).
  */
 
 /** A list off the wire, or a plain one; anything else has no items. */

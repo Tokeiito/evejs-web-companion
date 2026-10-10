@@ -60,7 +60,7 @@ test("a notice that is neither, or that names nobody, changes nothing", () => {
 });
 
 test("a pilot who arrives before the guests were ever asked for is kept until they are, and then the answer is the list", () => {
-  // base.py 85: OnCharNowInStation adds to the guests whether or not the list was received; GetGuests then clears
+  // base.py 86: OnCharNowInStation adds to the guests whether or not the list was received; GetGuests then clears
   // them and asks, for a station it has no list of.
   const station = createPilotStation();
   assert.equal(station.feed(notice("OnCharNowInStation", guest(140000003))), true);

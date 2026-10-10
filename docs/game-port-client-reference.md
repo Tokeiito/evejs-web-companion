@@ -963,6 +963,29 @@ at the office. I wrote on 2026-10-09 that the client makes the transfer at the o
 what the recording has, not what the client requires. Whether Tranquility's server takes the
 transfer from across the system is in no recording.
 
+**A station's guests and its own item, 2026-10-10.** The client's station service keeps both
+(`eve/client/script/ui/station/base.py`):
+
+| Call | When the client makes it | What it keeps |
+|---|---|---|
+| `station.GetGuests()` | 103, while it has no list, or the list it has is another station's | the guests by character; `OnCharNowInStation` adds one who is not a guest yet (86), `OnCharNoLongerInStation` takes one out (93) |
+| `stationSvc.GetStationItemBits()` | 575, while it has no item, or the item's ID is not the station the session is in | the item: owner, station, operation, the station's type |
+
+It lets both go when the session leaves the station. Tranquility's recordings have each call
+with nothing beside it. The guests come as a list of `[charID, corpID, allianceID,
+warFactionID]`, with None where a pilot has no alliance or no war faction; each notice carries
+one guest's four in the same form; the item comes as a tuple.
+
+The transport keeps both the same way (`src/gamePort/pilotStation.js`; `stationRead` in
+`pilots.js`), for a read asked with nothing beside it. An answer that is no list is handed on
+and not kept. The page reads the guests again at either notice, and is answered from what is
+kept.
+
+This server keeps, for each docked pilot, which guests it has told that pilot of
+(`server/src/services/_shared/guestLists.js`): the answer to `GetGuests` sets it, and an
+arrival is sent only for a pilot not in it. So a list asked for once and changed by the
+notices stays the list the server holds.
+
 **Asking with a cached version.** When the client already holds an answer, it sends that answer's
 version as `machoVersion`, and the server can reply "still good" instead of the answer. We always
 send 1, so the server always answers in full. (What comes back is handled; see below.)
