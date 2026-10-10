@@ -7422,6 +7422,46 @@ test("a home station that could not be read is not kept, and another account's s
   await assert.rejects(pilots.callMethod("home_station", "get_home_station", [], null, { userid: 9 }, handle), (error) => error.code === "SESSION_NOT_FOUND");
 });
 
+// ── the account's training slots, as the client's queue service reads them ───
+
+test("the selection screen's data is kept from the choosing and answered by name with nothing sent; the training slots are asked of the user service", async () => {
+  const ROWS = [characterRow(), characterRow({ characterID: 140000003, characterName: Buffer.from("Another"), skillTypeID: 3300 })];
+  const answers = { "charUnboundMgr.GetCharacterSelectionData": selectionData(ROWS), "userSvc.GetMultiCharactersTrainingSlots": { type: "dict", entries: [] } };
+  const LISTED = { allowed: new Set(["charUnboundMgr.GetCharacterSelectionData", "charUnboundMgr.GetCharacterLockType", "userSvc.GetMultiCharactersTrainingSlots"]) };
+  const { pilots, session, handle } = await selected({ answers }, LISTED);
+  const sent = () => session.calls.length + session.boundCalls.length;
+  const field = (row, name) => (row.args.entries.find(([key]) => key === name) ?? [])[1];
+  // ccSvc.GetCharacterSelectionData: what the choosing was answered, whole, in the form a call's answer has.
+  const before = sent();
+  for (const turn of [1, 2]) {
+    const kept = await pilots.callMethod("charUnboundMgr", "GetCharacterSelectionData", [], null, FIELDS, handle);
+    assert.deepEqual([kept.service, kept.method, kept.result.length, kept.result[2].items.map((row) => [field(row, "characterID"), field(row, "skillTypeID") ?? null])], ["charUnboundMgr", "GetCharacterSelectionData", 4, [[PILOT, null], [140000003, 3300]]], `turn ${turn}`);
+  }
+  assert.equal(sent(), before);
+  // The choosing's own asking is the one in the ledger.
+  assert.deepEqual(ledgerOf(pilots, "charUnboundMgr.GetCharacterSelectionData")[0], { same: 1 });
+  // Asked with anything, it is not the client's kept reading: it goes to the server.
+  await pilots.callMethod("charUnboundMgr", "GetCharacterSelectionData", [], { force: true }, FIELDS, handle);
+  assert.deepEqual([sent(), session.calls.at(-1).method, session.calls.at(-1).kwargs], [before + 1, "GetCharacterSelectionData", { force: true }]);
+  await pilots.callMethod("charUnboundMgr", "GetCharacterSelectionData", [1], null, FIELDS, handle);
+  assert.deepEqual([sent(), session.calls.at(-1).method, session.calls.at(-1).args], [before + 2, "GetCharacterSelectionData", [1]]);
+  // Another call of the service's with nothing is not this one: it is asked.
+  await pilots.callMethod("charUnboundMgr", "GetCharacterLockType", [], null, FIELDS, handle).catch(() => {});
+  assert.deepEqual([sent(), session.calls.at(-1).method], [before + 3, "GetCharacterLockType"]);
+  // skillQueueSvc.GetMultipleCharacterTraining: by the user service's name, with nothing, every time it is asked.
+  const from = sent();
+  const slots = await pilots.callMethod("userSvc", "GetMultiCharactersTrainingSlots", [], null, FIELDS, handle);
+  const asked = session.calls.at(-1);
+  assert.deepEqual([slots.result, sent(), asked.service, asked.method, asked.args, asked.kwargs], [{ type: "dict", entries: [] }, from + 1, "userSvc", "GetMultiCharactersTrainingSlots", [], null]);
+  assert.deepEqual(ledgerOf(pilots, "userSvc.GetMultiCharactersTrainingSlots"), [{ same: 1 }, "eve/client/script/ui/services/skillQueueSvc.py:851"]);
+  // Where the list of calls has not got them, neither is answered: not from what is kept either.
+  const without = await selected({ answers }, { allowed: new Set(["station.GetGuests"]) });
+  const then = without.session.calls.length;
+  await rejects(without.pilots.callMethod("charUnboundMgr", "GetCharacterSelectionData", [], null, FIELDS, without.handle), "CALL_NOT_ALLOWED");
+  await rejects(without.pilots.callMethod("userSvc", "GetMultiCharactersTrainingSlots", [], null, FIELDS, without.handle), "CALL_NOT_ALLOWED");
+  assert.equal(without.session.calls.length, then);
+});
+
 // ── what is no call ──────────────────────────────────────────────────────────
 
 test("a call whose service or method is not text is not on any list, whatever it would spell", async () => {

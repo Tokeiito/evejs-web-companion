@@ -1526,7 +1526,14 @@ test("the game port carries the customs office's transfer, the station's offices
     "skillHandler.GetSkillQueueAndFreePoints",
     "home_station.get_home_station",
     "skillHandler.SaveNewQueue",
+    "userSvc.GetMultiCharactersTrainingSlots",
   ]);
+  // skillQueueSvc.py 851: sm.RemoteSvc('userSvc').GetMultiCharactersTrainingSlots(), by the service's name and with nothing.
+  const slots = retailForm("userSvc", "GetMultiCharactersTrainingSlots", [], null);
+  assert.deepEqual([slots.status, slots.source, slots.args, slots.kwargs, slots.moniker], ["same", "eve/client/script/ui/services/skillQueueSvc.py:851", [], null, false]);
+  for (const [args, kwargs] of [[[4], null], [[], { force: true }]]) {
+    assert.equal(retailForm("userSvc", "GetMultiCharactersTrainingSlots", args, kwargs).status, "differs", JSON.stringify([args, kwargs]));
+  }
   // homestation/client/service.py 67: self.remote.get_home_station(), of the service by its name, with nothing.
   const home = retailForm("home_station", "get_home_station", [], null);
   assert.deepEqual([home.status, home.source, home.args, home.kwargs, home.moniker, home.proxy], ["same", "homestation/client/service.py:67", [], null, false, false]);

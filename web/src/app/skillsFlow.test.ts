@@ -410,13 +410,29 @@ interface PilotBff {
   saysClock: boolean;
   /** False where a test does not count the static data's asking in what was asked. */
   countsStatic?: boolean;
+  /** Whether the account's other character has a skill in training, by the selection screen's data. */
+  otherTrains?: boolean;
+  /** Whether the server says the account's training changed as it answers a save, as it does. */
+  tellsTraining?: boolean;
 }
 
 /** A BFF with a pilot chosen: the generic call for the skill handler, the static data, the route, and the pause. */
-function pilotBff(state: PilotBff): { fetch: typeof fetch; asked: () => string[]; requests: Recorded[] } {
+function pilotBff(state: PilotBff): { fetch: typeof fetch; asked: () => string[]; slotsAsked: () => string[]; requests: Recorded[] } {
   const made = makeFakeFetch((path, method, body) => {
     if (path === "/api/bridge/select") {
       return { status: 200, body: { ok: true, character: { characterID: 140000002, characterName: "Test Two", stationID: 60000004, structureID: null, solarSystemID: 30000142, corporationID: 98000000 }, station: null, notifications: [] } };
+    }
+    // The two reads the client's queue service reckons the account's training slots from (bridge/trainingSlots.ts).
+    // The game port carries the first; the web gateway's list has not got it.
+    if (path === "/api/bridge/call" && body.service === "userSvc" && body.method === "GetMultiCharactersTrainingSlots") {
+      return state.queue === null
+        ? { status: 403, body: { ok: false, error: "CALL_NOT_ALLOWED", message: "userSvc.GetMultiCharactersTrainingSlots is not on the web-call allowlist." } }
+        : { status: 200, body: { ok: true, service: body.service, method: body.method, result: { type: "dict", entries: [] }, notifications: [] } };
+    }
+    if (path === "/api/bridge/call" && body.service === "charUnboundMgr" && body.method === "GetCharacterSelectionData") {
+      const row = (characterID: number, training: boolean) => ({ type: "object", name: "util.KeyVal", args: { type: "dict", entries: [["characterID", characterID], ["skillTypeID", training ? GUNNERY : null]] } });
+      const characters = { type: "list", items: [row(140000002, true), row(140000003, state.otherTrains === true)] };
+      return { status: 200, body: { ok: true, service: body.service, method: body.method, result: [{ type: "list", items: [] }, [null, null], characters, { type: "list", items: [] }], notifications: [] } };
     }
     if (path === "/api/bridge/call" && body.service === "skillHandler") {
       const failure = state.fails[String(body.method)];
@@ -427,7 +443,8 @@ function pilotBff(state: PilotBff): { fetch: typeof fetch; asked: () => string[]
         const places = ((body.args as { entries: [number, [number, number]][] }[])[0]!).entries;
         state.queue = places.map(([, [typeID, toLevel]]) => queueEntry(typeID, toLevel, BROWSER_NOW + SERVER_AHEAD - 60_000, BROWSER_NOW + SERVER_AHEAD + 3_600_000));
         state.paused = false;
-        return { status: 200, body: { ok: true, service: body.service, method: body.method, result: null, notifications: [] } };
+        const told = state.tellsTraining === true ? [{ kind: "client", method: "OnMultipleCharactersTrainingUpdated", args: [] }] : [];
+        return { status: 200, body: { ok: true, service: body.service, method: body.method, result: null, notifications: told } };
       }
       // The pause: the handler's own call, which either transport carries.
       if (body.method === "AbortTraining") {
@@ -465,7 +482,11 @@ function pilotBff(state: PilotBff): { fetch: typeof fetch; asked: () => string[]
     // (A type's names and attributes are asked for once and kept: whether they are asked here is another test's.)
     .filter((request) => !/^\/api\/(names|types\/dogma)/.test(request.path) || state.countsStatic !== false)
     .map((request) => (request.path === "/api/bridge/call" ? String(request.body.method) : `${request.method} ${request.path}`));
-  return { fetch: made.fetch, asked, requests: made.requests };
+  /** What was asked to reckon the training slots, in order. */
+  const slotsAsked = () => made.requests
+    .filter((request) => request.path === "/api/bridge/call" && (request.body.service === "userSvc" || request.body.service === "charUnboundMgr"))
+    .map((request) => `${String(request.body.service)}.${String(request.body.method)}`);
+  return { fetch: made.fetch, asked, slotsAsked, requests: made.requests };
 }
 
 /** Runs `body` with the browser's clock held still. */
@@ -652,4 +673,103 @@ test("a save the server refuses by the page's own call is said in the player's w
   await lostFlow.selectCharacter(140000002);
   await assert.rejects(lostFlow.saveSkillQueue([], "Emptied the queue", "your queue"), (error: { code?: string }) => error.code === "SESSION_NOT_FOUND");
   assert.deepEqual([lostStore.station.get().online, lost.asked().includes("POST /api/bridge/skills/queue")], [null, false]);
+}));
+
+test("a change of the queue is saved started, and unstarted where every training slot of the account is used; the start button starts it whatever", () => atBrowserNow(async () => {
+  const kwargsOf = (requests: Recorded[]) => requests.filter((request) => request.body.method === "SaveNewQueue").map((request) => request.body.kwargs);
+  const QUEUE = [{ typeID: AFTERBURNER, toLevel: 4 }];
+  // The account's other character has a skill in training, and the account has the one slot: every slot is used.
+  const store = createClientStore();
+  const state: PilotBff = { queue: [], paused: false, fails: {}, saysClock: true, countsStatic: false, otherTrains: true };
+  const { fetch, slotsAsked, requests } = pilotBff(state);
+  const flow = createAppFlow(store, { fetch, eventSource: noStream });
+  await flow.selectCharacter(140000002);
+  // Nothing of the slots is asked until a change of the queue wants it.
+  assert.deepEqual(slotsAsked(), []);
+  await flow.saveSkillQueue(QUEUE, "Added Afterburner IV to the queue", "Afterburner");
+  // skillQueueSvc.OnClientQueueModified: IsAllCharacterTrainingSlotsUsed, then the commit, unstarted.
+  assert.deepEqual([slotsAsked(), kwargsOf(requests)], [["userSvc.GetMultiCharactersTrainingSlots", "charUnboundMgr.GetCharacterSelectionData"], [{ activate: false }]]);
+  assert.equal(store.get().skills.lastAction, "Added Afterburner IV to the queue");
+  // Kept: another change asks nothing more, and is saved the same way.
+  await flow.saveSkillQueue([], "Took Afterburner off the queue", "Afterburner");
+  assert.deepEqual([slotsAsked().length, kwargsOf(requests)], [2, [{ activate: false }, { activate: false }]]);
+  // skillQueuePanelNew.StartOrStopTraining: the start button says True, and it is the server's to refuse.
+  await flow.saveSkillQueue(QUEUE, "Started training", "your queue", true);
+  assert.deepEqual([slotsAsked().length, kwargsOf(requests).at(-1)], [2, { activate: true }]);
+
+  // Pressed before anything was reckoned, the start button asks nothing of the slots: it starts the queue.
+  const firstStore = createClientStore();
+  const first = pilotBff({ queue: [], paused: false, fails: {}, saysClock: true, otherTrains: true });
+  const firstFlow = createAppFlow(firstStore, { fetch: first.fetch, eventSource: noStream });
+  await firstFlow.selectCharacter(140000002);
+  await firstFlow.saveSkillQueue(QUEUE, "Started training", "your queue", true);
+  assert.deepEqual([first.slotsAsked(), kwargsOf(first.requests)], [[], [{ activate: true }]]);
+
+  // With a slot free a change is saved started.
+  const freeStore = createClientStore();
+  const free = pilotBff({ queue: [], paused: false, fails: {}, saysClock: true, otherTrains: false });
+  const freeFlow = createAppFlow(freeStore, { fetch: free.fetch, eventSource: noStream });
+  await freeFlow.selectCharacter(140000002);
+  await freeFlow.saveSkillQueue(QUEUE, "Added Afterburner IV to the queue", "Afterburner");
+  assert.deepEqual([free.slotsAsked().length, kwargsOf(free.requests)], [2, [{ activate: true }]]);
+}));
+
+test("what was reckoned of the training slots is let go at the server's word that the account's training changed, and with another character", () => atBrowserNow(async () => {
+  const kwargsOf = (requests: Recorded[]) => requests.filter((request) => request.body.method === "SaveNewQueue").map((request) => request.body.kwargs);
+  const QUEUE = [{ typeID: AFTERBURNER, toLevel: 4 }];
+  const store = createClientStore();
+  // The server says the account's training changed as it answers each save.
+  const state: PilotBff = { queue: [], paused: false, fails: {}, saysClock: true, otherTrains: true, tellsTraining: true };
+  const { fetch, slotsAsked, requests } = pilotBff(state);
+  const flow = createAppFlow(store, { fetch, eventSource: noStream });
+  await flow.selectCharacter(140000002);
+  await flow.saveSkillQueue(QUEUE, "Added Afterburner IV to the queue", "Afterburner");
+  assert.equal(slotsAsked().length, 2);
+  // skillQueueSvc.OnMultipleCharactersTrainingUpdated: reckoned again at the next change, by what is so then.
+  state.otherTrains = false;
+  await flow.saveSkillQueue([], "Took Afterburner off the queue", "Afterburner");
+  assert.deepEqual([slotsAsked().length, kwargsOf(requests)], [4, [{ activate: false }, { activate: true }]]);
+  // Another character chosen: what the last one's queue service had reckoned is not this one's.
+  state.tellsTraining = false;
+  await flow.saveSkillQueue(QUEUE, "Added Afterburner IV to the queue", "Afterburner");
+  await flow.saveSkillQueue([], "Took Afterburner off the queue", "Afterburner");
+  assert.equal(slotsAsked().length, 6);
+  await flow.selectCharacter(140000002);
+  await flow.saveSkillQueue(QUEUE, "Added Afterburner IV to the queue", "Afterburner");
+  assert.equal(slotsAsked().length, 8);
+}));
+
+test("through the web gateway the training slots cannot be reckoned: asked once, told so, and a change is saved started by the route as before", async () => {
+  const store = createClientStore();
+  const { fetch, asked, slotsAsked, requests } = pilotBff({ queue: null, paused: false, fails: {}, saysClock: false, otherTrains: true });
+  const flow = createAppFlow(store, { fetch, eventSource: noStream });
+  await flow.selectCharacter(140000002);
+  requests.length = 0;
+  await flow.saveSkillQueue([{ typeID: GUNNERY, toLevel: 5 }], "Added Gunnery V to the queue", "Gunnery");
+  await flow.saveSkillQueue([], "Took Gunnery off the queue", "Gunnery");
+  // The user service's read is refused, and the selection data is not asked for. Kept: the second change asks nothing.
+  assert.deepEqual(slotsAsked(), ["userSvc.GetMultiCharactersTrainingSlots"]);
+  assert.deepEqual(requests.filter((request) => request.body.method === "SaveNewQueue").map((request) => request.body.kwargs), [{ activate: true }, { activate: true }]);
+  assert.deepEqual(asked(), ["SaveNewQueue", "POST /api/bridge/skills/queue", "SaveNewQueue", "POST /api/bridge/skills/queue"]);
+  assert.equal(store.get().skills.actionError, null);
+});
+
+test("a reckoning of the training slots that fails is the change's failure, said, and nothing is saved", () => atBrowserNow(async () => {
+  const store = createClientStore();
+  const made = pilotBff({ queue: [queueEntry(AFTERBURNER, 4, BROWSER_NOW, BROWSER_NOW + 3_600_000)], paused: false, fails: {}, saysClock: true, countsStatic: false });
+  // The user service's read fails for a reason of its own: not that it is not carried.
+  const failing = (async (input: unknown, init?: { method?: string; body?: unknown }) => {
+    const body = init && typeof init.body === "string" ? JSON.parse(init.body) : {};
+    if (String(input) === "/api/bridge/call" && body.service === "userSvc") {
+      made.requests.push({ path: String(input), method: "POST", body });
+      return { ok: false, status: 502, async json() { return { ok: false, error: "CALL_FAILED", message: "The user service did not answer." }; } };
+    }
+    return made.fetch(input as never, init as never);
+  }) as unknown as typeof fetch;
+  const flow = createAppFlow(store, { fetch: failing, eventSource: noStream });
+  await flow.selectCharacter(140000002);
+  await flow.saveSkillQueue([{ typeID: GUNNERY, toLevel: 5 }], "Added Gunnery V to the queue", "Gunnery");
+  // Said in the words the failure came with, as a save's own failure is.
+  assert.equal(store.get().skills.actionError, "The user service did not answer.");
+  assert.deepEqual([made.requests.filter((request) => request.body.method === "SaveNewQueue").length, made.asked().includes("POST /api/bridge/skills/queue"), store.get().skills.lastAction], [0, false, null]);
 }));

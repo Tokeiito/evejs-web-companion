@@ -300,6 +300,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // The queue's saving as the client's queue service makes it, on the handler. The page makes it by name (the
   // plan's Phase 6b). The gateway's list has skillMgr's save and not this: through the gateway the route saves.
   "skillHandler.SaveNewQueue",
+  // The account's extra training slots, which the client's queue service asks for to tell whether a change of
+  // the queue may start it (skillQueueSvc.py 851). The gateway's list has nothing of the user service's.
+  "userSvc.GetMultiCharactersTrainingSlots",
 ]);
 
 /**
@@ -917,6 +920,8 @@ const RETAIL_CALLS = Object.freeze({
   "crimewatch.GetCharacterSecurityStatus": same(`${CRIMEWATCH_SVC}:596`, "CharGetCrimewatchLocation().GetCharacterSecurityStatus(charID)"),
   "crimewatch.GetSecurityStatusTransactions": same(`${CRIMEWATCH_SVC}:603`, "CharGetCrimewatchLocation().GetSecurityStatusTransactions(), no arguments"),
   "subscriptionMgr.GetCloneGrade": same("omega/client/clone_grade_svc.py:125", "sm.RemoteSvc('subscriptionMgr').GetCloneGrade(), no arguments: asked as the account comes onto the session (gameui.py 450) and kept; then what OnSubscriptionChangedServer says. In this server's log of a retail client's login it is the call before the character selection's."),
+  "userSvc.GetMultiCharactersTrainingSlots": judged("eve/client/script/ui/services/skillQueueSvc.py:851", sentWithNothing,
+    "sm.RemoteSvc('userSvc').GetMultiCharactersTrainingSlots(), no arguments: the account's extra training slots, a dict. The queue service reckons from it whether every slot is used (IsAllCharacterTrainingSlotsUsed, 859) and keeps that until OnMultipleCharactersTrainingUpdated. Recorded on Tranquility at every login, answering {}."),
   "skillMgr2.GetMySkillHandler": same(`${SKILL_SVC}:130`, "session.ConnectToRemoteService('skillMgr2').GetMySkillHandler(), no arguments: asked once and the moniker it answers kept."),
   "skillHandler.GetSkills": same(`${SKILL_SVC}:136`, "GetSkillHandler().GetSkills(), no arguments"),
   "skillHandler.GetAllSkills": same(`${SKILL_SVC}:142`, "GetSkillHandler().GetAllSkills(), no arguments"),
@@ -925,7 +930,7 @@ const RETAIL_CALLS = Object.freeze({
   "skillHandler.SaveNewQueue": judged(
     "eve/client/script/ui/services/skillQueueSvc.py:153",
     queueByPlace,
-    "GetSkillHandler().SaveNewQueue({place: (typeID, toLevel)}, activate=activate): the whole queue, and whether it is to be started. The queue panel's start says True; its save of a changed queue says whether a skill is in training. Recorded on Tranquility, with the queue asked for again after it.",
+    "GetSkillHandler().SaveNewQueue({place: (typeID, toLevel)}, activate=activate): the whole queue, and whether it is to be started. The queue service says True for each change it commits, and False where every training slot of the account is used by its other characters (OnClientQueueModified, 389); the panel's start button says True. Recorded on Tranquility, with the queue asked for again after it.",
   ),
   "skillHandler.GetSkillHistory": reshaped(
     `${SKILL_SVC}:363`,

@@ -210,7 +210,7 @@
 
   // Its start button saves the queue as it stands, which sets it going.
   async function startTraining(): Promise<void> {
-    await run(() => flow.saveSkillQueue(currentEntries(), "Started training", "your queue"));
+    await run(() => flow.saveSkillQueue(currentEntries(), "Started training", "your queue", true));
   }
 
   function finishText(endTimeMs: number | null): string {

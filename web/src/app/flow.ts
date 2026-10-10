@@ -100,6 +100,7 @@ import { createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
 import { createCharacterSheetReads } from "../bridge/characterSheetReads.ts";
 import { readJournal } from "../bridge/journalReads.ts";
 import { pauseTraining, saveQueue, type QueuePlace } from "../bridge/skillWrites.ts";
+import { createTrainingSlots } from "../bridge/trainingSlots.ts";
 import { readClientStates } from "../bridge/crimewatchReads.ts";
 import { readCloneGrade } from "../bridge/cloneGradeReads.ts";
 import { decodeClientStates } from "../bridge/boundCrimewatch.ts";
@@ -1209,6 +1210,8 @@ export interface AppFlow {
     entries: readonly { readonly typeID: number; readonly toLevel: number }[],
     label: string,
     context?: string,
+    /** True for the start button, which starts the queue whatever else is so; a change of the queue says nothing. */
+    start?: boolean,
   ): Promise<void>;
   /**
    * Pause training as the retail client does: the skill in training stops and
@@ -1715,6 +1718,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // The wallet's reads, asked call by call as the client's wallet and account services ask them
   // (bridge/walletReads.ts), with what those services keep kept for this pilot.
   const walletReads = createWalletReads(bridgeAsk);
+  // Whether every training slot of the account is used, as the client's queue service reckons and keeps it
+  // (bridge/trainingSlots.ts): what says whether a change of the queue may start it.
+  const trainingSlots = createTrainingSlots(bridgeAsk);
 
   let pilotRecoveryEnabled = options.browserPilotRecovery === true;
   const recoverySignal = createSignal<DroneRecoveryState>({ phase: pilotRecoveryEnabled ? "checking" : "ready", reason: null });
@@ -2093,6 +2099,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         void loadWallet().catch(() => {});
       }
       return;
+    }
+    // skillQueueSvc.OnMultipleCharactersTrainingUpdated (841): what was reckoned of the account's training
+    // slots is let go, and reckoned again when a change of the queue next wants it.
+    if (method === "OnMultipleCharactersTrainingUpdated") {
+      trainingSlots.forget();
     }
     // bco_corporations.OnCorporationChanged: the corporation's own row is not what was kept.
     if (method === "OnCorporationChanged") {
@@ -6306,10 +6317,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     entries: readonly { readonly typeID: number; readonly toLevel: number }[],
     label: string,
     context = "that skill",
+    start = false,
   ): Promise<void> {
     let raw: JsonValue;
     try {
-      raw = await saveQueueAndRead(entries);
+      raw = await saveQueueAndRead(entries, start);
     } catch (error) {
       if (isSessionLost(error)) {
         stopLiveStream();
@@ -6342,8 +6354,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * carries it (bridge/skillWrites.ts) and reads its sheet again as it reads it at any time. Where the call is
    * not carried, which is the web gateway, nothing was saved by it, and the route saves and answers its own sheet.
    */
-  async function saveQueueAndRead(entries: readonly QueuePlace[]): Promise<JsonValue> {
-    return (await saveQueue(bridgeDo, entries)) ? readSkillSheetRaw() : (await api.saveSkillQueue(entries, callOptions)).skills;
+  async function saveQueueAndRead(entries: readonly QueuePlace[], start: boolean): Promise<JsonValue> {
+    const online = store.station.get().online;
+    // The start button starts the queue (skillQueuePanelNew.StartOrStopTraining). A change of the queue is
+    // committed started too, and unstarted where every training slot of the account is in use by its other
+    // characters (skillQueueSvc.OnClientQueueModified, 389). Where that cannot be told (nobody chosen, or a
+    // transport that does not carry the reads) it is saved started, as it was before.
+    const activate = start || online === null || (await trainingSlots.allUsed(online.characterID)) !== true;
+    return (await saveQueue(bridgeDo, entries, activate)) ? readSkillSheetRaw() : (await api.saveSkillQueue(entries, callOptions)).skills;
   }
 
   async function pauseSkillTraining(): Promise<void> {
@@ -13538,6 +13556,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const result = await api.selectCharacter(characterID, callOptions);
       // accountsvc.ProcessSessionChange: another character, and what the account service kept was the last one's.
       walletReads.forget();
+      // skillQueueSvc.ReInitialize: and what the queue service had reckoned of the training slots.
+      trainingSlots.forget();
       requestGeneration++;
       recoveryGeneration++;
       recoveryTask = null;

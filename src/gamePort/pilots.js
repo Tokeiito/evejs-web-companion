@@ -1155,6 +1155,12 @@ function createGamePortPilots({
       accountStatic: createKeptReads(),
       /** The home station as the client's home station service keeps it (GET_HOME_STATION). */
       homeStation: createKeptReads(),
+      /**
+       * The selection screen's data as the server answered it at the choosing, in the form a call's answer has:
+       * the client's character service keeps it for as long as the character is on (ccSvc.py 39 to 43, let go at
+       * on_character_log_off). Null until a character has been chosen, which every pilot held here has been.
+       */
+      selection: null,
       /** godma's priming that is out now, and the ship in a place it is for: whoever wants the ship's readings meanwhile waits for it. */
       dogmaPriming: null,
       stationWork: Promise.resolve(),
@@ -1299,8 +1305,10 @@ function createGamePortPilots({
       for (const method of ["GetCharacterSelectionData", "GetCharacterLockType", "SelectCharacterID"]) {
         ledger.note("charUnboundMgr", method, shape("charUnboundMgr", method, [], null));
       }
-      row = selectionRow(wireToBridgeJson(await session.call("charUnboundMgr", "GetCharacterSelectionData", [])), characterID);
+      const selection = wireToBridgeJson(await session.call("charUnboundMgr", "GetCharacterSelectionData", []));
+      row = selectionRow(selection, characterID);
       if (!row) throw fail("CALL_REFUSED", "That character is not on this account.");
+      entry.selection = selection;
       entry.characterName = String(keyValField(row, "characterName") || "");
       const lockType = await session.call("charUnboundMgr", "GetCharacterLockType", [characterID]);
       if (lockType !== null && lockType !== undefined) {
@@ -1487,6 +1495,13 @@ function createGamePortPilots({
       await run(entry, service, method, () => journalUpToDate(entry));
       const journal = entry.journal.read();
       if (journal) return { service, method, result: wireToBridgeJson(journal), notifications: drain(entry) };
+    }
+    // The selection screen's data: the client's character service keeps what it was answered at the choosing
+    // (ccSvc.GetCharacterSelectionData), and whoever asks it again, as its queue service does to count the
+    // account's characters in training, has that. Asked for by name with nothing, it is what was kept: nothing
+    // is sent, and nothing is counted.
+    if (service === "charUnboundMgr" && method === "GetCharacterSelectionData" && form.args.length === 0 && form.kwargs === null) {
+      return { service, method, result: entry.selection, notifications: drain(entry) };
     }
     // The home station service's read: asked once and kept, until the server says the home station is another.
     if (service === HOME_STATION && method === GET_HOME_STATION && form.args.length === 0 && form.kwargs === null) {

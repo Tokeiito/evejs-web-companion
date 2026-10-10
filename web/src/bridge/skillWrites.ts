@@ -44,11 +44,17 @@
 // CALL_NOT_ALLOWED and nothing is saved: the flow then asks the route, which
 // still stands for that.
 //
-// NOT AS THE CLIENT YET. This says `activate: true` for every save, as the route
-// did on the game port. The client's panel says True at its start button and,
-// for a queue it saves because it was changed, whether a skill is in training
-// (skillQueuePanelNew.SaveSkillQueue, SaveQueueOnClose): a paused queue changed
-// stays paused there, and is started here.
+// WHETHER A SAVE STARTS THE QUEUE is the caller's to say, as it is the client's
+// queue service's and its panel's:
+//
+//   the panel's start button   True (skillQueuePanelNew.StartOrStopTraining, with nothing in training)
+//   a change of the queue      True, and False where every training slot of the account is in use by its
+//                              other characters (skillQueueSvc.OnClientQueueModified, 389, which every
+//                              adding, removing and moving ends in; bridge/trainingSlots.ts reckons it)
+//
+// (A reading of the panel alone, on 2026-10-10, had a changed queue saved by
+// whether a skill is in training. That is the panel's own save, at its closing,
+// which finds nothing changed: the service committed each change as it was made.)
 
 import { failureCode, type Ask } from "./ask.ts";
 
@@ -64,15 +70,15 @@ export interface QueuePlace {
 }
 
 /**
- * The whole queue saved, in the order given, and started. An empty list empties the queue. The server judges
- * the list as a whole and refuses all of it if any part is wrong.
+ * The whole queue saved, in the order given; `activate` says whether the save is to start it. An empty list
+ * empties the queue. The server judges the list as a whole and refuses all of it if any part is wrong.
  *
  * Answers whether the save was made: false where the pilot's transport does not carry the call, and then
  * nothing was saved. Fails as the call fails otherwise.
  */
-export async function saveQueue(act: Ask, queue: readonly QueuePlace[]): Promise<boolean> {
+export async function saveQueue(act: Ask, queue: readonly QueuePlace[], activate: boolean): Promise<boolean> {
   try {
-    await act("skillHandler", "SaveNewQueue", [{ type: "dict", entries: queue.map((place, at) => [at, [place.typeID, place.toLevel]]) }], { activate: true });
+    await act("skillHandler", "SaveNewQueue", [{ type: "dict", entries: queue.map((place, at) => [at, [place.typeID, place.toLevel]]) }], { activate });
   } catch (error) {
     if (failureCode(error) === "CALL_NOT_ALLOWED") return false;
     throw error;
