@@ -184,3 +184,96 @@ test("free points are in the total, and what is not kept or is no such thing rea
   const none = { toLevel: 0, startSP: 0, destinationSP: 0, startTimeMs: null, endTimeMs: null, skillPointsPerMinute: 0 };
   assert.deepEqual(sheetOf(skills, { queue: bare }).queue, { active: false, entries: [{ queuePosition: 0, typeID: 9, ...none }, { queuePosition: 1, typeID: 10, ...none }], endTimeMs: null, maxEntries: 150 });
 });
+
+// ── the page's own making (web/src/bridge/skillSheet.ts) ─────────────────────
+//
+// The page makes the sheet itself from the reads it asks for (the plan's Phase 6b). It has each read as the
+// generic call hands it on (bridgeJson.js), where the making above has it as it came off the wire. Given the same
+// kept state the two must make the same sheet.
+
+const { wireToBridgeJson } = require("../src/gamePort/bridgeJson");
+const page = require("../web/src/bridge/skillSheet.ts");
+
+/** A queue's entry as it comes off the wire: a KeyVal of the fields given. */
+const queueEntry = (fields) => ({ type: "object", name: Buffer.from("util.KeyVal"), args: { type: "dict", entries: Object.entries(fields).map(([key, value]) => [Buffer.from(key), value]) } });
+
+/** The page's sheet of the same kept state, each read handed on as the generic call hands it. `more` is as sheetOf's. */
+const pageSheetOf = (skills, more = {}) => {
+  const given = { skills: skills.read("skills"), allSkills: skills.read("allSkills"), queue: skills.read("queue"), freeSkillPoints: skills.read("freeSkillPoints"), attributes: skills.read("attributes") ?? null, now: () => 1_791_552_000_000, ...KNOWN, ...more };
+  return page.buildSkillSheet({
+    characterID: recording.pilot.characterID,
+    characterName: "Test Two",
+    ...given,
+    ...Object.fromEntries(["skills", "allSkills", "queue", "freeSkillPoints", "attributes"].map((read) => [read, wireToBridgeJson(given[read])])),
+  });
+};
+
+test("at every point of the recorded session the page's making gives the sheet this one gives", () => {
+  let compared = 0;
+  const seen = { training: 0, queued: 0, stopped: 0, rows: new Set() };
+  recording.events.forEach((upTo, index) => {
+    const state = () => replayedTo((event) => event === upTo);
+    const made = sheetOf(state());
+    const start = made.queue.entries[0]?.startTimeMs ?? 1_791_552_000_000;
+    // As the clock stood at the queue's start, a little after it, long after it, before it, and between two milliseconds.
+    for (const now of [start, start + 4100, start + 3_600_000, start - 5000, start + 61_000.7]) {
+      assert.deepEqual(pageSheetOf(state(), { now: () => now }), sheetOf(state(), { now: () => now }), `event ${index} (${upTo.kind} ${upTo.call ?? upTo.method ?? upTo.command ?? ""}) at ${now - start}`);
+      compared += 1;
+    }
+    if (made.queue.active) seen.training += 1;
+    if (made.queue.entries.length > 0) seen.queued += 1;
+    if (made.queue.entries.length > 0 && !made.queue.active) seen.stopped += 1;
+    seen.rows.add(made.skills.length);
+  });
+  // The session has what the comparison is for: a skill in training, a queue stopped, and skills coming and going.
+  assert.deepEqual([compared, recording.events.length], [480, 96]);
+  assert.ok(seen.training > 0 && seen.stopped > 0 && seen.queued > seen.training && seen.rows.size > 2, JSON.stringify({ ...seen, rows: [...seen.rows] }));
+  // And the page's sheet is the gateway's kind of thing through and through: it goes as JSON and comes back the same.
+  const whole = pageSheetOf(replayedTo(did("SaveNewQueue", 2)));
+  assert.deepEqual(JSON.parse(JSON.stringify(whole)), whole);
+});
+
+test("the two makings agree where the attributes, the types' facts or the free points are other than the recording's", () => {
+  const training = () => replayedTo(did("SaveNewQueue", 1));
+  const start = sheetOf(training()).queue.entries[0].startTimeMs;
+  const attributes = (values) => ({ type: "dict", entries: Object.entries(values).map(([id, value]) => [Number(id), value]) });
+  const variants = [
+    {},
+    { attributes: attributes({ 164: 21, 165: 99, 166: 27, 167: 99, 168: 99 }) },
+    { attributes: attributes({ 164: 21, 166: 27 }), typeAttribute: (typeID, attributeID) => ({ 180: 164, 181: 166 })[attributeID] },
+    { attributes: null },
+    { attributes: attributes({ 166: 27 }) },
+    { attributes: attributes({ 164: 21 }) },
+    { attributes: attributes({ 164: 0, 166: 0 }) },
+    { attributes: attributes({ 164: -4, 166: 1 }) },
+    { attributes: "many" },
+    { typeAttribute: () => null },
+    { typeAttribute: () => undefined },
+    { typeAttribute: (typeID, attributeID) => (attributeID === 180 ? 166 : null) },
+    { typeName: () => undefined, typeGroupName: () => null },
+    { typeName: (typeID) => String(999999 - typeID) },
+    { freeSkillPoints: 109092n },
+    { freeSkillPoints: 2n ** 60n },
+    { freeSkillPoints: null },
+    { freeSkillPoints: -5 },
+    { freeSkillPoints: "many" },
+    { queue: null },
+    { queue: { type: "list", items: [] } },
+    { skills: null, allSkills: null },
+    { allSkills: { type: "dict", entries: [[99001, { type: "objectex1", header: [null, [99001, 2, 1500, 1, null]], list: [], dict: [] }], [99002, null], [99003, { type: "objectex1", header: [null], list: [], dict: [] }]] } },
+    // Points below nothing in all: a total of none, and the free points with it.
+    { allSkills: { type: "dict", entries: [[99001, { type: "objectex1", header: [null, [99001, 1, -500, 1, null]], list: [], dict: [] }]] }, freeSkillPoints: 40 },
+    // In training with an end and no start: reckoned from now, which is what it had.
+    { queue: { type: "list", items: [queueEntry({ trainingTypeID: GIVEN, trainingToLevel: 1, trainingStartSP: 0, trainingDestinationSP: 750, trainingStartTime: null, trainingEndTime: 134360261550000000n, queuePosition: 0 })] } },
+    // Entries that do not say where they are in the queue are where they are; ones that say nothing else say nought.
+    { queue: { type: "list", items: [queueEntry({ trainingTypeID: OTHER, trainingToLevel: 1 }), queueEntry({ trainingTypeID: GIVEN, trainingToLevel: 2, trainingEndTime: 134360261550000000n }), queueEntry({})] } },
+    { skills: { type: "dict", entries: [[3300, { type: "objectex1", header: [null, [3300, 4, 45255, 1, null]], list: [], dict: [] }], [3301, { type: "objectex1", header: [null, [3301, null, null, 1, 2]], list: [], dict: [] }], [3302, "no entry"], [3303, { type: "objectex1", header: [null, [3303, 2, null, null, null]], list: [], dict: [] }], [3304, { type: "objectex1", header: [null, { 1: 4, 2: 100, 3: 1 }], list: [], dict: [] }]] } },
+  ];
+  for (const [index, more] of variants.entries()) {
+    assert.deepEqual(pageSheetOf(training(), { now: () => start + 120_000, ...more }), sheetOf(training(), { now: () => start + 120_000, ...more }), `variant ${index}`);
+  }
+  // The variants are not all one sheet: the rate, the points reckoned, the total and the rows each move.
+  const figures = variants.map((more) => { const sheet = pageSheetOf(training(), { now: () => start + 120_000, ...more }); return [sheet.queue.entries[0]?.skillPointsPerMinute ?? null, sheet.skills.find((row) => row.inTraining)?.skillPoints ?? null, sheet.totalSkillPoints, sheet.skills.length].join("/"); });
+  assert.ok(new Set(figures).size >= 8, figures.join(" "));
+  assert.deepEqual(figures.slice(0, 3), ["30/60/385914/53", "37.5/75/385914/53", "34.5/69/385914/53"]);
+});
