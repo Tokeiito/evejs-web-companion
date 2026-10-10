@@ -1216,6 +1216,20 @@ Battleship (group 1310), and "npc" of any other; that is the server's own word f
 of its NPC profiles but the drifters'. The group alone is not: this server's catalogue puts
 out ships of CONCORD's types that it calls NPCs and sends as hostile.
 
+**A ship that compresses, 2026-10-10.** A ship running an industrial core and a compressor
+is a compression facility for itself and its fleet. A client is told on the ship's slim
+item: `compression_facility_typelists` (`itemcompression/__init__.py`), a dict of type list
+to the range that list is taken at. `itemcompression/client/inSpaceCompression.py` lists the
+facilities in range: the pilot's own ship at no distance, and any other ship that has the
+dict, whose `charID` is a member of the pilot's fleet, for each list whose range the surface
+distance is within. The compression window then offers an item only if some facility's
+lists hold its type (`compress_in_space_controller.py`), and compresses with
+`inSpaceCompressionMgr.CompressItemInSpace`. No recording of Tranquility has the dict. This
+server sends the slim item again (`OnSlimItemChange`) when the modules start and stop; a
+Porpoise with a Medium Industrial Core I and a Medium Asteroid Ore Compressor I was given
+list 334 at 66,000 m. The game port's row gives the widest range and the lists, as the
+gateway's does.
+
 **The map's stations, 2026-10-10.** `map.GetStationInfo()` is asked once by the client's UI
 service and kept for the client's life (`uisvc.py` 246), and by five other callers through the
 object cache. On the game port the first asking is answered with a cached reference, which

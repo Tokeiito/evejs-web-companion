@@ -771,6 +771,16 @@ Take these defaults, and list each under "For the operator" in the log so they c
   out last, and if the pilot cannot dock: remove `evejs-web-online-pilots:v1` from the page's
   `sessionStorage`, put the store back, restart both BFFs, load the page again and read that
   nobody is in ("In client 0").
+- **A compressing ship for a check:** `compress-stage.js <scratch> <bff> <account> <charID>
+  <out.json>` gives a docked pilot a Porpoise, the core, the ore compressor and heavy water
+  (300: more does not fit the hold), fits, undocks, starts both and prints the own ship's
+  row at each step; `compress-dock-stage.js` stops docked with 50 Scordite aboard, for the
+  page. A ship with its core running cannot dock for the core's cycle.
+- **A module's button on the page's rack wants the pointer, not a click.** From a script:
+  dispatch `pointerdown` then `pointerup` (PointerEvent, bubbling) on
+  `button.module-slot.filled`; its `title` says whether the module is active.
+- **A value copied from an old note of ours is a guess until it is measured again.** The
+  compressor's range in a July note was 375,000 m; the server gave 66,000 m.
 - A test's "watched to fail" can be had after the fact, once the work is committed: put the source file back to the commit
   before (`git show HEAD~1:<file> > <file>`), run the test, and restore it with `git checkout
   HEAD -- <file>`. Check `git status` is clean after.

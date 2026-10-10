@@ -640,8 +640,9 @@ against 8690 in the same time). The two transports' rows were then read side by 
 three more gaps of the kind found: a drone's row did not say whose the drone is or what it is
 doing (mended, `2fbf14f`, with a launch that answered before its drones were in the park), a
 ship's did not say what kind of NPC it is (mended, `fd1f032`, with an NPC's ship of a player's
-hull that was not taken for an NPC's), and none says a ship is a compression facility. The
-default waits for the last.
+hull that was not taken for an NPC's), and none said a ship is a compression facility
+(mended, `7f0546b`; ore was then compressed from the page on the game port). The default
+is next.
 
 Not yet measured: the structure directory's reads, a fleet's parking and delivery checks, a
 training pilot's corporation fittings, the fleet's companions, the Factory and the training
