@@ -48,17 +48,22 @@ const ROUTES = Object.freeze({
 const PILOT_FUNCTIONS = new Set(["selectCharacter", "callMethod", "bindObject", "callBoundMethod", "releaseBridgeSession", "readFlightStatus", "readScannerState", "readSpaceSnapshot", "openSessionEventStream"]);
 /** Of those, the two that are also made with no session held: a call as a pilot who is not logged in (plan, 2.3). */
 const MAY_BE_UNHELD = new Set(["callMethod", "bindObject"]);
-/** The account-level routes the plan keeps on the gateway for good (2.3). */
-const ACCOUNT_ROUTES = new Set(["/health", "/status", "/account", "/account/create", "/characters", "/character-status", "/skills", "/skill-queue"]);
-/** Reads of one character, by where the character is among the arguments. The plan keeps two of them for pilots who are offline. */
+/**
+ * The account-level routes the plan keeps on the gateway for good (2.3). The snapshot of one character is among
+ * them since 2026-10-10, when each of its call sites was read: the select's check that the account owns the
+ * character, and the roster's planetary boards and haul, each of a pilot the retail protocol cannot be asked of.
+ */
+const ACCOUNT_ROUTES = new Set(["/health", "/status", "/account", "/account/create", "/characters", "/character-status", "/skills", "/skill-queue", "/snapshot"]);
+/** Reads of one character, by where the character is among the arguments. */
 const CHARACTER_AT = Object.freeze({ getSnapshot: 1, getSkills: 1, getCharacterStatus: 1, saveOfflineSkillQueue: 1 });
-const OFFLINE_ONLY = new Set(["getSkills", "saveOfflineSkillQueue"]);
+/** Of those, the ones the plan keeps for pilots who are not online: of a pilot who is, the pilot's own session is what the retail client asks. */
+const OFFLINE_ONLY = new Set(["getSkills", "saveOfflineSkillQueue", "getSnapshot"]);
 
 const KINDS = Object.freeze({
   pilot: "A held pilot's own. A pilot on the game port asks none of these; the cutover removes them.",
   unheld: "A call made as a pilot who is not logged in, with a session the BFF makes up. The retail protocol has no such thing; the plan lists which stay (2.3).",
   account: "Account-level, kept on the gateway for good (plan, 2.3).",
-  online: "A read the plan keeps for pilots who are offline, made here of a pilot who was online. The retail client asks the pilot's own session.",
+  online: "A read the plan keeps for pilots who are not online (a roster's board, the select's check), made here of a pilot who was online. The retail client asks the pilot's own session.",
   unlisted: "Not among the routes the plan keeps on the gateway (2.3). To be accounted for before the cutover is done.",
   chat: "The chat edge, which the retail client's chat speaks too. Not one of the web gateway's routes.",
 });
