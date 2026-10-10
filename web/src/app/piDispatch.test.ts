@@ -326,6 +326,12 @@ test("a picked delivery station: unload there, then fly back to where the earlie
   const home = doc.program.find((step) => step.id === "home")!;
   assert.ok(home.kind === "macro");
   assert.deepEqual(home.args["station"], { kind: "station", ref: { entity: "station", id: null, name: null, systemName: null, starting: true } });
+  // And the bot's home is that station: a run that starts in space docks there.
+  assert.deepEqual(doc.home, station);
+});
+
+test("no delivery station picked: the bot's home is where the run starts", () => {
+  assert.deepEqual(piHaulBotDoc(COLONIES.slice(0, 1), null, null).home, { entity: "station", id: null, name: null, systemName: null, starting: true });
 });
 
 test("no station picked, or the starting station picked: one trip back, no second leg", () => {
