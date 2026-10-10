@@ -31434,8 +31434,9 @@ tests alone.
 **Decisions taken in the operator's place.**
 
 - **The unit was split a second time.** Moving the flow means three test files that stand in
-  for the route, 16 tests that say which paths were asked, and a third reader of the sheet
-  (the drone range's skill levels) besides the window and the pause.
+  for the route (it is named 13 times in `skillsFlow.test.ts`, which has 10 tests, 5 times in
+  `freeSkillPointsFlow.test.ts`, which has 5, and once in `agentsFlow.test.ts`), and a third
+  reader of the sheet (the drone range's skill levels) besides the window and the pause.
 - **A sheet fails whole**, as the route's did, rather than showing with a part missing.
 - **A skill's group is asked of the static data**, as its name is, and not read from the
   `groupName` this server puts in each skill's entry. The client has it from its install.
