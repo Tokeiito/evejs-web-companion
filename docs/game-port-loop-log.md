@@ -32866,8 +32866,9 @@ sheet asks it.
 - **In the browser** (the default; Test Two): the Character Sheet asked the four calls, the
   third `home_station.get_home_station()`, at the login and again at its Refresh, and
   never the row. "Home station: Jita IV - Moon 4 - Caldari Navy Assembly Plant". The game
-  port's ledger over the two logins of this check: `get_home_station` 2, one a login,
-  where it was asked for four times. 75 pairs: 120 calls the same as the client's, 17
+  port's ledger over the two logins of this check (the side-by-side's and the browser's):
+  `get_home_station` 2, one a login, where it was asked for three times, once by the
+  side-by-side and twice by the window. 75 pairs: 120 calls the same as the client's, 17
   reshaped, none unchecked.
 - **Through the gateway, in the browser**: the service's call, then the row, and the same
   station on show.
