@@ -182,9 +182,10 @@ The retail protocol only sees the logged-in character. Management needs more:
 - **eve.js gateway, account-level only:** `health`, `status`, `accounts`, `account`,
   `account/create`, `characters`, `character-status`, `skills` and `skill-queue` for offline
   pilots, `character-control/*`. And `snapshot` for a pilot who is not online (added
-  2026-10-10, each call site read: the select's check that the account owns the character, the
-  roster's planetary boards and the customs haul's plan; one character's row, colonies and
-  goods out of the store, which no other route has).
+  2026-10-10, each call site read: the roster's planetary boards and the customs haul's plan;
+  one character's colonies and goods out of the store, which no other route has. The check
+  that an account owns a character was a third reader until `18e4db3`, and asks the account's
+  `characters` now).
 - **BFF app API (~115 routes):** web login, bot host, mining/PI/industry plans, pilot training,
   provisioning, and static data (map graph, types, names, icons, market reference).
 - **eve.js gateway, a call made as a pilot who is not logged in** (`callMethod` with no session
@@ -627,7 +628,7 @@ Where the two reads of one character are asked, read 2026-10-10:
 
 | Read | Asked by | Of whom |
 |---|---|---|
-| `snapshot` | the select's ownership check (`eveStore.getCharacterForAccount`), and the structure searches' check of a pilot chosen there | a pilot not yet chosen |
+| `characters` | the ownership check (`eveStore.getCharacterForAccount`: a pilot's choosing, a bot's start, the structure and fleet checks, the customs haul's plan). Until `18e4db3` this was a `snapshot` of the character asked about | the account |
 | `snapshot` | `/api/roster/planets`, `/api/roster/stock`, the customs haul's plan | each pilot a board lists, or the one hauled for |
 | `snapshot` | `/api/bridge/planets`, the gateway's branch | the held pilot when it is the gateway's; on the game port the route reads the colonies as the client does |
 | `skills` | `skillSheetFor`, the gateway's branch | the held pilot when it is the gateway's; on the game port the sheet is made from the skill handler's kept answers |

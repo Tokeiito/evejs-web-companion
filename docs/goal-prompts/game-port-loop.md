@@ -408,6 +408,11 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **What the server's code calls a thing is not what a row calls it.** The site service
   makes an ice chunk with the kind "iceChunk"; the gateway's row for it says "asteroid". Read
   the row.
+- **Two ways of asking one thing are set side by side for every case before one replaces the
+  other.** `owner-compare.js <repo> <account>...` did it for whose a character is (the
+  snapshot's row against the account's list, for each character of the server's), and it
+  also showed the one place they differ: what is said of a character that is not the
+  account's. `owner-live.js` asks the routes that check it, with the pilot flown elsewhere.
 - **Every pilot of every account, chosen in turn:** `every-pilot.js <scratch> <bff>
   <store.sqlite> [accounts]` (save the store first; a login brings a pilot online).
 - **Both BFFs run the code they were started on.** A change to a route's answer shows through
