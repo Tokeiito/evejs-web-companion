@@ -371,6 +371,22 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A pilot with no skills cannot show that a module fits.** Test Pilot has none: the server
   answers that the module failed to load, through either transport. Test Two has the skills
   for an afterburner and a mining laser.
+- **The check BFFs since the default changed (2026-10-10):** `restart-bffgp.sh` starts the
+  game-port one with nothing said (the bare default, every account on the game port), and
+  `restart-bffgw.sh` starts the other with `-Transport gateway`. `start-bff-check.ps1` takes
+  `-Transport` and `-Overrides`; each BFF's `<name>.out.log` has the "Pilot transport:" line
+  it started with. Read that line before trusting which transport a check ran on.
+- **`.env` and `.env.example` cannot be read or changed from here** (the permission is
+  withheld, and that is deliberate). A setting that wants documenting goes in the README.
+- **The Docker combination can be checked on this machine.** `docker build -t
+  evejs-web-poc-check:e .`, then run it as `compose.yaml` does but under its own name and
+  port (26512), with `--add-host host.docker.internal:host-gateway`, `EVEJS_GATEWAY_URL` at
+  `host.docker.internal:26002` and the eve.js checkout mounted read-only at `/srv/evejs`;
+  `docker exec <name> node scripts/doctor.js` is the first thing to read. Remove the
+  container (`docker rm -f -v`) and the image after. The operator's own image
+  (`evejs-web-poc-local`) and volume (`evejs-web-poc-data`) are not to be touched.
+- **Every pilot of every account, chosen in turn:** `every-pilot.js <scratch> <bff>
+  <store.sqlite> [accounts]` (save the store first; a login brings a pilot online).
 - **Both BFFs run the code they were started on.** A change to a route's answer shows through
   the game-port BFF once that is restarted, and through the gateway BFF only when that is
   restarted too: a field I had added read as nothing through it, where the new code says

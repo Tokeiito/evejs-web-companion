@@ -172,8 +172,8 @@ transport underneath is replaced.
 
 A setting (`EVEJS_PILOT_TRANSPORT=gateway|gameport`, with single accounts overridden by
 `EVEJS_PILOT_TRANSPORT_OVERRIDES="test=gameport,other=gateway"`) picks the
-implementation at select time. Default stays `gateway` until Phase 5. Any pilot can be moved back
-by flipping it and re-selecting.
+implementation at select time. The default was `gateway` until Phase 5 and is `gameport` since
+2026-10-10 (`1dacbb6`). Any pilot can be moved back by flipping it and re-selecting.
 
 ### 2.3 What stays on HTTP, permanently
 
@@ -198,7 +198,9 @@ The retail protocol only sees the logged-in character. Management needs more:
   pilot's corporation fittings (`corpFittingMgr.GetFittings`), a fitting provider's when the
   provider is not the pilot that is held, the corporation reads in training onboarding and
   settings (`corpRegistry.*`), and whatever but `charUnboundMgr` `/api/bridge/call` is asked
-  while the web session holds no pilot.
+  while the web session holds no pilot, by an account on the gateway. (For an account on the
+  game port the BFF refuses that itself since 2026-10-10, `d6d3de5`: the retail client has no
+  pilot's call to make before a pilot is chosen.)
 
 **What is not in that list** is what the retail client itself asks before a character is chosen.
 On its selection and creation screens it is logged in as the account and asks `charUnboundMgr`.
@@ -485,7 +487,7 @@ from `evejsWebGatewayRuntime.js`:
 **Status 2026-10-08: step 2 built, and the docked half of "done when" met.**
 `src/gamePort/pilots.js` is the transport; `EVEJS_PILOT_TRANSPORT` and
 `EVEJS_PILOT_TRANSPORT_OVERRIDES` choose it at select. Unset, no transport is created and nothing
-changes.
+changes. (So it stood until Phase 5. Unset is the game port since 2026-10-10.)
 
 What a "bind" turned out to be. The gateway's bind calls a method as though it were a service's
 (`invbroker.GetInventory(stationID)`) and keeps the bound object that comes back. The retail
@@ -641,12 +643,23 @@ three more gaps of the kind found: a drone's row did not say whose the drone is 
 doing (mended, `2fbf14f`, with a launch that answered before its drones were in the park), a
 ship's did not say what kind of NPC it is (mended, `fd1f032`, with an NPC's ship of a player's
 hull that was not taken for an NPC's), and none said a ship is a compression facility
-(mended, `7f0546b`; ore was then compressed from the page on the game port). The default
-is next.
+(mended, `7f0546b`; ore was then compressed from the page on the game port).
+
+**Status 2026-10-10, later: the default is `gameport`** (`1dacbb6`), with `gateway` selectable
+as the way back, on the host and in a container (`compose.yaml` passes the setting on; the
+doctor checks the game port). Seen: the parity tool across a BFF with nothing said and one
+told `gateway`, as before; every pilot of every account the store has chosen on the default,
+with nothing of a pilot's sent to the web gateway; a pilot chosen in the browser; and a
+container built from the tree choosing pilots on the game port at `host.docker.internal`.
+The image could not have started before: it had no `contracts/`, which the transport reads
+as it loads. With no pilot held, an account on the game port is refused a pilot's call by
+the BFF itself (`d6d3de5`), which closes the one case the tally showed of the second open
+question in section 5.
 
 Not yet measured: the structure directory's reads, a fleet's parking and delivery checks, a
 training pilot's corporation fittings, the fleet's companions, the Factory and the training
-flows. The default is still `gateway`. The steps are at the head of the loop log's "Next".
+flows; and both in containers. The removals wait for the operator to have run on the
+default. The steps are at the head of the loop log's "Next".
 
 ### Phase 6 — Browser ↔ BFF over one WebSocket (large, mechanical; independent of 0–5)
 
@@ -680,7 +693,10 @@ Can run in parallel with the phases above; it touches a different hop.
 
 1. **BFF restart behaviour** (Phase 3): retail-equivalent drop, or a separate socket host.
 2. **Generic call path after cutover** (Phase 5): keep an allowlist in the BFF, or accept retail
-   trust (a logged-in client may call anything as itself).
+   trust (a logged-in client may call anything as itself). Taken in the operator's absence
+   2026-10-10 for one case only: with no pilot held, an account on the game port is refused
+   anything but the selection screen's service. With a pilot held the pair list stands as it
+   did. The question is otherwise still open.
 3. ~~Phase 6b: wanted, or stop at 6a.~~ Settled 2026-10-07 by the stated goal: 6b is planned.
 
 ## 6. Out of scope
