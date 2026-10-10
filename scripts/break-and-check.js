@@ -13,6 +13,10 @@
 // A test that passes the first time it is run has proved nothing yet. This is
 // how the game-port loop finds out what its tests would actually notice.
 //
+// The tests are run once before anything is broken, and must pass. A test file
+// that fails as it stands (or does not load at all) fails for every breakage,
+// and each would be called "caught" having been tried against nothing.
+//
 // The source is restored when the run ends or is interrupted. A copy of the
 // original is also kept beside the system's temp files for the length of the
 // run, and its path printed, in case the process is killed outright: the file
@@ -38,6 +42,14 @@ function main(argv = process.argv.slice(2)) {
   const crlf = original.includes("\r\n");
   const source = original.replace(/\r\n/g, "\n");
   const asWritten = (text) => (crlf ? text.replace(/\n/g, "\r\n") : text);
+  const runTests = () => spawnSync(process.execPath, ["--test", "--test-timeout=20000", testFile], { encoding: "utf8", timeout: 120000 });
+  const failing = (output) => [...(output || "").matchAll(/^✖ (.+?) \(/gm)].map((match) => match[1]);
+  const unbroken = runTests();
+  if (unbroken.error || unbroken.status !== 0) {
+    const why = unbroken.error ? "they did not finish" : (failing(unbroken.stdout)[0] || "no test named").slice(0, 70);
+    console.log(`NOT TRIED any of ${pairs.length} | the tests fail before the source is broken: ${why}`);
+    return 2;
+  }
   const backup = path.join(os.tmpdir(), `break-and-check-${process.pid}-${path.basename(file)}`);
   fs.writeFileSync(backup, original);
   console.log(`${pairs.length} breakages of ${file}; the original is also at ${backup} until this ends`);
@@ -60,11 +72,9 @@ function main(argv = process.argv.slice(2)) {
       }
       // A function, so that "$&" and the like in the replacement are not read as instructions.
       fs.writeFileSync(file, asWritten(source.replace(find, () => replacement)));
-      const run = spawnSync(process.execPath, ["--test", "--test-timeout=20000", testFile], { encoding: "utf8", timeout: 120000 });
-      const output = run.stdout || "";
+      const run = runTests();
       const caught = Boolean(run.error) || run.status !== 0;
-      const names = [...output.matchAll(/^✖ (.+?) \(/gm)].map((match) => match[1]);
-      const why = run.error ? "the tests did not finish" : (names[0] || "").slice(0, 70);
+      const why = run.error ? "the tests did not finish" : (failing(run.stdout)[0] || "").slice(0, 70);
       console.log(`${caught ? "caught   " : "SURVIVED "} ${label} | ${why}`);
       if (!caught) survived += 1;
     }
