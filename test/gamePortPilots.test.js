@@ -6290,3 +6290,106 @@ test("an answer that is no list is handed on as it came with nothing kept, and a
   answer = { type: "list", items: [aGuest(PILOT)] };
   assert.deepEqual([(await guestsOf(pilots, handle)).items, (await guestsOf(pilots, handle)).items, asked], [[aGuest(PILOT)], [aGuest(PILOT)], 4]);
 });
+
+// ── the offices the pilot's corporation rents ────────────────────────────────
+
+const OFFICES = "officeManager.GetMyCorporationsOffices";
+const OFFICE_PAIRS = { allowed: new Set([OFFICES, "officeManager.GetSomethingElse", "someService.GetMyCorporationsOffices", "calendarProxy.GetEventList", "station.GetGuests"]) };
+const OWN_CORPORATION = 98000001;
+/** A pilot of a player's corporation, whose office manager answers with the count of times it was asked. */
+async function withOffices(more = {}) {
+  const asked = { times: 0 };
+  const chosen = await selected({ corpid: OWN_CORPORATION, answers: { [OFFICES]: () => { asked.times += 1; return { type: "list", items: [asked.times] }; }, ...more } }, OFFICE_PAIRS);
+  const offices = async (args = [], kwargs = null) => (await chosen.pilots.callMethod("officeManager", "GetMyCorporationsOffices", args, kwargs, FIELDS, chosen.handle)).result.items[0];
+  return { ...chosen, asked, offices };
+}
+
+test("the offices a pilot's corporation rents are asked for once and kept, as the client's office manager keeps them", async () => {
+  const { pilots, session, handle, asked, offices } = await withOffices();
+  // officeManager.corp_offices (officeManager.py 41): asked for while there is none, by name, with nothing.
+  assert.deepEqual([await offices(), await offices(), await offices()], [1, 1, 1]);
+  const sent = session.calls.filter((call) => call.service === "officeManager");
+  assert.deepEqual(sent.map((call) => [call.method, call.args, call.kwargs]), [["GetMyCorporationsOffices", [], null]]);
+  assert.deepEqual(ledgerOf(pilots, OFFICES), [{ same: 1 }, "eve/client/script/ui/services/corporation/officeManager.py:41"]);
+  // Two at once that find nothing kept ask once.
+  session.notify("OnOfficeRentalChange", [OWN_CORPORATION, 1054657764826n]);
+  assert.deepEqual(await Promise.all([offices(), offices()]), [2, 2]);
+  assert.equal(asked.times, 2);
+  // A read of the same name on another service is that service's own, each time.
+  await pilots.callMethod("someService", "GetMyCorporationsOffices", [], null, FIELDS, handle);
+  await pilots.callMethod("someService", "GetMyCorporationsOffices", [], null, FIELDS, handle);
+  assert.equal(session.calls.filter((call) => call.service === "someService").length, 2);
+  // And another read of the office manager's is asked each time.
+  await pilots.callMethod("officeManager", "GetSomethingElse", [], null, FIELDS, handle);
+  await pilots.callMethod("officeManager", "GetSomethingElse", [], null, FIELDS, handle);
+  assert.equal(session.calls.filter((call) => call.method === "GetSomethingElse").length, 2);
+});
+
+test("the offices kept are forgotten when the pilot's own corporation rents an office or gives one up, and in another corporation", async () => {
+  const { session, asked, offices } = await withOffices();
+  assert.equal(await offices(), 1);
+  const forgets = async (what, change) => {
+    const before = asked.times;
+    await change();
+    assert.deepEqual([await offices(), await offices(), asked.times], [before + 1, before + 1, before + 1], what);
+  };
+  const keeps = async (what, change) => {
+    const before = asked.times;
+    await change();
+    assert.deepEqual([await offices(), asked.times], [before, before], what);
+  };
+  // officeManager.OnOfficeRentalChange (69): the corporation's offices are let go where the corporation is the
+  // session's (72). The server tells it of the station's and of the corporation's, so it comes twice.
+  await forgets("its own corporation's office", () => session.notify("OnOfficeRentalChange", [OWN_CORPORATION, 1054657764826n]));
+  await forgets("told twice", () => { session.notify("OnOfficeRentalChange", [OWN_CORPORATION, 7]); session.notify("OnOfficeRentalChange", [OWN_CORPORATION, 7]); });
+  await forgets("the corporation's ID as the wire has a big one", () => session.notify("OnOfficeRentalChange", [BigInt(OWN_CORPORATION), 7]));
+  // Another corporation's office in the same station is none of this corporation's.
+  await keeps("another corporation's office", () => session.notify("OnOfficeRentalChange", [OWN_CORPORATION + 1, 7]));
+  await keeps("a notice that names no corporation", () => { session.notify("OnOfficeRentalChange", []); session.notify("OnOfficeRentalChange", [null, 7]); });
+  // Another notice, one that forgets what another service keeps among them, leaves the offices kept.
+  await keeps("another notice", () => { session.notify("OnNewCalendarEvent", [OWN_CORPORATION, 7]); session.notify("OnOfficeSomethingElse", [OWN_CORPORATION, 7]); });
+  // officeManager.OnSessionChanged (62): in another corporation the offices are another corporation's.
+  await forgets("another corporation", async () => { session.attributes.corpid = OWN_CORPORATION + 1; session.change({ corpid: [OWN_CORPORATION, OWN_CORPORATION + 1] }); await settled(); });
+  // The notice is now of the corporation the pilot is in.
+  await forgets("its new corporation's office", () => session.notify("OnOfficeRentalChange", [OWN_CORPORATION + 1, 7]));
+  await keeps("its old corporation's office", () => session.notify("OnOfficeRentalChange", [OWN_CORPORATION, 7]));
+  // Another station, or another alliance, is not another corporation.
+  await keeps("another station", async () => { session.attributes.stationid = 60000004; session.change({ stationid: [STATION, 60000004] }); await settled(); });
+  await keeps("another alliance", async () => { session.attributes.allianceid = ALLIANCE; session.change({ allianceid: [null, ALLIANCE] }); await settled(); });
+});
+
+test("what forgets the offices leaves the calendar's months kept, and an asking with something beside it is sent as it is asked", async () => {
+  const { pilots, session, handle, asked, offices } = await withOffices(calendarAnswers());
+  const month = async () => (await pilots.callMethod("calendarProxy", "GetEventList", NOVEMBER, null, FIELDS, handle)).result.items[2];
+  assert.deepEqual([await offices(), await month()], [1, 1]);
+  session.notify("OnOfficeRentalChange", [OWN_CORPORATION, 7]);
+  assert.deepEqual([await offices(), await month()], [2, 1]);
+  // The client asks with nothing. An asking with something beside it is no call of its, and is sent each time, with
+  // nothing kept of it and what is kept left as it is.
+  assert.deepEqual([await offices([60003760]), await offices([60003760]), await offices([], { all: true }), await offices()], [3, 4, 5, 2]);
+  assert.equal(asked.times, 5);
+});
+
+test("an answer on its way when an office changes is handed on and not kept, and a refusal keeps nothing", async () => {
+  let release = null;
+  let refuse = false;
+  let times = 0;
+  const { pilots, session, handle } = await selected({ corpid: OWN_CORPORATION, answers: { [OFFICES]: () => {
+    times += 1;
+    if (refuse) throw refusedBy("NotNow");
+    const answer = { type: "list", items: [times] };
+    return times === 1 ? new Promise((resolve) => { release = () => resolve(answer); }) : answer;
+  } } }, OFFICE_PAIRS);
+  const offices = async () => (await pilots.callMethod("officeManager", "GetMyCorporationsOffices", [], null, FIELDS, handle)).result.items[0];
+  const first = offices();
+  await settled();
+  // The office changes while the first answer is on its way: that answer may be from before it.
+  session.notify("OnOfficeRentalChange", [OWN_CORPORATION, 7]);
+  release();
+  assert.deepEqual([await first, await offices(), await offices()], [1, 2, 2]);
+  refuse = true;
+  session.notify("OnOfficeRentalChange", [OWN_CORPORATION, 7]);
+  await rejects(offices(), "CALL_REFUSED");
+  refuse = false;
+  assert.deepEqual([await offices(), await offices(), times], [4, 4, 4]);
+});

@@ -1003,7 +1003,7 @@ const RETAIL_CALLS = Object.freeze({
   "corpRegistry.GetEveOwners": same(`${CORP_SVC}/bco_members.py:136`, "GetCorpRegistry().GetEveOwners(), no arguments, on the corporation's moniker: asked when the session's corporation changes, for its members' names"),
   "corpRegistry.GetMyApplications": same(`${CORP_SVC}/bco_applications.py:72`, "GetCorpRegistry().GetMyApplications(), no arguments, on the corporation's moniker: asked once by the client, which keeps the list and works it over at each OnCorporationApplicationChanged"),
   "corpRegistry.GetCorporation": same(`${CORP_SVC}/bco_corporations.py:49`, "GetCorpRegistry().GetCorporation(), no arguments, on the corporation's moniker"),
-  "officeManager.GetMyCorporationsOffices": same(`${CORP_SVC}/officeManager.py:41`, "RemoteSvc('officeManager').GetMyCorporationsOffices(), no arguments"),
+  "officeManager.GetMyCorporationsOffices": same(`${CORP_SVC}/officeManager.py:41`, "RemoteSvc('officeManager').GetMyCorporationsOffices(), no arguments, while it has none; let go at OnOfficeRentalChange of the session's corporation (72) and in another corporation (62); the transport keeps it so (pilots.js, KEPT_UNTIL_CHANGED)"),
   "dogmaIM.LaunchProbes": same(`${SCAN_SVC}:494`, "LaunchProbes(moduleID, numProbes)"),
   "ship.Undock": needing(reshaped(`${STATION_SVC}:498`, undocking, "GetShipAccess().Undock(shipID, ignoreContraband, onlineModules={flagID: moduleID}), on the ship object bound for the station"), "dogma"),
   "dogmaIM.Activate": needing(reshaped(`${MODULE_BUTTON}:1348`, activation, "godma's GetDogmaLM().Activate(itemID, effectName, target, repeats) (godma.py 2062), on the dogma location bound for where the pilot is"), "dogma"),

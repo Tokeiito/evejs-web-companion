@@ -209,12 +209,22 @@ const changesAColony = (service, method) => (service === PLANET_MGR && COLONY_WR
  * it, which is no call of the client's and is asked as it came.
  */
 const planetKeptAs = (method, form) => (form.args.length > 0 ? null : method === "GetPlanetsForChar" ? "colonies" : method === "GetMyLaunchesDetails" ? "launches" : null);
+const OFFICE_MANAGER = "officeManager";
+/**
+ * What a read of the office manager's is kept as: the offices the pilot's corporation rents, wherever they are
+ * (officeManager.corp_offices: GetMyCorporationsOffices(), officeManager.py 41), asked with nothing. Null for any
+ * other read, and for one with something sent beside it, which is no call of the client's and is asked as it came.
+ */
+const officesKeptAs = (method, form) => (method === "GetMyCorporationsOffices" && form.args.length === 0 && form.kwargs === null ? "corporation" : null);
+/** Whether a notice of an office (corporationID, officeID) is of the corporation the session is in (officeManager.py 72). */
+const ofOwnCorporation = (args, attributes) => wholeOf(Array.isArray(args) ? args[0] : null) === wholeOf(attributes.corpid);
 /** What a read of the calendar's is kept as: a month's events, by the month (calendar.events[(month, year)]: GetEventList(month, year)). */
 const calendarKeptAs = (method, form) => (method === "GetEventList" ? `${form.args[1]}-${form.args[0]}` : null);
 /**
  * The answers a service of the client's keeps until something changes them, by the service they are asked of
  * (keptReads.js). `keptAs` says what a read is kept as, or null for one that is not kept. What changes them is
- * the server's word (`notices`) and the pilot's own writes, by the service each is made on (`writes`). The
+ * the server's word (`notices`; where there is a `concerns`, only a notice it says yes to, by the notice's
+ * arguments and the session's attributes) and the pilot's own writes, by the service each is made on (`writes`). The
  * client works each change into what it keeps (notificationSvc.py, eveCalendarsvc.py). Here everything kept of
  * the service is forgotten at any of them, and asked for when it is next wanted.
  */
@@ -240,6 +250,16 @@ const KEPT_UNTIL_CHANGED = Object.freeze({
     keptAs: planetKeptAs,
     notices: new Set(["OnPILaunchesChange", "OnMajorPlanetStateUpdate"]),
     writes: Object.freeze({ planetMgr: new Set(["DeleteLaunch", "UserUpdateNetwork"]) }),
+  }),
+  // officeManager: an office rented or given up by the pilot's own corporation (OnOfficeRentalChange, 69; the
+  // corporation's offices are let go only where the corporation is the session's, 72). The client lets nothing go
+  // at its own renting: the server's word of it does that. Another corporation forgets them too
+  // (officeManager.OnSessionChanged, 62), which the session's change sees to.
+  [OFFICE_MANAGER]: Object.freeze({
+    keptAs: officesKeptAs,
+    notices: new Set(["OnOfficeRentalChange"]),
+    concerns: ofOwnCorporation,
+    writes: Object.freeze({}),
   }),
 });
 /**
@@ -1116,7 +1136,9 @@ function createGamePortPilots({
       if (ITEM_NOTICES.has(notification.method)) entry.listings.forget();
       // What the client's own services tell its object cache to forget on this notice.
       forgetNamed(entry, namedOnNotice(notification.method, notification.args, entry.session.attributes));
-      for (const [service, keeper] of Object.entries(KEPT_UNTIL_CHANGED)) if (keeper.notices.has(notification.method)) entry.kept[service].forget();
+      for (const [service, keeper] of Object.entries(KEPT_UNTIL_CHANGED)) {
+        if (keeper.notices.has(notification.method) && (!keeper.concerns || keeper.concerns(notification.args, entry.session.attributes))) entry.kept[service].forget();
+      }
       if (COLONY_NOTICES.has(notification.method)) forgetColonies(entry);
       // A mission changed: what the client shows of its missions is drawn again from the journal, which reads it again.
       if (entry.journal.feed(notification)) journalUpToDate(entry);
@@ -1143,6 +1165,8 @@ function createGamePortPilots({
       if (["solarsystemid", "shipid", "structureid"].some((name) => name in changes)) entry.scanner.flush();
       // calendar.OnSessionChanged: in another corporation or alliance the months of events kept are not its.
       if ("corpid" in changes || "allianceid" in changes) entry.kept[CALENDAR_PROXY].forget();
+      // officeManager.OnSessionChanged: in another corporation the offices kept are not its.
+      if ("corpid" in changes) entry.kept[OFFICE_MANAGER].forget();
       // all_cso.OnSessionChanged: another alliance, another moniker, made and bound at once; no alliance, none.
       if ("allianceid" in changes) {
         entry.monikers.delete(ALLIANCE_REGISTRY);

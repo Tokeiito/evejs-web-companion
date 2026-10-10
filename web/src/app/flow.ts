@@ -2057,6 +2057,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         .catch(() => {});
       return;
     }
+    if (method === "OnOfficeRentalChange") {
+      // officeManager.py and invWindow.py: the client's inventory window draws
+      // its tree again where the corporation is the session's. The page reads
+      // the corporation's hangar again where it has it open.
+      if (args[0] === store.station.get().online?.corporationID && store.get().inventory.corp.loaded) {
+        void loadCorpHangar().catch(() => {});
+      }
+      return;
+    }
     if (method !== null && fleetSnapshotNotifications.has(method)) {
       // The notification is an invalidation, never the roster authority. A
       // coalesced, single-flight bound read below replaces the full snapshot.
