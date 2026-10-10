@@ -100,6 +100,7 @@ import type { PiRecipeBook } from "../bridge/piRecipes.ts";
 import type { TargetEvent } from "../bridge/targetNotifications.ts";
 import type { FleetAvailability, FleetPendingInvite } from "../bridge/fleetCenter.ts";
 import type { ShipStats } from "../bridge/shipStats.ts";
+import type { CrimewatchReading } from "../space/crimewatch.ts";
 import type { MiningRungID, MiningStepID } from "../nav/miningLadder.ts";
 import type {
   CompanionAbandonmentRecord,
@@ -628,6 +629,8 @@ export type FeedEvent =
   | { readonly type: "flight/action-error"; readonly message: string | null }
   // Drop the flight state (character offline / logged out).
   | { readonly type: "flight/cleared" }
+  // crimewatchSvc's client states, read again at each of the server's notices of them.
+  | { readonly type: "flight/crimewatch"; readonly crimewatch: CrimewatchReading }
   // Goal R11 — the Overview panel. A space snapshot read completed: everything
   // the ship can see right now plus the active ship's shield/armor/hull/cap.
   // The flow polls this ~1s while in space with the panel open; the panel is a

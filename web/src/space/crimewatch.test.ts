@@ -1,0 +1,84 @@
+// The safety level and the combat timers, as the page says them.
+//
+// The fixture is this server's own answer to crimewatch.GetClientStates for a pilot with nothing running, as the
+// BFF hands it on (read 2026-10-10 through the game-port BFF): five timers, each (state, expiry); the
+// engagements; who is flagged; the safety level. The states with a timer running are the client's own
+// (crimewatch/const.py): the idle state of each kind, plus 1 while the cause goes on, plus 2 while it counts down.
+
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import { decodeClientStates } from "../bridge/boundCrimewatch.ts";
+import { crimewatchTimers, filetimeToMs, safetyBadge, timerText } from "./crimewatch.ts";
+
+const aSet = (...items: number[]) => ({ type: "objectex1", header: [{ type: "token", value: "__builtin__.set" }, [{ type: "list", items }]], list: [], dict: [] });
+const QUIET = [[[100, null], [200, null], [400, null], [300, null], [500, null]], { type: "dict", entries: [] }, [aSet(), aSet()], 2];
+/** A server's clock time as the wire has one: 100 ns ticks since 1601. */
+const filetime = (ms: number) => ({ type: "long", value: String(BigInt(ms) * 10000n + 116444736000000000n) });
+const NOW = Date.UTC(2026, 9, 10, 3, 0, 0);
+const states = (timers: unknown[], safety = 2) => decodeClientStates([timers, { type: "dict", entries: [] }, [aSet(), aSet()], safety] as never);
+
+test("a pilot with nothing running has no timer to show", () => {
+  assert.deepEqual(crimewatchTimers(decodeClientStates(QUIET as never), NOW), []);
+  assert.deepEqual(crimewatchTimers(null, NOW), []);
+});
+
+test("a server's clock time is read to the millisecond, and what is no time is none", () => {
+  assert.equal(filetimeToMs(String(BigInt(NOW) * 10000n + 116444736000000000n)), NOW);
+  assert.equal(filetimeToMs("116444736000000000"), 0);
+  for (const none of [null, "", "x", "12.5"]) assert.equal(filetimeToMs(none), null, String(none));
+});
+
+test("each timer is named for its kind, in the order the client holds them, with what is left of it", () => {
+  const running = states([
+    [102, filetime(NOW + 42_000)],
+    [202, filetime(NOW + 14 * 60_000 + 20_000)],
+    [402, filetime(NOW + 4 * 60_000 + 59_000)],
+    [304, filetime(NOW + 15 * 60_000)],
+    [502, filetime(NOW + 5_000)],
+  ]);
+  assert.deepEqual(crimewatchTimers(running, NOW), [
+    { kind: "weapons", word: "Weapons", phase: "timer", remainingMs: 42_000 },
+    { kind: "pvp", word: "PvP", phase: "timer", remainingMs: 860_000 },
+    { kind: "npc", word: "NPC", phase: "timer", remainingMs: 299_000 },
+    { kind: "criminal", word: "Suspect", phase: "timer", remainingMs: 900_000 },
+    { kind: "disapproval", word: "Disapproval", phase: "timer", remainingMs: 5_000 },
+  ]);
+  // The fourth timer is the criminal's or the suspect's, by its state.
+  assert.deepEqual(crimewatchTimers(states([[100, null], [200, null], [400, null], [303, filetime(NOW + 1000)], [500, null]]), NOW).map((timer) => timer.word), ["Criminal"]);
+  assert.deepEqual(crimewatchTimers(states([[100, null], [200, null], [400, null], [301, null], [500, null]]), NOW).map((timer) => [timer.word, timer.phase]), [["Criminal", "active"]]);
+  assert.deepEqual(crimewatchTimers(states([[100, null], [200, null], [400, null], [302, null], [500, null]]), NOW).map((timer) => [timer.word, timer.phase]), [["Suspect", "active"]]);
+  assert.deepEqual(crimewatchTimers(states([[100, null], [200, null], [400, null], [305, null], [500, null]]), NOW).map((timer) => [timer.word, timer.phase]), [["Criminal", "inherited"]]);
+  assert.deepEqual(crimewatchTimers(states([[100, null], [200, null], [400, null], [306, null], [500, null]]), NOW).map((timer) => [timer.word, timer.phase]), [["Suspect", "inherited"]]);
+});
+
+test("a timer whose cause goes on has no time left to count, and one that has run out is gone", () => {
+  // The weapons' timer while a weapon is still firing: the state says so, and there is no expiry.
+  const firing = crimewatchTimers(states([[101, null], [201, null], [400, null], [300, null], [500, null]]), NOW);
+  assert.deepEqual(firing, [{ kind: "weapons", word: "Weapons", phase: "active", remainingMs: null }, { kind: "pvp", word: "PvP", phase: "active", remainingMs: null }]);
+  // Inherited from another's doing: shown, with what is left where the server says when it ends.
+  assert.deepEqual(crimewatchTimers(states([[103, filetime(NOW + 3000)], [200, null], [400, null], [300, null], [500, null]]), NOW), [{ kind: "weapons", word: "Weapons", phase: "inherited", remainingMs: 3000 }]);
+  // Counting down to a time that has passed: the server has not said it is over yet, and nothing is left to show.
+  assert.deepEqual(crimewatchTimers(states([[102, filetime(NOW - 1)], [202, filetime(NOW)], [400, null], [300, null], [500, null]]), NOW), []);
+  // Inherited, or going on, with an end the server gave that has passed: shown still, with nothing left to count.
+  assert.deepEqual(crimewatchTimers(states([[103, filetime(NOW - 5000)], [201, filetime(NOW - 1)], [400, null], [300, null], [500, null]]), NOW),
+    [{ kind: "weapons", word: "Weapons", phase: "inherited", remainingMs: null }, { kind: "pvp", word: "PvP", phase: "active", remainingMs: null }]);
+  // A state that is no state of its kind's is not shown as one.
+  assert.deepEqual(crimewatchTimers(states([[999, null], [0, null], [407, null], [300, null], [500, null]]), NOW), []);
+});
+
+test("what is left of a timer reads as minutes and seconds, rounded up, and a timer that only goes on reads as its word", () => {
+  assert.equal(timerText({ kind: "weapons", word: "Weapons", phase: "timer", remainingMs: 42_000 }), "Weapons 0:42");
+  assert.equal(timerText({ kind: "pvp", word: "PvP", phase: "timer", remainingMs: 860_000 }), "PvP 14:20");
+  assert.equal(timerText({ kind: "npc", word: "NPC", phase: "timer", remainingMs: 1 }), "NPC 0:01");
+  assert.equal(timerText({ kind: "npc", word: "NPC", phase: "timer", remainingMs: 59_001 }), "NPC 1:00");
+  assert.equal(timerText({ kind: "criminal", word: "Criminal", phase: "active", remainingMs: null }), "Criminal");
+});
+
+test("the safety level is said in a word, and what is no level is not said at all", () => {
+  assert.deepEqual([safetyBadge(decodeClientStates(QUIET as never)), safetyBadge(states([], 1)), safetyBadge(states([], 0))], [
+    { level: 2, word: "Full", tone: "full" }, { level: 1, word: "Partial", tone: "partial" }, { level: 0, word: "None", tone: "none" },
+  ]);
+  for (const level of [3, -1]) assert.equal(safetyBadge(states([], level)), null, String(level));
+  assert.equal(safetyBadge(null), null);
+});

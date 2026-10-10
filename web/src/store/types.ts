@@ -24,6 +24,7 @@ import type {
   ScannerOperationsSnapshot,
 } from "../scanner/scannerCenter.ts";
 import type { GateLink } from "../space/gateLinks.ts";
+import type { CrimewatchReading } from "../space/crimewatch.ts";
 import type { BotID, ShipControllerID } from "../nav/botRegistry.ts";
 import type { MiningRungID, MiningStepID } from "../nav/miningLadder.ts";
 import type {
@@ -1653,6 +1654,8 @@ export interface FlightState {
   readonly solarSystemName: string | null;
   readonly stationName: string | null;
   readonly structureName: string | null;
+  /** The pilot's combat timers and its ship's safety level, as crimewatch last said them; null until read. */
+  readonly crimewatch: CrimewatchReading | null;
 }
 
 // --- R11 Space overview + ship HUD -----------------------------------------

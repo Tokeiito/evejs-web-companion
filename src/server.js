@@ -4134,6 +4134,27 @@ app.get("/api/bridge/corp-offices", requireAuth, async (req, res, next) => {
   }
 });
 
+/**
+ * GET /api/bridge/crimewatch — the pilot's combat timers and its ship's safety level, as crimewatch's
+ * GetClientStates answers them, for the page to show. The answer goes on as it came; the BFF's clock at the
+ * read goes beside it, so that the page counts a timer down to the server's time and not to the browser's.
+ *
+ * On the game port the transport asks crimewatch at the retail client's own moments and keeps the answer, so
+ * this read is most often answered from there.
+ */
+app.get("/api/bridge/crimewatch", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const states = await heldTopLevelCall(held, req.webSessionID, "crimewatch", "GetClientStates", [], null);
+    res.json({ ok: true, serverNowMs: Date.now(), clientStates: states.result });
+  } catch (error) {
+    next(error);
+  }
+});
+
 /** appConst.corpRoleDirector and corpRoleCanRentOffice, the two the retail lobby's office buttons go by. */
 const CORP_ROLE_DIRECTOR = 1n;
 const CORP_ROLE_CAN_RENT_OFFICE = 562949953421312n;

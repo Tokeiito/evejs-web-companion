@@ -33,6 +33,8 @@ import {
   type RequestPriority,
 } from "./transport.ts";
 import type { JsonValue } from "../bridge/wire.ts";
+import { decodeClientStates } from "../bridge/boundCrimewatch.ts";
+import type { CrimewatchReading } from "../space/crimewatch.ts";
 import { decodeLaunchDetails, type LaunchDetail } from "../bridge/piColonies.ts";
 import type { MinerTrainingRead, StageFittingSelection, TrainingCharacter, QueueReview, QueueApplyOutcome } from "../training/types.ts";
 import type {
@@ -821,6 +823,21 @@ export async function loadCorpHangar(options: ApiOptions = {}): Promise<RawCorpH
       };
     }),
   };
+}
+
+/**
+ * The pilot's combat timers and its ship's safety level, as crimewatch's
+ * GetClientStates answers them, with the server's clock less the browser's at
+ * the read. An answer with no states in it is an error: nothing is shown of a
+ * read that said nothing.
+ */
+export async function loadCrimewatch(options: ApiOptions = {}): Promise<CrimewatchReading> {
+  const data = await getJson("/api/bridge/crimewatch", options);
+  const serverNowMs = data.serverNowMs;
+  if (!Array.isArray(data.clientStates) || typeof serverNowMs !== "number") {
+    throw new Error("Crimewatch did not say what the pilot's timers are.");
+  }
+  return { states: decodeClientStates(data.clientStates), clockOffsetMs: serverNowMs - Date.now() };
 }
 
 /**

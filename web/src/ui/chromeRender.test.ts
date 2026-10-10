@@ -823,3 +823,59 @@ test("the header says the ship's speed as the client's gauge does, and falls bac
   assert.doesNotMatch(renderHeader(bare, false), /ws-head-speed/);
   assert.match(visibleText(renderHeader(bare, false)), /STOP · 0%/);
 });
+
+// ── the safety level and the combat timers ───────────────────────────────────
+//
+// crimewatchSvc holds the ship's safety level and the pilot's five combat timers. The client's HUD has the
+// safety button in space, and its timers wherever the pilot is. The header says each in words: a colour alone
+// says nothing to someone who cannot tell it from the next.
+
+const { decodeClientStates } = await import("../bridge/boundCrimewatch.ts");
+const aCrimeSet = () => ({ type: "objectex1", header: [{ type: "token", value: "__builtin__.set" }, [{ type: "list", items: [] }]], list: [], dict: [] });
+const filetimeIn = (ms: number) => ({ type: "long", value: String(BigInt(Date.now() + ms) * 10000n + 116444736000000000n) });
+/** A store with crimewatch read: these five timers, this safety level, and the server's clock level with the page's. */
+function withCrimewatch(store: unknown, timers: unknown[], safetyLevel: number): unknown {
+  (store as { apply(event: unknown): void }).apply({ type: "flight/crimewatch", crimewatch: { states: decodeClientStates([timers, { type: "dict", entries: [] }, [aCrimeSet(), aCrimeSet()], safetyLevel] as never), clockOffsetMs: 0 } });
+  return store;
+}
+const QUIET_TIMERS = [[100, null], [200, null], [400, null], [300, null], [500, null]];
+const badges = (body: string) => [...body.matchAll(/<span class="state-badge ([^"]*)"[^>]*>([\s\S]*?)<\/span>/g)].map((match) => [match[1], visibleText(match[2] ?? "").replace(/\s+/g, " ").trim()]);
+
+test("in space the header says the ship's safety level in a word", () => {
+  for (const [level, word, tone] of [[2, "Full", "full"], [1, "Partial", "partial"], [0, "None", "none"]] as const) {
+    const said = badges(renderHeader(withCrimewatch(inSpaceStore(), QUIET_TIMERS, level), false)).filter(([classes]) => classes?.includes("safety"));
+    assert.deepEqual(said, [[`safety safety-${tone}`, `Safety ${word}`]], word);
+  }
+});
+
+test("⚠ docked there is no safety level to say, and before crimewatch is read nothing is said of it at all", () => {
+  // The client's safety button is on the ship's HUD, which a docked pilot has none of.
+  assert.deepEqual(badges(renderHeader(withCrimewatch(dockedStore(), QUIET_TIMERS, 2), true)).filter(([classes]) => /safety|crime/.test(classes ?? "")), []);
+  // Not read yet is not "no safety": nothing is shown, in space or docked.
+  assert.deepEqual(badges(renderHeader(inSpaceStore(), false)).filter(([classes]) => /safety|crime/.test(classes ?? "")), []);
+  assert.doesNotMatch(visibleText(renderHeader(inSpaceStore(), false)), /Safety/);
+});
+
+test("a combat timer that is running is said with what is left of it, docked or in space, and an idle one is not said", () => {
+  const running = [[102, filetimeIn(42_500)], [202, filetimeIn(14 * 60_000 + 19_500)], [400, null], [304, filetimeIn(60_000 - 500)], [500, null]];
+  for (const [store, isDocked] of [[inSpaceStore(), false], [dockedStore(), true]] as const) {
+    const said = badges(renderHeader(withCrimewatch(store, running, 2), isDocked)).filter(([classes]) => classes?.includes("crime-timer"));
+    assert.deepEqual(said.map(([classes]) => classes), ["crime-timer crime-weapons", "crime-timer crime-pvp", "crime-timer crime-criminal"], String(isDocked));
+    // To the second, a second begun counting as one; the render is within a second of the fixture's making.
+    assert.match(said[0]?.[1] ?? "", /^Weapons 0:4[23]$/);
+    assert.match(said[1]?.[1] ?? "", /^PvP 14:(19|20)$/);
+    assert.match(said[2]?.[1] ?? "", /^Suspect (0:59|1:00)$/);
+  }
+  // With nothing running there is no timer on the page.
+  assert.deepEqual(badges(renderHeader(withCrimewatch(inSpaceStore(), QUIET_TIMERS, 2), false)).filter(([classes]) => classes?.includes("crime-timer")), []);
+});
+
+test("a timer whose cause goes on is said by its word alone, and a timer is counted to the server's clock", () => {
+  const firing = badges(renderHeader(withCrimewatch(inSpaceStore(), [[101, null], [200, null], [400, null], [301, null], [500, null]], 0), false)).filter(([classes]) => classes?.includes("crime-timer"));
+  assert.deepEqual(firing.map(([, words]) => words), ["Weapons", "Criminal"]);
+  // The server's clock a minute ahead of the page's: a timer ending 90 s from now by the page's clock has 30 s left.
+  const store = inSpaceStore();
+  (store as { apply(event: unknown): void }).apply({ type: "flight/crimewatch", crimewatch: { states: decodeClientStates([[[102, filetimeIn(90_000)], [200, null], [400, null], [300, null], [500, null]], { type: "dict", entries: [] }, [aCrimeSet(), aCrimeSet()], 2] as never), clockOffsetMs: 60_000 } });
+  const ahead = badges(renderHeader(store, false)).filter(([classes]) => classes?.includes("crime-timer"));
+  assert.match(ahead[0]?.[1] ?? "", /^Weapons 0:(29|30)$/);
+});

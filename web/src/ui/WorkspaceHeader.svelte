@@ -14,6 +14,8 @@
   import { INDICATION_WORD_LABELS, indicationHeader, shipIndication } from "../space/actionIndication.ts";
   import { TIDI_WORD_LABELS, tidiHint, tidiPercent } from "../space/timeDilation.ts";
   import { SPEED_WORD_LABELS, shipSpeedText } from "../space/shipSpeed.ts";
+  import { crimewatchTimers, safetyBadge, timerText } from "../space/crimewatch.ts";
+  import { onMount } from "svelte";
 
   let { store, flow, isDocked }: { store: ClientStore; flow: AppFlow; isDocked: boolean } = $props();
 
@@ -27,6 +29,21 @@
   const names = store.names;
   // svelte-ignore state_referenced_locally
   const words = store.words;
+
+  // crimewatchSvc: the ship's safety level, which the client's HUD has a
+  // button for in space, and the pilot's combat timers, which it shows
+  // wherever the pilot is. The timers count down to the server's clock, read
+  // off the page's once a second. The clock is set going at mount, and not in
+  // an effect that reads a store, which every write to the store would start
+  // again before it had ticked.
+  let pageNow = $state(Date.now());
+  onMount(() => {
+    const ticking = setInterval(() => { pageNow = Date.now(); }, 1000);
+    return () => clearInterval(ticking);
+  });
+  const crimewatch = $derived($flight.crimewatch);
+  const safety = $derived(isDocked ? null : safetyBadge(crimewatch?.states ?? null));
+  const timers = $derived(crimewatch === null ? [] : crimewatchTimers(crimewatch.states, pageNow + crimewatch.clockOffsetMs));
 
   let busy = $state(false);
   let error = $state("");
@@ -90,6 +107,12 @@
   {#if tidi !== null}
     <span class="state-badge tidi" title={tidiHint(tidi, $words.templates)}>TiDi {tidi}%</span>
   {/if}
+  {#if safety !== null}
+    <span class="state-badge safety safety-{safety.tone}" title="Your ship's safety level">Safety {safety.word}</span>
+  {/if}
+  {#each timers as timer (timer.kind)}
+    <span class="state-badge crime-timer crime-{timer.kind}" title="A combat timer">{timerText(timer)}</span>
+  {/each}
   <div class="ws-head-where">
     {#if isDocked}
       <strong>{stationName}</strong>

@@ -2815,3 +2815,44 @@ test("a rent or a giving up the server refuses is an error, and is not said to b
   const giveUp = await giveUpRoute(gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CEO, ownOffices: [HERE], giveUp: refusedBy("CrpAccessDenied") }), { confirm: true });
   assert.deepEqual([giveUp.response.ok, giveUp.payload.ok], [false, false], JSON.stringify(giveUp.payload));
 });
+
+// ── crimewatch's client states, for the page's safety level and timers ──────
+//
+// crimewatchSvc holds the pilot's five combat timers and its safety level, from GetClientStates. The page shows
+// them from one read, beside the server's clock, so that a timer counts down to the server's time.
+
+const QUIET_STATES = [[[100, null], [200, null], [400, null], [300, null], [500, null]], { type: "dict", entries: [] }, [aSet(), aSet()], 2];
+
+test("the page's read of crimewatch asks the client's states once, on the pilot's own session, and says the server's time beside them", async () => {
+  const asked = [];
+  const backend = fakeGateway({
+    async callMethod(service, method, args, kwargs, sessionFields, bridgeSessionID) {
+      asked.push([service, method, args, kwargs, bridgeSessionID]);
+      return { service, method, result: service === "crimewatch" && method === "GetClientStates" ? QUIET_STATES : null, notifications: [] };
+    },
+  });
+  const { baseUrl } = await startTestServer({ gateway: backend });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  asked.length = 0;
+  const before = Date.now();
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/crimewatch");
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.deepEqual([payload.ok, payload.clientStates], [true, QUIET_STATES]);
+  assert.ok(Number.isSafeInteger(payload.serverNowMs) && payload.serverNowMs >= before && payload.serverNowMs <= Date.now(), String(payload.serverNowMs));
+  assert.deepEqual(asked.filter(([service]) => service === "crimewatch").map(([service, method, args, kwargs, handle]) => [method, args, kwargs, handle]), [["GetClientStates", [], null, BRIDGE_SESSION_ID]]);
+});
+
+test("crimewatch's states that cannot be read are an error, and a pilot not chosen has none", async () => {
+  const backend = fakeGateway({
+    async callMethod(service, method) {
+      if (service === "crimewatch") throw Object.assign(new Error("The game server refused crimewatch.GetClientStates."), { code: "EVE_GATEWAY_CALL_FAILED", statusCode: 502 });
+      return { service, method, result: null, notifications: [] };
+    },
+  });
+  const { baseUrl } = await startTestServer({ gateway: backend });
+  const unchosen = await apiRequest(baseUrl, "/api/bridge/crimewatch");
+  assert.equal(unchosen.response.ok, false, JSON.stringify(unchosen.payload));
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/crimewatch");
+  assert.deepEqual([response.ok, payload.ok, "clientStates" in payload], [false, false, false], JSON.stringify(payload));
+});

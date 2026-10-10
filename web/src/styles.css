@@ -4945,6 +4945,13 @@
   .state-badge.docked { color: var(--color-accent); border-color: var(--color-accent); }
   .state-badge.in-space { color: var(--color-good); border-color: var(--color-good); }
   .state-badge.tidi { color: var(--color-warn); border-color: var(--color-warn); }
+  /* The ship's safety level and the pilot's combat timers: each says itself in
+   * words, and the colour only seconds it. */
+  .state-badge.safety-full { color: var(--color-good); border-color: var(--color-good); }
+  .state-badge.safety-partial { color: var(--color-warn); border-color: var(--color-warn); }
+  .state-badge.safety-none { color: var(--color-danger); border-color: var(--color-danger); }
+  .state-badge.crime-timer { color: var(--color-warn); border-color: var(--color-warn); font-variant-numeric: tabular-nums; }
+  .state-badge.crime-criminal { color: var(--color-danger); border-color: var(--color-danger); }
 
   /* ============================================ locked-target cards (R71) --
    * EVE's target brackets: a round dial per locked target — the thing's picture

@@ -531,6 +531,7 @@ const INITIAL_FLIGHT: FlightState = Object.freeze({
   solarSystemName: null,
   stationName: null,
   structureName: null,
+  crimewatch: null,
 });
 
 const INITIAL_SPACE: SpaceState = Object.freeze({
@@ -1960,6 +1961,9 @@ export function createClientStore(): ClientStore {
         break;
       case "flight/action-error":
         flight.set({ ...flight.get(), actionError: event.message });
+        break;
+      case "flight/crimewatch":
+        flight.set({ ...flight.get(), crimewatch: event.crimewatch });
         break;
       case "flight/cleared":
         flight.set(INITIAL_FLIGHT);

@@ -200,6 +200,7 @@ import {
 // R30 slice A — reading the already-cached gate graph as "what is on this grid
 // and where does it go", so a stargate row can offer a jump.
 import { buildGateLinks, type GateLink } from "../space/gateLinks.ts";
+import { CRIMEWATCH_NOTICES, CRIMEWATCH_SESSION_NAMES } from "../space/crimewatch.ts";
 import type { AgentFinderRow } from "../store/types.ts";
 import {
   AUTOPILOT_WARP_MIN_RANGE_M,
@@ -2047,6 +2048,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return;
     }
     const sessionNames = sessionChangeNames(method, args);
+    // crimewatchSvc.ProcessSessionChange and OnSessionChanged: another place, or another system or ship, and
+    // the client asks crimewatch its states again. So does the page, of the BFF.
+    if (sessionNames?.some((name) => CRIMEWATCH_SESSION_NAMES.has(name)) || (method !== null && CRIMEWATCH_NOTICES.has(method))) {
+      void loadCrimewatch().catch(() => {});
+    }
     // The job board marks every mission out of date when the pilot's ship or station changes
     // (AgentMissionsJobProvider.OnSessionChanged), and a page on show reads its mission again.
     if (sessionNames?.includes("shipid") || sessionNames?.includes("stationid")) {
@@ -2756,6 +2762,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // from the builder because one read timed out would look like the
       // feature breaking.
       return { stationIDs: [], divisions: [], error: errorWords(error) };
+    }
+  }
+
+  // crimewatchSvc: the pilot's combat timers and its ship's safety level. The
+  // client's service has them from the choosing of the character on, and
+  // changes them at the server's notices; the page reads them at the choosing
+  // and again at each notice and each change of place or ship. A read that
+  // answers for a pilot no longer online here is not shown, and one that fails
+  // leaves what was shown.
+  async function loadCrimewatch(): Promise<void> {
+    const characterID = store.station.get().online?.characterID ?? null;
+    const crimewatch = await api.loadCrimewatch(callOptions);
+    if (store.station.get().online?.characterID === characterID) {
+      store.apply({ type: "flight/crimewatch", crimewatch });
     }
   }
 
@@ -13414,6 +13434,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // reads — anything the reads trigger is then already being observed.
       startLiveStream();
       void retryDroneRecovery();
+      void loadCrimewatch().catch(() => {});
       await refreshStationPanel();
     },
 
