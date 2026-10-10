@@ -471,6 +471,20 @@ Take these defaults, and list each under "For the operator" in the log so they c
   such cannot be written there, and is tested in the page's own test, where its form can.
   Then live, leaf by leaf: `skills-compare.mjs <repo> <scratch> <bff> <account> <characterID>
   [typeID toLevel]`. The clock's leaf differs, being read at two moments.
+- **A write is moved by the generic call's three sayings, and only after its handler is read.**
+  The page says `pilot` and `confirm`, and the pair goes on `PAGE_WRITE_PAIR_KEYS`
+  (`src/bridgeCallPolicy.js`); the page's side is `api.bridgeDo` and a module beside the
+  reads' (`web/src/bridge/skillWrites.ts`). The generic call hands the page's arguments on
+  as they come, so read the server's handler first for what it trusts, and correct
+  `docs/bridge-wire-contract.md` where it lists the pairs. Prove a write as the pause was:
+  what is refused (each saying left out, another write with all said, no pilot chosen), the
+  route's way and the page's one after the other with the sheets after compared
+  (`write-live.js <bff> <account> <characterID>`), then the button in the browser on both
+  pages.
+- **A survivor of the breakage pass is read, not waved through.** Two `typeof` checks that
+  no test caught led to a way round the write check: what was not text was no write to the
+  check, and was made into text further on. Where a check asks "is this text", ask what
+  becomes further on of what is not.
 - **A read may be no read of its window's at all.** Find every caller of the call in the
   client before moving it: `beyonce.GetFormations` has one, the ballpark's making, and the
   page's scanner was asking it for a readout the client's scanner has not got. Then the

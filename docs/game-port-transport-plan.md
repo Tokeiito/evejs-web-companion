@@ -776,8 +776,11 @@ The agents' journal is the second route off the list whole (`5c2e1f1`): one call
 by the page, answered on the game port from the journal the transport keeps. Crimewatch's
 states and the clone's grade followed (`e21134c`), and with them the clock for a pilot
 through the gateway. The scanner's read of the ballpark's formations was no read of the
-client's scanner at all, and is gone with its readout (`964c083`). 135 named now, 45 of
-them reads and 90 writes; no write has been moved yet. Of the phase's "done when", "no
+client's scanner at all, and is gone with its readout (`964c083`). The first write
+followed (`836fff6`): the pause of training, made by the generic call when it is said to
+be a pilot's (`pilot`), said to be meant (`confirm`) and on the BFF's list of the page's
+own writes; any other write is refused there as before. 134 named now, 45 of them reads
+and 89 writes. Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.
 Of 6a's four things, three are carried by the socket or in process, each with a way back
 (the routes' operations, the pushes, the hosted bots), and the cap is lifted for what is
