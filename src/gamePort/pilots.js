@@ -211,6 +211,11 @@ const changesAColony = (service, method) => (service === PLANET_MGR && COLONY_WR
 const planetKeptAs = (method, form) => (form.args.length > 0 ? null : method === "GetPlanetsForChar" ? "colonies" : method === "GetMyLaunchesDetails" ? "launches" : null);
 const OFFICE_MANAGER = "officeManager";
 /**
+ * The read of the station's own office object that the client's office manager keeps (officeManager.offices,
+ * officeManager.py 34): the corporations with an office where the session is docked.
+ */
+const STATION_OFFICES = "GetCorporationsWithOffices";
+/**
  * What a read of the office manager's is kept as: the offices the pilot's corporation rents, wherever they are
  * (officeManager.corp_offices: GetMyCorporationsOffices(), officeManager.py 41), asked with nothing. Null for any
  * other read, and for one with something sent beside it, which is no call of the client's and is asked as it came.
@@ -1093,6 +1098,8 @@ function createGamePortPilots({
       planetReads: new Map(),
       /** The station the pilot is docked in, as the client's station service keeps it; and its askings, one after another. */
       station: createPilotStation(),
+      /** The corporations with offices where the pilot is docked, as the station's office object answered (STATION_OFFICES). */
+      stationOffices: createKeptReads(),
       stationWork: Promise.resolve(),
       /** What each container bound for the BFF lists, as the server answered, until something may have changed it (INVENTORY_LISTINGS). */
       listings: createKeptReads(),
@@ -1132,6 +1139,8 @@ function createGamePortPilots({
       entry.targets.feed(notification);
       // station/base.py: a pilot arrived in the station, or left it.
       entry.station.feed(notification);
+      // officeManager.OnOfficeRentalChange (71): an office rented or given up, whoever's, and the station's are not as kept.
+      if (notification.method === "OnOfficeRentalChange") entry.stationOffices.forget();
       // invCache.OnItemChange: an item changed, and what a container lists may not be so any more.
       if (ITEM_NOTICES.has(notification.method)) entry.listings.forget();
       // What the client's own services tell its object cache to forget on this notice.
@@ -1156,6 +1165,8 @@ function createGamePortPilots({
       if ("shipid" in changes) entry.monikers.delete("ship");
       // station/base.py OnSessionChanged and ProcessSessionChange: out of a station, its guests and its item are let go.
       if ("stationid" in changes) entry.station.left();
+      // officeManager.DoSessionChanging and OnSessionChanged (58, 66): another station or structure, or none, and its offices are not this one's.
+      if ("stationid" in changes || "structureid" in changes) entry.stationOffices.forget();
       // fleetSvc.ProcessSessionChange: in no fleet, there is no fleet's object.
       if ("fleetid" in changes) {
         entry.fleetKept.sessionChanged();
@@ -1343,6 +1354,16 @@ function createGamePortPilots({
     // ever had, and each asking is sent.)
     if (STATION_KEPT.has(`${service}.${method}`) && form.args.length === 0 && form.kwargs === null) {
       const kept = await run(entry, service, method, () => stationRead(entry, service, method, form));
+      return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
+    }
+    // The corporations with offices where a pilot is docked are the client's office manager's to answer, where
+    // they are asked as the client asks them: of the station's own object, with nothing.
+    if (service === OFFICE_MANAGER && method === STATION_OFFICES && form.moniker && form.args.length === 0 && form.kwargs === null) {
+      const kept = await run(entry, service, method, () => entry.stationOffices.read(method, () => {
+        // Asked of the service by name and made on its moniker, as any call of a moniker's is noted.
+        ledger.note(service, method, form.status === "same" ? { ...form, status: "reshaped" } : form);
+        return monikerCall(entry, service, method, [], null);
+      }));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
     // objectCaching.PerformCachedMethodCall: what the server marked as cached is answered from its first answer
@@ -2130,6 +2151,8 @@ function createGamePortPilots({
         return attribute(entry, "solarsystemid") ?? undefined;
       case "planetOrbitalRegistryBroker": // GetPlanetOrbitalRegistry(session.solarsystemid): in space only
         return attribute(entry, "solarsystemid") ?? undefined;
+      case OFFICE_MANAGER: // officeManager.station: Moniker('officeManager', session.stationid or session.structureid)
+        return attribute(entry, "stationid") ?? attribute(entry, "structureid") ?? undefined;
       case "reprocessingSvc": // GetReprocessingManager
         return attribute(entry, "structureid") ?? attribute(entry, "stationid") ?? undefined;
       case "corpRegistry": // GetCorpRegistry: Moniker('corpRegistry', session.corpid)
@@ -2416,6 +2439,8 @@ function createGamePortPilots({
       allianceID: attribute(entry, "allianceid"),
       // session.solarsystemid: the system the pilot is in space in, and none while docked.
       solarSystemID: attribute(entry, "solarsystemid"),
+      // session.stationid or session.structureid: where the pilot is docked, and none in space.
+      dockedAt: attribute(entry, "stationid") ?? attribute(entry, "structureid"),
       onlineModules: () => {
         const shipID = attribute(entry, "shipid");
         return entry.dogmaLoaded && shipID !== null ? entry.dogma.onlineModules(shipID) : null;

@@ -41,6 +41,7 @@ import type {
   InventoryPlace,
   OnlineCharacterState,
   SlotFamily,
+  StationOffices,
   StationStatic,
   QuestionAnswer,
 } from "../store/types.ts";
@@ -818,6 +819,23 @@ export async function loadCorpHangar(options: ApiOptions = {}): Promise<RawCorpH
           : {},
       };
     }),
+  };
+}
+
+/**
+ * The lobby's offices where the pilot is docked: the corporations with an
+ * office there, and how many offices are free. The BFF asks them as the retail
+ * client's lobby does, of the station's own office object, for a pilot on the
+ * game port; for one on the gateway it answers `available: false`.
+ */
+export async function loadStationOffices(options: ApiOptions = {}): Promise<StationOffices> {
+  const data = await getJson("/api/bridge/station/offices", options);
+  const listed = Array.isArray(data.corporationIDs) ? data.corporationIDs : [];
+  const free = data.freeOffices;
+  return {
+    available: data.available === true,
+    corporationIDs: listed.filter((id): id is number => typeof id === "number" && Number.isSafeInteger(id) && id > 0),
+    freeOffices: typeof free === "number" && Number.isSafeInteger(free) && free >= 0 ? free : null,
   };
 }
 

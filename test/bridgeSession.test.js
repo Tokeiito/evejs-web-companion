@@ -2568,3 +2568,90 @@ test("a gateway pilot's colonies are still read from the gateway's snapshot, in 
   assert.deepEqual([response.status, payload.coloniesReadable, payload.colonies, gateway.snapshots], [200, true, [], 1]);
   assert.deepEqual([gamePort.asked.filter(([service]) => service === "planetMgr"), gamePort.onObjects], [[], []]);
 });
+
+// ── the lobby's offices where a pilot is docked ─────────────────────────────
+//
+// dockedUI/offices.py: the lobby lists the corporations with an office in the station
+// (officeManager.GetCorporationsWithOffices) and says how many offices are free (GetNumberOfUnrentedOffices),
+// each asked of the station's own office object. The gateway's list has neither.
+
+const aSet = (...items) => ({ type: "objectex1", header: [{ type: "token", value: "__builtin__.set" }, [{ type: "list", items }]], list: [], dict: [] });
+const STRUCTURE_DOCKED_AT = 1052851966475;
+
+/** A game port whose station's office object answers this for the corporations with offices, and this for the offices free. */
+function gamePortWithOffices(corporations, free, { dockedAt = { stationID: SELECT_SESSION_ECHO.stationID, structureID: null }, docked = true } = {}) {
+  const gamePort = fakeGateway({
+    async selectCharacter() {
+      return { bridgeSessionID: GAME_PORT_SESSION_ID, service: "charUnboundMgr", method: "SelectCharacterID", result: null, notifications: [], session: { ...SELECT_SESSION_ECHO, ...dockedAt } };
+    },
+    async readFlightStatus() {
+      return { flight: { docked, inSpace: !docked, ...(docked ? dockedAt : { stationID: null, structureID: null }), solarSystemID: SELECT_SESSION_ECHO.solarSystemID, shipID: SELECT_SESSION_ECHO.shipID }, notifications: [] };
+    },
+    async callMethod(service, method, args, kwargs, sessionFields, bridgeSessionID) {
+      gamePort.asked.push([service, method, args, kwargs, bridgeSessionID]);
+      const answer = service === "officeManager" && method === "GetCorporationsWithOffices" ? corporations : service === "officeManager" && method === "GetEmptyOfficeCount" ? free : null;
+      if (answer instanceof Error) throw answer;
+      return { service, method, result: answer, notifications: [] };
+    },
+  });
+  gamePort.asked = [];
+  return gamePort;
+}
+const askedOfTheOffices = (backend) => backend.asked.filter(([service]) => service === "officeManager").map(([service, method, args, kwargs, handle]) => [method, args, kwargs, handle]);
+async function officesRoute(gamePort, gateway = fakeGateway(), transport = "gameport") {
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => transport });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  gamePort.asked.length = 0;
+  return apiRequest(baseUrl, "/api/bridge/station/offices");
+}
+
+test("a game-port pilot's station offices are read as the lobby reads them: the corporations with offices, then the offices free", async () => {
+  const gamePort = gamePortWithOffices(aSet(98000003, 98000000, 1000035), 17);
+  const { response, payload } = await officesRoute(gamePort);
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  // The corporations in the order of their IDs: a set has none of its own.
+  assert.deepEqual(payload, { ok: true, available: true, stationID: SELECT_SESSION_ECHO.stationID, corporationIDs: [1000035, 98000000, 98000003], freeOffices: 17 });
+  // Each asked by the service's name on the pilot's own session, with nothing: the transport makes them on the station's object.
+  assert.deepEqual(askedOfTheOffices(gamePort), [["GetCorporationsWithOffices", [], null, GAME_PORT_SESSION_ID], ["GetEmptyOfficeCount", [], null, GAME_PORT_SESSION_ID]]);
+});
+
+test("the station's offices are read from whatever form the answers come in, and what is no number is left out", async () => {
+  // A plain list, a big ID as the wire has one, and things that are no corporation.
+  const listed = await officesRoute(gamePortWithOffices({ type: "list", items: [98000003, { type: "long", value: "98000000" }, "x", null, 0, -4, 98000003] }, 0));
+  assert.deepEqual([listed.payload.corporationIDs, listed.payload.freeOffices], [[98000000, 98000003], 0]);
+  // No station has offices free by a count that is no whole number, or none.
+  for (const free of [null, "many", 2.5, -1]) {
+    const { payload } = await officesRoute(gamePortWithOffices(aSet(), free));
+    assert.deepEqual([payload.ok, payload.corporationIDs, payload.freeOffices], [true, [], null], String(free));
+  }
+});
+
+test("in a structure the offices free are not asked for, as the client asks for none there", async () => {
+  // officeManager.GetNumberOfUnrentedOffices (133): None in a structure, with nothing asked.
+  const gamePort = gamePortWithOffices(aSet(98000000), 5, { dockedAt: { stationID: null, structureID: STRUCTURE_DOCKED_AT } });
+  const { response, payload } = await officesRoute(gamePort);
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.deepEqual(payload, { ok: true, available: true, stationID: STRUCTURE_DOCKED_AT, corporationIDs: [98000000], freeOffices: null });
+  assert.deepEqual(askedOfTheOffices(gamePort), [["GetCorporationsWithOffices", [], null, GAME_PORT_SESSION_ID]]);
+});
+
+test("a pilot in space has no station's offices, and a gateway pilot is told the read is not its transport's, with nothing asked", async () => {
+  const inSpace = gamePortWithOffices(aSet(98000000), 5, { docked: false });
+  const flying = await officesRoute(inSpace);
+  assert.deepEqual([flying.response.status, flying.payload.error, askedOfTheOffices(inSpace)], [409, "NOT_DOCKED", []]);
+  // Through the gateway: the gateway's list has neither read.
+  const gateway = fakeGateway({ async callMethod(service, method) { gateway.asked.push([service, method]); return { service, method, result: null, notifications: [] }; } });
+  gateway.asked = [];
+  const gamePort = gamePortWithOffices(aSet(98000000), 5);
+  const { response, payload } = await officesRoute(gamePort, gateway, "gateway");
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.deepEqual(payload, { ok: true, available: false, stationID: SELECT_SESSION_ECHO.stationID, corporationIDs: [], freeOffices: null });
+  assert.deepEqual([askedOfTheOffices(gamePort), gateway.asked.filter(([service]) => service === "officeManager")], [[], []]);
+});
+
+test("a station's offices that cannot be read are an error, not a station with none", async () => {
+  const refused = Object.assign(new Error("The game server refused officeManager.GetCorporationsWithOffices."), { code: "EVE_GATEWAY_CALL_FAILED", statusCode: 502 });
+  const { response, payload } = await officesRoute(gamePortWithOffices(refused, 5));
+  assert.equal(response.ok, false, JSON.stringify(payload));
+  assert.equal(payload.ok, false);
+});

@@ -322,6 +322,8 @@ test("everything of ship, dogmaIM, corpRegistry and the skill handler is made on
     allianceRegistry: ["GetAllianceMembers", "GetAllianceMembersOlderThan", "GetAlliancePublicInfo", "GetDaysInAlliance", "GetEmploymentRecord", "GetRankedAlliances"],
     // Nor a system's orbital registry: each use at a customs office makes a moniker for the system and calls it.
     planetOrbitalRegistryBroker: [],
+    // The office manager asks for its corporation's offices by name; all else is asked of the moniker for where the session is docked.
+    officeManager: ["GetMyCorporationsOffices"],
   });
   assert.deepEqual([madeOnMoniker("corpRegistry", "GetCorporation"), madeOnMoniker("corpRegistry", "AddBulletin"), madeOnMoniker("corpRegistry", "MachoBindObject")], [true, true, false]);
   assert.deepEqual([madeOnMoniker("ship", "Undock"), madeOnMoniker("dogmaIM", "GetTargets"), madeOnMoniker("ship", "SomethingNobodyRead"), madeOnMoniker("dogmaIM", "Overload")], [true, true, true, true]);
@@ -336,7 +338,7 @@ test("everything of ship, dogmaIM, corpRegistry and the skill handler is made on
     const [service, method] = pair.split(".");
     // On the moniker for every pair of those services but the ones the client asks by the service's name. (For a
     // pilot in an alliance: one in none has no moniker for an alliance's registry.)
-    assert.equal(retailForm(service, method, [], null, { allianceID: 99000001, solarSystemID: 30002780 }).moniker, Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method), pair);
+    assert.equal(retailForm(service, method, [], null, { allianceID: 99000001, solarSystemID: 30002780, dockedAt: 60003760 }).moniker, Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method), pair);
   }
 });
 
@@ -1396,6 +1398,37 @@ test("a pilot's colonies and launches are asked of the planet manager by name, w
 // export has both: MachoBindObject(30034971, ('GetTaxRate', (officeID,), {})) three times over, and
 // ImportExportWithPlanet(pinID, {}, {2398: 100.0}, 0.20000000149011612) on the inventory GetInventoryFromId answered.
 
+test("a station's offices are asked of the office manager's Moniker for where the session is docked, kept, and not at all in space", () => {
+  // officeManager.py: station (50) is Moniker('officeManager', session.stationid or session.structureid), kept
+  // while the session is there; corp_offices (41) is asked of the service by name. Tranquility's recordings of an
+  // office rented and of one given up have GetCorporationsWithOffices and GetEmptyOfficeCount on the bound
+  // object, each with an empty tuple.
+  const DOCKED = { dockedAt: 60003760 };
+  for (const [method, line] of [["GetCorporationsWithOffices", 34], ["GetEmptyOfficeCount", 136]]) {
+    const asked = retailForm("officeManager", method, [], null, DOCKED);
+    assert.deepEqual([asked.status, asked.args, asked.kwargs, asked.moniker, asked.source], ["same", [], null, true, `eve/client/script/ui/services/corporation/officeManager.py:${line}`], method);
+    // The client sends nothing with either: no argument, and no keyword.
+    assert.deepEqual([retailForm("officeManager", method, [60003760], null, DOCKED).status, retailForm("officeManager", method, [60003760], null, DOCKED).moniker], ["differs", true], method);
+    const keyed = retailForm("officeManager", method, [], { all: true }, DOCKED);
+    assert.deepEqual([keyed.status, keyed.args, keyed.kwargs, keyed.moniker], ["differs", [], { all: true }, true], method);
+    assert.match(keyed.note, /sends nothing/);
+    // In space the client's office manager has no station: it asks nothing, and what is asked all the same goes by name.
+    for (const context of [{}, { dockedAt: null }, undefined]) {
+      const inSpace = retailForm("officeManager", method, [], null, context);
+      assert.deepEqual([inSpace.status, inSpace.moniker], ["web-only", false], method);
+      assert.match(inSpace.source, /officeManager\.py:48$/);
+      assert.match(inSpace.note, /docked/);
+    }
+  }
+  assert.deepEqual([madeOnMoniker("officeManager", "GetCorporationsWithOffices"), madeOnMoniker("officeManager", "RentOffice"), madeOnMoniker("officeManager", "GetMyCorporationsOffices")], [true, true, false]);
+  // The moniker is kept: nothing of it is made afresh, docked or not.
+  assert.deepEqual([madeAfresh("officeManager", "GetCorporationsWithOffices"), madeAfresh("officeManager", "GetEmptyOfficeCount", { dockedInStation: true })], [false, false]);
+  // The corporation's own offices are asked by name wherever the pilot is.
+  for (const context of [DOCKED, {}]) assert.deepEqual([retailForm("officeManager", "GetMyCorporationsOffices", [], null, context).status, retailForm("officeManager", "GetMyCorporationsOffices", [], null, context).moniker], ["same", false]);
+  // The gateway's list has neither read of the station's object: the game port alone carries them.
+  assert.deepEqual(GAME_PORT_ONLY_CALLS.filter((pair) => pair.startsWith("officeManager.")), ["officeManager.GetCorporationsWithOffices", "officeManager.GetEmptyOfficeCount"]);
+});
+
 test("a customs office's tax rate is asked of the system's orbital registry, on a Moniker made for the call, and only in space", () => {
   const OFFICE = 1200040176368;
   const asked = retailForm("planetOrbitalRegistryBroker", "GetTaxRate", [OFFICE], null, { solarSystemID: 30002780 });
@@ -1441,8 +1474,8 @@ test("what goes up into a customs office, and comes down from one, goes as the c
   }
 });
 
-test("the game port carries the customs office's transfer, which the web gateway's list has not got", () => {
-  assert.deepEqual(GAME_PORT_ONLY_CALLS, ["invbroker.ImportExportWithPlanet"]);
+test("the game port carries the customs office's transfer and the station's offices, which the web gateway's list has not got", () => {
+  assert.deepEqual(GAME_PORT_ONLY_CALLS, ["invbroker.ImportExportWithPlanet", "officeManager.GetCorporationsWithOffices", "officeManager.GetEmptyOfficeCount"]);
   // When the gateway's list gains one of these, it is the gateway's too, and comes off this list.
   for (const pair of GAME_PORT_ONLY_CALLS) assert.equal(contract.gatewayAllowlist.pairs.includes(pair), false, pair);
 });

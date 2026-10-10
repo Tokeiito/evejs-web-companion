@@ -4134,6 +4134,60 @@ app.get("/api/bridge/corp-offices", requireAuth, async (req, res, next) => {
   }
 });
 
+/** A whole number off a number or a wire long; null for anything else. */
+function wholeWireNumber(value) {
+  const number = typeof value === "number" ? value : value && value.type === "long" ? Number(value.value) : NaN;
+  return Number.isSafeInteger(number) ? number : null;
+}
+
+/**
+ * GET /api/bridge/station/offices — the lobby's offices where the pilot is
+ * docked: the corporations with an office there, and how many offices are free.
+ *
+ * Asked as the retail client's lobby asks (dockedUI/offices.py, through
+ * officeManager.py 34 and 136): the corporations first, then the count, each of
+ * the station's own office object, which the game-port transport binds by the
+ * station and keeps. A structure has no count of free offices
+ * (officeManager.py 133), and none is asked for.
+ *
+ * The web gateway's list has neither read. A pilot there is answered
+ * `available: false`, with nothing asked. A read that fails is an error: it is
+ * never "this station has no offices".
+ */
+app.get("/api/bridge/station/offices", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    await readHeldFlight(held, req.webSessionID);
+    const stationID = inventoryLocationID(held);
+    if (!stationID) {
+      res.status(409).json({ ok: false, error: "NOT_DOCKED", message: "A station's offices are read while docked in it." });
+      return;
+    }
+    if (!(Boolean(gamePortPilots) && isGamePortHandle(held.bridgeSessionID))) {
+      res.json({ ok: true, available: false, stationID, corporationIDs: [], freeOffices: null });
+      return;
+    }
+    const corporations = await heldTopLevelCall(held, req.webSessionID, "officeManager", "GetCorporationsWithOffices", [], null);
+    const free = held.structureID
+      ? null
+      : wholeWireNumber((await heldTopLevelCall(held, req.webSessionID, "officeManager", "GetEmptyOfficeCount", [], null)).result);
+    const corporationIDs = [...new Set(inventoryListItems(corporations.result).map(wholeWireNumber).filter((id) => id !== null && id > 0))];
+    res.json({
+      ok: true,
+      available: true,
+      stationID,
+      // A set has no order of its own: by ID here, and by name on the page.
+      corporationIDs: corporationIDs.sort((left, right) => left - right),
+      freeOffices: free !== null && free >= 0 ? free : null,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Board a ship sitting in the station hangar (the retail
 // Moniker('ship',(stationID,groupStation)).Board(shipID, oldShipID)). On
 // success the newly boarded ship becomes the active ship for cargo reads.

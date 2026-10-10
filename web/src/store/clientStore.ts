@@ -85,6 +85,7 @@ import type {
   SurveyResult,
   ReprocessingQuote,
   StationGuest,
+  StationOffices,
   StationServiceBits,
   StationStatic,
   CustomBotState,
@@ -133,6 +134,8 @@ export interface StationSlice {
   /** Access-scoped, online structure services; null means unreadable. */
   readonly structureServiceIDs: readonly number[] | null;
   readonly guests: readonly StationGuest[];
+  /** The lobby's offices here; null until the player has them listed, and again in another station. */
+  readonly offices: StationOffices | null;
   /** null until map.GetStationInfo answered; then whether it was the cached envelope. */
   readonly stationInfoCached: boolean | null;
   /** Non-null when the last docked-read refresh had a (non-fatal) failure. */
@@ -210,6 +213,7 @@ const INITIAL_STATION: StationSlice = Object.freeze({
   bits: null,
   structureServiceIDs: null,
   guests: Object.freeze([]) as readonly StationGuest[],
+  offices: null,
   stationInfoCached: null,
   readError: null,
 });
@@ -1122,6 +1126,7 @@ export function createClientStore(): ClientStore {
           bits: null,
           structureServiceIDs: null,
           guests: [],
+          offices: null,
           stationInfoCached: null,
           readError: null,
         });
@@ -1135,6 +1140,9 @@ export function createClientStore(): ClientStore {
         break;
       case "station/guests":
         station.set({ ...station.get(), guests: [...event.guests] });
+        break;
+      case "station/offices":
+        station.set({ ...station.get(), offices: { ...event.offices, corporationIDs: [...event.offices.corporationIDs] } });
         break;
       case "station/info-cached":
         station.set({ ...station.get(), stationInfoCached: event.cached });

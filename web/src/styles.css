@@ -8465,6 +8465,16 @@
   }
   .stn-services[hidden] { display: none; }
   .stn-services-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  /* The lobby's offices: the corporations with an office here, one to a line,
+   * on the same rule the guest rows sit on. */
+  .stn-offices-head { margin-top: 10px; }
+  .stn-offices { list-style: none; margin: 0; padding: 0; }
+  .stn-offices li {
+    padding: 0.35rem 0.7rem 0.35rem 0;
+    border-bottom: 1px solid var(--color-row-line);
+    color: var(--color-cell);
+    overflow-wrap: anywhere;
+  }
   .stn-section {
     margin: 4px 0 0;
     font-family: var(--font-display);

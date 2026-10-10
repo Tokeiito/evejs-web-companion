@@ -63,6 +63,9 @@ const CRATE_ID = 9988400092050;
 const CRATE_TYPE = 3465;
 const GUEST_ID = 90000002;
 const GUEST_CORP = 1000002;
+// Two players' corporations with an office in the station, the later ID first by name.
+const OFFICE_CORP_ELYSIAN = 98000000;
+const OFFICE_CORP_ABLE = 98000003;
 
 function fakeFlow(): unknown {
   return new Proxy({}, { get: () => async () => {} });
@@ -133,6 +136,8 @@ interface Scene {
   readonly corpAvailable?: boolean;
   readonly container?: boolean;
   readonly guests?: boolean;
+  /** The lobby's offices as the store has them once listed; left out, they were never listed. */
+  readonly offices?: { readonly available: boolean; readonly corporationIDs: readonly number[]; readonly freeOffices: number | null };
   readonly names?: boolean;
   readonly actionError?: string;
   readonly hangarError?: string;
@@ -178,6 +183,9 @@ function panel(options: Scene = {}): string {
         { characterID: GUEST_ID, corporationID: GUEST_CORP, allianceID: null, warFactionID: null },
       ],
     } as never);
+  }
+  if (options.offices) {
+    store.apply({ type: "station/offices", offices: options.offices } as never);
   }
   if (options.loaded !== false) {
     store.apply({
@@ -248,6 +256,8 @@ function panel(options: Scene = {}): string {
         "owner:1000035": "Caldari Navy",
         [`character:${GUEST_ID}`]: "Another Pilot",
         [`corporation:${GUEST_CORP}`]: "Some Corporation",
+        [`corporation:${OFFICE_CORP_ELYSIAN}`]: "Elysian Industries",
+        [`corporation:${OFFICE_CORP_ABLE}`]: "able Works",
       },
     } as never);
   }
@@ -785,4 +795,63 @@ test("R8: the tap target is the ROW, which is how this panel resolves the 40px r
   //
   // So what is pinned is the thing that actually carries the rule: the row.
   assert.match(CSS, /\.stn-row \{[\s\S]{0,200}min-height: 46px/);
+});
+
+// ── the lobby's offices ─────────────────────────────────────────────────────
+//
+// dockedUI/offices.py: the corporations with an office in the station by name, under how many offices are free.
+// The page lists them when the player asks: until then the block says so, and is no list of none.
+
+/** The words of the services view from its Offices heading on. */
+function officesBlock(body: string): string {
+  const services = locationView(body, "services");
+  const start = services.indexOf("stn-offices-head");
+  assert.notEqual(start, -1, "the services view has no Offices block");
+  return visibleText(services.slice(start)).replace(/\s+/g, " ").trim();
+}
+
+test("⚠ offices never listed are not a station with none: the block says they are not listed yet", () => {
+  const block = officesBlock(panel());
+  assert.match(block, /Offices/);
+  assert.match(block, /Not listed yet/);
+  assert.doesNotMatch(block, /No corporation has an office here|rented|free/);
+  // The way to list them is a real button, named for what it does.
+  assert.match(locationView(panel(), "services"), /<button[^>]*aria-label="List the offices in this station"/);
+});
+
+test("the corporations with an office are listed by name, under how many are rented and how many are free", () => {
+  const body = panel({ offices: { available: true, corporationIDs: [OFFICE_CORP_ELYSIAN, OFFICE_CORP_ABLE], freeOffices: 17 } });
+  const block = officesBlock(body);
+  assert.match(block, /2 rented · 17 free/);
+  // By name without regard to case, as the lobby sorts them: "able Works" before "Elysian Industries".
+  assert.ok(block.indexOf("able Works") !== -1 && block.indexOf("able Works") < block.indexOf("Elysian Industries"), block);
+  assert.doesNotMatch(block, /Not listed yet|No corporation has an office here/);
+  // No corporation's number is on the page.
+  assert.doesNotMatch(block, /98000000|98000003/);
+  // Each is a list item of its own.
+  assert.equal((locationView(body, "services").match(/<li[^>]*>[^<]*(able Works|Elysian Industries)/g) || []).length, 2);
+});
+
+test("⚠ a station with no office rented says so, and where there is no count of free offices none is shown", () => {
+  const none = officesBlock(panel({ offices: { available: true, corporationIDs: [], freeOffices: 24 } }));
+  assert.match(none, /0 rented · 24 free/);
+  assert.match(none, /No corporation has an office here/);
+  // A structure's lobby has no count: nothing is said of free offices, and no nought is made up.
+  const noCount = officesBlock(panel({ offices: { available: true, corporationIDs: [OFFICE_CORP_ELYSIAN], freeOffices: null } }));
+  assert.match(noCount, /1 rented/);
+  assert.doesNotMatch(noCount, /free|null|undefined/);
+  // None free is a count like any other.
+  assert.match(officesBlock(panel({ offices: { available: true, corporationIDs: [OFFICE_CORP_ELYSIAN], freeOffices: 0 } })), /1 rented · 0 free/);
+});
+
+test("⚠ a pilot whose connection does not carry the read is told so, and shown no count and no empty station", () => {
+  const block = officesBlock(panel({ offices: { available: false, corporationIDs: [], freeOffices: null } }));
+  assert.match(block, /does not carry a station's offices/);
+  assert.doesNotMatch(block, /rented|free|No corporation has an office here|Not listed yet/);
+});
+
+test("a corporation whose name is not known yet is a dash, never its number", () => {
+  const block = officesBlock(panel({ names: false, offices: { available: true, corporationIDs: [OFFICE_CORP_ELYSIAN], freeOffices: 3 } }));
+  assert.match(block, /1 rented · 3 free/);
+  assert.doesNotMatch(block, /98000000/);
 });

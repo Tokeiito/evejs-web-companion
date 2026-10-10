@@ -83,6 +83,18 @@ export interface StationServiceBits {
   readonly stationTypeID: number | null;
 }
 
+/**
+ * The lobby's offices where the pilot is docked (dockedUI/offices.py): the
+ * corporations with an office there, and how many offices are free.
+ */
+export interface StationOffices {
+  /** False where the pilot's transport does not carry the read. */
+  readonly available: boolean;
+  readonly corporationIDs: readonly number[];
+  /** Null where there is no count: a structure has none. */
+  readonly freeOffices: number | null;
+}
+
 /** One docked guest from station.GetGuests: (charID, corp, alliance, warFaction). */
 export interface StationGuest {
   readonly characterID: number;

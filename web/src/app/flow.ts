@@ -681,6 +681,8 @@ export interface AppFlow {
   trashItems(itemIDs: readonly number[], place: InventoryPlace): Promise<void>;
   /** Read the corporation hangar at the docked station. */
   loadCorpHangar(): Promise<void>;
+  /** The lobby's offices where the pilot is docked, listed when the player asks for them. */
+  loadStationOffices(): Promise<void>;
   /**
    * WHERE the corporation has offices, and what its divisions are called —
    * answered for every station at once, from wherever the ship is. The Bot
@@ -2064,6 +2066,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (args[0] === store.station.get().online?.corporationID && store.get().inventory.corp.loaded) {
         void loadCorpHangar().catch(() => {});
       }
+      // dockedUI/offices.py: the lobby's offices are listed again, whoever's
+      // the office is, once they have been listed at all.
+      if (store.station.get().offices !== null && !listingStationOffices) {
+        void loadStationOffices().catch(() => {});
+      }
       return;
     }
     if (method !== null && fleetSnapshotNotifications.has(method)) {
@@ -2742,6 +2749,28 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // from the builder because one read timed out would look like the
       // feature breaking.
       return { stationIDs: [], divisions: [], error: errorWords(error) };
+    }
+  }
+
+  // dockedUI/offices.py: the lobby lists the station's offices when its
+  // Offices tab is shown, and again at each office rented or given up. The
+  // page lists them when the player asks, and from then on at each notice. A
+  // read that answers after the pilot has gone elsewhere is not shown.
+  // The server says an office changed twice over, to the station and to the
+  // corporation, and the client's panel does not load again while it is
+  // loading (offices.py, _load): `listingStationOffices` is that.
+  let listingStationOffices = false;
+  async function loadStationOffices(): Promise<void> {
+    const where = () => store.station.get().online?.stationID ?? store.station.get().online?.structureID ?? null;
+    const askedAt = where();
+    listingStationOffices = true;
+    try {
+      const offices = await api.loadStationOffices(callOptions);
+      if (where() === askedAt) {
+        store.apply({ type: "station/offices", offices });
+      }
+    } finally {
+      listingStationOffices = false;
     }
   }
 
@@ -13510,6 +13539,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     loadCorpHangar,
+    loadStationOffices,
     loadCorpOffices,
 
     selectCorpDivision(division) {

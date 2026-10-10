@@ -256,6 +256,13 @@
     return resolvedName($names.resolved, kind, id, "—");
   }
 
+  /** The corporations with an office here, by name, as the retail lobby lists them. */
+  const officeRows = $derived(
+    ($station.offices?.corporationIDs ?? [])
+      .map((corporationID) => ({ corporationID, name: nameOnly(corporationID, "corporation") }))
+      .sort((left, right) => left.name.localeCompare(right.name) || left.corporationID - right.corporationID),
+  );
+
   function typeName(typeID: number | null): string {
     if (typeID === null || typeID <= 0) {
       return "your ship";
@@ -296,6 +303,9 @@
       refs.push({ kind: "character", id: guest.characterID });
       if (guest.corporationID) refs.push({ kind: "corporation", id: guest.corporationID });
       if (guest.allianceID) refs.push({ kind: "alliance", id: guest.allianceID });
+    }
+    for (const corporationID of $station.offices?.corporationIDs ?? []) {
+      refs.push({ kind: "corporation", id: corporationID });
     }
     if (refs.length > 0) {
       flow.requestNames(refs);
@@ -1646,6 +1656,39 @@
               </tbody>
             </table>
           </div>
+        {/if}
+
+        <div class="stn-group-head stn-offices-head">
+          <span class="stn-group-title">Offices</span>
+          {#if $station.offices?.available}
+            <span class="stn-group-count">
+              {$station.offices.corporationIDs.length} rented{$station.offices.freeOffices === null ? "" : ` · ${$station.offices.freeOffices} free`}
+            </span>
+          {/if}
+          <span class="stn-group-gap"></span>
+          <button
+            type="button"
+            class="stn-icon-btn"
+            title="List the offices in this station"
+            aria-label="List the offices in this station"
+            disabled={busy}
+            onclick={() => run(() => flow.loadStationOffices())}
+          >
+            <span aria-hidden="true">↻</span>
+          </button>
+        </div>
+        {#if $station.offices === null}
+          <p class="stn-note">Not listed yet. Press ↻ to list this station's offices.</p>
+        {:else if !$station.offices.available}
+          <p class="stn-note">This pilot's connection does not carry a station's offices.</p>
+        {:else if officeRows.length === 0}
+          <p class="stn-note">No corporation has an office here.</p>
+        {:else}
+          <ul class="stn-offices">
+            {#each officeRows as office (office.corporationID)}
+              <li>{office.name}</li>
+            {/each}
+          </ul>
         {/if}
       </div>
     </section>

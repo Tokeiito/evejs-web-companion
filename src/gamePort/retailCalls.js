@@ -168,8 +168,8 @@ const ownOrderRow = (context, orderID) => (context && typeof context.ownOrder ==
 const sameValues = (one, other) => one.length === other.length && one.every((value, at) => value === other[at]);
 
 const same = (source, note) => Object.freeze({ status: "same", source, note });
-/** A judge for a call the client sends with nothing. */
-const sentWithNothing = (args) => (args.length === 0 ? {} : { status: "differs", note: "The client sends nothing with this call." });
+/** A judge for a call the client sends with nothing: no argument, and no keyword. */
+const sentWithNothing = (args, kwargs) => (args.length === 0 && Object.keys(kwargs).length === 0 ? {} : { status: "differs", note: "The client sends nothing with this call." });
 const reshaped = (source, shape, note) => Object.freeze({ status: "reshaped", source, shape, note });
 const differs = (source, note) => Object.freeze({ status: "differs", source, note });
 /** Same or differs, depending on what the call carries: `judge` answers { status, note }. */
@@ -198,6 +198,9 @@ const MONIKER_SERVICES = Object.freeze({
   // eveMoniker.GetPlanetOrbitalRegistry(session.solarsystemid): Moniker('planetOrbitalRegistryBroker', solarSystemID),
   // made where it is wanted and not kept (importExportUI.py 383, infosvc.py 2066).
   planetOrbitalRegistryBroker: new Set(),
+  // officeManager.station (officeManager.py 50): Moniker('officeManager', session.stationid or session.structureid),
+  // kept while the session is there. The corporation's own offices, wherever they are, are asked by name (41).
+  officeManager: new Set(["GetMyCorporationsOffices"]),
 });
 /**
  * Monikers for something a session may not have, by what it is in the call's context: the client cannot make one
@@ -214,6 +217,11 @@ const MONIKER_NEEDS = Object.freeze({
     has: "solarSystemID",
     source: "eve/common/script/net/eveMoniker.py:219",
     note: "The client asks this on a moniker for the system its session is in space in, at a customs office. Docked it has no such system, and does not ask.",
+  }),
+  officeManager: Object.freeze({
+    has: "dockedAt",
+    source: "eve/client/script/ui/services/corporation/officeManager.py:48",
+    note: "The client asks this on a moniker for the station or structure its session is docked in. In space it has none, and does not ask.",
   }),
 });
 
@@ -245,6 +253,7 @@ const PROXY_SERVICES = Object.freeze(new Set([
  * may ask by name, so that they have no entry in the table below. Each is read against the client where the
  * transport makes it (pilots.js): cfg.eveowners' priming, for the names of players' owners.
  */
+// (The station's office object's reads are the lobby's, which the gateway never had: see GAME_PORT_ONLY_CALLS.)
 const TRANSPORT_OWN_CALLS = Object.freeze(["config.GetMultiOwnersEx"]);
 
 /**
@@ -252,7 +261,7 @@ const TRANSPORT_OWN_CALLS = Object.freeze(["config.GetMultiOwnersEx"]);
  * through the gateway they are refused. The customs office's transfer is the client's own call at an office
  * (importExportUI.py 549), and the gateway never had it.
  */
-const GAME_PORT_ONLY_CALLS = Object.freeze(["invbroker.ImportExportWithPlanet"]);
+const GAME_PORT_ONLY_CALLS = Object.freeze(["invbroker.ImportExportWithPlanet", "officeManager.GetCorporationsWithOffices", "officeManager.GetEmptyOfficeCount"]);
 
 /**
  * Calls the client makes on an object that another call answered, where no moniker is: the system's scan manager,
@@ -1003,6 +1012,8 @@ const RETAIL_CALLS = Object.freeze({
   "corpRegistry.GetEveOwners": same(`${CORP_SVC}/bco_members.py:136`, "GetCorpRegistry().GetEveOwners(), no arguments, on the corporation's moniker: asked when the session's corporation changes, for its members' names"),
   "corpRegistry.GetMyApplications": same(`${CORP_SVC}/bco_applications.py:72`, "GetCorpRegistry().GetMyApplications(), no arguments, on the corporation's moniker: asked once by the client, which keeps the list and works it over at each OnCorporationApplicationChanged"),
   "corpRegistry.GetCorporation": same(`${CORP_SVC}/bco_corporations.py:49`, "GetCorpRegistry().GetCorporation(), no arguments, on the corporation's moniker"),
+  "officeManager.GetCorporationsWithOffices": judged(`${CORP_SVC}/officeManager.py:34`, sentWithNothing, "Moniker('officeManager', stationID).GetCorporationsWithOffices(), no arguments, while it has none for where the session is docked; let go at any OnOfficeRentalChange (71) and out of the station or structure (58, 66); the transport keeps it so (pilots.js, stationOffices). Recorded on Tranquility after an office was rented and after one was given up."),
+  "officeManager.GetEmptyOfficeCount": judged(`${CORP_SVC}/officeManager.py:136`, sentWithNothing, "Moniker('officeManager', stationID).GetEmptyOfficeCount(), no arguments, each time the lobby's offices are listed; not asked in a structure (133). Recorded on Tranquility beside the corporations with offices."),
   "officeManager.GetMyCorporationsOffices": same(`${CORP_SVC}/officeManager.py:41`, "RemoteSvc('officeManager').GetMyCorporationsOffices(), no arguments, while it has none; let go at OnOfficeRentalChange of the session's corporation (72) and in another corporation (62); the transport keeps it so (pilots.js, KEPT_UNTIL_CHANGED)"),
   "dogmaIM.LaunchProbes": same(`${SCAN_SVC}:494`, "LaunchProbes(moduleID, numProbes)"),
   "ship.Undock": needing(reshaped(`${STATION_SVC}:498`, undocking, "GetShipAccess().Undock(shipID, ignoreContraband, onlineModules={flagID: moduleID}), on the ship object bound for the station"), "dogma"),

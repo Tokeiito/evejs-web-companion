@@ -6319,10 +6319,10 @@ test("the offices a pilot's corporation rents are asked for once and kept, as th
   await pilots.callMethod("someService", "GetMyCorporationsOffices", [], null, FIELDS, handle);
   await pilots.callMethod("someService", "GetMyCorporationsOffices", [], null, FIELDS, handle);
   assert.equal(session.calls.filter((call) => call.service === "someService").length, 2);
-  // And another read of the office manager's is asked each time.
+  // And another read of the office manager's is asked each time, of the station's own object.
   await pilots.callMethod("officeManager", "GetSomethingElse", [], null, FIELDS, handle);
   await pilots.callMethod("officeManager", "GetSomethingElse", [], null, FIELDS, handle);
-  assert.equal(session.calls.filter((call) => call.method === "GetSomethingElse").length, 2);
+  assert.equal(session.boundCalls.filter((call) => call.method === "GetSomethingElse").length, 2);
 });
 
 test("the offices kept are forgotten when the pilot's own corporation rents an office or gives one up, and in another corporation", async () => {
@@ -6392,4 +6392,109 @@ test("an answer on its way when an office changes is handed on and not kept, and
   await rejects(offices(), "CALL_REFUSED");
   refuse = false;
   assert.deepEqual([await offices(), await offices(), times], [4, 4, 4]);
+});
+
+// ── the offices of the station a pilot is docked in ─────────────────────────
+
+const WITH_OFFICES = "officeManager.GetCorporationsWithOffices";
+const FREE_OFFICES = "officeManager.GetEmptyOfficeCount";
+const STATION_OFFICE_PAIRS = { allowed: new Set([OFFICES, WITH_OFFICES, FREE_OFFICES, "station.GetGuests"]) };
+const OFFICE_MANAGER_SOURCE = "eve/client/script/ui/services/corporation/officeManager.py";
+/** A docked pilot whose station's office object answers the corporations with offices, with the count of times it was asked, and eight offices free. */
+async function inAStationWithOffices(sessionOptions = {}) {
+  const asked = { corporations: 0, free: 0 };
+  const chosen = await selected({ corpid: OWN_CORPORATION, ...sessionOptions, answers: {
+    "bound:GetCorporationsWithOffices": () => { asked.corporations += 1; return { type: "list", items: [1000035, asked.corporations] }; },
+    "bound:GetEmptyOfficeCount": () => { asked.free += 1; return 8; },
+    [OFFICES]: () => ({ type: "list", items: [] }),
+  } }, STATION_OFFICE_PAIRS);
+  const ask = async (method, args = [], kwargs = null) => (await chosen.pilots.callMethod("officeManager", method, args, kwargs, FIELDS, chosen.handle)).result;
+  const corporations = async () => (await ask("GetCorporationsWithOffices")).items[1];
+  /** The binds of the station's office object, and the calls made on what they bound. */
+  const binds = () => chosen.session.binds.filter((bind) => bind.service === "officeManager").map((bind) => bind.params);
+  const onObjects = () => chosen.session.boundCalls.filter((call) => /Office/.test(call.method)).map((call) => [call.objectID, call.method, call.args, call.kwargs]);
+  return { ...chosen, asked, ask, corporations, binds, onObjects };
+}
+
+test("the corporations with offices in a station are asked of the station's own object, bound by the station, and kept", async () => {
+  const { pilots, session, asked, ask, corporations, binds, onObjects } = await inAStationWithOffices();
+  // officeManager.offices (officeManager.py 34): Moniker('officeManager', stationID), and asked while there is none.
+  assert.deepEqual([await corporations(), await corporations(), await corporations()], [1, 1, 1]);
+  assert.deepEqual(binds(), [STATION]);
+  const [[object]] = onObjects();
+  assert.deepEqual(onObjects(), [[object, "GetCorporationsWithOffices", [], null]]);
+  // The first call rode the bind.
+  assert.equal(session.carried.at(-1), "GetCorporationsWithOffices");
+  assert.deepEqual(ledgerOf(pilots, WITH_OFFICES), [{ reshaped: 1 }, `${OFFICE_MANAGER_SOURCE}:34`]);
+  // The count of offices free is asked each time, on the same object (officeManager.py 136).
+  assert.deepEqual([await ask("GetEmptyOfficeCount"), await ask("GetEmptyOfficeCount"), asked.free], [8, 8, 2]);
+  assert.deepEqual([binds(), onObjects().slice(1)], [[STATION], [[object, "GetEmptyOfficeCount", [], null], [object, "GetEmptyOfficeCount", [], null]]]);
+  assert.deepEqual(ledgerOf(pilots, FREE_OFFICES), [{ reshaped: 2 }, `${OFFICE_MANAGER_SOURCE}:136`]);
+  // The corporation's own offices are asked of the service by its name all the same (officeManager.py 41).
+  await ask("GetMyCorporationsOffices");
+  assert.deepEqual([session.calls.filter((call) => call.service === "officeManager").map((call) => call.method), binds()], [["GetMyCorporationsOffices"], [STATION]]);
+  // Two at once that find nothing kept ask once.
+  session.notify("OnOfficeRentalChange", [OWN_CORPORATION + 5, 7]);
+  assert.deepEqual([await Promise.all([corporations(), corporations()]), asked.corporations], [[2, 2], 2]);
+});
+
+test("the station's corporations kept are let go at any office rented or given up there, and out of the station", async () => {
+  const { session, asked, corporations, binds } = await inAStationWithOffices();
+  assert.equal(await corporations(), 1);
+  const forgets = async (what, change) => {
+    const before = asked.corporations;
+    await change();
+    assert.deepEqual([await corporations(), await corporations(), asked.corporations], [before + 1, before + 1, before + 1], what);
+  };
+  const keeps = async (what, change) => {
+    const before = asked.corporations;
+    await change();
+    assert.deepEqual([await corporations(), asked.corporations], [before, before], what);
+  };
+  // officeManager.OnOfficeRentalChange (71): the station's offices are let go whoever's the office is.
+  await forgets("another corporation's office", () => session.notify("OnOfficeRentalChange", [OWN_CORPORATION + 5, 7]));
+  await forgets("its own corporation's office", () => session.notify("OnOfficeRentalChange", [OWN_CORPORATION, 7]));
+  await keeps("another notice", () => { session.notify("OnOfficeSomethingElse", [OWN_CORPORATION, 7]); session.notify("OnNewCalendarEvent", [1]); });
+  // Another corporation is not another station.
+  await keeps("another corporation", async () => { session.attributes.corpid = OWN_CORPORATION + 1; session.change({ corpid: [OWN_CORPORATION, OWN_CORPORATION + 1] }); await settled(); });
+  assert.deepEqual(binds(), [STATION]);
+  // officeManager.DoSessionChanging and OnSessionChanged (58, 66): another station, another moniker and another list.
+  await forgets("another station", async () => { session.attributes.stationid = 60000004; session.change({ stationid: [STATION, 60000004] }); await settled(); });
+  assert.deepEqual(binds(), [STATION, 60000004]);
+  // Docked in a structure, the moniker is the structure's (48: session.stationid or session.structureid).
+  await forgets("a structure", async () => {
+    Object.assign(session.attributes, { stationid: null, structureid: 1052851966475n });
+    session.change({ stationid: [60000004, null], structureid: [null, 1052851966475n] });
+    await settled();
+  });
+  assert.deepEqual(binds(), [STATION, 60000004, 1052851966475]);
+  // From one structure to another the session's station does not change, and the offices are another's all the same.
+  await forgets("another structure", async () => {
+    session.attributes.structureid = 1052851966476n;
+    session.change({ structureid: [1052851966475n, 1052851966476n] });
+    await settled();
+  });
+  assert.deepEqual(binds(), [STATION, 60000004, 1052851966475, 1052851966476]);
+});
+
+test("in space the station's office object is not the client's to ask, and an asking with something beside it is sent each time", async () => {
+  const { pilots, session, asked, ask, corporations, binds } = await inAStationWithOffices();
+  // With something beside it the asking is no call of the client's: sent on the object each time, and nothing kept of it.
+  await ask("GetCorporationsWithOffices", [STATION]);
+  await ask("GetCorporationsWithOffices", [STATION]);
+  assert.deepEqual([asked.corporations, await corporations(), await corporations(), asked.corporations], [2, 3, 3, 3]);
+  assert.deepEqual(ledgerOf(pilots, WITH_OFFICES)[0], { differs: 2, reshaped: 1 });
+  // And so is one with a keyword beside it.
+  await ask("GetCorporationsWithOffices", [], { all: true });
+  await ask("GetCorporationsWithOffices", [], { all: true });
+  assert.deepEqual([asked.corporations, await corporations()], [5, 3]);
+  assert.deepEqual(ledgerOf(pilots, WITH_OFFICES)[0], { differs: 4, reshaped: 1 });
+  // Undocked: the client's office manager has no station, and asks nothing (33). What is asked all the same goes by the service's name.
+  session.attributes.stationid = null;
+  session.change({ stationid: [STATION, null] });
+  await settled();
+  await ask("GetCorporationsWithOffices");
+  await ask("GetCorporationsWithOffices");
+  assert.deepEqual([binds(), session.calls.filter((call) => call.method === "GetCorporationsWithOffices").length], [[STATION], 2]);
+  assert.equal(ledgerOf(pilots, WITH_OFFICES)[0]["web-only"], 2);
 });

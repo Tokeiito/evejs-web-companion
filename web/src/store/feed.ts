@@ -78,6 +78,7 @@ import type {
   GateLink,
   SpaceSnapshot,
   StationGuest,
+  StationOffices,
   StationServiceBits,
   StationStatic,
   MiningBotRunState,
@@ -153,6 +154,8 @@ export type FeedEvent =
   | { readonly type: "station/bits"; readonly bits: StationServiceBits }
   | { readonly type: "station/structure-services"; readonly serviceIDs: readonly number[] | null }
   | { readonly type: "station/guests"; readonly guests: readonly StationGuest[] }
+  // The lobby's offices, once the player has asked for them listed.
+  | { readonly type: "station/offices"; readonly offices: StationOffices }
   // map.GetStationInfo answered with its retail CachedMethodCallResult
   // envelope (the rowset itself rides the retail object cache).
   | { readonly type: "station/info-cached"; readonly cached: boolean }
