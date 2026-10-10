@@ -46,10 +46,25 @@
 # and waiting out half an hour, or saying so and being asked again, is a far
 # cheaper mistake than the one above.
 
+#
+# ⚠ AND THE FLIGHT RECORDER ONLY KNOWS THE HOSTED BOTS. A companion flown from
+# the page, or any pilot signed in through the bridge, writes no bot log: its
+# decisions run in the browser, and the BFF only holds its game session. So the
+# recorder alone answered "nobody is flying" in the middle of a fleet fight, and
+# on 2026-10-10 20:47 rebuild-when-stale.sh recreated the BFF under three
+# companions in combat. The second test below is that pilot: one the BFF holds a
+# session for (data/bridge-sessions.json) that the server has sampled IN SPACE
+# in the last minute. The sample is the skillWhileDoing heartbeat, one line per
+# piloted ship in space every 10 s; a docked pilot's line names its station
+# instead, so a fleet that has docked can be rebuilt under. The journal keeps
+# released sessions too until the BFF next starts, which costs nothing here: a
+# released pilot is not sampled under that id unless it is flying anyway.
+
 set -uo pipefail
 
 command -v docker >/dev/null 2>&1 || exit 0
 
+{
 docker exec evejs-web-poc-bff-1 sh -c '
   now=$(date +%s)
   for f in /app/data/bot-logs/*.jsonl; do
@@ -63,4 +78,17 @@ docker exec evejs-web-poc-bff-1 sh -c '
       *\"status\":\"running\"*) basename "$f" .jsonl ;;
       *\"kind\":\"decide\"*|*\"kind\":\"issue\"*|*\"kind\":\"start\"*) basename "$f" .jsonl ;;
     esac
-  done' 2>/dev/null || exit 0
+  done' 2>/dev/null
+
+# The bridge's pilots, kept only where the server saw that character in space.
+# Inside `sh -c`, as above: a bare /app/... argument is rewritten into a Windows path by Git Bash.
+held="$(docker exec evejs-web-poc-bff-1 sh -c 'cat /app/data/bridge-sessions.json' 2>/dev/null \
+  | grep -o '"characterID": *[0-9]*' | grep -o '[0-9]*$' | sort -u)"
+if [ -n "$held" ]; then
+  docker logs --since 60s evejs-server-1 2>&1 \
+    | grep -o '\[skillWhileDoing\] sample char=[0-9]* scene=solar-system' \
+    | grep -o 'char=[0-9]*' | cut -d= -f2 | sort -u \
+    | grep -Fx -f <(printf '%s\n' "$held")
+fi
+} | sort -u
+exit 0
