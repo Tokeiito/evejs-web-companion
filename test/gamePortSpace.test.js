@@ -11,7 +11,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { BIND_TRIES, FRAME_MS, createPilotSpace, rebaseDelta } = require("../src/gamePort/pilotSpace");
-const { CATEGORY, checkWarpDestination, healthOf, kindOf, npcKindOf, projectEntity, projectFlight, projectSpace } = require("../src/gamePort/spaceProjection");
+const { CATEGORY, checkWarpDestination, compressionFacilityOf, healthOf, kindOf, npcKindOf, projectEntity, projectFlight, projectSpace } = require("../src/gamePort/spaceProjection");
 const { Ballpark } = require("../src/gamePort/destiny/ballpark");
 const { Park } = require("../src/gamePort/destiny/park");
 const { MODE } = require("../src/gamePort/destiny/state");
@@ -659,6 +659,59 @@ test("a ship nobody flies is the law's only if it is of the law's groups and not
   // The same, asked of the table itself.
   assert.deepEqual([npcKindOf(301), npcKindOf(301, null), npcKindOf(301, -11), npcKindOf(301, 0), npcKindOf(301, 0.5), npcKindOf(301, 11)], ["concord", "concord", "concord", "concord", "npc", "npc"]);
   assert.deepEqual([npcKindOf(550), npcKindOf(550, -11), npcKindOf(550, 11), npcKindOf(1310), npcKindOf(1310, -11), npcKindOf(null), npcKindOf(null, -11)], ["npc", "npc", "npc", "drifter", "drifter", "npc", "npc"]);
+});
+
+// ── a ship that compresses ore ───────────────────────────────────────────────
+//
+// A client is told on the ship's slim item: compression_facility_typelists, a dict of the type lists the ship
+// takes, each with the range it takes them at (itemcompression/__init__.py; inSpaceCompression.py reads it).
+// This server puts it there while the ship runs an industrial core and a compressor, and sends the slim item
+// again when either starts or stops. No recording of Tranquility has one. The values here are what a Porpoise
+// with a Medium Industrial Core I and a Medium Asteroid Ore Compressor I was given on this server (2026-10-10):
+// list 334, at 66,000 m.
+
+const dict = (pairs) => ({ type: "dict", entries: pairs });
+
+test("a ship that is compressing says how far it reaches and which lists it takes, from its slim item; no other row says so", () => {
+  const park = undockedPark();
+  const slim = (fields) => new Map(Object.entries(fields));
+  const PORPOISE = 9000000000201;
+  const flown = { itemID: BigInt(PORPOISE), typeID: 42244, groupID: 1283, categoryID: 6, ownerID: 140000009, charID: 140000009, corpID: 98000001 };
+  park.ballpark.addBall({ id: PORPOISE, isFree: true, mass: 1e6, x: 3e3, maxVelocity: 100 });
+  const facilityOf = (itemID) => projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID }).entities.find((row) => row.itemID === itemID).compressionFacility;
+
+  // Not compressing: the slim item has no such thing.
+  park.slimItems.set(PORPOISE, slim(flown));
+  assert.equal(facilityOf(PORPOISE), null);
+  // Compressing: told by a slim item sent again, as an entry of a ballpark update.
+  park._notSimulation("OnSlimItemChange", [BigInt(PORPOISE), dict(Object.entries({ ...flown, compression_facility_typelists: dict([[334, 66000]]) }))]);
+  assert.deepEqual(facilityOf(PORPOISE), { rangeMeters: 66000, typeListIDs: [334] });
+  // Two lists at two ranges: the widest, and the lists in order whatever order they came in.
+  park.slimItems.set(PORPOISE, slim({ ...flown, compression_facility_typelists: dict([[336, 20000n], [334, 66000], [335, 1]]) }));
+  assert.deepEqual(facilityOf(PORPOISE), { rangeMeters: 66000, typeListIDs: [334, 335, 336] });
+  // Stopped: the slim item comes again without it, or with nothing in it.
+  park._notSimulation("OnSlimItemChange", [BigInt(PORPOISE), dict(Object.entries(flown))]);
+  assert.equal(facilityOf(PORPOISE), null);
+  park.slimItems.set(PORPOISE, slim({ ...flown, compression_facility_typelists: dict([]) }));
+  assert.equal(facilityOf(PORPOISE), null);
+
+  // The pilot's own ship is read the same way.
+  const own = park.slimItems.get(undock.shipID);
+  assert.equal(facilityOf(undock.shipID), null);
+  own.set("compression_facility_typelists", dict([[334, 66000]]));
+  assert.deepEqual(facilityOf(undock.shipID), { rangeMeters: 66000, typeListIDs: [334] });
+  own.delete("compression_facility_typelists");
+
+  // It is a ship's and a structure's field and no other row's, as on the gateway.
+  const rows = projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID }).entities;
+  assert.deepEqual([...new Set(rows.filter((row) => "compressionFacility" in row).map((row) => row.kind))].sort(), ["ship"]);
+  assert.ok(rows.filter((row) => !("compressionFacility" in row)).length > 90);
+
+  // The reading itself: what is not a dict, or has nothing a list could be, is no facility.
+  assert.deepEqual([compressionFacilityOf(undefined), compressionFacilityOf(null), compressionFacilityOf(334), compressionFacilityOf({ type: "list", items: [[334, 66000]] }), compressionFacilityOf(dict([]))], [null, null, null, null, null]);
+  // A list with no range is listed, and the reach is none: the page takes that for no facility, as it does the gateway's.
+  assert.deepEqual(compressionFacilityOf(dict([[334, 0]])), { rangeMeters: null, typeListIDs: [334] });
+  assert.deepEqual(compressionFacilityOf(dict([[0, 66000], [334n, 20000n]])), { rangeMeters: 66000, typeListIDs: [334] });
 });
 
 test("a new system arrives in two pieces: everything fixed in it, then the gate's own grid two ticks later", () => {

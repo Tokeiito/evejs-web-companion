@@ -122,6 +122,22 @@ function healthOf(damageState, secondsSince) {
  * group would call it the law. Told this way the word is the server's own for each of its NPC profiles but a
  * Drifter Battleship's, which the server calls an NPC.
  */
+/**
+ * Whether a ship is compressing ore for those about it, and how far it reaches. A client is told on the ship's
+ * slim item: `compression_facility_typelists` (itemcompression/__init__.py), a dict of the type lists it takes,
+ * each with the range it takes them at, there while the ship runs its industrial core and a compressor
+ * (itemcompression/client/inSpaceCompression.py reads it for the pilot's own ship and for a fleet member's).
+ * The gateway's row gives the widest of the ranges and the lists; so does this.
+ */
+function compressionFacilityOf(typelists) {
+  const entries = typelists && Array.isArray(typelists.entries) ? typelists.entries : [];
+  if (entries.length === 0) return null;
+  return {
+    rangeMeters: Math.max(0, ...entries.map(([, range]) => number(range) ?? 0)) || null,
+    typeListIDs: entries.map(([typeListID]) => positive(typeListID)).filter((typeListID) => typeListID !== null).sort((a, b) => a - b),
+  };
+}
+
 /** idCheckers.IsNPC: an owner above the system's own (inventorycommon/const.py maxSystemItem) and below the players' (minPlayerOwner). */
 const MAX_SYSTEM_ITEM = 9999;
 const MIN_PLAYER_OWNER = 90000000;
@@ -179,7 +195,7 @@ function projectEntity(park, ball, slim, ego, placed) {
     // overviewWindow.py 968).
     row.isNpc = categoryID === CATEGORY.ENTITY || (categoryID === CATEGORY.SHIP && isNpcOwner(row.ownerID));
     row.npcEntityType = row.isNpc ? npcKindOf(groupID, number(slim.get("hostile_response_threshold"))) : null;
-    row.compressionFacility = null;
+    row.compressionFacility = compressionFacilityOf(slim.get("compression_facility_typelists"));
   }
   // A drone in space: which ship is flying it, whose that ship is, what it is doing, and on what. A client is
   // told these of the pilot's own drones and of those its ship controls, by the park's drone states (michelle,
@@ -321,4 +337,4 @@ function projectFlight(park) {
   return { shipMode: MODE_NAME[ball.mode] ?? null, shipSpeedFraction: ball.speedFraction };
 }
 
-module.exports = { CATEGORY, GROUP, checkWarpDestination, healthOf, kindOf, npcKindOf, projectEntity, projectFlight, projectSpace };
+module.exports = { CATEGORY, GROUP, checkWarpDestination, compressionFacilityOf, healthOf, kindOf, npcKindOf, projectEntity, projectFlight, projectSpace };
