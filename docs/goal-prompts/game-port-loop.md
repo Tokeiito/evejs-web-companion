@@ -449,6 +449,16 @@ Take these defaults, and list each under "For the operator" in the log so they c
   <characterID>` is the pattern: it imports the page's TypeScript and asks through
   `/api/bridge/call`). Reading the client for a route is where the route's own faults show:
   the wallet's divisions had the hangar's names.
+- **Size a route before it is named next.** A handler's length is not its size: the skills'
+  is eleven lines, and its answer is made by 155 more from kept reads, static data and the
+  server's clock. Read what the answer is made from, then ask each read by name through
+  `POST /api/bridge/call` as a pilot (`skills-probe.js <scratch> <bff> <account>
+  <characterID>` is the pattern): a call no list carries answers 403 `CALL_NOT_ALLOWED`, and
+  then the game port's own list (`GAME_PORT_ONLY_CALLS`) is where it goes, the gateway's
+  being `eve.js`'s. What a unit needs of the BFF first is a unit of its own.
+  `routes-survey.js <repo> [list]` counts the routes the page still names.
+- **The page's clock** is `serverNowMs` on a pilot's answer of the generic call, on the game
+  port only: the server's clock as the pilot's session has it.
 - **After a route is moved, read the game port's ledger for its calls** (`call-ledger.json` in the
   check BFF's data folder). A call the route made unchecked is still unchecked when the page
   makes it: the standings' two details were. Set it against the client's spelling in

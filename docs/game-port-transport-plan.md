@@ -759,7 +759,11 @@ pilot's ISK asked for once and then what the server's `OnAccountChange` says, th
 transactions until that word, the divisions five minutes. The standings are the second
 (`11f1592`, `web/src/bridge/standingsReads.ts`): the page asks for the two lists and, for
 a row opened, its history or its composition, as the client's standings service and panel
-do; a call the page makes for a pilot says so, and is refused where the BFF holds none. Of the phase's "done when", "no
+do; a call the page makes for a pilot says so, and is refused where the BFF holds none.
+The skills' sheet is the third and is in two parts, the first done (`c8de548`): the queue's
+read carried on the game port and answered by name from what the transport keeps, and
+the server's clock told with each of a pilot's answers. Counted then: 140 of the BFF's 473
+routes under `/api/bridge` are named by the page's code, 50 of them reads. Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.
 Of 6a's four things, three are carried by the socket or in process, each with a way back
 (the routes' operations, the pushes, the hosted bots), and the cap is lifted for what is
