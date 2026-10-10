@@ -819,7 +819,8 @@ function createGamePortPilots({
   }
 
   function assertAllowed(service, method) {
-    if (!allowed.has(`${service}.${method}`)) {
+    // (Two names, as text: what would only spell a pair on the list is not on it.)
+    if (typeof service !== "string" || typeof method !== "string" || !allowed.has(`${service}.${method}`)) {
       throw fail("CALL_NOT_ALLOWED", `${service}.${method} is not on the web-call allowlist.`);
     }
   }

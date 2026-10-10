@@ -2403,10 +2403,25 @@ export type { RawWalletReads } from "../bridge/walletReads.ts";
  * it was made at; what the page makes itself it makes from this.
  */
 export function bridgeAsk(options: ApiOptions = {}, clock?: (serverNowMs: number) => void): Ask {
+  return asking(options, clock, false);
+}
+
+/**
+ * One write of the server's, made by the generic route as `bridgeAsk` makes a
+ * read: a pilot's call, and one the page says it means (`confirm`), which is
+ * what a write's own route took as its confirmation. The BFF makes it only
+ * where it is one of the writes the page makes itself
+ * (src/bridgeCallPolicy.js); any other is refused, and has its route.
+ */
+export function bridgeDo(options: ApiOptions = {}, clock?: (serverNowMs: number) => void): Ask {
+  return asking(options, clock, true);
+}
+
+function asking(options: ApiOptions, clock: ((serverNowMs: number) => void) | undefined, write: boolean): Ask {
   return async (service, method, args) => {
     const notificationSink = options.captureNotificationSink?.();
     // (The options are read as they stand now: a flow's token is another one after another pilot is chosen.)
-    const outcome = await callMethod(service, method, args, null, { ...options, pilot: true });
+    const outcome = await callMethod(service, method, args, null, { ...options, pilot: true, ...(write ? { confirm: true } : {}) });
     if (outcome.serverNowMs !== null) clock?.(outcome.serverNowMs);
     notificationSink?.(outcome.notifications as unknown as readonly JsonValue[]);
     return outcome.result;
@@ -5330,14 +5345,9 @@ export async function getSkills(options: ApiOptions = {}): Promise<SkillsResult>
   return readSkills(await getJson("/api/bridge/skills", options));
 }
 
-/**
- * Pause training as the retail client's queue panel does (skillHandler.AbortTraining): the skill in training
- * stops and the queue stays as it is, with no start or end to any entry. Saving the queue sets it going again.
- * Whoever paused reads the sheet afterwards, as it reads it at any time (the flow's own reading).
- */
-export async function pauseSkillTraining(options: ApiOptions = {}): Promise<void> {
-  await postJson("/api/bridge/skills/abort-training", { confirm: true }, options);
-}
+// The pause of training is made by the page itself, with the client's own call
+// (bridge/skillWrites.ts; the plan's Phase 6b): the first of its writes to leave
+// its route (POST /api/bridge/skills/abort-training), on 2026-10-10.
 
 /**
  * Save the whole training queue (skillMgr.SaveNewQueue).

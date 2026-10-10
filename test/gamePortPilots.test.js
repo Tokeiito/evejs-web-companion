@@ -7327,6 +7327,20 @@ test("a home station that could not be read is not kept, and another account's s
   await assert.rejects(pilots.callMethod("home_station", "get_home_station", [], null, { userid: 9 }, handle), (error) => error.code === "SESSION_NOT_FOUND");
 });
 
+// ── what is no call ──────────────────────────────────────────────────────────
+
+test("a call whose service or method is not text is not on any list, whatever it would spell", async () => {
+  const { pilots, session, handle } = await selected({ answers: { "station.GetGuests": { type: "list", items: [] } } }, { allowed: new Set(["station.GetGuests", "skillHandler.AbortTraining"]) });
+  const before = session.calls.length + session.boundCalls.length;
+  for (const [service, method] of [[["station"], "GetGuests"], ["station", ["GetGuests"]], [["skillHandler"], "AbortTraining"], [{ toString: () => "station" }, "GetGuests"], [null, "GetGuests"], ["station", undefined]]) {
+    await rejects(pilots.callMethod(service, method, [], null, FIELDS, handle), "CALL_NOT_ALLOWED");
+    await rejects(pilots.bindObject(service, method, [], null, FIELDS, handle), "CALL_NOT_ALLOWED");
+  }
+  assert.equal(session.calls.length + session.boundCalls.length, before);
+  // Two names on the list are a call.
+  assert.equal((await pilots.callMethod("station", "GetGuests", [], null, FIELDS, handle)).service, "station");
+});
+
 // ── the journal, asked for by name ───────────────────────────────────────────
 //
 // The page reads the journal by asking for it itself (web/src/bridge/journalReads.ts). Every window of the

@@ -133,6 +133,26 @@ function isBridgeWritePair(service, method) {
   );
 }
 
+/**
+ * The writes the page makes for its pilot by the generic call, where each had a route of its own (the plan's
+ * Phase 6b). A retail client makes its writes as it makes its reads: by the call. A write comes onto this list
+ * when its route has been read for what it did besides the call, and each such thing is either the page's to
+ * do now or was nothing but the confirmation, which the page still gives (`confirm` on the call). A write that
+ * is not on it is made by its route alone, as before.
+ *
+ *   skillHandler.AbortTraining   the queue panel's Pause. Its route confirmed and called, with nothing.
+ */
+const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining"]);
+const pageWritePairKeySet = new Set(PAGE_WRITE_PAIR_KEYS);
+for (const pair of PAGE_WRITE_PAIR_KEYS) {
+  if (!bridgeWritePairKeySet.has(pair)) throw new Error(`${pair} is among the page's writes and is no write.`);
+}
+
+/** Whether the page makes this write itself, by the generic call. */
+function isPageWritePair(service, method) {
+  return typeof service === "string" && typeof method === "string" && pageWritePairKeySet.has(`${service}.${method}`);
+}
+
 // Presentation preference only. Identity, authority, character, corporation,
 // role, ship and location fields are all created or retained server-side.
 const SAFE_BROWSER_SESSION_FIELDS = Object.freeze([
@@ -165,9 +185,11 @@ module.exports = {
   EARLIER_WRITE_PAIR_KEYS,
   FEATURE_WRITE_METHODS,
   FEATURE_WRITE_PAIR_KEYS,
+  PAGE_WRITE_PAIR_KEYS,
   PLUMBING_SWEEP_WRITE_METHODS,
   PLUMBING_SWEEP_WRITE_PAIR_KEYS,
   SAFE_BROWSER_SESSION_FIELDS,
   isBridgeWritePair,
+  isPageWritePair,
   pickSafeBrowserSessionFields,
 };

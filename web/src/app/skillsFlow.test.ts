@@ -214,10 +214,11 @@ test("pausing asks the server to stop the skill in training and re-reads: the qu
   const store = createClientStore();
   const queue = [{ typeID: GUNNERY, toLevel: 5 }, { typeID: SURGICAL, toLevel: 1 }];
   let paused = false;
-  const { fetch, requests } = makeFakeFetch((path, method) => {
-    if (path === "/api/bridge/skills/abort-training" && method === "POST") {
+  const { fetch, requests } = makeFakeFetch((path, method, body) => {
+    // The pause is the page's own call, a write it says it means (bridge/skillWrites.ts).
+    if (path === "/api/bridge/call" && body.service === "skillHandler" && body.method === "AbortTraining") {
       paused = true;
-      return { status: 200, body: { ok: true, applied: true, result: null, notifications: [] } };
+      return { status: 200, body: { ok: true, service: "skillHandler", method: "AbortTraining", result: null, notifications: [] } };
     }
     if (path === "/api/bridge/skills/queue" && method === "POST") paused = false;
     return { status: 200, body: sheetBody(queue, undefined, paused) };
@@ -227,12 +228,13 @@ test("pausing asks the server to stop the skill in training and re-reads: the qu
   requests.length = 0;
 
   await flow.pauseSkillTraining();
-  // The retail client's pause: one call that stops the skill in training, confirmed, and the sheet read again.
+  // The retail client's pause: one call that stops the skill in training, and the sheet read again. The call is
+  // the handler's own, with nothing, made as a pilot's and as a write the page means; its route is not asked.
   assert.deepEqual(requests.map((request) => [request.method, request.path]), [
-    ["POST", "/api/bridge/skills/abort-training"],
+    ["POST", "/api/bridge/call"],
     ["GET", "/api/bridge/skills"],
   ]);
-  assert.deepEqual(requests[0]!.body, { confirm: true });
+  assert.deepEqual(requests[0]!.body, { service: "skillHandler", method: "AbortTraining", args: [], kwargs: null, pilot: true, confirm: true });
   // What is on screen is the server's: every skill still queued, none of them training, no end in sight.
   const kept = store.get().skills.queue!;
   assert.deepEqual([kept.active, kept.endTimeMs, kept.entries.map((entry) => [entry.typeID, entry.toLevel, entry.startTimeMs, entry.endTimeMs])], [
@@ -250,7 +252,7 @@ test("pausing asks the server to stop the skill in training and re-reads: the qu
 test("a pause the server will not make says so, and re-reads so nothing looks paused", async () => {
   const store = createClientStore();
   const queue = [{ typeID: GUNNERY, toLevel: 5 }];
-  const { fetch, requests } = makeFakeFetch((path, method) => (path === "/api/bridge/skills/abort-training" && method === "POST"
+  const { fetch, requests } = makeFakeFetch((path, method, body) => (path === "/api/bridge/call" && body.method === "AbortTraining"
     ? { status: 409, body: { ok: false, error: "CALL_REFUSED", message: "NotNow" } }
     : { status: 200, body: sheetBody(queue) }));
   const flow = createAppFlow(store, { fetch });
@@ -258,7 +260,7 @@ test("a pause the server will not make says so, and re-reads so nothing looks pa
   requests.length = 0;
   await flow.pauseSkillTraining();
   assert.match(store.get().skills.actionError ?? "", /could not be paused/);
-  assert.deepEqual([requests.map((request) => request.path), store.get().skills.queue?.active], [["/api/bridge/skills/abort-training", "/api/bridge/skills"], true]);
+  assert.deepEqual([requests.map((request) => request.path), store.get().skills.queue?.active], [["/api/bridge/call", "/api/bridge/skills"], true]);
 });
 
 test("what lands in the store is the RE-READ sheet, not the edit we asked for", async () => {
@@ -400,6 +402,11 @@ function pilotBff(state: PilotBff): { fetch: typeof fetch; asked: () => string[]
     if (path === "/api/bridge/call" && body.service === "skillHandler") {
       const failure = state.fails[String(body.method)];
       if (failure) return { status: failure[0], body: { ok: false, error: failure[1], message: `${String(body.method)} failed.` } };
+      // The pause: the handler's own call, which either transport carries.
+      if (body.method === "AbortTraining") {
+        state.paused = true;
+        return { status: 200, body: { ok: true, service: body.service, method: body.method, result: null, notifications: [] } };
+      }
       const queue = (state.queue ?? []).map((entry) => (state.paused ? queueEntry(AFTERBURNER, 4, null, null) : entry));
       const answers: Record<string, unknown> = {
         GetSkillQueueAndFreePoints: [{ type: "list", items: queue }, 0],
@@ -418,10 +425,6 @@ function pilotBff(state: PilotBff): { fetch: typeof fetch; asked: () => string[]
       return { status: 200, body: { ok: true, names: Object.fromEntries((body.items as { kind: string; id: number }[]).map((item) => [`${item.kind}:${item.id}`, names[`${item.kind}:${item.id}`] ?? null])), unresolved: [] } };
     }
     if (path === "/api/types/dogma") return { status: 200, body: { ok: true, attributes: { [AFTERBURNER]: { 180: 166, 181: 164 } } } };
-    if (path === "/api/bridge/skills/abort-training" && method === "POST") {
-      state.paused = true;
-      return { status: 200, body: { ok: true, applied: true, result: null, notifications: [] } };
-    }
     if (path === "/api/bridge/skills") return { status: 200, body: sheetBody([{ typeID: GUNNERY, toLevel: 5 }]) };
     // (What else a choosing asks by the generic call is answered with nothing.)
     if (path === "/api/bridge/call") return { status: 200, body: { ok: true, service: body.service, method: body.method, result: null, notifications: [] } };
@@ -535,9 +538,11 @@ test("a pause re-reads the sheet as it is read at any time: by the page's own re
   requests.length = 0;
 
   await flow.pauseSkillTraining();
-  assert.deepEqual(requests.filter((request) => request.path.startsWith("/api/bridge/skills")).map((request) => [request.method, request.path, request.body]), [["POST", "/api/bridge/skills/abort-training", { confirm: true }]]);
-  // Nothing is in training now, so the attributes are not asked for.
-  assert.deepEqual(asked().filter((what) => !what.includes("abort")), ["GetSkillQueueAndFreePoints", "GetSkills", "GetAllSkills", "GetFreeSkillPoints"]);
+  // The pause by the page's own call, and no route of the skills' asked at all.
+  assert.deepEqual(requests.filter((request) => request.path.startsWith("/api/bridge/skills")).map((request) => [request.method, request.path]), []);
+  assert.deepEqual(requests.find((request) => request.body.method === "AbortTraining")?.body, { service: "skillHandler", method: "AbortTraining", args: [], kwargs: null, pilot: true, confirm: true });
+  // Then the sheet's reads. Nothing is in training now, so the attributes are not asked for.
+  assert.deepEqual(asked(), ["AbortTraining", "GetSkillQueueAndFreePoints", "GetSkills", "GetAllSkills", "GetFreeSkillPoints"]);
   const kept = store.get().skills.queue!;
   assert.deepEqual([kept.active, kept.endTimeMs, kept.entries.map((entry) => [entry.typeID, entry.toLevel, entry.startTimeMs, entry.endTimeMs]), store.get().skills.lastAction], [false, null, [[AFTERBURNER, 4, null, null]], "Paused training"]);
 
@@ -548,6 +553,6 @@ test("a pause re-reads the sheet as it is read at any time: by the page's own re
   await gatewayFlow.selectCharacter(140000002);
   gateway.requests.length = 0;
   await gatewayFlow.pauseSkillTraining();
-  assert.deepEqual(gateway.asked(), ["POST /api/bridge/skills/abort-training", "GetSkillQueueAndFreePoints", "GET /api/bridge/skills"]);
+  assert.deepEqual(gateway.asked(), ["AbortTraining", "GetSkillQueueAndFreePoints", "GET /api/bridge/skills"]);
   assert.equal(gatewayStore.get().skills.lastAction, "Paused training");
 });

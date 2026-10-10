@@ -205,3 +205,15 @@ test("an answer that says the server's clock has it handed on, and one that does
     assert.equal((await callMethod("skillHandler", "GetSkills", [], null, { fetch: answering(more) })).serverNowMs, null, JSON.stringify(more));
   }
 });
+
+test("a write the page means says so, and no other call does", async () => {
+  const { fetch, requests } = stubFetch(() => jsonResponse({ ok: true, service: "skillHandler", method: "AbortTraining", result: null, notifications: [] }));
+  await callMethod("skillHandler", "AbortTraining", [], null, { fetch, pilot: true, confirm: true });
+  await callMethod("skillHandler", "AbortTraining", [], null, { fetch, pilot: true, confirm: false });
+  await callMethod("skillHandler", "AbortTraining", [], null, { fetch, pilot: true });
+  assert.deepEqual(requests.map((request) => request.body), [
+    { service: "skillHandler", method: "AbortTraining", args: [], kwargs: null, pilot: true, confirm: true },
+    { service: "skillHandler", method: "AbortTraining", args: [], kwargs: null, pilot: true },
+    { service: "skillHandler", method: "AbortTraining", args: [], kwargs: null, pilot: true },
+  ]);
+});

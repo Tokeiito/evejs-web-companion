@@ -91,3 +91,24 @@ test("browser session projection retains only explicit language preferences", ()
   assert.deepEqual(pickSafeBrowserSessionFields(null), {});
   assert.deepEqual(pickSafeBrowserSessionFields([]), {});
 });
+
+test("the writes the page makes itself are writes, each named once, and the first is the pause of training", () => {
+  const { BRIDGE_WRITE_PAIR_KEYS, PAGE_WRITE_PAIR_KEYS, isBridgeWritePair, isPageWritePair } = require("../src/bridgeCallPolicy");
+  assert.deepEqual(PAGE_WRITE_PAIR_KEYS, ["skillHandler.AbortTraining"]);
+  assert.equal(new Set(PAGE_WRITE_PAIR_KEYS).size, PAGE_WRITE_PAIR_KEYS.length);
+  for (const pair of PAGE_WRITE_PAIR_KEYS) {
+    const [service, method] = pair.split(".");
+    assert.deepEqual([isPageWritePair(service, method), isBridgeWritePair(service, method)], [true, true], pair);
+  }
+  // Every other write is its route's alone; a read is no write of anybody's; what is no pair is none.
+  const others = BRIDGE_WRITE_PAIR_KEYS.filter((pair) => !PAGE_WRITE_PAIR_KEYS.includes(pair));
+  assert.ok(others.length > 100);
+  for (const pair of others) assert.equal(isPageWritePair(...pair.split(".")), false, pair);
+  for (const [service, method] of [["skillHandler", "GetSkills"], ["skillHandler", "abortTraining"], ["skillMgr", "AbortTraining"], [null, "AbortTraining"], ["skillHandler", undefined], ["skillHandler.AbortTraining", ""]]) {
+    assert.equal(isPageWritePair(service, method), false, String([service, method]));
+  }
+  // What would spell a pair if it were made into text is no pair: a list of one name is not that name.
+  for (const [service, method] of [[["skillHandler"], "AbortTraining"], ["skillHandler", ["AbortTraining"]], [{ toString: () => "skillHandler" }, "AbortTraining"]]) {
+    assert.deepEqual([isPageWritePair(service, method), isBridgeWritePair(service, method)], [false, false], JSON.stringify([service, method]));
+  }
+});

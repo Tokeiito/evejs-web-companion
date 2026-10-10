@@ -99,6 +99,7 @@ import { readStandings, standingComposition, standingHistory } from "../bridge/s
 import { createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
 import { createCharacterSheetReads } from "../bridge/characterSheetReads.ts";
 import { readJournal } from "../bridge/journalReads.ts";
+import { pauseTraining } from "../bridge/skillWrites.ts";
 import { readClientStates } from "../bridge/crimewatchReads.ts";
 import { readCloneGrade } from "../bridge/cloneGradeReads.ts";
 import { decodeClientStates } from "../bridge/boundCrimewatch.ts";
@@ -1699,6 +1700,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     serverClockAheadMs = serverNowMs - Date.now();
   });
   const serverNow = (): number => Date.now() + (serverClockAheadMs ?? 0);
+  // A write the page makes for its pilot, the same way, with its meaning it said (api.bridgeDo).
+  const bridgeDo = api.bridgeDo(callOptions, (serverNowMs) => {
+    serverClockAheadMs = serverNowMs - Date.now();
+  });
   // What a client knows of a skill's type without asking the server, asked of the static data once and kept.
   const skillTypeFacts = createSkillTypeFacts({
     // (A type's name is the static data's, and is answered or is none: only a structure's can be left unanswered.)
@@ -6335,7 +6340,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function pauseSkillTraining(): Promise<void> {
     let raw: JsonValue;
     try {
-      await api.pauseSkillTraining(callOptions);
+      // The queue panel's Pause, as the client's makes it: the one call (bridge/skillWrites.ts).
+      await pauseTraining(bridgeDo);
       // Whether it stopped is the server's to say: the sheet read again, as it is read at any time.
       raw = await readSkillSheetRaw();
     } catch (error) {

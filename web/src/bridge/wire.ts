@@ -38,6 +38,11 @@ export interface BridgeCallRequestBody {
    * BFF says so (NO_LIVE_SESSION), as that route did, and does not take the call for the account's.
    */
   readonly pilot?: true;
+  /**
+   * The page means this write: what a write's route took as its confirmation. A write the page makes for its
+   * pilot says both this and `pilot`; the BFF makes it only if it is one of the writes the page makes itself.
+   */
+  readonly confirm?: true;
 }
 
 // --- Response envelopes ----------------------------------------------------

@@ -69,6 +69,7 @@ const { runCustomsExport, planCustomsExports } = require("./piCustomsExport");
 const { colonyRowOf, planetIDsOf, resourceRecordOf } = require("./planetInfoColony");
 const {
   isBridgeWritePair,
+  isPageWritePair,
   pickSafeBrowserSessionFields,
 } = require("./bridgeCallPolicy");
 const {
@@ -949,7 +950,17 @@ async function activatePreparedOperation(definition,operationRunID) {
 // signed login session. Wire contract: docs/bridge-wire-contract.md.
 app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
   const body = req.body || {};
-  if (isBridgeWritePair(body.service, body.method)) {
+  // A call names its service and its method, each as text. Anything else is no call: a list of one name spells
+  // that name wherever it is made into text further on, and a write named so is no write to the check below.
+  if (typeof body.service !== "string" || body.service === "" || typeof body.method !== "string" || body.method === "") {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: "A call names its service and its method, each as text." });
+    return;
+  }
+  // A write is made here only as the page makes one for its pilot (the plan's Phase 6b): said to be a pilot's,
+  // said to be meant (`confirm`, which is what its route's confirmation was), and one of the writes the page
+  // makes itself (bridgeCallPolicy.js). Any other write has its own route, as before.
+  const write = isBridgeWritePair(body.service, body.method);
+  if (write && !(body.pilot === true && body.confirm === true && isPageWritePair(body.service, body.method))) {
     res.status(403).json({
       ok: false,
       error: "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE",
@@ -971,7 +982,11 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
   try {
     // With no pilot held this is the account asking (the hangar's roster is the client's character selection
     // screen), and the seam sends what the retail client asks there to where the account is (pilotTransport.js).
-    const outcome = !heldBridgeSession && typeof gateway.accountCall === "function"
+    // (A write is a pilot's, so one is held; and it is made under the checks every write of a held pilot's is
+    // under, as its route made it.)
+    const outcome = write
+      ? await heldTopLevelCall(heldBridgeSession, req.webSessionID, body.service, body.method, body.args, body.kwargs)
+      : !heldBridgeSession && typeof gateway.accountCall === "function"
       ? await gateway.accountCall(body.service, body.method, body.args, body.kwargs, {
         accountID: Number(req.account.accountID),
         userName: String(req.account.username || ""),

@@ -376,3 +376,16 @@ test("gateway errors never expose the configured token", async () => {
     },
   );
 });
+
+test("a call's service and method go to the gateway as the text they are, and what is not text goes as no name", async () => {
+  const sent = [];
+  global.fetch = async (url, options) => {
+    if (options && typeof options.body === "string") sent.push(JSON.parse(options.body));
+    return jsonResponse(200, gatewayResponse({ service: "x", method: "y", result: null, notifications: [] }));
+  };
+  const asked = [["station", "GetGuests"], [["marketProxy"], "PlaceBuyOrder"], ["marketProxy", ["PlaceBuyOrder"]], [{ toString: () => "station" }, "GetGuests"], [7, 8], [null, undefined]];
+  // (Whatever the stand-in gateway is taken to have answered is not this test's: only what was sent is.)
+  for (const [service, method] of asked) await gatewayClient.callMethod(service, method, [], null, { userid: 4 }).catch(() => {});
+  // A list of one name is not that name, nor anything else that would spell one.
+  assert.deepEqual(sent.map((body) => [body.service, body.method]), [["station", "GetGuests"], ["", "PlaceBuyOrder"], ["marketProxy", ""], ["", "GetGuests"], ["", ""], ["", ""]]);
+});

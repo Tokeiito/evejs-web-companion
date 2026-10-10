@@ -355,8 +355,10 @@ async function callMethod(service, method, args = [], kwargs = null, sessionFiel
   if (service === "structureDirectory" && method === "GetMyAccessibleStructureServices" ||
       service === "officeManager" && method === "RentOffice") require("./stockCompatibility").structureServices();
   const body = {
-    service: String(service || ""),
-    method: String(method || ""),
+    // A name is text, and what is not text is no name: it is not made into one (a list of one name would be that
+    // name), and the gateway refuses a call with none.
+    service: typeof service === "string" ? service : "",
+    method: typeof method === "string" ? method : "",
     args: Array.isArray(args) ? args : [],
     kwargs: kwargs && typeof kwargs === "object" && !Array.isArray(kwargs)
       ? kwargs

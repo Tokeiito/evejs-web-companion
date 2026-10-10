@@ -58,6 +58,8 @@ export interface CallMethodOptions {
   readonly captureRequestGuard?: () => () => void;
   /** The call is a pilot's (wire.ts, BridgeCallRequestBody.pilot): with no pilot held it is refused as NO_LIVE_SESSION. */
   readonly pilot?: boolean;
+  /** The call is a write the page means (wire.ts, BridgeCallRequestBody.confirm). */
+  readonly confirm?: boolean;
 }
 
 /** Client-side (non-server) failure codes, alongside the wire's BridgeErrorCode set. */
@@ -136,6 +138,7 @@ export async function callMethod<TResult = JsonValue>(
     kwargs,
     ...(options.session ? { session: options.session } : {}),
     ...(options.pilot === true ? { pilot: true as const } : {}),
+    ...(options.confirm === true ? { confirm: true as const } : {}),
   };
 
   let response: Response;

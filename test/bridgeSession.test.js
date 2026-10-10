@@ -203,7 +203,7 @@ async function startTestServer(options = {}) {
   activeServers.add(server);
   await once(server, "listening");
   const { port } = server.address();
-  return { baseUrl: `http://127.0.0.1:${port}` };
+  return { baseUrl: `http://127.0.0.1:${port}`, app };
 }
 
 async function apiRequest(baseUrl, path, options = {}) {
@@ -1038,6 +1038,95 @@ test("a call's answer for a pilot on the game port says the server's clock as th
   const nobody = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gameport" });
   const account = await apiRequest(nobody.baseUrl, "/api/bridge/call", { method: "POST", body: { service: "map", method: "GetStationInfo" } });
   assert.deepEqual([account.response.status, Object.hasOwn(account.payload, "serverNowMs"), clockAsked.length], [200, false, before]);
+});
+
+// ── What is no call at all (POST /api/bridge/call) ───────────────────────────
+
+test("a call whose service or method is not text is refused before anything is asked, whatever it would spell", async () => {
+  const gateway = fakeGateway();
+  const accountCalls = [];
+  gateway.accountCall = async (service, method) => { accountCalls.push([service, method]); return { service, method, result: null, notifications: [] }; };
+  const { baseUrl } = await startTestServer({ gateway });
+  const call = (service, method, more = {}) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service, method, args: [], kwargs: null, ...more } });
+  // A list of one name spells that name where it is made into text, and a write named so is no write to a check
+  // that looks for text: it must not be let through as a read. Nor anything else that is not two names.
+  const notCalls = [
+    [["marketProxy"], "PlaceBuyOrder"], ["marketProxy", ["PlaceBuyOrder"]], [["skillHandler"], "AbortTraining"], [["station"], "GetGuests"],
+    [null, "GetGuests"], ["station", null], [undefined, undefined], [7, "GetGuests"], ["station", 7], [{ name: "station" }, "GetGuests"], ["", "GetGuests"], ["station", ""],
+  ];
+  for (const who of ["the account", "a pilot"]) {
+    if (who === "a pilot") await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+    for (const [service, method] of notCalls) {
+      for (const more of [{}, { pilot: true }, { pilot: true, confirm: true }]) {
+        const answer = await call(service, method, more);
+        assert.deepEqual([answer.response.status, answer.payload.error], [400, "INVALID_REQUEST"], `${who}: ${JSON.stringify([service, method, more])}`);
+      }
+    }
+  }
+  assert.deepEqual([gateway.calls.call, accountCalls], [[], []]);
+  // Two names are a call, as before.
+  assert.equal((await call("station", "GetGuests")).response.status, 200);
+  assert.equal(gateway.calls.call.length, 1);
+});
+
+// ── A write the page makes for a pilot (POST /api/bridge/call, pilot and confirm) ──
+
+test("a write is made by the generic call only as the page makes one: a pilot's, said to be meant, and one of the page's own", async () => {
+  const gateway = fakeGateway();
+  const accountCalls = [];
+  gateway.accountCall = async (service, method) => { accountCalls.push(`${service}.${method}`); return { service, method, result: null, notifications: [] }; };
+  const { baseUrl } = await startTestServer({ gateway });
+  const call = (service, method, more) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service, method, args: [], kwargs: null, ...more } });
+  const refusedAsARoutes = (answer) => [answer.response.status, answer.payload.error];
+
+  // With no pilot held the page's own write is told so, as its route told it, and nothing is asked.
+  assert.deepEqual(refusedAsARoutes(await call("skillHandler", "AbortTraining", { pilot: true, confirm: true })), [409, "NO_LIVE_SESSION"]);
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const before = gateway.calls.call.length;
+
+  // Not said to be a pilot's, or not said to be meant: refused, as every write here was. Only `true` says either.
+  for (const more of [{}, { confirm: true }, { pilot: true }, { pilot: true, confirm: false }, { pilot: true, confirm: "yes" }, { pilot: 1, confirm: true }, { pilot: "true", confirm: true }]) {
+    assert.deepEqual(refusedAsARoutes(await call("skillHandler", "AbortTraining", more)), [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+  }
+  // A write that is not one of the page's own: refused, whatever is said.
+  for (const [service, method] of [["skillHandler", "ApplyFreeSkillPoints"], ["marketProxy", "PlaceBuyOrder"], ["mailMgr", "DeleteMail"], ["slash", "SlashCmd"]]) {
+    assert.deepEqual(refusedAsARoutes(await call(service, method, { pilot: true, confirm: true })), [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], `${service}.${method}`);
+  }
+  assert.deepEqual([gateway.calls.call.length, accountCalls], [before, []]);
+
+  // The pause of training, as the page makes it: made on the pilot's own session, and answered as a call is.
+  const made = await call("skillHandler", "AbortTraining", { pilot: true, confirm: true });
+  assert.equal(made.response.status, 200, JSON.stringify(made.payload));
+  assert.deepEqual([made.payload.ok, made.payload.service, made.payload.method, Array.isArray(made.payload.notifications)], [true, "skillHandler", "AbortTraining", true]);
+  assert.equal(gateway.calls.call.length, before + 1);
+  const sent = gateway.calls.call.at(-1);
+  assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["skillHandler", "AbortTraining", [], null, BRIDGE_SESSION_ID, { userid: 4 }]);
+  // The route stands, and makes the same call.
+  const byRoute = await apiRequest(baseUrl, "/api/bridge/skills/abort-training", { method: "POST", body: { confirm: true } });
+  assert.deepEqual([byRoute.response.status, byRoute.payload.applied, gateway.calls.call.length], [200, true, before + 2]);
+  const routed = gateway.calls.call.at(-1);
+  assert.deepEqual([routed.service, routed.method, routed.args, routed.kwargs, routed.bridgeSessionID], [sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID]);
+});
+
+test("the page's own write is under the checks every write of a held pilot's is under, and is made as its route makes it", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl, app } = await startTestServer({ gateway });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const pause = () => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "skillHandler", method: "AbortTraining", args: [], kwargs: null, pilot: true, confirm: true, session: { languageID: "EN" } } });
+  assert.equal((await pause()).response.status, 200);
+  // As its route makes it: with the account alone for the session's fields, whatever the page sent of its own.
+  assert.deepEqual(gateway.calls.call.at(-1).sessionFields, { userid: 4 });
+  const made = gateway.calls.call.length;
+  // A pilot whose earlier selection's release is not confirmed: no write is made for it, by its route or by the
+  // page's own call.
+  const [held] = [...app.locals.bridgeSessions.values()];
+  held.selectionReleaseUnverified = true;
+  const refused = await pause();
+  assert.deepEqual([refused.response.status, refused.payload.error, gateway.calls.call.length], [409, "PILOT_RELEASE_UNVERIFIED", made]);
+  const byRoute = await apiRequest(baseUrl, "/api/bridge/skills/abort-training", { method: "POST", body: { confirm: true } });
+  assert.deepEqual([byRoute.response.status, byRoute.payload.error, gateway.calls.call.length], [409, "PILOT_RELEASE_UNVERIFIED", made]);
+  held.selectionReleaseUnverified = false;
+  assert.equal((await pause()).response.status, 200);
 });
 
 // ── The wallet (GET /api/bridge/wallet) ──────────────────────────────────────
