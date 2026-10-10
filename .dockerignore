@@ -9,6 +9,8 @@
 !vite.config.ts
 !src/
 !src/**
+!contracts/
+!contracts/**
 !scripts/
 !scripts/**
 !web/

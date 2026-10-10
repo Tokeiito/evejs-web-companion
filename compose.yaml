@@ -41,6 +41,18 @@ services:
       # host checkout below.
       EVEJS_GAMESTORE_DATA_DIR: /srv/evejs/_local/gameStore/data
       EVEJS_SDE_DIR: /srv/evejs/_local/sde/eve-online-static-data-3396210-jsonl
+      # Where a chosen pilot's session is held: EveJS's game port (the default,
+      # the port the retail client logs in on) or the web gateway. Passed on
+      # from .env so that the way back, EVEJS_PILOT_TRANSPORT=gateway, works in
+      # a container too; unset arrives empty, which is the default.
+      #
+      # The game port is taken to be on the gateway's own host, port 26000 (the
+      # two are one process), which is right for this file and for the overlay.
+      # EVEJS_GAME_HOST and EVEJS_GAME_PORT say otherwise when it is not.
+      EVEJS_PILOT_TRANSPORT: ${EVEJS_PILOT_TRANSPORT:-}
+      EVEJS_PILOT_TRANSPORT_OVERRIDES: ${EVEJS_PILOT_TRANSPORT_OVERRIDES:-}
+      EVEJS_GAME_HOST: ${EVEJS_GAME_HOST:-}
+      EVEJS_GAME_PORT: ${EVEJS_GAME_PORT:-}
     extra_hosts:
       # Docker Desktop already provides this name; the line is what makes the
       # file work on native Linux Docker as well.

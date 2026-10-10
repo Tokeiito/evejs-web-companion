@@ -151,21 +151,45 @@ test("what makes a handle a game-port handle", () => {
   assert.equal(/^[A-Za-z0-9_-]+$/.test(GAME_PORT_HANDLE_PREFIX), false);
 });
 
-test("the setting: gateway unless told otherwise, with single accounts overridden", () => {
-  assert.equal(pilotTransportSetting({}).transportFor({ userName: "test" }), "gateway");
+test("the setting: the game port unless told otherwise, with single accounts overridden", () => {
+  // Nothing said, or said empty (as a compose file passes on a variable that is not set): the game port.
+  assert.equal(pilotTransportSetting({}).transportFor({ userName: "test" }), "gameport");
+  assert.equal(pilotTransportSetting({}).fallback, "gameport");
+  assert.equal(pilotTransportSetting({ EVEJS_PILOT_TRANSPORT: "", EVEJS_PILOT_TRANSPORT_OVERRIDES: "" }).transportFor({ userName: "test" }), "gameport");
   assert.equal(pilotTransportSetting({ EVEJS_PILOT_TRANSPORT: "gameport" }).transportFor({ userName: "test" }), "gameport");
   assert.equal(pilotTransportSetting({ EVEJS_PILOT_TRANSPORT: " GamePort " }).transportFor({}), "gameport");
+  // The way back: the gateway, for everybody.
+  assert.equal(pilotTransportSetting({ EVEJS_PILOT_TRANSPORT: "gateway" }).transportFor({ userName: "test" }), "gateway");
+  assert.equal(pilotTransportSetting({ EVEJS_PILOT_TRANSPORT: " GateWay " }).transportFor({}), "gateway");
+  assert.equal(pilotTransportSetting({ EVEJS_PILOT_TRANSPORT: "gateway" }).fallback, "gateway");
 
-  const mixed = pilotTransportSetting({ EVEJS_PILOT_TRANSPORT_OVERRIDES: "test=gameport, Test2 = gameport ,rrfarmer=gateway" });
+  const mixed = pilotTransportSetting({ EVEJS_PILOT_TRANSPORT: "gateway", EVEJS_PILOT_TRANSPORT_OVERRIDES: "test=gameport, Test2 = gameport ,rrfarmer=gateway" });
   assert.equal(mixed.transportFor({ userName: "test" }), "gameport");
   assert.equal(mixed.transportFor({ userName: "TEST2" }), "gameport");
   assert.equal(mixed.transportFor({ userName: "rrfarmer" }), "gateway");
   assert.equal(mixed.transportFor({ userName: "anyone" }), "gateway");
   assert.equal(mixed.transportFor({}), "gateway");
 
-  const reversed = pilotTransportSetting({ EVEJS_PILOT_TRANSPORT: "gameport", EVEJS_PILOT_TRANSPORT_OVERRIDES: "rrfarmer=gateway" });
+  // With nothing said for the rest, an override is the one account that is not on the game port.
+  const reversed = pilotTransportSetting({ EVEJS_PILOT_TRANSPORT_OVERRIDES: "rrfarmer=gateway" });
   assert.equal(reversed.transportFor({ userName: "rrfarmer" }), "gateway");
   assert.equal(reversed.transportFor({ userName: "test" }), "gameport");
+  assert.equal(reversed.transportFor({}), "gameport");
+});
+
+test("a BFF started with nothing said holds its pilots on the game port; told the gateway, it has no game port at all", () => {
+  const { createApp } = require("../src/server");
+  const built = (env) => createApp({ bridgeSessionStore: new Map(), eveStore: {}, webAuth: { requireAuth: (req, res, next) => next() }, env });
+  const transportOf = (app) => (app.locals.gamePortPilots ? "a game port" : "none");
+  assert.equal(transportOf(built({})), "a game port");
+  assert.equal(transportOf(built({ EVEJS_PILOT_TRANSPORT: "gameport" })), "a game port");
+  assert.equal(transportOf(built({ EVEJS_PILOT_TRANSPORT: "gateway" })), "none");
+  // One account sent to the game port is enough for there to be one; one sent to the gateway leaves it for the rest.
+  assert.equal(transportOf(built({ EVEJS_PILOT_TRANSPORT: "gateway", EVEJS_PILOT_TRANSPORT_OVERRIDES: "test=gameport" })), "a game port");
+  assert.equal(transportOf(built({ EVEJS_PILOT_TRANSPORT_OVERRIDES: "rrfarmer=gateway" })), "a game port");
+  assert.equal(transportOf(built({ EVEJS_PILOT_TRANSPORT: "gateway", EVEJS_PILOT_TRANSPORT_OVERRIDES: "rrfarmer=gateway" })), "none");
+  // A setting that is not a transport stops the BFF being built.
+  assert.throws(() => built({ EVEJS_PILOT_TRANSPORT: "tcp" }), /EVEJS_PILOT_TRANSPORT must be/);
 });
 
 test("a setting that is not a transport is refused at start-up, not guessed at", () => {

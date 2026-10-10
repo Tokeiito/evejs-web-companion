@@ -79,13 +79,18 @@ function isGamePortHandle(handle) {
 /**
  * Which transport an account's pilots use, from the environment:
  *
- *   EVEJS_PILOT_TRANSPORT            gateway (the default) or gameport
+ *   EVEJS_PILOT_TRANSPORT            gameport (the default) or gateway
  *   EVEJS_PILOT_TRANSPORT_OVERRIDES  name=transport, comma separated, for
  *                                    single accounts: "test=gameport,rrfarmer=gateway"
  *
  * An account is named as it logs in. A value that is not a transport is an
- * error at start-up rather than a silent fall back to the other one.
+ * error at start-up rather than a silent fall back to the other one. Unset or
+ * empty (a compose file passes an unset one on as empty) is the default.
+ *
+ * The default was the gateway until the plan's cutover (Phase 5, 2026-10-10).
+ * `gateway` stays selectable as the way back.
  */
+const DEFAULT_TRANSPORT = "gameport";
 function pilotTransportSetting(env = process.env) {
   const read = (value, where) => {
     const transport = String(value || "").trim().toLowerCase();
@@ -94,7 +99,7 @@ function pilotTransportSetting(env = process.env) {
     }
     return transport;
   };
-  const fallback = env.EVEJS_PILOT_TRANSPORT ? read(env.EVEJS_PILOT_TRANSPORT, "EVEJS_PILOT_TRANSPORT") : "gateway";
+  const fallback = env.EVEJS_PILOT_TRANSPORT ? read(env.EVEJS_PILOT_TRANSPORT, "EVEJS_PILOT_TRANSPORT") : DEFAULT_TRANSPORT;
   const overrides = new Map();
   for (const part of String(env.EVEJS_PILOT_TRANSPORT_OVERRIDES || "").split(",")) {
     if (!part.trim()) continue;

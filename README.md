@@ -51,6 +51,14 @@ disposable.** Closing a tab closes that client — the server never keeps drivin
   EveJS  = the game, the sole authority   ← owns all state + validation + persistence
 ```
 
+- **A chosen pilot is logged in as the retail client logs in.** Once a pilot is chosen, the
+  BFF holds its session on EveJS's **game port** (TCP 26000, machoNet, the port the retail
+  client uses): one connection for each pilot, kept open, with the server's own pushes
+  arriving on it. The gateway on 26002 is still what the BFF asks about the *account*
+  (its characters, an offline pilot's skills and queue) and what it used to hold every
+  pilot through. `EVEJS_PILOT_TRANSPORT=gateway` puts every pilot back on the gateway;
+  `EVEJS_PILOT_TRANSPORT_OVERRIDES="name=gateway"` does it for one account. The plan and
+  where it stands: [`docs/game-port-transport-plan.md`](docs/game-port-transport-plan.md).
 - **Bridge-only.** Every read and every mutation goes through `POST /api/bridge/*` (the
   retail call tuple, bound objects, the persistent session, flight, chat) or the
   login-gated read-only static routes (`/api/map/*`, `/api/names`, `/api/agents/find`)
@@ -237,7 +245,13 @@ EVEJS_ROOT=/path/to/eve.js
 EVEJS_GATEWAY_URL=http://127.0.0.1:26002/_evejs-web/v1
 EVEJS_WEB_GATEWAY_TOKEN=
 EVEJS_ICON_CACHE_DIR=/path/to/evejs-web-poc/data/icon-cache
+EVEJS_PILOT_TRANSPORT=gameport # where a chosen pilot's session is held: gameport (default) or gateway
+EVEJS_PILOT_TRANSPORT_OVERRIDES= # single accounts, e.g. "alice=gateway,bob=gameport"
+EVEJS_GAME_HOST=               # the game port's host; default: the gateway's own host
+EVEJS_GAME_PORT=26000
 ```
+
+`npm run doctor` checks the game port as well as the gateway, and says which one is shut.
 
 Hardening is deliberately out of scope — this is a trusted-environment emulator client
 (see roadmap section 6).

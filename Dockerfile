@@ -53,6 +53,10 @@ RUN apt-get update \
 WORKDIR /app
 COPY --chown=node:node package.json package-lock.json ./
 COPY --chown=node:node src ./src
+# The game port's transport reads the bridge contract as it loads, and the
+# server loads the transport as it starts: without this the container stops
+# at start-up with "Cannot find module" (test/dockerImage.test.js keeps watch).
+COPY --chown=node:node contracts ./contracts
 COPY --chown=node:node scripts ./scripts
 # The server bot host runs the BROWSER stack in this process: src/botHost.js
 # imports web/src/app/flow.ts and friends at runtime, letting Node strip the

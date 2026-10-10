@@ -24,6 +24,7 @@ const { createReplenishment } = require("./replenishment");
 const { createPilotMutationFence } = require("./pilotMutationFence");
 const { createPilotTransport, isGamePortHandle, pilotTransportSetting } = require("./pilotTransport");
 const { createGamePortPilots } = require("./gamePort/pilots");
+const { gameEndpoint } = require("./gamePort/tcp");
 const { registerProvisioningRoutes } = require("./provisioningRoutes");
 const { createFactorySkills } = require("./factorySkills");
 const { createTrainingOnboarding } = require("./trainingOnboarding");
@@ -156,10 +157,11 @@ const mutationFence = createPilotMutationFence({ heldSessions: { values: () => b
 // session (src/pilotTransport.js). With no game-port transport it is the
 // gateway client itself.
 //
-// The game-port transport exists only when EVEJS_PILOT_TRANSPORT or its
-// overrides send somebody to it, and never for an app built around an injected
-// gateway client: a test gets one only by handing one in. A value there that
-// is not a transport stops the server starting.
+// The game-port transport exists unless EVEJS_PILOT_TRANSPORT and its
+// overrides send everybody to the gateway (the game port is the default), and
+// never for an app built around an injected gateway client: a test gets one
+// only by handing one in. A value there that is not a transport stops the
+// server starting.
 const accountGateway = options.eveGatewayClient || eveGatewayClient;
 // What this BFF asks the web gateway is tallied in the gateway client itself (src/gatewayLedger.js): the
 // measure of the plan's cutover. A test's stand-in for the gateway is not the gateway, and has no tally.
@@ -25390,9 +25392,13 @@ function startServer(options = {}) {
     if (options.silent !== true) {
       console.log(`EveJS Web POC listening on http://${host}:${activePort}`);
       console.log(`Using EveJS gateway: ${process.env.EVEJS_GATEWAY_URL || "http://127.0.0.1:26002/_evejs-web/v1"}`);
+      const said = `EVEJS_PILOT_TRANSPORT=${process.env.EVEJS_PILOT_TRANSPORT || "gameport (the default)"}` +
+        ` overrides=${process.env.EVEJS_PILOT_TRANSPORT_OVERRIDES || "none"}`;
       if (appToStart.locals.gamePortPilots) {
-        console.log(`Pilot transport: EVEJS_PILOT_TRANSPORT=${process.env.EVEJS_PILOT_TRANSPORT || "gateway"}` +
-          ` overrides=${process.env.EVEJS_PILOT_TRANSPORT_OVERRIDES || "none"} (game port in use)`);
+        const game = gameEndpoint(process.env);
+        console.log(`Pilot transport: ${said} (pilots log in on the game port, ${game.host}:${game.port}; EVEJS_PILOT_TRANSPORT=gateway is the way back)`);
+      } else {
+        console.log(`Pilot transport: ${said} (pilots log in through the web gateway)`);
       }
     }
     // The ready-made starter bots go into the library once, on first boot.

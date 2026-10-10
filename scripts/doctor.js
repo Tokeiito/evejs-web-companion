@@ -28,6 +28,8 @@ const net = require("net");
 const { WebSocket } = require("ws");
 
 const config = require("../src/config");
+const { pilotTransportSetting } = require("../src/pilotTransport");
+const { gameEndpoint } = require("../src/gamePort/tcp");
 
 const DEFAULT_GATEWAY_URL = "http://127.0.0.1:26002/_evejs-web/v1";
 const PROBE_TIMEOUT_MS = 4000;
@@ -357,6 +359,44 @@ async function main() {
         : "");
   } else {
     warn("could not probe the push channel", stream.detail || stream.outcome);
+  }
+
+  // A chosen pilot's session is held on EveJS's game port unless the setting says the web gateway, and that is
+  // another port of the same process. Open for the gateway and shut for the game port reads as "I can log in
+  // and see my pilots, and choosing one fails", so it is named here.
+  heading("Pilot transport (where a chosen pilot's session is held)");
+  let transport = null;
+  try {
+    transport = pilotTransportSetting(process.env);
+  } catch (error) {
+    bad("the pilot transport setting cannot be read", error && error.message);
+    fix([
+      "EVEJS_PILOT_TRANSPORT is gameport (the default) or gateway.",
+      "EVEJS_PILOT_TRANSPORT_OVERRIDES is name=transport for single accounts, comma separated.",
+    ]);
+  }
+  if (transport) {
+    const said = `EVEJS_PILOT_TRANSPORT=${process.env.EVEJS_PILOT_TRANSPORT || "(not set: gameport)"}` +
+      (process.env.EVEJS_PILOT_TRANSPORT_OVERRIDES ? `, overrides ${process.env.EVEJS_PILOT_TRANSPORT_OVERRIDES}` : "");
+    const someoneOnGamePort = transport.fallback === "gameport" || [...transport.overrides.values()].includes("gameport");
+    if (!someoneOnGamePort) {
+      ok("pilots log in through the web gateway", said);
+    } else {
+      const game = gameEndpoint(process.env);
+      const reached = await tcpProbe(game.host, game.port);
+      if (reached.reachable) {
+        ok(`the game port answers at ${game.host}:${game.port}`, said);
+      } else {
+        bad(`the game port does not answer at ${game.host}:${game.port}`, reached.reason);
+        fix([
+          "A chosen pilot logs in on EveJS's game port, the one the retail client uses",
+          "(TCP 26000), taken to be on the gateway's own host. Logging in to this web",
+          "client and listing pilots still works without it; choosing one does not.",
+          "If the game port is somewhere else: EVEJS_GAME_HOST and EVEJS_GAME_PORT.",
+          "To hold every pilot through the web gateway instead: EVEJS_PILOT_TRANSPORT=gateway.",
+        ]);
+      }
+    }
   }
 
   heading("Static game data (names for types, stations, systems)");
