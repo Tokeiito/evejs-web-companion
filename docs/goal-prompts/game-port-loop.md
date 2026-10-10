@@ -668,6 +668,23 @@ Take these defaults, and list each under "For the operator" in the log so they c
   aside first. And keep making changes by script: it is what made the loss an hour's and not a
   day's. A lost page can be checked against the last build: `sha1sum public/dist/assets/*`
   before and after building again.
+- **The page's floating windows are over everything in the workspace.** They are in a layer of
+  their own (`.global-layer`, fixed, above the workspace), and the workspace is fixed too, so
+  no `z-index` inside it reaches over them: a menu under the header opened underneath a
+  window. What must not be covered is a popover of the browser's (`popover="auto"` and a
+  button with `popovertarget`, placed from the button's rectangle as it opens:
+  `web/src/ui/SafetyChooser.svelte`). Check a new menu live with
+  `document.elementFromPoint` at a few of its points: the menu must be what is there.
+- **Search `src/server.js` for a method's name before writing that no route sends it.** I
+  wrote that `SetSafetyLevel` had no route; it had had one since the plumbing sweep.
+- **A flow's request answered after its pilot has gone is thrown by the flow itself**
+  (`SESSION_REQUEST_RETIRED`, the guard every request of a pilot's has). A flow function
+  needs no check of its own for that, and one written is dead code that no test can reach.
+- **No solar system of this server's data is at 0.95 security or above** (the highest is
+  0.949794; the systems that were 1.0 are 0.949). What the client does only in the safest
+  class of security cannot be seen live here.
+- **`git diff --stat` does not see a new file.** After a breakage pass over one, compare it
+  with its copy in the scratch folder (keep one: write a new file there and copy it in).
 - A test's "watched to fail" can be had after the fact, once the work is committed: put the source file back to the commit
   before (`git show HEAD~1:<file> > <file>`), run the test, and restore it with `git checkout
   HEAD -- <file>`. Check `git status` is clean after.

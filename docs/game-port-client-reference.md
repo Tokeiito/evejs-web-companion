@@ -1100,9 +1100,9 @@ safetyLevel)`, each timer a `(state, expiry)`.
 
 The transport asks at the same moments (`pilots.js`, `clientStatesAtAChange`,
 `securityStatusRead`). It keeps the states as last answered, and lets them go at any of the
-eleven notices and at the pilot's own `SetSafetyLevel`, where the client works each into what
-it holds: a read after one of those asks again. The security status it keeps as the client
-does.
+eleven notices, where the client works each into what it holds: a read after one of those asks
+again. The pilot's own `SetSafetyLevel` it works in as the client does (below). The security
+status it keeps as the client does.
 
 A timer's state is its kind's idle state (weapons 100, PvP 200, criminal 300, NPC 400,
 disapproval 500), one above while its cause goes on, two above while it counts down to its
@@ -1111,6 +1111,32 @@ states are the criminal's and its even ones the suspect's. The safety level is 0
 none, partial, full. The page reads the states through `GET /api/bridge/crimewatch`, at the
 same moments, and its workspace header says the safety level in space and every running timer
 anywhere, in words, counted to the server's clock (`web/src/space/crimewatch.ts`).
+
+**The safety level set, 2026-10-10.** No recording has `SetSafetyLevel`; this is the code's.
+`crimewatchSvc.SetSafetyLevel(level)` (342) sends the one level on crimewatch's Moniker, then
+has it as the level and tells the HUD's button; it asks nothing after, and a refusal is raised
+before the line that keeps it. The button (`shipSafetyButton.py`) opens a selector of None,
+Partial and Full. A level lower than the one now gets a confirm button beside it, and no other
+button answers until that is pressed or gone; any other is set at once. Two things lock
+buttons. The level is held at Full (`IsSafetyLockedToFullLevel`, 148) in space in a system of
+the safest class of security (0.95 and above, `eveuniverse/security.py`) and while a
+structure is controlled in high security: then Full is the level whatever the server said
+(`_UpdateSafetyLevel`), and the two others are locked. And None is locked for an alpha clone
+in high security (`IsSafetyAlphaLocked`).
+
+| | The client | Here |
+|---|---|---|
+| The call | `SetSafetyLevel(level)`, on a Moniker made for it | the same (`POST /api/bridge/safety/set-level`; what is not 0, 1 or 2 is refused) |
+| After it | the level set is the level; nothing asked | the same: the transport puts it in the fourth place of the states it keeps, and the page into what it last read |
+| A lower level | a second press, on a confirm button | the same, with a Cancel beside it |
+| Held at Full in the safest class | Full shown, the others locked | the same, by the map's security for the system |
+| Held at Full controlling a structure | yes | not done: the page controls none |
+| None locked for an alpha clone | yes | not done: nothing of ours asks the clone's grade |
+
+No system of this server's data is at 0.95 or above (the highest is 0.949794), so the level
+held at Full has been seen in tests only. Whether the client's own table of systems
+(`res:/staticdata/systems.static`, which is where its `cfg.mapSystemCache` is from) has any
+was not read.
 
 **The map's stations, 2026-10-10.** `map.GetStationInfo()` is asked once by the client's UI
 service and kept for the client's life (`uisvc.py` 246), and by five other callers through the
