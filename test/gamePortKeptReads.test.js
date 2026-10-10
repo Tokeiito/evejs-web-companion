@@ -116,3 +116,19 @@ test("an amendment takes its turn behind a read begun before it, and comes befor
   await behind;
   assert.equal(await reads.read("unread", async () => "asked"), "asked");
 });
+
+test("an amendment that makes nothing of what is kept lets that one answer go, and never fails for who made it", async () => {
+  const reads = createKeptReads();
+  const { asked, ask } = counted();
+  await reads.read("all", ask("all"));
+  await reads.read("unread", ask("unread"));
+  // Nothing made of it: it is let go, and the other answer stays kept.
+  assert.equal(await reads.amend("all", () => undefined), undefined);
+  assert.deepEqual([await reads.read("all", ask("all")), await reads.read("unread", ask("unread")), asked], ["all 2", "unread 1", ["all", "unread", "all"]]);
+  // A change that fails is one that could not be made: let go as well, with nothing thrown.
+  assert.equal(await reads.amend("unread", () => { throw new Error("cannot"); }), undefined);
+  assert.deepEqual([await reads.read("unread", ask("unread")), await reads.read("all", ask("all"))], ["unread 2", "all 2"]);
+  // An answer of nothing is an answer, and is kept as one: only undefined lets go.
+  await reads.amend("all", () => null);
+  assert.deepEqual([await reads.read("all", ask("all")), asked.filter((each) => each === "all").length], [null, 2]);
+});

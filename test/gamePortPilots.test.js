@@ -6784,20 +6784,79 @@ test("crimewatch's states are asked again as the client asks: at a change of pla
   assert.equal(asked.status, 1);
 });
 
-test("the states kept are let go at the server's word of a timer, a flag or an engagement", async () => {
+/** A Python set and a dict as the wire has them, and as the bridge hands them on. */
+const aWireSet = (...items) => ({ type: "objectex1", header: [{ type: "token", value: "__builtin__.set" }, [{ type: "list", items }]], list: [], dict: [] });
+const aWireDict = (...entries) => ({ type: "dict", entries });
+const IDLE_TIMERS = [[100, null], [200, null], [400, null], [300, null], [500, null]];
+
+test("the server's word of a timer, of who is flagged or of an engagement is worked into the states kept, and crimewatch is asked nothing", async () => {
+  let asked = 0;
+  const answers = { "bound:GetClientStates": () => { asked += 1; return [IDLE_TIMERS, aWireDict(), [aWireSet(), aWireSet()], 2]; }, "bound:GetMySecurityStatus": 0.5 };
+  const { pilots, session, handle } = await selected({ answers }, CRIME_PAIRS);
+  const states = async () => (await pilots.callMethod("crimewatch", "GetClientStates", [], null, FIELDS, handle)).result;
+  const timers = (changed) => IDLE_TIMERS.map((timer, place) => changed[place] ?? timer);
+  // crimewatchSvc.OnNpcTimerUpdate(state, expiryTime), 234: that timer, and no other.
+  session.notify("OnNpcTimerUpdate", [402, 5000n]);
+  assert.deepEqual([await states(), await states(), asked], [[timers({ 2: [402, 5000] }), aWireDict(), [aWireSet(), aWireSet()], 2], [timers({ 2: [402, 5000] }), aWireDict(), [aWireSet(), aWireSet()], 2], 1]);
+  session.notify("OnWeaponsTimerUpdate", [101, null]);
+  session.notify("OnNpcTimerUpdate", [400, null]);
+  assert.deepEqual([(await states())[0], asked], [timers({ 0: [101, null] }), 1]);
+  // OnSystemCriminalFlagUpdates(newIdles, newSuspects, newCriminals), 252, as this server sends it and as Tranquility does.
+  session.notify("OnSystemCriminalFlagUpdates", [[], [PILOT], []]);
+  session.notify("OnSystemCriminalFlagUpdates", [aWireSet(), aWireSet(), aWireSet(7)]);
+  assert.deepEqual([(await states())[2], asked], [[aWireSet(7), aWireSet(PILOT)], 1]);
+  session.notify("OnSystemCriminalFlagUpdates", [[PILOT], [], []]);
+  assert.deepEqual([(await states())[2], asked], [[aWireSet(7), aWireSet()], 1]);
+  // The engagements, 263 to 288.
+  session.notify("OnCrimewatchEngagementCreated", [7, 6000n]);
+  session.notify("OnCrimewatchEngagementStopTimeout", [7]);
+  session.notify("OnCrimewatchEngagementStartTimeout", [8, 7000n]);
+  assert.deepEqual([(await states())[1], asked], [aWireDict([7, -1], [8, 7000]), 1]);
+  session.notify("OnCrimewatchEngagementEnded", [7]);
+  assert.deepEqual([(await states())[1], asked], [aWireDict([8, 7000]), 1]);
+  // Who is disapproved of is no part of the states: the notice changes nothing, and nothing is asked.
+  session.notify("OnSystemDisapprovalFlagUpdates", [[], [PILOT]]);
+  // Nor does a notice that is none of crimewatch's.
+  session.notify("OnSecurityStatusUpdate", [1.5]);
+  session.notify("OnItemChange", [1, 2]);
+  assert.deepEqual([await states(), asked], [[timers({ 0: [101, null] }), aWireDict([8, 7000]), [aWireSet(7), aWireSet()], 2], 1]);
+  // A notice that cannot be worked in (the client's handler takes two) lets the states go, and the next read asks.
+  session.notify("OnWeaponsTimerUpdate", [102]);
+  assert.deepEqual([await states(), await states(), asked], [[IDLE_TIMERS, aWireDict(), [aWireSet(), aWireSet()], 2], [IDLE_TIMERS, aWireDict(), [aWireSet(), aWireSet()], 2], 2]);
+});
+
+test("a notice that comes while the states are being asked for is worked into the answer once it is in", async () => {
+  let release;
+  let asked = 0;
+  const held = new Promise((resolve) => { release = resolve; });
+  const answers = { "bound:GetClientStates": async () => { asked += 1; if (asked === 2) await held; return [IDLE_TIMERS, aWireDict(), [aWireSet(), aWireSet()], 2]; }, "bound:GetMySecurityStatus": 0.5 };
+  const { pilots, session, handle } = await selected({ answers }, CRIME_PAIRS);
+  const read = () => pilots.callMethod("crimewatch", "GetClientStates", [], null, FIELDS, handle).then((answer) => answer.result[0][2]);
+  // Let go, so that the next read asks; the answer is kept back, and a timer's notice comes meanwhile.
+  session.notify("OnNpcTimerUpdate", [402]);
+  const asking = read();
+  await settled();
+  session.notify("OnNpcTimerUpdate", [402, 5000n]);
+  release();
+  // Who asked is answered as the server answered; what is kept from then on has the notice in it.
+  assert.deepEqual([await asking, await read(), asked], [[400, null], [402, 5000], 2]);
+});
+
+test("states kept in a form that is not read are let go at the server's word of a timer, a flag or an engagement", async () => {
   const { asked, answers } = crimewatchAnswers();
   const { pilots, session, handle } = await selected({ answers: { ...answers, "bound:SetSafetyLevel": () => 1 } }, CRIME_PAIRS);
   const states = async () => (await pilots.callMethod("crimewatch", "GetClientStates", [], null, FIELDS, handle)).result.items[1];
   let expected = 1;
-  for (const notice of ["OnWeaponsTimerUpdate", "OnPvpTimerUpdate", "OnNpcTimerUpdate", "OnCriminalTimerUpdate", "OnDisapprovalTimerUpdate", "OnSystemCriminalFlagUpdates", "OnSystemDisapprovalFlagUpdates",
+  for (const notice of ["OnWeaponsTimerUpdate", "OnPvpTimerUpdate", "OnNpcTimerUpdate", "OnCriminalTimerUpdate", "OnDisapprovalTimerUpdate", "OnSystemCriminalFlagUpdates",
     "OnCrimewatchEngagementCreated", "OnCrimewatchEngagementEnded", "OnCrimewatchEngagementStartTimeout", "OnCrimewatchEngagementStopTimeout"]) {
     session.notify(notice, [100, null]);
     expected += 1;
     assert.deepEqual([await states(), await states(), asked.states], [expected, expected, expected], notice);
   }
-  // Another notice leaves them kept.
+  // Another notice leaves them kept, and so does the one of who is disapproved of, which changes nothing they say.
   session.notify("OnSecurityStatusUpdate", [1.5]);
   session.notify("OnItemChange", [1, 2]);
+  session.notify("OnSystemDisapprovalFlagUpdates", [[], [PILOT]]);
   assert.deepEqual([await states(), asked.states], [expected, expected]);
   // crimewatchSvc.SetSafetyLevel lets nothing go: the client keeps the level it set and asks nothing (the next test).
   await pilots.callMethod("crimewatch", "SetSafetyLevel", [1], null, FIELDS, handle);
@@ -6844,7 +6903,8 @@ test("a safety level the pilot set is the level the states kept say from then on
   assert.deepEqual([await states(), asked], [of(0), { states: 1, sets: [1, 0] }]);
   refusing.now = false;
   // With nothing kept there is nothing to amend: the next read asks, and what the server says then is what is kept.
-  session.notify("OnWeaponsTimerUpdate", [100, null]);
+  // (A timer's notice with no expiry beside its state cannot be worked in, and lets the states go.)
+  session.notify("OnWeaponsTimerUpdate", [100]);
   await pilots.callMethod("crimewatch", "SetSafetyLevel", [1], null, FIELDS, handle);
   assert.deepEqual([await states(), await states(), asked], [of(2), of(2), { states: 2, sets: [1, 0, 1] }]);
 });

@@ -67,6 +67,7 @@ const { createPilotSkills } = require("./pilotSkills");
 const { createPilotJournal } = require("./pilotJournal");
 const { createKeptReads } = require("./keptReads");
 const { createPilotStation } = require("./pilotStation");
+const { CLIENT_STATE_NOTICES, statesAfter } = require("./crimewatchStates");
 const { isBridgeWritePair } = require("../bridgeCallPolicy");
 const { namedAfterCall, namedOnNotice, namedOnSessionChange } = require("./cachedCallsNamed");
 const { brokersFeeRate } = require("./brokerFee");
@@ -216,16 +217,6 @@ const OWN_SECURITY_STATUS = "GetMySecurityStatus";
 /** Whether a call is one of crimewatchSvc's two kept reads, asked as the client asks it: with nothing. */
 const SET_SAFETY_LEVEL = "SetSafetyLevel";
 const keptOfCrimewatch = (service, method, form) => service === CRIMEWATCH && (method === CLIENT_STATES || method === OWN_SECURITY_STATUS) && form.args.length === 0 && form.kwargs === null;
-/**
- * The server's word that something the client states say has changed, each of which crimewatchSvc works into
- * what it holds (crimewatchSvc.py 222 to 288). Here the states kept are let go at any of them, and asked for when
- * they are next wanted.
- */
-const CLIENT_STATE_NOTICES = new Set([
-  "OnWeaponsTimerUpdate", "OnPvpTimerUpdate", "OnNpcTimerUpdate", "OnCriminalTimerUpdate", "OnDisapprovalTimerUpdate",
-  "OnSystemCriminalFlagUpdates", "OnSystemDisapprovalFlagUpdates",
-  "OnCrimewatchEngagementCreated", "OnCrimewatchEngagementEnded", "OnCrimewatchEngagementStartTimeout", "OnCrimewatchEngagementStopTimeout",
-]);
 const OFFICE_MANAGER = "officeManager";
 /**
  * The read of the station's own office object that the client's office manager keeps (officeManager.offices,
@@ -1166,8 +1157,9 @@ function createGamePortPilots({
       entry.targets.feed(notification);
       // station/base.py: a pilot arrived in the station, or left it.
       entry.station.feed(notification);
-      // crimewatchSvc: a timer, a flag or an engagement changed, and the states kept do not say so.
-      if (CLIENT_STATE_NOTICES.has(notification.method)) entry.clientStates.forget();
+      // crimewatchSvc (222 to 288): a timer, a flag or an engagement changed. The client works the notice into what
+      // it keeps and asks nothing; so here (crimewatchStates.js). States the notice cannot be worked into are let go.
+      if (CLIENT_STATE_NOTICES.has(notification.method)) entry.clientStates.amend(CLIENT_STATES, (states) => statesAfter(states, notification.method, notification.args));
       // crimewatchSvc.OnSecurityStatusUpdate(newSecurityStatus): the status is what the server says.
       if (notification.method === "OnSecurityStatusUpdate" && typeof notification.args?.[0] === "number") entry.securityStatus = notification.args[0];
       // officeManager.OnOfficeRentalChange (71): an office rented or given up, whoever's, and the station's are not as kept.

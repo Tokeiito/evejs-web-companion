@@ -14,6 +14,8 @@
  * `amend(keptAs, change)` is the other way of the client's: what is kept becomes what `change` makes of it, and
  * nothing is asked. It takes its turn behind the reads begun before it, so that an answer on its way is kept
  * first and amended after. Where nothing is kept it does nothing: the next read asks, and is answered as things are.
+ * Where `change` makes nothing of what is kept (it answers `undefined`, or fails), that one answer is let go, and
+ * the next read of it asks: an amendment never fails for who made it.
  */
 function createKeptReads() {
   const kept = new Map();
@@ -36,7 +38,15 @@ function createKeptReads() {
     },
     amend(keptAs, change) {
       work = work.then(() => {
-        if (kept.has(keptAs)) kept.set(keptAs, change(kept.get(keptAs)));
+        if (!kept.has(keptAs)) return;
+        let made;
+        try {
+          made = change(kept.get(keptAs));
+        } catch {
+          made = undefined;
+        }
+        if (made === undefined) kept.delete(keptAs);
+        else kept.set(keptAs, made);
       });
       return work;
     },
