@@ -7,8 +7,8 @@
 // (bridge/callMethod.ts) and the fleet's fenced fetch (app/flow.ts).
 //
 // ⚠ IT IS A SETTING, AND HTTP IS WHAT IT IS UNLESS SAID. The routes still stand
-// over HTTP and the event stream still carries the pushes; the socket carries
-// requests beside them. Set `evejs-web-transport:v1` to "socket" in this
+// over HTTP, and so does the event stream; with the setting on, the socket
+// carries the requests and the pushed notices in their place. Set `evejs-web-transport:v1` to "socket" in this
 // browser's local storage and reload to have requests carried on it; remove
 // the key, or set anything else, to go back.
 //
@@ -60,14 +60,22 @@ export function socketTransport(): SocketFetch | null {
  * is made only when one is first wanted.
  */
 export function pageFetch(): typeof fetch {
+  return pageSocket()?.fetch ?? globalThis.fetch;
+}
+
+/**
+ * The page's socket, where the page is set to it: for a request (`pageFetch`) and for a session's pushed notices
+ * (`subscribeBridgeEvents` in app/api.ts). Null where requests go over HTTP and pushes come by the event stream.
+ */
+export function pageSocket(): SocketFetch | null {
   if (typeof location === "undefined" || typeof WebSocket === "undefined" || transportSetting() !== "socket") {
-    return globalThis.fetch;
+    return null;
   }
   carried ??= createSocketFetch({
     fetch: (input, init) => globalThis.fetch(input, init),
     openSocket: () => socketOver(new WebSocket(socketAddress(location))),
   });
-  return carried.fetch;
+  return carried;
 }
 
 /**

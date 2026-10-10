@@ -8,8 +8,8 @@
 // carriage of those routes, the event stream, and the cap of four requests the
 // page keeps because a browser has six connections to an origin and no more.
 //
-// This is the first slice of it: the socket, and an operation carried on it.
-// The routes and the event stream stand beside it as they were.
+// The routes and the event stream stand beside it as they were: the socket
+// carries what they carry, and nothing of them is taken away here.
 //
 // AN OPERATION IS A ROUTE, RUN WHERE IT IS. A frame names a method and a path
 // and may carry a body; the app is handed a request made of them, in this
@@ -37,12 +37,34 @@
 //
 // A reply is matched to its request by `id`, which is the browser's to choose.
 // Replies come as their routes finish, not in the order asked.
+//
+// THE PUSHED NOTICES ARE THE EVENT STREAM'S, ON THE SOCKET. The BFF's event
+// stream (GET /api/bridge/events, Server-Sent Events) is a route like the rest,
+// except that it answers for as long as it is listened to. Asked for on the
+// socket it is run where it is, like an operation (`streamInProcess`), and each
+// frame it writes is handed on as it is written. So who may listen, what is
+// refused, and every frame are the route's own.
+//
+//   browser -> BFF   { "events": "open", "n": 3 }
+//   BFF -> browser   { "events": { "open": true, "n": 3 } }          the route answered 200
+//   BFF -> browser   { "event": { ...one frame of the event stream... } }
+//   BFF -> browser   { "events": { "ended": true, "n": 3, "status": 409, "body": { ... } } }
+//   browser -> BFF   { "events": "close" }
+//
+// A socket has one event stream: asked for again, the one attached is let go
+// and another attached. `n` is the browser's to choose and is said back, so
+// that what is said of a stream it has since let go is not taken for the one it
+// has now. `ended` is said when the route refuses (its status and answer are
+// given) and when the route ends a stream it had opened (status 200, no body);
+// it is not said for a stream the browser closed. A socket that closes takes
+// its event stream with it.
 
 const http = require("node:http");
 const { Duplex } = require("node:stream");
 const { WebSocketServer } = require("ws");
 
 const SOCKET_PATH = "/api/socket";
+const EVENTS_PATH = "/api/bridge/events";
 /** The routes' own bodies are held to 64 KB (express.json in src/server.js); a frame is the body and a little more. */
 const MAX_FRAME_BYTES = 256 * 1024;
 const HELLO_WAIT_MS = 10_000;
@@ -57,7 +79,7 @@ const CLOSE = Object.freeze({ HELLO_EXPECTED: 4400, NOT_AUTHENTICATED: 4401 });
 function isOperationPath(path) {
   if (typeof path !== "string" || !path.startsWith("/api/") || /[\r\n]/.test(path)) return false;
   const name = path.split("?")[0];
-  return name !== SOCKET_PATH && name !== "/api/bridge/events";
+  return name !== SOCKET_PATH && name !== EVENTS_PATH;
 }
 
 /**
@@ -88,32 +110,7 @@ function noConnection(remoteAddress) {
  */
 function dispatchInProcess(app, request = {}) {
   return new Promise((resolve, reject) => {
-    const method = String(request.method || "GET").toUpperCase();
-    const payload = request.body === undefined || request.body === null ? null : Buffer.from(JSON.stringify(request.body), "utf8");
-    const headers = { host: "in-process" };
-    for (const [name, value] of Object.entries(request.headers || {})) {
-      if (typeof value === "string") headers[name.toLowerCase()] = value;
-    }
-    if (payload) {
-      headers["content-type"] = "application/json";
-      headers["content-length"] = String(payload.length);
-    } else {
-      delete headers["content-type"];
-      delete headers["content-length"];
-    }
-    const req = new http.IncomingMessage(noConnection(String(request.remoteAddress || "127.0.0.1")));
-    req.method = method;
-    req.url = String(request.path || "/");
-    req.headers = headers;
-    req.httpVersion = "1.1";
-    req.httpVersionMajor = 1;
-    req.httpVersionMinor = 1;
-    if (payload) req.push(payload);
-    req.push(null);
-    // The whole of it is here: said so, or the request is taken for one cut off when its body has been read.
-    req.complete = true;
-
-    const res = new http.ServerResponse(req);
+    const { req, res } = requestInProcess(request);
     const chunks = [];
     let answered = false;
     const take = (chunk, encoding) => {
@@ -153,6 +150,122 @@ function dispatchInProcess(app, request = {}) {
       }
     }
   });
+}
+
+/** A request and the response it will be answered on, made of what an operation says and with no connection. */
+function requestInProcess(request) {
+  const method = String(request.method || "GET").toUpperCase();
+  const payload = request.body === undefined || request.body === null ? null : Buffer.from(JSON.stringify(request.body), "utf8");
+  const headers = { host: "in-process" };
+  for (const [name, value] of Object.entries(request.headers || {})) {
+    if (typeof value === "string") headers[name.toLowerCase()] = value;
+  }
+  if (payload) {
+    headers["content-type"] = "application/json";
+    headers["content-length"] = String(payload.length);
+  } else {
+    delete headers["content-type"];
+    delete headers["content-length"];
+  }
+  const req = new http.IncomingMessage(noConnection(String(request.remoteAddress || "127.0.0.1")));
+  req.method = method;
+  req.url = String(request.path || "/");
+  req.headers = headers;
+  req.httpVersion = "1.1";
+  req.httpVersionMajor = 1;
+  req.httpVersionMinor = 1;
+  if (payload) req.push(payload);
+  req.push(null);
+  // The whole of it is here: said so, or the request is taken for one cut off when its body has been read.
+  req.complete = true;
+  return { req, res: new http.ServerResponse(req) };
+}
+
+/**
+ * Run a request whose route answers for as long as it is listened to, in this process: the event stream.
+ *
+ *   streamInProcess(app, { method, path, headers, remoteAddress }, { onHead(status), onChunk(buffer), onEnd(), onError(error) })
+ *     -> { close() }
+ *
+ * `onHead` is said once, with the route's status, before the first of what it
+ * writes. `onChunk` is each thing the route writes, as it writes it. `onEnd` is
+ * said once, when the route ends its answer; a path no route has ends with 404,
+ * and something thrown outside of every handler with 500 (and `onError`).
+ *
+ * `close()` is the listener going away. The request is told it has closed, as a
+ * connection lost tells it, which is what a route that streams waits for to let
+ * go of what it holds; nothing the route writes after that is handed on, and
+ * `onEnd` is not said.
+ */
+function streamInProcess(app, request = {}, handlers = {}) {
+  const { req, res } = requestInProcess(request);
+  let headSaid = false;
+  let over = false;
+  const head = () => {
+    if (headSaid) return;
+    headSaid = true;
+    handlers.onHead?.(res.statusCode);
+  };
+  const take = (chunk, encoding) => {
+    if (over || chunk === undefined || chunk === null || typeof chunk === "function") return;
+    head();
+    handlers.onChunk?.(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), typeof encoding === "string" ? encoding : "utf8"));
+  };
+  const finish = () => {
+    if (over) return;
+    head();
+    over = true;
+    handlers.onEnd?.();
+  };
+  const called = (...maybe) => maybe.find((each) => typeof each === "function");
+  res.write = (chunk, encoding, callback) => {
+    take(chunk, encoding);
+    called(encoding, callback)?.();
+    return true;
+  };
+  res.end = (chunk, encoding, callback) => {
+    take(chunk, encoding);
+    finish();
+    called(chunk, encoding, callback)?.();
+    return res;
+  };
+  const outside = (error) => {
+    if (error) handlers.onError?.(error);
+    res.statusCode = error ? 500 : 404;
+    finish();
+  };
+  try {
+    app(req, res, outside);
+  } catch (error) {
+    outside(error);
+  }
+  return {
+    close() {
+      if (over) return;
+      over = true;
+      req.emit("close");
+    },
+  };
+}
+
+/** The frames in what an event stream has written: each `data:` line of each record that is whole, and what is left over. */
+function eventFrames(text) {
+  const frames = [];
+  let rest = text;
+  for (let at = rest.indexOf("\n\n"); at >= 0; at = rest.indexOf("\n\n")) {
+    const record = rest.slice(0, at);
+    rest = rest.slice(at + 2);
+    for (const line of record.split("\n")) {
+      // A comment (the stream's opening line, its heartbeat) is nothing to hand on.
+      if (!line.startsWith("data:")) continue;
+      try {
+        frames.push(JSON.parse(line.slice(5)));
+      } catch {
+        // Not a frame: the stream's own readers let it pass too.
+      }
+    }
+  }
+  return { frames, rest };
 }
 
 /** What a route sent, as the frame carries it: JSON where it is JSON, the text where it is not, null where there is none. */
@@ -205,7 +318,43 @@ function attachPilotSocket(server, app, options = {}) {
     };
     const waiting = setTimeout(() => ws.close(CLOSE.HELLO_EXPECTED, "hello expected"), helloWaitMs);
     waiting.unref?.();
-    ws.on("close", () => clearTimeout(waiting));
+    /** The event stream attached to this socket, where there is one. */
+    let events = null;
+    const letEventsGo = () => {
+      const attached = events;
+      events = null;
+      // (Closing one its route has already ended tells nobody anything.)
+      attached?.close();
+    };
+    const attachEvents = (n) => {
+      letEventsGo();
+      let status = 0;
+      let unread = "";
+      const refusal = [];
+      events = streamInProcess(app, { method: "GET", path: EVENTS_PATH, headers: { authorization: `Bearer ${token}` }, remoteAddress }, {
+        onHead(code) {
+          status = code;
+          if (code === 200) say({ events: { open: true, n } });
+        },
+        onChunk(buffer) {
+          if (status !== 200) {
+            refusal.push(buffer);
+            return;
+          }
+          const read = eventFrames(unread + buffer.toString("utf8"));
+          unread = read.rest;
+          for (const frame of read.frames) say({ event: frame });
+        },
+        onEnd() {
+          say({ events: { ended: true, n, status, body: status === 200 ? null : replyBody(Buffer.concat(refusal)) } });
+        },
+        onError: (error) => onError(error),
+      });
+    };
+    ws.on("close", () => {
+      clearTimeout(waiting);
+      letEventsGo();
+    });
     ws.on("error", (error) => onError(error));
     ws.on("message", (data, isBinary) => {
       let frame = null;
@@ -237,6 +386,12 @@ function attachPilotSocket(server, app, options = {}) {
       }
       if (frame === null || typeof frame !== "object" || Array.isArray(frame)) {
         say({ id: null, error: { code: "BAD_FRAME", message: "A frame is a JSON object, sent as text." } });
+        return;
+      }
+      if (frame.events !== undefined) {
+        if (frame.events === "open") attachEvents(typeof frame.n === "number" ? frame.n : null);
+        else if (frame.events === "close") letEventsGo();
+        else say({ id: null, error: { code: "BAD_FRAME", message: "The event stream is asked to open or to close." } });
         return;
       }
       const id = typeof frame.id === "number" || typeof frame.id === "string" ? frame.id : null;
@@ -278,4 +433,4 @@ function attachPilotSocket(server, app, options = {}) {
   };
 }
 
-module.exports = { CLOSE, MAX_FRAME_BYTES, SOCKET_PATH, attachPilotSocket, dispatchInProcess, isOperationPath };
+module.exports = { CLOSE, EVENTS_PATH, MAX_FRAME_BYTES, SOCKET_PATH, attachPilotSocket, dispatchInProcess, eventFrames, isOperationPath, streamInProcess };

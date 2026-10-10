@@ -9,8 +9,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { loadCloneGrade } from "./api.ts";
+import { loadCloneGrade, subscribeBridgeEvents } from "./api.ts";
 import { TRANSPORT_SETTING_KEY, socketTransport } from "./pageFetch.ts";
+import { clearSessionToken, setSessionToken } from "./sessionToken.ts";
 import { MAX_IN_FLIGHT, bridgeLane } from "./transport.ts";
 import { callMethod } from "../bridge/callMethod.ts";
 
@@ -39,6 +40,23 @@ class PageSocket {
   }
 }
 
+/** The browser's event stream, as much of it as the page uses. */
+class PageEventSource {
+  static readonly made: PageEventSource[] = [];
+  onopen: ((event?: unknown) => void) | null = null;
+  onmessage: ((event: { data: string }) => void) | null = null;
+  onerror: ((event?: unknown) => void) | null = null;
+  closed = false;
+  readonly url: string;
+  constructor(url: string) {
+    this.url = url;
+    PageEventSource.made.push(this);
+  }
+  close(): void {
+    this.closed = true;
+  }
+}
+
 let setting: string | null = "socket";
 /** What went over HTTP and has not been answered yet. */
 const waiting: { path: unknown; answer: () => void }[] = [];
@@ -47,6 +65,7 @@ let fetched = 0;
 Object.defineProperty(globalThis, "location", { value: { protocol: "http:", host: "127.0.0.1:26500" }, configurable: true });
 Object.defineProperty(globalThis, "localStorage", { value: { getItem: (key: string) => (key === TRANSPORT_SETTING_KEY ? setting : null) }, configurable: true });
 Object.defineProperty(globalThis, "WebSocket", { value: PageSocket, configurable: true, writable: true });
+Object.defineProperty(globalThis, "EventSource", { value: PageEventSource, configurable: true, writable: true });
 globalThis.fetch = ((input: unknown) => {
   fetched += 1;
   return new Promise<Response>((resolve) => {
@@ -138,5 +157,87 @@ test("with the page set to the socket, what goes on its open line waits for no l
   }
   await Promise.all([...overHttp, own, ownCall, back, backCall]);
   assert.deepEqual([lanes(), handed, socket.sent.length], [[0, 0, 0], ["/api/bridge/clone-grade", "/api/bridge/call"], 4]);
+  socketTransport()?.close();
+});
+
+test("with the page set to the socket, a pilot's pushed notices come on it and no event stream is opened; the event stream is the way back", () => {
+  const heard: unknown[] = [];
+  const handlers = (name: string) => ({
+    onFrame: (frame: unknown) => heard.push([name, "frame", frame]),
+    onOpen: () => heard.push([name, "open"]),
+    onError: () => heard.push([name, "error"]),
+  });
+  const sockets = PageSocket.made.length;
+
+  // Listened to as the flow does it, with the session's own token: on a socket, made now, and nothing over HTTP.
+  const live = subscribeBridgeEvents(handlers("live"), { token: "T9" });
+  assert.deepEqual([PageSocket.made.length - sockets, PageEventSource.made.length], [1, 0]);
+  const socket = PageSocket.made.at(-1)!;
+  socket.onopen?.({});
+  socket.say({ hello: { ok: true } });
+  assert.deepEqual(socket.frames(), [{ hello: { token: "T9" } }, { events: "open", n: 1 }]);
+  socket.say({ events: { open: true, n: 1 } });
+  socket.say({ event: { source: "evejs-web-bff", type: "stream-status", state: "live", detail: null } });
+  assert.deepEqual(heard.splice(0), [["live", "open"], ["live", "frame", { source: "evejs-web-bff", type: "stream-status", state: "live", detail: null }]]);
+  // Ended by the BFF: as an event stream that failed says it, and still no event stream opened.
+  socket.say({ events: { ended: true, n: 1, status: 200, body: null } });
+  assert.deepEqual([heard.splice(0), PageEventSource.made.length], [[["live", "error"]], 0]);
+  live.close();
+
+  // Stopped by the page (the pilot goes offline): the BFF is told to let the stream go.
+  const brief = subscribeBridgeEvents(handlers("brief"), { token: "T9" });
+  assert.deepEqual(socket.frames().at(-1), { events: "open", n: 2 });
+  brief.close();
+  assert.deepEqual(socket.frames().at(-1), { events: "close" });
+
+  // Listened to again (a pilot chosen again), and then the socket goes down: the event stream is opened in its place.
+  const again = subscribeBridgeEvents(handlers("again"), { token: "T9" });
+  assert.deepEqual(socket.frames().at(-1), { events: "open", n: 3 });
+  socket.say({ events: { open: true, n: 3 } });
+  socket.onclose?.({ code: 1006 });
+  assert.equal(PageEventSource.made.length, 1);
+  const stream = PageEventSource.made[0]!;
+  assert.equal(stream.url, "/api/bridge/events?access_token=T9");
+  stream.onopen?.();
+  stream.onmessage?.({ data: JSON.stringify({ over: "http" }) });
+  stream.onmessage?.({ data: "not json" });
+  stream.onerror?.();
+  assert.deepEqual(heard.splice(0), [["again", "open"], ["again", "open"], ["again", "frame", { over: "http" }], ["again", "error"]]);
+  again.close();
+  assert.equal(stream.closed, true);
+  stream.onmessage?.({ data: JSON.stringify({ after: "close" }) });
+  assert.deepEqual(heard, []);
+
+  // Stopped, and only then does its socket go down: nothing is opened for a listener that has gone.
+  const made = PageSocket.made.length;
+  const stopped = subscribeBridgeEvents(handlers("stopped"), { token: "T10" });
+  assert.equal(PageSocket.made.length, made + 1);
+  stopped.close();
+  PageSocket.made.at(-1)!.onclose?.({ code: 1006 });
+  assert.deepEqual([heard, PageEventSource.made.length], [[], 1]);
+
+  // An event source handed in is used as it is, and a session with no token has nothing to say hello with.
+  const handed: string[] = [];
+  subscribeBridgeEvents(handlers("handed"), { token: "T11", eventSource: (url) => { handed.push(url); return new PageEventSource(url); } }).close();
+  subscribeBridgeEvents(handlers("tokenless"), { token: null }).close();
+  assert.deepEqual([handed, heard.splice(0), PageSocket.made.length], [["/api/bridge/events?access_token=T11"], [["tokenless", "error"]], made + 1]);
+
+  // A flow with no token of its own listens with the tab's: on that token's socket.
+  setSessionToken("the-tab's-own");
+  subscribeBridgeEvents(handlers("tab")).close();
+  clearSessionToken();
+  PageSocket.made.at(-1)!.onopen?.({});
+  assert.deepEqual([PageSocket.made.length, PageSocket.made.at(-1)!.frames()], [made + 2, [{ hello: { token: "the-tab's-own" } }]]);
+  // And signed out, with no token at all, it has only the event stream to ask.
+  const tokenless = PageEventSource.made.length;
+  subscribeBridgeEvents(handlers("signed out")).close();
+  assert.deepEqual([PageSocket.made.length, PageEventSource.made.length - tokenless, PageEventSource.made.at(-1)!.url], [made + 2, 1, "/api/bridge/events"]);
+
+  // And a page not set to the socket opens its event stream, as it always has.
+  setting = null;
+  const before = PageEventSource.made.length;
+  subscribeBridgeEvents(handlers("http"), { token: "T12" }).close();
+  setting = "socket";
+  assert.deepEqual([PageEventSource.made.length - before, PageEventSource.made.at(-1)!.url, PageSocket.made.length], [1, "/api/bridge/events?access_token=T12", made + 2]);
   socketTransport()?.close();
 });

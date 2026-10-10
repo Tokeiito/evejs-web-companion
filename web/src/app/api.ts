@@ -21,6 +21,7 @@ import {
 } from "../bridge/charCreation.ts";
 import {
   clearSessionToken,
+  getSessionToken,
   sessionAuthHeaders,
   setSessionToken,
   tokenAuthHeaders,
@@ -32,7 +33,7 @@ import {
   bridgeLane,
   type RequestPriority,
 } from "./transport.ts";
-import { pageCarries, pageFetch } from "./pageFetch.ts";
+import { pageCarries, pageFetch, pageSocket } from "./pageFetch.ts";
 import type { JsonValue } from "../bridge/wire.ts";
 import { decodeClientStates } from "../bridge/boundCrimewatch.ts";
 import type { CrimewatchReading, SafetyLevel } from "../space/crimewatch.ts";
@@ -2575,6 +2576,11 @@ export async function sendChat(
 // a LIVENESS channel only — every bridge response still carries its notification
 // drain — so a browser without EventSource, or one whose stream never connects,
 // simply keeps polling.
+//
+// Where the page is set to the tab's socket (app/pageFetch.ts), the same frames
+// come on the session's socket and no EventSource is opened: the BFF runs this
+// same route for as long as the page listens (src/pilotSocket.js). The
+// EventSource is the way back, opened if the socket is not to be had.
 
 export interface BridgeEventSubscription {
   close(): void;
@@ -2632,50 +2638,86 @@ export function subscribeBridgeEvents(
             withCredentials: true,
           }) as unknown as EventSourceLike
       : null);
-  if (!factory) {
-    // No EventSource in this environment: report the failure once so the caller
-    // stays on its polls rather than waiting for events that cannot arrive.
-    handlers.onError?.();
-    return { close() {} };
-  }
-
-  let source: EventSourceLike;
-  try {
-    source = factory(url);
-  } catch {
-    handlers.onError?.();
-    return { close() {} };
-  }
 
   let closed = false;
-  source.onopen = () => {
-    if (!closed) {
-      handlers.onOpen?.();
-    }
-  };
-  source.onmessage = (event) => {
-    if (closed) {
+  let source: EventSourceLike | null = null;
+  /** The event stream over HTTP: the only way where the page is not on its socket, and the way back where it is. */
+  const overHttp = (): void => {
+    if (!factory) {
+      // No EventSource in this environment: report the failure once so the caller
+      // stays on its polls rather than waiting for events that cannot arrive.
+      handlers.onError?.();
       return;
     }
-    let frame: JsonValue;
+    let made: EventSourceLike;
     try {
-      frame = JSON.parse(event.data) as JsonValue;
+      made = factory(url);
     } catch {
-      return; // A malformed frame is ignored, never thrown at the page.
-    }
-    handlers.onFrame(frame);
-  };
-  source.onerror = () => {
-    if (!closed) {
       handlers.onError?.();
+      return;
     }
+    source = made;
+    made.onopen = () => {
+      if (!closed) {
+        handlers.onOpen?.();
+      }
+    };
+    made.onmessage = (event) => {
+      if (closed) {
+        return;
+      }
+      let frame: JsonValue;
+      try {
+        frame = JSON.parse(event.data) as JsonValue;
+      } catch {
+        return; // A malformed frame is ignored, never thrown at the page.
+      }
+      handlers.onFrame(frame);
+    };
+    made.onerror = () => {
+      if (!closed) {
+        handlers.onError?.();
+      }
+    };
   };
+
+  // On the session's socket, where the page is set to it and the session has a token to say hello with. An
+  // event source handed in is used as it is, as a fetch handed in is.
+  const token = "token" in options ? options.token : getSessionToken();
+  const socket = options.eventSource === undefined && typeof token === "string" ? pageSocket() : null;
+  const pushes =
+    socket === null
+      ? null
+      : socket.listen(token as string, {
+          onOpen: () => {
+            if (!closed) {
+              handlers.onOpen?.();
+            }
+          },
+          onFrame: (frame) => {
+            if (!closed) {
+              handlers.onFrame(frame as JsonValue);
+            }
+          },
+          // Refused or ended by the BFF: as an event stream that failed says it. It is not asked for again here;
+          // the page listens anew each time a pilot is chosen.
+          onEnded: () => {
+            if (!closed) {
+              handlers.onError?.();
+            }
+          },
+          onUnavailable: overHttp,
+        });
+  if (socket === null) {
+    overHttp();
+  }
 
   return {
     close() {
       closed = true;
+      pushes?.close();
       try {
-        source.close();
+        source?.close();
       } catch {
         // Already closed.
       }

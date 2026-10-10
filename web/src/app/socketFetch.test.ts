@@ -7,7 +7,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createSocketFetch, operationOf, responseOf, type SocketLike } from "./socketFetch.ts";
+import { createSocketFetch, operationOf, responseOf, type PushHandlers, type SocketLike } from "./socketFetch.ts";
 
 /** A socket the test drives: what was sent on it, and the BFF's side said by hand. */
 class FakeSocket implements SocketLike {
@@ -50,6 +50,7 @@ interface Rig {
   readonly fetched: { input: unknown; init: RequestInit | undefined }[];
   readonly stats: () => { carried: number; fetched: number; open: number };
   readonly wouldCarry: (input: unknown, init: RequestInit | undefined) => boolean;
+  readonly listen: (token: string, handlers: PushHandlers) => { close(): void };
   readonly close: () => void;
   clock: number;
   failOpening: boolean;
@@ -65,6 +66,7 @@ function rig(life: { warmUp?: number; idleMs?: number } = { warmUp: 0 }): Rig {
     fetched,
     stats: () => ({ carried: 0, fetched: 0, open: 0 }),
     wouldCarry: () => false,
+    listen: () => ({ close() {} }),
     close: () => {},
     clock: 1_000_000,
     failOpening: false,
@@ -84,7 +86,7 @@ function rig(life: { warmUp?: number; idleMs?: number } = { warmUp: 0 }): Rig {
     retryMs: 5_000,
     ...life,
   });
-  return Object.assign(made, { fetch: carried.fetch, stats: carried.stats, wouldCarry: carried.wouldCarry, close: carried.close });
+  return Object.assign(made, { fetch: carried.fetch, stats: carried.stats, wouldCarry: carried.wouldCarry, listen: carried.listen, close: carried.close });
 }
 
 const asToken = (token: string, more: RequestInit = {}): RequestInit => ({ method: "GET", ...more, headers: { authorization: `Bearer ${token}`, ...((more.headers as Record<string, string> | undefined) ?? {}) } });
@@ -493,4 +495,215 @@ test("whether a request would go on an open socket is said without asking anythi
   socket.end(1006);
   assert.equal(page.wouldCarry("/api/bridge/skills", request), false);
   assert.equal(page.sockets.length, 1);
+});
+
+// --- the pushed notices ------------------------------------------------------
+//
+// A session's event stream, listened to on its socket. What has to hold: the listener is told what an event
+// stream would tell it, of its own stream and no other's; and where the socket is not to be had it is told that,
+// so that the page's EventSource can be the way back.
+
+/** A listener that keeps what it is told, under a name. */
+function hearing(heard: unknown[], name: string): PushHandlers {
+  return {
+    onOpen: () => heard.push([name, "open"]),
+    onFrame: (frame) => heard.push([name, "frame", frame]),
+    onEnded: () => heard.push([name, "ended"]),
+    onUnavailable: () => heard.push([name, "unavailable"]),
+  };
+}
+
+test("a session's pushed notices are listened to on its socket: asked for once it is open, and each frame handed on", async () => {
+  const page = rig({});
+  const heard: unknown[] = [];
+  // A session that is listened to is one that stays: its socket is made now, though it has asked nothing yet.
+  page.listen("T1", hearing(heard, "first"));
+  assert.equal(page.sockets.length, 1);
+  const socket = page.sockets[0]!;
+  assert.deepEqual(socket.frames(), []);
+  socket.open();
+  assert.deepEqual(socket.frames(), [{ hello: { token: "T1" } }]);
+  socket.say({ hello: { ok: true } });
+  assert.deepEqual(socket.frames().slice(1), [{ events: "open", n: 1 }]);
+  // (A hello said again changes nothing: the stream is not asked for twice.)
+  socket.say({ hello: { ok: true } });
+  assert.equal(socket.frames().length, 2);
+  assert.deepEqual(heard, []);
+  socket.say({ events: { open: true, n: 1 } });
+  socket.say({ event: { source: "evejs-web-bff", type: "stream-status", state: "live", detail: null } });
+  socket.say({ event: { source: "evejs-web-gateway", type: "event", cursor: { epoch: "e1", sequence: 1 }, event: { kind: "chat" } } });
+  assert.deepEqual(heard, [
+    ["first", "open"],
+    ["first", "frame", { source: "evejs-web-bff", type: "stream-status", state: "live", detail: null }],
+    ["first", "frame", { source: "evejs-web-gateway", type: "event", cursor: { epoch: "e1", sequence: 1 }, event: { kind: "chat" } }],
+  ]);
+  // Its requests go on the same socket from the first of them, with the frames between.
+  const asked = page.fetch("/api/bridge/skills", asToken("T1"));
+  assert.deepEqual(socket.frames().at(-1), { id: 1, method: "GET", path: "/api/bridge/skills" });
+  socket.say({ event: { between: true } });
+  socket.say({ id: 1, status: 200, body: { ok: true } });
+  assert.equal((await asked).status, 200);
+  assert.deepEqual(heard.at(-1), ["first", "frame", { between: true }]);
+  assert.deepEqual([page.sockets.length, page.fetched.length, page.stats()], [1, 0, { carried: 1, fetched: 0, open: 1 }]);
+  // On a socket already open it is asked for as it is listened to. Nothing said that is no frame of the stream's is handed on.
+  const other = rig();
+  void other.fetch("/api/bridge/skills", asToken("T2"));
+  other.sockets[0]!.greet();
+  other.listen("T2", hearing(heard, "other"));
+  assert.deepEqual(other.sockets[0]!.frames().at(-1), { events: "open", n: 1 });
+  other.sockets[0]!.say({ events: "something else" });
+  other.sockets[0]!.say({ events: null });
+  other.sockets[0]!.say({ events: { open: true } });
+  other.sockets[0]!.say({ events: { n: 1 } });
+  assert.equal(heard.filter((each) => (each as unknown[])[0] === "other").length, 0);
+});
+
+test("listening again takes the place of the one before, and what is said of the old stream is nothing to the new", () => {
+  const page = rig();
+  const heard: unknown[] = [];
+  const first = page.listen("T1", hearing(heard, "first"));
+  const socket = page.sockets[0]!;
+  socket.greet();
+  socket.say({ events: { open: true, n: 1 } });
+  socket.say({ event: { for: "first" } });
+  const second = page.listen("T1", hearing(heard, "second"));
+  assert.deepEqual(socket.frames().slice(1), [{ events: "open", n: 1 }, { events: "open", n: 2 }]);
+  // The one before is told nothing, and its closing now says nothing to the BFF: the stream there is the new one's.
+  first.close();
+  assert.equal(socket.frames().length, 3);
+  // The last of the old stream: a frame before the new one is said to be attached, and the old one's ending.
+  socket.say({ event: { for: "nobody" } });
+  socket.say({ events: { ended: true, n: 1, status: 200, body: null } });
+  socket.say({ events: { open: true, n: 1 } });
+  assert.deepEqual(heard, [["first", "open"], ["first", "frame", { for: "first" }]]);
+  socket.say({ events: { open: true, n: 2 } });
+  socket.say({ event: { for: "second" } });
+  assert.deepEqual(heard.slice(2), [["second", "open"], ["second", "frame", { for: "second" }]]);
+  second.close();
+  assert.deepEqual(socket.frames().at(-1), { events: "close" });
+});
+
+test("a listener that stops is told nothing more, and the BFF is told once; one the BFF ends is told so, once", async () => {
+  const page = rig();
+  const heard: unknown[] = [];
+  const listening = page.listen("T1", hearing(heard, "first"));
+  const socket = page.sockets[0]!;
+  socket.greet();
+  socket.say({ events: { open: true, n: 1 } });
+  listening.close();
+  listening.close();
+  assert.deepEqual(socket.frames().slice(2), [{ events: "close" }]);
+  socket.say({ event: { late: true } });
+  socket.say({ events: { ended: true, n: 1, status: 200, body: null } });
+  assert.deepEqual(heard, [["first", "open"]]);
+
+  // Stopped before the socket was open: nothing is asked for when it opens.
+  const early = rig();
+  early.listen("T1", hearing(heard, "early")).close();
+  early.sockets[0]!.greet();
+  assert.deepEqual(early.sockets[0]!.frames(), [{ hello: { token: "T1" } }]);
+
+  // Refused by the BFF (nobody flown), or ended by it: said once, and nothing after. The socket goes on.
+  const again = page.listen("T1", hearing(heard, "again"));
+  assert.deepEqual(socket.frames().at(-1), { events: "open", n: 2 });
+  socket.say({ events: { ended: true, n: 2, status: 409, body: { ok: false, error: "NO_LIVE_SESSION" } } });
+  socket.say({ events: { ended: true, n: 2, status: 409, body: null } });
+  socket.say({ event: { late: true } });
+  assert.deepEqual(heard.slice(1), [["again", "ended"]]);
+  const sentBefore = socket.frames().length;
+  again.close();
+  assert.equal(socket.frames().length, sentBefore, "a stream that has ended is not closed again");
+  const asked = page.fetch("/api/bridge/skills", asToken("T1"));
+  socket.say({ id: 1, status: 200, body: { ok: true } });
+  assert.equal((await asked).status, 200);
+});
+
+test("where the socket is not to be had, whoever listens is told so: the page's event stream is the way back", () => {
+  const heard: unknown[] = [];
+  // No socket can be made.
+  const none = rig();
+  none.failOpening = true;
+  none.listen("T1", hearing(heard, "none")).close();
+  assert.deepEqual([heard.splice(0), none.sockets.length], [[["none", "unavailable"]], 0]);
+
+  // It never opens; and for a while it is not tried again, so a listener then is told at once.
+  const never = rig();
+  never.listen("T1", hearing(heard, "never"));
+  never.sockets[0]!.end(1006);
+  never.listen("T1", hearing(heard, "soon after"));
+  assert.deepEqual([heard.splice(0), never.sockets.length], [[["never", "unavailable"], ["soon after", "unavailable"]], 1]);
+  never.clock += 5_000;
+  never.listen("T1", hearing(heard, "later"));
+  assert.deepEqual([heard.splice(0), never.sockets.length], [[], 2]);
+
+  // The BFF does not know the token: for good.
+  const refused = rig();
+  refused.listen("T1", hearing(heard, "refused"));
+  refused.sockets[0]!.open();
+  refused.sockets[0]!.end(4401);
+  refused.clock += 60_000;
+  refused.listen("T1", hearing(heard, "refused again"));
+  assert.deepEqual([heard.splice(0), refused.sockets.length], [[["refused", "unavailable"], ["refused again", "unavailable"]], 1]);
+
+  // It goes down while listened on: told once, and nothing of the line's after.
+  const lost = rig();
+  const listening = lost.listen("T1", hearing(heard, "lost"));
+  lost.sockets[0]!.greet();
+  lost.sockets[0]!.say({ events: { open: true, n: 1 } });
+  lost.sockets[0]!.end(1006);
+  lost.sockets[0]!.end(1006);
+  assert.deepEqual(heard.splice(0), [["lost", "open"], ["lost", "unavailable"]]);
+  // The session's next socket (a request makes it, when the wait is up) is not listened on for it: it was sent
+  // another way, and would otherwise be told everything twice.
+  lost.clock += 5_000;
+  void lost.fetch("/api/bridge/skills", asToken("T1"));
+  lost.sockets[1]!.greet();
+  assert.deepEqual(lost.sockets[1]!.frames(), [{ hello: { token: "T1" } }, { id: 1, method: "GET", path: "/api/bridge/skills" }]);
+  listening.close();
+  assert.equal(lost.sockets[1]!.frames().length, 2);
+  assert.deepEqual(heard, []);
+
+  // The asking itself cannot be put on the socket.
+  const mute = rig();
+  void mute.fetch("/api/bridge/skills", asToken("T1"));
+  mute.sockets[0]!.greet();
+  mute.sockets[0]!.refuseSends = true;
+  mute.listen("T1", hearing(heard, "mute")).close();
+  assert.deepEqual(heard.splice(0), [["mute", "unavailable"]]);
+  assert.equal(mute.sockets[0]!.frames().some((frame) => (frame as { events?: unknown }).events !== undefined), false);
+});
+
+test("a socket being listened on is not closed for having nothing asked on it; one let go on purpose tells its listener nothing", async () => {
+  const page = rig({ warmUp: 0, idleMs: 1_000 });
+  const heard: unknown[] = [];
+  const listening = page.listen("T1", hearing(heard, "first"));
+  const socket = page.sockets[0]!;
+  socket.greet();
+  socket.say({ events: { open: true, n: 1 } });
+  // A long while with nothing asked on it, and then another session asks something: it is kept.
+  page.clock += 60_000;
+  void page.fetch("/api/bridge/skills", asToken("T2"));
+  assert.equal(socket.closedByPage, false);
+  // No longer listened on, and left as long again: closed like any other.
+  listening.close();
+  page.clock += 60_000;
+  void page.fetch("/api/bridge/skills", asToken("T2"));
+  assert.equal(socket.closedByPage, true);
+  assert.deepEqual(heard, [["first", "open"]]);
+
+  // Logged out on its socket: the socket is closed by the page, and the listener is not sent another way.
+  const out = rig();
+  out.listen("T1", hearing(heard, "out"));
+  out.sockets[0]!.greet();
+  out.sockets[0]!.say({ events: { open: true, n: 1 } });
+  const gone = out.fetch("/api/logout", asToken("T1", { method: "POST", body: "{}" }));
+  out.sockets[0]!.say({ id: 1, status: 200, body: { ok: true } });
+  await gone;
+  assert.equal(out.sockets[0]!.closedByPage, true);
+  // The page closing every socket: the same.
+  const all = rig();
+  all.listen("T1", hearing(heard, "all"));
+  all.sockets[0]!.greet();
+  all.close();
+  assert.deepEqual(heard.slice(1), [["out", "open"]]);
 });

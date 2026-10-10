@@ -25,6 +25,15 @@
 // session is logged out on it; and one nothing has been asked on for a while is
 // closed when something else is asked.
 //
+// ⚠ THE PUSHED NOTICES COME ON IT TOO. A session's event stream (the BFF's
+// Server-Sent Events, GET /api/bridge/events) is listened to on its socket with
+// `listen`: the BFF runs that route for as long as the page listens and hands
+// each frame on. A session that is listened to is one that stays, so it is given
+// its socket then, whatever it has asked so far, and a socket being listened on
+// is not closed for having had nothing asked on it. Where the socket is not to
+// be had, the listener is told so, and the page's `EventSource` is the way back
+// (app/api.ts).
+//
 // ⚠ WHAT IS NOT KNOWN IS NOT RETRIED. A request sent and not answered when the
 // socket closes may have been run: it fails, as a fetch cut off does, and the
 // caller's own handling of a request that failed decides what happens next. A
@@ -64,8 +73,25 @@ export interface SocketFetchStats {
   readonly open: number;
 }
 
+/** What a listener to a session's pushed notices is told. */
+export interface PushHandlers {
+  /** The BFF has attached the session's event stream to the socket. */
+  onOpen(): void;
+  /** One frame of the event stream, as the BFF published it. */
+  onFrame(frame: unknown): void;
+  /** The BFF refused the stream, or ended it. Nothing more comes of this listening. */
+  onEnded(): void;
+  /** The socket is not to be had (it never opened, was refused, or went down): the pushes must come another way. */
+  onUnavailable(): void;
+}
+
 export interface SocketFetch {
   readonly fetch: typeof fetch;
+  /**
+   * Listen to the pushed notices of a token's session, on its socket. One listener for a token: listening again
+   * takes the place of the one before, which is told nothing. `close()` stops it.
+   */
+  listen(token: string, handlers: PushHandlers): { close(): void };
   /**
    * Whether this request, asked now, would be sent on a socket that is open. Asks nothing and changes nothing: it is
    * how the page's lane knows a request needs none of the browser's connections (app/transport.ts).
@@ -162,6 +188,14 @@ interface Waiting {
   readonly forget: () => void;
 }
 
+interface Listener {
+  /** This listening's number, said to the BFF and said back: what is said of another is not this one's. */
+  readonly n: number;
+  /** The BFF has said this one's stream is attached: frames from here on are its own. */
+  open: boolean;
+  readonly handlers: PushHandlers;
+}
+
 /** One token's socket: not yet open, open, or down until a time (for good when the token was refused). */
 interface Line {
   socket: SocketLike | null;
@@ -175,6 +209,8 @@ interface Line {
   readonly queued: Waiting[];
   /** Sent, and not yet answered. */
   readonly sent: Map<number, Waiting>;
+  /** Who is listening to the session's pushed notices on it, if anyone. */
+  listener: Listener | null;
 }
 
 export function createSocketFetch(deps: SocketFetchDeps): SocketFetch {
@@ -185,12 +221,15 @@ export function createSocketFetch(deps: SocketFetchDeps): SocketFetch {
   const lines = new Map<string, Line>();
   /** How many requests each token without a socket has made. */
   const asked = new Map<string, number>();
+  let listenings = 0;
 
   /** Let a token's socket go: closed if it is there, and nothing kept of it. What waited on it is dealt with as when it goes down. */
   function letGo(token: string): void {
     const line = lines.get(token);
     if (line === undefined) return;
     const socket = line.socket;
+    // Let go on purpose (a logout, a socket left idle, the page closing them all): its listener is not sent another way.
+    line.listener = null;
     down(line, token, undefined);
     lines.delete(token);
     try {
@@ -203,7 +242,7 @@ export function createSocketFetch(deps: SocketFetchDeps): SocketFetch {
   /** Close what has had nothing asked on it for too long, and has nothing waiting. */
   function sweep(keep: string): void {
     for (const [token, line] of lines) {
-      if (token === keep || line.queued.length > 0 || line.sent.size > 0) continue;
+      if (token === keep || line.queued.length > 0 || line.sent.size > 0 || line.listener !== null) continue;
       if (now() - line.lastAsked >= idleMs) letGo(token);
     }
   }
@@ -248,11 +287,28 @@ export function createSocketFetch(deps: SocketFetchDeps): SocketFetch {
       waiting.reject(new TypeError(`The socket closed before ${waiting.operation.path} was answered.`));
     }
     line.sent.clear();
+    // Whoever listened here is told the socket is not to be had, and is nothing of this line's any more.
+    const listener = line.listener;
+    line.listener = null;
+    listener?.handlers.onUnavailable();
     void token;
   }
 
+  /** Ask the BFF to attach the session's event stream, for the line's listener. */
+  function askForPushes(line: Line): void {
+    const listener = line.listener;
+    if (listener === null) return;
+    try {
+      line.socket?.send(JSON.stringify({ events: "open", n: listener.n }));
+    } catch {
+      // It could not be asked for on this socket: another way, then.
+      line.listener = null;
+      listener.handlers.onUnavailable();
+    }
+  }
+
   function connect(token: string): Line {
-    const line: Line = lines.get(token) ?? { socket: null, state: "down", retryAt: 0, refused: false, nextID: 0, lastAsked: now(), queued: [], sent: new Map() };
+    const line: Line = lines.get(token) ?? { socket: null, state: "down", retryAt: 0, refused: false, nextID: 0, lastAsked: now(), queued: [], sent: new Map(), listener: null };
     lines.set(token, line);
     line.state = "connecting";
     let socket: SocketLike;
@@ -282,8 +338,30 @@ export function createSocketFetch(deps: SocketFetchDeps): SocketFetch {
       }
       if (frame.hello !== undefined) {
         // (Said again on an open socket, it finds nothing waiting and changes nothing.)
+        const wasOpen = line.state === "open";
         line.state = "open";
         for (const waiting of line.queued.splice(0)) send(line, waiting);
+        // Listened to before the socket was open: asked for now that it is.
+        if (!wasOpen) askForPushes(line);
+        return;
+      }
+      if (frame.events !== undefined) {
+        const said = frame.events !== null && typeof frame.events === "object" ? (frame.events as Record<string, unknown>) : {};
+        const listener = line.listener;
+        // Said of a stream this line has since let go: nothing to the one it has now.
+        if (listener === null || said.n !== listener.n) return;
+        if (said.open === true) {
+          listener.open = true;
+          listener.handlers.onOpen();
+        } else if (said.ended === true) {
+          line.listener = null;
+          listener.handlers.onEnded();
+        }
+        return;
+      }
+      if (frame.event !== undefined) {
+        // A frame that comes before this listener's stream is said to be attached is the last of another's.
+        if (line.listener?.open === true) line.listener.handlers.onFrame(frame.event);
         return;
       }
       const id = typeof frame.id === "number" ? frame.id : null;
@@ -379,6 +457,33 @@ export function createSocketFetch(deps: SocketFetchDeps): SocketFetch {
 
   return {
     fetch: socketFetch,
+    listen(token, handlers) {
+      // A session that is listened to is one that stays: its socket is made now, whatever it has asked so far.
+      let line = lines.get(token);
+      if (line === undefined || (line.state === "down" && !line.refused && now() >= line.retryAt)) {
+        line = connect(token);
+      }
+      if (line.state === "down") {
+        handlers.onUnavailable();
+        return { close() {} };
+      }
+      const current = line;
+      const listener: Listener = { n: (listenings += 1), open: false, handlers };
+      current.listener = listener;
+      if (current.state === "open") askForPushes(current);
+      return {
+        close() {
+          if (current.listener !== listener) return;
+          current.listener = null;
+          if (current.state !== "open") return;
+          try {
+            current.socket?.send(JSON.stringify({ events: "close" }));
+          } catch {
+            // The socket is going: its stream goes with it.
+          }
+        },
+      };
+    },
     wouldCarry(input, init) {
       const operation = operationOf(input, init);
       return operation !== null && lines.get(operation.token)?.state === "open";
