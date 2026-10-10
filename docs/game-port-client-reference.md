@@ -1230,6 +1230,19 @@ Porpoise with a Medium Industrial Core I and a Medium Asteroid Ore Compressor I 
 list 334 at 66,000 m. The game port's row gives the widest range and the lists, as the
 gateway's does.
 
+**An ice site and an ore anomaly, 2026-10-10.** A client reaches one by the scanner: the
+sites of its system come with `scanMgr.GetFullState`, each with a label (`targetID`,
+"MTK-452") and an archetype (27 an ore anomaly, 28 ice, 24 a combat site among those seen),
+and the warp is `CmdWarpToStuff("scan", label)`. On the grid the rocks are ordinary slim
+items of the Asteroid category whose type is what they yield: ice is one of them (White
+Glaze, group 465). The site's own things are celestials to a client: the ice field's anchor
+and its marker are of the asteroid belt's group (type 17774), an anomaly's marker is of
+group 885, its scenery of groups 226 and 227. The web gateway's snapshot has the server's
+own names for those four ("iceFieldAnchor", "siteObjectiveMarker", "universeAnomalySite",
+"siteEnvironmentProp"); the game port's has what the category and group say. Rows were set
+side by side on both grids in Halaima: the same count, the rocks the same but for what is
+left in them.
+
 **The map's stations, 2026-10-10.** `map.GetStationInfo()` is asked once by the client's UI
 service and kept for the client's life (`uisvc.py` 246), and by five other callers through the
 object cache. On the game port the first asking is answered with a cached reference, which

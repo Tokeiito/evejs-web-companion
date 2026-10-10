@@ -398,6 +398,16 @@ Take these defaults, and list each under "For the operator" in the log so they c
   online pilot in the tally. `training-walk.js <scratch> <bff> <account> <id> <out.json>` does
   both for Pilot Training's reads and prints a digest of each answer; `roster-flown.js` reads
   the hangar's roster rows with one pilot flown.
+- **A site for a check:** `sites-scan.js <eve.js root> <first systemID> <count>` asks the
+  server's own generator which systems have an ice site (run it from `eve.js/server`);
+  `/solar <system name>` through the GM route moves an undocked pilot there; and
+  `ice-walk.js <scratch> <bff> <account> <id> <out.json> <system>` reads the scanner's sites
+  (`/api/bridge/bound-small-services`, `GetFullState`), warps to the ice one and then an ore
+  one by label (`/api/bridge/flight/warp-scan`), and prints each grid's rows by shape.
+  Halaima (30002781) has an ice site.
+- **What the server's code calls a thing is not what a row calls it.** The site service
+  makes an ice chunk with the kind "iceChunk"; the gateway's row for it says "asteroid". Read
+  the row.
 - **Every pilot of every account, chosen in turn:** `every-pilot.js <scratch> <bff>
   <store.sqlite> [accounts]` (save the store first; a login brings a pilot online).
 - **Both BFFs run the code they were started on.** A change to a route's answer shows through
