@@ -147,7 +147,11 @@ function createPilotSpace({
     if (now() - strayedSince < DRONE_STATE_GRACE_MS || remotePark === null) return;
     for (const id of stray) askedFor.add(id);
     strayedSince = null;
-    park.requestReset();
+    // ⚠ ASKED FOR, NOT RESET. Park.RequestReset would also mark the park invalid until the state comes, and
+    // every update meanwhile is dropped; seen 2026-10-10 20:01, two pilots blind for minutes when the answer
+    // did not come. The park the pilot has is good but for these drones: it keeps flying on it, and the
+    // state replaces it whenever the server sends one.
+    park.requestState();
     // Told as the park's other troubles are, so that each time it happens is on record.
     onError(new Error(`${stray.length} of the pilot's drones in space had no state for ${DRONE_STATE_GRACE_MS} ms (${stray.join(", ")}); the whole state was asked for again`), "drone state");
   }
