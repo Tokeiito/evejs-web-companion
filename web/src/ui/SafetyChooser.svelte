@@ -6,9 +6,10 @@
   // the level now marked. A level higher than the one now, or the same, is
   // set at once. A lower one wants a second press, on a button to confirm,
   // and nothing else in the selector answers until that is pressed or gone.
-  // Where the level is held at Full the other two cannot be pressed. Once
-  // the server has taken a level, the selector closes. It closes too when it
-  // loses the keyboard.
+  // Where the level is held at Full the other two cannot be pressed, and an
+  // alpha clone in high security cannot press None. Once the server has
+  // taken a level, the selector closes. It closes too when it loses the
+  // keyboard.
   //
   // Here the selector is a popover of the browser's: drawn in its top layer,
   // over whatever window floats above the header (the page's own windows are
@@ -19,11 +20,11 @@
   import { isSessionLost } from "../app/flow.ts";
   import type { AppFlow } from "../app/flow.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
-  import { safetyChoices, safetyPress, type SafetyBadge, type SafetyChoice, type SafetyLevel } from "../space/crimewatch.ts";
+  import { safetyChoices, safetyPress, type SafetyBadge, type SafetyChoice, type SafetyLevel, type SafetyLocks } from "../space/crimewatch.ts";
   import SafetyMenu from "./SafetyMenu.svelte";
 
   const menuID = $props.id();
-  let { flow, safety, lockedToFull }: { flow: AppFlow; safety: SafetyBadge; lockedToFull: boolean } = $props();
+  let { flow, safety, locks }: { flow: AppFlow; safety: SafetyBadge; locks: SafetyLocks } = $props();
 
   let button = $state<HTMLButtonElement | null>(null);
   let menu = $state<HTMLElement | null>(null);
@@ -32,7 +33,7 @@
   let confirming = $state<SafetyLevel | null>(null);
   let setting = $state(false);
   let error = $state("");
-  const choices = $derived(safetyChoices(safety.level, lockedToFull));
+  const choices = $derived(safetyChoices(safety.level, locks));
 
   /** Before the selector is shown: its place under the button, kept on the page, and nothing left of the last time. */
   function opening(event: ToggleEvent): void {
@@ -105,7 +106,7 @@
     ontoggle={closed}
   >
     {#if open}
-      <SafetyMenu {choices} {confirming} {setting} {lockedToFull} {error} onpress={press} onconfirm={(level) => void set(level)} oncancel={() => { confirming = null; }} />
+      <SafetyMenu {choices} {confirming} {setting} {locks} {error} onpress={press} onconfirm={(level) => void set(level)} oncancel={() => { confirming = null; }} />
     {/if}
   </div>
 </span>

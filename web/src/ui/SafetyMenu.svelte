@@ -6,13 +6,13 @@
   // there is to press: a button that would do nothing cannot be pressed, the
   // level now is marked, and each level has beside it what it lets the ship
   // do, or the two buttons while it waits to be confirmed.
-  import { safetyPress, type SafetyChoice, type SafetyLevel } from "../space/crimewatch.ts";
+  import { safetyPress, type SafetyChoice, type SafetyLevel, type SafetyLocks } from "../space/crimewatch.ts";
 
-  let { choices, confirming, setting, lockedToFull, error, onpress, onconfirm, oncancel }: {
+  let { choices, confirming, setting, locks, error, onpress, onconfirm, oncancel }: {
     choices: readonly SafetyChoice[];
     confirming: SafetyLevel | null;
     setting: boolean;
-    lockedToFull: boolean;
+    locks: SafetyLocks;
     error: string;
     onpress: (choice: SafetyChoice) => void;
     onconfirm: (level: SafetyLevel) => void;
@@ -21,8 +21,10 @@
 </script>
 
 <div class="safety-menu" role="group" aria-label="Safety level">
-  {#if lockedToFull}
+  {#if locks.full}
     <p class="safety-note">The security of this system holds the safety at Full.</p>
+  {:else if locks.alpha}
+    <p class="safety-note">An alpha clone cannot set the safety to None in high security.</p>
   {/if}
   {#each choices as choice (choice.level)}
     <div class="safety-row">

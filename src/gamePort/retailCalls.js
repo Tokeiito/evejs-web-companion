@@ -276,6 +276,8 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // The lobby's buttons, on the station's own office object. (The BFF's list of writes names the renting; the
   // gateway's list of what it will carry has none of these.)
   "officeManager.GetPriceQuote", "officeManager.HasCorpImpoundedItems", "officeManager.PrimeOfficeItem", "officeManager.RentOffice", "officeManager.UnrentOffice",
+  // The account's clone grade, which the client asks as it logs in. The gateway's list has nothing of the subscription manager's.
+  "subscriptionMgr.GetCloneGrade",
 ]);
 
 /**
@@ -877,6 +879,7 @@ const RETAIL_CALLS = Object.freeze({
   "crimewatch.GetMySecurityStatus": same(`${CRIMEWATCH_SVC}:592`, "CharGetCrimewatchLocation().GetMySecurityStatus(), no arguments: asked once and kept. Recorded on Tranquility as the call a bind of crimewatch carried."),
   "crimewatch.GetCharacterSecurityStatus": same(`${CRIMEWATCH_SVC}:596`, "CharGetCrimewatchLocation().GetCharacterSecurityStatus(charID)"),
   "crimewatch.GetSecurityStatusTransactions": same(`${CRIMEWATCH_SVC}:603`, "CharGetCrimewatchLocation().GetSecurityStatusTransactions(), no arguments"),
+  "subscriptionMgr.GetCloneGrade": same("omega/client/clone_grade_svc.py:125", "sm.RemoteSvc('subscriptionMgr').GetCloneGrade(), no arguments: asked as the account comes onto the session (gameui.py 450) and kept; then what OnSubscriptionChangedServer says. In this server's log of a retail client's login it is the call before the character selection's."),
   "skillMgr2.GetMySkillHandler": same(`${SKILL_SVC}:130`, "session.ConnectToRemoteService('skillMgr2').GetMySkillHandler(), no arguments: asked once and the moniker it answers kept."),
   "skillHandler.GetSkills": same(`${SKILL_SVC}:136`, "GetSkillHandler().GetSkills(), no arguments"),
   "skillHandler.GetAllSkills": same(`${SKILL_SVC}:142`, "GetSkillHandler().GetAllSkills(), no arguments"),

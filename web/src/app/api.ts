@@ -35,6 +35,7 @@ import {
 import type { JsonValue } from "../bridge/wire.ts";
 import { decodeClientStates } from "../bridge/boundCrimewatch.ts";
 import type { CrimewatchReading, SafetyLevel } from "../space/crimewatch.ts";
+import { cloneGradeOf, type CloneGrade } from "../bridge/cloneGrade.ts";
 import { decodeLaunchDetails, type LaunchDetail } from "../bridge/piColonies.ts";
 import type { MinerTrainingRead, StageFittingSelection, TrainingCharacter, QueueReview, QueueApplyOutcome } from "../training/types.ts";
 import type {
@@ -838,6 +839,15 @@ export async function loadCrimewatch(options: ApiOptions = {}): Promise<Crimewat
     throw new Error("Crimewatch did not say what the pilot's timers are.");
   }
   return { states: decodeClientStates(data.clientStates), clockOffsetMs: serverNowMs - Date.now() };
+}
+
+/**
+ * The account's clone grade, as the BFF has it from the pilot's login. Null where the pilot's connection does
+ * not carry it (the web gateway), and where the server said neither grade.
+ */
+export async function loadCloneGrade(options: ApiOptions = {}): Promise<CloneGrade | null> {
+  const data = await getJson("/api/bridge/clone-grade", options);
+  return cloneGradeOf(data.cloneGrade);
 }
 
 /**

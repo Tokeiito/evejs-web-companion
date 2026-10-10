@@ -202,6 +202,7 @@ import {
 import { buildGateLinks, type GateLink } from "../space/gateLinks.ts";
 import { CRIMEWATCH_NOTICES, CRIMEWATCH_SESSION_NAMES } from "../space/crimewatch.ts";
 import type { SafetyLevel } from "../space/crimewatch.ts";
+import { CLONE_GRADE_NOTICE, cloneGradeOf } from "../bridge/cloneGrade.ts";
 import type { AgentFinderRow } from "../store/types.ts";
 import {
   AUTOPILOT_WARP_MIN_RANGE_M,
@@ -2054,6 +2055,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       return;
     }
+    // clone_grade_svc.OnSubscriptionChangedServer(new_state): what the notice says is the grade from then on,
+    // with nothing asked. A notice that says neither grade leaves what was had.
+    if (method === CLONE_GRADE_NOTICE) {
+      const cloneGrade = cloneGradeOf(args[0]);
+      if (cloneGrade !== null) {
+        store.apply({ type: "character/clone-grade", cloneGrade });
+      }
+      return;
+    }
     const sessionNames = sessionChangeNames(method, args);
     // crimewatchSvc.ProcessSessionChange and OnSessionChanged: another place, or another system or ship, and
     // the client asks crimewatch its states again. So does the page, of the BFF.
@@ -2784,6 +2794,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (store.station.get().online?.characterID === characterID) {
       store.apply({ type: "flight/crimewatch", crimewatch });
     }
+  }
+
+  // clone_grade_svc: the client asks the account's clone grade as it logs in,
+  // and keeps it. The BFF's transport asked it at the pilot's login; the page
+  // reads it once as the pilot comes online. A read that fails leaves none.
+  async function loadCloneGrade(): Promise<void> {
+    store.apply({ type: "character/clone-grade", cloneGrade: await api.loadCloneGrade(callOptions) });
   }
 
   // crimewatchSvc.SetSafetyLevel: the client sets the level at the server and
@@ -13457,6 +13474,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       startLiveStream();
       void retryDroneRecovery();
       void loadCrimewatch().catch(() => {});
+      void loadCloneGrade().catch(() => {});
       await refreshStationPanel();
     },
 

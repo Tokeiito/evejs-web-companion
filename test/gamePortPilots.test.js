@@ -80,6 +80,8 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
     calls: [],
     closed: false,
     logins: [],
+    /** Each asking of the account's clone grade: what was sent with it, and how many calls by name had gone before it. */
+    gradeAsks: [],
     async login(userName, password) {
       session.logins.push([userName, password]);
       if (loginError) throw loginError;
@@ -92,9 +94,16 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
     },
     async call(service, method, args = [], kwargs = null) {
       if (session.closed) throw sessionError("CONNECTION_CLOSED");
+      const key = `${service}.${method}`;
+      // The account's clone grade is asked at every login, before the character selection's calls. It is listed
+      // apart (session.gradeAsks), so that `calls` and `sent` hold the selection's calls and what a test caused.
+      if (key === "subscriptionMgr.GetCloneGrade") {
+        session.gradeAsks.push({ args, kwargs, before: session.calls.length });
+        const grade = key in answers ? answers[key] : null;
+        return typeof grade === "function" ? grade(args, kwargs) : grade;
+      }
       session.calls.push({ service, method, args, kwargs });
       session.sent.push(method);
-      const key = `${service}.${method}`;
       if (key === "charUnboundMgr.SelectCharacterID" && !(key in answers)) {
         if (comesOnline) {
           const place = inSpace ? { solarsystemid: SYSTEM } : { stationid: STATION };
@@ -1253,6 +1262,8 @@ test("the transport keeps a tally of what it called and how each compared with t
   const tally = Object.fromEntries(pilots.callLedger().map((row) => [row.pair, row.statuses]));
   assert.deepEqual(tally, {
     "invbroker.GetCapacity": { "web-only": 3 },
+    // The account's clone grade, asked as it logs in.
+    "subscriptionMgr.GetCloneGrade": { same: 1 },
     "charUnboundMgr.GetCharacterLockType": { same: 1 },
     "charUnboundMgr.GetCharacterSelectionData": { same: 1 },
     "charUnboundMgr.SelectCharacterID": { same: 1 },
@@ -6782,6 +6793,60 @@ test("crimewatch's states are asked again as the client asks: at a change of pla
   assert.equal(await after({ stationid: [null, STATION], locationid: [SYSTEM, STATION], solarsystemid: [SYSTEM, null] }, { stationid: STATION, locationid: STATION, solarsystemid: null }), 5);
   // The security status was asked once, at the choosing, and never again.
   assert.equal(asked.status, 1);
+});
+
+// ── the clone's grade ────────────────────────────────────────────────────────
+//
+// gameui.OnSessionChanged (449): an account come onto the session has its clone grade asked,
+// sm.RemoteSvc('subscriptionMgr').GetCloneGrade(), and the client's clone grade service keeps it
+// (clone_grade_svc.py 125). OnSubscriptionChangedServer(new_state) is the grade from then on (243). In this
+// server's log of a retail client's login it is the call before the character selection's first.
+
+const GRADE_PAIRS = { allowed: new Set(["subscriptionMgr.GetCloneGrade"]) };
+
+test("an account logged in has its clone's grade asked once, by name and with nothing, before the character selection, and it is kept", async () => {
+  const { pilots, session, handle } = await selected({ answers: { "subscriptionMgr.GetCloneGrade": 0 } }, GRADE_PAIRS);
+  // Before the first of the selection's calls, and once.
+  assert.deepEqual(session.gradeAsks, [{ args: [], kwargs: null, before: 0 }]);
+  assert.deepEqual(ledgerOf(pilots, "subscriptionMgr.GetCloneGrade"), [{ same: 1 }, "omega/client/clone_grade_svc.py:125"]);
+  // What is read of it after is what was answered then, with nothing asked.
+  const grade = async () => (await pilots.callMethod("subscriptionMgr", "GetCloneGrade", [], null, FIELDS, handle)).result;
+  assert.deepEqual([await grade(), await grade(), session.gradeAsks.length], [0, 0, 1]);
+  // clone_grade_svc.OnSubscriptionChangedServer(new_state): what it says is the grade from then on.
+  session.notify("OnSubscriptionChangedServer", [1]);
+  assert.deepEqual([await grade(), session.gradeAsks.length], [1, 1]);
+  session.notify("OnSubscriptionChangedServer", [0]);
+  assert.deepEqual([await grade(), session.gradeAsks.length], [0, 1]);
+  // A notice that says no number leaves it as it was, and so does another notice.
+  session.notify("OnSubscriptionChangedServer", []);
+  session.notify("OnSubscriptionChangedServer", ["1"]);
+  session.notify("OnSubscriptionChangedServer", [null, 1]);
+  session.notify("OnSecurityStatusUpdate", [1]);
+  assert.deepEqual([await grade(), session.gradeAsks.length], [0, 1]);
+  // With something beside it the read is no call of the client's: it is sent each time, and what is kept stays.
+  await pilots.callMethod("subscriptionMgr", "GetCloneGrade", [1], null, FIELDS, handle);
+  await pilots.callMethod("subscriptionMgr", "GetCloneGrade", [], { fresh: true }, FIELDS, handle);
+  assert.deepEqual([session.gradeAsks.slice(1).map((asked) => [asked.args, asked.kwargs]), await grade(), session.gradeAsks.length], [[[[1], null], [[], { fresh: true }]], 0, 3]);
+});
+
+test("a grade that could not be read at login does not fail the choosing, and is asked for when it is wanted", async () => {
+  let refuse = true;
+  const answers = { "subscriptionMgr.GetCloneGrade": () => { if (refuse) throw refusedBy("NotNow"); return 1; } };
+  const { pilots, session, handle, outcome } = await selected({ answers }, GRADE_PAIRS);
+  assert.deepEqual([typeof outcome.bridgeSessionID, session.gradeAsks.length], ["string", 1]);
+  // Still refused: the read fails for who asked, and nothing is kept of it.
+  await assert.rejects(pilots.callMethod("subscriptionMgr", "GetCloneGrade", [], null, FIELDS, handle));
+  refuse = false;
+  const grade = async () => (await pilots.callMethod("subscriptionMgr", "GetCloneGrade", [], null, FIELDS, handle)).result;
+  assert.deepEqual([await grade(), await grade(), session.gradeAsks.length], [1, 1, 3]);
+  // A server that answers nothing for the grade has answered: nothing is kept, and it is not asked again.
+  const none = await selected({ answers: { "subscriptionMgr.GetCloneGrade": null } }, GRADE_PAIRS);
+  const read = async () => (await none.pilots.callMethod("subscriptionMgr", "GetCloneGrade", [], null, FIELDS, none.handle)).result;
+  assert.deepEqual([await read(), await read(), none.session.gradeAsks.length], [null, null, 1]);
+  // The login asks it whatever the page may ask: where the pair is not one the page may call, the page's read is refused.
+  const closed = await selected({ answers: { "subscriptionMgr.GetCloneGrade": 0 } }, { allowed: new Set(["crimewatch.GetClientStates"]) });
+  await rejects(closed.pilots.callMethod("subscriptionMgr", "GetCloneGrade", [], null, FIELDS, closed.handle), "CALL_NOT_ALLOWED");
+  assert.equal(closed.session.gradeAsks.length, 1);
 });
 
 /** A Python set and a dict as the wire has them, and as the bridge hands them on. */

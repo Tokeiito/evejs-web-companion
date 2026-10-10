@@ -14,7 +14,7 @@
   import { INDICATION_WORD_LABELS, indicationHeader, shipIndication } from "../space/actionIndication.ts";
   import { TIDI_WORD_LABELS, tidiHint, tidiPercent } from "../space/timeDilation.ts";
   import { SPEED_WORD_LABELS, shipSpeedText } from "../space/shipSpeed.ts";
-  import { crimewatchTimers, safetyBadge, safetyLockedToFull, timerText } from "../space/crimewatch.ts";
+  import { crimewatchTimers, safetyBadge, safetyLocks, timerText } from "../space/crimewatch.ts";
   import SafetyChooser from "./SafetyChooser.svelte";
   import { onMount } from "svelte";
 
@@ -44,7 +44,8 @@
   });
   const crimewatch = $derived($flight.crimewatch);
   // crimewatchSvc.IsSafetyLockedToFullLevel: in space, in a system of the
-  // safest class of security, the level is Full and is not to be lowered. The
+  // safest class of security, the level is Full and is not to be lowered. And
+  // IsSafetyAlphaLocked: an alpha clone in high security cannot set None. The
   // system's security is asked for once, as a name is.
   const systemID = $derived(isDocked ? null : ($space.snapshot?.solarSystemID ?? $flight.status?.solarSystemID ?? null));
   $effect(() => {
@@ -52,8 +53,8 @@
       flow.requestSystemSecurity([systemID]);
     }
   });
-  const lockedToFull = $derived(systemID !== null && safetyLockedToFull($names.systemSecurity[systemID] ?? null));
-  const safety = $derived(isDocked ? null : safetyBadge(crimewatch?.states ?? null, lockedToFull));
+  const locks = $derived(safetyLocks($station.cloneGrade, systemID === null ? null : ($names.systemSecurity[systemID] ?? null)));
+  const safety = $derived(isDocked ? null : safetyBadge(crimewatch?.states ?? null, locks.full));
   const timers = $derived(crimewatch === null ? [] : crimewatchTimers(crimewatch.states, pageNow + crimewatch.clockOffsetMs));
 
   let busy = $state(false);
@@ -119,7 +120,7 @@
     <span class="state-badge tidi" title={tidiHint(tidi, $words.templates)}>TiDi {tidi}%</span>
   {/if}
   {#if safety !== null}
-    <SafetyChooser {flow} {safety} {lockedToFull} />
+    <SafetyChooser {flow} {safety} {locks} />
   {/if}
   {#each timers as timer (timer.kind)}
     <span class="state-badge crime-timer crime-{timer.kind}" title="A combat timer">{timerText(timer)}</span>

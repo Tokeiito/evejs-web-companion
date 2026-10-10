@@ -9,6 +9,7 @@
 // The client draws each as a dial. Here each is its word and what is left of it. The words are this page's own.
 
 import type { CrimewatchClientStates } from "../bridge/boundCrimewatch.ts";
+import { CLONE_GRADE_ALPHA, type CloneGrade } from "../bridge/cloneGrade.ts";
 import { SECURITY_CLASS, securityClass } from "../bridge/systemSecurity.ts";
 
 /** The clock's 100 ns ticks at the start of Unix time. */
@@ -127,13 +128,30 @@ const SAFETY_LEVELS: ReadonlyArray<readonly [SafetyLevel, string, SafetyBadge["t
   [2, "Full", "full", "The ship refuses what would make you a suspect or a criminal."],
 ];
 
+/** What of the selector cannot be pressed where the pilot is. */
+export interface SafetyLocks {
+  /**
+   * Held at Full: only Full can be pressed, and Full is the level (crimewatchSvc.IsSafetyLockedToFullLevel). So in
+   * a solar system of the safest class of security. The client's other cause, a structure controlled in high
+   * security, is nothing this page does.
+   */
+  readonly full: boolean;
+  /** None cannot be pressed: an alpha clone in high security or above (crimewatchSvc.IsSafetyAlphaLocked). */
+  readonly alpha: boolean;
+}
+
+export const NO_SAFETY_LOCKS: SafetyLocks = Object.freeze({ full: false, alpha: false });
+
 /**
- * Whether the safety level is held at Full where the pilot is (crimewatchSvc.IsSafetyLockedToFullLevel): in a
- * solar system of the safest class of security. `security` is the system's own; null, while it is not known,
- * holds nothing. The client's other cause, a structure controlled in high security, is nothing this page does.
+ * The locks for a clone of this grade in a system of this security. Null for either is "not known": a system
+ * whose security is not known holds nothing, and a grade not known is no alpha's.
  */
-export function safetyLockedToFull(security: number | null): boolean {
-  return security !== null && securityClass(security) === SECURITY_CLASS.safe;
+export function safetyLocks(cloneGrade: CloneGrade | null, security: number | null): SafetyLocks {
+  const kind = security === null ? null : securityClass(security);
+  return {
+    full: kind === SECURITY_CLASS.safe,
+    alpha: cloneGrade === CLONE_GRADE_ALPHA && kind !== null && kind >= SECURITY_CLASS.high,
+  };
 }
 
 /**
@@ -156,18 +174,21 @@ export interface SafetyChoice extends SafetyBadge {
   readonly says: string;
   /** The level now. */
   readonly selected: boolean;
-  /** Not to be pressed (SecurityButton.IsLocked): every level but Full, where the level is held at Full. */
+  /**
+   * Not to be pressed (SecurityButton.IsLocked): every level but Full where the level is held at Full; otherwise
+   * None, for an alpha clone in high security.
+   */
   readonly locked: boolean;
   /** Lower than the level now: the client wants a second press, on a button to confirm. */
   readonly confirms: boolean;
 }
 
 /** The selector's buttons for a ship at this level: None, Partial, Full. */
-export function safetyChoices(current: SafetyLevel, lockedToFull: boolean): SafetyChoice[] {
+export function safetyChoices(current: SafetyLevel, locks: SafetyLocks): SafetyChoice[] {
   return SAFETY_LEVELS.map(([level, word, tone, says]) => ({
     level, word, tone, says,
     selected: level === current,
-    locked: lockedToFull && level !== 2,
+    locked: locks.full ? level !== 2 : locks.alpha && level === 0,
     confirms: level < current,
   }));
 }

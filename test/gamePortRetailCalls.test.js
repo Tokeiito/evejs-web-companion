@@ -1505,11 +1505,15 @@ test("what goes up into a customs office, and comes down from one, goes as the c
   }
 });
 
-test("the game port carries the customs office's transfer and the station's offices, which the web gateway's list has not got", () => {
+test("the game port carries the customs office's transfer, the station's offices and the clone's grade, which the web gateway's list has not got", () => {
   assert.deepEqual(GAME_PORT_ONLY_CALLS, [
     "invbroker.ImportExportWithPlanet", "officeManager.GetCorporationsWithOffices", "officeManager.GetEmptyOfficeCount",
     "officeManager.GetPriceQuote", "officeManager.HasCorpImpoundedItems", "officeManager.PrimeOfficeItem", "officeManager.RentOffice", "officeManager.UnrentOffice",
+    "subscriptionMgr.GetCloneGrade",
   ]);
+  // clone_grade_svc.py 125: sm.RemoteSvc('subscriptionMgr').GetCloneGrade(), by the service's name and with nothing.
+  const grade = RETAIL_CALLS["subscriptionMgr.GetCloneGrade"];
+  assert.deepEqual([grade.status, grade.source, MONIKER_SERVICES.subscriptionMgr, PROXY_SERVICES.has("subscriptionMgr")], ["same", "omega/client/clone_grade_svc.py:125", undefined, false]);
   // When the gateway's list gains one of these, it is the gateway's too, and comes off this list.
   for (const pair of GAME_PORT_ONLY_CALLS) assert.equal(contract.gatewayAllowlist.pairs.includes(pair), false, pair);
 });

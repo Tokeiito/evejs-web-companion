@@ -4155,6 +4155,30 @@ app.get("/api/bridge/crimewatch", requireAuth, async (req, res, next) => {
   }
 });
 
+/**
+ * GET /api/bridge/clone-grade — the account's clone grade (clonegrade/const.py: 0 an alpha clone, 1 an omega),
+ * which the retail client asks subscriptionMgr for as the account logs in, and keeps (gameui.py 450,
+ * clone_grade_svc.py 125). On the game port the transport asked it at the pilot's login, and this is answered
+ * from what it keeps. The web gateway's list has no call of the subscription manager's: a pilot there is
+ * answered `available: false`, with nothing asked, and what goes by the grade is then as for an omega clone.
+ */
+app.get("/api/bridge/clone-grade", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    if (!(Boolean(gamePortPilots) && isGamePortHandle(held.bridgeSessionID))) {
+      res.json({ ok: true, available: false, cloneGrade: null });
+      return;
+    }
+    const grade = await heldTopLevelCall(held, req.webSessionID, "subscriptionMgr", "GetCloneGrade", [], null);
+    res.json({ ok: true, available: true, cloneGrade: grade.result === 0 || grade.result === 1 ? grade.result : null });
+  } catch (error) {
+    next(error);
+  }
+});
+
 /** appConst.corpRoleDirector and corpRoleCanRentOffice, the two the retail lobby's office buttons go by. */
 const CORP_ROLE_DIRECTOR = 1n;
 const CORP_ROLE_CAN_RENT_OFFICE = 562949953421312n;

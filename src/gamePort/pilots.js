@@ -216,6 +216,10 @@ const CLIENT_STATES = "GetClientStates";
 const OWN_SECURITY_STATUS = "GetMySecurityStatus";
 /** Whether a call is one of crimewatchSvc's two kept reads, asked as the client asks it: with nothing. */
 const SET_SAFETY_LEVEL = "SetSafetyLevel";
+/** The account's clone grade, which the client's clone grade service asks once and keeps (omega/client/clone_grade_svc.py 125). */
+const SUBSCRIPTION_MGR = "subscriptionMgr";
+const CLONE_GRADE = "GetCloneGrade";
+const keptCloneGrade = (service, method, form) => service === SUBSCRIPTION_MGR && method === CLONE_GRADE && form.args.length === 0 && form.kwargs === null;
 const keptOfCrimewatch = (service, method, form) => service === CRIMEWATCH && (method === CLIENT_STATES || method === OWN_SECURITY_STATUS) && form.args.length === 0 && form.kwargs === null;
 const OFFICE_MANAGER = "officeManager";
 /**
@@ -1116,6 +1120,8 @@ function createGamePortPilots({
       /** crimewatchSvc's client states as last answered (CLIENT_STATES), and the pilot's security status (mySecurityStatus): undefined while none is had. */
       clientStates: createKeptReads(),
       securityStatus: undefined,
+      /** The account's clone grade as the server last said it (clonegrade/const.py: 0 alpha, 1 omega): undefined while none is had. */
+      cloneGrade: undefined,
       /** Whether the office's item was primed on the Moniker for where the pilot is docked (PRIME_OFFICE): its answer, kept while docked there. */
       officePrimed: createKeptReads(),
       stationWork: Promise.resolve(),
@@ -1160,6 +1166,8 @@ function createGamePortPilots({
       // crimewatchSvc (222 to 288): a timer, a flag or an engagement changed. The client works the notice into what
       // it keeps and asks nothing; so here (crimewatchStates.js). States the notice cannot be worked into are let go.
       if (CLIENT_STATE_NOTICES.has(notification.method)) entry.clientStates.amend(CLIENT_STATES, (states) => statesAfter(states, notification.method, notification.args));
+      // clone_grade_svc.OnSubscriptionChangedServer(new_state): the grade is what the server says.
+      if (notification.method === "OnSubscriptionChangedServer" && typeof notification.args?.[0] === "number") entry.cloneGrade = notification.args[0];
       // crimewatchSvc.OnSecurityStatusUpdate(newSecurityStatus): the status is what the server says.
       if (notification.method === "OnSecurityStatusUpdate" && typeof notification.args?.[0] === "number") entry.securityStatus = notification.args[0];
       // officeManager.OnOfficeRentalChange (71): an office rented or given up, whoever's, and the station's are not as kept.
@@ -1247,6 +1255,9 @@ function createGamePortPilots({
       if (positive(session.attributes.userid) !== accountID) {
         throw fail("SESSION_SELECT_FAILED", "The game server logged that name in as a different account.");
       }
+      // gameui.OnSessionChanged (449): an account come onto the session has its clone's grade asked. A grade that
+      // could not be read is asked for when it is next wanted, as the client's service asks where it has none.
+      await cloneGradeRead(entry).catch(() => {});
       // The character selection screen, as the retail client fills and leaves it.
       for (const method of ["GetCharacterSelectionData", "GetCharacterLockType", "SelectCharacterID"]) {
         ledger.note("charUnboundMgr", method, shape("charUnboundMgr", method, [], null));
@@ -1392,6 +1403,12 @@ function createGamePortPilots({
     // ever had, and each asking is sent.)
     if (STATION_KEPT.has(`${service}.${method}`) && form.args.length === 0 && form.kwargs === null) {
       const kept = await run(entry, service, method, () => stationRead(entry, service, method, form));
+      return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
+    }
+    // The account's clone grade is the client's clone grade service's to answer, where it is asked as the client
+    // asks it: with nothing.
+    if (keptCloneGrade(service, method, form)) {
+      const kept = await run(entry, service, method, () => cloneGradeRead(entry));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
     // crimewatchSvc's client states and the pilot's security status are that service's to answer, where they are
@@ -1718,6 +1735,18 @@ function createGamePortPilots({
   const crimewatchKept = (entry, method) => (method === CLIENT_STATES
     ? entry.clientStates.read(method, () => crimewatchAsked(entry, method))
     : securityStatusRead(entry));
+
+  /**
+   * clone_grade_svc.get_clone_grade_with_grace_period (113): sm.RemoteSvc('subscriptionMgr').GetCloneGrade(), by the
+   * service's name, asked for while there is none and kept.
+   */
+  async function cloneGradeRead(entry) {
+    if (entry.cloneGrade === undefined) {
+      ledger.note(SUBSCRIPTION_MGR, CLONE_GRADE, shape(SUBSCRIPTION_MGR, CLONE_GRADE, [], null));
+      entry.cloneGrade = await entry.session.call(SUBSCRIPTION_MGR, CLONE_GRADE, []);
+    }
+    return entry.cloneGrade;
+  }
 
   /** crimewatchSvc.GetMySecurityStatus (590): asked for while there is none, and kept. */
   async function securityStatusRead(entry) {

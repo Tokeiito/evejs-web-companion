@@ -9,7 +9,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { decodeClientStates } from "../bridge/boundCrimewatch.ts";
-import { crimewatchTimers, filetimeToMs, safetyBadge, safetyChoices, safetyLockedToFull, safetyPress, timerText } from "./crimewatch.ts";
+import { NO_SAFETY_LOCKS, crimewatchTimers, filetimeToMs, safetyBadge, safetyChoices, safetyLocks, safetyPress, timerText } from "./crimewatch.ts";
 
 const aSet = (...items: number[]) => ({ type: "objectex1", header: [{ type: "token", value: "__builtin__.set" }, [{ type: "list", items }]], list: [], dict: [] });
 const QUIET = [[[100, null], [200, null], [400, null], [300, null], [500, null]], { type: "dict", entries: [] }, [aSet(), aSet()], 2];
@@ -88,14 +88,25 @@ test("the safety level is said in a word, and what is no level is not said at al
 // shipSafetyButton.py: three buttons, None, Partial and Full. One lower than the level now wants a second press;
 // any other is set at once. Where the level is held at Full (crimewatchSvc.IsSafetyLockedToFullLevel: a system
 // of the safest class of security, 0.95 and above by eveuniverse/security.py) only Full can be pressed, and Full
-// is the level shown whatever the server said.
+// is the level shown whatever the server said. And an alpha clone in high security or above cannot press None
+// (IsSafetyAlphaLocked; SecurityButton.IsAlphaLockedAndRed).
 
 test("the safety level is held at Full in a system of the safest class of security, and nowhere else", () => {
   for (const [security, held] of [[1, true], [0.95, true], [0.9499, false], [0.9, false], [0.5, false], [0.45, false], [0.2, false], [0, false], [-0.4, false]] as const) {
-    assert.equal(safetyLockedToFull(security), held, String(security));
+    for (const grade of [0, 1, null] as const) assert.equal(safetyLocks(grade, security).full, held, `${security} ${grade}`);
   }
   // A system whose security is not known yet holds nothing.
-  assert.equal(safetyLockedToFull(null), false);
+  assert.deepEqual([safetyLocks(null, null), safetyLocks(0, null), safetyLocks(1, null)], [NO_SAFETY_LOCKS, NO_SAFETY_LOCKS, NO_SAFETY_LOCKS]);
+  assert.deepEqual(NO_SAFETY_LOCKS, { full: false, alpha: false });
+});
+
+test("None is locked for an alpha clone in high security and above, and for nobody else", () => {
+  // SecurityClassFromLevel: high from 0.45 up, the safest class among it.
+  for (const [security, high] of [[1, true], [0.95, true], [0.9459, true], [0.5, true], [0.45, true], [0.4499, false], [0.2, false], [0, false], [-0.4, false]] as const) {
+    assert.equal(safetyLocks(0, security).alpha, high, String(security));
+    // An omega clone, and a clone whose grade is not known, are locked out of nothing by their grade.
+    assert.deepEqual([safetyLocks(1, security).alpha, safetyLocks(null, security).alpha], [false, false], String(security));
+  }
 });
 
 test("where the level is held at Full the level shown is Full whatever crimewatch said, and what said no level still shows none", () => {
@@ -107,20 +118,24 @@ test("where the level is held at Full the level shown is Full whatever crimewatc
 });
 
 test("the selector has the three levels in the client's order, the level now marked and the lower ones wanting a second press", () => {
-  const brief = (current: 0 | 1 | 2, held = false) => safetyChoices(current, held).map((choice) => [choice.level, choice.word, choice.tone, choice.selected, choice.confirms, choice.locked]);
+  const brief = (current: 0 | 1 | 2, held = false, alpha = false) => safetyChoices(current, { full: held, alpha }).map((choice) => [choice.level, choice.word, choice.tone, choice.selected, choice.confirms, choice.locked]);
   assert.deepEqual(brief(2), [[0, "None", "none", false, true, false], [1, "Partial", "partial", false, true, false], [2, "Full", "full", true, false, false]]);
   assert.deepEqual(brief(1), [[0, "None", "none", false, true, false], [1, "Partial", "partial", true, false, false], [2, "Full", "full", false, false, false]]);
   assert.deepEqual(brief(0), [[0, "None", "none", true, false, false], [1, "Partial", "partial", false, false, false], [2, "Full", "full", false, false, false]]);
   // Held at Full: the two others are locked, and Full is not.
   assert.deepEqual(brief(2, true).map((row) => row[5]), [true, true, false]);
+  // An alpha clone in high security: None is locked, and nothing else, whatever the level now.
+  for (const current of [0, 1, 2] as const) assert.deepEqual(brief(current, false, true).map((row) => row[5]), [true, false, false], String(current));
+  // Both at once: held at Full, which is the client's first question (SecurityButton.IsLocked).
+  assert.deepEqual(brief(2, true, true).map((row) => row[5]), [true, true, false]);
   // Each says what it lets the ship do, and no two say the same.
-  const says = safetyChoices(2, false).map((choice) => choice.says);
+  const says = safetyChoices(2, NO_SAFETY_LOCKS).map((choice) => choice.says);
   assert.equal(new Set(says).size, 3);
   for (const said of says) assert.match(said, /^The ship refuses /);
 });
 
 test("a press sets a level at once unless it is lower than the level now, which waits for a second press", () => {
-  const press = (current: 0 | 1 | 2, confirming: 0 | 1 | 2 | null = null, held = false) => safetyChoices(current, held).map((choice) => safetyPress(choice, confirming));
+  const press = (current: 0 | 1 | 2, confirming: 0 | 1 | 2 | null = null, held = false, alpha = false) => safetyChoices(current, { full: held, alpha }).map((choice) => safetyPress(choice, confirming));
   // From Full, both others are lower; Full itself is set again at once, as the client sets it.
   assert.deepEqual(press(2), ["confirm", "confirm", "set"]);
   assert.deepEqual(press(1), ["confirm", "set", "set"]);
@@ -129,4 +144,6 @@ test("a press sets a level at once unless it is lower than the level now, which 
   assert.deepEqual([press(2, 0), press(2, 1), press(1, 0)], [["nothing", "nothing", "nothing"], ["nothing", "nothing", "nothing"], ["nothing", "nothing", "nothing"]]);
   // Held at Full: only Full answers.
   assert.deepEqual(press(2, null, true), ["nothing", "nothing", "set"]);
+  // An alpha clone in high security: None does not answer; Partial still wants its second press.
+  assert.deepEqual([press(2, null, false, true), press(1, null, false, true)], [["nothing", "confirm", "set"], ["nothing", "set", "set"]]);
 });

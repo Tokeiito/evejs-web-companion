@@ -914,10 +914,10 @@ test("a timer whose cause goes on is said by its word alone, and a timer is coun
 // is the chooser's, and is looked at in the browser.
 
 const { safetyChoices } = await import("../space/crimewatch.ts");
-function renderSafetyMenu(current: 0 | 1 | 2, more: { confirming?: 0 | 1 | 2 | null; setting?: boolean; lockedToFull?: boolean; error?: string } = {}): string {
-  const lockedToFull = more.lockedToFull === true;
+function renderSafetyMenu(current: 0 | 1 | 2, more: { confirming?: 0 | 1 | 2 | null; setting?: boolean; lockedToFull?: boolean; alphaLocked?: boolean; error?: string } = {}): string {
+  const locks = { full: more.lockedToFull === true, alpha: more.alphaLocked === true };
   return render(SafetyMenu as never, { props: {
-    choices: safetyChoices(current, lockedToFull), confirming: more.confirming ?? null, setting: more.setting === true, lockedToFull, error: more.error ?? "",
+    choices: safetyChoices(current, locks), confirming: more.confirming ?? null, setting: more.setting === true, locks, error: more.error ?? "",
     onpress() {}, onconfirm() {}, oncancel() {},
   } } as never).body;
 }
@@ -959,4 +959,28 @@ test("where the level is held at Full only Full can be pressed, and the selector
   assert.match(visibleText(held), /holds the safety at Full/);
   const refused = renderSafetyMenu(2, { error: "The session is changing place." });
   assert.match(refused, /<p class="safety-error" role="alert">The session is changing place\.<\/p>/);
+});
+
+test("for an alpha clone in high security None cannot be pressed, and the selector says why", () => {
+  // shipSafetyButton.SecurityButton.IsAlphaLockedAndRed: None alone, whatever the level now.
+  const alpha = renderSafetyMenu(2, { alphaLocked: true });
+  assert.deepEqual(safetyRows(alpha).map((row) => [row.word, row.pressable]), [["None", false], ["Partial", true], ["Full", true]]);
+  assert.match(visibleText(alpha), /alpha clone cannot set the safety to None/);
+  assert.doesNotMatch(visibleText(alpha), /holds the safety at Full/);
+  // Held at Full as well: that is what is said, and the one note.
+  const both = renderSafetyMenu(2, { alphaLocked: true, lockedToFull: true });
+  assert.deepEqual(safetyRows(both).map((row) => row.pressable), [false, false, true]);
+  assert.deepEqual([/holds the safety at Full/.test(visibleText(both)), /alpha clone/.test(visibleText(both)), (both.match(/class="safety-note"/g) ?? []).length], [true, false, 1]);
+  // With neither, no note.
+  assert.doesNotMatch(renderSafetyMenu(2), /safety-note/);
+});
+
+test("an alpha clone's grade changes nothing the header says of the level: only what the selector lets be pressed", () => {
+  const alpha = withCrimewatch(inSpaceStore(), QUIET_TIMERS, 0);
+  (alpha as { apply(event: unknown): void }).apply({ type: "names/system-security", security: { [SYSTEM_ID]: 0.9459 } });
+  (alpha as { apply(event: unknown): void }).apply({ type: "character/clone-grade", cloneGrade: 0 });
+  assert.deepEqual(safetyButtons(renderHeader(alpha, false)), [["safety safety-none", "false", "Safety None"]]);
+  // And in the safest class the level is Full for an alpha as for anyone.
+  (alpha as { apply(event: unknown): void }).apply({ type: "names/system-security", security: { [SYSTEM_ID]: 1 } });
+  assert.deepEqual(safetyButtons(renderHeader(alpha, false)), [["safety safety-full", "false", "Safety Full"]]);
 });

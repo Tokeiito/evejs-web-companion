@@ -2842,6 +2842,55 @@ test("the page's read of crimewatch asks the client's states once, on the pilot'
   assert.deepEqual(asked.filter(([service]) => service === "crimewatch").map(([service, method, args, kwargs, handle]) => [method, args, kwargs, handle]), [["GetClientStates", [], null, BRIDGE_SESSION_ID]]);
 });
 
+// ── the clone's grade ────────────────────────────────────────────────────────
+//
+// The retail client asks subscriptionMgr.GetCloneGrade() as the account logs in and keeps it (clone_grade_svc.py
+// 125). On the game port the transport does, and the page's read is answered through it. The web gateway's list
+// has no call of the subscription manager's.
+
+/** A game port whose subscription manager answers this for the clone's grade; an Error is thrown. */
+function gamePortWithGrade(grade) {
+  const gamePort = fakeGateway({
+    async selectCharacter() {
+      return { bridgeSessionID: GAME_PORT_SESSION_ID, service: "charUnboundMgr", method: "SelectCharacterID", result: null, notifications: [], session: { ...SELECT_SESSION_ECHO } };
+    },
+    async callMethod(service, method, args, kwargs, sessionFields, bridgeSessionID) {
+      gamePort.asked.push([service, method, args, kwargs, bridgeSessionID]);
+      if (service === "subscriptionMgr" && grade instanceof Error) throw grade;
+      return { service, method, result: service === "subscriptionMgr" && method === "GetCloneGrade" ? grade : null, notifications: [] };
+    },
+  });
+  gamePort.asked = [];
+  return gamePort;
+}
+const askedOfTheSubscription = (backend) => backend.asked.filter(([service]) => service === "subscriptionMgr").map(([service, method, args, kwargs, handle]) => [method, args, kwargs, handle]);
+
+test("a game-port pilot's clone grade is read by the service's name on its own session, and is one of the two grades or none", async () => {
+  for (const [answered, said] of [[0, 0], [1, 1], [null, null], [2, null], ["1", null], [true, null], [-1, null]]) {
+    const gamePort = gamePortWithGrade(answered);
+    const { response, payload } = await apiRequest(await atTheLobby(gamePort), "/api/bridge/clone-grade");
+    assert.equal(response.status, 200, JSON.stringify(payload));
+    assert.deepEqual(payload, { ok: true, available: true, cloneGrade: said }, JSON.stringify(answered));
+    assert.deepEqual(askedOfTheSubscription(gamePort), [["GetCloneGrade", [], null, GAME_PORT_SESSION_ID]], JSON.stringify(answered));
+  }
+});
+
+test("a gateway pilot has no clone grade to read, and nothing is asked for one; a read that fails is an error", async () => {
+  const gamePort = gamePortWithGrade(0);
+  const asked = [];
+  const gateway = fakeGateway({ async callMethod(service, method) { asked.push(`${service}.${method}`); return { service, method, result: 0, notifications: [] }; } });
+  const { response, payload } = await apiRequest(await atTheLobby(gamePort, gateway, "gateway"), "/api/bridge/clone-grade");
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.deepEqual([payload, askedOfTheSubscription(gamePort), asked.filter((pair) => pair.startsWith("subscriptionMgr."))], [{ ok: true, available: false, cloneGrade: null }, [], []]);
+  // On the game port a read the server refused is an error, and says no grade.
+  const refusing = await apiRequest(await atTheLobby(gamePortWithGrade(refusedBy("NotNow"))), "/api/bridge/clone-grade");
+  assert.deepEqual([refusing.response.ok, refusing.payload.ok, "cloneGrade" in refusing.payload], [false, false, false], JSON.stringify(refusing.payload));
+  // A pilot not chosen has none.
+  const { baseUrl } = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePortWithGrade(0), pilotTransportFor: () => "gameport" });
+  const unchosen = await apiRequest(baseUrl, "/api/bridge/clone-grade");
+  assert.equal(unchosen.response.ok, false, JSON.stringify(unchosen.payload));
+});
+
 test("crimewatch's states that cannot be read are an error, and a pilot not chosen has none", async () => {
   const backend = fakeGateway({
     async callMethod(service, method) {
