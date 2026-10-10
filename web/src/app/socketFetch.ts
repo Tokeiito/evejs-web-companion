@@ -66,6 +66,11 @@ export interface SocketFetchStats {
 
 export interface SocketFetch {
   readonly fetch: typeof fetch;
+  /**
+   * Whether this request, asked now, would be sent on a socket that is open. Asks nothing and changes nothing: it is
+   * how the page's lane knows a request needs none of the browser's connections (app/transport.ts).
+   */
+  wouldCarry(input: unknown, init: RequestInit | undefined): boolean;
   stats(): SocketFetchStats;
   /** Close every socket. Requests after this are fetched over HTTP until one is opened again. */
   close(): void;
@@ -374,6 +379,10 @@ export function createSocketFetch(deps: SocketFetchDeps): SocketFetch {
 
   return {
     fetch: socketFetch,
+    wouldCarry(input, init) {
+      const operation = operationOf(input, init);
+      return operation !== null && lines.get(operation.token)?.state === "open";
+    },
     stats: () => ({ carried, fetched, open: [...lines.values()].filter((line) => line.state === "open").length }),
     close() {
       for (const token of [...lines.keys()]) letGo(token);

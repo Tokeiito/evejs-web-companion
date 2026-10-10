@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { TRANSPORT_SETTING_KEY, pageFetch, socketAddress, socketOver, socketTransport, transportSetting } from "./pageFetch.ts";
+import { TRANSPORT_SETTING_KEY, pageCarries, pageFetch, socketAddress, socketOver, socketTransport, transportSetting } from "./pageFetch.ts";
 
 const storing = (value: string | null) => ({ getItem: (key: string) => (key === TRANSPORT_SETTING_KEY ? value : "socket") });
 
@@ -28,6 +28,8 @@ test("where there is no page, requests are the world's fetch whatever the settin
   assert.equal(typeof location, "undefined");
   assert.equal(pageFetch(), globalThis.fetch);
   assert.equal(socketTransport(), null);
+  // And nothing there is carried: every request takes a lane, as it always has.
+  assert.equal(pageCarries("/api/bridge/skills", { headers: { authorization: "Bearer T1" } }), false);
 });
 
 test("the browser's socket is handed on as the little of one that is asked for", () => {

@@ -8,7 +8,7 @@
 // identity to the logged-in account.
 
 import { sessionAuthHeaders, tokenAuthHeaders } from "../app/sessionToken.ts";
-import { pageFetch } from "../app/pageFetch.ts";
+import { pageCarries, pageFetch } from "../app/pageFetch.ts";
 import {
   TransportQueueError,
   bridgeLane,
@@ -137,28 +137,33 @@ export async function callMethod<TResult = JsonValue>(
   try {
     // R92 — the SECOND fetch site in the client shares the one request lane, or
     // the cap would only bound half of what the tab does. See app/transport.ts.
+    const url = `${options.baseUrl ?? ""}/api/bridge/call`;
+    const request: RequestInit = {
+      method: "POST",
+      // R42/R107 — explicit sessions omit shared cookies. This route is
+      // the second fetch site in the client (api.ts's requestJson is the other),
+      // so it needs the header too or character selection and the station panel
+      // would silently run as whoever last wrote the cookie. Per-session (token
+      // key present) uses this flow's token; otherwise the per-tab global.
+      headers: {
+        ...authHeaders,
+        "content-type": "application/json",
+      },
+      credentials,
+      body: JSON.stringify(body),
+    };
     response = await bridgeLane.run(options.priority ?? "read", "/api/bridge/call", () => {
       assertCurrent?.();
-      return doFetch(`${options.baseUrl ?? ""}/api/bridge/call`, {
-        method: "POST",
-        // R42/R107 — explicit sessions omit shared cookies. This route is
-        // the second fetch site in the client (api.ts's requestJson is the other),
-        // so it needs the header too or character selection and the station panel
-        // would silently run as whoever last wrote the cookie. Per-session (token
-        // key present) uses this flow's token; otherwise the per-tab global.
-        headers: {
-          ...authHeaders,
-          "content-type": "application/json",
-        },
-        credentials,
-        body: JSON.stringify(body),
+      return doFetch(url, {
+        ...request,
         // The same 65 s browser-side deadline as api.ts requestJson (see the
         // note there): a half-dead socket must abort into BRIDGE_NETWORK_ERROR
         // rather than freeze the awaiting loop forever. A caller's own signal
         // still wins.
         signal: options.signal ?? AbortSignal.timeout(65_000),
       });
-    });
+      // A call that goes on the tab's open socket holds none of the browser's connections, and so no lane.
+    }, { carried: options.fetch === undefined && pageCarries(url, request) });
   } catch (cause) {
     assertCurrent?.();
     if (cause instanceof BridgeCallError && cause.code === "SESSION_REQUEST_RETIRED") throw cause;

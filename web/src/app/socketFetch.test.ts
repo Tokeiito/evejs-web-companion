@@ -49,6 +49,7 @@ interface Rig {
   readonly sockets: FakeSocket[];
   readonly fetched: { input: unknown; init: RequestInit | undefined }[];
   readonly stats: () => { carried: number; fetched: number; open: number };
+  readonly wouldCarry: (input: unknown, init: RequestInit | undefined) => boolean;
   readonly close: () => void;
   clock: number;
   failOpening: boolean;
@@ -63,6 +64,7 @@ function rig(life: { warmUp?: number; idleMs?: number } = { warmUp: 0 }): Rig {
     sockets,
     fetched,
     stats: () => ({ carried: 0, fetched: 0, open: 0 }),
+    wouldCarry: () => false,
     close: () => {},
     clock: 1_000_000,
     failOpening: false,
@@ -82,7 +84,7 @@ function rig(life: { warmUp?: number; idleMs?: number } = { warmUp: 0 }): Rig {
     retryMs: 5_000,
     ...life,
   });
-  return Object.assign(made, { fetch: carried.fetch, stats: carried.stats, close: carried.close });
+  return Object.assign(made, { fetch: carried.fetch, stats: carried.stats, wouldCarry: carried.wouldCarry, close: carried.close });
 }
 
 const asToken = (token: string, more: RequestInit = {}): RequestInit => ({ method: "GET", ...more, headers: { authorization: `Bearer ${token}`, ...((more.headers as Record<string, string> | undefined) ?? {}) } });
@@ -456,4 +458,39 @@ test("a socket that has been replaced is not listened to: what it says late is n
   fresh.say({ id: 1, status: 200, body: { ok: true, from: "the new socket" } });
   assert.equal((await (await second).json()).from, "the new socket");
   assert.deepEqual(page.stats(), { carried: 1, fetched: 1, open: 1 });
+});
+
+test("whether a request would go on an open socket is said without asking anything or changing anything", async () => {
+  const page = rig({});
+  const request = asToken("T1");
+  // No socket yet, however often it is asked: asking is not a request, and is not counted towards one.
+  for (let i = 0; i < 5; i += 1) assert.equal(page.wouldCarry("/api/bridge/skills", request), false);
+  assert.equal(page.sockets.length, 0);
+  // The token's third request opens its socket; until the hello is answered, nothing would be carried.
+  await page.fetch("/api/bridge/skills", request);
+  await page.fetch("/api/bridge/skills", request);
+  assert.equal(page.sockets.length, 0, "five askings and two requests are two requests");
+  const third = page.fetch("/api/bridge/skills", request);
+  assert.equal(page.sockets.length, 1);
+  const socket = page.sockets[0]!;
+  assert.equal(page.wouldCarry("/api/bridge/skills", request), false, "a socket being made is not an open one");
+  socket.open();
+  assert.equal(page.wouldCarry("/api/bridge/skills", request), false, "nor is one that has not been said hello to");
+  socket.say({ hello: { ok: true } });
+  assert.equal(page.wouldCarry("/api/bridge/skills", request), true);
+  // Only what can be carried, and only on this token's socket.
+  assert.equal(page.wouldCarry("/api/bridge/skills", asToken("T2")), false);
+  assert.equal(page.wouldCarry("/api/bridge/events", request), false);
+  assert.equal(page.wouldCarry("/api/bridge/skills", { headers: {} }), false);
+  assert.equal(page.wouldCarry("/assets/app.js", request), false);
+  assert.equal(page.wouldCarry("/api/bridge/select", asToken("T1", { method: "POST", body: "{}" })), true);
+  // The asking sent nothing, opened nothing, and counted as nothing asked.
+  assert.deepEqual(socket.frames(), [{ hello: { token: "T1" } }, { id: 1, method: "GET", path: "/api/bridge/skills" }]);
+  socket.say({ id: 1, status: 200, body: { ok: true } });
+  assert.equal((await third).status, 200);
+  assert.deepEqual([page.sockets.length, page.stats()], [1, { carried: 1, fetched: 2, open: 1 }]);
+  // And not once the socket has gone.
+  socket.end(1006);
+  assert.equal(page.wouldCarry("/api/bridge/skills", request), false);
+  assert.equal(page.sockets.length, 1);
 });

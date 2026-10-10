@@ -339,3 +339,54 @@ test("a queue that has formed is not jumped by a later caller", () => {
   assert.equal(lane.queued(), 2);
   blocker.settle();
 });
+
+// --- what goes on the socket -------------------------------------------------
+//
+// The cap is for the browser's connections. A request carried on the tab's socket (app/socketFetch.ts) uses none
+// of them, however many are outstanding, so it holds no lane and waits for none.
+
+test("a request carried on the socket is started at once, holds no lane, and waits behind nothing", async () => {
+  const { lane } = testLane({ maxInFlight: 2 });
+  // Both lanes held, and one more waiting for one.
+  const held = [deferred(), deferred(), deferred()];
+  const runs = held.map((task, index) => lane.run("read", `/http${index}`, () => task.promise));
+  await Promise.resolve();
+  assert.deepEqual([lane.inFlight(), lane.queued(), lane.carried()], [2, 1, 0]);
+
+  // Eight on the socket, asked while every lane is busy: each is started in the tick it is asked.
+  const started: number[] = [];
+  const carriedTasks = Array.from({ length: 8 }, () => deferred<string>());
+  const carriedRuns = carriedTasks.map((task, index) => lane.run("poll", `/socket${index}`, () => { started.push(index); return task.promise; }, { carried: true }));
+  assert.deepEqual(started, [0, 1, 2, 3, 4, 5, 6, 7], "started without a microtask between the asking and the task");
+  assert.deepEqual([lane.inFlight(), lane.queued(), lane.carried()], [2, 1, 8], "and nothing of the lanes was touched");
+
+  // They are answered as they are answered, and counted down as they settle.
+  carriedTasks[3]!.settle("three");
+  assert.equal(await carriedRuns[3], "three");
+  assert.equal(lane.carried(), 7);
+  carriedTasks[0]!.fail(new Error("refused"));
+  await assert.rejects(carriedRuns[0]!, /refused/);
+  assert.equal(lane.carried(), 6);
+  // What waits for a lane is still waiting for a lane: a carried one settling hands none on.
+  assert.deepEqual([lane.inFlight(), lane.queued()], [2, 1]);
+  held[0]!.settle();
+  await runs[0];
+  await Promise.resolve();
+  assert.deepEqual([lane.inFlight(), lane.queued()], [2, 0]);
+  for (const task of [...held.slice(1), ...carriedTasks]) task.settle(undefined as never);
+  await Promise.allSettled([...runs, ...carriedRuns]);
+  assert.deepEqual([lane.inFlight(), lane.queued(), lane.carried()], [0, 0, 0]);
+});
+
+test("a carried request that cannot even be started fails, and is not left counted", async () => {
+  const { lane } = testLane();
+  await assert.rejects(lane.run("read", "/socket", () => { throw new Error("could not be asked"); }, { carried: true }), /could not be asked/);
+  assert.equal(lane.carried(), 0);
+  // Said not to be carried, or not said: it takes a lane like any other.
+  const task = deferred();
+  const plain = lane.run("read", "/http", () => task.promise, { carried: false });
+  const unsaid = lane.run("read", "/http", () => task.promise, {});
+  assert.deepEqual([lane.inFlight(), lane.carried()], [2, 0]);
+  task.settle();
+  await Promise.all([plain, unsaid]);
+});

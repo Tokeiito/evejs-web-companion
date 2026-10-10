@@ -32,7 +32,7 @@ import {
   bridgeLane,
   type RequestPriority,
 } from "./transport.ts";
-import { pageFetch } from "./pageFetch.ts";
+import { pageCarries, pageFetch } from "./pageFetch.ts";
 import type { JsonValue } from "../bridge/wire.ts";
 import { decodeClientStates } from "../bridge/boundCrimewatch.ts";
 import type { CrimewatchReading, SafetyLevel } from "../space/crimewatch.ts";
@@ -172,18 +172,20 @@ async function requestJson(
     // waited for a free lane must arrive at the server with its full budget; if
     // the clock started when the call was made, a queued request would time out
     // against a server that answered promptly. See app/transport.ts.
+    const url = `${options.baseUrl ?? ""}${path}`;
+    const request: RequestInit = {
+      ...init,
+      credentials,
+      headers: {
+        ...authHeaders,
+        ...((init.headers as Record<string, string> | undefined) ?? {}),
+      },
+    };
     response = await bridgeLane.run(options.priority ?? "read", path, () => {
       assertCurrent?.();
-      return doFetch(`${options.baseUrl ?? ""}${path}`, {
-        signal: AbortSignal.timeout(REQUEST_DEADLINE_MS),
-        ...init,
-        credentials,
-        headers: {
-          ...authHeaders,
-          ...((init.headers as Record<string, string> | undefined) ?? {}),
-        },
-      });
-    });
+      return doFetch(url, { signal: AbortSignal.timeout(REQUEST_DEADLINE_MS), ...request });
+      // A request that goes on the tab's open socket holds none of the browser's connections, and so no lane.
+    }, { carried: options.fetch === undefined && pageCarries(url, request) });
   } catch (cause) {
     assertCurrent?.();
     if (cause instanceof BridgeCallError && cause.code === "SESSION_REQUEST_RETIRED") throw cause;

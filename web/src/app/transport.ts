@@ -86,13 +86,27 @@ export interface TransportLane {
    * included — should start inside it, NOT when this is called, or a request
    * that waited for a lane arrives at the server with its budget already spent.
    */
-  run<T>(priority: RequestPriority, path: string, task: () => Promise<T>): Promise<T>;
+  run<T>(priority: RequestPriority, path: string, task: () => Promise<T>, how?: RunHow): Promise<T>;
   /** What the lane looked like at `nowMs`. */
   diagnose(nowMs?: number): TransportDiagnosis;
   /** In-flight count, for tests and diagnostics. */
   inFlight(): number;
   /** Queued (not yet started) count. */
   queued(): number;
+  /** Outstanding requests that hold no lane, because they use none of the browser's connections. */
+  carried(): number;
+}
+
+/**
+ * How a request is to be run.
+ *
+ * `carried`: it goes on the tab's socket (app/socketFetch.ts), not on a connection of its own. The cap exists
+ * because a browser has six connections to an origin and queues what is over that where nobody can see; a
+ * request on the socket uses none of them, however many are outstanding. It is started at once, holds no lane,
+ * and waits behind nothing. It is still counted, and still has its own deadline, set inside the task.
+ */
+export interface RunHow {
+  readonly carried?: boolean;
 }
 
 /** Thrown when a request never got a lane. Distinct so callers can word it. */
@@ -135,6 +149,8 @@ export function createTransportLane(deps: TransportLaneDeps = {}): TransportLane
 
   /** Started, not yet settled: path -> when it started. */
   const running = new Map<symbol, { path: string; startedAtMs: number }>();
+  /** Outstanding on the socket: they hold no lane. */
+  let carrying = 0;
   const waiting: Waiting[] = [];
 
   function diagnose(atMs?: number): TransportDiagnosis {
@@ -203,7 +219,21 @@ export function createTransportLane(deps: TransportLaneDeps = {}): TransportLane
     }
   }
 
-  function run<T>(priority: RequestPriority, path: string, task: () => Promise<T>): Promise<T> {
+  function run<T>(priority: RequestPriority, path: string, task: () => Promise<T>, how: RunHow = {}): Promise<T> {
+    if (how.carried === true) {
+      // No lane to take and none to hand on: started in this tick, like a request that found a lane free.
+      carrying += 1;
+      let started: Promise<T>;
+      try {
+        started = task();
+      } catch (cause) {
+        carrying -= 1;
+        return Promise.reject(cause);
+      }
+      return started.finally(() => {
+        carrying -= 1;
+      });
+    }
     const queuedAtMs = now();
     const ticket = Symbol(path);
 
@@ -276,6 +306,7 @@ export function createTransportLane(deps: TransportLaneDeps = {}): TransportLane
     diagnose,
     inFlight: () => running.size,
     queued: () => waiting.length,
+    carried: () => carrying,
   };
 }
 

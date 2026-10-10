@@ -70,6 +70,17 @@ export function pageFetch(): typeof fetch {
   return carried.fetch;
 }
 
+/**
+ * Whether this request, asked now, goes on a socket that is open, and so needs none of the browser's connections.
+ * False wherever requests go over HTTP: with the setting off, and where no page has made the socket's fetch (Node).
+ */
+export function pageCarries(input: unknown, init: RequestInit | undefined): boolean {
+  if (carried === null || transportSetting() !== "socket") {
+    return false;
+  }
+  return carried.wouldCarry(input, init);
+}
+
 /** The browser's socket as the little of one the socket's fetch asks for. */
 export function socketOver(socket: WebSocket): SocketLike {
   const like: SocketLike = {
