@@ -956,3 +956,84 @@ test("partial drone reads preserve other successful notification drains", async 
     }
   }
 });
+
+// ── a launch on the game port ────────────────────────────────────────────────
+//
+// The gateway's snapshot is the server's own scene, where a launched drone already is when LaunchDrones answers.
+// A pilot on the game port sees its own park, and the drone is a ball the next ballpark update brings (seen live
+// 2026-10-10: the launch's answer listed nothing launched, and four seconds on both transports listed the two).
+// The page reads "nothing launched" as a launch that failed.
+
+/** A pilot in space on a game port whose park shows a launched drone only at the read numbered `arrivesAt` after the launch (1 is the first). */
+async function inSpaceOnTheGamePort({ arrivesAt = 1, inertLaunch = false } = {}) {
+  const gamePort = fakeGateway();
+  gamePort.state.inertLaunch = inertLaunch;
+  const [select, call, snapshot] = [gamePort.selectCharacter, gamePort.callMethod, gamePort.readSpaceSnapshot];
+  let readsSinceLaunch = null;
+  gamePort.selectCharacter = async (...args) => ({ ...(await select(...args)), bridgeSessionID: "gp:a-game-port-session" });
+  gamePort.callMethod = async (service, method, ...rest) => {
+    const answer = await call(service, method, ...rest);
+    if (service === "ship" && method === "LaunchDrones") readsSinceLaunch = 0;
+    return answer;
+  };
+  gamePort.readSpaceSnapshot = async (...args) => {
+    const read = await snapshot(...args);
+    if (readsSinceLaunch === null) return read;
+    readsSinceLaunch += 1;
+    return readsSinceLaunch >= arrivesAt ? read : { ...read, space: { ...read.space, entities: read.space.entities.filter((row) => row.kind !== "drone") } };
+  };
+  const slept = [];
+  const gateway = fakeGateway();
+  const app = createApp({
+    eveStore: fakeStore(), eveGatewayClient: gateway, gamePortPilots: gamePort, pilotTransportFor: () => "gameport",
+    webAuth: fakeAuth(), staticData: fakeStaticData(), transitionSleep: async (ms) => { slept.push(ms); }, errorLogger() {},
+  });
+  const server = app.listen(0, "127.0.0.1");
+  activeServers.add(server);
+  await once(server, "listening");
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: CHARACTER_ID } });
+  return { gamePort, gateway, baseUrl, slept };
+}
+const launchOf = (baseUrl) => apiRequest(baseUrl, "/api/bridge/drones/launch", { method: "POST", body: { drones: [{ itemID: BAY_DRONE_ID }] } });
+
+test("on the game port a launched drone comes with the next ballpark update: the launch waits for it, and says it launched", async () => {
+  // The drone is in the park at the third look after the launch.
+  const { gamePort, gateway, baseUrl, slept } = await inSpaceOnTheGamePort({ arrivesAt: 3 });
+  const { response, payload } = await launchOf(baseUrl);
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.deepEqual([payload.launched.map((drone) => drone.itemID), payload.inSpace.map((drone) => drone.itemID)], [[BAY_DRONE_ID], [BAY_DRONE_ID]]);
+  // Two waits of a quarter of a second, and no more once it had come.
+  assert.deepEqual(slept, [250, 250]);
+  // The launch was the game port's, once; the gateway heard nothing of it.
+  assert.deepEqual([callsOf(gamePort, "ship", "LaunchDrones").length, callsOf(gateway, "ship", "LaunchDrones").length, gateway.calls.snapshot.length], [1, 0, 0]);
+  // A drone that is there at the first look is waited for not at all.
+  const prompt = await inSpaceOnTheGamePort({ arrivesAt: 1 });
+  assert.deepEqual([(await launchOf(prompt.baseUrl)).payload.launched.map((drone) => drone.itemID), prompt.slept], [[BAY_DRONE_ID], []]);
+});
+
+test("on the game port a launch the server did nothing with is said to have launched nothing, once the wait is over", async () => {
+  const { baseUrl, slept } = await inSpaceOnTheGamePort({ inertLaunch: true });
+  const { response, payload } = await launchOf(baseUrl);
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.deepEqual([payload.launched, payload.inSpace], [[], []]);
+  // Three seconds in all, a quarter at a time.
+  assert.deepEqual([slept.length, slept.reduce((sum, ms) => sum + ms, 0), new Set(slept).size], [12, 3000, 1]);
+  // A drone that comes later than the wait is not said to have launched: the page reads the drones again.
+  const late = await inSpaceOnTheGamePort({ arrivesAt: 20 });
+  assert.deepEqual([(await launchOf(late.baseUrl)).payload.launched, late.slept.length], [[], 12]);
+});
+
+test("a gateway pilot's launch is answered from the first look, with no waiting", async () => {
+  const slept = [];
+  const gateway = fakeGateway();
+  gateway.state.inertLaunch = true;
+  const app = createApp({ eveStore: fakeStore(), eveGatewayClient: gateway, webAuth: fakeAuth(), staticData: fakeStaticData(), transitionSleep: async (ms) => { slept.push(ms); }, errorLogger() {} });
+  const server = app.listen(0, "127.0.0.1");
+  activeServers.add(server);
+  await once(server, "listening");
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: CHARACTER_ID } });
+  const { payload } = await launchOf(baseUrl);
+  assert.deepEqual([payload.launched, slept], [[], []]);
+});

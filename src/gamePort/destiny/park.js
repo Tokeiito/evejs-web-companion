@@ -110,8 +110,21 @@ class Park {
    * `onBallsRemoved(list)` is told which balls are leaving, and which of them
    * are being destroyed rather than going out of sight.
    */
-  constructor({ ballpark = new Ballpark(), onEvent = null, requestState = null, onMultiEvent = null, onBallsRemoved = null } = {}) {
+  constructor({ ballpark = new Ballpark(), onEvent = null, requestState = null, onMultiEvent = null, onBallsRemoved = null, pilot = null } = {}) {
     this.ballpark = ballpark;
+    /**
+     * `pilot()` answers the session's character and ship, { charID, shipID }: a drone's state is kept only while the
+     * drone is that character's or is controlled by that ship (Park.OnDroneStateChange, 1496). With none given the
+     * character is not known, and the ship is the park's own (its ego).
+     */
+    this.pilot = pilot;
+    /**
+     * The drones the pilot has out, as michelle's park keeps them (stateByDroneID): by drone, { droneID, ownerID,
+     * controllerID, activityState, typeID, controllerOwnerID, targetID }. Filled by a whole state's droneState and
+     * changed by OnDroneStateChange. And what each is busy with, (activity, activityID), from OnDroneActivityChange.
+     */
+    this.stateByDroneID = new Map();
+    this.activityByDrone = new Map();
     this.onEvent = onEvent;
     this.requestState = requestState;
     this.onMultiEvent = onMultiEvent;
@@ -434,6 +447,33 @@ class Park {
   _notSimulation(funcName, args) {
     if (funcName === "OnDamageStateChange" || funcName === "OnFleetDamageStateChange") this._damage(ballId(args[0]), args[1]);
     if (funcName === "OnSlimItemChange") this.slimItems.set(ballId(args[0]), fieldsOf(args[1]));
+    if (funcName === "OnDroneStateChange") this.OnDroneStateChange(...items(args));
+  }
+
+  /**
+   * Park.OnDroneStateChange (1496): (itemID, ownerID, controllerID, activityState, typeID, controllerOwnerID,
+   * targetID). A drone that is neither the pilot's own nor controlled by the pilot's ship is forgotten: control of
+   * it is lost. Any other is kept as told. It comes as an entry of a ballpark update (recorded on Tranquility, as a
+   * list of the seven) and as a notice of its own (michelle.OnDroneStateChange, 265).
+   */
+  OnDroneStateChange(itemID, ownerID, controllerID, activityState, typeID, controllerOwnerID, targetID) {
+    const droneID = ballId(itemID);
+    const who = typeof this.pilot === "function" ? this.pilot() : null;
+    const charID = who && who.charID !== undefined && who.charID !== null ? ballId(who.charID) : null;
+    const shipID = who && who.shipID !== undefined && who.shipID !== null ? ballId(who.shipID) : this.ego;
+    if (charID !== ballId(ownerID) && shipID !== ballId(controllerID)) {
+      this.stateByDroneID.delete(droneID);
+      this.activityByDrone.delete(droneID);
+      return;
+    }
+    this.stateByDroneID.set(droneID, { droneID, ownerID: ballId(ownerID), controllerID: ballId(controllerID), activityState: number(activityState), typeID: number(typeID), controllerOwnerID: ballId(controllerOwnerID), targetID: targetID === null || targetID === undefined ? null : ballId(targetID) });
+  }
+
+  /** Park.OnDroneActivityChange (1520): (droneID, activityID, activity). With no activity, what was kept of the drone's is let go. */
+  OnDroneActivityChange(droneID, activityID, activity) {
+    const id = ballId(droneID);
+    if (!activity || (Buffer.isBuffer(activity) && activity.length === 0)) this.activityByDrone.delete(id);
+    else this.activityByDrone.set(id, [activity, activityID]);
   }
 
   /**
@@ -485,6 +525,17 @@ class Park {
   /** Park.SetState (968): a whole new park. */
   SetState(bag) {
     const fields = fieldsOf(bag);
+    // Park.SetState (970): the drones' states are the bag's, each row a drone; ClearAll then empties what each was busy with.
+    this.stateByDroneID = new Map();
+    this.activityByDrone = new Map();
+    const droneState = fieldsOf(fields.get("droneState"));
+    const columns = items(droneState.get("header")).map(text);
+    for (const line of items(droneState.get("lines"))) {
+      const row = Object.fromEntries(columns.map((column, index) => [column, items(line)[index]]));
+      if (row.droneID === undefined || row.droneID === null) continue;
+      const droneID = ballId(row.droneID);
+      this.stateByDroneID.set(droneID, { droneID, ownerID: ballId(row.ownerID), controllerID: ballId(row.controllerID), activityState: number(row.activityState), typeID: number(row.typeID), controllerOwnerID: ballId(row.controllerOwnerID), targetID: row.targetID === null || row.targetID === undefined ? null : ballId(row.targetID) });
+    }
     this.ballpark.clearAll();
     this.ballpark.readState(fields.get("state"), 0);
     this.ego = ballId(fields.get("ego"));

@@ -103,6 +103,13 @@ function healthOf(damageState, secondsSince) {
   return { shieldRatio: ratio(shield), armorRatio: ratio(damageState[damageState.length - 2]), hullRatio: ratio(damageState[damageState.length - 1]) };
 }
 
+/**
+ * A drone's activity state in the gateway's word for it (appConst.py: entityIdle, entityCombat, entityMining,
+ * entityApproaching, entityDeparting, entityPursuit, entitySalvaging). A state with no word is "could not tell",
+ * never idle.
+ */
+const DRONE_ACTIVITY = Object.freeze({ 0: "idle", 1: "fighting", 2: "mining", 3: "approaching", 4: "returning", 6: "chasing", 18: "salvaging" });
+
 /** One overview row: a ball with its slim item. `placed(ball)` says where the ball is shown and how fast: { p, v }. */
 function projectEntity(park, ball, slim, ego, placed) {
   const itemID = number(ball.id);
@@ -140,6 +147,17 @@ function projectEntity(park, ball, slim, ego, placed) {
     row.isNpc = categoryID === CATEGORY.ENTITY;
     row.npcEntityType = null;
     row.compressionFacility = null;
+  }
+  // A drone in space: which ship is flying it, whose that ship is, what it is doing, and on what. A client is
+  // told these of the pilot's own drones and of those its ship controls, by the park's drone states (michelle,
+  // stateByDroneID); of anybody else's drone it is told nothing, and each is null. The gateway reports them of
+  // every drone, from the server's own scene.
+  if (kind === "drone") {
+    const state = park.stateByDroneID ? park.stateByDroneID.get(ball.id) : undefined;
+    row.controllerID = state ? positive(state.controllerID) : null;
+    row.controllerOwnerID = state ? positive(state.controllerOwnerID) : null;
+    row.droneActivity = state ? DRONE_ACTIVITY[state.activityState] ?? null : null;
+    row.targetEntityID = state ? positive(state.targetID) : null;
   }
   // What there is to mine. A client knows a rock by its slim item's type, and that type is the ore a laser takes
   // from it: this server stamps an asteroid's slim item with the type it yields (asteroidService.js), whatever it

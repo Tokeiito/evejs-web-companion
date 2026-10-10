@@ -86,6 +86,8 @@ function createPilotSpace({
   let bound = null;
   const park = new Park({
     ballpark: new Ballpark({ onPost }),
+    // Whose drones the park keeps the states of: the session's character's, and those its ship controls.
+    pilot: () => ({ charID: session.attributes?.charid ?? null, shipID: session.attributes?.shipid ?? null }),
     // Park.RequestReset: the park has lost its place and asks for the whole state again.
     requestState: () => {
       if (remotePark === null) return; // not bound yet, or let go
@@ -150,6 +152,14 @@ function createPilotSpace({
       const delta = rebaseDelta(Array.isArray(notification.args) ? notification.args[0] : null);
       if (delta !== null) park.adjustTimes(delta);
       return true;
+    }
+    // michelle.OnDroneStateChange and OnDroneActivityChange (265, 270): a drone's notice of its own goes to the
+    // park, as the entry of a ballpark update does. The notice is the page's to hear as well.
+    if (notification.method === "OnDroneStateChange" && Array.isArray(notification.args)) {
+      guard("OnDroneStateChange", () => park.OnDroneStateChange(...notification.args));
+    }
+    if (notification.method === "OnDroneActivityChange" && Array.isArray(notification.args)) {
+      guard("OnDroneActivityChange", () => park.OnDroneActivityChange(...notification.args));
     }
     return false;
   }

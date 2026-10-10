@@ -768,3 +768,117 @@ test("a rock's row says what a laser takes from it, which is its own type; its b
   const row = projectEntity(park, ball, park.slimItems.get(ROCK.itemID), park.ego, (each) => ({ p: each.newPos, v: each.newVel }));
   assert.deepEqual([row.kind, row.miningYieldTypeID, row.beltID, row.remainingQuantity], ["asteroid", ROCK.typeID, null, null]);
 });
+
+// ── drones ───────────────────────────────────────────────────────────────────
+//
+// michelle's park keeps the states of the pilot's drones (stateByDroneID): filled by a whole state's droneState
+// (Park.SetState, 970), changed by OnDroneStateChange (1496), which comes as an entry of a ballpark update and as
+// a notice of its own (michelle, 265). The entry is Tranquility's, from a recording of two drones launched: a
+// list of the seven, (droneID, ownerID, controllerID, activityState, typeID, controllerOwnerID, targetID). The
+// gateway's snapshot says the same four things of every drone on grid, from the server's scene; a client is told
+// them of its own drones only.
+const DRONE = { itemID: 1054657303648, ownerID: 2124510715, shipID: 1054619390032, typeID: 2203 };
+const droneEntry = (more = {}) => ({ type: "list", items: [BigInt(more.itemID ?? DRONE.itemID), more.ownerID ?? DRONE.ownerID, BigInt(more.controllerID ?? DRONE.shipID), more.activityState ?? 0, DRONE.typeID, more.controllerOwnerID ?? DRONE.ownerID, more.targetID ?? null] });
+const pilotOfTheDrone = () => ({ charID: DRONE.ownerID, shipID: BigInt(DRONE.shipID) });
+
+test("a drone's state is kept as it is told, and forgotten when the drone is neither the pilot's nor its ship's", () => {
+  const park = new Park({ pilot: pilotOfTheDrone });
+  // As the recording has it: launched, idle, no target.
+  park._notSimulation("OnDroneStateChange", droneEntry());
+  assert.deepEqual(park.stateByDroneID.get(DRONE.itemID), { droneID: DRONE.itemID, ownerID: DRONE.ownerID, controllerID: DRONE.shipID, activityState: 0, typeID: DRONE.typeID, controllerOwnerID: DRONE.ownerID, targetID: null });
+  // Told again, in combat on something: the state is the new one.
+  park._notSimulation("OnDroneStateChange", droneEntry({ activityState: 1, targetID: 9000000000001n }));
+  assert.deepEqual([park.stateByDroneID.get(DRONE.itemID).activityState, park.stateByDroneID.get(DRONE.itemID).targetID, park.stateByDroneID.size], [1, 9000000000001, 1]);
+  // What it is busy with (Park.OnDroneActivityChange, 1520), kept and let go.
+  park.OnDroneActivityChange(BigInt(DRONE.itemID), 3, "assisting");
+  assert.deepEqual(park.activityByDrone.get(DRONE.itemID), ["assisting", 3]);
+  park.OnDroneActivityChange(DRONE.itemID, null, null);
+  assert.equal(park.activityByDrone.has(DRONE.itemID), false);
+  park.OnDroneActivityChange(DRONE.itemID, 3, "assisting");
+  // The pilot's own drone under another ship's control is still kept; so is another's drone under this ship's.
+  park._notSimulation("OnDroneStateChange", droneEntry({ controllerID: 77 }));
+  park._notSimulation("OnDroneStateChange", droneEntry({ itemID: 5, ownerID: 99, controllerOwnerID: 99 }));
+  assert.deepEqual([park.stateByDroneID.get(DRONE.itemID).controllerID, park.stateByDroneID.get(5).ownerID], [77, 99]);
+  // Neither the pilot's nor its ship's: control is lost, and the drone forgotten with what it was busy with.
+  park._notSimulation("OnDroneStateChange", droneEntry({ ownerID: 99, controllerID: 77 }));
+  assert.deepEqual([park.stateByDroneID.has(DRONE.itemID), park.activityByDrone.has(DRONE.itemID), park.stateByDroneID.size], [false, false, 1]);
+  // A park that is told no pilot knows no character: the ship is its own (its ego), and only what that controls is kept.
+  const alone = new Park();
+  alone.ego = DRONE.shipID;
+  alone.OnDroneStateChange(...droneEntry().items);
+  alone.OnDroneStateChange(...droneEntry({ itemID: 6, controllerID: 77 }).items);
+  assert.deepEqual([...alone.stateByDroneID.keys()], [DRONE.itemID]);
+});
+
+test("a whole state brings the drones' states with it and empties what each was busy with; the recorded one has none", () => {
+  // The recording's own state, off the server: a rowset of the seven columns, with no drone in it.
+  const recorded = undockedPark();
+  assert.deepEqual([recorded.stateByDroneID.size, recorded.activityByDrone.size], [0, 0]);
+  // The same bag with two drones in its rowset, as the server fills one (space/destiny/index.js, buildDroneState).
+  const [, [, [bag]]] = destinyUpdates(undock).flatMap((update) => update.entries).find(([, [name]]) => String(name) === "SetState");
+  const withDrones = { ...bag, args: { ...bag.args, entries: bag.args.entries.map(([key, value]) => (String(key) !== "droneState" ? [key, value] : [key, {
+    ...value, args: { ...value.args, entries: value.args.entries.map(([name, part]) => (String(name) !== "lines" ? [name, part] : [name, { type: "list", items: [
+      [BigInt(DRONE.itemID), DRONE.ownerID, BigInt(DRONE.shipID), 2, DRONE.typeID, DRONE.ownerID, 5020570318849n],
+      { type: "list", items: [7n, 99, 77n, 0, 2454, 99, null] },
+      [null, 1, 2, 0, 3, 1, null],
+    ] }])) },
+  }])) } };
+  const park = new Park({ pilot: pilotOfTheDrone });
+  park.OnDroneStateChange(8, DRONE.ownerID, DRONE.shipID, 0, DRONE.typeID, DRONE.ownerID, null);
+  park.OnDroneActivityChange(8, 1, "guarding");
+  park.SetState(withDrones);
+  // Each row a drone, whoever's it is: the state is the server's word. One with no ID is no drone. What was kept before is gone.
+  assert.deepEqual([...park.stateByDroneID.keys()], [DRONE.itemID, 7]);
+  assert.deepEqual(park.stateByDroneID.get(DRONE.itemID), { droneID: DRONE.itemID, ownerID: DRONE.ownerID, controllerID: DRONE.shipID, activityState: 2, typeID: DRONE.typeID, controllerOwnerID: DRONE.ownerID, targetID: 5020570318849 });
+  assert.deepEqual([park.stateByDroneID.get(7).controllerID, park.stateByDroneID.get(7).targetID, park.activityByDrone.size], [77, null, 0]);
+});
+
+test("a drone's row says whose it is, what it is doing and on what, where the park was told; of another's drone it says nothing", () => {
+  const park = undockedPark();
+  park.pilot = () => ({ charID: 140000002, shipID: undock.shipID });
+  const slim = (fields) => new Map(Object.entries(fields));
+  // A drone as this server sends one (a Hobgoblin I launched by Test Two, 2026-10-10): typeID 2454, group 100, the Drone category.
+  for (const id of [9988400109060, 9988400109061, 9988400109062]) {
+    park.ballpark.addBall({ id, isFree: true, mass: 3000, x: 500 + (id % 10) * 100, radius: 15 });
+    park.slimItems.set(id, slim({ itemID: BigInt(id), typeID: 2454, groupID: 100, categoryID: 18, name: "Hobgoblin I", ownerID: id === 9988400109062 ? 140000009 : 140000002 }));
+  }
+  // The pilot's two, as the server's notice says each: (droneID, ownerID, controllerID, activityState, typeID, controllerOwnerID, targetID).
+  park.OnDroneStateChange(9988400109060n, 140000002, BigInt(undock.shipID), 0, 2454, 140000002, null);
+  park.OnDroneStateChange(9988400109061n, 140000002, BigInt(undock.shipID), 2, 2454, 140000002, 5020570318849n);
+  const rows = () => projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID }).entities.filter((row) => row.kind === "drone");
+  const said = (row) => [row.controllerID, row.controllerOwnerID, row.droneActivity, row.targetEntityID];
+  assert.deepEqual(rows().map((row) => [row.itemID, row.name, row.ownerID, ...said(row)]), [
+    [9988400109060, "Hobgoblin I", 140000002, undock.shipID, 140000002, "idle", null],
+    [9988400109061, "Hobgoblin I", 140000002, undock.shipID, 140000002, "mining", 5020570318849],
+    // Another pilot's drone: a client is told nothing of it, and each of the four is "not known".
+    [9988400109062, "Hobgoblin I", 140000009, null, null, null, null],
+  ]);
+  // Each activity state in the gateway's word for it (appConst.py entityIdle to entitySalvaging); one with no word is not known, never idle.
+  for (const [state, word] of [[0, "idle"], [1, "fighting"], [2, "mining"], [3, "approaching"], [4, "returning"], [6, "chasing"], [18, "salvaging"], [5, null], [7, null], [99, null]]) {
+    park.OnDroneStateChange(9988400109060, 140000002, undock.shipID, state, 2454, 140000002, null);
+    assert.equal(rows()[0].droneActivity, word, String(state));
+  }
+  // Control lost: the row says nothing again.
+  park.OnDroneStateChange(9988400109061, 140000009, 77, 0, 2454, 140000009, null);
+  assert.deepEqual(said(rows()[1]), [null, null, null, null]);
+  // No other row has a drone's controller or activity.
+  const others = projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID }).entities.filter((row) => row.kind !== "drone");
+  assert.deepEqual(others.filter((row) => "controllerID" in row || "controllerOwnerID" in row || "droneActivity" in row), []);
+});
+
+test("a drone's notice of its own goes to the pilot's park, as michelle sends it on, and is left for the page as well", async () => {
+  const { session, space, state } = handTicked();
+  session.attributes = { charid: 140000002, shipid: 9988400109051n };
+  await space.start();
+  const taken = space.feed({ method: "OnDroneStateChange", args: [9988400109060n, 140000002, 9988400109051n, 0, 2454, 140000002, null] });
+  assert.deepEqual([taken, space.park.stateByDroneID.get(9988400109060)?.controllerID, space.park.stateByDroneID.get(9988400109060)?.activityState], [false, 9988400109051, 0]);
+  assert.equal(space.feed({ method: "OnDroneActivityChange", args: [9988400109060n, 2, "mining"] }), false);
+  assert.deepEqual(space.park.activityByDrone.get(9988400109060), ["mining", 2]);
+  // Another pilot's drone, told to this session: neither this character's nor this ship's, so nothing is kept of it.
+  space.feed({ method: "OnDroneStateChange", args: [9988400109062n, 140000009, 77n, 0, 2454, 140000009, null] });
+  assert.equal(space.park.stateByDroneID.has(9988400109062), false);
+  // A notice with no arguments to read is passed over, and nothing is reported as gone wrong.
+  assert.equal(space.feed({ method: "OnDroneStateChange", args: null }), false);
+  assert.equal(space.feed({ method: "OnDroneActivityChange", args: undefined }), false);
+  assert.deepEqual([space.park.stateByDroneID.size, state.errors], [1, []]);
+});

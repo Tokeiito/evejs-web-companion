@@ -20677,6 +20677,10 @@ app.post("/api/bridge/drones/scoop", requireAuth, async (req, res, next) => {
 // both limits, refuses per drone with its own reason, and would have to be
 // re-implemented here to guess — so the page shows the limits, sends the
 // request, and reports what came back in space.
+/** How long a launch on the game port waits for its drones' balls, and how often it looks. */
+const DRONE_ARRIVAL_WAIT_MS = 3000;
+const DRONE_ARRIVAL_STEP_MS = 250;
+
 app.post("/api/bridge/drones/launch", requireAuth, async (req, res, next) => {
   const held = requireHeldBridgeSession(req, res);
   if (!held) {
@@ -20726,6 +20730,20 @@ app.post("/api/bridge/drones/launch", requireAuth, async (req, res, next) => {
     let after = { drones: null, notifications: [] };
     try {
       after = await readDronesInSpace(held);
+      // On the game port a launched drone is a ball of the pilot's own park, and it comes with the ballpark
+      // update that follows the call's answer: the client's drone window fills as the balls arrive. (The gateway
+      // reads the server's scene, where the drone already is.) So the park is given a moment before it is said
+      // that none came. A launch the server did nothing with waits the whole of it.
+      if (Boolean(gamePortPilots) && isGamePortHandle(held.bridgeSessionID)) {
+        const sleep = typeof options.transitionSleep === "function"
+          ? options.transitionSleep
+          : (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        for (let waited = 0; waited < DRONE_ARRIVAL_WAIT_MS && after.drones !== null && !after.drones.some((drone) => !already.has(drone.itemID)); waited += DRONE_ARRIVAL_STEP_MS) {
+          await sleep(DRONE_ARRIVAL_STEP_MS);
+          const again = await readDronesInSpace(held);
+          after = { drones: again.drones, notifications: [...after.notifications, ...again.notifications] };
+        }
+      }
     } catch {
       after = { drones: null, notifications: [] };
     }
