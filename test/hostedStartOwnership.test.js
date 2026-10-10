@@ -450,6 +450,39 @@ test("caller-held stock pilot hands off to exactly one productive hosted owner a
   assert.equal(h.app.locals.botHost.claimedBy(characterID), null); assert.equal(h.reservations.size, 0);
 });
 
+test("a Start for the pilot the caller's own session holds does not ask again whose it is; for any other it asks", async t => {
+  const h = await harness(t, { factory: "absent" });
+  let lookups = 0;
+  h.behavior.characterLookupHook = () => { lookups += 1; };
+  // The pilot is chosen: the select asks whose it is, once.
+  await h.browser();
+  assert.equal(lookups, 1);
+  // Started by the session that holds it: the route does not ask again. The host's own select, made after the
+  // caller has let the pilot go, does (through the same public route), and that is the one lookup more.
+  const held = await h.start();
+  assert.equal(held.status, 200, JSON.stringify(held.body));
+  assert.equal(lookups, 2);
+  assert.equal((await h.stop(held.body.bot.botID)).status, 200);
+  // Started with nobody holding it: the route asks, and the host's select asks.
+  const unheld = await h.start();
+  assert.equal(unheld.status, 200, JSON.stringify(unheld.body));
+  assert.equal(lookups, 4);
+  assert.equal((await h.stop(unheld.body.bot.botID)).status, 200);
+  // Another web session's hold of the pilot says nothing of the caller: the route asks (and the Start is refused, the pilot being flown).
+  h.app.locals.bridgeSessions.set("foreign-session", { characterID, accountID: account.accountID, bridgeSessionID: "foreign-held" });
+  const flown = await h.start();
+  h.app.locals.bridgeSessions.delete("foreign-session");
+  assert.notEqual(flown.status, 200);
+  assert.equal(lookups, 5);
+  // Holding one pilot says nothing of another: a Start for a character that is not the account's is still refused.
+  await h.browser();
+  const before = lookups;
+  const other = await h.post("/api/bots/start", { characterID: characterID + 1, scriptID: script.scriptID, grant });
+  assert.deepEqual([other.status, other.body.error], [404, "CHARACTER_NOT_FOUND"]);
+  assert.equal(lookups, before + 1, "asked, and answered no");
+  assert.equal(h.app.locals.bridgeSessions.get(h.caller).characterID, characterID, "and the caller still holds its own");
+});
+
 for (const kind of ["browser", "reservation"]) test(`a newer WC ${kind} after the probe blocks hosted selection intact`, async t => {
   const h = await harness(t), entered = deferred(), release = deferred();
   const foreign = kind === "browser" ? { characterID, accountID: account.accountID, bridgeSessionID: "foreign-held" } : Symbol("foreign-current");

@@ -24966,7 +24966,15 @@ app.post("/api/bots/start", requireAuth, async (req, res, next) => {
     // The character must be the caller's — the same ownership read select does.
     // Identical for both kinds: owning the character is the one gate that
     // never differs by what is about to fly it.
-    const character = await store.getCharacterForAccount(req.account.accountID, characterID);
+    //
+    // A pilot this web session holds was shown to be the account's when it was
+    // chosen, by that same read. It is not made again: the read is the web
+    // gateway's snapshot of one character, and of a pilot who is online here it
+    // is a read the cutover means the BFF to stop making (the plan's Phase 5;
+    // src/gatewayLedger.js counts it as "online").
+    const heldHere = bridgeSessions.get(req.webSessionID) || null;
+    const chosenHere = heldHere !== null && Number(heldHere.characterID) === characterID;
+    const character = chosenHere || await store.getCharacterForAccount(req.account.accountID, characterID);
     if (!character) {
       res.status(404).json({ ok: false, error: "CHARACTER_NOT_FOUND" });
       return;
