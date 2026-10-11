@@ -1352,7 +1352,8 @@ test("ammunition loaded and unloaded are writes of the page's own, asked of the 
 test("a fleet's target tag set and cleared is a write of the page's own, asked of beyonce by its name: it goes as it was sent, and beyonce's other writes do not", async () => {
   const gateway = fakeGateway();
   const { baseUrl } = await startTestServer({ gateway });
-  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  // (Chosen as the page chooses a pilot, its check for lost drones done: an order to the ship is held back until it is.)
+  await acknowledgeRecovery(baseUrl);
   // A letter on a thing in space, and the tag taken off it.
   for (const args of [[9001, "A"], [9001, null]]) {
     const call = (more) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "beyonce", method: "CmdFleetTagTarget", args, kwargs: null, ...more } });
@@ -1441,7 +1442,8 @@ test("a colony's network changed is a write of the page's own, made on the plane
 test("only a call the client makes on an object of its own says which: with a planet said, any other is no call; and a planet's other writes have their routes", async () => {
   const { gateway, binds, bound } = bindingGateway();
   const { baseUrl } = await startTestServer({ gateway });
-  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  // (Chosen as the page chooses a pilot, its check for lost drones done: an order to the ship is held back until it is.)
+  await acknowledgeRecovery(baseUrl);
   const before = gateway.calls.call.length;
   const ask = (service, method, args) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service, method, args, kwargs: null, of: 40176368, pilot: true, confirm: true } });
   for (const [service, method, args] of [["beyonce", "CmdGotoPoint", [1, 2, 3]], ["planetMgr", "DeleteLaunch", [1]], ["planetMgr", "GetPlanetsForChar", []], ["planetMgr", "GetPlanetInfo", []]]) {
@@ -1550,7 +1552,8 @@ test("a mission's location warped to is a write of the page's own, made on the a
 test("a ship sent to a point is a write of the page's own, asked of beyonce by its name: it goes as it was sent", async () => {
   const gateway = fakeGateway();
   const { baseUrl } = await startTestServer({ gateway });
-  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  // (Chosen as the page chooses a pilot, its check for lost drones done: an order to the ship is held back until it is.)
+  await acknowledgeRecovery(baseUrl);
   const args = [1000, -2500.5, 300000000000];
   const call = (more) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "beyonce", method: "CmdGotoPoint", args, kwargs: null, ...more } });
   const before = gateway.calls.call.length;
@@ -3805,7 +3808,8 @@ test("crimewatch's states that cannot be read are an error, and a pilot not chos
 test("a ship aligned is a write of the page's own, asked of beyonce by its name with the thing and the bookmark by name: it goes as it was sent", async () => {
   const gateway = fakeGateway();
   const { baseUrl } = await startTestServer({ gateway });
-  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  // (Chosen as the page chooses a pilot, its check for lost drones done: an order to the ship is held back until it is.)
+  await acknowledgeRecovery(baseUrl);
   // menusvc.py 2790: bp.CmdAlignTo(dstID=targetID, bookmarkID=bookmarkID). Nothing by position.
   const kwargs = { dstID: 40009089, bookmarkID: null };
   const call = (more) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "beyonce", method: "CmdAlignTo", args: [], kwargs, ...more } });
@@ -3834,7 +3838,8 @@ test("a ship aligned is a write of the page's own, asked of beyonce by its name 
 test("a warp is a write of the page's own, asked of beyonce by its name with the subject, its number and the client's keywords: it goes as it was sent", async () => {
   const gateway = fakeGateway();
   const { baseUrl } = await startTestServer({ gateway });
-  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  // (Chosen as the page chooses a pilot, its check for lost drones done: an order to the ship is held back until it is.)
+  await acknowledgeRecovery(baseUrl);
   const [args, kwargs] = [["item", 5380000140002], { minRange: null, fleet: false }];
   const call = (more, sent = args) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "beyonce", method: "CmdWarpToStuff", args: sent, kwargs, ...more } });
   const before = gateway.calls.call.length;
@@ -3859,7 +3864,8 @@ test("a warp is a write of the page's own, asked of beyonce by its name with the
 test("the autopilot's warp is a write of the page's own, asked of beyonce by its name with the thing alone: it goes as it was sent", async () => {
   const gateway = fakeGateway();
   const { baseUrl } = await startTestServer({ gateway });
-  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  // (Chosen as the page chooses a pilot, its check for lost drones done: an order to the ship is held back until it is.)
+  await acknowledgeRecovery(baseUrl);
   // autopilot.py 465: GetRemotePark().CmdWarpToStuffAutopilot(destinationID).
   const call = (more) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "beyonce", method: "CmdWarpToStuffAutopilot", args: [50001248], kwargs: null, ...more } });
   const before = gateway.calls.call.length;
@@ -3880,7 +3886,8 @@ test("the autopilot's warp is a write of the page's own, asked of beyonce by its
 test("a warp of the page's is one the client's menus make, and no other: what the server's handler would take beyond that is not sent", async () => {
   const gateway = fakeGateway();
   const { baseUrl } = await startTestServer({ gateway });
-  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  // (Chosen as the page chooses a pilot, its check for lost drones done: an order to the ship is held back until it is.)
+  await acknowledgeRecovery(baseUrl);
   const call = (args, kwargs) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "beyonce", method: "CmdWarpToStuff", args, kwargs, pilot: true, confirm: true } });
   const before = gateway.calls.call.length;
   // The client's: a thing, a fleet member, a bookmark, a scan result and a launch, with what its callers send.

@@ -54,6 +54,7 @@ const path = require("path");
 const jettison = require("./jettisonCustody");
 const { createStartupRuns, credentialFree, preparationReady } = require("./startupRuns");
 const { pathToFileURL } = require("url");
+const { isBridgeWritePair } = require("./bridgeCallPolicy");
 
 // An unguessable per-run claim capability. The public botID is deliberately NOT
 // accepted by the select guard: account-scoped bot listings expose bot IDs, so
@@ -218,6 +219,18 @@ function sameSecret(left, right) {
 
 // Headless pilots need the same push-only fleet invitation authority as tabs.
 const { createHostedEventSource } = require("./hostedEventSource");
+
+/**
+ * What a request by the generic call asks, read off its body: the call's service and its method, and the object
+ * it is made on (`of`), as the page sends them (web/src/bridge/callMethod.ts). Null where the body is not one.
+ */
+function genericCallOf(body) {
+  if (typeof body !== "string") return null;
+  try {
+    const call = JSON.parse(body);
+    return call !== null && typeof call === "object" && typeof call.service === "string" && typeof call.method === "string" ? call : null;
+  } catch { return null; }
+}
 
 function createBotHost(options) {
   const auth = options.webAuth;
@@ -1102,17 +1115,25 @@ function createBotHost(options) {
         const secret = record.claimSecret;
         const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url, baseUrl);
         const method = String(init?.method || "GET").toUpperCase();
-        const writes = method !== "GET" && method !== "HEAD" && url.pathname !== "/api/bridge/call";
+        // The page makes its own writes by the generic call (the plan's Phase 6b), where the call's name says
+        // whether it is one, as it says to the BFF (bridgeCallPolicy.js). A call that cannot be read is taken
+        // for a write: unknown intent stays blocked.
+        const call = url.pathname === "/api/bridge/call" ? genericCallOf(init?.body) : null;
+        const writes = method !== "GET" && method !== "HEAD" &&
+          (url.pathname !== "/api/bridge/call" || call === null || isBridgeWritePair(call.service, call.method));
         const fleetAcceptance = record.recoveryFleetAcceptance;
         let exactFleetAcceptance = false;
-        if (url.pathname === "/api/bridge/fleet/invite/accept" && fleetAcceptance?.secret === secret && record.riskClasses.includes("fleet")) {
+        // An invitation is accepted by the generic call, on the fleet the call names (fleetWrites.ts, acceptFleetInvite).
+        if (call?.service === "fleetObjectHandler" && call.method === "AcceptInvite" && fleetAcceptance?.secret === secret && record.riskClasses.includes("fleet")) {
           try { fleetAcceptance.assertCurrent(); } catch (error) { return Promise.reject(error); }
-          try { exactFleetAcceptance = JSON.parse(String(init?.body)).fleetID === fleetAcceptance.fleetID; } catch { /* Unknown intent stays blocked. */ }
+          exactFleetAcceptance = call.of === fleetAcceptance.fleetID;
         }
         const preparationRecovery = record.operationPreparation && record.preparingRecovery === true &&
           ["/api/bridge/provisioning/review", "/api/bridge/provisioning/reconcile"].includes(url.pathname);
-        const recoveryWrite = preparationRecovery || exactFleetAcceptance || ["/api/bridge/select", "/api/bridge/entity/drones/reconnect", "/api/bridge/drones/recall",
-          "/api/bridge/drone-recovery/ready", "/api/bridge/flight/stop", "/api/bridge/ship/jettison/reconcile"].includes(url.pathname);
+        // (The stop is the ship's own command, by the generic call: movementWrites.ts, stopShip.)
+        const stops = call?.service === "beyonce" && call.method === "CmdStop";
+        const recoveryWrite = preparationRecovery || exactFleetAcceptance || stops || ["/api/bridge/select", "/api/bridge/entity/drones/reconnect", "/api/bridge/drones/recall",
+          "/api/bridge/drone-recovery/ready", "/api/bridge/ship/jettison/reconcile"].includes(url.pathname);
         if (record.recovering && !record.windingDown && writes && !recoveryWrite) {
           return Promise.reject(Object.assign(new Error("The hosted session is recovering; productive writes are paused."),
             { code: "HOSTED_RECOVERY_PENDING" }));

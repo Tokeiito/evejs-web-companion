@@ -12,6 +12,7 @@ const assert = require("node:assert/strict");
 const { once } = require("events");
 
 const { createApp } = require("../src/server");
+const { PAGE_WRITE_PAIR_KEYS } = require("../src/bridgeCallPolicy");
 
 const COOKIE_TOKEN = "raw-signed-login-cookie";
 const SESSION_ID = "signed-random-session-id";
@@ -494,6 +495,111 @@ test("ordinary writes are blocked before transition readiness and allowed during
     gateway.calls.boundCall.filter((call) => call.method === "CmdWarpToStuffAutopilot").length,
     1,
   );
+});
+
+// The page's own form of a write (the plan's Phase 6b) is by the generic call, which is no read for being one: the
+// gate of a session's change takes it for the write it names.
+test("a write by the generic call is blocked before transition readiness as a route's is, and a read by it is not", async () => {
+  const gateway = fakeGateway();
+  gateway.state.inSpace = true;
+  gateway.state.shipMode = "STOP";
+  const callBoundMethod = gateway.callBoundMethod.bind(gateway);
+  const readFlightStatus = gateway.readFlightStatus.bind(gateway);
+  let jumpPending = false;
+  let signalJumpIssued;
+  let releaseReadiness;
+  const jumpIssued = new Promise((resolve) => { signalJumpIssued = resolve; });
+  const readinessGate = new Promise((resolve) => { releaseReadiness = resolve; });
+  gateway.callBoundMethod = async (...args) => {
+    const outcome = await callBoundMethod(...args);
+    if (args[1] === "CmdStargateJump") {
+      gateway.state.solarSystemID = ORIGIN_SYSTEM_ID;
+      jumpPending = true;
+      signalJumpIssued();
+    }
+    return outcome;
+  };
+  gateway.readFlightStatus = async (...args) => {
+    if (jumpPending) {
+      await readinessGate;
+    }
+    return readFlightStatus(...args);
+  };
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  const byTheCall = (service, method, more) => apiRequest(baseUrl, "/api/bridge/call", {
+    method: "POST",
+    body: { service, method, args: [], kwargs: null, ...more },
+  });
+  const stopsSent = () => [...gateway.calls.call, ...gateway.calls.boundCall].filter((call) => call.method === "CmdStop").length;
+  const jumpRequest = apiRequest(baseUrl, "/api/bridge/flight/jump", {
+    method: "POST",
+    body: { fromGateID: GATE_ID, toGateID: DEST_GATE_ID },
+  });
+  await jumpIssued;
+
+  let read;
+  let blocked;
+  let sentWhileBlocked;
+  try {
+    read = await byTheCall("charMgr", "GetPublicInfo3", {});
+    blocked = await byTheCall("beyonce", "CmdStop", { pilot: true, confirm: true });
+    sentWhileBlocked = stopsSent();
+  } finally {
+    // (Whatever was found, the jump is let finish: a request left waiting holds the server open.)
+    gateway.state.solarSystemID = DEST_SYSTEM_ID;
+    jumpPending = false;
+    releaseReadiness();
+  }
+  assert.equal(read.response.status, 200, "a read by the call remains available");
+  assert.deepEqual([blocked.response.status, blocked.payload.error], [409, "SESSION_CHANGE_IN_PROGRESS"]);
+  assert.equal(sentWhileBlocked, 0, "the write by the call must not dispatch before readiness");
+
+  const completedJump = await jumpRequest;
+  assert.equal(completedJump.response.status, 200, JSON.stringify(completedJump.payload));
+  const allowed = await byTheCall("beyonce", "CmdStop", { pilot: true, confirm: true });
+  assert.equal(allowed.response.status, 200, JSON.stringify(allowed.payload));
+  assert.equal(stopsSent(), 1, "and with the change done, it is sent");
+});
+
+// The flight routes' gate (src/server.js): no order to the ship while the pilot's login check for lost drones is
+// unresolved, the stop excepted. The page orders its ship by the generic call now (the plan's Phase 6b).
+test("an order to the ship by the generic call is held back while the pilot's lost drones are looked for, as a flight route's is, and the stop is not", async () => {
+  const gateway = fakeGateway();
+  gateway.state.inSpace = true;
+  gateway.state.shipMode = "STOP";
+  const { baseUrl } = await startTestServer({ gateway });
+  const selected = await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  assert.equal(selected.response.status, 200);
+  const byTheCall = (service, method, args = [], more = { pilot: true, confirm: true }) => apiRequest(baseUrl, "/api/bridge/call", {
+    method: "POST",
+    body: { service, method, args, kwargs: null, ...more },
+  });
+  const sent = () => [...gateway.calls.call, ...gateway.calls.boundCall].map((call) => call.method);
+  const before = sent().length;
+
+  const route = await apiRequest(baseUrl, "/api/bridge/flight/warp", { method: "POST", body: { destinationID: GATE_ID } });
+  assert.deepEqual([route.response.status, route.payload.error], [409, "DRONE_RECOVERY_PENDING"], "a flight route");
+  // Every write of the page's own on beyonce was a flight route's (bridgeCallPolicy.js): each of them but the stop.
+  const orders = [...PAGE_WRITE_PAIR_KEYS].filter((pair) => pair.startsWith("beyonce.") && pair !== "beyonce.CmdStop").map((pair) => pair.slice("beyonce.".length));
+  assert.ok(orders.length >= 9 && ["CmdWarpToStuff", "CmdWarpToStuffAutopilot", "CmdFollowBall", "CmdOrbit", "CmdAlignTo", "CmdGotoPoint"].every((each) => orders.includes(each)), orders.join(", "));
+  for (const method of orders) {
+    const held = await byTheCall("beyonce", method);
+    assert.deepEqual([held.response.status, held.payload.error], [409, "DRONE_RECOVERY_PENDING"], method);
+  }
+  assert.equal(sent().length, before, "nothing of them is sent");
+
+  const read = await byTheCall("charMgr", "GetPublicInfo3", [], {});
+  assert.equal(read.response.status, 200, "a read by the call is not held back");
+  const stop = await byTheCall("beyonce", "CmdStop");
+  assert.equal(stop.response.status, 200, JSON.stringify(stop.payload));
+  assert.equal(sent().filter((method) => method === "CmdStop").length, 1, "the stop is sent");
+
+  const ready = await apiRequest(baseUrl, "/api/bridge/drone-recovery/ready", { method: "POST", body: { checkID: selected.payload.droneRecoveryCheckID } });
+  assert.equal(ready.response.status, 200, JSON.stringify(ready.payload));
+  const after = await byTheCall("beyonce", "CmdSetSpeedFraction", [1]);
+  assert.equal(after.response.status, 200, JSON.stringify(after.payload));
+  assert.equal(sent().filter((method) => method === "CmdSetSpeedFraction").length, 1, "and with the check done, an order is");
 });
 
 test("an uncertain jump timeout stays latched and blocks a repeated write", async () => {

@@ -317,6 +317,38 @@ test("retired hosted claim fences a write awaiting its bind", async () => {
   assert.equal(gateway.calls.boundCall.length, 0);
 });
 
+// A cockpit may attach to a hosted pilot's readouts, and only the generation that chose the session may write
+// (assertHeldRequestGeneration). The page makes its writes by the generic call now (the plan's Phase 6b).
+test("an attached cockpit's write by the generic call is fenced as its route's is, its read by it is not, and the hosted generation's own is made", async () => {
+  const gateway = fakeGateway();
+  const sent = [];
+  gateway.callMethod = async (service, method) => { sent.push(`${service}.${method}`); return { service, method, result: null, notifications: [] }; };
+  const botHost = { claimedBy: () => null, authorizesClaim: (_id, secret) => secret === "current-generation" };
+  const { baseUrl, app } = await startTestServer({ gateway, botHost });
+  await selectOnServer(baseUrl);
+  const held = app.locals.bridgeSessions.get(SESSION_ID);
+  app.locals.bridgeSessions.set(SESSION_ID, { ...held, botClaimSecret: "current-generation", boundHandles: new Map() });
+  const call = (body, headers = {}) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", headers, body });
+  const stop = { service: "beyonce", method: "CmdStop", args: [], kwargs: null, pilot: true, confirm: true };
+  const stops = () => sent.filter((pair) => pair === "beyonce.CmdStop").length;
+
+  const route = await apiRequest(baseUrl, "/api/bridge/flight/stop", { method: "POST", body: {} });
+  assert.deepEqual([route.response.status, route.payload.error], [409, "HOSTED_GENERATION_CHANGED"], "the route, of a cockpit");
+  const cockpit = await call(stop);
+  assert.deepEqual([cockpit.response.status, cockpit.payload.error], [409, "HOSTED_GENERATION_CHANGED"], "the call, of a cockpit");
+  assert.equal(stops(), 0, "and nothing is sent");
+  const read = await call({ service: "dogmaIM", method: "GetAllInfo", pilot: true });
+  assert.equal(read.response.status, 200, JSON.stringify(read.payload));
+  const owned = await call(stop, { "x-evejs-bot-claim": "current-generation" });
+  assert.equal(owned.response.status, 200, JSON.stringify(owned.payload));
+  assert.equal(stops(), 1, "the hosted generation's own stop is sent");
+  // (This pilot's check for lost drones is unresolved still: a hosted bot's own order is not held back for it.)
+  const ownedOrder = await call({ service: "beyonce", method: "CmdSetSpeedFraction", args: [1], kwargs: null, pilot: true, confirm: true },
+    { "x-evejs-bot-claim": "current-generation" });
+  assert.equal(ownedOrder.response.status, 200, JSON.stringify(ownedOrder.payload));
+  assert.equal(sent.filter((pair) => pair === "beyonce.CmdSetSpeedFraction").length, 1, "nor is it kept from being sent");
+});
+
 test("a late old-generation request cannot acquire the replacement held session", async () => {
   const gateway = fakeGateway();
   gateway.callMethod = async (service, method) => ({ service, method, result: [], notifications: [] });

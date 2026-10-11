@@ -826,15 +826,23 @@ app.post("/api/logout", async (req, res) => {
   res.json({ ok: true });
 });
 
+// The page makes its own writes by the generic call (the plan's Phase 6b), so that call is a read only where it
+// names one. A gate that tells a write by its path takes the call's own name for it, as the call's handler does
+// (bridgeCallPolicy.js). A body that names nothing is no call, and is refused there.
+function writesByTheGenericCall(req) {
+  const body = req.body || {};
+  return req.method === "POST" && `${req.baseUrl || ""}${req.path}` === "/api/bridge/call" && isBridgeWritePair(body.service, body.method);
+}
+
 // A session-changing command is issued once, then its HTTP handler waits for
 // authoritative location/scene/ship readiness. While that observation is
 // pending, no second bridge POST action may slip through another route. GET
-// reads, the policy-read-only generic call, release, and character reselection
+// reads, a read by the generic call (a write by it is gated), release, and character reselection
 // remain available so the UI can observe or recover the session. Once phase is
 // `ready`, ordinary commands are legal even
 // while retail's separate next-session-mutation cooldown is still running.
 const TRANSITION_GATE_EXEMPT_POST_PATHS = new Set([
-  "/api/bridge/call", // generic seam is read-only by policy
+  "/api/bridge/call", // the generic seam where it names a read: a write named there is gated (writesByTheGenericCall)
   "/api/bridge/select",
   "/api/bridge/release",
   "/api/bridge/provisioning/review", // read-only despite the structured POST body
@@ -845,7 +853,7 @@ app.use((req, res, next) => {
   if (
     req.method !== "POST" ||
     !req.path.startsWith("/api/bridge/") ||
-    TRANSITION_GATE_EXEMPT_POST_PATHS.has(req.path)
+    (TRANSITION_GATE_EXEMPT_POST_PATHS.has(req.path) && !writesByTheGenericCall(req))
   ) {
     next();
     return;
@@ -951,7 +959,8 @@ async function activatePreparedOperation(definition,operationRunID) {
 // Forwards the retail call tuple (service, method, args, kwargs) to the
 // gateway's POST /_evejs-web/v1/call; the gateway enforces the deny-by-default
 // (service, method) allowlist and materializes the browser-backed session. This
-// generic seam is READ-ONLY: every known mutator must use its purpose-built,
+// generic seam makes a read, or one of the writes the page makes itself for its
+// pilot (below; the plan's Phase 6b): every other mutator must use its purpose-built,
 // confirmation-gated BFF route. The BFF also projects browser session fields
 // onto an explicit presentation-only allowlist; `userid` always comes from the
 // signed login session. Wire contract: docs/bridge-wire-contract.md.
@@ -973,6 +982,12 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
       error: "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE",
       message: `${body.service}.${body.method} is a write and must use its dedicated confirmation route.`,
     });
+    return;
+  }
+  // An order to the ship was a flight route's, and those are held back while the pilot's lost drones are looked
+  // for (heldBackForDroneRecovery, below): every write of the page's own on beyonce was one of them, and the stop,
+  // which that gate lets through, is CmdStop.
+  if (write && body.service === "beyonce" && body.method !== "CmdStop" && heldBackForDroneRecovery(req, res)) {
     return;
   }
   // A call the client makes on an object of the service's for a thing it names (its Moniker(service, what)) says
@@ -1778,7 +1793,8 @@ function assertHeldRequestGeneration(req, held) {
   const secret = req.get(botHostModule.BOT_HEADER);
   // A cockpit may attach to hosted GET readouts. Writes and requests naming a
   // hosted generation must belong to the generation that selected this session.
-  const readOnly = req.method === "GET" || req.path === "/api/bridge/call";
+  // (The generic call is a read where it names one: the page makes its own writes by it. writesByTheGenericCall.)
+  const readOnly = req.method === "GET" || (req.path === "/api/bridge/call" && !writesByTheGenericCall(req));
   if (held.botClaimSecret && (!readOnly || secret) &&
       (secret !== held.botClaimSecret || !botHost.authorizesClaim(held.characterID, secret))) {
     throw Object.assign(new Error("The requesting hosted controller generation is no longer current."),
@@ -1805,17 +1821,22 @@ function assertCurrentHeldSession(held, webSessionID) {
 // unresolved. StopShip remains available; the hosted bot's own claim is not a
 // browser recovery session. All normal flight entry points share this gate.
 app.use("/api/bridge/flight", requireAuth, (req, res, next) => {
-  if (req.method === "POST" && req.path !== "/stop") {
-    const held = bridgeSessions.get(req.webSessionID);
-    if (held && hasPendingRecovery(held, held.characterID) &&
-        !botHost.authorizesClaim(held.characterID, req.get(botHostModule.BOT_HEADER))) {
-      res.status(409).json({ ok: false, error: "DRONE_RECOVERY_PENDING",
-        message: "Finish nearby lost-drone recovery before moving this pilot." });
-      return;
-    }
-  }
+  if (req.method === "POST" && req.path !== "/stop" && heldBackForDroneRecovery(req, res)) return;
   next();
 });
+// The page orders its ship by the generic call too (the plan's Phase 6b), and that call's handler asks this of
+// each order: every write of the page's own on beyonce was one of the flight routes above, and the stop is CmdStop.
+/** Answers a request for a pilot whose lost-drone check is unresolved, a hosted bot's own aside. True where it did. */
+function heldBackForDroneRecovery(req, res) {
+  const held = bridgeSessions.get(req.webSessionID);
+  if (held && hasPendingRecovery(held, held.characterID) &&
+      !botHost.authorizesClaim(held.characterID, req.get(botHostModule.BOT_HEADER))) {
+    res.status(409).json({ ok: false, error: "DRONE_RECOVERY_PENDING",
+      message: "Finish nearby lost-drone recovery before moving this pilot." });
+    return true;
+  }
+  return false;
+}
 
 function inventoryLocationID(held) {
   return "dockedLocationID" in held ? held.dockedLocationID : held.stationID;

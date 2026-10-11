@@ -283,7 +283,9 @@ async function fleetFixture(overrides = {}) {
             if (overrides.hauler) states.find(row => row.characterID === id).invited = true; },
           async acceptFleetInvite(id) { log.push(["accept", state.characterID, id]);
             if (overrides.acceptGate) { log.push("accept-queued"); await overrides.acceptGate;
-              await flowOptions.fetch("http://127.0.0.1:0/api/bridge/fleet/invite/accept", { method: "POST", body: JSON.stringify({ fleetID: id, confirm: true }) }); }
+              // As the page accepts one (web/src/bridge/fleetWrites.ts, acceptFleetInvite): by the generic call, on the fleet it names.
+              await flowOptions.fetch("http://127.0.0.1:0/api/bridge/call", { method: "POST", body: JSON.stringify({ service: "fleetObjectHandler",
+                method: "AcceptInvite", args: [], kwargs: null, pilot: true, confirm: true, of: overrides.acceptOf ?? id }) }); }
             if (!overrides.unconfirmedAcceptance) state.fleetID = id; },
           async prepareHostedBotStop() {}, async prepareCustomBotParking() {}, stopCustomBot() {}, abortRoute() {}, async logout() {},
         };
@@ -498,4 +500,57 @@ test("successful same-run restart retires an unowned failed recovery report with
   assert.equal(restored.log.filter(step => step === "logout").length, 1);
   assert.equal(readRun(owner.logicalRunID).ended, true);
   assert.equal(readRoster().length, 0);
+});
+
+// The page makes its own writes by the generic call (the plan's Phase 6b: web/src/app/api.ts, bridgeDo). To the
+// hosted fetch a call is what it names, as it is to the BFF: a write named there is a write, and a read is a read.
+const byTheCall = (service, method, more = { pilot: true, confirm: true }) =>
+  ["http://127.0.0.1:0/api/bridge/call", { method: "POST", body: JSON.stringify({ service, method, args: [], kwargs: null, ...more }) }];
+
+test("a write by the generic call is paused while the session recovers; a read by it and the stop are not", async t => {
+  const original = global.fetch; t.after(() => { global.fetch = original; });
+  const reached = [];
+  global.fetch = async (_input, init) => { reached.push(JSON.parse(init.body).method); return new Response("{}", { status: 200 }); };
+  const gate = deferred(), f = fixture({ suspend: () => gate.promise }); const started = await f.host.start(launch);
+  f.host.reconnect(started.bot.botID, 7);
+  // (Whatever is found, the recovery is let go on: one left held keeps its three minutes' watch, and the run open.)
+  try {
+    for (const [service, method] of [["dogmaIM", "AddTarget"], ["beyonce", "CmdWarpToStuff"], ["beyonce", "CmdFollowBall"], ["fleetObjectHandler", "AcceptInvite"]])
+      await assert.rejects(f.fetch(...byTheCall(service, method)), { code: "HOSTED_RECOVERY_PENDING" }, `${service}.${method}`);
+    await assert.rejects(f.fetch("http://127.0.0.1:0/api/bridge/call", { method: "POST", body: "{" }), { code: "HOSTED_RECOVERY_PENDING" }, "a call that cannot be read");
+    await f.fetch(...byTheCall("charMgr", "GetPublicInfo3", { pilot: true }));
+    await f.fetch(...byTheCall("beyonce", "CmdStop"));
+    assert.deepEqual(reached, ["GetPublicInfo3", "CmdStop"]);
+  } finally { gate.resolve(); }
+  await waitUntil(() => f.host.list(7)[0].recovery?.state === "READY");
+});
+
+test("a write by the generic call that is lost is kept unresolved as a route's is; a read by it that is lost is not", async t => {
+  const original = global.fetch; t.after(() => { global.fetch = original; });
+  global.fetch = async () => new Response(JSON.stringify({ error: "SESSION_NOT_FOUND" }), { status: 404 });
+  const lost = fixture(), started = await lost.host.start(launch);
+  await lost.fetch(...byTheCall("dogmaIM", "AddTarget"));
+  await waitUntil(() => lost.host.list(7)[0].recovery?.state === "BLOCKED");
+  assert.match(lost.host.list(7)[0].why, /write outcome/);
+  assert.equal((await lost.host.prepareOperationStop(started.bot.botID, 7, "op")).ok, false);
+  assert.equal(lost.log.includes("resume"), false); assert.equal(lost.log.includes("logout"), false);
+  const read = fixture(); await read.host.start(launch);
+  await read.fetch(...byTheCall("charMgr", "GetPublicInfo3", { pilot: true }));
+  await waitUntil(() => read.host.list(7)[0].recovery?.state === "READY");
+  assert.equal(read.log.includes("resume"), true);
+});
+
+test("a hauler's acceptance by the generic call goes through its recovery for the fleet it was invited to, and for no other", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const [acceptOf, state, accepted] of [[undefined, "READY", [["fleetObjectHandler", "AcceptInvite", 700]]], [701, "BLOCKED", []]]) {
+      const reached = [];
+      globalThis.fetch = async (_input, init) => { const call = JSON.parse(init.body); reached.push([call.service, call.method, call.of]); return new Response("{}", { status: 200 }); };
+      const f = await fleetFixture({ hauler: true, acceptGate: Promise.resolve(), acceptOf });
+      f.host.reconnect(f.member.bot.botID, 7);
+      await waitUntil(() => f.host.list(7).find(row => row.botID === f.member.bot.botID).recovery?.state === state);
+      assert.deepEqual(reached, accepted, String(acceptOf));
+      assert.equal(f.log.includes("resume"), state === "READY", String(acceptOf));
+    }
+  } finally { globalThis.fetch = originalFetch; }
 });
