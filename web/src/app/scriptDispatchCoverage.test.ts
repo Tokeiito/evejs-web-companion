@@ -29,10 +29,12 @@ test("every action the union declares has a case where the page carries actions 
 test("a thing's warp, the autopilot's and a fleet member's are carried out by the page's own calls wherever the page warps; their routes' askers are gone", () => {
   const flow = readFileSync(fileURLToPath(new URL("./flow.ts", import.meta.url)), "utf8");
   const times = (text: string) => flow.split(text).length - 1;
-  // The travel autopilot's and the mining bot's own warps: the menu's call at the autopilot's range of nought.
-  assert.equal(times("await warpToThing(destinationID, AUTOPILOT_WARP_MIN_RANGE_M);"), 2);
+  // The travel autopilot's warp: the client's autopilot's own call.
+  assert.equal(times("await warpAsTheAutopilot(destinationID);"), 1);
+  // The mining bot's own warp: the menu's call at nought.
+  assert.equal(times("await warpToThing(destinationID, MENU_WARP_RANGE_M);"), 1);
   // A script bot's.
-  assert.equal([...flow.matchAll(/case "warp":\s+await warpToThing\(action\.targetID, AUTOPILOT_WARP_MIN_RANGE_M\);\s+return;/g)].length, 1);
+  assert.equal([...flow.matchAll(/case "warp":\s+await warpToThing\(action\.targetID, MENU_WARP_RANGE_M\);\s+return;/g)].length, 1);
   // The fleet companion's: the autopilot's own call, and a fleet member by the pilot's number.
   assert.equal([...flow.matchAll(/case "warp":\s+await warpAsTheAutopilot\(action\.targetID\);\s+return;/g)].length, 1);
   assert.equal([...flow.matchAll(/await warpToMember\(action\.characterID\);\s+return;/g)].length, 1);

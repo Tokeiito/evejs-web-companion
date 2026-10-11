@@ -866,6 +866,16 @@ test("a station beyond the warp floor is warped to", () => {
   assert.equal(decision.phase, "Getting safe");
 });
 
+test("a station nearer than the autopilot's warp is taken from is closed on, not warped to", () => {
+  // The companion warps by the client's autopilot's own call, which this server stops ten kilometres short and
+  // refused from 160.0 km and nearer (measured 2026-10-11). The floor of that call is 162.5 km for a small hull.
+  for (const metres of [153_000, 160_000, 162_499]) {
+    const decision = decideCompanionAction(REQUEST, alone({ snapshot: gridWithStation(metres) }));
+    assert.deepEqual(decision.action, { kind: "approach", targetID: 60000001 }, `${metres} m off the station`);
+  }
+  assert.deepEqual(decideCompanionAction(REQUEST, alone({ snapshot: gridWithStation(162_500) })).action, { kind: "warp", targetID: 60000001 });
+});
+
 test("a station too close for the server to warp to is approached", () => {
   const decision = decideCompanionAction(REQUEST, alone({ snapshot: gridWithStation(50_000) }));
   assert.deepEqual(decision.action, { kind: "approach", targetID: 60000001 });
@@ -2241,6 +2251,15 @@ test("a JumpTo broadcast warps to the named gate when it is far", () => {
   );
   assert.deepEqual(decision.action, { kind: "warp", targetID: GATE });
   assert.equal(decision.followingOrderFrom, "broadcast");
+});
+
+test("a JumpTo broadcast closes in on a gate nearer than the autopilot's warp is taken from", () => {
+  const actionAt = (metres: number) =>
+    decideCompanionAction(REQUEST, obs({ snapshot: gridWithGate(metres), fleetBroadcast: fleetBroadcast("JumpTo", GATE) })).action;
+  for (const metres of [153_000, 160_000, 162_499]) {
+    assert.deepEqual(actionAt(metres), { kind: "approach", targetID: GATE }, `${metres} m off the gate`);
+  }
+  assert.deepEqual(actionAt(162_500), { kind: "warp", targetID: GATE });
 });
 
 test("a JumpTo broadcast closes in when too close for the server to warp to", () => {

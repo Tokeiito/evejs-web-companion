@@ -10,11 +10,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  AUTOPILOT_WARP_STOPS_SHORT_M,
   MAX_SILENT_DOCK_ATTEMPTS,
   MAX_WARP_ATTEMPTS,
+  MENU_WARP_RANGE_M,
   WARP_EXIT_VARIANCE_M,
   createAutopilot,
   decideAutopilotAction,
+  decideCloseIn,
   measureSpace,
   warpFloorMeters,
   type AutopilotAction,
@@ -860,9 +863,12 @@ test("ladder: the close-range rule is per target KIND, as retail splits it", () 
   assert.equal(stationDecisionAt(1_000).kind, "dock");
 });
 
-test("ladder: below the warp floor the ship APPROACHES; at or above it, it WARPS", () => {
-  const floor = warpFloorMeters(0);
-  for (const metres of [3_000, 100_000, 149_999, floor - 1]) {
+test("ladder: below the floor of the autopilot's warp the ship APPROACHES; at or above it, it WARPS", () => {
+  // The travel autopilot warps by the client's autopilot's own call, which this server stops ten kilometres
+  // short: the floor of that call is as much further out than the floor of a warp at nought.
+  const floor = warpFloorMeters(0, AUTOPILOT_WARP_STOPS_SHORT_M);
+  assert.equal(floor, 162_500);
+  for (const metres of [3_000, 100_000, 149_999, warpFloorMeters(0), 160_000, floor - 1]) {
     const action = gateDecisionAt(metres);
     assert.equal(action.kind, "approach", `${metres} m from the gate`);
     if (action.kind === "approach") {
@@ -888,23 +894,29 @@ test("warp floor: never below retail's 150 km, and it tracks the hull it is aske
   // A hull bigger than that scatter dominates instead: a station warp's stop
   // distance carries +shipRadius (warpState.js:632).
   assert.equal(warpFloorMeters(4_000), 154_000);
-  // The 10 km the AUTOPILOT call hardcodes, for comparison — this is the term
-  // R24 removes by sending retail's minRange=0 instead.
-  assert.equal(warpFloorMeters(0, 10_000), 162_500);
+  // A warp that stops short of its target is taken from that much further out. The client's autopilot's is
+  // stopped ten kilometres short by this server (measured 2026-10-11: taken 160.5 km off a gate and 160.1 km
+  // off a station, refused at 160.0 and 159.9).
+  assert.equal(AUTOPILOT_WARP_STOPS_SHORT_M, 10_000);
+  assert.equal(MENU_WARP_RANGE_M, 0);
+  assert.equal(warpFloorMeters(0, AUTOPILOT_WARP_STOPS_SHORT_M), 162_500);
+  assert.equal(warpFloorMeters(4_000, AUTOPILOT_WARP_STOPS_SHORT_M), 164_000);
+  assert.equal(warpFloorMeters(0, MENU_WARP_RANGE_M), warpFloorMeters(0));
+  // A range that is no number, or is below nought, brings the floor no nearer.
+  assert.equal(warpFloorMeters(0, Number.NaN), 150_000 + WARP_EXIT_VARIANCE_M);
+  assert.equal(warpFloorMeters(0, -5_000), 150_000 + WARP_EXIT_VARIANCE_M);
   // Never optimistic about junk input.
   assert.equal(warpFloorMeters(Number.NaN), 150_000 + WARP_EXIT_VARIANCE_M);
 });
 
-test("dead band: a target the SERVER would silently refuse is approached, never warped", () => {
-  // THE BUG. R13 warped at >= 150,000 m surface distance. The server refuses
-  // (warpState.js:236) and says nothing a client can see: WARP_DISTANCE_TOO_CLOSE
-  // (warpCommands.js:250-255) is not one of the four cases
-  // _throwWarpFailureUserError translates (beyonceService.js:1693-1713), so the
-  // browser gets ok:true / result:null and a ship that has not moved. The loop
-  // then re-measured the SAME distance and decided "warp" again, forever.
+test("dead band: a warp this server refuses is never asked for: the target is approached", () => {
+  // THE BUG. R13 warped at >= 150,000 m surface distance, which this server refuses: its least distance of a
+  // warp is measured to where the warp would end, not to the target. It answered nothing then (the loop asked
+  // again, forever); since eve.js 8d990c1c2 it says "You cannot warp there right now."
   //
-  // Every distance here is inside the band R13 warped in and the server refuses.
-  for (const metres of [150_000, 150_001, 151_000, 152_499]) {
+  // Every distance here is one the autopilot's warp was refused at, or is under the floor a small hull has for
+  // it (measured 2026-10-11: refused from 149 km to 160.0 km of a gate, and at 158 and 159.9 km of a station).
+  for (const metres of [150_000, 150_001, 151_000, 152_499, 152_500, 156_000, 159_900, 160_000, 162_499]) {
     assert.equal(
       gateDecisionAt(metres).kind,
       "approach",
@@ -916,6 +928,55 @@ test("dead band: a target the SERVER would silently refuse is approached, never 
       `${metres} m from the station is inside the dead band`,
     );
   }
+});
+
+test("the floor follows the call that warps: a warp at nought is taken from nearer than the autopilot's", () => {
+  const at = (metres: number, stopsShort?: number, shipRadius = 0) =>
+    decideCloseIn(GATE_ORIGIN, 2_500, measuredAt(GATE_ORIGIN, metres, "STOP", shipRadius), null, stopsShort)?.kind;
+  // A bot's own warp is the menu's at nought (the mining bot's, a script bot's): 152.5 km for a small hull, and
+  // that is the floor where no call is said.
+  assert.equal(at(152_499), "approach");
+  assert.equal(at(152_500), "warp");
+  assert.equal(at(155_000, MENU_WARP_RANGE_M), "warp");
+  // The client's autopilot's warp, which is stopped ten kilometres short: 162.5 km.
+  assert.equal(at(155_000, AUTOPILOT_WARP_STOPS_SHORT_M), "approach");
+  assert.equal(at(162_499, AUTOPILOT_WARP_STOPS_SHORT_M), "approach");
+  assert.equal(at(162_500, AUTOPILOT_WARP_STOPS_SHORT_M), "warp");
+  // A hull bigger than the gate's scatter moves both floors by its radius.
+  assert.equal(at(153_999, MENU_WARP_RANGE_M, 4_000), "approach");
+  assert.equal(at(154_000, MENU_WARP_RANGE_M, 4_000), "warp");
+  assert.equal(at(163_999, AUTOPILOT_WARP_STOPS_SHORT_M, 4_000), "approach");
+  assert.equal(at(164_000, AUTOPILOT_WARP_STOPS_SHORT_M, 4_000), "warp");
+  // What is in reach is arrived at, and an approach of ours that is running is waited on, under either floor.
+  assert.equal(at(2_499, AUTOPILOT_WARP_STOPS_SHORT_M), "arrive");
+  assert.equal(
+    decideCloseIn(GATE_ORIGIN, 2_500, measuredAt(GATE_ORIGIN, 160_000, "FOLLOW"), GATE_ORIGIN, AUTOPILOT_WARP_STOPS_SHORT_M)?.kind,
+    "closing",
+  );
+  assert.equal(decideCloseIn(GATE_ORIGIN, 2_500, null, null, AUTOPILOT_WARP_STOPS_SHORT_M), null);
+});
+
+test("a gate nearer than the autopilot's warp is taken from: the loop approaches it, and asks no warp", async () => {
+  // 158 km: a warp at nought would be taken from here, and the autopilot's was refused (measured 2026-10-11).
+  const calls: string[] = [];
+  const deps: AutopilotDeps = {
+    getStatus: async () => status({ inSpace: true, shipMode: "STOP", solarSystemID: ORIGIN_SYSTEM }),
+    getSpaceSnapshot: async () => gridSnapshot(GATE_ORIGIN, 158_000, ORIGIN_SYSTEM),
+    undock: async () => { calls.push("undock"); },
+    warp: async () => { calls.push("warp"); },
+    approach: async (id) => { calls.push(`approach ${id}`); },
+    jump: async () => { calls.push("jump"); },
+    dock: async () => { calls.push("dock"); },
+    sleep: async () => {},
+    now: () => 0,
+    onProgress: () => {},
+    isSessionLost: () => false,
+    refusalReason: (error) => String((error as Error).message || error),
+  };
+  const pilot: AutopilotController = createAutopilot(deps);
+  pilot.start(PLAN);
+  await pilot.tick();
+  assert.deepEqual(calls, [`approach ${GATE_ORIGIN}`]);
 });
 
 test("dead band: a warp that changes nothing is BOUNDED — the loop pauses, it does not spin", async () => {

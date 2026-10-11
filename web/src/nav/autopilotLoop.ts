@@ -22,6 +22,12 @@
 //     < 150000 m                              -> approach
 //     otherwise                               -> warp
 //
+// The warp is the client's autopilot's own call (`CmdWarpToStuffAutopilot`), and
+// the approach its own too (the throttle opened, then a follow at nought). This
+// server stops that warp ten kilometres short and refuses it from nearer than
+// about 160 km, so the loop approaches from under a floor that is further out
+// than retail's 150 km: see the dead-band note below.
+//
 // Measurement is the PRIMARY path; the server's refusals remain as a backstop
 // for the cycles where no snapshot is available (a slow read, a scene that has
 // not caught up, a target the snapshot cannot see). When we cannot measure, the
@@ -91,57 +97,74 @@ export const MIN_WARP_DISTANCE_M = 150_000;
 
 // --- R24 slice A: the warp DEAD BAND ----------------------------------------
 //
-// THE BUG THIS FIXES. R13 warped whenever the measured surface distance reached
-// MIN_WARP_DISTANCE_M, but that is not the gate the server applies, and the
-// server does not say so out loud:
+// THE BUG THIS FIXED. R13 warped whenever the measured surface distance reached
+// MIN_WARP_DISTANCE_M, but that is not the gate the server applies:
 //
 //   * the sim refuses when `totalDistance < MIN_WARP_DISTANCE_METERS`
-//     (warpState.js:236), where `totalDistance` is measured to the WARP-IN
-//     POINT, not to the target's centre;
-//   * that refusal comes back as `WARP_DISTANCE_TOO_CLOSE`
-//     (warpCommands.js:250-255), and `_throwWarpFailureUserError`
-//     (beyonceService.js:1693) only translates criminal / bubble / scramble /
-//     immobile — everything else falls into `default: break` (:1713) and throws
-//     NOTHING. The browser sees `ok:true, result:null` and a ship that has not
-//     moved.
+//     (warpCommands.js, `WARP_DISTANCE_TOO_CLOSE`), where `totalDistance` is
+//     measured to the WARP-IN POINT, not to the target's centre;
+//   * and at the time it refused without a word: the browser saw `ok:true,
+//     result:null` and a ship that had not moved. (Since eve.js `8d990c1c2`
+//     the refusal is spoken, "You cannot warp there right now.", and the loop
+//     waits such a one out: see `classifyWarpRefusal`.)
 //
 // So the loop re-measured, saw the same distance, decided "warp" again, and
-// span. Two separate corrections, plus a bound, are needed — a decision that
-// cannot make progress must pause with a reason, never repeat forever.
+// span. A decision that cannot make progress must pause with a reason, never
+// repeat forever: hence the floor below, and the bound on the warp branch.
 //
-// CORRECTION 1 — stop paying the autopilot call's built-in 10 km.
-// `Handle_CmdWarpToStuffAutopilot` (beyonceService.js:2983) hardcodes
-// `minimumRange: 10000`, which is added to the warp's stop distance and so
-// pushes the server's gate 10 km further out. Retail's own `WarpToItem` uses
-// `warpRange=0`, and `Handle_CmdWarpToStuff("item", id, minRange=0)`
-// (beyonceService.js:2654-2684) reaches the identical `warpToEntity` call with
-// that 10 km removed. The loop now sends that shape (see AUTOPILOT_WARP_MIN_RANGE_M).
+// THE FLOOR FOLLOWS THE CALL THAT WARPS. A warp that stops short of its target
+// ends that much nearer the ship, so the server's gate for it is that much
+// further out:
 //
-// CORRECTION 2 — measure against the gate the server actually applies. With the
-// 10 km gone the two target kinds still differ:
-//
-//   station  `getWarpStopDistanceForTarget` (warpState.js:632) gives
-//            `targetRadius + minRange + 2*shipRadius` against the station
-//            CENTRE, so accepted iff `surfaceDist >= 150000 + minRange + shipRadius`.
-//   stargate `resolveStargateWarpTarget` (runtime.js:2928) aims at a point on
-//            the gate's near-side envelope, jittered by a RANDOM offset inside
-//            `WARP_EXIT_VARIANCE_RADIUS_METERS` (runtime.js:701 = 2500), so
-//            accepted iff `surfaceDist >= 150000 + minRange - shipRadius ± 2500`.
+//   station  `getWarpStopDistanceForTarget` (warpState.js) gives
+//            `targetRadius + range + 2*shipRadius` against the station CENTRE,
+//            so accepted iff `surfaceDist >= 150000 + range + shipRadius`.
+//   stargate `resolveStargateWarpTarget` (runtime.js) aims at a point on the
+//            gate's near-side envelope, jittered by a RANDOM offset inside
+//            `WARP_EXIT_VARIANCE_RADIUS_METERS` (2500), so accepted iff
+//            `surfaceDist >= 150000 + range - shipRadius ± 2500`.
 //
 // The gate case is randomised, so no client can reproduce it exactly. What a
 // client CAN do is never ask for a warp the server might refuse: take the
 // worst case of both kinds. `max(shipRadius, 2500)` covers the station's
 // `+shipRadius` and the gate's `+2500` at once.
 //
-// The residual band (150 km → the floor) is no longer a spin: the ladder falls
+// The page warps to a thing by two calls, and each has its range:
+//
+//   the client's autopilot's (`CmdWarpToStuffAutopilot`), which the travel
+//   autopilot and the fleet companion make. It says no range; this server's
+//   handler stops it 10 km short (`minimumRange: 10000`). Measured 2026-10-11
+//   from a capsule: refused 160.0 km off a gate and taken at 160.5 km; refused
+//   159.9 km off a station and taken at 160.1 km; the ship came out 10,022 to
+//   11,850 m off.
+//
+//   the menu's at nought (`CmdWarpToStuff("item", id, minRange=0)`), which the
+//   mining bot and the script bots make. Measured the same day: refused 151 km
+//   off a gate and taken at 153 km; refused 149.9 km off a station and taken at
+//   150.1 km; the ship came out 22 to 1,637 m off.
+//
+// Until 2026-10-11 the travel autopilot warped by the menu's call too, to be
+// rid of the ten kilometres. It warps by the client's autopilot's now, as a
+// client's autopilot does (autopilot.py, AP_WarpToDestID), and the ten
+// kilometres are in its floor instead.
+//
+// The residual band (150 km → the floor) is not a spin: the ladder falls
 // through to APPROACH there, which is what retail does below minWarpDistance
-// anyway and which actually closes the gap.
+// and which actually closes the gap. (A client's autopilot asks for the warp in
+// that band; this server refused it there when it was measured.)
 
 /**
- * The range the loop's own warps ask for — retail's `WarpToItem(warpRange=0)`.
- * Zero, not the 10 km `CmdWarpToStuffAutopilot` bakes in.
+ * The range the bots' own warps ask for (the mining bot's, a script bot's): the
+ * menu's warp at nought, retail's `WarpToItem(warpRange=0)`.
  */
-export const AUTOPILOT_WARP_MIN_RANGE_M = 0;
+export const MENU_WARP_RANGE_M = 0;
+
+/**
+ * How far short of its target this server stops the client's autopilot's warp
+ * (`Handle_CmdWarpToStuffAutopilot`, `minimumRange: 10000`). The call itself
+ * says no range. It is part of the floor that warp is taken from.
+ */
+export const AUTOPILOT_WARP_STOPS_SHORT_M = 10_000;
 
 /**
  * `WARP_EXIT_VARIANCE_RADIUS_METERS` (runtime.js:701) — the radius of the random
@@ -153,18 +176,20 @@ export const WARP_EXIT_VARIANCE_M = 2_500;
 
 /**
  * The lowest SURFACE distance at which the server is guaranteed to accept a
- * warp — i.e. the distance at or above which "warp" is a decision that can
- * actually make progress. Below it the ladder approaches instead.
+ * warp that ends `stopsShortM` metres short of its target — i.e. the distance
+ * at or above which "warp" is a decision that can actually make progress. Below
+ * it the ladder approaches instead. Nought where none is said: the menu's warp
+ * at nought.
  *
  * Never below `MIN_WARP_DISTANCE_M`: retail's ladder approaches under 150 km
  * regardless, and this only ever raises that floor to match the server.
  */
 export function warpFloorMeters(
   shipRadius: number,
-  minRange: number = AUTOPILOT_WARP_MIN_RANGE_M,
+  stopsShortM: number = MENU_WARP_RANGE_M,
 ): number {
   const radius = Number.isFinite(shipRadius) ? Math.max(0, shipRadius) : 0;
-  const range = Number.isFinite(minRange) ? Math.max(0, minRange) : 0;
+  const range = Number.isFinite(stopsShortM) ? Math.max(0, stopsShortM) : 0;
   return MIN_WARP_DISTANCE_M + range + Math.max(radius, WARP_EXIT_VARIANCE_M);
 }
 
@@ -278,6 +303,7 @@ export interface AutopilotDeps {
    */
   getSpaceSnapshot?(): Promise<SpaceSnapshot | null>;
   undock(): Promise<void>;
+  /** Warp to a gate or a station as the client's autopilot does (CmdWarpToStuffAutopilot): this server stops it ten kilometres short. */
   warp(destinationID: number): Promise<void>;
   /** Approach a gate at full speed (CmdSetSpeedFraction + CmdFollowBall) to close into jump range. */
   approach(destinationID: number): Promise<void>;
@@ -536,6 +562,11 @@ export function isFollowing(shipMode: string | null): boolean {
  * server's 2,500 m station docking radius, or a bot's own "the warp has
  * landed" test. It is the caller's number, not this function's.
  *
+ * `warpStopsShortM` is how far short of the target the CALLER'S warp ends,
+ * which is the caller's too: nought for the menu's warp at nought (and where
+ * none is said), `AUTOPILOT_WARP_STOPS_SHORT_M` for the client's autopilot's.
+ * The floor under which a warp is not asked for is that much further out.
+ *
  * Returns null when the target is not measurable this tick, which sends the
  * caller back to whatever refusal-driven fallback it has.
  */
@@ -554,6 +585,7 @@ export function decideCloseIn(
   interactionRadiusM: number,
   measurement: SpaceMeasurement | null,
   approachingTargetID: number | null = null,
+  warpStopsShortM: number = MENU_WARP_RANGE_M,
 ): CloseInStep | null {
   const distance = measurement?.distances.get(targetID);
   if (!measurement || distance === undefined) {
@@ -562,7 +594,7 @@ export function decideCloseIn(
   if (distance < interactionRadiusM) {
     return { kind: "arrive" };
   }
-  if (distance < warpFloorMeters(measurement.shipRadius)) {
+  if (distance < warpFloorMeters(measurement.shipRadius, warpStopsShortM)) {
     if (approachingTargetID === targetID && isFollowing(measurement.shipMode)) {
       return { kind: "closing" };
     }
@@ -598,6 +630,8 @@ function decideFromDistance(
     kind === "gate" ? MAX_STARGATE_JUMPING_DISTANCE_M : STATION_DOCKING_RADIUS_M,
     measurement,
     memory.approachingTargetID ?? null,
+    // The loop's warp is the client's autopilot's, and the floor is that call's.
+    AUTOPILOT_WARP_STOPS_SHORT_M,
   );
   if (step === null) {
     return null;
@@ -1284,8 +1318,8 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
       memory.approachIssueAttempts = 0;
     }
 
-    // R24 slice A — BOUND THE WARP BRANCH. A warp the server silently declines
-    // (WARP_DISTANCE_TOO_CLOSE reaches us as 200/null — see the dead-band note
+    // R24 slice A — BOUND THE WARP BRANCH. A warp that is answered fine and
+    // never begins (as WARP_DISTANCE_TOO_CLOSE once was — see the dead-band note
     // at the top) leaves the ship exactly where it was, so the next tick
     // measures the same distance and decides "warp" again. Counting consecutive
     // warps to the SAME destination catches precisely that and nothing else: a

@@ -220,7 +220,7 @@ import type { SafetyLevel } from "../space/crimewatch.ts";
 import { CLONE_GRADE_NOTICE, cloneGradeOf } from "../bridge/cloneGrade.ts";
 import type { AgentFinderRow } from "../store/types.ts";
 import {
-  AUTOPILOT_WARP_MIN_RANGE_M,
+  MENU_WARP_RANGE_M,
   createAutopilot,
   type AutopilotController,
   type AutopilotDeps,
@@ -4332,12 +4332,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     await warpToScanResultCall(bridgeDo, readFlightNow, sitesLastRead, () => readScanFullState(bridgeAsk), label);
   }
 
-  /** A thing warped to as the client's menu warps to one, by the page's own call (bridge/movementWrites.ts), for the autopilots and the bots. */
+  /** A thing warped to as the client's menu warps to one, by the page's own call (bridge/movementWrites.ts), for the mining bot and the script bots. */
   async function warpToThing(targetID: number, range: number): Promise<void> {
     await warpToItemCall(bridgeDo, readFlightNow, targetID, range);
   }
 
-  /** A thing warped to as the client's autopilot warps, by the page's own call (bridge/movementWrites.ts), for the fleet companion. */
+  /** A thing warped to as the client's autopilot warps, by the page's own call (bridge/movementWrites.ts), for the travel autopilot and the fleet companion. */
   async function warpAsTheAutopilot(targetID: number): Promise<void> {
     await autopilotWarpCall(bridgeDo, readFlightNow, targetID);
   }
@@ -7188,15 +7188,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         await api.undock(callOptions, true);
       },
       warp: async (destinationID) => {
-        // R24 slice A — retail's `WarpToItem(warpRange=0)`, NOT the autopilot
-        // call. Passing a range routes to `CmdWarpToStuff("item", id,
-        // minRange=0)`, which reaches the identical `warpToEntity` as
-        // `CmdWarpToStuffAutopilot` but WITHOUT the 10 km that handler hardcodes
-        // (beyonceService.js:2983). That 10 km was added to the warp's stop
-        // distance, pushing the server's silent refusal 10 km further out than
-        // the distance the loop was measuring against — the dead band.
-        // (The page's own call since 2026-10-11: bridge/movementWrites.ts, warpToItem.)
-        await warpToThing(destinationID, AUTOPILOT_WARP_MIN_RANGE_M);
+        // The client's autopilot's own warp (autopilot.py, AP_WarpToDestID:
+        // `CmdWarpToStuffAutopilot(destinationID)`), by the page's own call
+        // (bridge/movementWrites.ts, autopilotWarp). This server stops it ten
+        // kilometres short, and the loop's floor for a warp is that call's
+        // (nav/autopilotLoop.ts, AUTOPILOT_WARP_STOPS_SHORT_M). Until 2026-10-11
+        // this was the menu's warp at nought (R24 slice A), which a client's
+        // autopilot does not make.
+        await warpAsTheAutopilot(destinationID);
       },
       approach: async (destinationID) => {
         // The autopilot's close-the-gap approach is retail's 0.0, not the
@@ -8734,10 +8733,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       undock: async () => {
         await api.undock(callOptions, true);
       },
-      // R24 slice A — retail's `WarpToItem(warpRange=0)`, not the autopilot
-      // call's hardcoded 10 km. Same correction, same reason.
+      // The mining bot's own warp is the menu's at nought (retail's
+      // `WarpToItem(warpRange=0)`), not the autopilot's: it is a pilot's warp to
+      // a belt or a station, and its floor is that call's.
       warp: async (destinationID) => {
-        await warpToThing(destinationID, AUTOPILOT_WARP_MIN_RANGE_M);
+        await warpToThing(destinationID, MENU_WARP_RANGE_M);
       },
       approach: async (destinationID) => {
         await approachShip(destinationID, 0);
@@ -12728,7 +12728,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             await api.undock(callOptions, true);
             return;
           case "warp":
-            await warpToThing(action.targetID, AUTOPILOT_WARP_MIN_RANGE_M);
+            await warpToThing(action.targetID, MENU_WARP_RANGE_M);
             return;
           case "approach":
             await approachShip(action.targetID, 0);

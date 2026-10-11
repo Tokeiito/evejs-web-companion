@@ -37,6 +37,7 @@ import { REPAIR_CAP_FLOOR } from "./scriptDecide.ts";
 // it would couple this file to the editor it exists not to be part of. These
 // three names live in `autopilotLoop.ts`, which the DSL does not own.
 import {
+  AUTOPILOT_WARP_STOPS_SHORT_M,
   decideCloseIn,
   measureSpace,
   MAX_STARGATE_JUMPING_DISTANCE_M,
@@ -2684,7 +2685,8 @@ function runToSafety(
     measurement,
   );
   if (target !== null) {
-    const step = decideCloseIn(target.itemID, STATION_DOCKING_RADIUS_M, measurement, mem.closingOn);
+    // The companion's warp is the client's autopilot's own call, and the floor is that call's.
+    const step = decideCloseIn(target.itemID, STATION_DOCKING_RADIUS_M, measurement, mem.closingOn, AUTOPILOT_WARP_STOPS_SHORT_M);
     if (step === null || step.kind === "arrive") {
       return {
         action: { kind: "dock", stationID: target.itemID },
@@ -7226,7 +7228,7 @@ function decideFleetOrders(
   //    firing it from further out is refused by the server, not by us.
   if (order?.name === "JumpTo") {
     const gateID = order.itemID;
-    const step = decideCloseIn(gateID, MAX_STARGATE_JUMPING_DISTANCE_M, measurement, memory.closingOn);
+    const step = decideCloseIn(gateID, MAX_STARGATE_JUMPING_DISTANCE_M, measurement, memory.closingOn, AUTOPILOT_WARP_STOPS_SHORT_M);
     if (step === null) {
       return {
         action: WAIT,
