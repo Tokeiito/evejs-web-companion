@@ -828,6 +828,17 @@ Take these defaults, and list each under "For the operator" in the log so they c
   <account> <characterID> [ledger.json]` runs the orbits; the overview's button reads
   "Orbit 5 km", and a second press of it a few seconds on is held back by the BFF,
   which the ledger's count shows.
+- **Before a call becomes the page's, find the tests that take it for an example of
+  something else.** Four did of the stop: of "a write of beyonce's that is not the
+  page's", and of "an order asked of beyonce by name" for a docked pilot. They fail
+  once the code is in, rightly; each wants another example, not the old behaviour
+  back (`grep -n '"<service>", "<method>"' test/*.js` before the tests are written).
+- **A ship is in the WARP mode before it is in the warp.** While it still turns to its
+  warp a stop calls the warp off and the server says nothing; in the warp itself, at
+  thousands of metres a second, the stop is answered with `OnRemoteMessage`
+  `ShipInWarp` and the ship flies on. `stp-live.js <bff> <account> <characterID>
+  [ledger.json]` waits for the speed. It leaves the pilot in space: put the store back
+  between its runs, not only after the last. In the tab the stop is `button.hud-stop`.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

@@ -835,8 +835,10 @@ pilot's flight read before and after by the page. An approach and a keep at rang
 beyonce's `CmdFollowBall`, and the autopilot's approach the throttle and then the follow
 (`b458395`), the BFF holding a follow back or opening the gateway's throttle as the
 routes did. An orbit is beyonce's `CmdOrbit` (`03dc5c7`), one of those follows, its range
-a float under ten metres and a whole number from there. Counted by the whole path,
-107 are named now, 47 of them reads and 60 writes (the count kept before
+a float under ten metres and a whole number from there. A stop is beyonce's `CmdStop`
+with nothing (`1b6fd44b`), which the BFF neither holds back nor opens a throttle for.
+Counted by the whole path,
+106 are named now, 47 of them reads and 59 writes (the count kept before
 `82a21e8` took a path's beginning for a path and missed a parameter inside one: it read 130
 where 138 was so). Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.
