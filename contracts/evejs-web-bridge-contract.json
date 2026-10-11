@@ -1101,6 +1101,7 @@
       "beyonce.CmdGotoPoint",
       "beyonce.CmdOrbit",
       "beyonce.CmdSetSpeedFraction",
+      "beyonce.CmdStop",
       "contractProxy.AcceptContract",
       "crimewatch.SetSafetyLevel",
       "dogmaIM.CreateNewbieShip",

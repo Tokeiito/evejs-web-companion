@@ -1,10 +1,10 @@
 // A ship sent to a point in space by the page itself, held to the ship and the system the point was measured in;
-// a ship aligned to a thing; and a thing approached, kept at range, or orbited.
+// a ship aligned to a thing; a thing approached, kept at range, or orbited; and the ship stopped.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { alignTo, approach, goToPoint, keepAtRange, orbit, APPROACH_RANGE_M, KEEP_AT_RANGE_DEFAULT_M, ORBIT_DEFAULT_M, type FlightNow } from "./movementWrites.ts";
+import { alignTo, approach, goToPoint, keepAtRange, orbit, stopShip, APPROACH_RANGE_M, KEEP_AT_RANGE_DEFAULT_M, ORBIT_DEFAULT_M, type FlightNow } from "./movementWrites.ts";
 
 const [SHIP, SYSTEM] = [9988400023309, 30000144];
 const POINT = { x: 1000, y: -2500.5, z: 300000000000 };
@@ -282,5 +282,31 @@ test("no orbit is ordered at what is no distance, of what is no thing, for a pil
   assert.deepEqual(unread.did, ["read"]);
   const refused = harness(HERE, new Error("ThrottleGeneric"));
   await assert.rejects(orbit(refused.act, refused.flightNow, 40009089), /ThrottleGeneric/);
+  assert.deepEqual(refused.did, ["read", "sent"]);
+});
+
+// ── the ship stopped ─────────────────────────────────────────────────────────
+
+test("a stop is one call with nothing, once the pilot's flight has been read; and none for a pilot that is not in space", async () => {
+  const { did, asked, act, flightNow } = harness();
+  await stopShip(act, flightNow);
+  // eveCommands.py 1104: bp.CmdStop(), and nothing with it.
+  assert.deepEqual(asked, [["beyonce", "CmdStop", [], null]]);
+  assert.deepEqual(did, ["read", "sent"]);
+
+  // CmdStopShip does nothing unless the pilot is in a ship in space (eveCfg.InShipInSpace).
+  const docked = harness({ ...HERE, inSpace: false });
+  await assert.rejects(stopShip(docked.act, docked.flightNow), /^Error: The ship is not in space; undock first\.$/);
+  assert.deepEqual(docked.did, ["read"]);
+  // A ship or a system that is not known stops all the same: a stop names neither.
+  const unknown = harness({ inSpace: true, shipID: null, solarSystemID: null });
+  await stopShip(unknown.act, unknown.flightNow);
+  assert.deepEqual(unknown.did, ["read", "sent"]);
+  // A flight that cannot be read stops nothing; and the call's refusal is the caller's, as it came.
+  const unread = harness(new Error("the session was lost"));
+  await assert.rejects(stopShip(unread.act, unread.flightNow), /the session was lost/);
+  assert.deepEqual(unread.did, ["read"]);
+  const refused = harness(HERE, new Error("ThrottleGeneric"));
+  await assert.rejects(stopShip(refused.act, refused.flightNow), /ThrottleGeneric/);
   assert.deepEqual(refused.did, ["read", "sent"]);
 });

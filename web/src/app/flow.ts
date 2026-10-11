@@ -349,7 +349,7 @@ import { decodeAvailableFleetAds, decodeMyFleetFinderAdvert } from "../bridge/fl
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { salvageWithDrones } from "../bridge/boundEntityWrites.ts";
-import { alignTo as alignToCall, approach as approachCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, type FlightNow } from "../bridge/movementWrites.ts";
+import { alignTo as alignToCall, approach as approachCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, type FlightNow } from "../bridge/movementWrites.ts";
 import { boardCorvette as boardCorvetteCall, leaveShip as leaveShipCall } from "../bridge/shipWrites.ts";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
 import { runSlashCommand } from "../bridge/gmWrites.ts";
@@ -4182,6 +4182,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   /** A thing orbited by the page's own call (bridge/movementWrites.ts), for the script bots. */
   async function orbitShip(targetID: number, range: number | null): Promise<void> {
     await orbitCall(bridgeDo, readFlightNow, targetID, range);
+  }
+
+  /**
+   * The ship stopped by the page's own call (bridge/movementWrites.ts), for the bots. The stop alone: what a
+   * caller gives up of the page's autopilot before it, the caller gives up.
+   */
+  async function cutEngines(): Promise<void> {
+    await stopShipCall(bridgeDo, readFlightNow);
   }
 
   /**
@@ -8223,7 +8231,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // the operator's words for this order are "it stops where it is".
           case "stopShip":
             autopilot?.abort();
-            await api.stopShip(callOptions);
+            await cutEngines();
             return;
           // The reload rung: put rounds in the guns from the ship's own cargo.
           //
@@ -10855,7 +10863,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           case "activate": await api.activateModule(action.moduleID, { targetID: action.targetID, repeat: -1 }, callOptions); break;
           case "deactivate": await api.deactivateModule(action.moduleID, { typeID: action.typeID }, callOptions); break;
           case "gotoPoint": await flyToPoint(action.position, action.shipID, action.solarSystemID); break;
-          case "stopShip": await api.stopShip(callOptions); break;
+          case "stopShip": await cutEngines(); break;
         }
         return { decision, feedback: { scope, ...(action.kind === "activate" || action.kind === "deactivate"
           ? { module: { actionID: decision.support!.actionID!, outcome: "acknowledged" as const } } : { movement: "acknowledged" as const }) } };
@@ -12431,13 +12439,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           case "gotoPoint":
             await flyToPoint(action.position, action.shipID, action.solarSystemID);
             return;
-          // Straight to `api.stopShip` and NOT through `flow.stopShip()`: that
+          // Straight to the stop itself (`cutEngines`) and NOT through `flow.stopShip()`: that
           // wrapper also aborts the browser autopilot, which is right for an
           // operator saying "stop" and wrong here — this is one rung of a
           // running block freeing a hull the server will not fly, and the
           // program is meant to carry on afterwards.
           case "stopShip":
-            await api.stopShip(callOptions);
+            await cutEngines();
             return;
           case "align":
             await alignShip(action.targetID);
@@ -14367,7 +14375,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // browser decide-loop first so it cannot issue another move into the stop,
       // then tell the server to cut the engines.
       autopilot?.abort();
-      await runFlightStep("Stop", () => api.stopShip(callOptions));
+      await runFlightStep("Stop", () => orderedStep((flightNow) => stopShipCall(bridgeDo, flightNow)));
     },
 
     loadSpaceSnapshot,

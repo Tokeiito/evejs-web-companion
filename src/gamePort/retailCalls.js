@@ -389,7 +389,7 @@ const ON_AN_ANSWERED_OBJECT = Object.freeze(new Set(["scanMgr.GetFullState"]));
  * What the client asks of its ballpark's own object (michelle.GetRemotePark()) and the page asks of beyonce by its
  * name: made on the park's object, where the pilot has a park.
  */
-const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdAlignTo", "CmdFollowBall", "CmdSetSpeedFraction", "CmdOrbit"]));
+const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdAlignTo", "CmdFollowBall", "CmdSetSpeedFraction", "CmdOrbit", "CmdStop"]));
 const madeOnMoniker = (service, method) => Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method) && method !== "MachoBindObject";
 
 const INV_CACHE = "eve/client/script/environment/invCache.py";
@@ -595,6 +595,9 @@ const aligning = (args, kwargs, context) => {
   // (A ship that is not known is no number an item's ID can be: the item is above nought.)
   return Number(context.shipID) === dstID ? { status: "differs", note: "The client does not align to the pilot's own ship: it sends nothing." } : {};
 };
+
+/** eveCommands.CmdStopShip (1104) and menusvc.Activate (2432): bp.CmdStop(), on the ballpark's object, with nothing at all. */
+const stopping = (args, kwargs) => (args.length === 0 && Object.keys(kwargs).length === 0 ? {} : { status: "differs", note: "The client sends nothing with a stop." });
 
 /**
  * movementFunctions.ShipApproach (302) and _Ship_KeepAtRange (229): bp.CmdFollowBall(targetID, range), on the
@@ -1082,7 +1085,7 @@ const RETAIL_CALLS = Object.freeze({
   "beyonce.CmdDock": same("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:517", "bp.CmdDock(itemID, session.shipid), on the ballpark's object, through sessionMgr.PerformSessionChange('dock', ...). Recorded on Tranquility with the two IDs."),
   "beyonce.CmdFollowBall": reshaped("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:302", following, "bp.CmdFollowBall(targetID, range), on the ballpark's object: the menu's approach with const.approachRange, keep at range with the pilot's distance (229), the autopilot's with 0.0 (autopilot.py 437). Not sent for the pilot's own ship. Recorded on Tranquility as (itemID, 50), and at 5000 and 7500, each a whole number; the autopilot's twice, its range a float of nought, which is how a range of nought goes."),
   "beyonce.CmdOrbit": reshaped("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:260", orbiting, "bp.CmdOrbit(targetID, range), on the ballpark's object: the range a float under 10 m and a whole number from there (243). Not sent for the pilot's own ship. Recorded on Tranquility as (itemID, 1000) and (itemID, 5000), 7500 and 10000, each a whole number, with nothing before it; none is recorded under ten metres, where the client's float is how it goes."),
-  "beyonce.CmdStop": same("eve/client/script/ui/eveCommands.py:1104", "bp.CmdStop(), no arguments, on the ballpark's object. Recorded on Tranquility so."),
+  "beyonce.CmdStop": judged("eve/client/script/ui/eveCommands.py:1104", stopping, "bp.CmdStop(), no arguments, on the ballpark's object: from the stop command, in a ship in space, and from a double click on the pilot's own capsule (menusvc.py 2432). Recorded on Tranquility so, 24 times."),
   "beyonce.CmdSetSpeedFraction": reshaped("eve/client/script/parklife/autopilot.py:434", throttling, "park.CmdSetSpeedFraction(1.0), on the ballpark's object, before the autopilot's approach; the ship's panel sends the pilot's own fraction (activeShipController.py 227). Recorded on Tranquility as (1.0), and every fraction as a float, which is how it goes. The menu's approach, keep at range and orbit send none before theirs, and on the game port the BFF's routes send none either; through the gateway they do."),
   "scanMgr.GetFullState": same("eve/client/script/parklife/sensorSuiteService.py:718", "scanSvc.GetScanMan().GetFullState(), no arguments, on the system's scan manager: the object GetSystemScanMgr() answers. Recorded on Tranquility on that object."),
   "scanMgr.GetSystemScanMgr": same(`${SCAN_SVC}:115`, "no arguments"),

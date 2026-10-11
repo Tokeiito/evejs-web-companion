@@ -1368,7 +1368,7 @@ test("a fleet's target tag set and cleared is a write of the page's own, asked o
     assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["beyonce", "CmdFleetTagTarget", args, null, BRIDGE_SESSION_ID, { userid: 4 }]);
   }
   const before = gateway.calls.call.length;
-  for (const method of ["CmdAbandonLoot", "CmdJumpThroughFleet", "CmdStop", "CmdWarpToStuff", "CmdDock"]) {
+  for (const method of ["CmdAbandonLoot", "CmdJumpThroughFleet", "CmdStargateJump", "CmdWarpToStuff", "CmdDock"]) {
     const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "beyonce", method, args: [], kwargs: null, pilot: true, confirm: true } });
     assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], method);
   }
@@ -3927,5 +3927,24 @@ test("on the game port an orbit the ship already flies is held back, one of noug
     assert.deepEqual([sent.sent, sent.wondered.length], [[["beyonce", "CmdOrbit", [FOLLOWED, range], null]], 1], String(range));
     const through = await byThePage("CmdOrbit", [FOLLOWED, range], { transport: "gateway", alreadySo: () => true });
     assert.deepEqual([through.status, through.sent, through.wondered], [200, [THROTTLE_BY_NAME, ["beyonce", "CmdOrbit", [FOLLOWED, range], null]], []], String(range));
+  }
+});
+
+// ── a stop asked by the page itself ──────────────────────────────────────────
+//
+// eveCommands.CmdStopShip (1104) and menusvc.Activate (2432): bp.CmdStop(), with nothing. The page asks it of
+// beyonce by name. Its route kept nothing of its own: a stop is never held back, and no throttle is opened for it.
+
+test("a stop is a write of the page's own, and goes alone on either transport: never held back, and with no throttle before it", async () => {
+  for (const more of [{}, { pilot: true }, { confirm: true }]) {
+    const refused = await byThePage("CmdStop", [], { more });
+    assert.deepEqual([refused.status, refused.payload.error, refused.sent], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE", []], JSON.stringify(more));
+  }
+  const named = await byThePage("CmdStop", [], { more: { pilot: true, confirm: true, of: PILOTS_SYSTEM } });
+  assert.deepEqual([named.status, named.payload.error, named.sent], [400, "INVALID_REQUEST", []]);
+  for (const transport of ["gameport", "gateway"]) {
+    const made = await byThePage("CmdStop", [], { transport, alreadySo: () => true });
+    assert.deepEqual([made.status, made.payload.ok, made.payload.service, made.payload.method, made.payload.result, made.payload.notifications, made.sent, made.wondered],
+      [200, true, "beyonce", "CmdStop", null, ["after CmdStop"], [["beyonce", "CmdStop", [], null]], []], transport);
   }
 });

@@ -2608,11 +2608,6 @@ export async function warpToFleetMember(
   return readFlightStep(await postJson("/api/bridge/flight/warp-member", body, options));
 }
 
-/** Cut the engines (beyonce.CmdStop). */
-export async function stopShip(options: ApiOptions = {}): Promise<FlightStepResult> {
-  return readFlightStep(await postJson("/api/bridge/flight/stop", {}, options));
-}
-
 /** Jump through an NPC stargate (beyonce.CmdStargateJump). */
 /**
  * Jump through a stargate.

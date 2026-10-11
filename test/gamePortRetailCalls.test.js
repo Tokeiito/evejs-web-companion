@@ -2299,3 +2299,14 @@ test("an orbit is the client's with a thing that is not the pilot's own ship and
   // Where the session's ship is not known (through the web gateway), it is not held against the call.
   for (const context of [{}, { shipID: null }, { shipID: undefined }]) assert.equal(orbit([5000, 1000], null, context).status, "same");
 });
+
+test("a stop is the client's call with nothing, and none of its with anything", () => {
+  const stop = (args, kwargs = null) => retailForm("beyonce", "CmdStop", args, kwargs, { shipID: 5000 });
+  const made = stop([]);
+  assert.deepEqual([made.status, made.source, made.args, made.kwargs, made.moniker, made.proxy], ["same", "eve/client/script/ui/eveCommands.py:1104", [], null, false, false]);
+  for (const [args, kwargs, why] of [[[1], null, "an argument"], [[null], null, "a None"], [[], { now: true }, "a keyword"], [[9001, 50], null, "a thing and a range"]]) {
+    const refused = stop(args, kwargs);
+    assert.deepEqual([refused.status, refused.args, refused.kwargs], ["differs", args, kwargs], why);
+    assert.match(refused.note, /nothing with a stop/, why);
+  }
+});

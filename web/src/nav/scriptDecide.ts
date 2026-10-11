@@ -75,7 +75,7 @@ export type ScriptAction =
   | { readonly kind: "approach"; readonly targetID: number }
   | { readonly kind: "gotoPoint"; readonly position: import("../store/types.ts").SpaceVector; readonly shipID: number; readonly solarSystemID: number }
   /**
-   * Cut the engines (api.stopShip). The one action here that UNDOES a standing
+   * Cut the engines (stopShip, bridge/movementWrites.ts). The one action here that UNDOES a standing
    * order rather than issuing one, and the only order eve.js does not gate on a
    * pending warp landing — see scriptMacros' `travelStall`, which emits this to
    * free a hull whose approach the server is silently refusing.

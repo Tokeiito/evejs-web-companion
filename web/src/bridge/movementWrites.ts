@@ -85,6 +85,22 @@
 // The hold-back and the gateway's throttle are the BFF's here too (followCall), for an orbit of nought as for
 // any other. The route rounded a range of ten metres or more to the nearest whole number; the page cuts it, as
 // int() does.
+//
+// STOPPED. eveCommands.CmdStopShip (1097 to 1110), and menusvc.Activate (2432) for a double click on the pilot's
+// own capsule:
+//
+//   bp.CmdStop()
+//
+// With nothing. The command does nothing unless the pilot is in a ship in space. Tranquility's 24 recordings have
+// it so, on the ballpark's bound object. It answers nothing. The server stops the session's own ship
+// (beyonceService.Handle_CmdStop), tells a ship stopped in warp that it is in warp (OnRemoteMessage, ShipInWarp),
+// and refuses a second stop within a second (ThrottleGeneric). The route held nothing back and opened no
+// throttle: nor does the BFF for the page's call.
+//
+// ⚠ WHAT THE CLIENT DOES OF ITS AUTOPILOT AROUND A STOP IS THE CALLER'S HERE. The command forgets the autopilot's
+// navigation in the system before the call and switches the autopilot off after it. The page's panel gives its
+// autopilot up before it asks (flow.stopShip), and so does the fleet companion's stop; a script bot's and a
+// support ship's stop is one step of a program that carries on, and gives nothing up.
 
 import type { Ask } from "./ask.ts";
 
@@ -219,4 +235,19 @@ export async function orbit(act: Ask, flightNow: () => Promise<FlightNow>, targe
   }
   await aThingToOrderAbout(flightNow, targetID, "A ship cannot orbit itself.");
   await act("beyonce", "CmdOrbit", [targetID, around < 10 ? around : Math.trunc(around)]);
+}
+
+/**
+ * Stops the pilot's ship. Fails as the call fails, and before it for a pilot that is not in space, where the
+ * client's command does nothing.
+ *
+ * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER A SHIP AT REST. A ship takes its time to stop, and one in warp
+ * does not stop at all.
+ */
+export async function stopShip(act: Ask, flightNow: () => Promise<FlightNow>): Promise<void> {
+  const now = await flightNow();
+  if (!now.inSpace) {
+    throw new Error("The ship is not in space; undock first.");
+  }
+  await act("beyonce", "CmdStop", []);
 }

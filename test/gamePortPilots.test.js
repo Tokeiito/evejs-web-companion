@@ -5871,7 +5871,9 @@ test("the ship is already flying an order when its own ball says so, and the pil
 // from then on goes by the server's OnItemChange. A whole mining mission recorded on Tranquility has twelve List
 // calls, one for each container and flag. The BFF's routes list a container each time they want it.
 
-const LIST_PAIRS = new Set(["stationSvc.GetStation", "dogmaIM.MachoBindObject", "dogmaIM.List", "invbroker.GetInventory", "invbroker.GetInventoryFromId", "invbroker.MachoBindObject", "invbroker.List", "invbroker.ListByFlags", "invbroker.Add", "invbroker.GetCapacity", "station.GetGuests", "slash.SlashCmd", "dogmaIM.AddTarget", "beyonce.CmdStop"]);
+// (An order to the engines among them is the autopilot's warp, asked by name. The stop was, until it was made on the
+// ballpark's own object, of which a docked pilot has none: 2026-10-11.)
+const LIST_PAIRS = new Set(["beyonce.CmdWarpToStuffAutopilot", "stationSvc.GetStation", "dogmaIM.MachoBindObject", "dogmaIM.List", "invbroker.GetInventory", "invbroker.GetInventoryFromId", "invbroker.MachoBindObject", "invbroker.List", "invbroker.ListByFlags", "invbroker.Add", "invbroker.GetCapacity", "station.GetGuests", "slash.SlashCmd", "dogmaIM.AddTarget", "beyonce.CmdStop"]);
 /** A docked pilot with its hangar and its ship bound. Each listing the server answers is a different one, so that what was kept can be told from what was asked for again. */
 async function withContainers(answers = {}) {
   let answered = 0;
@@ -5933,7 +5935,7 @@ test("the pilot's own writes forget every listing, done or refused; its reads, i
   assert.deepEqual([await list(hangar), await list(hangar)], [6, 6]);
   // Reads, an order to the engines, and a lock: no container is changed by any of them.
   await pilots.callMethod("station", "GetGuests", [], null, WHO, handle);
-  await pilots.callMethod("beyonce", "CmdStop", [], null, WHO, handle);
+  await pilots.callMethod("beyonce", "CmdWarpToStuffAutopilot", [9001], null, WHO, handle);
   await pilots.callMethod("dogmaIM", "AddTarget", [9001], null, WHO, handle);
   await pilots.callBoundMethod("invbroker", "GetCapacity", [4], null, WHO, handle, hangar);
   assert.deepEqual([await list(hangar), asked()], [6, 6]);
@@ -6053,7 +6055,7 @@ const formationsAsked = (session) => session.calls.filter((call) => call.service
 
 test("the formations are asked for once for a pilot: by its first ballpark, and whatever asks after is answered from that", async () => {
   const hand = handTicked();
-  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "beyonce.GetFormations": FORMATIONS } }, { ...hand.options, allowed: new Set(["beyonce.GetFormations", "beyonce.CmdStop"]) });
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "beyonce.GetFormations": FORMATIONS } }, { ...hand.options, allowed: new Set(["beyonce.GetFormations", "beyonce.CmdWarpToStuffAutopilot"]) });
   const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
   const { pilots, session } = built;
   const asks = async () => (await pilots.callMethod("beyonce", "GetFormations", [], null, WHOSE, handle)).result;
@@ -6067,8 +6069,8 @@ test("the formations are asked for once for a pilot: by its first ballpark, and 
   assert.deepEqual([hand.parks.length, hand.parks[1].space.formations, formationsAsked(session)], [2, FORMATIONS, 1]);
   assert.equal(typeof hand.parks[1].tick, "function", "the second park is ticking");
   // Anything else asked of the service by its name is sent, and is answered as the server answers it.
-  assert.equal((await pilots.callMethod("beyonce", "CmdStop", [], null, WHOSE, handle)).result, null);
-  assert.deepEqual(session.calls.at(-1), { service: "beyonce", method: "CmdStop", args: [], kwargs: null });
+  assert.equal((await pilots.callMethod("beyonce", "CmdWarpToStuffAutopilot", [9001], null, WHOSE, handle)).result, null);
+  assert.deepEqual(session.calls.at(-1), { service: "beyonce", method: "CmdWarpToStuffAutopilot", args: [9001], kwargs: null });
   // Counted once, as the client's own call.
   const row = pilots.callLedger().find((each) => each.pair === "beyonce.GetFormations");
   assert.deepEqual([row.calls, row.statuses], [1, { same: 1 }]);
@@ -6139,7 +6141,7 @@ test("a call the session's object cache answers is not sent and not counted; a w
   // A read, an order to the engines, a lock, and a write by name or on an object: the client's code names nothing beside any of them.
   const listed = await list(hangar);
   await pilots.callMethod("station", "GetGuests", [], null, WHO, handle);
-  await pilots.callMethod("beyonce", "CmdStop", [], null, WHO, handle);
+  await pilots.callMethod("beyonce", "CmdWarpToStuffAutopilot", [9001], null, WHO, handle);
   await pilots.callMethod("dogmaIM", "AddTarget", [9001], null, WHO, handle);
   await pilots.callMethod("slash", "SlashCmd", ["/giveitem 34 1"], null, WHO, handle);
   await pilots.callBoundMethod("invbroker", "Add", [1, STATION], { flag: 5 }, WHO, handle, hangar);
@@ -8242,4 +8244,47 @@ test("an orbit by name is the pilot's last order, a range under ten metres read 
   await ask([9001, 5]);
   assert.deepEqual([already("CmdOrbit", 9001, 5), already("CmdOrbit", 9001, 1000)], [true, false]);
   assert.deepEqual(hand.errors, []);
+});
+
+// ── a stop ───────────────────────────────────────────────────────────────────
+//
+// eveCommands.CmdStopShip (1104): bp.CmdStop(), with nothing, on the ballpark's object. Tranquility's 24
+// recordings have it so.
+
+test("a stop asked of beyonce by name goes on the ballpark's own object with nothing, and is the pilot's last order; docked, nothing is sent", async () => {
+  const hand = handTicked();
+  const allowed = new Set(["beyonce.MachoBindObject", "beyonce.CmdStop", "beyonce.CmdFollowBall"]);
+  const built = build(IN_SPACE, { ...hand.options, allowed });
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const { session } = built;
+  const rows = () => built.pilots.callLedger().find((each) => each.pair === "beyonce.CmdStop")?.statuses;
+  const already = (...order) => built.pilots.alreadyFollowing(handle, WHOSE, ...order);
+  for (const update of recordedUpdates.slice(0, 5)) session.notify("DoDestinyUpdate", update.args);
+  hand.parks[0].tick();
+  const park = hand.parks[0].space.park;
+  Object.assign(park.ballpark.ball(park.ego), { mode: BALL_MODES.FOLLOW, followId: 9001, followRange: Math.fround(50) });
+  await built.pilots.callMethod("beyonce", "CmdFollowBall", [9001, 50], null, WHOSE, handle);
+  assert.equal(already("CmdFollowBall", 9001, 50), true);
+
+  const sent = await built.pilots.callMethod("beyonce", "CmdStop", [], null, WHOSE, handle);
+  assert.deepEqual([sent.service, sent.method, sent.result], ["beyonce", "CmdStop", null]);
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:1", method: "CmdStop", args: [], kwargs: null });
+  assert.equal(session.calls.some((call) => call.service === "beyonce" && call.method === "CmdStop"), false, "nothing was asked of the service by name");
+  assert.deepEqual(rows(), { same: 1 });
+  // The stop is the pilot's last order: the ballpark has not heard of it yet, and the approach that follows is sent.
+  assert.equal(already("CmdFollowBall", 9001, 50), false);
+  // What is not the client's goes as it came, and is counted so.
+  for (const [args, kwargs] of [[[1], null], [[], { now: true }]]) {
+    await built.pilots.callMethod("beyonce", "CmdStop", args, kwargs, WHOSE, handle);
+    assert.deepEqual([session.boundCalls.at(-1).args, session.boundCalls.at(-1).kwargs], [args, kwargs], JSON.stringify([args, kwargs]));
+  }
+  assert.deepEqual(rows(), { same: 1, differs: 2 });
+  assert.deepEqual(hand.errors, []);
+
+  // Docked: CmdStopShip does nothing out of space. Asked all the same, the call is refused here, not sent, and not counted.
+  const docked = await selected({}, { allowed });
+  const sentBefore = docked.session.sent.length;
+  await assert.rejects(docked.pilots.callMethod("beyonce", "CmdStop", [], null, WHOSE, docked.handle), (error) => error.code === "CALL_REFUSED" && /in space/.test(error.message));
+  assert.equal(docked.session.sent.length, sentBefore, "nothing was sent");
+  assert.equal(docked.pilots.callLedger().some((each) => each.pair === "beyonce.CmdStop"), false, "and what was not sent is not counted");
 });

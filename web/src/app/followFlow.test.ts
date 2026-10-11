@@ -180,3 +180,31 @@ test("an orbit the server will not take twice in a second is shown as refused, i
   assert.deepEqual(steps().map((each) => each.path), [STATUS, "/api/bridge/call", STATUS]);
   assert.deepEqual(panel(), [null, "Orbit refused: That command came too soon after the last one. Wait a moment and try again.", "ORBIT"]);
 });
+
+// ── the panel's Stop ─────────────────────────────────────────────────────────
+//
+// beyonce's CmdStop with nothing, by the page's own call, and never the route it went by until 2026-10-11.
+
+const THE_STOP = { service: "beyonce", method: "CmdStop", args: [], kwargs: null, pilot: true, confirm: true };
+
+test("the panel's Stop is the page's own call, between two readings of the pilot's flight, and the route is not asked", async () => {
+  const { flow, steps, panel, asked } = harness([flying("FOLLOW"), flying("STOP")]);
+
+  await flow.stopShip();
+
+  assert.deepEqual(steps(), [{ path: STATUS, body: null }, { path: "/api/bridge/call", body: THE_STOP }, { path: STATUS, body: null }]);
+  assert.deepEqual(panel(), ["Stop", null, "STOP"]);
+  assert.equal(asked.some((each) => each.path === "/api/bridge/flight/stop"), false);
+});
+
+test("docked, no stop is sent, and the panel says why; one the server will not take twice in a second is worded by the page", async () => {
+  const docked = harness([{ status: 200, body: flightBody(true) }]);
+  await docked.flow.stopShip();
+  assert.equal(docked.steps().some((each) => each.path === "/api/bridge/call"), false);
+  assert.deepEqual(docked.panel(), [null, "Stop refused: The ship is not in space; undock first.", null]);
+
+  const twice = harness([flying("FOLLOW")], "ThrottleGeneric");
+  await twice.flow.stopShip();
+  assert.deepEqual(twice.steps().map((each) => each.path), [STATUS, "/api/bridge/call", STATUS]);
+  assert.deepEqual(twice.panel(), [null, "Stop refused: That command came too soon after the last one. Wait a moment and try again.", "FOLLOW"]);
+});

@@ -89,3 +89,22 @@ test("an orbit is carried out by the page's own call where the page carries a sc
   const api = readFileSync(fileURLToPath(new URL("./api.ts", import.meta.url)), "utf8");
   assert.equal(api.includes("/api/bridge/flight/orbit"), false);
 });
+
+test("a stop is carried out by the page's own call wherever the page carries a bot's actions out, and the autopilot is given up first where a stop is the operator's", () => {
+  const flow = readFileSync(fileURLToPath(new URL("./flow.ts", import.meta.url)), "utf8");
+  const times = (text: string) => flow.split(text).length - 1;
+  assert.equal([...flow.matchAll(/case "stopShip":/g)].length, 3);
+  // The fleet companion's stop is an operator's word: the page's autopilot is given up, and then the ship is stopped.
+  assert.equal([...flow.matchAll(/case "stopShip":\s+autopilot\?\.abort\(\);\s+await cutEngines\(\);\s+return;/g)].length, 1);
+  // A support ship's, and a script bot's: one step of a running program, which carries on after it.
+  assert.equal(times('case "stopShip": await cutEngines(); break;'), 1);
+  assert.equal([...flow.matchAll(/case "stopShip":\s+await cutEngines\(\);\s+return;/g)].length, 1);
+  // The page's own write (bridgeDo), with the pilot's flight read before it.
+  assert.equal(times("await stopShipCall(bridgeDo, readFlightNow);"), 1);
+  // The panel's: the autopilot given up first, then the stop.
+  assert.equal([...flow.matchAll(/autopilot\?\.abort\(\);\s+await runFlightStep\("Stop", \(\) => orderedStep\(\(flightNow\) => stopShipCall\(bridgeDo, flightNow\)\)\);/g)].length, 1);
+  // The route's asker is gone from the flow, and from the page's askers.
+  assert.equal(flow.includes("api.stopShip("), false);
+  const api = readFileSync(fileURLToPath(new URL("./api.ts", import.meta.url)), "utf8");
+  assert.equal(api.includes("/api/bridge/flight/stop"), false);
+});
