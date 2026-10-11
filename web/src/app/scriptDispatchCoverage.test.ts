@@ -123,3 +123,18 @@ test("a fleet is formed by the page's own call wherever the page carries a bot's
   const api = readFileSync(fileURLToPath(new URL("./api.ts", import.meta.url)), "utf8");
   assert.equal(api.includes("/api/bridge/fleet/create"), false);
 });
+
+test("an invitation is accepted by the page's own call wherever the page carries a bot's actions out", () => {
+  const flow = readFileSync(fileURLToPath(new URL("./flow.ts", import.meta.url)), "utf8");
+  const times = (text: string) => flow.split(text).length - 1;
+  // The fleet companion's, a support ship's, and a script bot's (with the invitation's fleet, or the one the
+  // Fleet window was told of): each on the bot's own reading that it is in no fleet.
+  assert.equal(times("await acceptFleetInviteCall(bridgeDo, action.fleetID, false);"), 2);
+  assert.equal(times("await acceptFleetInviteCall(bridgeDo, fleetID, false);"), 1);
+  // The Fleet window's: none from a pilot the window knows to be in a fleet.
+  assert.equal(times('await runFleetAction("accept", () => acceptFleetInviteCall(bridgeDo, wanted, store.fleet.get().availability === "ready"), "ready");'), 1);
+  // The route's asker is gone from the flow, and from the page's askers.
+  assert.equal(flow.includes("api.acceptFleetInvite("), false);
+  const api = readFileSync(fileURLToPath(new URL("./api.ts", import.meta.url)), "utf8");
+  assert.equal(api.includes("/api/bridge/fleet/invite/accept"), false);
+});

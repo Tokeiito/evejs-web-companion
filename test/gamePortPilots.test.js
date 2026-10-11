@@ -8321,3 +8321,35 @@ test("a pilot that holds a fleet's object and is in no fleet yet may form again:
   const again = await pilots.bindObject("fleetObjectHandler", "CreateFleet", [], null, WHO, handle);
   assert.equal(typeof again.boundHandle, "string");
 });
+
+// ── an invitation accepted from within a fleet ───────────────────────────────
+//
+// fleetSvc.OnFleetInvite (1171): `if session.fleetid is not None: __fleetMoniker.RejectInvite(True)`, and the
+// client asks no acceptance of it.
+
+test("a session in a fleet accepts no invitation: nothing is asked of the server, and nothing is counted as asked", async () => {
+  const built = await formed({ "bound:AcceptInvite": true });
+  const { pilots, session, handle } = built;
+  intoFleet(session, FLEET);
+  const invite = await pilots.bindObject("fleetObjectHandler", "MachoBindObject", [[FLEET + 1]], null, WHO, handle);
+  const before = [session.sent.length, fleetCalls(session).length, fleetBinds(session).length, JSON.stringify(pilots.callLedger())];
+  const held = pilots.fleet(FIELDS, handle);
+  await assert.rejects(pilots.callBoundMethod("fleetObjectHandler", "AcceptInvite", [null], null, WHO, handle, invite.boundHandle), (error) => error.code === "CALL_REFUSED" && error.message === "FleetError");
+  assert.deepEqual([session.sent.length, fleetCalls(session).length, fleetBinds(session).length, JSON.stringify(pilots.callLedger())], before);
+  // The fleet it is in is still the one it holds.
+  assert.deepEqual(pilots.fleet(FIELDS, handle), held);
+  // Out of that fleet, the same invitation is accepted as before.
+  intoFleet(session, null);
+  const again = await pilots.bindObject("fleetObjectHandler", "MachoBindObject", [[FLEET + 1]], null, WHO, handle);
+  await pilots.callBoundMethod("fleetObjectHandler", "AcceptInvite", [null], null, WHO, handle, again.boundHandle);
+  assert.deepEqual(onObjects(session, "AcceptInvite").map(([, , args]) => args), [[588]]);
+
+  // The client goes by its session's fleet, not by what it holds: a pilot whose CreateFleet has been answered and
+  // whose session is in no fleet yet accepts an invitation all the same.
+  const early = await selected({ answers: { "fleetObjectHandler.CreateFleet": boundObject("N=1:500"), "bound:AcceptInvite": true, "bound:GetInitState": "the state" } }, FLEET_PAIRS);
+  await early.pilots.bindObject("fleetObjectHandler", "CreateFleet", [], null, WHO, early.handle);
+  assert.deepEqual(early.pilots.fleet(FIELDS, early.handle), { fleetID: null, holdsObject: true });
+  const invited = await early.pilots.bindObject("fleetObjectHandler", "MachoBindObject", [[FLEET + 1]], null, WHO, early.handle);
+  await early.pilots.callBoundMethod("fleetObjectHandler", "AcceptInvite", [null], null, WHO, early.handle, invited.boundHandle);
+  assert.deepEqual(onObjects(early.session, "AcceptInvite").map(([, , args]) => args), [[588]]);
+});

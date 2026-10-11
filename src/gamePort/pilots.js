@@ -3208,6 +3208,9 @@ function createGamePortPilots({
     if (!object) throw fail("BOUND_HANDLE_NOT_FOUND", "Unknown bound-object handle for this session.");
     if (object.service !== service) throw fail("BOUND_HANDLE_NOT_FOUND", "Bound-object handle does not belong to the requested service.");
     assertAllowed(service, method);
+    // fleetSvc.OnFleetInvite (1171): `if session.fleetid is not None: __fleetMoniker.RejectInvite(True)`. A session
+    // in a fleet asks no acceptance: so here nothing is sent, and what was not sent is not counted.
+    if (service === "fleetObjectHandler" && method === "AcceptInvite" && attribute(entry, "fleetid") !== null) throw fail("CALL_REFUSED", "FleetError");
     if (retailNeeds(service, method) === "dogma") await shipReadings(entry, whereabouts(entry));
     const form = shape(service, method, args, kwargs, contextFor(entry));
     if (service === "dogmaIM" && method === "QueryAttributeValue") {

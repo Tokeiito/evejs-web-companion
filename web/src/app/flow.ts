@@ -347,7 +347,7 @@ import { canBroadcastInFleet, canTagInFleet } from "../bridge/fleetCommand.ts";
 import type { FleetCenterSnapshot } from "../bridge/fleetCenter.ts";
 import { decodeAvailableFleetAds, decodeMyFleetFinderAdvert } from "../bridge/fleetAds.ts";
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
-import { applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, formFleet as formFleetCall, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
+import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, formFleet as formFleetCall, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { salvageWithDrones } from "../bridge/boundEntityWrites.ts";
 import { alignTo as alignToCall, approach as approachCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, type FlightNow } from "../bridge/movementWrites.ts";
 import { boardCorvette as boardCorvetteCall, leaveShip as leaveShipCall } from "../bridge/shipWrites.ts";
@@ -4088,7 +4088,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       });
       return;
     }
-    await runFleetAction("accept", () => api.acceptFleetInvite(wanted, callOptions), "ready");
+    // (The page's own call, bridge/fleetWrites.ts: none from a pilot the Fleet window knows to be in a fleet.)
+    await runFleetAction("accept", () => acceptFleetInviteCall(bridgeDo, wanted, store.fleet.get().availability === "ready"), "ready");
   }
 
   async function leaveFleet(): Promise<void> {
@@ -8047,7 +8048,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             await leaveFleetCall(bridgeDo);
             return;
           case "acceptFleetInvite":
-            await api.acceptFleetInvite(action.fleetID, callOptions);
+            await acceptFleetInviteCall(bridgeDo, action.fleetID, false);
             return;
           // Rung 7, "obeying the fleet" (fleetCompanionLoop.ts): a tag or a
           // `Target` broadcast, locked; an `AlignTo` broadcast, aligned to.
@@ -10589,7 +10590,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // (A support ship forms a fleet on its own reading that it is in none.)
           if (action.kind === "createFleet") await formFleetCall(bridgeDo, false);
           else if (action.kind === "inviteToFleet") await api.inviteToFleet(action.charID, callOptions);
-          else if (action.kind === "acceptFleetInvite") await api.acceptFleetInvite(action.fleetID, callOptions);
+          else if (action.kind === "acceptFleetInvite") await acceptFleetInviteCall(bridgeDo, action.fleetID, false);
           else applicationOutcome = await applyToJoinFleetCall(bridgeDo, action.fleetID, true);
         } catch (error) {
           outcome = "unknown"; code = errorWords(error);
@@ -12976,7 +12977,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
               if (fleetID === undefined) {
                 throw new Error("No pending fleet invitation is available.");
               }
-              await api.acceptFleetInvite(fleetID, callOptions);
+              await acceptFleetInviteCall(bridgeDo, fleetID, false);
             }
             return;
           case "applyToJoinFleet": {

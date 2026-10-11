@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-import { applyToJoinFleet, createFleetBroadcasts, decodeFleetWriteAck, decodeFleetAdvertWriteAck, formFleet, leaveFleet, tagFleetTarget } from "./fleetWrites.ts";
+import { acceptFleetInvite, applyToJoinFleet, createFleetBroadcasts, decodeFleetWriteAck, decodeFleetAdvertWriteAck, formFleet, leaveFleet, tagFleetTarget } from "./fleetWrites.ts";
 import type { Ask } from "./ask.ts";
 import type { JsonValue } from "./wire.ts";
 
@@ -219,4 +219,43 @@ test("a fleet is formed by one call of the fleet handler's, with nothing; and by
 
 test("a forming the server refuses fails as the call fails", async () => {
   await assert.rejects(formFleet(asking(new Error("FleetError")).act, false), /FleetError/);
+});
+
+// --- an invitation accepted ---------------------------------------------------
+
+/** A stand-in for the page's asking that says which object each call named, too. */
+function askingOf() {
+  const asked: unknown[] = [];
+  const act: Ask = async (service, method, args, kwargs, of) => {
+    asked.push([service, method, args, kwargs ?? null, of ?? null]);
+    return null;
+  };
+  return { act, asked };
+}
+
+test("an invitation is accepted by one call on the fleet it names, with nothing said of the ship; and by none from within a fleet or for what is no fleet", async () => {
+  const { act, asked } = askingOf();
+
+  await acceptFleetInvite(act, 654500010000, false);
+
+  // fleetSvc.py 1191: GetFleet(fleetID).AcceptInvite(self.GetMyShipTypeID()). The fleet is the invitation's; the
+  // ship's type is the BFF's to say, never the page's.
+  assert.deepEqual(asked, [["fleetObjectHandler", "AcceptInvite", [], null, 654500010000]]);
+
+  // 1171: a session in a fleet turns the invitation down, and asks no acceptance.
+  const within = askingOf();
+  await assert.rejects(acceptFleetInvite(within.act, 654500010000, true), /^Error: You are already in a fleet\.$/);
+  assert.deepEqual(within.asked, []);
+  for (const fleetID of [0, -654500010000, 1.5, Number.NaN, 2 ** 53]) {
+    // (No fleet named is that, whether or not the pilot is in a fleet.)
+    for (const inAFleet of [false, true]) {
+      const none = askingOf();
+      await assert.rejects(acceptFleetInvite(none.act, fleetID, inAFleet), /^Error: That invitation names no fleet\.$/, `${fleetID} ${inAFleet}`);
+      assert.deepEqual(none.asked, [], `${fleetID} ${inAFleet}`);
+    }
+  }
+});
+
+test("an acceptance the server refuses fails as the call fails", async () => {
+  await assert.rejects(acceptFleetInvite(asking(new Error("FleetNotFound")).act, 654500010000, false), /FleetNotFound/);
 });

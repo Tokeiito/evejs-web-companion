@@ -189,11 +189,22 @@ const SERVER_REFUSALS: Readonly<Record<string, string>> = Object.freeze({
   // in its place. It says no more than that the fleet said no.
   FleetError:
     "The fleet would not allow that.",
+  // fleetRuntime's acceptInvite and its placing of a member — the wing or the
+  // squad the pilot was to be put in is not there, or has no room.
+  FleetNoPositionFound:
+    "That fleet has no place free where you were to be put.",
+  // fleetRuntime's word for a fleet that is not there, and for an invitation
+  // that is: no invitation of that fleet is open for this pilot.
+  FleetNotFound:
+    "That fleet could not be found, or its invitation is no longer open.",
   // fleetObjectHandler Handle_LeaveFleet (ensureFleetMembership) — the pilot is
   // no member of the fleet the object is for: it was left, or the pilot was
   // put out of it, since the page last read it.
   FleetNotInFleet:
     "You are not in that fleet.",
+  // fleetRuntime's acceptInvite — the fleet has as many members as it takes.
+  FleetTooManyMembers:
+    "That fleet is full. Ask its boss to make room, and to invite you again.",
   // dogma `_throwModuleActivationUserError` — MODULE_REACTIVATING.
   ModuleReactivationDelayed2:
     "That module is still cooling down from its last cycle. Give it a moment.",

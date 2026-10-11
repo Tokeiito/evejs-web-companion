@@ -265,9 +265,9 @@ test("acceptFleetInvite uses the fleetID from OnFleetInvite and re-reads", async
   let acceptedBody: Record<string, unknown> | null = null;
   const fetch: typeof globalThis.fetch = async (input, init) => {
     const url = String(input);
-    if (url.endsWith("/api/bridge/fleet/invite/accept")) {
+    if (url.endsWith("/api/bridge/call")) {
       acceptedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-      return json({ ok: true, applied: true });
+      return json({ ok: true, service: "fleetObjectHandler", method: "AcceptInvite", result: null, notifications: [] });
     }
     if (url.endsWith("/api/bridge/bound-fleet")) return json(populatedFleet());
     throw new Error(`unexpected fetch ${url}`);
@@ -279,9 +279,54 @@ test("acceptFleetInvite uses the fleetID from OnFleetInvite and re-reads", async
   });
   await createAppFlow(store, { fetch }).acceptFleetInvite();
 
-  assert.deepEqual(acceptedBody, { fleetID: 654500010000, confirm: true });
+  // fleetSvc.py 1191: GetFleet(fleetID).AcceptInvite(...), on the fleet the invitation named, as a pilot's write
+  // the page means. And nothing of the route it went by until 2026-10-11.
+  assert.deepEqual(acceptedBody, { service: "fleetObjectHandler", method: "AcceptInvite", args: [], kwargs: null, pilot: true, confirm: true, of: 654500010000 });
   assert.equal(store.get().fleet.availability, "ready");
   assert.equal(store.get().fleet.pendingInvite, null);
+});
+
+test("acceptFleetInvite from within a fleet asks nothing of the accepting, says so, and reads the fleet again", async () => {
+  const calls: string[] = [];
+  const fetch: typeof globalThis.fetch = async (input) => {
+    const url = String(input);
+    calls.push(url);
+    if (url.endsWith("/api/bridge/bound-fleet")) return json(populatedFleet());
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  const store = createClientStore();
+  const flow = createAppFlow(store, { fetch });
+  await flow.loadFleet();
+  assert.equal(store.get().fleet.availability, "ready");
+  calls.length = 0;
+
+  await flow.acceptFleetInvite(654500020000);
+
+  // fleetSvc.py 1171: a session in a fleet turns an invitation down, and asks no acceptance of it.
+  assert.deepEqual(calls, ["/api/bridge/bound-fleet"]);
+  assert.equal(store.get().fleet.actionError, "The fleet action was refused. You are already in a fleet.");
+});
+
+test("an acceptance the server refuses is said in the page's words for each refusal, and the fleet is read again all the same", async () => {
+  for (const [key, words] of [
+    ["FleetNotFound", "That fleet could not be found, or its invitation is no longer open."],
+    ["FleetTooManyMembers", "That fleet is full. Ask its boss to make room, and to invite you again."],
+    ["FleetNoPositionFound", "That fleet has no place free where you were to be put."],
+    ["FleetError", "The fleet would not allow that."],
+  ] as const) {
+    const calls: string[] = [];
+    const fetch: typeof globalThis.fetch = async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.endsWith("/api/bridge/call")) return json({ ok: false, error: "CALL_REFUSED", message: key }, 409);
+      if (url.endsWith("/api/bridge/bound-fleet")) return json(noFleet());
+      throw new Error(`unexpected fetch ${url}`);
+    };
+    const store = createClientStore();
+    await createAppFlow(store, { fetch }).acceptFleetInvite(654500010000);
+    assert.deepEqual(calls, ["/api/bridge/call", "/api/bridge/bound-fleet"], key);
+    assert.equal(store.get().fleet.actionError, `The fleet action was refused. ${words}`, key);
+  }
 });
 
 test("leaveFleet makes the page's own call on the fleet's object, does not trust its answer, and lands the no-fleet reread", async () => {

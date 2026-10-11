@@ -993,6 +993,11 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
     res.status(400).json({ ok: false, error: "INVALID_PLANET", message: "A positive planetID is required." });
     return;
   }
+  // (A fleet's number as its routes take one: a whole number above nought, or the text of one.)
+  if (objectKind === "fleetByNumber" && strictPositiveID(body.of) === null) {
+    res.status(400).json({ ok: false, error: "INVALID_FLEET_ID", message: "A positive fleetID is required." });
+    return;
+  }
   if (objectKind !== null && body.pilot !== true) {
     res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: "A call on an object is a pilot's." });
     return;
@@ -1042,6 +1047,11 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
       ? { ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => (body.method === "CreateFleet"
         ? createFleetCall(heldBridgeSession, req.webSessionID)
         : leaveFleetCall(heldBridgeSession, req.webSessionID, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null))), service: body.service, method: body.method }
+      // (An invitation accepted, as its route accepts one: on the fleet the page names, bound by its number,
+      // with no type of ship said whatever the call came with.)
+      : objectKind === "fleetByNumber"
+      ? { ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => acceptFleetInviteCall(heldBridgeSession, req.webSessionID, strictPositiveID(body.of))),
+        service: body.service, method: body.method }
       // (A follow, as its routes made it: held back where the ship already flies it, and through the gateway
       // with the throttle opened first. bridgeCallPolicy.js, PAGE_FOLLOW_CALLS.)
       : ordersAFollow(body.service, body.method)
@@ -9645,6 +9655,22 @@ async function createFleetCall(held, webSessionID) {
   };
   try {
     return await boundCall(held, webSessionID, bindSpec, "Init", [null, null], null);
+  } finally {
+    invalidateFleetBoundHandles(held);
+  }
+}
+
+/**
+ * A fleet's invitation accepted, as the client accepts one (fleetSvc.OnFleetInvite, 1168 to 1195): AcceptInvite on
+ * a Moniker for the fleet the invitation names. The invitation, not the bind, is the authority: the server
+ * accepts only where a real invitation for this character names that fleet. The ship's type is never the
+ * browser's to say, so none is said here: the game port says the ship's as the client does (retailCalls.js), and
+ * through the gateway the server takes the session's. Whatever comes of it, none of the BFF's handles for a fleet
+ * is kept: the pilot's fleet is another one now, or may be.
+ */
+async function acceptFleetInviteCall(held, webSessionID, fleetID) {
+  try {
+    return await boundCall(held, webSessionID, fleetIDBindSpec(fleetID), "AcceptInvite", [null], null);
   } finally {
     invalidateFleetBoundHandles(held);
   }

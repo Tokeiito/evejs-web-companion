@@ -267,3 +267,41 @@ export async function formFleet(act: Ask, inAFleet: boolean): Promise<void> {
   }
   await act("fleetObjectHandler", "CreateFleet", []);
 }
+
+// --- An invitation accepted (the plan's Phase 6b) ----------------------------
+//
+// Until 2026-10-11 it was one route of the BFF (POST /api/bridge/fleet/invite/accept).
+//
+// THE CALL, as the client makes it (fleetSvc.OnFleetInvite, 1168 to 1195). The invitation names its fleet, and
+// the client makes a Moniker for that fleet (GetFleet(fleetID)). From a session in a fleet it turns the
+// invitation down on it and asks no more. Otherwise, on the pilot's yes:
+//
+//   __fleetMoniker.AcceptInvite(self.GetMyShipTypeID())
+//
+// and the Moniker is the fleet's own object from then, on which the fleet is read. Tranquility's recording has
+// the bind of that Moniker carrying the call, with the ship's type.
+//
+// THE FLEET IS THE PAGE'S TO NAME (`of`), as its invitation named it. THE SHIP'S TYPE IS NOT: the game port says
+// the ship's as the client does, and through the web gateway the server takes the session's (src/server.js,
+// acceptFleetInviteCall). So the call goes with nothing.
+//
+// WHAT THE SERVER TAKES FROM THE CALLER: the fleet, by the bind, which proves nothing. It accepts only a real
+// invitation for the session's own character that names that fleet, and refuses a character that is in a fleet
+// (FleetError), a fleet that is full (FleetTooManyMembers), a place that is not there (FleetNoPositionFound) and
+// an invitation that is not open (FleetNotFound).
+//
+// ⚠ THE ANSWER IS NO PROOF OF ANYTHING. As with every fleet write here, the fleet is read again after.
+
+/**
+ * Accepts the invitation of the fleet `fleetID`. `inAFleet` is whether the pilot is in a fleet already, as the
+ * caller knows it: from there the client asks no acceptance, and nor does this. Fails as the call fails.
+ */
+export async function acceptFleetInvite(act: Ask, fleetID: number, inAFleet: boolean): Promise<void> {
+  if (!Number.isSafeInteger(fleetID) || fleetID <= 0) {
+    throw new Error("That invitation names no fleet.");
+  }
+  if (inAFleet) {
+    throw new Error("You are already in a fleet.");
+  }
+  await act("fleetObjectHandler", "AcceptInvite", [], undefined, fleetID);
+}

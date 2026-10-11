@@ -4038,3 +4038,73 @@ test("the fleet's route forms a fleet as the page's own call does", async () => 
   assert.deepEqual([routed.response.status, routed.payload.ok, routed.payload.applied, routed.payload.result, routed.payload.notifications], [200, true, true, null, ["after Init"]]);
   assert.deepEqual(asked, THROUGH_THE_FORMING("made 1"));
 });
+
+// ── an invitation accepted by the page itself ────────────────────────────────
+//
+// fleetSvc.OnFleetInvite (1168 to 1195): GetFleet(fleetID), a Moniker for the fleet the invitation names, and
+// AcceptInvite on it with the ship's type; Tranquility's recording has the bind carrying the call. The page names
+// the fleet, which its invitation said; the BFF makes the call as its route made it, bound by the fleet's number,
+// with no type said (the game port says the ship's, and through the gateway the server takes the session's), and
+// keeps none of its handles for a fleet after.
+
+const THE_ACCEPTING = { service: "fleetObjectHandler", method: "AcceptInvite", args: [], kwargs: null };
+const INVITING = 654500010000;
+const THROUGH_THE_ACCEPTING = (handle, fleetID = INVITING) => [["bind", "fleetObjectHandler", "MachoBindObject", [[fleetID]], null], [`on ${handle}`, "fleetObjectHandler", "AcceptInvite", [null], null]];
+
+test("an invitation accepted is a write the page means, made on the fleet the page names: bound by the fleet's number, with no type of ship said", async () => {
+  for (const transport of ["gameport", "gateway"]) {
+    const { asked, byName, baseUrl } = await formFleetByCall({ transport });
+    const accept = (more) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { ...THE_ACCEPTING, ...more } });
+    for (const words of [{ of: INVITING }, { of: INVITING, pilot: true }, { of: INVITING, confirm: true }]) {
+      const refused = await accept(words);
+      assert.deepEqual([refused.response.status, refused.payload.error, asked], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE", []], `${transport} ${JSON.stringify(words)}`);
+    }
+    // An invitation is some fleet's: a call that does not say whose is none.
+    for (const words of [{ pilot: true, confirm: true }, { pilot: true, confirm: true, of: null }]) {
+      const unnamed = await accept(words);
+      assert.deepEqual([unnamed.response.status, unnamed.payload.error, asked], [400, "INVALID_REQUEST", []], `${transport} ${JSON.stringify(words)}`);
+      assert.match(unnamed.payload.message, /says which with "of"/);
+    }
+    // And what is no fleet's number names none.
+    for (const of of [0, -1, 1.5, "", "  ", "a fleet", "6545e8x", Number.MAX_SAFE_INTEGER + 1, [INVITING], { fleetID: INVITING }, true]) {
+      const misnamed = await accept({ pilot: true, confirm: true, of });
+      assert.deepEqual([misnamed.response.status, misnamed.payload.error, asked], [400, "INVALID_FLEET_ID", []], `${transport} ${JSON.stringify(of)}`);
+    }
+    const made = await accept({ pilot: true, confirm: true, of: INVITING });
+    assert.deepEqual([made.response.status, made.payload.ok, made.payload.service, made.payload.method, made.payload.result, made.payload.notifications, made.payload.applied],
+      [200, true, "fleetObjectHandler", "AcceptInvite", null, ["after AcceptInvite"], undefined], transport);
+    assert.deepEqual([asked, byName], [THROUGH_THE_ACCEPTING("made 1"), []], transport);
+    // The same fleet again: bound afresh, and never on what the first acceptance was bound to.
+    asked.length = 0;
+    await accept({ pilot: true, confirm: true, of: INVITING });
+    assert.deepEqual(asked, THROUGH_THE_ACCEPTING("made 2"), transport);
+    // A fleet's number as text is that number, as its route took it (the Fleet panel's read answers one so).
+    asked.length = 0;
+    const asText = await accept({ pilot: true, confirm: true, of: String(INVITING + 20000) });
+    assert.deepEqual([asText.response.status, asked], [200, THROUGH_THE_ACCEPTING("made 3", INVITING + 20000)], transport);
+    // The ship's type is never the page's to say, and the call takes nothing else, whatever it came with.
+    asked.length = 0;
+    const odd = await accept({ pilot: true, confirm: true, of: INVITING + 10000, args: [655], kwargs: { now: true } });
+    assert.deepEqual([odd.response.status, asked], [200, THROUGH_THE_ACCEPTING("made 4", INVITING + 10000)], transport);
+  }
+});
+
+test("none of the BFF's handles for a fleet is kept across the page's own accepting, refused or not; and the route accepts as the call does", async () => {
+  const leave = (baseUrl) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "fleetObjectHandler", method: "LeaveFleet", args: [], kwargs: null, pilot: true, confirm: true } });
+  for (const refuses of [null, "AcceptInvite"]) {
+    const { asked, baseUrl } = await formFleetByCall({ refuses, holds: true });
+    await apiRequest(baseUrl, "/api/bridge/bound-fleet");
+    asked.length = 0;
+    const accepted = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { ...THE_ACCEPTING, pilot: true, confirm: true, of: INVITING } });
+    assert.deepEqual([accepted.response.status, accepted.payload.ok, accepted.payload.error ?? null], refuses === null ? [200, true, null] : [409, false, "CALL_REFUSED"], String(refuses));
+    assert.deepEqual(asked, THROUGH_THE_ACCEPTING("made 2"), String(refuses));
+    // After it, joined or refused, the pilot's fleet may be another: the leaving is of an object asked for afresh.
+    asked.length = 0;
+    await leave(baseUrl);
+    assert.deepEqual(asked, [["bind", "fleetObjectHandler", "MachoBindObject", [], null], ["on made 3", "fleetObjectHandler", "LeaveFleet", [], null]], String(refuses));
+  }
+  const { asked, baseUrl } = await formFleetByCall();
+  const routed = await apiRequest(baseUrl, "/api/bridge/fleet/invite/accept", { method: "POST", body: { fleetID: INVITING, confirm: true } });
+  assert.deepEqual([routed.response.status, routed.payload.ok, routed.payload.applied, routed.payload.result, routed.payload.notifications], [200, true, true, null, ["after AcceptInvite"]]);
+  assert.deepEqual(asked, THROUGH_THE_ACCEPTING("made 1"));
+});

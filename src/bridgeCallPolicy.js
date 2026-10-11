@@ -309,8 +309,16 @@ function isBridgeWritePair(service, method) {
  *                                the session's own character in it. The page cannot hold what the call
  *                                answers, so it is made as the route made it (PAGE_OBJECT_CALLS, "fleet").
  *                                A client asks it from no session that is in a fleet.
+ *   fleetObjectHandler.AcceptInvite  a fleet's invitation accepted. The route checked `confirm` and that the
+ *                                fleet named was a number above nought, bound that fleet's object by its
+ *                                number, asked AcceptInvite on it with no type of ship said, and kept none
+ *                                of the BFF's handles for a fleet after. The handler accepts only where a real
+ *                                invitation for the session's own character names that fleet, and refuses a
+ *                                character that is in a fleet, a fleet that is full, and a place that is not
+ *                                there. The page says which fleet (PAGE_OBJECT_CALLS, "fleetByNumber"). A
+ *                                client asks it from no session that is in a fleet.
  */
-const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet"]);
+const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.AcceptInvite"]);
 const pageWritePairKeySet = new Set(PAGE_WRITE_PAIR_KEYS);
 for (const pair of PAGE_WRITE_PAIR_KEYS) {
   if (!bridgeWritePairKeySet.has(pair)) throw new Error(`${pair} is among the page's writes and is no write.`);
@@ -401,12 +409,25 @@ function ordersAFollow(service, method) {
  *                                   names none, and the BFF makes it and the Init on what it answered, as its
  *                                   route did (src/server.js, createFleetCall).
  *
+ * And one on a fleet the call names by the fleet's number, which is not the session's own:
+ *
+ *   fleetObjectHandler.AcceptInvite "fleetByNumber": a WRITE, an invitation accepted (fleetSvc.OnFleetInvite,
+ *                                   1168 to 1195): GetFleet(fleetID).AcceptInvite(shipTypeID), on a Moniker
+ *                                   for the fleet the invitation named, which the page was told and says
+ *                                   with `of`. The bind selects a fleet and proves nothing: the handler
+ *                                   accepts only a real invitation for the session's own character. The
+ *                                   ship's type is not the page's to say (src/server.js,
+ *                                   acceptFleetInviteCall).
+ *
  * A write among them is one of the page's own writes. A read is listed here only once its handler has been read
  * for what it takes from the caller: a planet's reads once answered with another owner's colony.
  */
-const PAGE_OBJECT_CALLS = Object.freeze({ "planetMgr.UserUpdateNetwork": "planet", "planetMgr.UserLaunchCommodities": "planet", "planetMgr.GetProgramResultInfo": "planet", "scanMgr.GetFullState": "scanManager", "fleetObjectHandler.LeaveFleet": "fleet", "fleetObjectHandler.CreateFleet": "fleet" });
-/** The objects there are many of, which a call says which of with `of`. A scan manager and a fleet are the session's own. */
-const OBJECTS_THE_PAGE_NAMES = Object.freeze(new Set(["planet"]));
+const PAGE_OBJECT_CALLS = Object.freeze({ "planetMgr.UserUpdateNetwork": "planet", "planetMgr.UserLaunchCommodities": "planet", "planetMgr.GetProgramResultInfo": "planet", "scanMgr.GetFullState": "scanManager", "fleetObjectHandler.LeaveFleet": "fleet", "fleetObjectHandler.CreateFleet": "fleet", "fleetObjectHandler.AcceptInvite": "fleetByNumber" });
+/**
+ * The objects there are many of, which a call says which of with `of`: a planet, and a fleet that is not the
+ * session's own (the one an invitation names). A scan manager and the pilot's own fleet are the session's.
+ */
+const OBJECTS_THE_PAGE_NAMES = Object.freeze(new Set(["planet", "fleetByNumber"]));
 for (const pair of Object.keys(PAGE_OBJECT_CALLS)) {
   if (bridgeWritePairKeySet.has(pair) && !pageWritePairKeySet.has(pair)) throw new Error(`${pair} is among the page's calls on an object, is a write, and is none of the page's writes.`);
 }

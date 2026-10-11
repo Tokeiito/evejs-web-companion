@@ -1382,22 +1382,6 @@ export async function inviteToFleet(inviteeCharID: number, options: ApiOptions =
 }
 
 /**
- * ACCEPT a pending fleet invite for the session character (in the current ship).
- * An invitee is not in the fleet yet, so the route needs the fleetID carried by
- * OnFleetInvite in order to bind the invited fleet before accepting.
- */
-export async function acceptFleetInvite(
-  fleetID: number,
-  options: ApiOptions = {},
-): Promise<void> {
-  await postJson(
-    "/api/bridge/fleet/invite/accept",
-    { fleetID, confirm: true },
-    options,
-  );
-}
-
-/**
  * The fleet-finder reads: the listing of adverts open to THIS session, plus the
  * session's own advert. Decode with bridge/fleetAds.
  *

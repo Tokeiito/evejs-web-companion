@@ -87,10 +87,12 @@ function harness(answer: boolean) {
       applications.push(body);
       result = { ok: true, service: "fleetProxy", method: "ApplyToJoinFleet", result: answer, notifications: [] };
     }
-    if (path === "/api/bridge/fleet/invite/accept") {
+    if (path === "/api/bridge/fleet/invite/accept") asked.push("the acceptance's route");
+    if (path === "/api/bridge/call" && body.service === "fleetObjectHandler" && body.method === "AcceptInvite") {
       asked.push("the invitation accepted");
       accepts.push(body);
       joined = true;
+      result = { ok: true, service: "fleetObjectHandler", method: "AcceptInvite", result: null, notifications: [] };
     }
     return Response.json(result);
   } });
@@ -120,7 +122,8 @@ test("a bot joining a fleet by name applies by the page's own call, then accepts
     const order = asked.filter((each, at) => asked.indexOf(each) === at);
     assert.deepEqual(order, ["the finder read", "applied, by the page's own call", "the invitation accepted"]);
     assert.deepEqual(applications, [THE_CALL]);
-    assert.equal(accepts[0]?.fleetID, FLEET);
+    // fleetSvc.py 1191: on the fleet the invitation named, as a pilot's write the page means.
+    assert.deepEqual(accepts[0], { service: "fleetObjectHandler", method: "AcceptInvite", args: [], kwargs: null, pilot: true, confirm: true, of: FLEET });
   } finally {
     unsubscribe();
     flow.stopCustomBot();

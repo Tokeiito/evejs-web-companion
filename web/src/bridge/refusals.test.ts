@@ -74,8 +74,13 @@ const EVEJS_REFUSAL_VOCABULARY: readonly string[] = [
   // fleetRuntime's general refusal, and the client's own for a fleet formed from within one (fleetSvc.py 333) —
   // reachable from the Fleet window's "Form fleet" where the page's word for its fleet is behind the session's.
   "FleetError",
+  // fleetRuntime's acceptInvite — reachable from the Fleet window's acceptance of an invitation: a place in the
+  // fleet that is not there to take, an invitation that is no longer open, and a fleet that is full.
+  "FleetNoPositionFound",
+  "FleetNotFound",
   // fleetObjectHandler Handle_LeaveFleet (ensureFleetMembership) — reachable from the Fleet window's "Leave fleet".
   "FleetNotInFleet",
+  "FleetTooManyMembers",
   "ModuleReactivationDelayed2",
   "NoCharges",
   "NotEnoughCapacitorForOnline",
