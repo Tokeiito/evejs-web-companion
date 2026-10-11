@@ -971,6 +971,19 @@ wants the web login and no pilot. The page asks 400 to a request.
 `GET /api/bridge/combat-utility-types` is gone: it was this, under the bridge's path,
 and made no call of the server's.
 
+**The account's creation state stays a route**: `GET /api/bridge/character/creation-state`
+answers `{ ok, slots, characters: [{ characterID, name }], freeSlots, pendingName, recoveredCharacterID }`.
+It wants the web login and no pilot: the roster is
+`charUnboundMgr.GetCharacterSelectionData`, asked as the account (on a held pilot's
+session where there is one). `freeSlots` is never below nought. `pendingName` is the
+name of a creation whose outcome the BFF does not know; once the roster has a
+character of that name (capitals and spaces aside) the answer names it in
+`recoveredCharacterID`, once, and nothing is pending after. A roster the BFF cannot
+read (slots that are no number, another account's name on it, a character with no
+number or no name, two of one number) is 409 `CREATION_STATE_UNKNOWN`, and a call that
+fails fails the route with its own code: it is never answered as an account with no
+characters.
+
 ```jsonc
 {
   "blueprintID": 7100000001,   // the blueprint ITEM id

@@ -1153,11 +1153,13 @@ Take these defaults, and list each under "For the operator" in the log so they c
   bookmarks: a bot was told its spot was not in the list. Where a route is
   `Promise.allSettled`, follow the nothing through the asker and the decoder to what
   each reader does with it, and give the flow a test of the read failing.
-- **The page's requests ride its socket: the browser's resource timings list none of
-  them.** A check by `performance.getEntriesByType("resource")` proves nothing. Record
-  the frames: wrap `JSON.stringify` and keep each object that has a `path` (its
-  `method` beside it), and each with `pilot === true` for the generic calls. Then "no
-  request went to the route" is something seen.
+- **The page's requests ride its socket where the socket is open, and go by a plain
+  request where it is not** (the first request of a page just loaded did: corrected
+  2026-10-11, having been written as "none of them"). So a check of what the page
+  asked looks in both: the frames (wrap `JSON.stringify` and keep each object that has
+  a `path`, its `method` beside it, and each with `pilot === true` for the generic
+  calls) and `performance.getEntriesByType("resource")`. "No request went to the
+  route" is seen only where neither has it.
 - **A window that reads as it opens reads once.** "New bot" on a Bot Builder that is
   open already asks nothing: close the window by its ✕ and open it again.
 - **What a bot says in the store is the bot's reason, not a step's.** A step that cannot
@@ -1266,6 +1268,20 @@ Take these defaults, and list each under "For the operator" in the log so they c
   from either: the route's test has a type's category come from the static data's
   own function and not from the type's record, so a breakage that reads the record
   is caught.
+- **A route may be one thing that stays.** Where half of what it answers is the BFF's
+  own keeping (the creation's mark: a name journalled before the call, so that
+  nothing is made twice), which a client has nothing like and the page cannot keep
+  across a reload, the route is not moved: it is given its tests, and the log says
+  why. Ask first what the server would see either way: the same call.
+- **Tests of a route as it stands cannot fail first: every line they are about wants
+  a breakage.** Write the breakages from the code's branches, read each for the test
+  that would catch it, and say in the log that none failed first.
+- **A unit with no source changed wants no rebuild, no restart and no copy of the
+  store**: the look that only reads is run against what is running.
+- **Reading a route for its test may find that it sends what no client sends.** Read
+  the client's caller for each thing a route sends, keywords and all, and the
+  recordings' bytes for them (a dict's count of entries is after `\x16`; a value
+  comes before its key): the warps' keywords were found so.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

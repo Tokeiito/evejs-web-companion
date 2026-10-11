@@ -888,7 +888,10 @@ listed by the page from the whole table, asked for once by its own call and kept
 handful, and every agent to a pilot in a structure. Six are left, `combat-utility-types`
 next, which is static data and no call of the server's. It is read at
 `GET /api/types/combat-utility` now (`33d8f0dc`), and the path under the bridge's is
-gone: 472 routes are under it. Five are left, `character/creation-state` next. In `eve.js` an advert's text outside ASCII goes as
+gone: 472 routes are under it. Five are left, `character/creation-state` next. That one
+stays a route (`20062548`): half of it is the BFF's own mark of a creation under way,
+which a client has nothing like, and it has tests now. Four are left: two warps, whose
+keywords are not a client's, and the jettison's two. In `eve.js` an advert's text outside ASCII goes as
 unicode (`dcd459b0d`, not pushed).
 Counted by the whole path,
 87 are named now, 37 of them reads and 50 writes (the count kept before
