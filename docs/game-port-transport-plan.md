@@ -914,8 +914,9 @@ navigation again (the menu's warp at nought, the menu's approach), and the autop
 approach to its last station is the menu's under fifty kilometres (`e659cdac`); the
 page's measure of a closing ship was set beside the server's: the page's ship ran ahead
 after a warp because the server had left its greatest speed a tenth too high, which is
-the server's and is fixed there. The recorded warp taken again on the fixed server is
-next. In `eve.js` an advert's text outside ASCII goes as
+the server's and is fixed there. The recorded warp was taken again on the fixed server
+(`96c4fb20`), and the park's tests brought to it; what the server's answer to a refusal
+waits for is next. In `eve.js` an advert's text outside ASCII goes as
 unicode (`dcd459b0d`; on its origin since 2026-10-11, pushed by another hand than this loop's), and a dock
 asked from out of range of a station is finished by the server, as Tranquility finishes
 it (`869b28d2b`, not pushed), and a pilot's client is sent no greatest speed for its ship

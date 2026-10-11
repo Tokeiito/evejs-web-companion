@@ -1436,6 +1436,23 @@ Take these defaults, and list each under "For the operator" in the log so they c
   be a test's: go by the character and the time.
 - **A session that ends near a station does not find the ship where it left it**
   (500 m off, twice). Place the ship and measure in one session.
+- **A recording taken again is set beside the old one before a test is touched.**
+  `rwp-facts.js` plays a recorded warp through the park as the tests do and prints
+  every thing they pin; run on the old recording and on the new, it says which
+  numbers moved and which claims no longer hold. A number that moved is the new
+  recording's; a claim that no longer holds is read again and said in the log.
+- **A harness can hold a claim.** The warp tests' replay asserted that a state at rest
+  is stamped with the park's own tick, which was true of the one recording it was
+  written on. Keep what a harness measures, and let a test say what it should be.
+- **Each recording has its hour of the server's movement log** (`eve.js/_local/logs/
+  space-movement-debug.<date>_<hour>.log`; the newest is `space-movement-debug.log`),
+  and the old hours are kept: the old fixture could still be set beside its own.
+  `warp.requested`, `warp.started` and `warp.completed` are the server's own times.
+- **The hour's movement log holds more of a ship than the recording's minutes**: 708
+  rows of Test Pilot's ship from other minutes beside the recording's 122, an hour in
+  which `eve.js`'s tests had run (they fly Test Pilot on a copy of the store). Whose
+  each row was I did not check; the comparison script takes only the recording's own
+  seconds.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
