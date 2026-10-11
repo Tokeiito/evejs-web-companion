@@ -1453,6 +1453,16 @@ Take these defaults, and list each under "For the operator" in the log so they c
   which `eve.js`'s tests had run (they fly Test Pilot on a copy of the store). Whose
   each row was I did not check; the comparison script takes only the recording's own
   seconds.
+- **A `[PKT] OUT` line of `eve.js`'s `server.log` is stamped with the time of the next
+  logged line, not of the sending**: the logger keeps a packet-out line until the next
+  thing is logged, to count repeats (`utils/logger/index.js`, `pktOut`). `[PKT] IN`,
+  `[LOG]` and `[DBG]` lines are stamped as they happen. Do not time a sending by the
+  log: time it by the asker's clock (`rfa-time.js` asks a call several times through a
+  BFF and prints when each was asked and answered).
+- **A time read off a log is a time of the log's.** Two entries carried "answered
+  1.5 to 1.9 s after the refusal" from `server.log`; twenty calls timed by the asker
+  took a minute and said 10 to 20 ms. Measure by a second clock before a log's gap
+  goes into an entry.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
