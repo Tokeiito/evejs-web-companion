@@ -1,11 +1,11 @@
 // A ship sent to a point in space by the page itself, held to the ship and the system the point was measured in;
-// a ship aligned to a thing; a thing approached, kept at range, or orbited; the ship stopped; and a scan result
-// warped to.
+// a ship aligned to a thing; a thing approached, kept at range, or orbited; the ship stopped; and a scan result,
+// a bookmark and a launch warped to.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { alignTo, approach, goToPoint, keepAtRange, orbit, stopShip, warpToScanResult, APPROACH_RANGE_M, KEEP_AT_RANGE_DEFAULT_M, ORBIT_DEFAULT_M, type FlightNow, type SitesKnown, type SitesReadIn } from "./movementWrites.ts";
+import { alignTo, approach, goToPoint, keepAtRange, orbit, stopShip, warpToBookmark, warpToLaunch, warpToScanResult, APPROACH_RANGE_M, KEEP_AT_RANGE_DEFAULT_M, ORBIT_DEFAULT_M, type FlightNow, type SitesKnown, type SitesReadIn } from "./movementWrites.ts";
 
 const [SHIP, SYSTEM] = [9988400023309, 30000144];
 const POINT = { x: 1000, y: -2500.5, z: 300000000000 };
@@ -415,4 +415,60 @@ test("a flight or a scanner that cannot be read warps nothing, and the warp's re
   const refused = scanned(NO_SITES, HERE, new Error("You cannot warp there right now."));
   await assert.rejects(warpToScanResult(refused.act, refused.flightNow, readIn(NO_SITES), refused.readSites, "YLD-909"), /You cannot warp there right now\./);
   assert.deepEqual(refused.did, ["read", "sent"]);
+});
+
+// ── sent into warp, to a bookmark and to a launch ────────────────────────────
+//
+// movementFunctions.WarpToBookmark (410 to 421): CmdWarpToStuff('bookmark', bookmarkID, minRange=warpRange,
+// fleet=fleet), the range the pilot's own (nought by default) and the fleet's word False. journal.py 453:
+// CmdWarpToStuff('launch', launchID), and nothing else.
+
+test("a bookmark is warped to by its number, with a range of nought and fleet=False, once the pilot's flight has been read", async () => {
+  const { did, asked, act, flightNow } = harness();
+
+  await warpToBookmark(act, flightNow, 900001732);
+
+  assert.deepEqual(asked, [["beyonce", "CmdWarpToStuff", ["bookmark", 900001732], { minRange: 0, fleet: false }]]);
+  assert.deepEqual(did, ["read", "sent"]);
+
+  // A bookmark's number is its own: one that is the ship's number is a bookmark still.
+  const same = harness();
+  await warpToBookmark(same.act, same.flightNow, SHIP);
+  assert.deepEqual(same.asked, [["beyonce", "CmdWarpToStuff", ["bookmark", SHIP], { minRange: 0, fleet: false }]]);
+});
+
+test("a launch is warped to by its own number, and nothing goes with it", async () => {
+  const { did, asked, act, flightNow } = harness();
+
+  await warpToLaunch(act, flightNow, 910000001);
+
+  assert.deepEqual(asked, [["beyonce", "CmdWarpToStuff", ["launch", 910000001], null]]);
+  assert.deepEqual(did, ["read", "sent"]);
+});
+
+test("neither is warped to for what is no number, where nothing is read either; nor for a pilot that is not in space", async () => {
+  for (const id of [0, -4, 1.5, Number.NaN, 2 ** 60]) {
+    const spot = harness();
+    await assert.rejects(warpToBookmark(spot.act, spot.flightNow, id), /A bookmark is required\./, String(id));
+    assert.deepEqual(spot.did, [], String(id));
+    const launch = harness();
+    await assert.rejects(warpToLaunch(launch.act, launch.flightNow, id), /A launch is required\./, String(id));
+    assert.deepEqual(launch.did, [], String(id));
+  }
+  for (const warp of [warpToBookmark, warpToLaunch]) {
+    const docked = harness({ ...HERE, inSpace: false });
+    await assert.rejects(warp(docked.act, docked.flightNow, 900001732), /The ship is not in space; undock first\./);
+    assert.deepEqual(docked.did, ["read"]);
+  }
+});
+
+test("a flight that cannot be read warps to neither, and a warp's refusal is the caller's, as it came", async () => {
+  for (const warp of [warpToBookmark, warpToLaunch]) {
+    const unread = harness(new Error("flight unreadable"));
+    await assert.rejects(warp(unread.act, unread.flightNow, 900001732), /flight unreadable/);
+    assert.deepEqual(unread.did, ["read"]);
+    const refused = harness(HERE, new Error("BookmarkNotAvailable"));
+    await assert.rejects(warp(refused.act, refused.flightNow, 900001732), /BookmarkNotAvailable/);
+    assert.deepEqual(refused.did, ["read", "sent"]);
+  }
 });

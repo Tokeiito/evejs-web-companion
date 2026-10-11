@@ -267,14 +267,18 @@ function isBridgeWritePair(service, method) {
  *                                it takes the session's own character out of the fleet the object is for,
  *                                and refuses one who is no member of it. It is made as the route made it
  *                                (PAGE_OBJECT_CALLS, "fleet").
- *   beyonce.CmdWarpToStuff       the ship sent into warp: to a scan result so far (bridge/movementWrites.ts).
- *                                The routes asked no `confirm`. They checked that the pilot was in space, which
- *                                the page reads for itself before it asks. The server flies the session's own
- *                                ship in the session's own system: to a thing of its scene; a site of that system
- *                                by its label or its instance's number; a moon's mining point there; a bookmark,
- *                                a launch or an operation of the session's own character; a member of its fleet.
- *                                It takes a subject, a number or a label, a range and a fleet's word from the
- *                                caller, and nothing else (beyonceService.Handle_CmdWarpToStuff, read whole).
+ *   beyonce.CmdWarpToStuff       the ship sent into warp: to a scan result, a bookmark and a launch so far
+ *                                (bridge/movementWrites.ts). The routes asked no `confirm`. They checked that the
+ *                                pilot was in space, which the page reads for itself before it asks. The server
+ *                                flies the session's own ship in the session's own system: to a thing of its
+ *                                scene; a site of that system by its label or its instance's number; a moon's
+ *                                mining point there; a bookmark, a launch or an operation of the session's own
+ *                                character; a member of its fleet; AND TO A POINT THE CALLER GIVES (an object of
+ *                                x, y and z in the number's place, under a subject the handler does not know),
+ *                                which no client sends. With fleet=True it goes on to its fleet's followers
+ *                                (_warpFleetFollowers, not read further). So the BFF holds a page's warp to what
+ *                                the client's menus make (src/server.js, notAClientsWarp, by the ledger's
+ *                                judge): anything else is refused, and not sent.
  *   beyonce.CmdAlignTo           the ship aligned to a thing. The route asked no `confirm`. It checked that
  *                                the thing was a number above nought and that the pilot was in space, made the
  *                                call on a ballpark handle with the thing by name and no bookmark, and read

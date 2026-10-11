@@ -264,8 +264,13 @@ const warping = (args, kwargs, context) => {
   if (kwargs.fleet !== undefined && kwargs.fleet !== false) {
     return notAClients("A warp's fleet keyword is True or False.");
   }
-  const made = (wanted) => (isDeepStrictEqual(wanted, kwargs)
-    ? {}
+  // What a caller that cannot say a float said: each keyword, with a float read as its number.
+  const asSaid = (keywords) => Object.fromEntries(Object.entries(keywords).map(([name, value]) => [name, rangeOf(value)]));
+  // The client's keywords go. Where they are what was said, but for a float the caller could not say (the page's
+  // JSON has one kind of number), the call is the client's: a follow's nought is made a float so too. Where a
+  // keyword was put in or a range given in place of none, it was reshaped.
+  const made = (wanted) => (isDeepStrictEqual(asSaid(wanted), asSaid(kwargs))
+    ? { kwargs: wanted }
     : { kwargs: wanted, status: "reshaped", note: "The warp was given the keywords the client's caller for it sends (minRange, and fleet=False where the client says it)." });
   switch (subject) {
     case "item":

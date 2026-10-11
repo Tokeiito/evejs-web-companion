@@ -26,11 +26,17 @@ test("every action the union declares has a case where the page carries actions 
   assert.deepEqual(missing, [], "these actions are decided on and never carried out");
 });
 
-test("a launch's warp is carried out as the launch's own warp", () => {
+test("a launch's warp and a bookmark's are carried out by the page's own calls; their routes' askers are gone", () => {
   const flow = readFileSync(fileURLToPath(new URL("./flow.ts", import.meta.url)), "utf8");
-  const at = flow.indexOf('case "warpLaunch":');
-  assert.ok(at >= 0);
-  assert.match(flow.slice(at, at + 160), /^case "warpLaunch":\s+await api\.warpToLaunch\(action\.launchID, callOptions\);\s+return;/);
+  assert.equal([...flow.matchAll(/case "warpLaunch":\s+await warpToLaunchPickup\(action\.launchID\);\s+return;/g)].length, 1);
+  assert.equal([...flow.matchAll(/case "warpBookmark":\s+await warpToSpot\(action\.bookmarkID\);\s+return;/g)].length, 1);
+  assert.equal(flow.split("await warpToLaunchCall(bridgeDo, readFlightNow, launchID);").length - 1, 1);
+  assert.equal(flow.split("await warpToBookmarkCall(bridgeDo, readFlightNow, bookmarkID);").length - 1, 1);
+  assert.equal(flow.includes("api.warpToLaunch("), false);
+  assert.equal(flow.includes("api.warpToBookmark("), false);
+  const api = readFileSync(fileURLToPath(new URL("./api.ts", import.meta.url)), "utf8");
+  assert.equal(api.includes("/api/bridge/flight/warp-launch"), false);
+  assert.equal(api.includes("/api/bridge/flight/warp-bookmark"), false);
 });
 
 test("a launchpad sent up at its office is carried out by the customs office's own transfer, and the colonies are read while offices are collected from", () => {

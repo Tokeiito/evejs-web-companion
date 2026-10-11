@@ -3822,6 +3822,60 @@ test("a warp is a write of the page's own, asked of beyonce by its name with the
   assert.equal(gateway.calls.call.length, before + 2);
 });
 
+test("a warp of the page's is one the client's menus make, and no other: what the server's handler would take beyond that is not sent", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const call = (args, kwargs) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "beyonce", method: "CmdWarpToStuff", args, kwargs, pilot: true, confirm: true } });
+  const before = gateway.calls.call.length;
+  // The client's: a thing, a fleet member, a bookmark, a scan result and a launch, with what its callers send.
+  const clients = [
+    [["item", 40009084], { minRange: 0 }],
+    [["char", 140000003], { minRange: 0 }],
+    [["bookmark", 900001732], { minRange: 0, fleet: false }],
+    [["scan", "QEE-288"], { minRange: null, fleet: false }],
+    [["launch", 910000001], null],
+    // (And a warp that says less than the client's caller does is the client's warp still: it goes as it came, and
+    // the game port gives it the client's keywords.)
+    [["bookmark", 900001732], null],
+  ];
+  for (const [args, kwargs] of clients) {
+    const made = await call(args, kwargs);
+    assert.deepEqual([made.response.status, made.payload.method], [200, "CmdWarpToStuff"], JSON.stringify(args));
+    assert.deepEqual([gateway.calls.call.at(-1).args, gateway.calls.call.at(-1).kwargs], [args, kwargs], JSON.stringify(args));
+  }
+  // With no keywords said at all, as with none.
+  const bare = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "beyonce", method: "CmdWarpToStuff", args: ["launch", 910000001], pilot: true, confirm: true } });
+  assert.equal(bare.response.status, 200);
+  clients.push("the one with no keywords said");
+  assert.equal(gateway.calls.call.length, before + clients.length);
+  // None of a client's: a point (which the server would fly the ship to), a subject no menu of the page's has,
+  // a fleet's warp, a keyword else, a range that is no distance, no arguments at all, and what is no list.
+  const others = [
+    [["point", { x: 1, y: 2, z: 3 }], null],
+    [[null, { x: 1, y: 2, z: 3 }], null],
+    [["moonMiningPoint", 40009084], { minRange: 0 }],
+    [["epinstance", 5], null],
+    [["item", 40009084], { minRange: 0, fleet: true }],
+    [["item", 40009084], { minRange: 0, fleetFormationSettings: {} }],
+    [["bookmark", 900001732], { minRange: -1 }],
+    [["launch", 910000001], { minRange: 0 }],
+    [[], null],
+    ["item", null],
+    [["item", 40009084], "minRange"],
+    // Keywords that are not given by name: a number, and a list, an empty one too.
+    [["item", 40009084], 5],
+    [["item", 40009084], ["minRange"]],
+    [["item", 40009084], []],
+  ];
+  for (const [args, kwargs] of others) {
+    const refused = await call(args, kwargs);
+    assert.deepEqual([refused.response.status, refused.payload.error], [400, "INVALID_REQUEST"], JSON.stringify(args));
+    assert.match(refused.payload.message, /^That is no warp the page makes\. /, JSON.stringify(args));
+  }
+  assert.equal(gateway.calls.call.length, before + clients.length, "nothing more was sent");
+});
+
 // ── a follow asked by the page itself ────────────────────────────────────────
 //
 // The client's menu sends bp.CmdFollowBall(targetID, range) for an approach (const.approachRange) and for keep at

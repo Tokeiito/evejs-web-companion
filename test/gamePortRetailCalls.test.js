@@ -2741,6 +2741,13 @@ test("a warp goes with the keywords a client sends for what it is to, whatever t
   assert.deepEqual([warp(["bookmark", 900000008]).status, warp(["bookmark", 900000008]).kwargs], ["reshaped", { minRange: aFloat(0), fleet: false }]);
   assert.deepEqual(warp(["bookmark", 900000008], { minRange: 20000 }).kwargs, { minRange: aFloat(20000), fleet: false });
   assert.equal(warp(["bookmark", 900000008], { minRange: aFloat(20000), fleet: false }).status, "same");
+  // A caller that cannot say a float (the page: its JSON has one kind of number) says the number, and is taken to
+  // have said the client's: the float is made here, and the call counted the same. A follow's nought is so too.
+  assert.deepEqual([warp(["bookmark", 900000008], { minRange: 0, fleet: false }).status, warp(["bookmark", 900000008], { minRange: 0, fleet: false }).kwargs], ["same", { minRange: aFloat(0), fleet: false }]);
+  assert.deepEqual([warp(["char", 140000002], { minRange: 10000 }).status, warp(["char", 140000002], { minRange: 10000 }).kwargs], ["same", { minRange: aFloat(10000) }]);
+  // What was not said at all is another matter: the fleet's word put in is a reshaping, as a range put in is.
+  assert.equal(warp(["bookmark", 900000008], { minRange: 0 }).status, "reshaped");
+  assert.equal(warp(["bookmark", 900000008], { fleet: false }).status, "reshaped");
   // (In whichever order the two were written: the transport writes them in the client's.)
   assert.equal(warp(["bookmark", 900000008], { fleet: false, minRange: aFloat(20000) }).status, "same");
 

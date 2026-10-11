@@ -126,6 +126,34 @@
 // ⚠ AND NO AUTOPILOT IS CANCELLED HERE, as for the other orders. What the client keeps of the warp's destination
 // for itself (space.WarpDestination, the result's label) the BFF keeps as the thing warped to, for a pilot on the
 // game port (pilots.js, afterMovementCall).
+//
+// SENT INTO WARP, TO A BOOKMARK. movementFunctions.WarpToBookmark (410 to 421), with a park:
+//
+//   michelle.CmdWarpToStuff('bookmark', bookmarkID, minRange=warpRange, fleet=fleet)
+//
+// The bookmark's menu gives the range as a float of the pilot's own warp distance, nought by default (menusvc.py
+// 1481 to 1483), and the fleet's word False. It answers nothing. No recording has one. The server looks the
+// bookmark up among the session's own character's (beyonceService.js, resolveBookmarkAnyStore), refuses one
+// that is not there (BookmarkNotAvailable), and flies the session's own ship to the thing the bookmark is of, or
+// to its point.
+//
+// The page says a range of nought and fleet=False. Its JSON has one kind of number: on the game port the range is
+// made the client's float where the call is sent (retailCalls.js, warping), as a follow's nought is.
+//
+// ⚠ A MISSION'S BOOKMARK IS NOT WARPED TO SO BY A CLIENT. One that has an agent and a location's number is asked
+// of the agent (GetAgentMoniker(agentID).WarpToLocation, 416), and never of the ballpark. The page's mission
+// block warps to this server's "Agent Missions" bookmarks by this call still, as its route did.
+//
+// SENT INTO WARP, TO A LAUNCH. journal.py 452 to 453, the journal's "warp to" on a launch in the pilot's system
+// that is farther off than a warp's least distance (433 to 440):
+//
+//   sm.GetService('michelle').CmdWarpToStuff('launch', launchID)
+//
+// and nothing else. It answers nothing. The server looks the launch up among the session's own character's
+// (planetRuntimeStore.getLaunch), and flies the ship to its container, or to its point where that fails.
+//
+// ⚠ A PAGE'S WARP IS HELD TO THESE FORMS BY THE BFF (src/server.js, notAClientsWarp). The server's handler would
+// fly the ship to a point a caller gave; no client gives one.
 
 import type { Ask } from "./ask.ts";
 
@@ -313,4 +341,39 @@ export async function warpToScanResult(act: Ask, flightNow: () => Promise<Flight
   const sites = kept !== null && kept.solarSystemID !== null && kept.solarSystemID === now.solarSystemID ? kept : await readSites();
   const siteID = [...sites.anomalies, ...sites.structures].find((each) => each.targetID === label)?.siteID;
   await act("beyonce", "CmdWarpToStuff", isAnID(siteID) ? ["item", siteID] : ["scan", label], { minRange: null, fleet: false });
+}
+
+/** What a warp to a place of the pilot's own looks to before it is asked: that the place has a number, and that the pilot is in space. */
+async function aPlaceToWarpTo(flightNow: () => Promise<FlightNow>, id: number, none: string): Promise<void> {
+  if (!isAnID(id)) {
+    throw new Error(none);
+  }
+  const now = await flightNow();
+  if (!now.inSpace) {
+    throw new Error("The ship is not in space; undock first.");
+  }
+}
+
+/**
+ * Warps the pilot's ship to one of its bookmarks, as the bookmark's menu does: by the bookmark's number, with a
+ * range of nought and the fleet's word False. Fails as the call fails, and before it for what is no bookmark's
+ * number and for a pilot that is not in space.
+ *
+ * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER AN ARRIVAL.
+ */
+export async function warpToBookmark(act: Ask, flightNow: () => Promise<FlightNow>, bookmarkID: number): Promise<void> {
+  await aPlaceToWarpTo(flightNow, bookmarkID, "A bookmark is required.");
+  await act("beyonce", "CmdWarpToStuff", ["bookmark", bookmarkID], { minRange: 0, fleet: false });
+}
+
+/**
+ * Warps the pilot's ship to one of its launches, as the journal does: by the launch's own number (not its
+ * container's, which is on no grid the pilot is on), with nothing else. Fails as the call fails, and before it for
+ * what is no launch's number and for a pilot that is not in space.
+ *
+ * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER AN ARRIVAL.
+ */
+export async function warpToLaunch(act: Ask, flightNow: () => Promise<FlightNow>, launchID: number): Promise<void> {
+  await aPlaceToWarpTo(flightNow, launchID, "A launch is required.");
+  await act("beyonce", "CmdWarpToStuff", ["launch", launchID]);
 }

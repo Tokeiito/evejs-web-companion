@@ -4,6 +4,10 @@
 // and of which the page took the bookmarks alone. Where the route's read of them failed it answered with nothing
 // and a code beside it, and the page read nothing as no bookmarks: a bot's warp to a saved spot was told the spot
 // was not in the list, and stopped. It is the client's bookmark service's call now (bridge/bookmarkReads.ts).
+//
+// The warp itself went by POST /api/bridge/flight/warp-bookmark until 2026-10-11. It is the page's own call now
+// (bridge/movementWrites.ts, warpToBookmark): movementFunctions.py 419, CmdWarpToStuff('bookmark', bookmarkID,
+// minRange=warpRange, fleet=fleet), the range nought and the fleet's word False.
 
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
@@ -39,6 +43,8 @@ const refused = (error: string, status: number): Answer => ({ status, body: { ok
 
 // bookmarkSvc.py 163: self.accessGroupBookmarkMgr.GetMyActiveBookmarks(), nothing sent, as a pilot's read.
 const THE_READ = { service: "accessGroupBookmarkMgr", method: "GetMyActiveBookmarks", args: [], kwargs: null, pilot: true };
+// movementFunctions.py 419: the bookmark by its number, a range of nought and fleet=False, as a pilot's write.
+const THE_WARP = { service: "beyonce", method: "CmdWarpToStuff", args: ["bookmark", SPOT], kwargs: { minRange: 0, fleet: false }, pilot: true, confirm: true };
 
 /** A pilot in space, and a BFF whose answer to each read of the bookmarks is the test's to say (the first read is 1). */
 function harness(answerTo: (read: number) => Answer = () => answered(ACTIVE)) {
@@ -70,7 +76,12 @@ function harness(answerTo: (read: number) => Answer = () => answered(ACTIVE)) {
       reads.push(body);
       answer = answerTo(reads.length);
     }
-    if (path === "/api/bridge/flight/warp-bookmark") { warps.push(body); answer = { status: 200, body: flightBody(false) }; }
+    // The warp's route, which nothing is to ask either.
+    if (path === "/api/bridge/flight/warp-bookmark") { routes.push(path); answer = { status: 200, body: flightBody(false) }; }
+    if (path === "/api/bridge/call" && body.service === "beyonce") {
+      warps.push(body);
+      answer = { status: 200, body: { ok: true, service: "beyonce", method: body.method, result: null, notifications: [] } };
+    }
     return Response.json(answer.body, { status: answer.status });
   } });
   return { store, flow, reads, routes, warps };
@@ -124,7 +135,7 @@ async function run(context: TestContext, made: ReturnType<typeof harness>, until
 test("a bot's warp to a saved spot reads the bookmarks by the page's own call each time it looks, and warps to the one of its name", { timeout: 10_000 }, async (context) => {
   const made = harness();
   await run(context, made, () => made.warps.length > 0);
-  assert.deepEqual(made.warps, [{ bookmarkID: SPOT, minRange: 0 }]);
+  assert.deepEqual(made.warps, [THE_WARP]);
   assert.ok(made.reads.length >= 1);
   for (const each of made.reads) assert.deepEqual(each, THE_READ);
   assert.deepEqual(made.routes, []);
@@ -134,7 +145,7 @@ test("a bot whose bookmarks could not be read goes on reading, and is not told i
   // Twice the read fails, and then it answers.
   const made = harness((read) => (read <= 2 ? refused("CALL_FAILED", 502) : answered(ACTIVE)));
   const said = await run(context, made, () => made.warps.length > 0);
-  assert.deepEqual(made.warps, [{ bookmarkID: SPOT, minRange: 0 }]);
+  assert.deepEqual(made.warps, [THE_WARP]);
   assert.ok(made.reads.length >= 3, `${made.reads.length} reads`);
   assert.ok(said.includes("running: Reading your saved spots."), said.join(" | "));
   assert.equal(said.some((line) => /not in your list|no saved spot/i.test(line)), false, said.join(" | "));

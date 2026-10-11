@@ -8597,3 +8597,23 @@ test("a warp asked by beyonce's name is made on the ballpark's own object as it 
   assert.equal(docked.session.sent.length, sentBefore, "nothing was sent");
   assert.equal(docked.pilots.callLedger().some((each) => each.pair === "beyonce.CmdWarpToStuff"), false, "and what was not sent is not counted");
 });
+
+test("a bookmark's warp asked by name with a range the page can say goes with the client's float, counted the client's; a launch's goes with nothing", async () => {
+  const hand = handTicked();
+  const allowed = new Set(["beyonce.MachoBindObject", "beyonce.CmdWarpToStuff"]);
+  const built = build(IN_SPACE, { ...hand.options, allowed });
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const { session } = built;
+  const row = () => built.pilots.callLedger().find((each) => each.pair === "beyonce.CmdWarpToStuff");
+
+  // movementFunctions.py 419: minRange a float from the bookmark's menu, and fleet=False. The page's JSON says 0.
+  await built.pilots.callMethod("beyonce", "CmdWarpToStuff", ["bookmark", 900001732], { minRange: 0, fleet: false }, WHOSE, handle);
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:1", method: "CmdWarpToStuff", args: ["bookmark", 900001732], kwargs: { minRange: { type: "real", value: 0 }, fleet: false } });
+  assert.deepEqual(row().statuses, { same: 1 });
+
+  // journal.py 453: the launch's number, and nothing else.
+  await built.pilots.callMethod("beyonce", "CmdWarpToStuff", ["launch", 910000001], null, WHOSE, handle);
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:1", method: "CmdWarpToStuff", args: ["launch", 910000001], kwargs: null });
+  assert.deepEqual(row().statuses, { same: 2 });
+  assert.deepEqual(hand.errors, []);
+});

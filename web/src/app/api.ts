@@ -4603,14 +4603,8 @@ export async function compressOreInSpace(
   };
 }
 
-/** Warp to a saved bookmark (the server resolves site/point/mission scope). */
-export async function warpToBookmark(
-  bookmarkID: number,
-  minRange: number,
-  options: ApiOptions = {},
-): Promise<FlightStepResult> {
-  return readFlightStep(await postJson("/api/bridge/flight/warp-bookmark", { bookmarkID, minRange }, options));
-}
+// (A bookmark and a launch are warped to by the page itself, with the client's own call: bridge/movementWrites.ts,
+// warpToBookmark and warpToLaunch. Their routes are flight/warp-bookmark and flight/warp-launch.)
 
 // A place in space is bookmarked by the page itself, with the client's own
 // call of the ballpark (bridge/bookmarkWrites.ts): it left its route
@@ -4635,14 +4629,6 @@ export async function exportToCustomsOffice(
   );
 }
 
-/**
- * Warp to one of the pilot's planetary launches (CmdWarpToStuff("launch",
- * launchID)), as the retail journal's "warp to" on a launch does. The launch's
- * own ID, not its container's: the container is on no grid the pilot is on.
- */
-export async function warpToLaunch(launchID: number, options: ApiOptions = {}): Promise<FlightStepResult> {
-  return readFlightStep(await postJson("/api/bridge/flight/warp-launch", { launchID }, options));
-}
 
 // (A scan result is warped to by the page itself, with the client's own call: bridge/movementWrites.ts,
 // warpToScanResult. Its route, flight/warp-scan, warped to every site by its label.)

@@ -1,11 +1,13 @@
-// The page's warp to a launch, and its exports to a customs office.
+// The page's exports to a customs office.
 //
+// (The warp to a launch is the page's own call since 2026-10-11, and is tested where it is:
+// bridge/movementWrites.test.ts and app/launchCollectorFlow.test.ts.)
 // (The read of a pilot's launches is the page's own call now, and is tested where it is: bridge/launchReads.test.ts.)
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { exportToCustomsOffice, exportToCustomsOffices, warpToLaunch } from "./api.ts";
+import { exportToCustomsOffice, exportToCustomsOffices } from "./api.ts";
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -22,15 +24,6 @@ function recordingFetch(reply: (path: string, method: string, body: unknown) => 
   }) as unknown as typeof fetch;
   return { fetch: fake, requests };
 }
-
-test("warpToLaunch posts the launch's ID and nothing else", async () => {
-  const { fetch, requests } = recordingFetch(() => json({ ok: true, result: null, flight: { solarSystemID: 30000142 }, notifications: [] }));
-  await warpToLaunch(1000001, { fetch, token: "t" });
-  assert.equal(requests.length, 1);
-  assert.match(requests[0]!.path, /\/api\/bridge\/flight\/warp-launch$/);
-  assert.equal(requests[0]!.method, "POST");
-  assert.deepEqual(requests[0]!.body, { launchID: 1000001 });
-});
 
 test("exportToCustomsOffice posts the office, the launchpad, the goods and the confirmation", async () => {
   const { fetch, requests } = recordingFetch(() => json({ ok: true, applied: true, taxRate: 0.05, result: null, notifications: [] }));

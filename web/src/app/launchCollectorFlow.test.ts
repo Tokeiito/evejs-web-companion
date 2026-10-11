@@ -26,12 +26,12 @@ const script: BotScript = {
 const LAUNCH_COLUMNS = [["launchID", 3], ["solarSystemID", 3], ["itemID", 20], ["ownerID", 3], ["planetID", 3], ["status", 17], ["launchTime", 64], ["x", 5], ["y", 5], ["z", 5]];
 const LAUNCH_DESCRIPTOR = { type: "objectex1", header: [{ type: "token", value: "blue.DBRowDescriptor" }, [LAUNCH_COLUMNS]], list: [], dict: [] };
 /** planetMgr.GetMyLaunchesDetails as the server answers it: a CRowset, of one launch in this system or of none. */
-const launchesOf = (listed: boolean): unknown => ({
+const launchesOf = (listed: boolean, x = 1000): unknown => ({
   type: "objectex2",
   header: [[{ type: "token", value: "carbon.common.script.sys.crowset.CRowset" }], { type: "dict", entries: [["header", LAUNCH_DESCRIPTOR]] }],
   list: listed ? [{
     type: "packedrow", header: LAUNCH_DESCRIPTOR, columns: LAUNCH_COLUMNS,
-    values: [LAUNCH, SOLAR_SYSTEM_ID, CONTAINER, 140000005, 40009077, 1, String(BigInt(Date.now()) * 10000n + 116444736000000000n), 1000, 0, 0],
+    values: [LAUNCH, SOLAR_SYSTEM_ID, CONTAINER, 140000005, 40009077, 1, String(BigInt(Date.now()) * 10000n + 116444736000000000n), x, 0, 0],
   }] : [],
   dict: [],
 });
@@ -183,6 +183,60 @@ test("a launch whose goods did not all fit keeps its record: the container is no
     assert.deepEqual(removals, []);
     assert.ok(launchReads >= 1, "the launches were read by the page's own call");
     assert.equal(launchesRoute, 0);
+  } finally {
+    flow.stopCustomBot();
+  }
+});
+
+test("a launch that is not on the grid is warped to by the page's own call: by the launch's own number with nothing else, and never by its route", { timeout: 10_000 }, async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const store = createClientStore();
+  store.apply({ type: "character/online", character: {
+    characterID: 140000005, characterName: "Test", stationID: null,
+    structureID: null, solarSystemID: SOLAR_SYSTEM_ID, corporationID: 98000000,
+  }, station: null });
+  const warps: Record<string, unknown>[] = [];
+  const routes: string[] = [];
+  const flow = createAppFlow(store, { livePush: false, fetch: async (input, init) => {
+    const path = String(input);
+    const body = init?.body ? JSON.parse(String(init.body)) : {};
+    let result: unknown = { ok: true };
+    if (path === "/api/bridge/flight/status") result = flightBody(false);
+    if (path === "/api/bridge/fitting") result = fittingBody();
+    if (path === "/api/names") result = namesBody(body);
+    // The scene has no container in it: the launch is a long way off.
+    if (path === "/api/bridge/script/observation") result = { ok: true, inSpace: [], bay: [], space: {
+      inSpace: true, solarSystemID: SOLAR_SYSTEM_ID, shipID: SHIP_ID, sampledAtMs: Date.now(),
+      ship: { itemID: SHIP_ID, typeID: 17480, radius: 100, position: { x: 0, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 }, mode: "STOP" },
+      entities: [],
+    } };
+    if (path === "/api/bridge/targets") result = { ok: true, targetIDs: [] };
+    if (path === "/api/bridge/ship/ore-hold") result = holdsBody(0, []);
+    if (path.startsWith(`/api/bridge/ship/${SHIP_ID}/bays`)) result = { ok: true, shipID: SHIP_ID, bays: [
+      { key: "cargo", label: "Cargo", present: true, capacity: { capacity: 350, used: 0 }, items: [], error: null },
+      { key: "planetary", label: "Planetary", present: true, capacity: { capacity: 10000, used: 0 }, items: [], error: null },
+    ] };
+    if (path === "/api/bridge/call" && body.service === "planetMgr" && body.method === "GetMyLaunchesDetails") {
+      result = { ok: true, service: "planetMgr", method: "GetMyLaunchesDetails", result: launchesOf(true, 5.0e11), notifications: [] };
+    }
+    // The warp's route, which nothing is to ask.
+    if (path === "/api/bridge/flight/warp-launch") routes.push(path);
+    if (path === "/api/bridge/call" && body.service === "beyonce") {
+      warps.push(body);
+      result = { ok: true, service: "beyonce", method: body.method, result: null, notifications: [] };
+    }
+    return Response.json(result);
+  } });
+  try {
+    await flow.startCustomBot(script);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    for (let tick = 0; tick < 12 && warps.length === 0 && store.customBot.get().status === "running"; tick += 1) {
+      context.mock.timers.tick(2000);
+      for (let turn = 0; turn < 20; turn += 1) await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    // journal.py 453: sm.GetService('michelle').CmdWarpToStuff('launch', launchID), as a pilot's write.
+    assert.deepEqual(warps, [{ service: "beyonce", method: "CmdWarpToStuff", args: ["launch", LAUNCH], kwargs: null, pilot: true, confirm: true }]);
+    assert.deepEqual(routes, []);
   } finally {
     flow.stopCustomBot();
   }

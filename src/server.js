@@ -24,6 +24,7 @@ const { createReplenishment } = require("./replenishment");
 const { createPilotMutationFence } = require("./pilotMutationFence");
 const { createPilotTransport, isGamePortHandle, pilotTransportSetting } = require("./pilotTransport");
 const { createGamePortPilots } = require("./gamePort/pilots");
+const { retailForm } = require("./gamePort/retailCalls");
 const { gameEndpoint } = require("./gamePort/tcp");
 const { attachPilotSocket } = require("./pilotSocket");
 const { createInProcessFetch, hostedBotReach } = require("./inProcessFetch");
@@ -1019,6 +1020,17 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
   if (objectKind !== null && body.pilot !== true) {
     res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: "A call on an object is a pilot's." });
     return;
+  }
+  // A warp of the page's is one the client's menus make: to a thing, a fleet member, a bookmark, a scan result or
+  // a launch, with a range and fleet=False at most. The server's handler takes more of a caller than that (a point
+  // to fly to, a fleet's warp, subjects no menu of the page's has): what is none of a client's is refused here,
+  // on either transport, and nothing is sent.
+  if (body.service === "beyonce" && body.method === "CmdWarpToStuff") {
+    const why = notAClientsWarp(body.args, body.kwargs ?? null);
+    if (why !== null) {
+      res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: `That is no warp the page makes. ${why}` });
+      return;
+    }
   }
   // A call the page makes for a pilot, in place of a route that needed one held (the plan's Phase 6b): with none
   // held it is refused as that route refused, and is not taken for the account's.
@@ -17671,6 +17683,16 @@ async function followCall(held, webSessionID, method, args, kwargs) {
     : HELD_BACK;
   const made = await heldTopLevelCall(held, webSessionID, "beyonce", method, args, kwargs);
   return { ...made, notifications: [...opened.notifications, ...made.notifications] };
+}
+
+/**
+ * Why a warp is none the client's menus make, or null where it is one: by the ledger's own judge of the call
+ * (retailCalls.js, warping), asked with nothing known of the session. Keywords are given by name, or not at all.
+ */
+function notAClientsWarp(args, kwargs) {
+  if (kwargs !== null && (typeof kwargs !== "object" || Array.isArray(kwargs))) return "A warp's keywords are given by name.";
+  const warp = retailForm("beyonce", "CmdWarpToStuff", args, kwargs, {});
+  return warp.status === "differs" ? warp.note : null;
 }
 
 function parkBindSpec(solarSystemID) {

@@ -358,7 +358,7 @@ import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyTo
 import { BOOKMARK_EXPIRY, bookmarkLocation as bookmarkLocationCall } from "../bridge/bookmarkWrites.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
 import { salvageWithDrones, scoopDrones as scoopDronesCall } from "../bridge/boundEntityWrites.ts";
-import { alignTo as alignToCall, approach as approachCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
+import { alignTo as alignToCall, approach as approachCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
 import { boardCorvette as boardCorvetteCall, leaveShip as leaveShipCall } from "../bridge/shipWrites.ts";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
 import { runSlashCommand } from "../bridge/gmWrites.ts";
@@ -4330,6 +4330,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    */
   async function warpToSite(label: string): Promise<void> {
     await warpToScanResultCall(bridgeDo, readFlightNow, sitesLastRead, () => readScanFullState(bridgeAsk), label);
+  }
+
+  /** A bookmark warped to by the page's own call (bridge/movementWrites.ts), for the script bots. */
+  async function warpToSpot(bookmarkID: number): Promise<void> {
+    await warpToBookmarkCall(bridgeDo, readFlightNow, bookmarkID);
+  }
+
+  /** A launch warped to by the page's own call (bridge/movementWrites.ts), by the launch's own number, for the script bots. */
+  async function warpToLaunchPickup(launchID: number): Promise<void> {
+    await warpToLaunchCall(bridgeDo, readFlightNow, launchID);
   }
 
   /**
@@ -13070,10 +13080,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             await warpToSite(action.target);
             return;
           case "warpBookmark":
-            await api.warpToBookmark(action.bookmarkID, 0, callOptions);
+            await warpToSpot(action.bookmarkID);
             return;
           case "warpLaunch":
-            await api.warpToLaunch(action.launchID, callOptions);
+            await warpToLaunchPickup(action.launchID);
             return;
           case "restartExtractor":
             await restartExtractor(action.planetID, action.pinID, action.resourceTypeID, action.headRadius);
