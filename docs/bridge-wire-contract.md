@@ -912,6 +912,23 @@ four reads whatever it is asked, a member's row with `memberID` and several memb
 with `memberIDs`, each settled by itself (`null` and the code in `errors` where one
 fails); a member named who is not of the session's corporation comes back `null`.
 
+**Where a pilot's things are is the page's own read** (`web/src/bridge/assetReads.ts`):
+`charMgr.ListStations` by the generic call as a pilot's read, with nothing sent. It is
+one of the page's calls on an object, of the kind `"assets"`: the pilot's own global
+container, `Moniker('charMgr', (characterID, 10002))`, which the BFF binds for the
+pilot it holds. **The call takes no `of`** (400 `INVALID_REQUEST` with one) and is a
+pilot's (400 without `pilot`). The BFF reads the pilot's flight before it asks, as the
+route does; on the game port that sends nothing. The answer is a rowset whose rows are
+on `list`, each a packed row with `values` (the station, its system, its type, its
+count of items, its upkeep), the same on both transports. The page says a pilot owns
+nothing only of a rowset with no rows, and takes nothing but a rowset for an answer.
+`GET /api/bridge/assets` still stands, and nothing of the page asks it: it answers 200
+with `stations: null` and the code in `error` where the read fails.
+`GET /api/bridge/assets/station` is asked by the page still.
+A call the client makes on an object and that is not among the page's calls on objects
+goes by the generic call to the service by its name: `charMgr.ListStationItems` is
+answered so today, on both transports.
+
 ```jsonc
 {
   "blueprintID": 7100000001,   // the blueprint ITEM id

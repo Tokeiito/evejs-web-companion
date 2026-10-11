@@ -1190,6 +1190,28 @@ Take these defaults, and list each under "For the operator" in the log so they c
   invites, says who is in the fleet every 5 seconds and leaves; `cmb-live.js` and
   `cmb-look.js` read only. The Fleet window's buttons are "Leave fleet" (it asks
   `confirm`), "Accept invitation" and "Decline".
+- **A call the client makes on an object wants a kind in the policy before the page
+  may make it.** Asked by the generic call by name, it goes to the service by name:
+  this server answers, and no client sends it. `PAGE_OBJECT_CALLS`
+  (`bridgeCallPolicy.js`) says what the object is; one the session has only one of
+  takes no `of`, and the BFF binds it for the pilot it holds (`globalAssetsCall`).
+  Put the route on the same function, so that the two cannot part.
+- **Print what the transport sent for one read of the page's.** Read the game port's
+  ledger before the read and three seconds after, and print the pairs that moved
+  (`ast-live.js`, "what the transport sent for it"). It shows a call gone by name
+  that should be on an object, and a read the BFF makes beside the page's.
+- **A route that answers the BFF's static data beside a server's answer is two
+  things.** Move the server's call, and give the static half its own way to the page:
+  a client has it in its own data. Split the unit there.
+- **A test that stands on a route is made to stand on the page's call, with the
+  route's stand-in answering something else** (another station), so that a read by
+  the route shows. Change the stand-in before the tests, and watch each fail on the
+  old sources.
+- **A window that reads as the desktop opens has read before you look.** Use its own
+  Refresh for the read you record. The Personal Assets window's buttons are
+  "Refresh", "See what's here" and "Set destination".
+- **A unit that only reads wants no copy of the store and no restart of EveJS**: the
+  BFFs are restarted on the new code, and the log says nothing was staged.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
