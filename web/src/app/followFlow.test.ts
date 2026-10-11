@@ -135,3 +135,48 @@ test("a follow the call refuses is shown as refused, in the refusal's own words,
   assert.deepEqual(steps().map((each) => each.path), [STATUS, "/api/bridge/call", STATUS]);
   assert.deepEqual(panel(), [null, "Keep at range refused: The pilot has no ballpark to ask: it is not in space.", "WARP"]);
 });
+
+// ── the panel's Orbit ────────────────────────────────────────────────────────
+//
+// beyonce's CmdOrbit with the thing and a range, by the page's own call, and never the route it went by until
+// 2026-10-11.
+
+const orbitOf = (range: number) => ({ service: "beyonce", method: "CmdOrbit", args: [THING, range], kwargs: null, pilot: true, confirm: true });
+
+test("the panel's Orbit is the page's own call, between two readings of the pilot's flight: at the range said, cut to a whole number, and at a thousand metres where none is", async () => {
+  for (const [range, sent] of [[2500, 2500], [undefined, 1000], [null, 1000], [2500.7, 2500], [5, 5]] as const) {
+    const { flow, steps, panel, asked } = harness([flying("STOP"), flying("ORBIT")]);
+
+    await (range === undefined ? flow.orbit(THING) : flow.orbit(THING, range));
+
+    assert.deepEqual(steps(), [{ path: STATUS, body: null }, { path: "/api/bridge/call", body: orbitOf(sent) }, { path: STATUS, body: null }], String(range));
+    assert.deepEqual(panel(), ["Orbit", null, "ORBIT"], String(range));
+    assert.equal(asked.some((each) => each.path === "/api/bridge/flight/orbit"), false, "the route is not asked");
+  }
+});
+
+test("an orbit that cannot be ordered is ordered by no call, and the panel says why", async () => {
+  const cases: readonly [(flow: ReturnType<typeof harness>["flow"]) => Promise<void>, string, boolean][] = [
+    [(flow) => flow.orbit(THING, 2500), "Orbit refused: The ship is not in space; undock first.", true],
+    [(flow) => flow.orbit(SHIP_ID, 2500), "Orbit refused: A ship cannot orbit itself.", false],
+    [(flow) => flow.orbit(0, 2500), "Orbit refused: That target could not be identified.", false],
+    [(flow) => flow.orbit(THING, -5), "Orbit refused: The orbit range must be a distance in metres.", false],
+  ];
+  for (const [order, words, docked] of cases) {
+    const { flow, steps, panel } = harness([docked ? { status: 200, body: flightBody(true) } : flying("STOP")]);
+
+    await order(flow);
+
+    assert.equal(steps().some((each) => each.path === "/api/bridge/call"), false, words);
+    assert.deepEqual(panel(), [null, words, docked ? null : "STOP"], words);
+  }
+});
+
+test("an orbit the server will not take twice in a second is shown as refused, in the page's own words for it", async () => {
+  const { flow, steps, panel } = harness([flying("ORBIT")], "ThrottleGeneric");
+
+  await flow.orbit(THING, 2500);
+
+  assert.deepEqual(steps().map((each) => each.path), [STATUS, "/api/bridge/call", STATUS]);
+  assert.deepEqual(panel(), [null, "Orbit refused: That command came too soon after the last one. Wait a moment and try again.", "ORBIT"]);
+});

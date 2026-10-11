@@ -288,8 +288,16 @@ function isBridgeWritePair(service, method) {
  *   beyonce.CmdSetSpeedFraction  the throttle set. No route asked it for the page: the approach's opened it
  *                                before the autopilot's follow, as the client's autopilot does, and the page
  *                                asks it there itself now. The handler sets the session's own ship's speed.
+ *   beyonce.CmdOrbit             the ship set to orbit a thing at a range. Its route asked no `confirm`. It
+ *                                checked the thing and the range as the follow's routes did, with a thousand
+ *                                metres where no range was said, rounded a range of ten metres or more to a
+ *                                whole number, refused a pilot not in space, and read the pilot's flight
+ *                                after: all of which the page does for itself, cutting the range as the
+ *                                client's int() cuts it. The hold-back and the gateway's throttle are the
+ *                                BFF's still (PAGE_FOLLOW_CALLS). The handler flies the session's own ship,
+ *                                and refuses the same orbit sent again within a second (ThrottleGeneric).
  */
-const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction"]);
+const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit"]);
 const pageWritePairKeySet = new Set(PAGE_WRITE_PAIR_KEYS);
 for (const pair of PAGE_WRITE_PAIR_KEYS) {
   if (!bridgeWritePairKeySet.has(pair)) throw new Error(`${pair} is among the page's writes and is no write.`);
@@ -334,8 +342,9 @@ function swapsThePilotsShip(service, method) {
  * and the page opens its throttle itself, as the client's autopilot does.
  *
  *   beyonce.CmdFollowBall      the approach and keep at range.
+ *   beyonce.CmdOrbit           the orbit. One of nought is an orbit like any other: both are done for it.
  */
-const PAGE_FOLLOW_CALLS = Object.freeze(new Set(["beyonce.CmdFollowBall"]));
+const PAGE_FOLLOW_CALLS = Object.freeze(new Set(["beyonce.CmdFollowBall", "beyonce.CmdOrbit"]));
 for (const pair of PAGE_FOLLOW_CALLS) {
   if (!pageWritePairKeySet.has(pair)) throw new Error(`${pair} is among the page's follows and is none of its writes.`);
 }

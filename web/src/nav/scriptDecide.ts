@@ -83,7 +83,7 @@ export type ScriptAction =
   | { readonly kind: "stopShip" }
   | { readonly kind: "align"; readonly targetID: number }
   | { readonly kind: "orbit"; readonly targetID: number; readonly range: number }
-  /** Hold off a target at a set distance (api.keepAtRange) — "stand off", not "circle". */
+  /** Hold off a target at a set distance (keepAtRange, bridge/movementWrites.ts) — "stand off", not "circle". */
   | { readonly kind: "keepAtRange"; readonly targetID: number; readonly range: number }
   /**
    * SET a fleet target tag (api.setFleetTargetTag; server confirm-gated, but its

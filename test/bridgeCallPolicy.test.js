@@ -94,7 +94,7 @@ test("browser session projection retains only explicit language preferences", ()
 
 test("the writes the page makes itself are writes, each named once, and the first is the pause of training", () => {
   const { BRIDGE_WRITE_PAIR_KEYS, PAGE_WRITE_PAIR_KEYS, isBridgeWritePair, isPageWritePair } = require("../src/bridgeCallPolicy");
-  assert.deepEqual(PAGE_WRITE_PAIR_KEYS, ["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction"]);
+  assert.deepEqual(PAGE_WRITE_PAIR_KEYS, ["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit"]);
   // The repair shop's two repairs go by the server's own name through the gateway, whose list has no other; every
   // other call goes by its own.
   const { gatewaysNameFor } = require("../src/bridgeCallPolicy");
@@ -172,8 +172,9 @@ test("the page's writes that swap the pilot's ship are made under the BFF's watc
   // A follow is made as its routes made it: held back where the ship already flies it, and through the gateway
   // with the throttle opened first. The throttle and the page's other orders to the ship go as they are asked.
   const { PAGE_FOLLOW_CALLS, ordersAFollow } = require("../src/bridgeCallPolicy");
-  assert.deepEqual([...PAGE_FOLLOW_CALLS], ["beyonce.CmdFollowBall"]);
-  assert.deepEqual([ordersAFollow("beyonce", "CmdFollowBall"), ordersAFollow("beyonce", "CmdSetSpeedFraction"), ordersAFollow("beyonce", "CmdAlignTo"), ordersAFollow("beyonce", "CmdOrbit"), ordersAFollow("ship", "CmdFollowBall")], [true, false, false, false, false]);
+  assert.deepEqual([...PAGE_FOLLOW_CALLS], ["beyonce.CmdFollowBall", "beyonce.CmdOrbit"]);
+  assert.deepEqual([ordersAFollow("beyonce", "CmdFollowBall"), ordersAFollow("beyonce", "CmdSetSpeedFraction"), ordersAFollow("beyonce", "CmdAlignTo"), ordersAFollow("beyonce", "CmdOrbit"), ordersAFollow("ship", "CmdFollowBall")], [true, false, false, true, false]);
+  assert.deepEqual([ordersAFollow("beyonce", "CmdStop"), ordersAFollow("ship", "CmdOrbit"), ordersAFollow("beyonce", ["CmdOrbit"])], [false, false, false]);
   assert.deepEqual([ordersAFollow(["beyonce"], "CmdFollowBall"), ordersAFollow("beyonce", ["CmdFollowBall"]), ordersAFollow(null, undefined)], [false, false, false]);
   for (const pair of PAGE_FOLLOW_CALLS) assert.equal(PAGE_WRITE_PAIR_KEYS.includes(pair), true, pair);
   // station.CreateNewbieShip: the pilot in a corvette from then on.

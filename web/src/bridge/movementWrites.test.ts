@@ -1,10 +1,10 @@
 // A ship sent to a point in space by the page itself, held to the ship and the system the point was measured in;
-// a ship aligned to a thing; and a thing approached, or kept at range.
+// a ship aligned to a thing; and a thing approached, kept at range, or orbited.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { alignTo, approach, goToPoint, keepAtRange, APPROACH_RANGE_M, KEEP_AT_RANGE_DEFAULT_M, type FlightNow } from "./movementWrites.ts";
+import { alignTo, approach, goToPoint, keepAtRange, orbit, APPROACH_RANGE_M, KEEP_AT_RANGE_DEFAULT_M, ORBIT_DEFAULT_M, type FlightNow } from "./movementWrites.ts";
 
 const [SHIP, SYSTEM] = [9988400023309, 30000144];
 const POINT = { x: 1000, y: -2500.5, z: 300000000000 };
@@ -240,4 +240,47 @@ test("neither is ordered for what is no thing, for a pilot that is not in space,
     await assert.rejects(order(refused.act, refused.flightNow, 40009089), /The pilot has no ballpark to ask/, order.name);
     assert.deepEqual(refused.did, ["read", "sent"], order.name);
   }
+});
+
+// ── a thing orbited ──────────────────────────────────────────────────────────
+
+test("an orbit is one call, the thing and a range: a thousand metres where none is said, cut to a whole number from ten metres and left as it is under that", async () => {
+  for (const [range, sent] of [[2500, 2500], [null, 1000], [undefined, 1000], [2500.7, 2500], [10.9, 10], [10, 10], [9.99, 9.99], [5, 5], [2.5, 2.5], [0, 0], [1_000_000, 1_000_000]] as const) {
+    const { did, asked, act, flightNow } = harness();
+    await (range === undefined ? orbit(act, flightNow, 40009089) : orbit(act, flightNow, 40009089, range));
+    // movementFunctions.py 243 and 260: float(range) under ten, int(range) from there; then bp.CmdOrbit(targetID, range).
+    assert.deepEqual(asked, [["beyonce", "CmdOrbit", [40009089, sent], null]], String(range));
+    assert.deepEqual(did, ["read", "sent"], String(range));
+  }
+  assert.equal(ORBIT_DEFAULT_M, 1000);
+});
+
+test("no orbit is ordered at what is no distance, of what is no thing, for a pilot that is not in space, or of the pilot's own ship", async () => {
+  for (const range of [-1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 1_000_001]) {
+    const { did, act, flightNow } = harness();
+    await assert.rejects(orbit(act, flightNow, 40009089, range), /^Error: The orbit range must be a distance in metres\.$/, String(range));
+    assert.deepEqual(did, [], String(range));
+  }
+  for (const thing of [0, -40009089, 1.5, Number.NaN, 2 ** 53]) {
+    const { did, act, flightNow } = harness();
+    await assert.rejects(orbit(act, flightNow, thing), /^Error: That target could not be identified\.$/, String(thing));
+    assert.deepEqual(did, [], String(thing));
+  }
+  const docked = harness({ ...HERE, inSpace: false });
+  await assert.rejects(orbit(docked.act, docked.flightNow, 40009089), /^Error: The ship is not in space; undock first\.$/);
+  assert.deepEqual(docked.did, ["read"]);
+  // movementFunctions._IsInvalidMovementTarget: itemID == session.shipid, and the client sends nothing.
+  const own = harness();
+  await assert.rejects(orbit(own.act, own.flightNow, SHIP), /^Error: A ship cannot orbit itself\.$/);
+  assert.deepEqual(own.did, ["read"]);
+  const unknown = harness({ ...HERE, shipID: null });
+  await orbit(unknown.act, unknown.flightNow, SHIP);
+  assert.deepEqual(unknown.asked, [["beyonce", "CmdOrbit", [SHIP, 1000], null]]);
+  // A flight that cannot be read orders nothing; and the call's refusal is the caller's, as it came.
+  const unread = harness(new Error("the session was lost"));
+  await assert.rejects(orbit(unread.act, unread.flightNow, 40009089), /the session was lost/);
+  assert.deepEqual(unread.did, ["read"]);
+  const refused = harness(HERE, new Error("ThrottleGeneric"));
+  await assert.rejects(orbit(refused.act, refused.flightNow, 40009089), /ThrottleGeneric/);
+  assert.deepEqual(refused.did, ["read", "sent"]);
 });

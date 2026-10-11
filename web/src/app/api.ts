@@ -2608,16 +2608,6 @@ export async function warpToFleetMember(
   return readFlightStep(await postJson("/api/bridge/flight/warp-member", body, options));
 }
 
-/** Circle a target at a set distance (beyonce.CmdOrbit). Default 1000 m. */
-export async function orbit(
-  targetID: number,
-  range: number | null = null,
-  options: ApiOptions = {},
-): Promise<FlightStepResult> {
-  const body = range === null ? { targetID } : { targetID, range };
-  return readFlightStep(await postJson("/api/bridge/flight/orbit", body, options));
-}
-
 /** Cut the engines (beyonce.CmdStop). */
 export async function stopShip(options: ApiOptions = {}): Promise<FlightStepResult> {
   return readFlightStep(await postJson("/api/bridge/flight/stop", {}, options));

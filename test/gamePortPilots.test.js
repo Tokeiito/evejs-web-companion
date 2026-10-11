@@ -8169,3 +8169,77 @@ test("a follow by name is the pilot's last order, its range of nought read out o
   assert.equal(already("CmdFollowBall", 9001, 0), false);
   assert.deepEqual(hand.errors, []);
 });
+
+// ── an orbit ─────────────────────────────────────────────────────────────────
+//
+// movementFunctions.Orbit (243) and _Ship_Orbit (260): the range is float(range) under ten metres and int(range)
+// from there, and then bp.CmdOrbit(targetID, range). Tranquility's 79 recordings are all of whole numbers (1000,
+// 5000, 7500, 10000): none is of an orbit under ten metres.
+
+test("an orbit asked of beyonce by name goes on the ballpark's own object: a range under ten metres as a float, a larger one whole, as the client makes them; docked, nothing is sent", async () => {
+  const hand = handTicked();
+  const allowed = new Set(["beyonce.MachoBindObject", "beyonce.CmdOrbit"]);
+  const built = build(IN_SPACE, { ...hand.options, allowed });
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const { session } = built;
+  const real = (value) => ({ type: "real", value });
+  const rows = () => built.pilots.callLedger().find((each) => each.pair === "beyonce.CmdOrbit")?.statuses;
+  const ask = (args, kwargs = null) => built.pilots.callMethod("beyonce", "CmdOrbit", args, kwargs, WHOSE, handle);
+  // A whole range of ten metres or more: as it stands.
+  for (const range of [1000, 5000, 10]) {
+    const sent = await ask([9001, range]);
+    assert.deepEqual([sent.service, sent.method, sent.result], ["beyonce", "CmdOrbit", null]);
+    assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:1", method: "CmdOrbit", args: [9001, range], kwargs: null }, String(range));
+  }
+  assert.deepEqual(rows(), { same: 3 });
+  // Under ten metres: a float, whole or not.
+  for (const range of [5, 0, 9]) {
+    await ask([9001, range]);
+    assert.deepEqual(session.boundCalls.at(-1).args, [9001, real(range)], String(range));
+  }
+  await ask([9001, 2.5]);
+  assert.deepEqual(session.boundCalls.at(-1).args, [9001, real(2.5)]);
+  assert.deepEqual(rows(), { same: 4, reshaped: 3 });
+  // Ten metres or more and not whole: the client's int() of it.
+  await ask([9001, 2500.7]);
+  assert.deepEqual(session.boundCalls.at(-1).args, [9001, 2500]);
+  assert.deepEqual(rows(), { same: 4, reshaped: 4 });
+  assert.equal(session.calls.some((call) => call.service === "beyonce" && call.method === "CmdOrbit"), false, "nothing was asked of the service by name");
+  // What is not the client's goes as it came, and is counted so.
+  for (const [args, kwargs] of [[[9001], null], [[9001, "1000"], null], [[9001, 1000], { why: 1 }]]) {
+    await ask(args, kwargs);
+    assert.deepEqual([session.boundCalls.at(-1).args, session.boundCalls.at(-1).kwargs], [args, kwargs], JSON.stringify(args));
+  }
+  assert.deepEqual(rows(), { same: 4, reshaped: 4, differs: 3 });
+  assert.deepEqual(hand.errors, []);
+
+  // Docked, there is no park: asked all the same, it is refused here, not sent, and not counted.
+  const docked = await selected({}, { allowed });
+  const sentBefore = docked.session.sent.length;
+  await assert.rejects(docked.pilots.callMethod("beyonce", "CmdOrbit", [9001, 1000], null, WHOSE, docked.handle), (error) => error.code === "CALL_REFUSED" && /in space/.test(error.message));
+  assert.equal(docked.session.sent.length, sentBefore, "nothing was sent");
+  assert.equal(docked.pilots.callLedger().some((each) => each.pair === "beyonce.CmdOrbit"), false, "and what was not sent is not counted");
+});
+
+test("an orbit by name is the pilot's last order, a range under ten metres read out of the float it goes as", async () => {
+  const hand = handTicked();
+  const built = build(IN_SPACE, { ...hand.options, allowed: new Set(["beyonce.MachoBindObject", "beyonce.CmdOrbit", "beyonce.CmdStop"]) });
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const already = (...order) => built.pilots.alreadyFollowing(handle, WHOSE, ...order);
+  const ask = (args) => built.pilots.callMethod("beyonce", "CmdOrbit", args, null, WHOSE, handle);
+  for (const update of recordedUpdates.slice(0, 5)) built.session.notify("DoDestinyUpdate", update.args);
+  hand.parks[0].tick();
+  const park = hand.parks[0].space.park;
+  const ship = park.ballpark.ball(park.ego);
+  const orbiting = (followRange) => Object.assign(ship, { mode: BALL_MODES.ORBIT, followId: 9001, followRange: Math.fround(followRange) });
+  const parkHandle = (await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle)).boundHandle;
+  orbiting(1000);
+  await built.pilots.callBoundMethod("beyonce", "CmdStop", [], null, WHOSE, handle, parkHandle);
+  assert.equal(already("CmdOrbit", 9001, 1000), false, "a stop was sent since");
+  await ask([9001, 1000]);
+  assert.deepEqual([already("CmdOrbit", 9001, 1000), already("CmdOrbit", 9001, 5), already("CmdFollowBall", 9001, 1000)], [true, false, false]);
+  orbiting(5);
+  await ask([9001, 5]);
+  assert.deepEqual([already("CmdOrbit", 9001, 5), already("CmdOrbit", 9001, 1000)], [true, false]);
+  assert.deepEqual(hand.errors, []);
+});

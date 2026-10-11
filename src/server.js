@@ -17506,17 +17506,17 @@ function alreadyFlying(held, method, targetID, range) {
 const HELD_BACK = Object.freeze({ result: null, notifications: Object.freeze([]) });
 
 /**
- * A follow the page asks for its pilot (bridgeCallPolicy.js, PAGE_FOLLOW_CALLS), made as the approach's and the
- * keep at range's routes make it: not sent where the ship already flies it, which only a game-port pilot's own
- * ballpark can say; and through the gateway with the throttle opened first. Answered as the follow, with what
- * came of both.
+ * A follow or an orbit the page asks for its pilot (bridgeCallPolicy.js, PAGE_FOLLOW_CALLS), made as the
+ * approach's, the keep at range's and the orbit's routes make them: not sent where the ship already flies it,
+ * which only a game-port pilot's own ballpark can say; and through the gateway with the throttle opened first.
+ * Answered as the call that was asked, with what came of both.
  *
  * The follow with no range is the autopilot's. It is sent whatever the ship is doing, and its throttle is the
  * page's to open, as the client's autopilot opens its own: nothing is added to it here.
  */
 async function followCall(held, webSessionID, method, args, kwargs) {
   const [targetID, range] = args;
-  if (range === 0) return heldTopLevelCall(held, webSessionID, "beyonce", method, args, kwargs);
+  if (method === "CmdFollowBall" && range === 0) return heldTopLevelCall(held, webSessionID, "beyonce", method, args, kwargs);
   if (alreadyFlying(held, method, targetID, range)) return HELD_BACK;
   const opened = throttleOpenedFirst(held, false)
     ? await heldTopLevelCall(held, webSessionID, "beyonce", "CmdSetSpeedFraction", [1.0], null)

@@ -71,6 +71,20 @@
 //
 // What the routes did until 2026-10-11 the page does: a default range, keep at range's floor, a range that is a
 // distance of a million metres at most, and the refusal of a pilot that is not in space.
+//
+// SET TO ORBIT A THING. movementFunctions.Orbit (243) and _Ship_Orbit (260), the only place the client makes the
+// call:
+//
+//   bp.CmdOrbit(targetID, followRange)
+//
+// The range is made float(range) under ten metres and int(range) from there, before the call. Nothing is sent
+// for the pilot's own ship, nor where the ship already orbits that thing at that range. It answers nothing.
+// Tranquility's 79 recordings are of whole numbers (1000, 5000, 7500, 10000), none under ten metres. The server
+// flies the session's own ship, and refuses the same orbit sent again within a second (ThrottleGeneric).
+//
+// The hold-back and the gateway's throttle are the BFF's here too (followCall), for an orbit of nought as for
+// any other. The route rounded a range of ten metres or more to the nearest whole number; the page cuts it, as
+// int() does.
 
 import type { Ask } from "./ask.ts";
 
@@ -100,6 +114,8 @@ const isAnID = (id: number): boolean => Number.isSafeInteger(id) && id > 0;
 export const APPROACH_RANGE_M = 50;
 /** The range a thing is kept at where none is said, in metres. */
 export const KEEP_AT_RANGE_DEFAULT_M = 1000;
+/** The range a thing is orbited at where none is said, in metres. */
+export const ORBIT_DEFAULT_M = 1000;
 /** The farthest a follow's range goes, in metres. */
 const MAX_FOLLOW_RANGE_M = 1_000_000;
 /** Whether this is a distance a follow can be told: a number of metres, not below nought and not beyond the farthest. */
@@ -189,4 +205,18 @@ export async function keepAtRange(act: Ask, flightNow: () => Promise<FlightNow>,
   }
   await aThingToOrderAbout(flightNow, targetID, "A ship cannot keep at range of itself.");
   await act("beyonce", "CmdFollowBall", [targetID, Math.max(APPROACH_RANGE_M, held)]);
+}
+
+/**
+ * Has the pilot's ship orbit a thing at `range` metres: a thousand where none is said. From ten metres the range
+ * goes as a whole number, cut as the client cuts it; under that it goes as it is. Fails as the call fails, and
+ * before it where the range is no distance or the client sends nothing.
+ */
+export async function orbit(act: Ask, flightNow: () => Promise<FlightNow>, targetID: number, range: number | null = null): Promise<void> {
+  const around = range ?? ORBIT_DEFAULT_M;
+  if (!isARange(around)) {
+    throw new Error("The orbit range must be a distance in metres.");
+  }
+  await aThingToOrderAbout(flightNow, targetID, "A ship cannot orbit itself.");
+  await act("beyonce", "CmdOrbit", [targetID, around < 10 ? around : Math.trunc(around)]);
 }

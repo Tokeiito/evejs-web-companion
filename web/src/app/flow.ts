@@ -349,7 +349,7 @@ import { decodeAvailableFleetAds, decodeMyFleetFinderAdvert } from "../bridge/fl
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { salvageWithDrones } from "../bridge/boundEntityWrites.ts";
-import { alignTo as alignToCall, approach as approachCall, goToPoint, keepAtRange as keepAtRangeCall, type FlightNow } from "../bridge/movementWrites.ts";
+import { alignTo as alignToCall, approach as approachCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, type FlightNow } from "../bridge/movementWrites.ts";
 import { boardCorvette as boardCorvetteCall, leaveShip as leaveShipCall } from "../bridge/shipWrites.ts";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
 import { runSlashCommand } from "../bridge/gmWrites.ts";
@@ -4177,6 +4177,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   /** A thing kept at range by the page's own call (bridge/movementWrites.ts), for the bots. */
   async function keepShipAtRange(targetID: number, range: number | null): Promise<void> {
     await keepAtRangeCall(bridgeDo, readFlightNow, targetID, range);
+  }
+
+  /** A thing orbited by the page's own call (bridge/movementWrites.ts), for the script bots. */
+  async function orbitShip(targetID: number, range: number | null): Promise<void> {
+    await orbitCall(bridgeDo, readFlightNow, targetID, range);
   }
 
   /**
@@ -12438,7 +12443,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             await alignShip(action.targetID);
             return;
           case "orbit":
-            await api.orbit(action.targetID, action.range, callOptions);
+            await orbitShip(action.targetID, action.range);
             return;
           case "keepAtRange":
             await keepShipAtRange(action.targetID, action.range);
@@ -14349,7 +14354,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async orbit(targetID, range = null) {
-      await runFlightStep("Orbit", () => api.orbit(targetID, range, callOptions));
+      await runFlightStep("Orbit", () => orderedStep((flightNow) => orbitCall(bridgeDo, flightNow, targetID, range)));
     },
 
     async alignTo(targetID) {

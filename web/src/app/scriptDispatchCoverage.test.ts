@@ -76,3 +76,16 @@ test("an approach and a keep at range are carried out by the page's own calls wh
   const api = readFileSync(fileURLToPath(new URL("./api.ts", import.meta.url)), "utf8");
   assert.deepEqual([api.includes("/api/bridge/flight/approach"), api.includes("/api/bridge/flight/keep-at-range")], [false, false]);
 });
+
+test("an orbit is carried out by the page's own call where the page carries a script bot's actions out", () => {
+  const flow = readFileSync(fileURLToPath(new URL("./flow.ts", import.meta.url)), "utf8");
+  const times = (text: string) => flow.split(text).length - 1;
+  assert.equal([...flow.matchAll(/case "orbit":/g)].length, 1);
+  assert.equal([...flow.matchAll(/case "orbit":\s+await orbitShip\(action\.targetID, action\.range\);\s+return;/g)].length, 1);
+  // The page's own write (bridgeDo), with the pilot's flight read before it.
+  assert.equal(times("await orbitCall(bridgeDo, readFlightNow, targetID, range);"), 1);
+  // The route's asker is gone from the flow, and from the page's askers.
+  assert.equal(flow.includes("api.orbit("), false);
+  const api = readFileSync(fileURLToPath(new URL("./api.ts", import.meta.url)), "utf8");
+  assert.equal(api.includes("/api/bridge/flight/orbit"), false);
+});

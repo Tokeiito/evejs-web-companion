@@ -6603,7 +6603,7 @@ const orbitFleetMate: MacroDecider = (step, obs, mem) => {
 };
 
 // ── follow-fleet-mate ─────────────────────────────────────────────────────────
-// orbit-fleet-mate's stand-off twin: `api.keepAtRange` (CmdFollowBall with a
+// orbit-fleet-mate's stand-off twin: `keepAtRange` in bridge/movementWrites.ts (CmdFollowBall with a
 // non-zero range) instead of `orbit` (CmdOrbit) — holds station off the named
 // mate rather than circling them. The difference matters to a ship that should
 // not be turning through the mate's own firing arc (a hauler staying with a

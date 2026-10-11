@@ -2259,3 +2259,43 @@ test("a follow is the client's with a thing that is not the pilot's own ship and
     assert.match(refused.note, /a fraction/, why);
   }
 });
+
+test("an orbit is the client's with a thing that is not the pilot's own ship and a range: a float under ten metres, and a whole number from there", () => {
+  const real = (value) => ({ type: "real", value });
+  const flying = { shipID: 5000 };
+  const orbit = (args, kwargs = null, context = flying) => retailForm("beyonce", "CmdOrbit", args, kwargs, context);
+  // movementFunctions.py 243: followRange = float(followRange) if followRange < 10.0 else int(followRange).
+  for (const range of [10, 500, 1000, 5000, 7500, 10000]) {
+    const made = orbit([9001, range]);
+    assert.deepEqual([made.status, made.source, made.args, made.kwargs, made.moniker, made.proxy], ["same", "eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:260", [9001, range], null, false, false], String(range));
+  }
+  // Under ten metres a whole number is made the float; one that is no whole number is a float already.
+  for (const range of [0, 1, 5, 9]) assert.deepEqual([orbit([9001, range]).status, orbit([9001, range]).args], ["reshaped", [9001, real(range)]], String(range));
+  for (const range of [2.5, 9.99]) assert.deepEqual([orbit([9001, range]).status, orbit([9001, range]).args], ["same", [9001, real(range)]], String(range));
+  // From ten metres a range that is no whole number is cut to one, as int() cuts it.
+  for (const [range, cut] of [[2500.7, 2500], [10.5, 10], [1000.999, 1000]]) assert.deepEqual([orbit([9001, range]).status, orbit([9001, range]).args], ["reshaped", [9001, cut]], String(range));
+  for (const [args, kwargs, why, note] of [
+    [[], null, "nothing", /a thing and a range/],
+    [[9001], null, "no range", /a thing and a range/],
+    [[9001, 1000, 1], null, "a third argument", /a thing and a range/],
+    [[9001, 1000], { range: 1000 }, "a keyword", /a thing and a range/],
+    [[0, 1000], null, "no thing", /a thing and a range/],
+    [[-9001, 1000], null, "a thing below nought", /a thing and a range/],
+    [["9001", 1000], null, "a thing as text", /a thing and a range/],
+    [[9001.5, 1000], null, "half a thing", /a thing and a range/],
+    [[2 ** 53, 1000], null, "a thing too large to be held exactly", /a thing and a range/],
+    [[9001, "1000"], null, "a range as text", /a thing and a range/],
+    [[9001, -1], null, "a range below nought", /a thing and a range/],
+    [[9001, Number.NaN], null, "a range that is no number", /a thing and a range/],
+    [[9001, Number.POSITIVE_INFINITY], null, "a range without end", /a thing and a range/],
+    [[9001, null], null, "no range said", /a thing and a range/],
+    [[5000, 1000], null, "the pilot's own ship", /own ship/],
+    [[5000, 5], null, "the pilot's own ship, close", /own ship/],
+  ]) {
+    const refused = orbit(args, kwargs);
+    assert.deepEqual([refused.status, refused.args, refused.kwargs], ["differs", args, kwargs], why);
+    assert.match(refused.note, note, why);
+  }
+  // Where the session's ship is not known (through the web gateway), it is not held against the call.
+  for (const context of [{}, { shipID: null }, { shipID: undefined }]) assert.equal(orbit([5000, 1000], null, context).status, "same");
+});

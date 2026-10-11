@@ -882,7 +882,7 @@ export type MacroID =
   // no rep logic of its own.
   | "orbit-fleet-mate"
   // orbit-fleet-mate's stand-off twin: holds a set distance off the named
-  // fleet-mate (api.keepAtRange) instead of circling them — the escort a ship
+  // fleet-mate (keepAtRange, bridge/movementWrites.ts) instead of circling them — the escort a ship
   // wants when it should NOT be turning through the mate's own firing arc.
   | "follow-fleet-mate"
   // Set a fleet target tag on the top-priority hostile — a SINGLE-LETTER,

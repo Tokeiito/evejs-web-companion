@@ -3872,6 +3872,11 @@ test("on the game port a follow the ship already flies is held back, and answere
     const sent = await byThePage("CmdFollowBall", [FOLLOWED, range], { alreadySo: () => false });
     assert.deepEqual([sent.sent, sent.wondered.length], [[["beyonce", "CmdFollowBall", [FOLLOWED, range], null]], 1], String(range));
   }
+  // Only nought is the autopilot's: a follow of a single metre is looked at, and held back, as any other; and
+  // through the gateway its throttle is opened for it.
+  const nearly = await byThePage("CmdFollowBall", [FOLLOWED, 1], { alreadySo: () => true });
+  assert.deepEqual([nearly.sent, nearly.wondered], [[], [{ sessionFields: WHOSE_PILOT, order: ["CmdFollowBall", FOLLOWED, 1] }]]);
+  assert.deepEqual((await byThePage("CmdFollowBall", [FOLLOWED, 1], { transport: "gateway" })).sent, [THROTTLE_BY_NAME, ["beyonce", "CmdFollowBall", [FOLLOWED, 1], null]]);
   // The autopilot's approach is sent whatever the ship is doing: the client's autopilot does not look.
   const autopilots = await byThePage("CmdFollowBall", [FOLLOWED, 0], { alreadySo: () => true });
   assert.deepEqual([autopilots.sent, autopilots.wondered], [[["beyonce", "CmdFollowBall", [FOLLOWED, 0], null]], []]);
@@ -3883,4 +3888,44 @@ test("on the game port a follow the ship already flies is held back, and answere
 test("through the gateway a follow asked by the page is sent whether the ship flies it already or not, as its routes sent it", async () => {
   const sent = await byThePage("CmdFollowBall", [FOLLOWED, 50], { transport: "gateway", alreadySo: () => true });
   assert.deepEqual([sent.status, sent.sent, sent.wondered], [200, [THROTTLE_BY_NAME, ["beyonce", "CmdFollowBall", [FOLLOWED, 50], null]], []]);
+});
+
+// ── an orbit asked by the page itself ────────────────────────────────────────
+//
+// movementFunctions._Ship_Orbit (260): bp.CmdOrbit(targetID, range), and nothing where the ship already orbits
+// that thing at that range. The page asks the call of beyonce by name; the BFF holds it back or opens the
+// gateway's throttle before it, as the orbit's route did. An orbit of nought is an orbit like any other: only the
+// follow with no range is the autopilot's.
+
+test("an orbit is a write of the page's own: said to be a pilot's and meant, and on no object the page names", async () => {
+  for (const more of [{}, { pilot: true }, { confirm: true }]) {
+    const refused = await byThePage("CmdOrbit", [FOLLOWED, 2500], { more });
+    assert.deepEqual([refused.status, refused.payload.error, refused.sent], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE", []], JSON.stringify(more));
+  }
+  const named = await byThePage("CmdOrbit", [FOLLOWED, 2500], { more: { pilot: true, confirm: true, of: PILOTS_SYSTEM } });
+  assert.deepEqual([named.status, named.payload.error, named.sent], [400, "INVALID_REQUEST", []]);
+});
+
+test("on the game port an orbit asked by the page goes alone, as the client's menu sends it; through the gateway the throttle is opened first, as its route did", async () => {
+  for (const range of [2500, 5, 0]) {
+    const alone = await byThePage("CmdOrbit", [FOLLOWED, range]);
+    assert.deepEqual([alone.status, alone.payload.ok, alone.payload.service, alone.payload.method, alone.payload.result, alone.payload.notifications, alone.sent],
+      [200, true, "beyonce", "CmdOrbit", null, ["after CmdOrbit"], [["beyonce", "CmdOrbit", [FOLLOWED, range], null]]], String(range));
+    const opened = await byThePage("CmdOrbit", [FOLLOWED, range], { transport: "gateway" });
+    assert.deepEqual([opened.status, opened.payload.service, opened.payload.method, opened.payload.notifications, opened.sent],
+      [200, "beyonce", "CmdOrbit", ["after CmdSetSpeedFraction", "after CmdOrbit"], [THROTTLE_BY_NAME, ["beyonce", "CmdOrbit", [FOLLOWED, range], null]]], String(range));
+  }
+});
+
+test("on the game port an orbit the ship already flies is held back, one of nought as any other, and answered as the call that was asked; through the gateway it is sent", async () => {
+  const WHOSE_PILOT = { userid: 4 };
+  for (const range of [2500, 5, 0]) {
+    const held = await byThePage("CmdOrbit", [FOLLOWED, range], { alreadySo: () => true });
+    assert.deepEqual([held.status, held.sent, held.wondered], [200, [], [{ sessionFields: WHOSE_PILOT, order: ["CmdOrbit", FOLLOWED, range] }]], String(range));
+    assert.deepEqual([held.payload.ok, held.payload.service, held.payload.method, held.payload.result, held.payload.notifications], [true, "beyonce", "CmdOrbit", null, []], String(range));
+    const sent = await byThePage("CmdOrbit", [FOLLOWED, range], { alreadySo: () => false });
+    assert.deepEqual([sent.sent, sent.wondered.length], [[["beyonce", "CmdOrbit", [FOLLOWED, range], null]], 1], String(range));
+    const through = await byThePage("CmdOrbit", [FOLLOWED, range], { transport: "gateway", alreadySo: () => true });
+    assert.deepEqual([through.status, through.sent, through.wondered], [200, [THROTTLE_BY_NAME, ["beyonce", "CmdOrbit", [FOLLOWED, range], null]], []], String(range));
+  }
 });
