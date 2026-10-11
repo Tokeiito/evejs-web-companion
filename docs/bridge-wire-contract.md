@@ -2383,6 +2383,27 @@ Request body: `{ "service", "method", "args"?, "kwargs"?, "session"?, "pilot"?, 
 
 Success response: `{ "ok": true, "service", "method", "result", "notifications", "serverNowMs"? }` (the gateway envelope minus `source`/`apiVersion`; `serverNowMs` only where a pilot is held: on the game port the pilot's session clock, through the gateway the BFF's own). Gateway errors pass through with their status and `error` code (`CALL_NOT_ALLOWED` → 403, `CALL_REFUSED` → 409, etc.); transport failures surface as `EVE_GATEWAY_UNREACHABLE`/`EVE_GATEWAY_TIMEOUT` (502).
 
+**A write by this call is a write to every gate that tells one by its path.** The
+call is a read only where it names one. Where it names a write (the policy's own
+list, `src/bridgeCallPolicy.js`):
+
+- it is refused with `409 SESSION_CHANGE_IN_PROGRESS` while a session's change is not
+  ready, as a write's route is;
+- on a hosted pilot's session it is refused with `409 HOSTED_GENERATION_CHANGED`
+  unless it carries that generation's claim: an attached cockpit reads by the call,
+  and does not write by it;
+- where it is on `beyonce` and is not `CmdStop`, it is refused with
+  `409 DRONE_RECOVERY_PENDING` while the pilot's check for lost drones is unresolved
+  (`POST /api/bridge/drone-recovery/ready` resolves it), as the flight routes are, a
+  hosted bot's own claim excepted. This is asked before the call's arguments are
+  looked at;
+- a hosted bot's own fetch takes it for a write: while the bot's session recovers it
+  is not sent (`HOSTED_RECOVERY_PENDING`, raised in the bot's own process), but for
+  `beyonce.CmdStop` and the one `fleetObjectHandler.AcceptInvite` the recovery
+  expects (`of` the fleet invited to); and one answered `SESSION_NOT_FOUND` or
+  `NO_LIVE_SESSION` is kept as a write whose outcome is unresolved. A call whose body
+  cannot be read is taken for a write there.
+
 ### Persistent-session routes (R2)
 
 - `POST /api/bridge/select` with `{ "characterID" }`: validates ownership against the logged-in account, releases any previously held bridge session (character switch), then forwards the retail tuple `[characterID, null, true]` to the gateway's `session/select` with the pinned `userid`. The returned `bridgeSessionID` is stored **server-side only** (keyed by the signed web session); the browser gets `{ "ok": true, "character": {characterID, characterName, stationID, structureID, solarSystemID, corporationID}, "station": <client-local static identity or null>, "notifications": [...] }`. `station` is read-only static reference data (name/system/region/type/operation/security) — the same client-local resolution retail does from its static DB. Handler refusals pass through as `CALL_REFUSED` with the handler's message.
@@ -2447,8 +2468,9 @@ repeat the write until the character is reselected.
 
 While a transition is requested/accepted/session-changing (or has failed with
 an uncertain outcome), the BFF refuses every other bridge POST action with
-`SESSION_CHANGE_IN_PROGRESS`. GET reads, the policy-read-only generic call,
-release, and character reselection remain available. This is a conservative
+`SESSION_CHANGE_IN_PROGRESS`. GET reads, a read by the generic call,
+release, and character reselection remain available; a write by the generic
+call is refused as a write's route is. This is a conservative
 route-wide guard, including ordinary warp/module/inventory endpoints that do
 not themselves create a session change.
 

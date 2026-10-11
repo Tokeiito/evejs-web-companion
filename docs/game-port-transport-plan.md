@@ -922,8 +922,10 @@ server's own rule (measured on both transports; left for the operator). A bot's 
 approach is the menu's now, a follow at fifty metres with no throttle (`cd6306c6`). A
 thing the sensor suite has a bracket for was read to its end, with nothing to build. The
 bridge's routes were counted off the app's own table, and none taken away: 483, of which the
-page names 95, tests alone 217 and nothing at all 149. A hosted bot's guard of its recovery
-takes a write by the generic call for no write, and is next. In `eve.js` an advert's text outside ASCII goes as
+page names 95, tests alone 217 and nothing at all 149. A write by the generic call is a
+write to every gate of the BFF's that tells one by its path now (`15d2bbb9`): a hosted bot's own
+fetch while its session recovers, a session's change, a hosted generation, and the flight routes'
+gate while lost drones are looked for. The audit's own list of routes, read off the app, is next. In `eve.js` an advert's text outside ASCII goes as
 unicode (`dcd459b0d`; on its origin since 2026-10-11, pushed by another hand than this loop's), and a dock
 asked from out of range of a station is finished by the server, as Tranquility finishes
 it (`869b28d2b`, not pushed), and a pilot's client is sent no greatest speed for its ship

@@ -1510,6 +1510,20 @@ Take these defaults, and list each under "For the operator" in the log so they c
   route can be registered by a list of paths, by a helper or from another file. And a
   `${…}` in a path named is a route's parameter: `chat/${channel}` is not
   `chat/send-message`.
+- **Where one gate tells a write by its path, look for the others.** The bot host's
+  guard was one of five: the BFF's gate of a session's change and of a hosted
+  generation took `/api/bridge/call` for a read too, and the flight routes' gate
+  stood on those routes' own path. Search every source of the BFF for the call's
+  path as text, and for `req.path`, `url.pathname` and each `app.use(` with a
+  path, before a unit about one of them is sized.
+- **A test that chooses a pilot chooses it as the page does.** Seven tests of the
+  page's orders left the check for lost drones unresolved after `select`, which the
+  page never does, and passed only while a gate was open. Use the file's own helper
+  that resolves it (`acknowledgeRecovery`, `selectOnServer`).
+- **A test that holds a request open lets it go whatever it finds.** An assertion
+  that fails before a held jump or a held recovery is released leaves the run
+  waiting: a minute for a server that cannot close, three for a recovery's own
+  watch. Release in a `finally`.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
