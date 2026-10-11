@@ -4302,9 +4302,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const readFlightNow = async (): Promise<FlightNow> => decodeFlightStatus((await api.getFlightStatus(callOptions)).flight);
 
   /**
-   * The ship sent to a thing by the page's own call (bridge/movementWrites.ts), for the autopilots and the bots:
-   * to stop `range` metres short, at the client's own fifty where none is said, and as the autopilot's approach
-   * (the throttle opened, then a follow with no range) where it is nought.
+   * The ship sent to a thing by the page's own call (bridge/movementWrites.ts), for the travel loop and the bots:
+   * to stop `range` metres short, at the client's own fifty where none is said (the menu's approach, which is
+   * what a bot's is), and as the autopilot's approach (the throttle opened, then a follow with no range) where
+   * it is nought (the travel autopilot's alone).
    */
   async function approachShip(targetID: number, range: number | null): Promise<void> {
     await approachCall(bridgeDo, readFlightNow, targetID, range);
@@ -8752,8 +8753,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       warp: async (destinationID) => {
         await warpToThing(destinationID, MENU_WARP_RANGE_M);
       },
+      // The mining bot's own approach is the menu's too (`ShipApproach`: a
+      // follow at the client's fifty metres, and no throttle), not the
+      // autopilot's. Tranquility has 88 such follows recorded and two of the
+      // autopilot's.
       approach: async (destinationID) => {
-        await approachShip(destinationID, 0);
+        await approachShip(destinationID, null);
       },
       dock: async (stationID) => {
         await api.dock(stationID, callOptions);
@@ -12744,7 +12749,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             await warpToThing(action.targetID, MENU_WARP_RANGE_M);
             return;
           case "approach":
-            await approachShip(action.targetID, 0);
+            // A bot's approach is a pilot's own: the menu's, at the client's fifty.
+            await approachShip(action.targetID, null);
             return;
           case "gotoPoint":
             await flyToPoint(action.position, action.shipID, action.solarSystemID);

@@ -113,9 +113,12 @@ test("an approach and a keep at range are carried out by the page's own calls wh
   const times = (text: string) => flow.split(text).length - 1;
   // The fleet companion's approach: where to stop, or the client's own fifty metres where none is said.
   assert.equal(times("await approachShip(action.targetID, action.range ?? null);"), 1);
-  // A script bot's and the mining bot's: the autopilot's approach, with no range and the throttle opened first.
-  assert.equal(times("await approachShip(action.targetID, 0);"), 1);
-  assert.equal(times("await approachShip(destinationID, 0);"), 1);
+  // A script bot's and the mining bot's: the menu's approach, at the client's own fifty with no throttle.
+  assert.equal(times("await approachShip(action.targetID, null);"), 1);
+  assert.equal(times("await approachShip(destinationID, null);"), 1);
+  // Nothing but the travel loop makes the autopilot's approach, a follow at nought with the throttle opened first.
+  assert.equal(times("await approachShip(action.targetID, 0);"), 0);
+  assert.equal(times("await approachShip(destinationID, 0);"), 0);
   // The travel loop's: the autopilot's, or the menu's at the client's own fifty where the loop says so.
   assert.equal(times("await approachShip(destinationID, byMenu ? null : 0);"), 1);
   // Keep at range, the companion's and a script bot's.

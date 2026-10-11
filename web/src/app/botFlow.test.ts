@@ -316,6 +316,47 @@ test("the bot's warps carry retail's minRange 0, not the autopilot call's built-
   assert.equal(requests.some((r) => r.path === "/api/bridge/flight/warp"), false);
 });
 
+test("the bot's approach is the menu's: a follow at the client's fifty metres, and no throttle", async () => {
+  // A world with the belt thirty kilometres off and no rocks: nearer than a warp is asked from, so the ladder
+  // closes on it under its own power.
+  const { fetch, requests } = makeFakeFetch((path, _method, body) => {
+    if (path === "/api/bridge/flight/status") return { status: 200, body: flightBody(false) };
+    if (path === "/api/bridge/space/snapshot") {
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          space: {
+            inSpace: true,
+            solarSystemID: 30000142,
+            shipID: SHIP,
+            sampledAtMs: 0,
+            ship: { itemID: SHIP, radius: 60, position: { x: 0, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 }, mode: "STOP", shieldRatio: 1, armorRatio: 1, hullRatio: 1, activeModuleIDs: [] },
+            entities: [{ itemID: BELT, kind: "celestial", name: "Asteroid Belt 1", radius: 0, position: { x: 30_000, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 } }],
+          },
+          notifications: [],
+        },
+      };
+    }
+    if (path === "/api/bridge/targets") return { status: 200, body: { ok: true, targetIDs: [], notifications: [] } };
+    if (path === "/api/bridge/ship/ore-hold") return { status: 200, body: holdsBody(0, []) };
+    if (path === "/api/bridge/fitting") return { status: 200, body: fittingBody() };
+    if (path === "/api/names") return { status: 200, body: namesBody(body) };
+    return { status: 200, body: { ok: true } };
+  });
+  const flow = createAppFlow(createClientStore(), { fetch });
+  await flow.startMiningBot(REQUEST);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  flow.stopMiningBot();
+
+  // The page's own call (bridge/movementWrites.ts): movementFunctions.ShipApproach, CmdFollowBall(targetID, 50).
+  // The autopilot's approach opens the throttle first and follows at nought; a miner's is a pilot's own.
+  const orders = requests.filter((r) => r.path === "/api/bridge/call" && r.body.service === "beyonce").map((r) => r.body);
+  assert.deepEqual(orders[0], { service: "beyonce", method: "CmdFollowBall", args: [BELT, 50], kwargs: null, pilot: true, confirm: true });
+  assert.equal(orders.some((order) => order.method === "CmdSetSpeedFraction"), false, "no throttle is asked");
+  assert.equal(requests.some((r) => r.path === "/api/bridge/flight/approach"), false);
+});
+
 test("a docked bot unloads first and only then undocks — and the readout says why", async () => {
   let items: unknown[] = [{ itemID: 90001, typeID: 1230, quantity: 4_000 }];
   const { fetch, requests } = makeFakeFetch((path, _method, body) => {
