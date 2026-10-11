@@ -928,8 +928,9 @@ fetch while its session recovers, a session's change, a hosted generation, and t
 gate while lost drones are looked for. The audit's own list of routes, read off the app, is next. In `eve.js` an advert's text outside ASCII goes as
 unicode (`dcd459b0d`; on its origin since 2026-10-11, pushed by another hand than this loop's), and a dock
 asked from out of range of a station is finished by the server, as Tranquility finishes
-it (`869b28d2b`, not pushed), and a pilot's client is sent no greatest speed for its ship
-when it warps, as Tranquility sends none (`c0580dd05`, not pushed).
+it (`869b28d2b`), and a pilot's client is sent no greatest speed for its ship
+when it warps, as Tranquility sends none (`c0580dd05`); both are on its origin since 2026-10-11,
+pushed by another hand than this loop's.
 Counted by the whole path
 off the app's own table of routes, 95 of the bridge's 483 are named by the page now: 93 in its
 `api.ts`, 40 by GET and 53 by POST, and the generic call and the event stream (the counts kept

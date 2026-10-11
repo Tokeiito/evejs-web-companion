@@ -92798,8 +92798,11 @@ An attached cockpit.
 - The store was put aside before the live checks and put back after (Test Pilot is at
   Jita IV-4 again, read off the hangar); both check BFFs were restarted on the new
   code; EveJS was restarted twice, by the store's copy.
-- Nothing of `eve.js` was touched. **It is two commits ahead of its origin
-  (`869b28d2b`, `c0580dd05`), and not pushed.**
+- Nothing of `eve.js` was touched. **Its two commits (`869b28d2b`, `c0580dd05`) are on
+  its origin**: its remote's mark moved at 18:24 of 2026-10-11, while this unit's
+  breakages ran, pushed by another hand than this loop's. (This entry first said it was
+  ahead and not pushed, as it was when the unit began: it was not looked at again
+  before that was written.)
 
 
 ### Next

@@ -1524,6 +1524,10 @@ Take these defaults, and list each under "For the operator" in the log so they c
   that fails before a held jump or a held recovery is released leaves the run
   waiting: a minute for a server that cannot close, three for a recovery's own
   watch. Release in a `finally`.
+- **What is said of `eve.js` and its origin is read when it is written.** Another
+  hand pushed it while a unit ran, and that unit's entry said "two commits ahead,
+  and not pushed", as it was when the unit began. Run `git log origin/main..main`
+  there as the last thing before an entry is committed.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
