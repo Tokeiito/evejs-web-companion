@@ -366,6 +366,8 @@ export type FeedEvent =
   | { readonly type: "fleet/action-started"; readonly action: FleetAction }
   | { readonly type: "fleet/action-finished"; readonly error: string | null }
   | { readonly type: "fleet/pending-invite"; readonly invite: FleetPendingInvite }
+  // An invitation answered or turned down: the window's no longer, where it is the one held.
+  | { readonly type: "fleet/invite-settled"; readonly fleetID: number }
   // A one-shot fleet call (OnFleetBroadcast). Pure push-to-store, same shape
   // as fleet/pending-invite: last-write-wins, no reducer-side interpretation.
   | { readonly type: "fleet/broadcast"; readonly broadcast: FleetBroadcast }

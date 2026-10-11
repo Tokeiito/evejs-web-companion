@@ -4180,3 +4180,74 @@ test("none of the BFF's handles for a fleet is kept across the page's own inviti
     assert.deepEqual(asked, THROUGH_THE_INVITING("made 1", bound), JSON.stringify(body));
   }
 });
+
+// ── an invitation turned down by the page itself ─────────────────────────────
+//
+// fleetSvc.OnFleetInvite (1168 to 1199), on a Moniker for the fleet the invitation names: RejectInvite(True) at
+// once from a session in a fleet, RejectInvite(False) where invitations are turned away unasked, and RejectInvite()
+// on the pilot's no. The page names the fleet, and says the client's word or none; the BFF makes the call as its
+// route made it, bound by the fleet's number, and keeps none of its handles for a fleet after.
+
+const THE_DECLINING = { service: "fleetObjectHandler", method: "RejectInvite", args: [], kwargs: null };
+const THROUGH_THE_DECLINING = (handle, said = [], fleetID = INVITING) => [["bind", "fleetObjectHandler", "MachoBindObject", [[fleetID]], null], [`on ${handle}`, "fleetObjectHandler", "RejectInvite", said, null]];
+
+test("an invitation turned down is a write the page means, made on the fleet the page names, with the client's word for it or none", async () => {
+  for (const transport of ["gameport", "gateway"]) {
+    const { asked, byName, baseUrl } = await formFleetByCall({ transport });
+    const decline = (more) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { ...THE_DECLINING, ...more } });
+    for (const words of [{ of: INVITING }, { of: INVITING, pilot: true }, { of: INVITING, confirm: true }]) {
+      const refused = await decline(words);
+      assert.deepEqual([refused.response.status, refused.payload.error, asked], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE", []], `${transport} ${JSON.stringify(words)}`);
+    }
+    // An invitation is some fleet's: a call that does not say whose is none.
+    for (const words of [{ pilot: true, confirm: true }, { pilot: true, confirm: true, of: null }]) {
+      const unnamed = await decline(words);
+      assert.deepEqual([unnamed.response.status, unnamed.payload.error, asked], [400, "INVALID_REQUEST", []], `${transport} ${JSON.stringify(words)}`);
+    }
+    for (const of of [0, -1, 1.5, "", "a fleet", [INVITING], true]) {
+      const misnamed = await decline({ pilot: true, confirm: true, of });
+      assert.deepEqual([misnamed.response.status, misnamed.payload.error, asked], [400, "INVALID_FLEET_ID", []], `${transport} ${JSON.stringify(of)}`);
+    }
+    // The client says True, False or nothing with it (1180, 1184, 1198), and so does a call of the page's.
+    for (const args of [[1], [0], ["true"], [null], [true, true], [[true]], [{}], "true", true, {}]) {
+      const odd = await decline({ pilot: true, confirm: true, of: INVITING, args });
+      assert.deepEqual([odd.response.status, odd.payload.error, asked], [400, "INVALID_ALREADY_IN_FLEET", []], `${transport} ${JSON.stringify(args)}`);
+    }
+    const made = await decline({ pilot: true, confirm: true, of: INVITING });
+    assert.deepEqual([made.response.status, made.payload.ok, made.payload.service, made.payload.method, made.payload.result, made.payload.notifications, made.payload.applied],
+      [200, true, "fleetObjectHandler", "RejectInvite", null, ["after RejectInvite"], undefined], transport);
+    assert.deepEqual([asked, byName], [THROUGH_THE_DECLINING("made 1"), []], transport);
+    // The client's word goes as it was said; no arguments at all is none; the fleet's number as text is that
+    // number; and nothing by keyword is taken.
+    for (const [more, said, handle, fleetID] of [
+      [{ args: [true] }, [true], "made 2", INVITING], [{ args: [false] }, [false], "made 3", INVITING], [{ args: undefined }, [], "made 4", INVITING],
+      [{ args: null }, [], "made 5", INVITING], [{ of: String(INVITING + 20000) }, [], "made 6", INVITING + 20000], [{ args: [true], kwargs: { now: true } }, [true], "made 7", INVITING],
+    ]) {
+      asked.length = 0;
+      const again = await decline({ pilot: true, confirm: true, of: INVITING, ...more });
+      assert.deepEqual([again.response.status, asked], [200, THROUGH_THE_DECLINING(handle, said, fleetID)], `${transport} ${JSON.stringify(more)}`);
+    }
+  }
+});
+
+test("none of the BFF's handles for a fleet is kept across the page's own turning down, refused or not; and the route turns down as the call does", async () => {
+  const leave = (baseUrl) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "fleetObjectHandler", method: "LeaveFleet", args: [], kwargs: null, pilot: true, confirm: true } });
+  for (const refuses of [null, "RejectInvite"]) {
+    const { asked, baseUrl } = await formFleetByCall({ refuses, holds: true });
+    await apiRequest(baseUrl, "/api/bridge/bound-fleet");
+    asked.length = 0;
+    const declined = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { ...THE_DECLINING, args: [true], pilot: true, confirm: true, of: INVITING } });
+    assert.deepEqual([declined.response.status, declined.payload.ok, declined.payload.error ?? null], refuses === null ? [200, true, null] : [409, false, "CALL_REFUSED"], String(refuses));
+    assert.deepEqual(asked, THROUGH_THE_DECLINING("made 2", [true]), String(refuses));
+    // After it, whatever came of it: the leaving is of an object asked for afresh.
+    asked.length = 0;
+    await leave(baseUrl);
+    assert.deepEqual(asked, [["bind", "fleetObjectHandler", "MachoBindObject", [], null], ["on made 3", "fleetObjectHandler", "LeaveFleet", [], null]], String(refuses));
+  }
+  for (const [body, said] of [[{ fleetID: INVITING, confirm: true }, []], [{ fleetID: INVITING, confirm: true, alreadyInFleet: true }, [true]], [{ fleetID: INVITING, confirm: true, alreadyInFleet: false }, [false]]]) {
+    const { asked, baseUrl } = await formFleetByCall();
+    const routed = await apiRequest(baseUrl, "/api/bridge/fleet/invite/reject", { method: "POST", body });
+    assert.deepEqual([routed.response.status, routed.payload.ok, routed.payload.applied], [200, true, true], JSON.stringify(body));
+    assert.deepEqual(asked, THROUGH_THE_DECLINING("made 1", said), JSON.stringify(body));
+  }
+});

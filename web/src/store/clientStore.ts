@@ -1566,6 +1566,12 @@ export function createClientStore(): ClientStore {
       case "fleet/pending-invite":
         fleet.set({ ...fleet.get(), pendingInvite: event.invite });
         break;
+      case "fleet/invite-settled":
+        // An invitation the pilot has answered is the window's no longer. Another fleet's stays.
+        if (fleet.get().pendingInvite?.fleetID === event.fleetID) {
+          fleet.set({ ...fleet.get(), pendingInvite: null });
+        }
+        break;
       case "fleet/broadcast":
         fleet.set({ ...fleet.get(), lastBroadcast: event.broadcast });
         break;

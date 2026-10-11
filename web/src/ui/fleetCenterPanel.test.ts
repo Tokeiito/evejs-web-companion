@@ -188,6 +188,8 @@ test("Fleet Center names an observed invitation and PanelHost routes the Fleet t
   assert.match(body, /Fleet Center/);
   assert.match(body, /Wing Commander/);
   assert.match(body, /Accept invitation/);
+  // An invitation can be turned down, beside where it is accepted.
+  assert.match(body, />\s*Decline\s*</);
   assert.equal(body.includes("654500010000"), false);
   assert.equal(body.includes("140000002"), false);
 });
@@ -199,9 +201,14 @@ test("every consequential Fleet Center call is behind an explicit UI confirmatio
   const guardedCalls = [
     { handler: "formFleet", mutation: "formFleet", args: "" },
     { handler: "acceptInvite", mutation: "acceptFleetInvite", args: "" },
+    { handler: "declineInvite", mutation: "declineFleetInvite", args: "" },
     { handler: "inviteMember", mutation: "inviteFleetMember", args: "inviteeID" },
     { handler: "leaveFleet", mutation: "leaveFleet", args: "" },
   ] as const;
+
+  // Each of the invitation's two buttons asks its own thing.
+  assert.match(source, /onclick=\{\(\) => void acceptInvite\(\)\}>\s*Accept invitation\s*<\/button>/);
+  assert.match(source, /onclick=\{\(\) => void declineInvite\(\)\}>\s*Decline\s*<\/button>/);
 
   for (const { handler, mutation, args } of guardedCalls) {
     const functionBody = source.match(

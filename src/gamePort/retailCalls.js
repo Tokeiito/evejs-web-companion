@@ -707,6 +707,22 @@ const kickingAnother = (args, kwargs, context) => (String(args[0]) === String(co
   note: "The client does not kick the pilot's own character: it leaves the fleet instead (LeaveFleet, on the fleet's object).",
 } : {});
 /**
+ * fleetSvc.OnFleetInvite (1168 to 1199): the invitation turned down on a Moniker for its fleet. From a session in
+ * a fleet, RejectInvite(True), at once and with nothing asked of the pilot (1180). Where the pilot's setting or a
+ * blocked window turns invitations away, RejectInvite(False) (1184, 1187). On the pilot's no, RejectInvite()
+ * (1198). So True is said from within a fleet and from nowhere else, and nothing else is said from there.
+ * `context.fleetID` is the session's fleet, null in none; where it is not known it is not held against the call.
+ */
+const turningDown = (args, kwargs, context) => {
+  const asTheClient = Object.keys(kwargs).length === 0 && (args.length === 0 || (args.length === 1 && typeof args[0] === "boolean"));
+  if (!asTheClient) return { status: "differs", note: "The client turns an invitation down with True, False or nothing, and nothing by keyword." };
+  if (context.fleetID === undefined) return {};
+  const inAFleet = context.fleetID !== null;
+  if (inAFleet && args[0] !== true) return { status: "differs", note: "From a session in a fleet the client turns an invitation down with True, and with nothing else." };
+  if (!inAFleet && args[0] === true) return { status: "differs", note: "The client says True only from a session in a fleet: this one is in no fleet." };
+  return {};
+};
+/**
  * idCheckers, as fleetSvc.Invite goes by them before it asks (357): not IsNPC, and IsCharacter. By the number
  * alone: a player's character of the second or the third generation, or a number of the range the older
  * characters share with other things, where the client asks its cache of owners and nothing here can.
@@ -1236,7 +1252,7 @@ const RETAIL_CALLS = Object.freeze({
   "fleetObjectHandler.Init": needing(reshaped(`${FLEET_SVC}:336`, fleetInit, "self.fleet.Init(self.GetMyShipTypeID(), setupName, adInfoData=adInfoData), on the object CreateFleet answered"), "dogma"),
   "fleetObjectHandler.AcceptInvite": needing(reshaped(`${FLEET_SVC}:1194`, withOwnShipType, "GetFleet(fleetID).AcceptInvite(self.GetMyShipTypeID()), on the invite's fleet's Moniker, which binds with it and is the fleet's object from then"), "dogma"),
   "fleetObjectHandler.UpdateMemberInfo": needing(reshaped(`${FLEET_SVC}:1807`, withOwnShipType, "self.fleet.UpdateMemberInfo(self.GetMyShipTypeID())"), "dogma"),
-  "fleetObjectHandler.RejectInvite": same(`${FLEET_SVC}:1198`, "GetFleet(fleetID).RejectInvite(), and RejectInvite(True) from a pilot already in a fleet (1180), RejectInvite(False) where invitations are turned away unasked (1184)"),
+  "fleetObjectHandler.RejectInvite": judged(`${FLEET_SVC}:1198`, turningDown, "GetFleet(fleetID).RejectInvite(), and RejectInvite(True) from a pilot already in a fleet (1180), RejectInvite(False) where invitations are turned away unasked (1184)"),
   "fleetObjectHandler.Invite": judged(`${FLEET_SVC}:362`, inviting, "CSPAChargedAction('CSPAFleetCheck', self.fleet, 'Invite', charID, wingID, squadID, role): self.fleet.Invite(...) on the fleet's object, None for a wing, squad or role not named; asked again with approvedCost= where the server says the contact costs and the user agrees. A pilot in no fleet forms one first (352)"),
   // Its writes.
   "fleetObjectHandler.CreateWing": same(`${FLEET_SVC}:577`, "self.fleet.CreateWing(), no arguments; a wing that was made is given a squad at once (CreateSquad(wingID), 579)"),

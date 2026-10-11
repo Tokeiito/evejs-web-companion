@@ -880,7 +880,7 @@ export interface ActivityState {
 
 // --- Fleet Center ----------------------------------------------------------
 
-export type FleetAction = "form" | "invite" | "accept" | "leave";
+export type FleetAction = "form" | "invite" | "accept" | "decline" | "leave";
 
 /**
  * Player-facing fleet state. `fleet` is the last authoritative bound read;

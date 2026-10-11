@@ -8383,3 +8383,33 @@ test("a pilot invites another on its fleet's object as the client does, and neve
   const row = pilots.callLedger().find((each) => each.pair === "fleetObjectHandler.Invite");
   assert.deepEqual([row.calls, row.statuses], [1, { same: 1 }]);
 });
+
+// ── an invitation turned down ────────────────────────────────────────────────
+//
+// fleetSvc.OnFleetInvite (1179 to 1198): RejectInvite(True) from a session in a fleet, and from no other;
+// RejectInvite(False) or RejectInvite() from one in none.
+
+test("an invitation turned down is counted by the session's own fleet: True from within one is the client's, and so is nothing from none", async () => {
+  const built = await formed({ "bound:RejectInvite": true });
+  const { pilots, session, handle } = built;
+  const turnDown = async (said) => {
+    const moniker = await pilots.bindObject("fleetObjectHandler", "MachoBindObject", [[FLEET + 1]], null, WHO, handle);
+    return pilots.callBoundMethod("fleetObjectHandler", "RejectInvite", said, null, WHO, handle, moniker.boundHandle);
+  };
+  const counted = () => { const row = pilots.callLedger().find((each) => each.pair === "fleetObjectHandler.RejectInvite"); return [row.calls, row.statuses]; };
+  // In the fleet it formed.
+  assert.equal((await turnDown([true])).result, true);
+  assert.deepEqual(counted(), [1, { same: 1 }]);
+  await turnDown([]);
+  await turnDown([false]);
+  assert.deepEqual(counted(), [3, { same: 1, differs: 2 }]);
+  // Out of it: the session's fleet is none, whatever object is still held.
+  intoFleet(session, null);
+  await turnDown([]);
+  await turnDown([false]);
+  assert.deepEqual(counted(), [5, { same: 3, differs: 2 }]);
+  await turnDown([true]);
+  assert.deepEqual(counted(), [6, { same: 3, differs: 3 }]);
+  // Each went as it was said, on the invitation's own Moniker.
+  assert.deepEqual(onObjects(session, "RejectInvite").map(([, , args, kwargs]) => [args, kwargs]), [[[true], null], [[], null], [[false], null], [[], null], [[false], null], [[true], null]]);
+});

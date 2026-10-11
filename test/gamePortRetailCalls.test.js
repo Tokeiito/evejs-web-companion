@@ -2352,3 +2352,34 @@ test("an invitation is the client's with a pilot who is not the session's own, a
   // And the pilot's number is the pilot's however the session has it.
   for (const characterID of [140000001n, "140000001"]) assert.equal(invite([140000001, null, null, null], null, { characterID }).status, "differs");
 });
+
+test("an invitation is turned down as the client turns one down: with True from a session in a fleet and from no other, with False or nothing from one in none", () => {
+  const decline = (args, context, kwargs = null) => retailForm("fleetObjectHandler", "RejectInvite", args, kwargs, context);
+  const inAFleet = { fleetID: 654500010000 };
+  const inNone = { fleetID: null };
+  // fleetSvc.py 1179 and 1180: `if session.fleetid is not None: __fleetMoniker.RejectInvite(True)`, at once.
+  // 1184 and 1187: RejectInvite(False), where invitations are turned away unasked. 1198: RejectInvite(), the pilot's no.
+  for (const [args, context] of [[[true], inAFleet], [[false], inNone], [[], inNone]]) {
+    const made = decline(args, context);
+    assert.deepEqual([made.status, made.args, made.kwargs], ["same", args, null], JSON.stringify([args, context]));
+    assert.match(made.source, /fleetSvc\.py:1198$/);
+  }
+  // From within a fleet the client says True and nothing else; and True from nowhere else.
+  for (const [args, context, note] of [[[], inAFleet, /in a fleet/], [[false], inAFleet, /in a fleet/], [[true], inNone, /in no fleet/]]) {
+    const other = decline(args, context);
+    assert.deepEqual([other.status, other.args], ["differs", args], JSON.stringify([args, context]));
+    assert.match(other.note, note, JSON.stringify([args, context]));
+  }
+  // What is none of the client's three forms is none, wherever the session is.
+  for (const context of [inAFleet, inNone, {}]) {
+    for (const [args, kwargs] of [[[1], null], [[0], null], [["true"], null], [[null], null], [[true, true], null], [[true], { now: true }], [[], { alreadyInFleet: true }]]) {
+      const odd = decline(args, context, kwargs);
+      assert.equal(odd.status, "differs", JSON.stringify([args, kwargs, context]));
+      assert.match(odd.note, /True, False or nothing/, JSON.stringify([args, kwargs, context]));
+    }
+  }
+  // Where the session's fleet is not known, it is not held against the call.
+  for (const args of [[], [true], [false]]) assert.equal(decline(args, {}).status, "same", JSON.stringify(args));
+  // And a fleet's number is one however the session has it.
+  for (const fleetID of [654500010000n, "654500010000"]) assert.deepEqual([decline([true], { fleetID }).status, decline([], { fleetID }).status], ["same", "differs"], String(fleetID));
+});

@@ -165,6 +165,12 @@
     }
   }
 
+  async function declineInvite(): Promise<void> {
+    if (confirmAction(`Decline the fleet invitation from ${inviteSender()}?`)) {
+      await flow.declineFleetInvite();
+    }
+  }
+
   async function inviteMember(): Promise<void> {
     if (inviteeID === null) return;
     const who = inviteeName ?? `character ID ${inviteeID}`;
@@ -264,9 +270,14 @@
         <p class="empty">No pending invitation has arrived in this live session.</p>
       {:else}
         <p><strong>{inviteSender()}</strong> invited you to join a fleet.</p>
-        <button type="button" class="primary" disabled={busy} onclick={() => void acceptInvite()}>
-          Accept invitation
-        </button>
+        <div class="action-row">
+          <button type="button" class="primary" disabled={busy} onclick={() => void acceptInvite()}>
+            Accept invitation
+          </button>
+          <button type="button" disabled={busy} onclick={() => void declineInvite()}>
+            Decline
+          </button>
+        </div>
       {/if}
     </section>
   {:else if $fleet.fleet !== null}

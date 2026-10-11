@@ -366,3 +366,37 @@ export async function inviteToFleet(act: Ask, inviteeCharID: number, ownCharacte
   }
   await act("fleetObjectHandler", "Invite", [inviteeCharID, null, null, null], undefined, expectedFleetID);
 }
+
+// --- An invitation turned down (the plan's Phase 6b) --------------------------
+//
+// The page could not turn one down at all until 2026-10-11: nothing of it asked the BFF's route
+// (POST /api/bridge/fleet/invite/reject), and its Fleet window had an acceptance and nothing beside it.
+//
+// THE CALL, as the client makes it (fleetSvc.OnFleetInvite, 1168 to 1199), on a Moniker for the fleet the
+// invitation names:
+//
+//   __fleetMoniker.RejectInvite(True)    from a session that is in a fleet: at once, and its pilot asked nothing (1180)
+//   __fleetMoniker.RejectInvite(False)   where the pilot's setting turns invitations away, or the window is blocked (1184, 1187)
+//   __fleetMoniker.RejectInvite()        on the pilot's no (1198)
+//
+// and nothing is read after any of them. No Tranquility recording has one. The page has no such setting and no
+// blocked window, so it says True or nothing.
+//
+// THE FLEET IS THE PAGE'S TO NAME (`of`), as its invitation named it, and the word is the page's to say: it is
+// the page that knows whether its pilot is in a fleet (src/server.js, rejectFleetInviteCall).
+//
+// WHAT THE SERVER TAKES FROM THE CALLER: the fleet, by the bind, and the word. It forgets the session's own
+// character's invitation where that invitation names that fleet, tells the inviter (OnFleetJoinReject, with the
+// word made a reason), and answers true; with no such invitation it answers false and does nothing. The word
+// decides only which reason the inviter is told.
+
+/**
+ * Turns down the invitation of the fleet `fleetID`. `inAFleet` is whether the pilot is in a fleet, as the caller
+ * knows it: from there the client says True with it, and so does this. Fails as the call fails.
+ */
+export async function declineFleetInvite(act: Ask, fleetID: number, inAFleet: boolean): Promise<void> {
+  if (!Number.isSafeInteger(fleetID) || fleetID <= 0) {
+    throw new Error("That invitation names no fleet.");
+  }
+  await act("fleetObjectHandler", "RejectInvite", inAFleet ? [true] : [], undefined, fleetID);
+}

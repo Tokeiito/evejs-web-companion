@@ -829,3 +829,141 @@ test("the pilot does not invite itself, and an invitation the server refuses is 
     assert.equal(refused.store.get().fleet.actionError, `The fleet action was refused. ${words}`, key);
   }
 });
+
+// --- an invitation turned down, through the flow -------------------------------
+
+/** A pilot online with a live stream, over a BFF that reads a fleet as told and takes any call: says what was asked. */
+async function invitedFlow(fleetRead: () => unknown, call: { status: number; body: unknown } | null = null) {
+  const store = createClientStore();
+  const { factory, sources } = makeFakeEventSource();
+  const calls: Array<{ url: string; body: unknown }> = [];
+  const fetch: typeof globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    calls.push({ url, body: typeof init.body === "string" ? JSON.parse(init.body) : null });
+    if (url === "/api/bridge/select") {
+      return json({ ok: true, character: { characterID: 140000005, characterName: "Fleet Pilot", stationID: 60003760, structureID: null, solarSystemID: 30000142, corporationID: 98000001 }, station: null, notifications: [] });
+    }
+    if (url === "/api/bridge/bound-fleet") return json(fleetRead());
+    if (url === "/api/bridge/call") {
+      const request = JSON.parse(String(init.body)) as { service: string; method: string };
+      return call === null || request.method !== "RejectInvite" ? json({ ok: true, service: request.service, method: request.method, result: true, notifications: [] }) : json(call.body, call.status);
+    }
+    if (url === "/api/names") return json({ ok: true, names: {} });
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  const flow = createAppFlow(store, { fetch, eventSource: factory });
+  await flow.selectCharacter(140000005);
+  const source = sources[0];
+  assert.ok(source, "selecting a character must open the live event source");
+  const declines = () => calls.filter((each) => each.url === "/api/bridge/call" && (each.body as { method?: string }).method === "RejectInvite").map((each) => each.body);
+  const invite = (fleetID: number, sequence = 1) => source.emit(notificationFrame("OnFleetInvite", sequence, [fleetID, 140000002, "AskJoinFleet", {}]));
+  return { store, flow, source, calls, declines, invite };
+}
+const decliningOf = (fleetID: number, said: readonly boolean[] = []) => ({ service: "fleetObjectHandler", method: "RejectInvite", args: said, kwargs: null, pilot: true, confirm: true, of: fleetID });
+const settled = async (): Promise<void> => { for (let i = 0; i < 6; i += 1) await new Promise<void>((resolve) => setImmediate(resolve)); };
+
+test("declineFleetInvite makes the page's own call on the fleet the invitation named, and the invitation is the window's no longer", async () => {
+  const { store, flow, calls, declines, invite } = await invitedFlow(() => noFleet());
+  await flow.loadFleet();
+  invite(654500020000);
+  await waitFor(() => store.get().fleet.pendingInvite !== null, "the invitation did not reach the store");
+  calls.length = 0;
+
+  await flow.declineFleetInvite();
+
+  // fleetSvc.py 1198: GetFleet(fleetID).RejectInvite(), as a pilot's write the page means.
+  assert.deepEqual(declines(), [decliningOf(654500020000)]);
+  assert.deepEqual([store.get().fleet.pendingInvite, store.get().fleet.actionError, store.get().fleet.activeAction], [null, null, null]);
+  // The client reads nothing of a fleet after it: nor does the page.
+  assert.equal(calls.some((each) => each.url === "/api/bridge/bound-fleet"), false);
+
+  // With no invitation there is nothing to turn down, and nothing is asked.
+  await flow.declineFleetInvite();
+  assert.equal(declines().length, 1);
+  assert.equal(store.get().fleet.actionError, "No pending fleet invitation has arrived for this session.");
+  // A fleet named outright is turned down without the window having it (as an acceptance is).
+  await flow.declineFleetInvite(654500030000);
+  assert.deepEqual(declines().at(-1), decliningOf(654500030000));
+});
+
+test("an invitation whose turning down the server refuses is gone from the window all the same, and the refusal is said", async () => {
+  const { store, flow, declines, invite } = await invitedFlow(() => noFleet(), { status: 409, body: { ok: false, error: "CALL_REFUSED", message: "FleetNotFound" } });
+  await flow.loadFleet();
+  invite(654500020000);
+  await waitFor(() => store.get().fleet.pendingInvite !== null, "the invitation did not reach the store");
+  await flow.declineFleetInvite();
+  assert.equal(declines().length, 1);
+  // The client's own question is gone once it is answered, whatever the call said.
+  assert.equal(store.get().fleet.pendingInvite, null);
+  assert.equal(store.get().fleet.actionError, "The fleet action was refused. That fleet could not be found, or its invitation is no longer open.");
+});
+
+test("an invitation that reaches a pilot the page knows to be in a fleet is turned down at once, unasked, with True, and is not shown", async () => {
+  const { store, flow, calls, declines, invite } = await invitedFlow(() => populatedFleet());
+  await flow.loadFleet();
+  assert.equal(store.get().fleet.availability, "ready");
+  calls.length = 0;
+
+  invite(654500020000);
+  await waitFor(() => declines().length === 1, "the invitation was not turned down");
+  await settled();
+
+  // fleetSvc.py 1179 and 1180: `if session.fleetid is not None: __fleetMoniker.RejectInvite(True)`, and no question.
+  assert.deepEqual(declines(), [decliningOf(654500020000, [true])]);
+  assert.deepEqual([store.get().fleet.pendingInvite, store.get().fleet.actionError, store.get().fleet.activeAction, store.get().fleet.availability], [null, null, null, "ready"]);
+  // Nothing else is asked for it: not who invited, nor whether that pilot is of the corporation, nor the fleet again.
+  assert.deepEqual(calls.map((each) => each.url).filter((url) => /names|corp-members|bound-fleet/.test(url)), []);
+  // And a fleet's invitation the pilot turns down by name from within a fleet goes with True too.
+  await flow.declineFleetInvite(654500030000);
+  assert.deepEqual(declines().at(-1), decliningOf(654500030000, [true]));
+  // A turning down the server refuses is nothing the pilot is told of, as the client tells nothing.
+  const refused = await invitedFlow(() => populatedFleet(), { status: 409, body: { ok: false, error: "CALL_REFUSED", message: "FleetNotFound" } });
+  await refused.flow.loadFleet();
+  refused.invite(654500020000);
+  await waitFor(() => refused.declines().length === 1, "the invitation was not turned down");
+  await settled();
+  assert.deepEqual([refused.store.get().fleet.pendingInvite, refused.store.get().fleet.actionError], [null, null]);
+});
+
+test("an invitation that reaches a pilot in no fleet, or one whose fleet the page has not read, is kept for the pilot and nothing is asked of it", async () => {
+  for (const read of [true, false]) {
+    const { store, flow, declines, invite } = await invitedFlow(() => noFleet());
+    if (read) await flow.loadFleet();
+    invite(654500020000);
+    await waitFor(() => store.get().fleet.pendingInvite !== null, "the invitation did not reach the store");
+    await settled();
+    assert.deepEqual([store.get().fleet.pendingInvite?.fleetID, declines()], [654500020000, []], String(read));
+  }
+});
+
+test("an invitation kept by a page that then finds its pilot in another fleet is turned down then, with True; the invitation of the fleet it is in is not", async () => {
+  // Kept before the fleet was read. The read finds the pilot in fleet 654500010000.
+  const other = await invitedFlow(() => populatedFleet());
+  other.invite(654500020000);
+  await waitFor(() => other.store.get().fleet.pendingInvite !== null, "the invitation did not reach the store");
+  await other.flow.loadFleet();
+  await waitFor(() => other.declines().length === 1, "the invitation kept was not turned down");
+  await settled();
+  assert.deepEqual(other.declines(), [decliningOf(654500020000, [true])]);
+  assert.deepEqual([other.store.get().fleet.pendingInvite, other.store.get().fleet.actionError], [null, null]);
+  // Another read of the same fleet asks nothing more.
+  await other.flow.loadFleet();
+  await settled();
+  assert.equal(other.declines().length, 1);
+
+  // The invitation of the fleet the pilot is found in was taken: there is nothing to turn down.
+  const joined = await invitedFlow(() => populatedFleet());
+  joined.invite(654500010000);
+  await waitFor(() => joined.store.get().fleet.pendingInvite !== null, "the invitation did not reach the store");
+  await joined.flow.loadFleet();
+  await settled();
+  assert.deepEqual([joined.declines(), joined.store.get().fleet.pendingInvite], [[], null]);
+
+  // And a read that finds the pilot in no fleet leaves the invitation where it was.
+  const none = await invitedFlow(() => noFleet());
+  none.invite(654500020000);
+  await waitFor(() => none.store.get().fleet.pendingInvite !== null, "the invitation did not reach the store");
+  await none.flow.loadFleet();
+  await settled();
+  assert.deepEqual([none.declines(), none.store.get().fleet.pendingInvite?.fleetID], [[], 654500020000]);
+});

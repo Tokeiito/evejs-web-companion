@@ -270,3 +270,18 @@ test("offline, logout, coming online, and clearing all reset character-specific 
     assert.equal(store.get().fleet.targetTags, null);
   }
 });
+
+test("an invitation settled is the window's no longer, where it is the one held; another fleet's stays", () => {
+  const store = createClientStore();
+  store.apply({ type: "fleet/pending-invite", invite: { fleetID: 654500010000, inviterID: 140000002, receivedAtMs: 200 } });
+  store.apply({ type: "fleet/invite-settled", fleetID: 654500020000 });
+  assert.equal(store.get().fleet.pendingInvite?.fleetID, 654500010000);
+  store.apply({ type: "fleet/action-started", action: "decline" });
+  assert.equal(store.get().fleet.activeAction, "decline");
+  store.apply({ type: "fleet/invite-settled", fleetID: 654500010000 });
+  store.apply({ type: "fleet/action-finished", error: null });
+  assert.deepEqual([store.get().fleet.pendingInvite, store.get().fleet.activeAction], [null, null]);
+  // With none held there is nothing to settle.
+  store.apply({ type: "fleet/invite-settled", fleetID: 654500010000 });
+  assert.equal(store.get().fleet.pendingInvite, null);
+});

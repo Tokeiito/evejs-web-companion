@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-import { acceptFleetInvite, applyToJoinFleet, createFleetBroadcasts, decodeFleetWriteAck, decodeFleetAdvertWriteAck, formFleet, inviteToFleet, leaveFleet, tagFleetTarget } from "./fleetWrites.ts";
+import { acceptFleetInvite, applyToJoinFleet, createFleetBroadcasts, declineFleetInvite, decodeFleetWriteAck, decodeFleetAdvertWriteAck, formFleet, inviteToFleet, leaveFleet, tagFleetTarget } from "./fleetWrites.ts";
 import type { Ask } from "./ask.ts";
 import type { JsonValue } from "./wire.ts";
 
@@ -306,4 +306,29 @@ test("nobody is invited who is no pilot, and the pilot does not invite itself: n
   await assert.rejects(inviteToFleet(askingOf().act, 3000001, 3000001), /^Error: That is no pilot to invite\.$/);
   await assert.rejects(inviteToFleet(askingOf().act, 140000001, 140000001, 0), /^Error: You cannot invite yourself to your own fleet\.$/);
   await assert.rejects(inviteToFleet(asking(new Error("FleetError")).act, 140000003, 140000001), /FleetError/);
+});
+
+// --- an invitation turned down -------------------------------------------------
+
+test("an invitation is turned down by one call on the fleet it names: with nothing from a pilot in no fleet, and with True from one in a fleet", async () => {
+  const { act, asked } = askingOf();
+
+  await declineFleetInvite(act, 654500010000, false);
+
+  // fleetSvc.py 1198: GetFleet(fleetID).RejectInvite(), the pilot's no.
+  assert.deepEqual(asked, [["fleetObjectHandler", "RejectInvite", [], null, 654500010000]]);
+
+  // 1179 and 1180: from a session in a fleet, RejectInvite(True).
+  const within = askingOf();
+  await declineFleetInvite(within.act, 654500020000, true);
+  assert.deepEqual(within.asked, [["fleetObjectHandler", "RejectInvite", [true], null, 654500020000]]);
+
+  for (const fleetID of [0, -654500010000, 1.5, Number.NaN, 2 ** 53]) {
+    for (const inAFleet of [false, true]) {
+      const none = askingOf();
+      await assert.rejects(declineFleetInvite(none.act, fleetID, inAFleet), /^Error: That invitation names no fleet\.$/, `${fleetID} ${inAFleet}`);
+      assert.deepEqual(none.asked, [], `${fleetID} ${inAFleet}`);
+    }
+  }
+  await assert.rejects(declineFleetInvite(asking(new Error("FleetNotFound")).act, 654500010000, false), /FleetNotFound/);
 });

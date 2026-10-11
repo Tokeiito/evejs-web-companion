@@ -327,8 +327,16 @@ function isBridgeWritePair(service, method) {
  *                                too**: so the page's call names the invitee alone, and the BFF says None
  *                                for the other three whatever it came with (PAGE_OBJECT_CALLS,
  *                                "fleetExpected"). A client asks none for its own character.
+ *   fleetObjectHandler.RejectInvite  a fleet's invitation turned down. The route checked `confirm`, that the
+ *                                fleet named was a number above nought and that `alreadyInFleet`, where it
+ *                                was said, was true or false; bound that fleet's object by its number, asked
+ *                                RejectInvite on it with that word or with nothing, and kept none of the
+ *                                BFF's handles for a fleet after. The handler forgets the session's own
+ *                                character's invitation where it names that fleet, and tells the inviter;
+ *                                with none it answers false. The word decides only which reason the inviter
+ *                                is told. The page says which fleet (PAGE_OBJECT_CALLS, "fleetByNumber").
  */
-const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.Invite"]);
+const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.Invite", "fleetObjectHandler.RejectInvite"]);
 const pageWritePairKeySet = new Set(PAGE_WRITE_PAIR_KEYS);
 for (const pair of PAGE_WRITE_PAIR_KEYS) {
   if (!bridgeWritePairKeySet.has(pair)) throw new Error(`${pair} is among the page's writes and is no write.`);
@@ -428,6 +436,10 @@ function ordersAFollow(service, method) {
  *                                   accepts only a real invitation for the session's own character. The
  *                                   ship's type is not the page's to say (src/server.js,
  *                                   acceptFleetInviteCall).
+ *   fleetObjectHandler.RejectInvite "fleetByNumber": a WRITE, an invitation turned down (the same, 1180, 1184
+ *                                   and 1198): RejectInvite(True), RejectInvite(False) or RejectInvite() on
+ *                                   that same Moniker. The word is the page's to say, or none
+ *                                   (src/server.js, rejectFleetInviteCall).
  *
  * And one on the pilot's own fleet, which the call may say the number of all the same:
  *
@@ -442,7 +454,7 @@ function ordersAFollow(service, method) {
  * A write among them is one of the page's own writes. A read is listed here only once its handler has been read
  * for what it takes from the caller: a planet's reads once answered with another owner's colony.
  */
-const PAGE_OBJECT_CALLS = Object.freeze({ "planetMgr.UserUpdateNetwork": "planet", "planetMgr.UserLaunchCommodities": "planet", "planetMgr.GetProgramResultInfo": "planet", "scanMgr.GetFullState": "scanManager", "fleetObjectHandler.LeaveFleet": "fleet", "fleetObjectHandler.CreateFleet": "fleet", "fleetObjectHandler.AcceptInvite": "fleetByNumber", "fleetObjectHandler.Invite": "fleetExpected" });
+const PAGE_OBJECT_CALLS = Object.freeze({ "planetMgr.UserUpdateNetwork": "planet", "planetMgr.UserLaunchCommodities": "planet", "planetMgr.GetProgramResultInfo": "planet", "scanMgr.GetFullState": "scanManager", "fleetObjectHandler.LeaveFleet": "fleet", "fleetObjectHandler.CreateFleet": "fleet", "fleetObjectHandler.AcceptInvite": "fleetByNumber", "fleetObjectHandler.Invite": "fleetExpected", "fleetObjectHandler.RejectInvite": "fleetByNumber" });
 /**
  * The objects there are many of, which a call says which of with `of`: a planet, and a fleet that is not the
  * session's own (the one an invitation names). A scan manager and the pilot's own fleet are the session's.

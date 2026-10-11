@@ -347,7 +347,7 @@ import { canBroadcastInFleet, canTagInFleet } from "../bridge/fleetCommand.ts";
 import type { FleetCenterSnapshot } from "../bridge/fleetCenter.ts";
 import { decodeAvailableFleetAds, decodeMyFleetFinderAdvert } from "../bridge/fleetAds.ts";
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
-import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
+import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { salvageWithDrones } from "../bridge/boundEntityWrites.ts";
 import { alignTo as alignToCall, approach as approachCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, type FlightNow } from "../bridge/movementWrites.ts";
 import { boardCorvette as boardCorvetteCall, leaveShip as leaveShipCall } from "../bridge/shipWrites.ts";
@@ -872,6 +872,12 @@ export interface AppFlow {
    * See docs/join-advertised-fleet-handoff.md.
    */
   acceptFleetInvite(fleetID?: number): Promise<void>;
+  /**
+   * Turn a fleet invitation down. With no argument, the pending OnFleetInvite observed for this live session: the
+   * Fleet Center's own button. The invitation is the window's no longer whatever the call said, and nothing of
+   * the fleet is read after, as the client reads nothing.
+   */
+  declineFleetInvite(fleetID?: number): Promise<void>;
   /** Leave the current fleet, then re-read membership before settling. */
   leaveFleet(): Promise<void>;
   /**
@@ -2103,6 +2109,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     const fleetInvite = decodeFleetInviteNotification(method, args, receivedAtMs);
     if (fleetInvite !== null) {
+      // fleetSvc.OnFleetInvite (1179): from a session in a fleet the client turns the invitation down at once,
+      // and asks its pilot nothing. The page goes by what it has read of its pilot's fleet.
+      if (store.fleet.get().availability === "ready") {
+        turnDownUnasked(fleetInvite.fleetID);
+        return;
+      }
       store.apply({ type: "fleet/pending-invite", invite: fleetInvite });
       if (fleetInvite.inviterID !== null) {
         requestNames([{ kind: "character", id: fleetInvite.inviterID }]);
@@ -3918,12 +3930,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       readError = `Fleet membership could not be read just now. ${errorWords(error)}`;
     }
 
+    // (An invitation kept from before the page knew of a fleet: looked at before the read is applied, which
+    // takes it out of the window where the pilot is found in a fleet.)
+    const kept = store.fleet.get().pendingInvite;
     store.apply({
       type: "fleet/loaded",
       ...snapshot,
       readError,
       refreshedAtMs: Date.now(),
     });
+    // The pilot is found in a fleet, and the invitation kept is another fleet's: the client would have turned it
+    // down when it came (fleetSvc.py 1179), and the page does as soon as it knows. The invitation of the fleet
+    // the pilot is in was taken, and is nothing to turn down.
+    if (snapshot.availability === "ready" && kept !== null && kept.fleetID !== snapshot.fleet.fleetID) {
+      turnDownUnasked(kept.fleetID);
+    }
     rereadForComposition(snapshot);
 
     const refs: NameRef[] = [];
@@ -3974,7 +3995,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return fleetRefreshPromise;
   }
 
-  function fleetActionFailure(action: FleetAction): string {
+  function fleetActionFailure(action: Exclude<FleetAction, "decline">): string {
     switch (action) {
       case "form":
         return "The new fleet could not be confirmed by the follow-up roster read.";
@@ -3988,7 +4009,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   async function runFleetAction(
-    action: FleetAction,
+    action: Exclude<FleetAction, "decline">,
     mutate: () => Promise<void>,
     expected: "ready" | "not-in-fleet",
   ): Promise<void> {
@@ -4097,6 +4118,43 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     // (The page's own call, bridge/fleetWrites.ts: none from a pilot the Fleet window knows to be in a fleet.)
     await runFleetAction("accept", () => acceptFleetInviteCall(bridgeDo, wanted, store.fleet.get().availability === "ready"), "ready");
+  }
+
+  /**
+   * An invitation turned down without the pilot being asked, from within a fleet (fleetSvc.py 1180:
+   * RejectInvite(True)). Nothing is shown of it and nothing is said of how it went, as the client says nothing.
+   */
+  function turnDownUnasked(fleetID: number): void {
+    void declineFleetInviteCall(bridgeDo, fleetID, true).catch(() => {});
+  }
+
+  async function declineFleetInvite(fleetID?: number): Promise<void> {
+    const wanted = fleetID ?? store.fleet.get().pendingInvite?.fleetID ?? null;
+    store.apply({ type: "fleet/action-started", action: "decline" });
+    if (wanted === null) {
+      store.apply({
+        type: "fleet/action-finished",
+        error: "No pending fleet invitation has arrived for this session.",
+      });
+      return;
+    }
+    let failure: string | null = null;
+    try {
+      // (The page's own call, bridge/fleetWrites.ts: with True from a pilot the Fleet window knows to be in a fleet.)
+      await declineFleetInviteCall(bridgeDo, wanted, store.fleet.get().availability === "ready");
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        store.apply({ type: "fleet/action-finished", error: null });
+        throw error;
+      }
+      failure = `The fleet action was refused. ${errorWords(error)}`;
+    }
+    // The client's own question is gone once it is answered, whatever the call said; and it reads nothing of a
+    // fleet after, so nor does the page.
+    store.apply({ type: "fleet/invite-settled", fleetID: wanted });
+    store.apply({ type: "fleet/action-finished", error: failure });
   }
 
   async function leaveFleet(): Promise<void> {
@@ -14168,6 +14226,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     formFleet,
     inviteFleetMember,
     acceptFleetInvite,
+    declineFleetInvite,
     leaveFleet,
     readFleetFinder,
     applyToJoinFleet,

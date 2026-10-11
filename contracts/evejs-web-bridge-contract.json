@@ -1119,6 +1119,7 @@
       "fleetObjectHandler.CreateFleet",
       "fleetObjectHandler.Invite",
       "fleetObjectHandler.LeaveFleet",
+      "fleetObjectHandler.RejectInvite",
       "fleetProxy.ApplyToJoinFleet",
       "officeManager.RentOffice",
       "officeManager.UnrentOffice",

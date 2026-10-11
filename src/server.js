@@ -1001,6 +1001,11 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
     res.status(400).json({ ok: false, error: "INVALID_FLEET_ID", message: "A positive fleetID is required." });
     return;
   }
+  // (An invitation turned down goes with the client's word for it or with none: true, false, or nothing at all.)
+  if (objectKind === "fleetByNumber" && body.method === "RejectInvite" && decliningWordOf(body.args) === null) {
+    res.status(400).json({ ok: false, error: "INVALID_ALREADY_IN_FLEET", message: "An invitation is turned down with true, with false, or with nothing." });
+    return;
+  }
   // (The fleet an invitation is to, where the call says one: a fleet's number as above. And the pilot invited
   // is a pilot's number, the call's first argument: nothing else of what it came with is taken.)
   if (objectKind === "fleetExpected" && saysWhich && strictPositiveID(body.of) === null) {
@@ -1063,7 +1068,10 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
       // (An invitation accepted, as its route accepts one: on the fleet the page names, bound by its number,
       // with no type of ship said whatever the call came with.)
       : objectKind === "fleetByNumber"
-      ? { ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => acceptFleetInviteCall(heldBridgeSession, req.webSessionID, strictPositiveID(body.of))),
+      // (Or turned down, as its route turns one down: on the same object, with the word the call said or none.)
+      ? { ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => (body.method === "RejectInvite"
+        ? rejectFleetInviteCall(heldBridgeSession, req.webSessionID, strictPositiveID(body.of), decliningWordOf(body.args))
+        : acceptFleetInviteCall(heldBridgeSession, req.webSessionID, strictPositiveID(body.of)))),
         service: body.service, method: body.method }
       // (A pilot invited, on the session's own fleet or on the fleet the call expects, with the invitee and
       // nothing of a wing, a squad or a role whatever the call came with.)
@@ -9689,6 +9697,31 @@ async function createFleetCall(held, webSessionID) {
 async function acceptFleetInviteCall(held, webSessionID, fleetID) {
   try {
     return await boundCall(held, webSessionID, fleetIDBindSpec(fleetID), "AcceptInvite", [null], null);
+  } finally {
+    invalidateFleetBoundHandles(held);
+  }
+}
+
+/**
+ * What a call of the page's that turns an invitation down says with it, as the arguments to ask with: nothing
+ * (no arguments at all, or none in the list), or the one word, true or false. Null where it is none of those.
+ */
+function decliningWordOf(args) {
+  if (args === undefined || args === null) return [];
+  if (!Array.isArray(args) || args.length > 1) return null;
+  return args.length === 0 ? [] : typeof args[0] === "boolean" ? [args[0]] : null;
+}
+
+/**
+ * A fleet's invitation turned down, as the client turns one down (fleetSvc.OnFleetInvite, 1168 to 1199):
+ * RejectInvite(True), RejectInvite(False) or RejectInvite(), on a Moniker for the fleet the invitation names.
+ * The invitation, not the bind, is the authority: the server forgets only an invitation of the session's own
+ * character that names that fleet. `said` is the word as the arguments to ask with (decliningWordOf). Whatever
+ * comes of it, none of the BFF's handles for a fleet is kept, as after its route.
+ */
+async function rejectFleetInviteCall(held, webSessionID, fleetID, said) {
+  try {
+    return await boundCall(held, webSessionID, fleetIDBindSpec(fleetID), "RejectInvite", said, null);
   } finally {
     invalidateFleetBoundHandles(held);
   }
