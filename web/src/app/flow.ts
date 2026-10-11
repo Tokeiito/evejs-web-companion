@@ -334,6 +334,7 @@ import { siteKind } from "../scanner/siteKind.ts";
 import { decodeFittings } from "../bridge/fittings.ts";
 import { decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge/sharedFittings.ts";
 import { readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
+import { agentsAtStation, readAgentsTable } from "../bridge/agentReads.ts";
 import { readCorporationMemberIDs } from "../bridge/corpMemberReads.ts";
 import {
   authoritativeFleetMemberCharacterIDs,
@@ -5296,13 +5297,43 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     await loadChat(channel);
   }
 
-  // Load the docked station's agent roster (agentMgr.GetAgents, filtered to the
-  // held session's station by the BFF). Standalone so both the tab (onMount /
-  // Refresh) and the R6b docked-station-change refresh can call it.
+  /** The table of agents while it is being read, and once it is had. */
+  let agentsTableRead: ReturnType<typeof readAgentsTable> | null = null;
+
+  /**
+   * The whole table of agents, asked for once and kept, as the client's agents service keeps it for its life
+   * (agents.py 89 to 115): the page's own call (bridge/agentReads.ts). A table that could not be read is not
+   * kept, and is asked for again by whoever wants it next.
+   */
+  function agentsKnown(): ReturnType<typeof readAgentsTable> {
+    if (agentsTableRead === null) {
+      const reading = readAgentsTable(bridgeAsk);
+      agentsTableRead = reading;
+      reading.catch(() => {
+        if (agentsTableRead === reading) {
+          agentsTableRead = null;
+        }
+      });
+    }
+    return agentsTableRead;
+  }
+
+  // List the agents of the station the pilot is docked at: the table's, at the
+  // station the page has its pilot at, as the client's docked view picks them
+  // (dockedUI/agents.py 153). Standalone so both the tab (onMount / Refresh) and
+  // the R6b docked-station-change refresh can call it.
   async function loadAgents(): Promise<void> {
     await runAgentAction(async () => {
-      const list = await api.loadAgents(callOptions);
-      store.apply({ type: "agents/list", stationID: list.stationID, agents: list.agents });
+      const dockedAt = (): number | null => store.station.get().online?.stationID ?? null;
+      // A pilot at no station has no station's agents, and the table is not asked for to say so.
+      if (dockedAt() === null) {
+        store.apply({ type: "agents/list", stationID: null, agents: [] });
+        return;
+      }
+      const table = await agentsKnown();
+      // (Where the pilot is when the table comes: it may have docked elsewhere while it was read.)
+      const stationID = dockedAt();
+      store.apply({ type: "agents/list", stationID, agents: agentsAtStation(table, stationID) });
     });
   }
 

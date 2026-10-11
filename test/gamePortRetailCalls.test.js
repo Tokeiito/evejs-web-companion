@@ -2684,3 +2684,18 @@ test("what is at a station is asked of the pilot's own container with the statio
     assert.match(odd.note, /the one station/);
   }
 });
+
+// agents.py 92: agents = sm.RemoteSvc('agentMgr').GetAgents().Clone(), by name and with nothing, once for the
+// life of the client's agents service. Tranquility's recordings have it so, in two logins. The game port keeps
+// the table as the client does, and the page asks for it to list a station's agents.
+
+test("the table of agents is asked of the agent manager by name, with nothing", () => {
+  const asked = form("agentMgr.GetAgents", []);
+  assert.deepEqual([asked.status, asked.args, asked.kwargs], ["same", [], null]);
+  assert.match(asked.source, /agents\.py:92$/);
+  assert.match(asked.note, /Tranquility/);
+  // Something sent with it is not the client's call: a station least of all.
+  const withMore = form("agentMgr.GetAgents", [60003760]);
+  assert.deepEqual([withMore.status, withMore.args], ["differs", [60003760]]);
+  assert.match(withMore.note, /nothing/);
+});

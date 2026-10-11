@@ -8,8 +8,13 @@ import assert from "node:assert/strict";
 
 import { createAppFlow } from "./flow.ts";
 import { createClientStore } from "../store/clientStore.ts";
+import { agentsTableAnswer, isAgentsTableCall, pilotDockedAt } from "./agentFixtures.ts";
 
 // --- marshaled fixtures (handler-shaped) -----------------------------------
+//
+// (The station's agents are the page's own read since 2026-10-11: the whole table by agentMgr.GetAgents, and
+// those at the station the page has its pilot docked at. AGENTS_RESPONSE keeps the agents these tests talk to;
+// each stand-in answers the table with them, and has a pilot docked at their station.)
 
 const AGENTS_RESPONSE = {
   ok: true,
@@ -178,9 +183,10 @@ function makeFakeFetch(
 
 test("loadAgents fills the store's agent roster", async () => {
   const store = createClientStore();
-  const { fetch } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/agents") {
-      return { status: 200, body: AGENTS_RESPONSE };
+  store.apply(pilotDockedAt(60000004));
+  const { fetch } = makeFakeFetch((path, _method, body) => {
+    if (isAgentsTableCall(path, body)) {
+      return { status: 200, body: agentsTableAnswer(AGENTS_RESPONSE.agents) };
     }
     throw new Error(`unexpected ${path}`);
   });
@@ -782,9 +788,10 @@ function conversationWith(actions: readonly (readonly [number, number])[], info:
 /** A flow whose agent answers each DoAction from `answers`, by the action pressed (null for the opening). */
 async function talking(answers: Record<string, ReturnType<typeof conversationWith>>, agentTypeID: number | null = 2) {
   const store = createClientStore();
+  store.apply(pilotDockedAt(60000004));
   const { fetch, requests } = makeFakeFetch((path, _method, body) => {
-    if (path === "/api/bridge/agents") {
-      return { status: 200, body: { ...AGENTS_RESPONSE, agents: agentTypeID === null ? [] : [{ ...AGENTS_RESPONSE.agents[0]!, agentTypeID }] } };
+    if (isAgentsTableCall(path, body)) {
+      return { status: 200, body: agentsTableAnswer(agentTypeID === null ? [] : [{ ...AGENTS_RESPONSE.agents[0]!, agentTypeID }]) };
     }
     if (path === "/api/bridge/agents/3008416/action") {
       const answer = answers[String(body.actionID)];
@@ -940,6 +947,8 @@ async function listening(
     const routed = options.routes ? await options.routes(path, body) : undefined;
     if (routed !== undefined) {
       [status, answer] = routed;
+    } else if (isAgentsTableCall(path, body)) {
+      answer = agentsTableAnswer([AGENTS_RESPONSE.agents[0]!, { ...AGENTS_RESPONSE.agents[0]!, agentID: OTHER_AGENT }]);
     } else if (path === "/api/bridge/call") {
       // What coming online reads of the station: answered with nothing, in the route's own envelope.
       answer = { ok: true, service: body.service, method: body.method, result: null, notifications: [] };
@@ -950,8 +959,6 @@ async function listening(
         station: null,
         notifications: [],
       };
-    } else if (path === "/api/bridge/agents") {
-      answer = { ...AGENTS_RESPONSE, agents: [AGENTS_RESPONSE.agents[0]!, { ...AGENTS_RESPONSE.agents[0]!, agentID: OTHER_AGENT }] };
     } else if (/^\/api\/bridge\/agents\/\d+\/action$/.test(path)) {
       if (state.hold) await state.hold;
       if (state.holdAction && state.holdAction.actionID === body.actionID) await state.holdAction.wait;
@@ -1353,6 +1360,7 @@ const briefingWith = (declineTime: unknown, expirationTime: unknown) => ({
 
 test("each layout keeps what its own briefing says of time, whatever the last action was", async () => {
   const store = createClientStore();
+  store.apply(pilotDockedAt(60000004));
   let briefingAnswer: unknown = briefingWith(-1, null);
   const answers: Record<string, ReturnType<typeof conversationWith>> = {
     null: conversationWith([[816, 3], [817, 9]]),
@@ -1360,7 +1368,7 @@ test("each layout keeps what its own briefing says of time, whatever the last ac
     822: conversationWith([[821, 2]], [["missionQuit", true]]),
   };
   const { fetch } = makeFakeFetch((path, _method, body) => {
-    if (path === "/api/bridge/agents") return { status: 200, body: AGENTS_RESPONSE };
+    if (isAgentsTableCall(path, body)) return { status: 200, body: agentsTableAnswer(AGENTS_RESPONSE.agents) };
     if (path === "/api/bridge/agents/3008416/action") return { status: 200, body: answers[String(body.actionID)]! };
     if (path === "/api/bridge/agents/3008416/briefing") return { status: 200, body: briefingAnswer };
     if (path === JOURNAL_READ) return { status: 200, body: journalResponse([]) };
@@ -1403,6 +1411,7 @@ test("a window that closes takes its mission's time with it", async () => {
 
 test("each layout keeps the mission's objectives, and an action that ends the mission clears them", async () => {
   const store = createClientStore();
+  store.apply(pilotDockedAt(60000004));
   let reads: unknown = BRIEFING_RESPONSE;
   const answers: Record<string, ReturnType<typeof conversationWith>> = {
     null: conversationWith([[816, 3], [817, 9]]),
@@ -1410,7 +1419,7 @@ test("each layout keeps the mission's objectives, and an action that ends the mi
     822: conversationWith([[821, 2]], [["missionQuit", true]]),
   };
   const { fetch } = makeFakeFetch((path, _method, body) => {
-    if (path === "/api/bridge/agents") return { status: 200, body: AGENTS_RESPONSE };
+    if (isAgentsTableCall(path, body)) return { status: 200, body: agentsTableAnswer(AGENTS_RESPONSE.agents) };
     if (path === "/api/bridge/agents/3008416/action") return { status: 200, body: answers[String(body.actionID)]! };
     if (path === "/api/bridge/agents/3008416/briefing") return { status: 200, body: reads };
     if (path === JOURNAL_READ) return { status: 200, body: journalResponse([]) };

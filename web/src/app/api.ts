@@ -36,7 +36,6 @@ import type { JsonValue } from "../bridge/wire.ts";
 import type { SafetyLevel } from "../space/crimewatch.ts";
 import type { MinerTrainingRead, StageFittingSelection, TrainingCharacter, QueueReview, QueueApplyOutcome } from "../training/types.ts";
 import type {
-  AgentRow,
   IndustryActivity,
   InventoryPlace,
   OnlineCharacterState,
@@ -1886,19 +1885,8 @@ export async function readBotLog(
 // and decodes the raw retail-shaped conversation/briefing/journal results with
 // bridge/agents.ts.
 
-export interface AgentListResult {
-  readonly stationID: number | null;
-  readonly agents: readonly AgentRow[];
-}
-
-/** The station's agents (agentMgr.GetAgents, filtered to the docked station). */
-export async function loadAgents(options: ApiOptions = {}): Promise<AgentListResult> {
-  const data = await getJson("/api/bridge/agents", options);
-  return {
-    stationID: asNumberOrNull(data.stationID),
-    agents: Array.isArray(data.agents) ? (data.agents as unknown as readonly AgentRow[]) : [],
-  };
-}
+// (A station's agents are the page's own read since 2026-10-11: the whole table by bridge/agentReads.ts, kept by
+// the flow, and those at the pilot's station picked from it.)
 
 /**
  * Drive the agent conversation: DoAction(actionID). `actionID` null opens the

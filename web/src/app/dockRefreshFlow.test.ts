@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 
 import { createAppFlow } from "./flow.ts";
 import { createClientStore } from "../store/clientStore.ts";
+import { agentsTableAnswer } from "./agentFixtures.ts";
 
 const STATION_A = 60003760; // Jita 4-4 (select landing)
 const SYSTEM_A = 30000142; // Jita
@@ -124,6 +125,11 @@ function respond(path: string, _method: string, body: Record<string, unknown>): 
         },
       };
     }
+    // The whole table of agents, which the page asks for itself and picks its station's from: the two stations'
+    // agents, wherever the pilot is.
+    if (m === "GetAgents") {
+      return { status: 200, body: agentsTableAnswer([...agentsFor(STATION_A), ...agentsFor(STATION_B)]) };
+    }
     if (m === "GetStationItemBits") {
       return { status: 200, body: { ok: true, service: "stationSvc", method: m, result: [1000035, current.stationID, 26, 1529], notifications: [] } };
     }
@@ -153,8 +159,9 @@ function respond(path: string, _method: string, body: Record<string, unknown>): 
     current.inSpace = false;
     return { status: 200, body: { ok: true, result: null, flight: dockedSnapshot(), notifications: [] } };
   }
+  // The route, which nothing is to ask: it answers a station that is neither.
   if (path === "/api/bridge/agents") {
-    return { status: 200, body: { ok: true, stationID: current.stationID, agents: agentsFor(current.stationID) } };
+    return { status: 200, body: { ok: true, stationID: 60008494, agents: agentsFor(60008494) } };
   }
   if (path === "/api/bridge/inventory") {
     return {
@@ -255,13 +262,17 @@ test("opening the Agents tab after a dock re-fetches the current station's agent
 test("re-docking at the SAME station does not redundantly relocate (guarded)", async () => {
   const { store, flow, paths } = await onlineFlow();
   await flow.loadAgents();
-  const agentsReadsBefore = paths.filter((p) => p === "/api/bridge/agents").length;
+  // (The station's reads are the page's own calls, the station's services among them: a relocation makes some,
+  // and the table of agents is asked for once whatever happens.)
+  const callsBefore = paths.filter((p) => p === "/api/bridge/call").length;
+  assert.ok(callsBefore > 0);
 
   // A plain flight-status read while still docked at the select station A must
   // NOT trigger a relocate (no new station-scoped reads).
   await flow.loadFlightStatus();
 
-  const agentsReadsAfter = paths.filter((p) => p === "/api/bridge/agents").length;
-  assert.equal(agentsReadsAfter, agentsReadsBefore, "no redundant agents re-fetch at the same station");
+  const callsAfter = paths.filter((p) => p === "/api/bridge/call").length;
+  assert.equal(callsAfter, callsBefore, "no redundant station-scoped read at the same station");
+  assert.equal(paths.includes("/api/bridge/agents"), false, "and the agents' route is asked by nothing");
   assert.equal(store.station.get().online?.stationID, STATION_A);
 });

@@ -4756,3 +4756,91 @@ test("the station's route asks the same of the same container, reading the fligh
     assert.deepEqual([lost.first.response.status, lost.first.payload.error], [404, "SESSION_NOT_FOUND"], transport);
   }
 });
+
+// ── the agents at a station ──────────────────────────────────────────────────
+//
+// agents.py 92: sm.RemoteSvc('agentMgr').GetAgents(), by name with nothing: the whole table, which the client
+// keeps and picks a station's agents from (dockedUI/agents.py 153). The page asks it as a pilot's read and
+// does the same. The route the page asked before still stands: it reads the pilot's flight, asks for the table,
+// and answers those at the station the BFF has the pilot at.
+
+const AGENTS_HEADER = ["agentID", "agentTypeID", "divisionID", "level", "stationID", "corporationID", "isLocatorAgent", "isInSpace", "careerID", "importantMission", "missionKind", "missionTypeLabel", "specialityID", "stationTypeID", "bloodlineID"];
+const agentLine = (agentID, stationID, level = 1) => ({ type: "list", items: [agentID, 2, 22, level, stationID, 1000002, false, stationID === null, 14, false, "courier", "UI/Agents/MissionTypes/Courier", 15, 1531, 1] });
+const AGENTS_TABLE = { type: "object", name: "eve.common.script.sys.rowset.Rowset", args: { type: "dict", entries: [
+  ["header", { type: "list", items: AGENTS_HEADER }], ["RowClass", { type: "token", value: "carbon.common.script.sys.row.Row" }],
+  ["lines", { type: "list", items: [agentLine(3000001, 60003760), agentLine(3000002, 60000004, 4), agentLine(3000003, null), agentLine(0, 60003760), agentLine(3000004, 60003760, 2)] }],
+] } };
+const agentRow = (agentID, stationID, level = 1) => ({ agentID, agentTypeID: 2, divisionID: 22, level, stationID, corporationID: 1000002, missionKind: "courier", missionTypeLabel: "UI/Agents/MissionTypes/Courier" });
+
+test("the table of agents goes by the generic call as a pilot's read, by name and as it was sent", async () => {
+  const gateway = fakeGateway({
+    async callMethod(service, method, args, kwargs, sessionFields, bridgeSessionID) {
+      gateway.calls.call.push({ service, method, args, kwargs, sessionFields, bridgeSessionID });
+      return { service, method, result: AGENTS_TABLE, notifications: [] };
+    },
+  });
+  const { baseUrl } = await startTestServer({ gateway });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const before = gateway.calls.call.length;
+  const made = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "agentMgr", method: "GetAgents", args: [], kwargs: null, pilot: true } });
+  // The table as the server answered it, whole: the page picks its station's agents from it.
+  assert.deepEqual([made.response.status, made.payload.service, made.payload.method, made.payload.result], [200, "agentMgr", "GetAgents", AGENTS_TABLE]);
+  const sent = gateway.calls.call.at(-1);
+  assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["agentMgr", "GetAgents", [], null, BRIDGE_SESSION_ID, { userid: 4 }]);
+  assert.equal(gateway.calls.call.length, before + 1);
+  // It is made on no object: a call that says which is none.
+  const named = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "agentMgr", method: "GetAgents", args: [], kwargs: null, pilot: true, of: 3000001 } });
+  assert.deepEqual([named.response.status, named.payload.error, gateway.calls.call.length], [400, "INVALID_REQUEST", before + 1]);
+});
+
+test("the agents' route reads the pilot's flight, asks for the whole table by name, and answers those at the station the BFF has the pilot at", async () => {
+  const asked = [];
+  let flight = () => ({ docked: true, inSpace: false, stationID: 60003760, shipID: 9001 });
+  let table = () => AGENTS_TABLE;
+  const gateway = fakeGateway({
+    async readFlightStatus() { asked.push("the flight"); return { flight: flight(), notifications: [] }; },
+    async callMethod(service, method, args) { asked.push([service, method, args]); return { service, method, result: table(), notifications: [] }; },
+  });
+  const { baseUrl } = await startTestServer({ gateway });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  asked.length = 0;
+
+  // Docked at a station: its agents, each a plain row, in the table's order. A line that names no agent is none.
+  const docked = await apiRequest(baseUrl, "/api/bridge/agents");
+  assert.deepEqual([docked.response.status, docked.payload], [200, { ok: true, stationID: 60003760, agents: [agentRow(3000001, 60003760), agentRow(3000004, 60003760, 2)] }]);
+  assert.deepEqual(asked.splice(0), ["the flight", ["agentMgr", "GetAgents", []]]);
+
+  // Docked at another: the BFF's word for the station follows the flight, and so do the agents.
+  flight = () => ({ docked: true, inSpace: false, stationID: 60000004, shipID: 9001 });
+  const moved = await apiRequest(baseUrl, "/api/bridge/agents");
+  assert.deepEqual(moved.payload, { ok: true, stationID: 60000004, agents: [agentRow(3000002, 60000004, 4)] });
+  // In space after that: the last station, and its agents still.
+  flight = () => ({ docked: false, inSpace: true, stationID: null, shipID: 9001 });
+  const inSpace = await apiRequest(baseUrl, "/api/bridge/agents");
+  assert.deepEqual(inSpace.payload, { ok: true, stationID: 60000004, agents: [agentRow(3000002, 60000004, 4)] });
+  // Docked in a structure the BFF has the pilot at no station, and the route answers every agent of the table.
+  flight = () => ({ docked: true, inSpace: false, stationID: null, structureID: 1052851966475, shipID: 9001 });
+  const inAStructure = await apiRequest(baseUrl, "/api/bridge/agents");
+  assert.deepEqual([inAStructure.payload.stationID, inAStructure.payload.agents.map((agent) => agent.agentID)], [null, [3000001, 3000002, 3000003, 3000004]]);
+  asked.length = 0;
+
+  // What is no table reads as no agents; the route does not say the table was unread.
+  flight = () => ({ docked: true, inSpace: false, stationID: 60003760, shipID: 9001 });
+  for (const odd of [null, { type: "list", items: [] }, { type: "object", name: "x" }]) {
+    table = () => odd;
+    const unread = await apiRequest(baseUrl, "/api/bridge/agents");
+    assert.deepEqual([unread.response.status, unread.payload], [200, { ok: true, stationID: 60003760, agents: [] }], JSON.stringify(odd));
+  }
+  asked.length = 0;
+
+  // A flight that cannot be read fails the route, and the table is not asked for.
+  table = () => AGENTS_TABLE;
+  flight = () => { throw new gatewayClient.EveGatewayError("busy", { code: "CALL_FAILED", statusCode: 502 }); };
+  const blind = await apiRequest(baseUrl, "/api/bridge/agents");
+  assert.deepEqual([blind.response.status, blind.payload.error, asked.splice(0)], [502, "CALL_FAILED", ["the flight"]]);
+  // And so does a table the server refuses.
+  flight = () => ({ docked: true, inSpace: false, stationID: 60003760, shipID: 9001 });
+  table = () => { throw new gatewayClient.EveGatewayError("NotNow", { code: "CALL_REFUSED", statusCode: 409 }); };
+  const refused = await apiRequest(baseUrl, "/api/bridge/agents");
+  assert.deepEqual([refused.response.status, refused.payload.error], [409, "CALL_REFUSED"]);
+});
