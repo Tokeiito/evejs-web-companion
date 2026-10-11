@@ -294,6 +294,10 @@ const warping = (args, kwargs, context) => {
       return notAClients("No route warps to that: an item, a fleet member, a bookmark, a scan result or a launch.");
   }
 };
+/** autopilot.AP_WarpToDestID (465): GetRemotePark().CmdWarpToStuffAutopilot(destinationID), the one thing and nothing else. */
+const autopilotWarping = (args, kwargs) => (args.length === 1 && aThingsID(args[0]) && Object.keys(kwargs).length === 0
+  ? {}
+  : { status: "differs", note: "The client's autopilot sends the one thing it warps to, by its number, and nothing else." });
 /** A judge for a call the client sends with nothing: no argument, and no keyword. */
 const sentWithNothing = (args, kwargs) => (args.length === 0 && Object.keys(kwargs).length === 0 ? {} : { status: "differs", note: "The client sends nothing with this call." });
 /** Items' IDs as the client's repair shop lists them: whole numbers above nought, and one at least. */
@@ -474,7 +478,7 @@ const ON_AN_ANSWERED_OBJECT = Object.freeze(new Set(["scanMgr.GetFullState"]));
  * What the client asks of its ballpark's own object (michelle.GetRemotePark()) and the page asks of beyonce by its
  * name: made on the park's object, where the pilot has a park.
  */
-const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdAlignTo", "CmdFollowBall", "CmdSetSpeedFraction", "CmdOrbit", "CmdStop", "BookmarkLocation", "CmdWarpToStuff"]));
+const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdAlignTo", "CmdFollowBall", "CmdSetSpeedFraction", "CmdOrbit", "CmdStop", "BookmarkLocation", "CmdWarpToStuff", "CmdWarpToStuffAutopilot"]));
 const madeOnMoniker = (service, method) => Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method) && method !== "MachoBindObject";
 
 const INV_CACHE = "eve/client/script/environment/invCache.py";
@@ -1308,7 +1312,7 @@ const RETAIL_CALLS = Object.freeze({
 
   // ── the scanner (the scan manager a service call answers with, and the dogma location) ─────────────
   "beyonce.GetFormations": same("eve/client/script/remote/michelle.py:324", "RemoteSvc('beyonce').GetFormations(), no arguments, by name, as the ballpark is made. Recorded on Tranquility so."),
-  "beyonce.CmdWarpToStuffAutopilot": same("eve/client/script/parklife/autopilot.py:465", "GetRemotePark().CmdWarpToStuffAutopilot(destinationID): the autopilot's warp, on the ballpark's object. Recorded on Tranquility with the one ID."),
+  "beyonce.CmdWarpToStuffAutopilot": judged("eve/client/script/parklife/autopilot.py:465", autopilotWarping, "GetRemotePark().CmdWarpToStuffAutopilot(destinationID): the autopilot's warp, on the ballpark's object. Recorded on Tranquility with the one ID."),
   "beyonce.CmdWarpToStuff": judged("eve/client/script/remote/michelle.py:737", warping,
     "bp.CmdWarpToStuff(subject, subjectID, **kwargs), on the ballpark's object, with the keywords its caller sends: 'item' and the thing's ID with minRange (movementFunctions.py 452), 'char' for a fleet member with minRange a float (menusvc.py 2748), 'bookmark' with minRange a float and fleet (movementFunctions.py 419), 'scan' with minRange and fleet (menusvc.py 1428), 'launch' and a launch's ID with nothing (journal.py 453). Recorded on Tranquility as ('item', itemID, minRange=0), and as ('char', charID, minRange=0.0)."),
   "beyonce.CmdDock": same("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:517", "bp.CmdDock(itemID, session.shipid), on the ballpark's object, through sessionMgr.PerformSessionChange('dock', ...). Recorded on Tranquility with the two IDs."),

@@ -267,8 +267,14 @@ function isBridgeWritePair(service, method) {
  *                                it takes the session's own character out of the fleet the object is for,
  *                                and refuses one who is no member of it. It is made as the route made it
  *                                (PAGE_OBJECT_CALLS, "fleet").
- *   beyonce.CmdWarpToStuff       the ship sent into warp: to a scan result, a bookmark and a launch so far
- *                                (bridge/movementWrites.ts). The routes asked no `confirm`. They checked that the
+ *   beyonce.CmdWarpToStuffAutopilot  the ship sent into warp as the client's autopilot warps: the route
+ *                                (flight/warp, with no range) asked no `confirm`, and checked that the pilot was
+ *                                in space, which the page reads for itself. The server's handler
+ *                                (beyonceService.Handle_CmdWarpToStuffAutopilot, read to its closing brace) takes
+ *                                one number of the caller and nothing else: a thing of the session's own scene,
+ *                                which the session's own ship is flown to, to stop ten kilometres off.
+ *   beyonce.CmdWarpToStuff       the ship sent into warp: to a scan result, a bookmark, a launch, a thing and
+ *                                a fleet member (bridge/movementWrites.ts). The routes asked no `confirm`. They checked that the
  *                                pilot was in space, which the page reads for itself before it asks. The server
  *                                flies the session's own ship in the session's own system: to a thing of its
  *                                scene; a site of that system by its label or its instance's number; a moon's
@@ -382,7 +388,7 @@ function isBridgeWritePair(service, method) {
  *                                The page asks each by the service's name, with the system its own read of
  *                                the job has, and goes by the job answered.
  */
-const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.Invite", "fleetObjectHandler.RejectInvite", "beyonce.BookmarkLocation", "dogmaIM.AddTarget", "dogmaIM.RemoveTarget", "dogmaIM.CancelAddTarget", "ship.ScoopDrone", "industryManager.CompleteJob", "industryManager.CancelJob", "beyonce.CmdWarpToStuff"]);
+const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.Invite", "fleetObjectHandler.RejectInvite", "beyonce.BookmarkLocation", "dogmaIM.AddTarget", "dogmaIM.RemoveTarget", "dogmaIM.CancelAddTarget", "ship.ScoopDrone", "industryManager.CompleteJob", "industryManager.CancelJob", "beyonce.CmdWarpToStuff", "beyonce.CmdWarpToStuffAutopilot"]);
 const pageWritePairKeySet = new Set(PAGE_WRITE_PAIR_KEYS);
 for (const pair of PAGE_WRITE_PAIR_KEYS) {
   if (!bridgeWritePairKeySet.has(pair)) throw new Error(`${pair} is among the page's writes and is no write.`);

@@ -85,11 +85,17 @@ test("undock issues ship.Undock and refreshes the in-space snapshot", async () =
   assert.equal(flight.actionError, null);
 });
 
-test("warp posts the chosen destination and records the step", async () => {
+/** What the page asked by the generic call, in order. */
+const calls = (requests: Recorded[]) => requests.filter((request) => request.path === "/api/bridge/call").map((request) => request.body);
+
+test("a warp with no range said is the autopilot's own call and one with a range the menu's, each made by the page; the step is recorded", async () => {
   const store = createClientStore();
-  const { fetch, requests } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/flight/warp") {
-      return { status: 200, body: { ok: true, result: null, flight: IN_SPACE, notifications: [] } };
+  const { fetch, requests } = makeFakeFetch((path, _method, body) => {
+    if (path === "/api/bridge/flight/status") {
+      return { status: 200, body: { ok: true, flight: IN_SPACE, notifications: [] } };
+    }
+    if (path === "/api/bridge/call") {
+      return { status: 200, body: { ok: true, service: body.service, method: body.method, result: null, notifications: [] } };
     }
     throw new Error(`unexpected ${path}`);
   });
@@ -97,8 +103,18 @@ test("warp posts the chosen destination and records the step", async () => {
 
   await flow.warpTo(50001248);
 
-  assert.deepEqual(requests[0]?.body, { destinationID: 50001248 });
+  // autopilot.py 465: GetRemotePark().CmdWarpToStuffAutopilot(destinationID), as a pilot's write the page means.
+  assert.deepEqual(calls(requests), [{ service: "beyonce", method: "CmdWarpToStuffAutopilot", args: [50001248], kwargs: null, pilot: true, confirm: true }]);
   assert.equal(store.flight.get().lastAction, "Warp");
+  assert.equal(store.flight.get().actionError, null);
+  // The pilot's flight was read before the order and after it: the step's answer is the flight read after.
+  assert.deepEqual(requests.map((request) => request.path).filter((path) => path.startsWith("/api/bridge/")), ["/api/bridge/flight/status", "/api/bridge/call", "/api/bridge/flight/status"]);
+
+  // movementFunctions.py 452: CmdWarpToStuff('item', itemID, minRange=warpRange), with the range that was said.
+  await flow.warpTo(50001248, 10000);
+  assert.deepEqual(calls(requests).at(-1), { service: "beyonce", method: "CmdWarpToStuff", args: ["item", 50001248], kwargs: { minRange: 10000 }, pilot: true, confirm: true });
+  // Neither went by the route they went by until 2026-10-11.
+  assert.equal(requests.some((request) => request.path === "/api/bridge/flight/warp"), false);
 });
 
 test("jump posts both gate IDs; a follow-up status shows the new system", async () => {
@@ -139,7 +155,7 @@ test("dock returns the character to a station", async () => {
 test("a movement refusal is surfaced as a visible reason and the true state re-read", async () => {
   const store = createClientStore();
   const { fetch, requests } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/flight/warp") {
+    if (path === "/api/bridge/call") {
       // The handler's own refusal (e.g. warp scrambled) passes through as a
       // CALL_REFUSED with the handler text.
       return { status: 409, body: { ok: false, error: "CALL_REFUSED", message: "You are warp scrambled." } };

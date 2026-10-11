@@ -154,6 +154,42 @@
 //
 // ⚠ A PAGE'S WARP IS HELD TO THESE FORMS BY THE BFF (src/server.js, notAClientsWarp). The server's handler would
 // fly the ship to a point a caller gave; no client gives one.
+//
+// SENT INTO WARP, TO A THING. movementFunctions.WarpToItem (437 to 452), the menu's "warp to" and its "warp to
+// within": nothing for the pilot's own ship (438), and with a park
+//
+//   michelle.CmdWarpToStuff('item', itemID, minRange=warpRange)
+//
+// The range is the pilot's own warp distance where none is said, a whole number and nought by default; the menu's
+// list offers seven (GetWarpToRanges, 334 to 343), from nought to a hundred kilometres. It answers nothing.
+// Tranquility's recordings have it with a whole nought. The server flies the session's own ship to a thing of its
+// scene, to stop that far short of it.
+//
+// ⚠ WHERE THE SENSOR SUITE HAS A BRACKET FOR THE THING, THE CLIENT MAKES THE BRACKET'S OWN WARP IN THIS ONE'S PLACE
+// (443 to 446): a scan result's, or a bookmark's. The page makes this one for every thing.
+//
+// SENT INTO WARP, AS THE AUTOPILOT WARPS. autopilot.AP_WarpToDestID (465):
+//
+//   sm.GetService('michelle').GetRemotePark().CmdWarpToStuffAutopilot(destinationID)
+//
+// The thing alone. Tranquility has it recorded so. The server's handler takes one number of the caller, flies the
+// session's own ship to that thing of its scene, and stops it ten kilometres short: the autopilot's warp of the
+// client is not one to nought.
+//
+// ⚠ THE PAGE'S OWN AUTOPILOTS DO NOT MAKE THE AUTOPILOT'S CALL. Its travel autopilot, its mining bot and its script
+// bots warp by the menu's call at a range of nought (nav/autopilotLoop.ts says why: the ten kilometres). The flight
+// panel's warp with no range said, and the fleet companion's, make the autopilot's.
+//
+// SENT INTO WARP, TO A FLEET MEMBER. menusvc.WarpToMember (2748), from the fleet's menu:
+//
+//   michelle.CmdWarpToStuff('char', charID, minRange=warpRange)
+//
+// and no word of a fleet's. The menu gives the range as a float of the pilot's own warp distance, nought by
+// default (712). One recording has it, with a float's nought. The server (beyonceService.js,
+// resolveFleetMemberWarpTarget) looks the pilot up in the session's own fleet and flies the ship to that member's
+// ship, on this grid or off it; it refuses one who is in no fleet of the session's, is not online, or is in
+// another system. The page says a range of nought; on the game port it is made the client's float where the call
+// is sent.
 
 import type { Ask } from "./ask.ts";
 
@@ -195,6 +231,9 @@ export interface SitesReadIn extends SitesKnown {
 }
 
 const isAnID = (id: unknown): id is number => Number.isSafeInteger(id) && (id as number) > 0;
+
+/** The distances the client's menu offers a warp at (movementFunctions.GetWarpToRanges), in metres. */
+export const WARP_RANGES_M: readonly number[] = Object.freeze([0, 10000, 20000, 30000, 50000, 70000, 100000]);
 
 /** const.approachRange: how far short of a thing the client's own approach stops, in metres. */
 export const APPROACH_RANGE_M = 50;
@@ -376,4 +415,44 @@ export async function warpToBookmark(act: Ask, flightNow: () => Promise<FlightNo
 export async function warpToLaunch(act: Ask, flightNow: () => Promise<FlightNow>, launchID: number): Promise<void> {
   await aPlaceToWarpTo(flightNow, launchID, "A launch is required.");
   await act("beyonce", "CmdWarpToStuff", ["launch", launchID]);
+}
+
+/**
+ * Warps the pilot's ship to a thing in space, as the client's menu does: to stop `range` metres short of it, one
+ * of the seven distances the menu offers. Fails as the call fails, and before it where the range is none of
+ * those, or the client sends nothing: for what is no thing, for a pilot that is not in space, and for the pilot's
+ * own ship.
+ *
+ * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER AN ARRIVAL.
+ */
+export async function warpToItem(act: Ask, flightNow: () => Promise<FlightNow>, targetID: number, range: number): Promise<void> {
+  if (!WARP_RANGES_M.includes(range)) {
+    throw new Error("The warp range must be one of the offered distances.");
+  }
+  await aThingToOrderAbout(flightNow, targetID, "A ship cannot warp to itself.");
+  await act("beyonce", "CmdWarpToStuff", ["item", targetID], { minRange: range });
+}
+
+/**
+ * Warps the pilot's ship to a thing as the client's autopilot does: by the autopilot's own call, with the thing
+ * alone. The server stops the ship ten kilometres short. Fails as the call fails, and before it for what is no
+ * thing, for a pilot that is not in space, and for the pilot's own ship.
+ *
+ * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER AN ARRIVAL.
+ */
+export async function autopilotWarp(act: Ask, flightNow: () => Promise<FlightNow>, targetID: number): Promise<void> {
+  await aThingToOrderAbout(flightNow, targetID, "A ship cannot warp to itself.");
+  await act("beyonce", "CmdWarpToStuffAutopilot", [targetID]);
+}
+
+/**
+ * Warps the pilot's ship to a member of its fleet, as the fleet's menu does: by the member's own number (a pilot's,
+ * not a ship's), with a range of nought and nothing else. Fails as the call fails, and before it for what is no
+ * pilot's number and for a pilot that is not in space.
+ *
+ * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER AN ARRIVAL. The member need not be on this grid.
+ */
+export async function warpToFleetMember(act: Ask, flightNow: () => Promise<FlightNow>, characterID: number): Promise<void> {
+  await aPlaceToWarpTo(flightNow, characterID, "A fleet member is required.");
+  await act("beyonce", "CmdWarpToStuff", ["char", characterID], { minRange: 0 });
 }

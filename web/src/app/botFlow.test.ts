@@ -308,10 +308,12 @@ test("the bot's warps carry retail's minRange 0, not the autopilot call's built-
   await new Promise((resolve) => setTimeout(resolve, 60));
   flow.stopMiningBot();
 
-  const warp = requests.find((r) => r.path === "/api/bridge/flight/warp");
+  // The page's own call (bridge/movementWrites.ts): movementFunctions.py 452, CmdWarpToStuff('item', itemID,
+  // minRange=warpRange), with retail's WarpToItem(warpRange=0) and not the autopilot's call, which stops 10 km short.
+  const warp = requests.find((r) => r.path === "/api/bridge/call" && r.body.method === "CmdWarpToStuff");
   assert.ok(warp, "it warps to the belt");
-  assert.equal(warp.body.destinationID, BELT);
-  assert.equal(warp.body.minRange, 0, "retail's WarpToItem(warpRange=0), not the hardcoded 10 km");
+  assert.deepEqual(warp.body, { service: "beyonce", method: "CmdWarpToStuff", args: ["item", BELT], kwargs: { minRange: 0 }, pilot: true, confirm: true });
+  assert.equal(requests.some((r) => r.path === "/api/bridge/flight/warp"), false);
 });
 
 test("a docked bot unloads first and only then undocks — and the readout says why", async () => {

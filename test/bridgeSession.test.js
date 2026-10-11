@@ -1368,8 +1368,8 @@ test("a fleet's target tag set and cleared is a write of the page's own, asked o
     assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["beyonce", "CmdFleetTagTarget", args, null, BRIDGE_SESSION_ID, { userid: 4 }]);
   }
   const before = gateway.calls.call.length;
-  // (CmdWarpToStuff was among these until 2026-10-11: it is the page's own now, and has its test below.)
-  for (const method of ["CmdAbandonLoot", "CmdJumpThroughFleet", "CmdStargateJump", "CmdWarpToStuffAutopilot", "CmdDock"]) {
+  // (The two warps were among these until 2026-10-11: they are the page's own now, and have their tests below.)
+  for (const method of ["CmdAbandonLoot", "CmdJumpThroughFleet", "CmdStargateJump", "CmdDock"]) {
     const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "beyonce", method, args: [], kwargs: null, pilot: true, confirm: true } });
     assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], method);
   }
@@ -3820,6 +3820,27 @@ test("a warp is a write of the page's own, asked of beyonce by its name with the
   await call({ pilot: true, confirm: true }, ["scan", "QEE-288"]);
   assert.deepEqual([gateway.calls.call.at(-1).args, gateway.calls.call.at(-1).kwargs], [["scan", "QEE-288"], kwargs]);
   assert.equal(gateway.calls.call.length, before + 2);
+});
+
+test("the autopilot's warp is a write of the page's own, asked of beyonce by its name with the thing alone: it goes as it was sent", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  // autopilot.py 465: GetRemotePark().CmdWarpToStuffAutopilot(destinationID).
+  const call = (more) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "beyonce", method: "CmdWarpToStuffAutopilot", args: [50001248], kwargs: null, ...more } });
+  const before = gateway.calls.call.length;
+  for (const more of [{}, { pilot: true }, { confirm: true }]) {
+    const refused = await call(more);
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+  }
+  const named = await call({ pilot: true, confirm: true, of: 30000142 });
+  assert.deepEqual([named.response.status, named.payload.error], [400, "INVALID_REQUEST"]);
+  assert.equal(gateway.calls.call.length, before);
+  const made = await call({ pilot: true, confirm: true });
+  assert.deepEqual([made.response.status, made.payload.service, made.payload.method, made.payload.result], [200, "beyonce", "CmdWarpToStuffAutopilot", null]);
+  const sent = gateway.calls.call.at(-1);
+  assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["beyonce", "CmdWarpToStuffAutopilot", [50001248], null, BRIDGE_SESSION_ID, { userid: 4 }]);
+  assert.equal(gateway.calls.call.length, before + 1);
 });
 
 test("a warp of the page's is one the client's menus make, and no other: what the server's handler would take beyond that is not sent", async () => {

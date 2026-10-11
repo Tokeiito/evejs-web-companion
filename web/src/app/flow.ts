@@ -358,7 +358,7 @@ import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyTo
 import { BOOKMARK_EXPIRY, bookmarkLocation as bookmarkLocationCall } from "../bridge/bookmarkWrites.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
 import { salvageWithDrones, scoopDrones as scoopDronesCall } from "../bridge/boundEntityWrites.ts";
-import { alignTo as alignToCall, approach as approachCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
+import { alignTo as alignToCall, approach as approachCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
 import { boardCorvette as boardCorvetteCall, leaveShip as leaveShipCall } from "../bridge/shipWrites.ts";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
 import { runSlashCommand } from "../bridge/gmWrites.ts";
@@ -4332,6 +4332,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     await warpToScanResultCall(bridgeDo, readFlightNow, sitesLastRead, () => readScanFullState(bridgeAsk), label);
   }
 
+  /** A thing warped to as the client's menu warps to one, by the page's own call (bridge/movementWrites.ts), for the autopilots and the bots. */
+  async function warpToThing(targetID: number, range: number): Promise<void> {
+    await warpToItemCall(bridgeDo, readFlightNow, targetID, range);
+  }
+
+  /** A thing warped to as the client's autopilot warps, by the page's own call (bridge/movementWrites.ts), for the fleet companion. */
+  async function warpAsTheAutopilot(targetID: number): Promise<void> {
+    await autopilotWarpCall(bridgeDo, readFlightNow, targetID);
+  }
+
+  /** A fleet member warped to by the page's own call (bridge/movementWrites.ts), by the pilot's number, for the fleet companion. */
+  async function warpToMember(characterID: number): Promise<void> {
+    await warpToFleetMemberCall(bridgeDo, readFlightNow, characterID);
+  }
+
   /** A bookmark warped to by the page's own call (bridge/movementWrites.ts), for the script bots. */
   async function warpToSpot(bookmarkID: number): Promise<void> {
     await warpToBookmarkCall(bridgeDo, readFlightNow, bookmarkID);
@@ -7175,7 +7190,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // (beyonceService.js:2983). That 10 km was added to the warp's stop
         // distance, pushing the server's silent refusal 10 km further out than
         // the distance the loop was measuring against — the dead band.
-        await api.warpTo(destinationID, AUTOPILOT_WARP_MIN_RANGE_M, callOptions);
+        // (The page's own call since 2026-10-11: bridge/movementWrites.ts, warpToItem.)
+        await warpToThing(destinationID, AUTOPILOT_WARP_MIN_RANGE_M);
       },
       approach: async (destinationID) => {
         // The autopilot's close-the-gap approach is retail's 0.0, not the
@@ -8295,13 +8311,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           case "wait":
             return;
           case "warp":
-            await api.warpTo(action.targetID, null, callOptions);
+            await warpAsTheAutopilot(action.targetID);
             return;
           case "warpToFleetMember":
             // Rung e2's other half: an id the ladder could not find on its own
             // grid, which got that far only by being a fleet-mate. The server
             // resolves where they are — see the route's own note.
-            await api.warpToFleetMember(action.characterID, null, callOptions);
+            await warpToMember(action.characterID);
             return;
           case "approach":
             // ⚠ `range` IS WHERE TO STOP, and null hugs the object. Salvaging
@@ -8716,7 +8732,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // R24 slice A — retail's `WarpToItem(warpRange=0)`, not the autopilot
       // call's hardcoded 10 km. Same correction, same reason.
       warp: async (destinationID) => {
-        await api.warpTo(destinationID, AUTOPILOT_WARP_MIN_RANGE_M, callOptions);
+        await warpToThing(destinationID, AUTOPILOT_WARP_MIN_RANGE_M);
       },
       approach: async (destinationID) => {
         await approachShip(destinationID, 0);
@@ -12706,7 +12722,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             await api.undock(callOptions, true);
             return;
           case "warp":
-            await api.warpTo(action.targetID, AUTOPILOT_WARP_MIN_RANGE_M, callOptions);
+            await warpToThing(action.targetID, AUTOPILOT_WARP_MIN_RANGE_M);
             return;
           case "approach":
             await approachShip(action.targetID, 0);
@@ -14629,7 +14645,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async warpTo(destinationID, minRange = null) {
-      await runFlightStep("Warp", () => api.warpTo(destinationID, minRange, callOptions));
+      // The page's own calls (bridge/movementWrites.ts): the autopilot's with no range said, the menu's with one.
+      await runFlightStep("Warp", () => orderedStep((flightNow) => (
+        minRange === null ? autopilotWarpCall(bridgeDo, flightNow, destinationID) : warpToItemCall(bridgeDo, flightNow, destinationID, minRange))));
     },
 
     async approach(destinationID, range = null) {

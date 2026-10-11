@@ -2762,6 +2762,18 @@ test("a warp goes with the keywords a client sends for what it is to, whatever t
   assert.match(warp(["bookmark", 900000008]).note, /minRange/);
 });
 
+test("the autopilot's warp is the client's with the one thing, and nothing else", () => {
+  // autopilot.py 465: GetRemotePark().CmdWarpToStuffAutopilot(destinationID). Recorded so, with the one ID.
+  const asked = (args, kwargs = null) => form("beyonce.CmdWarpToStuffAutopilot", args, kwargs);
+  assert.deepEqual([asked([50001248]).status, asked([50001248]).args, asked([50001248]).kwargs], ["same", [50001248], null]);
+  assert.match(asked([50001248]).source, /autopilot\.py:465$/);
+  for (const [why, args, kwargs] of [["nothing", [], null], ["two things", [50001248, 0], null], ["a thing with no number", [0], null], ["a thing by its name", ["50001248"], null],
+    ["a number that is no whole one", [1.5], null], ["a keyword", [50001248], { minRange: 0 }]]) {
+    assert.deepEqual([asked(args, kwargs).status, asked(args, kwargs).args, asked(args, kwargs).kwargs], ["differs", args, kwargs], why);
+    assert.equal(typeof asked(args, kwargs).note, "string", why);
+  }
+});
+
 test("a warp's keywords are written as the recordings have them: fleet before minRange, a whole nought, a float's nought, False and None", () => {
   const { marshalEncode } = require("../src/gameProtocol/marshal");
   const written = (value) => Buffer.from(marshalEncode(value)).toString("hex").slice(-2);

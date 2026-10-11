@@ -1,11 +1,11 @@
 // A ship sent to a point in space by the page itself, held to the ship and the system the point was measured in;
 // a ship aligned to a thing; a thing approached, kept at range, or orbited; the ship stopped; and a scan result,
-// a bookmark and a launch warped to.
+// a bookmark, a launch, a thing and a fleet member warped to.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { alignTo, approach, goToPoint, keepAtRange, orbit, stopShip, warpToBookmark, warpToLaunch, warpToScanResult, APPROACH_RANGE_M, KEEP_AT_RANGE_DEFAULT_M, ORBIT_DEFAULT_M, type FlightNow, type SitesKnown, type SitesReadIn } from "./movementWrites.ts";
+import { alignTo, approach, autopilotWarp, goToPoint, keepAtRange, orbit, stopShip, warpToBookmark, warpToFleetMember, warpToItem, warpToLaunch, warpToScanResult, WARP_RANGES_M, APPROACH_RANGE_M, KEEP_AT_RANGE_DEFAULT_M, ORBIT_DEFAULT_M, type FlightNow, type SitesKnown, type SitesReadIn } from "./movementWrites.ts";
 
 const [SHIP, SYSTEM] = [9988400023309, 30000144];
 const POINT = { x: 1000, y: -2500.5, z: 300000000000 };
@@ -469,6 +469,99 @@ test("a flight that cannot be read warps to neither, and a warp's refusal is the
     assert.deepEqual(unread.did, ["read"]);
     const refused = harness(HERE, new Error("BookmarkNotAvailable"));
     await assert.rejects(warp(refused.act, refused.flightNow, 900001732), /BookmarkNotAvailable/);
+    assert.deepEqual(refused.did, ["read", "sent"]);
+  }
+});
+
+// ── sent into warp, to a thing, as the autopilot warps, and to a fleet member ─
+//
+// movementFunctions.WarpToItem (437 to 452): CmdWarpToStuff('item', itemID, minRange=warpRange), not for the pilot's
+// own ship. autopilot.py 465: CmdWarpToStuffAutopilot(destinationID). menusvc.WarpToMember (2748):
+// CmdWarpToStuff('char', charID, minRange=warpRange).
+
+test("a thing is warped to as the menu warps to one: its number as an item, and the range said, once the pilot's flight has been read", async () => {
+  for (const range of WARP_RANGES_M) {
+    const { did, asked, act, flightNow } = harness();
+    await warpToItem(act, flightNow, 50001248, range);
+    assert.deepEqual(asked, [["beyonce", "CmdWarpToStuff", ["item", 50001248], { minRange: range }]], String(range));
+    assert.deepEqual(did, ["read", "sent"]);
+  }
+  // movementFunctions.GetWarpToRanges (334 to 343): the seven the client's menu offers.
+  assert.deepEqual([...WARP_RANGES_M], [0, 10000, 20000, 30000, 50000, 70000, 100000]);
+});
+
+test("a range that is none of the menu's seven never leaves: nothing is read either", async () => {
+  for (const range of [5000, -1, 1, 100001, Number.NaN, Number.POSITIVE_INFINITY]) {
+    const { did, act, flightNow } = harness();
+    await assert.rejects(warpToItem(act, flightNow, 50001248, range), /The warp range must be one of the offered distances\./, String(range));
+    assert.deepEqual(did, [], String(range));
+  }
+});
+
+test("the autopilot's warp is its own call, with the thing alone", async () => {
+  const { did, asked, act, flightNow } = harness();
+
+  await autopilotWarp(act, flightNow, 50001248);
+
+  assert.deepEqual(asked, [["beyonce", "CmdWarpToStuffAutopilot", [50001248], null]]);
+  assert.deepEqual(did, ["read", "sent"]);
+});
+
+test("a fleet member is warped to by the pilot's number, with a range of nought and nothing else", async () => {
+  const { did, asked, act, flightNow } = harness();
+
+  await warpToFleetMember(act, flightNow, 140000003);
+
+  // menusvc.py 712 and 2748: the fleet's menu gives the pilot's own warp distance, nought by default; no fleet's word.
+  assert.deepEqual(asked, [["beyonce", "CmdWarpToStuff", ["char", 140000003], { minRange: 0 }]]);
+  assert.deepEqual(did, ["read", "sent"]);
+
+  // A pilot's number is its own: one that is the ship's number is a pilot still.
+  const same = harness();
+  await warpToFleetMember(same.act, same.flightNow, SHIP);
+  assert.deepEqual(same.asked, [["beyonce", "CmdWarpToStuff", ["char", SHIP], { minRange: 0 }]]);
+});
+
+test("no warp is ordered to what has no number, where nothing is read either; nor for a pilot that is not in space; nor to the pilot's own ship, as a thing or as the autopilot's", async () => {
+  const warps = {
+    thing: (made: ReturnType<typeof harness>, id: number) => warpToItem(made.act, made.flightNow, id, 0),
+    autopilot: (made: ReturnType<typeof harness>, id: number) => autopilotWarp(made.act, made.flightNow, id),
+    member: (made: ReturnType<typeof harness>, id: number) => warpToFleetMember(made.act, made.flightNow, id),
+  };
+  for (const [what, warp] of Object.entries(warps)) {
+    for (const id of [0, -4, 1.5, Number.NaN, 2 ** 60]) {
+      const none = harness();
+      await assert.rejects(warp(none, id), what === "member" ? /A fleet member is required\./ : /That target could not be identified\./, `${what} ${id}`);
+      assert.deepEqual(none.did, [], `${what} ${id}`);
+    }
+    const docked = harness({ ...HERE, inSpace: false });
+    await assert.rejects(warp(docked, 50001248), /The ship is not in space; undock first\./, what);
+    assert.deepEqual(docked.did, ["read"], what);
+  }
+  // movementFunctions.py 438: nothing is sent for the pilot's own ship.
+  for (const warp of [warps.thing, warps.autopilot]) {
+    const itself = harness();
+    await assert.rejects(warp(itself, SHIP), /A ship cannot warp to itself\./);
+    assert.deepEqual(itself.did, ["read"]);
+    // A ship that is not known is not taken for the thing.
+    const unknown = harness({ ...HERE, shipID: null });
+    await warp(unknown, SHIP);
+    assert.deepEqual(unknown.did, ["read", "sent"]);
+  }
+});
+
+test("a flight that cannot be read warps to none of the three, and a warp's refusal is the caller's, as it came", async () => {
+  const warps = [
+    (made: ReturnType<typeof harness>) => warpToItem(made.act, made.flightNow, 50001248, 0),
+    (made: ReturnType<typeof harness>) => autopilotWarp(made.act, made.flightNow, 50001248),
+    (made: ReturnType<typeof harness>) => warpToFleetMember(made.act, made.flightNow, 140000003),
+  ];
+  for (const warp of warps) {
+    const unread = harness(new Error("flight unreadable"));
+    await assert.rejects(warp(unread), /flight unreadable/);
+    assert.deepEqual(unread.did, ["read"]);
+    const refused = harness(HERE, new Error("You are warp scrambled."));
+    await assert.rejects(warp(refused), /You are warp scrambled\./);
     assert.deepEqual(refused.did, ["read", "sent"]);
   }
 });

@@ -26,6 +26,29 @@ test("every action the union declares has a case where the page carries actions 
   assert.deepEqual(missing, [], "these actions are decided on and never carried out");
 });
 
+test("a thing's warp, the autopilot's and a fleet member's are carried out by the page's own calls wherever the page warps; their routes' askers are gone", () => {
+  const flow = readFileSync(fileURLToPath(new URL("./flow.ts", import.meta.url)), "utf8");
+  const times = (text: string) => flow.split(text).length - 1;
+  // The travel autopilot's and the mining bot's own warps: the menu's call at the autopilot's range of nought.
+  assert.equal(times("await warpToThing(destinationID, AUTOPILOT_WARP_MIN_RANGE_M);"), 2);
+  // A script bot's.
+  assert.equal([...flow.matchAll(/case "warp":\s+await warpToThing\(action\.targetID, AUTOPILOT_WARP_MIN_RANGE_M\);\s+return;/g)].length, 1);
+  // The fleet companion's: the autopilot's own call, and a fleet member by the pilot's number.
+  assert.equal([...flow.matchAll(/case "warp":\s+await warpAsTheAutopilot\(action\.targetID\);\s+return;/g)].length, 1);
+  assert.equal([...flow.matchAll(/await warpToMember\(action\.characterID\);\s+return;/g)].length, 1);
+  // The flight panel's and the overview's: the autopilot's with no range said, the menu's with one.
+  assert.equal(times("minRange === null ? autopilotWarpCall(bridgeDo, flightNow, destinationID) : warpToItemCall(bridgeDo, flightNow, destinationID, minRange)"), 1);
+  // Each of the three goes as a write, with the pilot's flight read first.
+  assert.equal(times("await warpToItemCall(bridgeDo, readFlightNow, targetID, range);"), 1);
+  assert.equal(times("await autopilotWarpCall(bridgeDo, readFlightNow, targetID);"), 1);
+  assert.equal(times("await warpToFleetMemberCall(bridgeDo, readFlightNow, characterID);"), 1);
+  assert.equal(flow.includes("api.warpTo("), false);
+  assert.equal(flow.includes("api.warpToFleetMember("), false);
+  const api = readFileSync(fileURLToPath(new URL("./api.ts", import.meta.url)), "utf8");
+  assert.equal(api.includes('"/api/bridge/flight/warp"'), false);
+  assert.equal(api.includes("/api/bridge/flight/warp-member"), false);
+});
+
 test("a launch's warp and a bookmark's are carried out by the page's own calls; their routes' askers are gone", () => {
   const flow = readFileSync(fileURLToPath(new URL("./flow.ts", import.meta.url)), "utf8");
   assert.equal([...flow.matchAll(/case "warpLaunch":\s+await warpToLaunchPickup\(action\.launchID\);\s+return;/g)].length, 1);

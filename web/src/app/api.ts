@@ -2454,39 +2454,9 @@ export function isContrabandWarning(error: unknown): error is BridgeCallError {
   return error instanceof BridgeCallError && String(error.code) === "CONTRABAND_WARNING";
 }
 
-/**
- * Warp to a chosen gate/celestial.
- *
- * `minRange` null is the autopilot's own warp (CmdWarpToStuffAutopilot); a
- * number is the right-click "warp to within N" form (CmdWarpToStuff with a
- * minRange kwarg). Retail's own default for the menu is 0.
- */
-export async function warpTo(
-  destinationID: number,
-  minRange: number | null = null,
-  options: ApiOptions = {},
-): Promise<FlightStepResult> {
-  const body = minRange === null ? { destinationID } : { destinationID, minRange };
-  return readFlightStep(await postJson("/api/bridge/flight/warp", body, options));
-}
-
-/**
- * Warp to a FLEET MEMBER (CmdWarpToStuff("char", characterID)) — the retail
- * "warp to" on a fleet-window row.
- *
- * ⚠ A CHARACTER ID, NOT AN OBJECT ID, and that is the point: this is the only
- * warp whose destination need not be on this grid. The server resolves where
- * the member is, and refuses a character who is not in the same fleet or is not
- * online — so a wrong id fails rather than flying the ship somewhere.
- */
-export async function warpToFleetMember(
-  characterID: number,
-  minRange: number | null = null,
-  options: ApiOptions = {},
-): Promise<FlightStepResult> {
-  const body = minRange === null ? { characterID } : { characterID, minRange };
-  return readFlightStep(await postJson("/api/bridge/flight/warp-member", body, options));
-}
+// (A thing, the autopilot's destination and a fleet member are warped to by the page itself, with the client's own
+// calls: bridge/movementWrites.ts, warpToItem, autopilotWarp and warpToFleetMember. Their routes are flight/warp
+// and flight/warp-member.)
 
 /** Jump through an NPC stargate (beyonce.CmdStargateJump). */
 /**
