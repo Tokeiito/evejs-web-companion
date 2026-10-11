@@ -909,12 +909,18 @@ test("stopping, the park's ship slows as the server's does, to within a tick's w
 // (scripts/record-warp.js). The recorder flew by this same park, live, and
 // wrote down the ticks at which it saw the ship enter and leave warp. At rest
 // after each warp it asked the server for its state; at rest there is no
-// "which part of the second" to blur the answer, so that state is where the
-// server has the ship.
+// "which part of the second" to blur where the ship is, so that state is where
+// the server has it. (Which tick the state is stamped with is another matter:
+// see the test of the two rests.)
 //
 // Between the order to warp and that state the server sends the pilot's ship
 // nothing about where it is: a WarpTo, the old grid's balls removed (in a
 // packaged action), the new grid's added, and a flag. The flying is the park's.
+//
+// Taken again on 2026-10-11, on eve.js c0580dd05. The recording it replaced was
+// of 2026-10-08, when the server sent a SetMaxSpeed a tenth over the ship's own
+// with each WarpTo and never put it back; Tranquility sends none, and now this
+// server sends none. The ticks below are this recording's.
 
 const warped = require("./fixtures/destinyWarp.json");
 
@@ -942,15 +948,18 @@ function replayWarp(rewrite = (stamp) => stamp) {
     tickTo(update.atMs);
     const [stamp, [name, args]] = update.entries[0];
     if (name === "SetState" && park.validState) {
-      assert.equal(park.currentTime, stamp, "at rest the park and the state are at the same tick");
       const ours = park.ballpark.ball(warped.shipID);
       const theirs = readState(keyValField(args[0], "state")).balls.find((ball) => ball.id === warped.shipID);
-      atRest.push({ stamp: stamp - first, ours: { position: { ...ours.newPos }, velocity: { ...ours.newVel }, mode: ours.mode }, theirs });
+      atRest.push({ stamp: stamp - first, ahead: stamp - park.currentTime, ours: { position: { ...ours.newPos }, velocity: { ...ours.newVel }, mode: ours.mode }, theirs });
     }
     park.doDestinyUpdate(update.entries, update.waitForBubble);
   }
   tickTo(clock + 1000);
-  return { park, posted: posted.map((event) => ({ ...event, tick: event.tick - first, value: event.value > first - 1e6 ? event.value - first : event.value })), atRest, grid, flight, first, updates };
+  // An update can come stamped a tick ahead of the park (the last one of this recording does): the play goes on,
+  // a second at a time and no more than three, until the park has taken everything it was sent.
+  let more = 0;
+  for (; more < 3 && park.history.length > 0; more += 1) tickTo(clock + 1000);
+  return { park, posted: posted.map((event) => ({ ...event, tick: event.tick - first, value: event.value > first - 1e6 ? event.value - first : event.value })), atRest, grid, flight, first, updates, more };
 }
 
 test("a recorded warp, played through: the server's orders are the client's, and none fails", () => {
@@ -958,7 +967,12 @@ test("a recorded warp, played through: the server's orders are the client's, and
   assert.deepEqual([[...park.failed], park.resets, park.fatalDesyncs, park.history.length], [[], 0, 0, 0]);
   // What the server sent the ship for the warp out: where to, no stopping short, and a warp factor of 3000 (3 AU a second).
   const orders = updates.flatMap((update) => update.entries).filter(([, [name]]) => name === "WarpTo").map(([stamp, [, args]]) => [stamp - first, args.length, args[4], args[5]]);
-  assert.deepEqual(orders, [[6, 6, 0, 3000], [78, 6, 100076.8, 3000]]);
+  assert.deepEqual(orders, [[6, 6, 0, 3000], [80, 6, 100076.8, 3000]]);
+  // The ship's greatest speed is told once, on entering space, and with no WarpTo: a client flies its ball by the
+  // last it was told, and the server flies the ship by its own.
+  const speeds = updates.flatMap((update) => update.entries).filter(([, [name, args]]) => name === "SetMaxSpeed" && Number(args[0]) === warped.shipID).map(([stamp, [, args]]) => [stamp - first, args[1]]);
+  assert.deepEqual(speeds, [[0, 341]]);
+  assert.equal(park.ballpark.ball(warped.shipID).maxVelocity, 341);
   // One update is a packaged action, holding the old grid's removal. Unpacked, the grid goes 95 -> 76 -> 100 on the way out.
   const names = updates.flatMap((update) => update.entries.map(([, [name]]) => name));
   assert.equal(names.filter((name) => name === "PackagedAction").length, 2);
@@ -968,21 +982,26 @@ test("a recorded warp, played through: the server's orders are the client's, and
 test("a recorded warp, played through: the ship lines up, warps and drops out at the ticks the live park saw", () => {
   const { posted, flight } = replayWarp();
   assert.deepEqual(posted.map(({ name, id, value, tick }) => [name, id === warped.shipID, value, tick]), [
-    ["OnActivatingWarp", true, 16, 16],
-    ["OnDeactivatingWarp", true, 37, 37],
-    ["OnExitWarp", true, 0, 37],
-    ["OnActivatingWarp", true, 85, 85],
-    ["OnDeactivatingWarp", true, 106, 106],
-    ["OnExitWarp", true, 0, 106],
+    ["OnActivatingWarp", true, 17, 17],
+    ["OnDeactivatingWarp", true, 38, 38],
+    ["OnExitWarp", true, 0, 38],
+    ["OnActivatingWarp", true, 87, 87],
+    ["OnDeactivatingWarp", true, 108, 108],
+    ["OnExitWarp", true, 0, 108],
   ]);
   // The recorder flew by a park of its own, ticked by a timer, and wrote down the same ticks.
   const first = replayWarp().first;
-  assert.deepEqual(warped.warps.map((warp) => [warp.name, warp.enteredWarpAt - first, warp.leftWarpAt - first, warp.atRest]), [["out", 16, 37, true], ["back", 85, 106, true]]);
+  assert.deepEqual(warped.warps.map((warp) => [warp.name, warp.enteredWarpAt - first, warp.leftWarpAt - first, warp.atRest]), [["out", 17, 38, true], ["back", 87, 108, true]]);
   assert.deepEqual([warped.parkFailed, warped.parkResets, warped.parkErrors], [[], 0, []]);
-  // Ordered at +6: ten ticks lining up as an ordinary flight, never faster than its top speed.
+  // Ordered at +6, under way: eleven ticks lining up as an ordinary flight, never faster than its top speed.
   const liningUp = flight.filter((row) => row.mode === MODE.WARP && !row.warping && row.tick < 40);
-  assert.deepEqual([liningUp.length, liningUp[0].tick, liningUp.at(-1).tick], [10, 7, 16]);
-  assert.ok(liningUp.every((row) => row.speed <= 375.1 + 1e-9));
+  assert.deepEqual([liningUp.length, liningUp[0].tick, liningUp.at(-1).tick], [11, 7, 17]);
+  assert.ok(liningUp.every((row) => row.speed <= 341 + 1e-9));
+  // Ordered at +80, from rest: seven ticks, and into warp with the tick that takes it past three quarters of its
+  // top speed.
+  const fromRest = flight.filter((row) => row.mode === MODE.WARP && !row.warping && row.tick > 60);
+  assert.deepEqual([fromRest.length, fromRest[0].tick, fromRest.at(-1).tick], [7, 81, 87]);
+  assert.ok(fromRest.at(-2).speed < 0.75 * 341 && fromRest.at(-1).speed > 0.75 * 341, `${fromRest.at(-2).speed} then ${fromRest.at(-1).speed} m/s`);
   // Twenty-one ticks in warp. 275,000 km is too short to reach 3 AU a second: the top speed is the capped one.
   const inWarp = flight.filter((row) => row.warping && row.tick < 40);
   assert.equal(inWarp.length, 21);
@@ -991,13 +1010,17 @@ test("a recorded warp, played through: the ship lines up, warps and drops out at
   const peak = Math.max(...inWarp.map((row) => row.speed));
   assert.ok(peak > 1e7 && peak < (length + 1e6) * 3 / 4, `peak ${peak} m/s`);
   // Out of warp under 100 m/s, and slowing from there.
-  const after = flight.filter((row) => row.tick >= 38 && row.tick <= 44);
+  const after = flight.filter((row) => row.tick >= 39 && row.tick <= 45);
   assert.ok(after[0].speed < 100 && after.every((row, index) => row.mode === MODE.STOP && (index === 0 || row.speed < after[index - 1].speed)));
 });
 
 test("a recorded warp, played through: at rest after the warp out the park's ship is within a metre of where the server has it", () => {
   const { atRest } = replayWarp();
   assert.equal(atRest.length, 2);
+  // The first state is stamped with the tick the park is at when it comes, the second with the next. The park is
+  // stepped here a second at a time from the first update's coming, and the server stamps by its own whole
+  // seconds: which of the park's ticks a state's stamp is depends on where in the second it was asked.
+  assert.deepEqual(atRest.map(({ ahead }) => ahead), [0, 1]);
   for (const { stamp, ours, theirs } of atRest) {
     assert.deepEqual([ours.mode, theirs.mode], [MODE.STOP, MODE.STOP]);
     assert.ok(size(ours.velocity) < 0.1 && size(theirs.velocity) < 0.1, `at +${stamp}: both all but still`);
@@ -1010,30 +1033,34 @@ test("a recorded warp, played through: at rest after the warp out the park's shi
 
 // The warp back ends beside the station, which the server sends as a fixed,
 // massive ball 100 km across the radius. A ball dropping out of warp makes
-// itself massive (Ballpark::WarpDistance), and the server's word that the ship
-// is not massive is stamped two ticks after the one it drops out in. For the
-// tick between, the ship is a massive ball flying at a massive ball.
+// itself massive (Ballpark::WarpDistance). The server says twice that the ship
+// is not massive: stamped with the tick its own ship drops out in, and two
+// ticks on. On the way back the park's ship drops out in that same tick, so the
+// second word is two ticks after, and for the tick between the ship is a
+// massive ball flying at a massive ball. On the way out the park's ship dropped
+// out a tick after the server's first word, and was massive for one tick.
 test("a recorded warp, played through: landing beside the station, the park's ship bounces off it for the one tick it is massive", () => {
   const { atRest, flight, updates, first } = replayWarp();
   const demotions = updates.flatMap((update) => update.entries).filter(([, [name]]) => name === "SetBallMassive").map(([stamp, [, args]]) => [stamp - first, args[1]]);
-  assert.deepEqual(demotions.filter(([stamp]) => stamp > 0 && stamp < 144), [[37, 0], [39, 0], [106, 0], [108, 0]]);
-  // Massive after the tick it drops out in and the one after, at each landing; and at the station it touches.
-  assert.deepEqual(flight.filter((row) => row.massive).map((row) => row.tick), [38, 39, 107, 108]);
-  assert.deepEqual(flight.filter((row) => row.touched.length).map((row) => [row.tick, row.touched]), [[108, [warped.stationID]]]);
-  const bounce = flight.find((row) => row.tick === 108);
+  assert.deepEqual(demotions.filter(([stamp]) => stamp > 0 && stamp < 144), [[37, 0], [39, 0], [108, 0], [110, 0]]);
+  // Massive after the tick it drops out in (38, and 108), until the server's second word; and at the station it touches.
+  assert.deepEqual(flight.filter((row) => row.massive).map((row) => row.tick), [39, 109, 110]);
+  assert.deepEqual(flight.filter((row) => row.touched.length).map((row) => [row.tick, row.touched]), [[110, [warped.stationID]]]);
+  const bounce = flight.find((row) => row.tick === 110);
   assert.ok(bounce.touchedAt > 0.85 && bounce.touchedAt < 0.95, `touched ${bounce.touchedAt} of the way through the tick`);
-  // The server's ship coasts on inside the station's ball; the park's has been turned back. They rest 413 m apart.
+  // The server's ship coasts on inside the station's ball; the park's has been turned back. They rest about 413 m apart.
   const station = replayWarp().park.ballpark.ball(warped.stationID);
   const gap = (position) => apart(position, station.newPos) - station.radius - 38.400001525878906;
   assert.ok(gap(atRest[1].theirs.position) < -200 && gap(atRest[1].ours.position) > 150, `the server's ${gap(atRest[1].theirs.position)} m, the park's ${gap(atRest[1].ours.position)} m from the station's surface`);
   const between = apart(atRest[1].ours.position, atRest[1].theirs.position);
-  assert.ok(between > 413 && between < 413.5, `${between} m apart`);
+  assert.ok(between > 412.5 && between < 413.5, `${between} m apart`);
 });
 
 test("a recorded warp, played through: had the server's word come a tick sooner, the ship would have touched nothing", () => {
-  // The same stream, with the two late "not massive" entries stamped one tick earlier: the tick after the drop.
-  const { atRest, flight } = replayWarp((stamp, name) => (name === "SetBallMassive" && (stamp === 39 || stamp === 108) ? stamp - 1 : stamp));
-  assert.deepEqual(flight.filter((row) => row.massive).map((row) => row.tick), [38, 107], "massive only as the tick it dropped out in ends");
+  // The same stream, with the late "not massive" of the way back stamped one tick earlier: the tick after the drop.
+  // (The way out's already came the tick after the park's drop.)
+  const { atRest, flight } = replayWarp((stamp, name) => (name === "SetBallMassive" && stamp === 110 ? stamp - 1 : stamp));
+  assert.deepEqual(flight.filter((row) => row.massive).map((row) => row.tick), [39, 109], "massive only as the tick it dropped out in ends");
   assert.deepEqual(flight.filter((row) => row.touched.length), []);
   for (const { stamp, ours, theirs } of atRest) assert.ok(apart(ours.position, theirs.position) < 1, `at +${stamp}: ${apart(ours.position, theirs.position)} m apart`);
 });
@@ -1126,7 +1153,7 @@ test("a park's times moved, and how far through its tick a park is by the clock"
 });
 
 test("a recorded warp stepped by the clock a frame at a time is the same flight as one stepped a tick at a time", () => {
-  const byTick = replayWarp().park;
+  const { park: byTick, more } = replayWarp();
   const park = new Park();
   const updates = destinyUpdates(warped);
   // The recording's own clock, a frame every 50 ms. The park is started when the first update lands, as replayWarp starts its own.
@@ -1146,7 +1173,7 @@ test("a recorded warp stepped by the clock a frame at a time is the same flight 
     frameTo(update.atMs);
     park.doDestinyUpdate(update.entries, update.waitForBubble);
   }
-  frameTo(at + 1000);
+  frameTo(at + 1000 * (1 + more));
   assert.ok(frames > 20 * steps - 20 && steps > 100, `${frames} frames, ${steps} steps`);
   assert.deepEqual([[...park.failed], park.resets, park.fatalDesyncs], [[], 0, 0]);
   const [ours, theirs] = [park.ballpark.ball(warped.shipID), byTick.ballpark.ball(warped.shipID)];
