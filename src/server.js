@@ -4765,23 +4765,8 @@ app.get("/api/bridge/fitting", requireAuth, async (req, res, next) => {
   }
 });
 
-// Read-only pinned type facts for the shared combat utility classifier. No live authority.
-app.get("/api/bridge/combat-utility-types", requireAuth, (req, res) => {
-  const ids = String(req.query.typeIDs || "").split(",").map(Number);
-  if (ids.length > 100 || ids.some(id => !Number.isSafeInteger(id) || id <= 0)) {
-    res.status(400).json({ ok: false, error: "INVALID_TYPES" }); return;
-  }
-  const types = {};
-  for (const typeID of new Set(ids)) {
-    const type = staticData.getType(typeID), dogma = staticData.getTypeDogma(typeID);
-    if (!type || !dogma) continue;
-    types[typeID] = { typeID, groupID: type.groupID, categoryID: staticData.getTypeCategoryID(typeID),
-      effects: dogma.effects, attributes: dogma.attributes,
-      capacity: Number.isFinite(type.capacity) ? type.capacity : null,
-      volume: Number.isFinite(type.volume) ? type.volume : null };
-  }
-  res.json({ ok: true, types });
-});
+// (The pinned type facts for the shared combat utility classifier are static data, and are read where the
+// static reads are since 2026-10-11: GET /api/types/combat-utility.)
 
 // Read just the slot rows — used to VERIFY a mutation actually landed. The
 // server can decline a fit SILENTLY (invbroker's SKILL_REQUIRED branch returns
@@ -23582,6 +23567,60 @@ app.get("/api/types/cycle-times", requireAuth, async (req, res, next) => {
       baseCycleMs,
       capped: requested.length > CYCLE_TIME_TYPE_LIMIT,
       limit: CYCLE_TIME_TYPE_LIMIT,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * What the page's combat classifier wants to know of a type, from static reference data: its group and category,
+ * its effects and attributes, and how much it holds and measures (nav/combatUtilities.ts, for the types of what
+ * is fitted and what is in the hold). A retail client has all of it in its own static data.
+ *
+ * Until 2026-10-11 this was GET /api/bridge/combat-utility-types, under the bridge's path though it makes no call
+ * of the server's. It refused a request of more than 100 types, one with anything in it that was no type's
+ * number, and one with none; and it left out a type the tables did not know. Here, as the other static reads:
+ * what is no type's number is passed over, a type is answered for once, and null is a real answer (the tables
+ * have not both the type and its dogma), so that "not known" is told from "not asked".
+ *
+ * No gateway call and no live session: this cannot vary by player.
+ */
+const COMBAT_UTILITY_TYPE_LIMIT = 500;
+
+app.get("/api/types/combat-utility", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) {
+        asked.push(typeID);
+      }
+    }
+    const types = {};
+    for (const typeID of asked.slice(0, COMBAT_UTILITY_TYPE_LIMIT)) {
+      const type = staticData.getType(typeID);
+      const dogma = staticData.getTypeDogma(typeID);
+      types[String(typeID)] = type && dogma
+        ? {
+          typeID,
+          groupID: type.groupID,
+          categoryID: staticData.getTypeCategoryID(typeID),
+          effects: dogma.effects,
+          attributes: dogma.attributes,
+          capacity: Number.isFinite(type.capacity) ? type.capacity : null,
+          volume: Number.isFinite(type.volume) ? type.volume : null,
+        }
+        : null;
+    }
+    res.json({
+      ok: true,
+      source: "static-data",
+      types,
+      // Said, not hidden: a type past the limit is not in the answer at all,
+      // and a caller that asked for it must not take that for "not known".
+      capped: asked.length > COMBAT_UTILITY_TYPE_LIMIT,
+      limit: COMBAT_UTILITY_TYPE_LIMIT,
     });
   } catch (error) {
     next(error);

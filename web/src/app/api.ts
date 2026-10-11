@@ -921,11 +921,35 @@ export async function loadFitting(options: ApiOptions = {}): Promise<RawFittingR
   };
 }
 
+/** As many types as one request for types' facts asks of: under the route's own limit of 500. */
+const COMBAT_UTILITY_TYPES_PER_REQUEST = 400;
+
+/**
+ * What the combat classifier wants to know of each of these types (nav/combatUtilities.ts), from the BFF's static
+ * data: GET /api/types/combat-utility. Not a bridge call, and no live session: it cannot vary by player. A type
+ * the tables do not know is not among what is answered. Fails where a request fails, and where an answer has no
+ * types in it: that is the facts unread, and not no facts known.
+ */
 export async function combatUtilityTypes(typeIDs: readonly number[], options: ApiOptions = {}):
   Promise<Readonly<Record<number, import("../nav/combatUtilities.ts").UtilityType>>> {
-  if (typeIDs.length === 0) return {};
-  const data = await getJson(`/api/bridge/combat-utility-types?typeIDs=${[...new Set(typeIDs)].join(",")}`, options);
-  return data.types as unknown as Readonly<Record<number, import("../nav/combatUtilities.ts").UtilityType>>;
+  const asked = [...new Set(typeIDs)];
+  const types: Record<number, import("../nav/combatUtilities.ts").UtilityType> = {};
+  for (let at = 0; at < asked.length; at += COMBAT_UTILITY_TYPES_PER_REQUEST) {
+    const data = await getJson(
+      `/api/types/combat-utility?typeIDs=${encodeURIComponent(asked.slice(at, at + COMBAT_UTILITY_TYPES_PER_REQUEST).join(","))}`,
+      options,
+    );
+    if (typeof data.types !== "object" || data.types === null || Array.isArray(data.types)) {
+      throw new Error("The types' facts could not be read (the BFF did not answer with them).");
+    }
+    for (const [key, value] of Object.entries(data.types as Record<string, JsonValue>)) {
+      const typeID = Number(key);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && typeof value === "object" && value !== null && !Array.isArray(value)) {
+        types[typeID] = value as unknown as import("../nav/combatUtilities.ts").UtilityType;
+      }
+    }
+  }
+  return types;
 }
 
 /**
