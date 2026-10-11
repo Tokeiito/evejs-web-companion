@@ -1539,6 +1539,17 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A test of a module that is not there yet cannot be watched to fail.** Say so, and
   watch each of its claims fail by a breakage, and by the old-sources check with the
   new file left in.
+- **What a flow asks is counted under a test first.** A flow given a fetch that
+  keeps every request, and a bot's clock stepped by the test, counted 20 askings of
+  the static data in 20 looks in half a second, where the tab would have wanted a
+  fight staged. Count there; the tab is for seeing it once.
+- **The tab's requests are read off its socket.** `WebSocket.prototype.send`,
+  wrapped after the page has loaded, sees every frame the page carries
+  (`{ id, method, path, body }`). A wrap of `JSON.stringify` saw the GETs and none
+  of the POSTs, and a wrap of `fetch` saw nothing.
+- **A read that keeps nothing has a keeper.** `app/api.ts` keeps nothing of a static
+  read on purpose: its caller owns the cache. An asker of a read by type asks
+  through `bridge/keptTypeFacts.ts`, or keeps for itself and says so.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
