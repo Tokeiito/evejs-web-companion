@@ -1484,6 +1484,17 @@ Take these defaults, and list each under "For the operator" in the log so they c
   and the ship placed in the tab's own session: both can be asked of the BFF's
   routes from the page's own session, with its own token read inside the request and
   never returned.
+- **A branch of the client's on something it keeps may be about a thing of its
+  own.** "Where the sensor suite has a bracket for the ball" read as a rule for
+  things in space; the balls are the client's own (`AddClientSideBall`), for every
+  site but a structure's. Read where the kept thing is made before a unit is sized
+  by the branch.
+- **A note beside a recording is somebody's reading of it.** The citadel's notes have
+  a warp's range as 150000; the recording's bytes have nought. Go by the `.txt`,
+  and by the bytes of the call itself: a dict's count (`\x16\x02`), then each value
+  before its key.
+- **A search of the whole decompiled source by a shell `grep -r` takes minutes.**
+  Use the search tool, or name the folder.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
