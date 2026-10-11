@@ -4438,3 +4438,29 @@ test("a fleet's advert is made and changed by routes that hand on an object of t
   assert.deepEqual([gateway.calls.call.at(-1).service, gateway.calls.call.at(-1).method, gateway.calls.call.at(-1).args], ["fleetProxy", "UpdateAdvertInfo", [3, allowedDiff]]);
   assert.equal(gateway.calls.call.length, before + 2);
 });
+
+// ── the saved fittings, read by the page itself ──────────────────────────────
+//
+// fittingSvc.PrimeFittings (430): self.GetFittingMgr(ownerID).GetFittings(ownerID), of the character's manager
+// for the session's character and of the corporation's for its corporation. The page asks each as a pilot's
+// read, with the owner; the BFF hands it on as it came. (The server lets a session read its own owner's alone.)
+
+test("a pilot's fittings and its corporation's go by the generic call as a pilot's reads, each with its owner as it was sent", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  for (const [service, owner, writes] of [["charFittingMgr", 7, ["SaveManyFittings", "DeleteFitting", "DeleteManyFittings", "UpdateNameAndDescription"]], ["corpFittingMgr", 98000000, ["SaveManyFittings"]]]) {
+    const before = gateway.calls.call.length;
+    const made = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service, method: "GetFittings", args: [owner], kwargs: null, pilot: true } });
+    assert.deepEqual([made.response.status, made.payload.service, made.payload.method], [200, service, "GetFittings"]);
+    const sent = gateway.calls.call.at(-1);
+    assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], [service, "GetFittings", [owner], null, BRIDGE_SESSION_ID, { userid: 4 }]);
+    assert.equal(gateway.calls.call.length, before + 1, service);
+    // A fitting saved, renamed or deleted is its route's alone, whatever is said.
+    for (const method of writes) {
+      const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service, method, args: [owner, 1], kwargs: null, pilot: true, confirm: true } });
+      assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], `${service}.${method}`);
+    }
+    assert.equal(gateway.calls.call.length, before + 1, service);
+  }
+});

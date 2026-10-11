@@ -352,6 +352,7 @@ import type { FleetCenterSnapshot } from "../bridge/fleetCenter.ts";
 import { decodeAvailableFleetAds, decodeMyFleetFinderAdvert } from "../bridge/fleetAds.ts";
 import { readAvailableFleetAds, readFleetFinder as readFleetFinderCalls } from "../bridge/fleetFinderReads.ts";
 import { readMyLaunches } from "../bridge/launchReads.ts";
+import { readCharacterFittings, readCorporationFittings } from "../bridge/fittingReads.ts";
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { BOOKMARK_EXPIRY, bookmarkLocation as bookmarkLocationCall } from "../bridge/bookmarkWrites.ts";
@@ -2651,12 +2652,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   // Every fitting the refit block may apply: the pilot's own, then the session
-  // corp's. The personal read decides success; a corp read that fails (or a
-  // pilot in an NPC corp) leaves the personal library standing on its own.
+  // corp's. The personal read decides success; a corp read that fails leaves
+  // the personal library standing on its own.
+  //
+  // The page's own calls (bridge/fittingReads.ts), one for each owner, as the
+  // client's fitting service asks: the pilot and its corporation are the
+  // session's, as the page has them. With no corporation known the pilot's own
+  // are read alone: that read refuses by itself, with nothing asked.
   async function loadRefitLibrary(): Promise<readonly SourcedFitting[]> {
+    const online = store.station.get().online;
     const [personal, corporation] = await Promise.all([
-      api.loadSavedFittings(callOptions).then(decodeFittings),
-      api.loadCorporationFittings(callOptions).then(decodeCorpFittings).catch(() => []),
+      readCharacterFittings(bridgeAsk, online?.characterID ?? 0).then(decodeFittings),
+      readCorporationFittings(bridgeAsk, online?.corporationID ?? 0).then(decodeCorpFittings).catch(() => []),
     ]);
     return refitLibrary(personal, corporation);
   }
