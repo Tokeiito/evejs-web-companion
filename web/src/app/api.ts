@@ -1602,39 +1602,8 @@ export async function loadContractDetail(
 // READS ONLY. Raw retail shapes out; decoding is bridge/personalAssets.ts's
 // job, as everywhere else.
 
-export interface RawAssetStationItems {
-  readonly stationID: number;
-  /** charMgr.ListStationItems' list, untouched. null when the read failed. */
-  readonly items: JsonValue;
-  /** Per-type m³ from static data; a type it does not know is simply absent. */
-  readonly volumes: Readonly<Record<string, number>>;
-  readonly hasNoItems: boolean;
-  readonly error: string | null;
-}
-
-// (Where the pilot's things are is the page's own read since 2026-10-11: bridge/assetReads.ts.)
-
-/** What is at one of the stations that hold the pilot's things. */
-export async function loadAssetStationItems(
-  stationID: number,
-  options: ApiOptions = {},
-): Promise<RawAssetStationItems> {
-  const data = await getJson(
-    `/api/bridge/assets/station?stationID=${encodeURIComponent(String(stationID))}`,
-    options,
-  );
-  const volumes =
-    data.volumes && typeof data.volumes === "object" && !Array.isArray(data.volumes)
-      ? (data.volumes as Record<string, number>)
-      : {};
-  return {
-    stationID: Number(data.stationID) || stationID,
-    items: data.items ?? null,
-    volumes,
-    hasNoItems: data.hasNoItems === true,
-    error: typeof data.error === "string" ? data.error : null,
-  };
-}
+// (Where the pilot's things are, and what is at one station, are the page's own reads since 2026-10-11:
+// bridge/assetReads.ts. What each type measures is asked of the BFF's static data: loadTypeVolumes, below.)
 
 /** One person match from /api/characters/find. */
 export interface CharacterMatch {
@@ -3905,6 +3874,45 @@ export async function loadOverloadEffects(
     }
   }
   return effects;
+}
+
+// --- A type's volume (static reference data) ---------------------------------
+// GET /api/types/volumes?typeIDs=... answers { volumes }: each type's volume in m³, or null where the static
+// tables have none. A client has it in its own static data; the page asks here, once for a type, where it lists
+// what the server listed by its own call (the BFF's routes that list items send it beside their answer still).
+// Not a bridge call, and no live session: it cannot vary by player.
+
+/** As many types as one request asks of: under the route's own limit of 500. */
+const TYPE_VOLUMES_PER_REQUEST = 400;
+
+export interface TypeVolumesResult {
+  /** typeID -> m³, or null where the tables have no volume for the type. A type not answered for is absent. */
+  readonly volumes: Readonly<Record<number, number | null>>;
+}
+
+export async function loadTypeVolumes(
+  typeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<TypeVolumesResult> {
+  const volumes: Record<number, number | null> = {};
+  for (let at = 0; at < typeIDs.length; at += TYPE_VOLUMES_PER_REQUEST) {
+    const data = await getJson(
+      `/api/types/volumes?typeIDs=${encodeURIComponent(typeIDs.slice(at, at + TYPE_VOLUMES_PER_REQUEST).join(","))}`,
+      options,
+    );
+    const raw =
+      typeof data.volumes === "object" && data.volumes !== null && !Array.isArray(data.volumes)
+        ? (data.volumes as Record<string, JsonValue>)
+        : {};
+    for (const [key, value] of Object.entries(raw)) {
+      const typeID = Number(key);
+      if (!Number.isSafeInteger(typeID) || typeID <= 0) {
+        continue;
+      }
+      volumes[typeID] = typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+    }
+  }
+  return { volumes };
 }
 
 // --- R24 slice C: module cycle times (static reference data) ----------------

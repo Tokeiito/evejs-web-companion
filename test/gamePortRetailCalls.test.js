@@ -2665,3 +2665,22 @@ test("where a pilot's things are is asked of its own container with nothing", ()
   assert.deepEqual([withMore.status, withMore.args], ["differs", [60003760]]);
   assert.match(withMore.note, /nothing/);
 });
+
+// invCache.py 849: self.moniker.ListStationItems(stationID), on the pilot's own global container, with the one
+// station. No recording has one. The page's Personal Assets window asks it as a station is opened.
+
+test("what is at a station is asked of the pilot's own container with the station alone", () => {
+  const asked = form("charMgr.ListStationItems", [60003760]);
+  assert.deepEqual([asked.status, asked.args, asked.kwargs], ["same", [60003760], null]);
+  assert.match(asked.source, /invCache\.py:849$/);
+  assert.match(asked.note, /No recording/);
+  // A structure's number is one too.
+  assert.equal(form("charMgr.ListStationItems", [1052851966475]).status, "same");
+  // Nothing sent, more than the station, what is no number, and a keyword: none is the client's call.
+  for (const [args, kwargs] of [[[], null], [[60003760, 4], null], [["60003760"], null], [[0], null], [[-5], null], [[1.5], null], [[60003760], { flag: 4 }]]) {
+    const odd = form("charMgr.ListStationItems", args, kwargs);
+    assert.equal(odd.status, "differs", JSON.stringify([args, kwargs]));
+    assert.deepEqual(odd.args, args);
+    assert.match(odd.note, /the one station/);
+  }
+});

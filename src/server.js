@@ -13188,27 +13188,37 @@ function readModuleChargeFits(result) {
 function readTypeVolumes(result) {
   const rows = result && Array.isArray(result.items) ? result.items : [];
   const volumes = {};
-  // A REFERENCE LOOKUP MUST NOT BE ABLE TO BREAK A ROUTE. Volume is an
-  // enrichment: without it a panel shows "—" and a bot hands the server the
-  // whole stack to judge, both of which are defined behaviours. A static table
-  // that cannot answer therefore yields an empty map, never a 500 on a read the
-  // player asked for.
-  if (typeof staticData.getType !== "function") {
-    return volumes;
-  }
   for (const row of rows) {
     const fields = row && row.type === "packedrow" && row.fields ? row.fields : null;
     const typeID = Number(fields && fields.typeID) || 0;
     if (typeID <= 0 || Object.prototype.hasOwnProperty.call(volumes, typeID)) {
       continue;
     }
-    const type = staticData.getType(typeID);
-    const volume = Number(type && type.volume);
-    if (Number.isFinite(volume) && volume > 0) {
+    const volume = staticTypeVolume(typeID);
+    if (volume !== null) {
       volumes[typeID] = volume;
     }
   }
   return volumes;
+}
+
+/**
+ * A type's volume in m³ as static data has it, or null where it has none: never nought, which a page would have
+ * to show as a real measurement. The routes that list items and GET /api/types/volumes both go by it.
+ *
+ * A REFERENCE LOOKUP MUST NOT BE ABLE TO BREAK A ROUTE. Volume is an
+ * enrichment: without it a panel shows "—" and a bot hands the server the
+ * whole stack to judge, both of which are defined behaviours. A static table
+ * that cannot answer therefore says null, never a 500 on a read the
+ * player asked for.
+ */
+function staticTypeVolume(typeID) {
+  if (typeof staticData.getType !== "function") {
+    return null;
+  }
+  const type = staticData.getType(typeID);
+  const volume = Number(type && type.volume);
+  return Number.isFinite(volume) && volume > 0 ? volume : null;
 }
 
 /**
@@ -13232,15 +13242,8 @@ app.get("/api/bridge/assets/station", requireAuth, async (req, res, next) => {
     return;
   }
   try {
-    const spec = globalAssetsBindSpec(held);
-    const items = await boundCall(
-      held,
-      req.webSessionID,
-      spec,
-      "ListStationItems",
-      [stationID],
-      null,
-    );
+    // (By the object's one function, as the page's own call goes: the flight is read first there.)
+    const items = await globalAssetsCall(held, req.webSessionID, "ListStationItems", [stationID], null);
     const result = items.result;
     res.json({
       ok: true,
@@ -23579,6 +23582,45 @@ app.get("/api/types/cycle-times", requireAuth, async (req, res, next) => {
       baseCycleMs,
       capped: requested.length > CYCLE_TIME_TYPE_LIMIT,
       limit: CYCLE_TIME_TYPE_LIMIT,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * A type's volume, from static reference data.
+ *
+ * A retail client has every type's volume in its own static data, and shows it beside whatever lists items. The
+ * page has none: the routes here that list items send each type's volume beside the server's answer. Where the
+ * page asks the server itself (bridge/assetReads.ts), it asks the volumes here, once for a type, as it asks a
+ * type's cycle time. Null is a real answer: the tables have no volume for the type, and the page shows none.
+ *
+ * No gateway call and no live session: this cannot vary by player.
+ */
+const TYPE_VOLUME_TYPE_LIMIT = 500;
+
+app.get("/api/types/volumes", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) {
+        asked.push(typeID);
+      }
+    }
+    const volumes = {};
+    for (const typeID of asked.slice(0, TYPE_VOLUME_TYPE_LIMIT)) {
+      volumes[String(typeID)] = staticTypeVolume(typeID);
+    }
+    res.json({
+      ok: true,
+      source: "static-data",
+      volumes,
+      // Said, not hidden: a type past the limit is not in the answer at all,
+      // and a caller that asked for it must not take that for "has none".
+      capped: asked.length > TYPE_VOLUME_TYPE_LIMIT,
+      limit: TYPE_VOLUME_TYPE_LIMIT,
     });
   } catch (error) {
     next(error);

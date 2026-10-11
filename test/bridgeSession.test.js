@@ -4615,7 +4615,7 @@ const STATIONS_ROWSET = { type: "objectex2", header: [], list: [{ type: "packedr
 const NO_STATIONS = { type: "objectex2", header: [], list: [], dict: [] };
 
 /** The pilot's stations read through the route, or by the page's own call; says what was read, bound, and asked of what. On the game port unless told otherwise. */
-async function assetStations({ transport = "gameport", answer = () => STATIONS_ROWSET, call = null, flight = null } = {}) {
+async function assetStations({ transport = "gameport", answer = () => STATIONS_ROWSET, call = null, flight = null, route = "/api/bridge/assets", staticData = undefined } = {}) {
   const gamePort = gamePortWithQuestions(() => ({ answered: true }));
   const gateway = fakeGateway();
   const backend = transport === "gameport" ? gamePort : gateway;
@@ -4631,10 +4631,10 @@ async function assetStations({ transport = "gameport", answer = () => STATIONS_R
     asked.push({ onObject: `${service}.${method}`, args, kwargs, sessionFields, handle });
     return { service, method, result: answer(), notifications: ["a notice"] };
   };
-  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => transport });
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => transport, staticData });
   await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
   asked.length = 0;
-  const read = () => (call === null ? apiRequest(baseUrl, "/api/bridge/assets") : apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: call }));
+  const read = () => (call === null ? apiRequest(baseUrl, route) : apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: call }));
   return { first: await read(), again: await read(), asked };
 }
 const ASSETS_BOUND = { bound: "charMgr.MachoBindObject", args: [[7, 10002]] };
@@ -4670,9 +4670,9 @@ test("where a pilot's things are, asked by the page's own call, is asked of the 
     assert.deepEqual([blind.first.response.status, blind.first.payload.result, blind.asked.filter((each) => each.onObject).length], [200, STATIONS_ROWSET, 2], transport);
   }
   const { objectOfPageCall, isBridgeWritePair, pageNamesTheObject, pageMayNameTheObject } = require("../src/bridgeCallPolicy");
-  // A read, on an object the session has one of. What is at one station is its route's still.
+  // A read, on an object the session has one of. So is what is at one station (below).
   assert.deepEqual([objectOfPageCall("charMgr", "ListStations"), isBridgeWritePair("charMgr", "ListStations"), pageNamesTheObject("assets"), pageMayNameTheObject("assets")], ["assets", false, false, false]);
-  assert.deepEqual([objectOfPageCall("charMgr", "ListStationItems"), objectOfPageCall("charMgr", "List"), objectOfPageCall("charMgr", "GetAssetWorth"), objectOfPageCall("charMgr", "MachoBindObject")], [null, null, null, null]);
+  assert.deepEqual([objectOfPageCall("charMgr", "ListStationItems"), objectOfPageCall("charMgr", "List"), objectOfPageCall("charMgr", "GetAssetWorth"), objectOfPageCall("charMgr", "MachoBindObject")], ["assets", null, null, null]);
 });
 
 test("the assets' route reads the flight, binds the pilot's container and asks for its stations; it owns nothing only where the rowset is empty, and a read that fails is said as one", async () => {
@@ -4692,6 +4692,67 @@ test("the assets' route reads the flight, binds the pilot's container and asks f
     assert.deepEqual([refused.first.response.status, refused.first.payload], [200, { ok: true, characterID: 7, stations: null, ownsNothing: false, error: "CALL_REFUSED" }], transport);
     // A session the server no longer has is the route's failure.
     const lost = await assetStations({ transport, answer: () => { throw new gatewayClient.EveGatewayError("gone", { code: "SESSION_NOT_FOUND", statusCode: 404 }); } });
+    assert.deepEqual([lost.first.response.status, lost.first.payload.error], [404, "SESSION_NOT_FOUND"], transport);
+  }
+});
+
+// ── what is at a station of a pilot's things ─────────────────────────────────
+//
+// invCache.py 849: self.moniker.ListStationItems(stationID), on the same container, with the one station. No
+// recording has one. The page asks it by the generic call, as a pilot's read on the pilot's own container; the
+// BFF hands the station on as it came. The route the page asked before still stands: the same call, and each
+// type's volume from static data beside its answer.
+
+const STATION_ITEMS = { type: "list", items: [{ type: "packedrow", fields: { itemID: 9001, typeID: 588 } }, { type: "packedrow", fields: { itemID: 9002, typeID: 34 } }, { type: "packedrow", fields: { itemID: 9003, typeID: 588 } }] };
+const itemsAsked = (args = [60003760]) => ({ onObject: "charMgr.ListStationItems", args, kwargs: null, sessionFields: { userid: 4 }, handle: "the-pilots-assets" });
+
+test("what is at a station, asked by the page's own call, is asked of the pilot's own container on either transport, with the station as it was sent", async () => {
+  const theCall = (more = { pilot: true }) => ({ service: "charMgr", method: "ListStationItems", args: [60003760], kwargs: null, ...more });
+  for (const transport of ["gameport", "gateway"]) {
+    const made = await assetStations({ transport, call: theCall(), answer: () => STATION_ITEMS });
+    // The generic call's own answer, and none of the route's envelope: no volumes, and no word of an empty station.
+    assert.deepEqual([made.first.response.status, made.first.payload.ok, made.first.payload.service, made.first.payload.method, made.first.payload.result, made.first.payload.volumes, made.first.payload.hasNoItems],
+      [200, true, "charMgr", "ListStationItems", STATION_ITEMS, undefined, undefined], transport);
+    assert.deepEqual(made.asked, ["the flight", ASSETS_BOUND, itemsAsked(), "the flight", itemsAsked()], transport);
+    // The container is the pilot's own: a call that says which is none; and it is a pilot's.
+    const named = await assetStations({ transport, call: theCall({ pilot: true, of: 60003760 }) });
+    assert.deepEqual([named.first.response.status, named.first.payload.error, named.asked], [400, "INVALID_REQUEST", []], transport);
+    const unsaid = await assetStations({ transport, call: theCall({}) });
+    assert.deepEqual([unsaid.first.response.status, unsaid.first.payload.error, unsaid.asked], [400, "INVALID_REQUEST", []], transport);
+    // A read the server refuses is the call's own failure.
+    const refused = await assetStations({ transport, call: theCall(), answer: () => { throw Object.assign(new Error("NotNow"), { code: "CALL_REFUSED", statusCode: 409 }); } });
+    assert.deepEqual([refused.first.response.status, refused.first.payload.ok, refused.first.payload.error], [409, false, "CALL_REFUSED"], transport);
+  }
+});
+
+test("the station's route asks the same of the same container, reading the flight first, and answers each type's volume from static data beside it", async () => {
+  const typesAsked = [];
+  const staticData = { ...fakeStaticData(), getType(typeID) { typesAsked.push(typeID); return { 588: { volume: 15800 }, 34: { volume: 0 } }[typeID] ?? null; } };
+  const route = "/api/bridge/assets/station?stationID=60003760";
+  for (const transport of ["gameport", "gateway"]) {
+    typesAsked.length = 0;
+    const read = await assetStations({ transport, route, staticData, answer: () => STATION_ITEMS });
+    // A type is measured once however many of its items there are; one with no volume above nought is left out.
+    assert.deepEqual([read.first.response.status, read.first.payload], [200, { ok: true, stationID: 60003760, items: STATION_ITEMS, volumes: { 588: 15800 }, hasNoItems: false, error: null }], transport);
+    assert.deepEqual(read.asked, ["the flight", ASSETS_BOUND, itemsAsked(), "the flight", itemsAsked()], transport);
+    assert.deepEqual(typesAsked, [588, 34, 588, 34], transport);
+    const empty = await assetStations({ transport, route, staticData, answer: () => ({ type: "list", items: [] }) });
+    assert.deepEqual(empty.first.payload, { ok: true, stationID: 60003760, items: { type: "list", items: [] }, volumes: {}, hasNoItems: true, error: null }, transport);
+    // What is no list is not an empty station.
+    for (const odd of [null, STATIONS_ROWSET, []]) {
+      const unread = await assetStations({ transport, route, staticData, answer: () => odd });
+      assert.deepEqual([unread.first.payload.hasNoItems, unread.first.payload.volumes, unread.first.payload.error], [false, {}, null], `${transport} ${JSON.stringify(odd)}`);
+    }
+    // No station named, or what is none: refused, and nothing asked.
+    for (const none of ["/api/bridge/assets/station", "/api/bridge/assets/station?stationID=0", "/api/bridge/assets/station?stationID=abc", "/api/bridge/assets/station?stationID=-5"]) {
+      const refused = await assetStations({ transport, route: none, staticData });
+      assert.deepEqual([refused.first.response.status, refused.first.payload.error, refused.asked], [400, "ASSET_LOCATION_INVALID", []], `${transport} ${none}`);
+    }
+    // A read the server refuses: 200 all the same, with the code, and an empty station not said.
+    const refused = await assetStations({ transport, route, staticData, answer: () => { throw Object.assign(new Error("NotNow"), { code: "CALL_REFUSED", statusCode: 409 }); } });
+    assert.deepEqual([refused.first.response.status, refused.first.payload], [200, { ok: true, stationID: 60003760, items: null, hasNoItems: false, error: "CALL_REFUSED" }], transport);
+    // A session the server no longer has is the route's failure.
+    const lost = await assetStations({ transport, route, staticData, answer: () => { throw new gatewayClient.EveGatewayError("gone", { code: "SESSION_NOT_FOUND", statusCode: 404 }); } });
     assert.deepEqual([lost.first.response.status, lost.first.payload.error], [404, "SESSION_NOT_FOUND"], transport);
   }
 });

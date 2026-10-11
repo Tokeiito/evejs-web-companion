@@ -60,12 +60,9 @@ import {
   decodeContractSearch,
   decodeContractSummary,
 } from "../bridge/contracts.ts";
-import {
-  assetRefusalMessage,
-  decodeAssetItems,
-} from "../bridge/personalAssets.ts";
+import { decodeAssetItems } from "../bridge/personalAssets.ts";
 import { failsTheReading, failureCode } from "../bridge/ask.ts";
-import { readAssetStations, type AssetStationsRead } from "../bridge/assetReads.ts";
+import { readAssetStationItems, readAssetStations, type AssetStationItemsRead, type AssetStationsRead } from "../bridge/assetReads.ts";
 import {
   AGENT_BUTTON,
   decodeBriefing,
@@ -4638,6 +4635,39 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     requestNames(refs);
   }
 
+  /** Each type's volume as the BFF's static data has it: null where the tables have none. Kept once it is answered. */
+  const typeVolumes = new Map<number, number | null>();
+
+  /**
+   * The volumes of these types, by their numbers as text: those the static data has one for. A type is asked for
+   * once and kept, a volume being the type's own and the same for everyone. Volumes that could not be read are
+   * left out this once and asked for again: they are what a thing measures, and never whether it is there.
+   */
+  async function volumesOfTypes(typeIDs: readonly number[]): Promise<Record<string, number>> {
+    const unasked = [...new Set(typeIDs)].filter((typeID) => !typeVolumes.has(typeID));
+    if (unasked.length > 0) {
+      try {
+        const answered = (await api.loadTypeVolumes(unasked, callOptions)).volumes;
+        for (const typeID of unasked) {
+          const volume = answered[typeID];
+          if (volume !== undefined) {
+            typeVolumes.set(typeID, volume);
+          }
+        }
+      } catch (error) {
+        throwIfRequestRetired(error);
+      }
+    }
+    const known: Record<string, number> = {};
+    for (const typeID of typeIDs) {
+      const volume = typeVolumes.get(typeID);
+      if (typeof volume === "number") {
+        known[String(typeID)] = volume;
+      }
+    }
+    return known;
+  }
+
   /**
    * Expand one station and read what is there. Collapsing passes null and
    * touches no server.
@@ -4650,9 +4680,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (stationID === null || stationID <= 0) {
       return;
     }
-    let read: Awaited<ReturnType<typeof api.loadAssetStationItems>>;
+    let read: AssetStationItemsRead;
     try {
-      read = await api.loadAssetStationItems(stationID, callOptions);
+      // The page's own call (bridge/assetReads.ts), as the client's assets window makes it.
+      read = await readAssetStationItems(bridgeAsk, stationID);
     } catch (error) {
       throwIfRequestRetired(error);
       if (isSessionLost(error)) {
@@ -4660,22 +4691,25 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
+      // (Kept under the call's own code; what came back as no list, as a read that failed.)
       store.apply({
         type: "assets/station-items",
         stationID,
         items: [],
         hasNoItems: false,
-        error: assetRefusalMessage(error),
+        error: failureCode(error),
       });
       return;
     }
-    const items = read.error ? [] : decodeAssetItems(read.items, read.volumes);
+    // What each type measures is static data, as it is a client's own: asked of the BFF's for the types here.
+    const volumes = await volumesOfTypes(decodeAssetItems(read.listed).map((item) => item.typeID));
+    const items = decodeAssetItems(read.listed, volumes);
     store.apply({
       type: "assets/station-items",
       stationID,
       items,
       hasNoItems: read.hasNoItems,
-      error: read.error,
+      error: null,
     });
     // Every stack renders as a type NAME and a type ICON (R7d / R27).
     requestNames(items.map((item) => ({ kind: "type", id: item.typeID }) as NameRef));

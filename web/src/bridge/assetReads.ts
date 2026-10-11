@@ -23,11 +23,13 @@
 // the call fails, and says so where the answer is no rowset.
 //
 // THE ROUTE STILL STANDS (src/server.js). Nothing of the page's asks it now.
+//
+// What is at one station is the second read here, below.
 
 import type { AssetStationRow } from "../store/types.ts";
 import type { Ask } from "./ask.ts";
 import { decodeAssetStations } from "./personalAssets.ts";
-import type { JsonValue } from "./wire.ts";
+import { isListValue, type JsonValue } from "./wire.ts";
 
 /** The stations that hold something of the pilot's, and whether the server listed none at all. */
 export interface AssetStationsRead {
@@ -53,4 +55,51 @@ export async function readAssetStations(ask: Ask): Promise<AssetStationsRead> {
     throw new Error("Your assets could not be read (the server did not answer with its rowset).");
   }
   return { stations: decodeAssetStations(answered), ownsNothing: rows.length === 0 };
+}
+
+// --- What is at one station (the plan's Phase 6b) ------------------------------
+//
+// Until 2026-10-11 the page asked one route of the BFF (GET /api/bridge/assets/station), which made this one call
+// and answered each type's volume from its static data beside the items.
+//
+// THE CALL, as the client makes it (invCache.inv5MinCacheContainer.ListStationItems, 840 to 853):
+//
+//   self.moniker.ListStationItems(stationID)
+//
+// on the same container, with the one station (or structure). No recording has one. The assets window asks it as
+// a station is opened (assetsWindow.py 745). It answers a list of the pilot's own things there, a packed row
+// each. The server lists the things of the session that asks, and the station only picks among them.
+//
+// WHAT IS KEPT. The client keeps each station's answer five minutes (846). The page keeps nothing of it.
+//
+// A STATION IS EMPTY WHERE THE LIST WAS READ AND HAS NO ROWS, AND ONLY THERE. An answer that is no list is the
+// station unread.
+//
+// WHAT EACH THING MEASURES is not the server's to say: a client has a type's volume in its own static data, and
+// the page asks the BFF's (GET /api/types/volumes). The rows are handed on as they came, to be read with the
+// volumes beside them (personalAssets.ts, decodeAssetItems).
+//
+// THE ROUTE STILL STANDS (src/server.js). Nothing of the page's asks it now.
+
+/** What the server listed at one station, as it came, and whether it listed nothing at all. */
+export interface AssetStationItemsRead {
+  /** charMgr.ListStationItems' list, untouched. */
+  readonly listed: JsonValue;
+  /** True only where the list was read and had no rows. */
+  readonly hasNoItems: boolean;
+}
+
+/**
+ * What of the pilot's is at one station, as the server lists it. Nothing is asked for what is no station. Fails
+ * as the call fails; and where the server's answer is no list, which is no list of things at all.
+ */
+export async function readAssetStationItems(ask: Ask, stationID: number): Promise<AssetStationItemsRead> {
+  if (!Number.isSafeInteger(stationID) || stationID <= 0) {
+    throw new Error("No location was named.");
+  }
+  const answered = await ask("charMgr", "ListStationItems", [stationID]);
+  if (!isListValue(answered)) {
+    throw new Error("What is stored there could not be read (the server did not answer with a list).");
+  }
+  return { listed: answered, hasNoItems: answered.items.length === 0 };
 }

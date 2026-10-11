@@ -13,7 +13,8 @@
 //
 // Since 2026-10-11 the list of stations is the page's own read (bridge/assetReads.ts): charMgr.ListStations by
 // the generic call, as the client's assets window asks it. "Owns nothing" is said there of a rowset read and
-// empty, and of nothing else. What is at a station is its route's still.
+// empty, and of nothing else. What is at a station is the page's own read too (charMgr.ListStationItems), with
+// each type's volume asked of the BFF's static data (GET /api/types/volumes), once for a type.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -156,14 +157,35 @@ const THE_STATIONS_READ = { service: "charMgr", method: "ListStations", args: []
 /** Another station than the one the page's own read answers: what the route says, which nothing is to ask. */
 const THE_ROUTES_STATION = 60008494;
 
+/** The page's own read of what is at a station: charMgr.ListStationItems by the generic call. */
+const isItemsCall = (path: string, body: Record<string, unknown>): boolean =>
+  path === "/api/bridge/call" && body.service === "charMgr" && body.method === "ListStationItems";
+const itemsAnswer = (rows: Record<string, unknown>[]) => ({ status: 200, body: { ok: true, service: "charMgr", method: "ListStationItems", result: stationItems(rows), notifications: [] } });
+// assetsWindow.py 745, invCache.py 849: self.moniker.ListStationItems(stationID), on the pilot's own object.
+const THE_ITEMS_READ = { service: "charMgr", method: "ListStationItems", args: [STATION_ID], kwargs: null, pilot: true };
+/** What the station's route says is there, which nothing is to ask: another ship. */
+const THE_ROUTES_ITEM = { itemID: 9988400099999, typeID: 587, ownerID: 140000004, locationID: STATION_ID, flagID: 4, quantity: -1, groupID: 25, categoryID: 6, customInfo: "", singleton: 1, stacksize: 1 };
+/** GET /api/types/volumes as the BFF answers it: each type asked of, with its volume or null. */
+const typesAskedOf = (path: string): number[] => (new URL(path, "http://bff").searchParams.get("typeIDs") ?? "").split(",").filter((part) => part !== "").map(Number);
+const volumesAnswer = (path: string, known: Record<string, number | null> = LIVE_VOLUMES) =>
+  ({ status: 200, body: { ok: true, source: "static-data", volumes: Object.fromEntries(typesAskedOf(path).map((typeID) => [String(typeID), known[String(typeID)] ?? null])), capped: false, limit: 500 } });
+const volumeRequests = (requests: readonly Recorded[]): number[][] => requests.filter((entry) => entry.path.startsWith("/api/types/volumes")).map((entry) => typesAskedOf(entry.path).sort((a, b) => a - b));
+
 function respondOk(extra: (path: string, body: Record<string, unknown>) => unknown = () => null) {
   return (path: string, body: Record<string, unknown> = {}) => {
     const custom = extra(path, body);
     if (custom !== null && custom !== undefined) {
       return custom as { status: number; body: unknown };
     }
+    // The station's route, which nothing is to ask: it answers another item than the page's own read does.
     if (path.startsWith("/api/bridge/assets/station")) {
-      return { status: 200, body: stationPayload() };
+      return { status: 200, body: stationPayload({ items: stationItems([THE_ROUTES_ITEM]), volumes: { "587": 16500 } }) };
+    }
+    if (isItemsCall(path, body)) {
+      return itemsAnswer(LIVE_ITEM_ROWS);
+    }
+    if (path.startsWith("/api/types/volumes")) {
+      return volumesAnswer(path);
     }
     if (path.startsWith("/api/bridge/assets")) {
       return { status: 200, body: assetsPayload({ stations: stationsCrowset([[THE_ROUTES_STATION, 30002187, 1529, 1, null]]) }) };
@@ -208,10 +230,14 @@ test("a live read lands the character's stations in the store, by the page's own
   assert.equal(assets.stations[0]!.itemCount, 9);
 });
 
-test("expanding a station reads it and keeps its contents under that station", async () => {
-  const { store, flow } = makeFlow(respondOk());
+test("expanding a station reads it by the page's own call, never by the route, and keeps its contents under that station", async () => {
+  const { store, flow, requests } = makeFlow(respondOk());
   await flow.loadPersonalAssets();
   await flow.openAssetStation(STATION_ID);
+  assert.deepEqual(requests.filter((entry) => entry.path === "/api/bridge/call" && entry.body.method === "ListStationItems").map((entry) => entry.body), [THE_ITEMS_READ]);
+  assert.deepEqual(requests.filter((entry) => entry.path.startsWith("/api/bridge/assets")), []);
+  // Each type's volume, asked of the BFF's static data in one request for the two.
+  assert.deepEqual(volumeRequests(requests), [[9854, 40340]]);
 
   const assets = store.get().assets;
   assert.equal(assets.expandedStationID, STATION_ID);
@@ -221,8 +247,10 @@ test("expanding a station reads it and keeps its contents under that station", a
   // The assembled ship counts as one, not as the -1 the wire carries.
   assert.equal(contents.items.find((item) => item.typeID === 9854)!.units, 1);
   assert.equal(contents.items.find((item) => item.typeID === 40340)!.units, 12);
-  // Volume arrived from the BFF's static map.
+  // Volume arrived from the BFF's static data.
   assert.equal(contents.items.find((item) => item.typeID === 40340)!.volume, 800000);
+  assert.equal(contents.items.find((item) => item.typeID === 9854)!.volume, 20400);
+  assert.equal(contents.hasNoItems, false);
 });
 
 test("collapsing a station touches no server", async () => {
@@ -295,13 +323,8 @@ test("a read that reports an error is not rendered, even if it carried rows", as
 
 test("a station whose contents fail keeps the failure to itself", async () => {
   const { store, flow } = makeFlow(
-    respondOk((path) =>
-      path.startsWith("/api/bridge/assets/station")
-        ? {
-            status: 200,
-            body: stationPayload({ items: null, hasNoItems: false, error: "READ_FAILED" }),
-          }
-        : null,
+    respondOk((path, body) =>
+      isItemsCall(path, body) ? { status: 502, body: { ok: false, error: "CALL_FAILED", message: "CALL_FAILED" } } : null,
     ),
   );
   await flow.loadPersonalAssets();
@@ -312,7 +335,8 @@ test("a station whose contents fail keeps the failure to itself", async () => {
   assert.equal(assets.stations.length, 1);
   assert.equal(assets.error, null);
   const contents = assets.contents[STATION_ID]!;
-  assert.equal(contents.error, "READ_FAILED");
+  // (The call's own code is what the failure is kept as.)
+  assert.equal(contents.error, "CALL_FAILED");
   assert.equal(contents.hasNoItems, false, "a failed read is not an empty station");
   assert.deepEqual(contents.items, []);
 });
@@ -322,15 +346,11 @@ test("a station's failed read is not rendered, even if it carried rows", async (
   // is stored somewhere is worse than saying the read failed, because the
   // player would believe they had seen everything.
   const { store, flow } = makeFlow(
-    respondOk((path) =>
-      path.startsWith("/api/bridge/assets/station")
+    respondOk((path, body) =>
+      isItemsCall(path, body)
         ? {
-            status: 200,
-            body: stationPayload({
-              items: stationItems(LIVE_ITEM_ROWS),
-              hasNoItems: false,
-              error: "READ_FAILED",
-            }),
+            status: 502,
+            body: { ok: false, error: "CALL_FAILED", message: "CALL_FAILED", result: stationItems(LIVE_ITEM_ROWS) },
           }
         : null,
     ),
@@ -339,20 +359,13 @@ test("a station's failed read is not rendered, even if it carried rows", async (
   await flow.openAssetStation(STATION_ID);
 
   const contents = store.get().assets.contents[STATION_ID]!;
-  assert.equal(contents.error, "READ_FAILED");
+  assert.equal(contents.error, "CALL_FAILED");
   assert.deepEqual(contents.items, [], "a partial answer is not shown as the whole truth");
 });
 
 test("a station that is genuinely empty says so, distinctly", async () => {
-  const { store, flow } = makeFlow(
-    respondOk((path) =>
-      path.startsWith("/api/bridge/assets/station")
-        ? {
-            status: 200,
-            body: stationPayload({ items: stationItems([]), hasNoItems: true }),
-          }
-        : null,
-    ),
+  const { store, flow, requests } = makeFlow(
+    respondOk((path, body) => (isItemsCall(path, body) ? itemsAnswer([]) : null)),
   );
   await flow.loadPersonalAssets();
   await flow.openAssetStation(STATION_ID);
@@ -360,6 +373,8 @@ test("a station that is genuinely empty says so, distinctly", async () => {
   const contents = store.get().assets.contents[STATION_ID]!;
   assert.equal(contents.hasNoItems, true);
   assert.equal(contents.error, null);
+  // And no type's volume is asked for, there being no type.
+  assert.deepEqual(volumeRequests(requests), []);
 });
 
 // --- R7d --------------------------------------------------------------------
@@ -506,4 +521,89 @@ test("names are asked for the stations the page's own read answered, and for non
   const asked = requests.filter((entry) => entry.path === "/api/names").flatMap((entry) => (entry.body.items as { kind: string; id: number }[]) ?? []);
   assert.deepEqual(asked.filter((ref) => ref.kind === "station").map((ref) => ref.id), [STATION_ID]);
   assert.equal(asked.some((ref) => ref.id === THE_ROUTES_STATION), false);
+});
+
+// --- what is at a station, as the page's own read -----------------------------
+
+test("an answer that is no list is a station's read that failed, and never an empty station", async () => {
+  const answers: Array<[string, unknown]> = [["nothing", null], ["a rowset", stationsCrowset([])], ["a yes", true], ["the route's envelope", stationPayload({ hasNoItems: true })]];
+  for (const [what, result] of answers) {
+    const { store, flow, requests } = makeFlow(
+      respondOk((path, body) => (isItemsCall(path, body) ? { status: 200, body: { ok: true, service: "charMgr", method: "ListStationItems", result, notifications: [] } } : null)),
+    );
+    await flow.loadPersonalAssets();
+    await flow.openAssetStation(STATION_ID);
+    const contents = store.get().assets.contents[STATION_ID]!;
+    assert.deepEqual([contents.error, contents.hasNoItems, contents.items], ["READ_FAILED", false, []], what);
+    assert.deepEqual(volumeRequests(requests), [], what);
+  }
+});
+
+test("a type's volume is asked for once and kept: a second look asks for none, and a new type is asked for alone", async () => {
+  let rows = LIVE_ITEM_ROWS;
+  const { store, flow, requests } = makeFlow(respondOk((path, body) => (isItemsCall(path, body) ? itemsAnswer(rows) : null)));
+  await flow.loadPersonalAssets();
+  await flow.openAssetStation(STATION_ID);
+  await flow.openAssetStation(STATION_ID);
+  assert.deepEqual(volumeRequests(requests), [[9854, 40340]]);
+  assert.equal(store.get().assets.contents[STATION_ID]!.items.find((item) => item.typeID === 40340)!.volume, 800000);
+  // More stacks have come: two of one type not seen yet, and one of another, neither known to the static tables.
+  rows = [...LIVE_ITEM_ROWS, { ...LIVE_ITEM_ROWS[1], itemID: 9988400022137, typeID: 34, stacksize: 5, quantity: 5 }, { ...LIVE_ITEM_ROWS[1], itemID: 9988400022138, typeID: 70001, stacksize: 3, quantity: 3 },
+    { ...LIVE_ITEM_ROWS[1], itemID: 9988400022139, typeID: 34, stacksize: 2, quantity: 2 }];
+  await flow.openAssetStation(STATION_ID);
+  // A type is asked for once however many stacks of it there are.
+  assert.deepEqual(volumeRequests(requests), [[9854, 40340], [34, 70001]]);
+  // A type the tables do not know has no volume, and never one of nought. It is not asked for again either.
+  const unknown = store.get().assets.contents[STATION_ID]!.items.filter((item) => item.typeID === 34 || item.typeID === 70001);
+  assert.deepEqual(unknown.map((item) => item.volume), [null, null, null]);
+  await flow.openAssetStation(STATION_ID);
+  assert.equal(volumeRequests(requests).length, 2);
+});
+
+test("a type the BFF did not answer for is asked for again; one it said has no volume is not", async () => {
+  // The first answer leaves the stack's type out altogether (an answer cut short), and says the ship's has none.
+  let first = true;
+  const { store, flow, requests } = makeFlow(
+    respondOk((path) => {
+      if (!path.startsWith("/api/types/volumes")) return null;
+      const answer = first ? { status: 200, body: { ok: true, source: "static-data", volumes: { "9854": null }, capped: true, limit: 500 } } : volumesAnswer(path);
+      first = false;
+      return answer;
+    }),
+  );
+  await flow.loadPersonalAssets();
+  await flow.openAssetStation(STATION_ID);
+  assert.deepEqual(store.get().assets.contents[STATION_ID]!.items.map((item) => [item.typeID, item.volume]), [[40340, null], [9854, null]]);
+  await flow.openAssetStation(STATION_ID);
+  assert.deepEqual(volumeRequests(requests), [[9854, 40340], [40340]]);
+  assert.deepEqual(store.get().assets.contents[STATION_ID]!.items.map((item) => [item.typeID, item.volume]), [[40340, 800000], [9854, null]]);
+});
+
+test("volumes that could not be read leave the items listed without them, and are asked for again", async () => {
+  let failing = true;
+  const { store, flow, requests } = makeFlow(
+    respondOk((path) => (path.startsWith("/api/types/volumes") && failing ? { status: 500, body: { ok: false, error: "INTERNAL_ERROR", message: "boom" } } : null)),
+  );
+  await flow.loadPersonalAssets();
+  await flow.openAssetStation(STATION_ID);
+  const first = store.get().assets.contents[STATION_ID]!;
+  // The station's read is whole: only what each thing measures is not known.
+  assert.deepEqual([first.error, first.hasNoItems, first.items.map((item) => [item.typeID, item.units, item.volume])], [null, false, [[40340, 12, null], [9854, 1, null]]]);
+  failing = false;
+  await flow.openAssetStation(STATION_ID);
+  assert.deepEqual(store.get().assets.contents[STATION_ID]!.items.map((item) => [item.typeID, item.volume]), [[40340, 800000], [9854, 20400]]);
+  assert.deepEqual(volumeRequests(requests), [[9854, 40340], [9854, 40340]]);
+});
+
+test("a pilot's session gone while a station is read fails the look itself, and the pilot is offline", async () => {
+  const { store, flow } = makeFlow(
+    respondOk((path, body) => (isItemsCall(path, body) ? { status: 404, body: { ok: false, error: "SESSION_NOT_FOUND", message: "SESSION_NOT_FOUND" } } : null)),
+  );
+  await flow.loadPersonalAssets();
+  store.apply({ type: "character/online", character: {
+    characterID: 140000004, characterName: "Test", stationID: STATION_ID,
+    structureID: null, solarSystemID: SYSTEM_ID, corporationID: 98000000,
+  }, station: null } as never);
+  await assert.rejects(flow.openAssetStation(STATION_ID), (reason: { code?: string }) => reason.code === "SESSION_NOT_FOUND");
+  assert.equal(store.get().station.online, null);
 });

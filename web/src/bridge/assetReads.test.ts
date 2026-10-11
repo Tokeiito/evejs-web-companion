@@ -4,7 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { readAssetStations } from "./assetReads.ts";
+import { readAssetStationItems, readAssetStations } from "./assetReads.ts";
 import type { JsonValue } from "./wire.ts";
 
 // The form this server's charMgr printed (a CRowset whose rows are positional packed rows, on `list`), with
@@ -53,4 +53,42 @@ test("an answer that is no rowset is the pilot's things unread, not nothing owne
 test("a read that failed fails as the call failed: the caller has the call's own reason", async () => {
   const refused = Object.assign(new Error("CALL_FAILED"), { code: "CALL_FAILED" });
   await assert.rejects(readAssetStations(asker(refused).ask), (error) => error === refused);
+});
+
+// --- what is at one station ---------------------------------------------------
+
+// The form this server's charMgr printed: a plain list whose rows are name-keyed packed rows. Numbers made up.
+const item = (fields: Record<string, unknown>): JsonValue => ({ type: "packedrow", header: { type: "objectex1", header: [], list: [], dict: [] }, columns: [], fields }) as unknown as JsonValue;
+const listOf = (...rows: readonly JsonValue[]): JsonValue => ({ type: "list", items: rows }) as unknown as JsonValue;
+const STACK = item({ itemID: 9000000000001, typeID: 34, ownerID: 90000001, locationID: 60000001, flagID: 4, quantity: 12, groupID: 18, categoryID: 4, customInfo: "", singleton: 0, stacksize: 12 });
+
+test("what is at a station is asked with the station alone, of no object the page names, and handed on as the list it is", async () => {
+  const one = asker(listOf(STACK));
+  const read = await readAssetStationItems(one.ask, 60000001);
+  // assetsWindow.py 745: ...GetInventory(const.containerGlobal).ListStationItems(locationID), which is
+  // invCache.py 849: self.moniker.ListStationItems(stationID).
+  assert.deepEqual(one.asked, [["charMgr", "ListStationItems", [60000001], null, null]]);
+  assert.deepEqual(read, { listed: listOf(STACK), hasNoItems: false });
+  // A station is empty where the list was read and has no rows, and only there.
+  assert.deepEqual(await readAssetStationItems(asker(listOf()).ask, 60000001), { listed: listOf(), hasNoItems: true });
+});
+
+test("what is no station is asked of nobody", async () => {
+  for (const station of [0, -60000001, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 2, "60000001", null]) {
+    const none = asker(listOf(STACK));
+    await assert.rejects(readAssetStationItems(none.ask, station as number), /^Error: No location was named\.$/, String(station));
+    assert.deepEqual(none.asked, [], String(station));
+  }
+});
+
+test("an answer that is no list is the station unread, not an empty station", async () => {
+  const answers: Array<[string, unknown]> = [["nothing", null], ["nothing at all", undefined], ["a rowset", rowset([])], ["an array", []], ["a number", 0], ["a list with no rows of its own", { type: "list" }], ["a dict", { type: "dict", items: [] }]];
+  for (const [what, answer] of answers) {
+    await assert.rejects(readAssetStationItems(asker(answer as JsonValue | undefined).ask, 60000001), /^Error: What is stored there could not be read \(the server did not answer with a list\)\.$/, what);
+  }
+});
+
+test("a station's read that failed fails as the call failed", async () => {
+  const refused = Object.assign(new Error("CALL_REFUSED"), { code: "CALL_REFUSED" });
+  await assert.rejects(readAssetStationItems(asker(refused).ask, 60000001), (error) => error === refused);
 });

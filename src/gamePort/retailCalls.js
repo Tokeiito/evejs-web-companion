@@ -209,6 +209,10 @@ const oneContractForWhom = (args, kwargs) => (args.length === 2 && Number.isSafe
 const oneLaunch = (args, kwargs) => (args.length === 1 && Number.isSafeInteger(args[0]) && args[0] > 0 && Object.keys(kwargs).length === 0
   ? {}
   : { status: "differs", note: "The client names the one launch and nothing else: DeleteLaunch(launchID)." });
+/** invCache.ListStationItems (849): self.moniker.ListStationItems(stationID), the one station (or structure) and nothing else. */
+const oneStationAlone = (args, kwargs) => (args.length === 1 && Number.isSafeInteger(args[0]) && args[0] > 0 && Object.keys(kwargs).length === 0
+  ? {}
+  : { status: "differs", note: "The client sends the one station, by its number, and nothing else: ListStationItems(stationID)." });
 /** A judge for a call the client sends with nothing: no argument, and no keyword. */
 const sentWithNothing = (args, kwargs) => (args.length === 0 && Object.keys(kwargs).length === 0 ? {} : { status: "differs", note: "The client sends nothing with this call." });
 /** Items' IDs as the client's repair shop lists them: whole numbers above nought, and one at least. */
@@ -1322,6 +1326,8 @@ const RETAIL_CALLS = Object.freeze({
   "charMgr.GetHomeStationRow": same("eve/client/script/ui/shared/neocom/charactersheet.py:59", "RemoteSvc('charMgr').GetHomeStationRow(), no arguments, asked once and kept until the session is reset"),
   "charMgr.GetHomeStation": webOnly("eve/client/script/ui/shared/neocom/charactersheet.py:59", "The client never asks this of charMgr: its character sheet's service asks GetHomeStationRow()."),
   "charMgr.GetCloneInfo": webOnly("eve/client/script/ui/services/clonejumpsvc.py:76", "The client never asks this. Its jump clones, their implants and the time of the last jump come from GetCloneState() on the jumpCloneSvc moniker for where the pilot is; the implants in the pilot's head are what its skill handler answers GetImplants() with (skillsvc.py 967), which godma's 'implants' of the character hands on."),
+  "charMgr.ListStationItems": judged(`${INV_CACHE}:849`, oneStationAlone,
+    "invCache's global container: self.moniker.ListStationItems(stationID), with the one station. No recording has one. The client keeps each station's answer five minutes; the page asks each time a station is opened in its assets window, and the transport keeps nothing of it."),
   "charMgr.ListStations": judged(`${INV_CACHE}:833`, sentWithNothing,
     "invCache's global container, Moniker('charMgr', (session.charid, const.containerGlobal)): self.moniker.ListStations(), with nothing. Recorded on Tranquility so, three times, twice riding the bind. The client keeps the answer five minutes; the page asks each time its assets window asks, and the transport keeps nothing of it."),
 
