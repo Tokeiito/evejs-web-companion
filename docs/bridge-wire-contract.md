@@ -857,8 +857,19 @@ seventeen names below: one added to the route must be added to `jobDumped`.
 **Whatever a route hands the transport must be something the game port's marshal can
 write.** `npm run audit:game-port` runs the suite and looks at every call the tests
 cause, reshaped as the ledger reshapes it; a route that passes on a value of the
-browser's is as sendable as what the browser sends it. Five routes nothing of the page
-asks pass on an object as it came (`scripts/game-port-audit-known.json`).
+browser's is as sendable as what the browser sends it. Seven routes nothing of the page
+asks pass on an object as it came (`scripts/game-port-audit-known.json`): among them the
+two that make and change a fleet's advert, so a fleet is advertised through the web
+gateway only.
+
+**The fleet finder's reads are the page's own** (`web/src/bridge/fleetFinderReads.ts`):
+`fleetProxy.GetAvailableFleetAds` and `fleetProxy.GetMyFleetFinderAdvert`, each by the
+generic call as a pilot's read, nothing sent with either. The first answers a dict of
+adverts by fleet; the second one advert, or None. **An advert's `fleetName` and
+`description` are text or a wire string** (`{ type: "wstring", value }`): EveJS sends
+plain ASCII as a plain string and anything else as unicode, and Tranquility sends
+unicode always. `GET /api/bridge/fleet-ads` still stands, and nothing of the page asks
+it.
 
 ```jsonc
 {

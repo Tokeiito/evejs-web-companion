@@ -1081,6 +1081,35 @@ Take these defaults, and list each under "For the operator" in the log so they c
   a breakage that leaves a test waiting for an answer that never comes (a call made
   twice, the first one answered) stops everything. Read each for that before it is
   run.
+- **A look after a restore is a script that only reads.** `ffr-live.js` forms a fleet
+  and takes it down; run "for its first lines" after a restore, it did all of it. The
+  scripts that only read are named `*-look.js`: use one of those, or the tab's own
+  list of pilots, and nothing else.
+- **What stages a check may itself not go on the game port.** A fleet's advert is made
+  by a route that passes on an object: 400 `CALL_INVALID` there. Stage through the
+  gateway's BFF and test through the game port's: `ffr-live.js <bff under test> <the
+  boss's bff>`, and `ffr-stage.js <bff>` for the tab (it leaves the boss logged in,
+  so that its fleet stays: start that BFF again afterwards).
+- **A server defect goes to a sub-agent with the recording's line, the builder's
+  place, and the server's own helper for the thing**, and with what else to look at
+  and report without changing. It works in the `eve.js` checkout itself, on `main`.
+  While it runs, do what touches neither `eve.js` nor the store (tests, breakages,
+  the audit), and make the page read both the old form and the new before the fix is
+  run live. EveJS takes the fix when it is next started (`store.sh save`). Wait for
+  its commit by reading `git log` there, and for its own word that it is done.
+- **Text the client is sent as unicode is a wire string here** (`{ type: "wstring",
+  value }`), on both transports. A decoder that takes text for a plain string writes
+  such a name out as "[object Object]". Each decoder has its own small reader for
+  text (`toText` in `bridge/fleetAds.ts`): look at it whenever a name is decoded.
+- **A fixture in a recording's form has the recording's names and kinds, and made-up
+  values for what is other pilots'**: their names, and the numbers of their
+  characters, corporations and fleets.
+- **The Companions window keeps the op's fleet name and its roster in the browser.**
+  Note what the field holds before typing another name, and put it back. "Remove" on
+  a pilot's row was followed by its leaving the fleet. And find the page's "Log out"
+  before any BFF is started again, and read who is online after: one script, run
+  after the Fleet window was opened, did not find the button, and why was not looked
+  into.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

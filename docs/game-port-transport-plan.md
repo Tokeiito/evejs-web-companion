@@ -867,8 +867,11 @@ Both kinds of defect found there are looked for now by an audit run with the sui
 nothing of the page asks that pass on an object of the browser's, and **fourteen bridge
 routes the page names that no test asks**. Next: those fourteen, the reads among them
 moved to the page's own calls, `fleet-ads` first.
+The fleet finder is read by the page's own two calls (`71aee531`); thirteen of those
+routes are left, `pi-colonies` next. In `eve.js` an advert's text outside ASCII goes as
+unicode (`dcd459b0d`, not pushed).
 Counted by the whole path,
-97 are named now, 47 of them reads and 50 writes (the count kept before
+96 are named now, 46 of them reads and 50 writes (the count kept before
 `82a21e8` took a path's beginning for a path and missed a parameter inside one: it read 130
 where 138 was so). Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.
