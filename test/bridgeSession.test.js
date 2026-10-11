@@ -4251,3 +4251,29 @@ test("none of the BFF's handles for a fleet is kept across the page's own turnin
     assert.deepEqual(asked, THROUGH_THE_DECLINING("made 1", said), JSON.stringify(body));
   }
 });
+
+// ── a place in space bookmarked by the page itself ───────────────────────────
+//
+// bookmarkSvc.ACLBookmarkLocation (609 to 620): bp = michelle.GetRemotePark(), and bp.BookmarkLocation(itemID,
+// folderID, name, comment, expiry, subfolderID=subfolderID), on the ballpark's own object. The page asks it of
+// beyonce by its name, as it asks the park's other calls; the BFF hands it on as it came.
+
+const BOOKMARKED = [FOLLOWED, 7000001, "A spot", "a note", 2];
+
+test("a place bookmarked is a write of the page's own: said to be a pilot's and meant, on no object the page names, and handed on as it came", async () => {
+  for (const more of [{}, { pilot: true }, { confirm: true }]) {
+    const refused = await byThePage("BookmarkLocation", BOOKMARKED, { more: { kwargs: { subfolderID: null }, ...more } });
+    assert.deepEqual([refused.status, refused.payload.error, refused.sent], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE", []], JSON.stringify(more));
+  }
+  const named = await byThePage("BookmarkLocation", BOOKMARKED, { more: { pilot: true, confirm: true, of: PILOTS_SYSTEM } });
+  assert.deepEqual([named.status, named.payload.error, named.sent], [400, "INVALID_REQUEST", []]);
+  for (const transport of ["gameport", "gateway"]) {
+    // Never held back, and with no throttle opened before it: it is no order to the ship.
+    const made = await byThePage("BookmarkLocation", BOOKMARKED, { transport, alreadySo: () => true, more: { pilot: true, confirm: true, kwargs: { subfolderID: null } } });
+    assert.deepEqual([made.status, made.payload.ok, made.payload.service, made.payload.method, made.payload.result, made.payload.notifications, made.sent, made.wondered],
+      [200, true, "beyonce", "BookmarkLocation", null, ["after BookmarkLocation"], [["beyonce", "BookmarkLocation", BOOKMARKED, { subfolderID: null }]], []], transport);
+  }
+  // The other bookmark of the park's is its route's still.
+  const scanned = await byThePage("BookmarkScanResult", [PILOTS_SYSTEM, "A site", "", "ABC-123", 7000001, 0]);
+  assert.deepEqual([scanned.status, scanned.payload.error, scanned.sent], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE", []]);
+});

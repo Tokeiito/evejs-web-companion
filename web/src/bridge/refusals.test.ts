@@ -54,7 +54,11 @@ const EVEJS_REFUSAL_VOCABULARY: readonly string[] = [
   "AlreadyInNewbieShip",
   "ErrorCreatingNewbieShip",
   "MustBeDocked",
+  // beyonce Handle_BookmarkLocation — reachable from a mining operation's hauler saving its return point: the
+  // folder gone since it was read, or full.
+  "BookmarkFolderNoLongerThere",
   "BookmarkNotAvailable",
+  "FolderCapacityExceeded",
   "CannotOnlineReachedMaxGroupOnline",
   "CantInHighSecSpace",
   "CrpAccessDenied",

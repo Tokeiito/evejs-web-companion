@@ -153,3 +153,12 @@ test("a pilot is invited by the page's own call wherever the page carries a bot'
   const api = readFileSync(fileURLToPath(new URL("./api.ts", import.meta.url)), "utf8");
   assert.equal(api.includes('"/api/bridge/fleet/invite"'), false);
 });
+
+test("a mining site's return point is bookmarked by the page's own call, where the page carries a bot's actions out", () => {
+  const flow = readFileSync(fileURLToPath(new URL("./flow.ts", import.meta.url)), "utf8");
+  // The hauler's own ship, the folder, the name and the note; kept two days, as it was by its route.
+  assert.equal(flow.split("create: async (id, folder, name, note) => { await bookmarkLocationCall(bridgeDo, id, folder, name, note, BOOKMARK_EXPIRY.twoDays); },").length - 1, 1);
+  assert.equal(flow.includes("api.bookmarkMiningSiteLocation("), false);
+  const api = readFileSync(fileURLToPath(new URL("./api.ts", import.meta.url)), "utf8");
+  assert.equal(api.includes('"/api/bridge/flight/bookmark-location"'), false);
+});

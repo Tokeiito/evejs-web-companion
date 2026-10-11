@@ -2383,3 +2383,47 @@ test("an invitation is turned down as the client turns one down: with True from 
   // And a fleet's number is one however the session has it.
   for (const fleetID of [654500010000n, "654500010000"]) assert.deepEqual([decline([true], { fleetID }).status, decline([], { fleetID }).status], ["same", "differs"], String(fleetID));
 });
+
+test("a place bookmarked is the client's on the park, with the subfolder by keyword every time: put in where the call came without it", () => {
+  // bookmarkSvc.py 617: bp.BookmarkLocation(itemID, folderID, name, comment, expiry, subfolderID=subfolderID).
+  const bookmark = (args, kwargs = null) => retailForm("beyonce", "BookmarkLocation", args, kwargs, {});
+  const plain = [1000000012345, 7000001, "A spot", "a note", 2];
+  for (const kwargs of [{ subfolderID: null }, { subfolderID: 8000001 }]) {
+    const made = bookmark(plain, kwargs);
+    assert.deepEqual([made.status, made.args, made.kwargs], ["same", plain, kwargs], JSON.stringify(kwargs));
+    assert.match(made.source, /bookmarkSvc\.py:617$/);
+  }
+  // No subfolder said: the client says None by keyword, and so it goes.
+  const bare = bookmark(plain);
+  assert.deepEqual([bare.status, bare.args, bare.kwargs], ["reshaped", plain, { subfolderID: null }]);
+  // An empty comment, and each of the four times a bookmark is kept for (bookmarkConst).
+  for (const expiry of [0, 1, 2, 3]) assert.equal(bookmark([1000000012345, 7000001, "A spot", "", expiry], { subfolderID: null }).status, "same", String(expiry));
+  // What is not the client's form goes as it came, and is counted as not the client's.
+  for (const [args, kwargs, why] of [
+    [[1000000012345, 7000001, "A spot", "a note"], null, "no time said"],
+    [[1000000012345, 7000001, "A spot", "a note", 2, null], null, "a sixth"],
+    [[0, 7000001, "A spot", "a note", 2], null, "no thing"],
+    [["1000000012345", 7000001, "A spot", "a note", 2], null, "a thing as text"],
+    [[1000000012345, 0, "A spot", "a note", 2], null, "no folder"],
+    [[1000000012345, 7000001, "", "a note", 2], null, "no name"],
+    [[1000000012345, 7000001, "  \t ", "a note", 2], null, "a name of space alone"],
+    [[1000000012345, 7000001, 5, "a note", 2], null, "a name that is no text"],
+    [[1000000012345, 7000001, "A spot", null, 2], null, "a note that is no text"],
+    [[1000000012345, 7000001, "A spot", "a note", 4], null, "a time the client has not"],
+    [[1000000012345, 7000001, "A spot", "a note", "2"], null, "a time as text"],
+    [plain, { subfolderID: 0 }, "a subfolder of nought"],
+    [plain, { subfolderID: null, folderID: 7000001 }, "another keyword beside it"],
+    [plain, { folder: 7000001 }, "another keyword in its place"],
+  ]) {
+    const odd = bookmark(args, kwargs);
+    assert.deepEqual([odd.status, odd.args, odd.kwargs], ["differs", args, kwargs], why);
+    assert.match(odd.note, /a thing, a folder, a name/, why);
+  }
+  // 611 to 613: a region, a constellation, a system or a station is asked of accessGroupBookmarkMgr, not of the park.
+  for (const place of [10000000, 10000002, 19999999, 20000020, 30000142, 39999999, 60000000, 60003760, 63999999]) {
+    const still = bookmark([place, 7000001, "A place", "", 0], { subfolderID: null });
+    assert.equal(still.status, "differs", String(place));
+    assert.match(still.note, /BookmarkStaticLocation/, String(place));
+  }
+  for (const thing of [9999999, 40000000, 59999999, 64000000]) assert.equal(bookmark([thing, 7000001, "A thing", "", 0], { subfolderID: null }).status, "same", String(thing));
+});

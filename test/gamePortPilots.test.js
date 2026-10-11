@@ -8413,3 +8413,41 @@ test("an invitation turned down is counted by the session's own fleet: True from
   // Each went as it was said, on the invitation's own Moniker.
   assert.deepEqual(onObjects(session, "RejectInvite").map(([, , args, kwargs]) => [args, kwargs]), [[[true], null], [[], null], [[false], null], [[], null], [[false], null], [[true], null]]);
 });
+
+// ── a place in space bookmarked ──────────────────────────────────────────────
+//
+// bookmarkSvc.ACLBookmarkLocation (614 to 617): bp = michelle.GetRemotePark(); with none, UserError
+// BkmMustBeInFlight and nothing asked; otherwise bp.BookmarkLocation(itemID, folderID, name, comment, expiry,
+// subfolderID=subfolderID). In no Tranquility recording.
+
+test("a place bookmarked by beyonce's name is bookmarked on the ballpark's own object, the subfolder by keyword; docked, nothing is sent", async () => {
+  const hand = handTicked();
+  const allowed = new Set(["beyonce.MachoBindObject", "beyonce.BookmarkLocation"]);
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:BookmarkLocation": [900001, null, 5, 1.5, 2.5, 3.5, 30000142, null] } }, { ...hand.options, allowed });
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const { session } = built;
+  const row = () => built.pilots.callLedger().find((each) => each.pair === "beyonce.BookmarkLocation");
+  const plain = [1000000012345, 7000001, "A spot", "a note", 2];
+  // As the client asks it: as it came.
+  const sent = await built.pilots.callMethod("beyonce", "BookmarkLocation", plain, { subfolderID: null }, WHOSE, handle);
+  assert.deepEqual([sent.service, sent.method, sent.result], ["beyonce", "BookmarkLocation", [900001, null, 5, 1.5, 2.5, 3.5, 30000142, null]]);
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:1", method: "BookmarkLocation", args: plain, kwargs: { subfolderID: null } });
+  assert.equal(session.calls.some((call) => call.service === "beyonce" && call.method === "BookmarkLocation"), false, "nothing was asked of the service by name");
+  assert.deepEqual(row().statuses, { same: 1 });
+  // With no subfolder said, None is said for it by keyword, as the client says it.
+  await built.pilots.callMethod("beyonce", "BookmarkLocation", plain, null, WHOSE, handle);
+  assert.deepEqual([session.boundCalls.at(-1).args, session.boundCalls.at(-1).kwargs], [plain, { subfolderID: null }]);
+  assert.deepEqual(row().statuses, { same: 1, reshaped: 1 });
+  // What is not the client's form goes as it came, and is counted as not the client's.
+  await built.pilots.callMethod("beyonce", "BookmarkLocation", [1000000012345, 7000001, "", "a note", 2], null, WHOSE, handle);
+  assert.deepEqual([session.boundCalls.at(-1).args, session.boundCalls.at(-1).kwargs], [[1000000012345, 7000001, "", "a note", 2], null]);
+  assert.deepEqual(row().statuses, { same: 1, reshaped: 1, differs: 1 });
+  assert.deepEqual(hand.errors, []);
+
+  // Docked: the client says it must be in flight, and asks nothing. Asked all the same, the call is refused here and not sent.
+  const docked = await selected({}, { allowed });
+  const sentBefore = docked.session.sent.length;
+  await assert.rejects(docked.pilots.callMethod("beyonce", "BookmarkLocation", plain, { subfolderID: null }, WHOSE, docked.handle), (error) => error.code === "CALL_REFUSED" && /in space/.test(error.message));
+  assert.equal(docked.session.sent.length, sentBefore, "nothing was sent");
+  assert.equal(docked.pilots.callLedger().some((each) => each.pair === "beyonce.BookmarkLocation"), false, "and what was not sent is not counted");
+});

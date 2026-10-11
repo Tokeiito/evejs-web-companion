@@ -4778,11 +4778,9 @@ export async function warpToBookmark(
   return readFlightStep(await postJson("/api/bridge/flight/warp-bookmark", { bookmarkID, minRange }, options));
 }
 
-/** Save a short-lived personal return point for an owned operation logistics tail. */
-export async function bookmarkMiningSiteLocation(shipID: number, folderID: number, name: string, comment: string,
-  options: ApiOptions = {}): Promise<void> {
-  await postJson("/api/bridge/flight/bookmark-location", { itemID: shipID, folderID, name, comment, expiryMode: 2, confirm: true }, options);
-}
+// A place in space is bookmarked by the page itself, with the client's own
+// call of the ballpark (bridge/bookmarkWrites.ts): it left its route
+// (POST /api/bridge/flight/bookmark-location) on 2026-10-11.
 
 /**
  * Send one launchpad's goods up into its planet's customs office, on the

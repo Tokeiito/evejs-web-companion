@@ -389,7 +389,7 @@ const ON_AN_ANSWERED_OBJECT = Object.freeze(new Set(["scanMgr.GetFullState"]));
  * What the client asks of its ballpark's own object (michelle.GetRemotePark()) and the page asks of beyonce by its
  * name: made on the park's object, where the pilot has a park.
  */
-const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdAlignTo", "CmdFollowBall", "CmdSetSpeedFraction", "CmdOrbit", "CmdStop"]));
+const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdAlignTo", "CmdFollowBall", "CmdSetSpeedFraction", "CmdOrbit", "CmdStop", "BookmarkLocation"]));
 const madeOnMoniker = (service, method) => Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method) && method !== "MachoBindObject";
 
 const INV_CACHE = "eve/client/script/environment/invCache.py";
@@ -598,6 +598,32 @@ const aligning = (args, kwargs, context) => {
 
 /** eveCommands.CmdStopShip (1104) and menusvc.Activate (2432): bp.CmdStop(), on the ballpark's object, with nothing at all. */
 const stopping = (args, kwargs) => (args.length === 0 && Object.keys(kwargs).length === 0 ? {} : { status: "differs", note: "The client sends nothing with a stop." });
+
+/** idCheckers.IsRegion, IsConstellation, IsSolarSystem and IsStation, by the number alone. */
+const isStaticPlace = (itemID) => (itemID >= 10000000 && itemID <= 39999999) || (itemID >= 60000000 && itemID <= 63999999);
+/**
+ * bookmarkSvc.ACLBookmarkLocation (609 to 620): bp.BookmarkLocation(itemID, folderID, name, comment, expiry,
+ * subfolderID=subfolderID), on the ballpark's object. The subfolder goes by keyword every time, None where there
+ * is none: it is put in where a call came without it. The name is never nothing (bookmarkLocationWindow.Confirm,
+ * 212), and the time is one of bookmarkConst's four. A region, a constellation, a system or a station is not
+ * asked of the park at all, but of accessGroupBookmarkMgr (BookmarkStaticLocation, 613); so is a structure, which
+ * cannot be told by its number. No Tranquility recording has a bookmark made.
+ */
+const bookmarking = (args, kwargs) => {
+  const anID = (value) => Number.isSafeInteger(value) && value > 0;
+  const keywords = Object.keys(kwargs);
+  const [thing, folder, name, comment, expiry] = args;
+  const formed = args.length === 5 && anID(thing) && anID(folder) && typeof name === "string" && name.trim() !== "" && typeof comment === "string"
+    && [0, 1, 2, 3].includes(expiry)
+    && (keywords.length === 0 || (keywords.length === 1 && (kwargs.subfolderID === null || anID(kwargs.subfolderID))));
+  if (!formed) {
+    return { args, kwargs, status: "differs", note: "The client sends a thing, a folder, a name, a note and one of its four times to keep it, and the subfolder or None by keyword." };
+  }
+  if (isStaticPlace(thing)) {
+    return { args, kwargs, status: "differs", note: "The client bookmarks a region, a constellation, a system or a station by accessGroupBookmarkMgr's BookmarkStaticLocation, and asks the park nothing." };
+  }
+  return keywords.length === 0 ? { args, kwargs: { subfolderID: null } } : { args, kwargs, status: "same" };
+};
 
 /**
  * movementFunctions.ShipApproach (302) and _Ship_KeepAtRange (229): bp.CmdFollowBall(targetID, range), on the
@@ -1276,6 +1302,8 @@ const RETAIL_CALLS = Object.freeze({
     "eveMoniker.GetEntityAccess().CmdMineRepeatedly(droneIDs, targetID): the drones a list and the active target. No recording has one."),
   "entity.CmdSalvage": reshaped(`${DRONE_FUNCTIONS}:160`, salvaging,
     "eveMoniker.GetEntityAccess().CmdSalvage(droneIDs, targetID): the drones a list, and the active target or None, from a salvage drone's menu and the drones' primary action. It answers the drones that could not, each with why. No recording has one."),
+  "beyonce.BookmarkLocation": reshaped("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:617", bookmarking,
+    "bp.BookmarkLocation(itemID, folderID, name, comment, expiry, subfolderID=subfolderID), on the ballpark's object: the subfolder by keyword every time, None where there is none. No recording has one."),
   "beyonce.CmdGotoPoint": reshaped("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:324", goingToPoint,
     "bp.CmdGotoPoint(*position), on the ballpark's object: the point's three, each a float, from the positional control's drag, once the autopilot's navigation in the system is cancelled. A pilot controlling a structure sends none. It answers nothing. In no recording."),
   "beyonce.CmdAlignTo": judged("eve/client/script/ui/services/menusvc.py:2790", aligning,

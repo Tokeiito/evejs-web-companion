@@ -118,9 +118,19 @@ const SERVER_REFUSALS: Readonly<Record<string, string>> = Object.freeze({
   // client does; where it does not say, the server's refusal is what is left.
   AlreadyInNewbieShip:
     "You are already aboard a corvette.",
-  // beyonce Handle_CmdWarpToStuff — the bookmark is gone or not yours.
+  // bookmarkRuntime's createBookmark — the folder a bookmark was to go in was
+  // deleted after the page read it.
+  BookmarkFolderNoLongerThere:
+    "That bookmark folder is no longer there.",
+  // beyonce Handle_CmdWarpToStuff — the bookmark is gone or not yours. And
+  // Handle_BookmarkLocation — the thing to bookmark is not in the pilot's own
+  // space (a docked pilot's own ship among them, through the web gateway).
   BookmarkNotAvailable:
-    "That bookmark is not available to you, so the ship cannot warp to it.",
+    "That bookmark is not available to you, or there is nothing there to bookmark.",
+  // bookmarkRuntime's createBookmark — the folder holds as many bookmarks as it
+  // may.
+  FolderCapacityExceeded:
+    "That bookmark folder is full. Remove a bookmark from it, or use another folder.",
   // dogma `_throwModuleOnlineUserError` — MAX_GROUP_ONLINE.
   CannotOnlineReachedMaxGroupOnline:
     "Your ship already has as many modules of that kind online as it is allowed.",
