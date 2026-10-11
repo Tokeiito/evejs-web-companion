@@ -872,10 +872,12 @@ routes are left, `pi-colonies` next.
 A pilot's launches are read by the page's own call (`aed09283`): `pi-colonies` was asked
 for them alone. Twelve are left, `shared-fittings` next. The saved fittings are read by the page's own
 call for each owner (`6110e28a`): two routes were one reader's. Eleven are left,
-`bookmarks` next. In `eve.js` an advert's text outside ASCII goes as
+`bookmarks` next. A pilot's bookmarks are read by the page's own call (`c951e615`): a
+read that failed had been answered by the route as nothing, and read by the page as no
+bookmarks. Ten are left, `corp-members` next. In `eve.js` an advert's text outside ASCII goes as
 unicode (`dcd459b0d`, not pushed).
 Counted by the whole path,
-93 are named now, 43 of them reads and 50 writes (the count kept before
+92 are named now, 42 of them reads and 50 writes (the count kept before
 `82a21e8` took a path's beginning for a path and missed a parameter inside one: it read 130
 where 138 was so). Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.

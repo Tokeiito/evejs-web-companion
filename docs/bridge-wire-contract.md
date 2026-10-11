@@ -889,6 +889,17 @@ it out and kept it as a client does. `sharedFittings.ts` reads both.
 `GET /api/bridge/fittings` and `GET /api/bridge/shared-fittings` still stand, and
 nothing of the page asks either.
 
+**A pilot's bookmarks are the page's own read** (`web/src/bridge/bookmarkReads.ts`):
+`accessGroupBookmarkMgr.GetMyActiveBookmarks` by the generic call as a pilot's read,
+with nothing sent. It answers an array of three lists (the folders, the bookmarks in
+them, their subfolders), each row a KeyVal, the same on both transports. The server
+reads nothing of what is sent with it. The page takes nothing but three lists for an
+answer: anything else is the bookmarks unread, never no bookmarks.
+`GET /api/bridge/bookmarks` still stands, and nothing of the page asks it. Where one of
+its reads fails it answers 200 all the same, with `null` for that read and the code in
+`errors`; a folder named that is not the session's to see comes back so
+(`CALL_REFUSED`). A session the server no longer has is the whole route's failure.
+
 ```jsonc
 {
   "blueprintID": 7100000001,   // the blueprint ITEM id

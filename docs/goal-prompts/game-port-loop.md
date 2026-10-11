@@ -1147,6 +1147,30 @@ Take these defaults, and list each under "For the operator" in the log so they c
   (`rfl-look.js` reads a pilot's fittings and changes nothing). In the tab the Bot
   Builder is "New bot" in the bots' library; it reads the library as it opens, and
   a refit step's picker lists it ("Dock, refit, and repair" adds such a step).
+- **A route that settles its reads apart answers a failed read as nothing: read what
+  the page did with nothing.** The bookmarks' route answered 200 with `null` and a code
+  beside it, the asker took `data.active ?? null`, and the decoder read `null` as no
+  bookmarks: a bot was told its spot was not in the list. Where a route is
+  `Promise.allSettled`, follow the nothing through the asker and the decoder to what
+  each reader does with it, and give the flow a test of the read failing.
+- **The page's requests ride its socket: the browser's resource timings list none of
+  them.** A check by `performance.getEntriesByType("resource")` proves nothing. Record
+  the frames: wrap `JSON.stringify` and keep each object that has a `path` (its
+  `method` beside it), and each with `pilot === true` for the generic calls. Then "no
+  request went to the route" is something seen.
+- **A window that reads as it opens reads once.** "New bot" on a Bot Builder that is
+  open already asks nothing: close the window by its ✕ and open it again.
+- **What a bot says in the store is the bot's reason, not a step's.** A step that cannot
+  be done sends the bot home, and one with no home known stops saying so. A flow's test
+  of a step asserts what was asked and done, and prints the bot's lines in its message
+  (`bookmarksFlow.test.ts`: `run` gives them).
+- **A bot for a check is loaded into the Bot Builder from its box** (`#bot-io`, "Load
+  from box"; "Export to box" shows the form). A step is opened by a click on it, and
+  its picker is a `select`. Saved, it is run from the Bot Manager's "Pilots 1" tab. A
+  bookmark for a check is saved through the BFF's own route:
+  `bkr-live.js <bff> <account> <characterID> <stationID> "" stage` (`bkr-look.js` reads
+  a pilot's bookmarks and where it is, and changes nothing). 60003757 is another
+  station in Jita.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
