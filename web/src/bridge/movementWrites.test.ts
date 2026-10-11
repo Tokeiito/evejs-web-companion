@@ -1,10 +1,11 @@
 // A ship sent to a point in space by the page itself, held to the ship and the system the point was measured in;
-// a ship aligned to a thing; a thing approached, kept at range, or orbited; and the ship stopped.
+// a ship aligned to a thing; a thing approached, kept at range, or orbited; the ship stopped; and a scan result
+// warped to.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { alignTo, approach, goToPoint, keepAtRange, orbit, stopShip, APPROACH_RANGE_M, KEEP_AT_RANGE_DEFAULT_M, ORBIT_DEFAULT_M, type FlightNow } from "./movementWrites.ts";
+import { alignTo, approach, goToPoint, keepAtRange, orbit, stopShip, warpToScanResult, APPROACH_RANGE_M, KEEP_AT_RANGE_DEFAULT_M, ORBIT_DEFAULT_M, type FlightNow, type SitesKnown, type SitesReadIn } from "./movementWrites.ts";
 
 const [SHIP, SYSTEM] = [9988400023309, 30000144];
 const POINT = { x: 1000, y: -2500.5, z: 300000000000 };
@@ -308,5 +309,110 @@ test("a stop is one call with nothing, once the pilot's flight has been read; an
   assert.deepEqual(unread.did, ["read"]);
   const refused = harness(HERE, new Error("ThrottleGeneric"));
   await assert.rejects(stopShip(refused.act, refused.flightNow), /ThrottleGeneric/);
+  assert.deepEqual(refused.did, ["read", "sent"]);
+});
+
+// ── sent into warp, to a scan result ─────────────────────────────────────────
+//
+// menusvc._WarpXToScanResult (1418 to 1428), from the scanner's list (scannerListEntries.py 276): the sensor suite
+// is asked for a site of the result's label among its anomalies and its structures (sensorSuiteService.py 799);
+// where it has one the warp is to the site's own number as an item, and by the label only where it has none.
+// minRange=None and fleet=False go with both.
+
+const KEYWORDS = { minRange: null, fleet: false };
+const site = (siteID: number | string | null, targetID: string | null) => ({ siteID, targetID });
+const NO_SITES: SitesKnown = { anomalies: [], structures: [] };
+const readIn = (sites: SitesKnown, solarSystemID: number | null = SYSTEM): SitesReadIn => ({ ...sites, solarSystemID });
+
+/** The harness, and a reader of the scanner that says it was read ("sites") and answers what the test gives it. */
+function scanned(read: SitesKnown | Error = NO_SITES, now: FlightNow | Error = HERE, refusal: Error | null = null) {
+  const made = harness(now, refusal);
+  const readSites = async (): Promise<SitesKnown> => {
+    made.did.push("sites");
+    if (read instanceof Error) throw read;
+    return read;
+  };
+  return { ...made, readSites };
+}
+
+test("an anomaly the page's last read has is warped to as an item, by its site's number, with no range and no fleet's word: the scanner is not read again", async () => {
+  const { did, asked, act, flightNow, readSites } = scanned();
+  const kept = readIn({ anomalies: [site(5380000140001, "ABC-123"), site(5380000140002, "YLD-909")], structures: [] });
+
+  await warpToScanResult(act, flightNow, kept, readSites, "YLD-909");
+
+  // menusvc.py 1427 and 1428: michelle.CmdWarpToStuff('item', itemID, minRange=None, fleet=False).
+  assert.deepEqual(asked, [["beyonce", "CmdWarpToStuff", ["item", 5380000140002], KEYWORDS]]);
+  assert.deepEqual(did, ["read", "sent"]);
+});
+
+test("a structure's site is warped to as an item too; and where an anomaly goes by the same label, it is the anomaly", async () => {
+  const one = scanned();
+  await warpToScanResult(one.act, one.flightNow, readIn({ anomalies: [site(5, "ABC-123")], structures: [site(1030000000001, "STR-001")] }), one.readSites, "STR-001");
+  assert.deepEqual(one.asked, [["beyonce", "CmdWarpToStuff", ["item", 1030000000001], KEYWORDS]]);
+
+  // sensorSuiteService.py 800: the anomalies are gone through first.
+  const both = scanned();
+  await warpToScanResult(both.act, both.flightNow, readIn({ anomalies: [site(5, "DUP-001")], structures: [site(6, "DUP-001")] }), both.readSites, "DUP-001");
+  assert.deepEqual(both.asked, [["beyonce", "CmdWarpToStuff", ["item", 5], KEYWORDS]]);
+});
+
+test("a result the read has no site of its own for is warped to by its label: one that is no anomaly and no structure, and a site whose number cannot be sent", async () => {
+  // menusvc.py 1425: 'scan' and the result's own ID, where the suite answers no item.
+  const none = scanned();
+  await warpToScanResult(none.act, none.flightNow, readIn(NO_SITES), none.readSites, "QEE-288");
+  assert.deepEqual(none.asked, [["beyonce", "CmdWarpToStuff", ["scan", "QEE-288"], KEYWORDS]]);
+  assert.deepEqual(none.did, ["read", "sent"]);
+
+  const other = scanned();
+  await warpToScanResult(other.act, other.flightNow, readIn({ anomalies: [site(5, "ABC-123")], structures: [site(6, "STR-001")] }), other.readSites, "QEE-288");
+  assert.deepEqual(other.asked, [["beyonce", "CmdWarpToStuff", ["scan", "QEE-288"], KEYWORDS]]);
+
+  for (const siteID of [null, "5380000140002", 0, -5, 1.5, 2 ** 60]) {
+    const odd = scanned();
+    await warpToScanResult(odd.act, odd.flightNow, readIn({ anomalies: [site(siteID, "YLD-909")], structures: [] }), odd.readSites, "YLD-909");
+    assert.deepEqual(odd.asked, [["beyonce", "CmdWarpToStuff", ["scan", "YLD-909"], KEYWORDS]], String(siteID));
+  }
+});
+
+test("where the page has no read of the scanner, or one of another system, the sites are read before the warp, and the warp goes by that read", async () => {
+  const fresh: SitesKnown = { anomalies: [site(5380000140002, "YLD-909")], structures: [] };
+  const stale: SitesKnown = { anomalies: [site(777, "YLD-909")], structures: [] };
+  for (const kept of [null, readIn(stale, SYSTEM + 1), readIn(stale, null)]) {
+    const { did, asked, act, flightNow, readSites } = scanned(fresh);
+    await warpToScanResult(act, flightNow, kept, readSites, "YLD-909");
+    assert.deepEqual(asked, [["beyonce", "CmdWarpToStuff", ["item", 5380000140002], KEYWORDS]], JSON.stringify(kept));
+    assert.deepEqual(did, ["read", "sites", "sent"]);
+  }
+  // A system that is not known now is not taken for the read's, known or not.
+  for (const kept of [readIn(stale, SYSTEM), readIn(stale, null)]) {
+    const { did, asked, act, flightNow, readSites } = scanned(fresh, { ...HERE, solarSystemID: null });
+    await warpToScanResult(act, flightNow, kept, readSites, "YLD-909");
+    assert.deepEqual(asked, [["beyonce", "CmdWarpToStuff", ["item", 5380000140002], KEYWORDS]], JSON.stringify(kept));
+    assert.deepEqual(did, ["read", "sites", "sent"]);
+  }
+});
+
+test("nothing is warped for a pilot that is not in space; and for no label nothing is read either", async () => {
+  const docked = scanned(NO_SITES, { ...HERE, inSpace: false });
+  await assert.rejects(warpToScanResult(docked.act, docked.flightNow, null, docked.readSites, "YLD-909"), /The ship is not in space; undock first\./);
+  assert.deepEqual(docked.did, ["read"]);
+
+  const unnamed = scanned();
+  await assert.rejects(warpToScanResult(unnamed.act, unnamed.flightNow, null, unnamed.readSites, ""), /A scan-site label is required\./);
+  assert.deepEqual(unnamed.did, []);
+});
+
+test("a flight or a scanner that cannot be read warps nothing, and the warp's refusal is the caller's, as it came", async () => {
+  const unread = scanned(NO_SITES, new Error("flight unreadable"));
+  await assert.rejects(warpToScanResult(unread.act, unread.flightNow, null, unread.readSites, "YLD-909"), /flight unreadable/);
+  assert.deepEqual(unread.did, ["read"]);
+
+  const blind = scanned(new Error("scanner offline"));
+  await assert.rejects(warpToScanResult(blind.act, blind.flightNow, null, blind.readSites, "YLD-909"), /scanner offline/);
+  assert.deepEqual(blind.did, ["read", "sites"]);
+
+  const refused = scanned(NO_SITES, HERE, new Error("You cannot warp there right now."));
+  await assert.rejects(warpToScanResult(refused.act, refused.flightNow, readIn(NO_SITES), refused.readSites, "YLD-909"), /You cannot warp there right now\./);
   assert.deepEqual(refused.did, ["read", "sent"]);
 });

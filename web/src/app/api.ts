@@ -4644,14 +4644,8 @@ export async function warpToLaunch(launchID: number, options: ApiOptions = {}): 
   return readFlightStep(await postJson("/api/bridge/flight/warp-launch", { launchID }, options));
 }
 
-/** Warp to a scanned site by its scan-signature label ("QEE-288"). */
-export async function warpToScanSite(
-  target: string,
-  minRange: number,
-  options: ApiOptions = {},
-): Promise<FlightStepResult> {
-  return readFlightStep(await postJson("/api/bridge/flight/warp-scan", { target, minRange }, options));
-}
+// (A scan result is warped to by the page itself, with the client's own call: bridge/movementWrites.ts,
+// warpToScanResult. Its route, flight/warp-scan, warped to every site by its label.)
 
 // Drones are sent to salvage by the page itself, with the client's own call
 // (bridge/boundEntityWrites.ts; the plan's Phase 6b): the eighteenth of its

@@ -42,6 +42,17 @@ test("a launchpad sent up at its office is carried out by the customs office's o
   assert.match(flow, /if \(macro === "restart-extractors" \|\| macro === "launch-commodities" \|\| macro === "collect-customs"\) \{/);
 });
 
+test("a scan result's warp is carried out by the page's own call, by what the look read of the scanner; the route's asker is gone", () => {
+  const flow = readFileSync(fileURLToPath(new URL("./flow.ts", import.meta.url)), "utf8");
+  assert.equal([...flow.matchAll(/case "warpScan":\s+await warpToSite\(action\.target\);\s+return;/g)].length, 1);
+  // The look's read of the scanner is kept with the system it was of, and handed to the call with a reader beside it.
+  assert.equal(flow.split("sitesLastRead = { solarSystemID: status.solarSystemID, anomalies: full.anomalies, structures: full.structures };").length - 1, 1);
+  assert.equal(flow.split("await warpToScanResultCall(bridgeDo, readFlightNow, sitesLastRead, () => readScanFullState(bridgeAsk), label);").length - 1, 1);
+  assert.equal(flow.includes("api.warpToScanSite("), false);
+  const api = readFileSync(fileURLToPath(new URL("./api.ts", import.meta.url)), "utf8");
+  assert.equal(api.includes("/api/bridge/flight/warp-scan"), false);
+});
+
 test("an align is carried out by the page's own call wherever the page carries a bot's actions out, and before a recall's warp home", () => {
   const flow = readFileSync(fileURLToPath(new URL("./flow.ts", import.meta.url)), "utf8");
   // The fleet companion's actions and a script bot's: two places, and the same call in each.

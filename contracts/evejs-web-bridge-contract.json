@@ -1103,6 +1103,7 @@
       "beyonce.CmdOrbit",
       "beyonce.CmdSetSpeedFraction",
       "beyonce.CmdStop",
+      "beyonce.CmdWarpToStuff",
       "contractProxy.AcceptContract",
       "crimewatch.SetSafetyLevel",
       "dogmaIM.AddTarget",

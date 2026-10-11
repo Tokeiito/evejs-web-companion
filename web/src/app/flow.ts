@@ -358,7 +358,7 @@ import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyTo
 import { BOOKMARK_EXPIRY, bookmarkLocation as bookmarkLocationCall } from "../bridge/bookmarkWrites.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
 import { salvageWithDrones, scoopDrones as scoopDronesCall } from "../bridge/boundEntityWrites.ts";
-import { alignTo as alignToCall, approach as approachCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, type FlightNow } from "../bridge/movementWrites.ts";
+import { alignTo as alignToCall, approach as approachCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
 import { boardCorvette as boardCorvetteCall, leaveShip as leaveShipCall } from "../bridge/shipWrites.ts";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
 import { runSlashCommand } from "../bridge/gmWrites.ts";
@@ -4318,6 +4318,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   /** A thing orbited by the page's own call (bridge/movementWrites.ts), for the script bots. */
   async function orbitShip(targetID: number, range: number | null): Promise<void> {
     await orbitCall(bridgeDo, readFlightNow, targetID, range);
+  }
+
+  /** The scanner's sites as a bot's look last read them, and the system that read was of: what the page has for a sensor suite. */
+  let sitesLastRead: SitesReadIn | null = null;
+
+  /**
+   * A scan result warped to by the page's own call (bridge/movementWrites.ts), for the script bots: to the site's
+   * own number as an item where the look's read has the site, and by its label where it has not. The scanner is
+   * read first where no look read it for the system the pilot is in.
+   */
+  async function warpToSite(label: string): Promise<void> {
+    await warpToScanResultCall(bridgeDo, readFlightNow, sitesLastRead, () => readScanFullState(bridgeAsk), label);
   }
 
   /**
@@ -12079,6 +12091,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             miningOperation?.area.targetClasses.some(family => family === "ORE_ANOMALY" || family === "ICE"))) {
           try {
             const full = await readScanFullState(bridgeAsk);
+            // (Kept for a warp to one of them: bridge/movementWrites.ts, warpToScanResult.)
+            sitesLastRead = { solarSystemID: status.solarSystemID, anomalies: full.anomalies, structures: full.structures };
             // The whole row is classified here, not just labelled: `targetID` is
             // the handle a warp is issued against, and `scanStrengthAttribute`
             // (with `archetypeID` as its backstop) is what separates a rock
@@ -13053,7 +13067,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             await salvageWithDrones(bridgeDo, action.droneIDs, action.targetID);
             return;
           case "warpScan":
-            await api.warpToScanSite(action.target, 0, callOptions);
+            await warpToSite(action.target);
             return;
           case "warpBookmark":
             await api.warpToBookmark(action.bookmarkID, 0, callOptions);

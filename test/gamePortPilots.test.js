@@ -8557,3 +8557,43 @@ test("a warp goes on the ballpark's object with the client's keywords for what i
   await fly(["item", SHIP], { minRange: 0 });
   assert.deepEqual([session.boundCalls.at(-1).args, ledgerOf(pilots, "beyonce.CmdWarpToStuff")[0]], [["item", SHIP], { same: 2, reshaped: 4, differs: 2 }]);
 });
+
+// ── a warp asked by the page itself ──────────────────────────────────────────
+//
+// The page asks beyonce.CmdWarpToStuff by its name (bridge/movementWrites.ts), with what the client's caller sends.
+// The client makes it on the ballpark's own object (michelle.py 737): so does the transport.
+
+test("a warp asked by beyonce's name is made on the ballpark's own object as it was sent, counted the client's, and remembered as a warp on a handle is; docked, nothing is sent", async () => {
+  const hand = handTicked();
+  const allowed = new Set(["beyonce.MachoBindObject", "beyonce.CmdWarpToStuff"]);
+  const built = build(IN_SPACE, { ...hand.options, allowed });
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const { session } = built;
+  const row = () => built.pilots.callLedger().find((each) => each.pair === "beyonce.CmdWarpToStuff");
+
+  // menusvc.py 1427 and 1428: a scan result's own site, as an item, with no range and fleet=False.
+  const asASite = { minRange: null, fleet: false };
+  const sent = await built.pilots.callMethod("beyonce", "CmdWarpToStuff", ["item", 5380000140002], asASite, WHOSE, handle);
+  assert.deepEqual([sent.service, sent.method, sent.result], ["beyonce", "CmdWarpToStuff", null]);
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:1", method: "CmdWarpToStuff", args: ["item", 5380000140002], kwargs: asASite });
+  assert.equal(session.calls.some((call) => call.service === "beyonce" && call.method === "CmdWarpToStuff"), false, "nothing was asked of the service by name");
+  assert.deepEqual(row().statuses, { same: 1 });
+
+  // By the result's label, where the client's suite has no site of its own for it: the client's too.
+  await built.pilots.callMethod("beyonce", "CmdWarpToStuff", ["scan", "QEE-288"], asASite, WHOSE, handle);
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:1", method: "CmdWarpToStuff", args: ["scan", "QEE-288"], kwargs: asASite });
+  assert.deepEqual(row().statuses, { same: 2 });
+
+  // With nothing said of a range, it is given the client's keywords, as a warp on a handle is.
+  await built.pilots.callMethod("beyonce", "CmdWarpToStuff", ["scan", "QEE-288"], null, WHOSE, handle);
+  assert.deepEqual(session.boundCalls.at(-1).kwargs, asASite);
+  assert.deepEqual(row().statuses, { same: 2, reshaped: 1 });
+  assert.deepEqual(hand.errors, []);
+
+  // Docked: the client finds no park and does nothing. Asked all the same, the call is refused here and not sent.
+  const docked = await selected({}, { allowed });
+  const sentBefore = docked.session.sent.length;
+  await assert.rejects(docked.pilots.callMethod("beyonce", "CmdWarpToStuff", ["item", 5380000140002], asASite, WHOSE, docked.handle), (error) => error.code === "CALL_REFUSED" && /in space/.test(error.message));
+  assert.equal(docked.session.sent.length, sentBefore, "nothing was sent");
+  assert.equal(docked.pilots.callLedger().some((each) => each.pair === "beyonce.CmdWarpToStuff"), false, "and what was not sent is not counted");
+});

@@ -1368,7 +1368,8 @@ test("a fleet's target tag set and cleared is a write of the page's own, asked o
     assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["beyonce", "CmdFleetTagTarget", args, null, BRIDGE_SESSION_ID, { userid: 4 }]);
   }
   const before = gateway.calls.call.length;
-  for (const method of ["CmdAbandonLoot", "CmdJumpThroughFleet", "CmdStargateJump", "CmdWarpToStuff", "CmdDock"]) {
+  // (CmdWarpToStuff was among these until 2026-10-11: it is the page's own now, and has its test below.)
+  for (const method of ["CmdAbandonLoot", "CmdJumpThroughFleet", "CmdStargateJump", "CmdWarpToStuffAutopilot", "CmdDock"]) {
     const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "beyonce", method, args: [], kwargs: null, pilot: true, confirm: true } });
     assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], method);
   }
@@ -3788,6 +3789,37 @@ test("a ship aligned is a write of the page's own, asked of beyonce by its name 
   const sent = gateway.calls.call.at(-1);
   assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["beyonce", "CmdAlignTo", [], kwargs, BRIDGE_SESSION_ID, { userid: 4 }]);
   assert.equal(gateway.calls.call.length, before + 1);
+});
+
+// ── a warp asked by the page itself ──────────────────────────────────────────
+//
+// michelle.py 737: bp.CmdWarpToStuff(subject, subjectID, **kwargs), on the ballpark's object. The page asks it of
+// beyonce by its name, with what its caller in the client sends: for a scan result's own site (menusvc.py 1427),
+// the site's number as an item, with minRange=None and fleet=False.
+
+test("a warp is a write of the page's own, asked of beyonce by its name with the subject, its number and the client's keywords: it goes as it was sent", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const [args, kwargs] = [["item", 5380000140002], { minRange: null, fleet: false }];
+  const call = (more, sent = args) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "beyonce", method: "CmdWarpToStuff", args: sent, kwargs, ...more } });
+  const before = gateway.calls.call.length;
+  for (const more of [{}, { pilot: true }, { confirm: true }]) {
+    const refused = await call(more);
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+  }
+  // The ballpark is the session's own, of which it has one: the call names none.
+  const named = await call({ pilot: true, confirm: true, of: 30000142 });
+  assert.deepEqual([named.response.status, named.payload.error], [400, "INVALID_REQUEST"]);
+  assert.equal(gateway.calls.call.length, before);
+  const made = await call({ pilot: true, confirm: true });
+  assert.deepEqual([made.response.status, made.payload.service, made.payload.method, made.payload.result], [200, "beyonce", "CmdWarpToStuff", null]);
+  const sent = gateway.calls.call.at(-1);
+  assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["beyonce", "CmdWarpToStuff", args, kwargs, BRIDGE_SESSION_ID, { userid: 4 }]);
+  // By a label, where the page has no site of its own for the result: the same call.
+  await call({ pilot: true, confirm: true }, ["scan", "QEE-288"]);
+  assert.deepEqual([gateway.calls.call.at(-1).args, gateway.calls.call.at(-1).kwargs], [["scan", "QEE-288"], kwargs]);
+  assert.equal(gateway.calls.call.length, before + 2);
 });
 
 // ── a follow asked by the page itself ────────────────────────────────────────

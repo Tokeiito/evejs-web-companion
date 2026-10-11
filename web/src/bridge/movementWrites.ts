@@ -101,6 +101,31 @@
 // navigation in the system before the call and switches the autopilot off after it. The page's panel gives its
 // autopilot up before it asks (flow.stopShip), and so does the fleet companion's stop; a script bot's and a
 // support ship's stop is one step of a program that carries on, and gives nothing up.
+//
+// SENT INTO WARP, TO A SCAN RESULT. menusvc._WarpXToScanResult (1418 to 1428), which the scanner's list calls with
+// no range (scannerListEntries.py 276). With a park, the sensor suite is asked for the site that goes by the
+// result's label among its anomalies and its structures (sensorSuiteService.py 799), and the warp is
+//
+//   michelle.CmdWarpToStuff('item', siteID, minRange=None, fleet=False)     where it has one
+//   michelle.CmdWarpToStuff('scan', label, minRange=None, fleet=False)      where it has none
+//
+// on the ballpark's object (michelle.py 737). It answers nothing. Two of Tranquility's recordings have the item's
+// form, with fleet=False beside the range; none has a warp by a label.
+//
+// The server (beyonceService.Handle_CmdWarpToStuff) flies the session's own ship in the session's own system: an
+// item is a thing of the session's scene, a site the server seeded is given its contents on the way, and a label
+// is looked up among that system's sites. A warp that comes to nothing is refused with a user's error; a ship
+// already in warp is told so, and answered nothing. Either transport carries the call, asked of beyonce by its
+// name; the game port makes it on the ballpark's object.
+//
+// ⚠ THE PAGE'S SENSOR SUITE IS ITS LAST READ OF THE SCANNER. A client's suite keeps the sites it was told of, for
+// the system it is in. The page keeps what a bot's look last read (scanMgr.GetFullState, bridge/scanFullState.ts)
+// and the system that read was of; where it has none for the system the pilot is in now, the scanner is read
+// before the warp. A site whose number is no whole number the page can send goes by its label.
+//
+// ⚠ AND NO AUTOPILOT IS CANCELLED HERE, as for the other orders. What the client keeps of the warp's destination
+// for itself (space.WarpDestination, the result's label) the BFF keeps as the thing warped to, for a pilot on the
+// game port (pilots.js, afterMovementCall).
 
 import type { Ask } from "./ask.ts";
 
@@ -124,7 +149,24 @@ export interface FlightNow {
   readonly solarSystemID: number | null;
 }
 
-const isAnID = (id: number): boolean => Number.isSafeInteger(id) && id > 0;
+/** A site as the page's read of the scanner has it: its own number, and the label a scan result of it goes by. */
+export interface SiteKnown {
+  readonly siteID: number | string | null;
+  readonly targetID: string | null;
+}
+
+/** The sites the client's sensor suite looks among for a scan result's own: the anomalies, then the structures. */
+export interface SitesKnown {
+  readonly anomalies: readonly SiteKnown[];
+  readonly structures: readonly SiteKnown[];
+}
+
+/** Sites as they were read, and the system the read was of. */
+export interface SitesReadIn extends SitesKnown {
+  readonly solarSystemID: number | null;
+}
+
+const isAnID = (id: unknown): id is number => Number.isSafeInteger(id) && (id as number) > 0;
 
 /** const.approachRange: how far short of a thing the client's own approach stops, in metres. */
 export const APPROACH_RANGE_M = 50;
@@ -250,4 +292,25 @@ export async function stopShip(act: Ask, flightNow: () => Promise<FlightNow>): P
     throw new Error("The ship is not in space; undock first.");
   }
   await act("beyonce", "CmdStop", []);
+}
+
+/**
+ * Warps the pilot's ship to a scan result, as the client's scanner does: to the site's own number as an item where
+ * the result is of an anomaly or a structure the page has read, and by the result's label where it is not. `kept`
+ * is the page's last read of the scanner; where it is of another system than the pilot is in now, or of none, the
+ * sites are read first. Fails as a call fails, and before any for no label and for a pilot that is not in space.
+ *
+ * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER AN ARRIVAL. A ship already in warp is answered the same.
+ */
+export async function warpToScanResult(act: Ask, flightNow: () => Promise<FlightNow>, kept: SitesReadIn | null, readSites: () => Promise<SitesKnown>, label: string): Promise<void> {
+  if (label === "") {
+    throw new Error("A scan-site label is required.");
+  }
+  const now = await flightNow();
+  if (!now.inSpace) {
+    throw new Error("The ship is not in space; undock first.");
+  }
+  const sites = kept !== null && kept.solarSystemID !== null && kept.solarSystemID === now.solarSystemID ? kept : await readSites();
+  const siteID = [...sites.anomalies, ...sites.structures].find((each) => each.targetID === label)?.siteID;
+  await act("beyonce", "CmdWarpToStuff", isAnID(siteID) ? ["item", siteID] : ["scan", label], { minRange: null, fleet: false });
 }
