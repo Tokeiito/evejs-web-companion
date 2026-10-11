@@ -29,10 +29,12 @@ test("every action the union declares has a case where the page carries actions 
 test("a thing's warp, the autopilot's and a fleet member's are carried out by the page's own calls wherever the page warps; their routes' askers are gone", () => {
   const flow = readFileSync(fileURLToPath(new URL("./flow.ts", import.meta.url)), "utf8");
   const times = (text: string) => flow.split(text).length - 1;
-  // The travel autopilot's warp: the client's autopilot's own call.
+  // The travel loop's warp: the client's autopilot's own call, and the menu's at nought where the loop flies a
+  // pilot's own Dock or Jump.
   assert.equal(times("await warpAsTheAutopilot(destinationID);"), 1);
-  // The mining bot's own warp: the menu's call at nought.
-  assert.equal(times("await warpToThing(destinationID, MENU_WARP_RANGE_M);"), 1);
+  assert.equal([...flow.matchAll(/warp: async \(destinationID, byMenu\) => \{[^}]*if \(byMenu\) \{\s+await warpToThing\(destinationID, MENU_WARP_RANGE_M\);\s+return;\s+\}[^}]*await warpAsTheAutopilot\(destinationID\);\s+\},/g)].length, 1);
+  // The mining bot's own warp is the menu's call at nought too.
+  assert.equal(times("await warpToThing(destinationID, MENU_WARP_RANGE_M);"), 2);
   // A script bot's.
   assert.equal([...flow.matchAll(/case "warp":\s+await warpToThing\(action\.targetID, MENU_WARP_RANGE_M\);\s+return;/g)].length, 1);
   // The fleet companion's: the autopilot's own call, and a fleet member by the pilot's number.
@@ -111,9 +113,11 @@ test("an approach and a keep at range are carried out by the page's own calls wh
   const times = (text: string) => flow.split(text).length - 1;
   // The fleet companion's approach: where to stop, or the client's own fifty metres where none is said.
   assert.equal(times("await approachShip(action.targetID, action.range ?? null);"), 1);
-  // A script bot's, and the two autopilots': the autopilot's approach, with no range and the throttle opened first.
+  // A script bot's and the mining bot's: the autopilot's approach, with no range and the throttle opened first.
   assert.equal(times("await approachShip(action.targetID, 0);"), 1);
-  assert.equal(times("await approachShip(destinationID, 0);"), 2);
+  assert.equal(times("await approachShip(destinationID, 0);"), 1);
+  // The travel loop's: the autopilot's, or the menu's at the client's own fifty where the loop says so.
+  assert.equal(times("await approachShip(destinationID, byMenu ? null : 0);"), 1);
   // Keep at range, the companion's and a script bot's.
   assert.equal(times("await keepShipAtRange(action.targetID, action.range);"), 2);
   // Both are the page's own writes (bridgeDo), with the pilot's flight read before them.

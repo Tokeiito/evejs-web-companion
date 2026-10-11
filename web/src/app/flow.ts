@@ -7187,7 +7187,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       undock: async () => {
         await api.undock(callOptions, true);
       },
-      warp: async (destinationID) => {
+      warp: async (destinationID, byMenu) => {
+        // A pilot's own Dock or Jump: the menu's warp at nought, as the client's
+        // system navigation warps (autopilot.py, NavigateSystemTo: WarpToItem at
+        // `minWarpEndDistance`). Tranquility has it before each of its docks.
+        if (byMenu) {
+          await warpToThing(destinationID, MENU_WARP_RANGE_M);
+          return;
+        }
         // The client's autopilot's own warp (autopilot.py, AP_WarpToDestID:
         // `CmdWarpToStuffAutopilot(destinationID)`), by the page's own call
         // (bridge/movementWrites.ts, autopilotWarp). This server stops it ten
@@ -7197,10 +7204,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // autopilot does not make.
         await warpAsTheAutopilot(destinationID);
       },
-      approach: async (destinationID) => {
-        // The autopilot's close-the-gap approach is retail's 0.0, not the
-        // right-click menu's 50 m.
-        await approachShip(destinationID, 0);
+      approach: async (destinationID, byMenu) => {
+        // The autopilot's own approach is the throttle and a follow at nought
+        // (AP_ApproachDestID). The menu's is a follow at the client's fifty
+        // metres with no throttle (ShipApproach): a pilot's own Dock or Jump, and
+        // the autopilot's last station under fifty kilometres.
+        await approachShip(destinationID, byMenu ? null : 0);
       },
       jump: async (fromGateID, toGateID) => {
         await api.jump(fromGateID, toGateID, callOptions);
@@ -7463,6 +7472,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       destinationKind,
       destinationName,
       hops: [],
+      // A pilot's own Dock: the client's system navigation, and no autopilot's.
+      navigation: true,
     };
 
     store.apply({
@@ -7534,6 +7545,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       destinationKind: null,
       destinationName: link.toSystemName,
       hops: [hop],
+      // A pilot's own Jump: the client's system navigation, and no autopilot's.
+      navigation: true,
     };
 
     store.apply({

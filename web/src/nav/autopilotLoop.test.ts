@@ -956,6 +956,143 @@ test("the floor follows the call that warps: a warp at nought is taken from near
   assert.equal(decideCloseIn(GATE_ORIGIN, 2_500, null, null, AUTOPILOT_WARP_STOPS_SHORT_M), null);
 });
 
+// --- a pilot's own Dock and Jump, and the autopilot's last leg ----------------
+//
+// The client's menu Dock and Jump are its system navigation (autopilot.py, NavigateSystemTo): a warp at nought
+// from further than a warp's least distance, the menu's approach nearer (a follow at fifty metres), and the dock
+// or the jump within 2,500 m. Its autopilot asks that Dock under 50 km of its last station.
+
+const NAVIGATION = { ...COMPILED, navigation: true };
+const NO_MEMORY = { warpedInSystem: null, jumpedFromSystem: null, pendingApproachGate: null };
+type Remembered = typeof NO_MEMORY & { approachingTargetID?: number | null; approachingByMenu?: boolean };
+const stationStep = (plan: typeof COMPILED, metres: number, memory: Remembered = NO_MEMORY, shipMode = "STOP"): AutopilotAction =>
+  decideAutopilotAction(status({ inSpace: true, shipMode, solarSystemID: DEST_SYSTEM }), plan, memory, measuredAt(DEST_STATION, metres, shipMode));
+const gateStep = (plan: typeof COMPILED, metres: number, memory: Remembered = NO_MEMORY, shipMode = "STOP"): AutopilotAction =>
+  decideAutopilotAction(status({ inSpace: true, shipMode, solarSystemID: ORIGIN_SYSTEM }), plan, memory, measuredAt(GATE_ORIGIN, metres, shipMode));
+/** A decision's kind, and whether it is the menu's way of it. */
+const way = (action: AutopilotAction): string =>
+  action.kind === "warp" || action.kind === "approach" ? `${action.kind} ${action.byMenu === true ? "the menu's" : "the autopilot's"}` : action.kind;
+
+test("a pilot's own Dock or Jump is the client's system navigation: the menu's warp at nought, the menu's approach, then the dock or the jump", () => {
+  // The floor is a warp at nought's: 152.5 km for a small hull, where the autopilot's is 162.5 km.
+  for (const metres of [5_000_000_000, 160_000, 152_500]) {
+    assert.equal(way(stationStep(NAVIGATION, metres)), "warp the menu's", `${metres} m off the station`);
+    assert.equal(way(gateStep(NAVIGATION, metres)), "warp the menu's", `${metres} m off the gate`);
+  }
+  for (const metres of [152_499, 100_000, 50_000, 30_000, 2_500]) {
+    assert.equal(way(stationStep(NAVIGATION, metres)), "approach the menu's", `${metres} m off the station`);
+    assert.equal(way(gateStep(NAVIGATION, metres)), "approach the menu's", `${metres} m off the gate`);
+  }
+  assert.equal(stationStep(NAVIGATION, 2_499).kind, "dock");
+  assert.equal(gateStep(NAVIGATION, 2_499).kind, "jump");
+  // What it warps and approaches is the thing itself.
+  assert.deepEqual(stationStep(NAVIGATION, 160_000), { kind: "warp", destinationID: DEST_STATION, label: `Warp to station ${DEST_STATION}`, byMenu: true });
+  assert.deepEqual(gateStep(NAVIGATION, 30_000), { kind: "approach", gateID: GATE_ORIGIN, label: `Approach gate ${GATE_ORIGIN}`, byMenu: true });
+  // With nothing to measure by, the one warp it asks is the menu's too.
+  assert.equal(way(decideAutopilotAction(status({ inSpace: true, shipMode: "STOP", solarSystemID: DEST_SYSTEM }), NAVIGATION, NO_MEMORY, null)), "warp the menu's");
+  assert.equal(way(decideAutopilotAction(status({ inSpace: true, shipMode: "STOP", solarSystemID: ORIGIN_SYSTEM }), NAVIGATION, NO_MEMORY, null)), "warp the menu's");
+  assert.equal(way(decideAutopilotAction(status({ inSpace: true, shipMode: "STOP", solarSystemID: DEST_SYSTEM }), COMPILED, NO_MEMORY, null)), "warp the autopilot's");
+  assert.equal(way(decideAutopilotAction(status({ inSpace: true, shipMode: "STOP", solarSystemID: ORIGIN_SYSTEM }), COMPILED, NO_MEMORY, null)), "warp the autopilot's");
+  // And the approach it makes after a jump refused for its range, with nothing to measure by.
+  const refused = { warpedInSystem: ORIGIN_SYSTEM, jumpedFromSystem: null, pendingApproachGate: GATE_ORIGIN };
+  assert.equal(way(decideAutopilotAction(status({ inSpace: true, shipMode: "STOP", solarSystemID: ORIGIN_SYSTEM }), NAVIGATION, refused, null)), "approach the menu's");
+  assert.equal(way(decideAutopilotAction(status({ inSpace: true, shipMode: "STOP", solarSystemID: ORIGIN_SYSTEM }), COMPILED, refused, null)), "approach the autopilot's");
+});
+
+test("the autopilot's last leg: under fifty kilometres of its last station the approach is the menu's Dock's, and nowhere else", () => {
+  assert.equal(way(stationStep(COMPILED, 162_500)), "warp the autopilot's");
+  for (const metres of [162_499, 100_000, 50_000]) {
+    assert.equal(way(stationStep(COMPILED, metres)), "approach the autopilot's", `${metres} m off the station`);
+  }
+  for (const metres of [49_999, 10_000, 2_500]) {
+    assert.equal(way(stationStep(COMPILED, metres)), "approach the menu's", `${metres} m off the station`);
+  }
+  assert.equal(stationStep(COMPILED, 2_499).kind, "dock");
+  // A gate is approached as an autopilot approaches, however near.
+  for (const metres of [100_000, 49_999, 10_000, 2_500]) {
+    assert.equal(way(gateStep(COMPILED, metres)), "approach the autopilot's", `${metres} m off the gate`);
+  }
+});
+
+test("under fifty kilometres a follow the autopilot began gives way to the menu's approach, and the menu's own is waited on", () => {
+  const following = { ...NO_MEMORY, approachingTargetID: DEST_STATION };
+  // The autopilot's own approach is running (a follow at nought): the client's Dock makes its own follow then.
+  assert.equal(way(stationStep(COMPILED, 40_000, following, "FOLLOW")), "approach the menu's");
+  // The menu's approach is running: nothing more is asked.
+  assert.deepEqual(stationStep(COMPILED, 40_000, { ...following, approachingByMenu: true }, "FOLLOW"), { kind: "wait", reason: "Closing in" });
+  // Further out the autopilot's own follow is waited on as before.
+  assert.deepEqual(stationStep(COMPILED, 60_000, following, "FOLLOW"), { kind: "wait", reason: "Closing in" });
+  // A navigation's approach, once running, is waited on at any distance.
+  assert.deepEqual(stationStep(NAVIGATION, 40_000, { ...following, approachingByMenu: true }, "FOLLOW"), { kind: "wait", reason: "Closing in" });
+  assert.deepEqual(gateStep(NAVIGATION, 40_000, { ...NO_MEMORY, approachingTargetID: GATE_ORIGIN, approachingByMenu: true }, "FOLLOW"), { kind: "wait", reason: "Closing in" });
+  // A gate's follow is the autopilot's, and is waited on under fifty kilometres too.
+  assert.deepEqual(gateStep(COMPILED, 40_000, { ...NO_MEMORY, approachingTargetID: GATE_ORIGIN }, "FOLLOW"), { kind: "wait", reason: "Closing in" });
+});
+
+test("the loop tells its warp and its approach which way to go, and remembers which approach is running", async () => {
+  const flown = async (plan: RoutePlan, system: number, targetID: number, metres: number, ticks = 1): Promise<string[]> => {
+    const calls: string[] = [];
+    let mode = "STOP";
+    const pilot = createAutopilot({
+      getStatus: async () => status({ inSpace: true, shipMode: mode, solarSystemID: system }),
+      getSpaceSnapshot: async () => gridSnapshot(targetID, metres, system, mode),
+      undock: async () => { calls.push("undock"); },
+      warp: async (id, byMenu) => { calls.push(`warp ${id} ${byMenu === true ? "the menu's" : "the autopilot's"}`); },
+      approach: async (id, byMenu) => { calls.push(`approach ${id} ${byMenu === true ? "the menu's" : "the autopilot's"}`); mode = "FOLLOW"; },
+      jump: async () => { calls.push("jump"); },
+      dock: async () => { calls.push("dock"); },
+      sleep: async () => {},
+      now: () => 0,
+      onProgress: () => {},
+      isSessionLost: () => false,
+      refusalReason: (error) => String((error as Error).message || error),
+    });
+    pilot.start(plan);
+    for (let tick = 0; tick < ticks; tick += 1) await pilot.tick();
+    return calls;
+  };
+  const DOCK: RoutePlan = { ...PLAN, destinationSystemID: DEST_SYSTEM, hops: [], navigation: true };
+  const JUMP: RoutePlan = { ...PLAN, destinationStationID: null, navigation: true };
+  assert.deepEqual(await flown(DOCK, DEST_SYSTEM, DEST_STATION, 5_000_000), [`warp ${DEST_STATION} the menu's`]);
+  assert.deepEqual(await flown(JUMP, ORIGIN_SYSTEM, GATE_ORIGIN, 5_000_000), [`warp ${GATE_ORIGIN} the menu's`]);
+  assert.deepEqual(await flown(PLAN, ORIGIN_SYSTEM, GATE_ORIGIN, 5_000_000), [`warp ${GATE_ORIGIN} the autopilot's`]);
+  assert.deepEqual(await flown(PLAN, ORIGIN_SYSTEM, GATE_ORIGIN, 10_000), [`approach ${GATE_ORIGIN} the autopilot's`]);
+  // The menu's approach, once asked, is waited on: eight ticks ask it once.
+  assert.deepEqual(await flown(PLAN, DEST_SYSTEM, DEST_STATION, 10_000, 8), [`approach ${DEST_STATION} the menu's`]);
+  assert.deepEqual(await flown(DOCK, DEST_SYSTEM, DEST_STATION, 30_000, 8), [`approach ${DEST_STATION} the menu's`]);
+  // The autopilot's approach from sixty kilometres is waited on there.
+  assert.deepEqual(await flown(PLAN, DEST_SYSTEM, DEST_STATION, 60_000, 8), [`approach ${DEST_STATION} the autopilot's`]);
+});
+
+test("a follow the autopilot began from further out is replaced once by the menu's approach under fifty kilometres", async () => {
+  const calls: string[] = [];
+  let mode = "STOP";
+  let metres = 60_000;
+  const pilot = createAutopilot({
+    getStatus: async () => status({ inSpace: true, shipMode: mode, solarSystemID: DEST_SYSTEM }),
+    getSpaceSnapshot: async () => gridSnapshot(DEST_STATION, metres, DEST_SYSTEM, mode),
+    undock: async () => { calls.push("undock"); },
+    warp: async () => { calls.push("warp"); },
+    approach: async (_id, byMenu) => { calls.push(byMenu === true ? "the menu's approach" : "the autopilot's approach"); mode = "FOLLOW"; },
+    jump: async () => { calls.push("jump"); },
+    dock: async () => { calls.push("dock"); },
+    sleep: async () => {},
+    now: () => 0,
+    onProgress: () => {},
+    isSessionLost: () => false,
+    refusalReason: (error) => String((error as Error).message || error),
+  });
+  pilot.start(PLAN);
+  for (let tick = 0; tick < 6; tick += 1) await pilot.tick();
+  assert.deepEqual(calls, ["the autopilot's approach"]);
+  metres = 45_000;
+  for (let tick = 0; tick < 8; tick += 1) await pilot.tick();
+  assert.deepEqual(calls, ["the autopilot's approach", "the menu's approach"]);
+  metres = 1_000;
+  for (let tick = 0; tick < 4; tick += 1) await pilot.tick();
+  assert.equal(calls[2], "dock");
+});
+
 test("a gate nearer than the autopilot's warp is taken from: the loop approaches it, and asks no warp", async () => {
   // 158 km: a warp at nought would be taken from here, and the autopilot's was refused (measured 2026-10-11).
   const calls: string[] = [];

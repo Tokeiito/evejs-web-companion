@@ -28,6 +28,13 @@
 // about 160 km, so the loop approaches from under a floor that is further out
 // than retail's 150 km: see the dead-band note below.
 //
+// A plan can be a pilot's own Dock or Jump instead (`navigation`). The client's
+// menu flies those by its system navigation (autopilot.py, `NavigateSystemTo`):
+// the menu's warp at nought from further than a warp's least distance, the
+// menu's approach nearer (a follow at fifty metres, and no throttle), and the
+// dock or the jump within 2,500 m. The autopilot asks that same Dock once it is
+// under 50 km of its last station, so its approach there is the menu's too.
+//
 // Measurement is the PRIMARY path; the server's refusals remain as a backstop
 // for the cycles where no snapshot is available (a slow read, a scene that has
 // not caught up, a target the snapshot cannot see). When we cannot measure, the
@@ -266,13 +273,19 @@ export interface RoutePlan {
   readonly destinationKind?: "station" | "structure" | null;
   readonly destinationName: string | null;
   readonly hops: readonly RouteHop[];
+  /**
+   * True where the plan is a pilot's own Dock or Jump (the client's system
+   * navigation) and no autopilot's: every warp of it is the menu's at nought,
+   * and every approach the menu's.
+   */
+  readonly navigation?: boolean;
 }
 
 /** The single atomic decision a tick produces. */
 export type AutopilotAction =
   | { readonly kind: "undock" }
-  | { readonly kind: "warp"; readonly destinationID: number; readonly label: string }
-  | { readonly kind: "approach"; readonly gateID: number; readonly label: string }
+  | { readonly kind: "warp"; readonly destinationID: number; readonly label: string; readonly byMenu?: boolean }
+  | { readonly kind: "approach"; readonly gateID: number; readonly label: string; readonly byMenu?: boolean }
   | { readonly kind: "jump"; readonly fromGateID: number; readonly toGateID: number; readonly label: string }
   | { readonly kind: "dock"; readonly stationID: number; readonly label: string }
   | { readonly kind: "wait"; readonly reason: string }
@@ -303,10 +316,20 @@ export interface AutopilotDeps {
    */
   getSpaceSnapshot?(): Promise<SpaceSnapshot | null>;
   undock(): Promise<void>;
-  /** Warp to a gate or a station as the client's autopilot does (CmdWarpToStuffAutopilot): this server stops it ten kilometres short. */
-  warp(destinationID: number): Promise<void>;
-  /** Approach a gate at full speed (CmdSetSpeedFraction + CmdFollowBall) to close into jump range. */
-  approach(destinationID: number): Promise<void>;
+  /**
+   * Warp to a gate or a station: as the client's autopilot does
+   * (CmdWarpToStuffAutopilot, which this server stops ten kilometres short), or
+   * with `byMenu` as its menu does (a warp at nought), for a pilot's own Dock or
+   * Jump.
+   */
+  warp(destinationID: number, byMenu?: boolean): Promise<void>;
+  /**
+   * Approach a gate or a station: as the client's autopilot does (the throttle
+   * opened, then a follow at nought), or with `byMenu` as its menu does (a
+   * follow at fifty metres), for a pilot's own Dock or Jump and for the
+   * autopilot's last station under fifty kilometres.
+   */
+  approach(destinationID: number, byMenu?: boolean): Promise<void>;
   jump(fromGateID: number, toGateID: number): Promise<void>;
   dock(stationID: number): Promise<void>;
   sleep(ms: number): Promise<void>;
@@ -441,6 +464,8 @@ interface LoopMemory {
    * Cleared whenever we issue any other move.
    */
   approachingTargetID: number | null;
+  /** Whether that approach was the menu's (a follow at fifty metres), and not the autopilot's own. */
+  approachingByMenu: boolean;
   approachCycles: number;
   /** Consecutive ticks spent waiting on a measured, already-running approach. */
   approachWaitCycles: number;
@@ -485,6 +510,7 @@ function freshMemory(): LoopMemory {
     jumpedFromSystem: null,
     pendingApproachGate: null,
     approachingTargetID: null,
+    approachingByMenu: false,
     approachCycles: 0,
     approachWaitCycles: 0,
     approachIssueTargetID: null,
@@ -539,7 +565,7 @@ type DecisionMemory = Pick<
   LoopMemory,
   "warpedInSystem" | "jumpedFromSystem" | "pendingApproachGate"
 > &
-  Partial<Pick<LoopMemory, "approachingTargetID">>;
+  Partial<Pick<LoopMemory, "approachingTargetID" | "approachingByMenu">>;
 
 /** True when the server says the ship is currently following/approaching. */
 export function isFollowing(shipMode: string | null): boolean {
@@ -617,6 +643,7 @@ function decideFromDistance(
   memory: DecisionMemory,
   labels: { readonly jumpOrDock: string; readonly approach: string; readonly warp: string },
   hop: RouteHop | null,
+  navigation: boolean,
 ): AutopilotAction | null {
   // The shared three rungs — arrive / closing / approach / warp. The close-range
   // radius is the one the SERVER applies to this kind of target:
@@ -630,12 +657,21 @@ function decideFromDistance(
     kind === "gate" ? MAX_STARGATE_JUMPING_DISTANCE_M : STATION_DOCKING_RADIUS_M,
     measurement,
     memory.approachingTargetID ?? null,
-    // The loop's warp is the client's autopilot's, and the floor is that call's.
-    AUTOPILOT_WARP_STOPS_SHORT_M,
+    // The floor is the call's that warps: the menu's at nought for a pilot's own
+    // Dock or Jump, and the client's autopilot's for the autopilot.
+    navigation ? MENU_WARP_RANGE_M : AUTOPILOT_WARP_STOPS_SHORT_M,
   );
   if (step === null) {
     return null;
   }
+  // The approach is the menu's for a navigation, and for the autopilot under
+  // `maxDockingDistance` of its last station, where a client's autopilot asks
+  // the menu's Dock (autopilot.py 394 to 399). Else it is the autopilot's own.
+  const distance = measurement?.distances.get(targetID) ?? Number.POSITIVE_INFINITY;
+  const menusApproach = navigation || (kind === "station" && distance < MAX_DOCKING_DISTANCE_M);
+  const approach: AutopilotAction = menusApproach
+    ? { kind: "approach", gateID: targetID, label: labels.approach, byMenu: true }
+    : { kind: "approach", gateID: targetID, label: labels.approach };
 
   switch (step.kind) {
     case "arrive":
@@ -651,11 +687,19 @@ function decideFromDistance(
       }
       return { kind: "dock", stationID: targetID, label: labels.jumpOrDock };
     case "closing":
+      // The follow that is running is the autopilot's own, begun further out,
+      // and the menu's is wanted here: the client's Dock makes its own follow
+      // then (ShipApproach asks unless the ship follows at its own range).
+      if (menusApproach && memory.approachingByMenu !== true) {
+        return approach;
+      }
       return { kind: "wait", reason: "Closing in" };
     case "approach":
-      return { kind: "approach", gateID: targetID, label: labels.approach };
+      return approach;
     case "warp":
-      return { kind: "warp", destinationID: targetID, label: labels.warp };
+      return navigation
+        ? { kind: "warp", destinationID: targetID, label: labels.warp, byMenu: true }
+        : { kind: "warp", destinationID: targetID, label: labels.warp };
   }
 }
 
@@ -694,6 +738,9 @@ export function decideAutopilotAction(
   if (sys === null) {
     return { kind: "pause", reason: "No solar system in flight status." };
   }
+  // A pilot's own Dock or Jump warps and approaches as the menu does.
+  const navigation = plan.navigation === true;
+  const byMenu = navigation ? { byMenu: true } : {};
 
   // Jump handoff: while the status still shows the system we jumped FROM, the
   // session hasn't handed off yet — wait (the controller clears this once the
@@ -721,6 +768,7 @@ export function decideAutopilotAction(
         warp: `Warp to ${targetLabel} ${stationID}`,
       },
       null,
+      navigation,
     );
     if (measured) {
       return measured;
@@ -738,6 +786,7 @@ export function decideAutopilotAction(
       kind: "warp",
       destinationID: stationID,
       label: `Warp to ${targetLabel} ${stationID}`,
+      ...byMenu,
     };
   }
 
@@ -758,6 +807,7 @@ export function decideAutopilotAction(
       warp: `Warp to gate ${hop.gateToWarpID}`,
     },
     hop,
+    navigation,
   );
   if (measured) {
     return measured;
@@ -770,6 +820,7 @@ export function decideAutopilotAction(
         kind: "approach",
         gateID: hop.gateToWarpID,
         label: `Approach gate ${hop.gateToWarpID}`,
+        ...byMenu,
       };
     }
     return {
@@ -783,6 +834,7 @@ export function decideAutopilotAction(
     kind: "warp",
     destinationID: hop.gateToWarpID,
     label: `Warp to gate ${hop.gateToWarpID}`,
+    ...byMenu,
   };
 }
 
@@ -951,7 +1003,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
           memory.settleTicks = 0;
           break;
         case "warp":
-          await deps.warp(action.destinationID);
+          await deps.warp(action.destinationID, action.byMenu === true);
           if (!isCurrent(token)) return;
           memory.warpedInSystem = sys;
           memory.pendingApproachGate = null;
@@ -961,7 +1013,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
           memory.settleTicks = SETTLE_WARP;
           break;
         case "approach":
-          await deps.approach(action.gateID);
+          await deps.approach(action.gateID, action.byMenu === true);
           if (!isCurrent(token)) return;
           // Approached; clear the pending flag so the next decision retries the
           // jump (which will re-request an approach if still short of range).
@@ -975,6 +1027,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
             memory.approachWaitCycles = 0;
           }
           memory.approachingTargetID = action.gateID;
+          memory.approachingByMenu = action.byMenu === true;
           memory.settleTicks = SETTLE_APPROACH;
           break;
         case "jump":
