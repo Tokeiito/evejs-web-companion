@@ -1434,8 +1434,16 @@ Take these defaults, and list each under "For the operator" in the log so they c
   commit took away what put it back; knowing both is what made taking it out safe.
 - **`eve.js`'s tests write into the server's own `server.log`.** A line there may
   be a test's: go by the character and the time.
-- **A session that ends near a station does not find the ship where it left it**
-  (500 m off, twice). Place the ship and measure in one session.
+- **A session that ends near a station does not find the ship where it left it.**
+  The server puts a ship that is at rest within 100 km of a station 500 m off that
+  station wherever a session's ship is put into a scene (`eve.js`,
+  `normalizeLegacyStationState`; an undock skips it). Place the ship and
+  measure in one session, or leave it more than 100 km off, or off a gate.
+  `lgn-measure.js` leaves a ship at a said distance and says where the next session
+  finds it.
+- **A number the server gives twice the same is a rule to look for in its code**
+  ("500 m", twice): the search for the number beside the word of the thing found the
+  function in one step, before anything was measured.
 - **A recording taken again is set beside the old one before a test is touched.**
   `rwp-facts.js` plays a recorded warp through the park as the tests do and prints
   every thing they pin; run on the old recording and on the new, it says which

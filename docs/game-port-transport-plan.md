@@ -917,7 +917,9 @@ after a warp because the server had left its greatest speed a tenth too high, wh
 the server's and is fixed there. The recorded warp was taken again on the fixed server
 (`96c4fb20`), and the park's tests brought to it. The server's answer to a refusal waits
 for nothing (measured: 10 to 20 ms by the asker's clock; its log's line is stamped late).
-Where a pilot is put at a session's start near a station is next. In `eve.js` an advert's text outside ASCII goes as
+A pilot at rest within 100 km of a station is put 500 m off it at each login by the
+server's own rule (measured on both transports; left for the operator). A bot's own
+approach, set beside the menu's, is next. In `eve.js` an advert's text outside ASCII goes as
 unicode (`dcd459b0d`; on its origin since 2026-10-11, pushed by another hand than this loop's), and a dock
 asked from out of range of a station is finished by the server, as Tranquility finishes
 it (`869b28d2b`, not pushed), and a pilot's client is sent no greatest speed for its ship
