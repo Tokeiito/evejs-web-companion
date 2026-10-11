@@ -839,6 +839,25 @@ Take these defaults, and list each under "For the operator" in the log so they c
   `ShipInWarp` and the ship flies on. `stp-live.js <bff> <account> <characterID>
   [ledger.json]` waits for the speed. It leaves the pilot in space: put the store back
   between its runs, not only after the last. In the tab the stop is `button.hud-stop`.
+- **What the client refuses by itself, measure of the server before building.** The
+  client forms no fleet from within one (`fleetSvc.py` 332), so no recording and no
+  client ever showed what the server does then: it formed a second and left the pilot
+  in the first (`ffm-twice.js`, a dozen lines, run first). Where the client's own
+  code refuses before it asks, ask the server all the same, on both transports, and
+  give what it does wrong to a sub-agent. The game port then refuses in the client's
+  place, before anything is sent or counted.
+- **A sub-agent in `eve.js` is told its proof by file, and its wait is spent on the
+  page.** Name the test files it is to run (a wide run took most of an hour and proved
+  nothing asked for); say that the live server and the BFFs are node too. While it
+  works the page's own tests, breakages and suite can all be run, since none touches
+  the server's store; only the live checks wait. Read what it says it measured and
+  left: the first found two more holes beside the one it was given.
+- **A stand-in session stays where a test left it.** A notice that a pilot has left a
+  fleet does not take a test's session out of it: a server sends the session's change
+  as well. A test that forms a fleet after a leaving takes the session out first.
+  `ffm-live.js <bff> <account> <characterID> [ledger.json]` forms, asks again from
+  within, leaves and forms again; the Fleet window's "Form fleet" asks with the
+  browser's own box.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
