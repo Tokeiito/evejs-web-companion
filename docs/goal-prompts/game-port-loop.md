@@ -1560,6 +1560,19 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **"Asked by a test" is not "tested".** A request refused for its body takes a route
   off the audit's list and looks at nothing. Ask a route as the page does, or leave
   it on the list.
+- **The audit fails for a call of the page's own that goes by a service's name where
+  a route makes it on an object.** The routes' own binds are its evidence (95 pairs
+  in the suite). A call the client makes on an object goes on one for the page only
+  where the page names the object (`PAGE_OBJECT_CALLS`), where the game port asks
+  the service's moniker, or where it is the ballpark's own (`retailCalls.js`,
+  `madeOnAnObject`). A new call of the page's of that kind is given its object
+  there first.
+- **A call of the page's own has an entry in the table of the client's calls.** The
+  audit names one that has none ("NOT READ"). Read the client's function and enter
+  it, with its file and line, in the unit that adds the call.
+- **A measure that names something at its first run has earned its place.** The line
+  for unread calls named `fleetObjectHandler.CreateFleet`, which the game port made
+  as the client does and the table had never been told of.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
