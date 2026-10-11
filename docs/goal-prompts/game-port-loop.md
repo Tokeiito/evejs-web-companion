@@ -858,6 +858,22 @@ Take these defaults, and list each under "For the operator" in the log so they c
   `ffm-live.js <bff> <account> <characterID> [ledger.json]` forms, asks again from
   within, leaves and forms again; the Fleet window's "Form fleet" asks with the
   browser's own box.
+- **A number the page names is taken as its route took it.** A fleet named with `of`
+  ("fleetByNumber": `PAGE_OBJECT_CALLS`, `OBJECTS_THE_PAGE_NAMES`, the number's own
+  check in the generic call, and its branch) was first checked as a planet is, a whole
+  number and nothing else; the route took the text of one too (`strictPositiveID`),
+  and the Fleet panel's own read answers a fleet's number as text. The first live run
+  showed it, not a test: read what the route takes for a number before writing the
+  check, and give the live script what the page would have.
+- **A sentence in the table of refusals is more than twenty characters**, by the
+  table's own test: one that only names the trouble is turned back.
+- **Two pilots on one BFF, and the tab as one of them.** `fai-live.js <bff> <account>
+  <characterID> <account> <characterID> [ledger.json]` runs boss and guest as two
+  sessions of the script's own. With `wait` as its last word it forms a fleet, invites
+  and reads the fleet for forty seconds: started in the background, it leaves the tab
+  free to be the guest (the hangar's other row, the "Fleet" button for the window,
+  then "Accept invitation", which asks with the browser's own box). It ends by itself;
+  it is waited for before anything is put back.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

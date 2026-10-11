@@ -839,8 +839,10 @@ a float under ten metres and a whole number from there. A stop is beyonce's `Cmd
 with nothing (`1b6fd44b`), which the BFF neither holds back nor opens a throttle for.
 A fleet is formed by the fleet handler's `CreateFleet` (`0d059c45`), the BFF making it and
 the `Init` on what it answers, as the route did; from a session in a fleet the game port
-asks nothing, as the client does. Counted by the whole path,
-105 are named now, 47 of them reads and 58 writes (the count kept before
+asks nothing, as the client does. An invitation is accepted by `AcceptInvite` on the
+fleet the call names (`d6fd20b6`), the second kind of object the page says with `of`.
+Counted by the whole path,
+104 are named now, 47 of them reads and 57 writes (the count kept before
 `82a21e8` took a path's beginning for a path and missed a parameter inside one: it read 130
 where 138 was so). Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.
