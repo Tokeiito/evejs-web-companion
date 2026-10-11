@@ -909,7 +909,7 @@ autopilots, which warp by the menu's call where a client's autopilot warps by it
 The mission's spot is warped to by asking its agent now (`77464628`), with the spots
 taken from the journal: an agent is an object the page names. The page's autopilots are
 next. In `eve.js` an advert's text outside ASCII goes as
-unicode (`dcd459b0d`, not pushed).
+unicode (`dcd459b0d`; on its origin since 2026-10-11, pushed by another hand than this loop's).
 Counted by the whole path,
 82 are named now, 37 of them reads and 45 writes (the count kept before
 `82a21e8` took a path's beginning for a path and missed a parameter inside one: it read 130

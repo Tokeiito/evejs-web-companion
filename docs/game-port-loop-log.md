@@ -83171,3 +83171,10 @@ The list below goes on between those steps.
     was not in three reads, while the BFF hands it the whole table (322 KB of JSON). Find what, if anything, shows that
     yes or no; then stop sending the table, or stop asking.
 
+**A line of this date's entry on a mission's marked spot, corrected.** It says `eve.js` "is four commits ahead of its origin
+... and not pushed". That was so when the iteration began (`git log origin/main..main`: four). It was not so when
+the entry was written: `eve.js`'s `main` was pushed to its origin at 11:25 local time, during the iteration
+(`git reflog show origin/main`: "update by push", to `dcd459b0d`). **This loop did not push it**, and pushes
+nothing of `eve.js`: another session, or the operator, did. The four commits (`3b22b1aa3`, `440c52ef7`,
+`2b5877d17`, `dcd459b0d`) are on the origin, and `eve.js` is ahead of it by none. The six files of others'
+that are changed and not committed there are as they were.
