@@ -3948,3 +3948,93 @@ test("a stop is a write of the page's own, and goes alone on either transport: n
       [200, true, "beyonce", "CmdStop", null, ["after CmdStop"], [["beyonce", "CmdStop", [], null]], []], transport);
   }
 });
+
+// ── a fleet formed by the page itself ────────────────────────────────────────
+//
+// fleetSvc.CreateFleet (331 to 342): self.fleet = sm.RemoteSvc('fleetObjectHandler').CreateFleet(), with nothing,
+// which answers the fleet's own object; then Init on that object, and the fleet read on it. The page asks the
+// first, and cannot hold what it answers: the BFF makes it as its route made it, binding through the call, asking
+// Init on what was bound, and keeping none of its handles for a fleet after.
+
+/** The page's own forming of a fleet. Says each bind and each call on what was bound, with what each went with. */
+async function formFleetByCall({ transport = "gameport", refuses = null, holds = false } = {}) {
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  // (Where the test says the pilot's connection holds its fleet's object, a leaving is asked on that object.)
+  if (holds) gamePort.fleet = () => ({ fleetID: 654500010000, holdsObject: true });
+  const gateway = fakeGateway();
+  const backend = transport === "gameport" ? gamePort : gateway;
+  const asked = [];
+  let bound = 0;
+  backend.bindObject = async (service, method, args, kwargs) => { bound += 1; asked.push(["bind", service, method, args, kwargs]); return { boundHandle: `made ${bound}`, notifications: [] }; };
+  backend.callBoundMethod = async (service, method, args, kwargs, sessionFields, bridgeSessionID, handle) => {
+    asked.push([`on ${handle}`, service, method, args, kwargs]);
+    if (refuses === method) throw Object.assign(new Error("FleetError"), { code: "CALL_REFUSED", statusCode: 409 });
+    return { service, method, result: null, notifications: [`after ${method}`] };
+  };
+  const byName = [];
+  const plain = backend.callMethod;
+  backend.callMethod = async (service, method, ...rest) => { byName.push(`${service}.${method}`); return plain(service, method, ...rest); };
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => transport });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  asked.length = 0;
+  byName.length = 0;
+  const form = (more = { pilot: true, confirm: true }) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "fleetObjectHandler", method: "CreateFleet", args: [], kwargs: null, ...more } });
+  return { form, asked, byName, baseUrl };
+}
+const THROUGH_THE_FORMING = (handle) => [["bind", "fleetObjectHandler", "CreateFleet", [], null], [`on ${handle}`, "fleetObjectHandler", "Init", [null, null], null]];
+
+test("a fleet formed is a write the page means, made as its route made it: bound through the call, and Init asked on what it answered", async () => {
+  for (const transport of ["gameport", "gateway"]) {
+    const { form, asked, byName } = await formFleetByCall({ transport });
+    for (const words of [{}, { pilot: true }, { confirm: true }]) {
+      const refused = await form(words);
+      assert.deepEqual([refused.response.status, refused.payload.error, asked], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE", []], `${transport} ${JSON.stringify(words)}`);
+    }
+    // The fleet is the session's own to form: there is nothing to say which, and a call that says is none.
+    const named = await form({ pilot: true, confirm: true, of: 654500010000 });
+    assert.deepEqual([named.response.status, named.payload.error, asked], [400, "INVALID_REQUEST", []], transport);
+    const made = await form();
+    assert.deepEqual([made.response.status, made.payload.ok, made.payload.service, made.payload.method, made.payload.result, made.payload.notifications, made.payload.applied],
+      [200, true, "fleetObjectHandler", "CreateFleet", null, ["after Init"], undefined], transport);
+    assert.deepEqual([asked, byName], [THROUGH_THE_FORMING("made 1"), []], transport);
+    // Another forming is of another fleet: bound afresh, and never on what the first was bound to.
+    asked.length = 0;
+    await form();
+    assert.deepEqual(asked, THROUGH_THE_FORMING("made 2"), transport);
+    // CreateFleet takes nothing, and Init what the route gave it, whatever the page's call came with.
+    asked.length = 0;
+    const odd = await form({ pilot: true, confirm: true, args: [7], kwargs: { now: true } });
+    assert.deepEqual([odd.response.status, asked], [200, THROUGH_THE_FORMING("made 3")], transport);
+  }
+});
+
+test("none of the BFF's handles for a fleet is kept across the page's own forming, refused or not", async () => {
+  const leave = (baseUrl) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "fleetObjectHandler", method: "LeaveFleet", args: [], kwargs: null, pilot: true, confirm: true } });
+  // What a handle is kept for: a leaving straight after the Fleet panel's read goes on the object that read bound.
+  const kept = await formFleetByCall({ holds: true });
+  await apiRequest(kept.baseUrl, "/api/bridge/bound-fleet");
+  assert.deepEqual(kept.asked[0], ["bind", "fleetObjectHandler", "MachoBindObject", [], null]);
+  kept.asked.length = 0;
+  await leave(kept.baseUrl);
+  assert.deepEqual(kept.asked, [["on made 1", "fleetObjectHandler", "LeaveFleet", [], null]]);
+
+  for (const refuses of [null, "Init"]) {
+    const { form, asked, baseUrl } = await formFleetByCall({ refuses, holds: true });
+    await apiRequest(baseUrl, "/api/bridge/bound-fleet");
+    asked.length = 0;
+    const formed = await form();
+    assert.deepEqual([formed.response.status, formed.payload.ok, formed.payload.error ?? null], refuses === null ? [200, true, null] : [409, false, "CALL_REFUSED"], String(refuses));
+    assert.deepEqual(asked, THROUGH_THE_FORMING("made 2"), String(refuses));
+    // After it, formed or refused, the pilot's fleet may be another: the leaving is of an object asked for afresh.
+    asked.length = 0;
+    await leave(baseUrl);
+    assert.deepEqual(asked, [["bind", "fleetObjectHandler", "MachoBindObject", [], null], ["on made 3", "fleetObjectHandler", "LeaveFleet", [], null]], String(refuses));
+  }
+});
+
+test("the fleet's route forms a fleet as the page's own call does", async () => {
+  const { asked, baseUrl } = await formFleetByCall();
+  const routed = await apiRequest(baseUrl, "/api/bridge/fleet/create", { method: "POST", body: { confirm: true } });
+  assert.deepEqual([routed.response.status, routed.payload.ok, routed.payload.applied, routed.payload.result, routed.payload.notifications], [200, true, true, null, ["after Init"]]);
+  assert.deepEqual(asked, THROUGH_THE_FORMING("made 1"));
+});

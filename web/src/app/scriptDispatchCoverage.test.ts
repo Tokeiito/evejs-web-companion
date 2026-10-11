@@ -108,3 +108,18 @@ test("a stop is carried out by the page's own call wherever the page carries a b
   const api = readFileSync(fileURLToPath(new URL("./api.ts", import.meta.url)), "utf8");
   assert.equal(api.includes("/api/bridge/flight/stop"), false);
 });
+
+test("a fleet is formed by the page's own call wherever the page carries a bot's actions out", () => {
+  const flow = readFileSync(fileURLToPath(new URL("./flow.ts", import.meta.url)), "utf8");
+  const times = (text: string) => flow.split(text).length - 1;
+  // A support ship's, and a script bot's: each decided on the bot's own reading that it is in no fleet.
+  assert.equal(times('if (action.kind === "createFleet") await formFleetCall(bridgeDo, false);'), 1);
+  assert.equal([...flow.matchAll(/case "createFleet":\s+\/\/[^\n]*\n\s+\/\/[^\n]*\n\s+await formFleetCall\(bridgeDo, false\);\s+return;/g)].length, 1);
+  assert.equal(times("formFleetCall(bridgeDo, false)"), 2);
+  // The Fleet window's: none from a pilot the window knows to be in a fleet.
+  assert.equal(times('await runFleetAction("form", () => formFleetCall(bridgeDo, store.fleet.get().availability === "ready"), "ready");'), 1);
+  // The route's asker is gone from the flow, and from the page's askers.
+  assert.equal(flow.includes("api.createFleet("), false);
+  const api = readFileSync(fileURLToPath(new URL("./api.ts", import.meta.url)), "utf8");
+  assert.equal(api.includes("/api/bridge/fleet/create"), false);
+});

@@ -94,7 +94,7 @@ test("browser session projection retains only explicit language preferences", ()
 
 test("the writes the page makes itself are writes, each named once, and the first is the pause of training", () => {
   const { BRIDGE_WRITE_PAIR_KEYS, PAGE_WRITE_PAIR_KEYS, isBridgeWritePair, isPageWritePair } = require("../src/bridgeCallPolicy");
-  assert.deepEqual(PAGE_WRITE_PAIR_KEYS, ["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop"]);
+  assert.deepEqual(PAGE_WRITE_PAIR_KEYS, ["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet"]);
   // The repair shop's two repairs go by the server's own name through the gateway, whose list has no other; every
   // other call goes by its own.
   const { gatewaysNameFor } = require("../src/bridgeCallPolicy");
@@ -143,7 +143,11 @@ test("the page's calls that are made on an object of the service's own say what 
   assert.equal(objectOfPageCall("planetMgr", "GetProgramResultInfo"), "planet");
   // A write among them is one the page makes itself; a read among them is no write of any kind.
   const { PAGE_OBJECT_CALLS, isBridgeWritePair, isPageWritePair } = require("../src/bridgeCallPolicy");
-  assert.deepEqual(Object.keys(PAGE_OBJECT_CALLS).sort(), ["fleetObjectHandler.LeaveFleet", "planetMgr.GetProgramResultInfo", "planetMgr.UserLaunchCommodities", "planetMgr.UserUpdateNetwork", "scanMgr.GetFullState"]);
+  // fleetSvc.CreateFleet: asked of the handler by name, and what it answers is the fleet's own object, which the
+  // BFF holds: so it is made as the fleet's other call is, with no object the page names.
+  assert.deepEqual([objectOfPageCall("fleetObjectHandler", "CreateFleet"), isBridgeWritePair("fleetObjectHandler", "CreateFleet"), isPageWritePair("fleetObjectHandler", "CreateFleet")], ["fleet", true, true]);
+  assert.deepEqual([objectOfPageCall("fleetObjectHandler", "Init"), isPageWritePair("fleetObjectHandler", "Init")], [null, false]);
+  assert.deepEqual(Object.keys(PAGE_OBJECT_CALLS).sort(), ["fleetObjectHandler.CreateFleet", "fleetObjectHandler.LeaveFleet", "planetMgr.GetProgramResultInfo", "planetMgr.UserLaunchCommodities", "planetMgr.UserUpdateNetwork", "scanMgr.GetFullState"]);
   // fleetSvc.LeaveFleet: on the fleet's own object, of which the session has one. A write, and one of the page's.
   // The fleet's other calls are their routes' still.
   assert.deepEqual([objectOfPageCall("fleetObjectHandler", "LeaveFleet"), objectOfPageCall("fleetObjectHandler", "KickMember"), objectOfPageCall("fleetMgr", "ForceLeaveFleet")], ["fleet", null, null]);

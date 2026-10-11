@@ -233,3 +233,37 @@ export async function tagFleetTarget(act: Ask, itemID: number, tag: string | nul
 export async function leaveFleet(act: Ask): Promise<void> {
   await act("fleetObjectHandler", "LeaveFleet", []);
 }
+
+// --- A fleet formed (the plan's Phase 6b) -------------------------------------
+//
+// Until 2026-10-11 it was one route of the BFF (POST /api/bridge/fleet/create).
+//
+// THE CALLS, as the client makes them (fleetSvc.CreateFleet, 331 to 342). From a session in a fleet: none, and
+// its own refusal (332). Otherwise:
+//
+//   self.fleet = sm.RemoteSvc('fleetObjectHandler').CreateFleet()
+//
+// with nothing, which answers the fleet's own object; then, on that object, Init with the ship's type, a setup's
+// name and an advert by keyword; the fleet's state (InitFleet: GetInitState); and GetFleetID. No Tranquility
+// recording has a fleet formed: the one recording of a fleet joins one by invitation.
+//
+// THE OBJECT IS THE BFF'S TO HOLD, so the page asks the first call and the BFF makes it and the Init on what it
+// answered, as the route did (src/server.js, createFleetCall). On the game port the BFF's own fleet service goes
+// on as the client's does: Init carries the ship's type, and the state and the fleet's ID are read on the object
+// (src/gamePort/pilots.js). Through the web gateway it is the bind and the Init alone.
+//
+// WHAT THE SERVER TAKES FROM THE CALLER: nothing. CreateFleet makes a fleet nobody is in, and Init puts the
+// session's own character in it as its boss.
+//
+// ⚠ THE ANSWER IS NO PROOF OF ANYTHING. As with every fleet write here, the fleet is read again after.
+
+/**
+ * Forms a fleet, the pilot its boss. `inAFleet` is whether the pilot is in one already, as the caller knows it:
+ * from there the client asks nothing, and nor does this. Fails as the call fails.
+ */
+export async function formFleet(act: Ask, inAFleet: boolean): Promise<void> {
+  if (inAFleet) {
+    throw new Error("You are already in a fleet.");
+  }
+  await act("fleetObjectHandler", "CreateFleet", []);
+}

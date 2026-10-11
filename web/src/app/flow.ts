@@ -347,7 +347,7 @@ import { canBroadcastInFleet, canTagInFleet } from "../bridge/fleetCommand.ts";
 import type { FleetCenterSnapshot } from "../bridge/fleetCenter.ts";
 import { decodeAvailableFleetAds, decodeMyFleetFinderAdvert } from "../bridge/fleetAds.ts";
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
-import { applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
+import { applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, formFleet as formFleetCall, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { salvageWithDrones } from "../bridge/boundEntityWrites.ts";
 import { alignTo as alignToCall, approach as approachCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, type FlightNow } from "../bridge/movementWrites.ts";
 import { boardCorvette as boardCorvetteCall, leaveShip as leaveShipCall } from "../bridge/shipWrites.ts";
@@ -4010,7 +4010,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   async function formFleet(): Promise<void> {
-    await runFleetAction("form", () => api.createFleet(callOptions), "ready");
+    // (The page's own call, bridge/fleetWrites.ts: none from a pilot the Fleet window knows to be in a fleet.)
+    await runFleetAction("form", () => formFleetCall(bridgeDo, store.fleet.get().availability === "ready"), "ready");
   }
 
   async function inviteFleetMember(characterID: number, assertCurrent?: () => void, expectedFleetID?: number): Promise<void> {
@@ -10585,7 +10586,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         let applicationOutcome: MiningSupportFleetFeedback["applicationOutcome"];
         try {
           const action = fleetResult.action;
-          if (action.kind === "createFleet") await api.createFleet(callOptions);
+          // (A support ship forms a fleet on its own reading that it is in none.)
+          if (action.kind === "createFleet") await formFleetCall(bridgeDo, false);
           else if (action.kind === "inviteToFleet") await api.inviteToFleet(action.charID, callOptions);
           else if (action.kind === "acceptFleetInvite") await api.acceptFleetInvite(action.fleetID, callOptions);
           else applicationOutcome = await applyToJoinFleetCall(bridgeDo, action.fleetID, true);
@@ -12950,8 +12952,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             );
             return;
           case "createFleet":
-            // Confirmed by the next bound-fleet read (inFleet flips true).
-            await api.createFleet(callOptions);
+            // Confirmed by the next bound-fleet read (inFleet flips true). Decided on the bot's own reading
+            // that it is in no fleet.
+            await formFleetCall(bridgeDo, false);
             return;
           case "inviteToFleet":
             await api.inviteToFleet(action.charID, callOptions);

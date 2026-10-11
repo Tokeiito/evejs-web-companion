@@ -4447,6 +4447,9 @@ test("out of the fleet nothing is kept: by the pilot's own leaving, the server's
     assert.deepEqual(asked(), before, name);
     // A fleet formed after that whose state cannot be read is not the old fleet: nothing is kept of either.
     state.unreadable = true;
+    // (The session is out of its fleet by then, whichever way it left: a server says so with the leaving. From
+    // within a fleet a client forms no other, and nor does the game port: fleetSvc.py 332.)
+    intoFleet(built.session, null);
     const again = await built.pilots.bindObject("fleetObjectHandler", "CreateFleet", [], null, WHO, built.handle);
     await built.pilots.callBoundMethod("fleetObjectHandler", "Init", [null, null], null, WHO, built.handle, again.boundHandle);
     assert.deepEqual([await built.pilots.fleetKept(WHO, built.handle), built.pilots.fleet(FIELDS, built.handle).holdsObject], [null, true], name);
@@ -8287,4 +8290,34 @@ test("a stop asked of beyonce by name goes on the ballpark's own object with not
   await assert.rejects(docked.pilots.callMethod("beyonce", "CmdStop", [], null, WHOSE, docked.handle), (error) => error.code === "CALL_REFUSED" && /in space/.test(error.message));
   assert.equal(docked.session.sent.length, sentBefore, "nothing was sent");
   assert.equal(docked.pilots.callLedger().some((each) => each.pair === "beyonce.CmdStop"), false, "and what was not sent is not counted");
+});
+
+// ── a fleet formed from within a fleet ───────────────────────────────────────
+//
+// fleetSvc.CreateFleet (332): `if session.fleetid: raise UserError('FleetError')`, before anything is asked.
+
+test("a session in a fleet forms no other: nothing is asked of the server, and nothing is counted as asked", async () => {
+  const built = await formed();
+  const { pilots, session, handle } = built;
+  intoFleet(session, FLEET);
+  const before = [session.sent.length, fleetCalls(session).length, JSON.stringify(pilots.callLedger())];
+  const held = pilots.fleet(FIELDS, handle);
+  await assert.rejects(pilots.bindObject("fleetObjectHandler", "CreateFleet", [], null, WHO, handle), (error) => error.code === "CALL_REFUSED" && error.message === "FleetError");
+  assert.deepEqual([session.sent.length, fleetCalls(session).length, JSON.stringify(pilots.callLedger())], before);
+  // The fleet it is in is still the one it holds.
+  assert.deepEqual(pilots.fleet(FIELDS, handle), held);
+  // Out of that fleet, it forms another as before.
+  intoFleet(session, null);
+  const again = await pilots.bindObject("fleetObjectHandler", "CreateFleet", [], null, WHO, handle);
+  assert.equal(typeof again.boundHandle, "string");
+  assert.deepEqual(session.calls.at(-1), { service: "fleetObjectHandler", method: "CreateFleet", args: [], kwargs: null });
+});
+
+test("a pilot that holds a fleet's object and is in no fleet yet may form again: the client goes by its session, not by what it holds", async () => {
+  const built = await selected({ answers: { "fleetObjectHandler.CreateFleet": boundObject("N=1:500") } }, FLEET_PAIRS);
+  const { pilots, handle } = built;
+  await pilots.bindObject("fleetObjectHandler", "CreateFleet", [], null, WHO, handle);
+  assert.deepEqual(pilots.fleet(FIELDS, handle), { fleetID: null, holdsObject: true });
+  const again = await pilots.bindObject("fleetObjectHandler", "CreateFleet", [], null, WHO, handle);
+  assert.equal(typeof again.boundHandle, "string");
 });

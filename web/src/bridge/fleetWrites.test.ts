@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-import { applyToJoinFleet, createFleetBroadcasts, decodeFleetWriteAck, decodeFleetAdvertWriteAck, leaveFleet, tagFleetTarget } from "./fleetWrites.ts";
+import { applyToJoinFleet, createFleetBroadcasts, decodeFleetWriteAck, decodeFleetAdvertWriteAck, formFleet, leaveFleet, tagFleetTarget } from "./fleetWrites.ts";
 import type { Ask } from "./ask.ts";
 import type { JsonValue } from "./wire.ts";
 
@@ -198,4 +198,25 @@ test("a fleet is left by one call on the fleet's own object, with nothing, and o
 
 test("a leaving the server refuses fails as the call fails", async () => {
   await assert.rejects(leaveFleet(asking(new Error("FleetNotInFleet")).act), /FleetNotInFleet/);
+});
+
+// --- a fleet formed -----------------------------------------------------------
+
+test("a fleet is formed by one call of the fleet handler's, with nothing; and by none from within a fleet", async () => {
+  const { act, asked } = asking(null);
+
+  await formFleet(act, false);
+
+  // fleetSvc.CreateFleet (334): sm.RemoteSvc('fleetObjectHandler').CreateFleet(). What it answers, and what is asked
+  // on that, are the BFF's.
+  assert.deepEqual(asked, [["fleetObjectHandler", "CreateFleet", []]]);
+
+  // 332: `if session.fleetid: raise UserError('FleetError')`, and nothing is asked.
+  const within = asking(null);
+  await assert.rejects(formFleet(within.act, true), /^Error: You are already in a fleet\.$/);
+  assert.deepEqual(within.asked, []);
+});
+
+test("a forming the server refuses fails as the call fails", async () => {
+  await assert.rejects(formFleet(asking(new Error("FleetError")).act, false), /FleetError/);
 });

@@ -1037,9 +1037,11 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
         heldBridgeSession, req.webSessionID, body.method, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null)) }
       // (And the pilot's fleet left, as its route leaves it: on the fleet's object, or of fleetMgr where none is
       // held. Answered as the call that was asked.)
+      // (Or a fleet formed, as its route forms one: bound through the call, and Init asked on what it answered.)
       : objectKind === "fleet"
-      ? { ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => leaveFleetCall(
-        heldBridgeSession, req.webSessionID, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null)), service: body.service, method: body.method }
+      ? { ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => (body.method === "CreateFleet"
+        ? createFleetCall(heldBridgeSession, req.webSessionID)
+        : leaveFleetCall(heldBridgeSession, req.webSessionID, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null))), service: body.service, method: body.method }
       // (A follow, as its routes made it: held back where the ship already flies it, and through the gateway
       // with the throttle opened first. bridgeCallPolicy.js, PAGE_FOLLOW_CALLS.)
       : ordersAFollow(body.service, body.method)
@@ -9545,19 +9547,10 @@ app.post("/api/bridge/fleet/create", requireAuth, async (req, res, next) => {
   if (!held) {
     return;
   }
-  const bindSpec = {
-    key: `fleet-create:${Date.now()}:${Math.random().toString(36).slice(2)}`,
-    service: "fleetObjectHandler",
-    method: "CreateFleet",
-    args: [],
-    kwargs: null,
-  };
   try {
-    const outcome = await boundCall(held, req.webSessionID, bindSpec, "Init", [null, null], null);
-    invalidateFleetBoundHandles(held);
+    const outcome = await createFleetCall(held, req.webSessionID);
     res.json({ ok: true, applied: true, result: outcome.result ?? null, notifications: outcome.notifications });
   } catch (error) {
-    invalidateFleetBoundHandles(held);
     if (error && error.code === "SESSION_NOT_FOUND") {
       forgetBridgeSession(req.webSessionID, held);
     }
@@ -9629,6 +9622,29 @@ async function leaveFleetCall(held, webSessionID, args = [], kwargs = null) {
     return own && own.holdsObject === true
       ? await boundCall(held, webSessionID, fleetBindSpec(), "LeaveFleet", args, kwargs)
       : await heldTopLevelCall(held, webSessionID, "fleetMgr", "ForceLeaveFleet", [], null);
+  } finally {
+    invalidateFleetBoundHandles(held);
+  }
+}
+
+/**
+ * A fleet formed, as the client's fleet service forms one (fleetSvc.CreateFleet, 331 to 342): the handler's
+ * CreateFleet, with nothing, which answers the fleet's own object; and Init on that object. The mint is the bind,
+ * and its key is its own each time, so that a second forming is of a second fleet and never Init on what the first
+ * was bound to. Init goes with nothing said: the game port says the ship's type as the client does (retailCalls.js,
+ * fleetInit), and through the gateway the server takes the session's. Whatever comes of it, none of the BFF's
+ * handles for a fleet is kept: the pilot's fleet is another one now, or may be.
+ */
+async function createFleetCall(held, webSessionID) {
+  const bindSpec = {
+    key: `fleet-create:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+    service: "fleetObjectHandler",
+    method: "CreateFleet",
+    args: [],
+    kwargs: null,
+  };
+  try {
+    return await boundCall(held, webSessionID, bindSpec, "Init", [null, null], null);
   } finally {
     invalidateFleetBoundHandles(held);
   }

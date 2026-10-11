@@ -302,8 +302,15 @@ function isBridgeWritePair(service, method) {
  *                                reads the flight before and after itself. The handler stops the session's own
  *                                ship, tells one stopped in warp that it is in warp, and refuses a second
  *                                stop within a second (ThrottleGeneric).
+ *   fleetObjectHandler.CreateFleet  a fleet formed, the pilot its boss. The route checked `confirm`, bound
+ *                                through the call (it answers the fleet's own object), asked Init on what was
+ *                                bound, with nothing said, and kept none of the BFF's handles for a fleet
+ *                                after. The handler takes nothing and makes a fleet nobody is in; Init puts
+ *                                the session's own character in it. The page cannot hold what the call
+ *                                answers, so it is made as the route made it (PAGE_OBJECT_CALLS, "fleet").
+ *                                A client asks it from no session that is in a fleet.
  */
-const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop"]);
+const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet"]);
 const pageWritePairKeySet = new Set(PAGE_WRITE_PAIR_KEYS);
 for (const pair of PAGE_WRITE_PAIR_KEYS) {
   if (!bridgeWritePairKeySet.has(pair)) throw new Error(`${pair} is among the page's writes and is no write.`);
@@ -387,11 +394,17 @@ function ordersAFollow(service, method) {
  *                                   fleetMgr's ForceLeaveFleet by name instead, and so does the BFF in this
  *                                   call's place: only it knows which the connection holds (src/server.js,
  *                                   leaveFleetCall).
+ *   fleetObjectHandler.CreateFleet  "fleet": a WRITE, a fleet formed (fleetSvc.CreateFleet, 331 to 342). The
+ *                                   client asks it of the handler by name, with nothing, and what it answers is
+ *                                   the fleet's own object, on which it then asks Init and reads the fleet. The
+ *                                   page cannot hold that object, and a session forms one fleet: so the call
+ *                                   names none, and the BFF makes it and the Init on what it answered, as its
+ *                                   route did (src/server.js, createFleetCall).
  *
  * A write among them is one of the page's own writes. A read is listed here only once its handler has been read
  * for what it takes from the caller: a planet's reads once answered with another owner's colony.
  */
-const PAGE_OBJECT_CALLS = Object.freeze({ "planetMgr.UserUpdateNetwork": "planet", "planetMgr.UserLaunchCommodities": "planet", "planetMgr.GetProgramResultInfo": "planet", "scanMgr.GetFullState": "scanManager", "fleetObjectHandler.LeaveFleet": "fleet" });
+const PAGE_OBJECT_CALLS = Object.freeze({ "planetMgr.UserUpdateNetwork": "planet", "planetMgr.UserLaunchCommodities": "planet", "planetMgr.GetProgramResultInfo": "planet", "scanMgr.GetFullState": "scanManager", "fleetObjectHandler.LeaveFleet": "fleet", "fleetObjectHandler.CreateFleet": "fleet" });
 /** The objects there are many of, which a call says which of with `of`. A scan manager and a fleet are the session's own. */
 const OBJECTS_THE_PAGE_NAMES = Object.freeze(new Set(["planet"]));
 for (const pair of Object.keys(PAGE_OBJECT_CALLS)) {

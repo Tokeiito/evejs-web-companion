@@ -184,6 +184,11 @@ const SERVER_REFUSALS: Readonly<Record<string, string>> = Object.freeze({
   // which a bare panel read does not hold).
   FakeItemNotFound:
     "That ship or container is no longer there, or is too far away to reach.",
+  // fleetRuntime's general refusal of a fleet's call, and the client's own for
+  // a fleet formed from within one (fleetSvc.py 333), which the game port makes
+  // in its place. It says no more than that the fleet said no.
+  FleetError:
+    "The fleet would not allow that.",
   // fleetObjectHandler Handle_LeaveFleet (ensureFleetMembership) — the pilot is
   // no member of the fleet the object is for: it was left, or the pilot was
   // put out of it, since the page last read it.

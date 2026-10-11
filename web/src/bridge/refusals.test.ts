@@ -71,6 +71,9 @@ const EVEJS_REFUSAL_VOCABULARY: readonly string[] = [
   "EffectCrowdedOut",
   // invbroker Handle_GetInventoryFromId — reachable on every cargo/bay bind.
   "FakeItemNotFound",
+  // fleetRuntime's general refusal, and the client's own for a fleet formed from within one (fleetSvc.py 333) —
+  // reachable from the Fleet window's "Form fleet" where the page's word for its fleet is behind the session's.
+  "FleetError",
   // fleetObjectHandler Handle_LeaveFleet (ensureFleetMembership) — reachable from the Fleet window's "Leave fleet".
   "FleetNotInFleet",
   "ModuleReactivationDelayed2",

@@ -1376,11 +1376,6 @@ export async function loadBoundFleet(options: ApiOptions = {}): Promise<Record<s
   return getJson("/api/bridge/bound-fleet", options);
 }
 
-/** FORM a fleet (you become boss). Confirm-gated. */
-export async function createFleet(options: ApiOptions = {}): Promise<void> {
-  await postJson("/api/bridge/fleet/create", { confirm: true }, options);
-}
-
 /** INVITE a character into the session's own fleet (must already be in one). */
 export async function inviteToFleet(inviteeCharID: number, options: ApiOptions = {}, expectedFleetID?: number): Promise<void> {
   await postJson("/api/bridge/fleet/invite", { inviteeCharID, confirm: true, ...(expectedFleetID === undefined ? {} : { expectedFleetID }) }, options);

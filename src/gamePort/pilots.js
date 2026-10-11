@@ -3165,6 +3165,9 @@ function createGamePortPilots({
   async function bindObject(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined) {
     const entry = held(bridgeSessionID, sessionFields);
     assertAllowed(service, method);
+    // fleetSvc.CreateFleet (332): `if session.fleetid: raise UserError('FleetError')`, before anything is asked. So
+    // here: a session in a fleet forms no other, nothing is sent, and what was not sent is not counted.
+    if (service === "fleetObjectHandler" && method === "CreateFleet" && attribute(entry, "fleetid") !== null) throw fail("CALL_REFUSED", "FleetError");
     ledger.note(service, method, BOUND_AS_THE_CLIENT_BINDS);
     if (method === "MachoBindObject" && !(service === "beyonce" && entry.space)) {
       // A Moniker: what it is bound by is settled now, from what the client's own carries (eveMoniker.py), and
