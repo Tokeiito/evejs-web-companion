@@ -925,7 +925,10 @@ bridge's routes were counted off the app's own table, and none taken away: 483, 
 page names 95, tests alone 217 and nothing at all 149. A write by the generic call is a
 write to every gate of the BFF's that tells one by its path now (`15d2bbb9`): a hosted bot's own
 fetch while its session recovers, a session's change, a hosted generation, and the flight routes'
-gate while lost drones are looked for. The audit's own list of routes, read off the app, is next. In `eve.js` an advert's text outside ASCII goes as
+gate while lost drones are looked for. The audit's routes are the app's own now, and
+a route is the page's where any of the page's sources names it (`0f6c6137`): it names 219 routes of the
+page's where it named 187, and says of 34 that no test asks them where it said 23. What a static read is
+asked for more than once is next. In `eve.js` an advert's text outside ASCII goes as
 unicode (`dcd459b0d`; on its origin since 2026-10-11, pushed by another hand than this loop's), and a dock
 asked from out of range of a station is finished by the server, as Tranquility finishes
 it (`869b28d2b`), and a pilot's client is sent no greatest speed for its ship

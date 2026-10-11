@@ -1528,6 +1528,17 @@ Take these defaults, and list each under "For the operator" in the log so they c
   hand pushed it while a unit ran, and that unit's entry said "two commits ahead,
   and not pushed", as it was when the unit began. Run `git log origin/main..main`
   there as the last thing before an entry is committed.
+- **`node scripts/appRoutes.js` lists the app's routes**, off the app itself. Count
+  by it, and by the audit's own lines (`npm run audit:game-port`: "of the N routes
+  the page names"), and not by a search of `src/server.js`: the text had 582 of the
+  614 under `/api/`.
+- **A measure is checked by taking it a second way.** The audit's count of the page's
+  routes stood at what one file's text and another's gave it. A kept record
+  (`--keep`) can be counted again by a few lines of script: do it when a count is
+  first relied on.
+- **A test of a module that is not there yet cannot be watched to fail.** Say so, and
+  watch each of its claims fail by a breakage, and by the old-sources check with the
+  new file left in.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
