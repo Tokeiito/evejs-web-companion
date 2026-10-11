@@ -48,6 +48,30 @@
 // its own). The page's travel autopilot is not stopped by an align, as it was not when the route made it; the
 // overview holds its own movement buttons while an order it began is still running, and no more than that.
 
+// SENT AFTER A THING: THE APPROACH AND KEEP AT RANGE. One call for both, and for the autopilot's approach:
+//
+//   bp.CmdFollowBall(targetID, range)
+//
+// movementFunctions.ShipApproach (302) sends const.approachRange, fifty metres; _Ship_KeepAtRange (229) the
+// distance the pilot chose, no nearer than that; the autopilot (autopilot.py 451 to 454) opens the throttle,
+// park.CmdSetSpeedFraction(1.0), and then follows with a range of 0.0. None is sent for the pilot's own ship
+// (_IsInvalidMovementTarget). It answers nothing. Tranquility's recordings have 168 follows: 138 at 50, 22 at
+// 5000 and 6 at 7500, each a whole number, and the autopilot's twice, its range a float of nought; and ten
+// throttles, every fraction a float. The game port sends the same forms (retailCalls.js).
+//
+// The server flies the session's own ship (beyonceService.Handle_CmdFollowBall): it trusts nothing of the caller
+// but the thing and the range, does nothing for a session with no ship in space, and refuses the same follow
+// sent again within a second (ThrottleGeneric, which the page has words for).
+//
+// ⚠ TWO THINGS THE CLIENT DOES HERE ARE THE BFF'S, NOT THE PAGE'S (src/server.js, followCall). The client's menu
+// sends nothing where the ship already follows that thing at that range (_IsAlreadyFollowingBallAtRange): it
+// goes by its own ballpark, and a game-port pilot's ballpark is the BFF's, so the BFF holds the order back and
+// answers it as taken. And through the gateway the BFF opens the throttle before the menu's follow, as its
+// routes always did there. Neither is done for the autopilot's.
+//
+// What the routes did until 2026-10-11 the page does: a default range, keep at range's floor, a range that is a
+// distance of a million metres at most, and the refusal of a pilot that is not in space.
+
 import type { Ask } from "./ask.ts";
 
 /** A point in a solar system, in metres. */
@@ -71,6 +95,32 @@ export interface FlightNow {
 }
 
 const isAnID = (id: number): boolean => Number.isSafeInteger(id) && id > 0;
+
+/** const.approachRange: how far short of a thing the client's own approach stops, in metres. */
+export const APPROACH_RANGE_M = 50;
+/** The range a thing is kept at where none is said, in metres. */
+export const KEEP_AT_RANGE_DEFAULT_M = 1000;
+/** The farthest a follow's range goes, in metres. */
+const MAX_FOLLOW_RANGE_M = 1_000_000;
+/** Whether this is a distance a follow can be told: a number of metres, not below nought and not beyond the farthest. */
+const isARange = (range: number): boolean => range >= 0 && range <= MAX_FOLLOW_RANGE_M;
+
+/**
+ * What the client's menu looks to before it orders the ship about a thing: that there is a thing, that the pilot
+ * is in space, and that the thing is not the pilot's own ship. Fails where the client sends nothing.
+ */
+async function aThingToOrderAbout(flightNow: () => Promise<FlightNow>, targetID: number, itself: string): Promise<void> {
+  if (!isAnID(targetID)) {
+    throw new Error("That target could not be identified.");
+  }
+  const now = await flightNow();
+  if (!now.inSpace) {
+    throw new Error("The ship is not in space; undock first.");
+  }
+  if (now.shipID === targetID) {
+    throw new Error(itself);
+  }
+}
 
 /**
  * Sends the pilot's ship toward a point. Fails as the call fails, and before it where the point is no point, the
@@ -103,15 +153,40 @@ export async function goToPoint(act: Ask, flightNow: () => Promise<FlightNow>, p
  * ship or not: it does not for a ship in warp or docking, nor for a thing that is not in the pilot's system.
  */
 export async function alignTo(act: Ask, flightNow: () => Promise<FlightNow>, targetID: number): Promise<void> {
-  if (!isAnID(targetID)) {
-    throw new Error("That target could not be identified.");
-  }
-  const now = await flightNow();
-  if (!now.inSpace) {
-    throw new Error("The ship is not in space; undock first.");
-  }
-  if (now.shipID === targetID) {
-    throw new Error("A ship cannot align to itself.");
-  }
+  await aThingToOrderAbout(flightNow, targetID, "A ship cannot align to itself.");
   await act("beyonce", "CmdAlignTo", [], { dstID: targetID, bookmarkID: null });
+}
+
+/**
+ * Sends the pilot's ship to a thing, to stop `range` metres short of it: the client's own fifty where none is
+ * said. A range of nought is the autopilot's approach, which opens the throttle first. Fails as a call fails, and
+ * before any where the range is no distance or the client sends nothing.
+ *
+ * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN OR HELD BACK, NEVER AN ARRIVAL. The BFF answers the same for a follow
+ * the ship was already flying, which it does not send again.
+ */
+export async function approach(act: Ask, flightNow: () => Promise<FlightNow>, targetID: number, range: number | null = null): Promise<void> {
+  const stopAt = range ?? APPROACH_RANGE_M;
+  if (!isARange(stopAt)) {
+    throw new Error("The approach range must be a distance in metres.");
+  }
+  await aThingToOrderAbout(flightNow, targetID, "A ship cannot approach itself.");
+  if (stopAt === 0) {
+    await act("beyonce", "CmdSetSpeedFraction", [1]);
+  }
+  await act("beyonce", "CmdFollowBall", [targetID, stopAt]);
+}
+
+/**
+ * Has the pilot's ship keep `range` metres from a thing: a thousand where none is said, and never nearer than
+ * the client's approach stops. Fails as the call fails, and before it where the range is no distance or the
+ * client sends nothing.
+ */
+export async function keepAtRange(act: Ask, flightNow: () => Promise<FlightNow>, targetID: number, range: number | null = null): Promise<void> {
+  const held = range ?? KEEP_AT_RANGE_DEFAULT_M;
+  if (!isARange(held)) {
+    throw new Error("The range to hold must be a distance in metres.");
+  }
+  await aThingToOrderAbout(flightNow, targetID, "A ship cannot keep at range of itself.");
+  await act("beyonce", "CmdFollowBall", [targetID, Math.max(APPROACH_RANGE_M, held)]);
 }

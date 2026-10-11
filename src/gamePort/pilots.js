@@ -2271,7 +2271,9 @@ function createGamePortPilots({
   function afterMovementCall(entry, method, args, kwargs) {
     // The pilot's last order to its ship, for alreadyFollowing: what was ordered, and after what, at what range.
     // (A fleet's tag on a thing is the park's to take and no order to the ship: what the ship is flying stands.)
-    if (method.startsWith("Cmd") && method !== "CmdFleetTagTarget") entry.lastMove = { method, targetID: positive(args[0]), range: typeof args[1] === "number" ? args[1] : null };
+    // (A range that went as a float it was made, the autopilot's nought, is that number: retailCalls.js, following.)
+    const sent = (value) => (value !== null && typeof value === "object" && value.type === "real" ? value.value : value);
+    if (method.startsWith("Cmd") && method !== "CmdFleetTagTarget") entry.lastMove = { method, targetID: positive(args[0]), range: typeof sent(args[1]) === "number" ? sent(args[1]) : null };
     if (method === "CmdWarpToStuffAutopilot") {
       entry.warpDestination = positive(args[0]);
     } else if (method === "CmdWarpToStuff") {

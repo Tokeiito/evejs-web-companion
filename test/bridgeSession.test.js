@@ -3789,3 +3789,98 @@ test("a ship aligned is a write of the page's own, asked of beyonce by its name 
   assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["beyonce", "CmdAlignTo", [], kwargs, BRIDGE_SESSION_ID, { userid: 4 }]);
   assert.equal(gateway.calls.call.length, before + 1);
 });
+
+// ── a follow asked by the page itself ────────────────────────────────────────
+//
+// The client's menu sends bp.CmdFollowBall(targetID, range) for an approach (const.approachRange) and for keep at
+// range, and nothing where the ship already follows that thing at that range. Its autopilot sends
+// CmdSetSpeedFraction(1.0) and then CmdFollowBall(id, 0.0), whatever the ship is doing. The page asks the same
+// calls of beyonce by name. What the routes kept is the BFF's still: the order held back where the pilot's own
+// ballpark says it is flown already, and through the gateway the throttle opened before the menu's.
+
+/** A call of the page's own asked of beyonce for a pilot in space; on the game port unless told otherwise. Says what was asked by name, in order. */
+async function byThePage(method, args, { transport = "gameport", alreadySo = null, more = { pilot: true, confirm: true } } = {}) {
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  const gateway = fakeGateway();
+  const backend = transport === "gameport" ? gamePort : gateway;
+  const wondered = [];
+  if (alreadySo !== null) {
+    for (const each of [gamePort, gateway]) each.alreadyFollowing = (bridgeSessionID, sessionFields, ...order) => { wondered.push({ sessionFields, order }); return alreadySo(...order); };
+  }
+  backend.callMethod = async (service, name, sent, kwargs, sessionFields, bridgeSessionID) => {
+    backend.calls.call.push({ service, method: name, args: sent, kwargs, sessionFields, bridgeSessionID });
+    return { service, method: name, result: null, notifications: [`after ${name}`] };
+  };
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => transport });
+  const selected = await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const ready = await apiRequest(baseUrl, "/api/bridge/drone-recovery/ready", { method: "POST", body: { checkID: selected.payload.droneRecoveryCheckID } });
+  assert.equal(ready.response.status, 200, JSON.stringify(ready.payload));
+  const before = backend.calls.call.length;
+  const answer = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "beyonce", method, args, kwargs: null, ...more } });
+  const sent = backend.calls.call.slice(before).map((each) => [each.service, each.method, each.args, each.kwargs]);
+  return { status: answer.response.status, payload: answer.payload, sent, wondered };
+}
+const THROTTLE_BY_NAME = ["beyonce", "CmdSetSpeedFraction", [1], null];
+
+test("a follow and the throttle are writes of the page's own: said to be a pilot's and meant, and on no object the page names", async () => {
+  for (const [method, args] of [["CmdFollowBall", [FOLLOWED, 50]], ["CmdSetSpeedFraction", [1]]]) {
+    for (const more of [{}, { pilot: true }, { confirm: true }]) {
+      const refused = await byThePage(method, args, { more });
+      assert.deepEqual([refused.status, refused.payload.error, refused.sent], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE", []], `${method} ${JSON.stringify(more)}`);
+    }
+    const named = await byThePage(method, args, { more: { pilot: true, confirm: true, of: PILOTS_SYSTEM } });
+    assert.deepEqual([named.status, named.payload.error, named.sent], [400, "INVALID_REQUEST", []], method);
+  }
+});
+
+test("on the game port a follow asked by the page goes alone, as the client's menu sends it, and the autopilot's two go each as the page asked it", async () => {
+  for (const range of [50, 5000]) {
+    const menus = await byThePage("CmdFollowBall", [FOLLOWED, range]);
+    assert.deepEqual([menus.status, menus.payload.ok, menus.payload.service, menus.payload.method, menus.payload.result, menus.payload.notifications, menus.sent],
+      [200, true, "beyonce", "CmdFollowBall", null, ["after CmdFollowBall"], [["beyonce", "CmdFollowBall", [FOLLOWED, range], null]]], String(range));
+  }
+  for (const nothing of [[], undefined, "9001", { 0: FOLLOWED, 1: 50 }]) {
+    const bare = await byThePage("CmdFollowBall", nothing);
+    assert.deepEqual([bare.status, bare.sent], [200, [["beyonce", "CmdFollowBall", [], null]]], JSON.stringify(nothing));
+  }
+  // The autopilot's: the throttle, which the page asks itself, and then the follow with no range. The BFF adds nothing to either.
+  const throttle = await byThePage("CmdSetSpeedFraction", [1]);
+  assert.deepEqual([throttle.status, throttle.payload.method, throttle.sent], [200, "CmdSetSpeedFraction", [THROTTLE_BY_NAME]]);
+  const autopilots = await byThePage("CmdFollowBall", [FOLLOWED, 0]);
+  assert.deepEqual([autopilots.status, autopilots.sent], [200, [["beyonce", "CmdFollowBall", [FOLLOWED, 0], null]]]);
+});
+
+test("through the gateway the menu's follow opens the throttle first, as its routes did, and says what came of both; the autopilot's, whose throttle the page opens, goes alone", async () => {
+  for (const range of [50, 5000]) {
+    const menus = await byThePage("CmdFollowBall", [FOLLOWED, range], { transport: "gateway" });
+    assert.deepEqual([menus.status, menus.payload.service, menus.payload.method, menus.payload.notifications, menus.sent],
+      [200, "beyonce", "CmdFollowBall", ["after CmdSetSpeedFraction", "after CmdFollowBall"], [THROTTLE_BY_NAME, ["beyonce", "CmdFollowBall", [FOLLOWED, range], null]]], String(range));
+  }
+  const autopilots = await byThePage("CmdFollowBall", [FOLLOWED, 0], { transport: "gateway" });
+  assert.deepEqual([autopilots.status, autopilots.payload.notifications, autopilots.sent], [200, ["after CmdFollowBall"], [["beyonce", "CmdFollowBall", [FOLLOWED, 0], null]]]);
+  const throttle = await byThePage("CmdSetSpeedFraction", [1], { transport: "gateway" });
+  assert.deepEqual([throttle.status, throttle.sent], [200, [THROTTLE_BY_NAME]]);
+});
+
+test("on the game port a follow the ship already flies is held back, and answered as the call that was asked; the autopilot's is always sent", async () => {
+  const WHOSE_PILOT = { userid: 4 };
+  for (const range of [50, 5000]) {
+    const held = await byThePage("CmdFollowBall", [FOLLOWED, range], { alreadySo: () => true });
+    assert.deepEqual([held.status, held.sent, held.wondered], [200, [], [{ sessionFields: WHOSE_PILOT, order: ["CmdFollowBall", FOLLOWED, range] }]], String(range));
+    assert.deepEqual([held.payload.ok, held.payload.service, held.payload.method, held.payload.result, held.payload.notifications], [true, "beyonce", "CmdFollowBall", null, []], String(range));
+    // Not already so: sent, and asked once whether it was.
+    const sent = await byThePage("CmdFollowBall", [FOLLOWED, range], { alreadySo: () => false });
+    assert.deepEqual([sent.sent, sent.wondered.length], [[["beyonce", "CmdFollowBall", [FOLLOWED, range], null]], 1], String(range));
+  }
+  // The autopilot's approach is sent whatever the ship is doing: the client's autopilot does not look.
+  const autopilots = await byThePage("CmdFollowBall", [FOLLOWED, 0], { alreadySo: () => true });
+  assert.deepEqual([autopilots.sent, autopilots.wondered], [[["beyonce", "CmdFollowBall", [FOLLOWED, 0], null]], []]);
+  // Nor is the throttle anything the ship can be flying already.
+  const throttle = await byThePage("CmdSetSpeedFraction", [1], { alreadySo: () => true });
+  assert.deepEqual([throttle.sent, throttle.wondered], [[THROTTLE_BY_NAME], []]);
+});
+
+test("through the gateway a follow asked by the page is sent whether the ship flies it already or not, as its routes sent it", async () => {
+  const sent = await byThePage("CmdFollowBall", [FOLLOWED, 50], { transport: "gateway", alreadySo: () => true });
+  assert.deepEqual([sent.status, sent.sent, sent.wondered], [200, [THROTTLE_BY_NAME, ["beyonce", "CmdFollowBall", [FOLLOWED, 50], null]], []]);
+});

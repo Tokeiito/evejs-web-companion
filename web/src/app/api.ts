@@ -2608,35 +2608,6 @@ export async function warpToFleetMember(
   return readFlightStep(await postJson("/api/bridge/flight/warp-member", body, options));
 }
 
-/**
- * Approach a gate/target (beyonce.CmdFollowBall). The range is retail's: the
- * menu approach uses 50 m, and the autopilot's close-the-gap step uses 0. The
- * autopilot's goes out with the throttle opened first
- * (beyonce.CmdSetSpeedFraction(1)), as the client's does; through the gateway
- * every approach does.
- */
-export async function approach(
-  destinationID: number,
-  range: number | null = null,
-  options: ApiOptions = {},
-): Promise<FlightStepResult> {
-  const body = range === null ? { destinationID } : { destinationID, range };
-  return readFlightStep(await postJson("/api/bridge/flight/approach", body, options));
-}
-
-/**
- * Hold a set distance from a target (the same CmdFollowBall as approach, with a
- * non-zero range). Default 1000 m, floored at 50 m by the BFF.
- */
-export async function keepAtRange(
-  targetID: number,
-  range: number | null = null,
-  options: ApiOptions = {},
-): Promise<FlightStepResult> {
-  const body = range === null ? { targetID } : { targetID, range };
-  return readFlightStep(await postJson("/api/bridge/flight/keep-at-range", body, options));
-}
-
 /** Circle a target at a set distance (beyonce.CmdOrbit). Default 1000 m. */
 export async function orbit(
   targetID: number,

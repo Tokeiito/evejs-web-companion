@@ -8088,3 +8088,84 @@ test("a ship aligned by beyonce's name is aligned on the ballpark's own object, 
   assert.equal(docked.session.sent.length, sentBefore, "nothing was sent");
   assert.equal(docked.pilots.callLedger().some((each) => each.pair === "beyonce.CmdAlignTo"), false, "and what was not sent is not counted");
 });
+
+// ── a follow, and the throttle ───────────────────────────────────────────────
+//
+// movementFunctions.py 302 and 229: bp.CmdFollowBall(targetID, range), the menu's approach and keep at range.
+// autopilot.py 434 to 437: park.CmdSetSpeedFraction(1.0), then park.CmdFollowBall(destID, 0.0). Tranquility's
+// recordings (168 follows, 10 throttles): the menu's ranges are whole numbers (50, 5000, 7500), the autopilot's
+// range is a float of nought, and every fraction is a float.
+
+test("a follow and the throttle asked of beyonce by name go on the ballpark's own object: a range of nought and the throttle's fraction as the floats the recordings have; docked, nothing is sent", async () => {
+  const hand = handTicked();
+  const allowed = new Set(["beyonce.MachoBindObject", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction"]);
+  const built = build(IN_SPACE, { ...hand.options, allowed });
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const { session } = built;
+  const real = (value) => ({ type: "real", value });
+  const rows = (pair) => built.pilots.callLedger().find((each) => each.pair === pair)?.statuses;
+  const ask = (method, args, kwargs = null) => built.pilots.callMethod("beyonce", method, args, kwargs, WHOSE, handle);
+  // The menu's approach and keep at range: the thing and a whole range, as they stand.
+  for (const range of [50, 5000]) {
+    const sent = await ask("CmdFollowBall", [9001, range]);
+    assert.deepEqual([sent.service, sent.method, sent.result], ["beyonce", "CmdFollowBall", null]);
+    assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:1", method: "CmdFollowBall", args: [9001, range], kwargs: null });
+  }
+  assert.deepEqual(rows("beyonce.CmdFollowBall"), { same: 2 });
+  // The autopilot's two.
+  const throttle = await ask("CmdSetSpeedFraction", [1]);
+  assert.deepEqual([throttle.service, throttle.method, throttle.result], ["beyonce", "CmdSetSpeedFraction", null]);
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:1", method: "CmdSetSpeedFraction", args: [real(1)], kwargs: null });
+  await ask("CmdFollowBall", [9001, 0]);
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:1", method: "CmdFollowBall", args: [9001, real(0)], kwargs: null });
+  assert.deepEqual([rows("beyonce.CmdSetSpeedFraction"), rows("beyonce.CmdFollowBall")], [{ reshaped: 1 }, { same: 2, reshaped: 1 }]);
+  assert.equal(session.calls.some((call) => call.service === "beyonce" && /^Cmd/.test(call.method)), false, "nothing was asked of the service by name");
+  // A fraction the ship's own panel sends (activeShipController.py 227) is a float too.
+  await ask("CmdSetSpeedFraction", [0.25]);
+  assert.deepEqual(session.boundCalls.at(-1).args, [real(0.25)]);
+  // What is not the client's goes as it came, and is counted so.
+  for (const [method, args, kwargs] of [["CmdFollowBall", [9001], null], ["CmdFollowBall", [9001, "50"], null], ["CmdSetSpeedFraction", [2], null], ["CmdSetSpeedFraction", [1], { why: 1 }]]) {
+    await ask(method, args, kwargs);
+    assert.deepEqual([session.boundCalls.at(-1).args, session.boundCalls.at(-1).kwargs], [args, kwargs], JSON.stringify([method, args]));
+  }
+  assert.deepEqual([rows("beyonce.CmdSetSpeedFraction"), rows("beyonce.CmdFollowBall")], [{ reshaped: 2, differs: 2 }, { same: 2, reshaped: 1, differs: 2 }]);
+  assert.deepEqual(hand.errors, []);
+
+  // Docked, there is no park: asked all the same, each is refused here, not sent, and not counted.
+  const docked = await selected({}, { allowed });
+  const sentBefore = docked.session.sent.length;
+  for (const [method, args] of [["CmdFollowBall", [9001, 50]], ["CmdSetSpeedFraction", [1]]]) {
+    await assert.rejects(docked.pilots.callMethod("beyonce", method, args, null, WHOSE, docked.handle), (error) => error.code === "CALL_REFUSED" && /in space/.test(error.message), method);
+  }
+  assert.equal(docked.session.sent.length, sentBefore, "nothing was sent");
+  assert.equal(docked.pilots.callLedger().some((each) => /^beyonce\.Cmd/.test(each.pair)), false, "and what was not sent is not counted");
+});
+
+test("a follow by name is the pilot's last order, its range of nought read out of the float it goes as; and a throttle opened since is another order", async () => {
+  const hand = handTicked();
+  const built = build(IN_SPACE, { ...hand.options, allowed: new Set(["beyonce.MachoBindObject", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdStop"]) });
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const already = (...order) => built.pilots.alreadyFollowing(handle, WHOSE, ...order);
+  const ask = (method, args) => built.pilots.callMethod("beyonce", method, args, null, WHOSE, handle);
+  for (const update of recordedUpdates.slice(0, 5)) built.session.notify("DoDestinyUpdate", update.args);
+  hand.parks[0].tick();
+  const park = hand.parks[0].space.park;
+  const ship = park.ballpark.ball(park.ego);
+  const flying = (followRange) => Object.assign(ship, { mode: BALL_MODES.FOLLOW, followId: 9001, followRange: Math.fround(followRange) });
+  const parkHandle = (await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle)).boundHandle;
+  // A stop sent since the ball began to follow: the ballpark has not heard of it, and the approach is not held back.
+  flying(50);
+  await built.pilots.callBoundMethod("beyonce", "CmdStop", [], null, WHOSE, handle, parkHandle);
+  assert.equal(already("CmdFollowBall", 9001, 50), false);
+  // The menu's approach by name is the last order from then on.
+  await ask("CmdFollowBall", [9001, 50]);
+  assert.deepEqual([already("CmdFollowBall", 9001, 50), already("CmdFollowBall", 9001, 51)], [true, false]);
+  // The autopilot's, by name: its range is nought, whatever form it went in.
+  flying(0);
+  await ask("CmdFollowBall", [9001, 0]);
+  assert.deepEqual([already("CmdFollowBall", 9001, 0), already("CmdFollowBall", 9001, 50)], [true, false]);
+  // The throttle opened by name is an order to the ship, as it is on a handle.
+  await ask("CmdSetSpeedFraction", [1]);
+  assert.equal(already("CmdFollowBall", 9001, 0), false);
+  assert.deepEqual(hand.errors, []);
+});

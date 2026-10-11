@@ -5292,8 +5292,8 @@ const MAX_SALVAGE_LOCK_WAIT_TICKS = 10;
  *
  * ⚠ AN APPROACH IS **FOLLOW**, NOT GOTO, WHICH IS THE FACT THIS WHOLE CONSTANT
  * TURNS ON. There is no CmdApproach on this server: retail's Approach is
- * `CmdFollowBall(targetID, 0)`, the BFF's `/flight/approach` issues exactly that
- * (`CmdSetSpeedFraction(1.0)`, then `CmdFollowBall`), and it lands in
+ * `CmdFollowBall(targetID, 0)`, the page's approach issues exactly that
+ * (`CmdSetSpeedFraction(1.0)`, then `CmdFollowBall`; bridge/movementWrites.ts), and it lands in
  * `followShipEntity`, which sets FOLLOW at any range -- so the looter's
  * range-less approach and the salvager's 3 km one both produce it. `keepAtRange`
  * is the same server method with a non-zero range, which is also why no mode can
@@ -6357,8 +6357,8 @@ function decideSalvaging(
   if (reach !== null && distance > reach) {
     // ⚠ ONLY BELIEVE AN APPROACH THAT IS STILL RUNNING. A move that was
     // refused, or that the server finished early, leaves the ship out of reach
-    // -- and not necessarily stopped: `/flight/approach` opens the throttle
-    // BEFORE it sends the follow, so a refused one leaves the hull under way in
+    // -- and not necessarily stopped: through the gateway the throttle is opened
+    // BEFORE the follow is sent, so a refused one leaves the hull under way in
     // GOTO, flying somewhere that is not the wreck. A rung that trusted its own
     // "already issued" flag would wait on that for the rest of the run, which is
     // why GOTO is not in `NO_REAPPROACH_SHIP_MODES`.

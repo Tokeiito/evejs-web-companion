@@ -72,6 +72,7 @@ const {
   isPageWritePair,
   gatewaysNameFor,
   objectOfPageCall,
+  ordersAFollow,
   pageNamesTheObject,
   pickSafeBrowserSessionFields,
   swapsThePilotsShip,
@@ -1039,6 +1040,11 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
       : objectKind === "fleet"
       ? { ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => leaveFleetCall(
         heldBridgeSession, req.webSessionID, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null)), service: body.service, method: body.method }
+      // (A follow, as its routes made it: held back where the ship already flies it, and through the gateway
+      // with the throttle opened first. bridgeCallPolicy.js, PAGE_FOLLOW_CALLS.)
+      : ordersAFollow(body.service, body.method)
+      ? { ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => followCall(
+        heldBridgeSession, req.webSessionID, body.method, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null)), service: body.service, method: body.method }
       // (A write the gateway's list has under another name is asked by that name there, and answered as the call
       // that was asked: bridgeCallPolicy.js, gatewaysNameFor.)
       : write
@@ -17498,6 +17504,26 @@ function alreadyFlying(held, method, targetID, range) {
 }
 /** What a route answers for an order that was held back, in place of the call's outcome. */
 const HELD_BACK = Object.freeze({ result: null, notifications: Object.freeze([]) });
+
+/**
+ * A follow the page asks for its pilot (bridgeCallPolicy.js, PAGE_FOLLOW_CALLS), made as the approach's and the
+ * keep at range's routes make it: not sent where the ship already flies it, which only a game-port pilot's own
+ * ballpark can say; and through the gateway with the throttle opened first. Answered as the follow, with what
+ * came of both.
+ *
+ * The follow with no range is the autopilot's. It is sent whatever the ship is doing, and its throttle is the
+ * page's to open, as the client's autopilot opens its own: nothing is added to it here.
+ */
+async function followCall(held, webSessionID, method, args, kwargs) {
+  const [targetID, range] = args;
+  if (range === 0) return heldTopLevelCall(held, webSessionID, "beyonce", method, args, kwargs);
+  if (alreadyFlying(held, method, targetID, range)) return HELD_BACK;
+  const opened = throttleOpenedFirst(held, false)
+    ? await heldTopLevelCall(held, webSessionID, "beyonce", "CmdSetSpeedFraction", [1.0], null)
+    : HELD_BACK;
+  const made = await heldTopLevelCall(held, webSessionID, "beyonce", method, args, kwargs);
+  return { ...made, notifications: [...opened.notifications, ...made.notifications] };
+}
 
 function parkBindSpec(solarSystemID) {
   return {

@@ -349,7 +349,7 @@ import { decodeAvailableFleetAds, decodeMyFleetFinderAdvert } from "../bridge/fl
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { salvageWithDrones } from "../bridge/boundEntityWrites.ts";
-import { alignTo as alignToCall, goToPoint, type FlightNow } from "../bridge/movementWrites.ts";
+import { alignTo as alignToCall, approach as approachCall, goToPoint, keepAtRange as keepAtRangeCall, type FlightNow } from "../bridge/movementWrites.ts";
 import { boardCorvette as boardCorvetteCall, leaveShip as leaveShipCall } from "../bridge/shipWrites.ts";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
 import { runSlashCommand } from "../bridge/gmWrites.ts";
@@ -4162,6 +4162,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     await alignToCall(bridgeDo, async () => decodeFlightStatus((await api.getFlightStatus(callOptions)).flight), targetID);
   }
 
+  /** The pilot's flight as the BFF has it now, for an order to the ship that is only a ship's in space. */
+  const readFlightNow = async (): Promise<FlightNow> => decodeFlightStatus((await api.getFlightStatus(callOptions)).flight);
+
+  /**
+   * The ship sent to a thing by the page's own call (bridge/movementWrites.ts), for the autopilots and the bots:
+   * to stop `range` metres short, at the client's own fifty where none is said, and as the autopilot's approach
+   * (the throttle opened, then a follow with no range) where it is nought.
+   */
+  async function approachShip(targetID: number, range: number | null): Promise<void> {
+    await approachCall(bridgeDo, readFlightNow, targetID, range);
+  }
+
+  /** A thing kept at range by the page's own call (bridge/movementWrites.ts), for the bots. */
+  async function keepShipAtRange(targetID: number, range: number | null): Promise<void> {
+    await keepAtRangeCall(bridgeDo, readFlightNow, targetID, range);
+  }
+
   /**
    * One order to the ship from the flight panel that the page makes itself, with the pilot's flight read before
    * it, for the order to go by, and after it, for the panel to show: the order's route read both. Where the
@@ -6880,7 +6897,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       approach: async (destinationID) => {
         // The autopilot's close-the-gap approach is retail's 0.0, not the
         // right-click menu's 50 m.
-        await api.approach(destinationID, 0, callOptions);
+        await approachShip(destinationID, 0);
       },
       jump: async (fromGateID, toGateID) => {
         await api.jump(fromGateID, toGateID, callOptions);
@@ -8007,7 +8024,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             // ⚠ `range` IS WHERE TO STOP, and null hugs the object. Salvaging
             // and looting pass their working distance so the ship stops in
             // reach instead of flying all the way in for nothing.
-            await api.approach(action.targetID, action.range ?? null, callOptions);
+            await approachShip(action.targetID, action.range ?? null);
             return;
           case "dock":
             await api.dock(action.stationID, callOptions);
@@ -8186,7 +8203,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // pure bridge traffic for a command already in force — which is why
           // the memory gate lives up in the ladder and not down here.
           case "keepAtRange":
-            await api.keepAtRange(action.targetID, action.range, callOptions);
+            await keepShipAtRange(action.targetID, action.range);
             return;
           // `stop` in fleet chat — the only companion action that exists to
           // UNDO standing orders rather than to issue one.
@@ -8419,7 +8436,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         await api.warpTo(destinationID, AUTOPILOT_WARP_MIN_RANGE_M, callOptions);
       },
       approach: async (destinationID) => {
-        await api.approach(destinationID, 0, callOptions);
+        await approachShip(destinationID, 0);
       },
       dock: async (stationID) => {
         await api.dock(stationID, callOptions);
@@ -12404,7 +12421,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             await api.warpTo(action.targetID, AUTOPILOT_WARP_MIN_RANGE_M, callOptions);
             return;
           case "approach":
-            await api.approach(action.targetID, 0, callOptions);
+            await approachShip(action.targetID, 0);
             return;
           case "gotoPoint":
             await flyToPoint(action.position, action.shipID, action.solarSystemID);
@@ -12424,7 +12441,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             await api.orbit(action.targetID, action.range, callOptions);
             return;
           case "keepAtRange":
-            await api.keepAtRange(action.targetID, action.range, callOptions);
+            await keepShipAtRange(action.targetID, action.range);
             return;
           case "setFleetTargetTag":
             // ⚠ THE ACK IS NOT PROOF (api.ts's own warning on this wrapper). The
@@ -14324,11 +14341,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async approach(destinationID, range = null) {
-      await runFlightStep("Approach", () => api.approach(destinationID, range, callOptions));
+      await runFlightStep("Approach", () => orderedStep((flightNow) => approachCall(bridgeDo, flightNow, destinationID, range)));
     },
 
     async keepAtRange(targetID, range = null) {
-      await runFlightStep("Keep at range", () => api.keepAtRange(targetID, range, callOptions));
+      await runFlightStep("Keep at range", () => orderedStep((flightNow) => keepAtRangeCall(bridgeDo, flightNow, targetID, range)));
     },
 
     async orbit(targetID, range = null) {

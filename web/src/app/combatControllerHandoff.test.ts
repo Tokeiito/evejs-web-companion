@@ -48,13 +48,18 @@ for (const replacement of ["mining", "mission", "companion"] as const) {
         mutations.push(path);
         resolveIssued();
       }
+      // A write the page makes itself (bridge/movementWrites.ts: a follow is beyonce's own call) is an order too.
+      if (path === "/api/bridge/call" && body.confirm === true) {
+        mutations.push(`${body.service}.${body.method}`);
+        resolveIssued();
+      }
       return Response.json(result);
     } });
     try {
       await flow.startCustomBot(combat);
       await issued;
       await new Promise<void>(resolve => setImmediate(resolve));
-      assert.ok(mutations.some(path => /targets\/lock|flight\/keep|flight\/approach/.test(path)), "combat acquired a lock or movement order");
+      assert.ok(mutations.some(path => /targets\/lock|^beyonce\.CmdFollowBall$/.test(path)), "combat acquired a lock or movement order");
       const replace = replacement === "mining" ? () => flow.startMiningBot({ beltID: 40000123, beltName: "Belt",
         stationID: 60003760, stationName: "Home", miningModuleIDs: [7001], healthFloor: 0.5, useDrones: false }) :
         replacement === "mission" ? () => flow.startMissionBot({ agentID: 3018920, agentName: "Agent",

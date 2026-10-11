@@ -275,8 +275,21 @@ function isBridgeWritePair(service, method) {
  *                                ship in space, and refuses nothing. The page reads its pilot's flight before
  *                                and after, and makes the route's two refusals. Asked of beyonce by its name;
  *                                the game port makes it on the ballpark's own object.
+ *   beyonce.CmdFollowBall        the ship sent after a thing, to stop at a range of it: the menu's approach and
+ *                                keep at range, and the autopilot's approach with no range. Its two routes
+ *                                asked no `confirm`. They checked that the thing was a number above nought,
+ *                                made the range a distance (a default where none was said, a floor of fifty
+ *                                metres for keep at range, a million at most), refused a pilot not in space,
+ *                                and read the pilot's flight after for the panel: all of which the page does
+ *                                for itself. Two things they did are the BFF's still (PAGE_FOLLOW_CALLS). The
+ *                                handler flies the session's own ship, does nothing for a session with no
+ *                                ship in space, and refuses the same follow sent again within a second
+ *                                (ThrottleGeneric, which the page has words for).
+ *   beyonce.CmdSetSpeedFraction  the throttle set. No route asked it for the page: the approach's opened it
+ *                                before the autopilot's follow, as the client's autopilot does, and the page
+ *                                asks it there itself now. The handler sets the session's own ship's speed.
  */
-const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo"]);
+const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction"]);
 const pageWritePairKeySet = new Set(PAGE_WRITE_PAIR_KEYS);
 for (const pair of PAGE_WRITE_PAIR_KEYS) {
   if (!bridgeWritePairKeySet.has(pair)) throw new Error(`${pair} is among the page's writes and is no write.`);
@@ -305,6 +318,31 @@ for (const pair of PAGE_SHIP_SWAP_CALLS) {
 /** Whether this write of the page's puts the pilot in another ship. */
 function swapsThePilotsShip(service, method) {
   return typeof service === "string" && typeof method === "string" && PAGE_SHIP_SWAP_CALLS.has(`${service}.${method}`);
+}
+
+/**
+ * The page's own orders that send the ship after a thing, which the BFF makes as their routes made them
+ * (src/server.js, followCall), since each of the two things turns on the pilot's transport:
+ *
+ *   held back    where the ship already flies the order. The client's menu sends nothing then
+ *                (movementFunctions._IsAlreadyFollowingBallAtRange), going by its own ballpark, which for a
+ *                pilot on the game port is the BFF's. Through the gateway nothing can say, and the order is sent.
+ *   the throttle opened first, through the gateway, as its routes always did there. On the game port the menu's
+ *                order goes alone, as the client sends it.
+ *
+ * Neither is done for the follow with no range, which is the autopilot's: it is sent whatever the ship is doing,
+ * and the page opens its throttle itself, as the client's autopilot does.
+ *
+ *   beyonce.CmdFollowBall      the approach and keep at range.
+ */
+const PAGE_FOLLOW_CALLS = Object.freeze(new Set(["beyonce.CmdFollowBall"]));
+for (const pair of PAGE_FOLLOW_CALLS) {
+  if (!pageWritePairKeySet.has(pair)) throw new Error(`${pair} is among the page's follows and is none of its writes.`);
+}
+
+/** Whether this write of the page's sends the ship after a thing. */
+function ordersAFollow(service, method) {
+  return typeof service === "string" && typeof method === "string" && PAGE_FOLLOW_CALLS.has(`${service}.${method}`);
 }
 
 /**
@@ -405,6 +443,7 @@ module.exports = {
   EARLIER_WRITE_PAIR_KEYS,
   FEATURE_WRITE_METHODS,
   FEATURE_WRITE_PAIR_KEYS,
+  PAGE_FOLLOW_CALLS,
   PAGE_OBJECT_CALLS,
   PAGE_SHIP_SWAP_CALLS,
   PAGE_WRITE_PAIR_KEYS,
@@ -415,6 +454,7 @@ module.exports = {
   isBridgeWritePair,
   isPageWritePair,
   objectOfPageCall,
+  ordersAFollow,
   pageNamesTheObject,
   pickSafeBrowserSessionFields,
   swapsThePilotsShip,

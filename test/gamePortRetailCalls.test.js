@@ -367,10 +367,9 @@ test("the alliance's registry is asked on the moniker for the session's alliance
   assert.deepEqual([retailForm("corpRegistry", "GetCorporation", [], null, {}).moniker, retailForm("ship", "Undock", [], null, {}).moniker], [true, true]);
 });
 
-test("an approach, the speed set before the autopilot's, and a GM's command are the client's calls as they stand", () => {
+test("an approach, an orbit, a stop and a GM's command are the client's calls as they stand", () => {
   for (const [pair, args, where, moniker] of [
     ["beyonce.CmdFollowBall", [9001, 50], /movementFunctions\.py:302$/, false],
-    ["beyonce.CmdSetSpeedFraction", [1.0], /autopilot\.py:434$/, false],
     ["beyonce.CmdOrbit", [9001, 5000], /movementFunctions\.py:260$/, false],
     ["beyonce.CmdStop", [], /eveCommands\.py:1104$/, false],
     ["slash.SlashCmd", ["/giveskill me 3386 3"], /menusvc\.py:834$/, false],
@@ -2195,5 +2194,68 @@ test("an align is the client's call when it names a thing or a bookmark by name,
   for (const context of [{}, { shipID: null }, { shipID: undefined }]) {
     assert.equal(ask([], { dstID: 5000, bookmarkID: null }, context).status, "same");
     assert.equal(ask([], { dstID: null, bookmarkID: 777 }, context).status, "same");
+  }
+});
+
+test("a follow is the client's with a thing that is not the pilot's own ship and a range, nought going as the autopilot's float; the throttle's fraction goes as a float", () => {
+  const real = (value) => ({ type: "real", value });
+  const flying = { shipID: 5000 };
+  const follow = (args, kwargs = null, context = flying) => retailForm("beyonce", "CmdFollowBall", args, kwargs, context);
+  // movementFunctions.py 302 and 229: the menu's approach (const.approachRange) and keep at range. Whole numbers on
+  // Tranquility (50, 5000, 7500), and they go as they stand.
+  for (const range of [50, 500, 5000, 7500, 1000000]) {
+    const made = follow([9001, range]);
+    assert.deepEqual([made.status, made.source, made.args, made.kwargs, made.moniker, made.proxy], ["same", "eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:302", [9001, range], null, false, false], String(range));
+  }
+  // A range that is no whole number is a float already.
+  assert.deepEqual([follow([9001, 1234.5]).status, follow([9001, 1234.5]).args], ["same", [9001, 1234.5]]);
+  // autopilot.py 437 and 454: CmdFollowBall(destID, 0.0), a float in both recordings of it.
+  const autopilots = follow([9001, 0]);
+  assert.deepEqual([autopilots.status, autopilots.args, autopilots.kwargs], ["reshaped", [9001, real(0)], null]);
+  for (const [args, kwargs, why, note] of [
+    [[], null, "nothing", /a thing and a range/],
+    [[9001], null, "no range", /a thing and a range/],
+    [[9001, 50, 1], null, "a third argument", /a thing and a range/],
+    [[9001, 50], { range: 50 }, "a keyword", /a thing and a range/],
+    [[0, 50], null, "no thing", /a thing and a range/],
+    [[-9001, 50], null, "a thing below nought", /a thing and a range/],
+    [["9001", 50], null, "a thing as text", /a thing and a range/],
+    [[9001.5, 50], null, "half a thing", /a thing and a range/],
+    [[2 ** 53, 50], null, "a thing too large to be held exactly", /a thing and a range/],
+    [[9001, "50"], null, "a range as text", /a thing and a range/],
+    [[9001, -1], null, "a range below nought", /a thing and a range/],
+    [[9001, Number.NaN], null, "a range that is no number", /a thing and a range/],
+    [[9001, Number.POSITIVE_INFINITY], null, "a range without end", /a thing and a range/],
+    [[9001, null], null, "no range said", /a thing and a range/],
+    [[5000, 50], null, "the pilot's own ship", /own ship/],
+    [[5000, 0], null, "the pilot's own ship, by the autopilot's", /own ship/],
+  ]) {
+    const refused = follow(args, kwargs);
+    assert.deepEqual([refused.status, refused.args, refused.kwargs], ["differs", args, kwargs], why);
+    assert.match(refused.note, note, why);
+  }
+  // Where the session's ship is not known (through the web gateway), it is not held against the call.
+  for (const context of [{}, { shipID: null }, { shipID: undefined }]) assert.equal(follow([5000, 50], null, context).status, "same");
+
+  // autopilot.py 434, activeShipController.py 227 and 248, eveCommands.py 1071 and 1130: a fraction of the ship's
+  // speed, from nought to one, and a float in every one of the recordings (ten).
+  const throttle = (args, kwargs = null) => retailForm("beyonce", "CmdSetSpeedFraction", args, kwargs, flying);
+  for (const fraction of [1, 0, 0.25, 0.48751885873249523]) {
+    const made = throttle([fraction]);
+    assert.deepEqual([made.status, made.source, made.args, made.kwargs, made.moniker, made.proxy], ["reshaped", "eve/client/script/parklife/autopilot.py:434", [real(fraction)], null, false, false], String(fraction));
+  }
+  for (const [args, kwargs, why] of [
+    [[], null, "nothing"],
+    [[1, 2], null, "two"],
+    [[1], { fraction: 1 }, "a keyword"],
+    [["1"], null, "text"],
+    [[1.5], null, "more than all of it"],
+    [[-0.1], null, "less than none"],
+    [[Number.NaN], null, "no number"],
+    [[null], null, "none"],
+  ]) {
+    const refused = throttle(args, kwargs);
+    assert.deepEqual([refused.status, refused.args, refused.kwargs], ["differs", args, kwargs], why);
+    assert.match(refused.note, /a fraction/, why);
   }
 });

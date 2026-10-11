@@ -54,3 +54,25 @@ test("an align is carried out by the page's own call wherever the page carries a
   const api = readFileSync(fileURLToPath(new URL("./api.ts", import.meta.url)), "utf8");
   assert.equal(api.includes("/api/bridge/flight/align"), false);
 });
+
+test("an approach and a keep at range are carried out by the page's own calls wherever the page carries a bot's actions out", () => {
+  const flow = readFileSync(fileURLToPath(new URL("./flow.ts", import.meta.url)), "utf8");
+  const times = (text: string) => flow.split(text).length - 1;
+  // The fleet companion's approach: where to stop, or the client's own fifty metres where none is said.
+  assert.equal(times("await approachShip(action.targetID, action.range ?? null);"), 1);
+  // A script bot's, and the two autopilots': the autopilot's approach, with no range and the throttle opened first.
+  assert.equal(times("await approachShip(action.targetID, 0);"), 1);
+  assert.equal(times("await approachShip(destinationID, 0);"), 2);
+  // Keep at range, the companion's and a script bot's.
+  assert.equal(times("await keepShipAtRange(action.targetID, action.range);"), 2);
+  // Both are the page's own writes (bridgeDo), with the pilot's flight read before them.
+  assert.equal(times("await approachCall(bridgeDo, readFlightNow, targetID, range);"), 1);
+  assert.equal(times("await keepAtRangeCall(bridgeDo, readFlightNow, targetID, range);"), 1);
+  assert.equal(times("const readFlightNow = async (): Promise<FlightNow> => decodeFlightStatus((await api.getFlightStatus(callOptions)).flight);"), 1);
+  assert.equal([...flow.matchAll(/case "approach":/g)].length, 2);
+  assert.equal([...flow.matchAll(/case "keepAtRange":/g)].length, 2);
+  // The routes' askers are gone from the flow, and from the page's askers.
+  assert.deepEqual([flow.includes("api.approach("), flow.includes("api.keepAtRange(")], [false, false]);
+  const api = readFileSync(fileURLToPath(new URL("./api.ts", import.meta.url)), "utf8");
+  assert.deepEqual([api.includes("/api/bridge/flight/approach"), api.includes("/api/bridge/flight/keep-at-range")], [false, false]);
+});

@@ -176,8 +176,11 @@ test("a snapshot that says the ship is docked clears the overview", async () => 
 test("Warp to and Approach on a row reuse the existing atomic moves", async () => {
   const store = createClientStore();
   const { fetch, requests } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/flight/warp" || path === "/api/bridge/flight/approach") {
+    if (path === "/api/bridge/flight/warp") {
       return { status: 200, body: { ok: true, flight: IN_SPACE_FLIGHT, notifications: [] } };
+    }
+    if (path === "/api/bridge/call") {
+      return { status: 200, body: { ok: true, service: "beyonce", method: "CmdFollowBall", result: null, notifications: [] } };
     }
     if (path === "/api/bridge/flight/status") {
       return { status: 200, body: { ok: true, flight: IN_SPACE_FLIGHT, notifications: [] } };
@@ -196,10 +199,13 @@ test("Warp to and Approach on a row reuse the existing atomic moves", async () =
   assert.equal(warp?.method, "POST");
   assert.deepEqual(warp?.body, { destinationID: GATE_ID });
 
-  const approach = requests.find((entry) => entry.path === "/api/bridge/flight/approach");
-  assert.ok(approach, "Approach issues the existing approach move");
+  // The approach is the client's own call, made by the page (bridge/movementWrites.ts): the follow at the menu's
+  // fifty metres. Its route is not asked.
+  const approach = requests.find((entry) => entry.path === "/api/bridge/call");
+  assert.ok(approach, "Approach issues the page's own follow");
   assert.equal(approach?.method, "POST");
-  assert.deepEqual(approach?.body, { destinationID: GATE_ID });
+  assert.deepEqual(approach?.body, { service: "beyonce", method: "CmdFollowBall", args: [GATE_ID, 50], kwargs: null, pilot: true, confirm: true });
+  assert.equal(requests.some((entry) => entry.path === "/api/bridge/flight/approach"), false);
 
   assert.equal(store.flight.get().lastAction, "Approach");
 });

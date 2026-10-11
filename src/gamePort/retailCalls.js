@@ -389,7 +389,7 @@ const ON_AN_ANSWERED_OBJECT = Object.freeze(new Set(["scanMgr.GetFullState"]));
  * What the client asks of its ballpark's own object (michelle.GetRemotePark()) and the page asks of beyonce by its
  * name: made on the park's object, where the pilot has a park.
  */
-const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdAlignTo"]));
+const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdAlignTo", "CmdFollowBall", "CmdSetSpeedFraction"]));
 const madeOnMoniker = (service, method) => Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method) && method !== "MachoBindObject";
 
 const INV_CACHE = "eve/client/script/environment/invCache.py";
@@ -595,6 +595,32 @@ const aligning = (args, kwargs, context) => {
   // (A ship that is not known is no number an item's ID can be: the item is above nought.)
   return Number(context.shipID) === dstID ? { status: "differs", note: "The client does not align to the pilot's own ship: it sends nothing." } : {};
 };
+
+/**
+ * movementFunctions.ShipApproach (302) and _Ship_KeepAtRange (229): bp.CmdFollowBall(targetID, range), on the
+ * ballpark's object, with const.approachRange or the pilot's distance; neither for the pilot's own ship
+ * (_IsInvalidMovementTarget, 390). The autopilot's (autopilot.py 437 and 454) is CmdFollowBall(destID, 0.0).
+ * Tranquility's recordings (168): the menu's ranges whole numbers, the autopilot's a float of nought. A whole
+ * number goes as one from here, so a range of nought is made the float; any other goes as it stands.
+ */
+const following = (args, kwargs, context) => {
+  const [thing, range] = args;
+  if (!(args.length === 2 && Number.isSafeInteger(thing) && thing > 0 && Number.isFinite(range) && range >= 0 && Object.keys(kwargs).length === 0)) {
+    return { args, kwargs, status: "differs", note: "The client sends a thing and a range, a distance in metres, and nothing else." };
+  }
+  // (A ship that is not known is no number an item's ID can be: the item is above nought.)
+  if (Number(context.shipID) === thing) return { args, kwargs, status: "differs", note: "The client sends no follow for the pilot's own ship." };
+  return range === 0 ? { args: [thing, { type: "real", value: 0 }], kwargs } : { args, kwargs, status: "same" };
+};
+
+/**
+ * autopilot.py 434 and 451: park.CmdSetSpeedFraction(1.0), before the autopilot's approach. The ship's own panel
+ * sends min(1.0, speedRatio) (activeShipController.py 227), and the shortcuts a speed or 1.0 (eveCommands.py 1071,
+ * 1130). One fraction, from nought to one, and a float in every one of Tranquility's recordings (ten): so it goes.
+ */
+const throttling = (args, kwargs) => (args.length === 1 && typeof args[0] === "number" && args[0] >= 0 && args[0] <= 1 && Object.keys(kwargs).length === 0
+  ? { args: [{ type: "real", value: args[0] }], kwargs }
+  : { args, kwargs, status: "differs", note: "The client sends a fraction of the ship's speed, from nought to one, and nothing else." });
 
 /**
  * station.TryLeaveShip (base.py 236 to 251): LeaveShip(shipid) only for dogmaLocation.GetCurrentShipID(), from a
@@ -1036,10 +1062,10 @@ const RETAIL_CALLS = Object.freeze({
   "beyonce.CmdWarpToStuffAutopilot": same("eve/client/script/parklife/autopilot.py:465", "GetRemotePark().CmdWarpToStuffAutopilot(destinationID): the autopilot's warp, on the ballpark's object. Recorded on Tranquility with the one ID."),
   "beyonce.CmdWarpToStuff": same("eve/client/script/remote/michelle.py:737", "bp.CmdWarpToStuff(subject, subjectID, minRange=...), on the ballpark's object: 'item' and the thing's ID from the menu (movementFunctions.py 452), 'char' for a fleet member, 'bookmark' for a bookmark, 'launch' and a launch's ID with no range for a planetary launch (journal.py 453). Recorded on Tranquility as ('item', itemID, minRange=0)."),
   "beyonce.CmdDock": same("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:517", "bp.CmdDock(itemID, session.shipid), on the ballpark's object, through sessionMgr.PerformSessionChange('dock', ...). Recorded on Tranquility with the two IDs."),
-  "beyonce.CmdFollowBall": same("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:302", "bp.CmdFollowBall(targetID, range), on the ballpark's object: the menu's approach with const.approachRange, keep at range with the pilot's distance (229), the autopilot's with 0.0 (autopilot.py 437). Recorded on Tranquility as (itemID, 50)."),
+  "beyonce.CmdFollowBall": reshaped("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:302", following, "bp.CmdFollowBall(targetID, range), on the ballpark's object: the menu's approach with const.approachRange, keep at range with the pilot's distance (229), the autopilot's with 0.0 (autopilot.py 437). Not sent for the pilot's own ship. Recorded on Tranquility as (itemID, 50), and at 5000 and 7500, each a whole number; the autopilot's twice, its range a float of nought, which is how a range of nought goes."),
   "beyonce.CmdOrbit": same("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:260", "bp.CmdOrbit(targetID, range), on the ballpark's object: the range a float under 10 m and a whole number from there (243). Recorded on Tranquility as (itemID, 1000) and (itemID, 5000), with nothing before it."),
   "beyonce.CmdStop": same("eve/client/script/ui/eveCommands.py:1104", "bp.CmdStop(), no arguments, on the ballpark's object. Recorded on Tranquility so."),
-  "beyonce.CmdSetSpeedFraction": same("eve/client/script/parklife/autopilot.py:434", "park.CmdSetSpeedFraction(1.0), on the ballpark's object, before the autopilot's approach; the ship's panel sends the pilot's own fraction (activeShipController.py 227). Recorded on Tranquility as (1.0). The menu's approach, keep at range and orbit send none before theirs, and on the game port the BFF's routes send none either; through the gateway they do."),
+  "beyonce.CmdSetSpeedFraction": reshaped("eve/client/script/parklife/autopilot.py:434", throttling, "park.CmdSetSpeedFraction(1.0), on the ballpark's object, before the autopilot's approach; the ship's panel sends the pilot's own fraction (activeShipController.py 227). Recorded on Tranquility as (1.0), and every fraction as a float, which is how it goes. The menu's approach, keep at range and orbit send none before theirs, and on the game port the BFF's routes send none either; through the gateway they do."),
   "scanMgr.GetFullState": same("eve/client/script/parklife/sensorSuiteService.py:718", "scanSvc.GetScanMan().GetFullState(), no arguments, on the system's scan manager: the object GetSystemScanMgr() answers. Recorded on Tranquility on that object."),
   "scanMgr.GetSystemScanMgr": same(`${SCAN_SVC}:115`, "no arguments"),
   "scanMgr.RequestScans": reshaped(
