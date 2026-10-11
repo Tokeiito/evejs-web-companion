@@ -1171,6 +1171,25 @@ Take these defaults, and list each under "For the operator" in the log so they c
   `bkr-live.js <bff> <account> <characterID> <stationID> "" stage` (`bkr-look.js` reads
   a pilot's bookmarks and where it is, and changes nothing). 60003757 is another
   station in Jita.
+- **Before the page asks the server about another pilot, read how a client knows it
+  without asking.** The client's `GetMember` asks the registry only for a number its
+  own list of members has, and the list is `GetEveOwners`. A route's read that names
+  whoever the page was told of may be a call no client makes. Read the client's
+  function from its first line, guards and all, before taking its remote call for
+  "what the client asks".
+- **A route the page names that no test asks may carry a feature no test reaches.**
+  The corporation's route was asked by one thing, a mate's fleet invitation taken
+  unasked, and nothing tested the taking. Write the flow's test of the feature first,
+  with the old route answered so that the old code visibly acts on it.
+- **A changed test whose new line holds on the old sources is proven by a breakage made
+  for that line**, and said so in the log.
+- **Two pilots of one account stay online at once, one on each BFF**
+  (`cmb-two-look.js`, reads only). Test Two and Test Three are of one corporation
+  (98000000); Test Pilot's (1000044) and GM Elysian's (1000006) have no other test
+  pilot. `cmb-invite.js <bff> <account> <inviter> <invitee> <seconds>` forms a fleet,
+  invites, says who is in the fleet every 5 seconds and leaves; `cmb-live.js` and
+  `cmb-look.js` read only. The Fleet window's buttons are "Leave fleet" (it asks
+  `confirm`), "Accept invitation" and "Decline".
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

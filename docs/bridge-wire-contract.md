@@ -900,6 +900,18 @@ its reads fails it answers 200 all the same, with `null` for that read and the c
 `errors`; a folder named that is not the session's to see comes back so
 (`CALL_REFUSED`). A session the server no longer has is the whole route's failure.
 
+**A corporation's members are the page's own read** (`web/src/bridge/corpMemberReads.ts`):
+`corpRegistry.GetEveOwners` by the generic call as a pilot's read, with nothing sent.
+It answers a list of `util.Row`, one for each member of the session's own corporation
+(the member's number, name, type and gender), the same on both transports; on the game
+port it goes on the corporation's moniker. The server reads nothing of what is sent
+with it. The page takes nothing but a list for an answer, and knows a pilot for a
+member where its number is among the rows: it names no other pilot to the server.
+`GET /api/bridge/corp-members` still stands, and nothing of the page asks it. It makes
+four reads whatever it is asked, a member's row with `memberID` and several members'
+with `memberIDs`, each settled by itself (`null` and the code in `errors` where one
+fails); a member named who is not of the session's corporation comes back `null`.
+
 ```jsonc
 {
   "blueprintID": 7100000001,   // the blueprint ITEM id
