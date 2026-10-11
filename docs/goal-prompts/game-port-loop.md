@@ -1212,6 +1212,24 @@ Take these defaults, and list each under "For the operator" in the log so they c
   "Refresh", "See what's here" and "Set destination".
 - **A unit that only reads wants no copy of the store and no restart of EveJS**: the
   BFFs are restarted on the new code, and the log says nothing was staged.
+- **What a client has in its own static data is the BFF's static data to the page,
+  by a read of its own outside the bridge's path** (`/api/types/volumes`, in the
+  pattern of `/api/types/overload-effects`): each thing asked of once, null where
+  the tables have nothing and never nought, a limit, and `capped` said. The page
+  keeps what it is told for a type; a type not answered for is asked for again, and
+  one answered null is not. A static read that fails takes nothing from the list it
+  was for.
+- **Set the page's rows beside the route's in the live script, whole.** Where a read
+  is rebuilt from two (the server's call and the static read), print whether the
+  page's decoded rows are the same as the route's, by `JSON.stringify`
+  (`asi-live.js`, "the page's rows beside the route's").
+- **Read each breakage for what would catch it before the run, and make the test say
+  more where nothing would.** Three of this unit's would have passed: a list where an
+  object was wanted (its first place is no type), one stack of a type where two were
+  wanted, and a type left out of an answer. A check nothing at the wire can tell from
+  its absence is no breakage: leave it out, and say so.
+- **A test written after the code is said to be so**, with the breakages that catch
+  its lines and its failing on the old sources.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

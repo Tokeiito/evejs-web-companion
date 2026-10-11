@@ -924,10 +924,25 @@ count of items, its upkeep), the same on both transports. The page says a pilot 
 nothing only of a rowset with no rows, and takes nothing but a rowset for an answer.
 `GET /api/bridge/assets` still stands, and nothing of the page asks it: it answers 200
 with `stations: null` and the code in `error` where the read fails.
-`GET /api/bridge/assets/station` is asked by the page still.
 A call the client makes on an object and that is not among the page's calls on objects
-goes by the generic call to the service by its name: `charMgr.ListStationItems` is
-answered so today, on both transports.
+goes by the generic call to the service by its name.
+
+**What is at a station is the page's own read** (`readAssetStationItems`, in the same
+file): `charMgr.ListStationItems` with the one station, by the generic call as a
+pilot's read on the same container (the kind `"assets"`, so no `of`). The answer is a
+list whose rows are packed rows with `fields`, the same on both transports; with
+nothing sent the server answers a list of none. The page says a station is empty only
+of a list with no rows, and takes nothing but a list for an answer.
+`GET /api/bridge/assets/station` still stands, and nothing of the page asks it: it
+reads the pilot's flight first now, as the page's call does.
+
+**A type's volume is static data**: `GET /api/types/volumes?typeIDs=588,34` answers
+`{ ok, source: "static-data", volumes: { "588": 15800, "34": 0.01 }, capped, limit }`,
+with `null` for a type the tables have no volume for (never `0`), each type once
+however often it is named, 500 types at most and `capped: true` where it stopped. It
+wants the web login and no pilot. The page asks it for the types of what it listed by
+its own call, 400 to a request, once for a type. The routes that list items send
+`volumes` beside their answers still, from the same function.
 
 ```jsonc
 {
