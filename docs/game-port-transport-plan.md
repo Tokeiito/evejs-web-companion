@@ -841,8 +841,10 @@ A fleet is formed by the fleet handler's `CreateFleet` (`0d059c45`), the BFF mak
 the `Init` on what it answers, as the route did; from a session in a fleet the game port
 asks nothing, as the client does. An invitation is accepted by `AcceptInvite` on the
 fleet the call names (`d6fd20b6`), the second kind of object the page says with `of`.
+A pilot is invited by `Invite` on the pilot's own fleet, the invitee alone
+(`d551e8a6`), with an `of` that may be said: the fleet the invitation is held to.
 Counted by the whole path,
-104 are named now, 47 of them reads and 57 writes (the count kept before
+103 are named now, 47 of them reads and 56 writes (the count kept before
 `82a21e8` took a path's beginning for a path and missed a parameter inside one: it read 130
 where 138 was so). Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.

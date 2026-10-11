@@ -874,6 +874,33 @@ Take these defaults, and list each under "For the operator" in the log so they c
   free to be the guest (the hangar's other row, the "Fleet" button for the window,
   then "Accept invitation", which asks with the browser's own box). It ends by itself;
   it is waited for before anything is put back.
+- **An `of` that may be said.** A call on the pilot's own object that a caller may
+  hold to a number ("fleetExpected": `OBJECTS_THE_PAGE_MAY_NAME`,
+  `pageMayNameTheObject`) goes with `of` or without: the generic call's check of
+  `of` passes it either way, and its number is checked only where one is said. In the
+  page's function a number said that is none is refused, and **not taken for none
+  said**: the route refused it so, and the fence is the point.
+- **A test that looks for a route's not being asked passes once nothing asks the
+  route.** The hosted recovery's test of the fence did. Such a test looks for the call
+  now, and breakages show it looking (the fence not put, the fence never run). A write
+  asked under a caller's fence goes through `fencedDo` in `flow.ts`.
+- **What the client takes for no pilot, by the number alone**: `couldBeAPilot`
+  (`retailCalls.js`, and its twin in `fleetWrites.ts`): 90,000,000 to 97,999,999 and
+  100,000,000 to 2,129,999,999. A test's toy number (43) is no pilot to the page.
+- **Ask "all the same" in the first live script.** What the server does with what the
+  client never sends (an agent invited: answered true) was seen in the first live
+  run, and the game port's refusal, the ledger's rows, a second breakage list and a
+  second run of the suite came after it.
+- **Two pilots, the tab the boss.** `fiv-live.js <bff> <account> <characterID>
+  <account> <characterID> <ledger.json> wait` is the guest alone. The tab forms the
+  fleet and invites; the fleet's number is the last in the server's log (`grep -a -o
+  "6545000[0-9]\{5\}" server.log | sort -u | tail -1`) and is written to
+  `<ledger.json>.fleet.txt`; then the guest is started in the background (it
+  accepts, stays twenty seconds, leaves: thirty-five in all) and the tab's window is
+  read meanwhile.
+- **The wire contract's list of the page's writes is one line of many thousand
+  characters.** Never print it: `grep -c`, `grep -o "<a few words>"`, or `cut
+  -c1-200`.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
