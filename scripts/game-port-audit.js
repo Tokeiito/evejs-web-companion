@@ -15,7 +15,8 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
-const { coverage, gather, judge, routePatterns } = require("./gamePortAudit");
+const { coverage, gather, judge, pageSources, routePatterns } = require("./gamePortAudit");
+const { appRoutes } = require("./appRoutes");
 
 const root = path.resolve(__dirname, "..");
 const argv = process.argv.slice(2);
@@ -51,7 +52,9 @@ const suite = lines(files.log);
 console.log(`the suite: ${suite.filter((line) => /^ℹ (tests|pass|fail|cancelled|skipped) /.test(line)).map((line) => line.slice(2)).join(", ") || "no totals"} (exit ${run.status})`);
 for (const line of suite.filter((line) => /^✖ /.test(line)).slice(0, 20)) console.log(`  ${line}`);
 
-const routes = routePatterns(fs.readFileSync(path.join(root, "src/server.js"), "utf8"), fs.readFileSync(path.join(root, "web/src/app/api.ts"), "utf8"));
+// The routes are the app's own (it is asked for them: the text of its source has not every one), and a route is
+// the page's where any source of the page's names it.
+const routes = routePatterns(appRoutes(), pageSources(root));
 const known = JSON.parse(fs.readFileSync(path.join(__dirname, "game-port-audit-known.json"), "utf8"));
 const seen = rows(files.seen);
 const verdict = judge(gather(rows(files.out), routes), known);

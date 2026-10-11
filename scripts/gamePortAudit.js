@@ -22,6 +22,9 @@
 // ⚠ IT SEES WHAT THE TESTS SEND. A route that passes on what the browser gave it is as sendable as its test's
 // body. What matters for a window is what the page sends, which the page's own tests have.
 
+const fs = require("node:fs");
+const path = require("node:path");
+
 /** Where a call was made for no request of the browser's: a hosted bot's, or the BFF's own keeping. */
 const NO_REQUEST = "(no request)";
 /** The page's own call, by the generic route, as the page's tests make it. */
@@ -96,17 +99,36 @@ function createAudit({ retailForm, marshalEncode, isBridgeWritePair, currentRequ
 const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
- * The BFF's routes, read from its source, each with whether the page's api.ts names it by the whole path (a
- * "${...}" where the route has a ":param", and ending where the path ends), and what paths it takes.
+ * The page's own sources as one text: every source under web/src but its tests and their fixtures. A route is
+ * the page's where any of them names it: its api.ts names most, and not the generic call nor the event stream.
  */
-function routePatterns(serverSource, apiSource) {
-  const code = apiSource.split(/\r?\n/).filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line)).join("\n");
-  return [...serverSource.matchAll(/app\.(get|post|put|delete)\("(\/api\/[^"]+)"/g)].map((found) => {
-    const pattern = found[2];
+function pageSources(root) {
+  const texts = [];
+  const walk = (folder) => {
+    const inside = fs.readdirSync(folder, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const each of inside) {
+      const at = path.join(folder, each.name);
+      if (each.isDirectory()) walk(at);
+      else if (/\.(ts|svelte|js)$/.test(each.name) && !/\.test\.(ts|js)$/.test(each.name) && !/Fixtures\.ts$/.test(each.name)) texts.push(fs.readFileSync(at, "utf8"));
+    }
+  };
+  walk(path.join(root, "web", "src"));
+  return texts.join("\n");
+}
+
+/**
+ * The BFF's routes under /api/, as its app lists them (scripts/appRoutes.js: the app's own table, in the order a
+ * request is matched in; the text of its source has not every one), each with whether the page's sources name it
+ * by the whole path (a "${...}" where the route has a ":param", and ending where the path ends), and what paths
+ * it takes: as the app takes one, whatever its case and with a last "/" or without.
+ */
+function routePatterns(table, pageSource) {
+  const code = pageSource.split(/\r?\n/).filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line)).join("\n");
+  return table.filter((route) => route.path.startsWith("/api/")).map(({ method, path: pattern }) => {
     const parts = pattern.split("/");
     const inThePage = new RegExp("[\"`]" + parts.map((part) => (part.startsWith(":") ? "\\$\\{[^}]+\\}" : escaped(part))).join("/") + "(?:[\"`?]|\\$\\{)");
-    const taken = new RegExp("^" + parts.map((part) => (part.startsWith(":") ? "[^/]+" : escaped(part))).join("/") + "$");
-    return { method: found[1].toUpperCase(), pattern, named: inThePage.test(code), matches: (url) => taken.test(url) };
+    const taken = new RegExp("^" + parts.map((part) => (part.startsWith(":") ? "[^/]+" : escaped(part))).join("/") + "/?$", "i");
+    return { method, pattern, named: inThePage.test(code), matches: (url) => taken.test(url) };
   });
 }
 
@@ -172,4 +194,4 @@ function coverage(seen, routes, pageWritePairs) {
   };
 }
 
-module.exports = { NO_REQUEST, PAGES_OWN_CALL, coverage, createAudit, gather, judge, routePatterns };
+module.exports = { NO_REQUEST, PAGES_OWN_CALL, coverage, createAudit, gather, judge, pageSources, routePatterns };

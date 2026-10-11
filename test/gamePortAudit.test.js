@@ -6,8 +6,12 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 
-const { NO_REQUEST, PAGES_OWN_CALL, coverage, createAudit, gather, judge, routePatterns } = require("../scripts/gamePortAudit");
+const { NO_REQUEST, PAGES_OWN_CALL, coverage, createAudit, gather, judge, pageSources, routePatterns } = require("../scripts/gamePortAudit");
+const { appRoutes, tableOf } = require("../scripts/appRoutes");
 const { retailForm } = require("../src/gamePort/retailCalls");
 const { marshalEncode } = require("../src/gameProtocol/marshal");
 const { isBridgeWritePair } = require("../src/bridgeCallPolicy");
@@ -176,16 +180,19 @@ test("the page's own call is looked at as the BFF would hand it on: read back fr
   assert.equal(seen.length, 4);
 });
 
-const SERVER = `
-app.get("/api/bridge/industry", requireAuth, async (req, res) => {});
-app.post("/api/bridge/industry/install", requireAuth, async (req, res) => {});
-app.get("/api/bridge/planets", requireAuth, async (req, res) => {});
-app.get("/api/bridge/planets/:planetID/launch", requireAuth, async (req, res) => {});
-app.post("/api/bridge/planets/:planetID/launch", requireAuth, async (req, res) => {});
-app.post("/api/bridge/market/buy-multiple", requireAuth, async (req, res) => {});
-app.get("/api/bridge/chat/:channel", requireAuth, async (req, res) => {});
-app.post("/api/bridge/call", requireAuth, async (req, res) => {});
-`;
+// The app's own table of routes, as scripts/appRoutes.js lists it: in the app's order, whatever registered each.
+const TABLE = [
+  { method: "GET", path: "/api/bridge/industry" },
+  { method: "POST", path: "/api/bridge/industry/install" },
+  { method: "GET", path: "/api/bridge/planets" },
+  { method: "GET", path: "/api/bridge/planets/:planetID/launch" },
+  { method: "POST", path: "/api/bridge/planets/:planetID/launch" },
+  { method: "POST", path: "/api/bridge/market/buy-multiple" },
+  { method: "GET", path: "/api/bridge/chat/:channel" },
+  { method: "POST", path: "/api/bridge/call" },
+  // A page of the BFF's own, and nothing the page fetches.
+  { method: "GET", path: "/goblin-factory" },
+];
 const API = `
   const data = await getJson("/api/bridge/industry", options);
   await postJson("/api/bridge/industry/install", body, options);
@@ -195,8 +202,8 @@ const API = `
   await postJson("/api/bridge/call", body, options);
 `;
 
-test("the BFF's routes are read from its source, and each is said to be the page's or not by the whole path", () => {
-  const routes = routePatterns(SERVER, API);
+test("the BFF's routes are taken as its app lists them, and each is said to be the page's or not by the whole path", () => {
+  const routes = routePatterns(TABLE, API);
   assert.deepEqual(routes.map((route) => [route.method, route.pattern, route.named]), [
     ["GET", "/api/bridge/industry", true], ["POST", "/api/bridge/industry/install", true],
     // The beginning of a path the page names is not that path. A path is the page's by whichever method.
@@ -210,10 +217,74 @@ test("the BFF's routes are read from its source, and each is said to be the page
       launch.matches("/api/bridge/planets/1/2/launch"), launch.matches("/x/api/bridge/planets/1/launch")],
     [true, true, false, false, false, false],
   );
+  // A path is taken as the app takes one: whatever its case, and with a last "/" or without.
+  assert.deepEqual(
+    [launch.matches("/API/Bridge/planets/7/LAUNCH"), launch.matches("/api/bridge/planets/7/launch/"), launch.matches("/api/bridge/planets/7/launch//"), launch.matches("/api/bridge/planets/7/launches")],
+    [true, true, false, false],
+  );
+});
+
+test("the app's table is read off its stack: a route by each of its paths and each of its methods, in the app's order, and what is no route left out", () => {
+  const stack = [
+    { handle() {} },
+    { route: { path: "/api/a", methods: { get: true } } },
+    { route: { path: ["/api/b", "/api/c"], methods: { post: true } } },
+    { route: { path: "/api/d", methods: { get: true, post: true } } },
+    // (A path that is no text is none the page's sources can name.)
+    { route: { path: /^\/api\/e$/, methods: { get: true } } },
+  ];
+  const expected = [["GET", "/api/a"], ["POST", "/api/b"], ["POST", "/api/c"], ["GET", "/api/d"], ["POST", "/api/d"]];
+  for (const app of [{ router: { stack } }, { _router: { stack } }]) {
+    assert.deepEqual(tableOf(app).map((route) => [route.method, route.path]), expected);
+  }
+  assert.deepEqual(tableOf({}), []);
+});
+
+test("the page's sources are every source under web/src but its tests and their fixtures", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "page-sources-"));
+  try {
+    const write = (file, text) => { fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true }); fs.writeFileSync(path.join(root, file), text); };
+    write("web/src/app/api.ts", "IN-API");
+    write("web/src/bridge/callMethod.ts", "IN-CALL");
+    write("web/src/ui/App.svelte", "IN-SVELTE");
+    write("web/src/app/api.test.ts", "IN-TEST");
+    write("web/src/app/botFixtures.ts", "IN-FIXTURES");
+    write("web/src/ui/app.css", "IN-CSS");
+    write("web/dist/app.js", "IN-DIST");
+    write("src/server.js", "IN-BFF");
+    const text = pageSources(root);
+    assert.deepEqual(["IN-API", "IN-CALL", "IN-SVELTE", "IN-TEST", "IN-FIXTURES", "IN-CSS", "IN-DIST", "IN-BFF"].map((each) => text.includes(each)),
+      [true, true, true, false, false, false, false, false]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the app itself lists the routes its source's text has not, and the page's are told by all of the page's sources", () => {
+  const root = path.join(__dirname, "..");
+  const table = appRoutes();
+  const has = (method, at) => table.some((route) => route.method === method && route.path === at);
+  // A list of paths in one registration, a helper that registers, and a file of routes of its own.
+  for (const [method, at] of [["POST", "/api/login"], ["GET", "/api/bridge/drones"], ["GET", "/api/bridge/script/observation"],
+    ["POST", "/api/bridge/drones/recall"], ["POST", "/api/bridge/provisioning/reconcile"]]) {
+    assert.equal(has(method, at), true, `${method} ${at}`);
+  }
+  // And every route the text has, each once.
+  const byText = [...fs.readFileSync(path.join(root, "src/server.js"), "utf8").matchAll(/app\.(get|post|put|delete)\("(\/api\/[^"]+)"/g)].map((found) => [found[1].toUpperCase(), found[2]]);
+  assert.ok(byText.length > 500, String(byText.length));
+  assert.deepEqual(byText.filter(([method, at]) => !has(method, at)), []);
+  assert.equal(new Set(table.map((route) => `${route.method} ${route.path}`)).size, table.length);
+
+  const routes = routePatterns(table, pageSources(root));
+  const named = (method, pattern) => { const route = routes.find((each) => each.method === method && each.pattern === pattern); return route ? route.named : null; };
+  // Named by the page's api.ts, though the text of the BFF's source has no such route; named by another source of
+  // the page's than its api.ts (the generic call, the event stream); and named by nothing of the page's.
+  assert.deepEqual([named("GET", "/api/bridge/drones"), named("POST", "/api/bridge/provisioning/reconcile"), named("POST", "/api/bridge/call"), named("GET", "/api/bridge/events"),
+    named("POST", "/api/bridge/mail/mark-read"), named("POST", "/api/bridge/chat/send-message")], [true, true, true, true, false, false]);
 });
 
 test("findings are gathered by kind, route and call, each route by the BFF's own pattern for it", () => {
-  const routes = routePatterns(SERVER, API);
+  const routes = routePatterns(TABLE, API);
   const rows = gather([
     { kind: "unsendable", fn: "callMethod", pair: "marketProxy.BuyMultipleItems", route: "POST /api/bridge/market/buy-multiple", status: "unchecked", detail: "Cannot marshal value: object {}", test: "test/b.test.js" },
     { kind: "unsendable", fn: "callMethod", pair: "marketProxy.BuyMultipleItems", route: "POST /api/bridge/market/buy-multiple", status: "unchecked", detail: "Cannot marshal value: object {}", test: "test/a.test.js" },
@@ -260,7 +331,7 @@ test("a finding is expected only where it is listed and no window can meet it; a
 });
 
 test("what was looked at is measured against the routes the page names and the writes it makes itself", () => {
-  const routes = routePatterns(SERVER, API);
+  const routes = routePatterns(TABLE, API);
   const measured = coverage([
     { route: "GET /api/bridge/industry", fn: "request", pair: "-" }, { route: "GET /api/bridge/industry", fn: "callMethod", pair: "industryManager.GetJobCounts" },
     { route: "POST /api/bridge/planets/:n/launch", fn: "request", pair: "-" },
