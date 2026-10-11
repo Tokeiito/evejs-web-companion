@@ -1296,6 +1296,24 @@ Take these defaults, and list each under "For the operator" in the log so they c
   Read each breakage for the test that catches it, in that file.
 - **Ask of each check what a breakage of it would change, before the lists are
   run**: a check that changes nothing is taken out, not left to survive.
+- **A pair put among the page's writes changes three pinned things**: the policy's
+  list (its test), any older test that counted the pair among the writes that are not
+  the page's (`test/bridgeSession.test.js`: run the file whole), and the contract's
+  manifest, which is built by `node scripts/build-bridge-contract.js --write` and never
+  by hand (`test/bridgeContractManifest.test.js`).
+- **The breakage tool will not break a source against a test file that fails as it
+  stands: it says NOT TRIED.** Run each test file of a list whole before the list, and
+  read the list's output for the words.
+- **What a flow's test cannot reach by a bot, reach by what the function goes by.** A
+  bot's look always reads the scanner, so "no read kept" was not reachable; a flight
+  that names no system made the kept read not this system's, and the same path ran.
+- **A hull for a pilot in space in a capsule**: the GM's `/probe` and its like board
+  in a station only (in space: `TARGET_SHIP_NOT_ON_GRID`). Warp to a station, dock,
+  send it, undock (`swp-stage.js`, between a copy of the store and its putting back).
+  The overview lists 200 rows at most: in a den no station is among them.
+- **A check of what the page asked says no more than its filter**: a filter for
+  "warp" in a request's address finds a route, and not the generic call that took its
+  place. Read the frames for the call's own service and method.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

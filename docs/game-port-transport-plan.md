@@ -894,10 +894,14 @@ which a client has nothing like, and it has tests now. Four are left: two warps,
 keywords are not a client's, and the jettison's two. The warps' keywords are made the
 client's on the game port by the ledger (`e49f282b`), whatever a route gave, and the two
 routes have tests: two are left, the jettison's. A scan site is warped to by its label
-where a client warps to an anomaly by its site's number, as an item: next. In `eve.js` an advert's text outside ASCII goes as
+where a client warps to an anomaly by its site's number, as an item: next. That is the
+page's own call now (`6e0a27ec`, `bridge/movementWrites.ts`): `beyonce.CmdWarpToStuff`
+is one of the page's writes, and `flight/warp-scan` is asked by nothing of the page's.
+The bookmark's and the launch's warps are next, then the fleet member's, the item's and
+the autopilot's. In `eve.js` an advert's text outside ASCII goes as
 unicode (`dcd459b0d`, not pushed).
 Counted by the whole path,
-87 are named now, 37 of them reads and 50 writes (the count kept before
+86 are named now, 37 of them reads and 49 writes (the count kept before
 `82a21e8` took a path's beginning for a path and missed a parameter inside one: it read 130
 where 138 was so). Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.

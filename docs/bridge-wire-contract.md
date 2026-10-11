@@ -2494,6 +2494,17 @@ are refused with `SESSION_CHANGE_IN_PROGRESS`.
   fleet's warp (`fleet=True`) and a warp to the pilot's own ship are none of a
   client's from here: they go as given, and are counted as differing. Through the
   web gateway a warp goes as the route gave it.
+- **A warp is one of the page's own writes** (since 2026-10-11): `POST /api/bridge/call`
+  with `{ service: "beyonce", method: "CmdWarpToStuff", args: [subject, which], kwargs,
+  pilot: true, confirm: true }`, and no `of` (the ballpark is the session's own: an
+  object named is `400 INVALID_REQUEST`). Without `pilot` and `confirm` it is
+  `403 BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE`. It goes as it was sent, asked of beyonce
+  by its name; the game port makes it on the ballpark's object, and refuses it with
+  `409 CALL_REFUSED` and sends nothing for a pilot with no ballpark. The page sends a
+  scan result's warp so (`bridge/movementWrites.ts`, `warpToScanResult`):
+  `["item", siteID]` for an anomaly or a structure its last read of the scanner has,
+  `["scan", label]` for any other, each with `{ minRange: null, fleet: false }`.
+  `POST /api/bridge/flight/warp-scan` is asked by nothing of the page's.
 - `POST /api/bridge/flight/jump` `{ fromGateID, toGateID }` →
   `beyonce.CmdStargateJump([fromGateID, toGateID, shipID])`. The system
   response waits until the destination system, scene and ego are ready.
