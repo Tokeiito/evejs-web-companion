@@ -848,8 +848,10 @@ not do at all before: a call, a button, and the client's own turning down from w
 a fleet. It took no route off, nothing of the page having asked one. The inviter is
 told of it (`3a204509`): the server's notice read, and said in the page's words in the
 Fleet window and on the notice board, with no call.
+A place in space is bookmarked by `beyonce.BookmarkLocation` (`c27b24a2`), asked
+by the service's name and made on the park's object by the game port.
 Counted by the whole path,
-103 are named now, 47 of them reads and 56 writes (the count kept before
+102 are named now, 47 of them reads and 55 writes (the count kept before
 `82a21e8` took a path's beginning for a path and missed a parameter inside one: it read 130
 where 138 was so). Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.

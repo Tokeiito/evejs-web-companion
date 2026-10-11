@@ -936,6 +936,25 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **The pilot invited, as a script of a few seconds**: `fia-guest.js <bff> <account>
   <characterID> <fleetID> [plain|false|within]`, run in the foreground while the tab
   is the inviter. The fleet's number is the last in the server's log.
+- **Who asks the route, before how long it is.** `flight/bookmark-location` was the
+  shortest route left, and its one asker's one caller is a bot's action, a mining
+  operation's hauler: used in no window, and proven in a page only by running that
+  operation, which had never been run live. Read the asker's callers in `flow.ts`
+  when choosing the next unit, and put first what a window of the page can show.
+- **What a route says by keyword, and when.** The bookmark's route said the subfolder
+  by keyword only where there was one; the client says it every time, None for none
+  (`subfolderID=subfolderID`). The ledger puts it in where a call came without it,
+  and counts that reshaped.
+- **A wire string in a read is `{ type: "wstring", value }`**, not text: a live
+  script that looks for its own bookmark by its name unwraps it (`fbk-live.js`,
+  `plain`), or finds nothing and says "NOT FOUND" of what is there.
+- **A pilot in space for a check with no undock**: GM Elysian (`test2`, 140000004),
+  in Maurasi, stationary, with one personal bookmark folder and no bookmarks.
+  `fbk-live.js <bff> <account> <characterID> [ledger.json]` bookmarks the ship's
+  place and reads it back; from a docked pilot it asks the one call.
+- **A refusal's sentence changed is looked for first**: `grep -rn "<the sentence>"
+  web/src test`. `BookmarkNotAvailable` meant a warp alone, and means a bookmark made
+  as well.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
