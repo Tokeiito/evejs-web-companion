@@ -847,6 +847,49 @@ const REPEATS = 1000;
 const dict = (entries) => ({ type: "dict", entries });
 const text = (value) => (Buffer.isBuffer(value) ? value.toString("utf8") : typeof value === "string" ? value : "");
 
+/** industry/job.py 624 to 640: the seventeen names of a job's dump, in the order the client's own Python iterates its dict (scripts/py27-oracle.py). */
+const JOB_DUMP_NAMES = Object.freeze(["productTypeID", "outputLocation", "facilityID", "corporationID", "runs", "tax", "account", "materials", "activityID", "cost", "blueprintTypeID", "time", "blueprintID", "solarSystemID", "inputLocation", "characterID", "licensedRuns"]);
+/** The seven fields the server gives each place of a facility's (GetFacilityLocations), in the order the client's Python iterates a dict of them. */
+const JOB_PLACE_NAMES = Object.freeze(["itemID", "typeID", "flagID", "canTake", "ownerID", "solarSystemID", "canView"]);
+/** An object of the BFF's own, and no list. (A value in the codec's form is one too: it is told from a job by its names.) */
+const heldPlainly = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+const withJustTheNames = (value, names) => heldPlainly(value) && Object.keys(value).length === names.length && names.every((name) => Object.hasOwn(value, name));
+/**
+ * industrySvc.InstallJob (141) and ConnectJob (307): the one argument is job.dump(), a dict of seventeen names.
+ * Its materials are a dict of type to quantity, its time a float (timedelta.total_seconds()), its account a
+ * pair or None, and each of its two places an industry.job.Location, the client's own object, or None: written
+ * by the client's marshal as the class in a tuple and then the state, which is how the server's own test of a
+ * request has it (eve.js, server/tests/industryPayloads.test.js). No Tranquility recording has anything of
+ * industry.
+ *
+ * The BFF's routes hold the job as a plain object of the seventeen names, which the gateway takes as it is and
+ * no marshal can write. Here it is made the client's dict. What the routes send for the cost, the tax and the
+ * time is nought, where the client sends what it reckoned: the server reckons each itself, and checks only one
+ * that is not nought.
+ */
+const jobDumped = (args, kwargs) => {
+  const [job] = args;
+  const aPlace = (value) => value === null || withJustTheNames(value, JOB_PLACE_NAMES);
+  const anAccount = (value) => value === null || (Array.isArray(value) && value.length === 2);
+  const materialsHeld = (value) => heldPlainly(value) && Object.entries(value).every(([typeID, quantity]) => /^[1-9][0-9]*$/.test(typeID) && Number.isSafeInteger(quantity));
+  if (!(args.length === 1 && Object.keys(kwargs).length === 0 && withJustTheNames(job, JOB_DUMP_NAMES) && materialsHeld(job.materials) && typeof job.time === "number" && Number.isFinite(job.time)
+    && aPlace(job.inputLocation) && aPlace(job.outputLocation) && anAccount(job.account))) {
+    return { args, kwargs, status: "differs", note: "The client sends one dict and nothing else, its job's dump: seventeen names, the materials a dict of type to quantity, the time a number, the account a pair or None, and each place an industry.job.Location or None." };
+  }
+  const place = (value) => (value === null ? null : { type: "objectex2", header: [[token("industry.job.Location")], dict(JOB_PLACE_NAMES.map((name) => [name, value[name]]))], list: [], dict: [] });
+  const sent = {
+    ...job,
+    time: { type: "real", value: job.time },
+    materials: dict(Object.entries(job.materials).map(([typeID, quantity]) => [Number(typeID), quantity])),
+    inputLocation: place(job.inputLocation),
+    outputLocation: place(job.outputLocation),
+  };
+  return { args: [dict(JOB_DUMP_NAMES.map((name) => [name, sent[name]]))], kwargs };
+};
+/** industrySvc.DisconnectJob (313): DisconnectJob(job.monitorID if job else None). */
+const aMonitorLetGo = (args, kwargs) => (args.length === 1 && (args[0] === null || (Number.isSafeInteger(args[0]) && args[0] > 0)) && Object.keys(kwargs).length === 0
+  ? {} : { status: "differs", note: "The client sends the monitor's number, or None, and nothing else." });
+
 /**
  * shipmodulebutton.ActivateEffect: the module's default effect by name, the
  * target or None, and how often to repeat. The BFF's routes say -1 for "go on
@@ -1276,6 +1319,9 @@ const RETAIL_CALLS = Object.freeze({
   "industryManager.GetJobCounts": same(`${INDUSTRY}/industrySvc.py:243`, "RemoteSvc('industryManager').GetJobCounts(session.charid)"),
   "industryManager.CompleteJob": judged(`${INDUSTRY}/industrySvc.py:150`, aJobAndItsSystem, "RemoteSvc('industryManager').CompleteJob(int(jobID), solarSystemID), the system the job's own, from a ready job's button. No recording has one."),
   "industryManager.CancelJob": judged(`${INDUSTRY}/industrySvc.py:160`, aJobAndItsSystem, "RemoteSvc('industryManager').CancelJob(int(jobID), solarSystemID), the system the job's own, from a running job's button, pressed twice. No recording has one."),
+  "industryManager.InstallJob": reshaped(`${INDUSTRY}/industrySvc.py:141`, jobDumped, "RemoteSvc('industryManager').InstallJob(job.dump()): the job's dump, a dict of seventeen names (industry/job.py 624 to 640). The route's plain object is made that dict, its places the client's own objects. The cost, the tax and the time go as nought. No recording has one."),
+  "industryMonitor.ConnectJob": reshaped(`${INDUSTRY}/industrySvc.py:307`, jobDumped, "RemoteSvc('industryMonitor').ConnectJob(job.dump()), once the job has a place to take its materials from: the same dump, made the same dict."),
+  "industryMonitor.DisconnectJob": judged(`${INDUSTRY}/industrySvc.py:313`, aMonitorLetGo, "RemoteSvc('industryMonitor').DisconnectJob(job.monitorID if job else None)."),
   "facilityManager.GetFacilities": same(`${INDUSTRY}/facilitySvc.py:133`, "RemoteSvc('facilityManager').GetFacilities(), no arguments"),
   "facilityManager.GetMaxActivityModifiers": same(`${INDUSTRY}/facilitySvc.py:87`, "RemoteSvc('facilityManager').GetMaxActivityModifiers(), no arguments"),
 

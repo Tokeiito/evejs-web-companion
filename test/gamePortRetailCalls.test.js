@@ -2495,3 +2495,102 @@ test("a job delivered, and a job stopped, are the client's with the job and its 
     }
   }
 });
+
+// ── a job's dump, as the client sends it ─────────────────────────────────────
+//
+// industrySvc.InstallJob (141) and ConnectJob (307) each send job.dump() (industry/job.py 624 to 640): a dict of
+// seventeen names. The BFF's routes hold the job as a plain object of those names, which the gateway takes as it
+// is and no marshal can write; for the game port it is made the dict.
+
+const JOB_PLACE = (more = {}) => ({ itemID: 60003760, typeID: 52678, ownerID: 140000001, flagID: 4, solarSystemID: 30000142, canView: true, canTake: true, ...more });
+const JOB_HELD = (more = {}) => ({
+  blueprintID: 9988400109051, blueprintTypeID: 811, activityID: 1, facilityID: 60003760, solarSystemID: 30000142, characterID: 140000001, corporationID: 1000167,
+  account: [140000001, 1000], runs: 3, licensedRuns: 1, cost: 0, tax: 0, time: 0, materials: {}, inputLocation: JOB_PLACE(), outputLocation: JOB_PLACE({ flagID: 62, canTake: false }), productTypeID: 0, ...more,
+});
+/** A place as the client's marshal writes one of its own: the class, and its state (the server's own test of a request has it so). */
+const JOB_PLACE_SENT = (place) => ({
+  type: "objectex2",
+  header: [[{ type: "token", value: "industry.job.Location" }], { type: "dict", entries: ["itemID", "typeID", "flagID", "canTake", "ownerID", "solarSystemID", "canView"].map((name) => [name, place[name]]) }],
+  list: [],
+  dict: [],
+});
+const JOB_ASKED = [["industryManager", "InstallJob", /industrySvc\.py:141$/], ["industryMonitor", "ConnectJob", /industrySvc\.py:307$/]];
+
+test("a job's dump is made the dict the client sends: its names in the client's order, its materials a dict, its time a float, its places the client's own objects", () => {
+  for (const [service, method, where] of JOB_ASKED) {
+    const made = retailForm(service, method, [JOB_HELD({ materials: { 20410: 6, 34201: 3 }, productTypeID: 990, cost: 4368, time: 19380 })], null, {});
+    assert.deepEqual([made.status, made.kwargs, made.args.length, made.args[0].type], ["reshaped", null, 1, "dict"], method);
+    assert.match(made.source, where, method);
+    // The order the client's own Python iterates the dump's dict in (scripts/py27-oracle.py).
+    assert.deepEqual(made.args[0].entries.map(([name]) => name),
+      ["productTypeID", "outputLocation", "facilityID", "corporationID", "runs", "tax", "account", "materials", "activityID", "cost", "blueprintTypeID", "time", "blueprintID", "solarSystemID", "inputLocation", "characterID", "licensedRuns"], method);
+    const sent = Object.fromEntries(made.args[0].entries);
+    assert.deepEqual([sent.blueprintID, sent.blueprintTypeID, sent.activityID, sent.facilityID, sent.solarSystemID, sent.characterID, sent.corporationID, sent.runs, sent.licensedRuns, sent.cost, sent.tax, sent.productTypeID],
+      [9988400109051, 811, 1, 60003760, 30000142, 140000001, 1000167, 3, 1, 4368, 0, 990], method);
+    assert.deepEqual(sent.materials, { type: "dict", entries: [[20410, 6], [34201, 3]] }, method);
+    assert.deepEqual(sent.time, { type: "real", value: 19380 }, method);
+    assert.deepEqual(sent.account, [140000001, 1000], method);
+    assert.deepEqual(sent.inputLocation, JOB_PLACE_SENT(JOB_PLACE()), method);
+    assert.deepEqual(sent.outputLocation, JOB_PLACE_SENT(JOB_PLACE({ flagID: 62, canTake: false })), method);
+
+    // No place found, and no account: each None, as the client's job has them before it is given one.
+    const bare = Object.fromEntries(retailForm(service, method, [JOB_HELD({ inputLocation: null, outputLocation: null, account: null })], null, {}).args[0].entries);
+    assert.deepEqual([bare.inputLocation, bare.outputLocation, bare.account, bare.materials, bare.time], [null, null, null, { type: "dict", entries: [] }, { type: "real", value: 0 }], method);
+  }
+});
+
+test("a job's dump made for the game port can be written by the marshal, and reads back as the server's own test has the client's", () => {
+  const { marshalEncode, marshalDecode } = require("../src/gameProtocol/marshal");
+  const held = JOB_HELD({ materials: { 20410: 6 } });
+  // As it is held, no marshal can write it: this is what the game port answered an install with.
+  assert.throws(() => marshalEncode([held]), /Cannot marshal value/);
+  for (const [service, method] of JOB_ASKED) {
+    const read = marshalDecode(marshalEncode(retailForm(service, method, [held], null, {}).args));
+    const word = (value) => (Buffer.isBuffer(value) ? value.toString("utf8") : value);
+    assert.equal(read.length, 1, method);
+    assert.equal(read[0].type, "dict", method);
+    const sent = Object.fromEntries(read[0].entries.map(([name, value]) => [word(name), value]));
+    assert.equal(Object.keys(sent).length, 17, method);
+    assert.deepEqual([Number(sent.blueprintID), Number(sent.runs), Number(sent.time), sent.materials.entries.map(([typeID, quantity]) => [Number(typeID), Number(quantity)])], [9988400109051, 3, 0, [[20410, 6]]], method);
+    assert.deepEqual(sent.account.map(Number), [140000001, 1000], method);
+    // server/tests/industryPayloads.test.js, buildRetailLocation: an objectex2 whose header is the class in a tuple and then the state.
+    const place = sent.inputLocation;
+    assert.equal(place.type, "objectex2", method);
+    assert.equal(word(place.header[0][0].value ?? place.header[0][0]), "industry.job.Location", method);
+    assert.deepEqual(Object.fromEntries(place.header[1].entries.map(([name, value]) => [word(name), typeof value === "boolean" ? value : Number(value)])),
+      { itemID: 60003760, typeID: 52678, flagID: 4, canTake: true, ownerID: 140000001, solarSystemID: 30000142, canView: true }, method);
+  }
+});
+
+test("what is no job's dump goes as it came, and is said to differ", () => {
+  const short = (({ productTypeID, ...rest }) => rest)(JOB_HELD());
+  for (const [service, method] of JOB_ASKED) {
+    for (const [args, kwargs, why] of [
+      [[], null, "nothing"], [[JOB_HELD(), 1], null, "a second argument"], [[JOB_HELD()], { now: true }, "a keyword beside it"], [[{ type: "dict", entries: [] }], null, "a dict of nothing"],
+      [[[JOB_HELD()]], null, "the job in a list"], [[null], null, "None"], [["job"], null, "a word"], [[short], null, "a name short"], [[JOB_HELD({ optionalTypeID: null })], null, "a name more"],
+      [[{ ...short, optionalTypeID: null }], null, "seventeen names, one not the client's"], [[JOB_HELD({ materials: [] })], null, "the materials as a list"], [[JOB_HELD({ materials: null })], null, "no materials"],
+      [[JOB_HELD({ materials: { 20410: "6" } })], null, "a quantity as text"], [[JOB_HELD({ materials: { tritanium: 6 } })], null, "a material by its name"], [[JOB_HELD({ inputLocation: { itemID: 60003760 } })], null, "a place of one field"],
+      [[JOB_HELD({ outputLocation: 60003760 })], null, "a place by its number"], [[JOB_HELD({ inputLocation: { ...JOB_PLACE(), name: "here" } })], null, "a place with a field more"], [[JOB_HELD({ account: 1000 })], null, "an account by its key alone"],
+      [[JOB_HELD({ account: [140000001, 1000, 1] })], null, "an account of three"], [[JOB_HELD({ account: "ab" })], null, "an account that is a word of two letters"], [[JOB_HELD({ time: "0" })], null, "the time as text"],
+    ]) {
+      const odd = retailForm(service, method, args, kwargs, {});
+      assert.deepEqual([odd.status, odd.args, odd.kwargs], ["differs", args, kwargs], `${method}: ${why}`);
+      assert.match(odd.note, /its job's dump/, `${method}: ${why}`);
+    }
+  }
+});
+
+test("a job's monitor is let go of by its number, or by None", () => {
+  // industrySvc.py 313: DisconnectJob(job.monitorID if job else None).
+  const letGo = (args, kwargs = null) => retailForm("industryMonitor", "DisconnectJob", args, kwargs, {});
+  for (const args of [[7], [null]]) {
+    const made = letGo(args);
+    assert.deepEqual([made.status, made.args, made.kwargs], ["same", args, null], JSON.stringify(args));
+    assert.match(made.source, /industrySvc\.py:313$/);
+  }
+  for (const [args, kwargs, why] of [[[], null, "nothing"], [["7"], null, "the number as text"], [[0], null, "nought"], [[7.5], null, "a number that is no ID"], [[7, 8], null, "two"], [[[7]], null, "a list"], [[7], { now: true }, "a keyword beside it"]]) {
+    const odd = letGo(args, kwargs);
+    assert.deepEqual([odd.status, odd.args, odd.kwargs], ["differs", args, kwargs], why);
+    assert.match(odd.note, /the monitor's number, or None/, why);
+  }
+});

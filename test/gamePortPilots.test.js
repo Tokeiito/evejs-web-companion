@@ -8484,3 +8484,40 @@ test("a lock asked of a thing the ship has locked, a letting go of one it has no
   await ask("AddTarget", 9001);
   assert.deepEqual(counted().AddTarget, { reshaped: 2, differs: 1 });
 });
+
+// ── a job's dump on the game port ────────────────────────────────────────────
+//
+// industrySvc.InstallJob (141) and ConnectJob (307) send job.dump(). The BFF's routes hold the job as a plain
+// object, which no marshal can write: until 2026-10-11 the game port answered both with "an argument that cannot
+// be sent".
+
+test("a job installed, and a job previewed, each go to the server as the client's dict, and not as the object a route holds", async () => {
+  const { pilots, session, handle } = await selected(
+    { answers: { "industryManager.InstallJob": 970000000000005, "industryMonitor.ConnectJob": [7, { type: "dict", entries: [] }] } },
+    { allowed: new Set(["industryManager.InstallJob", "industryMonitor.ConnectJob", "industryMonitor.DisconnectJob"]) },
+  );
+  const place = { itemID: 60003760, typeID: 52678, ownerID: PILOT, flagID: 4, solarSystemID: 30000142, canView: true, canTake: true };
+  const job = {
+    blueprintID: 9988400109051, blueprintTypeID: 811, activityID: 1, facilityID: 60003760, solarSystemID: 30000142, characterID: PILOT, corporationID: 1000044,
+    account: [PILOT, 1000], runs: 3, licensedRuns: 1, cost: 0, tax: 0, time: 0, materials: { 20410: 6 }, inputLocation: place, outputLocation: null, productTypeID: 0,
+  };
+  for (const [service, method, answer] of [["industryMonitor", "ConnectJob", [7, { type: "dict", entries: [] }]], ["industryManager", "InstallJob", 970000000000005]]) {
+    const outcome = await pilots.callMethod(service, method, [job], null, FIELDS, handle);
+    assert.deepEqual(outcome.result, answer, method);
+    const sent = session.calls.at(-1);
+    assert.deepEqual([sent.service, sent.method, sent.kwargs, sent.args.length, sent.args[0].type, sent.args[0].entries.length], [service, method, null, 1, "dict", 17], method);
+    const named = Object.fromEntries(sent.args[0].entries);
+    assert.deepEqual([named.blueprintID, named.account, named.materials, named.time, named.outputLocation], [9988400109051, [PILOT, 1000], { type: "dict", entries: [[20410, 6]] }, { type: "real", value: 0 }, null], method);
+    assert.deepEqual([named.inputLocation.type, named.inputLocation.header[0], named.inputLocation.header[1].entries.length], ["objectex2", [{ type: "token", value: "industry.job.Location" }], 7], method);
+    assert.deepEqual(pilots.callLedger().find((row) => row.pair === `${service}.${method}`).statuses, { reshaped: 1 }, method);
+  }
+  // The object the route held is not changed by the sending.
+  assert.deepEqual([job.materials, job.time, job.inputLocation], [{ 20410: 6 }, 0, place]);
+  // What is not a job's dump goes as it came, and is counted so.
+  await pilots.callMethod("industryManager", "InstallJob", [{ type: "dict", entries: [] }], null, FIELDS, handle);
+  assert.deepEqual(session.calls.at(-1).args, [{ type: "dict", entries: [] }]);
+  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "industryManager.InstallJob").statuses, { reshaped: 1, differs: 1 });
+  // The monitor let go of: the client's call as it stands.
+  await pilots.callMethod("industryMonitor", "DisconnectJob", [7], null, FIELDS, handle);
+  assert.deepEqual([session.calls.at(-1).args, pilots.callLedger().find((row) => row.pair === "industryMonitor.DisconnectJob").statuses], [[7], { same: 1 }]);
+});

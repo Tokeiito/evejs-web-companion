@@ -621,6 +621,9 @@ function fakeIndustryGateway(options = {}) {
   const installAnswersNull = options.installAnswersNull === true;
   const deliverDoesNothing = options.deliverDoesNothing === true;
   const failures = new Set(options.failures || []);
+  // Where the facility's places are: the pilot's own solar system, unless a test says another. Or it has none.
+  const placesIn = options.placesIn ? { solarSystemID: options.placesIn } : {};
+  const noPlaces = options.noPlaces === true;
 
   function jobRowFor(job) {
     return jobRow({
@@ -682,7 +685,7 @@ function fakeIndustryGateway(options = {}) {
         });
       }
       if (service === "facilityManager" && method === "GetFacilityLocations") {
-        return { service, method, result: list([locationObject(), locationObject({ flagID: 62, canTake: false })]), notifications: [] };
+        return { service, method, result: list(noPlaces ? [] : [locationObject(placesIn), locationObject({ flagID: 62, canTake: false, ...placesIn })]), notifications: [] };
       }
       if (service === "industryMonitor" && method === "ConnectJob") {
         return {
@@ -693,6 +696,8 @@ function fakeIndustryGateway(options = {}) {
         };
       }
       if (service === "industryMonitor" && method === "DisconnectJob") {
+        // (A test may make the letting go slow, or make it fail.)
+        if (options.onRelease) await options.onRelease();
         return { service, method, result: null, notifications: [] };
       }
       if (service === "industryManager" && method === "InstallJob") {
@@ -844,6 +849,41 @@ test("install sends ONE POSITIONAL DICT with the fields the server actually read
   ]) {
     assert.ok(key in payload, `the payload must carry ${key}`);
   }
+  // The client's dump has seventeen names (industry/job.py 624 to 640). These are they, and nothing else is sent:
+  // the server reads no other from a request.
+  assert.deepEqual(Object.keys(payload).sort(), [
+    "account", "activityID", "blueprintID", "blueprintTypeID", "characterID", "corporationID", "cost", "facilityID", "inputLocation",
+    "licensedRuns", "materials", "outputLocation", "productTypeID", "runs", "solarSystemID", "tax", "time",
+  ]);
+  // The job's corporation is the session's (industryCommon.AttachSessionToJob), and it is paid for from the
+  // character's own cash (industrySvc._UpdateAccounts: (session.charid, accountingKeyCash), the key 1000).
+  assert.equal(payload.corporationID, 98000000);
+  assert.deepEqual(payload.account, [CHARACTER_ID, 1000]);
+});
+
+test("the job's solar system is its facility's, as the place its materials are in has it, and not the pilot's", async () => {
+  // industry/job.py 629: 'solarSystemID': self.facility.solarSystemID.
+  const gateway = fakeIndustryGateway({ placesIn: 30000144 });
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody() });
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody() });
+  const previewed = gateway.calls.topLevel.find((call) => call.method === "ConnectJob").args[0];
+  const installed = gateway.calls.topLevel.find((call) => call.method === "InstallJob").args[0];
+  assert.notEqual(SOLAR_SYSTEM_ID, 30000144);
+  assert.deepEqual([previewed.solarSystemID, installed.solarSystemID], [30000144, 30000144]);
+  assert.deepEqual([previewed.inputLocation.solarSystemID, installed.outputLocation.solarSystemID], [30000144, 30000144]);
+  // The preview's request is the install's, name for name.
+  assert.deepEqual(Object.keys(previewed).sort(), Object.keys(installed).sort());
+
+  // A facility that gives no place: neither is sent, and the solar system is the pilot's own, for want of another.
+  const bare = fakeIndustryGateway({ noPlaces: true });
+  const second = await startTestServer({ gateway: bare });
+  await selectOnServer(second.baseUrl);
+  await apiRequest(second.baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody() });
+  const placeless = bare.calls.topLevel.find((call) => call.method === "InstallJob").args[0];
+  assert.deepEqual([placeless.solarSystemID, placeless.inputLocation, placeless.outputLocation], [SOLAR_SYSTEM_ID, null, null]);
 });
 
 test("install resolves the input hangar from GetFacilityLocations, preferring one it may TAKE from", async () => {
@@ -972,6 +1012,47 @@ test("the preview reads what the player HAS and always RELEASES its monitor", as
   // The preview starts NOTHING.
   assert.equal(gateway.calls.topLevel.some((call) => call.method === "InstallJob"), false);
   assert.equal(gateway.jobs.size, 0);
+});
+
+test("the preview answers only once its monitor is let go of, so that a write which follows its answer finds the pilot free", async () => {
+  // Measured live, 2026-10-11: an install asked the instant a preview answered was refused CHARACTER_IN_USE, the
+  // preview's DisconnectJob still being made (one write at a time for a pilot: src/pilotMutationFence.js).
+  const events = [];
+  const gateway = fakeIndustryGateway({
+    onRelease: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      events.push("let go");
+    },
+  });
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody() });
+  events.push("answered");
+  assert.deepEqual([response.status, payload.available], [200, { [String(MATERIAL_TYPE_ID)]: 500 }]);
+  assert.deepEqual(events, ["let go", "answered"]);
+
+  // A letting go that fails does not make an error of a good preview: it is answered all the same, and after.
+  const failing = fakeIndustryGateway({
+    onRelease: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      events.push("not let go");
+      throw Object.assign(new Error("gone"), { code: "CALL_FAILED", statusCode: 502 });
+    },
+  });
+  const second = await startTestServer({ gateway: failing });
+  await selectOnServer(second.baseUrl);
+  const again = await apiRequest(second.baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody() });
+  events.push("answered again");
+  assert.deepEqual([again.response.status, again.payload.ok], [200, true]);
+  assert.deepEqual(events.slice(2), ["not let go", "answered again"]);
+
+  // A preview the server refuses is answered with the refusal, and no monitor is let go of: none was made.
+  const refusing = fakeIndustryGateway({ failures: ["industryMonitor.ConnectJob"] });
+  const third = await startTestServer({ gateway: refusing });
+  await selectOnServer(third.baseUrl);
+  const refused = await apiRequest(third.baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody() });
+  assert.deepEqual([refused.response.status, refused.payload.error], [409, "CALL_REFUSED"]);
+  assert.equal(refusing.calls.topLevel.some((call) => call.method === "DisconnectJob"), false);
 });
 
 test("the preview needs no confirmation - it spends nothing", async () => {
@@ -1123,7 +1204,7 @@ test("an invention with a decryptor sends the exact materials map and names the 
   const payload = install.args[0];
   assert.equal(payload.activityID, 8);
   assert.deepEqual(payload.materials, { [DATACORE_TYPE_ID]: 6, [DECRYPTOR_TYPE_ID]: 3 });
-  assert.equal(payload.optionalTypeID, DECRYPTOR_TYPE_ID);
+  assert.equal("optionalTypeID" in payload, false, "the client's dump names no decryptor: the server takes it from the materials");
   assert.equal(payload.productTypeID, INVENTED_TYPE_ID, "the invented blueprint, as the server resolves it");
   // The facility's modifiers are read for it, the way the retail client does.
   assert.ok(gateway.calls.topLevel.some((call) => call.method === "GetFacilities"));
@@ -1140,7 +1221,7 @@ test("without a decryptor, install keeps sending an empty materials map and read
   });
   const install = gateway.calls.topLevel.find((call) => call.method === "InstallJob");
   assert.deepEqual(install.args[0].materials, {});
-  assert.equal(install.args[0].optionalTypeID, null);
+  assert.equal("optionalTypeID" in install.args[0], false);
   assert.equal(gateway.calls.topLevel.some((call) => call.method === "GetFacilities"), false);
 });
 

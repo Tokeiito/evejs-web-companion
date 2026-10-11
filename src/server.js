@@ -5197,33 +5197,54 @@ async function readIndustryLocations(held, webSessionID, facilityID) {
   };
 }
 
+/** inventorycommon.const.accountingKeyCash: the wallet key of a character's own ISK. */
+const INDUSTRY_CASH_ACCOUNT_KEY = 1000;
+
 /**
  * The InstallJob payload — ONE POSITIONAL DICT, the shape
- * `industry.Job.dump()` produces and `parseIndustryRequest` reads.
+ * `industry.Job.dump()` produces (industry/job.py 624 to 640) and
+ * `parseIndustryRequest` reads: its seventeen names, and no other.
+ *
+ * ⚠ IT IS HELD HERE AS A PLAIN OBJECT, which the web gateway takes as it is and
+ * no marshal can write. For the game port it is made the client's own dict,
+ * its two places the client's own objects (src/gamePort/retailCalls.js,
+ * `jobDumped`): what that reads is exactly these names, a place's seven fields
+ * and an account of two, so a name added here must be added there. Until
+ * 2026-10-11 it was not, and the Industry window could neither preview nor
+ * install on the game port.
  *
  * ⚠ WHAT THE SERVER ACTUALLY READS. It recomputes materials, time and cost
  * from the blueprint definition plus the facility's modifiers, so `cost` /
  * `tax` / `time` / `materials` here are ADVISORY — sending them wrong does not
  * change what gets charged, and sending them right does not make them
- * authoritative. The fields that genuinely decide the outcome are
- * `blueprintID`, `activityID`, `facilityID`, `runs` (plus `licensedRuns` for
- * copying, `productTypeID` for invention, and the two locations). They are all
- * sent anyway because the shape is the retail one and a partial dict is a
- * worse contract than a complete one.
+ * authoritative (one that is not nought is checked against the server's own).
+ * The fields that genuinely decide the outcome are `blueprintID`,
+ * `activityID`, `facilityID`, `runs` (plus `licensedRuns` for copying,
+ * `productTypeID` for invention, and the two locations). They are all sent
+ * anyway because the shape is the retail one and a partial dict is a worse
+ * contract than a complete one. A decryptor is in the materials and nowhere
+ * else: the client's dump has no name for it, and the server reads none.
  */
 function buildInstallJobPayload(held, request) {
+  // (Where the facility gave any place, the first is both of the job's or the one its materials are taken from.)
+  const place = request.inputLocation || null;
   return {
     blueprintID: request.blueprintItemID,
     blueprintTypeID: request.blueprintTypeID || 0,
     activityID: request.activityID,
     facilityID: request.facilityID,
-    solarSystemID: held.solarSystemID || 0,
+    // The FACILITY'S solar system, as the client's job has it (job.py 629:
+    // self.facility.solarSystemID), which each of the facility's places says.
+    // The pilot's own only where the facility gave no place at all.
+    solarSystemID: (place && place.solarSystemID) || held.solarSystemID || 0,
     characterID: held.characterID,
-    corporationID: 0,
-    // Personal industry only: the wallet charge takes the character path, for
-    // which `account` is unused. A corporation install would need the
-    // (ownerID, walletKey) pair here.
-    account: null,
+    // The session's corporation (industryCommon.AttachSessionToJob).
+    corporationID: Number(held.corporationID) || 0,
+    // Personal industry only: the job is paid for from the character's own
+    // cash, which is what the client's job has for it
+    // (industrySvc._UpdateAccounts: (session.charid, accountingKeyCash)). A
+    // corporation install would need the (corporation, wallet division) pair.
+    account: [held.characterID, INDUSTRY_CASH_ACCOUNT_KEY],
     runs: request.runs,
     licensedRuns: request.licensedRuns,
     cost: 0,
@@ -5235,8 +5256,6 @@ function buildInstallJobPayload(held, request) {
     inputLocation: request.inputLocation,
     outputLocation: request.outputLocation,
     productTypeID: request.productTypeID || 0,
-    optionalTypeID: request.decryptorTypeID || null,
-    optionalTypeID2: null,
   };
 }
 
@@ -5375,6 +5394,8 @@ app.post("/api/bridge/industry/preview", requireAuth, async (req, res, next) => 
     return;
   }
   let monitorID = 0;
+  let answer = null;
+  let failure = null;
   try {
     await readHeldFlight(held, req.webSessionID);
     const locations = await readIndustryLocations(held, req.webSessionID, request.facilityID);
@@ -5402,15 +5423,15 @@ app.post("/api/bridge/industry/preview", requireAuth, async (req, res, next) => 
         available[String(Number(entry[0]) || 0)] = Number(entry[1]) || 0;
       }
     }
-    res.json({
+    answer = {
       ok: true,
       available,
       inputLocation: locations.input,
       outputLocation: locations.output,
       notifications: outcome.notifications,
-    });
+    };
   } catch (error) {
-    next(error);
+    failure = error;
   } finally {
     if (monitorID > 0) {
       // Best-effort release: a leaked monitor row is harmless but untidy, and
@@ -5428,6 +5449,15 @@ app.post("/api/bridge/industry/preview", requireAuth, async (req, res, next) => 
         // Ignored on purpose (see above).
       }
     }
+  }
+  // ⚠ THE ANSWER WAITS FOR THE RELEASE. A pilot has one write at a time
+  // (src/pilotMutationFence.js): answered before its monitor was let go of, the
+  // preview left that write still being made, and an install that followed the
+  // answer at once was refused CHARACTER_IN_USE (seen live, 2026-10-11).
+  if (failure) {
+    next(failure);
+  } else {
+    res.json(answer);
   }
 });
 
