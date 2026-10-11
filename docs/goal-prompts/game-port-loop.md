@@ -1248,6 +1248,24 @@ Take these defaults, and list each under "For the operator" in the log so they c
   after `botFixtures.ts`): the answer in the server's form from the page's own rows,
   the check that a request is that call, the call as the page sends it, and a pilot
   put where the read wants one. Six stand-ins in two files were moved by it.
+- **A route under the bridge's path that makes no call of the server's is moved, not
+  given a call.** Read the route for `heldTopLevelCall`, `boundCall` and the gateway
+  before sizing it as a read to move to the page: where there is none it is static
+  data, it goes where the static reads are (`/api/types/...`), and the old path goes
+  away with it, there being nothing a second path would be for. Say so among the
+  decisions: the routes that make calls were left standing.
+- **Ask the route as it stands at its edges before it is changed** (`cut-look.js`: a
+  type not known, one named twice, what is no type, none, more than its limit), and
+  the same of what replaces it after. What was refused, and what was left out and
+  read as not asked, are found so.
+- **A bot's read is proven by a bot of two steps loaded from the Builder's box**:
+  leave the station, and the step whose look makes the read. `fight-with-drones`
+  with no arguments makes the loadout's. With nothing to fight it finishes by
+  itself; dock by the overview after.
+- **Give a stand-in a value its record does not carry** where the code may read it
+  from either: the route's test has a type's category come from the static data's
+  own function and not from the type's record, so a breakage that reads the record
+  is caught.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

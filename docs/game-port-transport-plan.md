@@ -886,10 +886,12 @@ files is no call of the server's. Seven are left, `agents` next. A station's age
 listed by the page from the whole table, asked for once by its own call and kept
 (`52816a60`), as the client's agents service has it: the route had carried a station's
 handful, and every agent to a pilot in a structure. Six are left, `combat-utility-types`
-next, which is static data and no call of the server's. In `eve.js` an advert's text outside ASCII goes as
+next, which is static data and no call of the server's. It is read at
+`GET /api/types/combat-utility` now (`33d8f0dc`), and the path under the bridge's is
+gone: 472 routes are under it. Five are left, `character/creation-state` next. In `eve.js` an advert's text outside ASCII goes as
 unicode (`dcd459b0d`, not pushed).
 Counted by the whole path,
-88 are named now, 38 of them reads and 50 writes (the count kept before
+87 are named now, 37 of them reads and 50 writes (the count kept before
 `82a21e8` took a path's beginning for a path and missed a parameter inside one: it read 130
 where 138 was so). Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.

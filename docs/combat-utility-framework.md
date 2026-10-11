@@ -22,8 +22,9 @@ damps/disruptors, strategic modules, ancillary repairs, and AoE modules.
 
 `combatUtilities.ts` joins exact fitted slot/item/type/online state, ship-scoped
 bound dogma, loaded charge state, cargo, and the current ship's capacitor ratio.
-The authenticated read-only `combat-utility-types` endpoint supplies pinned SDE
-group/effect and charge facts. Effective cycle, capacitor cost, range and falloff
+The authenticated read-only static read `GET /api/types/combat-utility` supplies pinned
+SDE group/effect and charge facts (it was `/api/bridge/combat-utility-types` until
+2026-10-11, though it makes no call of the server's). Effective cycle, capacitor cost, range and falloff
 come from bound dogma. Malformed or foreign active-effect dictionaries are
 unknown; they cannot prove that a module is idle.
 

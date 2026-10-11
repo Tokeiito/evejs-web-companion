@@ -960,6 +960,17 @@ pilot's flight (and fails where that fails), asks for the table, and answers
 `{ ok, stationID, agents }` for the station the BFF has the pilot at, which is every
 agent where it has none (a pilot docked in a structure).
 
+**What the combat classifier wants of a type is static data**:
+`GET /api/types/combat-utility?typeIDs=527,34` answers
+`{ ok, source: "static-data", types: { "527": { typeID, groupID, categoryID, effects, attributes, capacity, volume }, "34": null }, capped, limit }`.
+`null` is a type the tables have not both a record and dogma for; `capacity` and
+`volume` are `null` where the record has no number for them (and `0` where it has
+nought). Each type is answered once however often it is named, what is no type's
+number is passed over, 500 types at most and `capped: true` where it stopped. It
+wants the web login and no pilot. The page asks 400 to a request.
+`GET /api/bridge/combat-utility-types` is gone: it was this, under the bridge's path,
+and made no call of the server's.
+
 ```jsonc
 {
   "blueprintID": 7100000001,   // the blueprint ITEM id
