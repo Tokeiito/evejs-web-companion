@@ -685,3 +685,128 @@ test("with a pilot held, the generic call is that pilot's, on whichever transpor
   assert.equal(call.bridgeSessionID, GAME_PORT_HANDLE);
   assert.equal(gateway.calls.callMethod.length, 0);
 });
+
+// --- the account's creation state ------------------------------------------------
+//
+// GET /api/bridge/character/creation-state: what the creation window asks as it opens, and again after a creation
+// whose outcome it does not know. Half of it is the server's: the account's characters and how many it may have,
+// by charUnboundMgr.GetCharacterSelectionData as the account, which is what the client's character selection asks.
+// Half is the BFF's own keeping: the name of a creation whose outcome is not known, so that nothing is made twice
+// (characterCreation.js). A retail client has no such thing: it makes a character by one call and is told. So
+// the route is one thing, and stays. No test asked it until 2026-10-11.
+
+/** A gateway whose roster is the test's to say, and whose answer to a creation is too. */
+function rosterGateway({ characters = [], slots = 3, userName = ACCOUNT.username, creating = null, roster = null } = {}) {
+  const gateway = fakeGateway();
+  const answering = gateway.callMethod.bind(gateway);
+  const state = { characters: [...characters], slots, userName, creating, roster };
+  gateway.state = state;
+  gateway.callMethod = async (service, method, args, kwargs, sessionFields, bridgeSessionID) => {
+    if (method === "GetCharacterSelectionData") {
+      gateway.calls.callMethod.push({ service, method, args, kwargs, sessionFields, bridgeSessionID });
+      if (state.roster) return { service, method, result: state.roster(), notifications: [] };
+      return { service, method, result: [
+        { type: "list", items: [keyVal([["userName", state.userName], ["characterSlots", state.slots]])] },
+        null,
+        { type: "list", items: state.characters.map((row) => keyVal([["characterID", row.characterID], ["characterName", row.name]])) },
+      ], notifications: [] };
+    }
+    if (method === "CreateCharacterWithDoll" && state.creating) {
+      gateway.calls.callMethod.push({ service, method, args, kwargs, sessionFields, bridgeSessionID });
+      return state.creating(args);
+    }
+    return answering(service, method, args, kwargs, sessionFields, bridgeSessionID);
+  };
+  return gateway;
+}
+const creationState = (baseUrl) => apiRequest(baseUrl, "/api/bridge/character/creation-state");
+const rosterReads = (gateway) => gateway.calls.callMethod.filter((call) => call.method === "GetCharacterSelectionData");
+
+test("the creation state is the account's characters and slots, asked as the account with no pilot held; with nothing under way it names nothing", async () => {
+  const gateway = rosterGateway({ characters: [{ characterID: 9001, name: "Old Hand" }] });
+  const { baseUrl } = await startTestServer({ gateway });
+  // Deliberately NO select: this is asked from the screen a fresh account lands on.
+  const { response, payload } = await creationState(baseUrl);
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload, { ok: true, slots: 3, characters: [{ characterID: 9001, name: "Old Hand" }], freeSlots: 2, pendingName: null, recoveredCharacterID: null });
+  // One read, the client's own of its character selection, as the account from the login.
+  assert.deepEqual(gateway.calls.callMethod, [{ service: "charUnboundMgr", method: "GetCharacterSelectionData", args: [], kwargs: null, sessionFields: { userid: ACCOUNT.accountID }, bridgeSessionID: undefined }]);
+
+  // An account with every slot taken has none free; and one with more characters than slots has none, not fewer.
+  for (const [characters, free] of [[[1, 2, 3], 0], [[1, 2, 3, 4], 0], [[], 3]]) {
+    gateway.state.characters = characters.map((characterID) => ({ characterID, name: `Pilot ${characterID}` }));
+    const read = await creationState(baseUrl);
+    assert.deepEqual([read.payload.freeSlots, read.payload.characters.length, read.payload.slots], [free, characters.length, 3], JSON.stringify(characters));
+  }
+});
+
+test("with a pilot held the creation state is asked on that pilot's session; with the account on the game port, there as the account", async () => {
+  const gateway = rosterGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  assert.equal((await creationState(baseUrl)).response.status, 200);
+  assert.deepEqual(rosterReads(gateway).map((call) => [call.bridgeSessionID, call.sessionFields]), [[BRIDGE_SESSION_ID, { userid: ACCOUNT.accountID }]]);
+
+  const behind = fakeGateway();
+  const gamePort = fakeGamePort();
+  const onPort = await startTestServer({ gateway: behind, gamePortPilots: gamePort, pilotTransportFor: onGamePort });
+  const { response, payload } = await creationState(onPort.baseUrl);
+  assert.deepEqual([response.status, payload.slots, payload.freeSlots, payload.pendingName], [200, 3, 3, null]);
+  assert.deepEqual(gamePort.calls.accountCall, [{ service: "charUnboundMgr", method: "GetCharacterSelectionData", args: [], kwargs: null, sessionFields: { userid: ACCOUNT.accountID, userName: ACCOUNT.username } }]);
+  assert.equal(behind.calls.callMethod.length, 0, "nothing of it reaches the web gateway");
+});
+
+test("a creation whose outcome is not known is named pending until the roster has its name; then it is found once, and nothing is pending after", async () => {
+  // The creation's answer is lost, and the roster does not have the character yet.
+  const gateway = rosterGateway({ creating: () => { throw Object.assign(new Error("lost"), { code: "CALL_FAILED", statusCode: 502 }); } });
+  const { baseUrl } = await startTestServer({ gateway });
+  const made = await apiRequest(baseUrl, "/api/bridge/character/create-with-doll", {
+    method: "POST", body: { name: "Zaphod Beeblebrox", raceID: 1, genderID: 1, bloodlineID: 2, ancestryID: 8, confirm: true },
+  });
+  assert.deepEqual([made.response.status, made.payload.error], [409, "CREATION_UNVERIFIED"]);
+  assert.equal(createCalls(gateway).length, 1);
+
+  const pending = await creationState(baseUrl);
+  assert.deepEqual(pending.payload, { ok: true, slots: 3, characters: [], freeSlots: 3, pendingName: "Zaphod Beeblebrox", recoveredCharacterID: null });
+  // And again: asking changes nothing while the roster has no such name.
+  assert.equal((await creationState(baseUrl)).payload.pendingName, "Zaphod Beeblebrox");
+
+  // The character was made after all: the roster has the name (as the server spells it), beside another's.
+  gateway.state.characters = [{ characterID: 9001, name: "Old Hand" }, { characterID: 4242, name: "  zaphod   BEEBLEBROX " }];
+  const found = await creationState(baseUrl);
+  assert.deepEqual([found.payload.pendingName, found.payload.recoveredCharacterID, found.payload.freeSlots], [null, 4242, 1]);
+  // Found once: after that nothing is under way, and the character is one of the account's like any other.
+  const after = await creationState(baseUrl);
+  assert.deepEqual([after.payload.pendingName, after.payload.recoveredCharacterID, after.payload.characters.length], [null, null, 2]);
+  // Nothing was made twice in all of it.
+  assert.equal(createCalls(gateway).length, 1);
+});
+
+test("a roster that cannot be read is no creation state: it is refused, and never answered as an account with no characters", async () => {
+  const user = (userName, characterSlots) => ({ type: "list", items: [keyVal([["userName", userName], ["characterSlots", characterSlots]])] });
+  const row = (characterID, name) => keyVal([["characterID", characterID], ["characterName", name]]);
+  const rows = (...items) => ({ type: "list", items });
+  const unreadable = [
+    ["slots that are no number", () => [user(ACCOUNT.username, "3"), null, rows()]],
+    ["no slot at all", () => [user(ACCOUNT.username, 0), null, rows()]],
+    ["another account's roster", () => [user("somebody else", 3), null, rows()]],
+    ["characters that are no list", () => [user(ACCOUNT.username, 3), null, null]],
+    ["a character with no number", () => [user(ACCOUNT.username, 3), null, rows(row(null, "Nameless"))]],
+    ["a character with no name", () => [user(ACCOUNT.username, 3), null, rows(row(9001, null))]],
+    ["two characters of one number", () => [user(ACCOUNT.username, 3), null, rows(row(9001, "One"), row(9001, "Other"))]],
+    ["nothing", () => null],
+  ];
+  for (const [what, roster] of unreadable) {
+    const gateway = rosterGateway({ roster });
+    const { baseUrl } = await startTestServer({ gateway });
+    const { response, payload } = await creationState(baseUrl);
+    assert.deepEqual([response.status, payload.ok, payload.error, payload.characters], [409, false, "CREATION_STATE_UNKNOWN", undefined], what);
+  }
+  // A read the server refuses, or that fails, fails the route as the call failed.
+  for (const [code, statusCode] of [["CALL_REFUSED", 409], ["CALL_FAILED", 502]]) {
+    const gateway = rosterGateway({ roster: () => { throw Object.assign(new Error("no"), { code, statusCode }); } });
+    const { baseUrl } = await startTestServer({ gateway });
+    const { response, payload } = await creationState(baseUrl);
+    assert.deepEqual([response.status, payload.error], [statusCode, code], code);
+  }
+});
