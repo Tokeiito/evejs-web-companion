@@ -505,6 +505,11 @@ const ON_AN_ANSWERED_OBJECT = Object.freeze(new Set(["scanMgr.GetFullState"]));
  */
 const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdAlignTo", "CmdFollowBall", "CmdSetSpeedFraction", "CmdOrbit", "CmdStop", "BookmarkLocation", "CmdWarpToStuff", "CmdWarpToStuffAutopilot"]));
 const madeOnMoniker = (service, method) => Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method) && method !== "MachoBindObject";
+/**
+ * Whether the game port makes a call on an object though it is asked of a service by its name: on the service's
+ * moniker, or on the ballpark's own object (pilots.js, callMethod). What else is asked by name goes by name.
+ */
+const madeOnAnObject = (service, method) => madeOnMoniker(service, method) || (service === "beyonce" && ON_THE_PARK.has(method));
 
 const INV_CACHE = "eve/client/script/environment/invCache.py";
 const INV_CONTROLLERS = "eve/client/script/environment/invControllers.py";
@@ -1209,6 +1214,10 @@ const RETAIL_CALLS = Object.freeze({
 
   // ── character creation (the account's own calls, with no character chosen) ──
   "charUnboundMgr.GetCharCreationInfo": webOnly(`${CC_STEPS}/bloodLineStep.py:107`, "The client never asks this. The races and bloodlines on its creation screens are in its own static data (characterdata)."),
+  "charUnboundMgr.GetValidRandomName": same(
+    `${CC_STEPS}/sections/chooseNameSection.py:96`,
+    "RandomizeName: name = sm.RemoteSvc('charUnboundMgr').GetValidRandomName(self.GetInfo().raceID), by name, with the race's number, from the name screen's Randomize button (the newer screen's is the same: charcreation_new, 83). No recording has one.",
+  ),
   "charUnboundMgr.ValidateNameEx": reshaped(
     `${CC_STEPS}/sections/chooseNameSection.py:201`,
     ([name, checked, ...rest], kwargs) => ({ args: [name, checked ?? 0, ...rest], kwargs }),
@@ -1477,6 +1486,10 @@ const RETAIL_CALLS = Object.freeze({
   "fleetObjectHandler.GetJoinRequests": same(`${FLEET_SVC}:461`, "self.fleet.GetJoinRequests(), no arguments"),
   "fleetObjectHandler.GetFleetComposition": same(`${FLEET_SVC}:900`, "self.fleet.GetFleetComposition(), no arguments"),
   // Forming one, joining one and leaving one.
+  "fleetObjectHandler.CreateFleet": same(
+    `${FLEET_SVC}:334`,
+    "CreateFleet: self.fleet = sm.RemoteSvc('fleetObjectHandler').CreateFleet(), by the service's name and with nothing, from a session in no fleet (332: with one it raises FleetError and asks nothing). It answers the fleet's own object, which Init is asked on next (336).",
+  ),
   "fleetObjectHandler.Init": needing(reshaped(`${FLEET_SVC}:336`, fleetInit, "self.fleet.Init(self.GetMyShipTypeID(), setupName, adInfoData=adInfoData), on the object CreateFleet answered"), "dogma"),
   "fleetObjectHandler.AcceptInvite": needing(reshaped(`${FLEET_SVC}:1194`, withOwnShipType, "GetFleet(fleetID).AcceptInvite(self.GetMyShipTypeID()), on the invite's fleet's Moniker, which binds with it and is the fleet's object from then"), "dogma"),
   "fleetObjectHandler.UpdateMemberInfo": needing(reshaped(`${FLEET_SVC}:1807`, withOwnShipType, "self.fleet.UpdateMemberInfo(self.GetMyShipTypeID())"), "dogma"),
@@ -1826,4 +1839,4 @@ function createCallLedger() {
   };
 }
 
-module.exports = { CONTRACT_SEARCH_KEYWORDS, GAME_PORT_ONLY_CALLS, MONIKER_SERVICES, ON_AN_ANSWERED_OBJECT, ON_THE_PARK, PROXY_SERVICES, REPEATS, RETAIL_CALLS, TRANSPORT_OWN_CALLS, couldBeAPilot, createCallLedger, list, madeAfresh, madeOnMoniker, retailForm, retailNeeds };
+module.exports = { CONTRACT_SEARCH_KEYWORDS, GAME_PORT_ONLY_CALLS, MONIKER_SERVICES, ON_AN_ANSWERED_OBJECT, ON_THE_PARK, PROXY_SERVICES, REPEATS, RETAIL_CALLS, TRANSPORT_OWN_CALLS, couldBeAPilot, createCallLedger, list, madeAfresh, madeOnAnObject, madeOnMoniker, retailForm, retailNeeds };

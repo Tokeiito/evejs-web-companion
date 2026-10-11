@@ -194,4 +194,33 @@ function coverage(seen, routes, pageWritePairs) {
   };
 }
 
-module.exports = { NO_REQUEST, PAGES_OWN_CALL, coverage, createAudit, gather, judge, pageSources, routePatterns };
+/**
+ * The page's own calls that go by the service's name, where a route of the BFF's makes the same call on an
+ * object. A retail client makes such a call on that object, which is why the route does; asked of the service by
+ * its name it is another call to the server, whatever it is asked with. `onAnObject(service, method)` says
+ * whether a call of the page's is made on an object all the same (one the page names, a service's moniker, the
+ * ballpark's own): such a one is none of these. Each comes with the routes that make it on an object.
+ */
+function byNameWhereARouteBinds(seen, onAnObject) {
+  const routes = new Map();
+  for (const each of seen) {
+    if (each.fn !== "callBoundMethod") continue;
+    if (!routes.has(each.pair)) routes.set(each.pair, new Set());
+    routes.get(each.pair).add(each.route);
+  }
+  const asked = [...new Set(seen.filter((each) => each.fn === "page").map((each) => each.pair))].sort();
+  return asked
+    .filter((pair) => routes.has(pair) && !onAnObject(pair.slice(0, pair.indexOf(".")), pair.slice(pair.indexOf(".") + 1)))
+    .map((pair) => ({ pair, routes: [...routes.get(pair)].sort() }));
+}
+
+/**
+ * The page's own calls whose pair `isRead` does not know: the client's own call for it has not been read, and
+ * the page asks it as nobody knows a client to. Only the pairs `isListed` knows are looked at: a test of the
+ * asking itself may name a pair that is none.
+ */
+function pagesCallsNotRead(seen, isRead, isListed) {
+  return [...new Set(seen.filter((each) => each.fn === "page").map((each) => each.pair))].filter((pair) => isListed(pair) && !isRead(pair)).sort();
+}
+
+module.exports = { NO_REQUEST, PAGES_OWN_CALL, byNameWhereARouteBinds, coverage, createAudit, gather, judge, pageSources, pagesCallsNotRead, routePatterns };

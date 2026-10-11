@@ -10,7 +10,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { NO_REQUEST, PAGES_OWN_CALL, coverage, createAudit, gather, judge, pageSources, routePatterns } = require("../scripts/gamePortAudit");
+const { NO_REQUEST, PAGES_OWN_CALL, byNameWhereARouteBinds, coverage, createAudit, gather, judge, pageSources, pagesCallsNotRead, routePatterns } = require("../scripts/gamePortAudit");
 const { appRoutes, tableOf } = require("../scripts/appRoutes");
 const { retailForm } = require("../src/gamePort/retailCalls");
 const { marshalEncode } = require("../src/gameProtocol/marshal");
@@ -352,4 +352,57 @@ test("what was looked at is measured against the routes the page names and the w
     pageWritesNotSeen: ["industryManager.CompleteJob"],
     withNoRequest: 1,
   });
+});
+
+// What every test process saw, as the runner gathers it: the routes' calls on objects and by name, and the page's own.
+const SEEN_CALLS = [
+  // The planet's reading: a route makes it on the planet's own object, and the page asks it by the service's name.
+  { route: "GET /api/bridge/planets/:n", fn: "bindObject", pair: "planetMgr.MachoBindObject" },
+  { route: "GET /api/bridge/planets/:n/resources", fn: "callBoundMethod", pair: "planetMgr.GetPlanetInfo" },
+  { route: "GET /api/bridge/planets/:n", fn: "callBoundMethod", pair: "planetMgr.GetPlanetInfo" },
+  { route: "GET /api/bridge/planets/:n", fn: "callBoundMethod", pair: "planetMgr.GetPlanetInfo" },
+  { route: PAGES_OWN_CALL, fn: "page", pair: "planetMgr.GetPlanetInfo" },
+  { route: PAGES_OWN_CALL, fn: "page", pair: "planetMgr.GetPlanetInfo" },
+  // A launch: on the planet's object by the generic call's own handler, and the page names the planet.
+  { route: "POST /api/bridge/call", fn: "callBoundMethod", pair: "planetMgr.UserLaunchCommodities" },
+  { route: PAGES_OWN_CALL, fn: "page", pair: "planetMgr.UserLaunchCommodities" },
+  // The stop: a route makes it on the ballpark's object, and so does the game port for the page.
+  { route: "POST /api/bridge/flight/stop", fn: "callBoundMethod", pair: "beyonce.CmdStop" },
+  { route: PAGES_OWN_CALL, fn: "page", pair: "beyonce.CmdStop" },
+  // A lock: a route makes it on the dogma's object, and the game port asks the service's moniker for the page.
+  { route: "POST /api/bridge/targets/lock", fn: "callBoundMethod", pair: "dogmaIM.AddTarget" },
+  { route: PAGES_OWN_CALL, fn: "page", pair: "dogmaIM.AddTarget" },
+  // The wallet: by the service's name by the page, and by no route on an object.
+  { route: "GET /api/bridge/wallet", fn: "callMethod", pair: "account.GetCashBalance" },
+  { route: PAGES_OWN_CALL, fn: "page", pair: "account.GetCashBalance" },
+  // A fleet's wings: on the fleet's object by a route, and the page asks no such thing.
+  { route: "GET /api/bridge/fleet", fn: "callBoundMethod", pair: "fleetObjectHandler.GetWings" },
+  // A pair of a test's own making, and one the table has not read.
+  { route: PAGES_OWN_CALL, fn: "page", pair: "s.m" },
+  { route: PAGES_OWN_CALL, fn: "page", pair: "charUnboundMgr.GetValidRandomName" },
+];
+
+test("a call of the page's own that goes by the service's name where a route makes it on an object is said, with the routes that do", () => {
+  const onAnObject = (service, method) => `${service}.${method}` === "planetMgr.UserLaunchCommodities" || service === "dogmaIM" || (service === "beyonce" && method === "CmdStop");
+  assert.deepEqual(byNameWhereARouteBinds(SEEN_CALLS, onAnObject), [
+    { pair: "planetMgr.GetPlanetInfo", routes: ["GET /api/bridge/planets/:n", "GET /api/bridge/planets/:n/resources"] },
+  ]);
+  // Made on an object for the page too, it is none; and with nothing made on an object for the page, each that a route binds is one.
+  assert.deepEqual(byNameWhereARouteBinds(SEEN_CALLS, () => true), []);
+  assert.deepEqual(byNameWhereARouteBinds(SEEN_CALLS, () => false).map((row) => row.pair), ["beyonce.CmdStop", "dogmaIM.AddTarget", "planetMgr.GetPlanetInfo", "planetMgr.UserLaunchCommodities"]);
+  // What is asked is the service and the method, each by itself.
+  const askedOf = [];
+  byNameWhereARouteBinds(SEEN_CALLS, (service, method) => { askedOf.push([service, method]); return true; });
+  assert.deepEqual(askedOf, [["beyonce", "CmdStop"], ["dogmaIM", "AddTarget"], ["planetMgr", "GetPlanetInfo"], ["planetMgr", "UserLaunchCommodities"]]);
+  assert.deepEqual(byNameWhereARouteBinds([], () => false), []);
+});
+
+test("a call of the page's own that the table of the client's calls has no entry for is said, where it is a pair some list has", () => {
+  const read = new Set(["planetMgr.GetPlanetInfo", "planetMgr.UserLaunchCommodities", "beyonce.CmdStop", "dogmaIM.AddTarget", "account.GetCashBalance"]);
+  const listed = (pair) => pair !== "s.m";
+  assert.deepEqual(pagesCallsNotRead(SEEN_CALLS, (pair) => read.has(pair), listed), ["charUnboundMgr.GetValidRandomName"]);
+  // With nothing read, every listed pair of the page's is one, each once; a route's own pair is none of the page's.
+  assert.deepEqual(pagesCallsNotRead(SEEN_CALLS, () => false, listed),
+    ["account.GetCashBalance", "beyonce.CmdStop", "charUnboundMgr.GetValidRandomName", "dogmaIM.AddTarget", "planetMgr.GetPlanetInfo", "planetMgr.UserLaunchCommodities"]);
+  assert.deepEqual(pagesCallsNotRead(SEEN_CALLS, () => false, () => false), []);
 });

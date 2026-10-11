@@ -2873,3 +2873,42 @@ test("what is no warp of a client's that a route makes is said to differ, and go
   assert.equal(flying(["bookmark", 5000], { shipID: 5000 }).status, "reshaped");
   for (const context of [{}, { shipID: null }, { shipID: undefined }]) assert.equal(flying(["item", 5000], context).status, "same");
 });
+
+// A call asked of a service by its name is made on an object by the game port where the client asks the service's
+// moniker, and where it is the ballpark's own (pilots.js, callMethod). Whatever else is asked by name goes by name:
+// the audit goes by this to say where a call of the page's own is no client's (scripts/game-port-audit.js).
+test("what the game port makes on an object though it is asked by name: a moniker's service's calls and the ballpark's own, and nothing else", () => {
+  const { ON_THE_PARK, madeOnAnObject } = require("../src/gamePort/retailCalls");
+  assert.ok(ON_THE_PARK.size >= 10);
+  for (const method of ON_THE_PARK) assert.equal(madeOnAnObject("beyonce", method), true, method);
+  // Beyonce's own by name, a command a route makes on the park itself, and the park's command asked of another service.
+  assert.deepEqual([madeOnAnObject("beyonce", "GetFormations"), madeOnAnObject("beyonce", "CmdDock"), madeOnAnObject("michelle", "CmdStop")], [false, false, false]);
+  assert.deepEqual([madeOnAnObject("dogmaIM", "AddTarget"), madeOnAnObject("ship", "Undock"), madeOnAnObject("entity", "CmdSalvage"), madeOnAnObject("skillHandler", "SaveNewQueue")], [true, true, true, true]);
+  // What the client asks of a moniker's service by its name all the same, and the bind itself.
+  assert.deepEqual([madeOnAnObject("ship", "GetShipFittingInfo"), madeOnAnObject("dogmaIM", "CreateNewbieShip"), madeOnAnObject("dogmaIM", "MachoBindObject")], [false, false, false]);
+  // A service asked by name, and services whose objects the BFF's routes bind and the game port does not.
+  assert.deepEqual([madeOnAnObject("account", "GetCashBalance"), madeOnAnObject("planetMgr", "GetPlanetInfo"), madeOnAnObject("fleetObjectHandler", "GetWings"),
+    madeOnAnObject("agentMgr", "DoAction"), madeOnAnObject("scanMgr", "GetFullState")], [false, false, false, false, false]);
+});
+
+// chooseNameSection.py (96, and 83 of the newer screen's): RandomizeName asks the service by its name, with the
+// race's number and nothing else. The page asks it so (web/src/app/api.ts, rollRandomCharacterName).
+test("the name screen's random name is the client's call as the page makes it: by the service's name, with the race's number", () => {
+  assert.deepEqual(form("charUnboundMgr.GetValidRandomName", [1]), {
+    args: [1], kwargs: null, status: "same", source: "eve/client/script/ui/login/charcreation/steps/sections/chooseNameSection.py:96",
+    note: RETAIL_CALLS["charUnboundMgr.GetValidRandomName"].note, moniker: false, proxy: false,
+  });
+  assert.match(RETAIL_CALLS["charUnboundMgr.GetValidRandomName"].note, /GetValidRandomName\(self\.GetInfo\(\)\.raceID\)/);
+  // And it is a pair the gateway carries, and no write.
+  assert.deepEqual([contract.gatewayAllowlist.pairs.includes("charUnboundMgr.GetValidRandomName"), contract.bffWritePolicy.pairs.includes("charUnboundMgr.GetValidRandomName")], [true, false]);
+});
+
+// fleetSvc.CreateFleet (331 to 342): the fleet's own object is what the service answers by its name, with nothing
+// sent; everything else of a fleet's is asked on that object.
+test("a fleet is formed by the service's name and with nothing: the one call of the fleet's the client makes so", () => {
+  assert.deepEqual(form("fleetObjectHandler.CreateFleet", []), {
+    args: [], kwargs: null, status: "same", source: "eve/client/script/parklife/fleetSvc.py:334",
+    note: RETAIL_CALLS["fleetObjectHandler.CreateFleet"].note, moniker: false, proxy: false,
+  });
+  assert.match(RETAIL_CALLS["fleetObjectHandler.CreateFleet"].note, /sm\.RemoteSvc\('fleetObjectHandler'\)\.CreateFleet\(\)/);
+});
