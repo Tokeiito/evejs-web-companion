@@ -162,3 +162,21 @@ test("a mining site's return point is bookmarked by the page's own call, where t
   const api = readFileSync(fileURLToPath(new URL("./api.ts", import.meta.url)), "utf8");
   assert.equal(api.includes('"/api/bridge/flight/bookmark-location"'), false);
 });
+
+test("a target is locked by the page's own call wherever the page carries a bot's actions out; and let go by the flow's own letting go", () => {
+  const flow = readFileSync(fileURLToPath(new URL("./flow.ts", import.meta.url)), "utf8");
+  const times = (text: string) => flow.split(text).length - 1;
+  // The fleet companion's, the mining bot's, a support ship's own mining and its tractor's, and a script bot's: each
+  // on its own reading that the thing is not locked.
+  assert.equal(times("await lockTargetCall(bridgeDo, action.targetID, null);"), 2);
+  assert.equal(times("await lockTargetCall(bridgeDo, targetID, null);"), 1);
+  assert.equal(times('case "lock": await lockTargetCall(bridgeDo, self.action.targetID, null); break;'), 1);
+  assert.equal(times('case "lock": await lockTargetCall(bridgeDo, tractor.action.targetID, null); break;'), 1);
+  // A script bot's letting go: by what the page has of the target, as the panel's is.
+  assert.equal([...flow.matchAll(/case "unlock":\s+await releaseTarget\(action\.targetID\);\s+return;/g)].length, 1);
+  assert.equal(flow.includes("api.lockTarget("), false);
+  assert.equal(flow.includes("api.unlockTarget("), false);
+  const api = readFileSync(fileURLToPath(new URL("./api.ts", import.meta.url)), "utf8");
+  assert.equal(api.includes('"/api/bridge/targets/lock"'), false);
+  assert.equal(api.includes('"/api/bridge/targets/unlock"'), false);
+});

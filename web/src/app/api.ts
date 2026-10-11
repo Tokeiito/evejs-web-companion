@@ -2682,22 +2682,10 @@ export interface TargetsResult {
   readonly notifications: readonly JsonValue[];
 }
 
-/**
- * One lock/unlock outcome. Both flags come from a RE-READ of GetTargets after
- * the mutation, never from the mutation's own 200.
- *
- * `locked`  — the lock has landed and the target is usable.
- * `acquiring` — the server accepted the attempt and is still acquiring it.
- * `released` — it is no longer locked (the unlock answer).
- */
-export interface TargetActionResult {
-  readonly targetID: number;
-  readonly locked: boolean;
-  readonly acquiring: boolean;
-  readonly released: boolean;
-  readonly targetIDs: JsonValue;
-  readonly notifications: readonly JsonValue[];
-}
+// A target is locked and let go by the page itself, with the client's own
+// calls of the dogma location (bridge/targetWrites.ts), and what is locked is
+// read after each by the read above: the two left their routes
+// (POST /api/bridge/targets/lock and /api/bridge/targets/unlock) on 2026-10-11.
 
 /**
  * One module activate/deactivate outcome, verified against the space snapshot's
@@ -2720,43 +2708,6 @@ function readNotifications(data: Record<string, JsonValue>): readonly JsonValue[
 export async function getTargets(options: ApiOptions = {}): Promise<TargetsResult> {
   const data = await getJson("/api/bridge/targets", options);
   return { targetIDs: data.targetIDs ?? null, notifications: readNotifications(data) };
-}
-
-/** Lock a target (dogmaIM.AddTarget). Acquisition is not instant. */
-export async function lockTarget(
-  targetID: number,
-  options: ApiOptions = {},
-): Promise<TargetActionResult> {
-  const data = await postJson("/api/bridge/targets/lock", { targetID }, options);
-  return {
-    targetID,
-    locked: data.locked === true,
-    acquiring: data.acquiring === true,
-    released: false,
-    targetIDs: data.targetIDs ?? null,
-    notifications: readNotifications(data),
-  };
-}
-
-/**
- * Release ONE lock (dogmaIM.RemoveTarget, preceded by CancelAddTarget so the
- * same button also abandons a lock that is still being acquired). The bulk
- * verbs are not on the gateway allowlist at all, so a stray click here can only
- * ever cost one lock.
- */
-export async function unlockTarget(
-  targetID: number,
-  options: ApiOptions = {},
-): Promise<TargetActionResult> {
-  const data = await postJson("/api/bridge/targets/unlock", { targetID }, options);
-  return {
-    targetID,
-    locked: false,
-    acquiring: false,
-    released: data.released === true,
-    targetIDs: data.targetIDs ?? null,
-    notifications: readNotifications(data),
-  };
 }
 
 function readModuleAction(itemID: number, data: Record<string, JsonValue>): ModuleActionResult {

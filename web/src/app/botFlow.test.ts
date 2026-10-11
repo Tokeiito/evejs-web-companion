@@ -171,11 +171,11 @@ function harness(options: { locked?: number[]; activeModuleIDs?: number[] } = {}
     if (path === "/api/bridge/targets") {
       return { status: 200, body: { ok: true, targetIDs: state.locked, notifications: [] } };
     }
-    if (path === "/api/bridge/targets/lock") {
+    if (path === "/api/bridge/call" && body.method === "AddTarget") {
       state.locked = [ROCK];
       return {
         status: 200,
-        body: { ok: true, locked: true, acquiring: false, targetIDs: state.locked, notifications: [] },
+        body: { ok: true, service: "dogmaIM", method: "AddTarget", result: [0, state.locked], notifications: [] },
       };
     }
     if (path === "/api/bridge/modules/activate") {
@@ -231,10 +231,11 @@ test("startMiningBot lands the plan in the store and the loop drives the real BF
   assert.ok(paths.has("/api/bridge/space/snapshot"), "it measures the space around the ship");
   assert.ok(paths.has("/api/bridge/targets"), "it reads the LOCK AUTHORITY, not its own memory");
   assert.ok(paths.has("/api/bridge/ship/ore-hold"), "it reads the ORE AUTHORITY");
-  assert.ok(paths.has("/api/bridge/targets/lock"), "and it locked the rock it measured as nearest");
-
-  const lock = requests.find((r) => r.path === "/api/bridge/targets/lock");
-  assert.equal(lock?.body.targetID, ROCK);
+  // The lock is the page's own call (bridge/targetWrites.ts): dogmaIM.AddTarget, the rock alone.
+  const lock = requests.find((r) => r.path === "/api/bridge/call" && r.body.method === "AddTarget");
+  assert.ok(lock, "and it locked the rock it measured as nearest");
+  assert.deepEqual(lock?.body, { service: "dogmaIM", method: "AddTarget", args: [ROCK], kwargs: null, pilot: true, confirm: true });
+  assert.equal(paths.has("/api/bridge/targets/lock"), false);
 });
 
 test("the bot activates a module with NO effect name — the server resolves it, the browser never guesses", async () => {

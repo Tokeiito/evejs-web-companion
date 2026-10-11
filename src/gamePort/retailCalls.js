@@ -727,6 +727,20 @@ const tagging = (args, kwargs, context) => {
   return context.fleetID === null ? { status: "differs", note: "The client tags only from a session in a fleet: in none it sends nothing." } : {};
 };
 
+/** The dogma location asked of a target: the target, and nothing else (targetMgr.py 1366, 1385, 1303). */
+const aTargetAlone = (args, kwargs) => args.length === 1 && Number.isSafeInteger(args[0]) && args[0] > 0 && Object.keys(kwargs).length === 0;
+const NOT_A_TARGET_ALONE = Object.freeze({ status: "differs", note: "The client sends the target, and nothing else." });
+/** Whether the ship has the thing locked, as the target service's own list is kept (`context.targetLocked`). Null where that is not known. */
+const lockedAlready = (context, itemID) => (typeof context.targetLocked === "function" ? context.targetLocked(itemID) : null);
+/** targetMgr.TryLockTarget (1307), by which every lock is asked: none of a thing in targetsByID. */
+const lockingATarget = (args, kwargs, context) => (!aTargetAlone(args, kwargs) ? NOT_A_TARGET_ALONE
+  : lockedAlready(context, args[0]) === true ? { status: "differs", note: "The client asks no lock of a thing the ship has locked." } : {});
+/** targetMgr.UnlockTarget (1384): `if tid in self.targetsByID:`, and for no other. */
+const lettingGoOfATarget = (args, kwargs, context) => (!aTargetAlone(args, kwargs) ? NOT_A_TARGET_ALONE
+  : lockedAlready(context, args[0]) === false ? { status: "differs", note: "The client lets go only of a thing the ship has locked: this one it has not locked." } : {});
+/** targetMgr.CancelAddTarget (1298): of a lock the client is still making, which a thing it has locked is not. */
+const callingOffALock = (args, kwargs, context) => (!aTargetAlone(args, kwargs) ? NOT_A_TARGET_ALONE
+  : lockedAlready(context, args[0]) === true ? { status: "differs", note: "The client calls off a lock that is still being made: this one is made." } : {});
 /** fleetSvc.KickMember (607): the pilot's own number is not kicked. The client leaves the fleet itself instead. */
 const kickingAnother = (args, kwargs, context) => (String(args[0]) === String(context.characterID) ? {
   status: "differs",
@@ -1539,9 +1553,9 @@ const RETAIL_CALLS = Object.freeze({
   "dogmaIM.Activate": needing(reshaped(`${MODULE_BUTTON}:1348`, activation, "godma's GetDogmaLM().Activate(itemID, effectName, target, repeats) (godma.py 2062), on the dogma location bound for where the pilot is"), "dogma"),
   "dogmaIM.Deactivate": needing(reshaped(`${GODMA}:2101`, deactivation, "GetDogmaLM().Deactivate(itemID, effectName), on the dogma location bound for where the pilot is"), "dogma"),
   "dogmaIM.GetTargets": same(`${GODMA}:2361`, "GetDogmaLM().GetTargets(), no arguments"),
-  "dogmaIM.AddTarget": same(`${TARGET_MGR}:1366`, "GetDogmaLM().AddTarget(targetID)"),
-  "dogmaIM.CancelAddTarget": same(`${TARGET_MGR}:1303`, "GetDogmaLM().CancelAddTarget(targetID)"),
-  "dogmaIM.RemoveTarget": same(`${TARGET_MGR}:1385`, "GetDogmaLM().RemoveTarget(targetID)"),
+  "dogmaIM.AddTarget": judged(`${TARGET_MGR}:1366`, lockingATarget, "GetDogmaLM().AddTarget(targetID), by TryLockTarget (1305): for no thing the client has locked or is locking. Recorded on Tranquility 223 times, the target a long."),
+  "dogmaIM.CancelAddTarget": judged(`${TARGET_MGR}:1303`, callingOffALock, "GetDogmaLM().CancelAddTarget(targetID), of a lock still being made. No recording has one."),
+  "dogmaIM.RemoveTarget": judged(`${TARGET_MGR}:1385`, lettingGoOfATarget, "GetDogmaLM().RemoveTarget(targetID), of a thing the client has locked (1384). Recorded on Tranquility 4 times, the target a long."),
   "dogmaIM.SetModuleOnline": same(`${CLIENT_DOGMA}:702`, "SetModuleOnline(the ship the module is in, moduleID)"),
   "dogmaIM.TakeModuleOffline": same(`${CLIENT_DOGMA}:718`, "TakeModuleOffline(the ship the module is in, moduleID)"),
   "dogmaIM.LoadAmmo": reshaped(`${CLIENT_DOGMA}:991`, loading, "LoadAmmo(shipID, moduleID, [chargeItemID, ...], chargeLocationID) for one module, as every recording has it, or with the modules as a list (LoadAmmoToModules, 996): the ship is the one the session is flying, and the charges are a list"),

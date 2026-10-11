@@ -4277,3 +4277,39 @@ test("a place bookmarked is a write of the page's own: said to be a pilot's and 
   const scanned = await byThePage("BookmarkScanResult", [PILOTS_SYSTEM, "A site", "", "ABC-123", 7000001, 0]);
   assert.deepEqual([scanned.status, scanned.payload.error, scanned.sent], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE", []]);
 });
+
+// ── a target locked and let go by the page itself ────────────────────────────
+//
+// targetMgr._LockTarget (1366), UnlockTarget (1385) and CancelAddTarget (1303): GetDogmaLM().AddTarget(tid),
+// .RemoveTarget(tid) and .CancelAddTarget(tid), each on the dogma location's own object. The page asks them of the
+// dogma service by its name, as it asks its other calls of that object; the BFF hands each on as it came.
+
+test("a target locked, let go and a lock called off are writes of the page's own, asked of the dogma service by its name: each goes as it was sent", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  for (const method of ["AddTarget", "RemoveTarget", "CancelAddTarget"]) {
+    const args = [9988400023500];
+    const call = (more) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "dogmaIM", method, args, kwargs: null, ...more } });
+    const before = gateway.calls.call.length;
+    for (const more of [{}, { pilot: true }, { confirm: true }]) {
+      const refused = await call(more);
+      assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], `${method} ${JSON.stringify(more)}`);
+    }
+    // The dogma location is the session's own: there is nothing to say which, and a call that says is none.
+    const named = await call({ pilot: true, confirm: true, of: 30000142 });
+    assert.deepEqual([named.response.status, named.payload.error], [400, "INVALID_REQUEST"], method);
+    assert.equal(gateway.calls.call.length, before, method);
+    const made = await call({ pilot: true, confirm: true });
+    assert.deepEqual([made.response.status, made.payload.service, made.payload.method], [200, "dogmaIM", method]);
+    const sent = gateway.calls.call.at(-1);
+    assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["dogmaIM", method, args, null, BRIDGE_SESSION_ID, { userid: 4 }]);
+  }
+  // Every lock let go at once is its route's still, whatever is said.
+  const before = gateway.calls.call.length;
+  for (const method of ["RemoveTargets", "ClearTargets"]) {
+    const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "dogmaIM", method, args: [], kwargs: null, pilot: true, confirm: true } });
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], method);
+  }
+  assert.equal(gateway.calls.call.length, before);
+});

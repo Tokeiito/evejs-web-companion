@@ -8451,3 +8451,36 @@ test("a place bookmarked by beyonce's name is bookmarked on the ballpark's own o
   assert.equal(docked.session.sent.length, sentBefore, "nothing was sent");
   assert.equal(docked.pilots.callLedger().some((each) => each.pair === "beyonce.BookmarkLocation"), false, "and what was not sent is not counted");
 });
+
+// ── a lock and a letting go, counted by what the ship has locked ─────────────
+//
+// targetMgr.TryLockTarget (1307) asks no lock of a thing it has locked, UnlockTarget (1384) lets go only of one
+// it has, and CancelAddTarget (1298) is of a lock still being made.
+
+test("a lock asked of a thing the ship has locked, a letting go of one it has not, and a made lock called off are counted as not the client's", async () => {
+  const hand = handTicked();
+  const allowed = new Set([...TARGET_PAIRS, "dogmaIM.CancelAddTarget"]);
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetTargets": idsOf(9001), "bound:GetTargeters": idsOf(), "bound:AddTarget": [1, idsOf(9001)], "bound:RemoveTarget": null, "bound:CancelAddTarget": null } },
+    { ...hand.options, allowed });
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const { pilots, session } = built;
+  const ask = (method, id) => pilots.callMethod("dogmaIM", method, [id], null, WHOSE, handle);
+  const counted = () => Object.fromEntries(pilots.callLedger().filter((row) => /Target$/.test(row.pair) && !/Get/.test(row.pair)).map((row) => [row.pair.replace("dogmaIM.", ""), row.statuses]));
+  // The ship has 9001 locked, by the server's own list.
+  assert.deepEqual((await pilots.callMethod("dogmaIM", "GetTargets", [], null, WHOSE, handle)).result.items, [9001]);
+  await ask("AddTarget", 9002);
+  await ask("RemoveTarget", 9001);
+  await ask("CancelAddTarget", 9002);
+  assert.deepEqual(counted(), { AddTarget: { reshaped: 1 }, RemoveTarget: { reshaped: 1 }, CancelAddTarget: { reshaped: 1 } });
+  // Each of the three where the client asks none. They go all the same, as they came.
+  await ask("AddTarget", 9001);
+  await ask("RemoveTarget", 9003);
+  await ask("CancelAddTarget", 9001);
+  assert.deepEqual(counted(), { AddTarget: { reshaped: 1, differs: 1 }, RemoveTarget: { reshaped: 1, differs: 1 }, CancelAddTarget: { reshaped: 1, differs: 1 } });
+  assert.deepEqual(session.boundCalls.filter((call) => /Target$/.test(call.method) && !/Get/.test(call.method)).map((call) => [call.method, call.args]),
+    [["AddTarget", [9002]], ["RemoveTarget", [9001]], ["CancelAddTarget", [9002]], ["AddTarget", [9001]], ["RemoveTarget", [9003]], ["CancelAddTarget", [9001]]]);
+  // The server's word of a lock lost is gone by at once.
+  session.notify("OnTarget", [Buffer.from("lost"), 9001, null]);
+  await ask("AddTarget", 9001);
+  assert.deepEqual(counted().AddTarget, { reshaped: 2, differs: 1 });
+});

@@ -2804,6 +2804,12 @@ function createGamePortPilots({
       overloadEffect: (itemID) => overloadEffectOf(typeOf(itemID)),
       // fleetSvc.GetMyShipTypeID: godma's word for the ship the pilot is in.
       shipTypeID: () => typeOf(attribute(entry, "shipid")),
+      // targetMgr.targetsByID, as it is kept (pilotTargets.js): whether the ship has the thing locked. Null while
+      // the list is not known.
+      targetLocked: (itemID) => {
+        const kept = entry.targets.read(TARGETS);
+        return kept ? kept.items.some((each) => String(each) === String(itemID)) : null;
+      },
       fleetID: attribute(entry, "fleetid"),
       holdsFleet: entry.fleet !== null,
       // fleetSvc.IsBoss and self.options, as the fleet is kept (pilotFleet.js).

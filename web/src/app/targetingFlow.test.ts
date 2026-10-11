@@ -127,22 +127,35 @@ test("loadTargets swallows a transient read failure — no banner, last locks ke
 });
 
 // --- Locking ----------------------------------------------------------------
+//
+// A lock is the page's own call (bridge/targetWrites.ts): dogmaIM.AddTarget, answering whether the lock is still
+// being made, and then the page's read of what is locked, which is what it goes by.
 
-test("lockTarget records the action and lands the server's re-read", async () => {
-  const store = createClientStore();
-  const { fetch, requests } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/targets/lock") {
-      return {
-        status: 200,
-        body: { ok: true, locked: true, acquiring: false, targetIDs: [ROCK_ID], notifications: [] },
-      };
+/** A BFF that takes the page's own targeting calls: `add` is what AddTarget answers, `locked` what is read as locked after. */
+function targetingBff(spec: { add?: () => { status: number; body: unknown }; locked: () => readonly number[] }) {
+  return makeFakeFetch((path, _method, body) => {
+    if (path === "/api/bridge/call") {
+      if (body.method === "AddTarget" && spec.add) return spec.add();
+      return { status: 200, body: { ok: true, service: body.service, method: body.method, result: null, notifications: [] } };
+    }
+    if (path === "/api/bridge/targets") {
+      return { status: 200, body: { ok: true, targetIDs: spec.locked(), notifications: [] } };
     }
     throw new Error(`unexpected ${path}`);
   });
+}
+const added = (pending: number, locked: readonly number[]) => ({ status: 200, body: { ok: true, service: "dogmaIM", method: "AddTarget", result: [pending, locked], notifications: [] } });
+const pageCall = (method: string, targetID: number) => ({ service: "dogmaIM", method, args: [targetID], kwargs: null, pilot: true, confirm: true });
+const calls = (requests: readonly Recorded[]) => requests.filter((each) => each.path === "/api/bridge/call").map((each) => each.body);
+
+test("lockTarget makes the page's own call, and lands the server's re-read", async () => {
+  const store = createClientStore();
+  const { fetch, requests } = targetingBff({ add: () => added(0, [ROCK_ID]), locked: () => [ROCK_ID] });
   const flow = createAppFlow(store, { fetch });
 
   await flow.lockTarget(ROCK_ID);
-  assert.deepEqual(requests[0]?.body, { targetID: ROCK_ID });
+  // targetMgr.py 1366: GetDogmaLM().AddTarget(tid), as a pilot's write the page means; and then what is locked, read.
+  assert.deepEqual(requests.map((each) => [each.path, each.path === "/api/bridge/call" ? each.body : null]), [["/api/bridge/call", pageCall("AddTarget", ROCK_ID)], ["/api/bridge/targets", null]]);
   const state = store.targeting.get();
   assert.deepEqual(state.lockedTargetIDs, [ROCK_ID]);
   assert.equal(state.lastAction, "Lock");
@@ -152,10 +165,7 @@ test("lockTarget records the action and lands the server's re-read", async () =>
 
 test("a lock still being ACQUIRED is a success, and is remembered as acquiring", async () => {
   const store = createClientStore();
-  const { fetch } = makeFakeFetch(() => ({
-    status: 200,
-    body: { ok: true, locked: false, acquiring: true, targetIDs: [], notifications: [] },
-  }));
+  const { fetch } = targetingBff({ add: () => added(1, []), locked: () => [] });
   const flow = createAppFlow(store, { fetch });
 
   await flow.lockTarget(ROCK_ID);
@@ -172,21 +182,7 @@ test("a lock still being ACQUIRED is a success, and is remembered as acquiring",
 test("an acquiring note is retired the moment the server reports the lock landed", async () => {
   const store = createClientStore();
   let landed = false;
-  const { fetch } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/targets/lock") {
-      return {
-        status: 200,
-        body: { ok: true, locked: false, acquiring: true, targetIDs: [], notifications: [] },
-      };
-    }
-    if (path === "/api/bridge/targets") {
-      return {
-        status: 200,
-        body: { ok: true, targetIDs: landed ? [ROCK_ID] : [], notifications: [] },
-      };
-    }
-    throw new Error(`unexpected ${path}`);
-  });
+  const { fetch } = targetingBff({ add: () => added(1, []), locked: () => (landed ? [ROCK_ID] : []) });
   const flow = createAppFlow(store, { fetch });
 
   await flow.lockTarget(ROCK_ID);
@@ -201,10 +197,7 @@ test("an acquiring note is retired the moment the server reports the lock landed
 
 test("a lock the server REFUSES surfaces the server's own reason", async () => {
   const store = createClientStore();
-  const { fetch } = makeFakeFetch(() => ({
-    status: 409,
-    body: { ok: false, error: "CALL_REFUSED", message: "TargetTooFar" },
-  }));
+  const { fetch, requests } = targetingBff({ add: () => ({ status: 409, body: { ok: false, error: "CALL_REFUSED", message: "TargetTooFar" } }), locked: () => [] });
   const flow = createAppFlow(store, { fetch });
 
   await flow.lockTarget(ROCK_ID);
@@ -214,14 +207,14 @@ test("a lock the server REFUSES surfaces the server's own reason", async () => {
   assert.equal(state.actionError, "Lock refused: That is too far away. Get closer and try again.");
   assert.equal(state.silentDecline, null, "a refusal is not a silent decline");
   assert.deepEqual(state.lockedTargetIDs, []);
+  // Nothing is read after a refusal: there is nothing new to read.
+  assert.deepEqual(requests.map((each) => each.path), ["/api/bridge/call"]);
 });
 
 test("a lock the server SILENTLY declines is reported as such, with no invented cause", async () => {
   const store = createClientStore();
-  const { fetch } = makeFakeFetch(() => ({
-    status: 200,
-    body: { ok: true, locked: false, acquiring: false, targetIDs: [], notifications: [] },
-  }));
+  // The call says the lock is made, and the read after it has no such lock.
+  const { fetch } = targetingBff({ add: () => added(0, []), locked: () => [] });
   const flow = createAppFlow(store, { fetch });
 
   await flow.lockTarget(ROCK_ID);
@@ -232,31 +225,87 @@ test("a lock the server SILENTLY declines is reported as such, with no invented 
   assert.doesNotMatch(state.silentDecline ?? "", /range|capacitor|too many|scrambl/i);
 });
 
-// --- Unlocking --------------------------------------------------------------
-
-test("unlockTarget lands the re-read, and an ignored unlock is called out", async () => {
+test("no lock is asked of a thing the page has locked or is locking, as the client asks none: the read alone is made", async () => {
   const store = createClientStore();
-  let released = true;
-  const { fetch } = makeFakeFetch(() => ({
-    status: 200,
-    body: {
-      ok: true,
-      released,
-      targetIDs: released ? [] : [ROCK_ID],
-      notifications: [],
-    },
-  }));
+  let landed = false;
+  const { fetch, requests } = targetingBff({ add: () => added(1, []), locked: () => (landed ? [ROCK_ID] : []) });
   const flow = createAppFlow(store, { fetch });
 
+  await flow.lockTarget(ROCK_ID);
+  assert.deepEqual(store.targeting.get().acquiringTargetIDs, [ROCK_ID]);
+  // targetMgr.TryLockTarget (1307): being locked already, nothing is asked. It is being locked still, and says so.
+  await flow.lockTarget(ROCK_ID);
+  assert.deepEqual(calls(requests), [pageCall("AddTarget", ROCK_ID)]);
+  assert.deepEqual([store.targeting.get().acquiringTargetIDs, store.targeting.get().silentDecline], [[ROCK_ID], null]);
+  // And locked: nothing is asked either.
+  landed = true;
+  await flow.loadTargets();
+  await flow.lockTarget(ROCK_ID);
+  assert.deepEqual(calls(requests), [pageCall("AddTarget", ROCK_ID)]);
+  assert.deepEqual([store.targeting.get().lockedTargetIDs, store.targeting.get().silentDecline, store.targeting.get().actionError], [[ROCK_ID], null, null]);
+});
+
+// --- Unlocking --------------------------------------------------------------
+//
+// The client lets go of a target it has locked by RemoveTarget (targetMgr.py 1385), and calls off a lock still
+// being made by CancelAddTarget (1303). The page asks the one its own word for the target says, and reads after.
+
+test("unlockTarget lets go of a target the page has locked by RemoveTarget, lands the re-read, and an ignored unlock is called out", async () => {
+  const store = createClientStore();
+  let locked: readonly number[] = [ROCK_ID];
+  const { fetch, requests } = targetingBff({ locked: () => locked });
+  const flow = createAppFlow(store, { fetch });
+  await flow.loadTargets();
+  requests.length = 0;
+
+  locked = [];
   await flow.unlockTarget(ROCK_ID);
+  assert.deepEqual(requests.map((each) => [each.path, each.path === "/api/bridge/call" ? each.body : null]), [["/api/bridge/call", pageCall("RemoveTarget", ROCK_ID)], ["/api/bridge/targets", null]]);
   assert.deepEqual(store.targeting.get().lockedTargetIDs, []);
   assert.equal(store.targeting.get().silentDecline, null);
+  assert.equal(store.targeting.get().lastAction, "Unlock");
 
-  released = false;
+  // The server lets go of nothing, and says nothing of why.
+  locked = [ROCK_ID];
+  await flow.loadTargets();
+  requests.length = 0;
   await flow.unlockTarget(ROCK_ID);
   const state = store.targeting.get();
+  assert.deepEqual(calls(requests), [pageCall("RemoveTarget", ROCK_ID)]);
   assert.deepEqual(state.lockedTargetIDs, [ROCK_ID], "it is still locked, so show it still locked");
   assert.match(state.silentDecline ?? "", /did not release/i);
+});
+
+test("unlockTarget calls off a lock the page is still making; and lets go of it as a lock where it turns out to be made", async () => {
+  // Being locked, by the page's own word: called off, and nothing more where the read after has no such lock.
+  const making = createClientStore();
+  const calledOff = targetingBff({ add: () => added(1, []), locked: () => [] });
+  const first = createAppFlow(making, { fetch: calledOff.fetch });
+  await first.lockTarget(ROCK_ID);
+  calledOff.requests.length = 0;
+  await first.unlockTarget(ROCK_ID);
+  assert.deepEqual(calledOff.requests.map((each) => [each.path, each.path === "/api/bridge/call" ? each.body : null]), [["/api/bridge/call", pageCall("CancelAddTarget", ROCK_ID)], ["/api/bridge/targets", null]]);
+  assert.equal(making.targeting.get().silentDecline, null);
+  // The client's own mark of a thing being locked goes when it calls the lock off (1299): so does the page's.
+  assert.deepEqual(making.targeting.get().acquiringTargetIDs, []);
+
+  // The lock was made since the page last read: the calling off did nothing, the read shows it locked, and it is
+  // let go of as the lock it is. One press of the one button, in either state.
+  const made = createClientStore();
+  let locked: readonly number[] = [ROCK_ID];
+  const landed = makeFakeFetch((path, _method, body) => {
+    if (path === "/api/bridge/call") {
+      if (body.method === "RemoveTarget") locked = [];
+      return { status: 200, body: { ok: true, service: body.service, method: body.method, result: null, notifications: [] } };
+    }
+    if (path === "/api/bridge/targets") return { status: 200, body: { ok: true, targetIDs: locked, notifications: [] } };
+    throw new Error(`unexpected ${path}`);
+  });
+  const second = createAppFlow(made, { fetch: landed.fetch });
+  await second.unlockTarget(ROCK_ID);
+  assert.deepEqual(calls(landed.requests), [pageCall("CancelAddTarget", ROCK_ID), pageCall("RemoveTarget", ROCK_ID)]);
+  assert.deepEqual(landed.requests.map((each) => each.path), ["/api/bridge/call", "/api/bridge/targets", "/api/bridge/call", "/api/bridge/targets"]);
+  assert.deepEqual([made.targeting.get().lockedTargetIDs, made.targeting.get().silentDecline, made.targeting.get().actionError], [[], null, null]);
 });
 
 // --- Module activation ------------------------------------------------------
@@ -456,14 +505,11 @@ test("deactivateModule forwards typeID so the BFF can name a prop mod's effect",
 test("a later success clears both the stale refusal AND the stale silent decline", async () => {
   const store = createClientStore();
   let fail = true;
-  const { fetch } = makeFakeFetch(() =>
-    fail
-      ? { status: 409, body: { ok: false, error: "CALL_REFUSED", message: "TargetTooFar" } }
-      : {
-          status: 200,
-          body: { ok: true, locked: true, acquiring: false, targetIDs: [ROCK_ID], notifications: [] },
-        },
-  );
+  // (The lock is the page's own call, refused and then taken; what is locked is read after the one that is taken.)
+  const { fetch } = targetingBff({
+    add: () => (fail ? { status: 409, body: { ok: false, error: "CALL_REFUSED", message: "TargetTooFar" } } : added(0, [ROCK_ID])),
+    locked: () => [ROCK_ID],
+  });
   const flow = createAppFlow(store, { fetch });
 
   await flow.lockTarget(ROCK_ID);

@@ -2427,3 +2427,31 @@ test("a place bookmarked is the client's on the park, with the subfolder by keyw
   }
   for (const thing of [9999999, 40000000, 59999999, 64000000]) assert.equal(bookmark([thing, 7000001, "A thing", "", 0], { subfolderID: null }).status, "same", String(thing));
 });
+
+test("a lock, a letting go and a lock called off are the client's with the target alone; and are held to what the ship has locked, where that is known", () => {
+  const targeting = (method, args, context = {}, kwargs = null) => retailForm("dogmaIM", method, args, kwargs, context);
+  const locked = (...ids) => ({ targetLocked: (itemID) => ids.includes(itemID) });
+  const unknown = { targetLocked: () => null };
+  // targetMgr.py 1366, 1385 and 1303, on GetDogmaLM(): the target, and nothing else.
+  for (const [method, line] of [["AddTarget", 1366], ["RemoveTarget", 1385], ["CancelAddTarget", 1303]]) {
+    for (const [args, kwargs, why] of [[[], null, "no target"], [[0], null, "nought"], [["9001"], null, "a target as text"], [[9001, 9002], null, "two"], [[9001], { now: true }, "a keyword beside it"]]) {
+      const odd = targeting(method, args, {}, kwargs);
+      assert.deepEqual([odd.status, odd.args, odd.kwargs], ["differs", args, kwargs], `${method} ${why}`);
+      assert.match(odd.note, /the target, and nothing else/, `${method} ${why}`);
+    }
+    for (const context of [{}, unknown]) {
+      const made = targeting(method, [9001], context);
+      assert.deepEqual([made.status, made.args, made.kwargs], ["same", [9001], null], method);
+      assert.match(made.source, new RegExp(`targetMgr\\.py:${line}$`));
+    }
+  }
+  // TryLockTarget (1307): `if itemID in self.GetTargeting() or itemID in self.targetsByID: return`.
+  assert.deepEqual([targeting("AddTarget", [9001], locked(9002)).status, targeting("AddTarget", [9001], locked(9001)).status], ["same", "differs"]);
+  assert.match(targeting("AddTarget", [9001], locked(9001)).note, /has locked/);
+  // UnlockTarget (1384): `if tid in self.targetsByID:`, and for no other.
+  assert.deepEqual([targeting("RemoveTarget", [9001], locked(9001)).status, targeting("RemoveTarget", [9001], locked(9002)).status], ["same", "differs"]);
+  assert.match(targeting("RemoveTarget", [9001], locked(9002)).note, /has not locked/);
+  // CancelAddTarget (1298) is asked of a lock still being made: not of one that is made.
+  assert.deepEqual([targeting("CancelAddTarget", [9001], locked(9002)).status, targeting("CancelAddTarget", [9001], locked(9001)).status], ["same", "differs"]);
+  assert.match(targeting("CancelAddTarget", [9001], locked(9001)).note, /still being made/);
+});

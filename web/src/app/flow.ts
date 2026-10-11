@@ -352,6 +352,7 @@ import { decodeAvailableFleetAds, decodeMyFleetFinderAdvert } from "../bridge/fl
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { BOOKMARK_EXPIRY, bookmarkLocation as bookmarkLocationCall } from "../bridge/bookmarkWrites.ts";
+import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
 import { salvageWithDrones } from "../bridge/boundEntityWrites.ts";
 import { alignTo as alignToCall, approach as approachCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, type FlightNow } from "../bridge/movementWrites.ts";
 import { boardCorvette as boardCorvetteCall, leaveShip as leaveShipCall } from "../bridge/shipWrites.ts";
@@ -5772,12 +5773,41 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
+  /** What is locked, read now: the only authority on it (the page's read of dogmaIM.GetTargets). */
+  async function readLockedTargetIDs(): Promise<readonly number[]> {
+    return decodeTargetIDs((await api.getTargets(callOptions)).targetIDs);
+  }
+
+  /**
+   * Lets go of a thing by the one of the client's two calls that what the page has of it says
+   * (bridge/targetWrites.ts), and reads what is locked after. A lock the page took to be still being made, and
+   * the read shows made, is let go of as the lock it is: one asking does for either.
+   */
+  async function releaseTarget(targetID: number): Promise<{ released: boolean; targetIDs: readonly number[] }> {
+    const locked = store.targeting.get().lockedTargetIDs.includes(targetID);
+    await unlockTargetCall(bridgeDo, targetID, locked ? "locked" : "acquiring");
+    let targetIDs = await readLockedTargetIDs();
+    if (!locked && targetIDs.includes(targetID)) {
+      await unlockTargetCall(bridgeDo, targetID, "locked");
+      targetIDs = await readLockedTargetIDs();
+    }
+    return { released: !targetIDs.includes(targetID), targetIDs };
+  }
+
   async function lockTarget(targetID: number): Promise<void> {
     await runTargetingAction(
       "Lock",
-      () => api.lockTarget(targetID, callOptions),
+      // The page's own call (bridge/targetWrites.ts): none for a thing the page has locked or is locking. And then
+      // what is locked, read: a lock asked is not a lock made.
+      async () => {
+        const { pending } = await lockTargetCall(bridgeDo, targetID, store.targeting.get());
+        const targetIDs = await readLockedTargetIDs();
+        // (A lock the call said was still being made and the read shows made: the store takes no note of a
+        // thing being locked that it has locked.)
+        return { locked: targetIDs.includes(targetID), acquiring: pending, targetIDs };
+      },
       (result) => {
-        store.apply({ type: "targeting/targets", targetIDs: decodeTargetIDs(result.targetIDs) });
+        store.apply({ type: "targeting/targets", targetIDs: result.targetIDs });
         if (result.acquiring) {
           store.apply({ type: "targeting/acquiring", targetID });
         }
@@ -5792,9 +5822,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function unlockTarget(targetID: number): Promise<void> {
     await runTargetingAction(
       "Unlock",
-      () => api.unlockTarget(targetID, callOptions),
-      (result) =>
-        store.apply({ type: "targeting/targets", targetIDs: decodeTargetIDs(result.targetIDs) }),
+      () => releaseTarget(targetID),
+      (result) => {
+        store.apply({ type: "targeting/targets", targetIDs: result.targetIDs });
+        // The client's own mark of a thing being locked goes when it lets go (targetMgr.py 1299): so does the page's.
+        if (result.released) {
+          store.apply({ type: "targeting/lock-event", event: { kind: "lost", targetID, reason: null } });
+        }
+      },
       (result) => result.released,
       "The server did not release that lock, and gave no reason.",
     );
@@ -8154,7 +8189,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             await alignShip(action.targetID);
             return;
           case "lock":
-            await api.lockTarget(action.targetID, callOptions);
+            await lockTargetCall(bridgeDo, action.targetID, null);
             return;
           // Rung 7, the Heal family (fleetCompanionLoop.ts): a fitted remote
           // repairer, aimed at the ship the broadcast named. `repeat: -1` is
@@ -8550,7 +8585,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         await api.dock(stationID, callOptions);
       },
       lockTarget: async (targetID) => {
-        await api.lockTarget(targetID, callOptions);
+        await lockTargetCall(bridgeDo, targetID, null);
       },
       // No `effect` is passed: the SERVER resolves the module's own default
       // activation effect from its type. The browser never guesses which effect
@@ -10906,7 +10941,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         let outcome: SupportSelfMiningFeedback["outcome"] = "acknowledged", reason: string | undefined;
         try {
           switch (self.action.kind) {
-            case "lock": await api.lockTarget(self.action.targetID, callOptions); break;
+            case "lock": await lockTargetCall(bridgeDo, self.action.targetID, null); break;
             case "activate": await api.activateModule(self.action.moduleID, { targetID: self.action.targetID, repeat: -1 }, callOptions); break;
             case "deactivate": await api.deactivateModule(self.action.moduleID, { typeID: self.action.typeID }, callOptions); break;
             case "launchDrones": await api.launchDrones(wholeStackLaunch(self.action.droneItemIDs, droneStackSizes(droneState?.bay ?? [])), callOptions); break;
@@ -10944,7 +10979,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           switch (tractor.action.kind) {
             case "claimContainer": claimedResult = await api.claimContainer(request.tractor.runID, solarSystemID, tractor.action.itemID, tractor.action.renewOnly, callOptions); break;
             case "releaseContainerClaim": await api.releaseContainerClaims(request.tractor.runID, callOptions); break;
-            case "lock": await api.lockTarget(tractor.action.targetID, callOptions); break;
+            case "lock": await lockTargetCall(bridgeDo, tractor.action.targetID, null); break;
             case "activate": await api.activateModule(tractor.action.moduleID, { targetID: tractor.action.targetID, repeat: -1 }, callOptions); break;
             case "deactivate": await api.deactivateModule(tractor.action.moduleID, { typeID: tractor.action.typeID }, callOptions); break;
           }
@@ -12567,10 +12602,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             await api.jump(action.fromGateID, action.toGateID, callOptions);
             return;
           case "lock":
-            await api.lockTarget(action.targetID, callOptions);
+            await lockTargetCall(bridgeDo, action.targetID, null);
             return;
           case "unlock":
-            await api.unlockTarget(action.targetID, callOptions);
+            await releaseTarget(action.targetID);
             return;
           case "activate":
             if (action.utility) {
