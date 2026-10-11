@@ -52,7 +52,9 @@
     type InstallCheck,
     type InstallPilot,
   } from "../bridge/industryJobs.ts";
-  import { buildSystemGraph, distancesFrom, type SystemGraph } from "../nav/routeSolver.ts";
+  import { distancesFrom, type SystemGraph } from "../nav/routeSolver.ts";
+  import { systemGraphOnce } from "../nav/systemGraphKept.ts";
+  import { pageFetch } from "../app/pageFetch.ts";
   import type { TabID } from "./tabs.ts";
   import { loadKnownCharacters } from "../app/knownCharacters.ts";
   import {
@@ -1039,9 +1041,10 @@
   onMount(() => {
     void loadPlans();
     void loadInventionTerms();
-    void ask((options) => loadSystemGraph(options))
-      .then((data) => {
-        systemGraph = buildSystemGraph(data);
+    // (The map is one for the page: where a pilot's flow has read it, nothing is asked. nav/systemGraphKept.ts.)
+    void systemGraphOnce(pageFetch(), () => ask((options) => loadSystemGraph(options)))
+      .then((graph) => {
+        systemGraph = graph;
       })
       .catch(() => {
         // Without it, a facility in another system reads as out of reach;

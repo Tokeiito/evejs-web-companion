@@ -197,10 +197,10 @@ import {
 import { voteTankLayer } from "../bots/tankLayer.ts";
 import type { BotLogDraft, BotLogSink } from "../nav/botLog.ts";
 import {
-  buildSystemGraph,
   routeAlong,
   type SystemGraph,
 } from "../nav/routeSolver.ts";
+import { systemGraphOnce } from "../nav/systemGraphKept.ts";
 import { autopilotDistances, autopilotJumpCounts, autopilotMap, autopilotPath, type AutopilotRouteType } from "../nav/autopilotRoute.ts";
 import {
   autopilotSettingsFrom,
@@ -7090,11 +7090,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (routeGraph) {
       return Promise.resolve(routeGraph);
     }
-    routeGraphLoading ??= api.loadSystemGraph(callOptions).then(
-      (data) => {
-        routeGraph = buildSystemGraph(data);
+    // (The graph is one for a page, whichever of its flows reads it: kept by what this flow asks with,
+    // nav/systemGraphKept.ts.)
+    routeGraphLoading ??= systemGraphOnce(callOptions.fetch ?? pageFetch(), () => api.loadSystemGraph(callOptions)).then(
+      (graph) => {
+        routeGraph = graph;
         routeGraphLoading = null;
-        return routeGraph;
+        return graph;
       },
       (error) => {
         routeGraphLoading = null;
