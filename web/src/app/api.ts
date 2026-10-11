@@ -2112,38 +2112,6 @@ function asFoundAgent(value: JsonValue): FoundAgent {
   };
 }
 
-/**
- * Whether `characterID` is a member of the SESSION character's corporation.
- *
- * ⚠ SESSION-CORP-SCOPED AND NOT REDIRECTABLE. The underlying `GetMember` looks
- * the id up in the session corp's own member table and answers null for anyone
- * outside it, so a caller cannot ask about somebody else's corporation by
- * passing a different id -- the worst a bad id can do is answer "no".
- *
- * ⚠ THREE-STATE, AND THE THIRD MATTERS. `null` is "could not tell" -- the read
- * failed or returned nothing usable -- and a caller acting on membership must
- * treat it as NO, never as yes. Auto-accepting a fleet invitation on an
- * unreadable answer would join whatever asked.
- */
-export async function isInMyCorporation(
-  characterID: number,
-  options: ApiOptions = {},
-): Promise<boolean | null> {
-  if (!Number.isSafeInteger(characterID) || characterID <= 0) {
-    return null;
-  }
-  try {
-    const data = await getJson(`/api/bridge/corp-members?memberID=${characterID}`, options);
-    const member = (data as Record<string, JsonValue>).member ?? null;
-    if (member === null || member === undefined) {
-      return false;
-    }
-    return true;
-  } catch {
-    return null;
-  }
-}
-
 /** Find agents from the static reference table (filtered + capped server-side). */
 export async function findAgents(
   filters: FindAgentsFilters = {},

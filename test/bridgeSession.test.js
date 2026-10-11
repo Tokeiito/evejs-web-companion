@@ -4533,3 +4533,73 @@ test("the bookmarks' route reads the bookmarks and the folders the pilot adminis
   const lost = await apiRequest(baseUrl, "/api/bridge/bookmarks");
   assert.deepEqual([lost.response.status, lost.payload.error], [404, "SESSION_NOT_FOUND"]);
 });
+
+// ── a corporation's members, read by the page itself ─────────────────────────
+//
+// bco_members.__PrimeEveOwners (136): self.GetCorpRegistry().GetEveOwners(), nothing sent. The page asks it as a
+// pilot's read; the BFF hands it on as it came. The route the page asked before still stands: four reads of
+// the registry whatever is asked, a member's where one is named and several members' where several are, each
+// settled by itself.
+
+test("a corporation's members go by the generic call as a pilot's read, as it was sent; what changes a member is its route's alone", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const before = gateway.calls.call.length;
+  const made = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "corpRegistry", method: "GetEveOwners", args: [], kwargs: null, pilot: true } });
+  assert.deepEqual([made.response.status, made.payload.service, made.payload.method], [200, "corpRegistry", "GetEveOwners"]);
+  const sent = gateway.calls.call.at(-1);
+  assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["corpRegistry", "GetEveOwners", [], null, BRIDGE_SESSION_ID, { userid: 4 }]);
+  assert.equal(gateway.calls.call.length, before + 1);
+  for (const method of ["UpdateMember", "UpdateMembers", "KickOutMember", "KickOutMembers", "ExecuteActions", "ResignFromCEO"]) {
+    const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "corpRegistry", method, args: [7], kwargs: null, pilot: true, confirm: true } });
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], method);
+  }
+  assert.equal(gateway.calls.call.length, before + 1);
+});
+
+test("the members' route makes four reads whatever it is asked, a member's and several members' where they are named; a read that fails is answered as nothing with its code beside it", async () => {
+  const asked = [];
+  let failing = null;
+  const gateway = fakeGateway({
+    async callMethod(service, method, args) {
+      asked.push([service, method, args]);
+      if (failing !== null && failing.method === method) throw new gatewayClient.EveGatewayError("the call failed", failing);
+      return { service, method, result: `${method}'s answer`, notifications: [] };
+    },
+  });
+  const { baseUrl } = await startTestServer({ gateway });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  asked.length = 0;
+  const always = (page) => [["corpRegistry", "GetMembersPaged", [page]], ["corpRegistry", "GetEveOwners", []], ["corpRegistry", "GetMemberTrackingInfo", []], ["corpRegistry", "GetMemberTrackingInfoSimple", []]];
+  const ANSWERS = { membersPaged: "GetMembersPaged's answer", eveOwners: "GetEveOwners's answer", trackingInfo: "GetMemberTrackingInfo's answer", trackingSimple: "GetMemberTrackingInfoSimple's answer" };
+  const NO_ERRORS = { membersPaged: null, eveOwners: null, trackingInfo: null, trackingSimple: null, member: null, membersByIds: null };
+
+  // Nothing named, and what names nothing: the first page, and no member's read.
+  for (const path of ["/api/bridge/corp-members", "/api/bridge/corp-members?page=0&memberID=0&memberIDs=", "/api/bridge/corp-members?page=x&memberID=-7&memberIDs=a,-1,0,1.5"]) {
+    const plain = await apiRequest(baseUrl, path);
+    assert.equal(plain.response.status, 200, path);
+    assert.deepEqual(plain.payload, { ok: true, requested: { page: 1, memberID: null, memberIDs: null }, ...ANSWERS, member: null, membersByIds: null, errors: NO_ERRORS }, path);
+    assert.deepEqual(asked.splice(0), always(1), path);
+  }
+
+  // A page, a member and several members named: the six reads, each with what was sent.
+  const named = await apiRequest(baseUrl, "/api/bridge/corp-members?page=3&memberID=8&memberIDs=9,%2010,x,9");
+  assert.deepEqual(named.payload, { ok: true, requested: { page: 3, memberID: 8, memberIDs: [9, 10, 9] }, ...ANSWERS, member: "GetMember's answer", membersByIds: "GetMembersByIds's answer", errors: NO_ERRORS });
+  assert.deepEqual(asked.splice(0), [...always(3), ["corpRegistry", "GetMember", [8]], ["corpRegistry", "GetMembersByIds", [[9, 10, 9]]]]);
+
+  // The member's read failing: 200 all the same, nothing for the member, and the code beside. What the page read
+  // as "not a member", while it asked this route.
+  failing = { method: "GetMember", code: "CALL_FAILED", statusCode: 502 };
+  const failed = await apiRequest(baseUrl, "/api/bridge/corp-members?memberID=8");
+  assert.equal(failed.response.status, 200);
+  assert.deepEqual([failed.payload.member, failed.payload.eveOwners, failed.payload.errors], [null, "GetEveOwners's answer", { ...NO_ERRORS, member: "CALL_FAILED" }]);
+  failing = { method: "GetEveOwners", code: "CALL_REFUSED", statusCode: 409 };
+  const refused = await apiRequest(baseUrl, "/api/bridge/corp-members?memberIDs=9");
+  assert.deepEqual([refused.response.status, refused.payload.eveOwners, refused.payload.membersByIds, refused.payload.errors], [200, null, "GetMembersByIds's answer", { ...NO_ERRORS, eveOwners: "CALL_REFUSED" }]);
+
+  // A session the server no longer has is the whole route's failure, whichever read met it.
+  failing = { method: "GetMemberTrackingInfoSimple", code: "SESSION_NOT_FOUND", statusCode: 404 };
+  const lost = await apiRequest(baseUrl, "/api/bridge/corp-members");
+  assert.deepEqual([lost.response.status, lost.payload.error], [404, "SESSION_NOT_FOUND"]);
+});

@@ -911,8 +911,10 @@ test("an invitation that reaches a pilot the page knows to be in a fleet is turn
   // fleetSvc.py 1179 and 1180: `if session.fleetid is not None: __fleetMoniker.RejectInvite(True)`, and no question.
   assert.deepEqual(declines(), [decliningOf(654500020000, [true])]);
   assert.deepEqual([store.get().fleet.pendingInvite, store.get().fleet.actionError, store.get().fleet.activeAction, store.get().fleet.availability], [null, null, null, "ready"]);
-  // Nothing else is asked for it: not who invited, nor whether that pilot is of the corporation, nor the fleet again.
+  // Nothing else is asked for it: not who invited, nor whether that pilot is of the corporation (by the page's
+  // own read of its members, or by the route it was asked by before), nor the fleet again.
   assert.deepEqual(calls.map((each) => each.url).filter((url) => /names|corp-members|bound-fleet/.test(url)), []);
+  assert.deepEqual(calls.filter((each) => (each.body as { service?: string } | null)?.service === "corpRegistry"), []);
   // And a fleet's invitation the pilot turns down by name from within a fleet goes with True too.
   await flow.declineFleetInvite(654500030000);
   assert.deepEqual(declines().at(-1), decliningOf(654500030000, [true]));
@@ -1029,4 +1031,134 @@ test("the inviter is told of a pilot whose name cannot be had as the pilot it in
   nobody.source.emit(notificationFrame("OnFleetJoinReject", 1, [140000003, 2]));
   await settled();
   assert.equal(nobody.store.get().fleet.inviteAnswered, null);
+});
+
+// --- an invitation from a pilot of the corporation ------------------------------
+//
+// The page takes such an invitation by itself. No retail client does: a client accepts unasked only where the
+// invitation says autoAccept (fleetSvc.py 1193), and asks its pilot otherwise. Whether the inviter is of the
+// pilot's corporation the page knows as a client knows its corporation's members: by
+// GetCorpRegistry().GetEveOwners() (bco_members.py 136), a pilot being a member whose number is among them (161).
+// Until 2026-10-11 it asked GET /api/bridge/corp-members with the inviter named: five reads, of which the page
+// took the member's, and one of them a call no client makes for a pilot its own list has not.
+
+const MATE = 140000002;
+const ownersOf = (...ids: readonly number[]) => ({ type: "list", items: ids.map((id) => ({ type: "object", name: "util.Row", args: { type: "dict", entries: [
+  ["header", { type: "list", items: ["ownerID", "ownerName", "typeID", "gender", "ownerNameID"] }], ["line", { type: "list", items: [id, `Pilot ${id}`, 1380, 1, null] }],
+] } })) });
+// bco_members.py 136: self.GetCorpRegistry().GetEveOwners(), nothing sent, as a pilot's read.
+const THE_MEMBERS_READ = { service: "corpRegistry", method: "GetEveOwners", args: [], kwargs: null, pilot: true };
+// fleetSvc.py 1194: GetFleet(fleetID).AcceptInvite(...), as a pilot's write the page means.
+const acceptingOf = (fleetID: number) => ({ service: "fleetObjectHandler", method: "AcceptInvite", args: [], kwargs: null, pilot: true, confirm: true, of: fleetID });
+
+/** A pilot in no fleet, online, and a BFF whose answer to the members' read is the test's to say. Once an invitation is accepted the pilot's fleet reads as one. */
+async function mateFlow(members: () => Response | Promise<Response>) {
+  const store = createClientStore();
+  const { factory, sources } = makeFakeEventSource();
+  const calls: Array<Record<string, unknown>> = [];
+  const routes: string[] = [];
+  let accepted = false;
+  const fetch: typeof globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    if (url === "/api/bridge/select") {
+      return json({ ok: true, character: { characterID: 140000005, characterName: "Fleet Pilot", stationID: 60003760, structureID: null, solarSystemID: 30000142, corporationID: 98000001 }, station: null, notifications: [] });
+    }
+    if (url === "/api/bridge/bound-fleet") return json(accepted ? populatedFleet() : noFleet());
+    if (url === "/api/names") return json({ ok: true, names: {} });
+    // The route, which nothing is to ask: it answers that the pilot named is a member.
+    if (url.startsWith("/api/bridge/corp-members")) {
+      routes.push(url);
+      return json({ ok: true, member: { type: "packedrow", fields: { characterID: MATE } }, errors: {} });
+    }
+    if (url === "/api/bridge/call") {
+      const request = JSON.parse(String(init.body)) as Record<string, unknown>;
+      calls.push(request);
+      if (request.service === "corpRegistry") return members();
+      if (request.method === "AcceptInvite") accepted = true;
+      return json({ ok: true, service: request.service, method: request.method, result: null, notifications: [] });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  const flow = createAppFlow(store, { fetch, eventSource: factory });
+  await flow.selectCharacter(140000005);
+  await flow.loadFleet();
+  const source = sources[0];
+  assert.ok(source, "selecting a character must open the live event source");
+  const of = (method: string) => calls.filter((each) => each.method === method);
+  let sequence = 0;
+  const invite = (fleetID: number, inviter: unknown = MATE) => { sequence += 1; source.emit(notificationFrame("OnFleetInvite", sequence, [fleetID, inviter, "AskJoinFleet", {}])); };
+  return { store, flow, calls, routes, of, invite };
+}
+const membersAre = (...ids: readonly number[]) => () => json({ ok: true, service: "corpRegistry", method: "GetEveOwners", result: ownersOf(...ids), notifications: [] });
+
+test("an invitation from a pilot of the corporation is taken by the page itself: the members read by the page's own call, and never by the route", async () => {
+  const { store, routes, of, invite } = await mateFlow(membersAre(140000005, MATE));
+  invite(654500020000);
+  await waitFor(() => of("AcceptInvite").length === 1 && store.get().fleet.availability === "ready", "the invitation was not taken");
+  await settled();
+  assert.deepEqual(of("GetEveOwners"), [THE_MEMBERS_READ]);
+  assert.deepEqual(of("AcceptInvite"), [acceptingOf(654500020000)]);
+  assert.deepEqual(routes, []);
+  assert.deepEqual([store.get().fleet.pendingInvite, store.get().fleet.actionError], [null, null]);
+});
+
+test("an invitation from a pilot who is not of the corporation waits for its pilot; so does one that names no pilot, of whom nothing is asked", async () => {
+  const stranger = await mateFlow(membersAre(140000005, 140000009));
+  stranger.invite(654500020000);
+  await waitFor(() => stranger.of("GetEveOwners").length === 1, "the members were not read");
+  await settled();
+  assert.deepEqual([stranger.of("GetEveOwners"), stranger.of("AcceptInvite"), stranger.routes], [[THE_MEMBERS_READ], [], []]);
+  assert.equal(stranger.store.get().fleet.pendingInvite?.fleetID, 654500020000);
+
+  const nobody = await mateFlow(membersAre(140000005, MATE));
+  nobody.invite(654500020000, null);
+  await waitFor(() => nobody.store.get().fleet.pendingInvite !== null, "the invitation did not reach the store");
+  await settled();
+  assert.deepEqual([nobody.of("GetEveOwners"), nobody.of("AcceptInvite"), nobody.routes], [[], [], []]);
+  assert.equal(nobody.store.get().fleet.pendingInvite?.fleetID, 654500020000);
+});
+
+test("members that could not be read leave the invitation waiting: a call that failed, and an answer that is no list", async () => {
+  const answers: Array<[string, () => Response]> = [
+    ["the call failed", () => json({ ok: false, error: "CALL_FAILED", message: "CALL_FAILED" }, 502)],
+    ["nothing", () => json({ ok: true, service: "corpRegistry", method: "GetEveOwners", result: null, notifications: [] })],
+    ["a yes", () => json({ ok: true, service: "corpRegistry", method: "GetEveOwners", result: true, notifications: [] })],
+    // The route's answer for a member, were it taken for the read's.
+    ["a row", () => json({ ok: true, service: "corpRegistry", method: "GetEveOwners", result: { type: "packedrow", fields: { characterID: MATE } }, notifications: [] })],
+  ];
+  for (const [what, members] of answers) {
+    const { store, routes, of, invite } = await mateFlow(members);
+    invite(654500020000);
+    await waitFor(() => of("GetEveOwners").length === 1, `the members were not read (${what})`);
+    await settled();
+    assert.deepEqual([of("AcceptInvite"), routes], [[], []], what);
+    assert.equal(store.get().fleet.pendingInvite?.fleetID, 654500020000, what);
+    assert.equal(store.get().fleet.actionError, null, what);
+  }
+});
+
+test("an invitation its pilot answered while the members were being read is not taken, and nor is one another has replaced", async () => {
+  const reading = deferred<Response>();
+  const { store, flow, of, invite } = await mateFlow(() => reading.promise);
+  invite(654500020000);
+  await waitFor(() => of("GetEveOwners").length === 1, "the members were not read");
+  await flow.declineFleetInvite();
+  assert.equal(store.get().fleet.pendingInvite, null);
+  reading.resolve(membersAre(140000005, MATE)() as Response);
+  await settled();
+  assert.deepEqual(of("AcceptInvite"), []);
+
+  // Another fleet's invitation has come meanwhile, from a pilot who is not of the corporation: the first read's
+  // yes is for the first invitation, and that one is the window's no longer.
+  const first = deferred<Response>();
+  let reads = 0;
+  const two = await mateFlow(() => { reads += 1; return reads === 1 ? first.promise : (membersAre(140000005)() as Response); });
+  two.invite(654500020000);
+  await waitFor(() => two.of("GetEveOwners").length === 1, "the members were not read");
+  two.invite(654500030000, 140000009);
+  await waitFor(() => two.of("GetEveOwners").length === 2, "the members were not read again");
+  first.resolve(membersAre(140000005, MATE)() as Response);
+  await settled();
+  assert.deepEqual(two.of("AcceptInvite"), []);
+  assert.equal(two.store.get().fleet.pendingInvite?.fleetID, 654500030000);
 });

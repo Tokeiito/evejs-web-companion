@@ -336,6 +336,7 @@ import { siteKind } from "../scanner/siteKind.ts";
 import { decodeFittings } from "../bridge/fittings.ts";
 import { decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge/sharedFittings.ts";
 import { readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
+import { readCorporationMemberIDs } from "../bridge/corpMemberReads.ts";
 import {
   authoritativeFleetMemberCharacterIDs,
   fleetCommanderCharacterIDs,
@@ -4115,8 +4116,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
  * silently. Neither is fixed by trying again; both are fixed by not needing a
  * human at the moment the push lands.
  *
- * ⚠ CORP-MATES ONLY, AND "COULD NOT TELL" MEANS NO. `isInMyCorporation` is
- * three-state; an unreadable answer leaves the invitation sitting in the panel
+ * ⚠ CORP-MATES ONLY, AND "COULD NOT TELL" MEANS NO. The inviter is a mate where
+ * its number is among the corporation's members as the registry lists them (the
+ * page's own read, bridge/corpMemberReads.ts: the client's own test of a member).
+ * A list that could not be read leaves the invitation sitting in the panel
  * for a human, which is exactly what used to happen for every invitation. This
  * only ever REMOVES a click, never widens who can put this character in a fleet:
  * an invite from outside the corporation still waits to be accepted by hand.
@@ -4130,8 +4133,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (inviter === null) {
       return;
     }
-    const sameCorp = await api.isInMyCorporation(inviter, callOptions);
-    if (sameCorp !== true) {
+    let sameCorp: boolean;
+    try {
+      sameCorp = (await readCorporationMemberIDs(bridgeAsk)).includes(inviter);
+    } catch {
+      return;
+    }
+    if (!sameCorp) {
       return;
     }
     // Still pending? A human may have accepted it in the seconds this read took.

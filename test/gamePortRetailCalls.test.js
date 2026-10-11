@@ -2635,3 +2635,18 @@ test("a pilot's bookmarks are asked of the bookmark manager by name, with nothin
   assert.deepEqual([withMore.status, withMore.args], ["differs", [500001]]);
   assert.match(withMore.note, /nothing/);
 });
+
+// bco_members.py 136: eveowners = self.GetCorpRegistry().GetEveOwners(), on the corporation's moniker and with
+// nothing. Tranquility's recordings have it so, seven times. The game port asks it as a character is chosen, and
+// the page asks it to know whether a pilot is of its own's corporation.
+
+test("a corporation's members are asked of its registry with nothing", () => {
+  const asked = form("corpRegistry.GetEveOwners", []);
+  assert.deepEqual([asked.status, asked.args, asked.kwargs], ["same", [], null]);
+  assert.match(asked.source, /bco_members\.py:136$/);
+  assert.match(asked.note, /Tranquility/);
+  // Something sent with it is not the client's call: a pilot named least of all.
+  const withMore = form("corpRegistry.GetEveOwners", [140000002]);
+  assert.deepEqual([withMore.status, withMore.args], ["differs", [140000002]]);
+  assert.match(withMore.note, /nothing/);
+});
