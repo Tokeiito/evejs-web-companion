@@ -1127,6 +1127,26 @@ Take these defaults, and list each under "For the operator" in the log so they c
   After: the station's row in the overview and "Dock" (wait for "Docked": about half
   a minute), the page's "Log out", and `lrd-unsave.js <bff> test2 "<the bot's name>"`,
   which takes the bot out of the BFF's library (a restore of the store does not).
+- **Two routes may be one reader's, and one call of the client's.** The refit library
+  read the pilot's own fittings by one route and its corporation's by a third of
+  another: the client's one call, `GetFittingMgr(owner).GetFittings(owner)`, for two
+  owners. Follow the reader in `flow.ts`, and move what it reads together.
+- **An answer may not be the same thing on the two transports.** A cached call's
+  result comes whole through the gateway and already taken out on the game port,
+  which keeps it. Print the raw answer on each in the live script, and see that the
+  decoder reads both (`rfl-live.js`: "its corporation's answer is").
+- **Before a page names an owner, read what the server trusts of one, and ask for
+  another's in the live script.** The fittings' managers refuse an owner that is not
+  the session's own; the page's own call with another pilot's number is 409.
+- **A test may take a route's asker for an example of something else.** The test of
+  the page's requests on its socket used the fittings' asker as its request of
+  `api.ts`. `grep -rn "<asker>" web/src --include=*.test.ts` before the asker is taken
+  out, and give such a test another asker that is staying a while.
+- **A fitting for a check** is saved through the BFF's own route in the wire's forms,
+  which both transports take: `rfl-live.js <bff> <account> <characterID> "" stage`
+  (`rfl-look.js` reads a pilot's fittings and changes nothing). In the tab the Bot
+  Builder is "New bot" in the bots' library; it reads the library as it opens, and
+  a refit step's picker lists it ("Dock, refit, and repair" adds such a step).
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

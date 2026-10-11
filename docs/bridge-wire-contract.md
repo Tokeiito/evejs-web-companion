@@ -878,6 +878,17 @@ list at all**, and the read fails for it. On the game port the transport answers
 what it keeps until a launch is removed or the server says the launches changed.
 `GET /api/bridge/pi-colonies` still stands, and nothing of the page asks it.
 
+**The saved fittings are the page's own reads** (`web/src/bridge/fittingReads.ts`):
+`charFittingMgr.GetFittings` with the pilot and `corpFittingMgr.GetFittings` with its
+corporation, each by the generic call as a pilot's read, the owner its one argument.
+The server lets a session read its own owner's alone (409 `CALL_REFUSED` for another's),
+and takes the session's where none is sent. **The corporation's answer differs by
+transport**: through the gateway it is a `CachedMethodCallResult`, with the library in
+its substream; on the game port it is the library itself, the transport having taken
+it out and kept it as a client does. `sharedFittings.ts` reads both.
+`GET /api/bridge/fittings` and `GET /api/bridge/shared-fittings` still stand, and
+nothing of the page asks either.
+
 ```jsonc
 {
   "blueprintID": 7100000001,   // the blueprint ITEM id
