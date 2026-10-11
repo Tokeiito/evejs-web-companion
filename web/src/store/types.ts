@@ -527,6 +527,8 @@ export interface IndustryJobRow {
   readonly blueprintTypeID: number;
   readonly productTypeID: number;
   readonly facilityID: number;
+  /** The solar system the job is in, which the client sends back with a delivery or a stop. Nought where the row has none. */
+  readonly solarSystemID: number;
   readonly runs: number;
   readonly successfulRuns: number;
   /** Installation cost the server charged, in ISK. */

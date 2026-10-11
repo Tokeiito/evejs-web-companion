@@ -94,6 +94,7 @@ const JOB_ROW = keyVal({
   blueprintID: 7_100_000_001,
   blueprintTypeID: 681,
   facilityID: 60003760,
+  solarSystemID: 30000142,
   ownerID: 7,
   status: 3,
   runs: 3,
@@ -157,6 +158,9 @@ test("a job decodes to activity + status NAMES, never their numbers", () => {
   assert.equal(job.productTypeID, 165);
   assert.equal(job.runs, 3);
   assert.equal(job.cost, 1250);
+  // The job's own solar system, which the client sends back with a delivery or a stop (industrySvc.py 150, 160).
+  assert.equal(job.solarSystemID, 30000142);
+  assert.equal(decodeJob(keyVal({ jobID: 9, status: 1 }))!.solarSystemID, 0);
   // FILETIME longs survive as bigints, not lossy numbers.
   assert.equal(job.startDate, 133000000000000000n);
   assert.equal(job.endDate, 133000000018000000n);

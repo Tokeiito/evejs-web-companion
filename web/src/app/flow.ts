@@ -36,6 +36,7 @@ import {
   industryRefusalMessage,
 } from "../bridge/industry.ts";
 import { decodeInventionTerms, type DecryptorTerms } from "../bridge/industryInvention.ts";
+import { cancelIndustryJob as cancelIndustryJobCall, deliverIndustryJob as deliverIndustryJobCall, type JobAsked } from "../bridge/industryWrites.ts";
 import {
   decodeEscrow,
   decodeOrderBook,
@@ -3430,6 +3431,19 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   /**
+   * The job as the page last read it. A delivery and a stop send the job's own solar system, as the client
+   * does from the job's row (industrySvc.py 150, 160), and the page has it from nowhere else: a job that is
+   * not among those read is not asked for.
+   */
+  function jobAsRead(jobID: number): JobAsked {
+    const job = store.get().industry.jobs.find((each) => each.jobID === jobID);
+    if (!job) {
+      throw new Error("That job is not among your jobs as they were last read.");
+    }
+    return job;
+  }
+
+  /**
    * Run an industry mutation, then reload the panel so it shows SERVER truth.
    *
    * The same two refusal shapes R12 and R14 established, and they are not the
@@ -3440,8 +3454,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    *    `industryRefusalMessage` turns into a sentence without inventing a
    *    cause the server did not give.
    *  - a SILENT decline returns success while nothing happened. The BFF
-   *    re-reads the job and reports `applied: false`; saying only that the
-   *    server declined is honest, where naming a cause would be a guess.
+   *    re-reads the job (an install), or the page reads the job the call
+   *    answered (a delivery, a stop: bridge/industryWrites.ts), and reports
+   *    `applied: false`; saying only that the server declined is honest,
+   *    where naming a cause would be a guess.
    */
   async function runIndustryAction(
     action: () => Promise<{ readonly applied: boolean }>,
@@ -14237,12 +14253,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await runIndustryAction(() => api.installIndustryJob(request, callOptions));
     },
 
+    // The page's own calls (bridge/industryWrites.ts), each judged by the job the server answers.
     async deliverIndustryJob(jobID) {
-      await runIndustryAction(() => api.deliverIndustryJob(jobID, callOptions));
+      await runIndustryAction(() => deliverIndustryJobCall(bridgeDo, jobAsRead(jobID)));
     },
 
     async cancelIndustryJob(jobID) {
-      await runIndustryAction(() => api.cancelIndustryJob(jobID, callOptions));
+      await runIndustryAction(() => cancelIndustryJobCall(bridgeDo, jobAsRead(jobID)));
     },
     loadMarket,
     findMarketTypes: (q: string) => api.findMarketTypes(q, callOptions),

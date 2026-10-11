@@ -1125,6 +1125,8 @@
       "fleetObjectHandler.LeaveFleet",
       "fleetObjectHandler.RejectInvite",
       "fleetProxy.ApplyToJoinFleet",
+      "industryManager.CancelJob",
+      "industryManager.CompleteJob",
       "officeManager.RentOffice",
       "officeManager.UnrentOffice",
       "planetMgr.DeleteLaunch",

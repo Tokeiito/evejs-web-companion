@@ -4345,3 +4345,39 @@ test("a drone scooped is a write of the page's own, asked of the ship's service 
   }
   assert.equal(gateway.calls.call.length, after);
 });
+
+// ── a job delivered, and a job stopped, by the page itself ───────────────────
+//
+// industrySvc.CompleteJob (150) and CancelJob (160): sm.RemoteSvc('industryManager').CompleteJob(int(jobID),
+// solarSystemID), and CancelJob the same, the solar system the job's own. The page asks each by the service's
+// name; the BFF hands it on as it came.
+
+test("a job delivered and a job stopped are writes of the page's own, asked of the industry manager by its name: each goes as it was sent", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const args = [4200001, 30000144];
+  for (const method of ["CompleteJob", "CancelJob"]) {
+    const call = (more) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "industryManager", method, args, kwargs: null, ...more } });
+    const before = gateway.calls.call.length;
+    for (const more of [{}, { pilot: true }, { confirm: true }]) {
+      const refused = await call(more);
+      assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], `${method} ${JSON.stringify(more)}`);
+    }
+    const named = await call({ pilot: true, confirm: true, of: 30000144 });
+    assert.deepEqual([named.response.status, named.payload.error], [400, "INVALID_REQUEST"], method);
+    assert.equal(gateway.calls.call.length, before, method);
+    const made = await call({ pilot: true, confirm: true });
+    assert.deepEqual([made.response.status, made.payload.service, made.payload.method], [200, "industryManager", method]);
+    const sent = gateway.calls.call.at(-1);
+    assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["industryManager", method, args, null, BRIDGE_SESSION_ID, { userid: 4 }]);
+    assert.equal(gateway.calls.call.length, before + 1, method);
+  }
+  // A job installed, and many delivered at once, are their routes' alone, whatever is said.
+  const after = gateway.calls.call.length;
+  for (const method of ["InstallJob", "CompleteManyJobs"]) {
+    const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "industryManager", method, args: [], kwargs: null, pilot: true, confirm: true } });
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], method);
+  }
+  assert.equal(gateway.calls.call.length, after);
+});

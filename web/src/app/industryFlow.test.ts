@@ -18,6 +18,9 @@ const SOLAR_SYSTEM_ID = 30000142;
 const BLUEPRINT_TYPE_ID = 681;
 const BLUEPRINT_ITEM_ID = 7_100_000_001;
 const PRODUCT_TYPE_ID = 165;
+const JOB_ID = 4_200_001;
+// The job's own solar system: its facility's, and not where the pilot is.
+const JOB_SOLAR_SYSTEM_ID = 30000144;
 
 function keyVal(fields: Record<string, unknown>): unknown {
   return {
@@ -70,6 +73,7 @@ function industryPanel(overrides: Record<string, unknown> = {}) {
           blueprintID: BLUEPRINT_ITEM_ID,
           blueprintTypeID: BLUEPRINT_TYPE_ID,
           facilityID: STATION_ID,
+          solarSystemID: JOB_SOLAR_SYSTEM_ID,
           status: 3,
           runs: 3,
           successfulRuns: 0,
@@ -175,6 +179,16 @@ function respondOk(
     }
     return { status: 200, body: { ok: true } };
   };
+}
+
+/** The listed job as the server answers it after a delivery or a stop: its row, with the status it has now. */
+function jobAnswered(status: number): unknown {
+  return keyVal({ activityID: 1, jobID: JOB_ID, facilityID: STATION_ID, solarSystemID: JOB_SOLAR_SYSTEM_ID, status, runs: 3 });
+}
+
+/** The page's own call, answered: POST /api/bridge/call says the service and the method it was asked. */
+function called(body: Record<string, unknown>, result: unknown): { status: number; body: unknown } {
+  return { status: 200, body: { ok: true, service: body.service, method: body.method, result, notifications: [] } };
 }
 
 /** Let the microtask-batched name queue flush. */
@@ -456,9 +470,9 @@ test("a STRUCTURED refusal becomes the server's own reasons in plain words", asy
 
 test("a PROSE refusal is passed through verbatim - the handler's own words", async () => {
   const store = createClientStore();
-  const { fetch } = makeFakeFetch(
-    respondOk((path) =>
-      path === "/api/bridge/industry/deliver"
+  const { fetch, requests } = makeFakeFetch(
+    respondOk((path, _method, body) =>
+      path === "/api/bridge/call" && body.method === "CompleteJob"
         ? {
             status: 409,
             body: {
@@ -472,31 +486,86 @@ test("a PROSE refusal is passed through verbatim - the handler's own words", asy
   );
   const flow = createAppFlow(store, { fetch });
 
-  await flow.deliverIndustryJob(5);
+  await flow.loadIndustry();
+  const reads = requests.filter((entry) => entry.path === "/api/bridge/industry").length;
+  await flow.deliverIndustryJob(JOB_ID);
   assert.equal(store.get().industry.actionError, "That industry job is not ready yet.");
+  // A refusal is told as it came: the panel is not read again over it.
+  assert.equal(requests.filter((entry) => entry.path === "/api/bridge/industry").length, reads);
 });
 
-test("deliver and cancel reload the panel and clear a stale error on success", async () => {
+test("deliver and cancel are the page's own calls, with the job's own solar system; each reloads the panel and clears a stale error", async () => {
   const store = createClientStore();
   const { fetch, requests } = makeFakeFetch(
-    respondOk((path) =>
-      path === "/api/bridge/industry/deliver" || path === "/api/bridge/industry/cancel"
-        ? { status: 200, body: { ok: true, applied: true, declinedSilently: false, jobID: 5 } }
-        : null,
+    respondOk((path, _method, body) =>
+      path === "/api/bridge/call" ? called(body, jobAnswered(body.method === "CompleteJob" ? 101 : 102)) : null,
     ),
   );
   const flow = createAppFlow(store, { fetch });
+  await flow.loadIndustry();
+  const reads = () => requests.filter((entry) => entry.path === "/api/bridge/industry").length;
+  const before = reads();
 
   store.apply({ type: "industry/action-error", message: "something old" });
-  await flow.deliverIndustryJob(5);
+  await flow.deliverIndustryJob(JOB_ID);
   assert.equal(store.get().industry.actionError, null);
+  assert.equal(reads(), before + 1);
 
-  await flow.cancelIndustryJob(5);
-  const cancel = requests.find((entry) => entry.path === "/api/bridge/industry/cancel");
-  assert.ok(cancel);
-  // Cancelling refunds nothing, so it carries the confirmation flag too.
-  assert.equal(cancel.body.confirm, true);
-  assert.equal(cancel.body.jobID, 5);
+  store.apply({ type: "industry/action-error", message: "something old" });
+  await flow.cancelIndustryJob(JOB_ID);
+  assert.equal(store.get().industry.actionError, null);
+  assert.equal(reads(), before + 2);
+
+  // industrySvc.py 150 and 160: CompleteJob(int(jobID), solarSystemID), and CancelJob the same, as a pilot's
+  // write the page means. The system is the job's own, as its row has it.
+  assert.deepEqual(
+    requests.filter((entry) => entry.path === "/api/bridge/call").map((entry) => entry.body),
+    [
+      { service: "industryManager", method: "CompleteJob", args: [JOB_ID, JOB_SOLAR_SYSTEM_ID], kwargs: null, pilot: true, confirm: true },
+      { service: "industryManager", method: "CancelJob", args: [JOB_ID, JOB_SOLAR_SYSTEM_ID], kwargs: null, pilot: true, confirm: true },
+    ],
+  );
+  // Neither route is asked.
+  assert.deepEqual(requests.filter((entry) => entry.path.startsWith("/api/bridge/industry/")), []);
+});
+
+test("a job the server answers as it was is told as a decline with no invented cause", async () => {
+  for (const [act, status] of [["deliver", 3], ["cancel", 1]] as const) {
+    const store = createClientStore();
+    const { fetch, requests } = makeFakeFetch(
+      respondOk((path, _method, body) => (path === "/api/bridge/call" ? called(body, jobAnswered(status)) : null)),
+    );
+    const flow = createAppFlow(store, { fetch });
+    await flow.loadIndustry();
+    await (act === "deliver" ? flow.deliverIndustryJob(JOB_ID) : flow.cancelIndustryJob(JOB_ID));
+    const message = store.get().industry.actionError ?? "";
+    assert.match(message, /gave no reason/i, act);
+    assert.doesNotMatch(message, /material|fee|slot|skill|ready/i, act);
+    // It is the call's own answer that was read so, and the panel read again after it.
+    assert.deepEqual(
+      requests.filter((entry) => entry.path !== "/api/names" && entry.path !== "/api/industry/blueprints").map((entry) => (entry.path === "/api/bridge/call" ? entry.body.method : entry.path)),
+      ["/api/bridge/industry", act === "deliver" ? "CompleteJob" : "CancelJob", "/api/bridge/industry"],
+      act,
+    );
+  }
+});
+
+test("a job that is not among those read is not asked for: its solar system is not known", async () => {
+  const store = createClientStore();
+  const { fetch, requests } = makeFakeFetch(respondOk());
+  const flow = createAppFlow(store, { fetch });
+
+  // Nothing read yet.
+  await flow.deliverIndustryJob(JOB_ID);
+  assert.equal(store.get().industry.actionError, "That job is not among your jobs as they were last read.");
+  // Read, and another job asked for.
+  await flow.loadIndustry();
+  assert.equal(store.get().industry.actionError, null);
+  await flow.cancelIndustryJob(JOB_ID + 1);
+  assert.equal(store.get().industry.actionError, "That job is not among your jobs as they were last read.");
+  await flow.deliverIndustryJob(JOB_ID + 1);
+  assert.equal(store.get().industry.actionError, "That job is not among your jobs as they were last read.");
+  assert.deepEqual(requests.filter((entry) => entry.path === "/api/bridge/call" || entry.path.startsWith("/api/bridge/industry/")), []);
 });
 
 test("the preview returns what the player HAS, and starts nothing", async () => {

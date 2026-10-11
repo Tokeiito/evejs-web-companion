@@ -1165,30 +1165,10 @@ export async function installIndustryJob(
   return asIndustryChange(data);
 }
 
-/** DELIVER a finished job — the retail `CompleteJob`. Only ever gives. */
-export async function deliverIndustryJob(
-  jobID: number,
-  options: ApiOptions = {},
-): Promise<IndustryChangeResult> {
-  const data = await postJson("/api/bridge/industry/deliver", { jobID }, options);
-  return asIndustryChange(data);
-}
-
-/**
- * CANCEL a job. The materials and the installation fee are NOT returned, so
- * the BFF refuses without `confirm` and the UI says what will be lost first.
- */
-export async function cancelIndustryJob(
-  jobID: number,
-  options: ApiOptions = {},
-): Promise<IndustryChangeResult> {
-  const data = await postJson(
-    "/api/bridge/industry/cancel",
-    { jobID, confirm: true },
-    options,
-  );
-  return asIndustryChange(data);
-}
+// A finished job is delivered, and a job stopped, by the page's own calls (bridge/industryWrites.ts:
+// industryManager.CompleteJob and CancelJob, each with the job's own solar system, and judged by the job the
+// server answers). Each left its route (POST /api/bridge/industry/deliver, POST /api/bridge/industry/cancel)
+// on 2026-10-11.
 
 // --- R16 Market ------------------------------------------------------------
 // Like industry, the whole retail market surface is top-level, so the BFF

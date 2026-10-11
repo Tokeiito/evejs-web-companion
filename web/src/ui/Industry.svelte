@@ -442,12 +442,13 @@
                 <td class="num" data-label="Time left">{jobTimeText(job)}</td>
                 <td data-label="Action">
                   <div class="row-actions">
+                    <!-- One or the other, as the client's own button is (submitButton.ClickFunc): a job
+                         that is ready is collected, and only a job that is not is stopped. -->
                     {#if job.status === "ready"}
                       <button type="button" disabled={busy} onclick={() => deliver(job.jobID)}>
                         Collect the results
                       </button>
-                    {/if}
-                    {#if cancellingJobID === job.jobID}
+                    {:else if cancellingJobID === job.jobID}
                       <button
                         type="button"
                         class="danger"

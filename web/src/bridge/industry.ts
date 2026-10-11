@@ -215,6 +215,7 @@ export function decodeJob(row: JsonValue): IndustryJobRow | null {
     blueprintTypeID: toNumber(readKeyVal(row, "blueprintTypeID")),
     productTypeID: toNumber(readKeyVal(row, "productTypeID")),
     facilityID: toNumber(readKeyVal(row, "facilityID")),
+    solarSystemID: toNumber(readKeyVal(row, "solarSystemID")),
     runs: toNumber(readKeyVal(row, "runs")),
     successfulRuns: toNumber(readKeyVal(row, "successfulRuns")),
     cost: toNumber(readKeyVal(row, "cost")),

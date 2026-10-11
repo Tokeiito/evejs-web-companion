@@ -2473,3 +2473,25 @@ test("a scoop is the client's with the drones as one list, and nothing else", ()
     assert.match(odd.note, /the drones as one list/, why);
   }
 });
+
+test("a job delivered, and a job stopped, are the client's with the job and its solar system, and nothing else", () => {
+  // industrySvc.py 150 and 160: RemoteSvc('industryManager').CompleteJob(int(jobID), solarSystemID), and CancelJob the same.
+  for (const [method, where] of [["CompleteJob", /industrySvc\.py:150$/], ["CancelJob", /industrySvc\.py:160$/]]) {
+    const ask = (args, kwargs = null) => retailForm("industryManager", method, args, kwargs, {});
+    for (const args of [[4200001, 30000142], [1, 31000005], [7, 30000000], [7, 39999999]]) {
+      const made = ask(args);
+      assert.deepEqual([made.status, made.args, made.kwargs], ["same", args, null], `${method} ${JSON.stringify(args)}`);
+      assert.match(made.source, where, method);
+    }
+    for (const [args, kwargs, why] of [
+      [[], null, "nothing"], [[4200001], null, "no solar system"], [[4200001, 30000142, 1], null, "a third thing"], [["4200001", 30000142], null, "the job as text"],
+      [[4200001, "30000142"], null, "the system as text"], [[0, 30000142], null, "nought for the job"], [[4200001.5, 30000142], null, "a job that is no ID"], [[4200001, null], null, "nothing for the system"],
+      [[4200001, 60003760], null, "a station for the system"], [[4200001, 0], null, "nought for the system"], [[4200001, 29999999], null, "a constellation for the system"], [[4200001, 40000000], null, "a planet for the system"],
+      [[4200001, 30000142.5], null, "a system that is no ID"], [[[4200001, 30000142]], null, "the two as one pair"], [[4200001, 30000142], { now: true }, "a keyword beside them"],
+    ]) {
+      const odd = ask(args, kwargs);
+      assert.deepEqual([odd.status, odd.args, odd.kwargs], ["differs", args, kwargs], `${method}: ${why}`);
+      assert.match(odd.note, /the job and its own solar system/, `${method}: ${why}`);
+    }
+  }
+});

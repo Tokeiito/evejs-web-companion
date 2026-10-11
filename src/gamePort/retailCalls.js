@@ -539,6 +539,10 @@ const oneBubbleBroadcast = (args, kwargs, context) => {
 const scooping = (args, kwargs) => (args.length === 1 && Array.isArray(args[0]) && args[0].length > 0 && args[0].every((each) => Number.isSafeInteger(each) && each > 0)
   && Object.keys(kwargs).length === 0 ? {} : { status: "differs", note: "The client sends the drones as one list of their IDs, and nothing else." });
 
+/** industrySvc.CompleteJob (150) and CancelJob (160): the job, and the job's own solar system (idCheckers.IsSolarSystem), and nothing else. */
+const aJobAndItsSystem = (args, kwargs) => (args.length === 2 && Number.isSafeInteger(args[0]) && args[0] > 0 && Number.isSafeInteger(args[1]) && args[1] >= 30000000 && args[1] <= 39999999
+  && Object.keys(kwargs).length === 0 ? {} : { status: "differs", note: "The client sends the job and its own solar system, and nothing else." });
+
 /** droneFunctions.py: an order to drones names them as a list, as every recorded one does. */
 const dronesListed = ([drones, ...rest], kwargs) => ({ args: [list(drones), ...rest], kwargs });
 
@@ -1270,6 +1274,8 @@ const RETAIL_CALLS = Object.freeze({
   "blueprintManager.GetBlueprintDataByOwner": same(`${INDUSTRY}/blueprintSvc.py:150`, "RemoteSvc('blueprintManager').GetBlueprintDataByOwner(ownerID, None), or with a facility's ID for the blueprints at one (137)"),
   "industryManager.GetJobsByOwner": same(`${INDUSTRY}/industrySvc.py:73`, "RemoteSvc('industryManager').GetJobsByOwner(ownerID, includeCompleted)"),
   "industryManager.GetJobCounts": same(`${INDUSTRY}/industrySvc.py:243`, "RemoteSvc('industryManager').GetJobCounts(session.charid)"),
+  "industryManager.CompleteJob": judged(`${INDUSTRY}/industrySvc.py:150`, aJobAndItsSystem, "RemoteSvc('industryManager').CompleteJob(int(jobID), solarSystemID), the system the job's own, from a ready job's button. No recording has one."),
+  "industryManager.CancelJob": judged(`${INDUSTRY}/industrySvc.py:160`, aJobAndItsSystem, "RemoteSvc('industryManager').CancelJob(int(jobID), solarSystemID), the system the job's own, from a running job's button, pressed twice. No recording has one."),
   "facilityManager.GetFacilities": same(`${INDUSTRY}/facilitySvc.py:133`, "RemoteSvc('facilityManager').GetFacilities(), no arguments"),
   "facilityManager.GetMaxActivityModifiers": same(`${INDUSTRY}/facilitySvc.py:87`, "RemoteSvc('facilityManager').GetMaxActivityModifiers(), no arguments"),
 
