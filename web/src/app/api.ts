@@ -4339,26 +4339,10 @@ export async function reconnectDrones(
   );
 }
 
-/**
- * Scoop drones straight into the bay (ship.ScoopDrone).
- *
- * The other half of recovery, and the one that needs no control at all: a drone
- * close enough to scoop comes home whether or not this ship can fly it. In
- * space only, and the server owns the range check — the page never pre-refuses
- * on distance it would have to guess.
- */
-export async function scoopDrones(
-  droneIDs: readonly number[],
-  options: ApiOptions = {},
-): Promise<DroneActionResult> {
-  return readDroneAction(
-    await postJson(
-      "/api/bridge/drones/scoop",
-      { droneIDs: [...droneIDs], confirm: true },
-      options,
-    ),
-  );
-}
+// Drones are scooped into the bay by the page itself, with the client's own
+// call of the ship (bridge/boundEntityWrites.ts), and the drones are read after
+// by the read above: it left its route (POST /api/bridge/drones/scoop) on
+// 2026-10-11.
 
 // Free skill points are put into a skill by the page itself, with the client's
 // own call (bridge/skillWrites.ts; the plan's Phase 6b): the third of its writes

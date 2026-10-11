@@ -353,7 +353,7 @@ import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { BOOKMARK_EXPIRY, bookmarkLocation as bookmarkLocationCall } from "../bridge/bookmarkWrites.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
-import { salvageWithDrones } from "../bridge/boundEntityWrites.ts";
+import { salvageWithDrones, scoopDrones as scoopDronesCall } from "../bridge/boundEntityWrites.ts";
 import { alignTo as alignToCall, approach as approachCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, type FlightNow } from "../bridge/movementWrites.ts";
 import { boardCorvette as boardCorvetteCall, leaveShip as leaveShipCall } from "../bridge/shipWrites.ts";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
@@ -6385,7 +6385,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function scoopDrones(droneIDs: readonly number[]): Promise<void> {
     await runDroneAction(
       "Scoop",
-      () => api.scoopDrones(droneIDs, callOptions),
+      // The page's own call (bridge/boundEntityWrites.ts), and then the drones as they are read again. What the
+      // server says of each drone it would not scoop is the call's own answer.
+      async () => {
+        const result = await scoopDronesCall(bridgeDo, droneIDs);
+        const read = await api.getDrones(callOptions);
+        return { inSpace: read.inSpace, launched: null, result };
+      },
       (inSpace, _launched, reports) => {
         if (inSpace === null) {
           return "The scoop was accepted, but space could not be re-read.";

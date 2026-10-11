@@ -4313,3 +4313,35 @@ test("a target locked, let go and a lock called off are writes of the page's own
   }
   assert.equal(gateway.calls.call.length, before);
 });
+
+// ── a drone scooped by the page itself ───────────────────────────────────────
+//
+// droneFunctions.RealScoopToDroneBay (192 to 197): ship = gameui.GetShipAccess(), and ship.ScoopDrone(objectIDs),
+// the drones as one list. The page asks it of the ship's service by its name; the BFF hands it on as it came.
+
+test("a drone scooped is a write of the page's own, asked of the ship's service by its name: it goes as it was sent", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const args = [[9988400023600, 9988400023601]];
+  const call = (more) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "ship", method: "ScoopDrone", args, kwargs: null, ...more } });
+  const before = gateway.calls.call.length;
+  for (const more of [{}, { pilot: true }, { confirm: true }]) {
+    const refused = await call(more);
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+  }
+  const named = await call({ pilot: true, confirm: true, of: 30000142 });
+  assert.deepEqual([named.response.status, named.payload.error], [400, "INVALID_REQUEST"]);
+  assert.equal(gateway.calls.call.length, before);
+  const made = await call({ pilot: true, confirm: true });
+  assert.deepEqual([made.response.status, made.payload.service, made.payload.method], [200, "ship", "ScoopDrone"]);
+  const sent = gateway.calls.call.at(-1);
+  assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["ship", "ScoopDrone", args, null, BRIDGE_SESSION_ID, { userid: 4 }]);
+  // The ship's other writes are their routes' alone, whatever is said.
+  const after = gateway.calls.call.length;
+  for (const method of ["Jettison", "LaunchDrones", "Eject", "Scoop", "LaunchFromShip", "Board", "Undock"]) {
+    const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "ship", method, args: [], kwargs: null, pilot: true, confirm: true } });
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], method);
+  }
+  assert.equal(gateway.calls.call.length, after);
+});

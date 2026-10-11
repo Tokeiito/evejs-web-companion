@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { decodeEntityDroneWriteAck, salvageWithDrones } from "./boundEntityWrites.ts";
+import { decodeEntityDroneWriteAck, salvageWithDrones, scoopDrones } from "./boundEntityWrites.ts";
 import type { JsonValue } from "./wire.ts";
 
 function plainAck(fields: Record<string, JsonValue>): JsonValue {
@@ -67,4 +67,28 @@ test("what the server says of each drone is handed on as it came, and a refusal 
   const failures: JsonValue = { type: "dict", entries: [[9988400023500, ["No salvageable wreck owned by you or a fleet member is available.", { type: "dict", entries: [] }]]] };
   assert.deepEqual(await salvageWithDrones(async () => failures, [9988400023500], null), failures);
   await assert.rejects(() => salvageWithDrones(async () => { throw new Error("the pilot is docked"); }, [9988400023500], null), /docked/);
+});
+
+// --- a drone scooped ------------------------------------------------------------
+
+test("drones are scooped by one call of the ship's service, the drones as one list; and what the server says of each comes back as it came", async () => {
+  const asked: unknown[] = [];
+  const said = { type: "dict", entries: [] } as unknown as JsonValue;
+  const act = async (service: string, method: string, args: readonly JsonValue[], kwargs?: unknown, of?: unknown) => { asked.push([service, method, args, kwargs ?? null, of ?? null]); return said; };
+
+  // droneFunctions.py 195: ship.ScoopDrone(objectIDs).
+  assert.equal(await scoopDrones(act, [9988400023600, 9988400023601]), said);
+  assert.deepEqual(asked, [["ship", "ScoopDrone", [[9988400023600, 9988400023601]], null, null]]);
+});
+
+test("nothing is asked for no drones, nor for what is no drone", async () => {
+  let asked = 0;
+  const act = async () => { asked += 1; return null; };
+  // The client's scoop is never called with none (the menu's one drone, or the drones chosen).
+  assert.equal(await scoopDrones(act, []), null);
+  for (const drones of [[0], [9988400023600, -1], [1.5], [Number.NaN], [2 ** 53]]) {
+    await assert.rejects(scoopDrones(act, drones), /^Error: That drone could not be identified\.$/, JSON.stringify(drones));
+  }
+  assert.equal(asked, 0);
+  await assert.rejects(scoopDrones(async () => { throw new Error("DeniedShipChanged"); }, [9988400023600]), /DeniedShipChanged/);
 });

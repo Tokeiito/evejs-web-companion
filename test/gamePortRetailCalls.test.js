@@ -2455,3 +2455,21 @@ test("a lock, a letting go and a lock called off are the client's with the targe
   assert.deepEqual([targeting("CancelAddTarget", [9001], locked(9002)).status, targeting("CancelAddTarget", [9001], locked(9001)).status], ["same", "differs"]);
   assert.match(targeting("CancelAddTarget", [9001], locked(9001)).note, /still being made/);
 });
+
+test("a scoop is the client's with the drones as one list, and nothing else", () => {
+  // droneFunctions.py 195: ship.ScoopDrone(objectIDs).
+  const scoop = (args, kwargs = null) => retailForm("ship", "ScoopDrone", args, kwargs, {});
+  for (const args of [[[11]], [[11, 12, 13]]]) {
+    const made = scoop(args);
+    assert.deepEqual([made.status, made.args, made.kwargs], ["same", args, null], JSON.stringify(args));
+    assert.match(made.source, /droneFunctions\.py:195$/);
+  }
+  for (const [args, kwargs, why] of [
+    [[], null, "nothing"], [[[]], null, "no drones"], [[11], null, "a drone by itself"], [["11,12"], null, "the drones as text"], [[null], null, "nothing for the drones"], [[[11], [12]], null, "two lists"], [[[11, 0]], null, "nought among them"],
+    [[["11"]], null, "a drone as text"], [[[11, 11.5]], null, "a number that is no ID"], [[[11]], { now: true }, "a keyword beside them"],
+  ]) {
+    const odd = scoop(args, kwargs);
+    assert.deepEqual([odd.status, odd.args, odd.kwargs], ["differs", args, kwargs], why);
+    assert.match(odd.note, /the drones as one list/, why);
+  }
+});

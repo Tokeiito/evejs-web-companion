@@ -74,3 +74,39 @@ export async function salvageWithDrones(act: Ask, droneIDs: readonly number[], t
   if (droneIDs.length === 0) return null;
   return act("entity", "CmdSalvage", [[...droneIDs], targetID === 0 ? null : targetID]);
 }
+
+// --- A drone scooped (the plan's Phase 6b) ------------------------------------
+//
+// Until 2026-10-11 it was one route of the BFF (POST /api/bridge/drones/scoop).
+//
+// THE CALL, as the client makes it (droneFunctions.RealScoopToDroneBay, 192 to 197), from a drone's menu
+// (menusvc.ScoopToDroneBay, 3624):
+//
+//   ship = sm.StartService('gameui').GetShipAccess()
+//   ret = ship.ScoopDrone(objectIDs)
+//
+// the drones as one list, on the ship's own object; and what it answers of each drone that could not be scooped
+// is told to the pilot (HandleMultipleCallError). For one drone the client flies to within reach of it first
+// (GetCloseAndTryCommand), which the page does not: the server says where a drone is too far. No Tranquility
+// recording has a scoop.
+//
+// THE PAGE ASKS IT OF THE SHIP'S SERVICE BY ITS NAME; the game port makes it on the ship's Moniker for where the
+// pilot is.
+//
+// WHAT THE SERVER TAKES FROM THE CALLER: the drones. The ship is the session's own. Of each drone it says why
+// where it will not: not in local space, under somebody's control, too far away, no room in the bay.
+//
+// ⚠ THE ANSWER IS NOT WHAT THE PAGE GOES BY. It is empty where every drone was scooped; the caller reads the
+// drones in space after, as it does for every order to drones.
+
+/**
+ * Scoops these drones into the ship's drone bay. With no drones nothing is asked. Answers what the server says
+ * of the drones that could not be scooped, as it came. Fails as the call fails.
+ */
+export async function scoopDrones(act: Ask, droneIDs: readonly number[]): Promise<JsonValue> {
+  if (droneIDs.length === 0) return null;
+  if (!droneIDs.every((droneID) => Number.isSafeInteger(droneID) && droneID > 0)) {
+    throw new Error("That drone could not be identified.");
+  }
+  return act("ship", "ScoopDrone", [[...droneIDs]]);
+}

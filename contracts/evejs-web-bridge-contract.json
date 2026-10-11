@@ -1133,6 +1133,7 @@
       "repairSvc.RepairItemsInStation",
       "repairSvc.RepairItemsInStructure",
       "ship.LeaveShip",
+      "ship.ScoopDrone",
       "skillHandler.AbortTraining",
       "skillHandler.ApplyFreeSkillPoints",
       "skillHandler.SaveNewQueue",

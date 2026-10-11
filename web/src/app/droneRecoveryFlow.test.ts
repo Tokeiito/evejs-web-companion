@@ -65,10 +65,7 @@ function makeFakeBff(options: {
     if (path === "/api/login") {
       return respond({ ok: true, account: { accountID: 2, username: "test2" } });
     }
-    if (
-      path === "/api/bridge/entity/drones/reconnect" ||
-      path === "/api/bridge/drones/scoop"
-    ) {
+    if (path === "/api/bridge/entity/drones/reconnect") {
       return respond({
         ok: true,
         inSpace: options.inSpaceAfter,
@@ -76,6 +73,10 @@ function makeFakeBff(options: {
         result: options.result ?? null,
         notifications: [],
       });
+    }
+    // The scoop is the page's own call (bridge/boundEntityWrites.ts): what the server says of each drone is its answer.
+    if (path === "/api/bridge/call" && body.method === "ScoopDrone") {
+      return respond({ ok: true, service: "ship", method: "ScoopDrone", result: options.result ?? null, notifications: [] });
     }
     if (path === "/api/bridge/drones") {
       return respond({ ok: true, bay: [], inSpace: options.inSpaceAfter, shipInfo: null, errors: {} });
@@ -118,8 +119,10 @@ test("scoop judges by the drone LEAVING space", async () => {
 
   await flow.scoopDrones([DRONE_ID]);
 
-  const write = bff.requests.find((r) => r.path === "/api/bridge/drones/scoop");
-  assert.deepEqual(write?.body, { droneIDs: [DRONE_ID], confirm: true });
+  // droneFunctions.py 195: ship.ScoopDrone(objectIDs), as a pilot's write the page means; and then the drones, read.
+  // (Read twice: once for what the scoop is judged by, in the route's place, and once by the window after any order.)
+  assert.deepEqual(bff.requests.map((r) => [r.path, r.path === "/api/bridge/call" ? r.body : null]),
+    [["/api/bridge/call", { service: "ship", method: "ScoopDrone", args: [[DRONE_ID]], kwargs: null, pilot: true, confirm: true }], ["/api/bridge/drones", null], ["/api/bridge/drones", null]]);
   assert.equal(store.drones.get().silentDecline, null);
   assert.equal(store.drones.get().lastAction, "Scoop");
 });
