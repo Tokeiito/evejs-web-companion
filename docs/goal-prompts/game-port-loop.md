@@ -921,6 +921,21 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **The server may never send what the client is written to answer** (an invitation
   to a pilot in a fleet). Then the page's handling is proven by its test, the log
   says "not seen" and why, and it is not called a defect without a recording.
+- **A notice the page takes nowhere is a unit too.** After building what one pilot's
+  client does, look at what the other pilot's client is told and whether the page
+  reads it (`grep -n "<notice>" web/src/app/flow.ts`). A notice is taken in
+  `applyPushedNotification` (`flow.ts`), read by a decoder in `web/src/bridge/`, and
+  said in **the page's own words**: the client's sentences are not the page's to use.
+- **What happened without the pilot pressing anything goes to the notice board by a
+  string field of a slice** (`web/src/ui/noticeSources.ts`). A watched field tells
+  only when it changes: the flow says it no longer and then says it (null, then the
+  words), so that the same thing a second time is told a second time.
+- **A name waited for, and the pilot looked at again after the wait**:
+  `resolveNamesNow`, then `nameCache`, then `onlineCharacterID()` against what it was
+  before, so that a sentence meant for one pilot is not said to the next.
+- **The pilot invited, as a script of a few seconds**: `fia-guest.js <bff> <account>
+  <characterID> <fleetID> [plain|false|within]`, run in the foreground while the tab
+  is the inviter. The fleet's number is the last in the server's log.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
