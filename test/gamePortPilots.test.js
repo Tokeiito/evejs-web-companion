@@ -8521,3 +8521,39 @@ test("a job installed, and a job previewed, each go to the server as the client'
   await pilots.callMethod("industryMonitor", "DisconnectJob", [7], null, FIELDS, handle);
   assert.deepEqual([session.calls.at(-1).args, pilots.callLedger().find((row) => row.pair === "industryMonitor.DisconnectJob").statuses], [[7], { same: 1 }]);
 });
+
+// The warps on the wire: what the game port sends for each thing a route warps to, whatever keywords the route
+// gave. (The ledger's own tests say why each is so: gamePortRetailCalls.test.js.)
+
+test("a warp goes on the ballpark's object with the client's keywords for what it is to, and is counted as it was made", async () => {
+  const allowed = new Set(["beyonce.MachoBindObject", "beyonce.GetFormations", "beyonce.CmdWarpToStuff"]);
+  const built = build({ ...IN_SPACE }, { ...handTicked().options, allowed });
+  const handle = (await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS)).bridgeSessionID;
+  const { pilots, session } = built;
+  const park = await pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
+  const fly = (args, kwargs = null) => pilots.callBoundMethod("beyonce", "CmdWarpToStuff", args, kwargs, WHOSE, handle, park.boundHandle);
+  const real = (value) => ({ type: "real", value });
+  // As the routes send them: an item's range every time, the others' only above nought, a launch's never.
+  await fly(["item", 40000001], { minRange: 0 });
+  await fly(["char", 140000002]);
+  await fly(["bookmark", 900000008]);
+  await fly(["bookmark", 900000009], { minRange: 20000 });
+  await fly(["scan", "QEE-288"]);
+  await fly(["launch", 1000001]);
+  assert.deepEqual(session.boundCalls.slice(-6).map((call) => [call.args, call.kwargs]), [
+    [["item", 40000001], { minRange: 0 }],
+    [["char", 140000002], { minRange: real(0) }],
+    [["bookmark", 900000008], { minRange: real(0), fleet: false }],
+    [["bookmark", 900000009], { minRange: real(20000), fleet: false }],
+    [["scan", "QEE-288"], { minRange: null, fleet: false }],
+    [["launch", 1000001], null],
+  ]);
+  // Two as the client sends them, four made so here.
+  assert.deepEqual(ledgerOf(pilots, "beyonce.CmdWarpToStuff"), [{ same: 2, reshaped: 4 }, "eve/client/script/remote/michelle.py:737"]);
+  // A warp that is none of a client's goes as it was given, and is counted as differing.
+  await fly(["item", 40000001], { minRange: 0, fleet: true });
+  assert.deepEqual([session.boundCalls.at(-1).kwargs, ledgerOf(pilots, "beyonce.CmdWarpToStuff")[0]], [{ minRange: 0, fleet: true }, { same: 2, reshaped: 4, differs: 1 }]);
+  // So does a warp to the ship the session is flying, which the client's menu sends nothing for.
+  await fly(["item", SHIP], { minRange: 0 });
+  assert.deepEqual([session.boundCalls.at(-1).args, ledgerOf(pilots, "beyonce.CmdWarpToStuff")[0]], [["item", SHIP], { same: 2, reshaped: 4, differs: 2 }]);
+});

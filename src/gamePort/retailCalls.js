@@ -45,6 +45,7 @@
 // so the list of what still needs reading is measured rather than guessed.
 // `shape` may also decide the status from the arguments it is given.
 
+const { isDeepStrictEqual } = require("node:util");
 const { constructorKeywordOrder, dictOrder, orderEntries } = require("./py27");
 
 /** A Python list, from a JS array (which would go out as a tuple) or from one already wrapped. */
@@ -213,6 +214,81 @@ const oneLaunch = (args, kwargs) => (args.length === 1 && Number.isSafeInteger(a
 const oneStationAlone = (args, kwargs) => (args.length === 1 && Number.isSafeInteger(args[0]) && args[0] > 0 && Object.keys(kwargs).length === 0
   ? {}
   : { status: "differs", note: "The client sends the one station, by its number, and nothing else: ListStationItems(stationID)." });
+/** A thing's number: a whole one above nought. */
+const aThingsID = (value) => Number.isSafeInteger(value) && value > 0;
+/** A range as it was given: the number, or the number a float was made of. */
+const rangeOf = (value) => (value !== null && typeof value === "object" && value.type === "real" ? value.value : value);
+/**
+ * michelle.CmdWarpToStuff (733 to 738): bp.CmdWarpToStuff(subject, subjectID, **kwargs), on the ballpark's object.
+ * What goes with a warp is its caller's, by what the warp is to:
+ *
+ *   'item'      movementFunctions.WarpToItem (452): minRange=warpRange, the WarpTo distance of the pilot's settings,
+ *               a whole number and nought by default (a float where a distance is picked from the menu's list:
+ *               menusvc.WarpToMenu, 2259). Recorded on Tranquility so, each with a whole nought. Not for the
+ *               pilot's own ship (438). With fleet=False beside it, and the range as the scan result's caller
+ *               has it, where the thing is a scan result's own site: an anomaly or a structure the sensor suite
+ *               knows (sensorSuiteService 799) is warped to as an item (menusvc 1427). Recorded twice.
+ *   'char'      menusvc.WarpToMember (2748): minRange=warpRange and nothing else, the range a float as the fleet's
+ *               menu makes it (float(defaultWarpDist), 712). Recorded so, once, with a float's nought.
+ *   'bookmark'  movementFunctions.WarpToBookmark (419): minRange=warpRange, a float from the bookmark's menu
+ *               (menusvc 1481 to 1483), and fleet=fleet. No recording has one. (A mission's bookmark is not warped
+ *               to so: the client asks its agent, WarpToLocation, 416.)
+ *   'scan'      menusvc._WarpXToScanResult (1428): minRange=minRange and fleet=fleet, by the result's label where
+ *               the sensor suite has no site of its own for it; the range None from the scanner's list
+ *               (scannerListEntries 276), a distance from the overlay's bracket. No recording has one.
+ *   'launch'    journal.py 453: nothing.
+ *
+ * The routes send a range for an item every time, for the others only where it is above nought, and `fleet`
+ * never. So a warp is given the keywords its caller in the client sends: the range that was said, or the nought
+ * (the scanner's None) of one that was not, a float where the client's is one; and fleet=False where the client
+ * says it. The transport puts them in a client's order (py27.js).
+ *
+ * A fleet's warp (fleet=True) goes with the formation's settings (michelle.SetFleetFormationSettings, 755), which
+ * nothing here sends: it differs, as does any keyword else, a range that is no distance, and a warp to what the
+ * routes do not warp to.
+ */
+const warping = (args, kwargs, context) => {
+  const notAClients = (note) => ({ status: "differs", note });
+  const [subject, which] = args;
+  const said = Object.keys(kwargs);
+  if (args.length !== 2 || said.some((name) => name !== "minRange" && name !== "fleet")) {
+    return notAClients("The client warps to one thing by what it is and its number, with a range and a fleet's word at most.");
+  }
+  const range = rangeOf(kwargs.minRange ?? null);
+  if (range !== null && !(Number.isFinite(range) && range >= 0)) {
+    return notAClients("A warp's range is a distance: a number, nought or more.");
+  }
+  if (kwargs.fleet === true) {
+    return notAClients("A fleet's warp goes with the formation's settings (michelle.SetFleetFormationSettings), which nothing here sends.");
+  }
+  if (kwargs.fleet !== undefined && kwargs.fleet !== false) {
+    return notAClients("A warp's fleet keyword is True or False.");
+  }
+  const made = (wanted) => (isDeepStrictEqual(wanted, kwargs)
+    ? {}
+    : { kwargs: wanted, status: "reshaped", note: "The warp was given the keywords the client's caller for it sends (minRange, and fleet=False where the client says it)." });
+  switch (subject) {
+    case "item":
+      if (!aThingsID(which)) return notAClients("The client warps to a thing by its number.");
+      // (A ship that is not known is no number an item's ID can be: the item is above nought.)
+      if (Number(context.shipID) === which) return notAClients("The client does not warp to the pilot's own ship: it sends nothing.");
+      return made(kwargs.fleet === false ? { minRange: kwargs.minRange ?? null, fleet: false } : { minRange: kwargs.minRange ?? 0 });
+    case "char":
+      if (!aThingsID(which) || kwargs.fleet !== undefined) return notAClients("The client warps to a fleet member by its number, with a range and nothing else.");
+      return made({ minRange: asReal(range ?? 0) });
+    case "bookmark":
+      if (!aThingsID(which)) return notAClients("The client warps to a bookmark by its number.");
+      return made({ minRange: asReal(range ?? 0), fleet: false });
+    case "scan":
+      if (typeof which !== "string" || which === "") return notAClients("The client warps to a scan result by its label.");
+      return made({ minRange: kwargs.minRange ?? null, fleet: false });
+    case "launch":
+      if (!aThingsID(which) || said.length > 0) return notAClients("The client warps to a launch by its number, and with nothing else.");
+      return {};
+    default:
+      return notAClients("No route warps to that: an item, a fleet member, a bookmark, a scan result or a launch.");
+  }
+};
 /** A judge for a call the client sends with nothing: no argument, and no keyword. */
 const sentWithNothing = (args, kwargs) => (args.length === 0 && Object.keys(kwargs).length === 0 ? {} : { status: "differs", note: "The client sends nothing with this call." });
 /** Items' IDs as the client's repair shop lists them: whole numbers above nought, and one at least. */
@@ -1228,7 +1304,8 @@ const RETAIL_CALLS = Object.freeze({
   // ── the scanner (the scan manager a service call answers with, and the dogma location) ─────────────
   "beyonce.GetFormations": same("eve/client/script/remote/michelle.py:324", "RemoteSvc('beyonce').GetFormations(), no arguments, by name, as the ballpark is made. Recorded on Tranquility so."),
   "beyonce.CmdWarpToStuffAutopilot": same("eve/client/script/parklife/autopilot.py:465", "GetRemotePark().CmdWarpToStuffAutopilot(destinationID): the autopilot's warp, on the ballpark's object. Recorded on Tranquility with the one ID."),
-  "beyonce.CmdWarpToStuff": same("eve/client/script/remote/michelle.py:737", "bp.CmdWarpToStuff(subject, subjectID, minRange=...), on the ballpark's object: 'item' and the thing's ID from the menu (movementFunctions.py 452), 'char' for a fleet member, 'bookmark' for a bookmark, 'launch' and a launch's ID with no range for a planetary launch (journal.py 453). Recorded on Tranquility as ('item', itemID, minRange=0)."),
+  "beyonce.CmdWarpToStuff": judged("eve/client/script/remote/michelle.py:737", warping,
+    "bp.CmdWarpToStuff(subject, subjectID, **kwargs), on the ballpark's object, with the keywords its caller sends: 'item' and the thing's ID with minRange (movementFunctions.py 452), 'char' for a fleet member with minRange a float (menusvc.py 2748), 'bookmark' with minRange a float and fleet (movementFunctions.py 419), 'scan' with minRange and fleet (menusvc.py 1428), 'launch' and a launch's ID with nothing (journal.py 453). Recorded on Tranquility as ('item', itemID, minRange=0), and as ('char', charID, minRange=0.0)."),
   "beyonce.CmdDock": same("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:517", "bp.CmdDock(itemID, session.shipid), on the ballpark's object, through sessionMgr.PerformSessionChange('dock', ...). Recorded on Tranquility with the two IDs."),
   "beyonce.CmdFollowBall": reshaped("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:302", following, "bp.CmdFollowBall(targetID, range), on the ballpark's object: the menu's approach with const.approachRange, keep at range with the pilot's distance (229), the autopilot's with 0.0 (autopilot.py 437). Not sent for the pilot's own ship. Recorded on Tranquility as (itemID, 50), and at 5000 and 7500, each a whole number; the autopilot's twice, its range a float of nought, which is how a range of nought goes."),
   "beyonce.CmdOrbit": reshaped("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:260", orbiting, "bp.CmdOrbit(targetID, range), on the ballpark's object: the range a float under 10 m and a whole number from there (243). Not sent for the pilot's own ship. Recorded on Tranquility as (itemID, 1000) and (itemID, 5000), 7500 and 10000, each a whole number, with nothing before it; none is recorded under ten metres, where the client's float is how it goes."),

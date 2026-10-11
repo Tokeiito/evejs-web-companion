@@ -1196,3 +1196,70 @@ test("warp-launch refuses a missing launch (INVALID_TARGET) and a docked pilot (
   assert.equal(payload.error, "NOT_IN_SPACE");
   assert.equal(dockedGateway.calls.boundCall.length, 0, "no movement dispatched when docked");
 });
+
+// menusvc._WarpXToScanResult (1418 to 1429) and movementFunctions.WarpToBookmark (410 to 420): the client warps to a
+// scan result with michelle.CmdWarpToStuff('scan', scanResultID, minRange=..., fleet=...), and to a bookmark with
+// ('bookmark', bookmarkID, minRange=..., fleet=...). The two routes hand on what and which, and a range only where
+// one above nought was said; on the game port the transport makes the keywords the client's
+// (gamePortRetailCalls.test.js). No test asked either route until 2026-10-11.
+
+for (const [path, field, subject, good, bad] of [
+  ["/api/bridge/flight/warp-scan", "target", "scan", "QEE-288", [{}, { target: "" }, { target: "   " }, { target: 5 }, { target: null }, { target: "x".repeat(33) }]],
+  ["/api/bridge/flight/warp-bookmark", "bookmarkID", "bookmark", 900000008, [{}, { bookmarkID: 0 }, { bookmarkID: "x" }, { bookmarkID: -4 }]],
+]) {
+  test(`POST ${path} dispatches CmdWarpToStuff("${subject}", which) on the ballpark's object, with a range only where one above nought is said`, async () => {
+    const gateway = fakeGateway();
+    gateway.state.inSpace = true;
+    gateway.state.shipMode = "STOP";
+    const { baseUrl } = await startTestServer({ gateway });
+    await selectOnServer(baseUrl);
+
+    const { response, payload } = await apiRequest(baseUrl, path, { method: "POST", body: { [field]: good } });
+    assert.equal(response.status, 200);
+    assert.equal(payload.ok, true);
+    assert.equal(JSON.stringify(payload).includes("handle:"), false, "bound handle must never reach the browser");
+    const warps = () => gateway.calls.boundCall.filter((call) => call.method === "CmdWarpToStuff");
+    assert.equal(warps().length, 1);
+    assert.deepEqual(warps()[0].args, [subject, good]);
+    assert.equal(warps()[0].kwargs ?? null, null);
+    assert.equal(warps()[0].bridgeSessionID, BRIDGE_SESSION_ID);
+    assert.match(warps()[0].boundHandle, /^handle:beyonce:MachoBindObject/);
+    // The answer carries the flight as it was read after the order.
+    assert.equal(payload.flight.solarSystemID, ORIGIN_SYSTEM_ID);
+
+    // A range above nought goes as the keyword; nought, less, and what is no number go as none said.
+    for (const [minRange, sent] of [[20000, { minRange: 20000 }], [0, null], [-5, null], ["far", null], ["2500", { minRange: 2500 }]]) {
+      const ranged = await apiRequest(baseUrl, path, { method: "POST", body: { [field]: good, minRange } });
+      assert.equal(ranged.response.status, 200, String(minRange));
+      assert.deepEqual([warps().at(-1).args, warps().at(-1).kwargs ?? null], [[subject, good], sent], String(minRange));
+    }
+  });
+
+  test(`${path} refuses what names nothing to warp to (INVALID_TARGET) and a docked pilot (NOT_IN_SPACE), and dispatches nothing`, async () => {
+    const inSpace = fakeGateway();
+    inSpace.state.inSpace = true;
+    const first = await startTestServer({ gateway: inSpace });
+    await selectOnServer(first.baseUrl);
+    for (const body of bad) {
+      const { response, payload } = await apiRequest(first.baseUrl, path, { method: "POST", body });
+      assert.deepEqual([response.status, payload.error], [400, "INVALID_TARGET"], JSON.stringify(body));
+    }
+    assert.equal(inSpace.calls.boundCall.length, 0, "nothing dispatched without something to warp to");
+
+    const dockedGateway = fakeGateway();
+    const second = await startTestServer({ gateway: dockedGateway });
+    await selectOnServer(second.baseUrl);
+    const { response, payload } = await apiRequest(second.baseUrl, path, { method: "POST", body: { [field]: good } });
+    assert.deepEqual([response.status, payload.error], [409, "NOT_IN_SPACE"]);
+    assert.equal(dockedGateway.calls.boundCall.length, 0, "no movement dispatched when docked");
+  });
+}
+
+test("a scan result's label goes without the spaces round it", async () => {
+  const gateway = fakeGateway();
+  gateway.state.inSpace = true;
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  await apiRequest(baseUrl, "/api/bridge/flight/warp-scan", { method: "POST", body: { target: "  QEE-288 " } });
+  assert.deepEqual(gateway.calls.boundCall.find((call) => call.method === "CmdWarpToStuff").args, ["scan", "QEE-288"]);
+});

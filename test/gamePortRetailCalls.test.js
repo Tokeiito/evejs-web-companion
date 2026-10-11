@@ -2699,3 +2699,113 @@ test("the table of agents is asked of the agent manager by name, with nothing", 
   assert.deepEqual([withMore.status, withMore.args], ["differs", [60003760]]);
   assert.match(withMore.note, /nothing/);
 });
+
+// michelle.CmdWarpToStuff (733 to 738): bp.CmdWarpToStuff(subject, subjectID, **kwargs), on the ballpark's object.
+// What goes with a warp is its caller's, by what the warp is to:
+//   'item'      movementFunctions.WarpToItem (452): minRange=warpRange, the WarpTo distance of the pilot's settings,
+//               a whole number. Recorded on Tranquility so, each with nought: the keyword's value is the byte
+//               \x08, the marshal's whole nought.
+//   'char'      menusvc.WarpToMember (2748): minRange=warpRange, which the fleet's menu makes a float
+//               (float(defaultWarpDist), 712). Recorded so, once: \x0b, a float's nought.
+//   'bookmark'  movementFunctions.WarpToBookmark (419): minRange=warpRange, a float from the menu (menusvc 1483),
+//               and fleet=fleet. No recording has one.
+//   'scan'      menusvc._WarpXToScanResult (1428): minRange=minRange and fleet=fleet; the range None from the
+//               scanner's list and the Agency, a distance from the overlay's bracket. No recording has one by
+//               its label; two have the site's own item warped to so, with fleet=False beside minRange.
+//   'launch'    journal.py 453: nothing.
+// The routes sent minRange only where it was above nought (an item's every time), and fleet never.
+
+const warp = (args, kwargs = null) => form("beyonce.CmdWarpToStuff", args, kwargs);
+const aFloat = (value) => ({ type: "real", value });
+
+test("a warp goes with the keywords a client sends for what it is to, whatever the route gave", () => {
+  // An item: the range as it was given, a whole number where it is one. As recorded, with nought.
+  for (const given of [{ minRange: 0 }, { minRange: 20000 }, { minRange: 0, fleet: false }]) {
+    const asked = warp(["item", 40000001], given);
+    assert.deepEqual([asked.status, asked.args, asked.kwargs], ["same", ["item", 40000001], given], JSON.stringify(given));
+    assert.match(asked.source, /michelle\.py:737$/);
+  }
+  // None said (no keyword, or None for one): nought, as the pilot's settings have it by default.
+  assert.deepEqual([warp(["item", 40000001]).status, warp(["item", 40000001]).kwargs], ["reshaped", { minRange: 0 }]);
+  assert.deepEqual([warp(["item", 40000001], { minRange: null }).status, warp(["item", 40000001], { minRange: null }).kwargs], ["reshaped", { minRange: 0 }]);
+  // A scan result's own site, warped to as an item from the scanner's list: no range, and fleet=False beside it.
+  assert.deepEqual([warp(["item", 40000001], { minRange: null, fleet: false }).status, warp(["item", 40000001], { minRange: null, fleet: false }).kwargs], ["same", { minRange: null, fleet: false }]);
+  assert.deepEqual([warp(["item", 40000001], { fleet: false }).status, warp(["item", 40000001], { fleet: false }).kwargs], ["reshaped", { minRange: null, fleet: false }]);
+
+  // A fleet member: the range a float, and nothing else.
+  assert.deepEqual([warp(["char", 140000002]).status, warp(["char", 140000002]).kwargs], ["reshaped", { minRange: aFloat(0) }]);
+  assert.deepEqual(warp(["char", 140000002], { minRange: 10000 }).kwargs, { minRange: aFloat(10000) });
+  assert.deepEqual([warp(["char", 140000002], { minRange: aFloat(0) }).status, warp(["char", 140000002], { minRange: aFloat(0) }).kwargs], ["same", { minRange: aFloat(0) }]);
+
+  // A bookmark: the range a float, and fleet=False beside it.
+  assert.deepEqual([warp(["bookmark", 900000008]).status, warp(["bookmark", 900000008]).kwargs], ["reshaped", { minRange: aFloat(0), fleet: false }]);
+  assert.deepEqual(warp(["bookmark", 900000008], { minRange: 20000 }).kwargs, { minRange: aFloat(20000), fleet: false });
+  assert.equal(warp(["bookmark", 900000008], { minRange: aFloat(20000), fleet: false }).status, "same");
+  // (In whichever order the two were written: the transport writes them in the client's.)
+  assert.equal(warp(["bookmark", 900000008], { fleet: false, minRange: aFloat(20000) }).status, "same");
+
+  // A scan result by its label: no range from the scanner's list, a distance from the overlay's; fleet=False.
+  assert.deepEqual([warp(["scan", "QEE-288"]).status, warp(["scan", "QEE-288"]).kwargs], ["reshaped", { minRange: null, fleet: false }]);
+  assert.deepEqual(warp(["scan", "QEE-288"], { minRange: 5000 }).kwargs, { minRange: 5000, fleet: false });
+  assert.equal(warp(["scan", "QEE-288"], { minRange: null, fleet: false }).status, "same");
+
+  // A launch: nothing goes with it.
+  assert.deepEqual([warp(["launch", 1000001]).status, warp(["launch", 1000001]).kwargs], ["same", null]);
+  // The note says what it was made.
+  assert.match(warp(["bookmark", 900000008]).note, /minRange/);
+});
+
+test("a warp's keywords are written as the recordings have them: fleet before minRange, a whole nought, a float's nought, False and None", () => {
+  const { marshalEncode } = require("../src/gameProtocol/marshal");
+  const written = (value) => Buffer.from(marshalEncode(value)).toString("hex").slice(-2);
+  // The client writes minRange=..., fleet=...; on an object's call its dict comes out fleet first, and machoVersion
+  // is added last. Recorded so: \x16\x03, False, 'fleet', nought, 'minRange', 1, machoVersion.
+  assert.deepEqual(keywordOrder(Object.keys(warp(["bookmark", 900000008]).kwargs), { via: "object" }), ["fleet", "minRange", "machoVersion"]);
+  assert.deepEqual(keywordOrder(Object.keys(warp(["item", 40000001]).kwargs), { via: "object" }), ["minRange", "machoVersion"]);
+  // \x08 an item's nought, \x0b a fleet member's and a bookmark's, \x20 False, \x01 the scanner's None.
+  assert.deepEqual([
+    written(warp(["item", 40000001]).kwargs.minRange), written(warp(["char", 140000002]).kwargs.minRange), written(warp(["bookmark", 900000008]).kwargs.minRange),
+    written(warp(["bookmark", 900000008]).kwargs.fleet), written(warp(["scan", "QEE-288"]).kwargs.minRange),
+  ], ["08", "0b", "0b", "20", "01"]);
+});
+
+test("what is no warp of a client's that a route makes is said to differ, and goes as it was given", () => {
+  const odd = [
+    ["a fleet's warp", ["item", 40000001], { minRange: 0, fleet: true }],
+    ["another keyword", ["item", 40000001], { minRange: 0, formation: 1 }],
+    ["a range below nought", ["item", 40000001], { minRange: -1 }],
+    ["a range that is no number", ["bookmark", 900000008], { minRange: "0" }],
+    ["a range that is not finite", ["char", 140000002], { minRange: Number.POSITIVE_INFINITY }],
+    ["a fleet's word that is no yes or no", ["bookmark", 900000008], { fleet: 0 }],
+    ["a fleet's word with a fleet member", ["char", 140000002], { minRange: 0, fleet: false }],
+    ["a range with a launch", ["launch", 1000001], { minRange: 0 }],
+    ["nothing to warp to", ["item"], null],
+    ["more than what and which", ["item", 40000001, 0], null],
+    ["a thing with no number", ["item", 0], null],
+    ["a thing by its name", ["item", "40000001"], null],
+    ["a bookmark with no number", ["bookmark", -4], null],
+    ["a scan result with no label", ["scan", ""], null],
+    ["a scan result by a number", ["scan", 5], null],
+    ["a fleet member with no number", ["char", 0], null],
+    ["a launch with no number", ["launch", 0], null],
+    ["a range that is a float of no distance", ["char", 140000002], { minRange: aFloat(-1) }],
+    ["a place the routes do not warp to", ["coords", 5], null],
+    ["no subject", [null, 5], null],
+  ];
+  for (const [why, args, kwargs] of odd) {
+    const asked = warp(args, kwargs);
+    assert.deepEqual([asked.status, asked.args, asked.kwargs], ["differs", args, kwargs && Object.keys(kwargs).length > 0 ? kwargs : null], why);
+    assert.equal(typeof asked.note, "string", why);
+  }
+  // A fleet's warp is said to be one, and why it is none of a route's.
+  assert.match(warp(["item", 40000001], { minRange: 0, fleet: true }).note, /formation/);
+  assert.doesNotMatch(warp(["bookmark", 900000008], { fleet: 0 }).note, /formation/);
+  // The pilot's own ship is warped to by no client (movementFunctions.WarpToItem returns first). Only as an item:
+  // a bookmark of the same number is a bookmark; and a ship that is not known holds nothing back.
+  const flying = (args, context) => retailForm("beyonce", "CmdWarpToStuff", args, { minRange: 0 }, context);
+  assert.deepEqual([flying(["item", 5000], { shipID: 5000 }).status, flying(["item", 5000], { shipID: 5000 }).kwargs], ["differs", { minRange: 0 }]);
+  assert.match(flying(["item", 5000], { shipID: 5000 }).note, /own ship/);
+  assert.equal(flying(["item", 5001], { shipID: 5000 }).status, "same");
+  assert.equal(flying(["bookmark", 5000], { shipID: 5000 }).status, "reshaped");
+  for (const context of [{}, { shipID: null }, { shipID: undefined }]) assert.equal(flying(["item", 5000], context).status, "same");
+});
