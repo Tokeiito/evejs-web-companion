@@ -4381,3 +4381,60 @@ test("a job delivered and a job stopped are writes of the page's own, asked of t
   }
   assert.equal(gateway.calls.call.length, after);
 });
+
+// ── the fleet finder, read by the page itself ────────────────────────────────
+//
+// fleetSvc.GetFleetAdsForChar (1891) and GetMyFleetFinderAdvert (2394): sm.ProxySvc('fleetProxy')
+// .GetAvailableFleetAds() and .GetMyFleetFinderAdvert(), nothing sent with either. The page asks each as a
+// pilot's read; the BFF hands it on as it came.
+
+test("the fleet finder's two reads go by the generic call as a pilot's reads: each as it was sent, and neither wanting the page's word for a write", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  for (const method of ["GetAvailableFleetAds", "GetMyFleetFinderAdvert"]) {
+    const before = gateway.calls.call.length;
+    const made = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "fleetProxy", method, args: [], kwargs: null, pilot: true } });
+    assert.deepEqual([made.response.status, made.payload.service, made.payload.method], [200, "fleetProxy", method]);
+    const sent = gateway.calls.call.at(-1);
+    assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["fleetProxy", method, [], null, BRIDGE_SESSION_ID, { userid: 4 }]);
+    assert.equal(gateway.calls.call.length, before + 1, method);
+  }
+  // The finder's writes are their routes' alone, but for the one application the page makes itself.
+  const after = gateway.calls.call.length;
+  for (const method of ["AddFleetFinderAdvert", "RemoveFleetFinderAdvert", "UpdateAdvertInfo"]) {
+    const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "fleetProxy", method, args: [], kwargs: null, pilot: true, confirm: true } });
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], method);
+  }
+  assert.equal(gateway.calls.call.length, after);
+});
+
+// ── a fleet's advert, as its routes hand it on ───────────────────────────────
+//
+// The client's calls are fleetSvc.AddFleetFinderAdvert (2371: sm.ProxySvc('fleetProxy').AddFleetFinderAdvert(
+// adInfoObject.GetData())) and UpdateAdvertInfo (1746: the number of members and a KeyVal of what changed of who
+// is let in). The two routes pass on what the browser gave them, a plain object each: the web gateway takes
+// it, and the game port's marshal cannot write it (400 CALL_INVALID, seen live). Nothing of the page asks
+// either route; this is what they do now, and what puts them before the game-port audit
+// (scripts/game-port-audit-known.json).
+
+test("a fleet's advert is made and changed by routes that hand on an object of the browser's as it came", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const advertData = { fleetName: "Mining Op", description: "", inviteScope: 16, joinNeedsApproval: false };
+  const allowedDiff = { membergroups_allowedEntities: [98000001] };
+  const before = gateway.calls.call.length;
+  for (const [path, body] of [["/api/bridge/fleet/advert/add", { advertData }], ["/api/bridge/fleet/advert/update", { numMembers: 3, allowedDiff }]]) {
+    const unconfirmed = await apiRequest(baseUrl, path, { method: "POST", body });
+    assert.deepEqual([unconfirmed.response.status, unconfirmed.payload.error], [400, "CONFIRMATION_REQUIRED"], path);
+  }
+  assert.equal(gateway.calls.call.length, before);
+  const added = await apiRequest(baseUrl, "/api/bridge/fleet/advert/add", { method: "POST", body: { advertData, confirm: true } });
+  assert.equal(added.response.status, 200);
+  assert.deepEqual([gateway.calls.call.at(-1).service, gateway.calls.call.at(-1).method, gateway.calls.call.at(-1).args], ["fleetProxy", "AddFleetFinderAdvert", [advertData]]);
+  const updated = await apiRequest(baseUrl, "/api/bridge/fleet/advert/update", { method: "POST", body: { numMembers: 3, allowedDiff, confirm: true } });
+  assert.equal(updated.response.status, 200);
+  assert.deepEqual([gateway.calls.call.at(-1).service, gateway.calls.call.at(-1).method, gateway.calls.call.at(-1).args], ["fleetProxy", "UpdateAdvertInfo", [3, allowedDiff]]);
+  assert.equal(gateway.calls.call.length, before + 2);
+});

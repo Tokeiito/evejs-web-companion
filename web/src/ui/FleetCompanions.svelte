@@ -322,7 +322,11 @@
       // "Test" reading `In "Nightshift"`. Two argless reads per unsettled pilot
       // per ten seconds is the cheap half of this tick — `loadFleet` above is
       // the five-call one, and that is the one that gets skipped.
-      const finder = await session.flow.readFleetFinder();
+      //
+      // It is told what this window knows of the pilot's being in a fleet: for
+      // one known to be in none, the fleet's own advert is not asked for (the
+      // client asks for it only in a fleet), and the read is the adverts alone.
+      const finder = await session.flow.readFleetFinder(inFleet);
 
       const verdict = decideFleetJoin(
         {

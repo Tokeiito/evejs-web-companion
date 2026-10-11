@@ -133,7 +133,9 @@ test("⚠ a flying companion's own fleet reading is used, not re-fetched every b
   // same lesson. It is the only read that NAMES the fleet a pilot is in; an
   // earlier version skipped it once a row settled, and retyping the op's fleet
   // then left a pilot flying in one fleet claiming to be in another.
-  assert.match(SOURCE, /const finder = await session\.flow\.readFleetFinder\(\);/);
+  // It is told what the window knows of the pilot's being in a fleet: the fleet's own advert is asked for
+  // unless the pilot is known to be in none (the client asks for it only in a fleet).
+  assert.match(SOURCE, /const finder = await session\.flow\.readFleetFinder\(inFleet\);/);
 });
 
 test("⚠ a refused apply is reported, not silently retried for ever", () => {

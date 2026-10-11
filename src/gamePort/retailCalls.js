@@ -502,6 +502,17 @@ const leavingOnTheObject = (args, kwargs, context) => (context.holdsFleet === tr
   status: "differs",
   note: "The client asks this of the fleet's object it holds. Here it holds no object for a fleet: it would ask fleetMgr.ForceLeaveFleet of a fleet the session is in, and nothing otherwise.",
 });
+/**
+ * fleetSvc.GetMyFleetFinderAdvert (2394): nothing sent. It is asked from GetCurrentAdvertForMyFleet (1924), which
+ * asks nothing where the session is in no fleet (nor where its fleet is not registered with the finder, which is
+ * not judged here), and where a fleet's boss has changed (949). A session in no fleet never asks it.
+ */
+const askingItsFleetsAdvert = (args, kwargs, context) => {
+  if (!(args.length === 0 && Object.keys(kwargs).length === 0)) return { status: "differs", note: "The client sends nothing with this call." };
+  return context.fleetID === null || context.fleetID === undefined
+    ? { status: "differs", note: "The client asks for its fleet's advert only from a session in a fleet: in none it asks nothing." }
+    : {};
+};
 const leavingByName = (args, kwargs, context) => (context.holdsFleet === false && context.fleetID !== null && context.fleetID !== undefined ? {} : {
   status: "differs",
   note: "The client asks this only where it holds no object for a fleet the session is in. With the object it asks LeaveFleet of that, and in no fleet it asks nothing.",
@@ -1361,6 +1372,8 @@ const RETAIL_CALLS = Object.freeze({
   "fleetObjectHandler.SetOptions": reshaped(`${FLEET_SVC}:449`, fleetOptionsCopy, "self.fleet.SetOptions(options): a copy of the options the client keeps, free move changed"),
   "fleetObjectHandler.Reconnect": same(`${FLEET_SVC}:1714`, "GetFleet(fleetID).Reconnect(), no arguments, on a Moniker for the fleet the connection was lost in"),
   "fleetObjectHandler.LeaveFleet": judged(`${FLEET_SVC}:369`, leavingOnTheObject, "self.fleet.LeaveFleet(), no arguments, on the fleet's object"),
+  "fleetProxy.GetAvailableFleetAds": judged(`${FLEET_SVC}:1891`, sentWithNothing, "sm.ProxySvc('fleetProxy').GetAvailableFleetAds(), nothing sent: the adverts open to the session, from the fleet finder's window, the Agency's and a fleet's link. Recorded on Tranquility so, once."),
+  "fleetProxy.GetMyFleetFinderAdvert": judged(`${FLEET_SVC}:2394`, askingItsFleetsAdvert, "sm.ProxySvc('fleetProxy').GetMyFleetFinderAdvert(), nothing sent, and only from a session in a fleet (1924). No recording has one."),
   "fleetProxy.ApplyToJoinFleet": judged(`${FLEET_SVC}:1907`, applyingToOneFleet,
     "sm.ProxySvc('fleetProxy').ApplyToJoinFleet(fleetID, autoAccept): from the fleet finder and a fleet's link with False, from the Agency's join window with True. It answers True where the boss must approve and False where an invitation was made. No recording has one."),
   // ── drones: eveMoniker.GetEntityAccess(), a Moniker made for each order ──

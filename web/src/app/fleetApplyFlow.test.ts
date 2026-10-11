@@ -27,7 +27,7 @@ const dict = (entries: readonly (readonly [unknown, unknown])[]): unknown => ({ 
 const keyVal = (entries: readonly (readonly [string, unknown])[]): unknown => ({ type: "object", name: "util.KeyVal", args: dict(entries) });
 const emptySet = { type: "objectex1", header: [{ type: "token", value: "__builtin__.set" }, [{ type: "list", items: [] }]], list: [], dict: [] };
 
-/** fleetProxy.GetAvailableFleetAds as the route hands it on: a dict of adverts by fleet, of the one fleet here. */
+/** fleetProxy.GetAvailableFleetAds as the server answers it: a dict of adverts by fleet, of the one fleet here. */
 const adverts = (): unknown => dict([[FLEET, dict(Object.entries({
   fleetID: FLEET,
   leader: keyVal([["charID", 140000001], ["corpID", 98000001], ["allianceID", null], ["warFactionID", null], ["securityStatus", 5]]),
@@ -61,6 +61,7 @@ function harness(answer: boolean) {
   const asked: string[] = [];
   const applications: Record<string, unknown>[] = [];
   const accepts: Record<string, unknown>[] = [];
+  const finderReads: Record<string, unknown>[] = [];
   let joined = false;
   const flow = createAppFlow(store, { livePush: false, fetch: async (input, init) => {
     const path = String(input);
@@ -77,9 +78,14 @@ function harness(answer: boolean) {
     if (path === "/api/bridge/targets") result = { ok: true, targetIDs: [] };
     if (path === "/api/bridge/ship/ore-hold") result = holdsBody(0, []);
     if (path === "/api/bridge/bound-fleet") result = joined ? inFleet() : noFleet();
-    if (path === "/api/bridge/fleet-ads") {
+    // The finder is read by the page's own call (bridge/fleetFinderReads.ts), and never by its route. A bot that
+    // is in no fleet asks for the adverts alone.
+    if (path === "/api/bridge/fleet-ads") asked.push("the finder's route");
+    if (path === "/api/bridge/call" && body.service === "fleetProxy" && body.method === "GetMyFleetFinderAdvert") asked.push("the fleet's own advert");
+    if (path === "/api/bridge/call" && body.service === "fleetProxy" && body.method === "GetAvailableFleetAds") {
       asked.push("the finder read");
-      result = { ok: true, availableFleetAds: adverts(), myFleetFinderAdvert: null, errors: { availableFleetAds: null, myFleetFinderAdvert: null } };
+      finderReads.push(body);
+      result = { ok: true, service: "fleetProxy", method: "GetAvailableFleetAds", result: adverts(), notifications: [] };
     }
     if (path === "/api/bridge/fleet/apply") asked.push("the route");
     if (path === "/api/bridge/call" && body.service === "fleetProxy" && body.method === "ApplyToJoinFleet") {
@@ -96,7 +102,7 @@ function harness(answer: boolean) {
     }
     return Response.json(result);
   } });
-  return { store, flow, asked, applications, accepts };
+  return { store, flow, asked, applications, accepts, finderReads };
 }
 
 /** fleetSvc.py 1907, with the pilot's yes already given (joinFleetConfirmation.py 25): as a pilot's, and as a write the page means. */
@@ -104,7 +110,7 @@ const THE_CALL = { service: "fleetProxy", method: "ApplyToJoinFleet", args: [FLE
 
 test("a bot joining a fleet by name applies by the page's own call, then accepts the invitation that answers", { timeout: 10_000 }, async (context) => {
   context.mock.timers.enable({ apis: ["setTimeout"] });
-  const { store, flow, asked, applications, accepts } = harness(false);
+  const { store, flow, asked, applications, accepts, finderReads } = harness(false);
   let resolveFinished!: () => void;
   const finished = new Promise<void>(resolve => { resolveFinished = resolve; });
   const unsubscribe = store.customBot.subscribe(state => {
@@ -121,6 +127,8 @@ test("a bot joining a fleet by name applies by the page's own call, then accepts
     // The finder, then the application, then the invitation: never by the application's route.
     const order = asked.filter((each, at) => asked.indexOf(each) === at);
     assert.deepEqual(order, ["the finder read", "applied, by the page's own call", "the invitation accepted"]);
+    // fleetSvc.py 1891: sm.ProxySvc('fleetProxy').GetAvailableFleetAds(), as a pilot's read.
+    assert.deepEqual(finderReads[0], { service: "fleetProxy", method: "GetAvailableFleetAds", args: [], kwargs: null, pilot: true });
     assert.deepEqual(applications, [THE_CALL]);
     // fleetSvc.py 1191: on the fleet the invitation named, as a pilot's write the page means.
     assert.deepEqual(accepts[0], { service: "fleetObjectHandler", method: "AcceptInvite", args: [], kwargs: null, pilot: true, confirm: true, of: FLEET });

@@ -1360,16 +1360,10 @@ export async function loadBoundFleet(options: ApiOptions = {}): Promise<Record<s
 // call on the fleet's object (bridge/fleetWrites.ts): it left its route
 // (POST /api/bridge/fleet/invite) on 2026-10-11.
 
-/**
- * The fleet-finder reads: the listing of adverts open to THIS session, plus the
- * session's own advert. Decode with bridge/fleetAds.
- *
- * The listing is filtered server-side (`isAdvertOpenToSession`), so it can only
- * ever show fleets this character was eligible to join in the first place.
- */
-export async function loadFleetAds(options: ApiOptions = {}): Promise<Record<string, JsonValue>> {
-  return getJson("/api/bridge/fleet-ads", options);
-}
+// The fleet finder is read by the page itself, with the client's own two calls
+// (bridge/fleetFinderReads.ts: fleetProxy.GetAvailableFleetAds and
+// GetMyFleetFinderAdvert): it left its route (GET /api/bridge/fleet-ads) on
+// 2026-10-11.
 
 // A fleet is applied to by the page itself, with the client's own call
 // (bridge/fleetWrites.ts; the plan's Phase 6b): the seventh of its writes to

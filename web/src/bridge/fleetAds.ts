@@ -67,14 +67,20 @@ function toBool(value: JsonValue | undefined): boolean {
   return value === true || toNumber(value) === 1;
 }
 
+/**
+ * Text as the wire has it. EveJS answers a name as a plain string; Tranquility answers a name and a description
+ * as unicode, which is a wire string ({type:"wstring", value}). What is neither is no text: a number is written
+ * out, and anything else is nothing (never "[object Object]").
+ */
 function toText(value: JsonValue | undefined): string {
   if (typeof value === "string") {
     return value;
   }
-  if (value === null || value === undefined) {
-    return "";
+  if (typeof value === "object" && value !== null) {
+    const wide = value as { type?: unknown; value?: unknown };
+    return wide.type === "wstring" && typeof wide.value === "string" ? wide.value : "";
   }
-  return String(value);
+  return typeof value === "number" ? String(value) : "";
 }
 
 /**

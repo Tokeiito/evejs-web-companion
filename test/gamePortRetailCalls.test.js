@@ -2594,3 +2594,29 @@ test("a job's monitor is let go of by its number, or by None", () => {
     assert.match(odd.note, /the monitor's number, or None/, why);
   }
 });
+
+test("the fleet finder's adverts are asked for with nothing; the fleet's own advert, with nothing and from a session in a fleet", () => {
+  // fleetSvc.py 1891: sm.ProxySvc('fleetProxy').GetAvailableFleetAds(), to the client's proxy node. Recorded on Tranquility so.
+  const ads = (args, kwargs = null, context = {}) => retailForm("fleetProxy", "GetAvailableFleetAds", args, kwargs, context);
+  for (const context of [{}, { fleetID: null }, { fleetID: 654500010000 }]) {
+    const made = ads([], null, context);
+    assert.deepEqual([made.status, made.source, made.args, made.kwargs, made.moniker, made.proxy], ["same", "eve/client/script/parklife/fleetSvc.py:1891", [], null, false, true], JSON.stringify(context));
+  }
+  // fleetSvc.py 2394: sm.ProxySvc('fleetProxy').GetMyFleetFinderAdvert(), which a session in no fleet never asks (1924).
+  const mine = (args, kwargs = null, context = {}) => retailForm("fleetProxy", "GetMyFleetFinderAdvert", args, kwargs, context);
+  const inOne = mine([], null, { fleetID: 654500010000 });
+  assert.deepEqual([inOne.status, inOne.source, inOne.args, inOne.kwargs, inOne.moniker, inOne.proxy], ["same", "eve/client/script/parklife/fleetSvc.py:2394", [], null, false, true]);
+  for (const context of [{}, { fleetID: null }, { fleetID: undefined }]) {
+    const inNone = mine([], null, context);
+    assert.deepEqual([inNone.status, inNone.args, inNone.kwargs], ["differs", [], null], JSON.stringify(context));
+    assert.match(inNone.note, /only from a session in a fleet/);
+  }
+  // Anything sent with either goes as it came, and is counted as differing.
+  for (const ask of [ads, mine]) {
+    for (const [args, kwargs, why] of [[[654500010000], null, "a fleet named"], [[null], null, "None"], [[], { all: true }, "a keyword"]]) {
+      const odd = ask(args, kwargs, { fleetID: 654500010000 });
+      assert.deepEqual([odd.status, odd.args, odd.kwargs], ["differs", args, kwargs], why);
+      assert.match(odd.note, /sends nothing/, why);
+    }
+  }
+});

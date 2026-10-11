@@ -350,6 +350,7 @@ import {
 import { canBroadcastInFleet, canTagInFleet } from "../bridge/fleetCommand.ts";
 import type { FleetCenterSnapshot } from "../bridge/fleetCenter.ts";
 import { decodeAvailableFleetAds, decodeMyFleetFinderAdvert } from "../bridge/fleetAds.ts";
+import { readAvailableFleetAds, readFleetFinder as readFleetFinderCalls } from "../bridge/fleetFinderReads.ts";
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { BOOKMARK_EXPIRY, bookmarkLocation as bookmarkLocationCall } from "../bridge/bookmarkWrites.ts";
@@ -896,8 +897,12 @@ export interface AppFlow {
    * second. `ownFleetName` is null both when this pilot is in no fleet and when
    * the fleet it is in is not advertised; the caller already knows which of
    * those it is from its own membership read.
+   *
+   * `inAFleet` is that knowledge, where the caller has it: for a pilot known
+   * to be in no fleet (`false`) the fleet's own advert is not asked for, as
+   * the client does not ask it (bridge/fleetFinderReads.ts).
    */
-  readFleetFinder(): Promise<FleetFinderRead>;
+  readFleetFinder(inAFleet?: boolean | null): Promise<FleetFinderRead>;
   /**
    * APPLY to an advertised fleet, and return WHICH HALF of the round trip the
    * server took.
@@ -4207,10 +4212,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     await runFleetAction("leave", () => leaveFleetCall(bridgeDo), "not-in-fleet");
   }
 
-  async function readFleetFinder(): Promise<FleetFinderRead> {
-    let raw: Awaited<ReturnType<typeof api.loadFleetAds>>;
+  async function readFleetFinder(inAFleet: boolean | null = null): Promise<FleetFinderRead> {
+    let reads: Awaited<ReturnType<typeof readFleetFinderCalls>>;
     try {
-      raw = await api.loadFleetAds(callOptions);
+      // The page's own two calls (bridge/fleetFinderReads.ts), each failing by itself.
+      reads = await readFleetFinderCalls(bridgeAsk, inAFleet);
     } catch (error) {
       if (isSessionLost(error)) {
         stopLiveStream();
@@ -4219,17 +4225,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // Not fatal and not faked: a watcher waits for a clean read.
       return { ads: null, ownFleetName: null };
     }
-    // ⚠ THE TWO ARMS ARE SETTLED SEPARATELY ON THE BFF (Promise.allSettled), so
-    // one of them failing must not throw the other away. A missing arm decodes
-    // to its own null / empty, which is what each of those already means here.
-    const ads = decodeAvailableFleetAds(raw.availableFleetAds ?? null)
-      .filter((ad) => ad.fleetID !== null && ad.fleetID > 0)
-      .map((ad) => ({
-        fleetID: ad.fleetID as number,
-        fleetName: ad.fleetName,
-        numMembers: ad.numMembers,
-      }));
-    const own = decodeMyFleetFinderAdvert(raw.myFleetFinderAdvert ?? null);
+    // ⚠ A LISTING THAT COULD NOT BE READ IS NOT A LISTING OF NOBODY. The route
+    // this was answered a failed listing as an empty one, which a watcher
+    // takes for "nobody is advertising" and may act on. The two reads are
+    // settled apart: one failing does not throw the other away.
+    const ads = reads.errors.available !== null
+      ? null
+      : decodeAvailableFleetAds(reads.available)
+        .filter((ad) => ad.fleetID !== null && ad.fleetID > 0)
+        .map((ad) => ({
+          fleetID: ad.fleetID as number,
+          fleetName: ad.fleetName,
+          numMembers: ad.numMembers,
+        }));
+    const own = decodeMyFleetFinderAdvert(reads.own);
     const ownFleetName = own !== null && own.fleetName.trim().length > 0 ? own.fleetName : null;
     return { ads, ownFleetName };
   }
@@ -12171,9 +12180,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         let fleetAds: ScriptObservation["fleetAds"] = null;
         if (macro !== null && FLEET_FINDER_MACROS.has(macro) && inFleet === false) {
           try {
-            fleetAds = decodeAvailableFleetAds(
-              (await api.loadFleetAds(callOptions)).availableFleetAds ?? null,
-            )
+            // The page's own call (bridge/fleetFinderReads.ts): the adverts alone, for a pilot in no fleet.
+            fleetAds = decodeAvailableFleetAds(await readAvailableFleetAds(bridgeAsk))
               .filter((ad) => ad.fleetID !== null && ad.fleetID > 0)
               .map((ad) => ({
                 fleetID: ad.fleetID as number,
