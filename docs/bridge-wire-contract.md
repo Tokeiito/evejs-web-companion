@@ -1246,7 +1246,12 @@ simulates or predicts position; each move's truth comes from the next
 - **Approach-then-redock (verified live).** `CmdDock` out of range refuses
   `DockingApproach` and the ship enters a FOLLOW approach; the loop **re-issues
   `CmdDock`** each cycle until `flight-status` shows docked — it does not assume
-  one dock call docks.
+  one dock call docks. Since eve.js `869b28d2b` (2026-10-11) the server finishes that
+  dock itself, as Tranquility does in each of the 9 it has recorded: a station's
+  `CmdDock` from out of range is answered `DockingApproach`, the ship is sent at the
+  station, and `OnDockingAccepted` follows when it is in range, with no second call.
+  The loop's next read of the flight then says docked. Any order to the ship ends
+  that approach.
 - **Pause, don't guess.** Any unsafe/blocked refusal that is not the normal
   docking-approach (warp scrambled, gate restricted, invalid target, lost
   control) **pauses** the loop with the handler's own reason. A jump
@@ -2529,7 +2534,13 @@ are refused with `SESSION_CHANGE_IN_PROGRESS`.
   short of the thing); the game port makes it on the ballpark's object, and refuses it
   with `409 CALL_REFUSED` for a pilot with no ballpark. The page makes it where a warp
   is asked with no range (`autopilotWarp`: the Flight window's "Warp to it", the fleet
-  companion's order). **Every warp of the page's is its own call**:
+  companion's order, and since later that day every warp of the travel autopilot's).
+  This server refused it from nearer than about 160 km of the thing's hull when it was
+  measured (`409 CALL_REFUSED`, "You cannot warp there right now."), so the travel
+  autopilot and the companion ask it from `warpFloorMeters(shipRadius, 10000)` (162.5 km
+  for a small hull) and under that open the throttle and follow at nought
+  (`CmdSetSpeedFraction [1]`, then `CmdFollowBall [itemID, 0]`), as a client's autopilot
+  does under a warp's least distance. **Every warp of the page's is its own call**:
   `POST /api/bridge/flight/warp` and `/flight/warp-member` are asked by nothing of the
   page's, as `warp-scan`, `warp-bookmark` and `warp-launch` are not.
 - **A mission's marked spot is warped to on its agent's own object** (since
@@ -2878,6 +2889,10 @@ because the warp branch had no attempt bound. Three corrections were all needed:
    now sends retail's own `WarpToItem(warpRange=0)` shape —
    `Handle_CmdWarpToStuff("item", id, minRange=0)` (`:2654-2684`) — which
    reaches the identical `warpToEntity` without that term.
+   **Undone on 2026-10-11 for the travel autopilot** (`9350fd89`): it makes the
+   client's autopilot's own call again, and the ten kilometres are in the floor it
+   asks a warp from. The mining bot's and a script bot's warps are still the menu's
+   at nought. The refusal has had words since eve.js `8d990c1c2`.
 2. **Measure against the gate the server really applies.** The two target kinds
    differ, and one of them is *random*:
 
@@ -2914,7 +2929,8 @@ rather than a second autopilot. Two corrections:
   whenever it has one, so that expression is exactly the surface distance the
   loop already measures. Firing Dock from 50 km is not free: `Handle_CmdDock`
   (`beyonceService.js:2994`) both starts an approach AND refuses with
-  `DockingApproach` (`:3013-3025`), and nothing auto-docks on arrival.
+  `DockingApproach` (`:3013-3025`), and nothing auto-docked on arrival (until eve.js
+  `869b28d2b`, 2026-10-11, which docks a ship whose docking approach has arrived).
 * **`CmdDock` can return 200/null WITHOUT docking** (`:3031-3042`) —
   `WARP_LANDING_PENDING`, `STATION_NOT_FOUND`, `SHIP_IMMOBILE` and
   `DOCKING_APPROACH_REQUIRED` all reach the browser as `ok:true`. Nothing reads
@@ -2994,7 +3010,8 @@ observable only as an **absence** — the rock stops appearing in the snapshot a
 in `GetTargets`; there is no "your rock is gone" event.
 
 R24 page pieces: `web/src/nav/autopilotLoop.ts` (`warpFloorMeters`,
-`WARP_EXIT_VARIANCE_M`, `AUTOPILOT_WARP_MIN_RANGE_M`, `MAX_WARP_ATTEMPTS`,
+`WARP_EXIT_VARIANCE_M`, `MENU_WARP_RANGE_M` (`AUTOPILOT_WARP_MIN_RANGE_M` until
+2026-10-11), `AUTOPILOT_WARP_STOPS_SHORT_M`, `MAX_WARP_ATTEMPTS`,
 `STATION_DOCKING_RADIUS_M`, `MAX_SILENT_DOCK_ATTEMPTS`), `app/flow.ts` `dockAt`
 plus `applyPushedNotification` / `applyCycleNotification` / `scheduleHoldRefresh`
 and `seedBaseCycleTimes`, `app/api.ts` `loadBaseCycleTimes`, the `moduleCycles`

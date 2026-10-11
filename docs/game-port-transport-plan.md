@@ -907,9 +907,13 @@ page's own calls too (`832dcb2a`): every warp of the page's is, and the five war
 are asked by nothing of the page's. A mission's marked spot is next; then the page's own
 autopilots, which warp by the menu's call where a client's autopilot warps by its own.
 The mission's spot is warped to by asking its agent now (`77464628`), with the spots
-taken from the journal: an agent is an object the page names. The page's autopilots are
-next. In `eve.js` an advert's text outside ASCII goes as
-unicode (`dcd459b0d`; on its origin since 2026-10-11, pushed by another hand than this loop's).
+taken from the journal: an agent is an object the page names. The page's travel
+autopilot warps as the client's autopilot does now (`9350fd89`), and a warp's floor
+follows the call that makes it; the autopilot's last leg, the client's Dock from fifty
+kilometres, is next. In `eve.js` an advert's text outside ASCII goes as
+unicode (`dcd459b0d`; on its origin since 2026-10-11, pushed by another hand than this loop's), and a dock
+asked from out of range of a station is finished by the server, as Tranquility finishes
+it (`869b28d2b`, not pushed).
 Counted by the whole path,
 82 are named now, 37 of them reads and 45 writes (the count kept before
 `82a21e8` took a path's beginning for a path and missed a parameter inside one: it read 130

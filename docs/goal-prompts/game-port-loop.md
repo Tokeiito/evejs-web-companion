@@ -1370,6 +1370,33 @@ Take these defaults, and list each under "For the operator" in the log so they c
   Maurasi (60003454), gives it a hull, and asks and accepts a mission of the level 1
   encounter agent there (3011918). The journal then has a `dungeon` and an
   `agenthomebase` in that system. `msw-agents.js` lists a station's agents by kind.
+- **A change to where the ship comes out of warp changes the leg after it.** Size
+  that leg too: read its handler to the closing brace, and search the recordings for
+  its answer and for what the server sends next, not only for its call. (The
+  autopilot's warp put the ship ten kilometres off a station; the approach and a dock
+  from out of range then ran, which seldom had; and the server never finished that
+  dock. The recordings had it all along: 9 docks answered `DockingApproach`, each
+  then accepted by Tranquility with no second call in 7.)
+- **Search the recordings for a refusal's name too**, and for the server's next word
+  after it. `apw-docks.js` counts a call so answered, whether it was asked again, and
+  how long till the acceptance.
+- **A ship is put at a said distance by the GM's `/tr me pos=x,y,z`**
+  (`POST /api/bridge/gm/slash`), in space. `apw-measure.js` puts it there, reads the
+  distance back as the page measures it, asks one warp and watches: a boundary of
+  the server's is found to a few hundred metres at a minute a point.
+- **The page's autopilot is driven by `run()`**; `start()` only readies it.
+  `apw-live.js` flies the page's own loop over a BFF with the page's own functions,
+  one gate and a dock.
+- **`eve.js`'s tests run by its own runner**: `npm run test:isolated --
+  server/tests/<file>.test.js`. A bare `node --test` is refused before it opens the
+  store.
+- **The server's own state at a call is in its log** (`eve.js/_local/logs/server.log`,
+  `[Beyonce] CmdDock state={...}`: its distance, its threshold, the ship's speed).
+  Set it beside the page's measure before saying which of the two is off. The log
+  starts again when EveJS does.
+- **On the game port the page's measure of a closing ship ran ahead of the
+  server's** (about 500 m at 172 m/s). A call asked at a threshold by the page's
+  measure can be refused by the server's; through the gateway it was not.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
