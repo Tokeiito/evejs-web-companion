@@ -1495,6 +1495,21 @@ Take these defaults, and list each under "For the operator" in the log so they c
   before its key.
 - **A search of the whole decompiled source by a shell `grep -r` takes minutes.**
   Use the search tool, or name the folder.
+- **A write moved onto the generic call leaves its route's path behind in whatever
+  reads paths.** The bot host's guard of a recovery tells a write by `url.pathname`
+  and takes `/api/bridge/call` for a read, as it was when the guard was written; 48
+  writes had moved onto the call before it was looked at. Before a write is moved,
+  search the BFF's sources for the route's path as text, and for
+  `"/api/bridge/call"` itself.
+- **A test's double keeps making the old form.** The recovery's tests accept a
+  fleet's invitation by its route and lose a write by a route; they pass, and say
+  nothing of the form the page makes now. When a form changes, search the tests'
+  doubles for the old one.
+- **Count routes off the app, not off the source's text.** `app.router.stack` has
+  483 under the bridge's path where `app.get("…")` in `src/server.js` has 472: a
+  route can be registered by a list of paths, by a helper or from another file. And a
+  `${…}` in a path named is a route's parameter: `chat/${channel}` is not
+  `chat/send-message`.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

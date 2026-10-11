@@ -921,15 +921,18 @@ A pilot at rest within 100 km of a station is put 500 m off it at each login by 
 server's own rule (measured on both transports; left for the operator). A bot's own
 approach is the menu's now, a follow at fifty metres with no throttle (`cd6306c6`). A
 thing the sensor suite has a bracket for was read to its end, with nothing to build. The
-bridge's routes that nothing of the page's asks are next. In `eve.js` an advert's text outside ASCII goes as
+bridge's routes were counted off the app's own table, and none taken away: 483, of which the
+page names 95, tests alone 217 and nothing at all 149. A hosted bot's guard of its recovery
+takes a write by the generic call for no write, and is next. In `eve.js` an advert's text outside ASCII goes as
 unicode (`dcd459b0d`; on its origin since 2026-10-11, pushed by another hand than this loop's), and a dock
 asked from out of range of a station is finished by the server, as Tranquility finishes
 it (`869b28d2b`, not pushed), and a pilot's client is sent no greatest speed for its ship
 when it warps, as Tranquility sends none (`c0580dd05`, not pushed).
-Counted by the whole path,
-82 are named now, 37 of them reads and 45 writes (the count kept before
-`82a21e8` took a path's beginning for a path and missed a parameter inside one: it read 130
-where 138 was so). Of the phase's "done when", "no
+Counted by the whole path
+off the app's own table of routes, 95 of the bridge's 483 are named by the page now: 93 in its
+`api.ts`, 40 by GET and 53 by POST, and the generic call and the event stream (the counts kept
+before were by the source's text, `app.get("…")`, which has 472 of the routes and 82 of the 93:
+eleven are registered by a list of paths, by a helper or from another file). Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.
 Of 6a's four things, three are carried by the socket or in process, each with a way back
 (the routes' operations, the pushes, the hosted bots), and the cap is lifted for what is
