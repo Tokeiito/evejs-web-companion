@@ -928,8 +928,10 @@ fetch while its session recovers, a session's change, a hosted generation, and t
 gate while lost drones are looked for. The audit's routes are the app's own now, and
 a route is the page's where any of the page's sources names it (`0f6c6137`): it names 219 routes of the
 page's where it named 187, and says of 34 that no test asks them where it said 23. What the static data says of a type
-is asked once and kept now (`1478046f`): three of the flow's nine askers by type kept nothing. The page's
-routes that no test asks are next. In `eve.js` an advert's text outside ASCII goes as
+is asked once and kept now (`1478046f`): three of the flow's nine askers by type kept nothing. Seven of the
+page's plain reads that no test of the BFF's asked are asked now by the page's own askers of the BFF's own
+routes (`d36eba9e`), and 27 routes the page names are asked by no test still. The reads the client makes on an
+object that the generic call sends by name are next. In `eve.js` an advert's text outside ASCII goes as
 unicode (`dcd459b0d`; on its origin since 2026-10-11, pushed by another hand than this loop's), and a dock
 asked from out of range of a station is finished by the server, as Tranquility finishes
 it (`869b28d2b`), and a pilot's client is sent no greatest speed for its ship

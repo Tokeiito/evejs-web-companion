@@ -1550,6 +1550,16 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A read that keeps nothing has a keeper.** `app/api.ts` keeps nothing of a static
   read on purpose: its caller owns the cache. An asker of a read by type asks
   through `bridge/keptTypeFacts.ts`, or keeps for itself and says so.
+- **A wire between the page and the BFF is tested by the page's own asker.** A test
+  of the BFF's can load `web/src/app/api.ts` and ask a route with it
+  (`test/pagesPlainReads.test.js`): what the page sends and reads, and what the route
+  takes and answers, are then one test's, and a name changed on either side fails it.
+- **A test that passes at its first run is proved by breaking both sides.** Where no
+  source changes with a test, nothing can be watched to fail first: break the route,
+  and break its asker, each in turn.
+- **"Asked by a test" is not "tested".** A request refused for its body takes a route
+  off the audit's list and looks at nothing. Ask a route as the page does, or leave
+  it on the list.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
