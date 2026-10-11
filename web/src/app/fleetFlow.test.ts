@@ -781,3 +781,51 @@ test("a fleet whose composition has not caught up with its roster is read once m
     assert.equal(quiet.state.reads, 1, why);
   }
 });
+
+// --- a pilot invited, through the flow ----------------------------------------
+
+/** A flow whose pilot is online as `characterID`, over a BFF that takes an invitation as told and reads a fleet after. */
+function invitingFlow(characterID: number, answer: { status: number; body: unknown } = { status: 200, body: { ok: true, service: "fleetObjectHandler", method: "Invite", result: true, notifications: [] } }) {
+  const calls: Array<{ url: string; body: unknown }> = [];
+  const fetch: typeof globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    calls.push({ url, body: typeof init.body === "string" ? JSON.parse(init.body) : null });
+    if (url.endsWith("/api/bridge/call")) return json(answer.body, answer.status);
+    if (url.endsWith("/api/bridge/bound-fleet")) return json(populatedFleet());
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  const store = createClientStore();
+  store.apply({ type: "character/online", character: {
+    characterID, characterName: "Test", stationID: 60003760, structureID: null, solarSystemID: 30000142, corporationID: 98000000,
+  }, station: null });
+  return { store, calls, flow: createAppFlow(store, { fetch, livePush: false }) };
+}
+const invitationOf = (invitee: number, of?: number) => ({ service: "fleetObjectHandler", method: "Invite", args: [invitee, null, null, null], kwargs: null, pilot: true, confirm: true, ...(of === undefined ? {} : { of }) });
+
+test("inviteFleetMember makes the page's own call on the pilot's fleet, names the fleet it expects where it is given one, and reads the fleet again", async () => {
+  const plain = invitingFlow(140000001);
+  await plain.flow.inviteFleetMember(140000003);
+  // fleetSvc.py 362: self.fleet.Invite(charID, None, None, None), as a pilot's write the page means. And nothing of
+  // the route it went by until 2026-10-11.
+  assert.deepEqual(plain.calls.filter((call) => call.url.endsWith("/api/bridge/call") || call.url.includes("/fleet/")), [{ url: "/api/bridge/call", body: invitationOf(140000003) }]);
+  assert.equal(plain.calls.at(-1)?.url, "/api/bridge/bound-fleet");
+  assert.equal(plain.store.get().fleet.actionError, null);
+
+  const expected = invitingFlow(140000001);
+  await expected.flow.inviteFleetMember(140000003, undefined, 654500010000);
+  assert.deepEqual(expected.calls.find((call) => call.url.endsWith("/api/bridge/call"))?.body, invitationOf(140000003, 654500010000));
+});
+
+test("the pilot does not invite itself, and an invitation the server refuses is said in the page's words for it", async () => {
+  const own = invitingFlow(140000001);
+  await own.flow.inviteFleetMember(140000001);
+  assert.equal(own.calls.some((call) => call.url.endsWith("/api/bridge/call")), false);
+  assert.equal(own.store.get().fleet.actionError, "The fleet action was refused. You cannot invite yourself to your own fleet.");
+
+  for (const [key, words] of [["FleetError", "The fleet would not allow that."], ["FleetNotInFleet", "You are not in that fleet."]] as const) {
+    const refused = invitingFlow(140000001, { status: 409, body: { ok: false, error: "CALL_REFUSED", message: key } });
+    await refused.flow.inviteFleetMember(140000003);
+    assert.deepEqual(refused.calls.map((call) => call.url).slice(-2), ["/api/bridge/call", "/api/bridge/bound-fleet"], key);
+    assert.equal(refused.store.get().fleet.actionError, `The fleet action was refused. ${words}`, key);
+  }
+});

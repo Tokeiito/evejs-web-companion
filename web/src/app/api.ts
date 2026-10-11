@@ -1376,10 +1376,9 @@ export async function loadBoundFleet(options: ApiOptions = {}): Promise<Record<s
   return getJson("/api/bridge/bound-fleet", options);
 }
 
-/** INVITE a character into the session's own fleet (must already be in one). */
-export async function inviteToFleet(inviteeCharID: number, options: ApiOptions = {}, expectedFleetID?: number): Promise<void> {
-  await postJson("/api/bridge/fleet/invite", { inviteeCharID, confirm: true, ...(expectedFleetID === undefined ? {} : { expectedFleetID }) }, options);
-}
+// A pilot is invited to the fleet by the page itself, with the client's own
+// call on the fleet's object (bridge/fleetWrites.ts): it left its route
+// (POST /api/bridge/fleet/invite) on 2026-10-11.
 
 /**
  * The fleet-finder reads: the listing of adverts open to THIS session, plus the

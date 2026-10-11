@@ -67,10 +67,13 @@ test("a queued surviving-member invite checks ownership at HTTP dispatch, after 
   let release!: () => void, current = true, checks = 0;
   const gate = new Promise<void>(resolve => { release = resolve; });
   const occupying = Array.from({ length: MAX_IN_FLIGHT }, () => bridgeLane.run("read", "/occupied", () => gate));
-  const invite = f.flow.inviteFleetMember(43, () => { checks++; if (!current) throw new Error("The inviter generation retired."); });
+  const before = f.paths.length;
+  // (The invitee is a pilot's number: the page asks nothing for what the client takes for no pilot.)
+  const invite = f.flow.inviteFleetMember(140000043, () => { checks++; if (!current) throw new Error("The inviter generation retired."); });
   assert.equal(bridgeLane.queued(), 1); current = false; release();
   await Promise.all(occupying); await invite;
-  assert.equal(f.paths.includes("/api/bridge/fleet/invite"), false);
+  // The invitation is the page's own call (bridge/fleetWrites.ts): it was not sent, and nor was its old route.
+  assert.deepEqual(f.paths.slice(before).filter((path) => path === "/api/bridge/call" || path === "/api/bridge/fleet/invite"), []);
   assert.equal(checks, 1); assert.ok(f.store.fleet.get().actionError);
 });
 

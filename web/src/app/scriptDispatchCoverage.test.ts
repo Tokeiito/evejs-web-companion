@@ -138,3 +138,18 @@ test("an invitation is accepted by the page's own call wherever the page carries
   const api = readFileSync(fileURLToPath(new URL("./api.ts", import.meta.url)), "utf8");
   assert.equal(api.includes("/api/bridge/fleet/invite/accept"), false);
 });
+
+test("a pilot is invited by the page's own call wherever the page carries a bot's actions out", () => {
+  const flow = readFileSync(fileURLToPath(new URL("./flow.ts", import.meta.url)), "utf8");
+  const times = (text: string) => flow.split(text).length - 1;
+  // A support ship's, and a script bot's: the invitee, and the pilot's own character for the page's refusal.
+  assert.equal(times('else if (action.kind === "inviteToFleet") await inviteToFleetCall(bridgeDo, action.charID, onlineCharacterID());'), 1);
+  assert.equal([...flow.matchAll(/case "inviteToFleet":\s+await inviteToFleetCall\(bridgeDo, action\.charID, onlineCharacterID\(\)\);\s+(return|break);/g)].length, 1);
+  // The Fleet window's and the bot host's: with the fleet expected where one is given, and the dispatch fenced
+  // where the caller gives a fence.
+  assert.equal(times("inviteToFleetCall(assertCurrent ? fencedDo(assertCurrent) : bridgeDo, characterID, onlineCharacterID(), expectedFleetID)"), 1);
+  // The route's asker is gone from the flow, and from the page's askers.
+  assert.equal(flow.includes("api.inviteToFleet("), false);
+  const api = readFileSync(fileURLToPath(new URL("./api.ts", import.meta.url)), "utf8");
+  assert.equal(api.includes('"/api/bridge/fleet/invite"'), false);
+});

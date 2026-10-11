@@ -8353,3 +8353,33 @@ test("a session in a fleet accepts no invitation: nothing is asked of the server
   await early.pilots.callBoundMethod("fleetObjectHandler", "AcceptInvite", [null], null, WHO, early.handle, invited.boundHandle);
   assert.deepEqual(onObjects(early.session, "AcceptInvite").map(([, , args]) => args), [[588]]);
 });
+
+// ── a pilot invited ──────────────────────────────────────────────────────────
+//
+// fleetSvc.Invite (361): `if charID != session.charid:`, and for the pilot's own character the client asks nothing.
+
+test("a pilot invites another on its fleet's object as the client does, and never itself: nothing is asked of the server, and nothing is counted as asked", async () => {
+  const built = await formed({ "bound:Invite": true, "bound:KickMember": null }, { allowed: new Set([...FLEET_PAIRS.allowed, "fleetObjectHandler.Invite"]) });
+  const { pilots, session, handle, made } = built;
+  const invite = (invitee) => pilots.callBoundMethod("fleetObjectHandler", "Invite", [invitee, null, null, null], null, WHO, handle, made.boundHandle);
+  const before = [session.sent.length, fleetCalls(session).length, JSON.stringify(pilots.callLedger())];
+  for (const own of [PILOT, String(PILOT)]) {
+    await assert.rejects(invite(own), (error) => error.code === "CALL_REFUSED" && error.message === "A pilot does not invite itself to its own fleet.", String(typeof own));
+  }
+  assert.deepEqual([session.sent.length, fleetCalls(session).length, JSON.stringify(pilots.callLedger())], before);
+  // fleetSvc.Invite (357): `if IsNPC(charID) or not IsCharacter(charID):`, the client's own word for it, and
+  // nothing asked. By the number alone: an agent, a corporation, nothing at all.
+  for (const none of [3000001, 98000000, 0, null, "a pilot", 2130000000]) {
+    await assert.rejects(invite(none), (error) => error.code === "CALL_REFUSED" && error.message === "That is no pilot to invite.", String(none));
+  }
+  assert.deepEqual([session.sent.length, fleetCalls(session).length, JSON.stringify(pilots.callLedger())], before);
+  // Only the invitation is held back so: the fleet's other calls that name the pilot's own character go as they went.
+  await pilots.callBoundMethod("fleetObjectHandler", "KickMember", [PILOT], null, WHO, handle, made.boundHandle);
+  assert.deepEqual(onObjects(session, "KickMember").map(([, , args]) => args), [[PILOT]]);
+  // Another pilot: asked on the fleet's object, as it was given, and counted as the client's own call.
+  const asked = await invite(PILOT + 2);
+  assert.equal(asked.result, true);
+  assert.deepEqual(onObjects(session, "Invite").map(([, , args, kwargs]) => [args, kwargs]), [[[PILOT + 2, null, null, null], null]]);
+  const row = pilots.callLedger().find((each) => each.pair === "fleetObjectHandler.Invite");
+  assert.deepEqual([row.calls, row.statuses], [1, { same: 1 }]);
+});

@@ -305,3 +305,64 @@ export async function acceptFleetInvite(act: Ask, fleetID: number, inAFleet: boo
   }
   await act("fleetObjectHandler", "AcceptInvite", [], undefined, fleetID);
 }
+
+// --- A pilot invited (the plan's Phase 6b) ------------------------------------
+//
+// Until 2026-10-11 it was one route of the BFF (POST /api/bridge/fleet/invite).
+//
+// THE CALL, as the client makes it (fleetSvc.Invite, 351 to 363). In no fleet it forms one first. For what is no
+// pilot (idCheckers: an NPC's number, or none of a character's) it says so itself and asks nothing; for the
+// pilot's own character it asks nothing and says nothing. Otherwise:
+//
+//   CSPAChargedAction('CSPAFleetCheck', self.fleet, 'Invite', charID, wingID, squadID, role)
+//
+// which is self.fleet.Invite(charID, wingID, squadID, role), on the fleet's own object, asked once, and again with
+// the cost by keyword where the server says the contact costs and the pilot agrees (eveMisc.py 89). From the
+// menus it is the pilot and three Nones (menusvc.py 2714, fleet/entries.py 72, fleetUtil.py 68); a wing, a squad
+// and a role are named from the fleet's own window alone. No Tranquility recording has an invitation sent: the
+// one recording of a fleet is of the pilot invited.
+//
+// THE PAGE NAMES THE PILOT ALONE, so its invitation is the plain one. The BFF makes it on the session's own
+// fleet's object and says None for the wing, the squad and the role whatever the call came with: the server seats
+// an invitee in whatever role it is told (src/server.js, inviteToFleetCall).
+//
+// A FLEET EXPECTED. A caller that queued its invitation while the pilot was in one fleet says that fleet's number
+// (`of`), and the BFF binds by it, so that the server's check of the inviter runs against that fleet and the
+// invitation cannot follow its pilot into another. Only the bot host's recovery says one.
+//
+// WHAT THE SERVER TAKES FROM THE CALLER: the invitee. The inviter is the session's own character, which must be a
+// member of the fleet (FleetNotInFleet); it refuses a character that is in a fleet (FleetError) and a place that
+// is not there (FleetNoPositionFound); for no pilot and for the inviter itself it answers false and does nothing.
+// It asks nothing of what the contact costs.
+//
+// THE PAGE FORMS NO FLEET FOR IT: its Fleet window invites only from a fleet, and a bot forms its own first.
+//
+// ⚠ THE ANSWER IS NO PROOF OF ANYTHING. As with every fleet write here, the fleet is read again after.
+
+/**
+ * idCheckers, as fleetSvc.Invite goes by them (357): not IsNPC, and IsCharacter. By the number alone: a player's
+ * character of the second or the third generation, or a number of the range the older characters share with
+ * other things. (There the client asks its cache of owners, which the page has not got.)
+ */
+const couldBeAPilot = (characterID: number): boolean => Number.isSafeInteger(characterID)
+  && ((characterID >= 90_000_000 && characterID <= 97_999_999) || (characterID >= 100_000_000 && characterID <= 2_129_999_999));
+
+/**
+ * Invites the pilot `inviteeCharID` to the pilot's own fleet. `ownCharacterID` is the pilot's own character as
+ * the caller knows it (null where it does not): the client asks nothing for that one, and nor does this.
+ * `expectedFleetID`, where the caller says one, is the fleet the invitation is to: the call is made on that
+ * fleet's object and no other. Fails as the call fails.
+ */
+export async function inviteToFleet(act: Ask, inviteeCharID: number, ownCharacterID: number | null, expectedFleetID?: number): Promise<void> {
+  if (!couldBeAPilot(inviteeCharID)) {
+    throw new Error("That is no pilot to invite.");
+  }
+  if (inviteeCharID === ownCharacterID) {
+    throw new Error("You cannot invite yourself to your own fleet.");
+  }
+  // (A fleet said and no fleet's number is not taken for none said: the invitation is to that fleet or to none.)
+  if (expectedFleetID !== undefined && !(Number.isSafeInteger(expectedFleetID) && expectedFleetID > 0)) {
+    throw new Error("That is no fleet to invite a pilot to.");
+  }
+  await act("fleetObjectHandler", "Invite", [inviteeCharID, null, null, null], undefined, expectedFleetID);
+}

@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-import { acceptFleetInvite, applyToJoinFleet, createFleetBroadcasts, decodeFleetWriteAck, decodeFleetAdvertWriteAck, formFleet, leaveFleet, tagFleetTarget } from "./fleetWrites.ts";
+import { acceptFleetInvite, applyToJoinFleet, createFleetBroadcasts, decodeFleetWriteAck, decodeFleetAdvertWriteAck, formFleet, inviteToFleet, leaveFleet, tagFleetTarget } from "./fleetWrites.ts";
 import type { Ask } from "./ask.ts";
 import type { JsonValue } from "./wire.ts";
 
@@ -258,4 +258,52 @@ test("an invitation is accepted by one call on the fleet it names, with nothing 
 
 test("an acceptance the server refuses fails as the call fails", async () => {
   await assert.rejects(acceptFleetInvite(asking(new Error("FleetNotFound")).act, 654500010000, false), /FleetNotFound/);
+});
+
+// --- a pilot invited ----------------------------------------------------------
+
+test("a pilot is invited by one call on the pilot's own fleet, the invitee and three Nones; with the fleet expected said where one is", async () => {
+  const { act, asked } = askingOf();
+
+  await inviteToFleet(act, 140000003, 140000001);
+
+  // fleetSvc.py 362, as the menus ask it: self.fleet.Invite(charID, None, None, None).
+  assert.deepEqual(asked, [["fleetObjectHandler", "Invite", [140000003, null, null, null], null, null]]);
+
+  const expected = askingOf();
+  await inviteToFleet(expected.act, 140000003, 140000001, 654500010000);
+  assert.deepEqual(expected.asked, [["fleetObjectHandler", "Invite", [140000003, null, null, null], null, 654500010000]]);
+  // A pilot whose own character is not known invites all the same: the server makes nothing of an invitation to itself.
+  const unknown = askingOf();
+  await inviteToFleet(unknown.act, 140000003, null);
+  assert.equal(unknown.asked.length, 1);
+});
+
+test("nobody is invited who is no pilot, and the pilot does not invite itself: nothing is asked", async () => {
+  for (const invitee of [90000000, 97999999, 100000000, 2129999999]) {
+    const { act, asked } = askingOf();
+    await inviteToFleet(act, invitee, 140000001);
+    assert.deepEqual(asked, [["fleetObjectHandler", "Invite", [invitee, null, null, null], null, null]], String(invitee));
+  }
+  // fleetSvc.py 357: `if IsNPC(charID) or not IsCharacter(charID):`, the client's own word for it, and nothing asked.
+  for (const invitee of [0, -140000003, 1.5, Number.NaN, 2 ** 53, 9999, 10000, 3000001, 89999999, 98000000, 99999999, 2130000000]) {
+    const { act, asked } = askingOf();
+    await assert.rejects(inviteToFleet(act, invitee, 140000001), /^Error: That is no pilot to invite\.$/, String(invitee));
+    assert.deepEqual(asked, [], String(invitee));
+  }
+  // fleetSvc.py 361: `if charID != session.charid:`, and nothing is asked for the pilot itself.
+  const own = askingOf();
+  await assert.rejects(inviteToFleet(own.act, 140000001, 140000001), /^Error: You cannot invite yourself to your own fleet\.$/);
+  assert.deepEqual(own.asked, []);
+  // A fleet expected that is no fleet's number is not taken for none expected: the invitation is to that fleet or
+  // to none (the route refused it so, and a queued invitation does not follow its pilot into another fleet).
+  for (const expected of [null, 0, -654500010000, 1.5, Number.NaN, 2 ** 53]) {
+    const { act, asked } = askingOf();
+    await assert.rejects(inviteToFleet(act, 140000003, 140000001, expected as number), /^Error: That is no fleet to invite a pilot to\.$/, String(expected));
+    assert.deepEqual(asked, [], String(expected));
+  }
+  // What is no pilot is said to be none before anything else of it: the client's own order (357, then 361).
+  await assert.rejects(inviteToFleet(askingOf().act, 3000001, 3000001), /^Error: That is no pilot to invite\.$/);
+  await assert.rejects(inviteToFleet(askingOf().act, 140000001, 140000001, 0), /^Error: You cannot invite yourself to your own fleet\.$/);
+  await assert.rejects(inviteToFleet(asking(new Error("FleetError")).act, 140000003, 140000001), /FleetError/);
 });

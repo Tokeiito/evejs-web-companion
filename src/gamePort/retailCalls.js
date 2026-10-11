@@ -706,6 +706,31 @@ const kickingAnother = (args, kwargs, context) => (String(args[0]) === String(co
   status: "differs",
   note: "The client does not kick the pilot's own character: it leaves the fleet instead (LeaveFleet, on the fleet's object).",
 } : {});
+/**
+ * idCheckers, as fleetSvc.Invite goes by them before it asks (357): not IsNPC, and IsCharacter. By the number
+ * alone: a player's character of the second or the third generation, or a number of the range the older
+ * characters share with other things, where the client asks its cache of owners and nothing here can.
+ */
+const couldBeAPilot = (characterID) => Number.isSafeInteger(characterID)
+  && ((characterID >= 90000000 && characterID <= 97999999) || (characterID >= 100000000 && characterID <= 2129999999));
+/**
+ * fleetSvc.Invite (351 to 363): self.fleet.Invite(charID, wingID, squadID, role), through CSPAChargedAction
+ * (eveMisc.py 89), which asks it once as it stands and again with approvedCost by keyword where the server says
+ * what the contact costs. A wing, a squad and a role are each an ID or None. For what by its number is no pilot
+ * (357) and for the pilot's own character (361) the client asks nothing.
+ */
+const inviting = (args, kwargs, context) => {
+  const anID = (value) => Number.isSafeInteger(value) && value > 0;
+  const orNone = (value) => value === null || anID(value);
+  const keywords = Object.keys(kwargs);
+  const asTheClient = args.length === 4 && couldBeAPilot(args[0]) && orNone(args[1]) && orNone(args[2]) && orNone(args[3])
+    && (keywords.length === 0 || (keywords.length === 1 && keywords[0] === "approvedCost"));
+  if (!asTheClient) {
+    return { status: "differs", note: "The client names a pilot, and a wing, a squad and a role or None for each, and nothing by keyword but a cost it has agreed to." };
+  }
+  // (A pilot that is not known is no number an invitee can be: the invitee is above nought.)
+  return Number(context.characterID) === args[0] ? { status: "differs", note: "The client does not invite the pilot itself: it sends nothing." } : {};
+};
 /** fleetSvc.DisbandFleet (614): unless the pilot is the fleet's boss the client refuses it itself, and nothing is sent. */
 const disbandingAsBoss = (args, kwargs, context) => (context.fleetBoss === true ? {} : {
   status: "differs",
@@ -1212,7 +1237,7 @@ const RETAIL_CALLS = Object.freeze({
   "fleetObjectHandler.AcceptInvite": needing(reshaped(`${FLEET_SVC}:1194`, withOwnShipType, "GetFleet(fleetID).AcceptInvite(self.GetMyShipTypeID()), on the invite's fleet's Moniker, which binds with it and is the fleet's object from then"), "dogma"),
   "fleetObjectHandler.UpdateMemberInfo": needing(reshaped(`${FLEET_SVC}:1807`, withOwnShipType, "self.fleet.UpdateMemberInfo(self.GetMyShipTypeID())"), "dogma"),
   "fleetObjectHandler.RejectInvite": same(`${FLEET_SVC}:1198`, "GetFleet(fleetID).RejectInvite(), and RejectInvite(True) from a pilot already in a fleet (1180), RejectInvite(False) where invitations are turned away unasked (1184)"),
-  "fleetObjectHandler.Invite": same(`${FLEET_SVC}:362`, "CSPAChargedAction('CSPAFleetCheck', self.fleet, 'Invite', charID, wingID, squadID, role): self.fleet.Invite(...) on the fleet's object, None for a wing, squad or role not named; asked again with approvedCost= where the server says the contact costs and the user agrees. A pilot in no fleet forms one first (352)"),
+  "fleetObjectHandler.Invite": judged(`${FLEET_SVC}:362`, inviting, "CSPAChargedAction('CSPAFleetCheck', self.fleet, 'Invite', charID, wingID, squadID, role): self.fleet.Invite(...) on the fleet's object, None for a wing, squad or role not named; asked again with approvedCost= where the server says the contact costs and the user agrees. A pilot in no fleet forms one first (352)"),
   // Its writes.
   "fleetObjectHandler.CreateWing": same(`${FLEET_SVC}:577`, "self.fleet.CreateWing(), no arguments; a wing that was made is given a squad at once (CreateSquad(wingID), 579)"),
   "fleetObjectHandler.CreateSquad": same(`${FLEET_SVC}:589`, "self.fleet.CreateSquad(wingID)"),
@@ -1550,4 +1575,4 @@ function createCallLedger() {
   };
 }
 
-module.exports = { CONTRACT_SEARCH_KEYWORDS, GAME_PORT_ONLY_CALLS, MONIKER_SERVICES, ON_AN_ANSWERED_OBJECT, ON_THE_PARK, PROXY_SERVICES, REPEATS, RETAIL_CALLS, TRANSPORT_OWN_CALLS, createCallLedger, list, madeAfresh, madeOnMoniker, retailForm, retailNeeds };
+module.exports = { CONTRACT_SEARCH_KEYWORDS, GAME_PORT_ONLY_CALLS, MONIKER_SERVICES, ON_AN_ANSWERED_OBJECT, ON_THE_PARK, PROXY_SERVICES, REPEATS, RETAIL_CALLS, TRANSPORT_OWN_CALLS, couldBeAPilot, createCallLedger, list, madeAfresh, madeOnMoniker, retailForm, retailNeeds };

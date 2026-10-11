@@ -2310,3 +2310,45 @@ test("a stop is the client's call with nothing, and none of its with anything", 
     assert.match(refused.note, /nothing with a stop/, why);
   }
 });
+
+test("an invitation is the client's with a pilot who is not the session's own, and a wing, a squad and a role or None for each", () => {
+  // fleetSvc.py 361 and 362: `if charID != session.charid:` and then self.fleet.Invite(charID, wingID, squadID,
+  // role), through CSPAChargedAction, which asks again with approvedCost by keyword where the server names a cost.
+  const session = { characterID: 140000001 };
+  const invite = (args, kwargs = null, context = session) => retailForm("fleetObjectHandler", "Invite", args, kwargs, context);
+  for (const [args, kwargs] of [[[140000003, null, null, null], null], [[140000003, 5, 6, 4], null], [[140000003, null, null, null], { approvedCost: 1000 }],
+    [[90000000, null, null, null], null], [[97999999, null, null, null], null], [[100000000, null, null, null], null], [[2129999999, null, null, null], null]]) {
+    const made = invite(args, kwargs);
+    assert.deepEqual([made.status, made.args, made.kwargs], ["same", args, kwargs], JSON.stringify([args, kwargs]));
+    assert.match(made.source, /fleetSvc\.py:362$/);
+  }
+  for (const [args, kwargs, why, note] of [
+    [[], null, "nothing", /a pilot/],
+    [[140000003], null, "a pilot alone", /a pilot/],
+    [[140000003, null, null], null, "no role", /a pilot/],
+    [[140000003, null, null, null, true], null, "a fifth", /a pilot/],
+    [[0, null, null, null], null, "no pilot", /a pilot/],
+    // idCheckers, as the client goes by them before it asks (357): IsNPC, or not IsCharacter.
+    [[3000001, null, null, null], null, "an agent", /a pilot/],
+    [[89999999, null, null, null], null, "the last number below the players'", /a pilot/],
+    [[98000000, null, null, null], null, "a corporation", /a pilot/],
+    [[99999999, null, null, null], null, "an alliance", /a pilot/],
+    [[2130000000, null, null, null], null, "above the players' characters", /a pilot/],
+    [["140000003", null, null, null], null, "a pilot as text", /a pilot/],
+    [[140000003, null, null, null], { cost: 1 }, "another keyword", /a pilot/],
+    [[140000003, null, null, null], { approvedCost: 1000, now: true }, "a second keyword", /a pilot/],
+    [[140000003, 0, null, null], null, "a wing of nought", /a pilot/],
+    [[140000003, null, "6", null], null, "a squad as text", /a pilot/],
+    [[140000003, null, null, "leader"], null, "a role by name", /a pilot/],
+    [[140000003, null, null, false], null, "a role that is no number", /a pilot/],
+    [[140000001, null, null, null], null, "the session's own pilot", /itself/],
+  ]) {
+    const refused = invite(args, kwargs);
+    assert.deepEqual([refused.status, refused.args, refused.kwargs], ["differs", args, kwargs], why);
+    assert.match(refused.note, note, why);
+  }
+  // Where the session's pilot is not known, it is not held against the call.
+  for (const context of [{}, { characterID: null }]) assert.equal(invite([140000001, null, null, null], null, context).status, "same");
+  // And the pilot's number is the pilot's however the session has it.
+  for (const characterID of [140000001n, "140000001"]) assert.equal(invite([140000001, null, null, null], null, { characterID }).status, "differs");
+});

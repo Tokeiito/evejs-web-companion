@@ -56,7 +56,7 @@ const { GamePortSession } = require("./session");
 const { connectTcp, gameEndpoint } = require("./tcp");
 const { notificationToBridgeJson, sessionChangeToBridgeJson, wireToBridgeJson } = require("./bridgeJson");
 const { GAME_PORT_HANDLE_PREFIX } = require("../pilotTransport");
-const { GAME_PORT_ONLY_CALLS, ON_AN_ANSWERED_OBJECT, ON_THE_PARK, createCallLedger, madeAfresh, retailForm, retailNeeds } = require("./retailCalls");
+const { GAME_PORT_ONLY_CALLS, ON_AN_ANSWERED_OBJECT, ON_THE_PARK, couldBeAPilot, createCallLedger, madeAfresh, retailForm, retailNeeds } = require("./retailCalls");
 const { createPilotSpace } = require("./pilotSpace");
 const { createPilotClock } = require("./pilotClock");
 const { EFFECT_CATEGORY, EFFECT_ONLINE, createPilotDogma, rowFields } = require("./pilotDogma");
@@ -3211,6 +3211,15 @@ function createGamePortPilots({
     // fleetSvc.OnFleetInvite (1171): `if session.fleetid is not None: __fleetMoniker.RejectInvite(True)`. A session
     // in a fleet asks no acceptance: so here nothing is sent, and what was not sent is not counted.
     if (service === "fleetObjectHandler" && method === "AcceptInvite" && attribute(entry, "fleetid") !== null) throw fail("CALL_REFUSED", "FleetError");
+    // fleetSvc.Invite, before it asks. 357: `if IsNPC(charID) or not IsCharacter(charID):`, where the client says
+    // so itself; by the number alone here (retailCalls.js, couldBeAPilot), a pilot's number as text being that
+    // number. 361: `if charID != session.charid:`, and for the pilot's own character it asks nothing. So here,
+    // for either, nothing is sent, and what was not sent is not counted.
+    if (service === "fleetObjectHandler" && method === "Invite") {
+      const invitee = Array.isArray(args) ? args[0] : null;
+      if (!couldBeAPilot(typeof invitee === "string" ? Number(invitee) : invitee)) throw fail("CALL_REFUSED", "That is no pilot to invite.");
+      if (String(invitee) === String(entry.characterID)) throw fail("CALL_REFUSED", "A pilot does not invite itself to its own fleet.");
+    }
     if (retailNeeds(service, method) === "dogma") await shipReadings(entry, whereabouts(entry));
     const form = shape(service, method, args, kwargs, contextFor(entry));
     if (service === "dogmaIM" && method === "QueryAttributeValue") {

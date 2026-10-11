@@ -4108,3 +4108,75 @@ test("none of the BFF's handles for a fleet is kept across the page's own accept
   assert.deepEqual([routed.response.status, routed.payload.ok, routed.payload.applied, routed.payload.result, routed.payload.notifications], [200, true, true, null, ["after AcceptInvite"]]);
   assert.deepEqual(asked, THROUGH_THE_ACCEPTING("made 1"));
 });
+
+// ── a pilot invited by the page itself ───────────────────────────────────────
+//
+// fleetSvc.Invite (351 to 363): self.fleet.Invite(charID, wingID, squadID, role), on the pilot's own fleet's
+// object; the menus' plain invitation names the pilot and three Nones. The page names the invitee alone. The BFF
+// makes the call as its route made it: on the session's own fleet, or, where the call says the number of the fleet
+// it expects to be in, on the object bound by that number, so that the server's check of the inviter runs against
+// that fleet; and keeps none of its handles for a fleet after. A wing, a squad and a role are not the page's to
+// name here: the server seats an invitee in whatever role it is told.
+
+const THE_INVITING = { service: "fleetObjectHandler", method: "Invite", args: [43, null, null, null], kwargs: null };
+const THROUGH_THE_INVITING = (handle, bound = [], invitee = 43) => [["bind", "fleetObjectHandler", "MachoBindObject", bound, null], [`on ${handle}`, "fleetObjectHandler", "Invite", [invitee, null, null, null], null]];
+
+test("an invitation is a write the page means, made on the pilot's own fleet or the one the call expects, with the invitee and nothing of a place", async () => {
+  for (const transport of ["gameport", "gateway"]) {
+    const { asked, byName, baseUrl } = await formFleetByCall({ transport });
+    const invite = (more) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { ...THE_INVITING, ...more } });
+    for (const words of [{}, { pilot: true }, { confirm: true }]) {
+      const refused = await invite(words);
+      assert.deepEqual([refused.response.status, refused.payload.error, asked], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE", []], `${transport} ${JSON.stringify(words)}`);
+    }
+    // No pilot named is no invitation.
+    for (const args of [[], [0, null, null, null], [-43], [1.5], ["a pilot"], [null], "43", undefined, [[43]]]) {
+      const nobody = await invite({ pilot: true, confirm: true, args });
+      assert.deepEqual([nobody.response.status, nobody.payload.error, asked], [400, "INVALID_CHARACTER", []], `${transport} ${JSON.stringify(args)}`);
+    }
+    // And a fleet expected is a fleet's number.
+    for (const of of [0, -1, 1.5, "", "a fleet", [INVITING], true]) {
+      const misnamed = await invite({ pilot: true, confirm: true, of });
+      assert.deepEqual([misnamed.response.status, misnamed.payload.error, asked], [400, "INVALID_FLEET_ID", []], `${transport} ${JSON.stringify(of)}`);
+    }
+    // With no fleet said: the session's own.
+    const made = await invite({ pilot: true, confirm: true });
+    assert.deepEqual([made.response.status, made.payload.ok, made.payload.service, made.payload.method, made.payload.result, made.payload.notifications, made.payload.applied],
+      [200, true, "fleetObjectHandler", "Invite", null, ["after Invite"], undefined], transport);
+    assert.deepEqual([asked, byName], [THROUGH_THE_INVITING("made 1"), []], transport);
+    // With the fleet the call expects: bound by that number, as a number or as the text of one. And with none said
+    // as nothing (`of: null`).
+    for (const [of, bound, handle] of [[INVITING, [[INVITING]], "made 2"], [String(INVITING + 10000), [[INVITING + 10000]], "made 3"], [null, [], "made 4"]]) {
+      asked.length = 0;
+      const expected = await invite({ pilot: true, confirm: true, of });
+      assert.deepEqual([expected.response.status, asked], [200, THROUGH_THE_INVITING(handle, bound)], `${transport} ${JSON.stringify(of)}`);
+    }
+    // A wing, a squad, a role and anything by keyword are not taken from the page; the pilot named as text is that pilot.
+    asked.length = 0;
+    const placed = await invite({ pilot: true, confirm: true, args: ["44", 5, 6, 1, true], kwargs: { approvedCost: 1 } });
+    assert.deepEqual([placed.response.status, asked], [200, THROUGH_THE_INVITING("made 5", [], 44)], transport);
+  }
+});
+
+test("none of the BFF's handles for a fleet is kept across the page's own inviting, refused or not; and the route invites as the call does", async () => {
+  const leave = (baseUrl) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "fleetObjectHandler", method: "LeaveFleet", args: [], kwargs: null, pilot: true, confirm: true } });
+  for (const refuses of [null, "Invite"]) {
+    const { asked, baseUrl } = await formFleetByCall({ refuses, holds: true });
+    await apiRequest(baseUrl, "/api/bridge/bound-fleet");
+    asked.length = 0;
+    const invited = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { ...THE_INVITING, pilot: true, confirm: true } });
+    assert.deepEqual([invited.response.status, invited.payload.ok, invited.payload.error ?? null], refuses === null ? [200, true, null] : [409, false, "CALL_REFUSED"], String(refuses));
+    // (The Fleet panel's read bound the pilot's own fleet, and the invitation goes on what it bound.)
+    assert.deepEqual(asked, [["on made 1", "fleetObjectHandler", "Invite", [43, null, null, null], null]], String(refuses));
+    // After it, sent or refused: the leaving is of an object asked for afresh.
+    asked.length = 0;
+    await leave(baseUrl);
+    assert.deepEqual(asked, [["bind", "fleetObjectHandler", "MachoBindObject", [], null], ["on made 2", "fleetObjectHandler", "LeaveFleet", [], null]], String(refuses));
+  }
+  for (const [body, bound] of [[{ inviteeCharID: 43, confirm: true }, []], [{ inviteeCharID: 43, confirm: true, expectedFleetID: INVITING }, [[INVITING]]]]) {
+    const { asked, baseUrl } = await formFleetByCall();
+    const routed = await apiRequest(baseUrl, "/api/bridge/fleet/invite", { method: "POST", body });
+    assert.deepEqual([routed.response.status, routed.payload.ok, routed.payload.applied], [200, true, true], JSON.stringify(body));
+    assert.deepEqual(asked, THROUGH_THE_INVITING("made 1", bound), JSON.stringify(body));
+  }
+});

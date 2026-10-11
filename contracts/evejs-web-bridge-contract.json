@@ -1117,6 +1117,7 @@
       "fleetMgr.BroadcastToBubble",
       "fleetObjectHandler.AcceptInvite",
       "fleetObjectHandler.CreateFleet",
+      "fleetObjectHandler.Invite",
       "fleetObjectHandler.LeaveFleet",
       "fleetProxy.ApplyToJoinFleet",
       "officeManager.RentOffice",

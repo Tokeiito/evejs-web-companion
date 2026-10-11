@@ -347,7 +347,7 @@ import { canBroadcastInFleet, canTagInFleet } from "../bridge/fleetCommand.ts";
 import type { FleetCenterSnapshot } from "../bridge/fleetCenter.ts";
 import { decodeAvailableFleetAds, decodeMyFleetFinderAdvert } from "../bridge/fleetAds.ts";
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
-import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, formFleet as formFleetCall, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
+import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { salvageWithDrones } from "../bridge/boundEntityWrites.ts";
 import { alignTo as alignToCall, approach as approachCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, type FlightNow } from "../bridge/movementWrites.ts";
 import { boardCorvette as boardCorvetteCall, leaveShip as leaveShipCall } from "../bridge/shipWrites.ts";
@@ -1756,6 +1756,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const bridgeDo = api.bridgeDo(callOptions, (serverNowMs) => {
     serverClockAheadMs = serverNowMs - Date.now();
   });
+  // The same write under a caller's own fence. The shared lane may hold a call back: the fence is run at the
+  // dispatch itself, before a hosted fetch can be taken by a newer generation of its caller.
+  const fencedDo = (assertCurrent: () => void) => api.bridgeDo({ ...callOptions, fetch: (input, init) => {
+    assertCurrent(); return (callOptions.fetch ?? pageFetch())(input, init);
+  } }, (serverNowMs) => {
+    serverClockAheadMs = serverNowMs - Date.now();
+  });
+  /** The pilot's own character, as the page has it. Null with none chosen. */
+  const onlineCharacterID = (): number | null => store.station.get().online?.characterID ?? null;
   // The pilot's broadcasts to its fleet, with the wait the client keeps between them (bridge/fleetWrites.ts).
   const fleetBroadcasts = createFleetBroadcasts(bridgeDo);
   // What a module type's overload effect is: the client's own static data, asked of the BFF's copy once for a type.
@@ -4025,11 +4034,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     await runFleetAction(
       "invite",
-      () => api.inviteToFleet(characterID, assertCurrent ? { ...callOptions, fetch: (input, init) => {
-        // The shared transport lane may queue this action. Fence the actual
-        // dispatch, before a hosted fetch can capture a newer generation.
-        assertCurrent(); return (callOptions.fetch ?? pageFetch())(input, init);
-      } } : callOptions, expectedFleetID),
+      // (The page's own call, bridge/fleetWrites.ts: the invitee alone, and the fleet expected where the caller
+      // says one. Under a caller's fence it is asked through fencedDo.)
+      () => inviteToFleetCall(assertCurrent ? fencedDo(assertCurrent) : bridgeDo, characterID, onlineCharacterID(), expectedFleetID),
       "ready",
     );
   }
@@ -10589,7 +10596,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           const action = fleetResult.action;
           // (A support ship forms a fleet on its own reading that it is in none.)
           if (action.kind === "createFleet") await formFleetCall(bridgeDo, false);
-          else if (action.kind === "inviteToFleet") await api.inviteToFleet(action.charID, callOptions);
+          else if (action.kind === "inviteToFleet") await inviteToFleetCall(bridgeDo, action.charID, onlineCharacterID());
           else if (action.kind === "acceptFleetInvite") await acceptFleetInviteCall(bridgeDo, action.fleetID, false);
           else applicationOutcome = await applyToJoinFleetCall(bridgeDo, action.fleetID, true);
         } catch (error) {
@@ -12958,7 +12965,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             await formFleetCall(bridgeDo, false);
             return;
           case "inviteToFleet":
-            await api.inviteToFleet(action.charID, callOptions);
+            await inviteToFleetCall(bridgeDo, action.charID, onlineCharacterID());
             return;
           case "acceptFleetInvite":
             // A missing invite is treated as a refused attempt; the runner re-reads
