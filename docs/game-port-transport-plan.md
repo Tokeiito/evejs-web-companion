@@ -860,6 +860,10 @@ A finished job is delivered and a job stopped by `industryManager.CompleteJob` a
 `CancelJob` (`fa17f327`), each with the job's own solar system and judged by the job
 the server answers. **The Industry window's install cannot be sent on the game port**
 (found the same day): it is the next unit.
+The Industry window previews and installs on the game port (`c027a911`): its two
+routes' request is made the client's own dict there. No route moved by it.
+**Next: the page's write routes read for an argument no marshal can write, and for an
+answer given before the route's last write is made.**
 Counted by the whole path,
 97 are named now, 47 of them reads and 50 writes (the count kept before
 `82a21e8` took a path's beginning for a path and missed a parameter inside one: it read 130

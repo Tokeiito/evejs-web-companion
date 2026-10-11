@@ -1024,6 +1024,37 @@ Take these defaults, and list each under "For the operator" in the log so they c
   tab. From Git Bash a GM command given on a command line wants
   `MSYS_NO_PATHCONV=1`, or the shell makes a path of its slash. `ijd-why.js` asks
   the page's install for a blueprint and prints what the server says.
+- **An argument the gateway takes may be one no marshal can write.** A route's plain
+  object goes through the gateway as it is; on the game port it is 400 `CALL_INVALID`.
+  It is made the client's form in the ledger, as a `reshaped` entry
+  (`src/gamePort/retailCalls.js`, `jobDumped`): a dict by `dict(entries)`, a float by
+  `{ type: "real" }`, a pair as a plain list, an object of a client's class as an
+  `objectex2` whose header is the class's token in a tuple and then its state. Test
+  that the marshal writes it and reads it back (`marshalEncode`, `marshalDecode`),
+  and that the pilots send it (`test/gamePortPilots.test.js`).
+- **Where no recording has a call, the server's own tests may have the client's form
+  of it.** `eve.js`'s `server/tests/industryPayloads.test.js` had how the client
+  writes an industry place. The oracle (`scripts/py27-oracle.py`) gives the order a
+  dict's names are iterated in, and has no `copy_reg`: it cannot say how an instance
+  is written.
+- **A pilot has one write at a time, and a second is refused, not made to wait**
+  (`src/pilotMutationFence.js`, `CHARACTER_IN_USE`). A route that answers before its
+  last write is made leaves that write in the way of the next request. A live script
+  that asks one write straight after another route's answer finds these; so ask them
+  so.
+- **Run the suite by itself.** Started in one command behind a breakage part, it had
+  two tests cancelled that have their own limit of five seconds and take a third of
+  one alone. Run it again alone before anything is made of a cancelled test, and say
+  how many times it was run.
+- **Driving the tab**: the page keeps the `fetch` it started with, so a
+  `window.fetch` wrapped later sees nothing. Wrap `JSON.stringify` and tell a
+  route's request by its fields (an install's has `blueprintItemID`, and `confirm`
+  where it is the install). A `<select>` is set by its `value` and a `change` event
+  that bubbles.
+- **A blueprint for the Industry window**: `iin-live.js <bff> <account> <characterID>
+  "" stage` gives the pilot its skills and a Rifter Blueprint copy with its
+  materials (`/bpauto seed frigate`). The Jita station manufactures and neither
+  copies nor researches (`FACILITY_ACTIVITY`): another facility is wanted for those.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

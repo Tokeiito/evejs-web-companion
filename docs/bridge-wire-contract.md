@@ -844,8 +844,16 @@ the panel delivers one job at a time.
 
 `InstallJob` takes a **single positional dict** (`args.length === 1`, `kwargs:
 null`), the shape `industry.Job.dump()` produces and `parseIndustryRequest`
-reads. A **plain JSON object** is that dict — `marshalObjectToObject` accepts it
-directly, so no marshal wrapper is involved.
+reads. Through the web gateway a **plain JSON object** is that dict —
+`marshalObjectToObject` accepts it directly, so no marshal wrapper is involved.
+**On the game port no marshal can write a plain object**: there the same object is
+made the client's own dict (`src/gamePort/retailCalls.js`, `jobDumped`), its
+seventeen names in the order the client's Python iterates them, `materials` a dict
+of type to quantity, `time` a float, `account` a tuple, and each of the two
+locations an `industry.job.Location` (an `objectex2` whose header is the class in
+a tuple and then the state of seven fields), or None. `industryMonitor.ConnectJob`
+takes the same argument and is made the same way. The object has exactly the
+seventeen names below: one added to the route must be added to `jobDumped`.
 
 ```jsonc
 {
@@ -853,17 +861,16 @@ directly, so no marshal wrapper is involved.
   "blueprintTypeID": 681,
   "activityID": 1,             // the BFF maps the browser's activity NAME
   "facilityID": 60003760,
-  "solarSystemID": 30000142,
+  "solarSystemID": 30000142,   // the FACILITY's, as its places say; not the pilot's
   "characterID": 140000003,    // the HELD session's own character
-  "corporationID": 0,
-  "account": null,             // (ownerID, walletKey) for corp installs only
+  "corporationID": 1000167,    // the held session's corporation
+  "account": [140000003, 1000], // the character's own cash; (corporation, division) for corp installs
   "runs": 3,
   "licensedRuns": 1,           // copying
   "cost": 0, "tax": 0, "time": 0, "materials": {},   // ADVISORY — see below
   "inputLocation": { "itemID": …, "flagID": 4, "ownerID": …, "canTake": true },
   "outputLocation": { … },
-  "productTypeID": 165,        // invention
-  "optionalTypeID": null, "optionalTypeID2": null
+  "productTypeID": 165         // invention
 }
 ```
 
@@ -899,7 +906,9 @@ to a generic sentence rather than leaking the code.
 - `POST /api/bridge/industry/preview` `{ blueprintItemID, blueprintTypeID,
   activity, facilityID, runs, licensedRuns? }` → `{ ok, available, inputLocation,
   outputLocation }`. `ConnectJob` then **always** `DisconnectJob` — the preview
-  is not a pure read, so the monitor it opens is always released. Needs no
+  is not a pure read, so the monitor it opens is always released, **and the route
+  answers only after that release**: a pilot has one write at a time, and a write
+  that followed an earlier answer was refused `CHARACTER_IN_USE`. Needs no
   confirmation: it spends nothing.
 - `POST /api/bridge/industry/install` `{ …, confirm: true }` → `{ ok, applied,
   declinedSilently, jobID, job, blueprint }`. **Refuses with 400
