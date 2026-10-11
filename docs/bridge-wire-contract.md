@@ -2518,6 +2518,20 @@ are refused with `SESSION_CHANGE_IN_PROGRESS`.
   `flight/warp-bookmark` and `flight/warp-launch` are asked by nothing of the page's.
   On the game port a range the page says as a number goes as the client's float where
   the client's is one (a fleet member's, a bookmark's), and is counted the client's.
+  The page sends a thing's warp as `["item", itemID]` with `{ minRange }`, one of
+  `[0, 10000, 20000, 30000, 50000, 70000, 100000]`, and a fleet member's as
+  `["char", characterID]` with `{ minRange: 0 }` (`warpToItem`, `warpToFleetMember`).
+- **The autopilot's warp is one of the page's own writes too** (since 2026-10-11):
+  `{ service: "beyonce", method: "CmdWarpToStuffAutopilot", args: [itemID], kwargs: null,
+  pilot: true, confirm: true }`, with no `of`; without `pilot` and `confirm` it is
+  `403 BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE`. It goes as it was sent (the server's
+  handler takes the one number and nothing else, and stops the ship ten kilometres
+  short of the thing); the game port makes it on the ballpark's object, and refuses it
+  with `409 CALL_REFUSED` for a pilot with no ballpark. The page makes it where a warp
+  is asked with no range (`autopilotWarp`: the Flight window's "Warp to it", the fleet
+  companion's order). **Every warp of the page's is its own call**:
+  `POST /api/bridge/flight/warp` and `/flight/warp-member` are asked by nothing of the
+  page's, as `warp-scan`, `warp-bookmark` and `warp-launch` are not.
 - `POST /api/bridge/flight/jump` `{ fromGateID, toGateID }` →
   `beyonce.CmdStargateJump([fromGateID, toGateID, shipID])`. The system
   response waits until the destination system, scene and ego are ready.

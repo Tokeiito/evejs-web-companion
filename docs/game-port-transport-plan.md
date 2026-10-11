@@ -902,10 +902,13 @@ the autopilot's. The bookmark's and the launch's are the page's own calls too
 (`690bc262`), and a page's warp is held by the BFF to what the client's menus make: the
 server's handler would fly the ship to a point a caller gave. The item's and the
 autopilot's are next, then the fleet member's; a mission's marked spot is warped to by
-the ballpark's call where a client asks the agent, and comes after. In `eve.js` an advert's text outside ASCII goes as
+the ballpark's call where a client asks the agent, and comes after. Those three are the
+page's own calls too (`832dcb2a`): every warp of the page's is, and the five warp routes
+are asked by nothing of the page's. A mission's marked spot is next; then the page's own
+autopilots, which warp by the menu's call where a client's autopilot warps by its own. In `eve.js` an advert's text outside ASCII goes as
 unicode (`dcd459b0d`, not pushed).
 Counted by the whole path,
-84 are named now, 37 of them reads and 47 writes (the count kept before
+82 are named now, 37 of them reads and 45 writes (the count kept before
 `82a21e8` took a path's beginning for a path and missed a parameter inside one: it read 130
 where 138 was so). Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.

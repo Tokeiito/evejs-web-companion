@@ -1333,6 +1333,22 @@ Take these defaults, and list each under "For the operator" in the log so they c
   starting after it).
 - **A long wait in the tab is two calls, not one**: a script that polls longer than
   some forty seconds is cut off, and goes on running in the page.
+- **A pair made to go on the ballpark's object changes every older test that asked it
+  by name as an example.** Three tests of the transport asked the autopilot's warp of
+  beyonce "as an order that goes by name". Grep the tests for the pair before it is
+  put in `ON_THE_PARK`, and give each another pair that goes by name still (a jump
+  through a gate does).
+- **A move to the page keeps the call each place made, and says where that is not the
+  client's.** The route made the menu's warp for the page's autopilots; so does the
+  page. That a client's autopilot makes another call is written under "Left", with
+  the note that says why it was chosen, and is a unit of its own.
+- **A window of the page's is opened by the button of its name** (a `button` whose
+  text is "Flight", "Travel"); the Flight window's warp is the picker's `select` in
+  the section headed "Warp to something" and the button "Warp to it"; the Travel
+  window's is the number input "station or system ID" and "Start route".
+- **A script that forms a fleet has both pilots leave first.** A member whose boss
+  left was seen still in that fleet (the corporation's members' unit), and this server
+  refuses a second fleet to one who is in one (`440c52ef7`).
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
