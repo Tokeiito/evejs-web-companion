@@ -4464,3 +4464,72 @@ test("a pilot's fittings and its corporation's go by the generic call as a pilot
     assert.equal(gateway.calls.call.length, before + 1, service);
   }
 });
+
+// ── a pilot's bookmarks, read by the page itself ─────────────────────────────
+//
+// bookmarkSvc.ACLPrimeBookmarks (163): self.accessGroupBookmarkMgr.GetMyActiveBookmarks(), nothing sent. The page
+// asks it as a pilot's read; the BFF hands it on as it came. The route the page asked before still stands: it
+// reads the folders the pilot administers beside the bookmarks, and a folder where one is named, each settled by
+// itself.
+
+test("a pilot's bookmarks go by the generic call as a pilot's read, as it was sent; a bookmark or a folder made, changed or deleted is its route's alone", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const before = gateway.calls.call.length;
+  const made = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "accessGroupBookmarkMgr", method: "GetMyActiveBookmarks", args: [], kwargs: null, pilot: true } });
+  assert.deepEqual([made.response.status, made.payload.service, made.payload.method], [200, "accessGroupBookmarkMgr", "GetMyActiveBookmarks"]);
+  const sent = gateway.calls.call.at(-1);
+  assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["accessGroupBookmarkMgr", "GetMyActiveBookmarks", [], null, BRIDGE_SESSION_ID, { userid: 4 }]);
+  assert.equal(gateway.calls.call.length, before + 1);
+  for (const method of ["AddFolder", "UpdateFolder", "DeleteFolder", "BookmarkStaticLocation", "UpdateBookmark", "DeleteBookmarks", "MoveBookmarksToFolderAndSubfolder"]) {
+    const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "accessGroupBookmarkMgr", method, args: [1], kwargs: null, pilot: true, confirm: true } });
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], method);
+  }
+  assert.equal(gateway.calls.call.length, before + 1);
+});
+
+test("the bookmarks' route reads the bookmarks and the folders the pilot administers, and a folder where one is named; a read that fails is answered as nothing with its code beside it", async () => {
+  const asked = [];
+  let failing = null;
+  const gateway = fakeGateway({
+    async callMethod(service, method, args) {
+      asked.push([service, method, args]);
+      if (failing !== null && failing.method === method) throw new gatewayClient.EveGatewayError("the call failed", failing);
+      return { service, method, result: `${method}'s answer`, notifications: [] };
+    },
+  });
+  const { baseUrl } = await startTestServer({ gateway });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  asked.length = 0;
+  const BOTH = [["accessGroupBookmarkMgr", "GetMyActiveBookmarks", []], ["accessGroupBookmarkMgr", "SearchFoldersWithAdminAccess", []]];
+  const NO_ERRORS = { active: null, adminFolders: null, folderInfo: null };
+
+  // No folder named, and a folder that is no number: the two reads, and no folder's.
+  for (const path of ["/api/bridge/bookmarks", "/api/bridge/bookmarks?folderID=abc", "/api/bridge/bookmarks?folderID=0", "/api/bridge/bookmarks?folderID=-3"]) {
+    const plain = await apiRequest(baseUrl, path);
+    assert.equal(plain.response.status, 200, path);
+    assert.deepEqual(plain.payload, { ok: true, active: "GetMyActiveBookmarks's answer", adminFolders: "SearchFoldersWithAdminAccess's answer", folderInfo: null, errors: NO_ERRORS }, path);
+    assert.deepEqual(asked.splice(0), BOTH, path);
+  }
+
+  // A folder named: its read beside the two, with the folder as it was sent.
+  const named = await apiRequest(baseUrl, "/api/bridge/bookmarks?folderID=500001");
+  assert.deepEqual(named.payload, { ok: true, active: "GetMyActiveBookmarks's answer", adminFolders: "SearchFoldersWithAdminAccess's answer", folderInfo: "GetFolderInfo's answer", errors: NO_ERRORS });
+  assert.deepEqual(asked.splice(0), [...BOTH, ["accessGroupBookmarkMgr", "GetFolderInfo", [500001]]]);
+
+  // The bookmarks' read failing: 200 all the same, nothing for the bookmarks, and the code beside. What the page
+  // read as no bookmarks, while it asked this route.
+  failing = { method: "GetMyActiveBookmarks", code: "CALL_FAILED", statusCode: 502 };
+  const failed = await apiRequest(baseUrl, "/api/bridge/bookmarks?folderID=500001");
+  assert.equal(failed.response.status, 200);
+  assert.deepEqual(failed.payload, { ok: true, active: null, adminFolders: "SearchFoldersWithAdminAccess's answer", folderInfo: "GetFolderInfo's answer", errors: { ...NO_ERRORS, active: "CALL_FAILED" } });
+  failing = { method: "GetFolderInfo", code: "CALL_REFUSED", statusCode: 409 };
+  const refused = await apiRequest(baseUrl, "/api/bridge/bookmarks?folderID=500001");
+  assert.deepEqual([refused.response.status, refused.payload.active, refused.payload.folderInfo, refused.payload.errors], [200, "GetMyActiveBookmarks's answer", null, { ...NO_ERRORS, folderInfo: "CALL_REFUSED" }]);
+
+  // A session the server no longer has is the whole route's failure, whichever read met it.
+  failing = { method: "SearchFoldersWithAdminAccess", code: "SESSION_NOT_FOUND", statusCode: 404 };
+  const lost = await apiRequest(baseUrl, "/api/bridge/bookmarks");
+  assert.deepEqual([lost.response.status, lost.payload.error], [404, "SESSION_NOT_FOUND"]);
+});

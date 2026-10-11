@@ -2620,3 +2620,18 @@ test("the fleet finder's adverts are asked for with nothing; the fleet's own adv
     }
   }
 });
+
+// bookmarkSvc.py 163: folders, bookmarks, subfolders = self.accessGroupBookmarkMgr.GetMyActiveBookmarks(), of the
+// bookmark manager by name and with nothing, once in a session. Tranquility's recordings have it so, in five. The
+// page's bots and its Bot Builder read it, and the ledger had it unchecked.
+
+test("a pilot's bookmarks are asked of the bookmark manager by name, with nothing", () => {
+  const asked = form("accessGroupBookmarkMgr.GetMyActiveBookmarks", []);
+  assert.deepEqual([asked.status, asked.args, asked.kwargs], ["same", [], null]);
+  assert.match(asked.source, /bookmarkSvc\.py:163$/);
+  assert.match(asked.note, /Tranquility/);
+  // Something sent with it is not the client's call.
+  const withMore = form("accessGroupBookmarkMgr.GetMyActiveBookmarks", [500001]);
+  assert.deepEqual([withMore.status, withMore.args], ["differs", [500001]]);
+  assert.match(withMore.note, /nothing/);
+});

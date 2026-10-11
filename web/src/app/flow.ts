@@ -335,7 +335,7 @@ import { scannerStateFromRead } from "../scanner/scannerCenter.ts";
 import { siteKind } from "../scanner/siteKind.ts";
 import { decodeFittings } from "../bridge/fittings.ts";
 import { decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge/sharedFittings.ts";
-import { decodeActiveBookmarks } from "../bridge/bookmarks.ts";
+import { readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
 import {
   authoritativeFleetMemberCharacterIDs,
   fleetCommanderCharacterIDs,
@@ -11952,7 +11952,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         let bookmarks: ScriptObservation["bookmarks"] = null;
         if (macro === "warp-to-bookmark" || macro === "fly-to-mission-site") {
           try {
-            const active = decodeActiveBookmarks(await api.loadActiveBookmarks(callOptions));
+            // The page's own call (bridge/bookmarkReads.ts), as the client's bookmark service makes it. A read
+            // that fails leaves them unread, and the step reading: never an empty list of them.
+            const active = await readMyActiveBookmarks(bridgeAsk);
             const folderName = new Map(active.folders.map((f) => [f.folderID, f.folderName]));
             bookmarks = active.bookmarks.map((bm) => ({
               bookmarkID: bm.bookmarkID,
@@ -12800,7 +12802,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
               throw new Error("SITE_TARGET_AUTHORITY_LOST: logistics return point could not be saved.");
             }
             miningSiteBookmarks[action.targetKey] = await ensureSiteLogisticsBookmark(target, siteBookmarkScope, shipID, {
-              read: async () => decodeActiveBookmarks(await api.loadActiveBookmarks(callOptions)),
+              read: async () => readMyActiveBookmarks(bridgeAsk),
               // (The page's own call, bridge/bookmarkWrites.ts: the hauler's own ship's place, kept two days.)
               create: async (id, folder, name, note) => { await bookmarkLocationCall(bridgeDo, id, folder, name, note, BOOKMARK_EXPIRY.twoDays); },
             });
@@ -14712,7 +14714,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async listBookmarks() {
-      const active = decodeActiveBookmarks(await api.loadActiveBookmarks(callOptions));
+      const active = await readMyActiveBookmarks(bridgeAsk);
       return active.bookmarks
         .filter((bm) => bm.memo.length > 0)
         .map((bm) => ({ bookmarkID: bm.bookmarkID, name: bm.memo }));

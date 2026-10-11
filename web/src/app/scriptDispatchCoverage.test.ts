@@ -161,6 +161,12 @@ test("a mining site's return point is bookmarked by the page's own call, where t
   assert.equal(flow.includes("api.bookmarkMiningSiteLocation("), false);
   const api = readFileSync(fileURLToPath(new URL("./api.ts", import.meta.url)), "utf8");
   assert.equal(api.includes('"/api/bridge/flight/bookmark-location"'), false);
+  // What it reads, before to find a return point made already and after to see the one it made, is the page's
+  // own read of the bookmarks (bridge/bookmarkReads.ts): a read that failed is no empty list of them.
+  assert.equal(flow.split("read: async () => readMyActiveBookmarks(bridgeAsk),").length - 1, 1);
+  assert.equal(flow.includes("api.loadActiveBookmarks("), false);
+  assert.equal(flow.includes("decodeActiveBookmarks("), false);
+  assert.equal(api.includes('"/api/bridge/bookmarks"'), false);
 });
 
 test("a target is locked by the page's own call wherever the page carries a bot's actions out; and let go by the flow's own letting go", () => {

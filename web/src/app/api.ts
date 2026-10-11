@@ -4635,12 +4635,6 @@ export async function compressOreInSpace(
   };
 }
 
-/** The character's active bookmarks, raw (decoded by bridge/bookmarks.ts). */
-export async function loadActiveBookmarks(options: ApiOptions = {}): Promise<JsonValue> {
-  const data = await getJson("/api/bridge/bookmarks", options);
-  return data.active ?? null;
-}
-
 /** Warp to a saved bookmark (the server resolves site/point/mission scope). */
 export async function warpToBookmark(
   bookmarkID: number,
