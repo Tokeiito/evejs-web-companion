@@ -157,7 +157,7 @@ test("the page's calls that are made on an object of the service's own say what 
   assert.deepEqual([objectOfPageCall("fleetObjectHandler", "Invite"), isBridgeWritePair("fleetObjectHandler", "Invite"), isPageWritePair("fleetObjectHandler", "Invite")], ["fleetExpected", true, true]);
   assert.deepEqual([policy.pageMayNameTheObject("fleetExpected"), policy.pageNamesTheObject("fleetExpected")], [true, false]);
   assert.deepEqual(["fleet", "fleetByNumber", "planet", "scanManager", null, undefined, ["fleetExpected"], "toString"].map((kind) => policy.pageMayNameTheObject(kind)), [false, false, false, false, false, false, false, false]);
-  assert.deepEqual(Object.keys(PAGE_OBJECT_CALLS).sort(), ["fleetObjectHandler.AcceptInvite", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.Invite", "fleetObjectHandler.LeaveFleet", "fleetObjectHandler.RejectInvite", "planetMgr.GetProgramResultInfo", "planetMgr.UserLaunchCommodities", "planetMgr.UserUpdateNetwork", "scanMgr.GetFullState"]);
+  assert.deepEqual(Object.keys(PAGE_OBJECT_CALLS).sort(), ["charMgr.ListStations", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.Invite", "fleetObjectHandler.LeaveFleet", "fleetObjectHandler.RejectInvite", "planetMgr.GetProgramResultInfo", "planetMgr.UserLaunchCommodities", "planetMgr.UserUpdateNetwork", "scanMgr.GetFullState"]);
   // fleetSvc.LeaveFleet: on the fleet's own object, of which the session has one. A write, and one of the page's.
   // The fleet's other calls are their routes' still.
   assert.deepEqual([objectOfPageCall("fleetObjectHandler", "LeaveFleet"), objectOfPageCall("fleetObjectHandler", "KickMember"), objectOfPageCall("fleetMgr", "ForceLeaveFleet")], ["fleet", null, null]);

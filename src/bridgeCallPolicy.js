@@ -447,6 +447,13 @@ function ordersAFollow(service, method) {
  *                                   There is nothing to say which: such a call takes no `of`, and with one is no
  *                                   call. The handler takes nothing from the caller and answers for the session's
  *                                   own system.
+ *   charMgr.ListStations            "assets": a READ, the stations that hold something of the pilot's
+ *                                   (invCache.py 833, for the assets window). The object is the pilot's own
+ *                                   global container, Moniker('charMgr', (session.charid, const.containerGlobal)),
+ *                                   which the BFF binds for the pilot it holds: there is nothing to say which,
+ *                                   and a call that says is none. The handler takes nothing from the caller and
+ *                                   lists the things of the session's own character (src/server.js,
+ *                                   globalAssetsCall).
  *   fleetObjectHandler.LeaveFleet   "fleet": a WRITE, the pilot's fleet left (fleetSvc.LeaveFleet, 365 to 371). The
  *                                   object is the fleet service's self.fleet: what CreateFleet answered, or the
  *                                   Moniker that accepted an invite. A session is in one fleet, so the call names
@@ -488,7 +495,7 @@ function ordersAFollow(service, method) {
  * A write among them is one of the page's own writes. A read is listed here only once its handler has been read
  * for what it takes from the caller: a planet's reads once answered with another owner's colony.
  */
-const PAGE_OBJECT_CALLS = Object.freeze({ "planetMgr.UserUpdateNetwork": "planet", "planetMgr.UserLaunchCommodities": "planet", "planetMgr.GetProgramResultInfo": "planet", "scanMgr.GetFullState": "scanManager", "fleetObjectHandler.LeaveFleet": "fleet", "fleetObjectHandler.CreateFleet": "fleet", "fleetObjectHandler.AcceptInvite": "fleetByNumber", "fleetObjectHandler.Invite": "fleetExpected", "fleetObjectHandler.RejectInvite": "fleetByNumber" });
+const PAGE_OBJECT_CALLS = Object.freeze({ "planetMgr.UserUpdateNetwork": "planet", "planetMgr.UserLaunchCommodities": "planet", "planetMgr.GetProgramResultInfo": "planet", "scanMgr.GetFullState": "scanManager", "charMgr.ListStations": "assets", "fleetObjectHandler.LeaveFleet": "fleet", "fleetObjectHandler.CreateFleet": "fleet", "fleetObjectHandler.AcceptInvite": "fleetByNumber", "fleetObjectHandler.Invite": "fleetExpected", "fleetObjectHandler.RejectInvite": "fleetByNumber" });
 /**
  * The objects there are many of, which a call says which of with `of`: a planet, and a fleet that is not the
  * session's own (the one an invitation names). A scan manager and the pilot's own fleet are the session's.
@@ -503,7 +510,7 @@ for (const pair of Object.keys(PAGE_OBJECT_CALLS)) {
   if (bridgeWritePairKeySet.has(pair) && !pageWritePairKeySet.has(pair)) throw new Error(`${pair} is among the page's calls on an object, is a write, and is none of the page's writes.`);
 }
 
-/** What the object of this call of the page's is ("planet", "scanManager", "fleet", "fleetByNumber", "fleetExpected"), or null where it is made on none. */
+/** What the object of this call of the page's is ("planet", "scanManager", "assets", "fleet", "fleetByNumber", "fleetExpected"), or null where it is made on none. */
 function objectOfPageCall(service, method) {
   if (typeof service !== "string" || typeof method !== "string") return null;
   // (A pair has a full stop in it, and nothing an object has of itself is named so.)

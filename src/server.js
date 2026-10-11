@@ -1058,6 +1058,10 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
       : objectKind === "scanManager"
       ? { service: body.service, method: body.method, ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => systemScanCall(
         heldBridgeSession, req.webSessionID, body.method, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null)) }
+      // (And a call on the pilot's own things everywhere, by the object its route goes by, bound for the pilot held.)
+      : objectKind === "assets"
+      ? { service: body.service, method: body.method, ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => globalAssetsCall(
+        heldBridgeSession, req.webSessionID, body.method, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null)) }
       // (And the pilot's fleet left, as its route leaves it: on the fleet's object, or of fleetMgr where none is
       // held. Answered as the call that was asked.)
       // (Or a fleet formed, as its route forms one: bound through the call, and Init asked on what it answered.)
@@ -13080,6 +13084,19 @@ function globalAssetsBindSpec(held) {
 }
 
 /**
+ * A call on the pilot's own things everywhere: invCache's global container, Moniker('charMgr', (session.charid,
+ * const.containerGlobal)), bound for the pilot held. The assets' route and the page's own call both go by it.
+ *
+ * The held session's flight is read first, and the call made whatever came of that: the server lists the things
+ * against the session that asks (the route's note, below), and the web gateway's session has the pilot's place
+ * only as a flight read last left it.
+ */
+async function globalAssetsCall(held, webSessionID, method, args, kwargs) {
+  await readHeldFlight(held, webSessionID).catch(() => null);
+  return boundCall(held, webSessionID, globalAssetsBindSpec(held), method, args, kwargs);
+}
+
+/**
  * Is this ListStations result a SUCCESSFUL, EMPTY read?
  *
  * The CRowset's rows live on `list`. An absent/!array `list` is a shape we did
@@ -13108,9 +13125,7 @@ app.get("/api/bridge/assets", requireAuth, async (req, res, next) => {
     // hides the character's own id, and an unknown location inherits the
     // session's system. This is the same class of dependency that made
     // GetAgents answer 0 for a docked station until the sync was added.
-    await readHeldFlight(held, req.webSessionID).catch(() => null);
-    const spec = globalAssetsBindSpec(held);
-    const stations = await boundCall(held, req.webSessionID, spec, "ListStations", [], null);
+    const stations = await globalAssetsCall(held, req.webSessionID, "ListStations", [], null);
     res.json({
       ok: true,
       characterID: held.characterID,

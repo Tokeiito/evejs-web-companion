@@ -4603,3 +4603,95 @@ test("the members' route makes four reads whatever it is asked, a member's and s
   const lost = await apiRequest(baseUrl, "/api/bridge/corp-members");
   assert.deepEqual([lost.response.status, lost.payload.error], [404, "SESSION_NOT_FOUND"]);
 });
+
+// ── where a pilot's things are ───────────────────────────────────────────────
+//
+// invCache's global container (invCache.py 519): Moniker('charMgr', (session.charid, const.containerGlobal)), and
+// ListStations() on it with nothing (833). Tranquility's recordings have it so, three times, twice riding the
+// bind. The page asks it by the generic call, as a pilot's read on an object that is the session's own: the BFF
+// binds for the pilot it holds, as the route does, and reads the pilot's flight first as the route does.
+
+const STATIONS_ROWSET = { type: "objectex2", header: [], list: [{ type: "packedrow", columns: [["stationID", 20]], values: [60003760] }], dict: [] };
+const NO_STATIONS = { type: "objectex2", header: [], list: [], dict: [] };
+
+/** The pilot's stations read through the route, or by the page's own call; says what was read, bound, and asked of what. On the game port unless told otherwise. */
+async function assetStations({ transport = "gameport", answer = () => STATIONS_ROWSET, call = null, flight = null } = {}) {
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  const gateway = fakeGateway();
+  const backend = transport === "gameport" ? gamePort : gateway;
+  const asked = [];
+  backend.readFlightStatus = async () => {
+    asked.push("the flight");
+    if (flight) flight();
+    return { flight: { docked: true, inSpace: false, stationID: 60003760, shipID: 9001 }, notifications: [] };
+  };
+  backend.callMethod = async (service, method, args) => { asked.push({ byName: `${service}.${method}`, args }); return { service, method, result: null, notifications: [] }; };
+  backend.bindObject = async (service, method, args) => { asked.push({ bound: `${service}.${method}`, args }); return { boundHandle: "the-pilots-assets", notifications: [] }; };
+  backend.callBoundMethod = async (service, method, args, kwargs, sessionFields, bridgeSessionID, handle) => {
+    asked.push({ onObject: `${service}.${method}`, args, kwargs, sessionFields, handle });
+    return { service, method, result: answer(), notifications: ["a notice"] };
+  };
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => transport });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  asked.length = 0;
+  const read = () => (call === null ? apiRequest(baseUrl, "/api/bridge/assets") : apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: call }));
+  return { first: await read(), again: await read(), asked };
+}
+const ASSETS_BOUND = { bound: "charMgr.MachoBindObject", args: [[7, 10002]] };
+const stationsAsked = (args = []) => ({ onObject: "charMgr.ListStations", args, kwargs: null, sessionFields: { userid: 4 }, handle: "the-pilots-assets" });
+
+test("where a pilot's things are, asked by the page's own call, is asked of the pilot's own container on either transport: its flight read first, the object bound once", async () => {
+  const theCall = (more = { pilot: true }) => ({ service: "charMgr", method: "ListStations", args: [], kwargs: null, ...more });
+  for (const transport of ["gameport", "gateway"]) {
+    const made = await assetStations({ transport, call: theCall() });
+    // The generic call's own answer, and none of the route's envelope.
+    assert.deepEqual([made.first.response.status, made.first.payload.ok, made.first.payload.service, made.first.payload.method, made.first.payload.result, made.first.payload.notifications, made.first.payload.ownsNothing],
+      [200, true, "charMgr", "ListStations", STATIONS_ROWSET, ["a notice"], undefined], transport);
+    // The flight, the bind for the pilot held, and the call; then the flight and the call on the same object.
+    assert.deepEqual(made.asked, ["the flight", ASSETS_BOUND, stationsAsked(), "the flight", stationsAsked()], transport);
+    // What is sent with it goes as it was sent: the ledger judges it, and the server reads none of it.
+    const withMore = await assetStations({ transport, call: { ...theCall(), args: [60003760] } });
+    assert.deepEqual(withMore.asked.filter((each) => each.onObject), [stationsAsked([60003760]), stationsAsked([60003760])], transport);
+    // The container is the pilot's own: there is nothing to say which, and a call that says is none.
+    for (const of of [7, [8, 10002], "mine", 0]) {
+      const named = await assetStations({ transport, call: theCall({ pilot: true, of }) });
+      assert.deepEqual([named.first.response.status, named.first.payload.error, named.asked], [400, "INVALID_REQUEST", []], `${transport} ${JSON.stringify(of)}`);
+      assert.match(named.first.payload.message, /no object the page names/);
+    }
+    // And it is a pilot's.
+    const unsaid = await assetStations({ transport, call: theCall({}) });
+    assert.deepEqual([unsaid.first.response.status, unsaid.first.payload.error, unsaid.asked], [400, "INVALID_REQUEST", []], transport);
+    assert.match(unsaid.first.payload.message, /a pilot's/);
+    // A read the server refuses is the call's own failure.
+    const refused = await assetStations({ transport, call: theCall(), answer: () => { throw Object.assign(new Error("NotNow"), { code: "CALL_REFUSED", statusCode: 409 }); } });
+    assert.deepEqual([refused.first.response.status, refused.first.payload.ok, refused.first.payload.error], [409, false, "CALL_REFUSED"], transport);
+    // A flight that could not be read does not stop the read: it is asked all the same.
+    const blind = await assetStations({ transport, call: theCall(), flight: () => { throw Object.assign(new Error("busy"), { code: "CALL_FAILED", statusCode: 502 }); } });
+    assert.deepEqual([blind.first.response.status, blind.first.payload.result, blind.asked.filter((each) => each.onObject).length], [200, STATIONS_ROWSET, 2], transport);
+  }
+  const { objectOfPageCall, isBridgeWritePair, pageNamesTheObject, pageMayNameTheObject } = require("../src/bridgeCallPolicy");
+  // A read, on an object the session has one of. What is at one station is its route's still.
+  assert.deepEqual([objectOfPageCall("charMgr", "ListStations"), isBridgeWritePair("charMgr", "ListStations"), pageNamesTheObject("assets"), pageMayNameTheObject("assets")], ["assets", false, false, false]);
+  assert.deepEqual([objectOfPageCall("charMgr", "ListStationItems"), objectOfPageCall("charMgr", "List"), objectOfPageCall("charMgr", "GetAssetWorth"), objectOfPageCall("charMgr", "MachoBindObject")], [null, null, null, null]);
+});
+
+test("the assets' route reads the flight, binds the pilot's container and asks for its stations; it owns nothing only where the rowset is empty, and a read that fails is said as one", async () => {
+  for (const transport of ["gameport", "gateway"]) {
+    const read = await assetStations({ transport });
+    assert.deepEqual([read.first.response.status, read.first.payload], [200, { ok: true, characterID: 7, stations: STATIONS_ROWSET, ownsNothing: false, error: null }], transport);
+    assert.deepEqual(read.asked, ["the flight", ASSETS_BOUND, stationsAsked(), "the flight", stationsAsked()], transport);
+    const nothing = await assetStations({ transport, answer: () => NO_STATIONS });
+    assert.deepEqual(nothing.first.payload, { ok: true, characterID: 7, stations: NO_STATIONS, ownsNothing: true, error: null }, transport);
+    // What is no rowset is not nothing owned.
+    for (const odd of [null, { type: "list", items: [] }, []]) {
+      const unread = await assetStations({ transport, answer: () => odd });
+      assert.deepEqual([unread.first.payload.ownsNothing, unread.first.payload.error], [false, null], `${transport} ${JSON.stringify(odd)}`);
+    }
+    // A read the server refuses: 200 all the same, with the code, and nothing owned not said.
+    const refused = await assetStations({ transport, answer: () => { throw Object.assign(new Error("NotNow"), { code: "CALL_REFUSED", statusCode: 409 }); } });
+    assert.deepEqual([refused.first.response.status, refused.first.payload], [200, { ok: true, characterID: 7, stations: null, ownsNothing: false, error: "CALL_REFUSED" }], transport);
+    // A session the server no longer has is the route's failure.
+    const lost = await assetStations({ transport, answer: () => { throw new gatewayClient.EveGatewayError("gone", { code: "SESSION_NOT_FOUND", statusCode: 404 }); } });
+    assert.deepEqual([lost.first.response.status, lost.first.payload.error], [404, "SESSION_NOT_FOUND"], transport);
+  }
+});

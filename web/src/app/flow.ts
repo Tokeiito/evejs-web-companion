@@ -63,8 +63,9 @@ import {
 import {
   assetRefusalMessage,
   decodeAssetItems,
-  decodeAssetStations,
 } from "../bridge/personalAssets.ts";
+import { failsTheReading, failureCode } from "../bridge/ask.ts";
+import { readAssetStations, type AssetStationsRead } from "../bridge/assetReads.ts";
 import {
   AGENT_BUTTON,
   decodeBriefing,
@@ -4598,25 +4599,30 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // --- R37 Personal Assets --------------------------------------------------
 
   async function loadPersonalAssets(): Promise<void> {
-    let read: Awaited<ReturnType<typeof api.loadAssetStations>>;
+    let read: AssetStationsRead;
     try {
-      read = await api.loadAssetStations(callOptions);
+      // The page's own call (bridge/assetReads.ts), as the client's assets window makes it.
+      read = await readAssetStations(bridgeAsk);
     } catch (error) {
       if (isSessionLost(error)) {
         stopLiveStream();
         store.apply({ type: "character/offline" });
       }
-      throw error;
+      if (failsTheReading(error)) {
+        throw error;
+      }
+      // ⚠ A FAILED READ MUST NOT LOOK LIKE "you own nothing". What the server
+      // refused, and what came back as no rowset, is kept AS a failure, by the
+      // call's own code; nothing is decoded, so the panel has nothing to
+      // mistake for a successful empty answer.
+      store.apply({ type: "assets/loaded", stations: [], error: failureCode(error), ownsNothing: false });
+      return;
     }
-    // ⚠ A FAILED READ MUST NOT DECODE TO AN EMPTY LIST AND LOOK LIKE "you own
-    // nothing". The BFF reports the failure as `error` with `ownsNothing`
-    // false; the decode is skipped entirely so the panel has nothing to
-    // mistake for a successful empty answer.
-    const stations = read.error ? [] : decodeAssetStations(read.stations);
+    const stations = read.stations;
     store.apply({
       type: "assets/loaded",
       stations,
-      error: read.error,
+      error: null,
       ownsNothing: read.ownsNothing,
     });
 

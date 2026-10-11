@@ -1322,7 +1322,8 @@ const RETAIL_CALLS = Object.freeze({
   "charMgr.GetHomeStationRow": same("eve/client/script/ui/shared/neocom/charactersheet.py:59", "RemoteSvc('charMgr').GetHomeStationRow(), no arguments, asked once and kept until the session is reset"),
   "charMgr.GetHomeStation": webOnly("eve/client/script/ui/shared/neocom/charactersheet.py:59", "The client never asks this of charMgr: its character sheet's service asks GetHomeStationRow()."),
   "charMgr.GetCloneInfo": webOnly("eve/client/script/ui/services/clonejumpsvc.py:76", "The client never asks this. Its jump clones, their implants and the time of the last jump come from GetCloneState() on the jumpCloneSvc moniker for where the pilot is; the implants in the pilot's head are what its skill handler answers GetImplants() with (skillsvc.py 967), which godma's 'implants' of the character hands on."),
-  "charMgr.ListStations": same(`${INV_CACHE}:833`, "invCache's global container: self.moniker.ListStations(), no arguments, kept for five minutes"),
+  "charMgr.ListStations": judged(`${INV_CACHE}:833`, sentWithNothing,
+    "invCache's global container, Moniker('charMgr', (session.charid, const.containerGlobal)): self.moniker.ListStations(), with nothing. Recorded on Tranquility so, three times, twice riding the bind. The client keeps the answer five minutes; the page asks each time its assets window asks, and the transport keeps nothing of it."),
 
   // ── industry ──────────────────────────────────────────────────────────────
   "blueprintManager.GetBlueprintDataByOwner": same(`${INDUSTRY}/blueprintSvc.py:150`, "RemoteSvc('blueprintManager').GetBlueprintDataByOwner(ownerID, None), or with a facility's ID for the blueprints at one (137)"),

@@ -2650,3 +2650,18 @@ test("a corporation's members are asked of its registry with nothing", () => {
   assert.deepEqual([withMore.status, withMore.args], ["differs", [140000002]]);
   assert.match(withMore.note, /nothing/);
 });
+
+// invCache.py 833: self.moniker.ListStations(), on the pilot's own global container (519: Moniker('charMgr',
+// (session.charid, const.containerGlobal))) and with nothing. Tranquility's recordings have it so, three times,
+// twice riding the bind. The page's Personal Assets window asks it.
+
+test("where a pilot's things are is asked of its own container with nothing", () => {
+  const asked = form("charMgr.ListStations", []);
+  assert.deepEqual([asked.status, asked.args, asked.kwargs], ["same", [], null]);
+  assert.match(asked.source, /invCache\.py:833$/);
+  assert.match(asked.note, /Tranquility/);
+  // Something sent with it is not the client's call: a station, a pilot.
+  const withMore = form("charMgr.ListStations", [60003760]);
+  assert.deepEqual([withMore.status, withMore.args], ["differs", [60003760]]);
+  assert.match(withMore.note, /nothing/);
+});

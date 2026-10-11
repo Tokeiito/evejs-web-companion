@@ -1602,15 +1602,6 @@ export async function loadContractDetail(
 // READS ONLY. Raw retail shapes out; decoding is bridge/personalAssets.ts's
 // job, as everywhere else.
 
-export interface RawAssetStations {
-  readonly characterID: number | null;
-  /** charMgr.ListStations' CRowset, untouched. null when the read failed. */
-  readonly stations: JsonValue;
-  /** ⚠ True ONLY when the read SUCCEEDED and was empty. */
-  readonly ownsNothing: boolean;
-  readonly error: string | null;
-}
-
 export interface RawAssetStationItems {
   readonly stationID: number;
   /** charMgr.ListStationItems' list, untouched. null when the read failed. */
@@ -1621,20 +1612,9 @@ export interface RawAssetStationItems {
   readonly error: string | null;
 }
 
-/** Every station holding this character's items. */
-export async function loadAssetStations(
-  options: ApiOptions = {},
-): Promise<RawAssetStations> {
-  const data = await getJson("/api/bridge/assets", options);
-  return {
-    characterID: asNumberOrNull(data.characterID),
-    stations: data.stations ?? null,
-    ownsNothing: data.ownsNothing === true,
-    error: typeof data.error === "string" ? data.error : null,
-  };
-}
+// (Where the pilot's things are is the page's own read since 2026-10-11: bridge/assetReads.ts.)
 
-/** What is at one of them. */
+/** What is at one of the stations that hold the pilot's things. */
 export async function loadAssetStationItems(
   stationID: number,
   options: ApiOptions = {},

@@ -10,6 +10,10 @@
 // Every previous panel in this codebase that conflated the last two rendered a
 // broken read as an empty world, which is why `ownsNothing` is a fact carried
 // from the BFF rather than inferred from an empty array here.
+//
+// Since 2026-10-11 the list of stations is the page's own read (bridge/assetReads.ts): charMgr.ListStations by
+// the generic call, as the client's assets window asks it. "Owns nothing" is said there of a rowset read and
+// empty, and of nothing else. What is at a station is its route's still.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -97,7 +101,7 @@ interface Recorded {
 }
 
 function makeFakeFetch(
-  responder: (path: string) => { status: number; body: unknown },
+  responder: (path: string, body: Record<string, unknown>) => { status: number; body: unknown },
 ): { fetch: typeof fetch; requests: Recorded[] } {
   const requests: Recorded[] = [];
   const fakeFetch = (async (input: unknown, init?: { method?: string; body?: unknown }) => {
@@ -107,7 +111,7 @@ function makeFakeFetch(
       method: (init && init.method) || "GET",
       body: init && typeof init.body === "string" ? JSON.parse(init.body) : {},
     });
-    const outcome = responder(path);
+    const outcome = responder(path, init && typeof init.body === "string" ? JSON.parse(init.body) : {});
     return {
       ok: outcome.status >= 200 && outcome.status < 300,
       status: outcome.status,
@@ -143,9 +147,18 @@ function stationPayload(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function respondOk(extra: (path: string) => unknown = () => null) {
-  return (path: string) => {
-    const custom = extra(path);
+/** The page's own read of where the pilot's things are: charMgr.ListStations by the generic call. */
+const isStationsCall = (path: string, body: Record<string, unknown>): boolean =>
+  path === "/api/bridge/call" && body.service === "charMgr" && body.method === "ListStations";
+const stationsAnswer = (rows: unknown[][]) => ({ status: 200, body: { ok: true, service: "charMgr", method: "ListStations", result: stationsCrowset(rows), notifications: [] } });
+// assetsWindow.py 923, invCache.py 833: self.moniker.ListStations(), nothing sent, on the pilot's own object.
+const THE_STATIONS_READ = { service: "charMgr", method: "ListStations", args: [], kwargs: null, pilot: true };
+/** Another station than the one the page's own read answers: what the route says, which nothing is to ask. */
+const THE_ROUTES_STATION = 60008494;
+
+function respondOk(extra: (path: string, body: Record<string, unknown>) => unknown = () => null) {
+  return (path: string, body: Record<string, unknown> = {}) => {
+    const custom = extra(path, body);
     if (custom !== null && custom !== undefined) {
       return custom as { status: number; body: unknown };
     }
@@ -153,7 +166,10 @@ function respondOk(extra: (path: string) => unknown = () => null) {
       return { status: 200, body: stationPayload() };
     }
     if (path.startsWith("/api/bridge/assets")) {
-      return { status: 200, body: assetsPayload() };
+      return { status: 200, body: assetsPayload({ stations: stationsCrowset([[THE_ROUTES_STATION, 30002187, 1529, 1, null]]) }) };
+    }
+    if (isStationsCall(path, body)) {
+      return stationsAnswer([[STATION_ID, SYSTEM_ID, STATION_TYPE_ID, 9, null]]);
     }
     if (path === "/api/names") {
       return { status: 200, body: { ok: true, names: {} } };
@@ -177,9 +193,11 @@ async function settleNames(): Promise<void> {
 
 // --- the happy path ---------------------------------------------------------
 
-test("a live read lands the character's stations in the store", async () => {
-  const { store, flow } = makeFlow(respondOk());
+test("a live read lands the character's stations in the store, by the page's own call and never by the route", async () => {
+  const { store, flow, requests } = makeFlow(respondOk());
   await flow.loadPersonalAssets();
+  assert.deepEqual(requests.filter((entry) => entry.path === "/api/bridge/call").map((entry) => entry.body), [THE_STATIONS_READ]);
+  assert.deepEqual(requests.filter((entry) => entry.path.startsWith("/api/bridge/assets")), []);
 
   const assets = store.get().assets;
   assert.equal(assets.loaded, true);
@@ -220,14 +238,7 @@ test("collapsing a station touches no server", async () => {
 
 test("a SUCCESSFUL empty read says the character owns nothing", async () => {
   const { store, flow } = makeFlow(
-    respondOk((path) =>
-      path === "/api/bridge/assets"
-        ? {
-            status: 200,
-            body: assetsPayload({ stations: stationsCrowset([]), ownsNothing: true }),
-          }
-        : null,
-    ),
+    respondOk((path, body) => (isStationsCall(path, body) ? stationsAnswer([]) : null)),
   );
   await flow.loadPersonalAssets();
 
@@ -239,13 +250,8 @@ test("a SUCCESSFUL empty read says the character owns nothing", async () => {
 
 test("a FAILED read never claims the character owns nothing", async () => {
   const { store, flow } = makeFlow(
-    respondOk((path) =>
-      path === "/api/bridge/assets"
-        ? {
-            status: 200,
-            body: assetsPayload({ stations: null, ownsNothing: false, error: "READ_FAILED" }),
-          }
-        : null,
+    respondOk((path, body) =>
+      isStationsCall(path, body) ? { status: 502, body: { ok: false, error: "CALL_FAILED", message: "CALL_FAILED" } } : null,
     ),
   );
   await flow.loadPersonalAssets();
@@ -253,28 +259,25 @@ test("a FAILED read never claims the character owns nothing", async () => {
   const assets = store.get().assets;
   // THE WHOLE POINT: an empty list here must not be readable as "you own
   // nothing". The panel branches on these two fields, and they disagree.
-  assert.equal(assets.error, "READ_FAILED");
+  // (The call's own code is what the failure is kept as.)
+  assert.equal(assets.error, "CALL_FAILED");
   assert.equal(assets.ownsNothing, false, "a failed read may never make that claim");
   assert.equal(assets.loaded, true, "the attempt completed, so the panel stops waiting");
   assert.deepEqual(assets.stations, []);
 });
 
 test("a read that reports an error is not rendered, even if it carried rows", async () => {
-  // Defence in depth against a PARTIAL answer. If a payload ever arrives with
-  // both an error and some rows on it, showing those rows would present a
+  // Defence in depth against a PARTIAL answer. If a refusal ever arrives with
+  // some rows on it, showing those rows would present a
   // known-incomplete list as if it were the whole truth — the player would see
   // "your things are in 1 place" when the read that would have found the other
   // places failed. The error wins; nothing is decoded.
   const { store, flow } = makeFlow(
-    respondOk((path) =>
-      path === "/api/bridge/assets"
+    respondOk((path, body) =>
+      isStationsCall(path, body)
         ? {
-            status: 200,
-            body: assetsPayload({
-              stations: stationsCrowset([[STATION_ID, SYSTEM_ID, STATION_TYPE_ID, 9, null]]),
-              ownsNothing: false,
-              error: "READ_FAILED",
-            }),
+            status: 502,
+            body: { ok: false, error: "CALL_FAILED", message: "CALL_FAILED", result: stationsCrowset([[STATION_ID, SYSTEM_ID, STATION_TYPE_ID, 9, null]]) },
           }
         : null,
     ),
@@ -282,7 +285,7 @@ test("a read that reports an error is not rendered, even if it carried rows", as
   await flow.loadPersonalAssets();
 
   const assets = store.get().assets;
-  assert.equal(assets.error, "READ_FAILED");
+  assert.equal(assets.error, "CALL_FAILED");
   assert.deepEqual(
     assets.stations,
     [],
@@ -418,7 +421,7 @@ test("setting a destination from an asset location plans a real route", async ()
     security: { 30000140: 0.9, 30000141: 0.9, [SYSTEM_ID]: 0.9 },
   };
 
-  const { store, flow } = makeFlow((path: string) => {
+  const { store, flow } = makeFlow((path: string, body: Record<string, unknown> = {}) => {
     if (path === "/api/map/graph") {
       return { status: 200, body: graph };
     }
@@ -444,7 +447,7 @@ test("setting a destination from an asset location plans a real route", async ()
         },
       };
     }
-    return respondOk()(path);
+    return respondOk()(path, body);
   });
 
   await flow.loadPersonalAssets();
@@ -463,4 +466,44 @@ test("setting a destination from an asset location plans a real route", async ()
   assert.equal(travel.failureReason, null);
   // R7d: what the panel shows is the NAME, never the id.
   assert.match(String(travel.destinationName), /Jita/);
+});
+
+// --- the list of stations, as the page's own read -----------------------------
+
+test("an answer that is no rowset is a read that failed, and never nothing owned", async () => {
+  const answers: Array<[string, unknown]> = [["nothing", null], ["a list", { type: "list", items: [] }], ["a yes", true], ["the route's envelope", assetsPayload({ ownsNothing: true })]];
+  for (const [what, result] of answers) {
+    const { store, flow } = makeFlow(
+      respondOk((path, body) => (isStationsCall(path, body) ? { status: 200, body: { ok: true, service: "charMgr", method: "ListStations", result, notifications: [] } } : null)),
+    );
+    await flow.loadPersonalAssets();
+    const assets = store.get().assets;
+    assert.deepEqual([assets.loaded, assets.error, assets.ownsNothing, assets.stations], [true, "READ_FAILED", false, []], what);
+  }
+});
+
+test("a pilot's session gone, or none held, fails the load itself: it is not kept as the read's failure", async () => {
+  for (const [status, error] of [[404, "SESSION_NOT_FOUND"], [409, "NO_LIVE_SESSION"]] as const) {
+    const { store, flow } = makeFlow(
+      respondOk((path, body) => (isStationsCall(path, body) ? { status, body: { ok: false, error, message: error } } : null)),
+    );
+    store.apply({ type: "character/online", character: {
+      characterID: 140000004, characterName: "Test", stationID: STATION_ID,
+      structureID: null, solarSystemID: SYSTEM_ID, corporationID: 98000000,
+    }, station: null } as never);
+    assert.notEqual(store.get().station.online, null, error);
+    await assert.rejects(flow.loadPersonalAssets(), (reason: { code?: string }) => reason.code === error, error);
+    assert.deepEqual([store.get().assets.loaded, store.get().assets.error], [false, null], error);
+    // And the pilot is offline to the page: its session is the server's no longer.
+    assert.equal(store.get().station.online, null, error);
+  }
+});
+
+test("names are asked for the stations the page's own read answered, and for none of the route's", async () => {
+  const { flow, requests } = makeFlow(respondOk());
+  await flow.loadPersonalAssets();
+  await settleNames();
+  const asked = requests.filter((entry) => entry.path === "/api/names").flatMap((entry) => (entry.body.items as { kind: string; id: number }[]) ?? []);
+  assert.deepEqual(asked.filter((ref) => ref.kind === "station").map((ref) => ref.id), [STATION_ID]);
+  assert.equal(asked.some((ref) => ref.id === THE_ROUTES_STATION), false);
 });
