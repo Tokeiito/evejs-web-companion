@@ -1055,6 +1055,32 @@ Take these defaults, and list each under "For the operator" in the log so they c
   "" stage` gives the pilot its skills and a Rifter Blueprint copy with its
   materials (`/bpauto seed frigate`). The Jita station manufactures and neither
   copies nor researches (`FACILITY_ACTIVITY`): another facility is wanted for those.
+- **The whole suite is run by `npm run audit:game-port`.** It is `node --test` with an
+  audit in every test process (`scripts/gamePortAudit.js`), and its report after:
+  every call a test causes the BFF to make is given to the game port's marshal as
+  the ledger reshapes it, and timed against its request's answer. It fails where the
+  suite fails, and where a finding is one a window can meet. `--keep <folder>` keeps
+  the suite's output and the audit's files; `-- <files>` runs some test files only
+  (and then says nothing of what it did not look at). `npm test` is the same suite
+  without it.
+- **The audit sees what the tests send.** A route that passes on what the browser
+  gave it is as sendable as its test's body; what a window sends is in the page's own
+  tests, which are looked at too. And **a route no test asks is looked at by nothing**:
+  the report lists those the page names at every run. Read that list.
+- **A finding goes on the audit's list only where nothing of the page asks its
+  route**, with what it wants before a window does
+  (`scripts/game-port-audit-known.json`). What a window can meet is never listed: it is
+  put right.
+- **A question about every route is asked of every test, not of the routes one by
+  one.** A file loaded first in each test process (`NODE_OPTIONS=--require`) can wrap
+  what a module exports as it is loaded (`Module._load`), give each request a record
+  of its own (`AsyncLocalStorage`, run from the server's `request` event), and write
+  down what passes. Try it on sources that are known to be wrong before believing
+  that it found nothing (`rga-old.sh`).
+- **A breakage must fail, not wait.** The breakage tool runs under no limit of time, so
+  a breakage that leaves a test waiting for an answer that never comes (a call made
+  twice, the first one answered) stops everything. Read each for that before it is
+  run.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

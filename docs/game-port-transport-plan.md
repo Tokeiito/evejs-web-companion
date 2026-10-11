@@ -862,8 +862,11 @@ the server answers. **The Industry window's install cannot be sent on the game p
 (found the same day): it is the next unit.
 The Industry window previews and installs on the game port (`c027a911`): its two
 routes' request is made the client's own dict there. No route moved by it.
-**Next: the page's write routes read for an argument no marshal can write, and for an
-answer given before the route's last write is made.**
+Both kinds of defect found there are looked for now by an audit run with the suite
+(`npm run audit:game-port`, `e62613a4`): it found nothing a window can meet, five routes
+nothing of the page asks that pass on an object of the browser's, and **fourteen bridge
+routes the page names that no test asks**. Next: those fourteen, the reads among them
+moved to the page's own calls, `fleet-ads` first.
 Counted by the whole path,
 97 are named now, 47 of them reads and 50 writes (the count kept before
 `82a21e8` took a path's beginning for a path and missed a parameter inside one: it read 130

@@ -854,6 +854,11 @@ locations an `industry.job.Location` (an `objectex2` whose header is the class i
 a tuple and then the state of seven fields), or None. `industryMonitor.ConnectJob`
 takes the same argument and is made the same way. The object has exactly the
 seventeen names below: one added to the route must be added to `jobDumped`.
+**Whatever a route hands the transport must be something the game port's marshal can
+write.** `npm run audit:game-port` runs the suite and looks at every call the tests
+cause, reshaped as the ledger reshapes it; a route that passes on a value of the
+browser's is as sendable as what the browser sends it. Five routes nothing of the page
+asks pass on an object as it came (`scripts/game-port-audit-known.json`).
 
 ```jsonc
 {
