@@ -1577,6 +1577,13 @@ Take these defaults, and list each under "For the operator" in the log so they c
   click; the one that mattered was found by the tab's socket and the size of an
   answer (the map's graph, 745 KB, twice), and not by reading who keeps what.
   Count the askings, and weigh the answers.
+- **What is kept for a page is kept by what it is asked with.** A keeper every flow
+  of a process shares is shared by a test's flows too, each with a map of its own.
+  Key it by the fetch (`callOptions.fetch ?? pageFetch()`): one for a page, and a
+  test's own in a test (`nav/systemGraphKept.ts`).
+- **A window left open is mounted as the page loads, before a recorder is in.** An
+  asking that comes some times and not others may be its. Close the window, load
+  the page again, count from there; and put the window back as it was found.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
