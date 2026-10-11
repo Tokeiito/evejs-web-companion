@@ -1,11 +1,11 @@
 // A ship sent to a point in space by the page itself, held to the ship and the system the point was measured in;
 // a ship aligned to a thing; a thing approached, kept at range, or orbited; the ship stopped; and a scan result,
-// a bookmark, a launch, a thing and a fleet member warped to.
+// a bookmark, a launch, a thing, a fleet member and a mission's marked spot warped to.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { alignTo, approach, autopilotWarp, goToPoint, keepAtRange, orbit, stopShip, warpToBookmark, warpToFleetMember, warpToItem, warpToLaunch, warpToScanResult, WARP_RANGES_M, APPROACH_RANGE_M, KEEP_AT_RANGE_DEFAULT_M, ORBIT_DEFAULT_M, type FlightNow, type SitesKnown, type SitesReadIn } from "./movementWrites.ts";
+import { alignTo, approach, autopilotWarp, goToPoint, keepAtRange, orbit, stopShip, warpToBookmark, warpToFleetMember, warpToItem, warpToLaunch, warpToMissionLocation, warpToScanResult, WARP_RANGES_M, APPROACH_RANGE_M, KEEP_AT_RANGE_DEFAULT_M, ORBIT_DEFAULT_M, type FlightNow, type SitesKnown, type SitesReadIn } from "./movementWrites.ts";
 
 const [SHIP, SYSTEM] = [9988400023309, 30000144];
 const POINT = { x: 1000, y: -2500.5, z: 300000000000 };
@@ -564,4 +564,72 @@ test("a flight that cannot be read warps to none of the three, and a warp's refu
     await assert.rejects(warp(refused), /You are warp scrambled\./);
     assert.deepEqual(refused.did, ["read", "sent"]);
   }
+});
+
+// ── sent into warp, to a mission's marked spot ───────────────────────────────
+//
+// movementFunctions.WarpToBookmark (414 to 416): a bookmark with an agent and a location's number is the agent's
+// to warp to: GetAgentMoniker(agentID).WarpToLocation(locationType, locationNumber, warpRange, fleet,
+// referringAgentID, GetFormationSettings()). Recorded 23 times on Tranquility, each ('dungeon', 0, nought, False,
+// None, {formationType: 0, formationSpacing: 1000, formationSize: 10000}).
+
+const AGENT = 3018920;
+const FORMATION = { formationType: 0, formationSpacing: 1000, formationSize: 10000 };
+
+/** An asker that says which object each call was made on, too. */
+function agentsHarness(now: FlightNow | Error = HERE, refusal: Error | null = null) {
+  const did: string[] = [];
+  const asked: unknown[][] = [];
+  const act = async (service: string, method: string, args: readonly unknown[], kwargs?: unknown, of?: unknown) => {
+    did.push("sent");
+    asked.push([service, method, args, kwargs ?? null, of ?? null]);
+    if (refusal) throw refusal;
+    return null;
+  };
+  const flightNow = async (): Promise<FlightNow> => {
+    did.push("read");
+    if (now instanceof Error) throw now;
+    return now;
+  };
+  return { did, asked, act, flightNow };
+}
+
+test("a mission's marked spot is warped to by asking its agent: the spot's type and number, nought, no fleet, no other agent and the formation's settings, on that agent's object", async () => {
+  const { did, asked, act, flightNow } = agentsHarness();
+
+  await warpToMissionLocation(act, flightNow, { agentID: AGENT, locationType: "dungeon", locationNumber: 0 });
+
+  assert.deepEqual(asked, [["agentMgr", "WarpToLocation", ["dungeon", 0, 0, false, null, FORMATION], null, AGENT]]);
+  assert.deepEqual(did, ["read", "sent"]);
+
+  // The agent's base: its own type, and the number the server gives it.
+  const base = agentsHarness();
+  await warpToMissionLocation(base.act, base.flightNow, { agentID: AGENT, locationType: "agenthomebase", locationNumber: -1 });
+  assert.deepEqual(base.asked, [["agentMgr", "WarpToLocation", ["agenthomebase", -1, 0, false, null, FORMATION], null, AGENT]]);
+});
+
+test("no agent is asked for what is no spot of a mission's, where nothing is read either; nor for a pilot that is not in space", async () => {
+  const spot = { agentID: AGENT, locationType: "dungeon", locationNumber: 0 };
+  for (const [why, odd] of [
+    ["no agent", { ...spot, agentID: 0 }], ["an agent with no whole number", { ...spot, agentID: 1.5 }],
+    ["no type", { ...spot, locationType: "" }],
+    ["a number that is no whole one", { ...spot, locationNumber: 0.5 }], ["no number", { ...spot, locationNumber: Number.NaN }],
+  ] as const) {
+    const none = agentsHarness();
+    await assert.rejects(warpToMissionLocation(none.act, none.flightNow, odd), /That is no spot of a mission's\./, why);
+    assert.deepEqual(none.did, [], why);
+  }
+  const docked = agentsHarness({ ...HERE, inSpace: false });
+  await assert.rejects(warpToMissionLocation(docked.act, docked.flightNow, spot), /The ship is not in space; undock first\./);
+  assert.deepEqual(docked.did, ["read"]);
+});
+
+test("a flight that cannot be read asks no agent, and the agent's refusal is the caller's, as it came", async () => {
+  const spot = { agentID: AGENT, locationType: "dungeon", locationNumber: 0 };
+  const unread = agentsHarness(new Error("flight unreadable"));
+  await assert.rejects(warpToMissionLocation(unread.act, unread.flightNow, spot), /flight unreadable/);
+  assert.deepEqual(unread.did, ["read"]);
+  const refused = agentsHarness(HERE, new Error("the agent said no"));
+  await assert.rejects(warpToMissionLocation(refused.act, refused.flightNow, spot), /the agent said no/);
+  assert.deepEqual(refused.did, ["read", "sent"]);
 });

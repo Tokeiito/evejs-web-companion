@@ -190,8 +190,29 @@
 // ship, on this grid or off it; it refuses one who is in no fleet of the session's, is not online, or is in
 // another system. The page says a range of nought; on the game port it is made the client's float where the call
 // is sent.
+//
+// SENT INTO WARP, TO A MISSION'S MARKED SPOT. movementFunctions.WarpToBookmark (410 to 421): a bookmark that has an
+// agent and a location's number is not the ballpark's to warp to, but the agent's (414 to 416):
+//
+//   GetAgentMoniker(agentID).WarpToLocation(locationType, locationNumber, warpRange, fleet, referringAgentID,
+//                                           GetFormationSettings())
+//
+// on the agent's own object. Such bookmarks are the journal's (bookmarkSvc.GetAgentBookmarks, 121 to 136, from
+// agentMgr.GetMyJournalDetails: each mission's seventh). Tranquility has the call recorded 23 times, each
+// ('dungeon', 0, nought, False, None, {formationType: 0, formationSpacing: 1000, formationSize: 10000}); the range
+// a whole nought in 12 and a float's in 11. The settings are the pilot's own for a fleet's warp, sent whether
+// the warp is a fleet's or not: those three are what a pilot who has chosen none has (evefleet/client/util.py
+// 11 to 34; the client's own compiled constants, asked of its own Python: the decompiled tables are wrong).
+//
+// The server (agentMgrService.Handle_WarpToLocation) reads the type, the range and the other agent. It finds the
+// session's own character's mission with that agent, gives a deadspace mission's site its contents, and flies the
+// session's own ship there. It answers nothing whether it warped or not.
+//
+// The page says the client's six: the spot's type and number as the journal has them, a whole nought, False, no
+// other agent, and the three settings of a pilot who has chosen none.
 
 import type { Ask } from "./ask.ts";
+import type { MissionSpot } from "../store/types.ts";
 
 /** A point in a solar system, in metres. */
 export interface MovementPoint {
@@ -455,4 +476,26 @@ export async function autopilotWarp(act: Ask, flightNow: () => Promise<FlightNow
 export async function warpToFleetMember(act: Ask, flightNow: () => Promise<FlightNow>, characterID: number): Promise<void> {
   await aPlaceToWarpTo(flightNow, characterID, "A fleet member is required.");
   await act("beyonce", "CmdWarpToStuff", ["char", characterID], { minRange: 0 });
+}
+
+/** The fleet formation a pilot has who has chosen none: a point, the first spacing and the first size (evefleet: POINT, FLEET_FORMATION_SPACING[0], FLEET_FORMATION_SIZE[0]). */
+const FORMATION_OF_NO_CHOICE = Object.freeze({ formationType: 0, formationSpacing: 1000, formationSize: 10000 });
+
+/**
+ * Warps the pilot's ship to a mission's marked spot, as the client's menu does: by asking the spot's agent, on
+ * that agent's own object, with the spot's type and number as the journal has them, a range of nought, no fleet's
+ * word, no other agent, and a fleet's formation settings as a pilot has them who has chosen none. Fails as the call
+ * fails, and before it for what is no spot of a mission's and for a pilot that is not in space.
+ *
+ * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN OR NOT, AND NEVER AN ARRIVAL. The server answers nothing either way.
+ */
+export async function warpToMissionLocation(act: Ask, flightNow: () => Promise<FlightNow>, spot: Pick<MissionSpot, "agentID" | "locationType" | "locationNumber">): Promise<void> {
+  if (!isAnID(spot.agentID) || spot.locationType === "" || !Number.isSafeInteger(spot.locationNumber)) {
+    throw new Error("That is no spot of a mission's.");
+  }
+  const now = await flightNow();
+  if (!now.inSpace) {
+    throw new Error("The ship is not in space; undock first.");
+  }
+  await act("agentMgr", "WarpToLocation", [spot.locationType, spot.locationNumber, 0, false, null, { ...FORMATION_OF_NO_CHOICE }], undefined, spot.agentID);
 }

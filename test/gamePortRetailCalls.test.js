@@ -2762,6 +2762,51 @@ test("a warp goes with the keywords a client sends for what it is to, whatever t
   assert.match(warp(["bookmark", 900000008]).note, /minRange/);
 });
 
+test("a mission's location warped to is the client's with its six, as Tranquility has them; the formation's settings a dict in the client's order", () => {
+  // movementFunctions.py 416: GetAgentMoniker(agentID).WarpToLocation(locationType, locationNumber, warpRange, fleet,
+  // referringAgentID, GetFormationSettings()). Recorded 23 times: ('dungeon', 0, 0 or 0.0, False, None,
+  // {formationType: 0, formationSpacing: 1000, formationSize: 10000}).
+  const asked = (args, kwargs = null) => form("agentMgr.WarpToLocation", args, kwargs);
+  const settings = { formationType: 0, formationSpacing: 1000, formationSize: 10000 };
+  const theClients = { type: "dict", entries: [["formationType", 0], ["formationSpacing", 1000], ["formationSize", 10000]] };
+  for (const args of [
+    ["dungeon", 0, 0, false, null, settings],
+    ["dungeon", 0, { type: "real", value: 0 }, false, null, settings],
+    ["agenthomebase", -1, 0, false, null, settings],
+    ["dungeon", 0, 20000, false, 3018921, settings],
+    // Its names in whatever order they were written, and its choices another pilot's.
+    ["dungeon", 0, 0, false, null, { formationSize: 10000, formationType: 0, formationSpacing: 1000 }],
+  ]) {
+    const made = asked(args);
+    assert.deepEqual([made.status, made.args.slice(0, 5), made.args[5], made.kwargs], ["same", args.slice(0, 5), theClients, null], JSON.stringify(args));
+  }
+  assert.deepEqual(asked(["dungeon", 0, 0, false, null, { formationType: 2, formationSpacing: 3000, formationSize: 50000 }]).args[5],
+    { type: "dict", entries: [["formationType", 2], ["formationSpacing", 3000], ["formationSize", 50000]] });
+  assert.match(asked(["dungeon", 0, 0, false, null, settings]).source, /movementFunctions\.py:416$/);
+  for (const [why, args, kwargs] of [
+    ["five things", ["dungeon", 0, 0, false, null], null],
+    ["seven things", ["dungeon", 0, 0, false, null, settings, 1], null],
+    ["a type that is no text", [5, 0, 0, false, null, settings], null],
+    ["no type", ["", 0, 0, false, null, settings], null],
+    ["a number that is no whole one", ["dungeon", 0.5, 0, false, null, settings], null],
+    ["a number that is none", ["dungeon", null, 0, false, null, settings], null],
+    ["a range below nought", ["dungeon", 0, -1, false, null, settings], null],
+    ["a range that is no number", ["dungeon", 0, "0", false, null, settings], null],
+    ["a fleet's warp", ["dungeon", 0, 0, true, null, settings], null],
+    ["a fleet's word that is no yes or no", ["dungeon", 0, 0, 0, null, settings], null],
+    ["nought for no other agent", ["dungeon", 0, 0, false, 0, settings], null],
+    ["no settings", ["dungeon", 0, 0, false, null, null], null],
+    ["settings with a name missing", ["dungeon", 0, 0, false, null, { formationType: 0, formationSpacing: 1000 }], null],
+    ["settings with a name more", ["dungeon", 0, 0, false, null, { ...settings, formation: 1 }], null],
+    ["a setting that is no number", ["dungeon", 0, 0, false, null, { ...settings, formationSize: "10000" }], null],
+    ["a keyword", ["dungeon", 0, 0, false, null, settings], { fleet: false }],
+  ]) {
+    const made = asked(args, kwargs);
+    assert.deepEqual([made.status, made.args, made.kwargs], ["differs", args, kwargs], why);
+    assert.equal(typeof made.note, "string", why);
+  }
+});
+
 test("the autopilot's warp is the client's with the one thing, and nothing else", () => {
   // autopilot.py 465: GetRemotePark().CmdWarpToStuffAutopilot(destinationID). Recorded so, with the one ID.
   const asked = (args, kwargs = null) => form("beyonce.CmdWarpToStuffAutopilot", args, kwargs);

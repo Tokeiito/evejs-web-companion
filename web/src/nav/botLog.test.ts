@@ -63,6 +63,7 @@ const EVERY_ACTION: readonly ScriptAction[] = [
   { kind: "warpScan", target: "QEE-288" },
   { kind: "warpBookmark", bookmarkID: 71 },
   { kind: "warpLaunch", launchID: 72 },
+  { kind: "warpMissionLocation", agentID: 3018920, locationType: "dungeon", locationNumber: 0 },
   { kind: "boardShip", shipID: 81 },
   { kind: "applyFitting", fittingID: 91 },
   { kind: "restartExtractor", planetID: 40001, pinID: 40002, resourceTypeID: 2073, headRadius: 0.03 },

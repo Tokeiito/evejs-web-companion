@@ -5297,11 +5297,11 @@ const warpToBookmark: MacroDecider = (step, obs, mem) => {
 };
 
 // ── fly-to-mission-site ──────────────────────────────────────────────────────
-// Warp to the accepted mission's own marked spot: the bookmark the agent filed
-// under "Agent Missions". Prefers a bookmark with real coordinates (the site
-// itself) over an agent-base marker; in-system only, with a plain travel hint
+// Warp to the accepted mission's own marked spot, as the client does: the spots are the journal's (the client's
+// bookmark service takes a mission's from there), and the warp is asked of the mission's agent with the spot's own
+// type and number. Prefers the mission's own site over the agent's base; in-system only, with a plain travel hint
 // otherwise. Done when the warp lands.
-const MISSION_FOLDER = "agent missions";
+// (Until 2026-10-11 it read this server's "Agent Missions" folder of bookmarks, and warped by the ballpark's call.)
 
 const flyToMissionSite: MacroDecider = (_step, obs, mem) => {
   if (obs.flightStatus?.docked === true) {
@@ -5326,13 +5326,11 @@ const flyToMissionSite: MacroDecider = (_step, obs, mem) => {
     }
     return tick(WAIT, "Waiting for the warp to start.", "Flying to the site", ACTING, false, { ...mem, waited });
   }
-  const list = obs.bookmarks ?? null;
-  if (list === null) {
+  const journal = obs.journal ?? null;
+  if (journal === null) {
     return tick(WAIT, "Reading the mission's marked spots.", "Flying to the site", ACTING, false, mem);
   }
-  const missionMarks = list.filter(
-    (bm) => (bm.folderName ?? "").trim().toLowerCase() === MISSION_FOLDER,
-  );
+  const missionMarks = journal.active.flatMap((mission) => mission.bookmarks ?? []);
   if (missionMarks.length === 0) {
     return tick(WAIT, "The agent has marked no spot.", "Flying to the site", {
       kind: "blocked",
@@ -5347,8 +5345,9 @@ const flyToMissionSite: MacroDecider = (_step, obs, mem) => {
       reason: "The mission site is in another system - put a travel block before this one.",
     });
   }
-  const pick = inSystem.find((bm) => bm.hasSpot === true) ?? inSystem[0]!;
-  return tick({ kind: "warpBookmark", bookmarkID: pick.bookmarkID }, "Warping to the mission site.", "Flying to the site", ACTING, false, warpIssuedMem(obs));
+  const pick = inSystem.find((spot) => !spot.isAgentBase) ?? inSystem[0]!;
+  return tick({ kind: "warpMissionLocation", agentID: pick.agentID, locationType: pick.locationType, locationNumber: pick.locationNumber },
+    "Warping to the mission site.", "Flying to the site", ACTING, false, warpIssuedMem(obs));
 };
 
 // ── restart-extractors ───────────────────────────────────────────────────────

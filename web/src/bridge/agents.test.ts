@@ -298,6 +298,8 @@ test("decodeJournal reads a row as the client unpacks it: whether it is importan
     agentID: 222,
     expirationTime: "135",
     missionID: 666,
+    // (The row's seventh, its marked spots: none of this row's is a spot of a mission's.)
+    bookmarks: [],
   });
   assert.equal(decoded(1, 58607).importantMission, true);
   assert.equal(decoded(true, 58607).importantMission, true);
@@ -511,4 +513,38 @@ test("an agent's record is read whole, and is nothing without its agent", () => 
   for (const nothing of [null, undefined, 5, "x", [], {}, { agentID: 0 }, { agentID: "3008416" }, { level: 1 }]) {
     assert.equal(decodeAgentRecord(nothing), null, JSON.stringify(nothing));
   }
+});
+
+test("decodeJournal keeps a mission's marked spots as the client's bookmark service takes them: each with its agent, its location's type and its number", () => {
+  // bookmarkSvc.GetAgentBookmarks (121 to 136) takes them from the journal's missions (journal.py 314: mission[6]).
+  // The server's form of one is a KeyVal (eve.js agentMissionRuntime.js, buildMissionBookmarkPayload).
+  const keyVal = (entries: readonly (readonly [string, JsonValue])[]): JsonValue => ({ type: "object", name: "util.KeyVal", args: { type: "dict", entries: entries.map(([key, value]) => [key, value]) } }) as JsonValue;
+  // (Each field once: what the test says of a spot takes the place of the fixture's own.)
+  const spot = (over: readonly (readonly [string, JsonValue])[]): JsonValue => keyVal([...new Map<string, JsonValue>([
+    ["itemID", null], ["typeID", 5], ["agentID", 3018920], ["hint", "a spot"], ["locationType", "dungeon"], ["memo", ""], ["isAgentBase", 0], ["locationNumber", 0],
+    ["created", { type: "long", value: "134360000000000000" }], ["flag", null], ["locationID", 30000142], ["ownerID", 140000005], ["y", 2.5], ["x", 1.5], ["solarsystemID", 30000142], ["z", 3.5],
+    ...over,
+  ])]);
+  const row = (spots: JsonValue): JsonValue => [2, 0, "UI/Agents/MissionTypes/Encounter", 58607, 3018920, { type: "long", value: "134295222004640000" }, spots, 0, 0, 1382];
+  const journal = decodeJournal([{ type: "list", items: [row({ type: "list", items: [
+    spot([["locationType", "agenthomebase"], ["isAgentBase", 1], ["locationNumber", -1], ["itemID", 60000004], ["locationID", 60000004]]),
+    spot([]),
+    // What the client's menu takes for no mission's spot: one with no agent, and one with no number.
+    spot([["agentID", null]]),
+    spot([["locationNumber", null]]),
+    // And what has no type to ask the agent by.
+    spot([["locationType", ""]]),
+    spot([["locationType", 5]]),
+    // (The server's mark of the agent's base is 1 or 0; a true is one too.)
+    spot([["locationType", "objective"], ["isAgentBase", true], ["solarsystemID", 30000144]]),
+    "no spot at all",
+  ] })] }, { type: "list", items: [] }]);
+  assert.deepEqual(journal.active[0]!.bookmarks, [
+    { agentID: 3018920, locationType: "agenthomebase", locationNumber: -1, solarSystemID: 30000142, isAgentBase: true },
+    { agentID: 3018920, locationType: "dungeon", locationNumber: 0, solarSystemID: 30000142, isAgentBase: false },
+    { agentID: 3018920, locationType: "objective", locationNumber: 0, solarSystemID: 30000144, isAgentBase: true },
+  ]);
+  // A mission with no list of them has none; so has the recorded courier's.
+  assert.deepEqual(decodeJournal([{ type: "list", items: [row(null)] }, { type: "list", items: [] }]).active[0]!.bookmarks, []);
+  assert.ok(Array.isArray(decodeJournal(JOURNAL).active[0]!.bookmarks));
 });

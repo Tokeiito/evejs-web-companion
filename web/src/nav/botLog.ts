@@ -195,6 +195,8 @@ export function describeAction(action: ScriptAction): string {
       return `warp to bookmark ${action.bookmarkID}`;
     case "warpLaunch":
       return `warp to launch ${action.launchID}`;
+    case "warpMissionLocation":
+      return `warp to the mission's ${action.locationType} ${action.locationNumber}, by agent ${action.agentID}`;
     case "boardShip":
       return `board ship ${action.shipID}`;
     case "applyFitting":

@@ -1199,6 +1199,21 @@ export interface JournalMission {
   readonly agentID: number | null;
   readonly missionID: number | null;
   readonly expirationTime: string | null;
+  /** The mission's marked spots, as the client's bookmark service takes them from the journal (bookmarkSvc.py 121 to 136). */
+  readonly bookmarks?: readonly MissionSpot[];
+}
+
+/**
+ * One marked spot of a mission: a bookmark of the journal's that has an agent and a location's number, which the
+ * client's menu warps to by asking that agent (movementFunctions.py 414 to 416).
+ */
+export interface MissionSpot {
+  readonly agentID: number;
+  /** What the agent is asked for the spot by: "dungeon" for the mission's own site, "agenthomebase" for the agent's base. */
+  readonly locationType: string;
+  readonly locationNumber: number;
+  readonly solarSystemID: number | null;
+  readonly isAgentBase: boolean;
 }
 
 /**

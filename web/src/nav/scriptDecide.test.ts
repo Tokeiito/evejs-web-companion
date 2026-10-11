@@ -1828,3 +1828,10 @@ test("a latched repair trip does not order the scanner read on the site block's 
   const flying = decideScriptAction(s, obs({ shieldRatio: 0.2, docked: false }), initialMemory(s), withShop, home);
   assert.equal(activeStepToursOreSites(s, flying.memory), false);
 });
+
+test("a mission's warp by its agent settles as a bookmark's warp does: its block looks to what it issued before anything else", () => {
+  // The mission block's warp was a bookmark's until 2026-10-11, and is guarded the same way.
+  const byAgent = { kind: "warpMissionLocation", agentID: 3018920, locationType: "dungeon", locationNumber: 0 } as const;
+  assert.equal(settleTicksFor(byAgent), settleTicksFor({ kind: "warpBookmark", bookmarkID: 71 }));
+  assert.equal(settleTicksFor(byAgent), 0);
+});

@@ -226,6 +226,8 @@ export type ScriptAction =
   | { readonly kind: "warpBookmark"; readonly bookmarkID: number }
   /** Warp to one of the pilot's planetary launches, by the launch's own ID. */
   | { readonly kind: "warpLaunch"; readonly launchID: number }
+  /** Warp to a mission's marked spot by asking its agent, with the spot's own type and number (the journal's). */
+  | { readonly kind: "warpMissionLocation"; readonly agentID: number; readonly locationType: string; readonly locationNumber: number }
   /** Board a ship in the station hangar (it becomes the active ship). */
   | { readonly kind: "boardShip"; readonly shipID: number }
   /** Apply a saved fitting to the active ship (modules from this hangar). */
@@ -514,6 +516,8 @@ const SETTLE_TICKS_BY_KIND: Partial<Record<ScriptAction["kind"], number>> = {
   // it and these two is the guard, not the call.
   warpScan: 0,
   warpBookmark: 0,
+  // (The mission's site was a bookmark's warp until 2026-10-11: the same guard, the agent's call.)
+  warpMissionLocation: 0,
 
   // GUARD (a): `applied: true` (~2575) and `stacked: true` (~4542), each written
   // in the issuing tick. Stacking is additionally idempotent — running it over an

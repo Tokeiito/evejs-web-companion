@@ -1513,6 +1513,40 @@ test("a colony's commodities launched is a write of the page's own, made on the 
   assert.equal(gateway.calls.call.some((each) => each.service === "planetMgr"), false, "nothing was asked of the service by its name");
 });
 
+test("a mission's location warped to is a write of the page's own, made on the agent's own object: the call says which agent, and is bound for it", async () => {
+  const { gateway, binds, bound } = bindingGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const AGENT = 3018920;
+  // movementFunctions.py 416, as Tranquility has it: ('dungeon', 0, 0, False, None, the formation's settings).
+  const args = ["dungeon", 0, 0, false, null, { formationType: 0, formationSpacing: 1000, formationSize: 10000 }];
+  const call = (more) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "agentMgr", method: "WarpToLocation", args, kwargs: null, of: AGENT, ...more } });
+  const meant = { pilot: true, confirm: true };
+  for (const more of [{}, { pilot: true }, { confirm: true }]) {
+    const refused = await call(more);
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+  }
+  // It is no call asked by the service's name: the agent is said.
+  const byName = await call({ ...meant, of: undefined });
+  assert.deepEqual([byName.response.status, byName.payload.error], [400, "INVALID_REQUEST"]);
+  for (const of of [-4, 0, 1.5, "3018920", [AGENT]]) {
+    const noAgent = await call({ ...meant, of });
+    assert.deepEqual([noAgent.response.status, noAgent.payload.error], [400, "INVALID_AGENT"], JSON.stringify(of));
+  }
+  assert.deepEqual([binds, bound], [[], []]);
+
+  const made = await call(meant);
+  assert.deepEqual([made.response.status, made.payload.service, made.payload.method], [200, "agentMgr", "WarpToLocation"]);
+  assert.deepEqual(binds.map((each) => [each.service, each.method, each.args]), [["agentMgr", "MachoBindObject", [AGENT]]]);
+  assert.deepEqual(bound.map((each) => [each.service, each.method, each.args, each.kwargs, each.bridgeSessionID]), [["agentMgr", "WarpToLocation", args, null, BRIDGE_SESSION_ID]]);
+  assert.equal(gateway.calls.call.some((each) => each.service === "agentMgr"), false, "nothing was asked of the service by its name");
+  // The agent's other writes are their routes' alone, whatever is said.
+  for (const method of ["GotoLocation", "WarpToAgentInSpace", "RemoveOfferFromJournal", "DoAction"]) {
+    const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "agentMgr", method, args: [], kwargs: null, of: AGENT, ...meant } });
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], method);
+  }
+});
+
 test("a ship sent to a point is a write of the page's own, asked of beyonce by its name: it goes as it was sent", async () => {
   const gateway = fakeGateway();
   const { baseUrl } = await startTestServer({ gateway });

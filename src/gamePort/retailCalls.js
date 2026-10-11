@@ -298,6 +298,31 @@ const warping = (args, kwargs, context) => {
 const autopilotWarping = (args, kwargs) => (args.length === 1 && aThingsID(args[0]) && Object.keys(kwargs).length === 0
   ? {}
   : { status: "differs", note: "The client's autopilot sends the one thing it warps to, by its number, and nothing else." });
+/** The three names of a fleet's formation settings, in the order the client's own Python writes its dict of them (the recordings have it so). */
+const FORMATION_NAMES = Object.freeze(["formationType", "formationSpacing", "formationSize"]);
+/**
+ * movementFunctions.WarpToBookmark (414 to 416): GetAgentMoniker(agentID).WarpToLocation(locationType,
+ * locationNumber, warpRange, fleet, referringAgentID, GetFormationSettings()), on the agent's own object. Six, and no
+ * keyword. Recorded 23 times on Tranquility: ('dungeon', 0, a whole nought or a float's, False, None,
+ * {formationType: 0, formationSpacing: 1000, formationSize: 10000}).
+ *
+ * The settings are a dict, and go as one in the client's order whatever order they were written in. A fleet's
+ * warp (fleet=True) is none of a caller's here: it differs, as does what is no type, no whole number, no distance,
+ * no agent or None for the other agent, and settings that are not those three numbers.
+ */
+const agentWarping = (args, kwargs) => {
+  const notAClients = { status: "differs", note: "The client sends the location's type and number, a range, False, another agent or None, and its three formation settings: WarpToLocation(locationType, locationNumber, warpRange, False, referringAgentID, settings)." };
+  const [locationType, locationNumber, range, fleet, referringAgentID, settings] = args;
+  const distance = rangeOf(range);
+  const given = settings !== null && typeof settings === "object" && !Array.isArray(settings) ? settings : {};
+  const named = Object.keys(given);
+  if (args.length !== 6 || Object.keys(kwargs).length > 0) return notAClients;
+  if (typeof locationType !== "string" || locationType === "" || !Number.isSafeInteger(locationNumber)) return notAClients;
+  if (!(Number.isFinite(distance) && distance >= 0) || fleet !== false) return notAClients;
+  if (!(referringAgentID === null || aThingsID(referringAgentID))) return notAClients;
+  if (named.length !== FORMATION_NAMES.length || !FORMATION_NAMES.every((name) => Number.isSafeInteger(given[name]))) return notAClients;
+  return { args: [locationType, locationNumber, range, fleet, referringAgentID, dict(FORMATION_NAMES.map((name) => [name, given[name]]))] };
+};
 /** A judge for a call the client sends with nothing: no argument, and no keyword. */
 const sentWithNothing = (args, kwargs) => (args.length === 0 && Object.keys(kwargs).length === 0 ? {} : { status: "differs", note: "The client sends nothing with this call." });
 /** Items' IDs as the client's repair shop lists them: whole numbers above nought, and one at least. */
@@ -1307,6 +1332,8 @@ const RETAIL_CALLS = Object.freeze({
   "agentMgr.GetMissionBriefingInfo": same(`${AGENTS}:750`, "no arguments"),
   "agentMgr.GetMissionObjectiveInfo": same(`${AGENT_WINDOW}:222`, "no arguments when the dialogue opens; the job board's page of a mission adds ignoreLocateCheck=True (jobboard/client/features/agent_missions/job.py:413)"),
   "agentMgr.GetAgentLocationWrap": same(`${AGENT_WINDOW}:276`, "no arguments"),
+  "agentMgr.WarpToLocation": judged("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:416", agentWarping,
+    "GetAgentMoniker(agentID).WarpToLocation(locationType, locationNumber, warpRange, fleet, referringAgentID, GetFormationSettings()), on the agent's own object: a mission's marked spot warped to. Recorded 23 times on Tranquility, each ('dungeon', 0, nought, False, None, the three settings)."),
   "agentMgr.RemoveOfferFromJournal": same(`${AGENTS}:783`, "GetAgentMoniker(agentID).RemoveOfferFromJournal(), no arguments, on the agent's bound object"),
   "agentMgr.GetMissionJournalInfo": differs(`${AGENTS}:747`, "The client sends (charID, contentID). The BFF sends nothing."),
 

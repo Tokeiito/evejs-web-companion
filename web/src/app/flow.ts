@@ -358,7 +358,7 @@ import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyTo
 import { BOOKMARK_EXPIRY, bookmarkLocation as bookmarkLocationCall } from "../bridge/bookmarkWrites.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
 import { salvageWithDrones, scoopDrones as scoopDronesCall } from "../bridge/boundEntityWrites.ts";
-import { alignTo as alignToCall, approach as approachCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
+import { alignTo as alignToCall, approach as approachCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
 import { boardCorvette as boardCorvetteCall, leaveShip as leaveShipCall } from "../bridge/shipWrites.ts";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
 import { runSlashCommand } from "../bridge/gmWrites.ts";
@@ -4350,6 +4350,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   /** A bookmark warped to by the page's own call (bridge/movementWrites.ts), for the script bots. */
   async function warpToSpot(bookmarkID: number): Promise<void> {
     await warpToBookmarkCall(bridgeDo, readFlightNow, bookmarkID);
+  }
+
+  /** A mission's marked spot warped to by asking its agent, by the page's own call (bridge/movementWrites.ts), for the script bots. */
+  async function warpToMissionSpot(agentID: number, locationType: string, locationNumber: number): Promise<void> {
+    await warpToMissionLocationCall(bridgeDo, readFlightNow, { agentID, locationType, locationNumber });
   }
 
   /** A launch warped to by the page's own call (bridge/movementWrites.ts), by the launch's own number, for the script bots. */
@@ -12067,7 +12072,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           }
         }
         let bookmarks: ScriptObservation["bookmarks"] = null;
-        if (macro === "warp-to-bookmark" || macro === "fly-to-mission-site") {
+        // (The mission block takes its spots from the journal, as the client's bookmark service does: no folder is read for it.)
+        if (macro === "warp-to-bookmark") {
           try {
             // The page's own call (bridge/bookmarkReads.ts), as the client's bookmark service makes it. A read
             // that fails leaves them unread, and the step reading: never an empty list of them.
@@ -13100,6 +13106,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             return;
           case "warpLaunch":
             await warpToLaunchPickup(action.launchID);
+            return;
+          case "warpMissionLocation":
+            await warpToMissionSpot(action.agentID, action.locationType, action.locationNumber);
             return;
           case "restartExtractor":
             await restartExtractor(action.planetID, action.pinID, action.resourceTypeID, action.headRadius);

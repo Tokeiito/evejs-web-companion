@@ -999,25 +999,47 @@ test("accept: an ENCOUNTER offer (no cargo) skips the volume gate and accepts on
   assert.ok(t.action.kind === "agentButton" && t.action.actionID === 816, "no-cargo offer must not be volume-gated");
 });
 
-test("fly-to-mission-site: warps to the Agent Missions bookmark, preferring the real spot", () => {
+test("fly-to-mission-site: warps to the accepted mission's own marked spot by asking its agent, the site before the agent's base", () => {
   const fly = SCRIPT_MACROS["fly-to-mission-site"]!;
   const s = step("fly-to-mission-site" as never);
   const inSpace = flight({ docked: false, inSpace: true, stationID: null });
-  const marks = [
-    { bookmarkID: 70, name: "", solarSystemID: 30000142, folderName: "Agent Missions", hasSpot: false },
-    { bookmarkID: 71, name: "", solarSystemID: 30000142, folderName: "Agent Missions", hasSpot: true },
-    { bookmarkID: 72, name: "Safe", solarSystemID: 30000142, folderName: "Spots", hasSpot: true },
-  ];
-  const go = fly(s, obs({ flightStatus: inSpace, bookmarks: marks }), {}, NB);
-  assert.ok(go.action.kind === "warpBookmark" && go.action.bookmarkID === 71, "the coordinates bookmark wins");
+  // The journal's own spots of a mission (bookmarkSvc.GetAgentBookmarks takes them from there): each with its agent,
+  // its location's type and its number.
+  const base = { agentID: AGENT, locationType: "agenthomebase", locationNumber: -1, solarSystemID: 30000142, isAgentBase: true };
+  const site = { agentID: AGENT, locationType: "dungeon", locationNumber: 0, solarSystemID: 30000142, isAgentBase: false };
+  const mission = (bookmarks: readonly typeof base[], missionState: number) =>
+    ({ missionState, missionTypeLabel: "Encounter", missionTitleID: 1, agentID: AGENT, missionID: 7, expirationTime: null, bookmarks });
+  const accepted = (bookmarks: readonly typeof base[]): JournalState => ({ active: [mission(bookmarks, 2)], offered: [] });
 
-  // No mission marks at all -> blocked with "accept a mission first".
-  const none = fly(s, obs({ flightStatus: inSpace, bookmarks: [marks[2]!] }), {}, NB);
+  const go = fly(s, obs({ flightStatus: inSpace, journal: accepted([base, site]) }), {}, NB);
+  assert.deepEqual(go.action, { kind: "warpMissionLocation", agentID: AGENT, locationType: "dungeon", locationNumber: 0 }, "the mission's own site wins over the agent's base");
+  // With the agent's base alone, that is the spot.
+  const home = fly(s, obs({ flightStatus: inSpace, journal: accepted([base]) }), {}, NB);
+  assert.deepEqual(home.action, { kind: "warpMissionLocation", agentID: AGENT, locationType: "agenthomebase", locationNumber: -1 });
+  // The folder of bookmarks is not gone by: one marked there and nothing in the journal is no spot of a mission's.
+  const folder = fly(s, obs({ flightStatus: inSpace, journal: accepted([]), bookmarks: [{ bookmarkID: 71, name: "", solarSystemID: 30000142, folderName: "Agent Missions", hasSpot: true }] }), {}, NB);
+  assert.deepEqual([folder.action.kind, folder.outcome.kind], ["wait", "blocked"]);
+
+  // The journal not read yet: the step reads on, and decides nothing.
+  const unread = fly(s, obs({ flightStatus: inSpace, journal: null }), {}, NB);
+  assert.deepEqual([unread.action.kind, unread.outcome.kind], ["wait", "acting"]);
+  // No mission accepted (one only offered, state 1, has no spot to fly to) -> blocked with "accept a mission first".
+  const offered = fly(s, obs({ flightStatus: inSpace, journal: { active: [], offered: [mission([site], 1)] } }), {}, NB);
+  assert.equal(offered.outcome.kind, "blocked");
+  // (And an accepted mission the journal has no spots for, as a courier's row may have none: the same.)
+  const spotless = fly(s, obs({ flightStatus: inSpace, journal: acceptedJournal() }), {}, NB);
+  assert.deepEqual([spotless.action.kind, spotless.outcome.kind], ["wait", "blocked"]);
+  const none = fly(s, obs({ flightStatus: inSpace, journal: { active: [], offered: [] } }), {}, NB);
   assert.equal(none.outcome.kind, "blocked");
 
-  // Site in another system -> blocked with the travel hint.
-  const far = fly(s, obs({ flightStatus: inSpace, bookmarks: [{ ...marks[1]!, solarSystemID: 30009999 }] }), {}, NB);
-  assert.equal(far.outcome.kind, "blocked");
+  // Site in another system -> blocked with the travel hint; one whose system is not known is warped to.
+  const far = fly(s, obs({ flightStatus: inSpace, journal: accepted([{ ...site, solarSystemID: 30009999 }]) }), {}, NB);
+  assert.deepEqual([far.action.kind, far.outcome.kind], ["wait", "blocked"]);
+  const somewhere = fly(s, obs({ flightStatus: inSpace, journal: accepted([{ ...site, solarSystemID: null as never }]) }), {}, NB);
+  assert.equal(somewhere.action.kind, "warpMissionLocation");
+  // Docked: nothing is warped to.
+  const docked = fly(s, obs({ journal: accepted([site]) }), {}, NB);
+  assert.deepEqual([docked.action.kind, docked.outcome.kind], ["wait", "blocked"]);
 });
 
 test("restart-extractors: restarts only EXPIRED programs on their own resource, one per tick", () => {

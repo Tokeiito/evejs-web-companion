@@ -17,6 +17,7 @@ import type {
   CourierBriefing,
   JournalMission,
   JournalState,
+  MissionSpot,
 } from "../store/types.ts";
 
 // Retail agent dialogue button constants (the client's appConst
@@ -418,6 +419,21 @@ export function decodeBriefing(
 
 // --- journal ---------------------------------------------------------------
 
+/**
+ * A mission's marked spot, as the client's menu takes one to be the agent's to warp to: it has an agent, and a
+ * location's number (movementFunctions.py 414). One with no type to ask the agent by is none either.
+ */
+function decodeMissionSpot(value: JsonValue): MissionSpot | null {
+  const agentID = toNumber(readDict(value, "agentID"));
+  const locationType = readDict(value, "locationType");
+  const locationNumber = toNumber(readDict(value, "locationNumber"));
+  if (!agentID || typeof locationType !== "string" || locationType === "" || locationNumber === null) {
+    return null;
+  }
+  const isAgentBase = readDict(value, "isAgentBase");
+  return { agentID, locationType, locationNumber, solarSystemID: toNumber(readDict(value, "solarsystemID")), isAgentBase: isAgentBase === true || isAgentBase === 1 };
+}
+
 function decodeJournalRow(row: JsonValue): JournalMission {
   // As the client unpacks it (journal.py 686): [missionState, importantMission,
   //  missionTypeLabel, missionNameID, agentID, expirationTime, bookmarks,
@@ -433,6 +449,7 @@ function decodeJournalRow(row: JsonValue): JournalMission {
     agentID: toNumber(items[4]),
     expirationTime: toDecimalString(items[5]),
     missionID: toNumber(items[9]),
+    bookmarks: seqItems(items[6]).map(decodeMissionSpot).filter((spot): spot is MissionSpot => spot !== null),
   };
 }
 

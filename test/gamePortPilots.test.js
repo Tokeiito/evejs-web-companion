@@ -8647,3 +8647,22 @@ test("the autopilot's warp asked by beyonce's name is made on the ballpark's own
   assert.equal(docked.session.sent.length, sentBefore, "nothing was sent");
   assert.equal(docked.pilots.callLedger().some((each) => each.pair === "beyonce.CmdWarpToStuffAutopilot"), false, "and what was not sent is not counted");
 });
+
+test("a mission's location warped to on the agent's bound object goes as the client sends it: its six, the formation's settings a dict in the client's order, counted the client's", async () => {
+  const allowed = new Set(["agentMgr.MachoBindObject", "agentMgr.WarpToLocation"]);
+  const { pilots, session, handle } = await selectedInSpace({ allowed });
+  const agent = (await pilots.bindObject("agentMgr", "MachoBindObject", [3018920], null, WHOSE, handle)).boundHandle;
+  const row = () => pilots.callLedger().find((each) => each.pair === "agentMgr.WarpToLocation");
+
+  // movementFunctions.py 416, as Tranquility has it. The page writes the settings' names in an order of its own.
+  await pilots.callBoundMethod("agentMgr", "WarpToLocation", ["dungeon", 0, 0, false, null, { formationSize: 10000, formationSpacing: 1000, formationType: 0 }], null, WHOSE, handle, agent);
+  const sent = session.boundCalls.at(-1);
+  assert.deepEqual([sent.method, sent.args.slice(0, 5), sent.kwargs], ["WarpToLocation", ["dungeon", 0, 0, false, null], null]);
+  assert.deepEqual(sent.args[5], { type: "dict", entries: [["formationType", 0], ["formationSpacing", 1000], ["formationSize", 10000]] });
+  assert.deepEqual([row().statuses, row().source], [{ same: 1 }, "eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:416"]);
+
+  // What is none of the client's goes as it came, and is counted so: a fleet's warp.
+  await pilots.callBoundMethod("agentMgr", "WarpToLocation", ["dungeon", 0, 0, true, null, { formationType: 0, formationSpacing: 1000, formationSize: 10000 }], null, WHOSE, handle, agent);
+  assert.deepEqual(session.boundCalls.at(-1).args[3], true);
+  assert.deepEqual(row().statuses, { same: 1, differs: 1 });
+});

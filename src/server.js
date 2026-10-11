@@ -997,6 +997,11 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
     res.status(400).json({ ok: false, error: "INVALID_PLANET", message: "A positive planetID is required." });
     return;
   }
+  // (An agent's number, as an agent's routes take one: a whole number above nought.)
+  if (objectKind === "agent" && !(Number.isSafeInteger(body.of) && body.of > 0)) {
+    res.status(400).json({ ok: false, error: "INVALID_AGENT", message: "A positive agentID is required." });
+    return;
+  }
   // (A fleet's number as its routes take one: a whole number above nought, or the text of one.)
   if (objectKind === "fleetByNumber" && strictPositiveID(body.of) === null) {
     res.status(400).json({ ok: false, error: "INVALID_FLEET_ID", message: "A positive fleetID is required." });
@@ -1066,6 +1071,10 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
     const outcome = objectKind === "planet"
       ? { service: body.service, method: body.method, ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => boundCall(
         heldBridgeSession, req.webSessionID, planetBindSpec(body.of), body.method, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null)) }
+      // (A call on an agent's object goes by the bind an agent's routes go by: bound for that agent, and kept.)
+      : objectKind === "agent"
+      ? { service: body.service, method: body.method, ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => boundCall(
+        heldBridgeSession, req.webSessionID, agentBindSpec(body.of), body.method, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null)) }
       // (And a call on the system's scan manager, by the object its route went by.)
       : objectKind === "scanManager"
       ? { service: body.service, method: body.method, ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => systemScanCall(

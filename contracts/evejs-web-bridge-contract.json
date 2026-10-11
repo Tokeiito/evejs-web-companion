@@ -1095,6 +1095,7 @@
   "boundary": {
     "genericBridgeAllowsWrites": true,
     "genericBridgeWrites": [
+      "agentMgr.WarpToLocation",
       "beyonce.BookmarkLocation",
       "beyonce.CmdAlignTo",
       "beyonce.CmdFleetTagTarget",
