@@ -2548,6 +2548,13 @@ are refused with `SESSION_CHANGE_IN_PROGRESS`.
   does under a warp's least distance. **Every warp of the page's is its own call**:
   `POST /api/bridge/flight/warp` and `/flight/warp-member` are asked by nothing of the
   page's, as `warp-scan`, `warp-bookmark` and `warp-launch` are not.
+- **A bot's approach is the menu's** (since 2026-10-11, `cd6306c6`): the mining bot's
+  and a script bot's `approach` ask `{ service: "beyonce", method: "CmdFollowBall",
+  args: [itemID, 50], kwargs: null, pilot: true, confirm: true }` and no
+  `CmdSetSpeedFraction`. Until then they asked the autopilot's form (the throttle,
+  then `[itemID, 0]`), which only the travel loop asks now, where it flies as an
+  autopilot. The fleet companion's is `[itemID, range]` where it says a range and
+  `[itemID, 50]` where it says none.
 - **A pilot's own Dock and Jump are flown as the client's system navigation** (since
   2026-10-11, `e659cdac`). `dockAt` (the overview's Dock, "Take me there and dock") and
   `jumpThrough` (the overview's "Jump to ...") warp by the menu's call at nought,

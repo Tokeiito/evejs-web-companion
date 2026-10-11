@@ -1471,6 +1471,19 @@ Take these defaults, and list each under "For the operator" in the log so they c
   1.5 to 1.9 s after the refusal" from `server.log`; twenty calls timed by the asker
   took a minute and said 10 to 20 ms. Measure by a second clock before a log's gap
   goes into an entry.
+- **Read every caller of the client's call, and the answer may be one line.** The
+  client's `CmdFollowBall` is called from five places, and a follow at nought from
+  the autopilot's two alone: that settled what a bot's approach is before a
+  recording was counted. `bap-follows.js` then counted them: 88 at fifty with no
+  throttle, 2 at nought after one.
+- **A note in Next can be wrong about the page.** It said the fleet companion's
+  approach was the autopilot's; the dispatch says otherwise. Read each asker's own
+  line before a unit is sized by the note.
+- **A bot does not fly a capsule**: it heads home, and stops where it has none. A
+  check of a bot's block in the tab wants a hull first (the GM's `/probe`, docked),
+  and the ship placed in the tab's own session: both can be asked of the BFF's
+  routes from the page's own session, with its own token read inside the request and
+  never returned.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

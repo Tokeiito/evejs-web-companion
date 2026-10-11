@@ -919,7 +919,8 @@ the server's and is fixed there. The recorded warp was taken again on the fixed 
 for nothing (measured: 10 to 20 ms by the asker's clock; its log's line is stamped late).
 A pilot at rest within 100 km of a station is put 500 m off it at each login by the
 server's own rule (measured on both transports; left for the operator). A bot's own
-approach, set beside the menu's, is next. In `eve.js` an advert's text outside ASCII goes as
+approach is the menu's now, a follow at fifty metres with no throttle (`cd6306c6`); a
+thing the sensor suite has a bracket for is next. In `eve.js` an advert's text outside ASCII goes as
 unicode (`dcd459b0d`; on its origin since 2026-10-11, pushed by another hand than this loop's), and a dock
 asked from out of range of a station is finished by the server, as Tranquility finishes
 it (`869b28d2b`, not pushed), and a pilot's client is sent no greatest speed for its ship
