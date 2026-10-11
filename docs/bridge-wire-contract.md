@@ -1111,7 +1111,12 @@ Success (200): `{ "ok": true, "space": { … }, "notifications": [...] }` where
   `maxVelocity`, `position`, `velocity`, the remaining fractions
   `shieldRatio` / `armorRatio` / `hullRatio` / `capacitorRatio`, and the
   capacities behind them (`shieldCapacity`, `armorCapacity`, `hullCapacity`).
-  Null when docked or the scene is gone.
+  Null when docked or the scene is gone. On the game port `maxVelocity` is what the
+  server last told the client of the ball (the state's, then any `SetMaxSpeed`), and
+  the ship is flown by it in the BFF's own park. Until eve.js `c0580dd05` (2026-10-11)
+  the server raised it by a tenth when a warp began and never put it back: after a
+  warp it read 189.75 for a capsule the server flew at 172.5, and the page's ship ran
+  17 m further each second than the server's.
 
 **The server never precomputes distance.** It reports positions; the browser
 measures from the ship's own position, sorts, filters and caps —

@@ -1414,6 +1414,28 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **`dkl-live.js` flies each of the travel loop's three plans** over a BFF (a Dock,
   a Jump, a route), with the page's own functions. `break-check.js` checks a
   breakage list's finds before the list is run.
+- **Two ships that drift apart are not two clocks that disagree.** Set the page's
+  ship beside the server's over a whole move and read how the gap changes: a gap that
+  holds is a matter of time (the page's ship is a steady part of two seconds behind,
+  as a client's is), and a gap that grows is a matter of speed. `cls-measure.js` does
+  it from the page's snapshot and the server's movement log, with a `/tr` and a warp
+  first if asked. The Dock asked "530 m early" was a speed: the page's ship flew a
+  tenth faster than the server's after a warp.
+- **What the page shows can be the measurement.** The Travel window said "189 m/s"
+  for a capsule the server's log had at 172.5, in two iterations' proofs, before it
+  was read as a finding. A number on the page that is not the server's is to be
+  chased the first time it is seen.
+- **What the server sent is in the recordings this repository keeps of it**
+  (`test/fixtures/destiny*.json`). `cls-speeds.js` lists a recording's orders about
+  speed and movement with their stamps: that is how a `SetMaxSpeed` with each
+  `WarpTo`, and none after, was found.
+- **A sub-agent asked to remove something is asked first why it is there.** The
+  tenth had a reason once (a client that would not fly a warp by itself) and a later
+  commit took away what put it back; knowing both is what made taking it out safe.
+- **`eve.js`'s tests write into the server's own `server.log`.** A line there may
+  be a test's: go by the character and the time.
+- **A session that ends near a station does not find the ship where it left it**
+  (500 m off, twice). Place the ship and measure in one session.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

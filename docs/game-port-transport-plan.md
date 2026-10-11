@@ -912,10 +912,14 @@ autopilot warps as the client's autopilot does now (`9350fd89`), and a warp's fl
 follows the call that makes it. A pilot's own Dock and Jump fly as the client's system
 navigation again (the menu's warp at nought, the menu's approach), and the autopilot's
 approach to its last station is the menu's under fifty kilometres (`e659cdac`); the
-page's measure of a closing ship, set beside the server's, is next. In `eve.js` an advert's text outside ASCII goes as
+page's measure of a closing ship was set beside the server's: the page's ship ran ahead
+after a warp because the server had left its greatest speed a tenth too high, which is
+the server's and is fixed there. The recorded warp taken again on the fixed server is
+next. In `eve.js` an advert's text outside ASCII goes as
 unicode (`dcd459b0d`; on its origin since 2026-10-11, pushed by another hand than this loop's), and a dock
 asked from out of range of a station is finished by the server, as Tranquility finishes
-it (`869b28d2b`, not pushed).
+it (`869b28d2b`, not pushed), and a pilot's client is sent no greatest speed for its ship
+when it warps, as Tranquility sends none (`c0580dd05`, not pushed).
 Counted by the whole path,
 82 are named now, 37 of them reads and 45 writes (the count kept before
 `82a21e8` took a path's beginning for a path and missed a parameter inside one: it read 130
