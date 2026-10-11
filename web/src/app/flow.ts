@@ -365,6 +365,7 @@ import { runSlashCommand } from "../bridge/gmWrites.ts";
 import { launchCommodities as launchCommoditiesCall, rerouteExtractorRoutes, type NewRoute } from "../bridge/planetWrites.ts";
 import { restartExtractor as restartExtractorAsTheClient } from "../bridge/extractorRestart.ts";
 import { createModuleRepairs, createOverloadEffects, createWeaponGrouping, loadAmmo as loadAmmoCall, repairWaitMs, setOverload as setOverloadCall, unloadAmmo as unloadAmmoCall } from "../bridge/dogmaWrites.ts";
+import { keptByType, keptTypeAttributes, keptWhereKnown } from "../bridge/keptTypeFacts.ts";
 import type { AmmoPlace, AmmoSession } from "../bridge/dogmaWrites.ts";
 import type { DogmaItemInfo } from "../bridge/boundDogma.ts";
 import {
@@ -1788,6 +1789,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const fleetBroadcasts = createFleetBroadcasts(bridgeDo);
   // What a module type's overload effect is: the client's own static data, asked of the BFF's copy once for a type.
   const overloadEffects = createOverloadEffects((typeIDs) => api.loadOverloadEffects(typeIDs, callOptions));
+  // What else the static data says of a type, asked of the BFF's copy once for a type and kept
+  // (bridge/keptTypeFacts.ts): a module type's base cycle time, the combat classifier's facts of a type, and a
+  // type's attributes by number. (The askers further down that keep what they are told themselves ask the reads.)
+  const baseCycleTimesOfTypes = keptByType((typeIDs: readonly number[]) => api.loadBaseCycleTimes(typeIDs, callOptions).then((answered) => answered.baseCycleMs));
+  // (That read leaves out a type the tables do not know: once it has answered, that is what is known of the type.)
+  const combatUtilityOfTypes = keptWhereKnown((typeIDs: readonly number[]) => api.combatUtilityTypes(typeIDs, callOptions));
+  const attributesOfTypes = keptTypeAttributes((typeIDs, attributeIDs) => api.fetchTypeDogma(typeIDs, attributeIDs, callOptions));
   // The repairs begun (bridge/dogmaWrites.ts): each is ended by the page when its time is up, as a client ends
   // its own, and the ship is read again then, which is when the module is mended.
   const moduleRepairs = createModuleRepairs(bridgeDo, { ended: () => { void loadSpaceSnapshot().catch(() => {}); } });
@@ -3214,7 +3222,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (typeIDs.length === 0) {
       return;
     }
-    const { baseCycleMs } = await api.loadBaseCycleTimes(typeIDs, callOptions);
+    const baseCycleMs = await baseCycleTimesOfTypes(typeIDs);
     const cycles: Record<number, number | null> = {};
     for (const slot of slots) {
       if (slot.module) {
@@ -8664,7 +8672,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         const container = decodeContainer(inventory.cargo.list, inventory.cargo.capacity,
           inventory.cargo.error, inventory.volumes);
         const rows = container.rows.filter(row => row.categoryID === CHARGE_CATEGORY_ID && row.quantity > 0);
-        const sizes = rows.length > 0 ? await api.fetchTypeDogma([...new Set(rows.map(row => row.typeID))], [128], callOptions) : {};
+        const sizes = rows.length > 0 ? await attributesOfTypes([...new Set(rows.map(row => row.typeID))], [128]) : {};
         const cargo = container.error !== null ? null : rows.map(row => ({
           itemID: row.itemID, typeID: row.typeID, groupID: row.groupID, quantity: row.quantity,
           size: sizes[row.typeID]?.[128] ?? null,
@@ -8673,7 +8681,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         const slots = buildSlots(fit.slots, fit.shipInfo, fit.online);
         const typeIDs = [...new Set([...slots.flatMap(slot => slot.module ? [slot.module.typeID,
           ...(slot.module.charge ? [slot.module.charge.typeID] : [])] : []), ...rows.map(row => row.typeID)])];
-        const types = await api.combatUtilityTypes(typeIDs, callOptions);
+        const types = await combatUtilityOfTypes(typeIDs);
         return { utilities: combatUtilityFit(shipID, slots, bound.allInfo.value, types,
           container.error === null ? rows.flatMap(row => types[row.typeID] ? [{ itemID: row.itemID, quantity: row.quantity, type: types[row.typeID]! }] : []) : null,
           snapshot?.ship?.itemID === shipID ? snapshot.ship.capacitorRatio : null),
@@ -11287,7 +11295,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     let oreMining: number[] = [];
     if ((options.miningOperationID || classifySiteMiners) && mining.length > 0 && fit.slotsError === null) {
       const modules = fit.slots.flatMap(slot => slot.module && slot.module.online && mining.includes(slot.module.itemID) ? [slot.module] : []);
-      const facts = await api.fetchTypeDogma(modules.map(module => module.typeID), [77, 182, 183, 184, 1285, 1289, 1290], callOptions)
+      const facts = await attributesOfTypes(modules.map(module => module.typeID), [77, 182, 183, 184, 1285, 1289, 1290])
         .catch(() => ({} as Readonly<Record<number, Readonly<Record<number, number>>>>));
       iceMining = modules.filter(module => iceMiningType(facts[module.typeID])).map(module => module.itemID);
       oreMining = modules.filter(module => (facts[module.typeID]?.[77] ?? 0) > 0 && !iceMiningType(facts[module.typeID]) &&
