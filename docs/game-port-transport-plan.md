@@ -850,8 +850,11 @@ told of it (`3a204509`): the server's notice read, and said in the page's words 
 Fleet window and on the notice board, with no call.
 A place in space is bookmarked by `beyonce.BookmarkLocation` (`c27b24a2`), asked
 by the service's name and made on the park's object by the game port.
+A target is locked and let go by `dogmaIM.AddTarget`, `RemoveTarget` and
+`CancelAddTarget` (`018ca9f7`), the read of what is locked after each made by the
+flow as the two routes made it.
 Counted by the whole path,
-102 are named now, 47 of them reads and 55 writes (the count kept before
+100 are named now, 47 of them reads and 53 writes (the count kept before
 `82a21e8` took a path's beginning for a path and missed a parameter inside one: it read 130
 where 138 was so). Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.

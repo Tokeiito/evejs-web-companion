@@ -955,6 +955,26 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A refusal's sentence changed is looked for first**: `grep -rn "<the sentence>"
   web/src test`. `BookmarkNotAvailable` meant a warp alone, and means a bookmark made
   as well.
+- **Look in `src/gamePort` for the client's own service before building anything.**
+  `pilotTargets.js` kept the client's list of what is locked already, fed by the
+  server's word, and answered `GetTargets` from it: the unit was the page's calls and
+  the routes' doings, and the ledger could judge a call by that list
+  (`context.targetLocked`).
+- **A route's own doings move to the flow, not away.** The lock's route read what was
+  locked after the call, and the unlock's asked two calls and read: the flow makes
+  the read by the page's own read route, and asks the one call the client would by
+  the page's word for the thing, with the second only where its read shows the first
+  did nothing.
+- **Tests that stand on a route's answer are rewritten, each keeping its claim.** Six
+  of the flow's tests answered `/api/bridge/targets/lock` in the route's own shape; a
+  stand-in that answers every path alike was found only when the code was in (run the
+  unit's test files again after the code, and the whole suite).
+- **A pilot undocked for a check, and docked again in the tab**: `tlk-live.js <bff>
+  <account> <characterID> [ledger.json]` undocks Test Pilot in Jita and locks the
+  station it left (in reach at once; locked in a second). Put the store back between
+  the two transports' runs: the script asks its first call docked. In the tab the
+  station's row has "Lock", "Release lock" and, for a second, "Locking… stop"; the
+  row's "Dock" docks the ship, and the page's "Log out" is there again.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
