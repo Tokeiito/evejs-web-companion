@@ -351,6 +351,7 @@ import { canBroadcastInFleet, canTagInFleet } from "../bridge/fleetCommand.ts";
 import type { FleetCenterSnapshot } from "../bridge/fleetCenter.ts";
 import { decodeAvailableFleetAds, decodeMyFleetFinderAdvert } from "../bridge/fleetAds.ts";
 import { readAvailableFleetAds, readFleetFinder as readFleetFinderCalls } from "../bridge/fleetFinderReads.ts";
+import { readMyLaunches } from "../bridge/launchReads.ts";
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { BOOKMARK_EXPIRY, bookmarkLocation as bookmarkLocationCall } from "../bridge/bookmarkWrites.ts";
@@ -11896,7 +11897,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         }
         if (macro === "collect-launches") {
           try {
-            piLaunches = (await api.getPiLaunches(callOptions)).map((launch) => ({
+            // The page's own call (bridge/launchReads.ts), as the client's planet service makes it.
+            piLaunches = (await readMyLaunches(bridgeAsk)).map((launch) => ({
               launchID: launch.launchID,
               solarSystemID: launch.solarSystemID,
               planetID: launch.planetID,

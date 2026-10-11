@@ -34,7 +34,6 @@ import {
 import { pageCarries, pageFetch, pageSocket } from "./pageFetch.ts";
 import type { JsonValue } from "../bridge/wire.ts";
 import type { SafetyLevel } from "../space/crimewatch.ts";
-import { decodeLaunchDetails, type LaunchDetail } from "../bridge/piColonies.ts";
 import type { MinerTrainingRead, StageFittingSelection, TrainingCharacter, QueueReview, QueueApplyOutcome } from "../training/types.ts";
 import type {
   AgentRow,
@@ -4364,28 +4363,9 @@ export async function reconnectDrones(
 // routes (GET /api/bridge/station/repair-quotes, POST /api/bridge/station/repair)
 // on 2026-10-10.
 
-/**
- * The session character's planetary launches (planetMgr.GetMyLaunchesDetails,
- * through /api/bridge/pi-colonies). Throws when the launch read itself failed,
- * so a caller never mistakes "could not read" for "no launches".
- */
-export async function getPiLaunches(options: ApiOptions = {}): Promise<readonly LaunchDetail[]> {
-  const data = await getJson("/api/bridge/pi-colonies", options);
-  const errors = data.errors;
-  const launchError =
-    errors !== null && typeof errors === "object" && !Array.isArray(errors)
-      ? (errors as { readonly [key: string]: JsonValue }).launches
-      : null;
-  if (typeof launchError === "string") {
-    throw new Error(`Your planet launches could not be read (${launchError}).`);
-  }
-  // The list is a rowset even when it is empty. A server that could not put its
-  // answer on the wire answers with nothing at all, and that is not "no launches".
-  if (data.launches === null || data.launches === undefined) {
-    throw new Error("Your planet launches could not be read (the server answered with nothing).");
-  }
-  return decodeLaunchDetails(data.launches);
-}
+// A pilot's planetary launches are read by the page itself, with the client's
+// own call (bridge/launchReads.ts: planetMgr.GetMyLaunchesDetails): the read
+// left its route (GET /api/bridge/pi-colonies) on 2026-10-11.
 
 // A planetary launch's record is removed by the page itself, with the client's
 // own call (bridge/launchWrites.ts; the plan's Phase 6b): the sixth of its writes

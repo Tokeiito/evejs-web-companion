@@ -25,7 +25,7 @@ const script: BotScript = {
 
 const LAUNCH_COLUMNS = [["launchID", 3], ["solarSystemID", 3], ["itemID", 20], ["ownerID", 3], ["planetID", 3], ["status", 17], ["launchTime", 64], ["x", 5], ["y", 5], ["z", 5]];
 const LAUNCH_DESCRIPTOR = { type: "objectex1", header: [{ type: "token", value: "blue.DBRowDescriptor" }, [LAUNCH_COLUMNS]], list: [], dict: [] };
-/** planetMgr.GetMyLaunchesDetails as the route hands it on: a CRowset, of one launch in this system or of none. */
+/** planetMgr.GetMyLaunchesDetails as the server answers it: a CRowset, of one launch in this system or of none. */
 const launchesOf = (listed: boolean): unknown => ({
   type: "objectex2",
   header: [[{ type: "token", value: "carbon.common.script.sys.crowset.CRowset" }], { type: "dict", entries: [["header", LAUNCH_DESCRIPTOR]] }],
@@ -46,6 +46,7 @@ test("a launch collected is emptied into the ship, read again, and only then has
   /** What the bot asked that matters here, in order. */
   const asked: string[] = [];
   const removals: Record<string, unknown>[] = [];
+  const launchReads: Record<string, unknown>[] = [];
   let removed = false;
   let emptied = false;
   let resolveFinished!: () => void;
@@ -72,8 +73,13 @@ test("a launch collected is emptied into the ship, read again, and only then has
       { key: "cargo", label: "Cargo", present: true, capacity: { capacity: 350, used: 0 }, items: [], error: null },
       { key: "planetary", label: "Planetary", present: true, capacity: { capacity: 10000, used: 0 }, items: [], error: null },
     ] };
-    // The launches: the one in this system, until its record has been removed.
-    if (path === "/api/bridge/pi-colonies") result = { ok: true, colonies: [], launches: launchesOf(!removed), errors: {} };
+    // The launches: the one in this system, until its record has been removed. Read by the page's own call
+    // (bridge/launchReads.ts), and never by the route they were read by.
+    if (path === "/api/bridge/pi-colonies") asked.push("the launches' route");
+    if (path === "/api/bridge/call" && body.service === "planetMgr" && body.method === "GetMyLaunchesDetails") {
+      launchReads.push(body);
+      result = { ok: true, service: "planetMgr", method: "GetMyLaunchesDetails", result: launchesOf(!removed), notifications: [] };
+    }
     if (path === `/api/bridge/inventory/container/${CONTAINER}`) {
       asked.push(emptied ? "the container, empty" : "the container, with goods");
       result = { ok: true, containerID: CONTAINER, capacity: null, volumes: { "3645": 0.38 },
@@ -109,6 +115,9 @@ test("a launch collected is emptied into the ship, read again, and only then has
     assert.deepEqual(order, ["the container, with goods", "the goods moved", "the container, empty", "the launch's record removed"]);
     // journal.py 464: sm.RemoteSvc('planetMgr').DeleteLaunch(launchID), as a pilot's and as a write the page means. Once.
     assert.deepEqual(removals, [{ service: "planetMgr", method: "DeleteLaunch", args: [LAUNCH], kwargs: null, pilot: true, confirm: true }]);
+    // planetUISvc.py 172: sm.RemoteSvc('planetMgr').GetMyLaunchesDetails(), as a pilot's read, each time the block looks.
+    assert.ok(launchReads.length >= 1);
+    for (const each of launchReads) assert.deepEqual(each, { service: "planetMgr", method: "GetMyLaunchesDetails", args: [], kwargs: null, pilot: true });
     assert.equal(store.customBot.get().status, "stopped");
   } finally {
     unsubscribe();
@@ -125,6 +134,8 @@ test("a launch whose goods did not all fit keeps its record: the container is no
   }, station: null });
   const removals: string[] = [];
   let transfers = 0;
+  let launchReads = 0;
+  let launchesRoute = 0;
   const flow = createAppFlow(store, { livePush: false, fetch: async (input, init) => {
     const path = String(input);
     const body = init?.body ? JSON.parse(String(init.body)) : {};
@@ -143,7 +154,11 @@ test("a launch whose goods did not all fit keeps its record: the container is no
       { key: "cargo", label: "Cargo", present: true, capacity: { capacity: 350, used: 0 }, items: [], error: null },
       { key: "planetary", label: "Planetary", present: true, capacity: { capacity: 10000, used: 0 }, items: [], error: null },
     ] };
-    if (path === "/api/bridge/pi-colonies") result = { ok: true, colonies: [], launches: launchesOf(true), errors: {} };
+    if (path === "/api/bridge/pi-colonies") launchesRoute += 1;
+    if (path === "/api/bridge/call" && body.service === "planetMgr" && body.method === "GetMyLaunchesDetails") {
+      launchReads += 1;
+      result = { ok: true, service: "planetMgr", method: "GetMyLaunchesDetails", result: launchesOf(true), notifications: [] };
+    }
     // One stack is moved and another is left behind: the container is never seen empty.
     if (path === `/api/bridge/inventory/container/${CONTAINER}`) {
       result = { ok: true, containerID: CONTAINER, capacity: null, volumes: { "3645": 0.38 },
@@ -166,6 +181,8 @@ test("a launch whose goods did not all fit keeps its record: the container is no
     }
     assert.ok(transfers >= 1, "the goods were asked to be moved");
     assert.deepEqual(removals, []);
+    assert.ok(launchReads >= 1, "the launches were read by the page's own call");
+    assert.equal(launchesRoute, 0);
   } finally {
     flow.stopCustomBot();
   }
