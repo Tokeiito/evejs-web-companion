@@ -871,6 +871,13 @@ plain ASCII as a plain string and anything else as unicode, and Tranquility send
 unicode always. `GET /api/bridge/fleet-ads` still stands, and nothing of the page asks
 it.
 
+**A pilot's launches are the page's own read** (`web/src/bridge/launchReads.ts`):
+`planetMgr.GetMyLaunchesDetails`, by the generic call as a pilot's read, nothing sent.
+It answers a rowset, empty where there are no launches; **an answer of nothing is no
+list at all**, and the read fails for it. On the game port the transport answers from
+what it keeps until a launch is removed or the server says the launches changed.
+`GET /api/bridge/pi-colonies` still stands, and nothing of the page asks it.
+
 ```jsonc
 {
   "blueprintID": 7100000001,   // the blueprint ITEM id

@@ -1110,6 +1110,23 @@ Take these defaults, and list each under "For the operator" in the log so they c
   before any BFF is started again, and read who is online after: one script, run
   after the Fleet window was opened, did not find the button, and why was not looked
   into.
+- **A route may be asked for a part of what it answers.** `pi-colonies` made two
+  calls, and its one asker read the launches alone. Read what the page takes of the
+  answer before both are moved; and `grep` the pairs in `src/gamePort/retailCalls.js`
+  and `pilots.js` first: the transport kept both of these already, and the ledger
+  judged them, so that only the page's asker was the route's.
+- **A live script can run the page's own function.** Node loads a `.ts` file of
+  `web/src/bridge` as it is: `await import(pathToFileURL(<repo>/web/src/bridge/x.ts))`,
+  and an `ask` made of a script's session (`lrd-live.js`). What is seen live is then
+  what the page runs, not a script's own reading of the answer.
+- **A launch for the collector's bot**: `lrd-stage.sh` (EveJS stopped: three launch
+  records, and goods in Test Two's command centre), `launch-real.js <bff> 40176368
+  1054656331534 2268 300` (a container in space, and the one-block bot saved), then
+  the tab: Test Two, "Undock", the Bot Manager's Pilots tab, the bot chosen in the
+  pilot's own chooser, "Run here". It warps, collects and ends in about a minute.
+  After: the station's row in the overview and "Dock" (wait for "Docked": about half
+  a minute), the page's "Log out", and `lrd-unsave.js <bff> test2 "<the bot's name>"`,
+  which takes the bot out of the BFF's library (a restore of the store does not).
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
