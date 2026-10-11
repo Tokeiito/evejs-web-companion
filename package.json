@@ -11,6 +11,7 @@
     "build:web": "tsc -p tsconfig.json && vite build",
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --test",
+    "audit:game-port": "node scripts/game-port-audit.js",
     "webpass": "node scripts/set-web-password.js",
     "cache-icons": "node scripts/cache-icons.js",
     "check": "node scripts/check.js",

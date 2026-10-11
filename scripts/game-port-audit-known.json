@@ -1,0 +1,32 @@
+[
+  {
+    "kind": "unsendable",
+    "route": "POST /api/bridge/dogma/drones/settings",
+    "pair": "dogmaIM.ChangeDroneSettings",
+    "why": "Nothing of the page asks this route. It passes on the settings as the browser gave them, and its test gives them as a plain object. Before a window asks it: the client's own form of the settings, in the ledger."
+  },
+  {
+    "kind": "unsendable",
+    "route": "POST /api/bridge/fleet/options",
+    "pair": "fleetObjectHandler.SetOptions",
+    "why": "Nothing of the page asks this route. It passes on the options as the browser gave them, and its test gives them as a plain object. Before a window asks it: the client's own form of a fleet's options, in the ledger."
+  },
+  {
+    "kind": "unsendable",
+    "route": "POST /api/bridge/market/buy-multiple",
+    "pair": "marketProxy.BuyMultipleItems",
+    "why": "Nothing of the page asks this route. It passes on each thing to buy as the browser gave it, and its test gives each as a plain object. Before a window asks it: the client's own form of the list, in the ledger."
+  },
+  {
+    "kind": "unsendable",
+    "route": "POST /api/bridge/market/plex/sell",
+    "pair": "marketProxy.PlacePlexSellOrder",
+    "why": "Nothing of the page asks this route. It passes on the PLEX entry as the browser gave it, and its test gives it as a plain object. Before a window asks it: the client's own form of the entry, in the ledger."
+  },
+  {
+    "kind": "unsendable",
+    "route": "POST /api/bridge/planet/network/update",
+    "pair": "planetMgr.UserUpdateNetwork",
+    "why": "Nothing of the page asks this route: the page makes this call itself, each command in the client's form (web/src/bridge/planetWrites.ts). The route passes on the commands as the browser gave them, and its test gives one as a plain object."
+  }
+]
