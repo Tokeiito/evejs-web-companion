@@ -2532,6 +2532,21 @@ are refused with `SESSION_CHANGE_IN_PROGRESS`.
   companion's order). **Every warp of the page's is its own call**:
   `POST /api/bridge/flight/warp` and `/flight/warp-member` are asked by nothing of the
   page's, as `warp-scan`, `warp-bookmark` and `warp-launch` are not.
+- **A mission's marked spot is warped to on its agent's own object** (since
+  2026-10-11): `POST /api/bridge/call` with `{ service: "agentMgr", method:
+  "WarpToLocation", args: [locationType, locationNumber, warpRange, false,
+  referringAgentID | null, { formationType, formationSpacing, formationSize }], kwargs:
+  null, pilot: true, confirm: true, of: agentID }`. `of` says which agent, and the
+  call is bound for it as an agent's routes bind one (`agentMgr.MachoBindObject`
+  `[agentID]`): with no `of` it is `400 INVALID_REQUEST`, with one that is no whole
+  number above nought `400 INVALID_AGENT`, and without `pilot` and `confirm`
+  `403 BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE`. The server answers `null` whether the
+  ship warped or not. The page sends `[type, number, 0, false, null, { formationType:
+  0, formationSpacing: 1000, formationSize: 10000 }]`, with the type and number of
+  the journal's own spot (`warpToMissionLocation`); on the game port the settings go
+  as a dict in the client's order. The agent's other writes are their routes' still.
+  A journal's row is decoded with its marked spots: `{ agentID, locationType,
+  locationNumber, solarSystemID, isAgentBase }` each, from the row's seventh.
 - `POST /api/bridge/flight/jump` `{ fromGateID, toGateID }` →
   `beyonce.CmdStargateJump([fromGateID, toGateID, shipID])`. The system
   response waits until the destination system, scene and ego are ready.

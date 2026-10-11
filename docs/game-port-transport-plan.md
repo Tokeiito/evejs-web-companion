@@ -905,7 +905,10 @@ autopilot's are next, then the fleet member's; a mission's marked spot is warped
 the ballpark's call where a client asks the agent, and comes after. Those three are the
 page's own calls too (`832dcb2a`): every warp of the page's is, and the five warp routes
 are asked by nothing of the page's. A mission's marked spot is next; then the page's own
-autopilots, which warp by the menu's call where a client's autopilot warps by its own. In `eve.js` an advert's text outside ASCII goes as
+autopilots, which warp by the menu's call where a client's autopilot warps by its own.
+The mission's spot is warped to by asking its agent now (`77464628`), with the spots
+taken from the journal: an agent is an object the page names. The page's autopilots are
+next. In `eve.js` an advert's text outside ASCII goes as
 unicode (`dcd459b0d`, not pushed).
 Counted by the whole path,
 82 are named now, 37 of them reads and 45 writes (the count kept before

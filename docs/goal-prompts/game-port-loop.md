@@ -1349,6 +1349,27 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A script that forms a fleet has both pilots leave first.** A member whose boss
   left was seen still in that fleet (the corporation's members' unit), and this server
   refuses a second fleet to one who is in one (`440c52ef7`).
+- **Where a recording has other numbers than the decompiled source, ask the client's
+  own Python.** The source printed two tables of a fleet's formation as other numbers
+  than the client's own (20 to 22 and 100 to 107, where the client has thousands; why
+  was not looked at). `scripts/client-code.py`
+  takes one module's compiled code out of the client; a module that imports nothing
+  runs whole in `scripts/py27-oracle.py` (`exec module in names`), and its names are
+  then the client's own.
+- **A handler that answers nothing whether it did the thing or not takes a refusal
+  away from the page.** Say under "Left" what the page's block does then (it waits,
+  and gives up), and do not make a refusal up.
+- **A new action of the bots is four places**: the union (`nav/scriptDecide.ts`), its
+  sentence (`nav/botLog.ts`, whose test lists every kind), where the flow carries it
+  out (the coverage test reads the union), and the settle table where its block is
+  guarded as a neighbour's is.
+- **A field added to a decoded row is optional in the type and always there in the
+  decode**: older fixtures build rows without it, and an older test that compares a
+  whole row is given it.
+- **A mission for a live check**: `msw-stage.js` docks GM Elysian at a station of
+  Maurasi (60003454), gives it a hull, and asks and accepts a mission of the level 1
+  encounter agent there (3011918). The journal then has a `dungeon` and an
+  `agenthomebase` in that system. `msw-agents.js` lists a station's agents by kind.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
