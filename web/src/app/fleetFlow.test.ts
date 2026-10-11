@@ -833,7 +833,7 @@ test("the pilot does not invite itself, and an invitation the server refuses is 
 // --- an invitation turned down, through the flow -------------------------------
 
 /** A pilot online with a live stream, over a BFF that reads a fleet as told and takes any call: says what was asked. */
-async function invitedFlow(fleetRead: () => unknown, call: { status: number; body: unknown } | null = null) {
+async function invitedFlow(fleetRead: () => unknown, call: { status: number; body: unknown } | null = null, names: Record<string, string> | (() => Promise<Record<string, string>>) = {}) {
   const store = createClientStore();
   const { factory, sources } = makeFakeEventSource();
   const calls: Array<{ url: string; body: unknown }> = [];
@@ -848,7 +848,7 @@ async function invitedFlow(fleetRead: () => unknown, call: { status: number; bod
       const request = JSON.parse(String(init.body)) as { service: string; method: string };
       return call === null || request.method !== "RejectInvite" ? json({ ok: true, service: request.service, method: request.method, result: true, notifications: [] }) : json(call.body, call.status);
     }
-    if (url === "/api/names") return json({ ok: true, names: {} });
+    if (url === "/api/names") return json({ ok: true, names: typeof names === "function" ? await names() : names });
     throw new Error(`unexpected fetch ${url}`);
   };
   const flow = createAppFlow(store, { fetch, eventSource: factory });
@@ -966,4 +966,67 @@ test("an invitation kept by a page that then finds its pilot in another fleet is
   await none.flow.loadFleet();
   await settled();
   assert.deepEqual([none.declines(), none.store.get().fleet.pendingInvite?.fleetID], [[], 654500020000]);
+});
+
+// --- the inviter told -----------------------------------------------------------
+
+test("the inviter is told when its invitation is turned down: in the page's words, with the pilot's name, and nothing is asked but that name", async () => {
+  const { store, calls, source } = await invitedFlow(() => populatedFleet(), null, { "character:140000003": "Test Three" });
+  const said: Array<string | null> = [];
+  store.fleet.subscribe((fleet) => { if (said.length === 0 || said.at(-1) !== fleet.inviteAnswered) said.push(fleet.inviteAnswered); });
+  calls.length = 0;
+
+  source.emit(notificationFrame("OnFleetJoinReject", 1, [140000003, 2]));
+  await waitFor(() => store.get().fleet.inviteAnswered !== null, "the inviter was not told");
+
+  // fleetSvc.py 1217: the client says so to its pilot and asks nothing. Reason 2: already in a fleet.
+  const words = "Test Three is already in a fleet, so your invitation was turned down.";
+  assert.equal(store.get().fleet.inviteAnswered, words);
+  assert.deepEqual(calls.map((each) => each.url).filter((url) => /bound-fleet|bridge\/call/.test(url)), []);
+  assert.equal(calls.filter((each) => each.url === "/api/names").length, 1);
+
+  // The same answer again is said again: cleared, and said.
+  source.emit(notificationFrame("OnFleetJoinReject", 2, [140000003, 2]));
+  await settled();
+  assert.deepEqual(said, [null, words, null, words]);
+  // The name is kept, and not asked for a second time.
+  assert.equal(calls.filter((each) => each.url === "/api/names").length, 1);
+
+  // Reason 1, and none.
+  source.emit(notificationFrame("OnFleetJoinReject", 3, [140000003, 1]));
+  await waitFor(() => store.get().fleet.inviteAnswered === "Test Three did not answer your fleet invitation.", "reason 1 was not said");
+  source.emit(notificationFrame("OnFleetJoinReject", 4, [140000003, null]));
+  await waitFor(() => store.get().fleet.inviteAnswered === "Test Three turned down your fleet invitation.", "no reason was not said");
+  assert.equal(store.get().fleet.actionError, null);
+});
+
+test("the inviter is told of a pilot whose name cannot be had as the pilot it invited; a notice that names nobody says nothing; and nothing is said to another pilot", async () => {
+  const unnamed = await invitedFlow(() => populatedFleet());
+  unnamed.source.emit(notificationFrame("OnFleetJoinReject", 1, [140000003, 1]));
+  await waitFor(() => unnamed.store.get().fleet.inviteAnswered !== null, "the inviter was not told");
+  assert.equal(unnamed.store.get().fleet.inviteAnswered, "The pilot you invited did not answer your fleet invitation.");
+
+  const none = await invitedFlow(() => populatedFleet());
+  none.source.emit(notificationFrame("OnFleetJoinReject", 1, [0, 1]));
+  // (The applicant's own notice, which is another: the fleet is read again for it, and nothing is said.)
+  none.source.emit(notificationFrame("OnFleetJoinRejected", 2, [140000003, 1]));
+  await settled();
+  assert.equal(none.store.get().fleet.inviteAnswered, null);
+
+  // The name comes after the pilot has gone: what was to be said to that pilot is said to nobody.
+  const answer = deferred<Record<string, string>>();
+  const gone = await invitedFlow(() => populatedFleet(), null, () => answer.promise);
+  gone.source.emit(notificationFrame("OnFleetJoinReject", 1, [140000003, 2]));
+  await settled();
+  gone.store.apply({ type: "character/offline" });
+  answer.resolve({ "character:140000003": "Test Three" });
+  await settled();
+  assert.equal(gone.store.get().fleet.inviteAnswered, null);
+
+  // And a notice that comes when no pilot is online is said to nobody, the name known or not.
+  const nobody = await invitedFlow(() => populatedFleet(), null, { "character:140000003": "Test Three" });
+  nobody.store.apply({ type: "character/offline" });
+  nobody.source.emit(notificationFrame("OnFleetJoinReject", 1, [140000003, 2]));
+  await settled();
+  assert.equal(nobody.store.get().fleet.inviteAnswered, null);
 });

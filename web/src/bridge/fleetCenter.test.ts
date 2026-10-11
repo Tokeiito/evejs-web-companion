@@ -4,7 +4,9 @@ import assert from "node:assert/strict";
 import {
   authoritativeFleetMemberCharacterIDs,
   decodeFleetCenter,
+  decodeFleetInviteAnswerNotification,
   decodeFleetInviteNotification,
+  fleetInviteAnswerWords,
   memberWhereabouts,
 } from "./fleetCenter.ts";
 
@@ -190,4 +192,34 @@ test("a member's ship and place are the fleet composition's word, and its own re
   assert.deepEqual(whereabouts(fleet, 1), { shipTypeID: 587, stationID: null, solarSystemID: 30000144 });
   // A record that names nobody is nobody's entry, even one that names nobody too.
   assert.deepEqual(whereabouts(fleet, 2), { shipTypeID: 670, stationID: 60003760, solarSystemID: 30000142 });
+});
+
+test("what the inviter is told of an invitation turned down is read from OnFleetJoinReject: the pilot, and the server's reason where it is one the client knows", () => {
+  // fleetSvc.OnFleetJoinReject(memberID, reasonCode), 1217. evefleet's two reasons: 1, no response; 2, already in a fleet.
+  assert.deepEqual(decodeFleetInviteAnswerNotification("OnFleetJoinReject", [140000003, 1]), { characterID: 140000003, reason: "no-response" });
+  assert.deepEqual(decodeFleetInviteAnswerNotification("OnFleetJoinReject", [140000003, 2]), { characterID: 140000003, reason: "in-a-fleet" });
+  // No reason, or one the client does not know: turned down, and no more is said of it (1218, 1222).
+  for (const code of [null, undefined, 0, 3, -1, "2x", {}, [2], true]) {
+    assert.deepEqual(decodeFleetInviteAnswerNotification("OnFleetJoinReject", [140000003, code]), { characterID: 140000003, reason: "none" }, JSON.stringify(code) ?? "undefined");
+  }
+  assert.deepEqual(decodeFleetInviteAnswerNotification("OnFleetJoinReject", [140000003]), { characterID: 140000003, reason: "none" });
+  // The wire's longs, and numbers as text.
+  assert.deepEqual(decodeFleetInviteAnswerNotification("OnFleetJoinReject", [{ type: "long", value: "140000003" }, { type: "long", value: "2" }]), { characterID: 140000003, reason: "in-a-fleet" });
+  assert.deepEqual(decodeFleetInviteAnswerNotification("OnFleetJoinReject", ["140000003", "1"]), { characterID: 140000003, reason: "no-response" });
+  // Another notice, or nobody named, is nothing: the applicant's own notice is not this one.
+  for (const [method, args] of [["OnFleetJoinRejected", [140000003, 1]], ["OnFleetJoin", [140000003, 1]], [null, [140000003, 1]], ["OnFleetJoinReject", [0, 1]], ["OnFleetJoinReject", [null, 2]], ["OnFleetJoinReject", []], ["OnFleetJoinReject", ["a pilot", 1]]] as const) {
+    assert.equal(decodeFleetInviteAnswerNotification(method, args), null, JSON.stringify([method, args]));
+  }
+});
+
+test("the page says in its own words what the inviter was told, and names the pilot where it can", () => {
+  assert.equal(fleetInviteAnswerWords("Test Three", "none"), "Test Three turned down your fleet invitation.");
+  assert.equal(fleetInviteAnswerWords("Test Three", "no-response"), "Test Three did not answer your fleet invitation.");
+  assert.equal(fleetInviteAnswerWords("Test Three", "in-a-fleet"), "Test Three is already in a fleet, so your invitation was turned down.");
+  for (const nobody of [null, "", "   "]) {
+    assert.equal(fleetInviteAnswerWords(nobody, "none"), "The pilot you invited turned down your fleet invitation.", JSON.stringify(nobody));
+    assert.equal(fleetInviteAnswerWords(nobody, "no-response"), "The pilot you invited did not answer your fleet invitation.", JSON.stringify(nobody));
+    assert.equal(fleetInviteAnswerWords(nobody, "in-a-fleet"), "The pilot you invited is already in a fleet, so your invitation was turned down.", JSON.stringify(nobody));
+  }
+  assert.equal(fleetInviteAnswerWords("  Test Three ", "none"), "Test Three turned down your fleet invitation.");
 });

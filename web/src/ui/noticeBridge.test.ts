@@ -207,3 +207,14 @@ test("no source is listed twice, or one event becomes two flashes", () => {
   const keys = NOTICE_SOURCES.map((s) => `${s.slice}.${s.field}`);
   assert.equal(new Set(keys).size, keys.length, "a slice field is watched twice");
 });
+
+test("another pilot's answer to an invitation is told as a note and not as an alert, and told again when it comes again", () => {
+  const { store, raised, stop } = watched();
+  const words = "Test Three turned down your fleet invitation.";
+  store.apply({ type: "fleet/invite-answered", words });
+  // (The flow clears it before it says it, so that the same answer a second time is a second note.)
+  store.apply({ type: "fleet/invite-answered", words: null });
+  store.apply({ type: "fleet/invite-answered", words });
+  stop();
+  assert.deepEqual(raised.map((each) => [each.kind, each.title, each.detail]), [["info", "Fleet", words], ["info", "Fleet", words]]);
+});

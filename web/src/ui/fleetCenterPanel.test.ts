@@ -267,3 +267,15 @@ test("Fleet Center shows a member's ship and place from the fleet's composition,
   for (const text of ["Rifter", "Perimeter", "Badger", "Muvolailen X - Moon 3"]) assert.match(body, new RegExp(text));
   for (const stale of ["Capsule", "Jita IV", "Ship unavailable", "Location unavailable"]) assert.equal(body.includes(stale), false, stale);
 });
+
+test("the Fleet window says what the pilot was told of an invitation it sent", () => {
+  const store = createClientStore();
+  loadSnapshot(store, populatedFleet());
+  const words = "Test Three is already in a fleet, so your invitation was turned down.";
+  const before = render(FleetCenter as never, { props: { store, flow: fakeFlow() } } as never).body;
+  assert.equal(before.includes(words), false);
+  store.apply({ type: "fleet/invite-answered", words });
+  const after = render(FleetCenter as never, { props: { store, flow: fakeFlow() } } as never).body;
+  assert.match(after, /Invite a pilot/);
+  assert.ok(after.includes(words), "the answer is not in the window");
+});

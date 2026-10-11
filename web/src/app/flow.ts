@@ -339,8 +339,11 @@ import {
   authoritativeFleetMemberCharacterIDs,
   fleetCommanderCharacterIDs,
   decodeFleetCenter,
+  decodeFleetInviteAnswerNotification,
   decodeFleetInviteNotification,
+  fleetInviteAnswerWords,
   memberWhereabouts,
+  type FleetInviteAnswer,
   type FleetPendingInvite,
 } from "../bridge/fleetCenter.ts";
 import { canBroadcastInFleet, canTagInFleet } from "../bridge/fleetCommand.ts";
@@ -2120,6 +2123,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         requestNames([{ kind: "character", id: fleetInvite.inviterID }]);
       }
       void autoAcceptCorpFleetInvite(fleetInvite);
+      return;
+    }
+    // fleetSvc.OnFleetJoinReject (1217): the inviter is told that its invitation was turned down, and why where
+    // the server says. The client says so to its pilot and asks nothing; so does the page, in its own words.
+    const fleetInviteAnswer = decodeFleetInviteAnswerNotification(method, args);
+    if (fleetInviteAnswer !== null) {
+      void tellOfInviteAnswer(fleetInviteAnswer);
       return;
     }
     // The two fleet pushes that carry their own payload rather than merely
@@ -4118,6 +4128,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     // (The page's own call, bridge/fleetWrites.ts: none from a pilot the Fleet window knows to be in a fleet.)
     await runFleetAction("accept", () => acceptFleetInviteCall(bridgeDo, wanted, store.fleet.get().availability === "ready"), "ready");
+  }
+
+  /**
+   * The inviter told that the pilot it invited turned the invitation down (fleetSvc.py 1217). The pilot's name
+   * is waited for, so that the sentence is said once and names its pilot; and it is said to the pilot that was
+   * told, or to nobody.
+   */
+  async function tellOfInviteAnswer(answer: FleetInviteAnswer): Promise<void> {
+    const told = onlineCharacterID();
+    await resolveNamesNow([{ kind: "character", id: answer.characterID }]);
+    if (told === null || onlineCharacterID() !== told) {
+      return;
+    }
+    const words = fleetInviteAnswerWords(nameCache.get(nameKey("character", answer.characterID)) ?? null, answer.reason);
+    // (Said no longer, and then said: the same answer a second time is said a second time.)
+    store.apply({ type: "fleet/invite-answered", words: null });
+    store.apply({ type: "fleet/invite-answered", words });
   }
 
   /**

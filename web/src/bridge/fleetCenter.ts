@@ -210,3 +210,47 @@ export function decodeFleetInviteNotification(
     receivedAtMs: Number.isFinite(receivedAtMs) && receivedAtMs > 0 ? receivedAtMs : Date.now(),
   };
 }
+
+// --- The inviter told (fleetSvc.OnFleetJoinReject) ---------------------------
+
+/** Why an invitation was turned down, as the server says where it says: one of the client's two reasons, or none. */
+export type FleetInviteAnswerReason = "none" | "no-response" | "in-a-fleet";
+
+export interface FleetInviteAnswer {
+  readonly characterID: number;
+  readonly reason: FleetInviteAnswerReason;
+}
+
+/**
+ * Read what the inviter is told when its invitation is turned down:
+ *   OnFleetJoinReject [memberID, reasonCode]
+ * The client (fleetSvc.OnFleetJoinReject, 1217) says so to its pilot and asks nothing: with a reason where the
+ * code is one of the two it knows (evefleet: 1, no response; 2, already in a fleet), and plainly for any other
+ * code or for none. No Tranquility recording has the notice.
+ */
+export function decodeFleetInviteAnswerNotification(method: string | null, args: readonly unknown[]): FleetInviteAnswer | null {
+  if (method !== "OnFleetJoinReject") {
+    return null;
+  }
+  const characterID = positiveSafeID(args[0]);
+  if (characterID === null) {
+    return null;
+  }
+  const code = unwrapLong(args[1]);
+  return { characterID, reason: code === 1n ? "no-response" : code === 2n ? "in-a-fleet" : "none" };
+}
+
+/**
+ * What the page says to the inviter of it, in the page's own words (the client's wording is not the page's to
+ * use). `name` is the pilot's, where it could be had.
+ */
+export function fleetInviteAnswerWords(name: string | null, reason: FleetInviteAnswerReason): string {
+  const who = name !== null && name.trim() !== "" ? name.trim() : "The pilot you invited";
+  if (reason === "no-response") {
+    return `${who} did not answer your fleet invitation.`;
+  }
+  if (reason === "in-a-fleet") {
+    return `${who} is already in a fleet, so your invitation was turned down.`;
+  }
+  return `${who} turned down your fleet invitation.`;
+}

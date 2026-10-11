@@ -902,6 +902,11 @@ export interface FleetCenterState {
   readonly availability: FleetAvailability | "unknown";
   readonly fleet: BoundFleet | null;
   readonly pendingInvite: FleetPendingInvite | null;
+  /**
+   * What the pilot was last told of an invitation it sent: that it was turned down, in the page's words
+   * (OnFleetJoinReject). Null until one is, and again once another invitation is sent from the window.
+   */
+  readonly inviteAnswered: string | null;
   readonly activeAction: FleetAction | null;
   readonly readError: string | null;
   readonly actionError: string | null;

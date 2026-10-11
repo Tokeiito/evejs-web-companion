@@ -321,6 +321,7 @@
           </p>
         {/if}
       </form>
+      {#if $fleet.inviteAnswered}<p class="note">{$fleet.inviteAnswered}</p>{/if}
     </section>
 
     <section class="hierarchy" aria-label="Fleet hierarchy">
