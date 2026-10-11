@@ -2505,6 +2505,19 @@ are refused with `SESSION_CHANGE_IN_PROGRESS`.
   `["item", siteID]` for an anomaly or a structure its last read of the scanner has,
   `["scan", label]` for any other, each with `{ minRange: null, fleet: false }`.
   `POST /api/bridge/flight/warp-scan` is asked by nothing of the page's.
+  **A page's warp is held to what the client's menus make**: the subject is `item`,
+  `char`, `bookmark`, `scan` or `launch`; `which` a whole number above nought (a
+  label for `scan`); the keywords `minRange` (a distance, or None) and `fleet`
+  (`false`) at most, given by name, none of them with a launch and no `fleet` with a
+  fleet member. Anything else (a point to fly to, a fleet's warp, another subject or
+  keyword) is `400 INVALID_REQUEST`, "That is no warp the page makes. …", on either
+  transport, and nothing is sent. A warp that says less than the client's caller does
+  is let through, and given the client's keywords on the game port. The page sends a
+  bookmark's as `["bookmark", bookmarkID]` with `{ minRange: 0, fleet: false }` and a
+  launch's as `["launch", launchID]` with nothing (`warpToBookmark`, `warpToLaunch`);
+  `flight/warp-bookmark` and `flight/warp-launch` are asked by nothing of the page's.
+  On the game port a range the page says as a number goes as the client's float where
+  the client's is one (a fleet member's, a bookmark's), and is counted the client's.
 - `POST /api/bridge/flight/jump` `{ fromGateID, toGateID }` →
   `beyonce.CmdStargateJump([fromGateID, toGateID, shipID])`. The system
   response waits until the destination system, scene and ego are ready.

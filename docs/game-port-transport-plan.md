@@ -898,10 +898,14 @@ where a client warps to an anomaly by its site's number, as an item: next. That 
 page's own call now (`6e0a27ec`, `bridge/movementWrites.ts`): `beyonce.CmdWarpToStuff`
 is one of the page's writes, and `flight/warp-scan` is asked by nothing of the page's.
 The bookmark's and the launch's warps are next, then the fleet member's, the item's and
-the autopilot's. In `eve.js` an advert's text outside ASCII goes as
+the autopilot's. The bookmark's and the launch's are the page's own calls too
+(`690bc262`), and a page's warp is held by the BFF to what the client's menus make: the
+server's handler would fly the ship to a point a caller gave. The item's and the
+autopilot's are next, then the fleet member's; a mission's marked spot is warped to by
+the ballpark's call where a client asks the agent, and comes after. In `eve.js` an advert's text outside ASCII goes as
 unicode (`dcd459b0d`, not pushed).
 Counted by the whole path,
-86 are named now, 37 of them reads and 49 writes (the count kept before
+84 are named now, 37 of them reads and 47 writes (the count kept before
 `82a21e8` took a path's beginning for a path and missed a parameter inside one: it read 130
 where 138 was so). Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.

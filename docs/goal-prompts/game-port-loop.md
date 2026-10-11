@@ -1314,6 +1314,25 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A check of what the page asked says no more than its filter**: a filter for
   "warp" in a request's address finds a route, and not the generic call that took its
   place. Read the frames for the call's own service and method.
+- **"Read whole" is to the last line of the handler, and is said only then.** The
+  warp's handler was put among the page's writes with its branches listed from a read
+  that stopped short of the last: there it takes a point of the caller. Read a
+  handler to its closing brace before a pair goes among the page's writes, and list
+  each `else`.
+- **The generic route sends a page's write as it came.** What a handler takes beyond
+  what the client's callers send is open to any browser the moment the pair is among
+  the page's writes. Where it takes more, hold the page's call at the BFF to what the
+  ledger's judge says is a client's (`src/server.js`, `notAClientsWarp`): one place
+  says what the client's call is.
+- **The page's JSON has one kind of number.** Where the client's is a float, the page
+  says the number and the ledger makes the float where the call is sent, counted the
+  client's (a follow's nought, a bookmark's range). What was not said at all and is
+  put in is a reshaping.
+- **A launch for a live check is put in the store** (`lrd-stage.sh`, between a copy
+  of the store and its putting back; it starts EveJS again itself, and both BFFs want
+  starting after it).
+- **A long wait in the tab is two calls, not one**: a script that polls longer than
+  some forty seconds is cut off, and goes on running in the page.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
