@@ -2479,6 +2479,21 @@ are refused with `SESSION_CHANGE_IN_PROGRESS`.
   handler's own `CALL_REFUSED`, so a wrong or stale character id fails loudly
   rather than flying the ship somewhere nobody named. Used by the fleet
   companion's `warp <character link>` chat order (rung e2).
+- `POST /api/bridge/flight/warp-bookmark` `{ bookmarkID, minRange? }` and
+  `POST /api/bridge/flight/warp-scan` `{ target, minRange? }` → `{ ok, result,
+  flight, notifications }`. Each binds the park and dispatches
+  `beyonce.CmdWarpToStuff(["bookmark", bookmarkID])` or `(["scan", label])`, with
+  `{minRange}` only where a range above nought is said. No bookmark, and a label
+  that is no text, is empty or is longer than 32, is `400 INVALID_TARGET`; a docked
+  pilot is `409 NOT_IN_SPACE`. The label goes without the spaces round it.
+- **What goes with a warp on the game port is the client's, whatever the route gave**
+  (`src/gamePort/retailCalls.js`, `warping`): an item's `minRange` as said, nought
+  where none is; a fleet member's a float, and nothing else; a bookmark's a float,
+  with `fleet=False`; a scan result's as said, None where none is, with
+  `fleet=False`; a launch's nothing. The ledger counts a warp so made "reshaped". A
+  fleet's warp (`fleet=True`) and a warp to the pilot's own ship are none of a
+  client's from here: they go as given, and are counted as differing. Through the
+  web gateway a warp goes as the route gave it.
 - `POST /api/bridge/flight/jump` `{ fromGateID, toGateID }` →
   `beyonce.CmdStargateJump([fromGateID, toGateID, shipID])`. The system
   response waits until the destination system, scene and ego are ready.

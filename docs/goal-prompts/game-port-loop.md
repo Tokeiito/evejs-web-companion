@@ -1282,6 +1282,20 @@ Take these defaults, and list each under "For the operator" in the log so they c
   the client's caller for each thing a route sends, keywords and all, and the
   recordings' bytes for them (a dict's count of entries is after `\x16`; a value
   comes before its key): the warps' keywords were found so.
+- **A client's call has more than one caller: read each from its first line before
+  its judge is written.** A grep for the call's name over the whole of the client's
+  source lists them. It names the warp in twenty places besides its definition: one
+  sends nothing for the pilot's own ship, one asks an agent in the call's place, one
+  warps to an anomaly as an item and not by its label. I had the judge built and seen
+  live before I had read them all, and went back for two guards.
+- **A guard added after a proof is proven again**: its tests, the breakages of the
+  new lines, the audit by itself, and live on the code as it is committed. What ran
+  before it is said to have run before it.
+- **A breakage is aimed at one test file.** Where a line before the broken one gives
+  the same answer for that file's cases, it survives and says nothing of the tests.
+  Read each breakage for the test that catches it, in that file.
+- **Ask of each check what a breakage of it would change, before the lists are
+  run**: a check that changes nothing is taken out, not left to survive.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
