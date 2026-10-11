@@ -1397,6 +1397,23 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **On the game port the page's measure of a closing ship ran ahead of the
   server's** (about 500 m at 172 m/s). A call asked at a threshold by the page's
   measure can be refused by the server's; through the gateway it was not.
+- **A loop that features share is each feature's.** Before a loop's call is changed,
+  list every starter of the loop (the travel loop's are `startRoute`, `dockAt` and
+  `jumpThrough`) and name each one's counterpart in the client. The unit that made
+  the autopilot's warp the client's autopilot's changed a pilot's own Dock and Jump
+  with it, whose counterpart is another thing.
+- **The client has two ways to a thing.** Its autopilot (`autopilot.Update`: its own
+  warp, and the throttle with a follow at nought), and its system navigation
+  (`NavigateSystemTo`, behind the menu's Dock, Jump and every gate's activation:
+  the menu's warp at nought, and the menu's approach at fifty metres with no
+  throttle). Say which one a feature of the page's is before choosing its calls.
+- **What the client asks before a call is in the recordings too.** `dkl-docks.js`
+  lists every recorded dock with the client's orders to the ship in the three
+  minutes before it, and with `--tally` counts the last order before each: that is
+  how a dock was seen to follow the menu's warp 25 times and a follow never.
+- **`dkl-live.js` flies each of the travel loop's three plans** over a BFF (a Dock,
+  a Jump, a route), with the page's own functions. `break-check.js` checks a
+  breakage list's finds before the list is run.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

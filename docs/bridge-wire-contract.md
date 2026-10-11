@@ -2543,6 +2543,20 @@ are refused with `SESSION_CHANGE_IN_PROGRESS`.
   does under a warp's least distance. **Every warp of the page's is its own call**:
   `POST /api/bridge/flight/warp` and `/flight/warp-member` are asked by nothing of the
   page's, as `warp-scan`, `warp-bookmark` and `warp-launch` are not.
+- **A pilot's own Dock and Jump are flown as the client's system navigation** (since
+  2026-10-11, `e659cdac`). `dockAt` (the overview's Dock, "Take me there and dock") and
+  `jumpThrough` (the overview's "Jump to ...") warp by the menu's call at nought,
+  `{ service: "beyonce", method: "CmdWarpToStuff", args: ["item", itemID], kwargs:
+  { minRange: 0 }, pilot: true, confirm: true }`, from `warpFloorMeters(shipRadius)`
+  (152.5 km for a small hull) or further, and nearer make the menu's approach,
+  `CmdFollowBall [itemID, 50]` with no `CmdSetSpeedFraction` before it. The dock and
+  the jump are their routes still (`POST /api/bridge/flight/dock`, `/flight/jump`),
+  asked within 2,500 m. From `9350fd89` until then those two warped by the autopilot's
+  call, which a client's Dock and Jump do not make. **The travel autopilot's approach
+  to its last station or structure is that same follow at fifty under 50 km**; further
+  out, and at every gate, it is `CmdSetSpeedFraction [1]` then `CmdFollowBall
+  [itemID, 0]`. The loop's plan says which it is (`RoutePlan.navigation`), and its
+  warp and approach say whether they are the menu's (`byMenu`).
 - **A mission's marked spot is warped to on its agent's own object** (since
   2026-10-11): `POST /api/bridge/call` with `{ service: "agentMgr", method:
   "WarpToLocation", args: [locationType, locationNumber, warpRange, false,

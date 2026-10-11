@@ -909,8 +909,10 @@ autopilots, which warp by the menu's call where a client's autopilot warps by it
 The mission's spot is warped to by asking its agent now (`77464628`), with the spots
 taken from the journal: an agent is an object the page names. The page's travel
 autopilot warps as the client's autopilot does now (`9350fd89`), and a warp's floor
-follows the call that makes it; the autopilot's last leg, the client's Dock from fifty
-kilometres, is next. In `eve.js` an advert's text outside ASCII goes as
+follows the call that makes it. A pilot's own Dock and Jump fly as the client's system
+navigation again (the menu's warp at nought, the menu's approach), and the autopilot's
+approach to its last station is the menu's under fifty kilometres (`e659cdac`); the
+page's measure of a closing ship, set beside the server's, is next. In `eve.js` an advert's text outside ASCII goes as
 unicode (`dcd459b0d`; on its origin since 2026-10-11, pushed by another hand than this loop's), and a dock
 asked from out of range of a station is finished by the server, as Tranquility finishes
 it (`869b28d2b`, not pushed).
