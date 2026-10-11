@@ -975,6 +975,28 @@ Take these defaults, and list each under "For the operator" in the log so they c
   the two transports' runs: the script asks its first call docked. In the tab the
   station's row has "Lock", "Release lock" and, for a second, "Locking… stop"; the
   row's "Dock" docks the ship, and the page's "Log out" is there again.
+- **Read every branch of a route before its length is believed.** The jettison's
+  fifty-six lines were three things, two of them the BFF's own keeping (a hosted bot's
+  custody, a mining operation's can), chosen by a header and records the page has
+  not got. Such a route is left, with why, until what it keeps is looked at whole.
+- **What a route read after its call, the page reads by its own read, and the two are
+  measured.** On the game port the scoop's route read the pilot's park in the same
+  breath as the call and still had the drone out; the page's read, a round trip on,
+  did not. Print both in the live script (`dsc-live.js`: "the route's own read has it
+  out still").
+- **Count the reads a panel makes after an action before writing how many a test
+  expects.** `runDroneAction` reads the drones again by itself (`loadDrones`), after
+  whatever read the step made to be judged by.
+- **A drone for a scoop**: `dsc-live.js <bff> <account> <characterID> [ledger.json]
+  [stage]` takes `/probe2`'s ship (five light and five medium drones in its bay),
+  undocks, launches a stack and lets go of one or two by the route's `abandon`: the
+  server scoops only a drone nobody controls. With `stage` it leaves the pilot in
+  space **and does not log it out**: a pilot that logs out with drones out has none of
+  its own on grid after. The tab then takes the pilot over (its row, "Go to first
+  pilot"); the loose drone is in the overview at once, and in the Drones window once a
+  drone is launched from it. It is some kilometres behind by then: its row's
+  "Approach", and "Scoop" when it is under 2,500 m. Start both BFFs again after: the
+  script's session is still theirs.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

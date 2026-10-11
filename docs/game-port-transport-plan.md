@@ -853,8 +853,11 @@ by the service's name and made on the park's object by the game port.
 A target is locked and let go by `dogmaIM.AddTarget`, `RemoveTarget` and
 `CancelAddTarget` (`018ca9f7`), the read of what is locked after each made by the
 flow as the two routes made it.
+A drone is scooped by `ship.ScoopDrone` (`6d6aef22`), the page's own read of its
+drones after it in the place of the route's. The jettison is left to its route: it
+does three things by what the BFF alone knows.
 Counted by the whole path,
-100 are named now, 47 of them reads and 53 writes (the count kept before
+99 are named now, 47 of them reads and 52 writes (the count kept before
 `82a21e8` took a path's beginning for a path and missed a parameter inside one: it read 130
 where 138 was so). Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.
