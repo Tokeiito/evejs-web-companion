@@ -856,8 +856,12 @@ flow as the two routes made it.
 A drone is scooped by `ship.ScoopDrone` (`6d6aef22`), the page's own read of its
 drones after it in the place of the route's. The jettison is left to its route: it
 does three things by what the BFF alone knows.
+A finished job is delivered and a job stopped by `industryManager.CompleteJob` and
+`CancelJob` (`fa17f327`), each with the job's own solar system and judged by the job
+the server answers. **The Industry window's install cannot be sent on the game port**
+(found the same day): it is the next unit.
 Counted by the whole path,
-99 are named now, 47 of them reads and 52 writes (the count kept before
+97 are named now, 47 of them reads and 50 writes (the count kept before
 `82a21e8` took a path's beginning for a path and missed a parameter inside one: it read 130
 where 138 was so). Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.

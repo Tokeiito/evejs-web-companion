@@ -997,6 +997,33 @@ Take these defaults, and list each under "For the operator" in the log so they c
   drone is launched from it. It is some kilometres behind by then: its row's
   "Approach", and "Scoop" when it is under 2,500 m. Start both BFFs again after: the
   script's session is still theirs.
+- **A window's every button is pressed on the game port, and a route the gateway
+  takes is not thereby one the game port can send.** The Industry window's install
+  sends a plain object: the gateway takes it, and on the game port it is 400
+  `CALL_INVALID`, "an argument that cannot be sent". It was found only because another
+  unit wanted a job staged. **The full run does not install a job.** When a unit
+  touches a window, ask each of that window's routes once on both transports in the
+  first live script, and write down any that differ.
+- **Read what a call answers before a route's read after it is kept.** A delivery
+  and a stop each answer the job as the server reads it after it acted: the routes'
+  second call (`GetJob`) said nothing more, and the client makes none.
+- **A route's twin goes with it.** Where two routes are one form of call, of handler
+  and of answer (a delivery and a stop), moving one alone leaves the window sending
+  two different things for the same argument.
+- **A new test that passes before the code is saying the old thing in other words.**
+  A stand-in that answers every path with `{ ok: true }` reads as "no change" to the
+  old code too: have the test say which call was made.
+- **Look at what the window offers in each state beside what the client's button
+  does.** The page's Industry window offered the stop of a ready job; the client's
+  one button delivers there, and the server refused the stop.
+- **A job for the Industry window**: `ijd-live.js <bff> <account> <characterID>
+  [ledger.json] [stage]`. It gives the pilot every skill (`/allskills`: the install
+  says `MISSING_SKILL` otherwise), and makes jobs by `/bpauto seed <preset>` and
+  `/bpauto build <preset> [ready]` (presets: frigate, ammo, module and others, in
+  `industryConstants.js`). With `stage` it leaves one ready and one running for the
+  tab. From Git Bash a GM command given on a command line wants
+  `MSYS_NO_PATHCONV=1`, or the shell makes a path of its slash. `ijd-why.js` asks
+  the page's install for a blueprint and prints what the server says.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

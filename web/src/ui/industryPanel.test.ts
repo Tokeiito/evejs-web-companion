@@ -55,7 +55,7 @@ const count = (body: string, words: string): number => body.split(words).length 
 const offered = (body: string): readonly number[] => [count(body, "Collect the results"), count(body, "Stop this job")];
 
 test("a job that is ready is offered its collecting and no stop; a job that is not, its stop and no collecting", () => {
-  // The client's own button (submitButton.ClickFunc, 199 to 211): a ready job is delivered by it, and only a job
+  // The client's own button (submitButton.ClickFunc, 200 to 210): a ready job is delivered by it, and only a job
   // installed and not ready is stopped. The server refuses the stop of a ready job in its own words.
   assert.deepEqual(offered(windowWith([job(1, "ready")])), [1, 0]);
   assert.deepEqual(offered(windowWith([job(2, "running")])), [0, 1]);
