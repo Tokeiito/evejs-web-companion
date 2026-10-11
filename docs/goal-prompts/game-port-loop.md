@@ -1230,6 +1230,24 @@ Take these defaults, and list each under "For the operator" in the log so they c
   its absence is no breakage: leave it out, and say so.
 - **A test written after the code is said to be so**, with the breakages that catch
   its lines and its failing on the old sources.
+- **Measure what a read carries before the page is made to carry it.** The table of
+  agents is a megabyte and a half and eleven thousand lines; the route carried two
+  rows. Print the bytes, the lines and the time on each transport in a look that only
+  reads (`agt-look.js`), and say in the log what the page carries now and how often.
+  Where a client asks once and keeps, so does the page (the flow keeps the promise,
+  and drops it where the asking failed).
+- **Read what the game port's transport keeps before sizing a read as costly there.**
+  It kept the agents' table already (`pilots.js`, `agentsKnown`): the page's asking
+  sent nothing to the server.
+- **Where the route went by the BFF's word for something of the pilot's, say what
+  word the page goes by, and what each said at the edges.** The route listed agents
+  by the station the BFF had the pilot at, which was every agent at no station; the
+  page goes by the station its store has the pilot docked at, and lists none at no
+  station. Write the route's edge into its own test.
+- **A fixtures module for an answer many stand-ins give** (`app/agentFixtures.ts`,
+  after `botFixtures.ts`): the answer in the server's form from the page's own rows,
+  the check that a request is that call, the call as the page sends it, and a pilot
+  put where the read wants one. Six stand-ins in two files were moved by it.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

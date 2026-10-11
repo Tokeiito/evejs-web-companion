@@ -882,10 +882,14 @@ two of `assets` next. Where a pilot's things are is read by the page's own call
 and has a kind for it now. Eight are left, `assets/station` next. What is at a station
 is read by the page's own call too (`a4320fca`), with each type's volume asked of the
 BFF's static data by a new read, `GET /api/types/volumes`: what a client has in its own
-files is no call of the server's. Seven are left, `agents` next. In `eve.js` an advert's text outside ASCII goes as
+files is no call of the server's. Seven are left, `agents` next. A station's agents are
+listed by the page from the whole table, asked for once by its own call and kept
+(`52816a60`), as the client's agents service has it: the route had carried a station's
+handful, and every agent to a pilot in a structure. Six are left, `combat-utility-types`
+next, which is static data and no call of the server's. In `eve.js` an advert's text outside ASCII goes as
 unicode (`dcd459b0d`, not pushed).
 Counted by the whole path,
-89 are named now, 39 of them reads and 50 writes (the count kept before
+88 are named now, 38 of them reads and 50 writes (the count kept before
 `82a21e8` took a path's beginning for a path and missed a parameter inside one: it read 130
 where 138 was so). Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.

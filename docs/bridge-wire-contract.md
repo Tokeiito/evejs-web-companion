@@ -944,6 +944,22 @@ wants the web login and no pilot. The page asks it for the types of what it list
 its own call, 400 to a request, once for a type. The routes that list items send
 `volumes` beside their answers still, from the same function.
 
+**The table of agents is the page's own read** (`web/src/bridge/agentReads.ts`):
+`agentMgr.GetAgents` by the generic call as a pilot's read, by name and with nothing.
+The answer is the whole table, the same on both transports: an object named
+`eve.common.script.sys.rowset.Rowset` whose `args` are a dict of `header` (a list of
+fifteen names), `RowClass` and `lines` (a list of lists, 10,941 on this server; about
+1.46 MB of JSON). The game port's transport keeps the table and answers from it,
+sending nothing; through the gateway it is asked each time. The page asks once and
+keeps it, reads each line by where the header puts `agentID`, `agentTypeID`,
+`divisionID`, `level`, `stationID`, `corporationID`, `missionKind` and
+`missionTypeLabel`, and lists the agents whose `stationID` is the station it has its
+pilot docked at; at no station it lists none and asks nothing.
+`GET /api/bridge/agents` still stands, and nothing of the page asks it: it reads the
+pilot's flight (and fails where that fails), asks for the table, and answers
+`{ ok, stationID, agents }` for the station the BFF has the pilot at, which is every
+agent where it has none (a pilot docked in a structure).
+
 ```jsonc
 {
   "blueprintID": 7100000001,   // the blueprint ITEM id
