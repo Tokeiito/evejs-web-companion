@@ -1573,6 +1573,10 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A measure that names something at its first run has earned its place.** The line
   for unread calls named `fleetObjectHandler.CreateFleet`, which the game port made
   as the client does and the table had never been told of.
+- **A count weighs what it counts.** Twenty static reads were asked once, or once a
+  click; the one that mattered was found by the tab's socket and the size of an
+  answer (the map's graph, 745 KB, twice), and not by reading who keeps what.
+  Count the askings, and weigh the answers.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

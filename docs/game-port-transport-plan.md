@@ -932,7 +932,9 @@ is asked once and kept now (`1478046f`): three of the flow's nine askers by type
 page's plain reads that no test of the BFF's asked are asked now by the page's own askers of the BFF's own
 routes (`d36eba9e`), and 27 routes the page names are asked by no test still. The calls the client makes on an
 object were counted (`ff7e1ec4`): none of the page's own goes by a service's name where a route makes it on an
-object, and the audit fails for one that does. The page's other static reads are next. In `eve.js` an advert's text outside ASCII goes as
+object, and the audit fails for one that does. The page's other static reads were counted: nothing is asked in a loop but
+a mining support ship's compression table, and the map's graph, 745 KB an asking, is asked for twice at a
+pilot's choosing. The graph kept once for a page is next. In `eve.js` an advert's text outside ASCII goes as
 unicode (`dcd459b0d`; on its origin since 2026-10-11, pushed by another hand than this loop's), and a dock
 asked from out of range of a station is finished by the server, as Tranquility finishes
 it (`869b28d2b`), and a pilot's client is sent no greatest speed for its ship
