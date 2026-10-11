@@ -834,8 +834,9 @@ did. A ship is aligned by beyonce's `CmdAlignTo`, the thing by name (`228b0d1`),
 pilot's flight read before and after by the page. An approach and a keep at range are
 beyonce's `CmdFollowBall`, and the autopilot's approach the throttle and then the follow
 (`b458395`), the BFF holding a follow back or opening the gateway's throttle as the
-routes did. Counted by the whole path,
-108 are named now, 47 of them reads and 61 writes (the count kept before
+routes did. An orbit is beyonce's `CmdOrbit` (`03dc5c7`), one of those follows, its range
+a float under ten metres and a whole number from there. Counted by the whole path,
+107 are named now, 47 of them reads and 60 writes (the count kept before
 `82a21e8` took a path's beginning for a path and missed a parameter inside one: it read 130
 where 138 was so). Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.

@@ -818,6 +818,16 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **The autopilot's approach is seen in the tab from the dock ladder.** Keep the
   station at 10 km (about 110 seconds from the undock), then press the station's
   "Dock": the page asks the throttle and the follow with no range, and docks.
+- **A rule made for one call in a function several calls share names the call, and a
+  row holds each side of its edge.** `followCall` let a range of nought through
+  unlooked-at whatever the method, which is the autopilot's follow alone: an orbit of
+  nought is an orbit. And a breakage that let every follow under ten metres through
+  passed every row, until one held a follow of a single metre back.
+- **Where a route made a number "as the client does", read how the client does.** The
+  orbit's route rounded its range; the client's `int()` cuts it. `orb-live.js <bff>
+  <account> <characterID> [ledger.json]` runs the orbits; the overview's button reads
+  "Orbit 5 km", and a second press of it a few seconds on is held back by the BFF,
+  which the ledger's count shows.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
