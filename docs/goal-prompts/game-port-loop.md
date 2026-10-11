@@ -901,6 +901,26 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **The wire contract's list of the page's writes is one line of many thousand
   characters.** Never print it: `grep -c`, `grep -o "<a few words>"`, or `cut
   -c1-200`.
+- **A unit may be a feature the page has not got.** The route for turning an
+  invitation down was asked by nothing of the page (`grep -n "<route>"
+  web/src/app/api.ts`), and the Fleet window had no control for it. Then the unit is
+  the page's call, the window's control, and what the client does by itself; no route
+  comes off, and the log says so.
+- **What the client does unasked at a notice is the flow's to do.** The page is the
+  client: with no page open nothing is done, as with no client. Where the client goes
+  by its session and the page by a read (its pilot's fleet), the page acts where it
+  knows and again when it learns, and the log says what is left between.
+- **Look at what the store forgets without a word.** The fleet's slice dropped a
+  pending invitation when a read found the pilot in a fleet, and told the server
+  nothing; the flow answers for it now, looking at the slice before the read is
+  applied.
+- **What the other pilot is told** comes with that pilot's next answer where no
+  stream is open: `fdc-live.js` keeps the inviter's `OnFleetJoinReject` from each of
+  its answers and reads them with a look at its fleet. With `invite` as its last word
+  the script is the inviter alone for fifty seconds, and the tab the pilot invited.
+- **The server may never send what the client is written to answer** (an invitation
+  to a pilot in a fleet). Then the page's handling is proven by its test, the log
+  says "not seen" and why, and it is not called a defect without a recording.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
