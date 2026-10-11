@@ -831,8 +831,11 @@ call of the slash service (`169ec79`). The repair shop is asked as the client as
 call, where the route sent a call of the server's own. A fleet is left on the fleet's
 own object (`f62b1b0`), the BFF choosing between that and the forced leaving as its route
 did. A ship is aligned by beyonce's `CmdAlignTo`, the thing by name (`228b0d1`), with the
-pilot's flight read before and after by the page. Counted by the whole path,
-110 are named now, 47 of them reads and 63 writes (the count kept before
+pilot's flight read before and after by the page. An approach and a keep at range are
+beyonce's `CmdFollowBall`, and the autopilot's approach the throttle and then the follow
+(`b458395`), the BFF holding a follow back or opening the gateway's throttle as the
+routes did. Counted by the whole path,
+108 are named now, 47 of them reads and 61 writes (the count kept before
 `82a21e8` took a path's beginning for a path and missed a parameter inside one: it read 130
 where 138 was so). Of the phase's "done when", "no
 `EventSource` is opened" holds with the setting on and the socket up, and not otherwise.

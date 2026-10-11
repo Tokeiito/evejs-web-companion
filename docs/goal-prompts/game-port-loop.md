@@ -797,6 +797,27 @@ Take these defaults, and list each under "For the operator" in the log so they c
   and says how many degrees off the thing the ship flies. In the tab: a row's
   `.spc-row-btn`, then `.spc-action-btn[title="Align to"]`; the station's row has
   "Dock", and the pilot is logged out once docked.
+- **Count the recordings by form, not by presence.** `fbl-look.js <recordings>
+  <method>` groups a ballpark call's recorded arguments by how each was written. The
+  ledger called the throttle and the autopilot's follow the client's "as they stand"
+  while the game port sent whole numbers for a fraction and a range that are floats in
+  every recording: a number that is whole goes as an int from JavaScript, and only a
+  shape in the ledger (`{ type: "real", value }`) makes it the float. Where a call
+  carries a number, look at which it is in the bytes.
+- **A stand-in BFF that knows an order only as its route goes quiet when the page asks
+  the call.** After the code, run the whole suite and read each failure for a stand-in:
+  one that waits for "a POST to a route" must count the page's own writes (`confirm`),
+  and one that answers every path with a bare ok gives no answer to a call. Answer the
+  call for the service concerned, with what was asked.
+- **A ship that follows a station flies away from it.** The station's ball is 100 km in
+  radius and a ship undocks inside it, so a follow at fifty metres flies outward to the
+  surface, on both transports. It was measured before it was explained
+  (`fbl-radius.js`: centre to centre, and surface to surface). `fbl-live.js <bff>
+  <account> <characterID> [ledger.json]` runs the follows; the BFF's ledger file is
+  written a moment after a call, so a count read straight after may be one behind.
+- **The autopilot's approach is seen in the tab from the dock ladder.** Keep the
+  station at 10 km (about 110 seconds from the undock), then press the station's
+  "Dock": the page asks the throttle and the follow with no range, and docks.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
