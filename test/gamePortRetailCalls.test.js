@@ -3096,3 +3096,20 @@ test("the reprocessing plant's quote and its reprocessing are the client's on th
   }
   assert.deepEqual([madeOnMoniker("reprocessingSvc", "GetQuotes"), madeOnMoniker("reprocessingSvc", "Reprocess"), madeOnMoniker("reprocessingSvc", "MachoBindObject")], [true, true, false]);
 });
+
+test("the survey scan is the client's with nothing sent", () => {
+  // asteroid_scanning_service.py 134: sm.RemoteSvc('miningScanMgr').perform_scan(), by the service's name and
+  // with no argument. No recording has one.
+  const scan = (args, kwargs = null) => retailForm("miningScanMgr", "perform_scan", args, kwargs, {});
+  const made = scan([]);
+  assert.deepEqual([made.status, made.args, made.kwargs], ["same", [], null]);
+  assert.equal(made.moniker ?? false, false, "asked of the service by its name, not on a Moniker");
+  assert.match(made.source, /mining\/client\/asteroid_scanning_service\.py:134$/);
+  // The entry says when the client asks at all, which the form of the call cannot show.
+  assert.match(RETAIL_CALLS["miningScanMgr.perform_scan"].note, /miningScannerUpgrade/);
+  for (const [args, kwargs, why] of [[[250000], null, "a range"], [[null], null, "nothing, said"], [[], { tier: 2 }, "a keyword"]]) {
+    const odd = scan(args, kwargs);
+    assert.deepEqual([odd.status, odd.args, odd.kwargs], ["differs", args, kwargs], why);
+    assert.match(odd.note, /sends nothing/, why);
+  }
+});
