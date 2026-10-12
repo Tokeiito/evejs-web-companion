@@ -1622,6 +1622,25 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **"Kept as" is broken three ways, not two.** Something sent beside the call, a
   keyword, and another read of the same service with nothing. The last lived until a
   test asked one.
+- **What a server hands out is a thing to meet, though no client shows it.** The rule
+  was that a difference no client behaviour meets is not sent to a sub-agent. A list
+  that hands every pilot what another pilot's client sent in confidence (whom a fleet's
+  boss lets in and keeps out) is met by whoever reads the wire. Where a recording has
+  None and the client's own code says the None is the server's, measure it live with
+  two pilots, and send it.
+- **A sub-agent told not to run a test has left it unrun.** The server's harness
+  scenarios copy the live store, and the sub-agent was told to leave them; it changed
+  two and ran neither. Run what it changed yourself, by the server's own isolated
+  runner (`node scripts/Tests/run-isolated-tests.js --jobs 1 --timeout-ms 600000
+  <file>`), with the store as it was before any staging, before the fix is called seen.
+- **A note beside a recording is a list of things to check, and it ages.** Another
+  hand's note of fourteen differences was three months old: of the five looked at,
+  none held any more. Say which were looked at and how (a search, or a measure), and
+  leave the rest named.
+- **A tab closed with the servers has no account signed in.** The hangar lists its
+  pilots from what the browser keeps, and a click on one only marks it. An account is
+  signed in at the hangar's own form (a test account's name out of the fixtures; the
+  form takes any password), and a marked pilot is brought online by "Bring online".
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

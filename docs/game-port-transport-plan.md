@@ -942,8 +942,11 @@ form or in a folder's names, and two things named for the operator that no recor
 "Agent Missions" folder, which a client would list among its folders that are not active, and its making of a
 pilot's first folder where a client makes its own). A pilot's bookmarks are asked for as its character is chosen
 and kept by the game port's transport (`1d9703f3`), as the client's bookmark service keeps them: a bot's warp to a
-saved spot reached the server with one asking, where 18 had in its first 26 seconds. The fleet's answers set
-beside the recording are next. In `eve.js` an advert's text outside ASCII goes as
+saved spot reached the server with one asking, where 18 had in its first 26 seconds. The fleet's answers were set beside
+the recording (`e9bf2d8f`): the page reads a fleet's state in the recorded form; and the list of advertised fleets,
+which handed every pilot each boss's four sets of whom it lets in and keeps out where Tranquility's has None,
+answers None for them in `eve.js` (`919c28959`, a sub-agent's, not pushed by this loop). A bookmark's changes
+worked into what the transport keeps are next. In `eve.js` an advert's text outside ASCII goes as
 unicode (`dcd459b0d`; on its origin since 2026-10-11, pushed by another hand than this loop's), and a dock
 asked from out of range of a station is finished by the server, as Tranquility finishes
 it (`869b28d2b`), and a pilot's client is sent no greatest speed for its ship

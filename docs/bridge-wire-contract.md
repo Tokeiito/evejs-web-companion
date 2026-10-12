@@ -868,8 +868,10 @@ generic call as a pilot's read, nothing sent with either. The first answers a di
 adverts by fleet; the second one advert, or None. **An advert's `fleetName` and
 `description` are text or a wire string** (`{ type: "wstring", value }`): EveJS sends
 plain ASCII as a plain string and anything else as unicode, and Tranquility sends
-unicode always. `GET /api/bridge/fleet-ads` still stands, and nothing of the page asks
-it.
+unicode always. **A listed advert's four sets of entities are None** (`public_allowedEntities`,
+`public_disallowedEntities`, and the two of the member groups), as Tranquility's list has
+them; a boss's own advert carries them as sets. A yes or no in an advert is a bool, or a
+0 or a 1. `GET /api/bridge/fleet-ads` still stands, and nothing of the page asks it.
 
 **A pilot's launches are the page's own read** (`web/src/bridge/launchReads.ts`):
 `planetMgr.GetMyLaunchesDetails`, by the generic call as a pilot's read, nothing sent.
