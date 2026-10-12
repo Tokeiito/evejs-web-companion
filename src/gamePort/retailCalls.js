@@ -1004,10 +1004,12 @@ const withJustTheNames = (value, names) => heldPlainly(value) && Object.keys(val
  * industry.
  *
  * The BFF's routes hold the job as a plain object of the seventeen names, which the gateway takes as it is and
- * no marshal can write. Here it is made the client's dict. A manufacturing job's time, its cost and its tax are
- * the client's own reckoning (src/industryInstall.js, manufacturingJobSeconds, manufacturingJobCost and
- * manufacturingJobTax); any other job's go as nought, where the client sends what it reckoned: the server
- * reckons each itself, and checks only a number that is not nought.
+ * no marshal can write. Here it is made the client's dict. A manufacturing job's time, its cost, its tax and its
+ * materials are the client's own reckoning (src/industryInstall.js, manufacturingJobSeconds, manufacturingJobCost,
+ * manufacturingJobTax and manufacturingJobMaterials); any other job's go as nought and an empty map, where the
+ * client sends what it reckoned: the server reckons each itself, and checks only a number that is not nought and
+ * a map that is not empty. (The materials go in the order of their types, where the client's dict has its
+ * Python's order for one filled in the blueprint's: the value read is the same.)
  */
 const jobDumped = (args, kwargs) => {
   const [job] = args;

@@ -511,6 +511,46 @@ export interface IndustryJobFee {
   readonly total: number;
 }
 
+/**
+ * A job's materials out of the preview's answer: each type to a whole quantity above nought, as the game's own
+ * client reckons what the job will use. Null for anything else: none were reckoned.
+ */
+export function decodeJobMaterials(value: JsonValue | undefined): Readonly<Record<string, number>> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const materials: Record<string, number> = {};
+  for (const [typeID, quantity] of Object.entries(value)) {
+    if (!/^[1-9][0-9]*$/.test(typeID) || typeof quantity !== "number" || !Number.isSafeInteger(quantity) || quantity <= 0) {
+      return null;
+    }
+    materials[typeID] = quantity;
+  }
+  return materials;
+}
+
+/**
+ * What the window says a job will use: the preview's reckoning, where it made one that has every material the
+ * page lists and no other, and is then exact; the page's own estimate otherwise, whole.
+ */
+export function materialsToUse(
+  estimate: readonly IndustryMaterial[],
+  reckoned: Readonly<Record<string, number>> | null,
+): { readonly materials: readonly IndustryMaterial[]; readonly exact: boolean } {
+  if (reckoned === null || Object.keys(reckoned).length !== estimate.length) {
+    return { materials: estimate, exact: false };
+  }
+  const materials: IndustryMaterial[] = [];
+  for (const material of estimate) {
+    const quantity = reckoned[String(material.typeID)];
+    if (quantity === undefined) {
+      return { materials: estimate, exact: false };
+    }
+    materials.push({ typeID: material.typeID, quantity });
+  }
+  return { materials, exact: true };
+}
+
 const FEE_PARTS = ["cost", "tax", "sccSurcharge", "securityTax"] as const;
 
 /** A fee out of the preview's answer: five whole amounts, the last the sum of the rest. Null for anything else. */

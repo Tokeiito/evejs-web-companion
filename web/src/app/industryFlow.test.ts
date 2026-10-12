@@ -572,10 +572,11 @@ test("the preview returns what the player HAS and the time the job will take, an
   const store = createClientStore();
   let timeSeconds: number | null | string = 1163;
   let fee: Record<string, number> | string | null | undefined = { cost: 5284, tax: 1321, sccSurcharge: 5284, securityTax: 0, total: 11889 };
+  let materials: Record<string, number | string> | string | null | undefined = { "38": 230 };
   const { fetch, requests } = makeFakeFetch(
     respondOk((path) =>
       path === "/api/bridge/industry/preview"
-        ? { status: 200, body: { ok: true, available: { "38": 500 }, timeSeconds, fee } }
+        ? { status: 200, body: { ok: true, available: { "38": 500 }, timeSeconds, fee, materials } }
         : null,
     ),
   );
@@ -587,10 +588,18 @@ test("the preview returns what the player HAS and the time the job will take, an
     facilityID: STATION_ID,
     runs: 3,
     timeEfficiency: 5,
+    materialEfficiency: 10,
   };
 
   const previewed = await flow.previewIndustryJob(request);
-  assert.deepEqual(previewed, { available: { "38": 500 }, timeSeconds: 1163, fee: { cost: 5284, tax: 1321, sccSurcharge: 5284, securityTax: 0, total: 11889 } });
+  assert.deepEqual(previewed, { available: { "38": 500 }, timeSeconds: 1163, fee: { cost: 5284, tax: 1321, sccSurcharge: 5284, securityTax: 0, total: 11889 }, materials: { "38": 230 } });
+  // Materials that were not reckoned, or that are none, are none.
+  const noMaterials: (Record<string, number | string> | string | null | undefined)[] = [null, undefined, "230", { "38": "230" }, { "38": 0 }];
+  for (const none of noMaterials) {
+    materials = none;
+    assert.equal((await flow.previewIndustryJob(request)).materials, null, JSON.stringify(none));
+  }
+  materials = { "38": 230 };
   // A fee that was not reckoned, or that is no fee, is none.
   const noFees: (Record<string, number> | string | null | undefined)[] = [null, undefined, "11889", { cost: 5284 }, { cost: 5284, tax: 1321, sccSurcharge: 5284, securityTax: 0, total: 1 }];
   for (const none of noFees) {
@@ -598,9 +607,11 @@ test("the preview returns what the player HAS and the time the job will take, an
     assert.equal((await flow.previewIndustryJob(request)).fee, null, JSON.stringify(none));
   }
   fee = null;
-  // The blueprint's time research goes with the request: the job's time is reckoned from it.
+  // The blueprint's time research goes with the request: the job's time is reckoned from it. And its material
+  // research, from which its materials are.
   const sent = requests.find((entry) => entry.path === "/api/bridge/industry/preview");
   assert.equal((sent?.body as { timeEfficiency?: number }).timeEfficiency, 5);
+  assert.equal((sent?.body as { materialEfficiency?: number }).materialEfficiency, 10);
   // A time that could not be reckoned, or that is no time, is none.
   for (const none of [null, "soon", 0, -4, 1.5]) {
     timeSeconds = none as number | null | string;

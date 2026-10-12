@@ -951,6 +951,86 @@ test("a manufacturing job's time is the client's own reckoning, in the preview's
   assert.deepEqual([gateway.calls.bound.length, gateway.calls.topLevel.filter((call) => call.method === "GetFacilities").length], [3, 3]);
 });
 
+test("a manufacturing job's materials are the client's own reckoning, in the preview's request and the install's, and the preview says them", async () => {
+  // industry/job.py 470 to 485 and 637 (src/industryInstall.js, manufacturingJobMaterials). The blueprint's
+  // manufacturing takes 86 of one material a run; three runs; a blueprint with ten of material research, in a
+  // facility whose hull takes 1% off any job's materials: 86 x 0.9 x 0.99 x 3 = 229.878.
+  const facility = facilityRow();
+  facility.args.entries.find(([name]) => name === "activities")[1] = dict([
+    [ACTIVITY_MANUFACTURING, { type: "tuple", items: [list([]), list([[0.99, null, null, null, 12]]), list([])] }],
+    [ACTIVITY_COPYING, { type: "tuple", items: [list([]), list([[0.5, null, null, null, 12]]), list([])] }],
+  ]);
+  const gateway = fakeIndustryGateway({ facility });
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  const jobs = (method) => sentJobs(gateway, method);
+
+  const preview = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ materialEfficiency: 10 }) });
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ materialEfficiency: 10 }) });
+  assert.deepEqual([jobs("ConnectJob")[0].materials, jobs("InstallJob")[0].materials, preview.payload.materials],
+    [{ [MATERIAL_TYPE_ID]: 230 }, { [MATERIAL_TYPE_ID]: 230 }, { [MATERIAL_TYPE_ID]: 230 }]);
+  // A blueprint said to have no material research: 86 x 0.99 x 3 = 255.42. And one run of it: 85.14.
+  const none = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ materialEfficiency: 0 }) });
+  const one = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ materialEfficiency: 0, runs: 1 }) });
+  assert.deepEqual([none.payload.materials, jobs("ConnectJob")[1].materials, one.payload.materials], [{ [MATERIAL_TYPE_ID]: 256 }, { [MATERIAL_TYPE_ID]: 256 }, { [MATERIAL_TYPE_ID]: 86 }]);
+  // One of which nothing is said: no materials are reckoned, an empty map goes as it always did, which the server
+  // reads as its own to work out, and the preview says none.
+  const unsaid = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody() });
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody() });
+  assert.deepEqual([unsaid.payload.materials, jobs("ConnectJob").at(-1).materials, jobs("InstallJob").at(-1).materials], [null, {}, {}]);
+  // Any other kind of work: none are reckoned, though the research is said and the facility has a modifier for it.
+  const copying = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ activity: "copying", materialEfficiency: 10 }) });
+  assert.deepEqual([copying.payload.materials, jobs("ConnectJob").at(-1).materials], [null, {}]);
+  // A facility that is not among those read: none are reckoned.
+  const elsewhere = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ facilityID: STATION_ID + 1, materialEfficiency: 10 }) });
+  assert.deepEqual([elsewhere.payload.materials, jobs("ConnectJob").at(-1).materials], [null, {}]);
+});
+
+test("a blueprint's material research is a whole number from nought to ten, or the request is refused before anything is asked", async () => {
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  for (const materialEfficiency of [-1, 11, 2.5, "ten", "5", true]) {
+    for (const route of ["preview", "install"]) {
+      const { response, payload } = await apiRequest(baseUrl, `/api/bridge/industry/${route}`, { method: "POST", body: installBody({ materialEfficiency }) });
+      assert.deepEqual([response.status, payload.error], [400, "INVALID_MATERIAL_EFFICIENCY"], `${route} ${materialEfficiency}`);
+    }
+  }
+  assert.deepEqual([gateway.calls.topLevel.length, gateway.calls.bound.length], [0, 0]);
+});
+
+test("on the game port a job's materials go the same way, by the facility the pilot's own transport keeps", async () => {
+  const facility = facilityRow();
+  facility.args.entries.find(([name]) => name === "activities")[1] = dict([
+    [ACTIVITY_MANUFACTURING, { type: "tuple", items: [list([]), list([[0.99, null, null, null, 12], [0.98, null, null, null, 11]]), list([])] }],
+  ]);
+  const asked = [];
+  const plain = fakeIndustryGateway();
+  const gamePort = {
+    ...plain,
+    async selectCharacter() {
+      return {
+        bridgeSessionID: "gp:a-pilot-on-the-game-port", service: "charUnboundMgr", method: "SelectCharacterID", result: null, notifications: [],
+        session: { userid: 4, characterID: CHARACTER_ID, characterName: "Test Pilot", stationID: STATION_ID, structureID: null, solarSystemID: SOLAR_SYSTEM_ID, corporationID: 98000000, shipID: ACTIVE_SHIP_ID },
+      };
+    },
+    async freshFacility(sessionFields, bridgeSessionID, facilityID) {
+      asked.push(facilityID);
+      return facility;
+    },
+  };
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort });
+  await selectOnServer(baseUrl);
+  // 86 x 0.93 x 0.99 x 0.98 x 3 = 232.79...: each of the facility's two modifiers in turn.
+  const preview = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ materialEfficiency: 7 }) });
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ materialEfficiency: 7 }) });
+  assert.deepEqual([preview.payload.materials, sentJobs(gamePort, "ConnectJob")[0].materials, sentJobs(gamePort, "InstallJob")[0].materials],
+    [{ [MATERIAL_TYPE_ID]: 233 }, { [MATERIAL_TYPE_ID]: 233 }, { [MATERIAL_TYPE_ID]: 233 }]);
+  // The facility is asked for once for a request, and nothing of the pilot's went to the gateway.
+  assert.deepEqual([asked, gateway.calls.topLevel.length], [[STATION_ID, STATION_ID], 0]);
+});
+
 test("a required skill's time per level and the facility's time modifiers for the product are in a job's time", async () => {
   // A skill the blueprint requires that takes 1% a level (attribute 1982), the pilot at its second level; a facility
   // that takes 15% off anything and has another modifier for another category of thing:

@@ -20,6 +20,7 @@
     previewMaterials,
     previewTimeSeconds,
     jobFeeParts,
+    materialsToUse,
     type IndustryJobFee,
     recipeFor,
     secondsUntil,
@@ -180,6 +181,8 @@
   let reckonedSeconds = $state<number | null>(null);
   /** What the job costs to start, as the preview reckoned it; null where it reckoned none. */
   let reckonedFee = $state<IndustryJobFee | null>(null);
+  /** typeID -> how much of it the job will USE, as the preview reckoned it; null where it reckoned none. */
+  let reckonedMaterials = $state<Readonly<Record<string, number>> | null>(null);
   /** The fee in a sentence: its total, and what it is made of where that is more than one thing. */
   const feeWords = $derived.by(() => {
     if (reckonedFee === null) {
@@ -225,16 +228,23 @@
     return recipeFor($industry.definitions[startingBlueprint.typeID], chosenActivity);
   });
 
-  /** Roughly what this job will consume, paired with what the player has. */
+  /**
+   * What this job will consume: the preview's own reckoning where it made one (which is what goes with the job),
+   * and the page's estimate where it made none.
+   */
+  const materialsForJob = $derived.by(() =>
+    materialsToUse(
+      startingBlueprint ? previewMaterials(chosenRecipe, chosenRuns, startingBlueprint.materialEfficiency) : [],
+      reckonedMaterials,
+    ),
+  );
+
+  /** Each material this job will consume, paired with what the player has. */
   const materialLines = $derived.by(() => {
     if (!startingBlueprint) {
       return [];
     }
-    const materials = previewMaterials(
-      chosenRecipe,
-      chosenRuns,
-      startingBlueprint.materialEfficiency,
-    );
+    const materials = materialsForJob.materials;
     // The decryptor is used one per run, as the server takes it.
     const all = decryptorForJob > 0 ? [...materials, { typeID: decryptorForJob, quantity: chosenRuns }] : materials;
     return all.map((material) => {
@@ -269,6 +279,7 @@
     availableMaterials = null;
     reckonedSeconds = null;
     reckonedFee = null;
+    reckonedMaterials = null;
     chosenRuns = 1;
     const activities = blueprintActivities(blueprint.typeID);
     chosenActivity = activities.length > 0 ? activities[0]! : null;
@@ -284,13 +295,20 @@
     availableMaterials = null;
     reckonedSeconds = null;
     reckonedFee = null;
+    reckonedMaterials = null;
     confirming = false;
   }
 
-  /** The blueprint's own time research, to go with a job's request: a job's time is reckoned from it. */
-  function timeResearchOf(blueprint: IndustryBlueprintRow): { timeEfficiency?: number } {
-    const said = blueprint.timeEfficiency;
-    return Number.isInteger(said) && said >= 0 && said <= 20 ? { timeEfficiency: said } : {};
+  /**
+   * The blueprint's own time research and its material research, to go with a job's request: a job's time is
+   * reckoned from the one, and a manufacturing job's materials from the other.
+   */
+  function researchOf(blueprint: IndustryBlueprintRow): { timeEfficiency?: number; materialEfficiency?: number } {
+    const [time, material] = [blueprint.timeEfficiency, blueprint.materialEfficiency];
+    return {
+      ...(Number.isInteger(time) && time >= 0 && time <= 20 ? { timeEfficiency: time } : {}),
+      ...(Number.isInteger(material) && material >= 0 && material <= 10 ? { materialEfficiency: material } : {}),
+    };
   }
 
   // The decryptor list, once, the first time invention is the chosen work.
@@ -326,11 +344,12 @@
         facilityID,
         runs: chosenRuns,
         ...(decryptorForJob > 0 ? { decryptorTypeID: decryptorForJob } : {}),
-        ...timeResearchOf(blueprint),
+        ...researchOf(blueprint),
       });
       availableMaterials = previewed.available;
       reckonedSeconds = previewed.timeSeconds;
       reckonedFee = previewed.fee;
+      reckonedMaterials = previewed.materials;
       confirming = true;
     });
   }
@@ -350,7 +369,7 @@
         facilityID,
         runs: chosenRuns,
         ...(decryptorForJob > 0 ? { decryptorTypeID: decryptorForJob } : {}),
-        ...timeResearchOf(blueprint),
+        ...researchOf(blueprint),
       });
       closeStartJob();
     });
@@ -704,9 +723,9 @@
             <p class="empty">This job does not use any materials.</p>
           {:else}
             <div class="table-wrap overflow-x-auto">
-              <table class="guests reflow">
+              <table class="guests reflow" data-job-materials={materialsForJob.exact ? "reckoned" : "rough"}>
                 <thead>
-                  <tr><th>Material</th><th class="num">It will use about</th><th class="num">You have</th></tr>
+                  <tr><th>Material</th><th class="num">{materialsForJob.exact ? "It will use" : "It will use about"}</th><th class="num">You have</th></tr>
                 </thead>
                 <tbody>
                   {#each materialLines as line (line.typeID)}
@@ -717,7 +736,7 @@
                           {typeName(line.typeID)}
                         </span>
                       </td>
-                      <td class="num" data-label="It will use about">{line.need}</td>
+                      <td class="num" data-label={materialsForJob.exact ? "It will use" : "It will use about"}>{line.need}</td>
                       <td class="num" data-label="You have">
                         {line.have === null ? "—" : line.have}
                         {#if line.short}
@@ -738,8 +757,14 @@
             {/if}
             {#if feeWords !== null}
               <span data-job-fee="reckoned">{feeWords}</span>
-              The amounts above are an estimate — the facility you picked may work
-              out cheaper, which the server works out when you confirm.
+              {#if !materialsForJob.exact}
+                The amounts above are an estimate — the facility you picked may work
+                out cheaper, which the server works out when you confirm.
+              {/if}
+            {:else if materialsForJob.exact}
+              <span data-job-fee="unknown">The station also charges a fee to start
+              the job, which the server works out when you confirm, and you will see
+              what was actually charged straight afterwards.</span>
             {:else}
               <span data-job-fee="unknown">The amounts above
               are an estimate — the facility you picked may work out cheaper, and

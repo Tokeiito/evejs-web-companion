@@ -5289,8 +5289,9 @@ function buildInstallJobPayload(held, request) {
     // The job's time as the client's own job reckons it, where it could be reckoned whole; else nought, which
     // the server does not check.
     time: request.time || 0,
-    // Empty means "recompute from the blueprint" to the server; only an
-    // invention with a decryptor sends the exact map (src/industryInstall.js).
+    // A manufacturing job's are the client's own reckoning, where they could be reckoned whole, and an
+    // invention's with a decryptor the exact map the server takes the decryptor from (src/industryInstall.js).
+    // Empty otherwise, which the server reads as its own to work out from the blueprint.
     materials: request.materials || {},
     inputLocation: request.inputLocation,
     outputLocation: request.outputLocation,
@@ -5355,6 +5356,16 @@ function normalizeIndustryRequest(req, res) {
     });
     return null;
   }
+  // And its material research, likewise: a manufacturing job's materials are reckoned from it.
+  const materialEfficiency = body.materialEfficiency === undefined ? null : body.materialEfficiency;
+  if (materialEfficiency !== null && !(Number.isSafeInteger(materialEfficiency) && materialEfficiency >= 0 && materialEfficiency <= INDUSTRY_MAX_MATERIAL_EFFICIENCY)) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_MATERIAL_EFFICIENCY",
+      message: "A blueprint's material research is a whole number from 0 to 10.",
+    });
+    return null;
+  }
   // A decryptor is an invention input, and only a decryptor (group 1304) may be
   // named as one: the server picks it out of the request's materials by group.
   const decryptorTypeID = body.decryptorTypeID === undefined || body.decryptorTypeID === null
@@ -5389,6 +5400,7 @@ function normalizeIndustryRequest(req, res) {
     productTypeID: Number(body.productTypeID) || 0,
     decryptorTypeID,
     timeEfficiency,
+    materialEfficiency,
   };
 }
 
@@ -5398,6 +5410,8 @@ const ATTRIBUTE_MANUFACTURE_TIME_MULTIPLIER = 219;
 const ATTRIBUTE_MANUFACTURE_TIME_PER_LEVEL = 1982;
 /** The most time research a blueprint has. */
 const INDUSTRY_MAX_TIME_EFFICIENCY = 20;
+/** The most material research a blueprint has. */
+const INDUSTRY_MAX_MATERIAL_EFFICIENCY = 10;
 
 /**
  * The pilot's level in effect of each skill named, as the client's industry reads it off its skill service
@@ -5478,6 +5492,53 @@ async function reckonedJobSeconds(account, held, webSessionID, request, facility
     });
   } catch (error) {
     // A pilot whose session went has no job to send; anything else that could not be asked leaves the time unreckoned.
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(webSessionID, held);
+      throw error;
+    }
+    assertCurrentHeldSession(held, webSessionID);
+    return null;
+  }
+}
+
+/**
+ * A manufacturing job's materials, each type to its quantity, as the client's own job reckons them before it sends
+ * the job (industry/job.py 470 to 485 and 637; src/industryInstall.js, manufacturingJobMaterials has the order and
+ * the rounding, and why each matters): from the blueprint's own quantities out of the game's data, its material
+ * research as the page read it of the blueprint, and the job's facility's material modifiers for the product.
+ *
+ * ⚠ ALL OR NOTHING, as the time is. The server refuses a job whose materials are not an empty map and are not its
+ * own to the unit (MISMATCH_MATERIAL). Null where they were not reckoned whole: any other kind of work (an
+ * invention's with a decryptor are made by decryptorInstallFields), a blueprint of which the page said no material
+ * research, one the game's data has not, a facility that is not among those read. An empty map then goes, as it
+ * always did, and the server works them out by itself.
+ */
+async function reckonedJobMaterials(held, webSessionID, request, facilityOf) {
+  if (request.activityID !== INDUSTRY_ACTIVITY_IDS.manufacturing || request.materialEfficiency === null) {
+    return null;
+  }
+  const definition = typeof staticData.getIndustryBlueprint === "function"
+    ? staticData.getIndustryBlueprint(request.blueprintTypeID)
+    : null;
+  const activity = definition && definition.activities ? definition.activities.manufacturing : null;
+  if (!activity) {
+    return null;
+  }
+  try {
+    assertCurrentHeldSession(held, webSessionID);
+    const facilityRow = await facilityOf();
+    if (!facilityRow) {
+      return null;
+    }
+    return industryInstall.manufacturingJobMaterials({
+      materials: Array.isArray(activity.materials) ? activity.materials : [],
+      runs: request.runs,
+      materialEfficiency: request.materialEfficiency,
+      facilityModifiers: industryInstall.facilityMaterialModifiers(facilityRow, request.activityID),
+      productType: manufacturedType(definition, activity),
+    });
+  } catch (error) {
+    // As for the time.
     if (error && error.code === "SESSION_NOT_FOUND") {
       forgetBridgeSession(webSessionID, held);
       throw error;
@@ -5760,8 +5821,10 @@ app.post("/api/bridge/industry/preview", requireAuth, async (req, res, next) => 
     const timeSeconds = await reckonedJobSeconds(req.account, held, req.webSessionID, request, facilityOf);
     const cost = await reckonedJobCost(held, req.webSessionID, request, facilityOf);
     const { tax, fee } = await reckonedJobFee(held, req.webSessionID, request, facilityOf, cost);
+    const materials = await reckonedJobMaterials(held, req.webSessionID, request, facilityOf);
     const payload = buildInstallJobPayload(held, {
       ...request,
+      ...(materials ? { materials } : {}),
       time: timeSeconds,
       cost,
       tax,
@@ -5796,6 +5859,9 @@ app.post("/api/bridge/industry/preview", requireAuth, async (req, res, next) => 
       // What the job costs to start, as the client adds it up: its cost, its tax, the SCC's surcharge and a
       // safe system's security tax, and their total; null where it could not be reckoned whole.
       fee,
+      // What the job will use of each material, where it was reckoned as the client reckons it (and sent, for
+      // the server to hold against its own); null where it was not.
+      materials,
       inputLocation: locations.input,
       outputLocation: locations.output,
       notifications: outcome.notifications,
@@ -5866,9 +5932,11 @@ app.post("/api/bridge/industry/install", requireAuth, async (req, res, next) => 
     const timeSeconds = await reckonedJobSeconds(req.account, held, req.webSessionID, request, facilityOf);
     const cost = await reckonedJobCost(held, req.webSessionID, request, facilityOf);
     const { tax } = await reckonedJobFee(held, req.webSessionID, request, facilityOf, cost);
+    const materials = await reckonedJobMaterials(held, req.webSessionID, request, facilityOf);
     const payload = buildInstallJobPayload(held, {
       ...request,
       ...(decryptorFields || {}),
+      ...(materials ? { materials } : {}),
       time: timeSeconds,
       cost,
       tax,

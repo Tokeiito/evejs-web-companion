@@ -33,7 +33,7 @@ import {
 } from "./transport.ts";
 import { pageCarries, pageFetch, pageSocket } from "./pageFetch.ts";
 import type { JsonValue } from "../bridge/wire.ts";
-import { decodeJobFee, type IndustryJobFee } from "../bridge/industry.ts";
+import { decodeJobFee, decodeJobMaterials, type IndustryJobFee } from "../bridge/industry.ts";
 import type { SafetyLevel } from "../space/crimewatch.ts";
 import type { MinerTrainingRead, StageFittingSelection, TrainingCharacter, QueueReview, QueueApplyOutcome } from "../training/types.ts";
 import type {
@@ -1119,6 +1119,8 @@ export interface IndustryJobRequest {
   readonly decryptorTypeID?: number;
   /** The blueprint's own time research, as it was read of the blueprint: a job's time is reckoned from it. */
   readonly timeEfficiency?: number;
+  /** And its material research: a manufacturing job's materials are reckoned from it. */
+  readonly materialEfficiency?: number;
 }
 
 export interface IndustryPreviewResult {
@@ -1135,6 +1137,11 @@ export interface IndustryPreviewResult {
    * what is charged is then the server's to work out.
    */
   readonly fee: IndustryJobFee | null;
+  /**
+   * typeID -> how much of it the job will USE, reckoned as the game's own client reckons it and sent with the job,
+   * which the server holds against its own. Null where they were not reckoned: the server then works them out alone.
+   */
+  readonly materials: Readonly<Record<string, number>> | null;
 }
 
 /**
@@ -1164,6 +1171,7 @@ export async function previewIndustryJob(
     available: normalized,
     timeSeconds: typeof reckoned === "number" && Number.isSafeInteger(reckoned) && reckoned > 0 ? reckoned : null,
     fee: decodeJobFee(data.fee),
+    materials: decodeJobMaterials(data.materials),
   };
 }
 

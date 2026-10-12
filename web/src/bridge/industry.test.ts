@@ -29,7 +29,9 @@ import {
   decodeSlotUsage,
   formatDuration,
   decodeJobFee,
+  decodeJobMaterials,
   jobFeeParts,
+  materialsToUse,
   industryRefusalMessage,
   isActiveJob,
   previewMaterials,
@@ -500,6 +502,32 @@ test("a fee out of the preview's answer is five whole amounts that add up, or no
   for (const none of [null, undefined, 11889, "11889", [], { cost: 5284 }, belowNought, notWhole, { ...fee, total: 11888 }, { ...fee, sccSurcharge: "5284" }]) {
     assert.equal(decodeJobFee(none as unknown as JsonValue), null, JSON.stringify(none));
   }
+});
+
+test("a job's materials out of the preview's answer are whole quantities by type, or none", () => {
+  const materials = { "34": 31680, "35": 5940, "36": 2475 };
+  assert.deepEqual(decodeJobMaterials(materials), materials);
+  // A job that takes nothing takes nothing.
+  assert.deepEqual(decodeJobMaterials({}), {});
+  // None where they were not reckoned, or where any of them is no quantity of a type.
+  for (const none of [null, undefined, 31680, "31680", [], [31680], { "34": "31680" }, { "34": 0 }, { "34": -1 }, { "34": 1.5 }, { "34": null },
+    { tritanium: 31680 }, { "-34": 31680 }, { "3.4": 31680 }, { "034": 31680 }, { "0": 5 }, { "34": 31680, "35": "5940" }]) {
+    assert.equal(decodeJobMaterials(none as unknown as JsonValue), null, JSON.stringify(none));
+  }
+});
+
+test("what a job will use is the preview's reckoning where it has every material, and the page's estimate otherwise", () => {
+  const estimate = [{ typeID: 34, quantity: 32000 }, { typeID: 35, quantity: 6000 }];
+  // The reckoning's quantities, in the estimate's order, and said to be exact.
+  assert.deepEqual(materialsToUse(estimate, { "35": 5940, "34": 31680 }), { materials: [{ typeID: 34, quantity: 31680 }, { typeID: 35, quantity: 5940 }], exact: true });
+  // None made: the estimate, and not exact.
+  assert.deepEqual(materialsToUse(estimate, null), { materials: estimate, exact: false });
+  // One that has not every material the page lists, or has one the page does not: the estimate, whole.
+  assert.deepEqual(materialsToUse(estimate, { "34": 31680 }), { materials: estimate, exact: false });
+  assert.deepEqual(materialsToUse(estimate, { "34": 31680, "35": 5940, "36": 2475 }), { materials: estimate, exact: false });
+  assert.deepEqual(materialsToUse(estimate, { "34": 31680, "36": 2475 }), { materials: estimate, exact: false });
+  // A job that uses nothing uses nothing, exactly.
+  assert.deepEqual(materialsToUse([], {}), { materials: [], exact: true });
 });
 
 test("a fee's parts are named in plain words, and one that is nought is not listed", () => {

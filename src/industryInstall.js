@@ -223,6 +223,81 @@ function manufacturingJobSeconds({ activityTime, runs, skills, characterAmount, 
 }
 
 /**
+ * A number rounded to two places as the client's Python 2.7 rounds one (round(x, 2), by which its job rounds a
+ * material's quantity): to the nearer of the two by what the number itself is, and a number that is exactly a
+ * half goes away from nought. toFixed(2) is that for a number that is not below nought: it rounds the number and
+ * not its hundredfold, and of two as near it takes the larger. (Asked of the client's own python27.dll for some
+ * forty thousand numbers at and beside a half of the second place, and the same for every one;
+ * test/industryJobMaterials.test.js has a score of them.)
+ *
+ * ⚠ NOT Math.round(x * 100) / 100, which the server's own roundMaterialQuantity is. A float written 2.675 is a
+ * little under it and rounds to 2.67; its hundredfold comes to 267.5 and rounds to 268.
+ */
+function roundToTwoPlaces(value) {
+  return Number(value.toFixed(2));
+}
+
+/**
+ * A manufacturing job's materials, each type to its quantity, as the client's own job reckons them before it sends
+ * the job to be previewed or installed (industry/job.py _get_materials, 470 to 485; dump, 637). For each material
+ * the blueprint's manufacturing lists:
+ *
+ *   quantity = float(material.base)                 the blueprint's own quantity of it
+ *   activity.job_modifiers                          activities/manufacturing.py 12: 1.0 - materialEfficiency /
+ *                                                   100.0, where the blueprint has any material research
+ *   facility.modifiers                              industryCommon.Facility (378): each of the facility's
+ *                                                   material modifiers for the activity that is for the
+ *                                                   blueprint's product (`productType`), in the facility's order
+ *   quantity *= runs                                activity.job_material_runs (activity.py 38)
+ *   max(int(math.ceil(round(quantity, 2))), runs)   never fewer than one a run
+ *
+ * ⚠ THE ORDER AND THE ROUNDING ARE THE CLIENT'S AND MUST STAY SO. The server holds a map that is not empty against
+ * its own, each quantity to the unit, and these are floats: the runs multiplied in first, the facility's modifiers
+ * multiplied together first, or the rounding done by a hundred times and back, each comes a unit apart for
+ * quantities the game's blueprints list (test/industryJobMaterials.test.js has each).
+ *
+ * Null where any input is not what it should be: no materials are made of a guess, and an empty map is sent
+ * instead, which the server reads as its own to work out.
+ */
+function manufacturingJobMaterials({ materials, runs, materialEfficiency, facilityModifiers, productType }) {
+  if (!Array.isArray(materials) || !Number.isSafeInteger(runs) || runs <= 0 || !Number.isSafeInteger(materialEfficiency) || materialEfficiency < 0) {
+    return null;
+  }
+  const amounts = [];
+  for (const modifier of facilityModifiers || []) {
+    if (!Array.isArray(modifier) || !aNumber(modifier[0])) {
+      return null;
+    }
+    if (modifierMatchesProduct(modifier, productType)) {
+      amounts.push(modifier[0]);
+    }
+  }
+  const taken = {};
+  for (const material of materials) {
+    const typeID = material ? material.typeID : null;
+    const base = material ? material.quantity : null;
+    // (A material listed twice is no one quantity to a type: no blueprint of the game's lists one so.)
+    if (!Number.isSafeInteger(typeID) || typeID <= 0 || !aNumber(base) || base < 0 || Object.hasOwn(taken, typeID)) {
+      return null;
+    }
+    let quantity = base;
+    if (materialEfficiency) {
+      quantity *= 1.0 - materialEfficiency / 100.0;
+    }
+    for (const amount of amounts) {
+      quantity *= amount;
+    }
+    quantity *= runs;
+    const whole = Math.max(Math.ceil(roundToTwoPlaces(quantity)), runs);
+    if (!Number.isSafeInteger(whole)) {
+      return null;
+    }
+    taken[typeID] = whole;
+  }
+  return taken;
+}
+
+/**
  * What a facility's row says a job at it is charged by beside its tax (industryCommon.Facility, 378 to 380): the
  * SCC's modifier of its surcharge, and the system it is in. Null for one the row has not.
  */
@@ -425,9 +500,11 @@ module.exports = {
   inventionRequestMaterials,
   manufacturingJobCost,
   manufacturingJobFee,
+  manufacturingJobMaterials,
   manufacturingJobSeconds,
   manufacturingJobTax,
   manufacturingServiceID,
   modifierMatchesProduct,
   roundMaterialQuantity,
+  roundToTwoPlaces,
 };
