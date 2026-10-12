@@ -2,7 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  CHAT_COMMAND_HELP,
   CHAT_COMMAND_VERBS,
+  type ChatCommandKind,
   COMPANION_FOLLOW_RANGE_M,
   isChatCommandSenderAllowed,
   parseChatCommand,
@@ -491,10 +493,102 @@ test("CHAT_COMMAND_VERBS lists exactly the recognised verbs, target/primary incl
       "salvage",
       "stop",
       "target",
+      "targets",
       "travel",
       "warp",
     ],
   );
+});
+
+// --- `targets called` / `targets all` ----------------------------------------
+//
+// The second toggle: a target MODE, not an order. Parsed like `props` -- both
+// words required, nothing allowed after them.
+
+test("targets called and targets all both parse, and carry which mode was said", () => {
+  assert.deepEqual(parseChatCommand(chatMessage("targets called")), {
+    kind: "targets",
+    mode: "called",
+  });
+  assert.deepEqual(parseChatCommand(chatMessage("targets all")), { kind: "targets", mode: "all" });
+});
+
+test("targets is case-insensitive and tolerates the surrounding and inner whitespace", () => {
+  assert.deepEqual(parseChatCommand(chatMessage("  TARGETS   ALL  ")), {
+    kind: "targets",
+    mode: "all",
+  });
+  assert.deepEqual(parseChatCommand(chatMessage("Targets Called")), {
+    kind: "targets",
+    mode: "called",
+  });
+});
+
+test("a bare `targets`, an unknown mode word, or trailing chatter is not an order", () => {
+  assert.equal(parseChatCommand(chatMessage("targets")), null);
+  assert.equal(parseChatCommand(chatMessage("targets please")), null);
+  assert.equal(parseChatCommand(chatMessage("targets none")), null);
+  assert.equal(parseChatCommand(chatMessage("targets alll")), null);
+  assert.equal(parseChatCommand(chatMessage("targets all please")), null);
+  assert.equal(parseChatCommand(chatMessage("targets called all")), null);
+});
+
+test("`targets` is anchored and word-bounded, and never reads as the `target` link verb", () => {
+  assert.equal(parseChatCommand(chatMessage("targeting all")), null);
+  assert.equal(parseChatCommand(chatMessage("those targets all died")), null);
+  // The plural with a link is not a `target` order either: `^target\b` refuses it.
+  assert.equal(
+    parseChatCommand(chatMessage("targets <url=showinfo:670//1099511628000>Some Rifter</url>")),
+    null,
+  );
+  // And the singular is still the link verb.
+  assert.deepEqual(
+    parseChatCommand(chatMessage("target <url=showinfo:670//1099511628000>Some Rifter</url>")),
+    { kind: "target", itemID: 1099511628000 },
+  );
+});
+
+// --- CHAT_COMMAND_HELP ---------------------------------------------------------
+
+// Exhaustive on purpose: the compiler refuses a new `ChatCommandKind` that is
+// not listed here, and the test below then refuses one with no help row.
+const ALL_KINDS: Record<ChatCommandKind, true> = {
+  target: true,
+  align: true,
+  travel: true,
+  jump: true,
+  salvage: true,
+  loot: true,
+  stop: true,
+  follow: true,
+  destination: true,
+  warp: true,
+  props: true,
+  targets: true,
+};
+
+test("every ChatCommandKind has a help row whose usage starts with its verb", () => {
+  for (const kind of Object.keys(ALL_KINDS)) {
+    const shown = CHAT_COMMAND_HELP.some((row) =>
+      new RegExp(`(^|\\|)${kind}\\b`).test(row.usage),
+    );
+    assert.equal(shown, true, `no help row for ${kind}`);
+  }
+});
+
+test("every recognised verb has a help row, and help rows are short plain ASCII", () => {
+  for (const verb of CHAT_COMMAND_VERBS) {
+    assert.equal(
+      CHAT_COMMAND_HELP.some((row) => new RegExp(`(^|\\|)${verb}\\b`).test(row.usage)),
+      true,
+      `no help row for verb ${verb}`,
+    );
+  }
+  for (const row of CHAT_COMMAND_HELP) {
+    assert.match(row.usage, /^[\x20-\x7e]+$/);
+    assert.match(row.does, /^[\x20-\x7e]+$/);
+    assert.ok(row.does.length <= 60, `too long: ${row.does}`);
+  }
 });
 
 // --- the sender gate ---------------------------------------------------------
