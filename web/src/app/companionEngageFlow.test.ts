@@ -32,7 +32,8 @@ function harness(role: "combat" | "repair", unreadable = false) {
     let answer: unknown = { ok: true };
     if (path === "/api/bridge/flight/status") answer = flightBody(false);
     if (path === "/api/bridge/fitting") answer = fittingBody({});
-    if (path === "/api/bridge/targets") answer = { ok: true, targetIDs: role === "combat" ? [TARGET] : [], notifications: [] };
+    // The companion tick also asks who has the ship locked (`?targeters=1`).
+    if (path.split("?")[0] === "/api/bridge/targets") answer = { ok: true, targetIDs: role === "combat" ? [TARGET] : [], notifications: [] };
     if (path === "/api/bots/active") answer = { ok: true, bots: [], characterIDs: [] };
     if (path === "/api/names") {
       const base = namesBody(body) as { names: Record<string, string> };
