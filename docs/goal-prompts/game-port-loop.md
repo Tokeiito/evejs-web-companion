@@ -1845,6 +1845,23 @@ Take these defaults, and list each under "For the operator" in the log so they c
   failed to start the web gateway (a lock file under `_local/certs` could not be
   opened) with the game port up: `store.sh` says "the gateway did not come up" and
   ends 1. Start EveJS again in the ordinary way (`restart-evejs-as.sh asitis`).
+- **Two things staged to tell a difference are first reckoned to differ on this
+  server.** The Rifter's two inventions were staged to show which blueprint a job is
+  priced by, and are priced alike here: what parts their materials is served no
+  price. A reckoning over the game's data by this server's own prices, which reads
+  only, found a pair that differ. Do that reckoning before the staging.
+- **Writing a breakage for a guard, ask what the next line makes of the same input.**
+  Two checks were found to be made already by what they guard while the list was
+  being written, and a third by the run. Take such a check out, or say why it is
+  left.
+- **A mark into the server's log can be past the log's end.** The server cuts its log
+  down to its tail when it has grown, and a reader that starts at an old mark then
+  finds nothing and says "none". `rig-asked.js` says so now; read the log from its
+  start and tell the calls by their times.
+- **What the client's dump has that the server drops is still sent.** The empty place
+  of an invention's decryptor is a None key the server takes out before it compares;
+  the job goes with it all the same, because the measure is the client's request
+  and not what the server needs of it.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

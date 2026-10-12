@@ -1013,10 +1013,10 @@ characters.
   "account": [140000003, 1000], // the character's own cash; (corporation, division) for corp installs
   "runs": 3,
   "licensedRuns": 300,         // any job's: the most the blueprint allows, till a copy job says another
-  "cost": 0, "tax": 0, "time": 0, "materials": {},   // ADVISORY — see below
+  "cost": 0, "tax": 0, "time": 0, "materials": {},   // ADVISORY — see below; an invention's map has its decryptor's place
   "inputLocation": { "itemID": …, "flagID": 4, "ownerID": …, "canTake": true },
   "outputLocation": { … },
-  "productTypeID": 165         // invention
+  "productTypeID": null        // an invention's, where the pilot chose one of several; else null
 }
 ```
 
@@ -1052,7 +1052,8 @@ to a generic sentence rather than leaking the code.
 #### BFF mutation routes
 
 - `POST /api/bridge/industry/preview` `{ blueprintItemID, blueprintTypeID,
-  activity, facilityID, runs, licensedRuns?, timeEfficiency?, materialEfficiency? }` →
+  activity, facilityID, runs, licensedRuns?, productTypeID?, decryptorTypeID?,
+  timeEfficiency?, materialEfficiency? }` →
   `{ ok, available, timeSeconds, fee, materials, inputLocation, outputLocation }`.
   **`licensedRuns`** is a copy job's alone to say: the runs each copy is licensed
   for, a whole number from 1 to the most the blueprint allows (else 400
@@ -1078,7 +1079,24 @@ to a generic sentence rather than leaking the code.
   **A research of a blueprint at its last level is refused 400
   `RESEARCH_LIMIT`, and one of more runs than are left to it 400
   `INVALID_RUNS`**, before anything is asked; one of more runs than thirty days
-  hold of its time, 400 `INVALID_RUNS`, where that could be reckoned. **`timeEfficiency`** is the
+  hold of its time, 400 `INVALID_RUNS`, where that could be reckoned. **An
+  invention is reckoned too** (`inventionJobSeconds`, `inventionJobFee`,
+  `inventionJobMaterials`): its time is the activity's by its runs, through the
+  pilot's own invention time and the facility's; its fee, on the game port, is of
+  the price of the blueprint it is to make. **`productTypeID`** is that
+  blueprint, and is an invention's alone to say: where the blueprint's invention
+  makes one of several it must be one of them (else 400 `INVALID_PRODUCT`, before
+  anything is asked), and where it makes the one nothing need be said, and the
+  job then names none, as the retail client's does. **`decryptorTypeID`** is a
+  decryptor to add, one a run (anything else, or on any other work, is 400
+  `INVALID_DECRYPTOR`). **An invention's request has the place of its decryptor
+  in its `materials` whether one is chosen or not**: the decryptor's type, or
+  with none the name `None` at the job's runs, which the game port writes as the
+  retail client's None key; the `materials` the route answers leave that empty
+  place out. An invention of more runs than the retail client's job could have
+  (thirty days over its time and time modifiers, and never more than 500) is 400
+  `INVALID_RUNS`, where that could be reckoned. A reaction is not reckoned, and
+  goes with nought and an empty map. **`timeEfficiency`** is the
   blueprint's own time research as the page read it (a whole number from 0 to 20,
   else 400 `INVALID_TIME_EFFICIENCY`). Where it is said and the work is
   manufacturing, the job's time is reckoned as the retail client's job reckons it
