@@ -1,12 +1,13 @@
 "use strict";
 
 // What an InstallJob request carries that the client's own job reckons before it sends the job: a manufacturing
-// job's time, cost, tax and materials, and an invention's materials where it has a decryptor.
+// job's time, cost, tax and materials, a copy job's the same, and an invention's materials where it has a decryptor.
 //
 // ---------------------------------------------------------------------------
 // AN INVENTION WITH A DECRYPTOR. The client's job sends its materials with every job (industry/job.py dump, 637);
-// the BFF sends a manufacturing job's (manufacturingJobMaterials, below) and, for any other kind of work, an
-// empty map, which the server reads as "recompute from the blueprint" (industryRuntimeState.js, after
+// the BFF sends a manufacturing job's and a copy job's (manufacturingJobMaterials and copyingJobMaterials, below)
+// and, for any other kind of work, an empty map, which the server reads as "recompute from the blueprint"
+// (industryRuntimeState.js, after
 // Job._get_errors). A decryptor is the exception among those: the server takes it from the request's materials
 // ONLY (resolveInventionDecryptorSelection: one decryptor, quantity equal to the runs), and once that map is
 // non-empty it must match the server's own map EXACTLY (materialMapsMatchExactly) or the install is refused
@@ -41,6 +42,14 @@ const SERVICE_MANUFACTURING_SUPERCAPITAL = 24;
 const SUPERCAPITAL_SHIP_GROUPS = new Set([659, 30]);
 /** inventorycommon.const.capitalShipsGroups: force auxiliaries, carriers, command carriers, dreadnoughts, capital industrial ships and lancer dreadnoughts. */
 const CAPITAL_SHIP_GROUPS = new Set([1538, 547, 5120, 485, 883, 4594]);
+/** structures/services.py: the service a structure copies a blueprint by. */
+const SERVICE_LABORATORY_COPYING = 33;
+/** industry.COST_PERCENTAGE: what a copy job's base is of the blueprint's price, for each run of each copy. */
+const COST_PERCENTAGE = 0.02;
+/** activities/copying.py MAX_RUNS: the most copies one job makes. */
+const COPYING_MAX_RUNS = 500;
+/** industry.MAX_RUN_LENGTH: thirty days of seconds, by which the most runs a job can have are reckoned. */
+const MAX_RUN_LENGTH = 2592000;
 
 function entriesOf(value) {
   if (value && typeof value === "object" && value.type === "dict" && Array.isArray(value.entries)) {
@@ -169,6 +178,25 @@ function inventionRequestMaterials({ invention, runs, modifiers, productType, de
 }
 
 const aNumber = (value) => typeof value === "number" && Number.isFinite(value);
+/** A whole number above nought: a job's runs, or the runs a copy is licensed for. */
+const aCount = (value) => Number.isSafeInteger(value) && value > 0;
+
+/**
+ * The amounts of those of a facility's modifiers that are for a product, in the facility's own order. Null where
+ * one of them is no modifier: nothing is reckoned from a row that is not what it should be.
+ */
+function facilityAmounts(facilityModifiers, productType) {
+  const amounts = [];
+  for (const modifier of facilityModifiers || []) {
+    if (!Array.isArray(modifier) || !aNumber(modifier[0])) {
+      return null;
+    }
+    if (modifierMatchesProduct(modifier, productType)) {
+      amounts.push(modifier[0]);
+    }
+  }
+  return amounts;
+}
 
 /**
  * A manufacturing job's time in whole seconds, as the client's own job reckons it before it sends the job to be
@@ -222,6 +250,57 @@ function manufacturingJobSeconds({ activityTime, runs, skills, characterAmount, 
 }
 
 /**
+ * A copy job's time in whole seconds, as the client's own job reckons it (industry/job.py _get_time, 460 to 468):
+ * the activity's time for the job (activities/copying.py job_time, 12: the time, by the runs each copy is licensed
+ * for, by the copies), times each time modifier the job has, in the order the job lists them, and rounded.
+ *
+ *   job.modifiers        industryCommon.GetJobModifiers (485): the pilot's own copy speed attribute,
+ *                        `characterAmount`. No skill's time per level is among a copy job's: the client lists those
+ *                        for manufacturing alone (REQUIRED_SKILL_MODIFIERS, 44)
+ *   facility.modifiers   each of the facility's time modifiers for copying that is for the blueprint's product, in
+ *                        the facility's own order
+ *
+ * The blueprint's time research is not in it: a copy job has no modifier of the blueprint's
+ * (activity.job_modifiers, 22). The order is the client's and must stay so, as a manufacturing job's must.
+ *
+ * Null where any input is not what it should be, and nought is sent instead, which the server does not check.
+ */
+function copyingJobSeconds({ activityTime, runs, licensedRuns, characterAmount, facilityModifiers, productType }) {
+  const amounts = facilityAmounts(facilityModifiers, productType);
+  if (!aNumber(activityTime) || activityTime <= 0 || !aCount(runs) || !aCount(licensedRuns) || !aNumber(characterAmount) || amounts === null) {
+    return null;
+  }
+  let seconds = activityTime * licensedRuns * runs;
+  seconds *= characterAmount;
+  for (const amount of amounts) {
+    seconds *= amount;
+  }
+  return Math.round(seconds);
+}
+
+/**
+ * The most copies one job can make, as the client's job has it, which holds a job's runs to it (industry/job.py
+ * _get_runs, 395; activity.py job_max_runs, 34 to 36): thirty days over the activity's time over the job's time
+ * modifiers multiplied together, taken up to the whole, and never more than COPYING_MAX_RUNS. The runs each copy is
+ * licensed for are not in it.
+ *
+ * Null where an input is not what it should be, or the modifiers come to nothing a time can be divided by.
+ */
+function copyingJobMostRuns({ activityTime, characterAmount, facilityModifiers, productType }) {
+  const amounts = facilityAmounts(facilityModifiers, productType);
+  if (!aNumber(activityTime) || activityTime <= 0 || !aNumber(characterAmount) || amounts === null) {
+    return null;
+  }
+  // reduce(operator.mul, modifiers, 1.0): multiplied together first, from one.
+  let together = 1.0 * characterAmount;
+  for (const amount of amounts) {
+    together *= amount;
+  }
+  const most = Math.ceil(MAX_RUN_LENGTH / activityTime / together);
+  return aCount(most) ? Math.min(most, COPYING_MAX_RUNS) : null;
+}
+
+/**
  * A number rounded to two places as the client's Python 2.7 rounds one (round(x, 2), by which its job rounds a
  * material's quantity): to the nearer of the two by what the number itself is, and a number that is exactly a
  * half goes away from nought. toFixed(2) is that for a number that is not below nought: it rounds the number and
@@ -259,18 +338,38 @@ function roundToTwoPlaces(value) {
  * instead, which the server reads as its own to work out.
  */
 function manufacturingJobMaterials({ materials, runs, materialEfficiency, facilityModifiers, productType }) {
-  if (!Array.isArray(materials) || !Number.isSafeInteger(runs) || runs <= 0 || !Number.isSafeInteger(materialEfficiency) || materialEfficiency < 0) {
+  const amounts = facilityAmounts(facilityModifiers, productType);
+  if (!Array.isArray(materials) || !aCount(runs) || !Number.isSafeInteger(materialEfficiency) || materialEfficiency < 0 || amounts === null) {
     return null;
   }
-  const amounts = [];
-  for (const modifier of facilityModifiers || []) {
-    if (!Array.isArray(modifier) || !aNumber(modifier[0])) {
-      return null;
-    }
-    if (modifierMatchesProduct(modifier, productType)) {
-      amounts.push(modifier[0]);
-    }
+  return materialsTaken(materials, materialEfficiency ? [1.0 - materialEfficiency / 100.0, ...amounts] : amounts, runs, runs);
+}
+
+/**
+ * A copy job's materials, each type to its quantity, as the client's own job reckons them (industry/job.py
+ * _get_materials, 470 to 485): as a manufacturing job's are, but that the blueprint's material research is not in
+ * them (a copy job has no modifier of the blueprint's), and that the quantity is for every run of every copy
+ * (activities/copying.py job_material_runs, 18: the copies times the runs each is licensed for). Never fewer than
+ * one a copy.
+ *
+ * A blueprint whose copying lists no materials takes none: an empty map, which is what the client's job sends.
+ * Null where any input is not what it should be.
+ */
+function copyingJobMaterials({ materials, runs, licensedRuns, facilityModifiers, productType }) {
+  const amounts = facilityAmounts(facilityModifiers, productType);
+  if (!Array.isArray(materials) || !aCount(runs) || !aCount(licensedRuns) || amounts === null) {
+    return null;
   }
+  return materialsTaken(materials, amounts, runs * licensedRuns, runs);
+}
+
+/**
+ * What a job takes of each material listed, as the client's job makes each quantity whole (industry/job.py 473 to
+ * 479): the blueprint's own quantity, times each amount in turn, times the runs the materials are for, rounded to
+ * two places as Python rounds, taken up to the whole, and never fewer than the job's runs. Null where a material is
+ * not what it should be.
+ */
+function materialsTaken(materials, amounts, materialRuns, runs) {
   const taken = {};
   for (const material of materials) {
     const typeID = material ? material.typeID : null;
@@ -280,13 +379,10 @@ function manufacturingJobMaterials({ materials, runs, materialEfficiency, facili
       return null;
     }
     let quantity = base;
-    if (materialEfficiency) {
-      quantity *= 1.0 - materialEfficiency / 100.0;
-    }
     for (const amount of amounts) {
       quantity *= amount;
     }
-    quantity *= runs;
+    quantity *= materialRuns;
     const whole = Math.max(Math.ceil(roundToTwoPlaces(quantity)), runs);
     if (!Number.isSafeInteger(whole)) {
       return null;
@@ -353,15 +449,32 @@ function facilityTaxRate(facilityRow, serviceID) {
 const aBase = (price, runs) => aNumber(price) && price >= 0 && Number.isSafeInteger(runs) && runs > 0;
 
 /**
+ * A copy job's base, not rounded, of which its cost, its tax and its surcharges are taken (activities/copying.py
+ * job_cost, 15): the blueprint's price, times COST_PERCENTAGE, times the runs each copy is licensed for, times the
+ * copies, in that order. Null where an input is not what it should be.
+ */
+function copyingJobBase({ blueprintPrice: price, runs, licensedRuns }) {
+  return aBase(price, runs) && aCount(licensedRuns) ? price * COST_PERCENTAGE * licensedRuns * runs : null;
+}
+
+/**
  * A manufacturing job's tax in whole ISK, as the client's own job reckons it (industry/job.py _get_tax, 450 to
  * 458): the base rounded (base_cost, 127 to 130: int(round(job_cost))) times the facility's rate (facilityTaxRate),
  * rounded. Null where there is no rate, or an input is not what it should be.
  */
 function manufacturingJobTax({ blueprintPrice: price, runs, facilityTax }) {
-  if (!aBase(price, runs) || !aNumber(facilityTax)) {
-    return null;
-  }
-  return Math.round(Math.round(price * runs) * facilityTax);
+  return aBase(price, runs) ? taxOn(price * runs, facilityTax) : null;
+}
+
+/** A copy job's tax in whole ISK, likewise, of the copy job's own base (copyingJobBase). */
+function copyingJobTax({ blueprintPrice, runs, licensedRuns, facilityTax }) {
+  const base = copyingJobBase({ blueprintPrice, runs, licensedRuns });
+  return base === null ? null : taxOn(base, facilityTax);
+}
+
+/** A job's tax of its base (industry/job.py _get_tax, 450 to 458): the base rounded, times the facility's rate, rounded. */
+function taxOn(base, facilityTax) {
+  return aNumber(facilityTax) ? Math.round(Math.round(base) * facilityTax) : null;
 }
 
 /**
@@ -373,12 +486,26 @@ function manufacturingJobTax({ blueprintPrice: price, runs, facilityTax }) {
  *
  * Null where a part is no whole amount or an input is no number: no fee is said of a guess.
  */
-function manufacturingJobFee({ blueprintPrice: price, runs, cost, tax, sccTaxModifier, security }) {
+function manufacturingJobFee({ blueprintPrice: price, runs, ...charges }) {
+  return aBase(price, runs) ? feeOn(price * runs, charges) : null;
+}
+
+/**
+ * What a copy job costs to start, likewise, of the copy job's own base (copyingJobBase). The SCC's surcharge is
+ * whole for a copy: it is a research job's that is halved (industry/job.py 144).
+ */
+function copyingJobFee({ blueprintPrice, runs, licensedRuns, ...charges }) {
+  const base = copyingJobBase({ blueprintPrice, runs, licensedRuns });
+  return base === null ? null : feeOn(base, charges);
+}
+
+/** What a job costs to start, of its base (industry/job.py total_cost, 132 to 135, and what it adds up). */
+function feeOn(base, { cost, tax, sccTaxModifier, security }) {
   const anAmount = (value) => Number.isSafeInteger(value) && value >= 0;
-  if (!aBase(price, runs) || !anAmount(cost) || !anAmount(tax) || !aNumber(sccTaxModifier) || !aNumber(security)) {
+  if (!anAmount(cost) || !anAmount(tax) || !aNumber(sccTaxModifier) || !aNumber(security)) {
     return null;
   }
-  const baseCost = Math.round(price * runs);
+  const baseCost = Math.round(base);
   const sccSurcharge = Math.round(baseCost * Math.max(0, SCC_SURCHARGE_RATE * sccTaxModifier));
   const securityTax = security >= SAFE_SECURITY_FROM ? Math.round(baseCost * INDUSTRY_SECURITY_TAX_RATE) : 0;
   return { cost, tax, sccSurcharge, securityTax, total: cost + tax + sccSurcharge + securityTax };
@@ -444,14 +571,25 @@ function blueprintPrice(typeID, lookups, within = new Set()) {
  * Null where any input is not what it should be: no cost is made of a guess, and nought is sent instead, which
  * the server does not check.
  */
-function manufacturingJobCost({ blueprintPrice: price, runs, blueprintAmount, alpha, faction, system, facilityModifiers, productType }) {
-  if (!aNumber(price) || price < 0 || !Number.isSafeInteger(runs) || runs <= 0) {
-    return null;
-  }
+function manufacturingJobCost({ blueprintPrice: price, runs, ...modifiers }) {
+  return aBase(price, runs) ? costOn(price * runs, modifiers) : null;
+}
+
+/**
+ * A copy job's cost in whole ISK, likewise, of the copy job's own base (copyingJobBase), through the cost modifiers
+ * the job has for copying: the blueprint type's own multiplier and an alpha clone's added one are of any kind of
+ * work (industryCommon.BLUEPRINT_MODIFIERS, 47; GetJobModifiers, 510).
+ */
+function copyingJobCost({ blueprintPrice, runs, licensedRuns, ...modifiers }) {
+  const base = copyingJobBase({ blueprintPrice, runs, licensedRuns });
+  return base === null ? null : costOn(base, modifiers);
+}
+
+/** A job's cost of its base, not rounded (industry/job.py _get_cost_for_modifiers, 310 to 320). */
+function costOn(base, { blueprintAmount, alpha, faction, system, facilityModifiers, productType }) {
   if ((blueprintAmount !== null && !aNumber(blueprintAmount)) || typeof alpha !== "boolean" || !aNumber(faction) || !aNumber(system)) {
     return null;
   }
-  const base = price * runs;
   let cost = base;
   if (blueprintAmount !== null) {
     cost *= blueprintAmount;
@@ -485,9 +623,17 @@ function inventionProductTypeID(invention, requested) {
 }
 
 module.exports = {
+  COPYING_MAX_RUNS,
   DECRYPTOR_GROUP_ID,
   INVENTION_ACTIVITY_ID,
+  SERVICE_LABORATORY_COPYING,
   blueprintPrice,
+  copyingJobCost,
+  copyingJobFee,
+  copyingJobMaterials,
+  copyingJobMostRuns,
+  copyingJobSeconds,
+  copyingJobTax,
   facilityCharges,
   facilityCostModifiers,
   facilityGlobalModifiers,

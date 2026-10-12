@@ -84,6 +84,21 @@ export const ACTIVITY_ORDER: readonly IndustryActivity[] = [
   "reaction",
 ];
 
+/**
+ * Whether a kind of work is for a blueprint as it is, an original or a copy. A copy is not copied or researched,
+ * nor is a reaction run from one, and only a copy is invented from. The game's own client offers a blueprint no
+ * other work, and the server refuses any other (INCOMPATIBLE_ACTIVITY).
+ */
+export function activityIsFor(activity: IndustryActivity, original: boolean): boolean {
+  if (activity === "manufacturing") {
+    return true;
+  }
+  return activity === "invention" ? !original : original;
+}
+
+/** The most copies one copy job makes: the game's own client holds a job to it, and the server refuses more. */
+export const MOST_COPIES_A_JOB = 500;
+
 /** status code -> status name (industryConstants.INDUSTRY_STATUS). */
 const STATUS_BY_ID: Readonly<Record<number, IndustryJobStatus>> = {
   0: "unsubmitted",
@@ -458,6 +473,9 @@ export function recipeFor(
  * its full listed materials no matter how well researched the blueprint is.
  * Applying the discount everywhere would under-quote the player.
  *
+ * A COPY JOB'S MATERIALS ARE FOR EVERY RUN OF EVERY COPY: `licensedRuns` is
+ * the runs each copy is licensed for, and counts for a copy job alone.
+ *
  * ⚠ THIS IS A PREVIEW, NOT A PREDICTION. The server recomputes materials from
  * the same static definition PLUS facility rig/structure bonuses this cannot
  * see, so its final figure can be lower. The panel labels this "about", and
@@ -469,10 +487,12 @@ export function previewMaterials(
   recipe: IndustryRecipe | null,
   runs: number,
   materialEfficiency: number,
+  licensedRuns = 1,
 ): readonly IndustryMaterial[] {
   if (!recipe || runs <= 0) {
     return [];
   }
+  const materialRuns = recipe.activity === "copying" ? runs * Math.max(1, licensedRuns) : runs;
   const efficiency =
     recipe.activity === "manufacturing"
       ? Math.max(0, Math.min(100, materialEfficiency)) / 100
@@ -481,22 +501,27 @@ export function previewMaterials(
     typeID: material.typeID,
     quantity: Math.max(
       runs,
-      Math.ceil(material.quantity * runs * (1 - efficiency)),
+      Math.ceil(material.quantity * materialRuns * (1 - efficiency)),
     ),
   }));
 }
 
-/** Base seconds for `runs` runs, with the blueprint's time efficiency applied. */
+/**
+ * Base seconds for `runs` runs. The blueprint's time efficiency is in a manufacturing job's time alone, and a
+ * copy job's time is by the runs each copy is licensed for (`licensedRuns`) too.
+ */
 export function previewTimeSeconds(
   recipe: IndustryRecipe | null,
   runs: number,
   timeEfficiency: number,
+  licensedRuns = 1,
 ): number {
   if (!recipe || runs <= 0) {
     return 0;
   }
-  const efficiency = Math.max(0, Math.min(100, timeEfficiency)) / 100;
-  return Math.ceil(recipe.timeSeconds * runs * (1 - efficiency));
+  const efficiency = recipe.activity === "manufacturing" ? Math.max(0, Math.min(100, timeEfficiency)) / 100 : 0;
+  const eachRun = recipe.activity === "copying" ? Math.max(1, licensedRuns) : 1;
+  return Math.ceil(recipe.timeSeconds * eachRun * runs * (1 - efficiency));
 }
 
 /**

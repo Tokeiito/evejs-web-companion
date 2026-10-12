@@ -840,7 +840,9 @@ test("install sends ONE POSITIONAL DICT with the fields the server actually read
   assert.equal(payload.activityID, ACTIVITY_MANUFACTURING, "the browser named the activity; the BFF maps it");
   assert.equal(payload.facilityID, STATION_ID);
   assert.equal(payload.runs, 3);
-  assert.equal(payload.licensedRuns, 1);
+  // The runs a copy would be licensed for go with any job, as the client's job has them: the most the blueprint
+  // allows (industrySvc._ApplyJobSettings, 357), which only a copy job's window gives the pilot a way to change.
+  assert.equal(payload.licensedRuns, 300);
   // Scoped to the HELD session, never to a browser-supplied identity.
   assert.equal(payload.characterID, CHARACTER_ID);
   assert.equal(payload.solarSystemID, SOLAR_SYSTEM_ID);
@@ -958,7 +960,7 @@ test("a manufacturing job's materials are the client's own reckoning, in the pre
   const facility = facilityRow();
   facility.args.entries.find(([name]) => name === "activities")[1] = dict([
     [ACTIVITY_MANUFACTURING, { type: "tuple", items: [list([]), list([[0.99, null, null, null, 12]]), list([])] }],
-    [ACTIVITY_COPYING, { type: "tuple", items: [list([]), list([[0.5, null, null, null, 12]]), list([])] }],
+    [8, { type: "tuple", items: [list([]), list([[0.5, null, null, null, 12]]), list([])] }],
   ]);
   const gateway = fakeIndustryGateway({ facility });
   const { baseUrl } = await startTestServer({ gateway });
@@ -978,9 +980,10 @@ test("a manufacturing job's materials are the client's own reckoning, in the pre
   const unsaid = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody() });
   await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody() });
   assert.deepEqual([unsaid.payload.materials, jobs("ConnectJob").at(-1).materials, jobs("InstallJob").at(-1).materials], [null, {}, {}]);
-  // Any other kind of work: none are reckoned, though the research is said and the facility has a modifier for it.
-  const copying = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ activity: "copying", materialEfficiency: 10 }) });
-  assert.deepEqual([copying.payload.materials, jobs("ConnectJob").at(-1).materials], [null, {}]);
+  // A kind of work that is not reckoned (a copy job's are: below): none are reckoned, though the research is said
+  // and the facility has a modifier for it.
+  const invention = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ activity: "invention", materialEfficiency: 10 }) });
+  assert.deepEqual([invention.payload.materials, jobs("ConnectJob").at(-1).materials], [null, {}]);
   // A facility that is not among those read: none are reckoned.
   const elsewhere = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ facilityID: STATION_ID + 1, materialEfficiency: 10 }) });
   assert.deepEqual([elsewhere.payload.materials, jobs("ConnectJob").at(-1).materials], [null, {}]);
@@ -1108,12 +1111,12 @@ test("where a job's time cannot be reckoned whole it goes as nought, as it did, 
     assert.equal(sentJobs(unread, "InstallJob")[0].time, 0);
   }
 
-  // Any other kind of work: nothing is asked for its time, which goes as nought.
+  // A kind of work that is not reckoned (a copy job's is: below): nothing is asked for its time, which goes as nought.
   const gateway = fakeIndustryGateway({ timeMultiplier: 0.68 });
   const third = await startTestServer({ gateway });
   await selectOnServer(third.baseUrl);
   const invention = await apiRequest(third.baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ activity: "invention", timeEfficiency: 5 }) });
-  await apiRequest(third.baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ activity: "copying" }) });
+  await apiRequest(third.baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ activity: "invention" }) });
   assert.deepEqual([invention.payload.timeSeconds, sentJobs(gateway, "ConnectJob")[0].time, sentJobs(gateway, "InstallJob")[0].time], [null, 0, 0]);
   assert.deepEqual([gateway.calls.bound.length, gateway.calls.topLevel.some((call) => call.method === "GetFacilities")], [0, false]);
 
@@ -1256,9 +1259,9 @@ test("on the game port a manufacturing job's cost is the client's own reckoning,
   state.table = false;
   assert.equal((await install()).cost, 0);
   state.table = true;
-  // Any other kind of work: nought goes, and no price is read for it.
+  // A kind of work that is not reckoned (a copy job's is: below): nought goes, and no price is read for it.
   const before = state.priced.length;
-  assert.deepEqual([(await install({ activity: "copying" })).cost, state.priced.length], [0, before]);
+  assert.deepEqual([(await install({ activity: "invention" })).cost, state.priced.length], [0, before]);
   // The job's facility is asked for once for a request, whether the cost alone wants it or the time does too.
   const asked = state.fresh;
   await install();
@@ -1326,8 +1329,8 @@ test("on the game port the preview says what the job costs to start, as the clie
   assert.deepEqual(await previewed(), { cost: 5284, tax: 1321, sccSurcharge: 5284, securityTax: 0, total: 11889 });
   // The security read is the facility's system's, and not the pilot's.
   assert.deepEqual([asked.at(-1), A_SYSTEM_AWAY === SOLAR_SYSTEM_ID], [A_SYSTEM_AWAY, false]);
-  // Any other kind of work: no tax is reckoned, nought goes, and no fee is said.
-  const other = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ activity: "copying" }) });
+  // A kind of work that is not reckoned (a copy job's is: below): no tax is reckoned, nought goes, and no fee is said.
+  const other = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ activity: "invention" }) });
   assert.deepEqual([other.payload.fee, sentJobs(gamePort, "ConnectJob").at(-1).tax], [null, 0]);
   await previewed();
   // The tax is in the job as the cost is: in the preview's request and the install's.
@@ -1887,4 +1890,269 @@ test("a decryptor is refused on anything but invention, and anything but a decry
     assert.equal(payload.error, "INVALID_DECRYPTOR");
     assert.equal(gateway.calls.topLevel.some((call) => call.method === "InstallJob"), false);
   }
+});
+
+// --- a copy job, by the client's own reckoning ---------------------------------
+//
+// industry/activities/copying.py, 12 to 19, and what a job has of every kind of work (src/industryInstall.js: the
+// copy job's time, its most runs, its materials, its cost, its tax and its fee; test/industryJobCopy.test.js has
+// each against the client's own Python's answers).
+
+/** The game's data with a blueprint's copying said as a test wants it. */
+function staticDataCopying(copying) {
+  const plain = fakeStaticData();
+  return {
+    ...plain,
+    getIndustryBlueprint(blueprintTypeID) {
+      const definition = plain.getIndustryBlueprint(blueprintTypeID);
+      if (definition) definition.activities.copying = copying;
+      return definition;
+    },
+    // (A skill that takes 1% off a job's time a level: it is of a manufacturing job's time alone.)
+    getTypeDogmaAttribute: (typeID, attributeID) => (Number(typeID) === 11452 && Number(attributeID) === 1982 ? -1 : null),
+  };
+}
+
+/** A copy job's request, as the page sends it. */
+const copyBody = (overrides = {}) => installBody({ activity: "copying", ...overrides });
+
+test("a copy job's time and its materials are the client's own reckoning, by the runs each copy is licensed for, in the preview's request and the install's", async () => {
+  // The blueprint's copying takes 480 s and 5 of one material for each run of each copy, and requires a skill that
+  // has a time per level; a pilot whose copy speed is 0.75; a facility that takes 15% off a copy job's time and 2%
+  // off its materials, and half off a manufacturing job's of each.
+  const staticData = staticDataCopying({ time: 480, materials: [{ typeID: MATERIAL_TYPE_ID, quantity: 5 }], skills: [{ typeID: 11452, level: 1 }] });
+  const facility = facilityRow();
+  facility.args.entries.find(([name]) => name === "activities")[1] = dict([
+    [ACTIVITY_MANUFACTURING, { type: "tuple", items: [list([[0.5, null, null, null, 12]]), list([[0.5, null, null, null, 12]]), list([])] }],
+    [ACTIVITY_COPYING, { type: "tuple", items: [list([[0.85, null, null, null, 12]]), list([[0.98, null, null, null, 12]]), list([])] }],
+  ]);
+  const gateway = fakeIndustryGateway({ timeMultiplier: 0.75, facility });
+  const sheets = [];
+  gateway.getSkills = async (...asked) => { sheets.push(asked); return { skills: [{ typeID: 11452, level: 5 }] }; };
+  const { baseUrl } = await startTestServer({ gateway, staticData });
+  await selectOnServer(baseUrl);
+
+  // 25 copies of 2 runs each: 480 x 2 x 25 x 0.75 x 0.85 = 15300 s, and 5 x 0.98 x (25 x 2) = 245.
+  const body = copyBody({ runs: 25, licensedRuns: 2 });
+  const preview = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body });
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body });
+  const [previewed, installed] = [sentJobs(gateway, "ConnectJob")[0], sentJobs(gateway, "InstallJob")[0]];
+  assert.deepEqual([preview.payload.timeSeconds, previewed.time, installed.time], [15300, 15300, 15300]);
+  assert.deepEqual([preview.payload.materials, previewed.materials, installed.materials], [{ [MATERIAL_TYPE_ID]: 245 }, { [MATERIAL_TYPE_ID]: 245 }, { [MATERIAL_TYPE_ID]: 245 }]);
+  assert.deepEqual([previewed.activityID, previewed.runs, previewed.licensedRuns, installed.licensedRuns], [ACTIVITY_COPYING, 25, 2, 2]);
+  // The pilot's copy speed is asked of its dogma location (387), and not its manufacturing time (219); and no
+  // skill's level is asked for, though the copying requires one that has a time per level.
+  assert.deepEqual(gateway.calls.bound.map((call) => [call.method, call.args]), [["QueryAttributeValue", [CHARACTER_ID, 387]], ["QueryAttributeValue", [CHARACTER_ID, 387]]]);
+  assert.equal(sheets.length, 0);
+  // Through the gateway the cost and the tax go as nought still: a pilot there has no table of prices.
+  assert.deepEqual([installed.cost, installed.tax, preview.payload.fee], [0, 0, null]);
+
+  // The blueprint's research is in neither, whatever is said of it, or nothing.
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: { ...body, timeEfficiency: 20, materialEfficiency: 10 } });
+  assert.deepEqual([sentJobs(gateway, "InstallJob")[1].time, sentJobs(gateway, "InstallJob")[1].materials], [15300, { [MATERIAL_TYPE_ID]: 245 }]);
+  // Nothing said of the runs each copy is licensed for: the most the blueprint allows, three hundred, as the
+  // client's job begins. One copy: 480 x 300 x 1 x 0.75 x 0.85 = 91800 s, and 5 x 0.98 x 300 = 1470.
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: copyBody({ runs: 1 }) });
+  const most = sentJobs(gateway, "InstallJob")[2];
+  assert.deepEqual([most.licensedRuns, most.time, most.materials], [300, 91800, { [MATERIAL_TYPE_ID]: 1470 }]);
+
+  // A blueprint whose copying lists no materials takes none, and the preview says so: an empty map, and not nothing.
+  const bare = fakeIndustryGateway({ timeMultiplier: 0.75, facility });
+  const second = await startTestServer({ gateway: bare });
+  await selectOnServer(second.baseUrl);
+  const none = await apiRequest(second.baseUrl, "/api/bridge/industry/preview", { method: "POST", body });
+  assert.deepEqual([none.payload.materials, sentJobs(bare, "ConnectJob")[0].materials, none.payload.timeSeconds], [{}, {}, 15300]);
+  // A facility that is not among those read: neither is reckoned, and nought and an empty map go, as they did.
+  const elsewhere = await apiRequest(second.baseUrl, "/api/bridge/industry/preview", { method: "POST", body: { ...body, facilityID: STATION_ID + 1 } });
+  assert.deepEqual([elsewhere.payload.materials, elsewhere.payload.timeSeconds, sentJobs(bare, "ConnectJob")[1].time, sentJobs(bare, "ConnectJob")[1].materials], [null, null, 0, {}]);
+});
+
+test("a copy job of more copies than the client's job can have is refused before the job is sent, where that most could be reckoned", async () => {
+  // industry/job.py 395 and activity.py 34 to 36: the client's job holds its runs to the most it can have. A
+  // blueprint whose copy takes 96000 s, and a pilot whose copy speed is 0.75: 2592000 / 96000 / 0.75 = 36.
+  const gateway = fakeIndustryGateway({ timeMultiplier: 0.75 });
+  const { baseUrl } = await startTestServer({ gateway, staticData: staticDataCopying({ time: 96000 }) });
+  await selectOnServer(baseUrl);
+  for (const route of ["preview", "install"]) {
+    const { response, payload } = await apiRequest(baseUrl, `/api/bridge/industry/${route}`, { method: "POST", body: copyBody({ runs: 37, licensedRuns: 1 }) });
+    assert.deepEqual([response.status, payload.error], [400, "INVALID_RUNS"], route);
+    assert.match(payload.message, /at most 36 copies/);
+  }
+  assert.deepEqual([sentJobs(gateway, "ConnectJob").length, sentJobs(gateway, "InstallJob").length], [0, 0]);
+  // Thirty-six go, however many runs each is licensed for.
+  const most = await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: copyBody({ runs: 36, licensedRuns: 300 }) });
+  assert.deepEqual([most.response.status, sentJobs(gateway, "InstallJob").map((job) => [job.runs, job.licensedRuns])], [200, [[36, 300]]]);
+
+  // Never more than five hundred, however short the copy: the blueprint of the fixture, at 480 s.
+  const short = fakeIndustryGateway({ timeMultiplier: 0.75 });
+  const second = await startTestServer({ gateway: short });
+  await selectOnServer(second.baseUrl);
+  const over = await apiRequest(second.baseUrl, "/api/bridge/industry/install", { method: "POST", body: copyBody({ runs: 501, licensedRuns: 1 }) });
+  assert.deepEqual([over.response.status, over.payload.error, sentJobs(short, "InstallJob").length], [400, "INVALID_RUNS", 0]);
+  assert.match(over.payload.message, /at most 500 copies/);
+  await apiRequest(second.baseUrl, "/api/bridge/industry/install", { method: "POST", body: copyBody({ runs: 500, licensedRuns: 1 }) });
+  assert.deepEqual(sentJobs(short, "InstallJob").map((job) => job.runs), [500]);
+  // A manufacturing job's runs are not held to a copy job's most.
+  await apiRequest(second.baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ runs: 501, timeEfficiency: 0 }) });
+  assert.deepEqual(sentJobs(short, "InstallJob").map((job) => job.runs), [500, 501]);
+
+  // Where the most could not be reckoned (the pilot's copy speed could not be asked), the job is the server's to judge.
+  const unasked = fakeIndustryGateway({ attributeRefused: true });
+  const third = await startTestServer({ gateway: unasked });
+  await selectOnServer(third.baseUrl);
+  const sent = await apiRequest(third.baseUrl, "/api/bridge/industry/install", { method: "POST", body: copyBody({ runs: 501, licensedRuns: 1 }) });
+  assert.deepEqual([sent.response.status, sentJobs(unasked, "InstallJob").map((job) => [job.runs, job.time])], [200, [[501, 0]]]);
+});
+
+test("the runs each copy is licensed for are a whole number from one to the most the blueprint allows, or the request is refused before anything is asked; any other job's are that most", async () => {
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  for (const licensedRuns of [0, -1, 301, 2.5, "10", true]) {
+    for (const route of ["preview", "install"]) {
+      const { response, payload } = await apiRequest(baseUrl, `/api/bridge/industry/${route}`, { method: "POST", body: copyBody({ licensedRuns }) });
+      assert.deepEqual([response.status, payload.error], [400, "INVALID_LICENSED_RUNS"], `${route} ${licensedRuns}`);
+      assert.match(payload.message, /from 1 to 300/);
+    }
+  }
+  assert.deepEqual([gateway.calls.topLevel.length, gateway.calls.bound.length], [0, 0]);
+
+  const licensed = async (body, base = baseUrl, through = gateway) => {
+    const { response } = await apiRequest(base, "/api/bridge/industry/install", { method: "POST", body });
+    return [response.status, response.status === 200 ? sentJobs(through, "InstallJob").at(-1).licensedRuns : null];
+  };
+  // One and the most go as they were said; nothing said, or null, is the most.
+  assert.deepEqual([await licensed(copyBody({ licensedRuns: 1 })), await licensed(copyBody({ licensedRuns: 300 })), await licensed(copyBody()), await licensed(copyBody({ licensedRuns: null }))],
+    [[200, 1], [200, 300], [200, 300], [200, 300]]);
+  // Any other kind of work: the most, whatever is said of them, and whatever is said is not refused.
+  assert.deepEqual([await licensed(installBody({ licensedRuns: 7 })), await licensed(installBody({ licensedRuns: "seven" })), await licensed(installBody({ activity: "invention", licensedRuns: 0 }))],
+    [[200, 300], [200, 300], [200, 300]]);
+
+  // A blueprint whose type has no limit: one, and no other.
+  const plain = fakeStaticData();
+  const unlimited = { ...plain, getIndustryBlueprint: (blueprintTypeID) => { const definition = plain.getIndustryBlueprint(blueprintTypeID); if (definition) definition.maxProductionLimit = null; return definition; } };
+  const bare = fakeIndustryGateway();
+  const second = await startTestServer({ gateway: bare, staticData: unlimited });
+  await selectOnServer(second.baseUrl);
+  assert.deepEqual([await licensed(copyBody(), second.baseUrl, bare), await licensed(copyBody({ licensedRuns: 1 }), second.baseUrl, bare), await licensed(copyBody({ licensedRuns: 2 }), second.baseUrl, bare), await licensed(installBody(), second.baseUrl, bare)],
+    [[200, 1], [200, 1], [400, null], [200, 1]]);
+  // A blueprint the game's data has not: there is no most to hold them to. What is said goes, where it is a
+  // whole number above nought, and one where nothing is said.
+  const unknown = { blueprintTypeID: 999_999 };
+  assert.deepEqual([await licensed(copyBody({ ...unknown, licensedRuns: 7 })), await licensed(copyBody(unknown)), await licensed(installBody(unknown)), await licensed(copyBody({ ...unknown, licensedRuns: 0 }))],
+    [[200, 7], [200, 1], [200, 1], [400, null]]);
+});
+
+test("on the game port a copy job's cost, its tax and what it costs to start are the client's own reckoning, of the copy job's own base", async () => {
+  // activities/copying.py 15: the blueprint's price x 0.02 x the licensed runs x the copies. The blueprint's price
+  // is by its manufacturing materials, as a manufacturing job's is: 86 of the one material at 512, which is 44032.
+  // Ten licensed runs and three copies: a base of 26419.2. The facility's cost modifier for copying is 0.04 (and
+  // for manufacturing another), its tax 0.01 and the SCC's modifier 1.
+  const A_SYSTEM_AWAY = 30000144;
+  const activities = dict([
+    [ACTIVITY_MANUFACTURING, { type: "tuple", items: [list([]), list([]), list([[0.5, null, null, null, 4]])] }],
+    [ACTIVITY_COPYING, { type: "tuple", items: [list([]), list([]), list([[0.04, null, null, null, 4]])] }],
+  ]);
+  const facilityWith = (overrides = {}, [faction, manufacturingSystem, copyingSystem] = [1, 1, 1]) => {
+    const row = facilityRow({ solarSystemID: A_SYSTEM_AWAY, ...overrides });
+    row.args.entries.push(["globalModifiers", dict([["faction", faction], ["system", dict([[ACTIVITY_MANUFACTURING, manufacturingSystem], [ACTIVITY_COPYING, copyingSystem]])]])]);
+    row.args.entries.find(([name]) => name === "activities")[1] = activities;
+    return row;
+  };
+  const state = { facility: facilityWith(), security: 0.9, grade: 1, prices: { [MATERIAL_TYPE_ID]: 512 } };
+  const plain = fakeIndustryGateway({ timeMultiplier: 0.75 });
+  const jobsSaid = [];
+  const gamePort = {
+    ...plain,
+    async selectCharacter() {
+      return {
+        bridgeSessionID: "gp:a-pilot-on-the-game-port", service: "charUnboundMgr", method: "SelectCharacterID", result: null, notifications: [],
+        session: { userid: 4, characterID: CHARACTER_ID, characterName: "Test Pilot", stationID: STATION_ID, structureID: null, solarSystemID: SOLAR_SYSTEM_ID, corporationID: 98000000, shipID: ACTIVE_SHIP_ID },
+      };
+    },
+    async callMethod(service, method, ...rest) {
+      if (service === "subscriptionMgr" && method === "GetCloneGrade") return { service, method, result: state.grade, notifications: [] };
+      return plain.callMethod(service, method, ...rest);
+    },
+    async freshFacility(sessionFields, bridgeSessionID, facilityID, job) {
+      jobsSaid.push(job);
+      return state.facility;
+    },
+    averageMarketPrice(sessionFields, bridgeSessionID, typeID) {
+      return Object.hasOwn(state.prices, typeID) ? { averagePrice: null, adjustedPrice: state.prices[typeID] } : { averagePrice: null, adjustedPrice: null };
+    },
+  };
+  const staticData = { ...fakeStaticData(), getSolarSystem: () => ({ security: state.security }) };
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, staticData });
+  await selectOnServer(baseUrl);
+  const body = copyBody({ runs: 3, licensedRuns: 10 });
+  const previewed = async (overrides = {}, base = baseUrl) => (await apiRequest(base, "/api/bridge/industry/preview", { method: "POST", body: { ...body, ...overrides } })).payload.fee;
+  const installed = async (overrides = {}, base = baseUrl) => {
+    await apiRequest(base, "/api/bridge/industry/install", { method: "POST", body: { ...body, ...overrides } });
+    return sentJobs(gamePort, "InstallJob").at(-1);
+  };
+
+  // The cost 26419.2 x 0.04 = 1056.768; the tax 26419 x 0.01 = 264.19; the surcharge 26419 x 0.04 = 1056.76.
+  assert.deepEqual(await previewed(), { cost: 1057, tax: 264, sccSurcharge: 1057, securityTax: 0, total: 2378 });
+  const sent = await installed();
+  assert.deepEqual([sentJobs(gamePort, "ConnectJob")[0].cost, sentJobs(gamePort, "ConnectJob")[0].tax, sent.cost, sent.tax], [1057, 264, 1057, 264]);
+  // The job's time is in it too, by the copy speed the pilot's transport answered: 480 x 10 x 3 x 0.75.
+  assert.equal(sent.time, 10800);
+  // The facility was asked for as the facility of that job: its blueprint, and copying.
+  assert.deepEqual(jobsSaid.at(-1), { blueprintID: BLUEPRINT_ITEM_ID, activityID: ACTIVITY_COPYING });
+  // The runs each copy is licensed for are in the base. Nothing said of them: three hundred, 792576 x 0.04, and
+  // the tax 792576 x 0.01.
+  const most = await installed({ licensedRuns: undefined });
+  assert.deepEqual([most.licensedRuns, most.cost, most.tax], [300, 31703, 7926]);
+  // An alpha clone's job costs a quarter of a percent of the base more: 1056.768 + 66.048.
+  state.grade = 0;
+  assert.equal((await installed()).cost, 1123);
+  state.grade = 1;
+  // A system of security 0.95 and over has a security tax of 5% of the base beside them: 1320.95.
+  state.security = 0.95;
+  assert.deepEqual(await previewed(), { cost: 1057, tax: 264, sccSurcharge: 1057, securityTax: 1321, total: 3699 });
+  state.security = 0.9;
+  // In a structure the tax is by the access of the service a structure copies by (33), and of no other: 26419 x 0.0325.
+  state.facility = facilityWith({ tax: null, serviceAccess: dict([[22, 0.05], [33, 0.0325]]) });
+  assert.deepEqual([(await installed()).tax, (await previewed()).tax], [859, 859]);
+  // And nought where the structure says nothing for that service.
+  state.facility = facilityWith({ tax: null, serviceAccess: dict([[22, 0.05]]) });
+  assert.equal((await previewed()).tax, 0);
+  // The faction's cost modifier and the system's are in the cost, and the system's is the one for copying:
+  // 26419.2 x 0.9 x 0.5 x 0.04 = 475.5456.
+  state.facility = facilityWith({}, [0.9, 0.25, 0.5]);
+  assert.equal((await installed()).cost, 476);
+  state.facility = facilityWith();
+  // A pilot with no price for the material: the blueprint is priced at nought, as the client prices it, and so is the job.
+  state.prices = {};
+  assert.deepEqual(await previewed(), { cost: 0, tax: 0, sccSurcharge: 0, securityTax: 0, total: 0 });
+  state.prices = { [MATERIAL_TYPE_ID]: 512 };
+  // And nothing of the pilot's went to the gateway.
+  assert.equal(gateway.calls.topLevel.length, 0);
+
+  // A blueprint that has no manufacturing is priced by its own type, as the client prices it: at 1,000,000 a base
+  // of 600000, a cost of 24000 and a tax of 6000. One the table has no price for is priced at nought.
+  const copied = fakeStaticData();
+  const copiedOnly = {
+    ...copied,
+    getSolarSystem: () => ({ security: 0.9 }),
+    getIndustryBlueprint(blueprintTypeID) {
+      const definition = copied.getIndustryBlueprint(blueprintTypeID);
+      if (definition) delete definition.activities.manufacturing;
+      return definition;
+    },
+  };
+  const second = await startTestServer({ gateway: fakeIndustryGateway(), gamePortPilots: gamePort, staticData: copiedOnly });
+  await selectOnServer(second.baseUrl);
+  state.prices = { [BLUEPRINT_TYPE_ID]: 1_000_000 };
+  assert.deepEqual(await previewed({}, second.baseUrl), { cost: 24000, tax: 6000, sccSurcharge: 24000, securityTax: 0, total: 54000 });
+  state.prices = {};
+  assert.deepEqual(await previewed({}, second.baseUrl), { cost: 0, tax: 0, sccSurcharge: 0, securityTax: 0, total: 0 });
+  // A manufacturing job with such a blueprint is not reckoned at all, whatever its type is priced at: no fee is
+  // said, and nought goes for its cost and its tax.
+  state.prices = { [BLUEPRINT_TYPE_ID]: 1_000_000 };
+  const unmade = await apiRequest(second.baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody() });
+  const asked = sentJobs(gamePort, "ConnectJob").at(-1);
+  assert.deepEqual([unmade.payload.fee, asked.activityID, asked.cost, asked.tax], [null, ACTIVITY_MANUFACTURING, 0, 0]);
 });

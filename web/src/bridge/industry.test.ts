@@ -17,8 +17,10 @@ import assert from "node:assert/strict";
 import {
   ACTIVITY_LABELS,
   ACTIVITY_ORDER,
+  MOST_COPIES_A_JOB,
   STATUS_LABELS,
   activityIDOf,
+  activityIsFor,
   activityOfID,
   decodeBlueprints,
   decodeDefinition,
@@ -338,6 +340,31 @@ test("the time preview applies time efficiency", () => {
   assert.equal(previewTimeSeconds(recipe, 2, 0), 1200);
   assert.equal(previewTimeSeconds(recipe, 2, 20), 960);
   assert.equal(previewTimeSeconds(null, 2, 0), 0);
+});
+
+test("a kind of work is for an original or for a copy, and manufacturing for either", () => {
+  // The game's own client's activities (industry/activities: REQUIRES_ORIGINAL on copying, the two researches and
+  // a reaction, REQUIRES_COPY on invention), and the server's own refusal of any other.
+  assert.deepEqual(ACTIVITY_ORDER.filter((activity) => activityIsFor(activity, true)), ["manufacturing", "copying", "research_material", "research_time", "reaction"]);
+  assert.deepEqual(ACTIVITY_ORDER.filter((activity) => activityIsFor(activity, false)), ["manufacturing", "invention"]);
+  assert.equal(MOST_COPIES_A_JOB, 500);
+});
+
+test("a copy job's rough materials and time are for every run of every copy, and only a manufacturing job's time has the blueprint's time research", () => {
+  const copying = { activity: "copying" as const, materials: [{ typeID: 38, quantity: 5 }], products: [], timeSeconds: 480 };
+  // 25 copies of 2 runs each: 5 x 50. Said of no licensed runs, one each.
+  assert.deepEqual(previewMaterials(copying, 25, 10, 2), [{ typeID: 38, quantity: 250 }]);
+  assert.deepEqual(previewMaterials(copying, 25, 10), [{ typeID: 38, quantity: 125 }]);
+  assert.deepEqual(previewMaterials(copying, 25, 10, 0), [{ typeID: 38, quantity: 125 }]);
+  // 3 copies of 10 runs each at 480 s a run, and the blueprint's time research not in it.
+  assert.equal(previewTimeSeconds(copying, 3, 20, 10), 14400);
+  assert.equal(previewTimeSeconds(copying, 3, 20), 1440);
+  // A manufacturing job's are by its runs alone, whatever is said of licensed runs, and its time has the research.
+  const manufacturing = recipeFor(decodeDefinition(RAW_DEFINITION), "manufacturing")!;
+  assert.deepEqual(previewMaterials(manufacturing, 3, 10, 30), [{ typeID: 38, quantity: 233 }]);
+  assert.equal(previewTimeSeconds(manufacturing, 2, 20, 30), 960);
+  // A research's time has none of it either.
+  assert.equal(previewTimeSeconds({ activity: "research_time" as const, materials: [], products: [], timeSeconds: 600 }, 2, 20, 30), 1200);
 });
 
 // --- presentation helpers ---------------------------------------------------

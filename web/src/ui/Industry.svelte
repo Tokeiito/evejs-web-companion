@@ -14,7 +14,9 @@
   import {
     ACTIVITY_LABELS,
     ACTIVITY_ORDER,
+    MOST_COPIES_A_JOB,
     STATUS_LABELS,
+    activityIsFor,
     formatDuration,
     isActiveJob,
     previewMaterials,
@@ -85,10 +87,20 @@
     return definition.productTypeID ? typeName(definition.productTypeID) : null;
   }
 
-  /** Which activities a blueprint supports, as names the player can read. */
-  function blueprintActivities(blueprintTypeID: number): readonly IndustryActivity[] {
-    const definition = $industry.definitions[blueprintTypeID];
-    return definition ? definition.recipes.map((recipe) => recipe.activity) : [];
+  /**
+   * The kinds of work a blueprint can be put to, as names the player can read: those its type has a recipe for
+   * that are for the blueprint as it is, an original or a copy (activityIsFor).
+   */
+  function blueprintActivities(blueprint: IndustryBlueprintRow): readonly IndustryActivity[] {
+    const definition = $industry.definitions[blueprint.typeID];
+    return definition
+      ? definition.recipes.map((recipe) => recipe.activity).filter((activity) => activityIsFor(activity, blueprint.original))
+      : [];
+  }
+
+  /** The most runs a copy of a blueprint can be licensed for: its type's own limit, and one where it has none. */
+  function mostLicensedRuns(blueprint: IndustryBlueprintRow): number {
+    return Math.max(1, $industry.definitions[blueprint.typeID]?.maxProductionLimit ?? 1);
   }
 
   /**
@@ -175,6 +187,13 @@
   let chosenActivity = $state<IndustryActivity | null>(null);
   let chosenFacilityID = $state<number | null>(null);
   let chosenRuns = $state(1);
+  /**
+   * A copy job only: the runs each copy is licensed for. The most the blueprint allows until the pilot says
+   * another, which is where the game's own client starts a copy job.
+   */
+  let chosenLicensedRuns = $state(1);
+  /** What goes with a copy job's request beside its runs: the runs each copy is licensed for. */
+  const licensedForJob = $derived(chosenActivity === "copying" ? { licensedRuns: chosenLicensedRuns } : {});
   /** typeID -> how much of it the player HAS, read from the SERVER. */
   let availableMaterials = $state<Readonly<Record<string, number>> | null>(null);
   /** The seconds the job will take, as the preview reckoned them; null where it reckoned none. */
@@ -234,7 +253,7 @@
    */
   const materialsForJob = $derived.by(() =>
     materialsToUse(
-      startingBlueprint ? previewMaterials(chosenRecipe, chosenRuns, startingBlueprint.materialEfficiency) : [],
+      startingBlueprint ? previewMaterials(chosenRecipe, chosenRuns, startingBlueprint.materialEfficiency, chosenLicensedRuns) : [],
       reckonedMaterials,
     ),
   );
@@ -261,14 +280,17 @@
 
   const previewTime = $derived.by(() =>
     startingBlueprint
-      ? previewTimeSeconds(chosenRecipe, chosenRuns, startingBlueprint.timeEfficiency)
+      ? previewTimeSeconds(chosenRecipe, chosenRuns, startingBlueprint.timeEfficiency, chosenLicensedRuns)
       : 0,
   );
 
-  /** The most runs this blueprint could be asked for. A copy is finite. */
+  /** The most runs this blueprint could be asked for. A copy is finite, and a copy job makes only so many copies. */
   const maxRuns = $derived.by(() => {
     if (!startingBlueprint) {
       return 1;
+    }
+    if (chosenActivity === "copying") {
+      return MOST_COPIES_A_JOB;
     }
     return startingBlueprint.original ? 1000 : Math.max(1, startingBlueprint.runs);
   });
@@ -281,7 +303,8 @@
     reckonedFee = null;
     reckonedMaterials = null;
     chosenRuns = 1;
-    const activities = blueprintActivities(blueprint.typeID);
+    chosenLicensedRuns = mostLicensedRuns(blueprint);
+    const activities = blueprintActivities(blueprint);
     chosenActivity = activities.length > 0 ? activities[0]! : null;
     chosenFacilityID = null;
     chosenDecryptorTypeID = null;
@@ -353,6 +376,7 @@
         activity,
         facilityID,
         runs: chosenRuns,
+        ...licensedForJob,
         ...(decryptorForJob > 0 ? { decryptorTypeID: decryptorForJob } : {}),
         ...researchOf(blueprint),
       });
@@ -378,6 +402,7 @@
         activity,
         facilityID,
         runs: chosenRuns,
+        ...licensedForJob,
         ...(decryptorForJob > 0 ? { decryptorTypeID: decryptorForJob } : {}),
         ...researchOf(blueprint),
       });
@@ -418,7 +443,7 @@
         return;
       }
       startJobFor(blueprint);
-      if (blueprintActivities(blueprint.typeID).includes(request.activity)) {
+      if (blueprintActivities(blueprint).includes(request.activity)) {
         chosenActivity = request.activity;
       }
       const most = blueprint.original ? 1000 : Math.max(1, blueprint.runs);
@@ -630,10 +655,10 @@
                 </td>
                 <td class="num" data-label="Time efficiency">{blueprint.timeEfficiency}% faster</td>
                 <td data-label="Can be used for">
-                  {#if blueprintActivities(blueprint.typeID).length === 0}
+                  {#if blueprintActivities(blueprint).length === 0}
                     <span class="note">—</span>
                   {:else}
-                    {blueprintActivities(blueprint.typeID)
+                    {blueprintActivities(blueprint)
                       .map((activity) => ACTIVITY_LABELS[activity])
                       .join(", ")}
                   {/if}
@@ -662,7 +687,7 @@
   {#if startingBlueprint}
     <section class="bulk">
       <h2>Start a job with {typeName(startingBlueprint.typeID)}</h2>
-      {#if blueprintActivities(startingBlueprint.typeID).length === 0}
+      {#if blueprintActivities(startingBlueprint).length === 0}
         <p class="note">
           Nothing is known about what this blueprint can be used for, so a job
           cannot be set up for it here.
@@ -672,7 +697,7 @@
           <label>
             Work
             <select bind:value={chosenActivity} disabled={busy || confirming}>
-              {#each blueprintActivities(startingBlueprint.typeID) as activity (activity)}
+              {#each blueprintActivities(startingBlueprint) as activity (activity)}
                 <option value={activity}>{ACTIVITY_LABELS[activity]}</option>
               {/each}
             </select>
@@ -689,7 +714,7 @@
             </select>
           </label>
           <label>
-            Runs
+            {chosenActivity === "copying" ? "Copies" : "Runs"}
             <input
               type="number"
               min="1"
@@ -698,6 +723,19 @@
               disabled={busy || confirming}
             />
           </label>
+          {#if chosenActivity === "copying"}
+            <label>
+              Runs on each copy
+              <input
+                type="number"
+                min="1"
+                max={mostLicensedRuns(startingBlueprint)}
+                bind:value={chosenLicensedRuns}
+                disabled={busy || confirming}
+                data-job-licensed-runs
+              />
+            </label>
+          {/if}
           {#if chosenActivity === "invention"}
             <label>
               Decryptor
@@ -721,7 +759,8 @@
           <p class="controls">
             <button
               type="button"
-              disabled={busy || chosenActivity === null || chosenFacilityID === null || chosenRuns < 1}
+              disabled={busy || chosenActivity === null || chosenFacilityID === null || chosenRuns < 1 ||
+                (chosenActivity === "copying" && !(chosenLicensedRuns >= 1 && chosenLicensedRuns <= mostLicensedRuns(startingBlueprint)))}
               onclick={askToConfirm}
             >
               See what this will take
