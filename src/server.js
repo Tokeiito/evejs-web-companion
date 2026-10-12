@@ -21212,6 +21212,12 @@ function keyValEntries(value) {
  * (services/station/reprocessingService.js buildRecoverableEntry).
  */
 function decodeReprocessingQuotes(result) {
+  // A quote's whole amount as the server said it. Nought is an amount: a stack of too few has nothing to process,
+  // and that is said as 0. Null where the quote has none, or what it has is no amount.
+  const quotedAmount = (said) => {
+    const amount = typeof said === "string" && /^\d+$/.test(said) ? Number(said) : said;
+    return typeof amount === "number" && amount >= 0 ? amount : null;
+  };
   const triple = Array.isArray(result) ? result : [];
   const taxRaw = Number(triple[0]);
   const dictEntries = (value) =>
@@ -21243,8 +21249,8 @@ function decodeReprocessingQuotes(result) {
     quotes.push({
       itemID: numericItemID,
       typeID: Number(readKeyValField(entries, "typeID")) || null,
-      quantityToProcess: Number(readKeyValField(entries, "quantityToProcess")) || null,
-      leftOvers: Number(readKeyValField(entries, "leftOvers")) || null,
+      quantityToProcess: quotedAmount(readKeyValField(entries, "quantityToProcess")),
+      leftOvers: quotedAmount(readKeyValField(entries, "leftOvers")),
       // What this stack costs in ISK, as the station computed it.
       iskCost: Number.isFinite(iskCost) ? iskCost : null,
       outputs,

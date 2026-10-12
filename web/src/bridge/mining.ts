@@ -16,6 +16,7 @@ import { unwrapLong, type JsonValue } from "./wire.ts";
 import type {
   HoldCapacity,
   HoldItem,
+  InventoryItemRow,
   MiningHold,
   ReprocessingQuote,
   SurveyResult,
@@ -199,4 +200,34 @@ export function decodeReprocessingQuotes(
 export function decodeTaxRate(raw: JsonValue | undefined): number | null {
   const numeric = numberOrNull(raw);
   return numeric === null || numeric < 0 ? null : numeric;
+}
+
+/** invconst.categoryAsteroid and invconst.groupHarvestableCloud. */
+const CATEGORY_ASTEROID = 25;
+const GROUP_HARVESTABLE_CLOUD = 711;
+
+/**
+ * The hangar's stacks the Mining window offers for refining: what the client's own rule calls refinable of what
+ * is mined, which is ore and ice by their category and gas by its group (typematerials/data.py 104 to 117). One of
+ * a kind is no stack, and a row whose kind is not known is left out: refining uses a stack up, and "cannot tell"
+ * does not pass. Whether the plant will refine a stack is the plant's to say, in its quote.
+ */
+export function refinableHangarStacks(rows: readonly InventoryItemRow[]): readonly InventoryItemRow[] {
+  return rows.filter((row) => !row.singleton && row.quantity > 0 &&
+    (row.categoryID === CATEGORY_ASTEROID || row.groupID === GROUP_HARVESTABLE_CLOUD));
+}
+
+/**
+ * Whether a quote says nothing of what was picked would be refined: it has a row, and every row of it has nought to
+ * process (each stack too few for one batch). A row that does not say is not nought, and a quote of no rows is the
+ * plant refusing every stack, which the window says in its own words.
+ */
+export function quoteRefinesNothing(quotes: readonly ReprocessingQuote[]): boolean {
+  return quotes.length > 0 && quotes.every((quote) => quote.quantityToProcess === 0);
+}
+
+/** Of what is picked, the stacks that are in the ship's holds: the unloading is theirs, and no hangar's stack's. */
+export function picksInHolds(selected: readonly number[], holds: readonly MiningHold[]): readonly number[] {
+  const held = new Set(holds.flatMap((hold) => (hold.items ?? []).map((item) => item.itemID)));
+  return selected.filter((itemID) => held.has(itemID));
 }

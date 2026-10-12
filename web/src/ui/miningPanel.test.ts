@@ -54,6 +54,8 @@ function renderLoaded(options: {
   quotesFor?: number[];
   holdItemsNull?: boolean;
   capacityUnknown?: boolean;
+  hangar?: unknown[];
+  hangarError?: string;
 } = {}): string {
   const store = createClientStore();
   store.apply({
@@ -88,6 +90,15 @@ function renderLoaded(options: {
       { key: "gas", label: "Gas hold", present: false, capacity: null, items: [], error: null },
     ],
   });
+  if (options.hangar) {
+    store.apply({
+      type: "inventory/loaded",
+      stationID: STATION_ID,
+      activeShipID: SHIP_ID,
+      hangar: { rows: options.hangar as never, capacity: null, error: options.hangarError ?? null },
+      cargo: { rows: [], capacity: null, error: null },
+    });
+  }
   if (options.quotes) {
     store.apply({
       type: "mining/quotes",
@@ -101,6 +112,8 @@ function renderLoaded(options: {
     entries: {
       [`type:${ORE_TYPE_ID}`]: "Veldspar",
       [`type:${TRITANIUM_TYPE_ID}`]: "Tritanium",
+      "type:1228": "Scordite",
+      "type:588": "Reaper",
     },
   });
   return render(Mining, { props: { store, flow: fakeFlow() } }).body;
@@ -324,4 +337,71 @@ test("the panel predicts nothing: every number on screen came from the server", 
   // The one derived number is the tax PERCENTAGE, which is a unit conversion of
   // a rate the server gave, not a prediction.
   assert.match(code, /\$mining\.taxRate \* 100/);
+});
+
+// --- The hangar's ore, while docked -------------------------------------------
+
+const HANGAR = [
+  { itemID: 7700001, typeID: 1228, groupID: 460, categoryID: 25, flagID: 4, quantity: 700, singleton: false },
+  { itemID: 7700002, typeID: TRITANIUM_TYPE_ID, groupID: 18, categoryID: 4, flagID: 4, quantity: 9000, singleton: false },
+  { itemID: SHIP_ID, typeID: 588, groupID: 237, categoryID: 6, flagID: 4, quantity: 1, singleton: true },
+];
+
+test("docked, the window lists the hangar's ore beside the holds, to be picked for refining; minerals and ships are not ore", () => {
+  const body = renderLoaded({ hangar: HANGAR });
+  const text = visibleText(body);
+  assert.match(text, /In your hangar/);
+  const hangar = text.slice(text.indexOf("In your hangar"), text.indexOf("Move it to your hangar"));
+  assert.match(hangar, /Scordite/);
+  assert.match(hangar, /700/);
+  assert.doesNotMatch(hangar, /Tritanium|Reaper|9,000/);
+  assert.match(body, /aria-label="Pick Scordite in your hangar"/);
+  // R7d: its itemID is not shown.
+  assert.doesNotMatch(text, /7700001/);
+});
+
+test("docked with no ore in the hangar the window says so; in space it shows no hangar at all", () => {
+  const none = visibleText(renderLoaded({ hangar: [HANGAR[1], HANGAR[2]] }));
+  assert.match(none, /In your hangar/);
+  assert.match(none, /No ore in your hangar here/);
+  const inSpace = visibleText(renderLoaded({ docked: false, hangar: HANGAR }));
+  assert.doesNotMatch(inSpace, /In your hangar|Scordite/);
+  // Before the hangar has been read the window says it is looking, and does not say there is none.
+  const unread = visibleText(renderLoaded());
+  assert.match(unread, /Looking in your hangar/);
+  assert.doesNotMatch(unread, /No ore in your hangar here/);
+  // A hangar that could not be read says so: "we could not look" is not "it is empty".
+  const failed = visibleText(renderLoaded({ hangar: [], hangarError: "READ_FAILED" }));
+  assert.match(failed, /Your hangar could not be read/);
+  assert.doesNotMatch(failed, /No ore in your hangar here|Looking in your hangar/);
+});
+
+test("a stack of too few is said to make nothing, not 'not known'; and what would be refined of it reads 0", () => {
+  const text = visibleText(renderLoaded({ quotes: [{ ...QUOTE, quantityToProcess: 0, leftOvers: 50, iskCost: 0, outputs: [] }] }));
+  assert.match(text, /nothing: too few for a batch/);
+  assert.doesNotMatch(text, /not known/);
+  // And a quote that says no amount is "not known" still (the test above this section holds it).
+  const unsaid = visibleText(renderLoaded({ quotes: [{ ...QUOTE, quantityToProcess: null, outputs: [], iskCost: null }] }));
+  assert.match(unsaid, /not known/);
+  assert.doesNotMatch(unsaid, /too few for a batch/);
+});
+
+test("the control that arms the refining is not offered for a quote that refines nothing, and the unloading is of the holds' picks alone", () => {
+  // The quote's verdict is asked before the arming control is drawn, and says why there is none.
+  const quoted = SOURCE.slice(SOURCE.indexOf("{#if quotedForSelection}"));
+  assert.ok(quoted.indexOf("{#if refinesNothing}") >= 0 && quoted.indexOf("{#if refinesNothing}") < quoted.indexOf("Refine it…"), "the verdict stands before the arming control");
+  assert.match(SOURCE, /const refinesNothing = \$derived\(quoteRefinesNothing\(\$mining\.quotes\)\)/);
+  assert.match(SOURCE, /None of that is enough for a batch/);
+  // The unloading names the picks that are in the holds, by the one helper.
+  assert.match(SOURCE, /const heldPicks = \$derived\(picksInHolds\(selected, holds\)\)/);
+  assert.match(SOURCE, /flow\.unloadMiningHolds\(heldPicks\)/);
+  assert.match(SOURCE, /\{:else if heldPicks\.length === 0\}\s*<p class="note">Pick what you want to unload from your holds above\.<\/p>/);
+  assert.match(SOURCE, /Unload \{heldPicks\.length\} to the hangar/);
+  // The dumping is of the holds' picks too: a hangar's stack picked while docked is no pick of a ship in space.
+  assert.match(SOURCE, /flow\.jettisonItems\(heldPicks\)/);
+  assert.match(SOURCE, /\{#if heldPicks\.length === 0\}\s*<p class="note">Pick what you want to dump from the list above\.<\/p>/);
+  assert.match(SOURCE, /Dump \{heldPicks\.length\} into space…/);
+  assert.match(SOURCE, /Yes — dump \{heldPicks\.length\} into space/);
+  // And the window's own read is the one the mount and the Refresh button make.
+  assert.equal(SOURCE.split("flow.loadMiningWindow()").length - 1, 2);
 });

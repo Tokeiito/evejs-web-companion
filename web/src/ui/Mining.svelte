@@ -29,6 +29,7 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import { holdCapacityText, holdFillPercent } from "./holdFill.ts";
+  import { picksInHolds, quoteRefinesNothing, refinableHangarStacks } from "../bridge/mining.ts";
   import type { MiningHold } from "../store/types.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
 
@@ -42,6 +43,8 @@
   const names = store.names;
   // svelte-ignore state_referenced_locally
   const space = store.space;
+  // svelte-ignore state_referenced_locally
+  const inventory = store.inventory;
 
   let busy = $state(false);
   let error = $state("");
@@ -83,6 +86,13 @@
   const fillPercent = holdFillPercent;
 
   const allItems = $derived(holds.flatMap((hold) => hold.items ?? []));
+  // What else there is to refine while docked: the hangar's ore. The plant takes a stack from the hangar as it
+  // takes one from a hold. (Its list is drawn only while docked: in space there is no hangar.)
+  const hangarOre = $derived(refinableHangarStacks($inventory.hangar.rows));
+  // The unloading is of the holds' picks alone: a hangar's stack is in the hangar already.
+  const heldPicks = $derived(picksInHolds(selected, holds));
+  // A quote in which every stack is too few for a batch: there is nothing to arm.
+  const refinesNothing = $derived(quoteRefinesNothing($mining.quotes));
 
   function toggle(itemID: number): void {
     selected = selected.includes(itemID)
@@ -96,7 +106,7 @@
   // and minerals read as "Veldspar" and "Tritanium" and never as a typeID (R7d).
   $effect(() => {
     const refs: NameRef[] = [];
-    for (const item of allItems) {
+    for (const item of [...allItems, ...hangarOre]) {
       refs.push({ kind: "type", id: item.typeID });
     }
     for (const quote of $mining.quotes) {
@@ -226,7 +236,7 @@
   );
 
   async function jettison(): Promise<void> {
-    await run(() => flow.jettisonItems(selected));
+    await run(() => flow.jettisonItems(heldPicks));
     selected = [];
     jettisonArmedFor = null;
   }
@@ -239,7 +249,7 @@
   }
 
   async function unload(): Promise<void> {
-    await run(() => flow.unloadMiningHolds(selected));
+    await run(() => flow.unloadMiningHolds(heldPicks));
     selected = [];
     confirmingFor = null;
   }
@@ -255,7 +265,7 @@
   }
 
   onMount(() => {
-    void run(() => flow.loadMiningHolds());
+    void run(() => flow.loadMiningWindow());
     // R30 slice B — claim the space feed while this tab is open, so a player
     // watching the hold fill is not also freezing the grid the ore comes from.
     flow.startSpacePolling();
@@ -267,7 +277,7 @@
   <header class="panel-head">
     <h2 class="panel-title">Mining</h2>
     <span class="controls">
-      <button type="button" disabled={busy} onclick={() => run(() => flow.loadMiningHolds())}>
+      <button type="button" disabled={busy} onclick={() => run(() => flow.loadMiningWindow())}>
         Refresh
       </button>
     </span>
@@ -361,6 +371,58 @@
   {/if}
 </section>
 
+{#if docked}
+  <section>
+    <h2>In your hangar</h2>
+    <!--
+      What else there is to refine here: the ore, ice and gas in this hangar,
+      picked with the same ticks as the holds'. The refinery takes a stack from
+      the hangar as it takes one from a hold; the unloading below is of the
+      holds alone.
+    -->
+    {#if !$inventory.loaded}
+      <p class="note">Looking in your hangar…</p>
+    {:else if $inventory.hangar.error}
+      <p class="error">Your hangar could not be read, so what ore is in it is unknown.</p>
+    {:else if hangarOre.length === 0}
+      <p class="empty">No ore in your hangar here.</p>
+    {:else}
+      <div class="table-wrap overflow-x-auto">
+        <table class="guests reflow">
+          <thead>
+            <tr>
+              <th>Pick</th>
+              <th>Ore</th>
+              <th class="num">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each hangarOre as item (item.itemID)}
+              <tr>
+                <td data-label="Pick">
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(item.itemID)}
+                    onchange={() => toggle(item.itemID)}
+                    aria-label={`Pick ${itemName(item.typeID)} in your hangar`}
+                  />
+                </td>
+                <td data-label="Ore">
+                  <span class="cell-item">
+                    <TypeIcon typeID={item.typeID} name={itemName(item.typeID)} />
+                    {itemName(item.typeID)}
+                  </span>
+                </td>
+                <td class="num" data-label="Amount">{item.quantity.toLocaleString()}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+  </section>
+{/if}
+
 <!--
   ============================================================== IN SPACE =====
   What a full hold can do out here. Both sections are drawn only in space, for
@@ -429,7 +491,7 @@
       the same two-step arming that reprocessing has, and why the words say
       plainly what happens rather than calling it "drop".
     -->
-    {#if selected.length === 0}
+    {#if heldPicks.length === 0}
       <p class="note">Pick what you want to dump from the list above.</p>
     {:else if !jettisonArmed}
       <p class="controls">
@@ -438,7 +500,7 @@
           disabled={busy}
           onclick={() => (jettisonArmedFor = selectionKey(selected))}
         >
-          Dump {selected.length} into space…
+          Dump {heldPicks.length} into space…
         </button>
       </p>
       <p class="note">
@@ -448,7 +510,7 @@
     {:else}
       <p class="controls">
         <button type="button" class="danger" disabled={busy} onclick={jettison}>
-          Yes — dump {selected.length} into space
+          Yes — dump {heldPicks.length} into space
         </button>
         <button type="button" disabled={busy} onclick={() => (jettisonArmedFor = null)}>
           Keep it
@@ -462,12 +524,12 @@
   <h2>Move it to your hangar</h2>
   {#if !docked}
     <p class="note">Dock at a station to unload.</p>
-  {:else if selected.length === 0}
-    <p class="note">Pick what you want to unload from the list above.</p>
+  {:else if heldPicks.length === 0}
+    <p class="note">Pick what you want to unload from your holds above.</p>
   {:else}
     <p class="controls">
       <button type="button" class="primary" disabled={busy} onclick={unload}>
-        Unload {selected.length} to the hangar
+        Unload {heldPicks.length} to the hangar
       </button>
     </p>
   {/if}
@@ -485,7 +547,7 @@
   {#if !docked}
     <p class="note">Dock at a station to use its refinery.</p>
   {:else if selected.length === 0 && !hasQuote}
-    <p class="note">Pick what you want to refine from the list above.</p>
+    <p class="note">Pick what you want to refine from your holds or your hangar above.</p>
   {:else}
     {#if selected.length > 0}
       <p class="controls">
@@ -550,7 +612,9 @@
                     {/if}
                   </td>
                   <td data-label="You would get">
-                    {#if quote.outputs.length === 0}
+                    {#if quote.outputs.length === 0 && quote.quantityToProcess === 0}
+                      nothing: too few for a batch
+                    {:else if quote.outputs.length === 0}
                       <span class="stat-unavailable">not known</span>
                     {:else}
                       {quote.outputs
@@ -570,6 +634,9 @@
           numbers it was shown for.
         -->
         {#if quotedForSelection}
+          {#if refinesNothing}
+            <p class="note">None of that is enough for a batch, so there is nothing to refine.</p>
+          {:else}
           <p class="controls">
             {#if armed}
               <button type="button" class="danger" disabled={busy} onclick={reprocess}>
@@ -594,6 +661,7 @@
               </button>
             {/if}
           </p>
+          {/if}
         {:else}
           <p class="note">
             That quote is for a different pick. Ask again for what you have

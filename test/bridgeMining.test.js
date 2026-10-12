@@ -136,6 +136,9 @@ function fakeGateway(overrides = {}) {
     placeless: new Set(),
     // What the plant's Reprocess answers: nothing (null), or a function of the call's arguments.
     reprocessed: null,
+    // What the plant's quote says of a stack, as [to process, left over]: 500 and nought for any, or a function of
+    // the stack. A part that is undefined is one the quote has not got.
+    quoted: null,
     // The corporation's offices, as officeManager.GetMyCorporationsOffices
     // reports them: corporation-wide, one row per station.
     offices: [],
@@ -299,8 +302,7 @@ function fakeGateway(overrides = {}) {
                 itemID,
                 keyVal([
                   ["typeID", itemID === ICE_STACK_ID ? 16262 : 1230],
-                  ["quantityToProcess", 500],
-                  ["leftOvers", 0],
+                  ...[["quantityToProcess", (state.quoted ? state.quoted(itemID) : [500, 0])[0]], ["leftOvers", (state.quoted ? state.quoted(itemID) : [500, 0])[1]]].filter(([, said]) => said !== undefined),
                   ["totalISKCost", 1234.5],
                   // The REAL shape (services/station/reprocessingService.js
                   // buildRecoverableEntry): a LIST of KeyVals, where `client`
@@ -1239,4 +1241,24 @@ test("a hull whose type is known has only the holds it carries read for where an
   const { response, payload } = await apiRequest(baseUrl, "/api/bridge/reprocessing/reprocess", { method: "POST", body: { itemIDs: [999], confirm: true } });
   assert.deepEqual([response.status, payload.processed, payload.remaining], [200, [], [999]], JSON.stringify(payload));
   assert.deepEqual(boundOf(gateway, "invbroker", "List").slice(lists).map((call) => call.args[0]), [FLAG_HANGAR, FLAG_ORE_HOLD, FLAG_CARGO]);
+});
+
+test("a quote's nought is nought: a stack of too few has nothing to process, said as 0 and not as unknown; and what the quote has not got is null", async () => {
+  const TOO_FEW = ORE_STACK_ID + 20;
+  const UNSAID = ORE_STACK_ID + 21;
+  const AS_LONGS = ORE_STACK_ID + 22;
+  const { gateway, baseUrl } = await docked();
+  // By the stack: too few for one portion (nothing to process, all of it left over); a quote with neither part; and
+  // the two as the wire's longs.
+  gateway.state.quoted = (itemID) => (itemID === TOO_FEW ? [0, 50] : itemID === UNSAID ? [undefined, undefined] : itemID === AS_LONGS ? [{ type: "long", value: "7000000000" }, { type: "long", value: "0" }] : [500, 0]);
+  const { response, payload } = await apiRequest(baseUrl, `/api/bridge/reprocessing/quote?itemIDs=${[ORE_STACK_ID, TOO_FEW, UNSAID, AS_LONGS].join(",")}`);
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.deepEqual(payload.quotes.map((quote) => [quote.itemID, quote.quantityToProcess, quote.leftOvers]),
+    [[ORE_STACK_ID, 500, 0], [TOO_FEW, 0, 50], [UNSAID, null, null], [AS_LONGS, 7000000000, 0]]);
+  // What is no amount is none: text that is no number, a number below nought, and one that is no number at all.
+  for (const said of ["many", -1, Number.NaN, null, true, { type: "list", items: [] }]) {
+    gateway.state.quoted = () => [said, said];
+    const answer = await apiRequest(baseUrl, `/api/bridge/reprocessing/quote?itemIDs=${ORE_STACK_ID}`);
+    assert.deepEqual([answer.payload.quotes[0].quantityToProcess, answer.payload.quotes[0].leftOvers], [null, null], String(said));
+  }
 });

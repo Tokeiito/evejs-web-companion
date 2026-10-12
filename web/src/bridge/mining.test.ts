@@ -14,6 +14,9 @@ import {
   decodeReprocessingQuotes,
   decodeSurveyResults,
   decodeTaxRate,
+  picksInHolds,
+  quoteRefinesNothing,
+  refinableHangarStacks,
 } from "./mining.ts";
 import type { JsonValue } from "./wire.ts";
 
@@ -185,4 +188,53 @@ test("a malformed quotes payload decodes to an empty list", () => {
   assert.deepEqual(decodeReprocessingQuotes({ nope: true } as unknown as JsonValue), []);
   // A quote row with no itemID cannot be tied to a stack, so it is dropped.
   assert.deepEqual(decodeReprocessingQuotes([{ typeID: 1230 }] as unknown as JsonValue), []);
+});
+
+// --- The hangar's stacks the Mining window offers, and what a quote says of them ---
+
+const row = (itemID: number, more: Record<string, unknown> = {}) => ({ itemID, typeID: 1230, groupID: 462, categoryID: 25, flagID: 4, quantity: 500, singleton: false, ...more });
+
+test("the hangar's stacks offered for refining are what the client's rule calls refinable of what is mined: ore and ice by their category, gas by its group, and stacks only", () => {
+  // typematerials/data.py 104 to 117: categoryAsteroid (25), or groupHarvestableCloud (711).
+  const rows = [
+    row(1),
+    row(2, { typeID: 16262, groupID: 465 }),
+    row(3, { typeID: 30375, groupID: 711, categoryID: 2 }),
+    // A mineral, a module and a ship: none is of what is mined.
+    row(4, { typeID: 34, groupID: 18, categoryID: 4 }),
+    row(5, { typeID: 439, groupID: 46, categoryID: 7 }),
+    row(6, { typeID: 588, groupID: 237, categoryID: 6, singleton: true, quantity: 1 }),
+    // One of a kind is no stack; a stack of nothing is none; and a row whose kind is not known is left out:
+    // refining uses a stack up, and "cannot tell" does not pass.
+    row(7, { singleton: true }),
+    row(8, { quantity: 0 }),
+    row(9, { groupID: null, categoryID: null }),
+    // A category that is not the asteroids' with a group that is not the clouds'.
+    row(10, { groupID: 712, categoryID: 2 }),
+  ];
+  assert.deepEqual(refinableHangarStacks(rows as never).map((each) => each.itemID), [1, 2, 3]);
+  assert.deepEqual(refinableHangarStacks([]), []);
+});
+
+test("a quote that has nothing to process for any stack refines nothing; one stack that can be refined, or a quote that does not say, does not make it so", () => {
+  const quote = (quantityToProcess: number | null) => ({ itemID: 1, typeID: 1230, quantityToProcess, leftOvers: 50, iskCost: 0, outputs: [] });
+  assert.equal(quoteRefinesNothing([quote(0)]), true);
+  assert.equal(quoteRefinesNothing([quote(0), quote(0)]), true);
+  assert.equal(quoteRefinesNothing([quote(0), quote(300)]), false);
+  // Not said is not nought: the plant is asked.
+  assert.equal(quoteRefinesNothing([quote(null)]), false);
+  // No row at all is the plant refusing every stack, which the window says in its own words.
+  assert.equal(quoteRefinesNothing([]), false);
+});
+
+test("the unloading is of the picks that are in the ship's holds: a hangar's stack picked for refining is not unloaded", () => {
+  const holds = [
+    { key: "ore", label: "Ore hold", present: true, capacity: null, error: null, items: [{ itemID: 11, typeID: 1230, groupID: 462, categoryID: 25, quantity: 5 }] },
+    { key: "cargo", label: "Cargo hold", present: true, capacity: null, error: null, items: [{ itemID: 12, typeID: 1230, groupID: 462, categoryID: 25, quantity: 5 }] },
+    // A hold that could not be read has no stacks to pick.
+    { key: "ice", label: "Ice hold", present: true, capacity: null, error: "READ_FAILED", items: null },
+  ];
+  assert.deepEqual(picksInHolds([12, 99, 11], holds as never), [12, 11]);
+  assert.deepEqual(picksInHolds([99], holds as never), []);
+  assert.deepEqual(picksInHolds([], holds as never), []);
 });

@@ -1164,6 +1164,8 @@ export interface AppFlow {
   // laser. The browser never simulates a cycle or predicts a yield.
   /** R23 — read the ship's ore / gas / ice holds (falling back to cargo). */
   loadMiningHolds(): Promise<void>;
+  /** The Mining window's own read: the holds, and the hangar too where the pilot is docked (its ore can be refined there). */
+  loadMiningWindow(): Promise<void>;
   /** R23 — run the survey scanner; the panel merges the results into the overview. */
   runSurveyScan(): Promise<void>;
   /** R23 — ask the station refinery what these stacks yield, and its ISK tax. */
@@ -6053,6 +6055,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     store.apply({ type: "mining/holds", holds: decodeMiningHolds(result.holds) });
   }
 
+  /** The hangar read again where the pilot is docked, for the Mining window's list of its ore. It fails for itself. */
+  async function hangarWhereDocked(): Promise<void> {
+    if (store.flight.get().status?.docked === true) await loadInventory().catch(() => {});
+  }
+
+  /** The Mining window's own read: the ship's holds, and the hangar where the pilot is docked. */
+  async function loadMiningWindow(): Promise<void> {
+    await loadMiningHolds();
+    await hangarWhereDocked();
+  }
+
   /** Run the survey scanner and land what it saw. */
   async function runSurveyScan(): Promise<void> {
     let result;
@@ -6164,6 +6177,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     partial: (moved: number, total: number) => string,
     none: string,
     unverified: string,
+    // The stacks that were said beforehand to stay: one of them left is as it was foretold, and no decline.
+    foretold: ReadonlySet<number> = new Set(),
   ): Promise<void> {
     let result;
     try {
@@ -6183,6 +6198,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     store.apply({ type: "mining/action", action: label });
     // Whatever happened, the holds are the ground truth now.
     await loadMiningHolds().catch(() => {});
+    // And the hangar, where the pilot is docked: what was unloaded went into it, and what was refined was made in it.
+    await hangarWhereDocked();
     if (result.moved === null) {
       store.apply({ type: "mining/silent-decline", message: unverified });
       return;
@@ -6191,7 +6208,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       store.apply({ type: "mining/silent-decline", message: none });
       return;
     }
-    if (result.moved.length < result.requested.length) {
+    const moved = result.moved;
+    if (result.requested.some((itemID) => !moved.includes(itemID) && !foretold.has(itemID))) {
       store.apply({
         type: "mining/silent-decline",
         message: partial(result.moved.length, result.requested.length),
@@ -6623,6 +6641,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * side of it, as with destroyRig.
    */
   async function reprocessItems(itemIDs: readonly number[]): Promise<void> {
+    // What the quote on the page said of these stacks before they were refined: one with nothing to process is too
+    // few for a batch, and is left as the page said it would be.
+    const tooFew = new Set(store.mining.get().quotes.filter((quote) => quote.quantityToProcess === 0).map((quote) => quote.itemID));
     await runMiningAction(
       "Reprocess",
       () => api.reprocessItems(itemIDs, callOptions),
@@ -6630,6 +6651,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         `Only ${moved} of ${total} stacks were reprocessed. The server did not say why the rest were left.`,
       "Nothing was reprocessed, and the server gave no reason.",
       "The refinery accepted that, but what you picked could not be read again, so what was reprocessed is unknown.",
+      tooFew,
     );
     // The previous quote described stacks that may no longer exist.
     store.apply({ type: "mining/quotes", quotes: [], taxRate: null, quotesFor: [] });
@@ -14739,6 +14761,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     repairModule,
     setWeaponBanks,
     loadMiningHolds,
+    loadMiningWindow,
     loadDrones,
     launchDrones,
     engageDrones,

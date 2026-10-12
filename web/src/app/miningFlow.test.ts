@@ -394,3 +394,91 @@ test("a refinery refusal carries the server's own reason", async () => {
   await flow.reprocessItems([ORE_STACK_ID]);
   assert.match(store.mining.get().actionError ?? "", /enough ISK/);
 });
+
+// --- The Mining window's own read, and the hangar after what changes it ---------
+
+const FLIGHT = { inSpace: false, docked: true, solarSystemID: 30000142, stationID: 60003760, structureID: null, shipID: 9001, shipTypeID: null, shipIsCapsule: null, shipMode: null, shipSpeedFraction: null };
+const hangarBody = () => ({
+  ok: true, stationID: 60003760, structureID: null, activeShipID: 9001, volumes: {},
+  hangar: { list: { type: "list", items: [{ type: "packedrow", fields: { itemID: 7700001, typeID: 1228, groupID: 460, categoryID: 25, flagID: 4, quantity: 700, singleton: 0 } }] }, capacity: null, error: null },
+  cargo: { list: { type: "list", items: [] }, capacity: null, error: null },
+});
+/** A flow whose BFF answers the holds, the hangar (or refuses it) and the two actions, with every request listed. */
+function windowFlow(options: { docked?: boolean; hangarRefused?: boolean } = {}) {
+  const store = createClientStore();
+  store.apply({ type: "flight/status", status: { ...FLIGHT, docked: options.docked !== false, inSpace: options.docked === false } });
+  const { fetch, requests } = makeFakeFetch((path) => {
+    if (path === "/api/bridge/ship/ore-hold") return { status: 200, body: holdsBody() };
+    if (path === "/api/bridge/inventory") return options.hangarRefused ? { status: 409, body: { ok: false, error: "NOT_DOCKED", message: "Dock first." } } : { status: 200, body: hangarBody() };
+    if (path === "/api/bridge/ship/ore-hold/unload") return { status: 200, body: { ok: true, requested: [ORE_STACK_ID], moved: [ORE_STACK_ID], remaining: [] } };
+    if (path === "/api/bridge/reprocessing/reprocess") return { status: 200, body: { ok: true, requested: [7700001], processed: [7700001], remaining: [] } };
+    throw new Error(`unexpected ${path}`);
+  });
+  const paths = () => requests.map((entry) => entry.path);
+  return { store, flow: createAppFlow(store, { fetch }), paths };
+}
+
+test("the Mining window's read is the holds, and the hangar too where the pilot is docked; in space the holds alone; a hangar that cannot be read fails nothing", async () => {
+  const docked = windowFlow();
+  await docked.flow.loadMiningWindow();
+  assert.deepEqual(docked.paths(), ["/api/bridge/ship/ore-hold", "/api/bridge/inventory"]);
+  assert.deepEqual([docked.store.mining.get().holdsLoaded, docked.store.inventory.get().hangar.rows.map((each) => each.itemID)], [true, [7700001]]);
+  const inSpace = windowFlow({ docked: false });
+  await inSpace.flow.loadMiningWindow();
+  assert.deepEqual(inSpace.paths(), ["/api/bridge/ship/ore-hold"]);
+  const refused = windowFlow({ hangarRefused: true });
+  await refused.flow.loadMiningWindow();
+  assert.deepEqual([refused.paths(), refused.store.mining.get().holdsLoaded, refused.store.mining.get().holdsError], [["/api/bridge/ship/ore-hold", "/api/bridge/inventory"], true, null]);
+});
+
+test("after an unloading and after a refining the hangar is read again where the pilot is docked, for what went into it and what was made", async () => {
+  const unloaded = windowFlow();
+  await unloaded.flow.unloadMiningHolds([ORE_STACK_ID]);
+  assert.deepEqual(unloaded.paths(), ["/api/bridge/ship/ore-hold/unload", "/api/bridge/ship/ore-hold", "/api/bridge/inventory"]);
+  const refined = windowFlow();
+  await refined.flow.reprocessItems([7700001]);
+  assert.deepEqual(refined.paths(), ["/api/bridge/reprocessing/reprocess", "/api/bridge/ship/ore-hold", "/api/bridge/inventory"]);
+  assert.deepEqual([refined.store.mining.get().silentDecline, refined.store.mining.get().actionError], [null, null]);
+  // In space neither reads a hangar there is none of; and a hangar that cannot be read fails neither.
+  const inSpace = windowFlow({ docked: false });
+  await inSpace.flow.unloadMiningHolds([ORE_STACK_ID]);
+  assert.deepEqual(inSpace.paths(), ["/api/bridge/ship/ore-hold/unload", "/api/bridge/ship/ore-hold"]);
+  const refused = windowFlow({ hangarRefused: true });
+  await refused.flow.reprocessItems([7700001]);
+  assert.deepEqual([refused.store.mining.get().lastAction, refused.store.mining.get().actionError], ["Reprocess", null]);
+});
+
+// --- A refining that leaves what its quote said it would -------------------------
+
+test("a refining that leaves only the stacks its quote said were too few is no decline: nothing is said of them; a stack left that the quote would have refined is", async () => {
+  const TOO_FEW = 7700002;
+  const OTHER = 7700003;
+  /** A flow whose plant quotes each stack with what is to process of it, and reprocesses what `processed` names. */
+  const quotedThenRefined = async (toProcess: Record<number, number | null>, processed: number[], quoteFirst = true) => {
+    const store = createClientStore();
+    const ids = Object.keys(toProcess).map(Number);
+    const { fetch } = makeFakeFetch((path) => {
+      if (path.startsWith("/api/bridge/reprocessing/quote")) {
+        return { status: 200, body: { ok: true, taxRate: 0.05, quotes: ids.map((itemID) => ({ itemID, typeID: 1230, quantityToProcess: toProcess[itemID], leftOvers: 50, iskCost: 0, outputs: [] })) } };
+      }
+      if (path === "/api/bridge/reprocessing/reprocess") {
+        return { status: 200, body: { ok: true, requested: ids, processed, remaining: ids.filter((itemID) => !processed.includes(itemID)) } };
+      }
+      return { status: 200, body: holdsBody() };
+    });
+    const flow = createAppFlow(store, { fetch });
+    if (quoteFirst) await flow.loadReprocessingQuote(ids);
+    await flow.reprocessItems(ids);
+    return store.mining.get().silentDecline;
+  };
+  // One refined, and one the quote said had nothing to process: as foretold, and nothing is said.
+  assert.equal(await quotedThenRefined({ [ORE_STACK_ID]: 1000, [TOO_FEW]: 0 }, [ORE_STACK_ID]), null);
+  // A stack the quote would have refined is left as well: that one is told of, with the count of all that were asked.
+  assert.match(await quotedThenRefined({ [ORE_STACK_ID]: 1000, [TOO_FEW]: 0, [OTHER]: 300 }, [ORE_STACK_ID]) ?? "", /Only 1 of 3 stacks were reprocessed/);
+  // A quote that did not say what there was to process of a stack foretold nothing of it.
+  assert.match(await quotedThenRefined({ [ORE_STACK_ID]: 1000, [TOO_FEW]: null }, [ORE_STACK_ID]) ?? "", /Only 1 of 2 stacks were reprocessed/);
+  // With no quote on the page for them nothing was foretold.
+  assert.match(await quotedThenRefined({ [ORE_STACK_ID]: 1000, [TOO_FEW]: 0 }, [ORE_STACK_ID], false) ?? "", /Only 1 of 2 stacks were reprocessed/);
+  // Nothing refined at all is said as it was, whatever the quote said.
+  assert.match(await quotedThenRefined({ [ORE_STACK_ID]: 0, [TOO_FEW]: 0 }, []) ?? "", /Nothing was reprocessed/);
+});
