@@ -38,6 +38,8 @@ import {
   industryRefusalMessage,
   inventionChoices,
   isActiveJob,
+  jobAsChosen,
+  jobCannotBeAsked,
   mostRunsToAsk,
   previewMaterials,
   previewTimeSeconds,
@@ -657,4 +659,57 @@ test("a job is asked for no more runs than its kind of work has of the blueprint
   assert.deepEqual([mostRunsToAsk("research_time", blueprint(true, -1, 16, 3)), mostRunsToAsk("research_material", blueprint(true, -1, 16, 3)), mostRunsToAsk("research_material", blueprint(true, -1, 20, 10))], [2, 7, 1]);
   // No work chosen: as a blueprint's own runs.
   assert.deepEqual([mostRunsToAsk(null, blueprint(false, 7)), mostRunsToAsk(null, blueprint(true, -1))], [7, 1000]);
+});
+
+// --- a job as its blueprint is chosen -------------------------------------------
+// The client's industry window makes a job the moment a blueprint is chosen (industryWnd.py 131 to 160 and 191 to
+// 211; industrySvc.CreateJob, 92 to 110): at the blueprint's own facility, by the first kind of work in its own
+// order (industry.ACTIVITIES, industry/const.py 15 to 21: manufacturing, the two researches, materials first, then
+// copying, invention and reactions) that the blueprint is for and the facility takes. The numbers are made up.
+
+const aFacility = (facilityID: number, activities: readonly string[], online = true) =>
+  ({ facilityID, solarSystemID: 30000142, typeID: 1529, ownerID: 1000035, online, tax: 0.01, activities, modifiers: {} }) as never;
+
+test("a job is made at its blueprint's own facility, by the first work in the client's order that the blueprint is for and the facility takes", () => {
+  const facilities = [aFacility(60000001, ["manufacturing", "copying", "research_time", "research_material"]), aFacility(60000002, ["copying", "research_time", "research_material"]), aFacility(1030000000002, ["reaction"])];
+  // An original in a factory: manufacturing.
+  assert.deepEqual(jobAsChosen(["manufacturing", "copying", "research_material", "research_time"], 60000001, facilities), { activity: "manufacturing", facilityID: 60000001 });
+  // The same original in a laboratory that manufactures nothing: the research of its materials, which is before
+  // copying in the client's order, however the page lists a blueprint's work.
+  assert.deepEqual(jobAsChosen(["manufacturing", "copying", "research_material", "research_time"], 60000002, facilities), { activity: "research_material", facilityID: 60000002 });
+  assert.deepEqual(jobAsChosen(["copying", "research_time", "manufacturing"], 60000002, facilities), { activity: "research_time", facilityID: 60000002 });
+  // A formula in a refinery.
+  assert.deepEqual(jobAsChosen(["reaction"], 1030000000002, facilities), { activity: "reaction", facilityID: 1030000000002 });
+  // A copy to invent from, in a laboratory that takes no invention: the blueprint's first work, and no place.
+  assert.deepEqual(jobAsChosen(["manufacturing", "invention"], 60000002, facilities), { activity: "manufacturing", facilityID: null });
+});
+
+test("where the blueprint's own facility is not one to work at, the job has the blueprint's first work and no place chosen", () => {
+  const facilities = [aFacility(60000001, ["manufacturing"]), aFacility(60000003, ["manufacturing", "copying"], false)];
+  // Not among the facilities read; in none (in a container, or in space); in one that is not online.
+  for (const where of [60000009, null, 60000003]) {
+    assert.deepEqual(jobAsChosen(["copying", "manufacturing"], where, facilities), { activity: "manufacturing", facilityID: null }, String(where));
+  }
+  // No facilities read at all.
+  assert.deepEqual(jobAsChosen(["copying", "research_time"], 60000001, []), { activity: "research_time", facilityID: null });
+  // A blueprint that is for no work known has none, and no place.
+  assert.deepEqual(jobAsChosen([], 60000001, facilities), { activity: null, facilityID: null });
+  // Another facility's work is not the blueprint's facility's: a blueprint in the factory is not copied there.
+  assert.deepEqual(jobAsChosen(["copying"], 60000001, [...facilities, aFacility(60000004, ["copying"])]), { activity: "copying", facilityID: null });
+});
+
+test("a job is not asked about while anything is wanting for it: its work, its place, its runs, a research left, an invention's product, a copy's licence", () => {
+  const job = { activity: "manufacturing", facilityID: 60000001, runs: 1, researchFinished: false, productUnchosen: false, licensedRuns: 1, mostLicensedRuns: 300 } as const;
+  assert.equal(jobCannotBeAsked(job), false);
+  for (const wanting of [{ activity: null }, { facilityID: null }, { runs: 0 }, { runs: -1 }, { researchFinished: true }, { productUnchosen: true }] as const) {
+    assert.equal(jobCannotBeAsked({ ...job, ...wanting }), true, JSON.stringify(wanting));
+  }
+  // The licence is a copy job's alone: any other work is asked about whatever it says.
+  for (const licensedRuns of [0, 301, -5]) {
+    assert.equal(jobCannotBeAsked({ ...job, licensedRuns }), false, String(licensedRuns));
+    assert.equal(jobCannotBeAsked({ ...job, activity: "copying", licensedRuns }), true, String(licensedRuns));
+  }
+  for (const licensedRuns of [1, 150, 300]) assert.equal(jobCannotBeAsked({ ...job, activity: "copying", licensedRuns }), false, String(licensedRuns));
+  // Many runs are the blueprint's and the server's to hold, not this rule's.
+  assert.equal(jobCannotBeAsked({ ...job, runs: 100000 }), false);
 });

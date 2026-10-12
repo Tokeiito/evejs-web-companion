@@ -19,6 +19,8 @@
     formatDuration,
     inventionChoices,
     isActiveJob,
+    jobAsChosen,
+    jobCannotBeAsked,
     mostRunsToAsk,
     previewMaterials,
     previewTimeSeconds,
@@ -183,6 +185,12 @@
   // choose the work, where, and how many runs -> see what it will take and
   // confirm. The BFF refuses an install without an explicit confirmation flag
   // too, so neither a stray click nor a stray request can spend anything.
+  //
+  // As the game's own client makes a job the moment a blueprint is chosen, at
+  // the blueprint's own facility, and shows what it will take at once
+  // (industryWnd.py 131 to 160): the pick chooses the work and the place for
+  // the pilot and asks what the job will take straight away, where it can. The
+  // pilot goes back to change any of them, and nothing is spent before the yes.
 
   /** The blueprint the player is setting a job up for, or null. */
   let startingBlueprint = $state<IndustryBlueprintRow | null>(null);
@@ -311,6 +319,20 @@
   /** The most runs this blueprint could be asked for, of the chosen kind of work (mostRunsToAsk). */
   const maxRuns = $derived(startingBlueprint ? mostRunsToAsk(chosenActivity, startingBlueprint) : 1);
 
+  /** Whether anything keeps the job from being asked about, as it is chosen now (bridge/industry.ts, jobCannotBeAsked). */
+  const cannotAsk = $derived(
+    startingBlueprint === null ||
+      jobCannotBeAsked({
+        activity: chosenActivity,
+        facilityID: chosenFacilityID,
+        runs: chosenRuns,
+        researchFinished: research !== null && research.finished,
+        productUnchosen,
+        licensedRuns: chosenLicensedRuns,
+        mostLicensedRuns: mostLicensedRuns(startingBlueprint),
+      }),
+  );
+
   function startJobFor(blueprint: IndustryBlueprintRow): void {
     startingBlueprint = blueprint;
     confirming = false;
@@ -320,11 +342,26 @@
     reckonedMaterials = null;
     chosenRuns = 1;
     chosenLicensedRuns = mostLicensedRuns(blueprint);
-    const activities = blueprintActivities(blueprint);
-    chosenActivity = activities.length > 0 ? activities[0]! : null;
-    chosenFacilityID = null;
+    // The work and the place the client's window gives a job as its blueprint is chosen (bridge/industry.ts,
+    // jobAsChosen): the blueprint's own facility, where the page has it and it takes the work.
+    const chosen = jobAsChosen(blueprintActivities(blueprint), blueprint.facilityID, $industry.facilities);
+    chosenActivity = chosen.activity;
+    chosenFacilityID = chosen.facilityID;
     chosenDecryptorTypeID = null;
     chosenProductTypeID = null;
+  }
+
+  /**
+   * The row's press: the job is made as its blueprint is chosen, and what it will take is asked at once, as the
+   * client's window shows it at once (industryWnd.py 131 to 160; industrySvc.ConnectJob, 305 to 308). Where
+   * something is wanting for the asking (no place the page has, an invention with several to choose of), the form
+   * waits for the pilot.
+   */
+  function chooseBlueprint(blueprint: IndustryBlueprintRow): void {
+    startJobFor(blueprint);
+    if (!cannotAsk) {
+      askToConfirm();
+    }
   }
 
   function closeStartJob(): void {
@@ -694,7 +731,7 @@
                       Never mind
                     </button>
                   {:else}
-                    <button type="button" disabled={busy} onclick={() => startJobFor(blueprint)}>
+                    <button type="button" disabled={busy} onclick={() => chooseBlueprint(blueprint)}>
                       Start a job…
                     </button>
                   {/if}
@@ -804,8 +841,7 @@
           <p class="controls">
             <button
               type="button"
-              disabled={busy || chosenActivity === null || chosenFacilityID === null || chosenRuns < 1 || (research !== null && research.finished) || productUnchosen ||
-                (chosenActivity === "copying" && !(chosenLicensedRuns >= 1 && chosenLicensedRuns <= mostLicensedRuns(startingBlueprint)))}
+              disabled={busy || cannotAsk}
               onclick={askToConfirm}
             >
               See what this will take

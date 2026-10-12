@@ -96,6 +96,52 @@ export function activityIsFor(activity: IndustryActivity, original: boolean): bo
   return activity === "invention" ? !original : original;
 }
 
+/** industry.ACTIVITIES (industry/const.py 15 to 21): the order the client's window looks for a blueprint's work in. */
+const CLIENT_ACTIVITY_ORDER: readonly IndustryActivity[] = ["manufacturing", "research_material", "research_time", "copying", "invention", "reaction"];
+
+/**
+ * The work and the place of a job as its blueprint is chosen, as the client's industry window makes one
+ * (industryWnd.py 131 to 160 and 191 to 211; industrySvc.CreateJob, 92 to 110): at the blueprint's own facility, by
+ * the first kind of work, in the client's own order, that the blueprint is for and that facility takes. Where the
+ * facility takes none of them, or is not one the page has to work at, the work is the blueprint's first in that
+ * order and no place is chosen: the pilot is left to choose one.
+ *
+ * (The client looks first for the work the pilot used last, a setting of its own. The page keeps none.)
+ *
+ * `activities` are the kinds of work the blueprint is for, as it is; `blueprintFacilityID` the facility the
+ * blueprint is in, or null; `facilities` those the page has read.
+ */
+export function jobAsChosen(
+  activities: readonly IndustryActivity[],
+  blueprintFacilityID: number | null,
+  facilities: readonly IndustryFacilityRow[],
+): { readonly activity: IndustryActivity | null; readonly facilityID: number | null } {
+  const own = facilities.find((facility) => facility.facilityID === blueprintFacilityID && facility.online) ?? null;
+  const inOrder = CLIENT_ACTIVITY_ORDER.filter((activity) => activities.includes(activity));
+  const taken = own ? inOrder.find((activity) => own.activities.includes(activity)) : undefined;
+  return { activity: taken ?? inOrder[0] ?? null, facilityID: own !== null && taken !== undefined ? own.facilityID : null };
+}
+
+/**
+ * What keeps a job from being asked about, by what the pilot has chosen for it: no work or no place, no runs, a
+ * research that is finished, an invention with none of its several products chosen, or a copy job whose copies
+ * are licensed for no runs or for more than the blueprint allows.
+ */
+export function jobCannotBeAsked(job: {
+  readonly activity: IndustryActivity | null;
+  readonly facilityID: number | null;
+  readonly runs: number;
+  readonly researchFinished: boolean;
+  readonly productUnchosen: boolean;
+  readonly licensedRuns: number;
+  readonly mostLicensedRuns: number;
+}): boolean {
+  return (
+    job.activity === null || job.facilityID === null || job.runs < 1 || job.researchFinished || job.productUnchosen ||
+    (job.activity === "copying" && !(job.licensedRuns >= 1 && job.licensedRuns <= job.mostLicensedRuns))
+  );
+}
+
 /** The most copies one copy job makes: the game's own client holds a job to it, and the server refuses more. */
 export const MOST_COPIES_A_JOB = 500;
 

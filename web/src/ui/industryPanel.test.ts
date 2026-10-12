@@ -3,6 +3,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { register } from "node:module";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 
 register("./svelteSsrHook.ts", import.meta.url);
 
@@ -105,4 +108,25 @@ test("a blueprint is said to be for the kinds of work that are for it as it is: 
     "Manufacturing, Copying, Material research, Time research",
     "Manufacturing, Invention",
   ]);
+});
+
+// --- a job made as its blueprint is chosen ---------------------------------------
+// The client's window makes the job as the blueprint is chosen, at the blueprint's own facility, and shows what it
+// will take at once (industryWnd.py 131 to 160; industrySvc.CreateJob, 92 to 110, and ConnectJob, 305 to 308). What
+// the page does at that press is drawn only after it, so its own lines are held here; the choice itself is held in
+// bridge/industry.test.ts, and the press was made in the tab.
+
+const SOURCE = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "Industry.svelte"), "utf8").replace(/\r\n/g, "\n");
+
+test("choosing a blueprint makes its job at the blueprint's own facility and asks what it will take at once", () => {
+  // The row's press is the choosing.
+  assert.match(SOURCE, /<button type="button" disabled=\{busy\} onclick=\{\(\) => chooseBlueprint\(blueprint\)\}>\s*Start a job…/);
+  assert.doesNotMatch(SOURCE, /onclick=\{\(\) => startJobFor\(blueprint\)\}/);
+  // The job's work and place are the client's choice for the blueprint, out of the facilities the page has.
+  assert.match(SOURCE, /const chosen = jobAsChosen\(blueprintActivities\(blueprint\), blueprint\.facilityID, \$industry\.facilities\);\n\s*chosenActivity = chosen\.activity;\n\s*chosenFacilityID = chosen\.facilityID;/);
+  // And what it will take is asked at once, where nothing is wanting for the asking.
+  assert.match(SOURCE, /function chooseBlueprint\(blueprint: IndustryBlueprintRow\): void \{\n\s*startJobFor\(blueprint\);\n\s*if \(!cannotAsk\) \{\n\s*askToConfirm\(\);\n\s*\}\n\s*\}/);
+  // The same wants keep the button from being pressed: the bridge's rule, asked of what is chosen now.
+  assert.match(SOURCE, /disabled=\{busy \|\| cannotAsk\}\s*onclick=\{askToConfirm\}/);
+  assert.match(SOURCE, /const cannotAsk = \$derived\(\s*startingBlueprint === null \|\|\s*jobCannotBeAsked\(\{\s*activity: chosenActivity,\s*facilityID: chosenFacilityID,\s*runs: chosenRuns,\s*researchFinished: research !== null && research\.finished,\s*productUnchosen,\s*licensedRuns: chosenLicensedRuns,\s*mostLicensedRuns: mostLicensedRuns\(startingBlueprint\),\s*\}\),\s*\);/);
 });
