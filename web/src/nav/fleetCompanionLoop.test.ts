@@ -7,6 +7,8 @@ import {
   FLEET_COMPANION_ABANDONMENT_WAIT_MS,
   FLEET_COMPANION_BURST_MS,
   FLEET_COMPANION_CADENCE_MS,
+  COMPANION_RESEND_WAIT_TICKS,
+  COMPANION_RETRY_BACKOFF_TICKS,
   TANK_LAYER_HURT_THRESHOLD,
   createFleetCompanion,
   decideCompanionAction,
@@ -1312,7 +1314,7 @@ test("an alignment refusal settling after pause and resume still permits its bou
   assert.equal(calls, 2);
 });
 
-test("an ambiguous alignment settling after pause and resume pauses the resumed driver without replay", async () => {
+test("an ambiguous alignment settling after pause and resume is resent after a short wait, not paused on", async () => {
   const began = deferred<void>();
   const outcome = deferred<void>();
   let calls = 0;
@@ -1327,9 +1329,16 @@ test("an ambiguous alignment settling after pause and resume pauses the resumed 
   companion.resume();
   outcome.reject(Object.assign(new Error("Align response lost"), { code: "BRIDGE_NETWORK_ERROR" }));
   await first;
+  for (let tick = 0; tick < COMPANION_RESEND_WAIT_TICKS; tick += 1) {
+    assert.equal((await companion.tick()).kind, "wait");
+  }
+  assert.equal(calls, 1, "not resent inside the wait");
+  assert.equal(companion.snapshot().status, "running");
+  // The mock answers every call with the same lost response, so the resend
+  // itself is lost too; what matters is that it was SENT, and nothing paused.
   await companion.tick();
-  assert.equal(companion.snapshot().status, "paused");
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
+  assert.equal(companion.snapshot().status, "running");
 });
 
 for (const oldOutcome of ["success", "CALL_REFUSED", "BRIDGE_NETWORK_ERROR"]) {
@@ -1384,7 +1393,9 @@ test("overlapping public ticks share the pending command and do not issue anothe
   assert.equal(calls, 2);
 });
 
-test("repeated definite alignment refusals pause after three writes", async () => {
+test("repeated definite alignment refusals back off after three writes, then try again", async () => {
+  // ⚠ BACK OFF, NOT GIVE UP: the order still stands, and a pilot that stops
+  // obeying it is a pilot somebody has to restart by hand.
   let calls = 0;
   const companion = createFleetCompanion(makeDeps({
     observe: async () => alignmentObs("broadcast", 1_000),
@@ -1396,28 +1407,36 @@ test("repeated definite alignment refusals pause after three writes", async () =
   companion.start(REQUEST);
   for (let tick = 0; tick < 10; tick += 1) await companion.tick();
   assert.equal(calls, 3);
-  assert.equal(companion.snapshot().status, "paused");
+  assert.equal(companion.snapshot().status, "running");
+  assert.match(companion.snapshot().why ?? "", /Trying again shortly|Waiting a moment/);
+  for (let tick = 0; tick < COMPANION_RETRY_BACKOFF_TICKS; tick += 1) await companion.tick();
+  assert.ok(calls > 3, "the attempts start over once the back-off is spent");
+  assert.equal(companion.snapshot().status, "running");
 });
 
 for (const error of [
   Object.assign(new Error("Alignment response lost"), { code: "BRIDGE_NETWORK_ERROR" }),
   new Error("Unknown alignment failure"),
 ]) {
-  test(`an ambiguous alignment response (${error.message}) pauses and is not replayed after resume`, async () => {
+  test(`an ambiguous alignment response (${error.message}) is resent after a short wait, without pausing`, async () => {
     let calls = 0;
     const companion = createFleetCompanion(makeDeps({
       observe: async () => alignmentObs("broadcast", 1_000),
       issue: async () => {
         calls += 1;
-        throw error;
+        if (calls === 1) throw error;
       },
     }).deps);
     companion.start(REQUEST);
     await companion.tick();
-    assert.equal(companion.snapshot().status, "paused");
-    companion.resume();
-    for (let tick = 0; tick < 3; tick += 1) assert.equal((await companion.tick()).kind, "wait");
+    assert.equal(companion.snapshot().status, "running");
+    for (let tick = 0; tick < COMPANION_RESEND_WAIT_TICKS; tick += 1) {
+      assert.equal((await companion.tick()).kind, "wait");
+    }
     assert.equal(calls, 1);
+    assert.equal((await companion.tick()).kind, "align");
+    assert.equal((await companion.tick()).kind, "wait", "a resend that landed is not sent a third time");
+    assert.equal(calls, 2);
   });
 }
 
@@ -5400,7 +5419,7 @@ test("partial drone refusals retry only refused IDs and preserve accepted drones
   ]);
 });
 
-test("mixed drone results retry known refusals without replaying accepted or uncertain drones", async () => {
+test("mixed drone results retry refusals at once and resend the flight after a short wait for the unknown ones", async () => {
   const unknownDrone = 700099;
   const issued: FleetCompanionAction[] = [];
   const companion = createFleetCompanion(makeDeps({
@@ -5413,15 +5432,20 @@ test("mixed drone results retry known refusals without replaying accepted or unc
     },
   }).deps);
   companion.start(REQUEST);
-  for (let tick = 0; tick < 4; tick += 1) await companion.tick();
+  for (let tick = 0; tick < 2 + COMPANION_RESEND_WAIT_TICKS; tick += 1) await companion.tick();
   assert.deepEqual(issued, [
     { kind: "engageDrones", droneIDs: [DRONE_A, DRONE_B, unknownDrone], targetID: LOGI },
     { kind: "engageDrones", droneIDs: [DRONE_B], targetID: LOGI },
   ]);
-  assert.equal(companion.snapshot().status, "paused");
+  assert.equal(companion.snapshot().status, "running");
+  // Engaging a drone already on this target is the same order again, so the
+  // whole flight goes rather than a guess at which drone missed it.
+  await companion.tick();
+  assert.deepEqual(issued[2], { kind: "engageDrones", droneIDs: [DRONE_A, DRONE_B, unknownDrone], targetID: LOGI });
+  assert.equal(companion.snapshot().status, "running");
 });
 
-test("drone engagement ordinary refusals are bounded, and transport ambiguity is never replayed", async () => {
+test("drone engagement refusals back off, and a lost answer is resent after a short wait", async () => {
   for (const code of ["CALL_REFUSED", "BRIDGE_NETWORK_ERROR"]) {
     let calls = 0;
     const companion = createFleetCompanion(makeDeps({
@@ -5430,8 +5454,14 @@ test("drone engagement ordinary refusals are bounded, and transport ambiguity is
     }).deps);
     companion.start(REQUEST);
     for (let tick = 0; tick < 8; tick += 1) await companion.tick();
-    assert.equal(calls, code === "CALL_REFUSED" ? 3 : 1, code);
-    assert.equal(companion.snapshot().status, "paused", code);
+    // Refused: three tries, then the back-off. Lost: a resend every
+    // COMPANION_RESEND_WAIT_TICKS + 1 ticks. Both come to three in eight ticks.
+    assert.equal(calls, 3, code);
+    assert.equal(companion.snapshot().status, "running", code);
+    if (code === "CALL_REFUSED") {
+      for (let tick = 0; tick < COMPANION_RETRY_BACKOFF_TICKS; tick += 1) await companion.tick();
+      assert.ok(calls > 3, "the attempts start over once the back-off is spent");
+    }
   }
 });
 
@@ -6584,7 +6614,7 @@ test("formation retries definite refusals but does not spend its budget on sessi
   }
 });
 
-test("formation ordinary refusals are bounded and ambiguous responses are never replayed", async () => {
+test("formation refusals back off, and a lost answer is resent after a short wait", async () => {
   for (const code of ["CALL_REFUSED", "BRIDGE_NETWORK_ERROR"]) {
     let calls = 0;
     const companion = createFleetCompanion(makeDeps({
@@ -6593,13 +6623,32 @@ test("formation ordinary refusals are bounded and ambiguous responses are never 
     }).deps);
     companion.start(REQUEST);
     for (let tick = 0; tick < 8; tick += 1) await companion.tick();
-    assert.equal(calls, code === "CALL_REFUSED" ? 3 : 1, code);
-    assert.equal(companion.snapshot().status, "paused", code);
+    assert.equal(calls, 3, code);
+    assert.equal(companion.snapshot().status, "running", code);
+    if (code === "CALL_REFUSED") {
+      for (let tick = 0; tick < COMPANION_RETRY_BACKOFF_TICKS; tick += 1) await companion.tick();
+      assert.ok(calls > 3, "the attempts start over once the back-off is spent");
+    }
   }
 });
 
+test("a lost formation answer that DID land is not sent a third time", async () => {
+  let calls = 0;
+  const companion = createFleetCompanion(makeDeps({
+    observe: async () => obs({ snapshot: fcGrid() }),
+    issue: async () => {
+      calls += 1;
+      if (calls === 1) throw Object.assign(new Error("Follow response lost"), { code: "BRIDGE_NETWORK_ERROR" });
+    },
+  }).deps);
+  companion.start(REQUEST);
+  for (let tick = 0; tick < 10; tick += 1) await companion.tick();
+  assert.equal(calls, 2);
+  assert.equal(companion.snapshot().status, "running");
+});
+
 for (const job of ["combat", "repair", "follow"] as const) {
-  test(`${job} session-change deferrals are bounded with read-only ticks between writes`, async () => {
+  test(`${job} session-change deferrals keep read-only ticks between writes and back off instead of pausing`, async () => {
     let calls = 0;
     const companion = createFleetCompanion(makeDeps({
       observe: async () => job === "follow" ? obs({ snapshot: fcGrid() }) : engagementObs(job),
@@ -6608,16 +6657,23 @@ for (const job of ["combat", "repair", "follow"] as const) {
       }); },
     }).deps);
     companion.start(REQUEST);
+    let longestGap = 0;
+    let sinceWrite = 0;
     for (let tick = 0; tick < 100; tick += 1) {
       const before = calls;
       await companion.tick();
-      if (calls > before && companion.snapshot().status === "running") {
+      sinceWrite += 1;
+      if (calls > before) {
+        longestGap = Math.max(longestGap, sinceWrite);
+        sinceWrite = 0;
         await companion.tick();
+        sinceWrite += 1;
         assert.equal(calls, before + 1, "the following read must not write again");
       }
     }
-    assert.equal(calls, 30);
-    assert.equal(companion.snapshot().status, "paused");
+    assert.ok(calls > 30, "after the thirtieth deferral it backs off and tries again");
+    assert.ok(longestGap >= COMPANION_RETRY_BACKOFF_TICKS, "with a real back-off in between");
+    assert.equal(companion.snapshot().status, "running");
   });
   for (const interruption of ["pause", "restart"] as const) {
     for (const outcomeKind of ["success", "CALL_REFUSED", "SESSION_CHANGE_IN_PROGRESS", "BRIDGE_NETWORK_ERROR"]) {
@@ -6656,9 +6712,15 @@ for (const job of ["combat", "repair", "follow"] as const) {
           assert.equal(calls, 1);
           assert.equal(companion.snapshot().status, "running");
         } else {
+          // Lost across a pause: resent after the short wait, never paused on.
           assert.equal(next.kind, "wait");
           assert.equal(calls, 1);
-          assert.equal(companion.snapshot().status, "paused");
+          assert.equal(companion.snapshot().status, "running");
+          for (let tick = 1; tick < COMPANION_RESEND_WAIT_TICKS; tick += 1) {
+            assert.equal((await companion.tick()).kind, "wait");
+          }
+          assert.equal((await companion.tick()).kind, job === "follow" ? "keepAtRange" : "engageDrones");
+          assert.equal(calls, 2);
         }
       });
     }

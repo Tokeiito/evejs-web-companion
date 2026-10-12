@@ -1279,17 +1279,31 @@ interface CompanionDroneEngagement {
   readonly deferrals: number;
   readonly deferralWait: boolean;
   readonly pending: boolean;
+  /**
+   * Ticks left before this order is sent again, or absent. See
+   * `COMPANION_RESEND_WAIT_TICKS` and `COMPANION_RETRY_BACKOFF_TICKS`.
+   */
+  readonly cooldown?: number;
 }
 
 export interface CompanionLadderMemory {
   /** Server chat timestamps plus sender/text identity disambiguate timestamp ties. */
   readonly standingChatCursor: { readonly at: number; readonly keys: readonly string[] } | null;
-  /** One alignment request, confirmed on dispatch success; uncertain writes are never replayed. */
+  /**
+   * One alignment request, confirmed on dispatch success. An uncertain write is
+   * resent after a short wait rather than parked: aligning to the same object
+   * twice is the same order, not a second one.
+   */
   readonly alignmentOrder: {
     readonly key: string;
     readonly targetID: number;
     readonly status: "pending" | "issued" | "refused" | "uncertain";
     readonly refusals: number;
+    /**
+     * Ticks left before this order is sent again, or absent. See
+     * `COMPANION_RESEND_WAIT_TICKS` and `COMPANION_RETRY_BACKOFF_TICKS`.
+     */
+    readonly cooldown?: number;
   } | null;
   /** A bounded lock wait and refused or uncertain repair writes for one call. */
   readonly healOrder: {
@@ -1641,6 +1655,11 @@ export interface CompanionLadderMemory {
     readonly refusals: number;
     readonly deferrals: number;
     readonly deferralWait: boolean;
+    /**
+     * Ticks left before this order is sent again, or absent. See
+     * `COMPANION_RESEND_WAIT_TICKS` and `COMPANION_RETRY_BACKOFF_TICKS`.
+     */
+    readonly cooldown?: number;
   } | null;
   /**
    * The solar system a `destination` order is taking this pilot to, or null.
@@ -6240,27 +6259,39 @@ function decideFollow(
     return null;
   }
   const range = memory.followRangeM;
-  const previous = memory.followOrder?.targetID === anchor.itemID && memory.followOrder.range === range
+  let previous = memory.followOrder?.targetID === anchor.itemID && memory.followOrder.range === range
     ? memory.followOrder : null;
-  if ((previous?.deferrals ?? 0) >= MAX_COMPANION_SESSION_DEFERRALS) {
-    return { action: WAIT, phase: "Following", memory,
-      why: "The session change kept blocking formation movement. Pausing for the operator.",
-      pause: "The session change did not become ready for formation movement.",
-    };
+  if (previous !== null && previous.cooldown !== undefined) {
+    if (previous.cooldown > 1) {
+      return waiting("Following", "Waiting a moment before sending the formation request again.", {
+        ...memory, followOrder: { ...previous, cooldown: previous.cooldown - 1 },
+      });
+    }
+    // The wait is over: the order is sent again from scratch, counters and all.
+    // `followAnchorID` goes too, or the "already holding" check below would
+    // read the stale stamp as a standing order and send nothing.
+    memory = { ...memory, followOrder: null, followAnchorID: null };
+    previous = null;
+  }
+  if (previous !== null && previous.deferrals >= MAX_COMPANION_SESSION_DEFERRALS) {
+    return waiting("Following", "A session change kept blocking formation movement. Trying again shortly.", {
+      ...memory, followOrder: { ...previous, cooldown: COMPANION_RETRY_BACKOFF_TICKS },
+    });
   }
   if (previous?.deferralWait) {
     return waiting("Following", "Waiting for the session change to clear before retrying formation movement.", {
       ...memory, followOrder: { ...previous, deferralWait: false },
     });
   }
-  if (previous?.status === "uncertain" || (previous?.refusals ?? 0) >= MAX_COMPANION_FOLLOW_REFUSALS) {
-    return {
-      action: WAIT, phase: "Following", memory,
-      why: previous?.status === "uncertain"
-        ? "The formation request's outcome is unknown. Pausing without repeating it."
-        : "The formation request was refused repeatedly. Pausing for the operator.",
-      pause: "Cannot confirm formation movement.",
-    };
+  if (previous !== null && previous.status === "uncertain") {
+    return waiting("Following", "The formation request got no answer. Sending it again in a moment.", {
+      ...memory, followOrder: { ...previous, cooldown: COMPANION_RESEND_WAIT_TICKS },
+    });
+  }
+  if (previous !== null && previous.refusals >= MAX_COMPANION_FOLLOW_REFUSALS) {
+    return waiting("Following", "The formation request was refused repeatedly. Trying again shortly.", {
+      ...memory, followOrder: { ...previous, cooldown: COMPANION_RETRY_BACKOFF_TICKS },
+    });
   }
   if (memory.followAnchorID === anchor.itemID && memory.followRangeIssuedM === range &&
     (previous === null || previous.status === "pending" || previous.status === "issued")) {
@@ -6790,18 +6821,53 @@ const MAX_COMPANION_FOLLOW_REFUSALS = 3;
 // A separate, generous barrier budget; every deferral gets a read-only tick.
 const MAX_COMPANION_SESSION_DEFERRALS = 30;
 
+/**
+ * Ticks to wait before RESENDING an order whose answer was lost.
+ *
+ * ⚠ THESE ORDERS ARE STANDING STATE, NOT EVENTS, SO REPEATING ONE IS SAFE.
+ * `keepAtRange` on the same commander at the same range, drones engaged on the
+ * same target, aligning to the same object: a second copy of each lands on the
+ * state the first one set, and changes nothing if the first one took. That is
+ * what separates them from a cargo move or a jump, which must never be
+ * replayed on a guess. Pausing here used to park a companion mid-fight every
+ * time a server stall swallowed an answer, until somebody pressed Carry on.
+ * The wait is there so the resend lands after the stall, not inside it.
+ */
+export const COMPANION_RESEND_WAIT_TICKS = 2;
+
+/**
+ * Ticks to back off after an order was refused repeatedly, or a session change
+ * kept blocking it, before the attempts start over.
+ *
+ * ⚠ BACK OFF, NOT GIVE UP. The order is still the fleet's order; a pilot that
+ * stops obeying it because the server said no three times in six seconds is a
+ * pilot somebody has to restart by hand. Thirty seconds is long enough not to
+ * hammer a server that is refusing for a reason, and short enough that the
+ * pilot is back in formation before the fight has moved on.
+ */
+export const COMPANION_RETRY_BACKOFF_TICKS = 15;
+
 function decideDroneEngagement(
   memory: CompanionLadderMemory, role: "combat" | "repair", flightIDs: readonly number[], targetID: number, why: string,
 ): CompanionDecision | null {
   const field = role === "combat" ? "combatDroneOrder" : "repairDroneOrder";
   const saved = memory[field];
-  const previous = saved?.targetID === targetID ? saved : null;
+  let previous = saved?.targetID === targetID ? saved : null;
   if (previous?.pending) return null;
-  if ((previous?.deferrals ?? 0) >= MAX_COMPANION_SESSION_DEFERRALS) {
-    return { action: WAIT, phase: "Drones", memory,
-      why: "The session change kept blocking drone engagement. Pausing for the operator.",
-      pause: "The session change did not become ready for drone engagement.",
-    };
+  if (previous !== null && previous.cooldown !== undefined) {
+    if (previous.cooldown > 1) {
+      return waiting("Drones", "Waiting a moment before sending the drones again.", {
+        ...memory, [field]: { ...previous, cooldown: previous.cooldown - 1 },
+      });
+    }
+    // Over: every drone in flight is sent again, from a clean slate.
+    memory = { ...memory, [field]: null };
+    previous = null;
+  }
+  if (previous !== null && previous.deferrals >= MAX_COMPANION_SESSION_DEFERRALS) {
+    return waiting("Drones", "A session change kept blocking the drones. Trying again shortly.", {
+      ...memory, [field]: { ...previous, cooldown: COMPANION_RETRY_BACKOFF_TICKS },
+    });
   }
   if (previous?.deferralWait) {
     return waiting("Drones", "Waiting for the session change to clear before retrying drone engagement.", {
@@ -6813,12 +6879,13 @@ function decideDroneEngagement(
   );
   if (requestedIDs.length === 0) {
     if (previous !== null && (previous.uncertainIDs.length > 0 || previous.refusedIDs.length > 0)) {
-      return { action: WAIT, phase: "Drones", memory,
-        why: previous.uncertainIDs.length > 0
-          ? "A drone engagement's outcome is unknown. Pausing without repeating it."
-          : "Drone engagement was refused repeatedly. Pausing for the operator.",
-        pause: "Cannot confirm drone engagement.",
-      };
+      const lost = previous.refusedIDs.length === 0;
+      return waiting("Drones", lost
+        ? "The drones' order got no answer. Sending it again in a moment."
+        : "The drones' order was refused repeatedly. Trying again shortly.", {
+        ...memory,
+        [field]: { ...previous, cooldown: lost ? COMPANION_RESEND_WAIT_TICKS : COMPANION_RETRY_BACKOFF_TICKS },
+      });
     }
     return null;
   }
@@ -7077,19 +7144,33 @@ function decideFleetOrders(
 
   // d. An `AlignTo` order.
   if (order?.name === "AlignTo") {
-    const previous = memory.alignmentOrder?.key === order.key ? memory.alignmentOrder : null;
+    let previous = memory.alignmentOrder?.key === order.key ? memory.alignmentOrder : null;
     const base = {
       phase: "Obeying fleet",
       followingOrderFrom: order.source,
       lastOrderHeard: order.heard,
     };
-    if (previous?.status === "uncertain") {
+    if (previous !== null && previous.cooldown !== undefined) {
+      if (previous.cooldown > 1) {
+        return {
+          ...base,
+          action: WAIT,
+          why: order.why + " Waiting a moment before aligning again.",
+          memory: { ...memory, alignmentOrder: { ...previous, cooldown: previous.cooldown - 1 } },
+          standing: true,
+          holdsNavigation: true,
+        };
+      }
+      previous = null;
+    }
+    if (previous !== null && previous.status === "uncertain") {
       return {
         ...base,
         action: WAIT,
-        why: order.why + " Its alignment response was lost. Pausing without repeating that request.",
-        memory,
-        pause: "The previous alignment request has an unknown outcome.",
+        why: order.why + " The alignment request got no answer. Sending it again in a moment.",
+        memory: { ...memory, alignmentOrder: { ...previous, cooldown: COMPANION_RESEND_WAIT_TICKS } },
+        standing: true,
+        holdsNavigation: true,
       };
     }
     if (previous !== null && previous.status !== "refused") {
@@ -7104,13 +7185,14 @@ function decideFleetOrders(
         holdsNavigation: true,
       };
     }
-    if ((previous?.refusals ?? 0) >= MAX_COMPANION_ALIGN_REFUSALS) {
+    if (previous !== null && previous.refusals >= MAX_COMPANION_ALIGN_REFUSALS) {
       return {
         ...base,
         action: WAIT,
-        why: order.why + " Alignment was refused repeatedly. Pausing for the operator.",
-        memory,
-        pause: "The alignment order was refused three times.",
+        why: order.why + " Alignment was refused repeatedly. Trying again shortly.",
+        memory: { ...memory, alignmentOrder: { ...previous, cooldown: COMPANION_RETRY_BACKOFF_TICKS } },
+        standing: true,
+        holdsNavigation: true,
       };
     }
     return {
@@ -7541,7 +7623,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
         //
         // A definite refusal and a lost transport response are different: the
         // latter may follow a committed write. Each action keeps its pending
-        // state and retry budget; alignment pauses when its outcome is unknown.
+        // state and retry budget, and an unknown outcome is resent, not paused on.
         // A refused lock can still land once the ship drifts closer.
         //
         // ⚠ THE SERVER'S OWN WORDS NEVER REACH THE PLAYER. A refusal arrives as
@@ -7558,30 +7640,13 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
         const raw = error instanceof Error ? error.message : String(error);
         mem.failureReason = raw;
         mem.why = `${decision.why} ${refusalWords(raw)}`;
-        const engagementTargetID = decision.action.kind === "engageDrones" ? decision.action.targetID : null;
-        const droneOrder = engagementTargetID !== null
-          ? [mem.ladder.combatDroneOrder, mem.ladder.repairDroneOrder].find((order) =>
-            order !== null && order.targetID === engagementTargetID && order.uncertainIDs.length > 0) : null;
-        const uncertainMovement = decision.action.kind === "keepAtRange" && mem.ladder.followOrder?.status === "uncertain";
-        const uncertainDrones = droneOrder != null && !droneOrder.refusedIDs.some((id) =>
-          (droneOrder.refusals[id] ?? 0) < MAX_COMPANION_DRONE_ENGAGE_REFUSALS);
-        if (uncertainMovement || uncertainDrones) {
-          runToken += 1;
-          mem.status = "paused";
-          mem.action = null;
-          mem.why = "Cannot confirm the command's outcome. Pausing without repeating it.";
-        }
-        const alignment = mem.ladder.alignmentOrder;
-        if (decision.action.kind === "align" && alignment !== null &&
-          alignment.key === decision.memory.alignmentOrder?.key) {
-          const definite = isDefiniteCompanionRefusal(error);
-          if (!definite) {
-            runToken += 1;
-            mem.status = "paused";
-            mem.action = null;
-            mem.why = "Cannot confirm whether the alignment request took effect. Pausing for the operator.";
-          }
-        }
+        // ⚠ NO PAUSE HERE ANY MORE FOR AN UNCONFIRMED FOLLOW, DRONE OR ALIGN
+        // ORDER. The settle calls above have already recorded the outcome as
+        // "uncertain"; the ladder reads that on its next tick and resends the
+        // order after `COMPANION_RESEND_WAIT_TICKS`. Each of these orders is
+        // standing state that a second copy lands on harmlessly -- see that
+        // constant -- so parking the pilot for an operator bought nothing but a
+        // stopped companion in the middle of whatever the stall interrupted.
         // ⚠ COUNTED HERE, WHERE THE REFUSAL IS, AND NOWHERE ELSE. The ladder is
         // pure and never learns what happened to a call it chose; this is the
         // one place that knows. Lock refusals have their own bound because the
