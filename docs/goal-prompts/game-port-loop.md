@@ -2022,6 +2022,22 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **What is open in the tab is in its saved layout, in the order first opened.**
   `JSON.parse(localStorage["evejs-web-desktop:v1:<pilot>"]).wins`, read before a
   rail button is pressed, says whether the press opens a window or raises one.
+- **What is said of `eve.js` is read with the eyes before it is written.** A
+  docs script was handed the count of commits ahead straight from the command
+  that read it, and wrote "0 ... none of which this loop pushes" of an origin
+  another hand had pushed to minutes before. Read the three (local `main`, the
+  origin asked now, how many ahead) in a command of their own, look, write the
+  sentence by hand, and hand the script the sentence. Where the origin moved,
+  `git reflog show refs/remotes/origin/main --date=iso` says when, and whether
+  by a push from this checkout.
+- **Where a thing cannot be seen live, say what stands for it, and why that is
+  enough.** No recording has a clone jump and the page makes none. The server's
+  own tests stood for the running server because, the unit before, tests of the
+  same notice had failed and passed exactly as the live server did.
+- **While a sub-agent works, read the next unit; do not build it.** The
+  reaction's job was read whole and sized into Next while one worked in
+  `eve.js`. Nothing of it was built, so the iteration ended on a clean tree,
+  and the breakage tool never ran beside another's tests.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
