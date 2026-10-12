@@ -2126,6 +2126,26 @@ Take these defaults, and list each under "For the operator" in the log so they c
   asker does.** A look at a ship being made answers `READY`, and the panel
   then asks the plan again and applies it: followed by the page's own askers
   to the finished ship, the wire's second half is in the test too.
+- **A consumer of something already tested is broken through its own test
+  too.** The Center's Apply has lines only a consumer that is not the Center
+  reaches (which consumer a plan is for, the session that asked, the
+  training read again under control): eleven breakages of it were caught by
+  the Training's test, and by no other.
+- **A second line of defence is seen only where the first is got past: have
+  the stand-in answer one asking otherwise than the last.** The Center's
+  read of a fitting is held to what the page accepted, after the
+  qualification's read has refused a changed fitting already. A library that
+  answers its n-th asking differently (`world.saved` in
+  `test/pagesTrainingEquipment.test.js`) is a fitting saved between the two,
+  and the second check is then the one that refuses.
+- **A thing checked at two places is lost at each in turn.** Skills lost
+  before an Apply are refused at the first of the two readings whichever is
+  broken. An Apply held at each place, the skill lost there
+  (`provisioningCenterFault`), tells the two apart.
+- **Next's order is a decision, and can be taken again.** The jettison's two
+  were set to wait on a live run. Read again, what waits on it is their use in
+  a page, not the asking of them. A change of the order is said among the
+  decisions, with why.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
