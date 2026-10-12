@@ -1685,6 +1685,17 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **The tab serves the built page.** `public/dist` is what a check BFF hands the
   browser, and it is not built by a test or a restart: `npm run build:web` before a
   change to the page is looked for in the tab, then load the tab again.
+- **A call only the transport makes has no entry in the routes' table.** A call of the
+  client's own that a route may not ask by name (the contract refuses it before
+  dispatch) is listed with the transport's own calls (`TRANSPORT_OWN_CALLS`,
+  `retailCalls.js`) and noted in the ledger where it is made, with its place in the
+  client's source. Do not allowlist a pair to make the transport's own asking of it
+  pass: the transport's askings do not go through the list.
+- **The gateway's askings are not in the server's log.** A call on the game port is one
+  `[PKT] IN` line there (and one `[PyPacket]` line beside it: count one of the two).
+  A call through the web gateway is written nowhere in it: count those in the gateway
+  BFF's own tally (`gateway-ledger.json` in its data folder), from a BFF started
+  afresh.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
