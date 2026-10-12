@@ -1894,6 +1894,29 @@ Take these defaults, and list each under "For the operator" in the log so they c
   commands and one look told that a complex's reprocessing and market can be set
   online, and a short script saw the server's notice let the kept services go: each
   was a line under "left" in the entry before.
+- **Nothing heavy runs beside the breakage tool, and it runs a test file under twenty
+  seconds.** A store put back beside it started EveJS under it. And a file with a
+  slow test in it is "NOT TRIED … the tests fail before the source is broken", which
+  reads like a failure of the unit's: run the file as the tool does
+  (`node --test --test-timeout=20000 <file>`) before the list is made, and give a
+  test that waits on the server's own clock a clock of its own
+  (`transitionNow`, `transitionSleep`).
+- **A check that reads the world for what is gone says the opposite for what stays
+  the less.** The reprocess route read the hangar for the stacks that were gone, and
+  called a stack with a remainder left and a stack that was never there done. Where
+  the server says what it did, go by that, as the client does; read the world only
+  where it does not say.
+- **A stand-in's function replaced after the server is made may be one the server
+  never calls.** A test that swapped `callBoundMethod` on the stand-in refused
+  nothing, and passed. Give the stand-in the refusal as its own state, and hold the
+  test to the refusal having happened.
+- **Before a row is sent back to the server, write one and compare the bytes.** A row
+  decoded and written again was a byte longer (its text came back as bytes); read
+  as text first, it was the server's own bytes. `rpc-roundtrip.js` is the check,
+  with this server's own codec for the first writing.
+- **A window's tab says where it is offered: read it before a control in it is called
+  a feature.** `web/src/ui/tabs.ts`, `where`. The Mining window's refining is for a
+  docked pilot, and the window is offered in space only.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

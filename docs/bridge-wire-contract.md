@@ -2978,6 +2978,29 @@ a player straight past a full belt. Only asteroid rows grow the fields.
 - `GET  /api/bridge/reprocessing/quote?itemIDs=…` → `{ ok, stationID, taxRate, quotes }` (docked only)
 - `POST /api/bridge/reprocessing/reprocess` `{ itemIDs, confirm }` → `{ ok, requested, processed, remaining }` (docked only)
 
+**The plant's two calls, as the retail client makes them** (on the game port; no
+Tranquility recording has either). Both are on the reprocessing service's
+Moniker for where the pilot is docked (`Moniker('reprocessingSvc',
+session.structureid or session.stationid)`). The quote is
+`GetQuotes(items, activeShipID)`: the client's window hands in its own dict of
+the items, **each item's row by the item's ID**, and the ship the pilot is in.
+The route names the items; the transport gives each its row out of the listings
+the pilot holds (the route reads the hangar's first, which is answered from what
+is held), written as the server wrote it. An item no listing has makes the quote
+go with the IDs alone, which the call ledger counts as not the client's. Through
+the gateway it goes with the IDs alone. The reprocessing is
+`Reprocess(itemIDs, fromLocation, ownerID, outputLocationID, outputFlagID)`,
+with **the output named always** (the client's window names the hangar of where
+the pilot is docked): the route sends the hangar's place, the pilot, and that
+hangar and its flag again as the output, on both transports. In a structure both
+routes are held to its reprocessing service ("A structure's services", above).
+
+**`processed` is what the server says it reprocessed** (the first of
+`Reprocess`'s two answers, as the client's window takes it); `remaining` is the
+rest of what was asked. A stack that is no whole number of portions stays in
+the hangar, the less, and is reprocessed all the same. Only where the answer
+does not say is the hangar read again for which stacks are gone.
+
 **`division` delivers into a CORPORATION hangar instead — and falls back.** The
 same `invbroker.Add`, with the corporation's office at the docked station as the
 bound object and the division's flag (`114 + N`, never sent by the browser) as
