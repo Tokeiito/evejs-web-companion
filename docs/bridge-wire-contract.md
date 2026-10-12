@@ -1012,7 +1012,7 @@ characters.
   "corporationID": 1000167,    // the held session's corporation
   "account": [140000003, 1000], // the character's own cash; (corporation, division) for corp installs
   "runs": 3,
-  "licensedRuns": 1,           // copying
+  "licensedRuns": 300,         // any job's: the most the blueprint allows, till a copy job says another
   "cost": 0, "tax": 0, "time": 0, "materials": {},   // ADVISORY — see below
   "inputLocation": { "itemID": …, "flagID": 4, "ownerID": …, "canTake": true },
   "outputLocation": { … },
@@ -1022,8 +1022,10 @@ characters.
 
 ⚠ **`cost` / `tax` / `time` / `materials` are advisory.** The server recomputes
 all four from the blueprint definition plus the facility's modifiers, so sending
-them wrong does not change what is charged and sending them right does not make
-them authoritative. The fields that genuinely decide the outcome are
+them does not change what is charged. **One that is not nought (or not an empty
+map) is held against the server's own, and a job whose number is not the
+server's is refused** (`MISMATCH_COST`, `_TAX`, `_TIME`, `_MATERIAL`). The
+fields that genuinely decide the outcome are
 `blueprintID`, `activityID`, `facilityID`, `runs` (plus `licensedRuns` for
 copying, `productTypeID` for invention, and the two locations). A **null**
 location means "the server picks the default hangar".
@@ -1051,7 +1053,21 @@ to a generic sentence rather than leaking the code.
 
 - `POST /api/bridge/industry/preview` `{ blueprintItemID, blueprintTypeID,
   activity, facilityID, runs, licensedRuns?, timeEfficiency?, materialEfficiency? }` →
-  `{ ok, available, timeSeconds, fee, materials, inputLocation, outputLocation }`. **`timeEfficiency`** is the
+  `{ ok, available, timeSeconds, fee, materials, inputLocation, outputLocation }`.
+  **`licensedRuns`** is a copy job's alone to say: the runs each copy is licensed
+  for, a whole number from 1 to the most the blueprint allows (else 400
+  `INVALID_LICENSED_RUNS`), and that most where nothing is said, as the retail
+  client's job begins. Any other job is sent with that most whatever is said (the
+  client's job is). **A copy job is reckoned as a manufacturing job is** in all
+  that follows (`copyingJobSeconds`, `copyingJobFee`, `copyingJobMaterials`):
+  its time, on both transports, by the licensed runs, the copies and the pilot's
+  copy speed, with neither research of the blueprint's in it or needing to be
+  said; its fee, on the game port, of the copy job's own base; its materials for
+  every run of every copy, an empty map (`{}`, and not null) where the blueprint's
+  copying lists none. **A copy job of more copies than the retail client's job
+  could have** (thirty days over its time and time modifiers, and never more than
+  500) **is refused 400 `INVALID_RUNS`**, with the most said, where that most
+  could be reckoned; no job is sent. **`timeEfficiency`** is the
   blueprint's own time research as the page read it (a whole number from 0 to 20,
   else 400 `INVALID_TIME_EFFICIENCY`). Where it is said and the work is
   manufacturing, the job's time is reckoned as the retail client's job reckons it

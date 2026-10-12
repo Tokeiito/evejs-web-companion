@@ -1799,6 +1799,22 @@ Take these defaults, and list each under "For the operator" in the log so they c
   file alone, read what it tests, and write down what was found and what was not:
   here a test of a socket's stream, nothing of the unit's, three passes alone, and a
   clean run after. That is what was measured; why it failed is not known.
+- **Where the server's sum reads the same as the client's, a second copy of it proves
+  nothing.** Written out again it agrees with itself. Hold this code against the
+  client's own interpreter instead (`scripts/py27-oracle.py`), over what the game's
+  data has, and take the tests' vectors from the cases that tell the client's order
+  from another (`cpy-vectors.js` finds them: for each other way of doing the sum, the
+  first cases it comes apart at). A search of the game's blueprints for where the
+  server parts from the client is for where the two are written differently.
+- **A name the client's job always sends is a name of every kind of job.** The runs a
+  copy is licensed for went as 1 with a manufacturing job for as long as the route
+  had sent one, because only a copy job "used" them: the client's job has them for
+  any work, and sends them. Read `dump` name by name against what the job has for the work in hand.
+- **The bare interpreter has no `functools`.** `reduce` fails in the oracle for want
+  of it: write the reduction out by hand, in the same order.
+- **A script that makes a number of an answer says the answer's status first.** A
+  hangar read as nought, four times, was a route refusing with 409: the count was of
+  nothing. (`GET /api/bridge/inventory` refuses for a pilot docked in a structure.)
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
