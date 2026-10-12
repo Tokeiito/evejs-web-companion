@@ -1051,7 +1051,7 @@ to a generic sentence rather than leaking the code.
 
 - `POST /api/bridge/industry/preview` `{ blueprintItemID, blueprintTypeID,
   activity, facilityID, runs, licensedRuns?, timeEfficiency? }` → `{ ok, available,
-  timeSeconds, inputLocation, outputLocation }`. **`timeEfficiency`** is the
+  timeSeconds, fee, inputLocation, outputLocation }`. **`timeEfficiency`** is the
   blueprint's own time research as the page read it (a whole number from 0 to 20,
   else 400 `INVALID_TIME_EFFICIENCY`). Where it is said and the work is
   manufacturing, the job's time is reckoned as the retail client's job reckons it
@@ -1059,7 +1059,12 @@ to a generic sentence rather than leaking the code.
   for the server to hold against its own; **`timeSeconds`** is that time, and
   null where none was reckoned (the request then carries nought, which the server
   does not check). The install route takes the same field and sends the same
-  time. `ConnectJob` then **always** `DisconnectJob` — the preview
+  time. **`fee`** is what the job costs to start as the retail client adds it up,
+  `{ cost, tax, sccSurcharge, securityTax, total }` in whole ISK
+  (`manufacturingJobFee`), on the game port for manufacturing; null where any part
+  of it could not be reckoned (through the gateway, always), and the page then
+  says no amount. The `cost` and the `tax` of it are sent in the request, and in
+  the install's, for the server to hold against its own. `ConnectJob` then **always** `DisconnectJob` — the preview
   is not a pure read, so the monitor it opens is always released, **and the route
   answers only after that release**: a pilot has one write at a time, and a write
   that followed an earlier answer was refused `CHARACTER_IN_USE`. Needs no

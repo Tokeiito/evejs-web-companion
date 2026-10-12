@@ -1719,6 +1719,18 @@ Take these defaults, and list each under "For the operator" in the log so they c
   test's lookup that made every type a blueprint had a price refused for a blueprint
   among its own materials, and the breakage of the check it was written for lived.
   Make a stand-in answer for the IDs meant, and nothing for the rest.
+- **A guard that repeats the reckoning's own cannot be seen broken.** A route refused
+  a fee where the cost or the tax was null, and so did the reckoning it called:
+  breaking either changed no test's answer. Keep a refusal in one place, the
+  reckoning's, and take the other out rather than write a test round it.
+- **A wrong value for a decoder's test is wrong in one way only.** A fee with a part
+  below nought was refused for not adding up, and the check of the part lived broken.
+  Make the wrong one pass every check but the one meant.
+- **Read whether a thing can be seen here before promising to see it.** Every facility
+  of the region had a tax of nought, and no system a gate reaches the security a tax
+  wants: both were read before a line was built, and the unit said from its start
+  which of its numbers would be in tests only and what would have to be staged to
+  see them.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
