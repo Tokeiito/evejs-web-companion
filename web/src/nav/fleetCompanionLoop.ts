@@ -1497,6 +1497,27 @@ export interface CompanionLadderMemory {
    */
   readonly lockGaveUpOn: readonly number[];
   /**
+   * The called target rung 7 asked to lock and has not yet seen land, and when.
+   *
+   * ⚠ WITHOUT THIS THE RUNG ASKED AGAIN ON EVERY TICK OF THE LOCK TIMER. A lock
+   * is not instant: the server holds it pending for the retail scan-resolution
+   * time (about 6.5 s for a Vexor on a 35 m frigate) and the lock list shows it
+   * only once it lands. Every tick in between read "not locked" and issued
+   * `lock` again, and a tick that issues something sleeps only
+   * `FLEET_COMPANION_BURST_MS` -- so 2026-10-12's fights carried ten to twenty
+   * AddTarget calls per pilot per kill, each with a full set of reads, and the
+   * server answered every repeat with "pending". Asked again only after
+   * `LOCK_LANDING_WAIT_MS`, so a lock the server dropped is not waited on for
+   * ever; a refusal clears it at once (`noteRefusedLock`).
+   */
+  readonly lockPending: { readonly targetID: number; readonly sinceMs: number } | null;
+  /**
+   * The hostiles the lock-ahead has asked to lock, each asked at most once, and
+   * when. See `decideLockAhead`. Capped at `MAX_PRELOCK_MEMORY`, emptied by a
+   * warp like `lockGaveUpOn`.
+   */
+  readonly preLocked: readonly { readonly targetID: number; readonly atMs: number }[];
+  /**
    * Rung 6's recall-and-relaunch cycle, or null when none is running.
    *
    * ⚠ A RECORD, BECAUSE THE TRIGGER EXTINGUISHES ITSELF. The instant the recall
@@ -1900,6 +1921,8 @@ export function freshLadderMemory(): CompanionLadderMemory {
     lockRefusedFor: null,
     lockRefusals: 0,
     lockGaveUpOn: [],
+    lockPending: null,
+    preLocked: [],
     droneCycle: null,
     droneCyclesSpent: 0,
     droneSizeSwitchAtMs: null,
@@ -2007,6 +2030,17 @@ export interface CompanionDecision {
   readonly standing?: true;
   /** Lower work may continue, but must not replace this standing movement order. */
   readonly holdsNavigation?: true;
+  /**
+   * The hostile a standing target decision is fighting, so the lock-ahead knows
+   * which ship NOT to pre-lock and that there is a fight to lock ahead in.
+   */
+  readonly engagedTargetID?: number;
+  /**
+   * Set on the lock-ahead's own `lock`. A refusal of it is not booked against
+   * the ship (`noteRefusedLock`): the pre-lock is an optimisation asked once,
+   * and the ship gets its full budget the moment it becomes the target.
+   */
+  readonly preLock?: true;
 }
 
 /**
@@ -2235,8 +2269,11 @@ function decideCompanionStep(
     // else -- so every give-up is dropped here rather than carried onto a grid
     // where it was never measured. See `lockGaveUpOn`. Nothing else in this
     // memory is distance-shaped, which is why nothing else is cleared.
-    if (next.lockGaveUpOn.length > 0 || next.lockRefusedFor !== null) {
-      next = { ...next, lockGaveUpOn: [], lockRefusedFor: null, lockRefusals: 0 };
+    // The lock-ahead's record goes with it: those ships were ranked on the old
+    // grid, and a pending lock is on a ship this one has left behind.
+    if (next.lockGaveUpOn.length > 0 || next.lockRefusedFor !== null ||
+      next.lockPending !== null || next.preLocked.length > 0) {
+      next = { ...next, lockGaveUpOn: [], lockRefusedFor: null, lockRefusals: 0, lockPending: null, preLocked: [] };
     }
     return waiting(
       "In warp",
@@ -2297,6 +2334,8 @@ function decideCompanionStep(
     lockRefusedFor: memory.lockRefusedFor,
     lockRefusals: memory.lockRefusals,
     lockGaveUpOn: memory.lockGaveUpOn,
+    lockPending: memory.lockPending,
+    preLocked: memory.preLocked,
     lastDroneRepairTargetID: memory.lastDroneRepairTargetID,
     lastDroneRepairIDs: memory.lastDroneRepairIDs,
     lastDroneEngageTargetID: memory.lastDroneEngageTargetID,
@@ -2482,9 +2521,27 @@ function decideCompanionStep(
   // as a READOUT while the ladder goes on. Before this, that case returned an
   // ordinary wait and ended the tick, so a standing target call starved every
   // rung beneath it for as long as it stood. See `CompanionDecision.standing`.
-  const obeying = decideFleetOrders(request, obs, reloading.memory);
+  const obeying = decideFleetOrders(request, obs, reloading.memory, nowMs);
   if (obeying !== null && obeying.standing !== true) {
     return obeying;
+  }
+
+  // Rung 7b: the lock-ahead. Only while the pilot stands on a target -- its
+  // lock pending or its guns running -- and before the loot and salvage rungs,
+  // because the next kill outranks a wreck. See `decideLockAhead`.
+  if (obeying !== null && obeying.engagedTargetID !== undefined) {
+    const ahead = decideLockAhead(obs, obeying.memory, obeying.engagedTargetID, nowMs);
+    if (ahead !== null) {
+      return {
+        action: { kind: "lock", targetID: ahead.targetID },
+        phase: obeying.phase,
+        why: "Locking the next one up while this one dies.",
+        memory: ahead.memory,
+        ...(obeying.followingOrderFrom === undefined ? {} : { followingOrderFrom: obeying.followingOrderFrom }),
+        ...(obeying.lastOrderHeard === undefined ? {} : { lastOrderHeard: obeying.lastOrderHeard }),
+        preLock: true,
+      };
+    }
   }
 
   // Rung 8: the `loot` order.
@@ -3267,6 +3324,118 @@ function bestTaggedEntity(
  */
 const MAX_REFUSED_LOCK_ATTEMPTS = 3;
 
+/**
+ * How long an asked-for lock is waited on before it is asked for again.
+ *
+ * ⚠ A BOUND ON THE REPEATS, NOT A GUESS AT THE LOCK TIME. The server answers a
+ * repeated AddTarget on a pending lock with "pending" and changes nothing, so
+ * asking early costs only the call; asking late after a lock the server dropped
+ * costs the wait. Ten seconds covers a cruiser on a frigate (about 6.5 s at
+ * 340 mm scan resolution) and re-asks a lock that is slower than that once
+ * every ten seconds rather than every 400 ms.
+ */
+const LOCK_LANDING_WAIT_MS = 10_000;
+
+/**
+ * How many hostiles beyond the one being shot this pilot keeps locked.
+ *
+ * ⚠ THIS IS WHAT A KILL COSTS WITHOUT IT. Measured 2026-10-12: after a rat
+ * died the next AddTarget went out in 0.5-2.6 s and then waited 3.5-7 s on the
+ * lock timer before a drone or gun could move -- the lock was most of the
+ * dead time between kills, and it was paid only because nothing asked for it
+ * until the last ship was dead. A player locks the next ones while shooting
+ * this one; two is the next kill and the one after, without spending the
+ * slots a heal call or a salvager needs.
+ */
+const COMPANION_LOCK_AHEAD = 2;
+
+/**
+ * How many pre-locks the lock-ahead remembers having asked for. The cap is the
+ * whole bound on that record (the drone boat's `MAX_PRELOCK_MEMORY`, same
+ * number for the same reason): comfortably more than any hull locks.
+ */
+const MAX_PRELOCK_MEMORY = 16;
+
+/**
+ * The lock-ahead: while this pilot is fighting `engagedID`, lock the hostiles it
+ * will fight next, so the next kill starts with the lock already on.
+ *
+ * Ranked as the next call is most likely to come: the fleet's other tagged
+ * ships first by tag rank, then the free-fire kill order (`rankByKillOrder`).
+ * Locking is not shooting -- nothing here activates anything, and a `targets
+ * called` pilot still fires only on what it is called on.
+ *
+ * ⚠ UNREADABLE MEANS DO NOT. No lock count, no lock list, no grid: nothing is
+ * asked, the drone boat's rule. A guessed count would spend a slot the hull
+ * may not have, every kill.
+ *
+ * ⚠ EACH SHIP IS ASKED FOR ONCE. A pre-lock that does not land is not
+ * retried; the ship gets a proper, budgeted lock the moment it becomes the
+ * target. That is the whole stop condition, and why a refusal of one is not
+ * booked against the ship (`CompanionDecision.preLock`).
+ *
+ * ⚠ ONE SLOT IS ALWAYS LEFT FREE. A heal call locks a fleet-mate and the
+ * salvage order locks wrecks; a pilot whose slots were all spent on rats it
+ * is not yet shooting would be refused the lock that mattered.
+ */
+function decideLockAhead(
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+  engagedID: number,
+  nowMs: number,
+): { readonly targetID: number; readonly memory: CompanionLadderMemory } | null {
+  const maxLocks = obs.maxLockedTargets ?? null;
+  const locked = obs.lockedTargetIDs ?? null;
+  const snapshot = obs.snapshot ?? null;
+  if (maxLocks === null || !Number.isFinite(maxLocks) || maxLocks < 1 || locked === null || snapshot === null) {
+    return null;
+  }
+  const entities = snapshot.entities;
+  const onGrid = new Set(entities.map((entity) => entity.itemID));
+  const hostileIDs = new Set(entities.filter(isHostile).map((entity) => entity.itemID));
+  // Asked for, still on grid, not landed, and asked recently enough to still be
+  // pending on the server: each holds a slot and counts as locked ahead.
+  const inFlight = memory.preLocked.filter((asked) =>
+    asked.targetID !== engagedID && onGrid.has(asked.targetID) && !locked.includes(asked.targetID) &&
+    nowMs - asked.atMs < LOCK_LANDING_WAIT_MS).length;
+  const lockedAhead = locked.filter((id) => id !== engagedID && hostileIDs.has(id)).length;
+  if (lockedAhead + inFlight >= COMPANION_LOCK_AHEAD) {
+    return null;
+  }
+  const engagedPending = locked.includes(engagedID) ? 0 : 1;
+  if (locked.length + inFlight + engagedPending + 1 >= maxLocks) {
+    return null;
+  }
+  const measurement = measureSpace(snapshot);
+  const reach = obs.maxTargetRangeM ?? null;
+  const asked = new Set(memory.preLocked.map((entry) => entry.targetID));
+  const candidates = entities.filter((entity) => {
+    if (entity.itemID === engagedID || !isHostile(entity) || locked.includes(entity.itemID) ||
+      asked.has(entity.itemID) || gaveUpOnLocking(memory, entity.itemID)) {
+      return false;
+    }
+    const distance = measurement?.distances.get(entity.itemID) ?? null;
+    return reach === null || distance === null || distance <= reach;
+  });
+  if (candidates.length === 0) {
+    return null;
+  }
+  const tags = obs.fleetTargetTags ?? null;
+  const next =
+    (tags === null ? null : bestTaggedEntity(tags, candidates, measurement)) ??
+    rankByKillOrder(obs, candidates, measurement);
+  if (next === null) {
+    return null;
+  }
+  return {
+    targetID: next.itemID,
+    memory: {
+      ...memory,
+      preLocked: [...memory.preLocked, { targetID: next.itemID, atMs: nowMs }].slice(-MAX_PRELOCK_MEMORY),
+    },
+  };
+}
+
 /** Record one refused lock, and give up on that ship once the budget is spent. */
 function noteRefusedLock(
   memory: CompanionLadderMemory,
@@ -3276,11 +3445,14 @@ function noteRefusedLock(
   // ship", not "three refusals ever" -- a fleet calling three ships in a row has
   // exhausted nothing.
   const attempts = memory.lockRefusedFor === targetID ? memory.lockRefusals + 1 : 1;
+  // A refused lock is not pending, so the next tick may ask again at once.
+  const lockPending = memory.lockPending?.targetID === targetID ? null : memory.lockPending;
   if (attempts < MAX_REFUSED_LOCK_ATTEMPTS) {
-    return { ...memory, lockRefusedFor: targetID, lockRefusals: attempts };
+    return { ...memory, lockRefusedFor: targetID, lockRefusals: attempts, lockPending };
   }
   return {
     ...memory,
+    lockPending,
     lockRefusedFor: null,
     lockRefusals: 0,
     lockGaveUpOn: rememberGiveUp(memory.lockGaveUpOn, targetID),
@@ -3418,6 +3590,7 @@ function lockThenEngage(
   request: FleetCompanionRequest,
   obs: FleetCompanionObservation,
   memory: CompanionLadderMemory,
+  nowMs: number,
 ): CompanionDecision {
   // Free fire obeys nobody, so it says so: its own phase, and no
   // `followingOrderFrom`, which the controller reads as "own-ladder".
@@ -3426,13 +3599,31 @@ function lockThenEngage(
       ? { phase: "Free fire" }
       : { phase: "Obeying fleet", followingOrderFrom: source };
   if (!isAlreadyLocked(targetID, obs.lockedTargetIDs, memory)) {
+    // ⚠ A LOCK ALREADY ASKED FOR IS WAITED ON, NOT ASKED FOR AGAIN. See
+    // `lockPending`. The wait is STANDING, so the rungs beneath -- the
+    // lock-ahead first -- get the tick while the lock timer runs.
+    const pending = memory.lockPending;
+    if (pending !== null && pending.targetID === targetID && nowMs - pending.sinceMs < LOCK_LANDING_WAIT_MS) {
+      return {
+        action: WAIT,
+        standing: true,
+        ...authority,
+        why: why + " Waiting for the lock to land.",
+        memory,
+        lastOrderHeard: heard,
+        engagedTargetID: targetID,
+      };
+    }
     return {
       action: { kind: "lock", targetID },
       ...authority,
       why: why + " Locking it.",
-      memory: { ...memory, lastLockIssuedFor: targetID },
+      memory: { ...memory, lastLockIssuedFor: targetID, lockPending: { targetID, sinceMs: nowMs } },
       lastOrderHeard: heard,
     };
+  }
+  if (memory.lockPending?.targetID === targetID) {
+    memory = { ...memory, lockPending: null };
   }
   const fire = decideOpenFire(targetID, request, obs, memory);
   if (fire !== null) {
@@ -3464,6 +3655,7 @@ function lockThenEngage(
         : " Locked, and firing on it."),
     memory,
     lastOrderHeard: heard,
+    engagedTargetID: targetID,
   };
 }
 
@@ -6689,21 +6881,8 @@ function freeFireTarget(
   if (candidates.length === 0) {
     return null;
   }
-  const groups = obs.targetGroupNames ?? null;
   const threats = obs.threatByTypeID ?? null;
-  const signatures = obs.signatureByTypeID ?? null;
-  const target = pickPrimary(
-    candidates,
-    (entity) => entity.typeID,
-    distanceOf,
-    (typeID) => (groups === null ? null : (groups[typeID] ?? null)),
-    undefined,
-    undefined,
-    (typeID) => threats?.[typeID] ?? null,
-    undefined,
-    undefined,
-    (entity) => (entity.typeID === null || signatures === null ? null : (signatures[entity.typeID] ?? null)),
-  );
+  const target = rankByKillOrder(obs, candidates, measurement);
   if (target === null) {
     return null;
   }
@@ -6723,6 +6902,35 @@ function freeFireTarget(
     heard: "free fire",
     why: `Free fire: shooting ${what}.`,
   };
+}
+
+/**
+ * The first of `candidates` by the free-fire kill order (`pickPrimary`).
+ *
+ * ⚠ ONE RANKING FOR THE PICK AND THE PRE-LOCK. The lock-ahead ranks the same
+ * grid the same way minus the ship being shot, so its first pre-lock is the
+ * ship free fire turns to next and that ship's lock is already on.
+ */
+function rankByKillOrder(
+  obs: FleetCompanionObservation,
+  candidates: readonly SpaceEntity[],
+  measurement: SpaceMeasurement | null,
+): SpaceEntity | null {
+  const groups = obs.targetGroupNames ?? null;
+  const threats = obs.threatByTypeID ?? null;
+  const signatures = obs.signatureByTypeID ?? null;
+  return pickPrimary(
+    candidates,
+    (entity) => entity.typeID,
+    (entity) => measurement?.distances.get(entity.itemID) ?? null,
+    (typeID) => (groups === null ? null : (groups[typeID] ?? null)),
+    undefined,
+    undefined,
+    (typeID) => threats?.[typeID] ?? null,
+    undefined,
+    undefined,
+    (entity) => (entity.typeID === null || signatures === null ? null : (signatures[entity.typeID] ?? null)),
+  );
 }
 
 /** The called target's id alone, for the drone rung. */
@@ -7474,6 +7682,7 @@ function decideFleetOrders(
   request: FleetCompanionRequest,
   obs: FleetCompanionObservation,
   memory: CompanionLadderMemory,
+  nowMs: number,
 ): CompanionDecision | null {
   const snapshot = obs.snapshot ?? null;
   if (snapshot === null) {
@@ -7517,6 +7726,7 @@ function decideFleetOrders(
       request,
       obs,
       memory,
+      nowMs,
     );
   }
 
@@ -8035,7 +8245,9 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
         // one place that knows. Lock refusals have their own bound because the
         // authoritative lock list is consulted rather than believed, so a
         // refused lock never reads as done.
-        if (decision.action.kind === "lock") {
+        // A pre-lock was asked once and is already recorded as asked; its
+        // refusal is not the ship's (`CompanionDecision.preLock`).
+        if (decision.action.kind === "lock" && decision.preLock !== true) {
           mem.ladder = noteRefusedLock(mem.ladder, decision.action.targetID);
         }
         if (decision.action.kind === "warp" &&
@@ -8137,6 +8349,8 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
           lockRefusedFor: null,
           lockRefusals: 0,
           lockGaveUpOn: [],
+          lockPending: null,
+          preLocked: [],
           // A resumed run has launched and recalled nothing either, and a cycle
           // it was mid-way through is gone with the process that held it. Its
           // drones, if any, are already abandoned in space - that is the
