@@ -113,7 +113,7 @@ test("the bind is tried again a second later, ten times at most", async () => {
   assert.equal(gone.session.asked.filter((line) => line.startsWith("bind")).length, 2);
 });
 
-test("a drone of the pilot's left in space with no state asks once for the whole state, and again only if it strays again", async () => {
+test("a drone of the pilot's left in space with no state asks for the whole state, and goes on asking while it stays so", async () => {
   const clock = { ms: 0 };
   const { session, space, state } = handTicked({}, { now: () => clock.ms });
   session.attributes = { charid: 90000001, shipid: undock.shipID };
@@ -145,7 +145,7 @@ test("a drone of the pilot's left in space with no state asks once for the whole
   assert.match(state.errors[0][1], new RegExp(`^1 of the pilot's drones .*\\(${lost}\\).*ask 1 of 3`));
   // The park is not thrown away while the answer is on its way: an answer that never comes leaves the pilot flying.
   assert.equal(space.park.validState, true);
-  // An answer that leaves the drone out is asked again, 15 s on, three times in all and no more.
+  // An answer that leaves the drone out is asked again, 15 s on, three times at that pace.
   clock.ms = 19999;
   state.frame();
   assert.equal(asks(), 1);
@@ -154,17 +154,30 @@ test("a drone of the pilot's left in space with no state asks once for the whole
   clock.ms = 35000;
   state.frame();
   assert.equal(asks(), 3);
-  clock.ms = 120000;
+  // Then every 30 s for as long as it lasts (seen 2026-10-12: three asks spent in 36 s, eleven minutes blind).
+  clock.ms = 64999;
   state.frame();
-  assert.equal(asks(), 3, "three asks, then it stops");
-  // Given its state, then losing it again, it starts over.
+  assert.equal(asks(), 3);
+  clock.ms = 65000;
+  state.frame();
+  assert.equal(asks(), 4);
+  assert.match(state.errors.at(-1)[1], /ask 4, every 30 s while it lasts/);
+  clock.ms = 95000;
+  state.frame();
+  assert.equal(asks(), 5);
+  // Given its state, then losing it again, it starts over: the grace first, then the quick asks.
   space.park.OnDroneStateChange(lost, 90000001, undock.shipID, 0, 2454, 90000001, null);
   state.frame();
   space.park.stateByDroneID.delete(lost);
+  clock.ms = 96000;
   state.frame();
-  clock.ms = 125000;
+  clock.ms = 100999;
   state.frame();
-  assert.equal(asks(), 4);
+  assert.equal(asks(), 5);
+  clock.ms = 101000;
+  state.frame();
+  assert.equal(asks(), 6);
+  assert.match(state.errors.at(-1)[1], /ask 1 of 3/);
 });
 
 test("a park is fed the session's ballpark updates and nothing else, and steps when ticked", async () => {
