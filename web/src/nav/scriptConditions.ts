@@ -524,10 +524,6 @@ export interface ScriptObservation {
     readonly bookmarkID: number;
     readonly name: string;
     readonly solarSystemID: number | null;
-    /** The folder the bookmark sits in. No step reads it: a mission's spots are the journal's, not a folder's. */
-    readonly folderName?: string | null;
-    /** True when the bookmark carries raw coordinates (a real spot in space). No step reads it. */
-    readonly hasSpot?: boolean;
   }[] | null;
   /** The ACTIVE ship's item id (from the docked inventory read). */
   readonly activeShipID?: number | null;

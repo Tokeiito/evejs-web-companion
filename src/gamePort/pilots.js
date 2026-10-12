@@ -257,6 +257,17 @@ const officesKeptAs = (method, form) => (method === "GetMyCorporationsOffices" &
 const ofOwnCorporation = (args, attributes) => wholeOf(Array.isArray(args) ? args[0] : null) === wholeOf(attributes.corpid);
 /** What a read of the calendar's is kept as: a month's events, by the month (calendar.events[(month, year)]: GetEventList(month, year)). */
 const calendarKeptAs = (method, form) => (method === "GetEventList" ? `${form.args[1]}-${form.args[0]}` : null);
+const BOOKMARK_MGR = "accessGroupBookmarkMgr";
+/**
+ * The bookmark manager's one read the client's bookmark service keeps (bookmarkSvc.ACLPrimeBookmarks, 157 to 177):
+ * the folders the pilot knows, active or not, and the bookmarks and the subfolders of the active ones.
+ */
+const ACTIVE_BOOKMARKS = "GetMyActiveBookmarks";
+/**
+ * What a read of the bookmark manager's is kept as: its three lists, asked with nothing. Null for any other read,
+ * and for one with something sent beside it, which is no call of the client's and is asked as it came.
+ */
+const bookmarksKeptAs = (method, form) => (method === ACTIVE_BOOKMARKS && form.args.length === 0 && form.kwargs === null ? "active" : null);
 /**
  * The answers a service of the client's keeps until something changes them, by the service they are asked of
  * (keptReads.js). `keptAs` says what a read is kept as, or null for one that is not kept. What changes them is
@@ -298,6 +309,19 @@ const KEPT_UNTIL_CHANGED = Object.freeze({
     concerns: ofOwnCorporation,
     writes: Object.freeze({}),
   }),
+  // bookmarkSvc: a shared folder changed, was deleted, is the pilot's to see no more, or is its to do other things
+  // in (232, 322, 332, 343); and the pilot's own making, changing and deleting of a bookmark, a folder or a
+  // subfolder, on the manager (every such call of the service's) or on the ballpark's own object (617, 629). The
+  // client works each into what it keeps, and asks nothing.
+  [BOOKMARK_MGR]: Object.freeze({
+    keptAs: bookmarksKeptAs,
+    notices: new Set(["OnSharedBookmarksFolderUpdated", "OnSharedBookmarksFolderDeleted", "OnSharedBookmarksFoldersAccessLost", "OnSharedBookmarksFoldersAccessChanged"]),
+    writes: Object.freeze({
+      accessGroupBookmarkMgr: new Set(["AddFolder", "UpdateFolder", "DeleteFolder", "AddToKnownFolders", "RemoveFromKnownFolders", "UpdateKnownFolderState", "BookmarkStaticLocation",
+        "UpdateBookmark", "DeleteBookmarks", "MoveBookmarksToFolderAndSubfolder", "CopyBookmarksToFolderAndSubfolder", "CreateSubfolder", "UpdateSubfolder", "DeleteSubfolder"]),
+      beyonce: new Set(["BookmarkLocation", "BookmarkScanResult"]),
+    }),
+  }),
 });
 /**
  * A container's two listings, which the client's inventory cache keeps (invCacheContainer.List, ListByFlags, in
@@ -321,6 +345,25 @@ const OWN_ORDERS = "GetCharOrders";
 function wholeOf(value) {
   if (typeof value === "bigint") return value;
   return typeof value === "number" && Number.isSafeInteger(value) ? BigInt(value) : null;
+}
+
+/** Whether an answer is the bookmark manager's three lists: the folders, the bookmarks, the subfolders. */
+const isTheThreeLists = (answered) => Array.isArray(answered) && answered.length === 3 && answered.every(isAList);
+
+/**
+ * bookmarkSvc.RemoveExpiredBookmarks (186 to 192): the three lists less the bookmarks whose time has run out by the
+ * clock (`if bookmark.expiry and bookmark.expiry < now`). A row whose time cannot be read is left. The lists
+ * themselves are left as they were answered: where a bookmark is taken out, what is handed on is another three.
+ */
+function withoutExpiredBookmarks(answered, nowMs) {
+  const now = BigInt(Math.trunc(nowMs)) * 10000n + FILETIME_OF_UNIX_EPOCH;
+  const [folders, bookmarks, subfolders] = answered;
+  const rows = itemsOf(bookmarks);
+  const live = rows.filter((row) => {
+    const expiry = wholeOf(row && row.type === "object" && row.args ? dictValue(row.args, "expiry") : undefined);
+    return expiry === null || expiry === 0n || expiry >= now;
+  });
+  return live.length === rows.length ? answered : [folders, Array.isArray(bookmarks) ? live : { ...bookmarks, items: live }, subfolders];
 }
 
 /**
@@ -1334,6 +1377,10 @@ function createGamePortPilots({
       await primeSkills(entry);
       // journal._UpdateMissionDataFull: a character chosen has its agents' journal read, for the missions it is on.
       await journalUpToDate(entry).catch(() => {});
+      // bookmarkSvc.ACLPrimeBookmarks: a character chosen has its bookmarks read, and the folders it knows with them,
+      // after the journal, as a client asks this server. A manager that refuses fails no choosing: they are asked
+      // for when they are next wanted.
+      await bookmarksRead(entry, shape(BOOKMARK_MGR, ACTIVE_BOOKMARKS, [], null, contextFor(entry))).catch(() => {});
       // crimewatchSvc: the client's states, as a character on the session and a system under it each ask them; and
       // the pilot's own security status, which the client asks for once.
       await clientStatesAtAChange(entry, { charid: [null, characterID], ...(attribute(entry, "solarsystemid") === null ? {} : { solarsystemid: [null, attribute(entry, "solarsystemid")] }) });
@@ -1432,7 +1479,7 @@ function createGamePortPilots({
     const form = shape(service, method, args, kwargs, contextFor(entry));
     // What a service of the client's keeps until it changes is that service's to answer, and is noted where it is asked for.
     if (Object.hasOwn(KEPT_UNTIL_CHANGED, service) && KEPT_UNTIL_CHANGED[service].keptAs(method, form) !== null) {
-      const kept = await run(entry, service, method, () => keptRead(entry, service, method, form));
+      const kept = await run(entry, service, method, () => (service === BOOKMARK_MGR ? bookmarksRead(entry, form) : keptRead(entry, service, method, form)));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
     // The formations are asked for once, as the client's object cache has them after its first asking.
@@ -1899,6 +1946,19 @@ function createGamePortPilots({
       ledger.note(service, method, form);
       return byName(entry.session, service, method, form);
     });
+  }
+
+  /**
+   * bookmarkSvc.GetBookmarks (69 to 79): the bookmark manager's three lists as they are kept, asked for, and noted,
+   * where none are; less the bookmarks whose time has run out by the server's clock, which the client's service
+   * takes out of what it keeps by itself and asks nothing for. (It looks for them when five minutes have gone by
+   * since it last looked; here every reading looks.) An answer that is not the three lists is handed on, and not kept.
+   */
+  async function bookmarksRead(entry, form) {
+    const answered = await keptRead(entry, BOOKMARK_MGR, ACTIVE_BOOKMARKS, form);
+    if (isTheThreeLists(answered)) return withoutExpiredBookmarks(answered, entry.session.serverNow());
+    entry.kept[BOOKMARK_MGR].forget();
+    return answered;
   }
 
   /** One of the client's own askings of a service by its name, with nothing: noted as it is sent. */

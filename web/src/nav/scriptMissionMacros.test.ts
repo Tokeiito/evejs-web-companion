@@ -1017,7 +1017,7 @@ test("fly-to-mission-site: warps to the accepted mission's own marked spot by as
   const home = fly(s, obs({ flightStatus: inSpace, journal: accepted([base]) }), {}, NB);
   assert.deepEqual(home.action, { kind: "warpMissionLocation", agentID: AGENT, locationType: "agenthomebase", locationNumber: -1 });
   // The folder of bookmarks is not gone by: one marked there and nothing in the journal is no spot of a mission's.
-  const folder = fly(s, obs({ flightStatus: inSpace, journal: accepted([]), bookmarks: [{ bookmarkID: 71, name: "", solarSystemID: 30000142, folderName: "Agent Missions", hasSpot: true }] }), {}, NB);
+  const folder = fly(s, obs({ flightStatus: inSpace, journal: accepted([]), bookmarks: [{ bookmarkID: 71, name: "", solarSystemID: 30000142 }] }), {}, NB);
   assert.deepEqual([folder.action.kind, folder.outcome.kind], ["wait", "blocked"]);
 
   // The journal not read yet: the step reads on, and decides nothing.

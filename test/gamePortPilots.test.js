@@ -47,6 +47,7 @@ const refusedBy = (key, reason = key) => sessionError("GAME_CALL_REFUSED", `refu
  */
 const CHOSEN_ASKS = [
   "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler", "agentMgr.GetMyJournalDetails",
+  "accessGroupBookmarkMgr.GetMyActiveBookmarks",
   "charMgr.GetContactList", "onlineStatus.GetInitialState",
   // The stand-in's pilot is chosen in a station: its lobby's four.
   "officeManager.GetMyCorporationsOffices", "stationSvc.GetStationItemBits", "station.GetGuests", "map.GetStationInfo",
@@ -304,6 +305,8 @@ test("select logs in as the account and makes the retail client's three calls, i
     "skillMgr2.GetMySkillHandler",
     // And its agents' journal, as the client's journal service asks for it.
     "agentMgr.GetMyJournalDetails",
+    // And its bookmarks, with the folders it knows, as the client's bookmark service asks for them.
+    "accessGroupBookmarkMgr.GetMyActiveBookmarks",
     // And its contacts and who of them is online, as the client's address book asks. (Its corporation's contacts
     // are asked of the registry, and not at all of an NPC corporation, which the stand-in pilot's is.)
     "charMgr.GetContactList",
@@ -1369,6 +1372,7 @@ test("the transport keeps a tally of what it called and how each compared with t
     // Asked for and not answered by this stand-in: nothing was asked of a handler, and nothing of one is tallied.
     "skillMgr2.GetMySkillHandler": { same: 1 },
     "agentMgr.GetMyJournalDetails": { same: 1 },
+    "accessGroupBookmarkMgr.GetMyActiveBookmarks": { same: 1 },
     "agentMgr.GetAgents": { same: 1 },
     "notificationMgr.GetAllNotifications": { same: 1 },
     "contractProxy.GetLoginInfo": { same: 1 },
@@ -8665,4 +8669,168 @@ test("a mission's location warped to on the agent's bound object goes as the cli
   await pilots.callBoundMethod("agentMgr", "WarpToLocation", ["dungeon", 0, 0, true, null, { formationType: 0, formationSpacing: 1000, formationSize: 10000 }], null, WHOSE, handle, agent);
   assert.deepEqual(session.boundCalls.at(-1).args[3], true);
   assert.deepEqual(row().statuses, { same: 1, differs: 1 });
+});
+
+// ── a pilot's bookmarks, asked for as its character is chosen and kept ───────
+//
+// bookmarkSvc.ACLPrimeBookmarks (157 to 177): folders, bookmarks, subfolders =
+// self.accessGroupBookmarkMgr.GetMyActiveBookmarks(), once, and the three kept. The service works its own writes
+// and the server's four notices of a shared folder into what it keeps, and takes out a bookmark whose time has run
+// out by its own clock (RemoveExpiredBookmarks, 186 to 192). Here what is kept is let go at a write or a notice, and
+// asked for when it is next wanted (keptReads.js); the clock's part is done as the client does it. Each of
+// Tranquility's three recordings of a login has the asking once, and this server's log of a retail client's login
+// has it once, after the journal's.
+
+const BOOKMARKS = "accessGroupBookmarkMgr.GetMyActiveBookmarks";
+/** Every call of the manager's by which the client's bookmark service changes a bookmark, a folder or a subfolder (bookmarkSvc.py). */
+const BOOKMARK_WRITES = ["AddFolder", "UpdateFolder", "DeleteFolder", "AddToKnownFolders", "RemoveFromKnownFolders", "UpdateKnownFolderState", "BookmarkStaticLocation",
+  "UpdateBookmark", "DeleteBookmarks", "MoveBookmarksToFolderAndSubfolder", "CopyBookmarksToFolderAndSubfolder", "CreateSubfolder", "UpdateSubfolder", "DeleteSubfolder"];
+const BOOKMARK_PAIRS = { allowed: new Set([BOOKMARKS, "accessGroupBookmarkMgr.GetFolderInfo", "accessGroupBookmarkMgr.SearchFoldersWithAdminAccess", "someService.GetMyActiveBookmarks",
+  ...BOOKMARK_WRITES.map((method) => `accessGroupBookmarkMgr.${method}`)]) };
+/** A time as the server's clock counts it, off the wire. */
+const filetimeOf = (ms) => BigInt(ms) * 10000n + 116444736000000000n;
+const aKeyVal = (fields) => ({ type: "object", name: "util.KeyVal", args: { type: "dict", entries: Object.entries(fields) } });
+/** A bookmark as this server answers one: a KeyVal, the time it runs out among its names. */
+const aBookmark = (bookmarkID, expiry = null) => aKeyVal({ bookmarkID, folderID: 500001, itemID: null, typeID: 5, flag: null, memo: "A spot", expiry, locationID: 30000142, subfolderID: null, creatorID: PILOT });
+/** The manager's three lists: one folder, the bookmarks given, no subfolder. */
+const threeLists = (...bookmarks) => [{ type: "list", items: [aKeyVal({ folderID: 500001, isPersonal: true, isActive: true, accessLevel: 1 })] }, { type: "list", items: bookmarks }, { type: "list", items: [] }];
+/** The bookmarks in the three lists as the transport hands them on, each by its ID; a row that is no KeyVal by what it is. */
+const bookmarkIDs = (result) => result[1].items.map((row) => (row && row.type === "object" ? row.args.entries.find(([name]) => name === "bookmarkID")[1] : "no KeyVal"));
+/** A pilot whose bookmark manager answers one bookmark, numbered by which asking it is the answer of. */
+async function withBookmarks(more = {}) {
+  const asked = { times: 0 };
+  const chosen = await selected({ answers: { [BOOKMARKS]: () => { asked.times += 1; return threeLists(aBookmark(900000 + asked.times)); }, ...more } }, BOOKMARK_PAIRS);
+  /** Which asking the bookmarks handed on are the answer of. */
+  const bookmarks = async (args = [], kwargs = null) => bookmarkIDs((await chosen.pilots.callMethod("accessGroupBookmarkMgr", "GetMyActiveBookmarks", args, kwargs, FIELDS, chosen.handle)).result)[0] - 900000;
+  return { ...chosen, asked, bookmarks };
+}
+
+test("a pilot's bookmarks are asked for as its character is chosen, once, and kept, as the client's bookmark service keeps them", async () => {
+  const { pilots, session, handle, asked, bookmarks } = await withBookmarks({ "accessGroupBookmarkMgr.SearchFoldersWithAdminAccess": "the folders administered" });
+  // bookmarkSvc.ACLPrimeBookmarks (163): by name, with nothing, after the journal's asking, as a client asks this server.
+  const chosen = session.calls.map((call) => `${call.service}.${call.method}`);
+  assert.equal(chosen[chosen.indexOf("agentMgr.GetMyJournalDetails") + 1], BOOKMARKS);
+  assert.deepEqual(session.calls.filter((call) => call.service === "accessGroupBookmarkMgr").map((call) => [call.method, call.args, call.kwargs]), [["GetMyActiveBookmarks", [], null]]);
+  // Read as often as it is wanted, by name and with nothing: what was answered at the choosing, and nothing sent.
+  assert.deepEqual([await bookmarks(), await bookmarks(), await bookmarks(), asked.times], [1, 1, 1, 1]);
+  assert.deepEqual(ledgerOf(pilots, BOOKMARKS), [{ same: 1 }, "eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:163"]);
+  // Two at once that find nothing kept ask once.
+  session.notify("OnSharedBookmarksFolderDeleted", [500002]);
+  assert.deepEqual([...(await Promise.all([bookmarks(), bookmarks()])), asked.times], [2, 2, 2]);
+  // A read of the same name on another service is that service's own, each time.
+  await pilots.callMethod("someService", "GetMyActiveBookmarks", [], null, FIELDS, handle);
+  await pilots.callMethod("someService", "GetMyActiveBookmarks", [], null, FIELDS, handle);
+  assert.equal(session.calls.filter((call) => call.service === "someService").length, 2);
+  // And another read of the manager's, with nothing too, is its own: asked each time, and answered as it is answered.
+  const administered = async () => (await pilots.callMethod("accessGroupBookmarkMgr", "SearchFoldersWithAdminAccess", [], null, FIELDS, handle)).result;
+  assert.deepEqual([await administered(), await administered()], ["the folders administered", "the folders administered"]);
+  assert.equal(session.calls.filter((call) => call.method === "SearchFoldersWithAdminAccess").length, 2);
+  // The client asks with nothing. An asking with something beside it is no call of its: sent each time, with
+  // nothing kept of it and what is kept left as it is.
+  assert.deepEqual([await bookmarks([500001]), await bookmarks([500001]), await bookmarks([], { all: true }), await bookmarks(), asked.times], [3, 4, 5, 2, 5]);
+  assert.deepEqual(ledgerOf(pilots, BOOKMARKS)[0], { same: 2, differs: 3 });
+});
+
+test("the bookmarks kept are let go at the server's word of a shared folder, and at the pilot's own write of a bookmark, a folder or a subfolder, done or refused", async () => {
+  let refuse = false;
+  const writes = Object.fromEntries(BOOKMARK_WRITES.map((method) => [`accessGroupBookmarkMgr.${method}`, () => { if (refuse) throw refusedBy("NotNow"); return null; }]));
+  const { pilots, session, handle, asked, bookmarks } = await withBookmarks(writes);
+  assert.equal(await bookmarks(), 1);
+  const forgets = async (what, change) => {
+    const before = asked.times;
+    await change();
+    assert.deepEqual([await bookmarks(), await bookmarks(), asked.times], [before + 1, before + 1, before + 1], what);
+  };
+  const keeps = async (what, change) => {
+    const before = asked.times;
+    await change();
+    assert.deepEqual([await bookmarks(), asked.times], [before, before], what);
+  };
+  // bookmarkSvc.py 232, 322, 332 and 343: the four notices the service has of a shared folder.
+  for (const [notice, args] of [
+    ["OnSharedBookmarksFolderUpdated", [[[[500002], "bookmarksAdded", { type: "list", items: [] }]]]],
+    ["OnSharedBookmarksFolderDeleted", [500002]],
+    ["OnSharedBookmarksFoldersAccessLost", [[500002]]],
+    ["OnSharedBookmarksFoldersAccessChanged", [{ type: "dict", entries: [[500002, 2]] }]],
+  ]) await forgets(notice, () => session.notify(notice, args));
+  // Each of the service's own writes on the manager, done;
+  for (const method of BOOKMARK_WRITES) await forgets(method, () => pilots.callMethod("accessGroupBookmarkMgr", method, [500001], null, FIELDS, handle));
+  // and refused, since a refusal may come after the server changed something.
+  refuse = true;
+  for (const method of BOOKMARK_WRITES) await forgets(`${method}, refused`, () => rejects(pilots.callMethod("accessGroupBookmarkMgr", method, [500001], null, FIELDS, handle), "CALL_REFUSED"));
+  // A read of the manager's and another service's notices leave them kept.
+  await keeps("a folder read", () => pilots.callMethod("accessGroupBookmarkMgr", "GetFolderInfo", [500001], null, FIELDS, handle));
+  await keeps("other notices", () => { session.notify("OnOfficeRentalChange", [1000044, 7]); session.notify("OnSharedBookmarksSomethingElse", [500002]); session.notify("OnNewCalendarEvent", [1, 7]); });
+});
+
+test("a place bookmarked on the ballpark's object lets the bookmarks kept go, by beyonce's name and on a handle, and an order to the ship does not", async () => {
+  const hand = handTicked();
+  let times = 0;
+  const allowed = new Set([BOOKMARKS, "beyonce.MachoBindObject", "beyonce.BookmarkLocation", "beyonce.BookmarkScanResult", "beyonce.CmdStop"]);
+  const saved = [900001, null, 5, 1.5, 2.5, 3.5, 30000142, null];
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, [BOOKMARKS]: () => { times += 1; return threeLists(aBookmark(900000 + times)); }, "bound:BookmarkLocation": saved, "bound:BookmarkScanResult": saved } }, { ...hand.options, allowed });
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const bookmarks = async () => bookmarkIDs((await built.pilots.callMethod("accessGroupBookmarkMgr", "GetMyActiveBookmarks", [], null, WHOSE, handle)).result)[0] - 900000;
+  assert.deepEqual([await bookmarks(), await bookmarks(), times], [1, 1, 1]);
+  // bookmarkSvc.ACLBookmarkLocation (617): on the park, asked by beyonce's name.
+  await built.pilots.callMethod("beyonce", "BookmarkLocation", [1000000012345, 7000001, "A spot", "a note", 2], { subfolderID: null }, WHOSE, handle);
+  assert.deepEqual([await bookmarks(), await bookmarks(), times], [2, 2, 2]);
+  // And on a handle of the park's.
+  const { boundHandle } = await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
+  await built.pilots.callBoundMethod("beyonce", "BookmarkLocation", [1000000012345, 7000001, "A spot", "a note", 2], { subfolderID: null }, WHOSE, handle, boundHandle);
+  assert.deepEqual([await bookmarks(), times], [3, 3]);
+  // bookmarkSvc.ACLBookmarkScanResult (629): a scan result's place, on the park too.
+  await built.pilots.callBoundMethod("beyonce", "BookmarkScanResult", [30000142, "A site", "", "ABC-123", 7000001, 0], { subfolderID: null }, WHOSE, handle, boundHandle);
+  assert.deepEqual([await bookmarks(), times], [4, 4]);
+  // An order to the ship changes no bookmark.
+  await built.pilots.callMethod("beyonce", "CmdStop", [], null, WHOSE, handle);
+  await built.pilots.callBoundMethod("beyonce", "CmdStop", [], null, WHOSE, handle, boundHandle);
+  assert.deepEqual([await bookmarks(), times], [4, 4]);
+  assert.deepEqual(hand.errors, []);
+});
+
+test("a bookmark whose time has run out by the server's clock is not handed on, and nothing is asked for that", async () => {
+  const NOW = 1_700_000_000_000;
+  let asked = 0;
+  const lists = () => {
+    asked += 1;
+    return threeLists(aBookmark(1), aBookmark(2, filetimeOf(NOW + 60_000)), aBookmark(3, 0), aBookmark(4, filetimeOf(NOW + 120_000)), { type: "list", items: [5] });
+  };
+  const { pilots, session, handle } = await selected({ serverNow: NOW, answers: { [BOOKMARKS]: lists } }, BOOKMARK_PAIRS);
+  const read = async () => (await pilots.callMethod("accessGroupBookmarkMgr", "GetMyActiveBookmarks", [], null, FIELDS, handle)).result;
+  // bookmarkSvc.RemoveExpiredBookmarks (188): `if bookmark.expiry and bookmark.expiry < now`. None has run out yet.
+  assert.deepEqual(bookmarkIDs(await read()), [1, 2, 3, 4, "no KeyVal"]);
+  // At its own tick a bookmark is there still; a millisecond on, it is not. One with no time, or with nought for
+  // one, never runs out, and a row whose time cannot be read is left.
+  session.serverNowMs = NOW + 60_000;
+  assert.deepEqual(bookmarkIDs(await read()), [1, 2, 3, 4, "no KeyVal"]);
+  session.serverNowMs = NOW + 60_001;
+  assert.deepEqual(bookmarkIDs(await read()), [1, 3, 4, "no KeyVal"]);
+  session.serverNowMs = NOW + 500_000;
+  const late = await read();
+  assert.deepEqual(bookmarkIDs(late), [1, 3, "no KeyVal"]);
+  // The folders and the subfolders are as they were answered, and nothing was asked again.
+  assert.deepEqual([late.length, late[0].items.length, late[2].items.length, asked], [3, 1, 0, 1]);
+});
+
+test("a manager that refuses fails no choosing, an answer that is not its three lists is handed on and not kept, and a refusal keeps nothing", async () => {
+  let answer = null;
+  let refuse = true;
+  let asked = 0;
+  const { pilots, handle } = await selected({ answers: { [BOOKMARKS]: () => { asked += 1; if (refuse) throw refusedBy("NotNow"); return answer; } } }, BOOKMARK_PAIRS);
+  const read = async () => (await pilots.callMethod("accessGroupBookmarkMgr", "GetMyActiveBookmarks", [], null, FIELDS, handle)).result;
+  // Refused at the choosing, which went on; and refused where it is next wanted, for who wanted it.
+  assert.equal(asked, 1);
+  await rejects(read(), "CALL_REFUSED");
+  refuse = false;
+  // Nothing: asked for at each reading.
+  assert.deepEqual([await read(), await read(), asked], [null, null, 4]);
+  // Two lists, and three of which one is no list: neither is the manager's answer, and neither is kept.
+  answer = [{ type: "list", items: [] }, { type: "list", items: [] }];
+  assert.deepEqual([(await read()).length, (await read()).length, asked], [2, 2, 6]);
+  answer = [{ type: "list", items: [] }, "no list", { type: "list", items: [] }];
+  assert.deepEqual([(await read())[1], (await read())[1], asked], ["no list", "no list", 8]);
+  // The three lists: kept from then on.
+  answer = threeLists(aBookmark(7));
+  assert.deepEqual([bookmarkIDs(await read()), bookmarkIDs(await read()), bookmarkIDs(await read()), asked], [[7], [7], [7], 9]);
 });

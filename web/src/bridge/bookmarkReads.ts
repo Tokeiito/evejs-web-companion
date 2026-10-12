@@ -33,6 +33,13 @@
 // changes and deletes a bookmark itself, and as the server tells it a shared folder changed
 // (OnSharedBookmarksFolderUpdated and its fellows). The page keeps nothing: it asks each time it wants them.
 //
+// ON THE GAME PORT THE TRANSPORT KEEPS THEM (src/gamePort/pilots.js, bookmarksRead). They are asked for as a
+// character is chosen, as a client asks, and from then on the page's asking is answered from what is kept, with
+// nothing sent. What is kept is let go at the pilot's own write of a bookmark, a folder or a subfolder, and at the
+// server's word of a shared folder, and is asked for when it is next wanted: once more than a client asks, which
+// works each into what it keeps. A bookmark whose time has run out by the server's clock is not handed on.
+// Through the gateway each asking is sent.
+//
 // AN ANSWER THAT IS NOT THE THREE LISTS IS NOT "NO BOOKMARKS". The route answered a read that had failed with
 // nothing and a code beside it, and the page read nothing as no bookmarks: a bot's warp to a saved spot was told
 // the spot was not in its list, and stopped. The read fails as the call fails, and says so where the answer is

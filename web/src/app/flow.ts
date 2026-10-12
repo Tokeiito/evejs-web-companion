@@ -12104,15 +12104,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         if (macro === "warp-to-bookmark") {
           try {
             // The page's own call (bridge/bookmarkReads.ts), as the client's bookmark service makes it. A read
-            // that fails leaves them unread, and the step reading: never an empty list of them.
+            // that fails leaves them unread, and the step reading: never an empty list of them. On the game port
+            // the transport answers each look from what it keeps, and sends nothing for it.
             const active = await readMyActiveBookmarks(bridgeAsk);
-            const folderName = new Map(active.folders.map((f) => [f.folderID, f.folderName]));
             bookmarks = active.bookmarks.map((bm) => ({
               bookmarkID: bm.bookmarkID,
               name: bm.memo,
               solarSystemID: bm.locationID > 0 ? bm.locationID : null,
-              folderName: folderName.get(bm.folderID) ?? null,
-              hasSpot: bm.x !== null && bm.y !== null && bm.z !== null,
             }));
           } catch {
             bookmarks = null;
