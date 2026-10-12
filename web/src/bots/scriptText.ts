@@ -167,6 +167,8 @@ export function macroName(macro: MacroID): string {
       return "Move items";
     case "warp-to-bookmark":
       return "Fly to a saved spot";
+    case "use-bookmark-folders":
+      return "Use bookmark folders";
     case "find-combat-agent":
       return "Find a combat agent";
     case "fly-to-mission-site":
@@ -753,6 +755,12 @@ function macroPhrase(step: MacroStep): string {
           ? bm.name
           : "a spot you pick";
       return `Warp to ${name}`;
+    }
+    case "use-bookmark-folders": {
+      const names = ["folder", "alsoFolder"]
+        .map((key) => step.args[key])
+        .flatMap((arg) => (arg !== undefined && arg.kind === "bookmarkFolder" && arg.name !== null && arg.name.length > 0 ? [arg.name] : []));
+      return names.length === 0 ? "Switch on a bookmark folder you pick" : `Switch on the ${names.join(" and ")} bookmark folder${names.length > 1 ? "s" : ""}`;
     }
     case "find-combat-agent": {
       const level = step.args["level"];

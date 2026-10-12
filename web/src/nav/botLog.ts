@@ -193,6 +193,10 @@ export function describeAction(action: ScriptAction): string {
       return `warp to scan result ${action.target}`;
     case "warpBookmark":
       return `warp to bookmark ${action.bookmarkID}`;
+    case "addKnownFolder":
+      return `add bookmark folder ${action.folderID}`;
+    case "setFolderActive":
+      return `switch bookmark folder ${action.folderID} ${action.active ? "on" : "off"}`;
     case "warpLaunch":
       return `warp to launch ${action.launchID}`;
     case "warpMissionLocation":

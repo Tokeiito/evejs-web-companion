@@ -348,6 +348,12 @@ const ENTRIES: Readonly<Record<MacroID, MacroCatalogEntry>> = {
     "Warps to one of your saved spots — a mission site, a safe spot, a mining perch. Finishes when the warp lands.",
     "Being in space, in the saved spot's system",
   ),
+  "use-bookmark-folders": entry(
+    "use-bookmark-folders",
+    "movement",
+    "Adds the bookmark folders you name to the pilot's list and switches them on, so their bookmarks can be seen and warped to. When three shared folders are already on, it switches off one you did not name.",
+    null,
+  ),
   "find-combat-agent": entry(
     "find-combat-agent",
     "missions",

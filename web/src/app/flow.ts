@@ -3419,6 +3419,8 @@ export interface AppFlow {
   listSavedFittings(): Promise<readonly (import("../bridge/sharedFittings.ts").SourcedFitting & { readonly shipName: string | null })[]>;
   /** The character's saved bookmarks (for the Bot Builder's saved-spot picker). */
   listBookmarks(): Promise<readonly { bookmarkID: number; name: string }[]>;
+  /** The bookmark folders the character knows or administers (for the Bot Builder's folder picker). */
+  listBookmarkFolders(): Promise<readonly { folderID: number; name: string }[]>;
   /**
    * The pilot's bookmark folders, bookmarks and subfolders (accessGroupBookmarkMgr.GetMyActiveBookmarks, as the
    * client's bookmark service primes them): the Locations window's list.
@@ -24872,6 +24874,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             bookmarks = null;
           }
         }
+        let bookmarkFolders: ScriptObservation["bookmarkFolders"] = null;
+        if (macro === "use-bookmark-folders") {
+          try {
+            // The folders the pilot knows, and those it administers and may add: both of the client's reads
+            // (bridge/bookmarkReads.ts). A read that fails leaves them unread, never an empty list.
+            const [active, administered] = await Promise.all([readMyActiveBookmarks(bridgeAsk), readFoldersWithAdminAccess(bridgeAsk)]);
+            bookmarkFolders = {
+              known: active.folders.map((f) => ({ folderID: f.folderID, name: f.folderName, isPersonal: f.isPersonal, isActive: f.isActive })),
+              addable: administered.map((f) => ({ folderID: f.folderID, name: f.folderName, isPersonal: f.isPersonal })),
+            };
+          } catch {
+            bookmarkFolders = null;
+          }
+        }
         let activeShipID: ScriptObservation["activeShipID"] = null;
         if (macro === "refit-ship") {
           try {
@@ -25384,6 +25400,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           activeFitting,
           activeShipID,
           bookmarks,
+          bookmarkFolders,
           colonies,
           piLaunches,
           customsOffices,
@@ -25887,6 +25904,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             return;
           case "warpBookmark":
             await warpToSpot(action.bookmarkID);
+            return;
+          case "addKnownFolder":
+            await addToKnownFoldersCall(bridgeDo, action.folderID, true);
+            return;
+          case "setFolderActive":
+            await setFolderActiveCall(bridgeDo, action.folderID, action.active);
             return;
           case "warpLaunch":
             await warpToLaunchPickup(action.launchID);
@@ -29023,6 +29046,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return active.bookmarks
         .filter((bm) => bm.memo.length > 0)
         .map((bm) => ({ bookmarkID: bm.bookmarkID, name: bm.memo }));
+    },
+
+    async listBookmarkFolders() {
+      const [active, administered] = await Promise.all([readMyActiveBookmarks(bridgeAsk), readFoldersWithAdminAccess(bridgeAsk)]);
+      const byID = new Map<number, string>();
+      for (const folder of [...active.folders, ...administered]) byID.set(folder.folderID, folder.folderName);
+      return [...byID].map(([folderID, name]) => ({ folderID, name })).sort((a, b) => a.name.localeCompare(b.name) || a.folderID - b.folderID);
     },
 
     pauseRoute() {

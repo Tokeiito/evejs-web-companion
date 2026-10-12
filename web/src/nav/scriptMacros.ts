@@ -62,6 +62,7 @@ import { AGENT_BUTTON } from "../bridge/agents.ts";
 import { FREIGHT_BAYS, planLootTransfers, preferredBays } from "../bridge/bayRouting.ts";
 import { preferredResources } from "./resourcePriority.ts";
 import { holdFreeM3 } from "../bridge/holdFit.ts";
+import { MAX_ACTIVE_PERSONAL_FOLDERS, MAX_ACTIVE_SHARED_FOLDERS, MAX_KNOWN_FOLDERS } from "../bridge/bookmarkFolders.ts";
 import { isUnreachable, NO_STEP_ID, refusalFor, refusalTargets, shipHasNoRoom, shouldSetAside } from "./refusalLedger.ts";
 import { movableRows, pickedRows, type KeepRule } from "../bridge/keepAboard.ts";
 import { FALLBACK_CONTROL_RANGE_M } from "./kiteBand.ts";
@@ -5297,6 +5298,101 @@ const warpToBookmark: MacroDecider = (step, obs, mem) => {
   return tick({ kind: "warpBookmark", bookmarkID: match.bookmarkID }, "Warping to the spot.", "Warping", ACTING, false, warpIssuedMem(obs));
 };
 
+// ── use-bookmark-folders ─────────────────────────────────────────────────────
+// Take up and switch on the folders named, matched BY NAME (the id is a
+// same-world hint, as for a bookmark). A shared folder the pilot may use is not
+// one it sees until it has added it and switched it on (bridge/bookmarkFolders.ts),
+// so a bot working from a shared folder starts here. One change a tick, each
+// judged on a fresh read of the folders:
+//   1. a named folder not added yet is added, asked for on;
+//   2. a named folder that is off is switched on, where the limit leaves room;
+//   3. where it does not, a folder of the same kind that is on and NOT named is
+//      switched off first (the operator's rule: make room, then switch on).
+// Done once every named folder is on.
+const FOLDER_CHANGES_CAP = 8;
+const useBookmarkFolders: MacroDecider = (step, obs, mem) => {
+  const wanted = ["folder", "alsoFolder"]
+    .map((key) => step.args[key])
+    .flatMap((arg) => (arg !== undefined && arg.kind === "bookmarkFolder" && (arg.folderID !== null || (arg.name ?? "").trim() !== "") ? [arg] : []));
+  if (wanted.length === 0) {
+    return tick(WAIT, "No bookmark folder picked.", "Bookmark folders", {
+      kind: "blocked",
+      reason: "Pick the bookmark folder this step switches on.",
+    });
+  }
+  const read = obs.bookmarkFolders ?? null;
+  if (read === null) {
+    return tick(WAIT, "Reading your bookmark folders.", "Bookmark folders", ACTING, false, mem);
+  }
+  const resolved: { folderID: number; name: string }[] = [];
+  for (const arg of wanted) {
+    const label = arg.name ?? "that";
+    const seen = new Map<number, string>();
+    for (const folder of [...read.known, ...read.addable]) {
+      if (arg.name !== null && arg.name !== "" ? folder.name === arg.name : folder.folderID === arg.folderID) {
+        seen.set(folder.folderID, folder.name);
+      }
+    }
+    let ids = [...seen.keys()];
+    if (ids.length > 1 && arg.folderID !== null && seen.has(arg.folderID)) ids = [arg.folderID];
+    if (ids.length === 0) {
+      return tick(WAIT, "That bookmark folder is not one this pilot can find.", "Bookmark folders", {
+        kind: "blocked",
+        reason: `This pilot has no bookmark folder called ${label}, and none it administers. Share the folder with the pilot's corporation, or add it in the game once.`,
+      });
+    }
+    if (ids.length > 1) {
+      return tick(WAIT, "Two bookmark folders share that name.", "Bookmark folders", {
+        kind: "blocked",
+        reason: `This pilot can see more than one bookmark folder called ${label}. Rename one so the bot knows which to use.`,
+      });
+    }
+    const folderID = ids[0] as number;
+    if (!resolved.some((r) => r.folderID === folderID)) resolved.push({ folderID, name: seen.get(folderID) ?? label });
+  }
+  const changes = num(mem, "changes") ?? 0;
+  const change = (action: MacroTick["action"], why: string): MacroTick => {
+    if (changes >= FOLDER_CHANGES_CAP) {
+      return tick(WAIT, "The folder changes are not taking.", "Bookmark folders", {
+        kind: "blocked",
+        reason: "The bookmark folders would not switch on, so the bot stopped.",
+      });
+    }
+    return tick(action, why, "Bookmark folders", ACTING, false, { ...mem, changes: changes + 1 });
+  };
+  const known = new Map(read.known.map((folder) => [folder.folderID, folder]));
+  const wantedIDs = new Set(resolved.map((r) => r.folderID));
+  for (const r of resolved) {
+    if (!known.has(r.folderID)) {
+      if (known.size >= MAX_KNOWN_FOLDERS) {
+        return tick(WAIT, "This pilot knows too many folders.", "Bookmark folders", {
+          kind: "blocked",
+          reason: `This pilot already has ${MAX_KNOWN_FOLDERS} bookmark folders, the most it can have. Remove one in the game.`,
+        });
+      }
+      return change({ kind: "addKnownFolder", folderID: r.folderID }, `Adding the ${r.name} folder.`);
+    }
+  }
+  for (const r of resolved) {
+    const folder = known.get(r.folderID);
+    if (folder === undefined || folder.isActive) continue;
+    const on = read.known.filter((f) => f.isPersonal === folder.isPersonal && f.isActive);
+    const limit = folder.isPersonal ? MAX_ACTIVE_PERSONAL_FOLDERS : MAX_ACTIVE_SHARED_FOLDERS;
+    if (on.length < limit) {
+      return change({ kind: "setFolderActive", folderID: r.folderID, active: true }, `Switching on the ${r.name} folder.`);
+    }
+    const spare = on.find((f) => !wantedIDs.has(f.folderID));
+    if (spare === undefined) {
+      return tick(WAIT, "Too many folders named.", "Bookmark folders", {
+        kind: "blocked",
+        reason: `Only ${limit} ${folder.isPersonal ? "personal" : "shared"} bookmark folders can be on at once.`,
+      });
+    }
+    return change({ kind: "setFolderActive", folderID: spare.folderID, active: false }, `Switching off the ${spare.name} folder to make room for ${r.name}.`);
+  }
+  return tick(WAIT, "Every bookmark folder named is on.", "Bookmark folders", { kind: "done" });
+};
+
 // ── fly-to-mission-site ──────────────────────────────────────────────────────
 // Warp to the accepted mission's own marked spot, as the client does: the spots are the journal's (the client's
 // bookmark service takes a mission's from there), and the warp is asked of the mission's agent with the spot's own
@@ -7607,6 +7703,7 @@ export const SCRIPT_MACROS: CompleteMacroRegistry = {
   "board-planetary-hauler": boardPlanetaryHauler,
   "move-items": moveItems,
   "warp-to-bookmark": warpToBookmark,
+  "use-bookmark-folders": useBookmarkFolders,
   "find-combat-agent": findCombatAgent,
   "fly-to-mission-site": flyToMissionSite,
   "restart-extractors": restartExtractors,

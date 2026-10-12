@@ -224,6 +224,10 @@ export type ScriptAction =
   | { readonly kind: "warpScan"; readonly target: string }
   /** Warp to a saved bookmark (the server resolves site/point + mission scope). */
   | { readonly kind: "warpBookmark"; readonly bookmarkID: number }
+  /** Take up a shared bookmark folder, asking for it active (the server adds it not active past the limit). */
+  | { readonly kind: "addKnownFolder"; readonly folderID: number }
+  /** Switch a known bookmark folder on or off. */
+  | { readonly kind: "setFolderActive"; readonly folderID: number; readonly active: boolean }
   /** Warp to one of the pilot's planetary launches, by the launch's own ID. */
   | { readonly kind: "warpLaunch"; readonly launchID: number }
   /** Warp to a mission's marked spot by asking its agent, with the spot's own type and number (the journal's). */

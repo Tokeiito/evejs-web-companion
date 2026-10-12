@@ -249,6 +249,15 @@ export const MACRO_SPECS: Readonly<Record<MacroID, MacroSpec>> = {
     args: [{ key: "bookmark", kind: "bookmark", required: true }],
     untilRequired: false,
   },
+  // Anywhere: take up and switch on the bookmark folders a bot works from, by
+  // name. Done when every one is on.
+  "use-bookmark-folders": {
+    args: [
+      { key: "folder", kind: "bookmarkFolder", required: true },
+      { key: "alsoFolder", kind: "bookmarkFolder", required: false },
+    ],
+    untilRequired: false,
+  },
   // The combat twin of find-distribution-agent: same criteria, security agents.
   "find-combat-agent": {
     args: [

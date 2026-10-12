@@ -137,6 +137,7 @@ export const MACRO_RUN_POLICY: Readonly<Record<MacroID, MacroRunPolicy>> = Objec
   "board-planetary-hauler": policy(["inventory"]),
   "move-items": policy(["inventory"]),
   "warp-to-bookmark": SAFE,
+  "use-bookmark-folders": SAFE,
   "find-combat-agent": SAFE,
   "fly-to-mission-site": policy(["mission", "combat"]),
   "restart-extractors": policy(["colony"]),
