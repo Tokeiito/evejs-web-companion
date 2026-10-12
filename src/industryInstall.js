@@ -35,6 +35,14 @@ const SCC_SURCHARGE_RATE = 0.04;
 const INDUSTRY_SECURITY_TAX_RATE = 0.05;
 /** eveuniverse/security.py SecurityClassFromLevel: a system's security from which it is a safe one. */
 const SAFE_SECURITY_FROM = 0.95;
+/** structures/services.py: the three services a structure manufactures by. */
+const SERVICE_MANUFACTURING_BASIC = 22;
+const SERVICE_MANUFACTURING_CAPITAL = 23;
+const SERVICE_MANUFACTURING_SUPERCAPITAL = 24;
+/** inventorycommon.const.superCapitalShipsGroups: the supercarriers' group and the titans'. */
+const SUPERCAPITAL_SHIP_GROUPS = new Set([659, 30]);
+/** inventorycommon.const.capitalShipsGroups: force auxiliaries, carriers, command carriers, dreadnoughts, capital industrial ships and lancer dreadnoughts. */
+const CAPITAL_SHIP_GROUPS = new Set([1538, 547, 5120, 485, 883, 4594]);
 
 function entriesOf(value) {
   if (value && typeof value === "object" && value.type === "dict" && Array.isArray(value.entries)) {
@@ -215,18 +223,56 @@ function manufacturingJobSeconds({ activityTime, runs, skills, characterAmount, 
 }
 
 /**
- * What a facility's row says a job at it is charged by (industryCommon.Facility, 378 to 380): its tax, the SCC's
- * modifier of its surcharge, and the system it is in. Null for one the row has not; a tax the row says is None (a
- * structure's is by its services' access, activity.activity_tax) is none, which is not a tax of nought.
+ * What a facility's row says a job at it is charged by beside its tax (industryCommon.Facility, 378 to 380): the
+ * SCC's modifier of its surcharge, and the system it is in. Null for one the row has not.
  */
 function facilityCharges(facilityRow) {
   const named = (name) => (entriesOf(facilityRow).find(([key]) => key === name) || [])[1];
-  const [tax, sccTaxModifier, solarSystemID] = [named("tax"), named("sccTaxModifier"), toInt(named("solarSystemID"))];
+  const [sccTaxModifier, solarSystemID] = [named("sccTaxModifier"), toInt(named("solarSystemID"))];
   return {
-    tax: aNumber(tax) ? tax : null,
     sccTaxModifier: aNumber(sccTaxModifier) ? sccTaxModifier : null,
     solarSystemID: solarSystemID > 0 ? solarSystemID : null,
   };
+}
+
+/**
+ * The service a structure manufactures a thing by, as the client's structures say it (structures/services.py
+ * GetServiceID, 149 to 158): by the group of what is made. Null where that is no group.
+ */
+function manufacturingServiceID(productGroupID) {
+  if (!Number.isSafeInteger(productGroupID) || productGroupID <= 0) {
+    return null;
+  }
+  if (SUPERCAPITAL_SHIP_GROUPS.has(productGroupID)) {
+    return SERVICE_MANUFACTURING_SUPERCAPITAL;
+  }
+  return CAPITAL_SHIP_GROUPS.has(productGroupID) ? SERVICE_MANUFACTURING_CAPITAL : SERVICE_MANUFACTURING_BASIC;
+}
+
+/**
+ * The rate a facility taxes a job by, as the client's activity has it (industry/activity.py activity_tax, 50 to
+ * 58): the row's own tax where it says one, a tax of nought among them. Where it says None, as a structure's does,
+ * the rate is by the access of the service the job is done by (`serviceID`), out of the row's `serviceAccess`, and
+ * nought where that says nothing for the service, or says None (serviceAccess.get(serviceID, 0) or 0).
+ *
+ * Null where no rate can be read whole: the row says no tax at all, or one that is no number; it says None and has
+ * no access by service; the service is not known; or the access says something for it that is no number.
+ */
+function facilityTaxRate(facilityRow, serviceID) {
+  const named = (name) => (entriesOf(facilityRow).find(([key]) => key === name) || [])[1];
+  const tax = named("tax");
+  if (aNumber(tax)) {
+    return tax;
+  }
+  const access = named("serviceAccess");
+  if (tax !== null || !(access && access.type === "dict" && Array.isArray(access.entries)) || !Number.isSafeInteger(serviceID)) {
+    return null;
+  }
+  const said = (access.entries.find(([key]) => typeof key === "number" && key === serviceID) || [])[1];
+  if (said === undefined || said === null) {
+    return 0;
+  }
+  return aNumber(said) ? said : null;
 }
 
 /** A blueprint's price and a job's runs that a base can be made of. */
@@ -234,8 +280,8 @@ const aBase = (price, runs) => aNumber(price) && price >= 0 && Number.isSafeInte
 
 /**
  * A manufacturing job's tax in whole ISK, as the client's own job reckons it (industry/job.py _get_tax, 450 to
- * 458): the base rounded (base_cost, 127 to 130: int(round(job_cost))) times the facility's tax, rounded. Null
- * where the facility says no tax of its own, or an input is not what it should be.
+ * 458): the base rounded (base_cost, 127 to 130: int(round(job_cost))) times the facility's rate (facilityTaxRate),
+ * rounded. Null where there is no rate, or an input is not what it should be.
  */
 function manufacturingJobTax({ blueprintPrice: price, runs, facilityTax }) {
   if (!aBase(price, runs) || !aNumber(facilityTax)) {
@@ -372,6 +418,7 @@ module.exports = {
   facilityCostModifiers,
   facilityGlobalModifiers,
   facilityMaterialModifiers,
+  facilityTaxRate,
   facilityTimeModifiers,
   findFacilityRow,
   inventionProductTypeID,
@@ -380,6 +427,7 @@ module.exports = {
   manufacturingJobFee,
   manufacturingJobSeconds,
   manufacturingJobTax,
+  manufacturingServiceID,
   modifierMatchesProduct,
   roundMaterialQuantity,
 };

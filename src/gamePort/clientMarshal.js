@@ -23,6 +23,14 @@
 // Everything else is the server codec's own encoding, reused: this walks the
 // containers and hands every other value to it.
 //
+// ⚠ AN EXTENDED OBJECT IS A CONTAINER. Python's reduce (what makes the object,
+// then a list's items, then a dict's entries) holds whatever the object held,
+// longs among them: a job's place has its item's ID, a set of items has every
+// item's. Handed whole to the server codec, a long inside one went out as an
+// int64. Seen live, 2026-10-12: a job installed in a structure, whose ID is
+// beyond 32 bits, had the server's install throw on the BigInt it read; in a
+// station, whose ID is within them, nothing showed.
+//
 // How a value is read:
 //   number, whole, within 32 bits   a Python int
 //   number, whole, beyond 32 bits   a Python long (it cannot be an int there)
@@ -115,6 +123,20 @@ function write(value, chunks) {
       write(value.name, chunks);
       write(value.args, chunks);
       return;
+    case "objectex1":
+    case "objectex2":
+      // As the server codec writes one (src/gameProtocol/marshal.js): what makes it, the list's items and an
+      // end, the dict's entries (each a key, then its value) and an end.
+      chunks.push(Buffer.from([value.type === "objectex1" ? Op.PyObjectEx1 : Op.PyObjectEx2]));
+      write(value.header, chunks);
+      for (const item of value.list ?? []) write(item, chunks);
+      chunks.push(Buffer.from([Op.PackedTerminator]));
+      for (const [key, entry] of value.dict ?? []) {
+        write(key, chunks);
+        write(entry, chunks);
+      }
+      chunks.push(Buffer.from([Op.PackedTerminator]));
+      return;
     case "substruct":
       chunks.push(Buffer.from([Op.PySubStruct]));
       write(value.value, chunks);
@@ -125,7 +147,8 @@ function write(value, chunks) {
       return;
     }
     default:
-      // A unicode string, a byte string, a token, a real: no integers inside.
+      // A unicode string, a byte string, a token, a real: no integers inside. (A packed row and a pickle, which
+      // have, are the server's to send: no call of the client's that goes out from here has either.)
       chunks.push(leaf(value));
   }
 }

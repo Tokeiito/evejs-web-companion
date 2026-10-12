@@ -1259,7 +1259,7 @@ test("on the game port the preview says what the job costs to start, as the clie
   const ungraded = await installed();
   assert.deepEqual([await previewed(), ungraded.tax, ungraded.cost], [null, 1321, 0]);
   state.grade = 1;
-  // A facility that says no tax of its own (a structure's is by its services): no tax is reckoned, nought goes, and
+  // A facility that says no tax of its own, and no access by service either: no tax is reckoned, nought goes, and
   // there is no total to say. The cost goes as it did.
   state.facility = facilityRow({ tax: null });
   state.facility.args.entries.push(...facility.args.entries.filter(([name]) => name === "globalModifiers"));
@@ -1271,6 +1271,89 @@ test("on the game port the preview says what the job costs to start, as the clie
   state.table = false;
   const unpriced = await installed();
   assert.deepEqual([await previewed(), unpriced.tax, unpriced.cost], [null, 0, 0]);
+});
+
+test("on the game port a job in a structure is taxed by the access of the service it is done by", async () => {
+  // industry/activity.py 50 to 58 and structures/services.py 149 to 158. A structure's row says no tax of its own
+  // (None) and, by service, what each takes: the basic manufacturing's (22) 0.0325, the capital ships' (23) 0.05,
+  // and nothing for the supercapital ships' (24). The base is 132096, and the facility's cost modifier 0.04.
+  const structure = facilityRow({ tax: null, serviceAccess: dict([[22, 0.0325], [23, 0.05]]) });
+  structure.args.entries.push(["globalModifiers", dict([["faction", 1], ["system", dict([[ACTIVITY_MANUFACTURING, 1]])]])]);
+  structure.args.entries.find(([name]) => name === "activities")[1] = dict([
+    [ACTIVITY_MANUFACTURING, { type: "tuple", items: [list([]), list([]), list([[0.04, null, null, null, 4]])] }],
+  ]);
+  // What the blueprint makes, by its group: a frigate (25), a carrier (547), a titan (30), or a type the data has not.
+  // The blueprint's named product is another type here than the first thing its manufacturing makes, and a
+  // carrier: the service is by the first thing made.
+  const A_NAMED_PRODUCT = 23757;
+  const state = { facility: structure, group: 25 };
+  const plain = fakeIndustryGateway({ timeMultiplier: 0.68 });
+  const gamePort = {
+    ...plain,
+    async selectCharacter() {
+      return {
+        bridgeSessionID: "gp:a-pilot-on-the-game-port", service: "charUnboundMgr", method: "SelectCharacterID", result: null, notifications: [],
+        session: { userid: 4, characterID: CHARACTER_ID, characterName: "Test Pilot", stationID: STATION_ID, structureID: null, solarSystemID: SOLAR_SYSTEM_ID, corporationID: 98000000, shipID: ACTIVE_SHIP_ID },
+      };
+    },
+    async callMethod(service, method, ...rest) {
+      if (service === "subscriptionMgr" && method === "GetCloneGrade") return { service, method, result: 1, notifications: [] };
+      return plain.callMethod(service, method, ...rest);
+    },
+    async freshFacility() {
+      return state.facility;
+    },
+    averageMarketPrice(sessionFields, bridgeSessionID, typeID) {
+      return typeID === MATERIAL_TYPE_ID ? { averagePrice: 600, adjustedPrice: 512 } : { averagePrice: null, adjustedPrice: null };
+    },
+  };
+  const asked = [];
+  const staticData = {
+    ...fakeStaticData(),
+    getSolarSystem: () => ({ security: 0.9 }),
+    getIndustryBlueprint: (blueprintTypeID) => {
+      const known = fakeStaticData().getIndustryBlueprint(blueprintTypeID);
+      return known && { ...known, productTypeID: A_NAMED_PRODUCT };
+    },
+    getType: (typeID) => {
+      asked.push(Number(typeID));
+      if (Number(typeID) === A_NAMED_PRODUCT) return { typeID: A_NAMED_PRODUCT, groupID: 547, categoryID: 6 };
+      if (Number(typeID) !== PRODUCT_TYPE_ID) return fakeStaticData().getType(typeID);
+      return state.group === null ? null : { typeID: PRODUCT_TYPE_ID, groupID: state.group, categoryID: 6 };
+    },
+  };
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, staticData });
+  await selectOnServer(baseUrl);
+  const previewed = async () => (await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody() })).payload.fee;
+  const installed = async () => {
+    await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody() });
+    return sentJobs(gamePort, "InstallJob").at(-1);
+  };
+
+  // A frigate, by the basic service: 132096 x 0.0325 = 4293.12. The tax is in the fee, in the preview's job and the install's.
+  assert.deepEqual(await previewed(), { cost: 5284, tax: 4293, sccSurcharge: 5284, securityTax: 0, total: 14861 });
+  assert.deepEqual([sentJobs(gamePort, "ConnectJob").at(-1).tax, (await installed()).tax], [4293, 4293]);
+  // The group read is the product's: the first thing the blueprint's manufacturing makes.
+  assert.ok(asked.includes(PRODUCT_TYPE_ID));
+  // A carrier, by the capital ships' service: 132096 x 0.05 = 6604.8.
+  state.group = 547;
+  assert.deepEqual([await previewed(), (await installed()).tax], [{ cost: 5284, tax: 6605, sccSurcharge: 5284, securityTax: 0, total: 17173 }, 6605]);
+  // A titan, by a service the access says nothing for: a tax of nought, which is a tax, and the fee is said.
+  state.group = 30;
+  assert.deepEqual([await previewed(), (await installed()).tax], [{ cost: 5284, tax: 0, sccSurcharge: 5284, securityTax: 0, total: 10568 }, 0]);
+  // A product whose group the game's data has not: no service, no tax reckoned, nought goes, and no fee is said.
+  state.group = null;
+  assert.deepEqual([await previewed(), (await installed()).tax, (await installed()).cost], [null, 0, 5284]);
+  // A station's own tax is its tax whatever is made there, a product the data has not among them: 132096 x 0.01.
+  state.facility = facilityRow({ tax: 0.01, serviceAccess: dict([[22, 0.5]]) });
+  state.facility.args.entries.push(...structure.args.entries.filter(([name]) => name === "globalModifiers"));
+  state.facility.args.entries.find(([name]) => name === "activities")[1] = structure.args.entries.find(([name]) => name === "activities")[1];
+  assert.deepEqual([(await previewed()).tax, (await installed()).tax], [1321, 1321]);
+  state.group = 25;
+  assert.equal((await installed()).tax, 1321);
+  // And nothing of the pilot's went to the gateway.
+  assert.equal(gateway.calls.topLevel.length, 0);
 });
 
 test("through the gateway the preview says no fee, and the job's tax goes as nought", async () => {

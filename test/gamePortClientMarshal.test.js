@@ -112,3 +112,57 @@ test("a long is found wherever it sits: in a tuple, a list, a dict, an object, a
     assert.ok(decoded.every((entry) => typeof entry === "number"), `no BigInt reaches the server: ${JSON.stringify(value).slice(0, 60)}`);
   }
 });
+
+// An extended object (Python's reduce: what makes the object, then a list's items, then a dict's) is a container
+// like the rest, and blue writes a long inside one as it writes a long anywhere. Seen live, 2026-10-12: a job's
+// place in a structure (industry/job.py's Location, the structure's ID beyond 32 bits) went out with its item as an
+// int64, the server read a BigInt, and its install threw "Do not know how to serialize a BigInt". In a station,
+// whose ID is within 32 bits, nothing showed.
+const token = (value) => ({ type: "token", value });
+const aStructure = 1030000000002;
+const EXTENDED = [
+  // A job's place, as the job's dump has it: the class, then its state.
+  { type: "objectex2", header: [[token("industry.job.Location")], { type: "dict", entries: [["itemID", aStructure], ["typeID", 35825], ["flagID", 4]] }], list: [], dict: [] },
+  // A set of items, as a fitting's itemsToFit has each type's.
+  { type: "objectex1", header: [token("__builtin__.set"), [{ type: "list", items: [aStructure, aStructure + 1] }]], list: [], dict: [] },
+  // Items after what makes the object, and entries after those: each a key, then its value.
+  { type: "objectex1", header: [token("collections.defaultdict"), [token("__builtin__.set")]], list: [aStructure, 7], dict: [[aStructure + 2, aStructure + 3], ["name", 5]] },
+  // One inside another.
+  { type: "objectex1", header: [token("collections.defaultdict"), [token("__builtin__.set")]], list: [], dict: [[587, { type: "objectex1", header: [token("__builtin__.set"), [{ type: "list", items: [aStructure + 4] }]], list: [], dict: [] }]] },
+];
+const wholeNumbers = (value, found = []) => {
+  if (typeof value === "number" || typeof value === "bigint") found.push(value);
+  else if (Array.isArray(value)) value.forEach((entry) => wholeNumbers(entry, found));
+  else if (value && typeof value === "object" && !Buffer.isBuffer(value)) Object.values(value).forEach((entry) => wholeNumbers(entry, found));
+  return found;
+};
+
+test("a long inside an extended object reaches the server as a number: in what makes it, its list and its dict", () => {
+  for (const value of EXTENDED) {
+    const sent = wholeNumbers(value).filter((each) => each > 2147483647);
+    assert.ok(sent.length > 0);
+    const read = wholeNumbers(marshalDecodeExact(encodeClient(value)));
+    for (const each of sent) assert.ok(read.includes(each), `${each} of ${JSON.stringify(value).slice(0, 70)}`);
+    assert.ok(read.every((each) => typeof each === "number"), `no BigInt reaches the server: ${JSON.stringify(value).slice(0, 70)}`);
+  }
+});
+
+test("an extended object is the server codec's own encoding but for its longs, each written as blue writes a long", () => {
+  const asInt64 = (value) => { const bytes = Buffer.alloc(8); bytes.writeBigInt64LE(BigInt(value)); return `03${bytes.toString("hex")}`; };
+  for (const value of EXTENDED) {
+    let expected = marshalEncode(value).toString("hex");
+    for (const each of wholeNumbers(value).filter((one) => one > 2147483647)) {
+      assert.equal(expected.split(asInt64(each)).length, 2, `${each} is in the server's encoding once`);
+      expected = expected.split(asInt64(each)).join(body(long(each)));
+    }
+    assert.equal(encodeClient(value).toString("hex"), expected, JSON.stringify(value).slice(0, 70));
+  }
+  // With no long in it, and with no list or dict said at all, it is the server's encoding whole.
+  for (const value of [
+    { type: "objectex1", header: [token("__builtin__.set"), [{ type: "list", items: [1, 2, 3] }]], list: [], dict: [] },
+    { type: "objectex2", header: [[token("industry.job.Location")], { type: "dict", entries: [["itemID", 60003760], ["canTake", true]] }], list: ["a"], dict: [["b", 0.5]] },
+    { type: "objectex1", header: [token("collections.defaultdict"), [token("__builtin__.set")]] },
+  ]) {
+    assert.equal(encodeClient(value).toString("hex"), marshalEncode(value).toString("hex"), JSON.stringify(value).slice(0, 70));
+  }
+});

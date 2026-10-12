@@ -20,7 +20,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { blueprintPrice, facilityCharges, facilityCostModifiers, facilityGlobalModifiers, facilityTimeModifiers, manufacturingJobCost, manufacturingJobFee, manufacturingJobTax } = require("../src/industryInstall");
+const { blueprintPrice, facilityCharges, facilityCostModifiers, facilityGlobalModifiers, facilityTaxRate, facilityTimeModifiers, manufacturingJobCost, manufacturingJobFee, manufacturingJobTax, manufacturingServiceID } = require("../src/industryInstall");
 
 const dict = (entries) => ({ type: "dict", entries });
 const keyVal = (entries) => ({ type: "object", name: "util.KeyVal", args: dict(entries) });
@@ -201,11 +201,49 @@ test("no fee is said of a guess: one part that is no whole amount, or one input 
   }
 });
 
-test("a facility's row says its tax, the SCC's modifier of it and its system", () => {
+test("a facility's row says the SCC's modifier of its surcharge and its system", () => {
   const row = keyVal([["facilityID", 60003760], ["tax", 0.1], ["sccTaxModifier", 0.5], ["solarSystemID", 30000142]]);
-  assert.deepEqual(facilityCharges(row), { tax: 0.1, sccTaxModifier: 0.5, solarSystemID: 30000142 });
-  // A tax of nought is a tax; one the row says is None (a structure's is by its services) is none.
-  assert.deepEqual(facilityCharges(keyVal([["tax", 0], ["sccTaxModifier", 1], ["solarSystemID", 30000142]])), { tax: 0, sccTaxModifier: 1, solarSystemID: 30000142 });
-  assert.deepEqual(facilityCharges(keyVal([["tax", null], ["solarSystemID", 0]])), { tax: null, sccTaxModifier: null, solarSystemID: null });
-  assert.deepEqual(facilityCharges(null), { tax: null, sccTaxModifier: null, solarSystemID: null });
+  assert.deepEqual(facilityCharges(row), { sccTaxModifier: 0.5, solarSystemID: 30000142 });
+  assert.deepEqual(facilityCharges(keyVal([["tax", 0], ["sccTaxModifier", 1], ["solarSystemID", 30000142]])), { sccTaxModifier: 1, solarSystemID: 30000142 });
+  assert.deepEqual(facilityCharges(keyVal([["sccTaxModifier", "1"], ["solarSystemID", 0]])), { sccTaxModifier: null, solarSystemID: null });
+  assert.deepEqual(facilityCharges(null), { sccTaxModifier: null, solarSystemID: null });
+});
+
+test("a job's tax rate is the facility's own, or by the access of the service the job is done by", () => {
+  // industry/activity.py activity_tax (50 to 58). A station's row says a tax; the service is not looked at.
+  const station = keyVal([["facilityID", 60003760], ["tax", 0.1], ["serviceAccess", dict([])]]);
+  assert.deepEqual([facilityTaxRate(station, 22), facilityTaxRate(station, null)], [0.1, 0.1]);
+  // A tax of nought is a tax, and is not looked past to the services.
+  assert.equal(facilityTaxRate(keyVal([["tax", 0], ["serviceAccess", dict([[22, 0.5]])]]), 22), 0);
+  // A structure's row says None, and its services' access says each service's: the one the job is done by, and
+  // nought where the access says nothing for it, or says None.
+  const structure = keyVal([["facilityID", 1030000000002], ["tax", null], ["serviceAccess", dict([[22, 0.0325], [23, 0.05], [24, null], [31, 0]])]]);
+  assert.deepEqual([22, 23, 24, 31, 33].map((serviceID) => facilityTaxRate(structure, serviceID)), [0.0325, 0.05, 0, 0, 0]);
+  // The access is found by the service's number, as a dict finds it: under a key that is its text there is nothing for it.
+  assert.equal(facilityTaxRate(keyVal([["tax", null], ["serviceAccess", dict([["22", 0.5]])]]), 22), 0);
+  // With no service known there is no rate to say; nor with one that is no whole number.
+  for (const serviceID of [null, undefined, 22.5, "22"]) assert.equal(facilityTaxRate(structure, serviceID), null, String(serviceID));
+  // And none of a guess: no row; a row with no tax said at all; None with no access, or with an access that is no
+  // dict; a tax that is no number; an access that is none.
+  for (const row of [
+    null,
+    keyVal([["serviceAccess", dict([[22, 0.1]])]]),
+    keyVal([["tax", null]]),
+    keyVal([["tax", null], ["serviceAccess", null]]),
+    keyVal([["tax", null], ["serviceAccess", [22, 0.1]]]),
+    keyVal([["tax", "0.1"], ["serviceAccess", dict([[22, 0.1]])]]),
+    keyVal([["tax", null], ["serviceAccess", dict([[22, "0.1"]])]]),
+  ]) {
+    assert.equal(facilityTaxRate(row, 22), null, JSON.stringify(row).slice(0, 120));
+  }
+});
+
+test("a structure manufactures by one of three services, by the group of what is made", () => {
+  // structures/services.py GetServiceID (149 to 158): the supercapital ships' groups, the capital ships', and the rest.
+  assert.deepEqual([659, 30].map(manufacturingServiceID), [24, 24]);
+  assert.deepEqual([1538, 547, 5120, 485, 883, 4594].map(manufacturingServiceID), [23, 23, 23, 23, 23, 23]);
+  // A frigate, a freighter, a jump freighter, a mineral: the basic one.
+  assert.deepEqual([25, 513, 902, 18].map(manufacturingServiceID), [22, 22, 22, 22]);
+  // A group that is none has no service.
+  for (const group of [null, undefined, 0, -1, 25.5, "25", NaN]) assert.equal(manufacturingServiceID(group), null, String(group));
 });

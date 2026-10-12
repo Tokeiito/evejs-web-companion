@@ -5533,13 +5533,32 @@ function jobBlueprintPrice(held, request) {
 }
 
 /**
+ * The service a structure would do a manufacturing job by, as the client's activity asks for it
+ * (industry/activity.py 55 to 57: structures.GetServiceID(activityID, self.products[0].typeID)): by the group of
+ * the first thing the blueprint's manufacturing makes. Null where the game's data has not the blueprint, a product
+ * of it or the product's type.
+ */
+function manufacturingServiceOf(request) {
+  const definition = typeof staticData.getIndustryBlueprint === "function"
+    ? staticData.getIndustryBlueprint(request.blueprintTypeID)
+    : null;
+  const products = definition && definition.activities && definition.activities.manufacturing
+    ? definition.activities.manufacturing.products
+    : null;
+  const made = Array.isArray(products) && products[0] ? Number(products[0].typeID) : 0;
+  const type = made > 0 && typeof staticData.getType === "function" ? staticData.getType(made) : null;
+  return industryInstall.manufacturingServiceID(type ? Number(type.groupID) : null);
+}
+
+/**
  * A manufacturing job's tax, and what the job costs to start, as the client's own job reckons the one and adds up
  * the other (industry/job.py 450 to 458 and 127 to 174; src/industryInstall.js, manufacturingJobTax and
  * manufacturingJobFee). `cost` is the job's cost as it was reckoned (reckonedJobCost), or null.
  *
- * Answers { tax, fee }, each null where it could not be reckoned whole. The tax wants the blueprint's price and a
- * facility whose row says a tax of its own (every station's does; a structure's is by its services' access, which
- * is not read here). The fee wants the cost and the tax as well, the row's SCC modifier, and the security of the
+ * Answers { tax, fee }, each null where it could not be reckoned whole. The tax wants the blueprint's price and
+ * the facility's rate: its row's own tax, as every station's says one, or, where the row says None as a
+ * structure's does, the access of the service the job is done by (industry/activity.py 50 to 58;
+ * facilityTaxRate). The fee wants the cost and the tax as well, the row's SCC modifier, and the security of the
  * facility's system out of the game's own data. Where the tax is null nought goes in the job, as it always did.
  */
 async function reckonedJobFee(held, webSessionID, request, facilityOf, cost) {
@@ -5553,8 +5572,13 @@ async function reckonedJobFee(held, webSessionID, request, facilityOf, cost) {
     if (price === null) {
       return none;
     }
-    const charges = industryInstall.facilityCharges(await facilityOf());
-    const tax = industryInstall.manufacturingJobTax({ blueprintPrice: price, runs: request.runs, facilityTax: charges.tax });
+    const facilityRow = await facilityOf();
+    const charges = industryInstall.facilityCharges(facilityRow);
+    const tax = industryInstall.manufacturingJobTax({
+      blueprintPrice: price,
+      runs: request.runs,
+      facilityTax: industryInstall.facilityTaxRate(facilityRow, manufacturingServiceOf(request)),
+    });
     const system = charges.solarSystemID !== null && typeof staticData.getSolarSystem === "function"
       ? staticData.getSolarSystem(charges.solarSystemID)
       : null;
