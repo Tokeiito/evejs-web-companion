@@ -47,12 +47,21 @@
 // again while the answer leaves it out: seen 2026-10-10 20:39, an answer with
 // no drone rows at all while the server held eighteen controlled drones in the
 // bubble; the same question two minutes later was answered in full.
+//
+// ⚠ AND IT NEVER STOPS ASKING while the drone stays so, only asks less often.
+// Seen 2026-10-12 14:31: three asks in 36 s after a landing, all answered
+// without the five drones, and then nothing more; the pilot's companion could
+// not see its own drones for eleven minutes and sent a launch it could not make
+// on every tick. After the first DRONE_STATE_ASKS the asking goes on every
+// DRONE_STATE_SLOW_RETRY_MS for as long as the drone is in space with no state.
 
 /** How long a drone of the pilot's may be in the park with no state before the whole state is asked for. */
 const DRONE_STATE_GRACE_MS = 5000;
-/** How long after asking it is asked again, while the drone still has no state; and how many times in all. */
+/** How long after asking it is asked again, while the drone still has no state; and how many times at that pace. */
 const DRONE_STATE_RETRY_MS = 15000;
 const DRONE_STATE_ASKS = 3;
+/** How long after asking it is asked again once those are spent, for as long as the drone stays so. */
+const DRONE_STATE_SLOW_RETRY_MS = 30000;
 /** invCategories: Drone. */
 const CATEGORY_DRONE = 18;
 
@@ -149,8 +158,9 @@ function createPilotSpace({
     for (const id of stray) {
       if (!strays.has(id)) strays.set(id, { since: at, asks: 0, askedAt: null });
       const each = strays.get(id);
-      if (each.asks >= DRONE_STATE_ASKS) continue;
-      if (each.asks === 0 ? at - each.since >= DRONE_STATE_GRACE_MS : at - each.askedAt >= DRONE_STATE_RETRY_MS) due.push(id);
+      const wait = each.asks === 0 ? DRONE_STATE_GRACE_MS
+        : each.asks < DRONE_STATE_ASKS ? DRONE_STATE_RETRY_MS : DRONE_STATE_SLOW_RETRY_MS;
+      if (at - (each.askedAt ?? each.since) >= wait) due.push(id);
     }
     if (due.length === 0 || remotePark === null) return;
     for (const id of due) {
@@ -165,7 +175,9 @@ function createPilotSpace({
     park.requestState();
     // Told as the park's other troubles are, so that each time it happens is on record.
     const asks = Math.max(...due.map((id) => strays.get(id).asks));
-    onError(new Error(`${due.length} of the pilot's drones in space had no state (${due.join(", ")}); the whole state was asked for (ask ${asks} of ${DRONE_STATE_ASKS})`), "drone state");
+    const pace = asks <= DRONE_STATE_ASKS ? `ask ${asks} of ${DRONE_STATE_ASKS}`
+      : `ask ${asks}, every ${DRONE_STATE_SLOW_RETRY_MS / 1000} s while it lasts`;
+    onError(new Error(`${due.length} of the pilot's drones in space had no state (${due.join(", ")}); the whole state was asked for (${pace})`), "drone state");
   }
   const guard = (what, action) => {
     try {
