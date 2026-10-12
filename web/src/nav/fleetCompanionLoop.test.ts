@@ -4906,18 +4906,43 @@ test("a one-drone flight relaunches the pulled drone, not the whole bay", () => 
   assert.deepEqual(home.action, { kind: "launchDrones", droneItemIDs: [DRONE_A] });
 });
 
-// ⚠ AN ENGAGE CANCELS A RECALL. While the hurt drone is flying home, a new call
-// must not send the flight -- that drone included -- back at a rat.
-test("no new drone order while a pulled drone is flying home", () => {
+// ⚠ AN ENGAGE CANCELS A RECALL, so the hurt drone flying home is never named in
+// one -- but the rest of the flight takes a new call at once. Holding them all
+// until it was aboard cost 9 s on a locked target, seen 2026-10-12.
+test("while a pulled drone flies home, the rest take the new call without it", () => {
   let memory: CompanionLadderMemory = freshLadderMemory();
   memory = decideCompanionAction(
     WITH_DRONES, rotationObs([droneRow(DRONE_A, 0.6), droneRow(DRONE_B)]), memory).memory;
+  const calledObs = (rows: Parameters<typeof rotationObs>[0], bay: readonly number[] = []) =>
+    rotationObs(rows, bay, { fleetTargetTags: new Map([[TACKLE, "A"]]), lockedTargetIDs: [TACKLE] });
+  const called = decideCompanionAction(
+    WITH_DRONES, calledObs([droneRow(DRONE_A, 0.5), droneRow(DRONE_B)]), memory);
+  assert.deepEqual(called.action, { kind: "engageDrones", droneIDs: [DRONE_B], targetID: TACKLE });
+  memory = called.memory;
+
+  // Still flying home: the order stands, and the homeward drone is not read as
+  // a change of flight that needs the order again.
+  const again = decideCompanionAction(
+    WITH_DRONES, calledObs([droneRow(DRONE_A, 0.5), droneRow(DRONE_B)]), memory);
+  assert.notEqual(again.action.kind, "engageDrones");
+  memory = again.memory;
+
+  // Aboard and relaunched: it joins the others on the call.
+  memory = decideCompanionAction(WITH_DRONES, calledObs([droneRow(DRONE_B)], [DRONE_A]), memory).memory;
+  const joined = decideCompanionAction(WITH_DRONES, calledObs([droneRow(DRONE_A), droneRow(DRONE_B)]), memory);
+  assert.equal(joined.action.kind, "engageDrones");
+  assert.deepEqual(
+    joined.action.kind === "engageDrones" ? [...joined.action.droneIDs].sort() : [],
+    [DRONE_A, DRONE_B].sort(),
+  );
+});
+
+test("a one-drone flight with that drone flying home orders nothing", () => {
+  let memory: CompanionLadderMemory = freshLadderMemory();
+  memory = decideCompanionAction(WITH_DRONES, rotationObs([droneRow(DRONE_A, 0.6)]), memory).memory;
   const called = decideCompanionAction(
     WITH_DRONES,
-    rotationObs([droneRow(DRONE_A, 0.5), droneRow(DRONE_B)], [], {
-      fleetTargetTags: new Map([[TACKLE, "A"]]),
-      lockedTargetIDs: [TACKLE],
-    }),
+    rotationObs([droneRow(DRONE_A, 0.5)], [], { fleetTargetTags: new Map([[TACKLE, "A"]]), lockedTargetIDs: [TACKLE] }),
     memory,
   );
   assert.notEqual(called.action.kind, "engageDrones");

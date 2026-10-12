@@ -6407,8 +6407,13 @@ function withObservedDroneFlights(
   obs: FleetCompanionObservation,
   memory: CompanionLadderMemory,
 ): CompanionLadderMemory {
-  const sameFlight = (observed: readonly number[], ordered: readonly number[]): boolean =>
-    observed.length === ordered.length && observed.every((id) => ordered.includes(id));
+  // The drone a rotation is bringing home is not part of the flight an order
+  // names (see the engage in `decideDrones`), so it is not a change of flight.
+  const homeward = memory.droneRotation.active?.phase === "recalling" ? memory.droneRotation.active.itemID : null;
+  const sameFlight = (observed: readonly number[], ordered: readonly number[]): boolean => {
+    const flying = homeward === null || ordered.includes(homeward) ? observed : observed.filter((id) => id !== homeward);
+    return flying.length === ordered.length && flying.every((id) => ordered.includes(id));
+  };
   if (
     memory.lastDroneEngageTargetID !== null &&
     obs.combatDroneIDs != null &&
@@ -6640,11 +6645,17 @@ function decideDrones(
   // locking -- so on the tick the call first lands there is nothing to send
   // them onto yet, and the order belongs on the tick after it, when the lock is
   // a fact.
-  // ⚠ NO NEW ORDER WHILE A DRONE IS FLYING HOME. An engage names the whole
-  // flight, the drone on its way home included, and an engage is what cancels a
-  // recall: the hurt drone would turn round and go back to the rat. The flight
-  // keeps the order it has; a new call is obeyed the tick the drone is aboard.
-  if (rotating?.phase === "recalling") {
+  // ⚠ THE DRONE FLYING HOME IS LEFT OUT OF ANY NEW ORDER, NOT THE WHOLE FLIGHT
+  // HELD BACK. An engage is what cancels a recall, so naming the hurt drone
+  // would turn it round and send it back to the rat. This used to hold every
+  // order until it was aboard, and that cost the fight: seen 2026-10-12, a
+  // called target was locked at once but the four healthy drones waited 9 s
+  // for the fifth to land and relaunch. The rest take the new order now; the
+  // relaunched drone changes the flight, which `withObservedDroneFlights`
+  // reads as a new order to give, and it joins them.
+  const homewardID = rotating?.phase === "recalling" ? rotating.itemID : null;
+  const fighting = homewardID === null ? roleOut : roleOut.filter((id) => id !== homewardID);
+  if (fighting.length === 0) {
     return nothing;
   }
   if (role === "combat") {
@@ -6655,7 +6666,7 @@ function decideDrones(
     if (!isAlreadyLocked(called, obs.lockedTargetIDs, memory)) {
       return nothing;
     }
-    return { decision: decideDroneEngagement(memory, "combat", roleOut, called,
+    return { decision: decideDroneEngagement(memory, "combat", fighting, called,
       "Putting the combat drones on the target the fleet called."), memory };
   }
   if (role === "salvage") {
@@ -6668,7 +6679,7 @@ function decideDrones(
   if (healTarget === null) {
     return nothing;
   }
-  return { decision: decideDroneEngagement(memory, "repair", roleOut, healTarget,
+  return { decision: decideDroneEngagement(memory, "repair", fighting, healTarget,
     "Sending the repair drones to the ship calling for reps."), memory };
 }
 
