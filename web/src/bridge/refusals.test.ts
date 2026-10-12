@@ -92,6 +92,8 @@ const EVEJS_REFUSAL_VOCABULARY: readonly string[] = [
   "NotEnoughCargoSpace",
   // officeManager Handle_RentOffice — reachable from the Station panel's "Rent it and pay".
   "NotEnoughMoney",
+  // ship Handle_Jettison — reachable from the Mining window's dumping, a second time inside three minutes.
+  "ShpJettisonPending",
   "TargetNotWithinRangeGeneric",
   "TargetTooFar",
   "TargetingAttemptCancelled",

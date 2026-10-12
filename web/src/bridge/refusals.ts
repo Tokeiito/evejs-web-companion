@@ -243,6 +243,13 @@ const SERVER_REFUSALS: Readonly<Record<string, string>> = Object.freeze({
   // throw the same key for a pilot's own.
   NotEnoughMoney:
     "There is not enough ISK in the wallet that pays for that.",
+  // ship Handle_Jettison — JETTISON_COOLDOWN: this server makes a ship one can
+  // in three minutes, and refuses a jettison asked sooner (seen 2026-10-12 on
+  // both transports, for the same item again and for an item that was not
+  // there). The client has a notice of this name that says how long is left;
+  // what reaches the page is the key alone, so the sentence names no time.
+  ShpJettisonPending:
+    "Your ship jettisoned a container a moment ago and cannot launch another yet. Wait a few minutes, then try again.",
   // dogma `_throwModuleActivationUserError` — TARGET_OUT_OF_RANGE for anything
   // that is not a mining laser — and `_throwTargetingUserError` for a lock on
   // something beyond the ship's own targeting range. The sentence is true of
