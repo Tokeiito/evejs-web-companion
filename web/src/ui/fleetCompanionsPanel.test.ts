@@ -323,3 +323,26 @@ test("⚠ THE UNREADABLE ROSTER IS STILL REPORTED, AND STILL NOT FLATTENED", () 
     "only one of the tab rows and the server rows reports an unreadable roster",
   );
 });
+
+// ─── the chat commands and the target mode ───────────────────────────────────
+
+test("the window lists every chat command the companions obey, from the parser's own table", async () => {
+  const { CHAT_COMMAND_HELP } = await import("../nav/chatCommands.ts");
+  const body = renderWindow({ sessions: [] });
+  assert.match(body, /<details class="chat-help/, "a reference, folded away by default");
+  assert.doesNotMatch(body, /<details class="chat-help[^"]*"[^>]*open/);
+  const text = visibleText(body).replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  for (const row of CHAT_COMMAND_HELP) {
+    assert.ok(text.includes(row.usage), `missing usage: ${row.usage}`);
+    assert.ok(text.includes(row.does), `missing meaning: ${row.does}`);
+  }
+});
+
+test("no flying pilot, no target mode chip", () => {
+  assert.doesNotMatch(visibleText(renderWindow({ sessions: [] })), /Targets:/);
+});
+
+test("the chip says mixed when pilots disagree, never one pilot's mode for all of them", () => {
+  assert.match(SOURCE, /modes\.size > 1/);
+  assert.match(SOURCE, /return "mixed"/);
+});

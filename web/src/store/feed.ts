@@ -1062,6 +1062,7 @@ export type FeedEvent =
       readonly inFleet: boolean | null;
       readonly followingOrderFrom: CompanionOrderAuthority | null;
       readonly lastOrderHeard: string | null;
+      readonly targetMode: "called" | "all";
       readonly canTag: boolean | null;
       /**
        * Decision 5's abandonment, or null. Carried through the slice rather

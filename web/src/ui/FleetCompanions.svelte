@@ -99,6 +99,7 @@
     type CompanionSetup,
   } from "../nav/fleetCompanionLoop.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
+  import { CHAT_COMMAND_HELP } from "../nav/chatCommands.ts";
   import type { Session } from "../app/sessions.ts";
   import type { FleetCompanionState } from "../store/types.ts";
 
@@ -516,6 +517,35 @@
   );
   const summary = $derived(companionSummaryWords(tally));
 
+  /**
+   * `targets called|all` across every flying pilot, for the header chip.
+   *
+   * ⚠ THE MODE IS PER PILOT, so the chip says "mixed" rather than picking one
+   * when they disagree: a commander who switched only some of them (a pilot
+   * that was offline when `targets all` was typed, say) needs to see that, not
+   * a word that is true of half the fleet. No flying pilot reported one, no chip.
+   */
+  const targetMode = $derived.by((): string | null => {
+    const modes = new Set<string>();
+    for (const row of tabRows) {
+      if (!row.onServer && row.facts.targetMode !== null) {
+        modes.add(row.facts.targetMode);
+      }
+    }
+    for (const bot of serverRows) {
+      if (bot.companion?.targetMode != null) {
+        modes.add(bot.companion.targetMode);
+      }
+    }
+    if (modes.size === 0) {
+      return null;
+    }
+    if (modes.size > 1) {
+      return "mixed";
+    }
+    return modes.has("all") ? "free fire" : "called";
+  });
+
   /** Which row's detail is open: a session id, or `server:<botID>`. */
   let selected = $state<string | null>(null);
   const selectedSession = $derived(pilots.find((session) => session.id === selected) ?? null);
@@ -725,6 +755,14 @@
          thought, and splitting them across the divider made the strip look like
          a toolbar with a caption. -->
     <p class="stat-line">{summary}</p>
+    {#if targetMode !== null}
+      <span
+        class="mode-chip"
+        title="What companions shoot when nobody calls a target. Change it with targets called or targets all in fleet chat."
+      >
+        Targets: {targetMode}
+      </span>
+    {/if}
     <span class="controls">
       <button type="button" class="danger" disabled={busy || !anyFlying} onclick={stopAll}>
         Stop all
@@ -959,6 +997,21 @@
        ⚠ ONLY PILOTS ALREADY SIGNED IN. Bringing one online is the Pilot
        hangar's job and needs an account password; this window takes pilots that
        are already flying and puts them in a fleet. -->
+  <!-- ⚠ GENERATED FROM `CHAT_COMMAND_HELP`, never written out here. The parser
+       owns the verbs, and its own test fails when a command has no help row, so
+       this list cannot fall behind what the companions actually obey. Closed by
+       default: it is a reference, and the roster above it is what the window
+       is for. -->
+  <details class="chat-help">
+    <summary>Chat commands <span class="note">- type them in fleet or local chat</span></summary>
+    <dl>
+      {#each CHAT_COMMAND_HELP as row (row.usage)}
+        <dt>{row.usage}</dt>
+        <dd>{row.does}</dd>
+      {/each}
+    </dl>
+  </details>
+
   <div class="op-add">
     <label for="companion-add-pilot">Add a pilot</label>
     <select id="companion-add-pilot" bind:value={addChoice} disabled={addable.length === 0}>
@@ -1237,6 +1290,48 @@
   }
   .op-add > .note {
     flex-basis: 100%;
+  }
+
+  /* The target mode beside the count: a bordered word, not a colour alone. */
+  .mode-chip {
+    border: 1px solid var(--color-accent-dim);
+    color: var(--color-accent);
+    padding: 0 0.4rem;
+    font-size: 0.85em;
+    white-space: nowrap;
+  }
+
+  /* The command reference: verb column and meaning column, stacking when the
+     window is too narrow for both. */
+  .chat-help {
+    margin-top: 0.7rem;
+    border: 1px solid var(--color-line);
+    padding: 0.35rem 0.6rem;
+  }
+  .chat-help > summary {
+    cursor: pointer;
+    color: var(--color-text-bright);
+  }
+  .chat-help dl {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 0.15rem 1rem;
+    margin: 0.5rem 0 0.2rem;
+  }
+  .chat-help dt {
+    font-family: var(--font-mono, monospace);
+    color: var(--color-accent);
+  }
+  .chat-help dd {
+    margin: 0;
+  }
+  @container (max-width: 26rem) {
+    .chat-help dl {
+      grid-template-columns: 1fr;
+    }
+    .chat-help dd {
+      margin-bottom: 0.3rem;
+    }
   }
 
   /* ------------------------------------------------------------- the roster --
