@@ -1108,6 +1108,91 @@ test("on the game port a job's facility is asked of the transport, which keeps t
   assert.deepEqual(sentJobs(gamePort, "InstallJob")[3].materials, { [DATACORE_TYPE_ID]: 6, [DECRYPTOR_TYPE_ID]: 3 });
 });
 
+test("on the game port a manufacturing job's cost is the client's own reckoning, from the pilot's table of prices", async () => {
+  // industry/job.py 310 to 320 (src/industryInstall.js, manufacturingJobCost). 86 of the one material a run, at an
+  // adjusted price of 512, three runs: a base of 132096. The facility's one cost modifier, 0.04: 5283.84.
+  const facility = facilityRow();
+  facility.args.entries.push(["globalModifiers", dict([["faction", 1], ["system", dict([[ACTIVITY_MANUFACTURING, 1]])]])]);
+  facility.args.entries.find(([name]) => name === "activities")[1] = dict([
+    [ACTIVITY_MANUFACTURING, { type: "tuple", items: [list([]), list([]), list([[0.04, null, null, null, 4]])] }],
+  ]);
+  const state = { grade: 1, table: true, priced: [] };
+  const plain = fakeIndustryGateway({ timeMultiplier: 0.68 });
+  const who = [{ userid: 4 }, "gp:a-pilot-on-the-game-port"];
+  const gamePort = {
+    ...plain,
+    async selectCharacter() {
+      return {
+        bridgeSessionID: who[1], service: "charUnboundMgr", method: "SelectCharacterID", result: null, notifications: [],
+        session: { userid: 4, characterID: CHARACTER_ID, characterName: "Test Pilot", stationID: STATION_ID, structureID: null, solarSystemID: SOLAR_SYSTEM_ID, corporationID: 98000000, shipID: ACTIVE_SHIP_ID },
+      };
+    },
+    // The account's clone grade, as the transport answers it from what it keeps.
+    async callMethod(service, method, ...rest) {
+      if (service === "subscriptionMgr" && method === "GetCloneGrade") return { service, method, result: state.grade, notifications: [] };
+      return plain.callMethod(service, method, ...rest);
+    },
+    async freshFacility() {
+      state.fresh = (state.fresh || 0) + 1;
+      return state.facility || facility;
+    },
+    // The pilot's table of prices: a type's two prices, none of either for a type it has not, and null with no table.
+    averageMarketPrice(sessionFields, bridgeSessionID, typeID) {
+      state.priced.push([sessionFields, bridgeSessionID, typeID]);
+      if (!state.table) return null;
+      return typeID === MATERIAL_TYPE_ID ? { averagePrice: 600, adjustedPrice: 512 } : { averagePrice: null, adjustedPrice: null };
+    },
+  };
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort });
+  await selectOnServer(baseUrl);
+  const install = async (overrides = {}) => {
+    await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody(overrides) });
+    return sentJobs(gamePort, "InstallJob").at(-1);
+  };
+
+  await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody() });
+  assert.deepEqual([sentJobs(gamePort, "ConnectJob")[0].cost, (await install()).cost], [5284, 5284]);
+  // The price read is the adjusted one, of the blueprint's material, off the pilot's own table.
+  assert.deepEqual(state.priced[0], [...who, MATERIAL_TYPE_ID]);
+  // The tax goes as nought still, and the time is its own reckoning's: none here, nothing being said of the blueprint's time research.
+  assert.deepEqual([(await install()).tax, (await install()).time, (await install({ timeEfficiency: 0 })).time], [0, 0, 1224]);
+  // One run: 86 x 512 x 0.04 = 1761.28.
+  assert.equal((await install({ runs: 1 })).cost, 1761);
+  // An alpha clone's job costs a quarter of a percent of the base more: 5283.84 + 330.24.
+  state.grade = 0;
+  assert.equal((await install()).cost, 5614);
+  // A grade that is neither an alpha's nor an omega's is no grade to reckon by: nought goes, and the server reckons the cost.
+  state.grade = null;
+  assert.equal((await install()).cost, 0);
+  state.grade = 1;
+  // A pilot with no table of prices yet: nought goes.
+  state.table = false;
+  assert.equal((await install()).cost, 0);
+  state.table = true;
+  // Any other kind of work: nought goes, and no price is read for it.
+  const before = state.priced.length;
+  assert.deepEqual([(await install({ activity: "copying" })).cost, state.priced.length], [0, before]);
+  // The job's facility is asked for once for a request, whether the cost alone wants it or the time does too.
+  const asked = state.fresh;
+  await install();
+  await install({ timeEfficiency: 0 });
+  assert.equal(state.fresh, asked + 2);
+  // And nothing of the pilot's went to the gateway.
+  assert.equal(gateway.calls.topLevel.length, 0);
+
+  // The blueprint type's own cost multiplier (attribute 1954), the faction's modifier and the system's are in it:
+  // 132096 x 0.5 x 0.9 x 0.05 x 0.04 = 118.8864.
+  state.facility = facilityRow();
+  state.facility.args.entries.push(["globalModifiers", dict([["faction", 0.9], ["system", dict([[ACTIVITY_MANUFACTURING, 0.05]])]])]);
+  state.facility.args.entries.find(([name]) => name === "activities")[1] = facility.args.entries.find(([name]) => name === "activities")[1];
+  const withItsOwn = { ...fakeStaticData(), getTypeDogmaAttribute: (typeID, attributeID) => (Number(typeID) === BLUEPRINT_TYPE_ID && Number(attributeID) === 1954 ? 0.5 : null) };
+  const second = await startTestServer({ gateway: fakeIndustryGateway(), gamePortPilots: gamePort, staticData: withItsOwn });
+  await selectOnServer(second.baseUrl);
+  await apiRequest(second.baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody() });
+  assert.equal(sentJobs(gamePort, "InstallJob").at(-1).cost, 119);
+});
+
 test("a blueprint's time research is a whole number from nought to twenty, or the request is refused before anything is asked", async () => {
   const gateway = fakeIndustryGateway();
   const { baseUrl } = await startTestServer({ gateway });

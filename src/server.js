@@ -5251,7 +5251,8 @@ const INDUSTRY_CASH_ACCOUNT_KEY = 1000;
  * authoritative (one that is not nought is checked against the server's own,
  * and a job whose number is not the server's to the whole is REFUSED). The
  * `time` of a manufacturing job is the client's own reckoning
- * (reckonedJobSeconds); the cost and the tax go as nought.
+ * (reckonedJobSeconds), and on the game port its `cost` is too
+ * (reckonedJobCost); the tax goes as nought.
  * The fields that genuinely decide the outcome are `blueprintID`,
  * `activityID`, `facilityID`, `runs` (plus `licensedRuns` for copying,
  * `productTypeID` for invention, and the two locations). They are all sent
@@ -5281,7 +5282,8 @@ function buildInstallJobPayload(held, request) {
     account: [held.characterID, INDUSTRY_CASH_ACCOUNT_KEY],
     runs: request.runs,
     licensedRuns: request.licensedRuns,
-    cost: 0,
+    // The job's cost as the client's own job reckons it, where it could be reckoned whole; else nought.
+    cost: request.cost || 0,
     tax: 0,
     // The job's time as the client's own job reckons it, where it could be reckoned whole; else nought, which
     // the server does not check.
@@ -5435,7 +5437,7 @@ async function skillLevelsFor(account, held, typeIDs) {
  * research, one the game's data has not, a facility that is not among those read, an input that could not be
  * asked. Nought then goes, as it always did, and the server reckons the time by itself.
  */
-async function reckonedJobSeconds(account, held, webSessionID, request) {
+async function reckonedJobSeconds(account, held, webSessionID, request, facilityOf) {
   if (request.activityID !== INDUSTRY_ACTIVITY_IDS.manufacturing || request.timeEfficiency === null) {
     return null;
   }
@@ -5460,12 +5462,10 @@ async function reckonedJobSeconds(account, held, webSessionID, request) {
     const levels = timed.length > 0 ? await skillLevelsFor(account, held, timed.map((skill) => skill.typeID)) : [];
     const character = await boundCall(held, webSessionID, dogmaBindSpec(), "QueryAttributeValue",
       [held.characterID, ATTRIBUTE_MANUFACTURE_TIME_MULTIPLIER], null);
-    const facilityRow = await jobFacilityRow(held, webSessionID, request.facilityID);
+    const facilityRow = await facilityOf();
     if (!facilityRow) {
       return null;
     }
-    const products = Array.isArray(activity.products) ? activity.products : [];
-    const productTypeID = Number(definition.productTypeID) || Number(products[0] && products[0].typeID) || 0;
     return industryInstall.manufacturingJobSeconds({
       activityTime: Number(activity.time),
       runs: request.runs,
@@ -5473,10 +5473,110 @@ async function reckonedJobSeconds(account, held, webSessionID, request) {
       characterAmount: character.result,
       timeEfficiency: request.timeEfficiency,
       facilityModifiers: industryInstall.facilityTimeModifiers(facilityRow, request.activityID),
-      productType: productTypeID > 0 && typeof staticData.getType === "function" ? staticData.getType(productTypeID) : null,
+      productType: manufacturedType(definition, activity),
     });
   } catch (error) {
     // A pilot whose session went has no job to send; anything else that could not be asked leaves the time unreckoned.
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(webSessionID, held);
+      throw error;
+    }
+    assertCurrentHeldSession(held, webSessionID);
+    return null;
+  }
+}
+
+/** The type a blueprint's manufacturing makes, as the game's data has it (its group and category say which of a facility's modifiers are for it), or null. */
+function manufacturedType(definition, activity) {
+  const products = Array.isArray(activity.products) ? activity.products : [];
+  const productTypeID = Number(definition.productTypeID) || Number(products[0] && products[0].typeID) || 0;
+  return productTypeID > 0 && typeof staticData.getType === "function" ? staticData.getType(productTypeID) : null;
+}
+
+/** What `ask` answers, asked for once however many want it, and failing for each of them as it failed. */
+function askedOnce(ask) {
+  let asking = null;
+  return () => {
+    asking ??= ask();
+    return asking;
+  };
+}
+
+/** const.attributeJobCostMultiplier: a blueprint type's own multiplier of what a job with it costs. */
+const ATTRIBUTE_JOB_COST_MULTIPLIER = 1954;
+
+/**
+ * A manufacturing job's cost in whole ISK, as the client's own job reckons it before sending the job
+ * (industry/job.py 310 to 320; src/industryInstall.js, manufacturingJobCost, has the order and why it matters).
+ * What it is reckoned from, and where the client has each:
+ *
+ *   the blueprint's materials, and its type's own cost multiplier (1954)    the game's own data
+ *   each material's adjusted average price                                  the price table its cfg asked for at
+ *                                                                           its login, which on the game port the
+ *                                                                           transport keeps for the pilot
+ *   whether the pilot's clone is an alpha's                                 its clone grade service, likewise
+ *   the faction's and the system's modifiers, and the facility's own        its facility service, likewise
+ *
+ * ⚠ ALL OR NOTHING, as a job's time is: the server refuses a job whose cost is not nought and is not its own to
+ * the ISK (MISMATCH_COST). Null otherwise: any other kind of work; a pilot through the gateway, who has no price
+ * table; one on the game port whose table has not come yet, or could not be asked for; a clone grade that is
+ * neither an alpha's nor an omega's; a blueprint the game's data has not; a facility that is not to be had.
+ * Nought then goes, as it always did, and the server reckons the cost by itself.
+ */
+async function reckonedJobCost(held, webSessionID, request, facilityOf) {
+  if (request.activityID !== INDUSTRY_ACTIVITY_IDS.manufacturing) {
+    return null;
+  }
+  if (!(gamePortPilots && isGamePortHandle(held.bridgeSessionID) && typeof gamePortPilots.averageMarketPrice === "function")) {
+    return null;
+  }
+  const activitiesOf = (typeID) => {
+    const each = typeof staticData.getIndustryBlueprint === "function" ? staticData.getIndustryBlueprint(typeID) : null;
+    return each && each.activities ? each.activities : null;
+  };
+  const definition = typeof staticData.getIndustryBlueprint === "function"
+    ? staticData.getIndustryBlueprint(request.blueprintTypeID)
+    : null;
+  const activity = definition && definition.activities ? definition.activities.manufacturing : null;
+  if (!activity) {
+    return null;
+  }
+  try {
+    assertCurrentHeldSession(held, webSessionID);
+    const price = industryInstall.blueprintPrice(request.blueprintTypeID, {
+      activitiesOf,
+      adjustedPriceOf: (typeID) => {
+        const said = gamePortPilots.averageMarketPrice({ userid: held.accountID }, held.bridgeSessionID, typeID);
+        return said === null ? undefined : said.adjustedPrice;
+      },
+    });
+    if (price === null) {
+      return null;
+    }
+    const grade = await heldTopLevelCall(held, webSessionID, "subscriptionMgr", "GetCloneGrade", [], null);
+    if (grade.result !== 0 && grade.result !== 1) {
+      return null;
+    }
+    const facilityRow = await facilityOf();
+    if (!facilityRow) {
+      return null;
+    }
+    const { faction, system } = industryInstall.facilityGlobalModifiers(facilityRow, request.activityID);
+    const multiplier = typeof staticData.getTypeDogmaAttribute === "function"
+      ? staticData.getTypeDogmaAttribute(request.blueprintTypeID, ATTRIBUTE_JOB_COST_MULTIPLIER)
+      : null;
+    return industryInstall.manufacturingJobCost({
+      blueprintPrice: price,
+      runs: request.runs,
+      blueprintAmount: multiplier === null || multiplier === undefined ? null : Number(multiplier),
+      alpha: grade.result === 0,
+      faction,
+      system,
+      facilityModifiers: industryInstall.facilityCostModifiers(facilityRow, request.activityID),
+      productType: manufacturedType(definition, activity),
+    });
+  } catch (error) {
+    // As for the time: a pilot whose session went has no job to send; anything else leaves the cost unreckoned.
     if (error && error.code === "SESSION_NOT_FOUND") {
       forgetBridgeSession(webSessionID, held);
       throw error;
@@ -5568,10 +5668,14 @@ app.post("/api/bridge/industry/preview", requireAuth, async (req, res, next) => 
   try {
     await readHeldFlight(held, req.webSessionID);
     const locations = await readIndustryLocations(held, req.webSessionID, request.facilityID);
-    const timeSeconds = await reckonedJobSeconds(req.account, held, req.webSessionID, request);
+    // The job's facility, as the client's job has the one it was given: asked for once for the two reckonings.
+    const facilityOf = askedOnce(() => jobFacilityRow(held, req.webSessionID, request.facilityID));
+    const timeSeconds = await reckonedJobSeconds(req.account, held, req.webSessionID, request, facilityOf);
+    const cost = await reckonedJobCost(held, req.webSessionID, request, facilityOf);
     const payload = buildInstallJobPayload(held, {
       ...request,
       time: timeSeconds,
+      cost,
       inputLocation: locations.input,
       outputLocation: locations.output,
     });
@@ -5666,11 +5770,14 @@ app.post("/api/bridge/industry/install", requireAuth, async (req, res, next) => 
     await readHeldFlight(held, req.webSessionID);
     const locations = await readIndustryLocations(held, req.webSessionID, request.facilityID);
     const decryptorFields = await decryptorInstallFields(held, req.webSessionID, request);
-    const timeSeconds = await reckonedJobSeconds(req.account, held, req.webSessionID, request);
+    const facilityOf = askedOnce(() => jobFacilityRow(held, req.webSessionID, request.facilityID));
+    const timeSeconds = await reckonedJobSeconds(req.account, held, req.webSessionID, request, facilityOf);
+    const cost = await reckonedJobCost(held, req.webSessionID, request, facilityOf);
     const payload = buildInstallJobPayload(held, {
       ...request,
       ...(decryptorFields || {}),
       time: timeSeconds,
+      cost,
       inputLocation: locations.input,
       outputLocation: locations.output,
     });
