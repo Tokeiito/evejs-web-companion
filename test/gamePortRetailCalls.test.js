@@ -2511,6 +2511,25 @@ test("a scoop is the client's with the drones as one list, and nothing else", ()
   }
 });
 
+test("a jettison is the client's with the items as one list, and nothing else", () => {
+  // invItemFunctions.py 63: ship.Jettison(itemIDs), with itemIDs = itemsByID.keys(). Both recordings of it have one
+  // list of one ID (beyond 32 bits, as an item's is) and no keywords, on the ship's Moniker.
+  const jettison = (args, kwargs = null) => retailForm("ship", "Jettison", args, kwargs, {});
+  for (const args of [[[11]], [[11, 12, 13]], [[1054657192170]]]) {
+    const made = jettison(args);
+    assert.deepEqual([made.status, made.args, made.kwargs, made.moniker], ["same", args, null, true], JSON.stringify(args));
+    assert.match(made.source, /invItemFunctions\.py:63$/);
+  }
+  for (const [args, kwargs, why] of [
+    [[], null, "nothing"], [[[]], null, "no items"], [[11], null, "an item by itself"], [["11,12"], null, "the items as text"], [[null], null, "nothing for the items"], [[[11], [12]], null, "two lists"], [[[11, 0]], null, "nought among them"],
+    [[["11"]], null, "an item as text"], [[[11, 11.5]], null, "a number that is no ID"], [[[11]], { now: true }, "a keyword beside them"],
+  ]) {
+    const odd = jettison(args, kwargs);
+    assert.deepEqual([odd.status, odd.args, odd.kwargs], ["differs", args, kwargs], why);
+    assert.match(odd.note, /the items as one list/, why);
+  }
+});
+
 test("a job delivered, and a job stopped, are the client's with the job and its solar system, and nothing else", () => {
   // industrySvc.py 150 and 160: RemoteSvc('industryManager').CompleteJob(int(jobID), solarSystemID), and CancelJob the same.
   for (const [method, where] of [["CompleteJob", /industrySvc\.py:150$/], ["CancelJob", /industrySvc\.py:160$/]]) {

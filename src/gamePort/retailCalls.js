@@ -602,6 +602,7 @@ const TARGET_MGR = "eve/client/script/parklife/targetMgr.py";
 const CLIENT_DOGMA = "eve/client/script/dogma/clientDogmaLocation.py";
 const EVE_MISC = "eve/client/script/util/eveMisc.py";
 const DRONE_FUNCTIONS = "eve/client/script/ui/services/menuSvcExtras/droneFunctions.py";
+const INV_ITEM_FUNCTIONS = "eve/client/script/ui/services/menuSvcExtras/invItemFunctions.py";
 const SHIP_CONFIG = "eve/client/script/ui/services/shipConfigSvc.py";
 const FITTING_SVC = "eve/client/script/environment/fittingSvc.py";
 const CLIENT_PLANET = "eve/client/script/environment/planet/clientPlanet.py";
@@ -746,6 +747,10 @@ const oneBubbleBroadcast = (args, kwargs, context) => {
 /** droneFunctions.RealScoopToDroneBay (195): ship.ScoopDrone(objectIDs), the drones as one list of their IDs and nothing else. */
 const scooping = (args, kwargs) => (args.length === 1 && Array.isArray(args[0]) && args[0].length > 0 && args[0].every((each) => Number.isSafeInteger(each) && each > 0)
   && Object.keys(kwargs).length === 0 ? {} : { status: "differs", note: "The client sends the drones as one list of their IDs, and nothing else." });
+
+/** invItemFunctions.Jettison (63): ship.Jettison(itemIDs), with itemIDs = itemsByID.keys(): the items as one list of their IDs and nothing else. */
+const jettisoning = (args, kwargs) => (args.length === 1 && Array.isArray(args[0]) && args[0].length > 0 && args[0].every((each) => Number.isSafeInteger(each) && each > 0)
+  && Object.keys(kwargs).length === 0 ? {} : { status: "differs", note: "The client sends the items as one list of their IDs, and nothing else." });
 
 /** industrySvc.CompleteJob (150) and CancelJob (160): the job, and the job's own solar system (idCheckers.IsSolarSystem), and nothing else. */
 /** One ID alone, a whole number above nought, and nothing by keyword. */
@@ -1879,6 +1884,7 @@ const RETAIL_CALLS = Object.freeze({
   "dogmaIM.ShipOnlineModules": webOnly(`${GODMA}:697`, "godma has a wrapper for this that nothing in the client calls, and throws its answer away. Which modules are online the client reads from the effects GetAllInfo lists. eve.js answers with the online modules, and the BFF reads that."),
   "ship.LaunchDrones": reshaped(`${EVE_MISC}:29`, launching, "GetShipAccess().LaunchDrones([(itemID, quantity), ...], whoseBehalfID, ignoreWarning): a list of pairs, and None for whose behalf when it is the pilot's own"),
   "ship.ScoopDrone": judged(`${DRONE_FUNCTIONS}:195`, scooping, "GetShipAccess().ScoopDrone(droneIDs), the drones as one list, from a drone's menu. No recording has one."),
+  "ship.Jettison": judged(`${INV_ITEM_FUNCTIONS}:63`, jettisoning, "GetShipAccess().Jettison(itemIDs), the items as one list, from an item's menu (and a node graph's action, with no confirmation). Recorded twice, each on the bind of the ship's Moniker for the solar system, with one list of one ID and no keywords, and answered two lists: what went to a can, and what was launched for itself."),
   "ship.LeaveShip": judged(`${STATION_SVC}:248`, leavingTheShip, "station.TryLeaveShip: gameui.GetShipAccess().LeaveShip(shipid), for the ship the pilot is in and no other, docked; from the item's menu and before a clone jump. In a structure, structureDocking.LeaveShip makes the same call and then makes the capsule it answers active. In space the menu ejects. In no recording."),
   "dogmaIM.CreateNewbieShip": judged(`${STATION_SVC}:613`, boardingACorvette, "station.CreateNewbieShip: sm.RemoteSvc('dogmaIM').CreateNewbieShip(shipID, locationID), by the service's name, for the ship the pilot is in and where it is docked (session.stationid or session.structureid). The client asks the pilot first unless it is in a capsule, and refuses by itself aboard a corvette. From the lobby's corvette button and no other place. In no recording."),
   "ship.Board": same("eve/client/script/ui/services/menuSvcExtras/menuFunctions.py:209", "GetShipAccess().Board(shipID, session.shipid or session.stationid), through sessionMgr.PerformSessionChange('board', ...). Recorded on Tranquility in space as (shipID, the ship left), the bind carrying it."),
