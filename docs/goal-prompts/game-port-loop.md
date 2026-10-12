@@ -2092,6 +2092,16 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A count in a sentence is counted again against the list beside it.** "The
   five writes' askers read nothing" was four: the reserve's reads what it is
   answered. Before a number goes in the log, name its members.
+- **A route that answers before its work is done is waited for, with an end.**
+  The support's stop answers 202 and stops the bots after. A test that reads
+  the state at once reads it too soon, and one that sleeps reads a guess: wait
+  a little at a time for the state, to a bound, and assert what the wait
+  answered.
+- **Where a route's answer is a module's number, break the number through the
+  route's test.** Ten seconds fresh and thirty seconds lost are the support
+  policy's, and what a bot's page is answered turns on them. No test asked
+  them through a route; ten breakages of the two modules were caught by the
+  routes' own test.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
