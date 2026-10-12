@@ -1653,6 +1653,15 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **Run a live check on the gateway too, and read what it answers.** The same call by
   the same function saved a bookmark with a place on the game port and with none
   through the gateway. A count alone would not have shown it.
+- **Where a recording has a course, run the course.** A note's nine differences were
+  settled by running the recording's own course with two pilots and printing what each
+  was told at each step (`flb-live.js`), beside the recording's lines. Seven fell in one
+  run, where reading the source for each would have left them "read". What a pilot is
+  told comes back with its next answer, on either transport.
+- **Read the recording before a note of it.** A note said the recorded state had a
+  `squads` beside its wings; the answer's own dict counts six entries, and the name
+  stands once, inside the wing. A field was made in the server after that misreading.
+  Count a dict's entries off the packet where the client's own line of it is cut short.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
