@@ -1696,6 +1696,16 @@ Take these defaults, and list each under "For the operator" in the log so they c
   A call through the web gateway is written nowhere in it: count those in the gateway
   BFF's own tally (`gateway-ledger.json` in its data folder), from a BFF started
   afresh.
+- **The recordings begin at the choosing of a character.** What a client asks as it
+  starts (its cfg loading, its selection screen) is in none of them, and "no recording
+  has it" there says nothing of whether a client asks it. This server's own log of a
+  retail client's login has that stretch (the login report's source, in `eve.js`'s
+  logs): look there before writing that a client does not ask.
+- **A thread of the client's that waits is a timer here, and other tests ask for none.**
+  A call whose place among a login's calls is the clock's is made by the transport's
+  injectable `timers`, never by the tests' `sleep` (which is instant, and would put the
+  call in every test's login). The stand-in session lists such a call apart, and the
+  tests' transport is told not to make it; the tests of it hold the timers themselves.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
