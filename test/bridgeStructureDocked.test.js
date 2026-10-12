@@ -112,7 +112,7 @@ function fakeTransport({ handle, answers = {} }) {
       if (method === "Add") placement.get(args[0]).flag = kwargs.flag;
       if (method === "List") {
         return { result: { type: "list", items: [...placement].filter(([, item]) => item.flag === args[0])
-          .map(([itemID, item]) => packedRow({ itemID, typeID: item.typeID, groupID: 18, categoryID: 4, ownerID: 7, flagID: item.flag, quantity: item.quantity, stacksize: item.quantity, singleton: 0 })) }, notifications: [] };
+          .map(([itemID, item]) => packedRow({ itemID, typeID: item.typeID, groupID: 18, categoryID: 4, ownerID: 7, locationID: item.flag === FLAG_HANGAR ? STRUCTURE_ID : SHIP_ID, flagID: item.flag, quantity: item.quantity, stacksize: item.quantity, singleton: 0 })) }, notifications: [] };
       }
       if (method === "GetCapacity") return { result: keyVal([["capacity", 1000], ["used", 1]]), notifications: [] };
       return { result: null, notifications: [] };
@@ -275,12 +275,13 @@ test("through the web gateway a structure's services have no answer, and each of
   assert.deepEqual([other.calls.call, other.calls.bind, other.calls.boundCall], [[], [], []]);
 });
 
-test("on the game port the reprocessing plant's quote has the hangar listed for it first, the reprocessing names its output, and in a structure both are held to its reprocessing service", async () => {
+test("on the game port the reprocessing plant's quote has the hangar listed for it first and the ship's holds for an item not in it, the reprocessing names each item's own place and its output, and in a structure both are held to its reprocessing service", async () => {
   const state = { answer: services(1, 2, 3, 4, 8) };
   const { ask, own, other } = await startTestServer({ onGamePort: true, answers: { "structureSettings.CharacterGetServices": () => state.answer } });
   const bound = (method) => own.calls.boundCall.filter((call) => call.method === method).map((call) => [call.service, call.args, call.kwargs, call.boundHandle]);
   const HANGAR = `handle:invbroker:GetInventory:[${STRUCTURE_ID}]`;
   const PLANT = `handle:reprocessingSvc:MachoBindObject:[${STRUCTURE_ID}]`;
+  const SHIP = `handle:invbroker:GetInventoryFromId:[${SHIP_ID}]`;
 
   // The quote: the hangar's listing is read first (the transport hands the quote each item's row out of it), and
   // the plant is asked for the items by their IDs, on its own Moniker, which is for the structure.
@@ -293,11 +294,22 @@ test("on the game port the reprocessing plant's quote has the hangar listed for 
   const unlisted = await ask("/api/bridge/reprocessing/quote?itemIDs=100");
   assert.deepEqual([unlisted.status, own.refusals, bound("GetQuotes").length], [200, ["invbroker.List"], 2]);
   own.refused.delete("List");
+  // An item that is not in the hangar: the ship's holds are listed for it too, down the ladder as far as the one it
+  // is in (the cargo is the last), so that the transport holds its row for the quote.
+  const asked = own.calls.boundCall.length;
+  const ofTheCargo = await ask("/api/bridge/reprocessing/quote?itemIDs=101");
+  assert.equal(ofTheCargo.status, 200, JSON.stringify(ofTheCargo.payload));
+  assert.deepEqual(own.calls.boundCall.slice(asked).map((call) => [call.method, call.args, call.boundHandle]),
+    [["List", [FLAG_HANGAR], HANGAR], ["List", [134], SHIP], ["List", [135], SHIP], ["List", [181], SHIP], ["List", [182], SHIP], ["List", [FLAG_CARGO], SHIP], ["GetQuotes", [[101]], PLANT]]);
 
-  // The reprocessing: of the structure's hangar, for the pilot, to that hangar by name.
-  const done = await ask("/api/bridge/reprocessing/reprocess", { method: "POST", body: { itemIDs: [100], confirm: true } });
+  // The reprocessing: each item as of its own place (the structure's hangar; the ship), for the pilot, to the
+  // structure's hangar by name.
+  const done = await ask("/api/bridge/reprocessing/reprocess", { method: "POST", body: { itemIDs: [100, 101], confirm: true } });
   assert.equal(done.status, 200, JSON.stringify(done.payload));
-  assert.deepEqual(bound("Reprocess"), [["reprocessingSvc", [[100], STRUCTURE_ID, 7, STRUCTURE_ID, FLAG_HANGAR], null, PLANT]]);
+  assert.deepEqual(bound("Reprocess"), [
+    ["reprocessingSvc", [[100], STRUCTURE_ID, 7, STRUCTURE_ID, FLAG_HANGAR], null, PLANT],
+    ["reprocessingSvc", [[101], SHIP_ID, 7, STRUCTURE_ID, FLAG_HANGAR], null, PLANT],
+  ]);
 
   // A structure with no reprocessing for the pilot: neither is asked of the plant.
   state.answer = services(1, 2, 3, 8);

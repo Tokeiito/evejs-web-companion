@@ -75,9 +75,16 @@ test("docked shows fitting + travel + bots and hides the in-space-only tabs", ()
   for (const shown of ["fitting", "travel", "bots"] as const) {
     assert.ok(docked.includes(shown), `${shown} must be visible while docked`);
   }
-  for (const hidden of ["flight", "mining", "scanner"] as const) {
+  for (const hidden of ["flight", "scanner"] as const) {
     assert.equal(docked.includes(hidden), false, `${hidden} must be hidden while docked`);
   }
+});
+
+test("the Mining window is offered docked as well as in space: its unloading and its refining are a docked pilot's", () => {
+  // The routes of both refuse a pilot in space, and the window says "Dock at a
+  // station…" there. Offered in space only, the page refined nowhere.
+  assert.ok(idsOf(true).includes("mining"), "a docked pilot must reach the window that unloads and refines");
+  assert.ok(idsOf(false).includes("mining"), "a pilot in space must reach the window that shows the holds");
 });
 
 test("in space shows the flight tabs and hides fitting + travel", () => {

@@ -6628,7 +6628,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       (moved, total) =>
         `Only ${moved} of ${total} stacks were reprocessed. The server did not say why the rest were left.`,
       "Nothing was reprocessed, and the server gave no reason.",
-      "The refinery accepted that, but your hangar could not be re-read, so what was reprocessed is unknown.",
+      "The refinery accepted that, but what you picked could not be read again, so what was reprocessed is unknown.",
     );
     // The previous quote described stacks that may no longer exist.
     store.apply({ type: "mining/quotes", quotes: [], taxRate: null, quotesFor: [] });
@@ -13216,9 +13216,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           }
           case "reprocessOre":
             if (action.itemIDs.length > 0) {
-              // The BFF verifies by re-reading the hangar; the block confirms on
-              // its own next-tick read too, so a silent decline just retries
-              // within the block's bound instead of being believed.
+              // The BFF goes by the server's own word of what it reprocessed;
+              // the block confirms on its own next-tick read too, so a silent
+              // decline just retries within the block's bound instead of being
+              // believed.
               await api.reprocessItems(action.itemIDs, callOptions);
             }
             return;

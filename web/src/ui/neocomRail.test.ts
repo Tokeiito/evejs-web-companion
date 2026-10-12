@@ -149,9 +149,13 @@ test("the rail follows the docked / in-space state", () => {
   const docked = renderRail(true);
   const inSpace = renderRail(false);
   assert.match(docked, /aria-label="Fitting"/);
-  assert.equal(/aria-label="Mining"/.test(docked), false);
-  assert.match(inSpace, /aria-label="Mining"/);
+  assert.equal(/aria-label="Flight"/.test(docked), false);
+  assert.match(inSpace, /aria-label="Flight"/);
   assert.equal(/aria-label="Fitting"/.test(inSpace), false);
+  // Mining is offered in both: its unloading and refining are a docked pilot's,
+  // its holds, compressing and dumping a flying one's.
+  assert.match(docked, /aria-label="Mining"/);
+  assert.match(inSpace, /aria-label="Mining"/);
 });
 
 test("the rail offers NO way into the bots that run on the server", () => {

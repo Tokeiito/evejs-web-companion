@@ -1789,7 +1789,7 @@
           <p class="stn-note">Personal hangar: {structureHasCapability($station.structureServiceIDs, "personalInventory") ? "available" : "unavailable"}</p>
           <p class="stn-note">Corporation office: {structureHasCapability($station.structureServiceIDs, "corporationHangar") ? "available; office and division rights still required" : "unavailable"}</p>
           <p class="stn-note">Manual fitting: {structureHasCapability($station.structureServiceIDs, "fitting") ? "available" : "unavailable"}</p>
-          <p class="stn-note">Reprocessing: {structureHasCapability($station.structureServiceIDs, "reprocessing") ? "online; action support is separate" : "unavailable"}</p>
+          <p class="stn-note">Reprocessing: {structureHasCapability($station.structureServiceIDs, "reprocessing") ? "online; refine from the Mining window" : "unavailable"}</p>
           <p class="stn-note">Market: {structureHasCapability($station.structureServiceIDs, "market") ? "online; action support is separate" : "unavailable"}</p>
           <p class="stn-note">Industry: {structureHasCapability($station.structureServiceIDs, "industry") ? "online; facility authority is separate" : "unavailable"}</p>
           <p class="stn-note">Repair: {structureHasCapability($station.structureServiceIDs, "repair") ? "available" : "unavailable"}</p>

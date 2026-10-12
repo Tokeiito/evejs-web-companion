@@ -20429,6 +20429,19 @@ async function reckonedHoldCapacity(own, flag, listed, asked) {
   return used === null ? asked() : { result: capacityAnswer(Number(size), used) };
 }
 
+/**
+ * Which of the mining holds a ship carries, and (on the game port) its holds as the client knows them. A hold the
+ * hull's type does not carry is not read: it answers what the server would (nothing in it, no capacity), and costs
+ * the server nothing. The hull's type only counts when flight status names THIS ship; the gateway reports a null
+ * type while a ship change is still settling, and every hold is then read.
+ */
+async function miningHoldsOfShip(held, webSessionID, shipID, status) {
+  const flight = (status && status.flight) || {};
+  const carried = Number(flight.shipID) === Number(shipID) ? miningHoldsCarriedByHull(flight.shipTypeID) : null;
+  const own = await shipHoldsAsTheClient(held, webSessionID, Number(shipID));
+  return { own, carries: (hold) => (own ? own.has(hold.flag) !== false : carried === null || carried.has(hold.key)) };
+}
+
 // Read the ship's mining holds. Every hold in the ladder is read independently
 // (Promise.allSettled) so one that the hull does not have — or one whose read
 // fails — never blanks the rest, and a hold that answers nothing at all is
@@ -20445,20 +20458,11 @@ app.get("/api/bridge/ship/ore-hold", requireAuth, async (req, res, next) => {
       res.status(409).json({ ok: false, error: "NO_ACTIVE_SHIP", message: "No active ship." });
       return;
     }
-    // The hull's type only counts when flight status names THIS ship; the
-    // gateway reports a null type while a ship change is still settling.
-    const flight = (status && status.flight) || {};
-    const carried = Number(flight.shipID) === Number(shipID)
-      ? miningHoldsCarriedByHull(flight.shipTypeID)
-      : null;
     const spec = cargoBindSpec(held, shipID);
     // ⚠ THE RETAIL CLIENT NEVER ASKS HOW FULL A HOLD IS (invCache.py 1224,
     // godma.py 871). On the game port a hold's capacity is reckoned as the
     // client reckons it, and the server is asked for the hold's List alone.
-    const own = await shipHoldsAsTheClient(held, req.webSessionID, Number(shipID));
-    // A hold the hull's type does not carry is not read: it answers what the
-    // server would (nothing in it, no capacity), and costs the server nothing.
-    const carries = (hold) => (own ? own.has(hold.flag) !== false : carried === null || carried.has(hold.key));
+    const { own, carries } = await miningHoldsOfShip(held, req.webSessionID, shipID, status);
     const settled = await Promise.allSettled(
       MINING_HOLDS.flatMap((hold) => {
         if (!carries(hold)) return [null, null];
@@ -21253,6 +21257,33 @@ function decodeReprocessingQuotes(result) {
   };
 }
 
+/**
+ * Where each of these items is, of the places the page's refining reaches: the hangar where the pilot is docked,
+ * and the mining holds of the ship the pilot is in, the cargo among them. The client's window has each item's own
+ * row, and so its place (reprocessing/ui/itemReprocessor.py 19 to 23); the page names the items alone, so the
+ * listings are read for them: the hangar's first, and the ship's holds down the ladder only while an item is still
+ * to be found. An item that is in none of them, or whose row names no place, has no place here.
+ */
+async function reprocessingPlacesOf(held, webSessionID, itemIDs, status) {
+  const wanted = new Set(itemIDs);
+  const places = new Map();
+  const allFoundIn = (listed) => {
+    for (const row of decodeInventoryRows(listed.result)) {
+      if (wanted.has(row.itemID) && row.locationID > 0) places.set(row.itemID, row.locationID);
+    }
+    return places.size === wanted.size;
+  };
+  if (allFoundIn(await boundCall(held, webSessionID, hangarBindSpec(held), "List", [ITEM_FLAG_HANGAR], null))) return places;
+  const shipID = Number(held.activeShipID) || 0;
+  if (shipID <= 0) return places;
+  const { carries } = await miningHoldsOfShip(held, webSessionID, shipID, status);
+  const spec = cargoBindSpec(held, shipID);
+  for (const hold of MINING_HOLDS.filter(carries)) {
+    if (allFoundIn(await boundCall(held, webSessionID, spec, "List", [hold.flag], null))) break;
+  }
+  return places;
+}
+
 // What reprocessing these stacks WOULD produce, and what the station will take.
 // A pure read: nothing is consumed and nothing is charged by this route. The
 // tax comes back first in the retail triple and is passed through as its own
@@ -21285,12 +21316,13 @@ app.get("/api/bridge/reprocessing/quote", requireAuth, async (req, res, next) =>
       return;
     }
     if (held.structureID) await assertDockedInventoryAccess(held, req.webSessionID, 4);
-    // The client's window asks its quote with each item's own row, which its inventory cache has from the hangar's
-    // listing (reprocessing/ui/quotes.py 20). On the game port the transport hands the rows in from the listings
-    // the pilot holds: the hangar's is read here, which is answered from what is held where it is. A listing that
-    // could not be read fails nothing: the quote is then asked for the items by their IDs alone.
+    // The client's window asks its quote with each item's own row, which its inventory cache has from the listing
+    // of where the item is (reprocessing/ui/quotes.py 20). On the game port the transport hands the rows in from
+    // the listings the pilot holds: the hangar's is read here, and the ship's holds' where an item is not in it,
+    // each answered from what is held where it is. A listing that could not be read fails nothing: the quote is
+    // then asked for the items by their IDs alone.
     if (heldOnTheGamePort(held)) {
-      await boundCall(held, req.webSessionID, hangarBindSpec(held), "List", [ITEM_FLAG_HANGAR], null).catch((error) => {
+      await reprocessingPlacesOf(held, req.webSessionID, itemIDs, before).catch((error) => {
         if (error && error.code === "SESSION_NOT_FOUND") throw error;
       });
     }
@@ -21368,58 +21400,55 @@ app.post("/api/bridge/reprocessing/reprocess", requireAuth, async (req, res, nex
     }
     if (held.structureID) await assertDockedInventoryAccess(held, req.webSessionID, 4);
     const spec = reprocessingBindSpec(held);
-    // Reprocess(itemIDs, fromLocationID, ownerID, outputLocationID, outputFlagID): the hangar where the pilot is
-    // docked is both the source and the output, so the minerals land where the ore was. The output is named, as
-    // the client's window names it (its own choice is that hangar: reprocessingWnd.py 344 to 367); the client
-    // never leaves it unnamed.
-    const outcome = await boundCall(
-      held,
-      req.webSessionID,
-      spec,
-      "Reprocess",
-      [itemIDs, inventoryLocationID(held), held.characterID || 0, inventoryLocationID(held), ITEM_FLAG_HANGAR],
-      null,
-    );
+    const dockedAt = inventoryLocationID(held);
+    // Reprocess(itemIDs, fromLocationID, ownerID, outputLocationID, outputFlagID). The items of a call are all of
+    // one place, the items' own, and the client's reprocessor makes a call for each place its items are of
+    // (reprocessing/ui/itemReprocessor.py 19 to 44): a stack in a hold of the ship is of the ship, and the server
+    // passes over an item that is not of the place named (seen live 2026-10-12: a hold's stack, named as the
+    // hangar's, was quoted and not reprocessed). An item of no place found is asked of nobody. The output is named,
+    // as the client's window names it (its own choice is the hangar of where the pilot is docked: reprocessingWnd.py
+    // 344 to 367), so the minerals land in that hangar; the client never leaves it unnamed.
+    const places = await reprocessingPlacesOf(held, req.webSessionID, itemIDs, before);
+    const byPlace = new Map();
+    for (const itemID of itemIDs) {
+      const place = places.get(itemID);
+      if (place !== undefined) byPlace.set(place, [...(byPlace.get(place) || []), itemID]);
+    }
     // The server answers which items it reprocessed, and what they made; the client's window goes by the first
-    // (reprocessing/ui/controller.py 78 to 82). A stack that is no whole number of portions stays in the hangar,
+    // (reprocessing/ui/controller.py 78 to 82). A stack that is no whole number of portions stays where it was,
     // the less, and is reprocessed all the same: seen live 2026-10-12, 5,050 Veldspar reprocessed to 50, which a
     // reading of the hangar for what is gone took for not reprocessed.
-    const said = reprocessedItemIDs(outcome.result);
-    if (said !== null) {
-      res.json({
-        ok: true,
-        requested: itemIDs,
-        processed: itemIDs.filter((id) => said.has(id)),
-        remaining: itemIDs.filter((id) => !said.has(id)),
-        notifications: outcome.notifications,
-      });
-      return;
+    const notifications = [];
+    const said = new Set();
+    const unsaid = [];
+    for (const [place, ofPlace] of byPlace) {
+      const outcome = await boundCall(held, req.webSessionID, spec, "Reprocess", [ofPlace, place, held.characterID || 0, dockedAt, ITEM_FLAG_HANGAR], null);
+      notifications.push(...outcome.notifications);
+      const named = reprocessedItemIDs(outcome.result);
+      if (named === null) unsaid.push(...ofPlace);
+      else for (const itemID of named) said.add(itemID);
     }
-    // An answer that does not say: re-read the hangar and report which stacks are
-    // actually gone. A stack still present is then taken for not reprocessed.
-    let stillPresent = null;
-    try {
-      const listed = await boundCall(
-        held,
-        req.webSessionID,
-        hangarBindSpec(held),
-        "List",
-        [ITEM_FLAG_HANGAR],
-        null,
-      );
-      stillPresent = new Set(decodeInventoryRows(listed.result).map((row) => row.itemID));
-    } catch {
-      // The hangar could not be re-read, so nothing can be claimed either way.
-      stillPresent = null;
+    // An answer that does not say: the places are read again for which of its stacks are gone. A stack still there
+    // is then taken for not reprocessed.
+    let gone = new Set();
+    if (unsaid.length > 0) {
+      try {
+        const still = await reprocessingPlacesOf(held, req.webSessionID, unsaid, before);
+        gone = new Set(unsaid.filter((itemID) => !still.has(itemID)));
+      } catch {
+        // They could not be read again, so nothing can be claimed either way: null, "we could not check", which is
+        // reported as such and never as success.
+        res.json({ ok: true, requested: itemIDs, processed: null, remaining: null, notifications });
+        return;
+      }
     }
+    const processed = itemIDs.filter((itemID) => said.has(itemID) || gone.has(itemID));
     res.json({
       ok: true,
       requested: itemIDs,
-      // null when the verification read failed — "we could not check", which is
-      // reported as such and never as success.
-      processed: stillPresent === null ? null : itemIDs.filter((id) => !stillPresent.has(id)),
-      remaining: stillPresent === null ? null : itemIDs.filter((id) => stillPresent.has(id)),
-      notifications: outcome.notifications,
+      processed,
+      remaining: itemIDs.filter((itemID) => !processed.includes(itemID)),
+      notifications,
     });
   } catch (error) {
     next(error);

@@ -134,9 +134,15 @@ export const TABS: readonly TabDef[] = [
   // title comes from `tabLabel`, and `NEOCOM_GLYPHS` is exhaustive over the
   // union whether or not a glyph is ever rendered in the strip.
   { id: "companion", label: "Fleet companions", where: "both", launchable: false },
-  // In space only — flying, what's around the ship, mining.
+  // In space only — flying, what's around the ship.
   { id: "flight", label: "Flight", where: "in-space" },
-  { id: "mining", label: "Mining", where: "in-space" },
+  // ⚠ BOTH, THOUGH MINING IS DONE IN SPACE. The window is the mining loop's
+  // dockside half as much as its belt half: its unloading and its refining are
+  // a docked pilot's (their routes refuse a pilot in space), and for as long as
+  // it was offered in space only, no window of the page refined anything for
+  // anyone. In space it shows the holds, compressing and dumping; docked, the
+  // holds, unloading and refining.
+  { id: "mining", label: "Mining", where: "both" },
   // Two sections of the old overview cockpit, now windows of their own. Both
   // are LAUNCHABLE on purpose: "where are my drones" and "what just hit me" are
   // questions a pilot asks without anything having been clicked first.
