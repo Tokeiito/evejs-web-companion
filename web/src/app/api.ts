@@ -2592,6 +2592,8 @@ export async function getSpaceSnapshot(
 /** What the server says is locked right now — the only authority. */
 export interface TargetsResult {
   readonly targetIDs: JsonValue;
+  /** What has this ship locked (GetTargeters); null when it could not be read. */
+  readonly targeterIDs: JsonValue;
   readonly notifications: readonly JsonValue[];
 }
 
@@ -2618,9 +2620,13 @@ function readNotifications(data: Record<string, JsonValue>): readonly JsonValue[
 }
 
 /** Read the locked-target list (dogmaIM.GetTargets). */
-export async function getTargets(options: ApiOptions = {}): Promise<TargetsResult> {
-  const data = await getJson("/api/bridge/targets", options);
-  return { targetIDs: data.targetIDs ?? null, notifications: readNotifications(data) };
+export async function getTargets(options: ApiOptions = {}, withTargeters = false): Promise<TargetsResult> {
+  const data = await getJson(withTargeters ? "/api/bridge/targets?targeters=1" : "/api/bridge/targets", options);
+  return {
+    targetIDs: data.targetIDs ?? null,
+    targeterIDs: data.targeterIDs ?? null,
+    notifications: readNotifications(data),
+  };
 }
 
 function readModuleAction(itemID: number, data: Record<string, JsonValue>): ModuleActionResult {
