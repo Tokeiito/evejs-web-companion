@@ -99,6 +99,52 @@ export function activityIsFor(activity: IndustryActivity, original: boolean): bo
 /** The most copies one copy job makes: the game's own client holds a job to it, and the server refuses more. */
 export const MOST_COPIES_A_JOB = 500;
 
+/** What one run of a research takes of its recipe's time, by the level the run starts from: the game's own table. */
+const RESEARCH_TIMES: readonly number[] = [1.0, 29 / 21.0, 23 / 7.0, 39 / 5.0, 278 / 15.0, 928 / 21.0, 2200 / 21.0, 5251 / 21.0, 4163 / 7.0, 29660 / 21.0];
+
+/** The two researches: which of a blueprint's researches each is of, the step one run raises it by, and the most it comes to. */
+const RESEARCH_OF: Readonly<Partial<Record<IndustryActivity, { readonly of: "timeEfficiency" | "materialEfficiency"; readonly step: number; readonly most: number }>>> = {
+  research_time: { of: "timeEfficiency", step: 2, most: 20 },
+  research_material: { of: "materialEfficiency", step: 1, most: 10 },
+};
+
+/** Where a blueprint stands in a research, and what a job of some runs would bring it to. */
+export interface ResearchStanding {
+  /** The level it is at: the level its next run starts from. */
+  readonly level: number;
+  /** The runs left to it. */
+  readonly runsLeft: number;
+  /** True at the last level: it cannot be researched any further. */
+  readonly finished: boolean;
+  /** Its research of that kind now, and after the runs said, in percent. */
+  readonly from: number;
+  readonly to: number;
+}
+
+/**
+ * Where a blueprint stands in a research, as the game's own client reads it of the blueprint, and what `runs` of
+ * the research would bring the blueprint's research to (never past the most). Null for a kind of work that is no
+ * research.
+ */
+export function researchStanding(
+  activity: IndustryActivity,
+  blueprint: Pick<IndustryBlueprintRow, "timeEfficiency" | "materialEfficiency">,
+  runs = 0,
+): ResearchStanding | null {
+  const research = RESEARCH_OF[activity];
+  if (!research) {
+    return null;
+  }
+  const from = Math.max(0, Math.min(research.most, Math.trunc(blueprint[research.of]) || 0));
+  return {
+    level: Math.floor(from / research.step),
+    runsLeft: Math.floor((research.most - from) / research.step),
+    finished: from >= research.most,
+    from,
+    to: Math.min(from + research.step * Math.max(0, Math.trunc(runs) || 0), research.most),
+  };
+}
+
 /** status code -> status name (industryConstants.INDUSTRY_STATUS). */
 const STATUS_BY_ID: Readonly<Record<number, IndustryJobStatus>> = {
   0: "unsubmitted",
@@ -508,16 +554,26 @@ export function previewMaterials(
 
 /**
  * Base seconds for `runs` runs. The blueprint's time efficiency is in a manufacturing job's time alone, and a
- * copy job's time is by the runs each copy is licensed for (`licensedRuns`) too.
+ * copy job's time is by the runs each copy is licensed for (`licensedRuns`) too. A research's is by the level each
+ * run starts from: `researchLevel` is the level the blueprint is at, and each run starts a level higher.
  */
 export function previewTimeSeconds(
   recipe: IndustryRecipe | null,
   runs: number,
   timeEfficiency: number,
   licensedRuns = 1,
+  researchLevel = 0,
 ): number {
   if (!recipe || runs <= 0) {
     return 0;
+  }
+  if (RESEARCH_OF[recipe.activity]) {
+    let seconds = 0;
+    for (let run = 0; run < runs; run += 1) {
+      seconds += recipe.timeSeconds * RESEARCH_TIMES[Math.min(Math.max(0, researchLevel) + run, RESEARCH_TIMES.length - 1)]!;
+    }
+    // (Rounded, as the game's own client rounds a job's time: the levels' shares are no whole numbers.)
+    return Math.round(seconds);
   }
   const efficiency = recipe.activity === "manufacturing" ? Math.max(0, Math.min(100, timeEfficiency)) / 100 : 0;
   const eachRun = recipe.activity === "copying" ? Math.max(1, licensedRuns) : 1;
@@ -680,6 +736,7 @@ const REFUSAL_SENTENCES: Readonly<Record<string, string>> = {
   MISSING_OUTPUT_LOCATION: "There is nowhere to deliver the results to.",
   INPUT_ACCESS: "You cannot take materials from that hangar.",
   RESEARCH_LIMIT: "That blueprint cannot be researched any further.",
+  RUN_LENGTH: "That job would run too long: all of its runs but the last must be done within thirty days.",
   STANDINGS_RESTRICTION: "Your standing is not good enough to work here.",
   INVALID_OWNER: "You cannot install a job for that owner.",
   INVALID_PRODUCT: "That blueprint does not make anything you can build here.",

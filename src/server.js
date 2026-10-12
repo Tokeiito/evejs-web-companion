@@ -5250,8 +5250,9 @@ const INDUSTRY_CASH_ACCOUNT_KEY = 1000;
  * change what gets charged, and sending them right does not make them
  * authoritative (one that is not nought is checked against the server's own,
  * and a job whose number is not the server's to the whole is REFUSED). The
- * `time` and the `materials` of a manufacturing job and of a copy job are
- * the client's own reckoning (reckonedJobSeconds, reckonedJobMaterials), and
+ * `time` and the `materials` of a manufacturing job, a copy job and a
+ * research job are the client's own reckoning (reckonedJobSeconds,
+ * reckonedJobMaterials), and
  * on the game port the `cost` and the `tax` of each are too
  * (reckonedJobCost, reckonedJobFee).
  * The fields that genuinely decide the outcome are `blueprintID`,
@@ -5292,8 +5293,9 @@ function buildInstallJobPayload(held, request) {
     // The job's time as the client's own job reckons it, where it could be reckoned whole; else nought, which
     // the server does not check.
     time: request.time || 0,
-    // A manufacturing job's and a copy job's are the client's own reckoning, where they could be reckoned whole,
-    // and an invention's with a decryptor the exact map the server takes the decryptor from (src/industryInstall.js).
+    // A manufacturing job's, a copy job's and a research job's are the client's own reckoning, where they could be
+    // reckoned whole, and an invention's with a decryptor the exact map the server takes the decryptor from
+    // (src/industryInstall.js).
     // Empty otherwise, which the server reads as its own to work out from the blueprint.
     materials: request.materials || {},
     inputLocation: request.inputLocation,
@@ -5390,6 +5392,28 @@ function normalizeIndustryRequest(req, res) {
     });
     return null;
   }
+  // A research's runs are held to what is left to the blueprint, as the client's job holds them: a blueprint at the
+  // most of that research has no job (research_time.py job_validate, 33 to 37), and a job has no more runs than
+  // are left, and one at the least (job_max_runs, 22 to 23; job.py 395). By the research of that kind the page read
+  // of the blueprint; where it said none, the job is the server's to judge.
+  const standing = researchStandingOf({ activityID, timeEfficiency, materialEfficiency });
+  if (standing && standing.finished) {
+    res.status(400).json({
+      ok: false,
+      error: "RESEARCH_LIMIT",
+      message: "That blueprint cannot be researched any further.",
+    });
+    return null;
+  }
+  if (standing && runs > Math.max(standing.runsLeft, 1)) {
+    const left = Math.max(standing.runsLeft, 1);
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_RUNS",
+      message: `That blueprint has ${left} ${left === 1 ? "level" : "levels"} of that research left.`,
+    });
+    return null;
+  }
   // A decryptor is an invention input, and only a decryptor (group 1304) may be
   // named as one: the server picks it out of the request's materials by group.
   const decryptorTypeID = body.decryptorTypeID === undefined || body.decryptorTypeID === null
@@ -5434,26 +5458,77 @@ const ATTRIBUTE_MANUFACTURE_TIME_MULTIPLIER = 219;
 const ATTRIBUTE_MANUFACTURE_TIME_PER_LEVEL = 1982;
 /** const.attributeCopySpeedPercent: the pilot's own copying time, which its skills and implants make. */
 const ATTRIBUTE_COPY_SPEED_PERCENT = 387;
+/** const.attributeManufacturingTimeResearchSpeed: the pilot's own time for a research of a blueprint's time. */
+const ATTRIBUTE_TIME_RESEARCH_SPEED = 385;
+/** const.attributeMineralNeedResearchSpeed: the pilot's own time for a research of a blueprint's materials. */
+const ATTRIBUTE_MATERIAL_RESEARCH_SPEED = 398;
+
+/** The reckonings of a research job, which the two researches share (src/industryInstall.js). */
+const RESEARCH_RECKONINGS = Object.freeze({
+  cost: industryInstall.researchJobCost,
+  tax: industryInstall.researchJobTax,
+  fee: industryInstall.researchJobFee,
+  materials: (listed) => industryInstall.researchJobMaterials(listed),
+});
 
 /**
  * The kinds of work whose job is reckoned here as the client's own job reckons it, each with the name its recipe
- * has in the game's data and its reckonings of what the job is charged (src/industryInstall.js). A research and an
- * invention are not among them yet: each has its own base, and goes with nought and an empty map, as it did.
+ * has in the game's data, the attribute of the pilot's that is its own time for that work
+ * (industryCommon.CHARACTER_MODIFIERS, 19 to 43), and its reckonings of what the job is charged and takes
+ * (src/industryInstall.js). An invention is not among them yet: it has its own base, and goes with nought and,
+ * where it has no decryptor, an empty map, as it did.
  */
 const JOB_RECKONINGS = Object.freeze({
   [INDUSTRY_ACTIVITY_IDS.manufacturing]: Object.freeze({
     recipe: "manufacturing",
+    timeAttribute: ATTRIBUTE_MANUFACTURE_TIME_MULTIPLIER,
     cost: industryInstall.manufacturingJobCost,
     tax: industryInstall.manufacturingJobTax,
     fee: industryInstall.manufacturingJobFee,
+    materials: (listed, request) => industryInstall.manufacturingJobMaterials({ ...listed, materialEfficiency: request.materialEfficiency }),
   }),
   [INDUSTRY_ACTIVITY_IDS.copying]: Object.freeze({
     recipe: "copying",
+    timeAttribute: ATTRIBUTE_COPY_SPEED_PERCENT,
     cost: industryInstall.copyingJobCost,
     tax: industryInstall.copyingJobTax,
     fee: industryInstall.copyingJobFee,
+    materials: (listed, request) => industryInstall.copyingJobMaterials({ ...listed, licensedRuns: request.licensedRuns }),
   }),
+  [INDUSTRY_ACTIVITY_IDS.research_time]: Object.freeze({ recipe: "research_time", timeAttribute: ATTRIBUTE_TIME_RESEARCH_SPEED, ...RESEARCH_RECKONINGS }),
+  [INDUSTRY_ACTIVITY_IDS.research_material]: Object.freeze({ recipe: "research_material", timeAttribute: ATTRIBUTE_MATERIAL_RESEARCH_SPEED, ...RESEARCH_RECKONINGS }),
 });
+
+/**
+ * Where the request's blueprint stands in the research the request is for (src/industryInstall.js,
+ * researchStanding), by the research of that kind the page read of the blueprint: its time research for a research
+ * of time, its material research for one of materials. Undefined for a job that is no research, and null for a
+ * research of which the page said nothing.
+ */
+function researchStandingOf(request) {
+  if (request.activityID !== INDUSTRY_ACTIVITY_IDS.research_time && request.activityID !== INDUSTRY_ACTIVITY_IDS.research_material) {
+    return undefined;
+  }
+  const researched = request.activityID === INDUSTRY_ACTIVITY_IDS.research_time ? request.timeEfficiency : request.materialEfficiency;
+  return researched === null ? null : industryInstall.researchStanding(request.activityID, researched);
+}
+
+/**
+ * What a job's base is of, beside the blueprint's price, by its kind of work (the three bases of
+ * src/industryInstall.js): its runs; for a copy job the runs each copy is licensed for; and for a research job the
+ * activity's time and the level the blueprint is at. Null for a research of which the page said nothing.
+ */
+function jobBasis(request, recipe) {
+  const standing = researchStandingOf(request);
+  if (standing === null) {
+    return null;
+  }
+  return {
+    runs: request.runs,
+    licensedRuns: request.licensedRuns,
+    ...(standing ? { activityTime: Number(recipe.activity.time), level: standing.level } : {}),
+  };
+}
 
 /** A job's recipe out of the game's data, for a kind of work that is reckoned here: { definition, activity }, or null. */
 function reckonedRecipe(request) {
@@ -5487,14 +5562,15 @@ async function skillLevelsFor(account, held, typeIDs) {
 }
 
 /**
- * A manufacturing job's time, or a copy job's, in whole seconds, as the client's own job reckons it before sending
- * the job (industry/job.py 460 to 468; src/industryInstall.js, manufacturingJobSeconds and copyingJobSeconds, have
- * the order and why it matters). What it is reckoned from, and where the client has each:
+ * A manufacturing job's time, a copy job's or a research job's, in whole seconds, as the client's own job reckons it
+ * before sending the job (industry/job.py 460 to 468; src/industryInstall.js, manufacturingJobSeconds,
+ * copyingJobSeconds and researchJobSeconds, have the order and why it matters). What it is reckoned from, and where
+ * the client has each:
  *
  *   the activity's time, the skills it requires and each one's time per level     the game's own data
  *   the blueprint's time research                                                 the blueprint, as the page read it
  *   the pilot's level in effect of each such skill                                its skill service
- *   the pilot's manufacturing time attribute (219), or its copy speed (387)       its own dogma location, which on
+ *   the pilot's own time for the work (attribute 219, 387, 385 or 398)            its own dogma location, which on
  *                                                                                 the game port godma answers, with
  *                                                                                 nothing asked of the server
  *   the facility's time modifiers                                                 its facility service, which keeps
@@ -5503,27 +5579,34 @@ async function skillLevelsFor(account, held, typeIDs) {
  *                                                                                 (jobFacilityRow)
  *
  * A copy job's is of neither the skills nor the blueprint's time research (the client's job has those for
- * manufacturing alone), and is by the runs each copy is licensed for.
+ * manufacturing alone), and is by the runs each copy is licensed for. A research job's is of neither too, and is by
+ * the level the blueprint is at: each run's time is the activity's by the level it starts from.
  *
  * ⚠ ALL OR NOTHING. The server refuses a job whose time is not nought and is not its own to the second
  * (MISMATCH_TIME), so a time is sent only where every input was had. Null otherwise: any other kind of work
  * (each has its own reckoning, and none has been seen accepted), a manufacturing job with a blueprint of which the
- * page said no time research, a blueprint the game's data has not, a facility that is not among those read, an
- * input that could not be asked. Nought then goes, as it always did, and the server reckons the time by itself.
+ * page said no time research, a research of which the page said nothing of where the blueprint stands in it, a
+ * blueprint the game's data has not, a facility that is not among those read, an input that could not be asked.
+ * Nought then goes, as it always did, and the server reckons the time by itself.
  *
- * ⚠ A COPY JOB OF MORE COPIES THAN THE CLIENT'S JOB CAN HAVE IS REFUSED HERE (400 INVALID_RUNS), where that most
- * could be reckoned: the client's job holds its runs to it (industry/job.py 395), so no such job is ever sent.
+ * ⚠ A COPY JOB OR A RESEARCH JOB OF MORE RUNS THAN THE CLIENT'S JOB CAN HAVE IS REFUSED HERE (400 INVALID_RUNS),
+ * where that most could be reckoned: the client's job holds its runs to it, and to one at the least
+ * (industry/job.py 395), so no such job is ever sent.
  */
 async function reckonedJobSeconds(account, held, webSessionID, request, facilityOf) {
+  const manufacturing = request.activityID === INDUSTRY_ACTIVITY_IDS.manufacturing;
   const copying = request.activityID === INDUSTRY_ACTIVITY_IDS.copying;
-  const recipe = copying || request.timeEfficiency !== null ? reckonedRecipe(request) : null;
+  const standing = researchStandingOf(request);
+  // (What each kind of work wants said of the blueprint: a manufacturing job its time research, and a research
+  // where the blueprint stands in it.)
+  const recipe = (manufacturing ? request.timeEfficiency !== null : standing !== null) ? reckonedRecipe(request) : null;
   if (!recipe || !(Number(recipe.activity.time) > 0)) {
     return null;
   }
   const { definition, activity } = recipe;
   const timed = [];
-  // (A copy job has no skill's time per level: the client lists those for manufacturing alone.)
-  for (const skill of !copying && Array.isArray(activity.skills) ? activity.skills : []) {
+  // (No other job has a skill's time per level: the client lists those for manufacturing alone.)
+  for (const skill of manufacturing && Array.isArray(activity.skills) ? activity.skills : []) {
     const typeID = Number(skill && skill.typeID) || 0;
     const perLevel = typeID > 0 && typeof staticData.getTypeDogmaAttribute === "function"
       ? staticData.getTypeDogmaAttribute(typeID, ATTRIBUTE_MANUFACTURE_TIME_PER_LEVEL)
@@ -5537,7 +5620,7 @@ async function reckonedJobSeconds(account, held, webSessionID, request, facility
   try {
     const levels = timed.length > 0 ? await skillLevelsFor(account, held, timed.map((skill) => skill.typeID)) : [];
     const character = await boundCall(held, webSessionID, dogmaBindSpec(), "QueryAttributeValue",
-      [held.characterID, copying ? ATTRIBUTE_COPY_SPEED_PERCENT : ATTRIBUTE_MANUFACTURE_TIME_MULTIPLIER], null);
+      [held.characterID, JOB_RECKONINGS[request.activityID].timeAttribute], null);
     const facilityRow = await facilityOf();
     if (!facilityRow) {
       return null;
@@ -5551,6 +5634,9 @@ async function reckonedJobSeconds(account, held, webSessionID, request, facility
     if (copying) {
       mostRuns = industryInstall.copyingJobMostRuns(timedBy);
       seconds = industryInstall.copyingJobSeconds({ ...timedBy, runs: request.runs, licensedRuns: request.licensedRuns });
+    } else if (standing) {
+      mostRuns = industryInstall.researchJobMostRuns({ ...timedBy, runsLeft: standing.runsLeft });
+      seconds = industryInstall.researchJobSeconds({ ...timedBy, level: standing.level, runs: request.runs });
     } else {
       seconds = industryInstall.manufacturingJobSeconds({
         ...timedBy,
@@ -5568,8 +5654,13 @@ async function reckonedJobSeconds(account, held, webSessionID, request, facility
     assertCurrentHeldSession(held, webSessionID);
     return null;
   }
-  if (mostRuns !== null && request.runs > mostRuns) {
-    throw Object.assign(new Error(`One job copying this blueprint here makes at most ${mostRuns} ${mostRuns === 1 ? "copy" : "copies"}.`), {
+  // (The client's job has one run at the least, whatever its most: job.py 395.)
+  const most = mostRuns === null ? null : Math.max(mostRuns, 1);
+  if (most !== null && request.runs > most) {
+    const said = copying
+      ? `One job copying this blueprint here makes at most ${most} ${most === 1 ? "copy" : "copies"}.`
+      : `One job researching this blueprint here has at most ${most} ${most === 1 ? "run" : "runs"}.`;
+    throw Object.assign(new Error(said), {
       statusCode: 400,
       code: "INVALID_RUNS",
     });
@@ -5578,12 +5669,12 @@ async function reckonedJobSeconds(account, held, webSessionID, request, facility
 }
 
 /**
- * A manufacturing job's materials, or a copy job's, each type to its quantity, as the client's own job reckons
- * them before it sends the job (industry/job.py 470 to 485 and 637; src/industryInstall.js,
- * manufacturingJobMaterials and copyingJobMaterials, have the order and the rounding, and why each matters): from
- * the blueprint's own quantities out of the game's data, its material research as the page read it of the
- * blueprint, and the job's facility's material modifiers for the product. A copy job's are of no material
- * research, and are for every run of every copy.
+ * A manufacturing job's materials, a copy job's or a research job's, each type to its quantity, as the client's own
+ * job reckons them before it sends the job (industry/job.py 470 to 485 and 637; src/industryInstall.js,
+ * manufacturingJobMaterials, copyingJobMaterials and researchJobMaterials, have the order and the rounding, and why
+ * each matters): from the blueprint's own quantities out of the game's data, its material research as the page read
+ * it of the blueprint, and the job's facility's material modifiers for the product. A copy job's and a research
+ * job's are of no material research; a copy job's are for every run of every copy.
  *
  * ⚠ ALL OR NOTHING, as the time is. The server refuses a job whose materials are not an empty map and are not its
  * own to the unit (MISMATCH_MATERIAL). Null where they were not reckoned whole: any other kind of work (an
@@ -5592,8 +5683,9 @@ async function reckonedJobSeconds(account, held, webSessionID, request, facility
  * read. An empty map then goes, as it always did, and the server works them out by itself.
  */
 async function reckonedJobMaterials(held, webSessionID, request, facilityOf) {
-  const copying = request.activityID === INDUSTRY_ACTIVITY_IDS.copying;
-  const recipe = copying || request.materialEfficiency !== null ? reckonedRecipe(request) : null;
+  // (Only a manufacturing job's want anything said of the blueprint: its material research.)
+  const manufacturing = request.activityID === INDUSTRY_ACTIVITY_IDS.manufacturing;
+  const recipe = !manufacturing || request.materialEfficiency !== null ? reckonedRecipe(request) : null;
   if (!recipe) {
     return null;
   }
@@ -5610,9 +5702,7 @@ async function reckonedJobMaterials(held, webSessionID, request, facilityOf) {
       facilityModifiers: industryInstall.facilityMaterialModifiers(facilityRow, request.activityID),
       productType: blueprintsProduct(definition),
     };
-    return copying
-      ? industryInstall.copyingJobMaterials({ ...listed, licensedRuns: request.licensedRuns })
-      : industryInstall.manufacturingJobMaterials({ ...listed, materialEfficiency: request.materialEfficiency });
+    return JOB_RECKONINGS[request.activityID].materials(listed, request);
   } catch (error) {
     // As for the time.
     if (error && error.code === "SESSION_NOT_FOUND") {
@@ -5675,13 +5765,18 @@ function jobBlueprintPrice(held, request) {
 
 /**
  * The service a structure would do a job by, as the client's activity asks for it (industry/activity.py 54 to 57:
- * structures.GetServiceID(activityID, typeID)). A copy job's is the one service a structure copies by. A
- * manufacturing job's is by the group of the first thing the blueprint's manufacturing makes, and null where the
- * game's data has not the blueprint, a product of it or the product's type.
+ * structures.GetServiceID(activityID, typeID)). A copy job's is the one service a structure copies by, and a
+ * research job's the one it does that research by. A manufacturing job's is by the group of the first thing the
+ * blueprint's manufacturing makes, and null where the game's data has not the blueprint, a product of it or the
+ * product's type.
  */
 function jobServiceOf(request) {
   if (request.activityID === INDUSTRY_ACTIVITY_IDS.copying) {
     return industryInstall.SERVICE_LABORATORY_COPYING;
+  }
+  const researchedBy = industryInstall.researchServiceID(request.activityID);
+  if (researchedBy !== null) {
+    return researchedBy;
   }
   const definition = typeof staticData.getIndustryBlueprint === "function"
     ? staticData.getIndustryBlueprint(request.blueprintTypeID)
@@ -5695,10 +5790,10 @@ function jobServiceOf(request) {
 }
 
 /**
- * A manufacturing job's tax, or a copy job's, and what the job costs to start, as the client's own job reckons the
- * one and adds up the other (industry/job.py 450 to 458 and 127 to 174; src/industryInstall.js, manufacturingJobTax
- * and manufacturingJobFee, and the copy job's two). `cost` is the job's cost as it was reckoned (reckonedJobCost),
- * or null.
+ * A manufacturing job's tax, a copy job's or a research job's, and what the job costs to start, as the client's own
+ * job reckons the one and adds up the other (industry/job.py 450 to 458 and 127 to 174; src/industryInstall.js,
+ * manufacturingJobTax and manufacturingJobFee, and the two of a copy job and of a research job, whose SCC surcharge
+ * is halved). `cost` is the job's cost as it was reckoned (reckonedJobCost), or null.
  *
  * Answers { tax, fee }, each null where it could not be reckoned whole. The tax wants the blueprint's price and
  * the facility's rate: its row's own tax, as every station's says one, or, where the row says None as a
@@ -5708,8 +5803,11 @@ function jobServiceOf(request) {
  */
 async function reckonedJobFee(held, webSessionID, request, facilityOf, cost) {
   const none = { tax: null, fee: null };
-  // (A kind of work that is not reckoned here, or a blueprint the game's data has no recipe of that work for.)
-  if (!reckonedRecipe(request)) {
+  // (A kind of work that is not reckoned here, a blueprint the game's data has no recipe of that work for, or a
+  // research of which the page said nothing of where the blueprint stands in it.)
+  const recipe = reckonedRecipe(request);
+  const basis = recipe ? jobBasis(request, recipe) : null;
+  if (!basis) {
     return none;
   }
   const reckoning = JOB_RECKONINGS[request.activityID];
@@ -5721,8 +5819,9 @@ async function reckonedJobFee(held, webSessionID, request, facilityOf, cost) {
     }
     const facilityRow = await facilityOf();
     const charges = industryInstall.facilityCharges(facilityRow);
-    // (What the job's base is of: a copy job's is by the runs each copy is licensed for, too.)
-    const job = { blueprintPrice: price, runs: request.runs, licensedRuns: request.licensedRuns };
+    // (What the job's base is of: a copy job's is by the runs each copy is licensed for, too, and a research
+    // job's by the level the blueprint is at.)
+    const job = { blueprintPrice: price, ...basis };
     const tax = reckoning.tax({ ...job, facilityTax: industryInstall.facilityTaxRate(facilityRow, jobServiceOf(request)) });
     const system = charges.solarSystemID !== null && typeof staticData.getSolarSystem === "function"
       ? staticData.getSolarSystem(charges.solarSystemID)
@@ -5748,9 +5847,9 @@ async function reckonedJobFee(held, webSessionID, request, facilityOf, cost) {
 }
 
 /**
- * A manufacturing job's cost, or a copy job's, in whole ISK, as the client's own job reckons it before sending the
- * job (industry/job.py 310 to 320; src/industryInstall.js, manufacturingJobCost and copyingJobCost, have the order
- * and why it matters). What it is reckoned from, and where the client has each:
+ * A manufacturing job's cost, a copy job's or a research job's, in whole ISK, as the client's own job reckons it
+ * before sending the job (industry/job.py 310 to 320; src/industryInstall.js, manufacturingJobCost, copyingJobCost
+ * and researchJobCost, have the order and why it matters). What it is reckoned from, and where the client has each:
  *
  *   the blueprint's materials, and its type's own cost multiplier (1954)    the game's own data
  *   each material's adjusted average price                                  the price table its cfg asked for at
@@ -5767,7 +5866,8 @@ async function reckonedJobFee(held, webSessionID, request, facilityOf, cost) {
  */
 async function reckonedJobCost(held, webSessionID, request, facilityOf) {
   const recipe = reckonedRecipe(request);
-  if (!recipe) {
+  const basis = recipe ? jobBasis(request, recipe) : null;
+  if (!basis) {
     return null;
   }
   try {
@@ -5790,8 +5890,7 @@ async function reckonedJobCost(held, webSessionID, request, facilityOf) {
       : null;
     return JOB_RECKONINGS[request.activityID].cost({
       blueprintPrice: price,
-      runs: request.runs,
-      licensedRuns: request.licensedRuns,
+      ...basis,
       blueprintAmount: multiplier === null || multiplier === undefined ? null : Number(multiplier),
       alpha: grade.result === 0,
       faction,
@@ -5892,8 +5991,8 @@ function keepsTheWindowsJob(held) {
  * THE INSTALLATION FEE is not the server's to quote: no retail call quotes a
  * cost without also installing the job. The retail client reckons it itself,
  * and on the game port so does this route (reckonedJobFee), for a
- * manufacturing job and for a copy job: `fee`, its four parts and their
- * total. Where it could not be reckoned `fee` is null, the
+ * manufacturing job, a copy job and a research job: `fee`, its four parts
+ * and their total. Where it could not be reckoned `fee` is null, the
  * panel says the fee is the server's to work out, and the install response
  * reports the cost the server actually charged.
  */

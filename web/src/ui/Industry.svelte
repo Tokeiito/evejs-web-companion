@@ -25,6 +25,7 @@
     materialsToUse,
     type IndustryJobFee,
     recipeFor,
+    researchStanding,
     secondsUntil,
   } from "../bridge/industry.ts";
   import { BridgeCallError } from "../bridge/callMethod.ts";
@@ -278,19 +279,33 @@
     });
   });
 
+  /**
+   * A research only: where the blueprint stands in it, and what the runs chosen would bring its research to. Null
+   * for any other kind of work.
+   */
+  const research = $derived(
+    startingBlueprint && chosenActivity ? researchStanding(chosenActivity, startingBlueprint, chosenRuns) : null,
+  );
+
   const previewTime = $derived.by(() =>
     startingBlueprint
-      ? previewTimeSeconds(chosenRecipe, chosenRuns, startingBlueprint.timeEfficiency, chosenLicensedRuns)
+      ? previewTimeSeconds(chosenRecipe, chosenRuns, startingBlueprint.timeEfficiency, chosenLicensedRuns, research ? research.level : 0)
       : 0,
   );
 
-  /** The most runs this blueprint could be asked for. A copy is finite, and a copy job makes only so many copies. */
+  /**
+   * The most runs this blueprint could be asked for. A copy is finite, a copy job makes only so many copies, and a
+   * research has only the levels that are left to the blueprint (one at the least, as the game's own client has it).
+   */
   const maxRuns = $derived.by(() => {
     if (!startingBlueprint) {
       return 1;
     }
     if (chosenActivity === "copying") {
       return MOST_COPIES_A_JOB;
+    }
+    if (research) {
+      return Math.max(1, research.runsLeft);
     }
     return startingBlueprint.original ? 1000 : Math.max(1, startingBlueprint.runs);
   });
@@ -714,7 +729,7 @@
             </select>
           </label>
           <label>
-            {chosenActivity === "copying" ? "Copies" : "Runs"}
+            {chosenActivity === "copying" ? "Copies" : research ? "Levels" : "Runs"}
             <input
               type="number"
               min="1"
@@ -755,11 +770,22 @@
           </p>
         {/if}
 
+        {#if research}
+          <p class="note" data-job-research={research.finished ? "finished" : "left"}>
+            {#if research.finished}
+              It cannot be researched any further.
+            {:else}
+              This takes its {chosenActivity === "research_time" ? "time efficiency" : "material efficiency"} from
+              {research.from}% to {research.to}%.
+            {/if}
+          </p>
+        {/if}
+
         {#if !confirming}
           <p class="controls">
             <button
               type="button"
-              disabled={busy || chosenActivity === null || chosenFacilityID === null || chosenRuns < 1 ||
+              disabled={busy || chosenActivity === null || chosenFacilityID === null || chosenRuns < 1 || (research !== null && research.finished) ||
                 (chosenActivity === "copying" && !(chosenLicensedRuns >= 1 && chosenLicensedRuns <= mostLicensedRuns(startingBlueprint)))}
               onclick={askToConfirm}
             >

@@ -39,6 +39,7 @@ import {
   previewMaterials,
   previewTimeSeconds,
   recipeFor,
+  researchStanding,
   secondsUntil,
 } from "./industry.ts";
 import type { JsonValue } from "./wire.ts";
@@ -363,8 +364,54 @@ test("a copy job's rough materials and time are for every run of every copy, and
   const manufacturing = recipeFor(decodeDefinition(RAW_DEFINITION), "manufacturing")!;
   assert.deepEqual(previewMaterials(manufacturing, 3, 10, 30), [{ typeID: 38, quantity: 233 }]);
   assert.equal(previewTimeSeconds(manufacturing, 2, 20, 30), 960);
-  // A research's time has none of it either.
-  assert.equal(previewTimeSeconds({ activity: "research_time" as const, materials: [], products: [], timeSeconds: 600 }, 2, 20, 30), 1200);
+  // A research's time has none of it either: two runs from the first level, 600 and 600 x 29/21.
+  assert.equal(previewTimeSeconds({ activity: "research_time" as const, materials: [], products: [], timeSeconds: 600 }, 2, 20, 30), 1429);
+});
+
+test("a blueprint stands in a research at the level its own research comes to, and a job of some runs brings it no further than the most", () => {
+  // The game's own client's two researches (industry/activities/research_time.py and research_material.py): of a
+  // blueprint's time by twos to twenty, of its materials by ones to ten.
+  const blueprint = { timeEfficiency: 4, materialEfficiency: 9 };
+  assert.deepEqual(researchStanding("research_time", blueprint, 2), { level: 2, runsLeft: 8, finished: false, from: 4, to: 8 });
+  assert.deepEqual(researchStanding("research_time", blueprint), { level: 2, runsLeft: 8, finished: false, from: 4, to: 4 });
+  assert.deepEqual(researchStanding("research_time", blueprint, 8), { level: 2, runsLeft: 8, finished: false, from: 4, to: 20 });
+  assert.deepEqual(researchStanding("research_material", blueprint, 1), { level: 9, runsLeft: 1, finished: false, from: 9, to: 10 });
+  // Never past the most, whatever runs are said.
+  assert.equal(researchStanding("research_material", blueprint, 3)!.to, 10);
+  assert.equal(researchStanding("research_time", blueprint, 50)!.to, 20);
+  // At the most: finished, and nothing left.
+  const done = { timeEfficiency: 20, materialEfficiency: 10 };
+  assert.deepEqual(researchStanding("research_time", done, 1), { level: 10, runsLeft: 0, finished: true, from: 20, to: 20 });
+  assert.deepEqual(researchStanding("research_material", done, 1), { level: 10, runsLeft: 0, finished: true, from: 10, to: 10 });
+  // A whole division, as the client's: a time research of 5 is where one of 4 is, with seven runs left.
+  assert.deepEqual(researchStanding("research_time", { timeEfficiency: 5, materialEfficiency: 0 }, 1), { level: 2, runsLeft: 7, finished: false, from: 5, to: 7 });
+  // Any other kind of work is no research.
+  for (const activity of ["manufacturing", "copying", "invention", "reaction"] as const) {
+    assert.equal(researchStanding(activity, blueprint, 1), null, activity);
+  }
+});
+
+test("a research's rough time is by the level each run starts from, each run a level above the last", () => {
+  // (The first three are the game's own client's Python's answers for these, with no modifier of the pilot's or a
+  // facility's: scripts/py27-oracle.py, 2026-10-12.)
+  const ofTime = { activity: "research_time" as const, materials: [], products: [], timeSeconds: 210 };
+  assert.equal(previewTimeSeconds(ofTime, 3, 0, 1, 0), 1190);
+  assert.equal(previewTimeSeconds(ofTime, 4, 0), 2828);
+  assert.equal(previewTimeSeconds(ofTime, 1, 0, 1, 8), 124890);
+  // A research of materials is the same sum.
+  const ofMaterials = { ...ofTime, activity: "research_material" as const };
+  assert.equal(previewTimeSeconds(ofMaterials, 3, 0, 1, 0), 1190);
+  assert.equal(previewTimeSeconds(ofMaterials, 1, 0, 1, 8), 124890);
+  // Rounded, as the client rounds a job's time, and not taken up: 100 x 29/21 is 138.09...
+  assert.equal(previewTimeSeconds({ ...ofTime, timeSeconds: 100 }, 1, 0, 1, 1), 138);
+  // Past the last level each run is the last level's: 210 x 29660/21, twice.
+  assert.equal(previewTimeSeconds(ofTime, 2, 0, 1, 9), 593200);
+  // The blueprint's time efficiency and a copy's licensed runs are not in it; a level below nought is the first.
+  assert.equal(previewTimeSeconds(ofTime, 3, 20, 30, 0), 1190);
+  assert.equal(previewTimeSeconds(ofTime, 3, 0, 1, -4), 1190);
+  // Any other work's rough time has no level in it.
+  const manufacturing = recipeFor(decodeDefinition(RAW_DEFINITION), "manufacturing")!;
+  assert.equal(previewTimeSeconds(manufacturing, 2, 20, 1, 5), 960);
 });
 
 // --- presentation helpers ---------------------------------------------------
@@ -421,6 +468,8 @@ test("each mapped refusal name yields a distinct plain sentence", () => {
     ["MISSING_SKILL", /skills/i],
     ["INPUT_ACCESS", /hangar/i],
     ["RESEARCH_LIMIT", /researched/i],
+    // (A research of many levels meets it: the last levels take weeks each.)
+    ["RUN_LENGTH", /within thirty days/i],
   ];
   for (const [name, pattern] of cases) {
     const message = industryRefusalMessage({ message: `IndustryValidationError: ${name}` });

@@ -2156,3 +2156,297 @@ test("on the game port a copy job's cost, its tax and what it costs to start are
   const asked = sentJobs(gamePort, "ConnectJob").at(-1);
   assert.deepEqual([unmade.payload.fee, asked.activityID, asked.cost, asked.tax], [null, ACTIVITY_MANUFACTURING, 0, 0]);
 });
+
+// --- a research job, by the client's own reckoning ----------------------------
+//
+// industry/activities/research_time.py and research_material.py, which are one but for what they read of the
+// blueprint, and what a job has of every kind of work (src/industryInstall.js: where a blueprint stands in a
+// research, and the research job's time, its most runs, its materials, its cost, its tax and its fee;
+// test/industryJobResearch.test.js has each against the client's own Python's answers).
+
+const RESEARCH_OF_TIME = 3;
+const RESEARCH_OF_MATERIALS = 4;
+
+/** The game's data with a blueprint's two researches said as a test wants them: the one recipe for both, unless another is said for its materials'. */
+function staticDataResearching(ofTime, ofMaterials = ofTime) {
+  const plain = fakeStaticData();
+  return {
+    ...plain,
+    getIndustryBlueprint(blueprintTypeID) {
+      const definition = plain.getIndustryBlueprint(blueprintTypeID);
+      if (definition) Object.assign(definition.activities, { research_time: { ...ofTime }, research_material: { ...ofMaterials } });
+      return definition;
+    },
+    // (A skill that takes 1% off a job's time a level: it is of a manufacturing job's time alone.)
+    getTypeDogmaAttribute: (typeID, attributeID) => (Number(typeID) === 11452 && Number(attributeID) === 1982 ? -1 : null),
+  };
+}
+
+/** A research job's request, as the page sends it: the work by name, and the blueprint's two researches as it read them. */
+const researchBody = (activity, overrides = {}) => installBody({ activity, ...overrides });
+
+test("a research job's time and its materials are the client's own reckoning, by the level the blueprint is at, in the preview's request and the install's", async () => {
+  // Each research of the blueprint takes 2100 s at the first level and requires a skill that has a time per level;
+  // a research of its time takes 5 of one material a run, and one of its materials 7; a pilot whose own time for
+  // either research is 0.6375; a facility that takes 15% off either research's time and 2% off its materials, and
+  // half off a manufacturing job's of each.
+  const skills = [{ typeID: 11452, level: 1 }];
+  const staticData = staticDataResearching(
+    { time: 2100, materials: [{ typeID: MATERIAL_TYPE_ID, quantity: 5 }], skills },
+    { time: 2100, materials: [{ typeID: MATERIAL_TYPE_ID, quantity: 7 }], skills },
+  );
+  const facility = facilityRow();
+  const modified = { type: "tuple", items: [list([[0.85, null, null, null, 12]]), list([[0.98, null, null, null, 12]]), list([])] };
+  facility.args.entries.find(([name]) => name === "activities")[1] = dict([
+    [ACTIVITY_MANUFACTURING, { type: "tuple", items: [list([[0.5, null, null, null, 12]]), list([[0.5, null, null, null, 12]]), list([])] }],
+    [RESEARCH_OF_TIME, modified],
+    [RESEARCH_OF_MATERIALS, modified],
+  ]);
+  const gateway = fakeIndustryGateway({ timeMultiplier: 0.6375, facility });
+  const sheets = [];
+  gateway.getSkills = async (...asked) => { sheets.push(asked); return { skills: [{ typeID: 11452, level: 5 }] }; };
+  const { baseUrl } = await startTestServer({ gateway, staticData });
+  await selectOnServer(baseUrl);
+  const asked = () => gateway.calls.bound.map((call) => [call.method, call.args]);
+
+  // A research of the blueprint's time, which is at 4 (the third level): two runs, (2100 x 23/7 + 2100 x 39/5) x
+  // 0.6375 x 0.85 = 12614.85 s; and 5 x 0.98 x 2 = 9.8 of the material.
+  const ofTime = researchBody("research_time", { runs: 2, timeEfficiency: 4, materialEfficiency: 7 });
+  const preview = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: ofTime });
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: ofTime });
+  const [previewed, installed] = [sentJobs(gateway, "ConnectJob")[0], sentJobs(gateway, "InstallJob")[0]];
+  assert.deepEqual([preview.payload.timeSeconds, previewed.time, installed.time], [12615, 12615, 12615]);
+  assert.deepEqual([preview.payload.materials, previewed.materials, installed.materials], [{ [MATERIAL_TYPE_ID]: 10 }, { [MATERIAL_TYPE_ID]: 10 }, { [MATERIAL_TYPE_ID]: 10 }]);
+  assert.deepEqual([previewed.activityID, previewed.runs, previewed.licensedRuns], [RESEARCH_OF_TIME, 2, 300]);
+  // The pilot's own time for a research of time is asked of its dogma location (385); and no skill's level is
+  // asked for, though the research requires one that has a time per level.
+  assert.deepEqual(asked(), [["QueryAttributeValue", [CHARACTER_ID, 385]], ["QueryAttributeValue", [CHARACTER_ID, 385]]]);
+  assert.equal(sheets.length, 0);
+  // Through the gateway the cost and the tax go as nought still: a pilot there has no table of prices.
+  assert.deepEqual([installed.cost, installed.tax, preview.payload.fee], [0, 0, null]);
+
+  // A research of its materials is by its material research, which is at 3 (the fourth level), and not by its time
+  // research: two runs, (2100 x 39/5 + 2100 x 278/15) x 0.6375 x 0.85 = 29965.69; by the pilot's own time for that
+  // research (398); and by that research's own recipe: 7 x 0.98 x 2 = 13.72 of the material.
+  const ofMaterials = researchBody("research_material", { runs: 2, timeEfficiency: 4, materialEfficiency: 3 });
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: ofMaterials });
+  const second = sentJobs(gateway, "InstallJob")[1];
+  assert.deepEqual([second.activityID, second.time, second.materials, asked().at(-1)], [RESEARCH_OF_MATERIALS, 29966, { [MATERIAL_TYPE_ID]: 14 }, ["QueryAttributeValue", [CHARACTER_ID, 398]]]);
+
+  // Nothing said of where the blueprint stands in the research (its time research, for a research of time): no time
+  // is reckoned, nothing is asked for it, and nought goes. Its materials are reckoned all the same: they are by no
+  // research of the blueprint's.
+  const before = asked().length;
+  const unsaid = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: researchBody("research_time", { runs: 2, materialEfficiency: 7 }) });
+  assert.deepEqual([unsaid.payload.timeSeconds, sentJobs(gateway, "ConnectJob").at(-1).time, unsaid.payload.materials, asked().length], [null, 0, { [MATERIAL_TYPE_ID]: 10 }, before]);
+  // And with nothing said of either research of the blueprint's.
+  const nothing = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: researchBody("research_time", { runs: 2 }) });
+  assert.deepEqual([nothing.payload.timeSeconds, nothing.payload.materials, asked().length], [null, { [MATERIAL_TYPE_ID]: 10 }, before]);
+
+  // A blueprint whose research lists no materials takes none, and the preview says so: an empty map, and not nothing.
+  const bare = fakeIndustryGateway({ timeMultiplier: 0.6375, facility });
+  const other = await startTestServer({ gateway: bare, staticData: staticDataResearching({ time: 2100 }) });
+  await selectOnServer(other.baseUrl);
+  const none = await apiRequest(other.baseUrl, "/api/bridge/industry/preview", { method: "POST", body: ofTime });
+  assert.deepEqual([none.payload.materials, sentJobs(bare, "ConnectJob")[0].materials, none.payload.timeSeconds], [{}, {}, 12615]);
+  // A facility that is not among those read: neither is reckoned, and nought and an empty map go, as they did.
+  const elsewhere = await apiRequest(other.baseUrl, "/api/bridge/industry/preview", { method: "POST", body: { ...ofTime, facilityID: STATION_ID + 1 } });
+  assert.deepEqual([elsewhere.payload.materials, elsewhere.payload.timeSeconds, sentJobs(bare, "ConnectJob")[1].time, sentJobs(bare, "ConnectJob")[1].materials], [null, null, 0, {}]);
+});
+
+test("a research job's runs are held to what is left to the blueprint, and a blueprint at the last level has no job, before anything is asked", async () => {
+  // research_time.py 22 to 23 and 33 to 37, and job.py 395: the client's job has no more runs than are left to the
+  // blueprint, one at the least, and at the last level it has an error and is not sent.
+  const gateway = fakeIndustryGateway({ timeMultiplier: 1 });
+  const { baseUrl } = await startTestServer({ gateway, staticData: staticDataResearching({ time: 2100 }) });
+  await selectOnServer(baseUrl);
+  const answered = async (route, activity, overrides) => {
+    const { response, payload } = await apiRequest(baseUrl, `/api/bridge/industry/${route}`, { method: "POST", body: researchBody(activity, overrides) });
+    return [response.status, payload.error || null, payload.message || null];
+  };
+  for (const route of ["preview", "install"]) {
+    // At the last level: twenty of time research, ten of material.
+    assert.deepEqual((await answered(route, "research_time", { runs: 1, timeEfficiency: 20, materialEfficiency: 0 })).slice(0, 2), [400, "RESEARCH_LIMIT"], route);
+    assert.deepEqual((await answered(route, "research_material", { runs: 1, timeEfficiency: 0, materialEfficiency: 10 })).slice(0, 2), [400, "RESEARCH_LIMIT"], route);
+    // More runs than are left: a time research of 16 has two levels left, and a material research of 9 has one.
+    const [status, error, message] = await answered(route, "research_time", { runs: 3, timeEfficiency: 16, materialEfficiency: 0 });
+    assert.deepEqual([status, error], [400, "INVALID_RUNS"], route);
+    assert.match(message, /has 2 levels of that research left/);
+    const ofMaterials = await answered(route, "research_material", { runs: 2, timeEfficiency: 0, materialEfficiency: 9 });
+    assert.deepEqual(ofMaterials.slice(0, 2), [400, "INVALID_RUNS"], route);
+    assert.match(ofMaterials[2], /has 1 level of that research left/);
+    // One at the least: a time research of 19 has no whole step left and is not at the last level. Two runs do not
+    // go, and one is said to be left.
+    const odd = await answered(route, "research_time", { runs: 2, timeEfficiency: 19, materialEfficiency: 0 });
+    assert.deepEqual(odd.slice(0, 2), [400, "INVALID_RUNS"], route);
+    assert.match(odd[2], /has 1 level of that research left/);
+  }
+  assert.deepEqual([gateway.calls.topLevel.length, gateway.calls.bound.length], [0, 0]);
+
+  const went = async (activity, overrides) => {
+    const [status] = await answered("install", activity, overrides);
+    const job = sentJobs(gateway, "InstallJob").at(-1);
+    return [status, job.activityID, job.runs];
+  };
+  // What is left goes, and one run of a time research of 19.
+  assert.deepEqual(await went("research_time", { runs: 2, timeEfficiency: 16, materialEfficiency: 0 }), [200, RESEARCH_OF_TIME, 2]);
+  assert.deepEqual(await went("research_material", { runs: 1, timeEfficiency: 0, materialEfficiency: 9 }), [200, RESEARCH_OF_MATERIALS, 1]);
+  assert.deepEqual(await went("research_time", { runs: 1, timeEfficiency: 19, materialEfficiency: 0 }), [200, RESEARCH_OF_TIME, 1]);
+  // Each research is held by its own: a blueprint whose materials are at the most has all ten of its time left,
+  // and one whose time is at the most all ten of its materials.
+  assert.deepEqual(await went("research_time", { runs: 10, timeEfficiency: 0, materialEfficiency: 10 }), [200, RESEARCH_OF_TIME, 10]);
+  assert.deepEqual(await went("research_material", { runs: 10, timeEfficiency: 20, materialEfficiency: 0 }), [200, RESEARCH_OF_MATERIALS, 10]);
+  // Nothing said of the research: there is nothing to hold the runs to, and the job is the server's to judge.
+  assert.deepEqual(await went("research_time", { runs: 11, materialEfficiency: 0 }), [200, RESEARCH_OF_TIME, 11]);
+  // No other kind of work is held to a research's levels.
+  assert.deepEqual(await went("manufacturing", { runs: 50, timeEfficiency: 20, materialEfficiency: 10 }), [200, ACTIVITY_MANUFACTURING, 50]);
+  assert.deepEqual(await went("copying", { runs: 50, licensedRuns: 1, timeEfficiency: 20, materialEfficiency: 10 }), [200, ACTIVITY_COPYING, 50]);
+});
+
+test("a research job of more runs than thirty days hold of its time is refused before the job is sent, where that could be reckoned", async () => {
+  // activity.py 34 to 36: thirty days over the activity's time over the time modifiers together, taken up. A
+  // research whose first level takes 420000 s, and a pilot whose own time for it is 1: 2592000 / 420000 = 6.17..., so
+  // seven runs, of the ten that are left to the blueprint.
+  const gateway = fakeIndustryGateway({ timeMultiplier: 1 });
+  const { baseUrl } = await startTestServer({ gateway, staticData: staticDataResearching({ time: 420000 }) });
+  await selectOnServer(baseUrl);
+  for (const route of ["preview", "install"]) {
+    const { response, payload } = await apiRequest(baseUrl, `/api/bridge/industry/${route}`, { method: "POST", body: researchBody("research_time", { runs: 8, timeEfficiency: 0 }) });
+    assert.deepEqual([response.status, payload.error], [400, "INVALID_RUNS"], route);
+    assert.match(payload.message, /at most 7 runs/);
+  }
+  assert.deepEqual([sentJobs(gateway, "ConnectJob").length, sentJobs(gateway, "InstallJob").length], [0, 0]);
+  const most = await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: researchBody("research_material", { runs: 7, materialEfficiency: 0 }) });
+  assert.deepEqual([most.response.status, sentJobs(gateway, "InstallJob").map((job) => job.runs)], [200, [7]]);
+  // Where it could not be reckoned (the pilot's own time could not be asked), the job is the server's to judge.
+  const unasked = fakeIndustryGateway({ attributeRefused: true });
+  const second = await startTestServer({ gateway: unasked, staticData: staticDataResearching({ time: 420000 }) });
+  await selectOnServer(second.baseUrl);
+  const sent = await apiRequest(second.baseUrl, "/api/bridge/industry/install", { method: "POST", body: researchBody("research_time", { runs: 8, timeEfficiency: 0 }) });
+  assert.deepEqual([sent.response.status, sentJobs(unasked, "InstallJob").map((job) => [job.runs, job.time])], [200, [[8, 0]]]);
+});
+
+test("on the game port a research job's cost, its tax and what it costs to start are the client's own reckoning, of the research job's own base, with the SCC's surcharge halved", async () => {
+  // research_time.py 25: the blueprint's price x 0.02 x the job's time / the activity's time. The price is by the
+  // blueprint's manufacturing materials: 86 of the one material at 512, which is 44032. A research of time from 4
+  // (the third level), two runs: 44032 x 0.02 x 23280 / 2100, a base of 9762.52. The facility's cost modifier for
+  // either research is 0.04 (and for manufacturing another), its tax 0.01 and the SCC's modifier 1.
+  const A_SYSTEM_AWAY = 30000144;
+  const activities = dict([
+    [ACTIVITY_MANUFACTURING, { type: "tuple", items: [list([]), list([]), list([[0.5, null, null, null, 4]])] }],
+    [RESEARCH_OF_TIME, { type: "tuple", items: [list([]), list([]), list([[0.04, null, null, null, 4]])] }],
+    [RESEARCH_OF_MATERIALS, { type: "tuple", items: [list([]), list([]), list([[0.04, null, null, null, 4]])] }],
+  ]);
+  const facilityWith = (overrides = {}, [faction, manufacturingSystem, researchSystem] = [1, 1, 1]) => {
+    const row = facilityRow({ solarSystemID: A_SYSTEM_AWAY, ...overrides });
+    row.args.entries.push(["globalModifiers", dict([["faction", faction], ["system", dict([[ACTIVITY_MANUFACTURING, manufacturingSystem], [RESEARCH_OF_TIME, researchSystem], [RESEARCH_OF_MATERIALS, 1]])]])]);
+    row.args.entries.find(([name]) => name === "activities")[1] = activities;
+    return row;
+  };
+  const state = { facility: facilityWith(), security: 0.9, grade: 1, prices: { [MATERIAL_TYPE_ID]: 512 } };
+  const plain = fakeIndustryGateway({ timeMultiplier: 0.75 });
+  const jobsSaid = [];
+  const gamePort = {
+    ...plain,
+    async selectCharacter() {
+      return {
+        bridgeSessionID: "gp:a-pilot-on-the-game-port", service: "charUnboundMgr", method: "SelectCharacterID", result: null, notifications: [],
+        session: { userid: 4, characterID: CHARACTER_ID, characterName: "Test Pilot", stationID: STATION_ID, structureID: null, solarSystemID: SOLAR_SYSTEM_ID, corporationID: 98000000, shipID: ACTIVE_SHIP_ID },
+      };
+    },
+    async callMethod(service, method, ...rest) {
+      if (service === "subscriptionMgr" && method === "GetCloneGrade") {
+        state.graded = (state.graded || 0) + 1;
+        return { service, method, result: state.grade, notifications: [] };
+      }
+      return plain.callMethod(service, method, ...rest);
+    },
+    async freshFacility(sessionFields, bridgeSessionID, facilityID, job) {
+      jobsSaid.push(job);
+      return state.facility;
+    },
+    averageMarketPrice(sessionFields, bridgeSessionID, typeID) {
+      state.priced = (state.priced || 0) + 1;
+      return Object.hasOwn(state.prices, typeID) ? { averagePrice: null, adjustedPrice: state.prices[typeID] } : { averagePrice: null, adjustedPrice: null };
+    },
+  };
+  const staticData = { ...staticDataResearching({ time: 2100 }), getSolarSystem: () => ({ security: state.security }) };
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, staticData });
+  await selectOnServer(baseUrl);
+  const ofTime = researchBody("research_time", { runs: 2, timeEfficiency: 4, materialEfficiency: 3 });
+  const ofMaterials = researchBody("research_material", { runs: 2, timeEfficiency: 4, materialEfficiency: 3 });
+  const previewed = async (body = ofTime) => (await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body })).payload.fee;
+  const installed = async (body = ofTime) => {
+    await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body });
+    return sentJobs(gamePort, "InstallJob").at(-1);
+  };
+
+  // The cost 9762.52 x 0.04 = 390.5; the tax 9763 x 0.01 = 97.63; the surcharge half of 4% of 9763, 195.26.
+  assert.deepEqual(await previewed(), { cost: 391, tax: 98, sccSurcharge: 195, securityTax: 0, total: 684 });
+  const sent = await installed();
+  assert.deepEqual([sentJobs(gamePort, "ConnectJob")[0].cost, sentJobs(gamePort, "ConnectJob")[0].tax, sent.cost, sent.tax], [391, 98, 391, 98]);
+  // The job's time is in it too, by the pilot's own time the transport answered: 23280 x 0.75.
+  assert.equal(sent.time, 17460);
+  // The facility was asked for as the facility of that job: its blueprint, and that research.
+  assert.deepEqual(jobsSaid.at(-1), { blueprintID: BLUEPRINT_ITEM_ID, activityID: RESEARCH_OF_TIME });
+  // A research of its materials is by its material research, 3 (the fourth level): a base of 23190.2, a cost of
+  // 927.6 and a tax of 231.9.
+  const other = await installed(ofMaterials);
+  assert.deepEqual([other.activityID, other.cost, other.tax], [RESEARCH_OF_MATERIALS, 928, 232]);
+  // An alpha clone's job costs a quarter of a percent of the base more: 390.5 + 24.41.
+  state.grade = 0;
+  assert.equal((await installed()).cost, 415);
+  state.grade = 1;
+  // A system of security 0.95 and over has a security tax of 5% of the base beside them: 488.15.
+  state.security = 0.95;
+  assert.deepEqual(await previewed(), { cost: 391, tax: 98, sccSurcharge: 195, securityTax: 488, total: 1172 });
+  state.security = 0.9;
+  // In a structure the tax is by the access of the service a structure does that research by: 31 for a research of
+  // time (9763 x 0.0325 = 317.3), 32 for one of materials (23190 x 0.05 = 1159.5), and no other's.
+  state.facility = facilityWith({ tax: null, serviceAccess: dict([[22, 0.1], [31, 0.0325], [32, 0.05], [33, 0.2]]) });
+  assert.deepEqual([(await installed()).tax, (await previewed()).tax, (await installed(ofMaterials)).tax], [317, 317, 1160]);
+  // And nought where the structure says nothing for that service.
+  state.facility = facilityWith({ tax: null, serviceAccess: dict([[22, 0.1], [32, 0.05]]) });
+  assert.equal((await previewed()).tax, 0);
+  // The faction's cost modifier and the system's are in the cost, and the system's is the one for that research:
+  // 9762.52 x 0.9 x 0.5 x 0.04 = 175.7.
+  state.facility = facilityWith({}, [0.9, 0.25, 0.5]);
+  assert.equal((await installed()).cost, 176);
+  state.facility = facilityWith();
+  // Nothing said of where the blueprint stands in the research: nothing is reckoned, no fee is said, and nought
+  // goes for each.
+  const unsaid = researchBody("research_time", { runs: 2, materialEfficiency: 3 });
+  const [graded, priced] = [state.graded, state.priced];
+  const blind = await installed(unsaid);
+  assert.deepEqual([await previewed(unsaid), blind.cost, blind.tax, blind.time], [null, 0, 0, 0]);
+  // And neither the clone grade nor a price was asked for it.
+  assert.deepEqual([state.graded, state.priced], [graded, priced]);
+  // A pilot with no price for the material: the blueprint is priced at nought, as the client prices it, and so is the job.
+  state.prices = {};
+  assert.deepEqual(await previewed(), { cost: 0, tax: 0, sccSurcharge: 0, securityTax: 0, total: 0 });
+  // And nothing of the pilot's went to the gateway.
+  assert.equal(gateway.calls.topLevel.length, 0);
+
+  // The activity's own time is in the base, and the division by it comes last. A blueprint priced at 2332925 (by
+  // its own type: it has no manufacturing), a research whose first level takes 10631 s, one run from a time research
+  // of 16, at a facility whose tax is the whole of the base, that the base rounded is what is read. The client's own
+  // Python makes that base 27748477 (test/industryJobResearch.test.js); with another time for the activity's, or
+  // with the time over the activity's time taken first, as this server takes it, it comes to 27748476.
+  const long = staticDataResearching({ time: 10631 });
+  const pricedByItsType = {
+    ...long,
+    getSolarSystem: () => ({ security: 0.9 }),
+    getIndustryBlueprint(blueprintTypeID) {
+      const definition = long.getIndustryBlueprint(blueprintTypeID);
+      if (definition) delete definition.activities.manufacturing;
+      return definition;
+    },
+  };
+  const second = await startTestServer({ gateway: fakeIndustryGateway(), gamePortPilots: gamePort, staticData: pricedByItsType });
+  await selectOnServer(second.baseUrl);
+  state.prices = { [BLUEPRINT_TYPE_ID]: 2332925 };
+  state.facility = facilityWith({ tax: 1 });
+  const whole = await apiRequest(second.baseUrl, "/api/bridge/industry/preview", { method: "POST", body: researchBody("research_time", { runs: 1, timeEfficiency: 16 }) });
+  assert.deepEqual([whole.payload.fee.tax, whole.payload.fee.cost], [27748477, 1109939]);
+});

@@ -1,7 +1,8 @@
 "use strict";
 
 // What an InstallJob request carries that the client's own job reckons before it sends the job: a manufacturing
-// job's time, cost, tax and materials, a copy job's the same, and an invention's materials where it has a decryptor.
+// job's time, cost, tax and materials, a copy job's and a research job's the same, and an invention's materials where
+// it has a decryptor.
 //
 // ---------------------------------------------------------------------------
 // AN INVENTION WITH A DECRYPTOR. The client's job sends its materials with every job (industry/job.py dump, 637);
@@ -28,7 +29,7 @@ const MATERIAL_MODIFIER_INDEX = 1;
 const COST_MODIFIER_INDEX = 2;
 /** clonegrade.CLONE_STATE_INDUSTRY_TAX: an alpha clone's job costs this much of the base, less one, beyond an omega's. */
 const ALPHA_INDUSTRY_TAX = 1.0025;
-/** industry.SCC_SURCHARGE_RATE: what the SCC takes of a job's rounded base, by the facility's modifier of it. (Research pays half of it; no research is reckoned here.) */
+/** industry.SCC_SURCHARGE_RATE: what the SCC takes of a job's rounded base, by the facility's modifier of it. (A research job pays half of it: SCC_SURCHARGE_RESEARCH_DISCOUNT.) */
 const SCC_SURCHARGE_RATE = 0.04;
 /** security.common.const.INDUSTRY_SECURITY_TAX_RATE: what a job in a safe system pays of its rounded base beside the rest. */
 const INDUSTRY_SECURITY_TAX_RATE = 0.05;
@@ -50,6 +51,22 @@ const COST_PERCENTAGE = 0.02;
 const COPYING_MAX_RUNS = 500;
 /** industry.MAX_RUN_LENGTH: thirty days of seconds, by which the most runs a job can have are reckoned. */
 const MAX_RUN_LENGTH = 2592000;
+/** structures/services.py: the two services a structure researches a blueprint by, its time and its materials. */
+const SERVICE_LABORATORY_RESEARCH_TIME = 31;
+const SERVICE_LABORATORY_RESEARCH_MATERIAL = 32;
+/** industry.RESEARCH_TIMES: what one run of a research takes of the activity's time, by the level the run starts from. */
+const RESEARCH_TIMES = Object.freeze([1.0, 29 / 21.0, 23 / 7.0, 39 / 5.0, 278 / 15.0, 928 / 21.0, 2200 / 21.0, 5251 / 21.0, 4163 / 7.0, 29660 / 21.0]);
+/** industry.SCC_SURCHARGE_RESEARCH_DISCOUNT_MODIFIER: a research job pays this much of the SCC's surcharge. */
+const SCC_SURCHARGE_RESEARCH_DISCOUNT = 0.5;
+/**
+ * The two researches, by the activity's own number (3, of a blueprint's time; 4, of its materials): the step one
+ * run raises the blueprint's research by, the most it comes to (industry.STEP_ and MAX_TIME_EFFICIENCY, and the
+ * two of MATERIAL), and the service a structure does it by.
+ */
+const RESEARCHES = Object.freeze({
+  3: Object.freeze({ step: 2, most: 20, serviceID: SERVICE_LABORATORY_RESEARCH_TIME }),
+  4: Object.freeze({ step: 1, most: 10, serviceID: SERVICE_LABORATORY_RESEARCH_MATERIAL }),
+});
 
 function entriesOf(value) {
   if (value && typeof value === "object" && value.type === "dict" && Array.isArray(value.entries)) {
@@ -301,6 +318,99 @@ function copyingJobMostRuns({ activityTime, characterAmount, facilityModifiers, 
 }
 
 /**
+ * Where a blueprint stands in a research, as the client's activity reads it (activities/research_time.py and
+ * research_material.py, which are one but for what they read: blueprint_level, 11, and job_max_runs, 23): the
+ * level it is at, which is its research over the step, and the runs left to it, which is what is left to the most
+ * over the step; each a whole division. `finished` is a blueprint at the last level, which has no job of that
+ * research (job_validate, 33 to 37). `activityID` is the research's own number and `efficiency` the blueprint's
+ * research of that kind (its time research for the one, its material research for the other).
+ *
+ * Null for any other kind of work, and for a research that is no whole number from nought to the most.
+ */
+function researchStanding(activityID, efficiency) {
+  const research = aResearch(activityID) ? RESEARCHES[activityID] : null;
+  if (!research || !Number.isSafeInteger(efficiency) || efficiency < 0 || efficiency > research.most) {
+    return null;
+  }
+  const level = Math.floor(efficiency / research.step);
+  return { level, runsLeft: Math.floor((research.most - efficiency) / research.step), finished: level >= RESEARCH_TIMES.length };
+}
+
+/** The service a structure does a research by, by the research's own number (structures/services.py 168 to 171); null for any other work. */
+function researchServiceID(activityID) {
+  return aResearch(activityID) ? RESEARCHES[activityID].serviceID : null;
+}
+
+/** An activity's number that is a research's: the number itself, and not its text. */
+const aResearch = (activityID) => typeof activityID === "number" && Object.hasOwn(RESEARCHES, activityID);
+
+/** A level a run of research can start from: a whole number from nought to the last but one of the ten. */
+const aLevel = (value) => Number.isSafeInteger(value) && value >= 0 && value < RESEARCH_TIMES.length;
+
+/**
+ * A research's own time for a job (job_time, 17 to 20), not rounded: the sum, from nought, of each run's time, a
+ * run's being the activity's time by RESEARCH_TIMES at the level the run starts from (blueprint_levels, 14). Each
+ * run starts a level above the one before it.
+ */
+function researchActivitySeconds(activityTime, level, runs) {
+  let seconds = 0;
+  for (let run = 0; run < runs; run += 1) {
+    seconds += activityTime * RESEARCH_TIMES[Math.min(level + run, RESEARCH_TIMES.length - 1)];
+  }
+  return seconds;
+}
+
+/**
+ * A research job's time in whole seconds, as the client's own job reckons it (industry/job.py _get_time, 460 to
+ * 468): the research's own time for the job (researchActivitySeconds), from the level the blueprint is at, times
+ * each time modifier the job has, in the order the job lists them, and rounded.
+ *
+ *   job.modifiers        industryCommon.GetJobModifiers (485): the pilot's own time for that research,
+ *                        `characterAmount` (attribute 385 for a research of time, 398 for one of materials). No
+ *                        skill's time per level is among a research job's
+ *   facility.modifiers   each of the facility's time modifiers for that research that is for the blueprint's
+ *                        product, in the facility's own order
+ *
+ * The order is the client's and must stay so, as a manufacturing job's must. Null where any input is not what it
+ * should be, and nought is sent instead, which the server does not check.
+ */
+function researchJobSeconds({ activityTime, level, runs, characterAmount, facilityModifiers, productType }) {
+  const amounts = facilityAmounts(facilityModifiers, productType);
+  if (!aNumber(activityTime) || activityTime <= 0 || !aLevel(level) || !aCount(runs) || !aNumber(characterAmount) || amounts === null) {
+    return null;
+  }
+  let seconds = researchActivitySeconds(activityTime, level, runs);
+  seconds *= characterAmount;
+  for (const amount of amounts) {
+    seconds *= amount;
+  }
+  return Math.round(seconds);
+}
+
+/**
+ * The most runs one research job can have, as the client's job has it, which holds a job's runs to it
+ * (research_time.py job_max_runs, 22 to 23; activity.py 34 to 36): the fewer of the runs left to the blueprint
+ * (`runsLeft`: researchStanding) and what any job can have, which is thirty days over the activity's time over the
+ * job's time modifiers multiplied together, taken up to the whole. (And never more than a million,
+ * industry.MAX_RUNS_HARD_CAP, which a research cannot come near: it has ten runs at the most.) Nought for a
+ * blueprint that has no run left.
+ *
+ * Null where an input is not what it should be, or the modifiers come to nothing a time can be divided by.
+ */
+function researchJobMostRuns({ activityTime, runsLeft, characterAmount, facilityModifiers, productType }) {
+  const amounts = facilityAmounts(facilityModifiers, productType);
+  if (!aNumber(activityTime) || activityTime <= 0 || !Number.isSafeInteger(runsLeft) || runsLeft < 0 || !aNumber(characterAmount) || amounts === null) {
+    return null;
+  }
+  let together = 1.0 * characterAmount;
+  for (const amount of amounts) {
+    together *= amount;
+  }
+  const most = Math.ceil(MAX_RUN_LENGTH / activityTime / together);
+  return aCount(most) ? Math.min(most, runsLeft) : null;
+}
+
+/**
  * A number rounded to two places as the client's Python 2.7 rounds one (round(x, 2), by which its job rounds a
  * material's quantity): to the nearer of the two by what the number itself is, and a number that is exactly a
  * half goes away from nought. toFixed(2) is that for a number that is not below nought: it rounds the number and
@@ -361,6 +471,20 @@ function copyingJobMaterials({ materials, runs, licensedRuns, facilityModifiers,
     return null;
   }
   return materialsTaken(materials, amounts, runs * licensedRuns, runs);
+}
+
+/**
+ * A research job's materials, each type to its quantity, as the client's own job reckons them (industry/job.py
+ * _get_materials, 470 to 485): as a manufacturing job's are, by the job's runs, but that the blueprint's material
+ * research is not in them (a research job has no modifier of the blueprint's). A blueprint whose research lists no
+ * materials takes none: an empty map. Null where any input is not what it should be.
+ */
+function researchJobMaterials({ materials, runs, facilityModifiers, productType }) {
+  const amounts = facilityAmounts(facilityModifiers, productType);
+  if (!Array.isArray(materials) || !aCount(runs) || amounts === null) {
+    return null;
+  }
+  return materialsTaken(materials, amounts, runs, runs);
 }
 
 /**
@@ -458,6 +582,23 @@ function copyingJobBase({ blueprintPrice: price, runs, licensedRuns }) {
 }
 
 /**
+ * A research job's base, not rounded, of which its cost, its tax and its surcharges are taken
+ * (activities/research_time.py job_cost, 25): the blueprint's price, times COST_PERCENTAGE, times the research's own
+ * time for the job (researchActivitySeconds), over the activity's time; in that order, the division last. Null
+ * where an input is not what it should be.
+ *
+ * (This server reckons it the price's share times the time over the activity's time. Of every research of every
+ * blueprint the two price alike, from every level and for every number of runs left, they come to another whole
+ * base for one blueprint alone, at a price no wallet holds: scratch's rsc-search.js, 2026-10-12.)
+ */
+function researchJobBase({ blueprintPrice: price, activityTime, level, runs }) {
+  if (!aBase(price, runs) || !aNumber(activityTime) || activityTime <= 0 || !aLevel(level)) {
+    return null;
+  }
+  return price * COST_PERCENTAGE * researchActivitySeconds(activityTime, level, runs) / activityTime;
+}
+
+/**
  * A manufacturing job's tax in whole ISK, as the client's own job reckons it (industry/job.py _get_tax, 450 to
  * 458): the base rounded (base_cost, 127 to 130: int(round(job_cost))) times the facility's rate (facilityTaxRate),
  * rounded. Null where there is no rate, or an input is not what it should be.
@@ -469,6 +610,12 @@ function manufacturingJobTax({ blueprintPrice: price, runs, facilityTax }) {
 /** A copy job's tax in whole ISK, likewise, of the copy job's own base (copyingJobBase). */
 function copyingJobTax({ blueprintPrice, runs, licensedRuns, facilityTax }) {
   const base = copyingJobBase({ blueprintPrice, runs, licensedRuns });
+  return base === null ? null : taxOn(base, facilityTax);
+}
+
+/** A research job's tax in whole ISK, likewise, of the research job's own base (researchJobBase). */
+function researchJobTax({ blueprintPrice, activityTime, level, runs, facilityTax }) {
+  const base = researchJobBase({ blueprintPrice, activityTime, level, runs });
   return base === null ? null : taxOn(base, facilityTax);
 }
 
@@ -499,14 +646,31 @@ function copyingJobFee({ blueprintPrice, runs, licensedRuns, ...charges }) {
   return base === null ? null : feeOn(base, charges);
 }
 
-/** What a job costs to start, of its base (industry/job.py total_cost, 132 to 135, and what it adds up). */
-function feeOn(base, { cost, tax, sccTaxModifier, security }) {
+/**
+ * What a research job costs to start, likewise, of the research job's own base (researchJobBase), with the SCC's
+ * surcharge halved (industry/job.py 144 to 145).
+ */
+function researchJobFee({ blueprintPrice, activityTime, level, runs, ...charges }) {
+  const base = researchJobBase({ blueprintPrice, activityTime, level, runs });
+  return base === null ? null : feeOn(base, charges, true);
+}
+
+/**
+ * What a job costs to start, of its base (industry/job.py total_cost, 132 to 135, and what it adds up). The SCC's
+ * rate is its own by the facility's modifier, never below nought, and for a research job (`research`) halved then
+ * (137 to 146).
+ */
+function feeOn(base, { cost, tax, sccTaxModifier, security }, research = false) {
   const anAmount = (value) => Number.isSafeInteger(value) && value >= 0;
   if (!anAmount(cost) || !anAmount(tax) || !aNumber(sccTaxModifier) || !aNumber(security)) {
     return null;
   }
   const baseCost = Math.round(base);
-  const sccSurcharge = Math.round(baseCost * Math.max(0, SCC_SURCHARGE_RATE * sccTaxModifier));
+  let sccRate = Math.max(0, SCC_SURCHARGE_RATE * sccTaxModifier);
+  if (research) {
+    sccRate *= SCC_SURCHARGE_RESEARCH_DISCOUNT;
+  }
+  const sccSurcharge = Math.round(baseCost * sccRate);
   const securityTax = security >= SAFE_SECURITY_FROM ? Math.round(baseCost * INDUSTRY_SECURITY_TAX_RATE) : 0;
   return { cost, tax, sccSurcharge, securityTax, total: cost + tax + sccSurcharge + securityTax };
 }
@@ -585,6 +749,15 @@ function copyingJobCost({ blueprintPrice, runs, licensedRuns, ...modifiers }) {
   return base === null ? null : costOn(base, modifiers);
 }
 
+/**
+ * A research job's cost in whole ISK, likewise, of the research job's own base (researchJobBase), through the cost
+ * modifiers the job has for that research.
+ */
+function researchJobCost({ blueprintPrice, activityTime, level, runs, ...modifiers }) {
+  const base = researchJobBase({ blueprintPrice, activityTime, level, runs });
+  return base === null ? null : costOn(base, modifiers);
+}
+
 /** A job's cost of its base, not rounded (industry/job.py _get_cost_for_modifiers, 310 to 320). */
 function costOn(base, { blueprintAmount, alpha, faction, system, facilityModifiers, productType }) {
   if ((blueprintAmount !== null && !aNumber(blueprintAmount)) || typeof alpha !== "boolean" || !aNumber(faction) || !aNumber(system)) {
@@ -650,5 +823,13 @@ module.exports = {
   manufacturingJobTax,
   manufacturingServiceID,
   modifierMatchesProduct,
+  researchJobCost,
+  researchJobFee,
+  researchJobMaterials,
+  researchJobMostRuns,
+  researchJobSeconds,
+  researchJobTax,
+  researchServiceID,
+  researchStanding,
   roundToTwoPlaces,
 };
