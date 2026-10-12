@@ -20,6 +20,8 @@ import {
   planLaunch,
   scoreAgainst,
   shouldSwitch,
+  sizeSwitchVerdict,
+  sizedLaunch,
   switchCostSeconds,
   type DroneFacts,
   type TargetFacts,
@@ -336,4 +338,76 @@ test("every why is one short plain-ASCII sentence", () => {
     assert.ok(why.length < 80, why);
     assert.ok(why.endsWith("."), why);
   }
+});
+
+// ── the companion's two questions ────────────────────────────────────────────
+
+const HULL = { bandwidthMbit: 75, maxActive: 5 };
+const MIXED_BAY = bay([11, 2454, 5], [12, 2444, 3]);
+
+test("sizedLaunch: lights for a frigate, heavies for a battleship, from one bay", () => {
+  assert.equal(sizedLaunch(MIXED_BAY, FACTS, HULL, [FRIGATE])?.primaryTypeID, 2454);
+  assert.equal(sizedLaunch(MIXED_BAY, FACTS, HULL, [BATTLESHIP])?.primaryTypeID, 2444);
+});
+
+test("sizedLaunch cannot judge without the bay, the hull limits or a target", () => {
+  assert.equal(sizedLaunch(null, FACTS, HULL, [FRIGATE]), null);
+  assert.equal(sizedLaunch(MIXED_BAY, FACTS, null, [FRIGATE]), null);
+  assert.equal(sizedLaunch(MIXED_BAY, FACTS, HULL, []), null);
+  assert.equal(sizedLaunch(MIXED_BAY, FACTS, HULL, [{ ...FRIGATE, signatureRadius: null }]), null);
+});
+
+const SWITCH_BASE = {
+  bay: bay([12, 2444, 3]),
+  facts: FACTS,
+  limits: HULL,
+  remainingEhp: 4000,
+  lastSwitchAtMs: null,
+  nowMs: NOW,
+};
+
+test("sizeSwitchVerdict: heavies out on a frigate come home for the lights", () => {
+  const verdict = sizeSwitchVerdict({
+    ...SWITCH_BASE,
+    bay: bay([11, 2454, 5]),
+    flightTypeIDs: [2444, 2444, 2444],
+    target: FRIGATE,
+  });
+  assert.equal(verdict?.switch, true);
+});
+
+test("sizeSwitchVerdict: lights on a nearly dead battleship stay out", () => {
+  const verdict = sizeSwitchVerdict({
+    ...SWITCH_BASE,
+    flightTypeIDs: [2454, 2454, 2454, 2454, 2454],
+    target: BATTLESHIP,
+    remainingEhp: 500,
+  });
+  assert.equal(verdict?.switch, false);
+});
+
+test("sizeSwitchVerdict: lights on a fresh battleship go up when the fight is long", () => {
+  const verdict = sizeSwitchVerdict({
+    ...SWITCH_BASE,
+    flightTypeIDs: [2454, 2454, 2454, 2454, 2454],
+    target: BATTLESHIP,
+    remainingEhp: 200_000,
+  });
+  assert.equal(verdict?.switch, true);
+});
+
+test("sizeSwitchVerdict: nothing better in the bay never recalls", () => {
+  const verdict = sizeSwitchVerdict({
+    ...SWITCH_BASE,
+    bay: bay(),
+    flightTypeIDs: [2444, 2444, 2444],
+    target: FRIGATE,
+  });
+  assert.notEqual(verdict?.switch, true, "no recall when the bay holds nothing better");
+});
+
+test("sizeSwitchVerdict cannot judge a drone whose type or facts are unknown", () => {
+  assert.equal(sizeSwitchVerdict({ ...SWITCH_BASE, flightTypeIDs: [null], target: FRIGATE }), null);
+  assert.equal(sizeSwitchVerdict({ ...SWITCH_BASE, flightTypeIDs: [999], target: FRIGATE }), null);
+  assert.equal(sizeSwitchVerdict({ ...SWITCH_BASE, flightTypeIDs: [2454], target: FRIGATE, limits: null }), null);
 });
