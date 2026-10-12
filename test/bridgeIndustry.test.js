@@ -980,8 +980,8 @@ test("a manufacturing job's materials are the client's own reckoning, in the pre
   const unsaid = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody() });
   await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody() });
   assert.deepEqual([unsaid.payload.materials, jobs("ConnectJob").at(-1).materials, jobs("InstallJob").at(-1).materials], [null, {}, {}]);
-  // A kind of work that is not reckoned (a reaction; the others are, below): none are reckoned, though the research
-  // is said and the facility has a modifier for it.
+  // A kind of work the blueprint has no recipe of (a reaction, of a blueprint that has none): none are reckoned,
+  // though the research is said and the facility has a modifier for it. (A formula's are, below.)
   const reaction = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ activity: "reaction", materialEfficiency: 10 }) });
   assert.deepEqual([reaction.payload.materials, jobs("ConnectJob").at(-1).materials], [null, {}]);
   // A facility that is not among those read: none are reckoned.
@@ -1111,8 +1111,8 @@ test("where a job's time cannot be reckoned whole it goes as nought, as it did, 
     assert.equal(sentJobs(unread, "InstallJob")[0].time, 0);
   }
 
-  // A kind of work that is not reckoned (a reaction; the others are, below): nothing is asked for its time, which
-  // goes as nought.
+  // A kind of work the blueprint has no recipe of (a reaction, of a blueprint that has none): nothing is asked
+  // for its time, which goes as nought. (A formula's is reckoned, below.)
   const gateway = fakeIndustryGateway({ timeMultiplier: 0.68 });
   const third = await startTestServer({ gateway });
   await selectOnServer(third.baseUrl);
@@ -1260,7 +1260,8 @@ test("on the game port a manufacturing job's cost is the client's own reckoning,
   state.table = false;
   assert.equal((await install()).cost, 0);
   state.table = true;
-  // A kind of work that is not reckoned (a reaction; the others are, below): nought goes, and no price is read for it.
+  // A kind of work the blueprint has no recipe of (a reaction, of a blueprint that has none): nought goes, and no
+  // price is read for it. (A formula's is reckoned, below.)
   const before = state.priced.length;
   assert.deepEqual([(await install({ activity: "reaction" })).cost, state.priced.length], [0, before]);
   // The job's facility is asked for once for a request, whether the cost alone wants it or the time does too.
@@ -1330,8 +1331,8 @@ test("on the game port the preview says what the job costs to start, as the clie
   assert.deepEqual(await previewed(), { cost: 5284, tax: 1321, sccSurcharge: 5284, securityTax: 0, total: 11889 });
   // The security read is the facility's system's, and not the pilot's.
   assert.deepEqual([asked.at(-1), A_SYSTEM_AWAY === SOLAR_SYSTEM_ID], [A_SYSTEM_AWAY, false]);
-  // A kind of work that is not reckoned (a reaction; the others are, below): no tax is reckoned, nought goes, and no
-  // fee is said.
+  // A kind of work the blueprint has no recipe of (a reaction, of a blueprint that has none): no tax is reckoned,
+  // nought goes, and no fee is said. (A formula's are reckoned, below.)
   const other = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ activity: "reaction" }) });
   assert.deepEqual([other.payload.fee, sentJobs(gamePort, "ConnectJob").at(-1).tax], [null, 0]);
   await previewed();
@@ -2725,4 +2726,204 @@ test("on the game port an invention's cost, its tax and what it costs to start a
   assert.deepEqual([await previewed(), (await installed()).cost], [null, 0]);
   // And nothing of the pilot's went to the gateway.
   assert.equal(gateway.calls.topLevel.length, 0);
+});
+
+// ── a reaction's job ──────────────────────────────────────────────────────────
+//
+// activities/reaction.py, whole; industryCommon.GetJobModifiers (485 to 513) and GetBlueprintPrice (521 to 543);
+// industry/blueprint.py 62 to 72; structures/services.py 149 to 167 (src/industryInstall.js, reactionJobSeconds,
+// reactionJobMaterials, reactionServiceID, and blueprintPrice for a reaction). No Tranquility recording has an
+// install: the numbers are made up and worked by hand.
+
+const FUEL_TYPE_ID = 4051;
+const REACTED_TYPE_ID = 16654;
+/** A skill a reaction requires. It is given a time per level here, which only a manufacturing job's time is of. */
+const REACTION_SKILL = 45746;
+
+/**
+ * The game's data with the test's blueprint a reaction formula: it has a reaction and nothing else, its own type
+ * says no product (as the data's formulas say none at the top), and what it makes is a composite (group 429).
+ */
+function staticDataReacting(more = {}) {
+  const plain = fakeStaticData();
+  return {
+    ...plain,
+    getIndustryBlueprint(blueprintTypeID) {
+      if (Number(blueprintTypeID) !== BLUEPRINT_TYPE_ID) return null;
+      return {
+        blueprintTypeID: BLUEPRINT_TYPE_ID,
+        blueprintName: "A Made-Up Reaction Formula",
+        productTypeID: 0,
+        maxProductionLimit: 1000,
+        activities: {
+          reaction: {
+            materials: [{ typeID: MATERIAL_TYPE_ID, quantity: 100 }, { typeID: FUEL_TYPE_ID, quantity: 5 }],
+            products: [{ typeID: REACTED_TYPE_ID, quantity: 200 }],
+            skills: [{ typeID: REACTION_SKILL, level: 1 }],
+            time: 10800,
+          },
+        },
+      };
+    },
+    getType: (typeID) => (Number(typeID) === REACTED_TYPE_ID ? { typeID: REACTED_TYPE_ID, groupID: 429, categoryID: 4 } : plain.getType(typeID)),
+    getTypeDogmaAttribute: (typeID, attributeID) => (Number(typeID) === REACTION_SKILL && Number(attributeID) === 1982 ? -1 : null),
+    ...more,
+  };
+}
+
+/** A reaction's request, as the page sends it: nothing is said of a formula's research. */
+const reactionBody = (overrides = {}) => installBody({ activity: "reaction", ...overrides });
+
+test("a reaction's time and its materials are the client's own reckoning, in the preview's request and the install's, with nothing of a research or a skill in them", async () => {
+  // Three hours a run and three runs; a pilot whose own reaction time is 0.85; a facility that takes a quarter off
+  // any reaction's time and a fifth off a composite's, and 2.4% off a composite's materials. It has modifiers for
+  // hybrid polymers and for manufacturing too, which are not this job's.
+  //   the time        10800 x 3 x 0.85 x 0.75 x 0.8 = 16524
+  //   the materials   100 x 0.976 x 3 = 292.8, and 5 x 0.976 x 3 = 14.64
+  const facility = facilityRow();
+  facility.args.entries.find(([name]) => name === "activities")[1] = dict([
+    [ACTIVITY_MANUFACTURING, { type: "tuple", items: [list([[0.5, null, null, null, 12]]), list([[0.5, null, null, null, 12]]), list([])] }],
+    [9, { type: "tuple", items: [list([[0.75, null, null, null, 12], [0.8, null, 429, null, 13], [0.5, null, 974, null, 13]]), list([[0.976, null, 429, null, 13], [0.5, null, 974, null, 13]]), list([])] }],
+  ]);
+  const gateway = fakeIndustryGateway({ timeMultiplier: 0.85, facility });
+  const sheets = [];
+  gateway.getSkills = async (...asked) => { sheets.push(asked); return { skills: [{ typeID: REACTION_SKILL, level: 5 }] }; };
+  const { baseUrl } = await startTestServer({ gateway, staticData: staticDataReacting() });
+  await selectOnServer(baseUrl);
+  const taken = { [MATERIAL_TYPE_ID]: 293, [FUEL_TYPE_ID]: 15 };
+
+  const preview = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: reactionBody() });
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: reactionBody() });
+  assert.deepEqual([preview.payload.timeSeconds, sentJobs(gateway, "ConnectJob")[0].time, sentJobs(gateway, "InstallJob")[0].time], [16524, 16524, 16524]);
+  assert.deepEqual([preview.payload.materials, sentJobs(gateway, "ConnectJob")[0].materials, sentJobs(gateway, "InstallJob")[0].materials], [taken, taken, taken]);
+  // The job is a reaction's, of the formula: activity 9.
+  assert.deepEqual([sentJobs(gateway, "InstallJob")[0].activityID, sentJobs(gateway, "InstallJob")[0].blueprintTypeID], [9, BLUEPRINT_TYPE_ID]);
+  // The pilot's own reaction time is asked of its dogma location (attribute 2662), once for each request; and no
+  // skill's level is asked for: a reaction's time is of no skill's time per level.
+  assert.deepEqual(gateway.calls.bound.map((call) => [call.method, call.args]), [["QueryAttributeValue", [CHARACTER_ID, 2662]], ["QueryAttributeValue", [CHARACTER_ID, 2662]]]);
+  assert.deepEqual(sheets, []);
+  // A research said of the formula changes nothing: a formula has none.
+  const researched = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: reactionBody({ timeEfficiency: 20, materialEfficiency: 10 }) });
+  assert.deepEqual([researched.payload.timeSeconds, researched.payload.materials], [16524, taken]);
+  // One run: 10800 x 0.85 x 0.75 x 0.8 = 5508; 97.6 and 4.88.
+  const one = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: reactionBody({ runs: 1 }) });
+  assert.deepEqual([one.payload.timeSeconds, one.payload.materials], [5508, { [MATERIAL_TYPE_ID]: 98, [FUEL_TYPE_ID]: 5 }]);
+  // A facility that is not among those read: neither is reckoned, and nought and an empty map go.
+  const elsewhere = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: reactionBody({ facilityID: STATION_ID + 1 }) });
+  assert.deepEqual([elsewhere.payload.timeSeconds, elsewhere.payload.materials, sentJobs(gateway, "ConnectJob").at(-1).time, sentJobs(gateway, "ConnectJob").at(-1).materials], [null, null, 0, {}]);
+});
+
+test("on the game port a reaction's cost, its tax and what it costs to start are the client's own reckoning, of the formula's price by its reaction's materials", async () => {
+  // The formula's price is by its reaction's materials: 100 of one at an adjusted 512 and 5 fuel blocks at 12000,
+  // 111200 a run; three runs, a base of 333600. A refinery's row says no tax of its own, and its access taxes a
+  // composite's reaction (service 41) at 0.02; the system's cost index for reactions is 0.05, and a rig takes a
+  // tenth off the cost of a composite's.
+  //   the cost        333600 x 0.05 x 0.9 = 15012
+  //   the tax         333600 x 0.02 = 6672
+  //   the surcharge   333600 x 0.04 = 13344
+  const facility = facilityRow({ tax: null });
+  facility.args.entries.push(["serviceAccess", dict([[22, 0.5], [40, 0.9], [41, 0.02], [42, 0.7], [43, 0.8]])]);
+  facility.args.entries.push(["globalModifiers", dict([["faction", 1], ["system", dict([[ACTIVITY_MANUFACTURING, 0.5], [9, 0.05]])]])]);
+  facility.args.entries.find(([name]) => name === "activities")[1] = dict([
+    [ACTIVITY_MANUFACTURING, { type: "tuple", items: [list([]), list([]), list([[0.5, null, null, null, 4]])] }],
+    [9, { type: "tuple", items: [list([]), list([]), list([[0.9, null, 429, null, 13], [0.5, null, 974, null, 13]])] }],
+  ]);
+  const state = { grade: 1, priced: [] };
+  const plain = fakeIndustryGateway({ timeMultiplier: 0.85 });
+  const gamePort = {
+    ...plain,
+    async selectCharacter() {
+      return {
+        bridgeSessionID: "gp:a-pilot-on-the-game-port", service: "charUnboundMgr", method: "SelectCharacterID", result: null, notifications: [],
+        session: { userid: 4, characterID: CHARACTER_ID, characterName: "Test Pilot", stationID: STATION_ID, structureID: null, solarSystemID: SOLAR_SYSTEM_ID, corporationID: 98000000, shipID: ACTIVE_SHIP_ID },
+      };
+    },
+    async callMethod(service, method, ...rest) {
+      if (service === "subscriptionMgr" && method === "GetCloneGrade") return { service, method, result: state.grade, notifications: [] };
+      return plain.callMethod(service, method, ...rest);
+    },
+    async freshFacility() {
+      return facility;
+    },
+    averageMarketPrice(sessionFields, bridgeSessionID, typeID) {
+      state.priced.push(typeID);
+      const adjustedPrice = { [MATERIAL_TYPE_ID]: 512, [FUEL_TYPE_ID]: 12000, [BLUEPRINT_TYPE_ID]: 77 }[typeID] ?? null;
+      return { averagePrice: adjustedPrice, adjustedPrice };
+    },
+  };
+  const gateway = fakeIndustryGateway();
+  const staticData = staticDataReacting({ getSolarSystem: () => ({ security: 0.9 }) });
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, staticData });
+  await selectOnServer(baseUrl);
+
+  const preview = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: reactionBody() });
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: reactionBody() });
+  assert.deepEqual(preview.payload.fee, { cost: 15012, tax: 6672, sccSurcharge: 13344, securityTax: 0, total: 35028 });
+  const [connected, installed] = [sentJobs(gamePort, "ConnectJob")[0], sentJobs(gamePort, "InstallJob")[0]];
+  assert.deepEqual([connected.cost, connected.tax, installed.cost, installed.tax], [15012, 6672, 15012, 6672]);
+  // The prices read are the reaction's materials', and never the formula's own: it has a recipe to be priced by.
+  assert.deepEqual([...new Set(state.priced)].sort((a, b) => a - b), [MATERIAL_TYPE_ID, FUEL_TYPE_ID].sort((a, b) => a - b));
+  // One run: a base of 111200. 111200 x 0.05 x 0.9 = 5004; 2224; 4448.
+  const one = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: reactionBody({ runs: 1 }) });
+  assert.deepEqual(one.payload.fee, { cost: 5004, tax: 2224, sccSurcharge: 4448, securityTax: 0, total: 11676 });
+  // An alpha clone's job costs a quarter of a percent of the base more: 15012 + 834.
+  state.grade = 0;
+  const alpha = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: reactionBody() });
+  assert.equal(alpha.payload.fee.cost, 15846);
+  // And nothing of the pilot's went to the gateway.
+  assert.equal(gateway.calls.topLevel.length, 0);
+
+  // At the same row a manufacturing job is a manufacturing job's still: priced by its manufacturing's materials (86
+  // at 512 a run, three runs, a base of 132096), costed by the system's index for manufacturing and the row's
+  // modifier for it (x 0.5 x 0.5), and taxed by the service a frigate is manufactured by (22, at 0.5).
+  state.grade = 1;
+  const making = { ...fakeStaticData(), getSolarSystem: () => ({ security: 0.9 }), getType: (typeID) => (Number(typeID) === PRODUCT_TYPE_ID ? { typeID: PRODUCT_TYPE_ID, groupID: 25, categoryID: 6 } : null) };
+  const second = await startTestServer({ gateway: fakeIndustryGateway(), gamePortPilots: gamePort, staticData: making });
+  await selectOnServer(second.baseUrl);
+  const made = await apiRequest(second.baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody() });
+  assert.deepEqual(made.payload.fee, { cost: 33024, tax: 66048, sccSurcharge: 5284, securityTax: 0, total: 104356 });
+});
+
+test("a reaction is taxed by the service its product's group is reacted by, and a formula that makes nothing the data knows is not taxed by a guess", async () => {
+  // structures/services.py 161 to 167, by the row's access (industry/activity.py 50 to 58): a biochemical material's
+  // (group 712) by service 42, a hybrid polymer's (974) by 43, and any other thing's by 40.
+  const facility = facilityRow({ tax: null });
+  facility.args.entries.push(["serviceAccess", dict([[40, 0.04], [41, 0.01], [42, 0.02], [43, 0.03]])]);
+  facility.args.entries.push(["globalModifiers", dict([["faction", 1], ["system", dict([[9, 1]])]])]);
+  const state = { groupID: 712 };
+  const plain = fakeIndustryGateway({ timeMultiplier: 1 });
+  const gamePort = {
+    ...plain,
+    async selectCharacter() {
+      return {
+        bridgeSessionID: "gp:a-pilot-on-the-game-port", service: "charUnboundMgr", method: "SelectCharacterID", result: null, notifications: [],
+        session: { userid: 4, characterID: CHARACTER_ID, characterName: "Test Pilot", stationID: STATION_ID, structureID: null, solarSystemID: SOLAR_SYSTEM_ID, corporationID: 98000000, shipID: ACTIVE_SHIP_ID },
+      };
+    },
+    async callMethod(service, method, ...rest) {
+      if (service === "subscriptionMgr" && method === "GetCloneGrade") return { service, method, result: 1, notifications: [] };
+      return plain.callMethod(service, method, ...rest);
+    },
+    async freshFacility() {
+      return facility;
+    },
+    averageMarketPrice: (sessionFields, bridgeSessionID, typeID) => ({ averagePrice: 1, adjustedPrice: typeID === MATERIAL_TYPE_ID ? 1000 : 0 }),
+  };
+  const staticData = staticDataReacting({ getType: (typeID) => (Number(typeID) === REACTED_TYPE_ID && state.groupID !== null ? { typeID: REACTED_TYPE_ID, groupID: state.groupID, categoryID: 4 } : null) });
+  const { baseUrl } = await startTestServer({ gateway: fakeIndustryGateway(), gamePortPilots: gamePort, staticData });
+  await selectOnServer(baseUrl);
+  const taxed = async () => {
+    await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: reactionBody({ runs: 1 }) });
+    return sentJobs(gamePort, "InstallJob").at(-1).tax;
+  };
+  // A base of 100 x 1000 = 100000 a run.
+  const taxes = [];
+  for (const groupID of [712, 4096, 974, 428, 429, 4932, 18]) {
+    state.groupID = groupID;
+    taxes.push(await taxed());
+  }
+  assert.deepEqual(taxes, [2000, 2000, 3000, 1000, 1000, 1000, 4000]);
+  // What the formula makes is no type the data has: no service, no rate, and nought goes for the tax.
+  state.groupID = null;
+  assert.equal(await taxed(), 0);
 });

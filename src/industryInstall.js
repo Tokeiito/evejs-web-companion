@@ -58,6 +58,17 @@ const MAX_RUN_LENGTH = 2592000;
 /** structures/services.py: the two services a structure researches a blueprint by, its time and its materials. */
 const SERVICE_LABORATORY_RESEARCH_TIME = 31;
 const SERVICE_LABORATORY_RESEARCH_MATERIAL = 32;
+/** structures/services.py: the four services a structure reacts by. */
+const SERVICE_REACTIONS = 40;
+const SERVICE_REACTIONS_COMPOSITE = 41;
+const SERVICE_REACTIONS_BIOCHEMICAL = 42;
+const SERVICE_REACTIONS_HYBRID = 43;
+/** inventorycommon.const.groupBiochemicalMaterial and groupMolecularForgedMaterials. */
+const BIOCHEMICAL_REACTION_GROUPS = new Set([712, 4096]);
+/** inventorycommon.const.groupHybridPolymers. */
+const HYBRID_POLYMERS_GROUP = 974;
+/** inventorycommon.const.compositeReactionGroups: intermediate materials, composites and unrefined minerals. */
+const COMPOSITE_REACTION_GROUPS = new Set([428, 429, 4932]);
 /** industry.RESEARCH_TIMES: what one run of a research takes of the activity's time, by the level the run starts from. */
 const RESEARCH_TIMES = Object.freeze([1.0, 29 / 21.0, 23 / 7.0, 39 / 5.0, 278 / 15.0, 928 / 21.0, 2200 / 21.0, 5251 / 21.0, 4163 / 7.0, 29660 / 21.0]);
 /** industry.SCC_SURCHARGE_RESEARCH_DISCOUNT_MODIFIER: a research job pays this much of the SCC's surcharge. */
@@ -331,6 +342,34 @@ function inventionJobSeconds({ activityTime, runs, characterAmount, facilityModi
 }
 
 /**
+ * A reaction's time in whole seconds, as the client's own job reckons it (industry/job.py _get_time, 460 to 468):
+ * the activity's time by the runs (activity.py job_time, 28), times each time modifier the job has, in the order
+ * the job lists them, and rounded.
+ *
+ *   job.modifiers        industryCommon.GetJobModifiers (485): the pilot's own reaction time, `characterAmount`
+ *                        (attribute 2662). No skill's time per level is among a reaction's: the client lists those
+ *                        for manufacturing alone (REQUIRED_SKILL_MODIFIERS, 44)
+ *   facility.modifiers   each of the facility's time modifiers for reactions that is for the formula's product, in
+ *                        the facility's own order
+ *
+ * A reaction has no modifier of the blueprint's (activities/reaction.py has none; activity.py 22): a formula has
+ * no research. The order is the client's and must stay so, as a manufacturing job's must. Null where any input is
+ * not what it should be, and nought is sent instead, which the server does not check.
+ */
+function reactionJobSeconds({ activityTime, runs, characterAmount, facilityModifiers, productType }) {
+  const amounts = facilityAmounts(facilityModifiers, productType);
+  if (!aNumber(activityTime) || activityTime <= 0 || !aCount(runs) || !aNumber(characterAmount) || amounts === null) {
+    return null;
+  }
+  let seconds = activityTime * runs;
+  seconds *= characterAmount;
+  for (const amount of amounts) {
+    seconds *= amount;
+  }
+  return Math.round(seconds);
+}
+
+/**
  * The most runs any invention can have, as the client's activity has it (activity.py 34 to 36, with
  * activities/invention.py's own MAX_RUNS): what thirty days hold of the activity's time, and never more than
  * INVENTION_MAX_RUNS. (The client's job holds its runs to the fewer of this and the runs the copy has left,
@@ -535,6 +574,20 @@ function inventionJobMaterials({ materials, runs, facilityModifiers, productType
 }
 
 /**
+ * A reaction's materials, each type to its quantity, as the client's own job reckons them (industry/job.py
+ * _get_materials, 470 to 485): as a manufacturing job's are, by the job's runs, but that nothing of the blueprint's
+ * is in them (a reaction has no modifier of the blueprint's: a formula has no research). A reaction that lists no
+ * materials takes none: an empty map. Null where any input is not what it should be.
+ */
+function reactionJobMaterials({ materials, runs, facilityModifiers, productType }) {
+  const amounts = facilityAmounts(facilityModifiers, productType);
+  if (!Array.isArray(materials) || !aCount(runs) || amounts === null) {
+    return null;
+  }
+  return materialsTaken(materials, amounts, runs, runs);
+}
+
+/**
  * What a job takes of each material listed, as the client's job makes each quantity whole (industry/job.py 473 to
  * 479): the blueprint's own quantity, times each amount in turn, times the runs the materials are for, rounded to
  * two places as Python rounds, taken up to the whole, and never fewer than the job's runs. Null where a material is
@@ -588,6 +641,25 @@ function manufacturingServiceID(productGroupID) {
     return SERVICE_MANUFACTURING_SUPERCAPITAL;
   }
   return CAPITAL_SHIP_GROUPS.has(productGroupID) ? SERVICE_MANUFACTURING_CAPITAL : SERVICE_MANUFACTURING_BASIC;
+}
+
+/**
+ * The service a structure reacts by, as the client's structures say it (structures/services.py GetServiceID, 159
+ * to 167): by the group of what the reaction makes. Biochemical materials and molecular-forged materials have one,
+ * hybrid polymers another, the composite groups a third, and anything else the plain one. Null where that is no
+ * group.
+ */
+function reactionServiceID(productGroupID) {
+  if (!Number.isSafeInteger(productGroupID) || productGroupID <= 0) {
+    return null;
+  }
+  if (BIOCHEMICAL_REACTION_GROUPS.has(productGroupID)) {
+    return SERVICE_REACTIONS_BIOCHEMICAL;
+  }
+  if (productGroupID === HYBRID_POLYMERS_GROUP) {
+    return SERVICE_REACTIONS_HYBRID;
+  }
+  return COMPOSITE_REACTION_GROUPS.has(productGroupID) ? SERVICE_REACTIONS_COMPOSITE : SERVICE_REACTIONS;
 }
 
 /**
@@ -751,6 +823,11 @@ function feeOn(base, { cost, tax, sccTaxModifier, security }, research = false) 
  * where it has none (the client logs that, and goes on). A blueprint whose manufacturing lists no materials is
  * nought.
  *
+ * ⚠ FOR A REACTION IT IS BY THE REACTION'S MATERIALS, and each material's by its own reaction's in turn: the
+ * client prices by the materials of the work asked, and makes manufacturing of a science job's alone (527).
+ * `activity` names the work whose materials price it: "reaction" for a reaction's job, and manufacturing where
+ * none is said.
+ *
  * `activitiesOf(typeID)` is a blueprint type's activities, or null for a type that is no blueprint.
  * `adjustedPriceOf(typeID)` is the type's adjusted average price off the pilot's price table: null where the
  * table has not the type, and undefined where there is no table to read.
@@ -760,8 +837,9 @@ function feeOn(base, { cost, tax, sccTaxModifier, security }, research = false) 
  */
 function blueprintPrice(typeID, lookups, within = new Set()) {
   const activities = lookups.activitiesOf(typeID);
-  const manufacturing = activities ? activities.manufacturing : null;
-  if (!manufacturing) {
+  // (The work whose materials price it: manufacturing, or the reaction for a reaction's job.)
+  const work = activities ? activities[lookups.activity ?? "manufacturing"] : null;
+  if (!work) {
     const adjusted = lookups.adjustedPriceOf(typeID);
     if (adjusted === null) {
       return 0;
@@ -773,7 +851,7 @@ function blueprintPrice(typeID, lookups, within = new Set()) {
   }
   within.add(typeID);
   let price = 0;
-  for (const material of manufacturing.materials || []) {
+  for (const material of work.materials || []) {
     const each = Number.isSafeInteger(material && material.quantity) ? blueprintPrice(material.typeID, lookups, within) : null;
     if (each === null) {
       return null;
@@ -913,6 +991,9 @@ module.exports = {
   manufacturingJobTax,
   manufacturingServiceID,
   modifierMatchesProduct,
+  reactionJobMaterials,
+  reactionJobSeconds,
+  reactionServiceID,
   researchJobCost,
   researchJobFee,
   researchJobMaterials,

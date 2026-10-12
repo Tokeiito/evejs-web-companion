@@ -5480,6 +5480,8 @@ const ATTRIBUTE_TIME_RESEARCH_SPEED = 385;
 const ATTRIBUTE_MATERIAL_RESEARCH_SPEED = 398;
 /** const.attributeInventionReverseEngineeringResearchSpeed: the pilot's own time for an invention. */
 const ATTRIBUTE_INVENTION_SPEED = 1959;
+/** const.attributeReactionTimeMultiplier: the pilot's own time for a reaction. */
+const ATTRIBUTE_REACTION_TIME_MULTIPLIER = 2662;
 
 /** The reckonings of a research job, which the two researches share (src/industryInstall.js). */
 const RESEARCH_RECKONINGS = Object.freeze({
@@ -5493,7 +5495,10 @@ const RESEARCH_RECKONINGS = Object.freeze({
  * The kinds of work whose job is reckoned here as the client's own job reckons it, each with the name its recipe
  * has in the game's data, the attribute of the pilot's that is its own time for that work
  * (industryCommon.CHARACTER_MODIFIERS, 19 to 43), and its reckonings of what the job is charged and takes
- * (src/industryInstall.js). A reaction is not among them: it goes with nought and an empty map, as it did.
+ * (src/industryInstall.js). A reaction's cost, its tax and what it costs to start are a manufacturing job's
+ * reckonings: its base is the same (activities/reaction.py 16: the formula's price times the runs), the formula's
+ * price being by its reaction's materials (jobBlueprintPrice). Its materials have nothing of the blueprint's in
+ * them: a formula has no research.
  */
 const JOB_RECKONINGS = Object.freeze({
   [INDUSTRY_ACTIVITY_IDS.manufacturing]: Object.freeze({
@@ -5522,7 +5527,18 @@ const JOB_RECKONINGS = Object.freeze({
     fee: industryInstall.inventionJobFee,
     materials: (listed, request) => industryInstall.inventionJobMaterials({ ...listed, decryptorTypeID: request.decryptorTypeID }),
   }),
+  [INDUSTRY_ACTIVITY_IDS.reaction]: Object.freeze({
+    recipe: "reaction",
+    timeAttribute: ATTRIBUTE_REACTION_TIME_MULTIPLIER,
+    cost: industryInstall.manufacturingJobCost,
+    tax: industryInstall.manufacturingJobTax,
+    fee: industryInstall.manufacturingJobFee,
+    materials: (listed) => industryInstall.reactionJobMaterials(listed),
+  }),
 });
+
+/** The work whose materials a job's blueprint is priced by (industryCommon.GetBlueprintPrice, 521 to 528): a reaction's own for a reaction, and manufacturing's for any other. */
+const pricedWorkOf = (request) => (request.activityID === INDUSTRY_ACTIVITY_IDS.reaction ? "reaction" : "manufacturing");
 
 /**
  * The type whose price a job's base is of (the bases of src/industryInstall.js): the job's own blueprint's, and for
@@ -5625,7 +5641,7 @@ async function skillLevelsFor(account, held, typeIDs) {
  * A copy job's is of neither the skills nor the blueprint's time research (the client's job has those for
  * manufacturing alone), and is by the runs each copy is licensed for. A research job's is of neither too, and is by
  * the level the blueprint is at: each run's time is the activity's by the level it starts from. An invention's is
- * the activity's time by its runs.
+ * the activity's time by its runs, and so is a reaction's, by the pilot's own reaction time (attribute 2662).
  *
  * ⚠ ALL OR NOTHING. The server refuses a job whose time is not nought and is not its own to the second
  * (MISMATCH_TIME), so a time is sent only where every input was had. Null otherwise: any other kind of work
@@ -5686,6 +5702,9 @@ async function reckonedJobSeconds(account, held, webSessionID, request, facility
     } else if (request.activityID === INDUSTRY_ACTIVITY_IDS.invention) {
       mostRuns = industryInstall.inventionJobMostRuns(timedBy);
       seconds = industryInstall.inventionJobSeconds({ ...timedBy, runs: request.runs });
+    } else if (request.activityID === INDUSTRY_ACTIVITY_IDS.reaction) {
+      // (Its most runs are not held here, as a manufacturing job's are not.)
+      seconds = industryInstall.reactionJobSeconds({ ...timedBy, runs: request.runs });
     } else {
       seconds = industryInstall.manufacturingJobSeconds({
         ...timedBy,
@@ -5774,13 +5793,16 @@ async function reckonedJobMaterials(held, webSessionID, request, facilityOf) {
 }
 
 /**
- * The type a blueprint's manufacturing makes, as the game's data has it, or null. Its group and category say which
- * of a facility's modifiers are for a job with the blueprint, of whatever kind of work: the client holds each such
- * modifier to the blueprints of what it names (industryCommon.Facility, 404 to 411).
+ * The type a blueprint makes, as the game's data has it, or null: the first thing its manufacturing makes, and for
+ * a blueprint that has no manufacturing, which a reaction formula is, the first thing its reaction makes
+ * (industry/blueprint.py 62 to 72). Its group and category say which of a facility's modifiers are for a job with
+ * the blueprint, of whatever kind of work: the client holds each such modifier to the blueprints of what it names
+ * (industryCommon.Facility, 404 to 411).
  */
 function blueprintsProduct(definition) {
-  const manufacturing = definition.activities ? definition.activities.manufacturing : null;
-  const products = manufacturing && Array.isArray(manufacturing.products) ? manufacturing.products : [];
+  const activities = definition.activities || {};
+  const making = activities.manufacturing || activities.reaction || null;
+  const products = making && Array.isArray(making.products) ? making.products : [];
   const productTypeID = Number(definition.productTypeID) || Number(products[0] && products[0].typeID) || 0;
   return productTypeID > 0 && typeof staticData.getType === "function" ? staticData.getType(productTypeID) : null;
 }
@@ -5799,14 +5821,15 @@ const ATTRIBUTE_JOB_COST_MULTIPLIER = 1954;
 
 /**
  * The price of a blueprint a job's base is of (`blueprintTypeID`: pricedTypeOf), off the pilot's own price table
- * (src/industryInstall.js, blueprintPrice): by the blueprint's manufacturing materials, for any kind of work
- * (industryCommon.GetBlueprintPrice, 526 to 528). Null where there is none to read: a pilot through the gateway,
+ * (src/industryInstall.js, blueprintPrice): by the blueprint's manufacturing materials, for any kind of work but a
+ * reaction, whose formula is priced by its reaction's materials (`work`: pricedWorkOf;
+ * industryCommon.GetBlueprintPrice, 526 to 528). Null where there is none to read: a pilot through the gateway,
  * who has no table; one on the game port whose table has not come yet; no blueprint named. (A blueprint that has
  * no manufacturing is priced by its own type, as the client prices it: a copy job can have such a one. It is asked
  * for only of a job that is reckoned at all, which is one the data has a recipe of its own work for:
  * reckonedRecipe.)
  */
-function jobBlueprintPrice(held, blueprintTypeID) {
+function jobBlueprintPrice(held, blueprintTypeID, work = "manufacturing") {
   if (!(blueprintTypeID > 0 && gamePortPilots && isGamePortHandle(held.bridgeSessionID) && typeof gamePortPilots.averageMarketPrice === "function")) {
     return null;
   }
@@ -5815,6 +5838,7 @@ function jobBlueprintPrice(held, blueprintTypeID) {
     return each && each.activities ? each.activities : null;
   };
   return industryInstall.blueprintPrice(blueprintTypeID, {
+    activity: work,
     activitiesOf,
     adjustedPriceOf: (typeID) => {
       const said = gamePortPilots.averageMarketPrice({ userid: held.accountID }, held.bridgeSessionID, typeID);
@@ -5827,8 +5851,9 @@ function jobBlueprintPrice(held, blueprintTypeID) {
  * The service a structure would do a job by, as the client's activity asks for it (industry/activity.py 54 to 57:
  * structures.GetServiceID(activityID, typeID)). A copy job's is the one service a structure copies by, a
  * research job's the one it does that research by, and an invention's the one it invents by. A manufacturing job's is by the group of the first thing the
- * blueprint's manufacturing makes, and null where the game's data has not the blueprint, a product of it or the
- * product's type.
+ * blueprint's manufacturing makes, and a reaction's by the group of the first thing the formula's reaction makes
+ * (activity.py 54 to 56: self.products[0]). Null where the game's data has not the blueprint, a product of it or
+ * the product's type.
  */
 function jobServiceOf(request) {
   if (request.activityID === INDUSTRY_ACTIVITY_IDS.copying) {
@@ -5844,12 +5869,13 @@ function jobServiceOf(request) {
   const definition = typeof staticData.getIndustryBlueprint === "function"
     ? staticData.getIndustryBlueprint(request.blueprintTypeID)
     : null;
-  const products = definition && definition.activities && definition.activities.manufacturing
-    ? definition.activities.manufacturing.products
-    : null;
+  const reaction = request.activityID === INDUSTRY_ACTIVITY_IDS.reaction;
+  const making = definition && definition.activities ? definition.activities[reaction ? "reaction" : "manufacturing"] : null;
+  const products = making ? making.products : null;
   const made = Array.isArray(products) && products[0] ? Number(products[0].typeID) : 0;
   const type = made > 0 && typeof staticData.getType === "function" ? staticData.getType(made) : null;
-  return industryInstall.manufacturingServiceID(type ? Number(type.groupID) : null);
+  const groupID = type ? Number(type.groupID) : null;
+  return reaction ? industryInstall.reactionServiceID(groupID) : industryInstall.manufacturingServiceID(groupID);
 }
 
 /**
@@ -5876,7 +5902,7 @@ async function reckonedJobFee(held, webSessionID, request, facilityOf, cost) {
   const reckoning = JOB_RECKONINGS[request.activityID];
   try {
     assertCurrentHeldSession(held, webSessionID);
-    const price = jobBlueprintPrice(held, pricedTypeOf(request, recipe));
+    const price = jobBlueprintPrice(held, pricedTypeOf(request, recipe), pricedWorkOf(request));
     if (price === null) {
       return none;
     }
@@ -5935,7 +5961,7 @@ async function reckonedJobCost(held, webSessionID, request, facilityOf) {
   }
   try {
     assertCurrentHeldSession(held, webSessionID);
-    const price = jobBlueprintPrice(held, pricedTypeOf(request, recipe));
+    const price = jobBlueprintPrice(held, pricedTypeOf(request, recipe), pricedWorkOf(request));
     if (price === null) {
       return null;
     }
