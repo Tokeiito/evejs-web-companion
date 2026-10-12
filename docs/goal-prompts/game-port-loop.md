@@ -2146,6 +2146,27 @@ Take these defaults, and list each under "For the operator" in the log so they c
   were set to wait on a live run. Read again, what waits on it is their use in
   a page, not the asking of them. A change of the order is said among the
   decisions, with why.
+- **The real thing may be easier to stand up than a stand-in is to write.**
+  The bot host with an engine that runs nothing (`createBotHost` and a stack
+  of stubs, as `src/botHostRecovery.test.js` makes it) gives a hosted bot's
+  real request, by the host's own fetch for that bot, and its real keeping.
+  Before something is stood in for, read how its own tests make it
+  (`test/pagesJettison.test.js`).
+- **What is kept "before the call leaves" is read while the call is at the
+  server.** The stand-in server tells the test when a call arrives
+  (`world.amid`), and the test reads what the BFF has kept at that moment.
+  Taking out the host's marking of a jettison as issued changed no state a
+  test could see afterwards, and lived until then.
+- **A refusal made at two places is told apart by what was read for it.** A
+  jettison held back by unsettled custody is refused by the handler before
+  anything is read, and again by the host five reads on: the same answer.
+  Assert the reads.
+- **A replacement that says the same thing another way is no breakage.** Two
+  lived for that: a value the line above holds equal to what replaced it, and
+  a check rewritten to the same truth. Read each replacement for the input
+  that makes it differ, before the list is run.
+- **A route's clock may not be the one the fixture holds.** The custody's is
+  the BFF's own `Date.now()`; the operations' is the test's.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
