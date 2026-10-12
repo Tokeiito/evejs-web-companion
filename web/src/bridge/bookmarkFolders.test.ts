@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { bridgeAsk, bridgeDo } from "../app/api.ts";
-import { addToKnownFolders, readFoldersWithAdminAccess, updateKnownFolderState } from "./bookmarkFolders.ts";
+import { addToKnownFolders, moveBookmarks, readFoldersWithAdminAccess, updateKnownFolderState } from "./bookmarkFolders.ts";
 
 function recording(result: unknown, method: string) {
   const sent: [string, unknown][] = [];
@@ -43,4 +43,14 @@ test("the folders a pilot administers are read by the search, with nothing sent,
   const body = read.sent[0]![1] as { service: string; method: string; args: unknown[] };
   assert.deepEqual([body.service, body.method, body.args], ["accessGroupBookmarkMgr", "SearchFoldersWithAdminAccess", []]);
   assert.deepEqual(folders.map((f) => [f.folderID, f.folderName, f.isPersonal]), [[7000001, "To Salvage", false]]);
+});
+
+test("a finished site's bookmark is moved as a pilot's write, meant: from, to, no subfolder, and the bookmarks", async () => {
+  const move = recording([{ type: "list", items: [] }, null], "MoveBookmarksToFolderAndSubfolder");
+  await moveBookmarks(bridgeDo({ token: "a-pilot's", fetch: move.fetch }), 7000001, 7000002, [9000011]);
+  assert.deepEqual(move.sent, [["/api/bridge/call", { service: "accessGroupBookmarkMgr", method: "MoveBookmarksToFolderAndSubfolder", args: [7000001, 7000002, null, [9000011]], kwargs: null, pilot: true, confirm: true }]]);
+  const none = recording(null, "MoveBookmarksToFolderAndSubfolder");
+  await assert.rejects(moveBookmarks(bridgeDo({ token: "a-pilot's", fetch: none.fetch }), 7000001, 7000002, []), /There is no bookmark to move\./);
+  await assert.rejects(moveBookmarks(bridgeDo({ token: "a-pilot's", fetch: none.fetch }), 0, 7000002, [9000011]), /That is no bookmark folder\./);
+  assert.equal(none.sent.length, 0);
 });

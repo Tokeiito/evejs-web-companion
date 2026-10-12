@@ -67,6 +67,8 @@ const ARG_LABEL: Readonly<Record<string, string>> = {
   bookmark: "a saved bookmark to warp to",
   folder: "a bookmark folder to use",
   alsoFolder: "another bookmark folder to use",
+  fromFolder: "the bookmark folder of sites to salvage",
+  doneFolder: "the bookmark folder to file finished sites in",
   from: "where to move items from",
   to: "where to move items to",
   items: "something to load",
