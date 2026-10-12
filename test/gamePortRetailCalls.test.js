@@ -1769,6 +1769,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "structureSettings.CharacterGetService",
     // A structure's guests. The gateway's list has a station's guests and nothing of a structure's.
     "structureGuests.GetGuests",
+    // A shared bookmark folder taken up, and a known one switched on or off (bookmarkSvc.py 357 and 483).
+    "accessGroupBookmarkMgr.AddToKnownFolders", "accessGroupBookmarkMgr.UpdateKnownFolderState",
     // A pilot's dock at a structure and its undock, by the client's structure docking service. The gateway's list has nothing of them.
     "structureDocking.Dock", "structureDocking.Undock",
     // A pilot's employment record and transfers, by the client's History panel. The gateway's list has nothing of the corporation service's.
