@@ -1067,7 +1067,18 @@ to a generic sentence rather than leaking the code.
   copying lists none. **A copy job of more copies than the retail client's job
   could have** (thirty days over its time and time modifiers, and never more than
   500) **is refused 400 `INVALID_RUNS`**, with the most said, where that most
-  could be reckoned; no job is sent. **`timeEfficiency`** is the
+  could be reckoned; no job is sent. **A research job** (`research_time`,
+  `research_material`) **is reckoned too** (`researchJobSeconds`,
+  `researchJobFee`, `researchJobMaterials`), by where the blueprint stands in
+  that research: its `timeEfficiency` for a research of time, its
+  `materialEfficiency` for one of materials, as the page read them. Its time is
+  the sum of its runs' times, each run a level above the last; its fee is of the
+  research job's own base, with the SCC's surcharge halved; its materials are by
+  its runs. Where the page said nothing of that research, nought goes as before.
+  **A research of a blueprint at its last level is refused 400
+  `RESEARCH_LIMIT`, and one of more runs than are left to it 400
+  `INVALID_RUNS`**, before anything is asked; one of more runs than thirty days
+  hold of its time, 400 `INVALID_RUNS`, where that could be reckoned. **`timeEfficiency`** is the
   blueprint's own time research as the page read it (a whole number from 0 to 20,
   else 400 `INVALID_TIME_EFFICIENCY`). Where it is said and the work is
   manufacturing, the job's time is reckoned as the retail client's job reckons it

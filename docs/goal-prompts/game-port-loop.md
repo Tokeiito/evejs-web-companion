@@ -1815,6 +1815,20 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A script that makes a number of an answer says the answer's status first.** A
   hangar read as nought, four times, was a route refusing with 409: the count was of
   nothing. (`GET /api/bridge/inventory` refuses for a pilot docked in a structure.)
+- **A search for where the server parts from the client is over what both are given, and
+  says what it left out.** The search of the researches skipped every blueprint the
+  two price differently, to compare bases like for like, and so found the pricing
+  itself: 649 blueprints the client prices at nought and the server by their own
+  type. Count what a search sets aside, and look at it.
+- **A sum whose terms cancel is still told apart by its floats.** The activity's time
+  is multiplied into a research's base and divided out again; a breakage that made it
+  1 lived until a case out of the client's Python's answers was put to the route,
+  where the two come an ISK apart. Take such a case from the oracle's own cases
+  (`rsc-vectors.js` lists them by the other way of doing the sum).
+- **A new test that fails on its first run is read both ways before either side is
+  changed.** Two of this unit's did. One was my own sum in a comment (a product
+  rounded the wrong way): the expectation was mine to correct. The other was the code
+  taking the text "3" for the number 3: the code was made strict.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
