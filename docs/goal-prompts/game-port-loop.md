@@ -2210,6 +2210,19 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A small ship wants small stacks.** A Reaper's hold is 120 m³: of 1,000 Veldspar and 1,000
   Scordite asked into it, one went, and the transfer route said "applied". Read the hold after
   a move before going by it (`jet-stage.js <bff> <account> <characterID> [typeID:quantity,...]`).
+- **A live run is sized from its start route's text before anything is staged.** Each refusal
+  of the start is a thing to stage: a Mining Operation's start refuses a member whose
+  corporation has no saved fitting that its ship is (`OPERATION_EQUIPMENT_NOT_READY`), which
+  no note had said. Read the start, what it plans by, and the routines it starts; then look,
+  reading only, at whether the world has each thing.
+- **Looks for a mining operation, each of which only reads**: `mo-look.js <bff> <account>
+  <characterID>...` (where a pilot is, in what, and its corporation's saved fittings as the
+  BFF's provisioning reads them); `mo-two-look.js <bff> <account> <characterID> <characterID>`
+  (two pilots of one account online at once, each read before and after the other comes on);
+  `mo-static.js <repo> <stationID>` (the BFF's static data for a station and its system). A
+  login brings a pilot online and the logout takes it off: nothing is changed.
+- **Two pilots of one account are online at once on the game-port BFF** (Test Two and Test
+  Three, seen 2026-10-12). Of the test pilots only those two are of a player's corporation.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
