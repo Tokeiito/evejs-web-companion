@@ -2038,6 +2038,22 @@ Take these defaults, and list each under "For the operator" in the log so they c
   reaction's job was read whole and sized into Next while one worked in
   `eve.js`. Nothing of it was built, so the iteration ended on a clean tree,
   and the breakage tool never ran beside another's tests.
+- **Where no recording is, the server that holds a number against its own is the
+  oracle.** No recording has an install. The server refuses a job whose time,
+  materials or cost is not nought and is not its own: a reckoning is proven by a
+  job accepted with each number not nought. Stage the case that makes each one
+  so (a reaction's tax was nought until the refinery was given a rate in the
+  store).
+- **A test that passes may be saying what is no longer so.** Four passages held
+  "a reaction is not reckoned", asking one of a blueprint that has no reaction.
+  They pass with every kind reckoned, for the blueprint's want of a recipe. When
+  the last case of a kind goes, `grep` the tests for the kind's name and read
+  what each says.
+- **The server started by its launcher outlives a background shell.** A script
+  run in the background stopped EveJS, changed the store and started it through
+  `start-evejs.ps1`; the server was listening by the same pid after the shell
+  was gone, and through the checks that followed. It is the shell's own child
+  that dies with it. Look at the listener's pid after such a start all the same.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

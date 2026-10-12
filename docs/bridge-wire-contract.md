@@ -1169,7 +1169,14 @@ to a generic sentence rather than leaking the code.
   retail client's None key; the `materials` the route answers leave that empty
   place out. An invention of more runs than the retail client's job could have
   (thirty days over its time and time modifiers, and never more than 500) is 400
-  `INVALID_RUNS`, where that could be reckoned. A reaction is not reckoned, and
+  `INVALID_RUNS`, where that could be reckoned. **A reaction is reckoned too**
+  (`reactionJobSeconds`, `reactionJobMaterials`, and a manufacturing job's
+  cost, tax and fee on its own base): its time is the activity's by its runs,
+  through the pilot's own reaction time and the facility's modifiers for what
+  the formula makes; its materials have nothing of a research in them, and
+  nothing need be said of one; its fee, on the game port, is of the formula's
+  price by its reaction's materials, and its tax by the service the group of
+  what it makes is reacted by. A reaction asked of a blueprint that has none
   goes with nought and an empty map. **`timeEfficiency`** is the
   blueprint's own time research as the page read it (a whole number from 0 to 20,
   else 400 `INVALID_TIME_EFFICIENCY`). Where it is said and the work is
