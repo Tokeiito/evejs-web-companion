@@ -2054,6 +2054,23 @@ Take these defaults, and list each under "For the operator" in the log so they c
   `start-evejs.ps1`; the server was listening by the same pid after the shell
   was gone, and through the checks that followed. It is the shell's own child
   that dies with it. Look at the listener's pid after such a start all the same.
+- **A script's press is of the thing it names, or it is not named.** A press
+  written down as "the second blueprint's row" took the window's first "Start
+  a job…" button, and that was the first blueprint's again: the form had been
+  closed by a refusal. It stood in the notes as a call that was not sent and
+  could not be explained. Find the thing pressed by what it holds (the row's
+  own text or class, its place among the rows read in the call before), read
+  which is the chosen one after, and read the transcript's own script before a
+  press is said to be of anything.
+- **Listing the breakages can move a rule to where a test reaches it.** What
+  keeps a job from being asked about was one long line of a window: nine ways
+  to break it and no test that could see one. Made a function of the bridge,
+  each is caught. Where a list has a breakage no test could catch for want of
+  anything to call, move the rule and do not write a test of the source's text.
+- **What a transport answers from what it kept sends nothing, and the server's
+  log shows nothing.** A second asking of the job that is the one monitored is
+  answered so. Before a call "not sent" is taken for a fault, read what the
+  transport keeps for that call and by what.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
