@@ -127029,6 +127029,11 @@ hangar for reprocessed (below).
 - The store was saved before each staging (`rpc`, then `sth`) and put back after;
   looks that change nothing then found Test Pilot at the Jita station with its one
   ship and an empty hold. The copies are deleted.
+- **A slip of mine**: the tab was left with Test Pilot online from the look for a
+  Mining window until this entry was written, while scripts chose the same pilot on
+  the same BFF (the game port's; nothing of the gateway's ran for the pilot in that
+  while) and the store was put back under it. It was logged out by the page's own
+  button after, and the viewport put back.
 - **`eve.js` has none of its commits off its origin, read as this was written**: its
   origin's `main` is at `edc0b26ff`, where the local one is. The five by sub-agents
   of the units before (`d6db121a0`, `9adca66a3`, `d925ef3d8`, `e86e63437` and
