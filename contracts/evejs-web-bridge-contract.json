@@ -1098,6 +1098,7 @@
     "genericBridgeAllowsWrites": true,
     "genericBridgeWrites": [
       "accessGroupBookmarkMgr.AddToKnownFolders",
+      "accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder",
       "accessGroupBookmarkMgr.UpdateKnownFolderState",
       "agentMgr.WarpToLocation",
       "beyonce.BookmarkLocation",

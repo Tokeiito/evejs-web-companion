@@ -329,6 +329,21 @@ const sentWithNothing = (args, kwargs) => (args.length === 0 && Object.keys(kwar
 const folderAndState = (args, kwargs) => (args.length === 2 && Number.isSafeInteger(args[0]) && args[0] > 0 && typeof args[1] === "boolean" && Object.keys(kwargs).length === 0
   ? {}
   : { status: "differs", note: "The client sends the folder's ID and whether it is active, and nothing else." });
+/**
+ * bookmarkSvc.MoveOrCopyBookmarks (691): MoveBookmarksToFolderAndSubfolder(oldFolderID, folderID, subfolderID,
+ * bookmarkIDs), the bookmarks a set (the values of a defaultdict(set)), which Python reduces to (set, ([...],)). A
+ * route gives a list.
+ */
+const movingBookmarks = (args, kwargs) => {
+  const anID = (value) => Number.isSafeInteger(value) && value > 0;
+  const [from, to, subfolder, bookmarkIDs] = args;
+  const ids = Array.isArray(bookmarkIDs) ? bookmarkIDs : null;
+  if (args.length !== 4 || !anID(from) || !anID(to) || !(subfolder === null || anID(subfolder)) || ids === null || ids.length === 0 || !ids.every(anID)
+    || Object.keys(kwargs).length !== 0) {
+    return { args, kwargs, status: "differs", note: "The client sends the folder the bookmarks are in, the folder and subfolder (or None) they go to, and a set of them." };
+  }
+  return { args: [from, to, subfolder, { type: "objectex1", header: [token("__builtin__.set"), [{ type: "list", items: dictOrder(ids) }]], list: [], dict: [] }], kwargs };
+};
 /** Items' IDs as the client's repair shop lists them: whole numbers above nought, and one at least. */
 const itemIDsListed = (value) => Array.isArray(value) && value.length > 0 && value.every((each) => Number.isSafeInteger(each) && each > 0);
 /** repair.GetRepairQuotes (base_repairshop.py 63): GetRemoteRepairMgr().GetRepairQuotes(itemIDs), the IDs a list. */
@@ -1548,6 +1563,8 @@ const RETAIL_CALLS = Object.freeze({
     "folders, bookmarks, subfolders = self.accessGroupBookmarkMgr.GetMyActiveBookmarks(), by name and with nothing: recorded on Tranquility so, in three recordings. The client asks once in a session and keeps the three, changing them as it makes, changes and deletes a bookmark and as the server says a shared folder changed. The transport asks as a character is chosen and keeps the three (pilots.js, bookmarksRead): a place bookmarked on the ballpark's object is worked into them as the client works it (afterBookmarkCall), and they are let go at any other write of the pilot's own of a bookmark, a folder or a subfolder and at the server's word of a shared folder, and asked for when they are next wanted. The page asks each time it wants them, and is answered from what is kept."),
   "accessGroupBookmarkMgr.SearchFoldersWithAdminAccess": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:715", sentWithNothing,
     "self.accessGroupBookmarkMgr.SearchFoldersWithAdminAccess(), by name and with nothing, kept two minutes (Memoize(2)): the pilot's personal folders and the shared folders it administers, which is how the Locations panel finds a folder to add by its name (bookmarksPanel.py 638). No recording has one."),
+  "accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder": reshaped("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:691", movingBookmarks,
+    "self.accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder(oldFolderID, folderID, subfolderID, bookmarkIDs), by name, once for each folder the bookmarks are in, the bookmarks a set. It answers the rows moved and a message or None. No recording has one."),
   "accessGroupBookmarkMgr.AddToKnownFolders": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:357", folderAndState,
     "self.accessGroupBookmarkMgr.AddToKnownFolders(folderID, isActive), by name, from the window that adds a shared folder (linkedBookmarkFolderWindow.py 173). It answers the folder, and its bookmarks and subfolders where it is active. No recording has one."),
   "accessGroupBookmarkMgr.UpdateKnownFolderState": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:483", folderAndState,

@@ -523,6 +523,10 @@ export interface ScriptObservation {
   readonly bookmarks?: readonly {
     readonly bookmarkID: number;
     readonly name: string;
+    /** The folder it is filed in. */
+    readonly folderID?: number;
+    /** How long ago it was made, by the server's clock; null where it does not say. */
+    readonly ageMs?: number | null;
     readonly solarSystemID: number | null;
   }[] | null;
   /**

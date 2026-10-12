@@ -12,6 +12,8 @@
 //   self.accessGroupBookmarkMgr.SearchFoldersWithAdminAccess()            (bookmarkSvc.py 715)
 //   self.accessGroupBookmarkMgr.AddToKnownFolders(folderID, isActive)     (bookmarkSvc.py 357)
 //   self.accessGroupBookmarkMgr.UpdateKnownFolderState(folderID, isActive) (bookmarkSvc.py 483)
+//   self.accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder(oldFolderID, folderID, subfolderID, bookmarkIDs)
+//                                                                         (bookmarkSvc.py 691)
 //
 // by the manager's name. The search is how the client's panel finds a folder to add by its name
 // (bookmarksPanel.py 638): it answers the pilot's personal folders and every shared folder the pilot administers.
@@ -47,6 +49,21 @@ export async function addToKnownFolders(act: Ask, folderID: number, isActive: bo
     throw new Error("That is no bookmark folder.");
   }
   await act("accessGroupBookmarkMgr", "AddToKnownFolders", [folderID, isActive]);
+}
+
+/**
+ * Moves the bookmarks `bookmarkIDs`, all in the folder `fromFolderID`, into the folder `toFolderID` (no subfolder):
+ * the client's own move (bookmarkSvc.MoveOrCopyBookmarks, 691), which needs the pilot able to manage both folders.
+ * Fails as the call fails.
+ */
+export async function moveBookmarks(act: Ask, fromFolderID: number, toFolderID: number, bookmarkIDs: readonly number[]): Promise<void> {
+  if (!anID(fromFolderID) || !anID(toFolderID)) {
+    throw new Error("That is no bookmark folder.");
+  }
+  if (bookmarkIDs.length === 0 || !bookmarkIDs.every(anID)) {
+    throw new Error("There is no bookmark to move.");
+  }
+  await act("accessGroupBookmarkMgr", "MoveBookmarksToFolderAndSubfolder", [fromFolderID, toFolderID, null, [...bookmarkIDs]]);
 }
 
 /** Switches the known folder `folderID` on or off. Fails as the call fails (TooManyActiveFolders past the limit). */
