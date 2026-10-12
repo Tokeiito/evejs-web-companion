@@ -3791,6 +3791,15 @@ export function foregroundCallPriority(active: boolean): RequestPriority | undef
 const ratThreatByTypeID = new Map<number, RatThreat>();
 
 /**
+ * Each rat type's signature radius (dogma 552), filled by the SAME fetch as
+ * `ratThreatByTypeID` and cached under the same rule: only what the route
+ * answered for. A type the static tables gave no 552 for is simply absent,
+ * which the kill order sorts after every known size.
+ */
+const ratSignatureByTypeID = new Map<number, number>();
+const ATTR_SIGNATURE_RADIUS = 552;
+
+/**
  * Metres of drone control range each drone-range SKILL buys per level, off that
  * skill type's own dogma attribute 459 (`droneRangeBonus`).
  *
@@ -20967,6 +20976,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           targetedByPlayer,
           targetGroupNames,
           threatByTypeID,
+          signatureByTypeID: ratSignaturesOnGrid(snapshot, origin),
           dronesOut:
             snapshot === null
               ? null
@@ -23112,7 +23122,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const missing = [...typeIDs].filter((typeID) => !ratThreatByTypeID.has(typeID));
     if (missing.length > 0) {
       try {
-        const attributes = await api.fetchTypeDogma(missing, THREAT_ATTRIBUTE_IDS, callOptions);
+        // The signature radius rides along: same types, same round trip, and
+        // `threatFromAttributes` reads only the ids it names.
+        const attributes = await api.fetchTypeDogma(
+          missing,
+          [...THREAT_ATTRIBUTE_IDS, ATTR_SIGNATURE_RADIUS],
+          callOptions,
+        );
         for (const typeID of missing) {
           const row = attributes[typeID];
           // ⚠ ONLY WHAT THE ROUTE ACTUALLY ANSWERED FOR. A typeID the response
@@ -23122,6 +23138,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // there", and those two must not both become a permanent verdict.
           if (row !== undefined) {
             ratThreatByTypeID.set(typeID, threatFromAttributes(row));
+            const signature = row[ATTR_SIGNATURE_RADIUS];
+            if (typeof signature === "number" && Number.isFinite(signature) && signature > 0) {
+              ratSignatureByTypeID.set(typeID, signature);
+            }
           }
         }
       } catch {
@@ -23141,6 +23161,28 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
     }
     return threats;
+  }
+
+  /**
+   * The signature radius of each hostile type on this grid, from the cache
+   * `classifyRatThreats` fills. Free: it reads no route, so it must run AFTER
+   * that call on the same tick to see this tick's new types.
+   */
+  function ratSignaturesOnGrid(
+    snapshot: ReturnType<typeof decodeSpaceSnapshot>,
+    origin: SpaceVector,
+  ): Readonly<Record<number, number>> | null {
+    if (snapshot === null) {
+      return null;
+    }
+    const signatures: Record<number, number> = {};
+    for (const row of hostileRows(snapshot, origin)) {
+      const signature = row.typeID === null ? undefined : ratSignatureByTypeID.get(row.typeID);
+      if (row.typeID !== null && signature !== undefined) {
+        signatures[row.typeID] = signature;
+      }
+    }
+    return signatures;
   }
 
   // --- the drone leash, from the PILOT --------------------------------------

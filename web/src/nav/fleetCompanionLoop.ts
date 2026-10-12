@@ -61,6 +61,7 @@ import {
 } from "./propulsion.ts";
 import type { SpaceEntity, SpaceSnapshot } from "../store/types.ts";
 import type { ChatMessage } from "../store/types.ts";
+import { isHostile } from "../space/overview.ts";
 import {
   COMPANION_FOLLOW_RANGE_M,
   isChatCommandSenderAllowed,
@@ -623,6 +624,17 @@ export interface CompanionFlee {
  * They stay EMPTY in phase 0; each is filled by the phase that needs it.
  */
 export interface FleetCompanionObservation extends ScriptObservation {
+  /**
+   * Each hostile TYPE's signature radius in metres (dogma 552), for the free-
+   * fire kill order's "up the size chain".
+   *
+   * ⚠ SIGNATURE, NOT A SIZE WORD IN THE GROUP NAME. Officers, haulers, rogue
+   * drones and sentry guns carry no "Frigate" or "Cruiser" in their group, but
+   * every type has a signature radius, and it is the number the server's own
+   * turret and drone hit formula reads. A type whose read has not landed is
+   * absent, which `pickPrimary` sorts after every known size.
+   */
+  readonly signatureByTypeID?: Readonly<Record<number, number>> | null;
   /**
    * Whether THIS pilot's tag write can land, from the fleet roster's role/job.
    *
@@ -1719,6 +1731,21 @@ export interface CompanionLadderMemory {
    */
   readonly propsStoppingID: number | null;
   /**
+   * `targets called|all`: whether this pilot shoots only what the fleet calls,
+   * or picks its own targets off the grid by the kill order when nobody is
+   * calling one.
+   *
+   * ⚠ "called" IS THE DEFAULT, AND IT IS THE SAFE ONE. A commander who forgot
+   * to say anything gets pilots that hold fire until a call, which is visible
+   * and harmless. A free-fire default would shoot a site's wave trigger the
+   * first time a fleet warped in, which cannot be taken back.
+   *
+   * ⚠ IT LATCHES LIKE `propsHeld`, AND A `stop` DOES NOT CLEAR IT, for the same
+   * reason: `stop` cancels orders and halts the hull, and a mode is not an
+   * order. See `withStandingChatOrders`.
+   */
+  readonly targetMode: "called" | "all";
+  /**
    * How many `loadAmmo` calls the reload rung has spent on each gun, keyed by
    * the module's own item id.
    *
@@ -1836,6 +1863,7 @@ export function freshLadderMemory(): CompanionLadderMemory {
     // a standing order never to use its prop mod.
     propsHeld: null,
     propsStoppingID: null,
+    targetMode: "called",
     reloadAttempts: {},
   };
 }
@@ -2232,6 +2260,7 @@ function decideCompanionStep(
     stopShipIssued: memory.stopShipIssued,
     propsHeld: memory.propsHeld,
     propsStoppingID: memory.propsStoppingID,
+    targetMode: memory.targetMode,
     // Carried for the same reason as the orders above: a supervisor logging
     // back in says nothing about which of this ship's guns are empty or how
     // many loads have already been spent on them.
@@ -3300,20 +3329,25 @@ function decideOpenFire(
  */
 function lockThenEngage(
   targetID: number,
-  source: "tag" | "broadcast" | "chat",
+  source: "tag" | "broadcast" | "chat" | "free-fire",
   heard: string,
   why: string,
   request: FleetCompanionRequest,
   obs: FleetCompanionObservation,
   memory: CompanionLadderMemory,
 ): CompanionDecision {
+  // Free fire obeys nobody, so it says so: its own phase, and no
+  // `followingOrderFrom`, which the controller reads as "own-ladder".
+  const authority =
+    source === "free-fire"
+      ? { phase: "Free fire" }
+      : { phase: "Obeying fleet", followingOrderFrom: source };
   if (!isAlreadyLocked(targetID, obs.lockedTargetIDs, memory)) {
     return {
       action: { kind: "lock", targetID },
-      phase: "Obeying fleet",
+      ...authority,
       why: why + " Locking it.",
       memory: { ...memory, lastLockIssuedFor: targetID },
-      followingOrderFrom: source,
       lastOrderHeard: heard,
     };
   }
@@ -3321,10 +3355,9 @@ function lockThenEngage(
   if (fire !== null) {
     return {
       action: { kind: "activate", moduleID: fire.moduleID, targetID },
-      phase: "Obeying fleet",
+      ...authority,
       why: why + " Opening fire on it.",
       memory: fire.memory,
-      followingOrderFrom: source,
       lastOrderHeard: heard,
     };
   }
@@ -3334,7 +3367,7 @@ function lockThenEngage(
   return {
     action: WAIT,
     standing: true,
-    phase: "Obeying fleet",
+    ...authority,
     // ⚠ THE NO-WEAPON CASE SAYS SO, and that is the whole of its job. An empty
     // weapon list is a setting, not a fault, so it must not read as one -- but
     // a pilot that locks a called target and never shoots it is EXACTLY what
@@ -3347,7 +3380,6 @@ function lockThenEngage(
         ? " Locked. No weapon is picked for this pilot, so it holds the lock without firing."
         : " Locked, and firing on it."),
     memory,
-    followingOrderFrom: source,
     lastOrderHeard: heard,
   };
 }
@@ -3656,7 +3688,7 @@ interface NamedOrder {
  */
 type NamedChatCommandKind = Exclude<
   ChatCommand["kind"],
-  "salvage" | "loot" | "stop" | "follow" | "destination" | "props"
+  "salvage" | "loot" | "stop" | "follow" | "destination" | "props" | "targets"
 >;
 
 const CHAT_ORDER_NAMES: Readonly<Record<NamedChatCommandKind, NamedOrderName>> = Object.freeze({
@@ -3907,6 +3939,7 @@ function withStandingChatOrders(
       command.kind === "destination" ||
       command.kind === "stop" ||
       command.kind === "props" ||
+      command.kind === "targets" ||
       command.kind === "salvage" ||
       command.kind === "loot"
     ) {
@@ -3945,6 +3978,10 @@ function withStandingChatOrders(
       // find the rung still holding a stale "I am switching this off". The
       // override is the newer statement and wins outright.
       next = { ...next, propsHeld: command.on, propsStoppingID: null };
+      continue;
+    }
+    if (command.kind === "targets") {
+      next = { ...next, targetMode: command.mode };
       continue;
     }
     // This is a new stop identity, so it gets one ship stop even when another
@@ -6479,16 +6516,30 @@ type CompanionDroneRole = "combat" | "logistic" | "salvage";
  */
 interface CalledTarget {
   readonly itemID: number;
-  readonly source: "tag" | "broadcast" | "chat";
+  /** "free-fire" = nobody called it; this pilot picked it by the kill order. */
+  readonly source: "tag" | "broadcast" | "chat" | "free-fire";
   readonly heard: string;
   readonly why: string;
 }
 
+/**
+ * ⚠ FREE FIRE LIVES HERE, BEHIND EVERY CALL, so `targets all` is the answer to
+ * "nobody is calling anything" and never a second opinion against a call. A
+ * tag or a `Target` still wins outright (the kill order is this client's guess;
+ * a call is the commander looking at the fight), and so does any other named
+ * order: a pilot told to align, travel, jump or warp is doing that, and a rat
+ * it could shoot on the way is not a reason to stop.
+ *
+ * Because rung 6 reads this same function, the drones follow the guns onto the
+ * free-fire pick too, and every companion ranks the same grid the same way, so
+ * a fleet in free fire focuses one ship rather than spreading over five.
+ */
 function calledTarget(
   obs: FleetCompanionObservation,
   entities: readonly SpaceEntity[],
   measurement: SpaceMeasurement | null,
   order: NamedOrder | null,
+  memory: CompanionLadderMemory,
 ): CalledTarget | null {
   const tags = obs.fleetTargetTags ?? null;
   if (tags !== null) {
@@ -6510,13 +6561,92 @@ function calledTarget(
       why: order.why,
     };
   }
+  if (memory.targetMode === "all" && order === null) {
+    return freeFireTarget(obs, entities, measurement, memory);
+  }
   return null;
+}
+
+/**
+ * `targets all`: the hostile this pilot shoots when nobody is calling one.
+ *
+ * The kill order is `pickPrimary`'s, the same ladder the scripted bots fight
+ * by: tacklers (scramblers, then webbers), then ECM, then other ewar, then the
+ * rest smallest signature first, nearest breaking ties. Removing a small ship
+ * removes its damage fastest, and the tacklers and jammers are what stop this
+ * pilot leaving or fighting at all.
+ *
+ * ⚠ NPC HOSTILES ONLY, through `isHostile`. Free fire is for clearing a site,
+ * and a neutral player on the grid is not part of one: shooting them is a
+ * decision a human makes by calling them.
+ *
+ * ⚠ ONLY WHAT THIS HULL CAN LOCK, and never a ship it already gave up locking.
+ * A call names one ship and the pilot answers "I cannot" when it is out of
+ * reach; free fire has the whole grid to choose from, so picking a ship out of
+ * range would waste the lock budget on it while a reachable one shoots back.
+ * An unreadable lock range is no gate, the same reading the rest of this loop
+ * gives it.
+ */
+function freeFireTarget(
+  obs: FleetCompanionObservation,
+  entities: readonly SpaceEntity[],
+  measurement: SpaceMeasurement | null,
+  memory: CompanionLadderMemory,
+): CalledTarget | null {
+  const reach = obs.maxTargetRangeM ?? null;
+  const distanceOf = (entity: SpaceEntity): number | null =>
+    measurement?.distances.get(entity.itemID) ?? null;
+  const candidates = entities.filter((entity) => {
+    if (!isHostile(entity) || gaveUpOnLocking(memory, entity.itemID)) {
+      return false;
+    }
+    const distance = distanceOf(entity);
+    return reach === null || distance === null || distance <= reach;
+  });
+  if (candidates.length === 0) {
+    return null;
+  }
+  const groups = obs.targetGroupNames ?? null;
+  const threats = obs.threatByTypeID ?? null;
+  const signatures = obs.signatureByTypeID ?? null;
+  const target = pickPrimary(
+    candidates,
+    (entity) => entity.typeID,
+    distanceOf,
+    (typeID) => (groups === null ? null : (groups[typeID] ?? null)),
+    undefined,
+    undefined,
+    (typeID) => threats?.[typeID] ?? null,
+    undefined,
+    undefined,
+    (entity) => (entity.typeID === null || signatures === null ? null : (signatures[entity.typeID] ?? null)),
+  );
+  if (target === null) {
+    return null;
+  }
+  const threat = target.typeID === null ? null : (threats?.[target.typeID] ?? null);
+  const what = threat?.scram
+    ? "the warp scrambler"
+    : threat?.web
+      ? "the webber"
+      : threat?.ecm
+        ? "the jammer"
+        : threat?.ewar
+          ? "the ewar ship"
+          : "the next ship in the kill order";
+  return {
+    itemID: target.itemID,
+    source: "free-fire",
+    heard: "free fire",
+    why: `Free fire: shooting ${what}.`,
+  };
 }
 
 /** The called target's id alone, for the drone rung. */
 function calledCombatTargetID(
   request: FleetCompanionRequest,
   obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
 ): number | null {
   const snapshot = obs.snapshot ?? null;
   if (snapshot === null) {
@@ -6528,6 +6658,7 @@ function calledCombatTargetID(
     entities,
     measureSpace(snapshot),
     resolveNamedOrder(request, obs, entities),
+    memory,
   );
   return called === null ? null : called.itemID;
 }
@@ -6761,7 +6892,7 @@ function decideDrones(
   // them onto yet, and the order belongs on the tick after it, when the lock is
   // a fact.
   if (role === "combat") {
-    const called = calledCombatTargetID(request, obs);
+    const called = calledCombatTargetID(request, obs, memory);
     if (called === null) {
       return nothing;
     }
@@ -7061,7 +7192,7 @@ function decideFleetOrders(
   //        heard, and answered with "I cannot", instead of being re-issued for
   //        ever -- and crucially the rung falls THROUGH, so the orders below and
   //        the rungs beneath this one get their ticks back. See `lockGaveUpOn`.
-  const called = calledTarget(obs, entities, measurement, order);
+  const called = calledTarget(obs, entities, measurement, order, memory);
   const unreachable = called !== null && gaveUpOnLocking(memory, called.itemID);
   if (called !== null && !unreachable) {
     return lockThenEngage(
@@ -7287,7 +7418,9 @@ function decideFleetOrders(
   // spending on a lock that never landed, and the panel still says what the
   // fleet asked for and why this pilot is not doing it. Parking here would swap
   // one kind of stuck pilot for another.
-  if (unreachable && called !== null) {
+  // A free-fire pick never lands here: `freeFireTarget` skips every ship this
+  // pilot gave up locking, so it moves on instead of announcing "I cannot".
+  if (unreachable && called !== null && called.source !== "free-fire") {
     return {
       action: WAIT,
       standing: true,
@@ -7731,6 +7864,10 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
           // live tick answers from the autopilot itself.
           propsHeld: null,
           propsStoppingID: null,
+          // Back to "called" for the same reason: a `targets all` nobody can
+          // re-hear is free fire nobody can see, and the safe mode is the one
+          // a pilot may hold without anybody having asked for it.
+          targetMode: "called",
           // A resumed run has loaded nothing either. Starting the budget empty
           // is the generous answer and the right one: the dead process's loads
           // may well have landed, and if they did, the first live tick sees
