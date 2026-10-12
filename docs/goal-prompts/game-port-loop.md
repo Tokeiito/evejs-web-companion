@@ -1917,6 +1917,18 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A window's tab says where it is offered: read it before a control in it is called
   a feature.** `web/src/ui/tabs.ts`, `where`. The Mining window's refining is for a
   docked pilot, and the window is offered in space only.
+- **A test may hold a defect as what should be.** The reprocess route's oldest test
+  had its stack in the ore hold, and asserted the hangar as the place the stack was
+  reprocessed of. Read where a stand-in's thing is before what a test says is done
+  with it is believed; and give a stand-in's rows what a server's have (a place).
+- **Where a tab is offered is held by more tests than the tab table's.** The rail's
+  own test had Mining for its example of an in-space tab. Run the page's UI tests on
+  their own before the whole suite (`node --test "web/src/ui/*.test.ts"`; a folder's
+  name alone is taken for a file, and fails). And why a tab is where it is: `git log
+  -S` its line of `web/src/ui/tabs.ts`.
+- **The whole suite is run on the tree that is committed.** Words of a page changed
+  after the audit want the audit again: it was run twice for one line of the Station
+  panel.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

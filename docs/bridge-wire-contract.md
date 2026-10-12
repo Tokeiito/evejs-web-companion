@@ -2985,21 +2985,31 @@ session.structureid or session.stationid)`). The quote is
 `GetQuotes(items, activeShipID)`: the client's window hands in its own dict of
 the items, **each item's row by the item's ID**, and the ship the pilot is in.
 The route names the items; the transport gives each its row out of the listings
-the pilot holds (the route reads the hangar's first, which is answered from what
-is held), written as the server wrote it. An item no listing has makes the quote
+the pilot holds (the route reads the hangar's first, and the ship's holds' for an
+item that is not in it, each answered from what is held), written as the server
+wrote it. An item no listing has makes the quote
 go with the IDs alone, which the call ledger counts as not the client's. Through
 the gateway it goes with the IDs alone. The reprocessing is
 `Reprocess(itemIDs, fromLocation, ownerID, outputLocationID, outputFlagID)`,
 with **the output named always** (the client's window names the hangar of where
-the pilot is docked): the route sends the hangar's place, the pilot, and that
-hangar and its flag again as the output, on both transports. In a structure both
-routes are held to its reprocessing service ("A structure's services", above).
+the pilot is docked) and **the items of a call all of one place, their own**:
+the client's reprocessor makes a call for each place its items are of
+(`reprocessing/ui/itemReprocessor.py` 19 to 44). The route names the items
+alone, so it finds each one's place in the listings (the hangar's first, then
+the ship's mining holds down the ladder, the cargo last, only while an item is
+still to be found; a row's own `locationID` is the place) and makes one
+`Reprocess` for each place: the place, the pilot, and the hangar of where the
+pilot is docked and its flag as the output, on both transports. An item found in
+no listing is asked of nobody, and is told as `remaining`. A listing that cannot
+be read refuses the reprocessing. In a structure both routes are held to its
+reprocessing service ("A structure's services", above).
 
 **`processed` is what the server says it reprocessed** (the first of
 `Reprocess`'s two answers, as the client's window takes it); `remaining` is the
-rest of what was asked. A stack that is no whole number of portions stays in
-the hangar, the less, and is reprocessed all the same. Only where the answer
-does not say is the hangar read again for which stacks are gone.
+rest of what was asked. A stack that is no whole number of portions stays where
+it was, the less, and is reprocessed all the same. Only where a call's answer
+does not say are the places read again, for that call's items, for which stacks
+are gone; where they cannot be read, `processed` and `remaining` are null.
 
 **`division` delivers into a CORPORATION hangar instead — and falls back.** The
 same `invbroker.Add`, with the corporation's office at the docked station as the
