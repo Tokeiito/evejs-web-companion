@@ -1882,6 +1882,18 @@ Take these defaults, and list each under "For the operator" in the log so they c
   <folder>` keeps the suite's output; the plain run keeps only the test's name. Two
   failed once each for a running clock and a frame's arrival: neither a longer wait
   nor a run again is the fix.
+- **Before a route is sized, see that the page still asks it.** The repair's two routes
+  were on the list of what a structure's check opens, and nothing of the page has
+  asked either since its repair became its own call. `grep -rn "<route>" web/src`
+  first: a route named only in a comment is no caller.
+- **A feature hidden behind a reading that could not be had has never been seen.**
+  The panel's repair in a structure was built and tested and stood hidden until the
+  structure's services could be read; its first showing had words for a charge of
+  nothing. When a reading comes to be had, list what it was hiding and look at each.
+- **While something is staged, try what the next units will want of it.** Three GM
+  commands and one look told that a complex's reprocessing and market can be set
+  online, and a short script saw the server's notice let the kept services go: each
+  was a line under "left" in the entry before.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
