@@ -1129,6 +1129,8 @@ export interface FleetCompanionProgress {
   /** Which authority the last decision came from, for the readout. */
   readonly followingOrderFrom: CompanionOrderAuthority | null;
   readonly lastOrderHeard: string | null;
+  /** `targets called|all`: what this pilot shoots when nobody calls a target. */
+  readonly targetMode: "called" | "all";
   /**
    * Whether this pilot's tag write would land. Three states, and the third is
    * the point: a pilot silently unable to tag looks exactly like one with
@@ -7531,6 +7533,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
       inFleet: mem.inFleet,
       followingOrderFrom: mem.followingOrderFrom,
       lastOrderHeard: mem.lastOrderHeard,
+      targetMode: mem.ladder.targetMode,
       canTag: mem.canTag,
       abandonment: abandonmentRecord(mem.ladder),
       failureReason: mem.failureReason,

@@ -3286,6 +3286,8 @@ export interface ServerBotCompanion {
   /** Which authority its last decision came from. Null before it decided one. */
   readonly followingOrderFrom: CompanionOrderAuthority | null;
   readonly lastOrderHeard: string | null;
+  /** `targets called|all`. Null when not reported. */
+  readonly targetMode: "called" | "all" | null;
   /**
    * Whether this pilot's tag write would land.
    *
@@ -3404,6 +3406,7 @@ function asServerBotCompanion(value: JsonValue | undefined): ServerBotCompanion 
     inFleet: typeof row.inFleet === "boolean" ? row.inFleet : null,
     followingOrderFrom: asCompanionOrderAuthority(row.followingOrderFrom),
     lastOrderHeard: typeof row.lastOrderHeard === "string" ? row.lastOrderHeard : null,
+    targetMode: row.targetMode === "called" || row.targetMode === "all" ? row.targetMode : null,
     canTag: typeof row.canTag === "boolean" ? row.canTag : null,
     fitWarnings: Array.isArray(row.fitWarnings)
       ? row.fitWarnings.filter((line): line is string => typeof line === "string")
