@@ -462,6 +462,31 @@ and repair (8). The numbers are CCP's own (`structures/services.py`).
   the gateway: 409 `STRUCTURE_SERVICE_AUTHORITY_UNAVAILABLE`, after the docking
   check that was there.
 
+**The market in a structure (service 5).** `POST /api/bridge/market/buy`, `sell`
+and `modify` are held to the structure's market service as above, and name the
+structure as the order's place. On the game port an order goes out as the retail
+client's: its broker's fee rate is the structure's own market tax for the pilot
+over a hundred, with no skill and no standing in it
+(`marketsvc.GetBrokersFeeCommissionFromStationID`, 161, for what is no station).
+The transport asks the tax as the client's market service does,
+`structureSettings.CharacterGetService(structureID, 5)`, before the order, and
+keeps it two minutes by the structure (`GetMarketTaxAtStructure`,
+`@Memoize(2)`); True is one percent, as the client's Python has it, and None a
+rate of nothing. What is no tax, or could not be asked, names no rate, and the
+ledger counts the order as not the client's. `GET /api/bridge/market` names the
+structure the pilot is docked in as `structureID` (null in a station and in
+space; `stationID` is null in a structure), and its `brokersFeeRate` is that
+rate there; the page then says the rate is the structure's own, and that the
+SCC's surcharge a structure's market takes is not shown. The gateway's list has
+not the call: the game port alone carries it. No Tranquility recording has it,
+nor any market order.
+
+**On this server no order can stand in a structure** (seen 2026-10-12): the
+market daemon knows stations alone ("station … does not exist in market
+database"), and the server leaves a structure out of what it tells the daemon
+(`buildNativeStationMetadata`, `eve.js` `8dd49cbec`). The routes answer the
+server's own refusal.
+
 ### `POST /_evejs-web/v1/session/flight-status`
 
 Request: `{ "bridgeSessionID", "session"?: { "userid" } }` — a **read-only**

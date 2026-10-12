@@ -1929,6 +1929,27 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **The whole suite is run on the tree that is committed.** Words of a page changed
   after the audit want the audit again: it was run twice for one line of the Station
   panel.
+- **A server's own test may stand on a session no pilot has.** `eve.js`'s tests of a
+  structure's market built their docked session with the structure as its
+  `locationid`; a recorded one has the solar system there, and the running server
+  refused what the tests passed. Before a server's test of a place is believed, set
+  its session beside a recording's session change.
+- **Whether a thing can be done at all: try it with the least, then with the most.**
+  A buy order in a structure was refused for a skill; with every skill
+  (`/allskills`) it got as far as the market daemon, whose refusal was the answer.
+  And read the server's own comment at the place before a refusal is called a
+  fault: the daemon is told of no structure by decision.
+- **A rate the server holds an order to is proven by the refusal that comes next.**
+  Read the order of the server's checks first (`executeBuyRequest`): a rate that is
+  not the server's is `MktBrokersFeeUnexpected2` before anything else, and one that
+  is gets as far as the check after it.
+- **Where what the server tells the client and what it charges are two things, the
+  client's own rule says which the client believes.** An unset tax was answered as
+  True and charged as nothing; the client's Python makes one percent of True
+  (`scripts/py27-oracle.py`, with the client's `tq/bin64`).
+- **List a new function's breakages before running them, and take out what none of
+  them changes.** Four guards of mine made no difference to any answer (nought is
+  what `Number()` makes of None, and a rate of nothing comes of it by itself).
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
