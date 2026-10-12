@@ -29,6 +29,7 @@
   } from "../bridge/fitting.ts";
   import { OUTER_RADIUS_PERCENT, countByFamily, placeFamily } from "./fittingGeometry.ts";
   import { abbreviate } from "./fittingIcons.ts";
+  import { HANGAR_NAME } from "./inventoryModel.ts";
   // R78 — drag and drop. The RULES (what may be dropped where, and why not) live
   // in a pure module, because a target that decides inside `dragover` can only be
   // checked by dragging onto it — and `dragover` is also what tells the cursor
@@ -1458,7 +1459,7 @@
               >
                 <td data-label="Module">{moduleName(entry.row.typeID)}</td>
                 <td data-label="Where it is">
-                  {entry.source === "hangar" ? "Station hangar" : "Cargo hold"}
+                  {entry.source === "hangar" ? HANGAR_NAME : "Cargo hold"}
                 </td>
                 <td data-label="Action">
                   <button

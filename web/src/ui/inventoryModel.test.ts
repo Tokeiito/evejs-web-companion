@@ -29,6 +29,7 @@ import {
   fillPercent,
   hangarThings,
   mergeOrder,
+  HANGAR_NAME,
   moveDestinations,
   moveQuantityFor,
   orderedPresentBays,
@@ -217,7 +218,8 @@ test("⚠ a bay that could not be read has no rows — it does not borrow anothe
 
 test("a place is named in the player's words, never by a flag or an id", () => {
   const inv = inventory({ corp: true, container: true });
-  assert.equal(placeName(inv, { kind: "hangar" }, "Crate"), "Station hangar");
+  // The client's own name for it, in a station and in a structure alike (below).
+  assert.equal(placeName(inv, { kind: "hangar" }, "Crate"), "Item hangar");
   assert.equal(placeName(inv, { kind: "cargo" }, "Crate"), "Ship cargo");
   assert.equal(placeName(inv, { kind: "shipBay", bay: "ore" }, "Crate"), "Ore hold");
   assert.equal(placeName(inv, { kind: "container", itemID: CRATE_ID }, "Crate"), "Crate");
@@ -581,7 +583,7 @@ test("a division that reads back empty only LOOKS inaccessible — it never gate
 
 test("a destination abbreviates to its DISTINGUISHING word, not just its first", () => {
   assert.equal(shortLabel("Ship cargo"), "Cargo");
-  assert.equal(shortLabel("Station hangar"), "Hangar");
+  assert.equal(shortLabel("Item hangar"), "Hangar");
   // "hold" and "bay" are what every hull has, so they are never the half that
   // tells two places apart.
   assert.equal(shortLabel("Ore hold"), "Ore");
@@ -590,4 +592,25 @@ test("a destination abbreviates to its DISTINGUISHING word, not just its first",
   // A one-word name is already as short as it goes.
   assert.equal(shortLabel("Industry"), "Industry");
   assert.equal(shortLabel(""), "");
+});
+
+// --- the hangar's name --------------------------------------------------------
+// The client's inventory names the pilot's hangar by one label, UI/Inventory/ItemHangar, in a station
+// (invCtrl.StationItems, environment/invControllers.py 1145) and in a structure (invCtrl.StructureItemHangar,
+// 1803): eleven characters, "Item hangar". The page said "Station hangar", which a structure's is not.
+
+test("the hangar is named as the client names it, a station's and a structure's alike, wherever the page names it", () => {
+  assert.equal(HANGAR_NAME, "Item hangar");
+  const inv = inventory();
+  assert.equal(placeName(inv, { kind: "hangar" }, "Crate"), HANGAR_NAME);
+  // As a destination it is the first offered, by that name, from a hold.
+  const fromOre = moveDestinations(inv, { kind: "shipBay", bay: "ore" }, "Crate");
+  assert.deepEqual(fromOre[0], { label: "Item hangar", place: { kind: "hangar" } });
+  assert.deepEqual(fromOre.filter((each) => /hangar/i.test(each.label) && each.place.kind === "hangar").length, 1);
+  // Nothing the model names is a "station" anything.
+  for (const from of [{ kind: "shipBay", bay: "ore" }, { kind: "cargo" }, { kind: "hangar" }] as const) {
+    for (const each of moveDestinations(inv, from, "Crate")) assert.doesNotMatch(each.label, /station/i, each.label);
+  }
+  // In space there is no hangar to name.
+  assert.equal(moveDestinations(inv, { kind: "shipBay", bay: "ore" }, "Crate", false).some((each) => each.place.kind === "hangar"), false);
 });

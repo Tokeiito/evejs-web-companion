@@ -874,7 +874,8 @@
       list.push({ id: "container", label: containerName(), badge: `${container.rows.length}` });
     }
     if (isDocked) {
-      list.push({ id: "services", label: "Station services", badge: "" });
+      // Named for what the pilot is docked in: the panel heads a structure's "Structure services".
+      list.push({ id: "services", label: $station.online?.structureID ? "Structure services" : "Station services", badge: "" });
     }
     return list;
   });

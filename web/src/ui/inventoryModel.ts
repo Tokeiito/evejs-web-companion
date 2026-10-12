@@ -103,6 +103,15 @@ export function rowsIn(
 }
 
 /**
+ * The pilot's hangar, as the client's inventory names it in a station and in a
+ * structure alike: its label UI/Inventory/ItemHangar (invCtrl.StationItems and
+ * invCtrl.StructureItemHangar, environment/invControllers.py 1145 and 1803).
+ * It is the name the Station panel's own tab has. (This said "Station hangar"
+ * until 2026-10-12, which a structure's hangar is not.)
+ */
+export const HANGAR_NAME = "Item hangar";
+
+/**
  * What a place is CALLED, in the player's words. `containerName` is passed in
  * already resolved because resolving a type name needs the names cache, which
  * is a store concern and not this module's.
@@ -116,7 +125,7 @@ export function placeName(
     return "";
   }
   if (place.kind === "hangar") {
-    return "Station hangar";
+    return HANGAR_NAME;
   }
   if (place.kind === "cargo") {
     return "Ship cargo";
@@ -167,7 +176,7 @@ export function moveDestinations(
 ): readonly MoveDestination[] {
   const options: MoveDestination[] = [];
   if (docked && !samePlace(current, { kind: "hangar" })) {
-    options.push({ label: "Station hangar", place: { kind: "hangar" } });
+    options.push({ label: HANGAR_NAME, place: { kind: "hangar" } });
   }
   if (inventory.activeShipID && !samePlace(current, { kind: "cargo" })) {
     options.push({ label: "Ship cargo", place: { kind: "cargo" } });
@@ -446,11 +455,11 @@ const GENERIC_PLACE_WORDS = new Set(["hold", "bay"]);
  * one is generic.
  *
  *   "Ship cargo"    -> "Cargo"      "Ore hold"   -> "Ore"
- *   "Station hangar"-> "Hangar"     "Drone bay"  -> "Drone"
+ *   "Item hangar"   -> "Hangar"     "Drone bay"  -> "Drone"
  *
  * ⚠ It is only ever an ABBREVIATION of a name shown in full elsewhere — the
  * button's own `title`, the "▾" menu and the move bar all spell it out. Two
- * places can abbreviate alike; the alternative was "to Station hangar" pushing
+ * places can abbreviate alike; the alternative was "to Item hangar" pushing
  * the quantity column into "123 75", which is a WRONG number rather than a
  * short name.
  */

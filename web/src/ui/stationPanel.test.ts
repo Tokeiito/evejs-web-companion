@@ -995,3 +995,35 @@ test("the guests come before the offices, in a station and in a structure", () =
     assert.ok(services.indexOf("Guests") !== -1 && services.indexOf("Guests") < services.indexOf("Offices"), JSON.stringify(scene));
   }
 });
+
+// --- The hangar's name ---------------------------------------------------------
+// The panel's tab and its group are "Item hangar", the client's own name for it in a station and in a structure
+// (environment/invControllers.py 1145 and 1803). What a row is moved to is named the same.
+
+test("a row in a hold is moved to the Item hangar, by the name the tab has, in a station and in a structure", () => {
+  for (const scene of [{}, { structure: true }] as const) {
+    const body = panel(scene);
+    const bays = locationView(body, "ship");
+    assert.match(visibleText(bays), /to Item hangar/, JSON.stringify(scene));
+    assert.match(bays, /title="Move [^"]* to Item hangar"/, JSON.stringify(scene));
+    assert.doesNotMatch(visibleText(body), /Station hangar/, JSON.stringify(scene));
+    assert.doesNotMatch(body, /Station hangar/, JSON.stringify(scene));
+    // And the tab it names.
+    assert.match(visibleText(body), /Item hangar/);
+  }
+});
+
+// --- The services' tab -----------------------------------------------------------
+// The panel heads a structure's services "Structure services". Its tab over them said "Station services".
+
+test("the services' tab is named for what the pilot is docked in: a station's, or a structure's", () => {
+  const tabs = (body: string) => [...body.matchAll(/<button[^>]*class="[^"]*stn-tab[^"]*"[^>]*>([\s\S]*?)<\/button>/g)].map((tab) => visibleText(tab[1]!).replace(/\s+/g, " ").trim());
+  const inStation = tabs(panel());
+  assert.ok(inStation.some((tab) => tab.startsWith("Station services")), JSON.stringify(inStation));
+  assert.equal(inStation.some((tab) => /Structure/.test(tab)), false);
+  const inStructure = tabs(panel({ structure: true }));
+  assert.ok(inStructure.some((tab) => tab.startsWith("Structure services")), JSON.stringify(inStructure));
+  assert.equal(inStructure.some((tab) => /Station/.test(tab)), false, JSON.stringify(inStructure));
+  // Under the tab, the heading it names.
+  assert.match(visibleText(locationView(panel({ structure: true }), "services")), /Structure services/);
+});

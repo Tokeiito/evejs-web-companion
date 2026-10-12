@@ -409,3 +409,26 @@ test("before any read, every statistic is unavailable rather than zero", async (
   assert.doesNotMatch(body, /0 GJ/);
   assert.match(body, /No active ship/);
 });
+
+// The fitting window's list of what can be fitted says where each module is: in the hold, or in the hangar by the
+// client's own name for it (environment/invControllers.py 1145 and 1803), which the inventory model has.
+
+test("a module that can be fitted is said to be in the Item hangar or in the Cargo hold, where it is", async () => {
+  const store = createClientStore();
+  const flow = createAppFlow(store, { fetch: fittingFetch(rawFittingRead({ high: 3, mid: 2, low: 2, rig: 0 })) });
+  await flow.loadFitting();
+  const stack = (itemID: number, categoryID: number) => ({ itemID, typeID: 3170, groupID: 53, categoryID, flagID: null, quantity: 1, singleton: true });
+  store.apply({
+    type: "inventory/loaded",
+    stationID: 60003760,
+    activeShipID: 9988400029047,
+    // A module in the hangar, then ore there, which is nothing to fit; and a module in the hold.
+    hangar: { rows: [stack(9001, 7), stack(9003, 25)], capacity: { capacity: 1000000, used: 5 }, error: null },
+    cargo: { rows: [stack(9002, 7)], capacity: { capacity: 350, used: 5 }, error: null },
+  } as never);
+  const { default: Panel } = (await import("./Fitting.svelte")) as { default: unknown };
+  const body = render(Panel as never, { props: { store, flow } } as never).body;
+  const where = [...body.matchAll(/<td data-label="Where it is"[^>]*>([\s\S]*?)<\/td>/g)].map((cell) => cell[1]!.replace(/<!--[\s\S]*?-->/g, "").trim());
+  assert.deepEqual(where, ["Item hangar", "Cargo hold"]);
+  assert.doesNotMatch(body, /Station hangar/);
+});

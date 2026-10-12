@@ -76,7 +76,13 @@
     }
   }
 
-  const stationName = $derived($station.station?.stationName ?? $flight.stationName ?? "this station");
+  // Where the pilot is docked, by its name. A structure is no station: it has no static row, and its name is
+  // the flight's (the structure directory's name for it, read as the pilot docks). Until that is read it is
+  // "this structure". (It was "this station" until 2026-10-12, seen in the tab docked in a complex.)
+  const inStructure = $derived(Boolean($station.online?.structureID ?? $flight.status?.structureID));
+  const stationName = $derived(inStructure
+    ? ($flight.structureName ?? "this structure")
+    : ($station.station?.stationName ?? $flight.stationName ?? "this station"));
   const systemName = $derived($station.station?.solarSystemName ?? $flight.solarSystemName ?? null);
   const regionName = $derived($station.station?.regionName ?? null);
   const spaceSystem = $derived($flight.solarSystemName ?? null);

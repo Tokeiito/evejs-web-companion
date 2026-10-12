@@ -984,3 +984,60 @@ test("an alpha clone's grade changes nothing the header says of the level: only 
   (alpha as { apply(event: unknown): void }).apply({ type: "names/system-security", security: { [SYSTEM_ID]: 1 } });
   assert.deepEqual(safetyButtons(renderHeader(alpha, false)), [["safety safety-full", "false", "Safety Full"]]);
 });
+
+// --- docked in a structure -----------------------------------------------------
+// A structure is no station: it has no static row, and its name is the flight's (the structure directory's name
+// for it, read as the pilot docks). Seen in the tab 2026-10-12, docked in a complex: the header said "this station".
+
+/** A pilot docked in a structure, its name read or not yet. */
+function structureStore(structureName: string | null): unknown {
+  const store = createClientStore();
+  store.apply({
+    type: "flight/status",
+    status: {
+      inSpace: false, docked: true, solarSystemID: SYSTEM_ID, stationID: null, structureID: 1030000000002,
+      shipID: SHIP_ID, shipTypeID: null, shipIsCapsule: null, shipMode: null, shipSpeedFraction: null,
+    },
+  });
+  store.apply({
+    type: "flight/location",
+    forSolarSystemID: SYSTEM_ID,
+    forStationID: null,
+    forStructureID: 1030000000002,
+    solarSystemName: "Jita",
+    stationName: null,
+    structureName,
+  });
+  return store;
+}
+
+test("docked in a structure the header names the structure, and never calls it a station", () => {
+  const named = visibleText(renderHeader(structureStore("A Made-Up Complex"), true));
+  assert.match(named, /A Made-Up Complex/);
+  assert.match(named, /Jita/, "the system is not named");
+  assert.doesNotMatch(named, /station/i);
+  // Its name not read yet: a structure all the same.
+  const unnamed = visibleText(renderHeader(structureStore(null), true));
+  assert.match(unnamed, /this structure/);
+  assert.doesNotMatch(unnamed, /station/i);
+  // A station is named as it was, and one whose name is not read is "this station" still.
+  assert.match(visibleText(renderHeader(dockedStore(), true)), /Jita IV - Moon 4 - Caldari Navy Assembly Plant/);
+  const station = createClientStore();
+  station.apply({ type: "flight/status", status: { inSpace: false, docked: true, solarSystemID: SYSTEM_ID, stationID: STATION_ID, structureID: null,
+    shipID: SHIP_ID, shipTypeID: null, shipIsCapsule: null, shipMode: null, shipSpeedFraction: null } });
+  const nameless = visibleText(renderHeader(station, true));
+  assert.match(nameless, /this station/);
+  assert.doesNotMatch(nameless, /structure/i);
+  // A pilot just come online in a structure, its flight not read yet: a structure by what it came online with.
+  const justOnline = createClientStore();
+  justOnline.apply({ type: "character/online", character: { characterID: 90000001, characterName: "A Pilot", stationID: null, structureID: 1030000000002,
+    solarSystemID: SYSTEM_ID, corporationID: 1000001 } } as never);
+  const early = visibleText(renderHeader(justOnline, true));
+  assert.match(early, /this structure/);
+  assert.doesNotMatch(early, /station/i);
+  // And one come online in a station is in a station.
+  const inAStation = createClientStore();
+  inAStation.apply({ type: "character/online", character: { characterID: 90000001, characterName: "A Pilot", stationID: STATION_ID, structureID: null,
+    solarSystemID: SYSTEM_ID, corporationID: 1000001 } } as never);
+  assert.match(visibleText(renderHeader(inAStation, true)), /this station/);
+});
