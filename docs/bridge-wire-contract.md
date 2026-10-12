@@ -891,8 +891,10 @@ nothing of the page asks either.
 
 **A pilot's bookmarks are the page's own read** (`web/src/bridge/bookmarkReads.ts`):
 `accessGroupBookmarkMgr.GetMyActiveBookmarks` by the generic call as a pilot's read,
-with nothing sent. It answers an array of three lists (the folders, the bookmarks in
-them, their subfolders), each row a KeyVal, the same on both transports. The server
+with nothing sent. It answers an array of three lists, each row a KeyVal, the same on
+both transports: the folders the pilot knows, active or not, and the bookmarks and the
+subfolders of the active folders alone. One folder answered is this server's own,
+"Agent Missions", not active unless a pilot has marked it so. The server
 reads nothing of what is sent with it. The page takes nothing but three lists for an
 answer: anything else is the bookmarks unread, never no bookmarks.
 `GET /api/bridge/bookmarks` still stands, and nothing of the page asks it. Where one of

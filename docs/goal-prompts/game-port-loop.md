@@ -1591,6 +1591,21 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A call of the page's own is told by its body, not by a flag.** An account's call
   and a call on the session held go to the game port as a pilot's does. The audit
   takes the four names the page builds a call of (`callMethod.ts`).
+- **A name in a recording is not a call.** The bookmark manager's name is in three dozen
+  recordings and its asking in three: the rest are lists of services a client is sent.
+  "Agent Missions" is in 19, each a menu's entry. Say what kind of line each match is
+  before recordings are counted, and count again before a count is written a second
+  time: "five recordings" stood in three places and could not be counted again.
+- **What a client makes for itself says what form it can live with.** A client keeps a
+  KeyVal of its own making beside the server's rows of the same thing
+  (`NewBookmarkCreated`): the names it gives are the names every reader of its cache
+  goes by. Look for the client's own making of a thing before a server's form is set
+  against a recording's.
+- **What a server keeps for itself can show in an answer.** This server files a
+  mission's spots in a bookmark folder of the pilot's, and the folder is in the answer
+  a client lists its folders from. Where a server's own keeping is found in what a
+  client is answered, say what a client would show of it, and find a recording before
+  it is called a defect.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

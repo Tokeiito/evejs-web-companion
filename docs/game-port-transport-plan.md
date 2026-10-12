@@ -937,7 +937,11 @@ a mining support ship's compression table, and the map's graph, 745 KB an asking
 pilot's choosing. The graph is read once for a page now
 (`09879964`), kept by the fetch it is asked with. The audit looks at every call the page makes by the generic route now, a
 pilot's or not (`16242cd1`), and all 80 pairs the page's source names are made by a test of the page's. The
-bookmarks' answer set beside the recording is next. In `eve.js` an advert's text outside ASCII goes as
+bookmarks' answer was set beside the recording (`78e11a7b`, comments alone): nothing a client meets in a row's
+form or in a folder's names, and two things named for the operator that no recording settles (this server's own
+"Agent Missions" folder, which a client would list among its folders that are not active, and its making of a
+pilot's first folder where a client makes its own). The bookmarks asked once in a session and kept, as the
+client keeps them, are next. In `eve.js` an advert's text outside ASCII goes as
 unicode (`dcd459b0d`; on its origin since 2026-10-11, pushed by another hand than this loop's), and a dock
 asked from out of range of a station is finished by the server, as Tranquility finishes
 it (`869b28d2b`), and a pilot's client is sent no greatest speed for its ship
