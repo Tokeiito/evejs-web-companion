@@ -2289,6 +2289,19 @@ Take these defaults, and list each under "For the operator" in the log so they c
   call of its own, read in the next.
 - **Text for a test file is written to a scratch file and appended by a script**, never by a
   shell's here-document: a backtick or a quote in it ends the document early.
+- **A route that answers a refusal with a code and a sentence of its own may be dropping the
+  cause's.** Look for a catch that keeps `error.code` and not `error.message`, and for an
+  error class in the page with one sentence for every code. A hosted bot's log is the code and
+  the error's words and nothing else; a refusal that cannot be told from another there costs
+  a run to find. The custody's now say which check failed (`src/jettisonCustody.js`).
+- **A refusal is proven live where it still happens.** The gateway's BFF (26511) still refuses
+  a hosted miner's jettison, its scene's ship naming nobody: the staged copy of the mining
+  operation (`store.sh restore mo-staged`) runs on either BFF, since `mo-plan.mjs` and
+  `mo-run.mjs` take the BFF's address, and each BFF keeps its bots' logs in its own data
+  folder (`bffgw-data/bot-logs`, `bffgp-data/bot-logs`; `mo-logs.js` reads either).
+- **A breakage of your own that survives may be saying what the test expects.** Read what it
+  makes the code say before calling the test weak: a fallback in the breakage itself ("is not
+  ore") was the very words the one case looked for.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
