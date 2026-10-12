@@ -1862,6 +1862,26 @@ Take these defaults, and list each under "For the operator" in the log so they c
   of an invention's decryptor is a None key the server takes out before it compares;
   the job goes with it all the same, because the measure is the client's request
   and not what the server needs of it.
+- **A refusal with a code of its own may be a decision.** `git log -S"<CODE>"` it, read
+  the commit and whatever policy it names, and say whose it is before sizing a fix.
+  The structure's 409 was a boundary for the web gateway, by another hand: it was
+  kept where its reason holds and lifted only where it does not, and the entry says
+  which commit to take back if that was not wanted.
+- **Count a call's forms across every recording before the client's code is believed
+  alone.** The cache's code makes a structure's hangar `GetInventory(containerStructure)`;
+  no recording has it, because godma has bound the same key first, another way.
+  `grep -rhoE "\('GetInventory(FromId)?', \([^)]*\), \{[^}]*\}\)" . | sed -E
+  's/[0-9]{9,}L?/<id>/g' | sort | uniq -c`; and a call on an object already bound is in
+  the transport's bytes only (`grep -rlaF "GetInventory,\x05\x1e'"`).
+- **A page's control may ask before it acts, and one in a hidden section does
+  nothing.** The hangar's "to Cargo" opens "Confirm move". Where a scripted click
+  changes nothing, read the control's rectangle (0 by 0 is a hidden one: open its
+  tab first) and what the page shows after it.
+- **A test of another unit that fails in the whole suite is run alone, read for what
+  it waits on, and held still there.** `node scripts/game-port-audit.js --keep
+  <folder>` keeps the suite's output; the plain run keeps only the test's name. Two
+  failed once each for a running clock and a frame's arrival: neither a longer wait
+  nor a run again is the fix.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

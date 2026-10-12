@@ -297,7 +297,13 @@ key — `hangar:<stationID>`, `cargo:<shipID>`, `ship:<stationID>` — re-bindin
   each. The four reads are independent (`Promise.allSettled`) so one failed read
   never blanks the rest; each container carries its own `error` code. `list` and
   `capacity` are the raw retail-shaped results, decoded browser-side
-  (`web/src/bridge/inventoryShip.ts`).
+  (`web/src/bridge/inventoryShip.ts`). **Docked in a structure** the answer has
+  `structureID` and a null `stationID`, and the hangar is the structure's own
+  inventory: on the game port the transport binds it as the retail client's godma
+  has bound it, `invbroker.GetInventoryFromId(structureID, 1)` from the manager for
+  where the pilot is, and lists the hangar's flag; its capacity is said as a
+  station's is (no limit: the client shows one for neither). Through the web
+  gateway the route is refused there ("A structure's services", below).
 - `POST /api/bridge/inventory/move` `{ itemID, direction: "toCargo"|"toHangar", qty? }`
   → `invbroker.Add(itemID, sourceLocationID, {qty?, flag})` on the **destination**
   binding (retail `Add` carries the source location and destination flag; a
@@ -425,6 +431,36 @@ movement state still transition authoritatively.
   invalid target, docking-approach, lost control, ship destroyed) surfaces as a
   `CALL_REFUSED` (409) with the handler's user-facing text — never a silent
   no-op or a fake success.
+
+### A structure's services: the BFF's check, and its answer
+
+Sixteen places check that the structure a pilot is docked in has a service for it
+before a route goes on: the inventory read and every inventory write (docking,
+1), fitting (2), the corporation's office (3), reprocessing (4), the market (5)
+and repair (8). The numbers are CCP's own (`structures/services.py`).
+
+- **Through the web gateway** each is 409 `STRUCTURE_SERVICE_AUTHORITY_UNAVAILABLE`,
+  deliberately: the stock gateway's list has nothing of the structure settings'
+  (`docs/stock-evejs-integration-policy.md`).
+- **On the game port** the check is the retail client's own rule
+  (`structureServices.IsServiceAvailableForCharacter`): docking and fitting pass
+  with nothing asked, a structure having them for anyone docked in it; any other
+  passes where it is in the server's answer to
+  `structureSettings.CharacterGetServices(structureID)`, else 409
+  `STRUCTURE_SERVICE_UNAVAILABLE`; an answer that is no dict of services is 503
+  `STRUCTURE_SERVICE_UNREADABLE`. The transport asks that call as the client does
+  (as the pilot docks in a structure, and as its character is chosen docked in
+  one), keeps the answer for that structure, and lets it go at
+  `OnStructureServiceChanged(structureID)` and in another structure or none.
+  Another structure's are asked each time. The gateway's list has not the call:
+  the game port alone carries it.
+- `GET /api/dockable-structures/:id/services` → `{ ok, structureID, serviceIDs }`
+  for the held pilot's own structure on the game port: the two a structure has for
+  anyone docked in it (1, 2), each service in the server's answer, and 20
+  (industry) where any industry service is among them, in the order of their
+  numbers. For another structure, for another pilot of the account, and through
+  the gateway: 409 `STRUCTURE_SERVICE_AUTHORITY_UNAVAILABLE`, after the docking
+  check that was there.
 
 ### `POST /_evejs-web/v1/session/flight-status`
 
