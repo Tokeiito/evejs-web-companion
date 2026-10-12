@@ -16,11 +16,28 @@
 const { MODE, MODE_NAME } = require("./destiny/state");
 
 /** inventorycommon/const.py. */
-const CATEGORY = { CELESTIAL: 2, STATION: 3, SHIP: 6, ENTITY: 11, DRONE: 18, ASTEROID: 25, ORBITAL: 46, STRUCTURE: 65, FIGHTER: 87 };
+const CATEGORY = { CELESTIAL: 2, STATION: 3, SHIP: 6, CHARGE: 8, ENTITY: 11, DRONE: 18, ASTEROID: 25, ORBITAL: 46, STRUCTURE: 65, FIGHTER: 87 };
 const GROUP = {
   SUN: 6, PLANET: 7, MOON: 8, ASTEROID_BELT: 9, STARGATE: 10, CARGO_CONTAINER: 12, SENTRY_GUN: 99, WRECK: 186, BILLBOARD: 323,
   SECURE_CARGO_CONTAINER: 340, AUDIT_LOG_SECURE_CONTAINER: 448, FREIGHT_CONTAINER: 649,
 };
+/**
+ * A ball of the Charge category. The client draws any group its data marks "fittable non-singleton" as a Missile
+ * (spaceObject/repository.py, GetGroupDict), unless the table beside it says otherwise: the three bomb groups a
+ * Bomb, which is the missile's class with another explosion, and the scanner's, the interdiction's and the
+ * burst's probes a ScannerProbe. In the client's own groups table (res:/staticdata/groups.fsdbinary, read with
+ * its loader on 2026-10-12) 72 groups are marked so, every one of this category; the seven of the category that
+ * are not have no class to be drawn by, and are never a ball: two unpublished groups, the guidance scripts, the
+ * exotic plasma charges and the condenser packs.
+ *
+ * The word is the server's, as the gateway's rows have it: "missile" for a missile and for a bomb
+ * (missileEntity.js, bombRuntime.js), "probe" for an interdiction probe and for a survey probe
+ * (inventorySpaceEntity.js). A survey probe is the one the client and the server part on: the client draws it as
+ * a missile, having no class of its own for group 492.
+ */
+const PROBE_GROUPS = new Set([479, 492, 548, 4088]);
+const CHARGE_GROUPS_NEVER_IN_SPACE = new Set([92, 892, 1400, 1987, 1989, 4061, 4062]);
+
 /**
  * The shield's recharge constant, tau, is in milliseconds: the client divides
  * the difference of two readings of its clock (in 100 ns) by
@@ -44,7 +61,8 @@ const vector = (v) => ({ x: v.x, y: v.y, z: v.z });
  * Seen to agree with the server on live grids (a station's, and a gate's on
  * each side of a jump): station, structure, sun, planet, moon, asteroidBelt,
  * stargate, sentryGun, billboard, orbital, ship. The rest follow the same
- * constants and have not been set beside the server's word yet. Two things cannot be told
+ * constants and have not been set beside the server's word yet. A missile, a bomb and a probe
+ * are told by their group within the Charge category (above). Two things cannot be told
  * this way and are not attempted: the server's "authoredSpaceProp" (scenery it
  * placed itself, an ordinary celestial to a client), and anything in a category
  * not listed, which answers null.
@@ -58,6 +76,7 @@ function kindOf(categoryID, groupID) {
     case CATEGORY.FIGHTER: return "fighter";
     case CATEGORY.ASTEROID: return "asteroid";
     case CATEGORY.ORBITAL: return "orbital";
+    case CATEGORY.CHARGE: return PROBE_GROUPS.has(groupID) ? "probe" : CHARGE_GROUPS_NEVER_IN_SPACE.has(groupID) ? null : "missile";
     // Everything nobody flies is in one category: the guns and the billboards at a gate as well as the ships.
     case CATEGORY.ENTITY: return groupID === GROUP.SENTRY_GUN ? "sentryGun" : groupID === GROUP.BILLBOARD ? "billboard" : "ship";
     case CATEGORY.CELESTIAL:

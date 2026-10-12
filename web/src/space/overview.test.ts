@@ -21,6 +21,7 @@ import {
   isHostile,
   isMyDrone,
   newlyArrivedHostiles,
+  overviewCanList,
   overviewFilterIDs,
   ownRadius,
   ratioPercent,
@@ -166,7 +167,34 @@ test("filtering narrows by category, by group, and by free text", () => {
   assert.equal(none.matched, 0);
 });
 
-test("rocks and rats are always listed — nothing but self is hidden", () => {
+// tacticalConst.py: the groups an overview can list at all leave out every group of the Charge category but
+// seven (bombGroups, 86: the three bombs, the scanner's, the interdiction's and the burst's probes, and a
+// structure's guided bomb). No setting of the client's shows a missile on its overview.
+test("a missile is on no overview; a bomb and a probe are", () => {
+  const rat = entity({ itemID: 3, name: "Pirate", kind: "ship", categoryID: 11, groupID: 562, isNpc: true, npcEntityType: "npc", position: { x: 9_000, y: 0, z: 0 } });
+  const charge = (itemID: number, groupID: number, name: string, x: number): SpaceEntity =>
+    entity({ itemID, name, kind: "missile", typeID: 266, categoryID: 8, groupID, position: { x, y: 0, z: 0 } });
+  const missiles = [charge(11, 387, "Scourge Rocket", 400), charge(12, 385, "Scourge Heavy Missile", 500), charge(13, 89, "Scourge Torpedo", 600),
+    charge(14, 88, "Defender", 700), charge(15, 492, "Quest Survey Probe I", 800), charge(16, 85, "Antimatter Charge S", 900)];
+  const listed = [charge(21, 90, "Concussion Bomb", 1_000), charge(22, 863, "Lockbreaker Bomb", 1_100), charge(23, 864, "Void Bomb", 1_200),
+    charge(24, 479, "Core Scanner Probe I", 1_300), charge(25, 548, "Warp Disrupt Probe", 1_400), charge(26, 4088, "Stasis Webification Probe", 1_500),
+    charge(27, 1548, "Standup Heavy Guided Bomb", 1_600)];
+  const snapshot = snapshotOf([SELF, rat, ...missiles, ...listed]);
+  const result = buildOverviewRows(snapshot, ORIGIN);
+  assert.deepEqual(result.rows.map((row) => row.itemID), [21, 22, 23, 24, 25, 26, 27, 3]);
+  assert.equal(result.matched, 8, "and the count of what is in range is without them");
+  // A search finds none of them by name, and they offer no filter of their own.
+  assert.deepEqual(buildOverviewRows(snapshot, ORIGIN, { filter: { text: "scourge" } }).rows, []);
+  assert.deepEqual([...overviewFilterIDs(snapshot).groupIDs].sort((a, b) => a - b), [90, 479, 548, 562, 863, 864, 1548, 4088]);
+  assert.deepEqual([...overviewFilterIDs(snapshotOf([SELF, ...missiles])).categoryIDs], []);
+  // It is the category and the group that say so, whatever word the row has for its kind: the game port's rows had none.
+  const unnamed = snapshotOf([SELF, { ...missiles[0]!, kind: null }, { ...listed[0]!, kind: null }]);
+  assert.deepEqual(buildOverviewRows(unnamed, ORIGIN).rows.map((row) => row.itemID), [21]);
+  for (const each of missiles) assert.equal(overviewCanList(each), false, each.name ?? "");
+  for (const each of [...listed, rat, entity({ itemID: 5, categoryID: null, groupID: null }), entity({ itemID: 6, categoryID: 8, groupID: null })]) assert.equal(overviewCanList(each), each.itemID !== 6, each.name ?? String(each.itemID));
+});
+
+test("rocks and rats are always listed: nothing is left out but the ship itself and what no overview lists", () => {
   const gate = entity({ itemID: 1, name: "Stargate", kind: "celestial" });
   const rock = entity({ itemID: 2, name: "Veldspar", kind: "asteroid", miningYieldTypeID: 1230, beltID: 99 });
   const rat = entity({ itemID: 3, name: "Pirate", kind: "ship", isNpc: true, npcEntityType: "npc" });

@@ -201,8 +201,31 @@ function matchesText(
 }
 
 /**
- * Build the overview list: drop the player's own ship, apply the filters,
- * compute each remaining row's distance from the ship, and sort.
+ * Whether any overview can list a thing. The client's overview is made of a
+ * table of groups (parklife/tacticalConst.py, construct_groups, 112), and that
+ * table leaves out every group of the Charge category but seven (bombGroups,
+ * 86): the three bombs', the scanner's, the interdiction's and the burst's
+ * probes, and a structure's guided bomb. So a missile in flight is on nobody's
+ * overview, whatever its settings; the client shows one in space and nowhere
+ * else.
+ *
+ * It is the category and the group that say so, never the row's word for its
+ * kind: a charge whose group is not known is not listed.
+ */
+const CATEGORY_CHARGE = 8;
+const CHARGE_GROUPS_AN_OVERVIEW_LISTS: ReadonlySet<number> = new Set([90, 863, 864, 479, 548, 4088, 1548]);
+
+export function overviewCanList(entity: Pick<SpaceEntity, "categoryID" | "groupID">): boolean {
+  if (entity.categoryID !== CATEGORY_CHARGE) {
+    return true;
+  }
+  return entity.groupID !== null && CHARGE_GROUPS_AN_OVERVIEW_LISTS.has(entity.groupID);
+}
+
+/**
+ * Build the overview list: drop the player's own ship and what no overview
+ * lists, apply the filters, compute each remaining row's distance from the
+ * ship, and sort.
  *
  * `cap` bounds how many rows the caller renders — a busy grid can hold hundreds
  * of balls and the panel must stay responsive at a 1s cadence. The cap is
@@ -228,7 +251,7 @@ export function buildOverviewRows(
   const radius = ownRadius(snapshot);
   const matched: OverviewRow[] = [];
   for (const entity of snapshot.entities) {
-    if (entity.isSelf) {
+    if (entity.isSelf || !overviewCanList(entity)) {
       continue;
     }
     if (
@@ -293,7 +316,7 @@ export function overviewFilterIDs(snapshot: SpaceSnapshot | null): {
   const categories = new Set<number>();
   const groups = new Set<number>();
   for (const entity of snapshot.entities) {
-    if (entity.isSelf) {
+    if (entity.isSelf || !overviewCanList(entity)) {
       continue;
     }
     if (entity.categoryID !== null) {

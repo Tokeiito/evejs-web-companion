@@ -307,6 +307,44 @@ test("what a thing is, told from its slim item's category and group", () => {
   assert.equal(CATEGORY.ENTITY, 11);
 });
 
+// spaceObject/repository.py: a group the client's data marks "fittable non-singleton" is drawn as a Missile
+// (GetGroupDict, 196), unless the table beside it says otherwise: the three bomb groups a Bomb, which is a
+// missile's class with another explosion, and the scanner, interdiction and burst probes a ScannerProbe. The
+// client's own groups table (res:/staticdata/groups.fsdbinary, read with its loader on 2026-10-12) marks 72 groups
+// so, every one of the Charge category, and leaves seven of that category unmarked.
+test("a ball of the Charge category is a missile, a probe if its group is a probe's, and nothing if its group is never launched", () => {
+  const charge = (group) => kindOf(8, group);
+  // Light, heavy, cruise, rocket, defender, torpedo, the heavy assault and the citadel's, and a turret's own ammunition, were one in space.
+  for (const group of [384, 385, 386, 387, 88, 89, 394, 395, 396, 476, 772, 1019, 83, 85, 86, 372]) assert.equal(charge(group), "missile", String(group));
+  // A bomb of any of its three groups, and a structure's guided bomb: the server's word for each is a missile's.
+  for (const group of [90, 863, 864, 1548]) assert.equal(charge(group), "missile", String(group));
+  // The scanner's, the interdiction's and the burst's are the client's ScannerProbe; a survey probe the client
+  // draws as a missile, and the server calls a probe as it does an interdiction probe. The word is the server's.
+  for (const group of [479, 548, 4088, 492]) assert.equal(charge(group), "probe", String(group));
+  // The seven groups of the category the client has no way to draw: scripts, exotic plasma, condenser packs and two unpublished.
+  for (const group of [92, 892, 1400, 1987, 1989, 4061, 4062]) assert.equal(charge(group), null, String(group));
+  // A group not known at all is taken for what the category's groups are but for those seven.
+  assert.equal(charge(999999), "missile");
+  assert.equal(charge(null), "missile");
+  assert.equal(CATEGORY.CHARGE, 8);
+});
+
+test("a missile's row, from a slim item as Tranquility sends one: what it is, whose, and none of a ship's fields", () => {
+  const park = undockedPark();
+  const slim = (fields) => new Map(Object.entries(fields));
+  // TheBlockadeLevel1.txt, line 18903: a Scourge Rocket fired at the recording's pilot by a rat of 500010.
+  park.ballpark.addBall({ id: 9002278201000510230n, isFree: true, isMassive: true, mass: 100, radius: 300, maxVelocity: 2571.75, x: 5000, vx: 0.6, vy: 0.8 });
+  park.slimItems.set(9002278201000510230n, slim({ itemID: 9002278201000510230n, typeID: 266, groupID: 387, categoryID: 8, ownerID: 500010, name: "", sourceShipID: 9002278201000509637n, sourceModuleID: 0, nameID: 63845 }));
+  const row = projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID }).entities.find((each) => each.typeID === 266);
+  assert.deepEqual([row.kind, row.categoryID, row.groupID, row.ownerID, row.name, row.isSelf, row.radius], ["missile", 8, 387, 500010, null, false, 300]);
+  assert.deepEqual(Object.keys(row), ["kind", "itemID", "typeID", "groupID", "categoryID", "name", "ownerID", "radius", "position", "velocity", "isSelf", "shieldRatio", "armorRatio", "hullRatio"]);
+  // A probe's row the same way.
+  park.ballpark.addBall({ id: 9000000000007, isFree: false, mass: 1, radius: 20, x: -3000 });
+  park.slimItems.set(9000000000007, slim({ itemID: 9000000000007, typeID: 22778, groupID: 548, categoryID: 8, ownerID: 140000009 }));
+  const probe = projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID }).entities.find((each) => each.itemID === 9000000000007);
+  assert.deepEqual([probe.kind, probe.groupID, probe.ownerID], ["probe", 548, 140000009]);
+});
+
 test("health is what the damage state says, with the shield brought forward by its own recharge", () => {
   // ((shield, tau in ms, when), armour, hull). One second on, a quarter shield with tau 1000 ms has recharged to (1 - 0.5/e)^2.
   const state = [[0.25, 1000, 134359116934190000n], 0.5, 0.75];
