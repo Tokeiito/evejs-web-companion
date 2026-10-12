@@ -83,6 +83,8 @@
     type SortOrder,
   } from "./inventoryModel.ts";
   import {
+    repairButtonWords,
+    repairChargeWords,
     repairQuoteTotal,
     type RepairQuotePart,
     type RepairQuoteRow,
@@ -1336,17 +1338,11 @@
         </tbody>
       </table>
     </div>
-    <p class="stn-note">
-      {#if repairTotal === null}
-        The repair service did not quote a price. In a station nothing is paid that was not quoted.
-      {:else}
-        The repair service will charge {formatIsk(repairTotal.toFixed(2))}.
-      {/if}
-    </p>
+    <p class="stn-note">{repairChargeWords(repairTotal, formatIsk)}</p>
     <p class="stn-controls">
       <button type="button" class="stn-btn stn-btn-go" disabled={busy}
         onclick={() => run(() => payRepairQuote(repairQuote ?? []))}>
-        Repair {repairParts.length === 1 ? "it" : `all ${repairParts.length}`} and pay
+        {repairButtonWords(repairParts.length, repairTotal)}
       </button>
       <button type="button" class="stn-btn" disabled={busy} onclick={() => { repairQuote = null; repairNote = ""; }}>
         Cancel

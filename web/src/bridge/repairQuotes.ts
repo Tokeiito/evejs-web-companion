@@ -173,3 +173,22 @@ export function repairQuoteTotal(quotes: readonly RepairQuoteRow[]): number | nu
   }
   return quotes.reduce((sum, quote) => sum + (quote.cost ?? 0), 0);
 }
+
+/**
+ * What the panel says a quote will cost. The game's own client asks its pilot nothing before a repair that costs
+ * nothing, and makes it at once (base_repairshop.py 310 to 321): a structure's repair is such a one on this
+ * server, where every part is quoted at nought. So where nothing is charged that is what is said.
+ * `isk` writes an amount of two places as the page writes ISK.
+ */
+export function repairChargeWords(total: number | null, isk: (amount: string) => string): string {
+  if (total === null) {
+    return "The repair service did not quote a price. In a station nothing is paid that was not quoted.";
+  }
+  return total > 0 ? `The repair service will charge ${isk(total.toFixed(2))}.` : "The repair service charges nothing for this.";
+}
+
+/** What the button that makes the repair reads, for so many damaged parts: it speaks of paying unless the quote is of nothing. */
+export function repairButtonWords(parts: number, total: number | null): string {
+  const what = parts === 1 ? "it" : `all ${parts}`;
+  return total === 0 ? `Repair ${what}` : `Repair ${what} and pay`;
+}

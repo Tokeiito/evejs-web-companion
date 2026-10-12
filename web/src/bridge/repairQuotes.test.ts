@@ -7,7 +7,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { decodeRepairQuotes, repairQuoteTotal, repairTargets } from "./repairQuotes.ts";
+import { decodeRepairQuotes, repairButtonWords, repairChargeWords, repairQuoteTotal, repairTargets } from "./repairQuotes.ts";
 
 function part(fields: Record<string, unknown>): unknown {
   return { type: "packedrow", fields };
@@ -171,4 +171,17 @@ test("a result that is not a dict is no damage, and an empty quote has no total"
   assert.deepEqual(decodeRepairQuotes(null), []);
   assert.deepEqual(decodeRepairQuotes({ type: "list", items: [] }), []);
   assert.equal(repairQuoteTotal([]), null);
+});
+
+test("a quote of nothing is said to charge nothing, and its button says nothing of paying", () => {
+  const isk = (amount: string) => `${amount} ISK`;
+  // A station's quote: the charge, and a button that pays.
+  assert.equal(repairChargeWords(615.410564, isk), "The repair service will charge 615.41 ISK.");
+  assert.deepEqual([repairButtonWords(1, 615.41), repairButtonWords(2, 615.41)], ["Repair it and pay", "Repair all 2 and pay"]);
+  // A structure's on this server: every part at nought.
+  assert.equal(repairChargeWords(0, isk), "The repair service charges nothing for this.");
+  assert.deepEqual([repairButtonWords(1, 0), repairButtonWords(2, 0)], ["Repair it", "Repair all 2"]);
+  // No price quoted: said so, and the button is the paying one still (in a station such a press pays nothing, and says why).
+  assert.match(repairChargeWords(null, isk), /did not quote a price/);
+  assert.equal(repairButtonWords(3, null), "Repair all 3 and pay");
 });
