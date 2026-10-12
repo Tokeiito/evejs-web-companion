@@ -856,6 +856,11 @@ export type MacroID =
   // Take up and switch on the bookmark folders a bot works from (a shared folder is
   // seen only once a pilot has added it and switched it on). Done when every one is on.
   | "use-bookmark-folders"
+  // The dedicated salvager's lap: work through the sites bookmarked in one
+  // folder (loot your corporation's wrecks, salvage every wreck), file each
+  // finished site's bookmark in another, unload at a station when the hold is
+  // full, and dock there to wait when no site is left. Never finishes.
+  | "salvage-bookmarked-sites"
   | "find-combat-agent"
   | "fly-to-mission-site"
   | "restart-extractors"
@@ -957,6 +962,7 @@ export const MACRO_IDS: readonly MacroID[] = Object.freeze<MacroID[]>([
   "move-items",
   "warp-to-bookmark",
   "use-bookmark-folders",
+  "salvage-bookmarked-sites",
   "find-combat-agent",
   "fly-to-mission-site",
   "restart-extractors",

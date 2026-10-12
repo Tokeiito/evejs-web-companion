@@ -28,6 +28,8 @@ import { startupSteps, type StartupCheckpoint, type StartupState } from "../bots
 import { resolveStationRef } from "./scriptMacros.ts";
 import {
   activeMacroID,
+  activeStepNeedsFolderSearch,
+  activeStepSalvagerUnloading,
   currentStepID,
   activeStepNeedsTypeNames,
   activeStepMinesIce,
@@ -77,6 +79,10 @@ export interface ObserveHint {
    * means "no", which is what every block but a name-matching one wants.
    */
   readonly needsTypeNames?: boolean;
+  /** Whether the active block is still taking up its bookmark folders, and so needs the folders it may add by name. */
+  readonly needsFolderSearch?: boolean;
+  /** Whether the active block is a salvager emptying its hold, the one time it needs the docked hold read. */
+  readonly salvagerUnloading?: boolean;
   /**
    * Whether the active block is a mining block touring ORE SITES, and so needs
    * the onboard scanner read that only the fly-to-an-anomaly blocks otherwise
@@ -492,6 +498,8 @@ export function createScriptRunner(deps: ScriptRunnerDeps): ScriptRunnerControll
         activeMacro: activeMacroID(script, memory),
         needsMobileCombat: needsMobileCombat(script.program),
         needsTypeNames: activeStepNeedsTypeNames(script, memory),
+        needsFolderSearch: activeStepNeedsFolderSearch(script, memory),
+        salvagerUnloading: activeStepSalvagerUnloading(script, memory),
         needsOreSites: activeStepToursOreSites(script, memory),
         minesIce: activeStepMinesIce(script, memory),
         squadRole: activeSquadRole(script, memory),

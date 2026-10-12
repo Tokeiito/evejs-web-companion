@@ -169,6 +169,8 @@ export function macroName(macro: MacroID): string {
       return "Fly to a saved spot";
     case "use-bookmark-folders":
       return "Use bookmark folders";
+    case "salvage-bookmarked-sites":
+      return "Salvage bookmarked sites";
     case "find-combat-agent":
       return "Find a combat agent";
     case "fly-to-mission-site":
@@ -755,6 +757,11 @@ function macroPhrase(step: MacroStep): string {
           ? bm.name
           : "a spot you pick";
       return `Warp to ${name}`;
+    }
+    case "salvage-bookmarked-sites": {
+      const from = step.args["fromFolder"];
+      const name = from !== undefined && from.kind === "bookmarkFolder" && from.name !== null && from.name.length > 0 ? from.name : "a folder you pick";
+      return `Salvage the sites bookmarked in ${name}`;
     }
     case "use-bookmark-folders": {
       const names = ["folder", "alsoFolder"]

@@ -197,6 +197,8 @@ export function describeAction(action: ScriptAction): string {
       return `add bookmark folder ${action.folderID}`;
     case "setFolderActive":
       return `switch bookmark folder ${action.folderID} ${action.active ? "on" : "off"}`;
+    case "moveBookmarks":
+      return `move bookmark ${action.bookmarkIDs.join(",")} from folder ${action.fromFolderID} to ${action.toFolderID}`;
     case "warpLaunch":
       return `warp to launch ${action.launchID}`;
     case "warpMissionLocation":
