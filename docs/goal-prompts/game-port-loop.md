@@ -2082,6 +2082,16 @@ Take these defaults, and list each under "For the operator" in the log so they c
   icons' three use the tab's own `fetch` and the tab's own token. Stand in for
   those two (a path with no origin sent on to the BFF; the token set through
   the page's own module) and the asker is the page's own still.
+- **A hosted bot's route is asked as a hosted bot asks it.** Such a route wants
+  three things of a request: a web session's token, that session's pilot held,
+  and the bot host's private header with the secret the held session carries
+  (`botClaimSecret`). A held session with that secret refuses any write
+  without it before the route is reached (`HOSTED_GENERATION_CHANGED`), so a
+  fixture whose held rows have no secret tests another refusal than the one a
+  cockpit beside a bot meets. Put the secret on the row.
+- **A count in a sentence is counted again against the list beside it.** "The
+  five writes' askers read nothing" was four: the reserve's reads what it is
+  answered. Before a number goes in the log, name its members.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
