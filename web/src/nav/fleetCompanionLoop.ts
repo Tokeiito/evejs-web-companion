@@ -2480,6 +2480,7 @@ function decideAbandonment(
       phase: "Getting safe",
       because: "there is nobody left in the fleet to fly with",
       write: (m, run) => ({ ...m, abandonment: { ...running, ...run } }),
+      recallWaitTicks: MAX_GET_SAFE_RECALL_WAIT_TICKS,
     });
     if (safe !== null) {
       return safe;
@@ -2585,6 +2586,12 @@ interface SafetyLeg {
   readonly because: string;
   /** Put an updated run back where this caller keeps it. */
   readonly write: (mem: CompanionLadderMemory, run: SafetyRun) => CompanionLadderMemory;
+  /**
+   * How many ticks this leg waits for its recall before it leaves anyway, read
+   * on every tick of the wait -- see `fleeRecallWaitTicks` for why it is the
+   * caller's to say.
+   */
+  readonly recallWaitTicks: number;
 }
 
 /**
@@ -2597,6 +2604,23 @@ interface SafetyLeg {
  * worth the ship.
  */
 const MAX_GET_SAFE_RECALL_WAIT_TICKS = 8;
+/**
+ * How long a HURT ship's flee waits for its recall: two waiting ticks, a few
+ * seconds, against the abandonment's eight.
+ *
+ * ⚠ THE FLEE IS THE ONE RUN TO SAFETY WHERE WAITING COSTS THE SHIP. Seen live
+ * 2026-10-12: a pilot well under its armour floor sat 17 s on grid "waiting for
+ * the drones to come home" before it warped. A recall does not need the ship
+ * to wait for it to be worth sending: recalled drones go on flying home while
+ * the hull aligns, and any that reach scoop range before the warp starts are
+ * scooped. Only the ones still out when the ship leaves are abandoned.
+ */
+const FLEE_RECALL_WAIT_TICKS = 2;
+/**
+ * At or below this share of the flee floor the flee does not wait for its
+ * drones at all: the recall goes out and the warp follows on the next tick.
+ */
+const FLEE_NO_WAIT_SHARE_OF_FLOOR = 0.5;
 const MAX_GET_SAFE_WARP_ATTEMPTS = 3;
 // At the idle cadence this allows two minutes for a slow-aligning hull.
 // Expiry pauses; elapsed time is never evidence that the ship got safe.
@@ -2633,7 +2657,7 @@ function recallBeforeLeaving(
       memory: leg.write(mem, { ...leg.run, droneRecallWaited: 0 }),
     };
   }
-  if (waited >= MAX_GET_SAFE_RECALL_WAIT_TICKS) {
+  if (waited >= leg.recallWaitTicks) {
     // ⚠ GIVE UP AND GO. A recall that has not completed by now is most likely
     // one the server refused in silence for a full bay, and no amount of
     // further waiting fixes that. Leaving costs the drones; staying risks the
@@ -5023,6 +5047,21 @@ function recoverAndReturn(
  * a flee that behaved differently on its first tick than its second would be a
  * flee whose first tick is untested by every test that starts from a latch.
  */
+/**
+ * How many ticks this flee waits for its drones, from how hurt the ship is NOW.
+ *
+ * ⚠ READ ON EVERY TICK OF THE WAIT, NOT ONCE AT THE TRIGGER. A ship that keeps
+ * taking damage while it waits is exactly the one that must stop waiting, so a
+ * wait that started at the short bound ends the tick the hull falls far enough.
+ * An unreadable health is not "far below": it keeps the short bound.
+ */
+function fleeRecallWaitTicks(request: FleetCompanionRequest, obs: FleetCompanionObservation): number {
+  const health = tankHealth(request, obs);
+  return health !== null && health <= request.fleeHealthFloor * FLEE_NO_WAIT_SHARE_OF_FLOOR
+    ? 0
+    : FLEE_RECALL_WAIT_TICKS;
+}
+
 function flyTheFlee(
   request: FleetCompanionRequest,
   obs: FleetCompanionObservation,
@@ -5070,6 +5109,7 @@ function flyTheFlee(
     phase: "Getting clear",
     because: "this ship is hurt",
     write: (m, run) => ({ ...m, flee: { ...running, ...run } }),
+    recallWaitTicks: fleeRecallWaitTicks(request, obs),
   });
   if (safe !== null) {
     return { decision: safe, memory: safe.memory };

@@ -3757,6 +3757,47 @@ test("the floor that decides is the request's own", () => {
   assert.notEqual(decideCompanionAction(REQUEST, fleeObs({ health: 0.5 })).phase, "Getting clear");
 });
 
+// --- how long a flee waits for its drones -------------------------------------
+//
+// ⚠ SEEN LIVE 2026-10-12: a pilot well under its armour floor sat 17 s on grid
+// waiting for its drones before it warped -- the abandonment's eight ticks,
+// spent by a ship that was being shot. Recalled drones go on flying home while
+// the hull aligns, so the recall is worth sending even when nothing waits on it.
+
+const FLEEING_DRONE = 700101;
+
+test("a ship far below its floor calls its drones in and warps on the very next tick", () => {
+  // REQUEST's floor is 0.3; 0.1 is under half of it.
+  const out = fleeObs({ health: 0.1, myDroneIDs: [FLEEING_DRONE] });
+  const first = decideCompanionAction(REQUEST, out);
+  assert.deepEqual(first.action, { kind: "recallDrones", droneIDs: [FLEEING_DRONE] });
+  const second = decideCompanionAction(REQUEST, out, first.memory);
+  assert.deepEqual(second.action, { kind: "warp", targetID: 60000001 });
+});
+
+test("a ship just under its floor waits two ticks for its drones, then goes", () => {
+  const jumpy: FleetCompanionRequest = { ...REQUEST, fleeHealthFloor: 0.8 };
+  const out = fleeObs({ health: 0.5, myDroneIDs: [FLEEING_DRONE] });
+  let decision = decideCompanionAction(jumpy, out);
+  assert.equal(decision.action.kind, "recallDrones");
+  const kinds: string[] = [];
+  for (let tick = 0; tick < 3; tick += 1) {
+    decision = decideCompanionAction(jumpy, out, decision.memory);
+    kinds.push(decision.action.kind);
+  }
+  assert.deepEqual(kinds, ["wait", "wait", "warp"]);
+});
+
+test("a ship that keeps losing health while it waits stops waiting", () => {
+  const jumpy: FleetCompanionRequest = { ...REQUEST, fleeHealthFloor: 0.8 };
+  const first = decideCompanionAction(jumpy, fleeObs({ health: 0.5, myDroneIDs: [FLEEING_DRONE] }));
+  const waiting = decideCompanionAction(jumpy, fleeObs({ health: 0.5, myDroneIDs: [FLEEING_DRONE] }), first.memory);
+  assert.equal(waiting.action.kind, "wait");
+  // 0.35 is under half of 0.8: the next tick leaves.
+  const worse = decideCompanionAction(jumpy, fleeObs({ health: 0.35, myDroneIDs: [FLEEING_DRONE] }), waiting.memory);
+  assert.deepEqual(worse.action, { kind: "warp", targetID: 60000001 });
+});
+
 // --- which layers a flee is judged on -----------------------------------------
 //
 // ⚠ DAMAGE EATS SHIELD, THEN ARMOUR, THEN HULL, WHATEVER THE FIT. So an armour
