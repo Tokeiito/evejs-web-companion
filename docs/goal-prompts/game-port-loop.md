@@ -1641,6 +1641,18 @@ Take these defaults, and list each under "For the operator" in the log so they c
   pilots from what the browser keeps, and a click on one only marks it. An account is
   signed in at the hangar's own form (a test account's name out of the fixtures; the
   form takes any password), and a marked pilot is brought online by "Bring online".
+- **Work in the write the page makes, and let go at the rest.** Sixteen writes change
+  what the client's bookmark service keeps, and the page makes one of them. Working
+  that one in as the client does took the page's last asking a client does not make;
+  the other fifteen stay let go at, which is never behind. Count who of ours makes a
+  call before building for all of its kind.
+- **What is kept is proven by a session begun after.** A bookmark the transport made
+  for itself was set beside the one the server answered at the next choosing, by the
+  page's own decoding, name by name: the same but for when it was made. Do that for
+  anything worked in without asking.
+- **Run a live check on the gateway too, and read what it answers.** The same call by
+  the same function saved a bookmark with a place on the game port and with none
+  through the gateway. A count alone would not have shown it.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

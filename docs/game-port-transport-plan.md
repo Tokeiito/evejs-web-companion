@@ -945,8 +945,9 @@ and kept by the game port's transport (`1d9703f3`), as the client's bookmark ser
 saved spot reached the server with one asking, where 18 had in its first 26 seconds. The fleet's answers were set beside
 the recording (`e9bf2d8f`): the page reads a fleet's state in the recorded form; and the list of advertised fleets,
 which handed every pilot each boss's four sets of whom it lets in and keeps out where Tranquility's has None,
-answers None for them in `eve.js` (`919c28959`, a sub-agent's, not pushed by this loop). A bookmark's changes
-worked into what the transport keeps are next. In `eve.js` an advert's text outside ASCII goes as
+answers None for them in `eve.js` (`919c28959`, a sub-agent's, not pushed by this loop). A place bookmarked on the
+ballpark's object, the page's one write of a bookmark, is worked into what the transport keeps as the client works
+it (`7731baf3`): nothing is asked after it. The note's other nine beside the fleet's recording are next. In `eve.js` an advert's text outside ASCII goes as
 unicode (`dcd459b0d`; on its origin since 2026-10-11, pushed by another hand than this loop's), and a dock
 asked from out of range of a station is finished by the server, as Tranquility finishes
 it (`869b28d2b`), and a pilot's client is sent no greatest speed for its ship

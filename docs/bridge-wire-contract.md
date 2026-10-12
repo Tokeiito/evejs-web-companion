@@ -901,9 +901,14 @@ reads nothing of what is sent with it. The page takes nothing but three lists fo
 answer: anything else is the bookmarks unread, never no bookmarks.
 **On the game port the transport keeps them** (`src/gamePort/pilots.js`, `bookmarksRead`):
 it asks as a character is chosen, as a client does, and answers this call from what it
-keeps, with nothing sent. What is kept is let go at the pilot's own write of a
-bookmark, a folder or a subfolder (on the manager, or on the ballpark's object) and at
-the server's four notices of a shared folder, and asked for when it is next wanted. A
+keeps, with nothing sent. **A place bookmarked on the ballpark's object**
+(`beyonce.BookmarkLocation`, the page's one write of a bookmark) **is worked into what
+is kept as the client works it**: where the call is the client's own and is answered its
+eight with a bookmark's ID, a bookmark is made of them and of what was sent, and nothing
+is asked. What is kept is let go at any other write of the pilot's own of a bookmark, a
+folder or a subfolder (on the manager, or a scan result's place on the ballpark's
+object), at a bookmarking that is not the client's or is not answered the eight, and at
+the server's four notices of a shared folder; and is asked for when it is next wanted. A
 bookmark whose time has run out by the server's clock is not in the answer. An asking
 with something sent beside it is sent as it came. Through the gateway every asking is
 sent.
