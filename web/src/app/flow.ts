@@ -571,6 +571,7 @@ import {
   createFleetCompanion,
   type FleetCompanionController,
   type FleetCompanionDeps,
+  type CompanionHitPoints,
   type FleetCompanionObservation,
   type CompanionSetup,
   type FleetCompanionRequest,
@@ -579,6 +580,11 @@ import {
   type CompanionPropulsionModule,
   type CompanionTankLayer,
 } from "../nav/fleetCompanionLoop.ts";
+import {
+  DRONE_SIZING_ATTRIBUTE_IDS,
+  droneFactsFromAttributes,
+  type DroneFacts,
+} from "../nav/droneSizing.ts";
 import { highSlotMiningModules, isDockableKind, ungroupedHighSlotModules } from "../space/rowActions.ts";
 import {
   DEFAULT_MAX_JUMPS,
@@ -3798,6 +3804,23 @@ const ratThreatByTypeID = new Map<number, RatThreat>();
  */
 const ratSignatureByTypeID = new Map<number, number>();
 const ATTR_SIGNATURE_RADIUS = 552;
+
+/**
+ * Each rat type's full shield, armour and hull (263, 265, 9), riding the same
+ * fetch, so the drone rung can tell a nearly dead ship from a fresh one when it
+ * prices a size switch.
+ */
+const ratHitPointsByTypeID = new Map<number, CompanionHitPoints>();
+const ATTR_SHIELD_CAPACITY = 263;
+const ATTR_ARMOR_HP = 265;
+const ATTR_HULL_HP = 9;
+
+/**
+ * Each combat drone type's sizing facts, or null for a type whose dogma came
+ * back without the essentials (never invented; see `droneFactsFromAttributes`).
+ * Permanent for the session, like the rat caches: type dogma is static.
+ */
+const droneFactsByTypeID = new Map<number, DroneFacts | null>();
 
 /**
  * Metres of drone control range each drone-range SKILL buys per level, off that
@@ -20912,6 +20935,27 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           snapshot,
           ship?.itemID ?? null,
         );
+        // ── Drone sizing's inputs. The combat stacks WITH their types (the
+        // role split above keeps only ids), the hull's limits off the same
+        // drones read, and each combat type's dogma -- bay types and the types
+        // already out, since a size switch compares the two.
+        const combatBayIDs = new Set(companionDroneRoles.bay?.combat ?? []);
+        const combatDroneStacks =
+          companionBay === null || companionDroneRoles.bay === null
+            ? null
+            : companionBay.filter((stack) => combatBayIDs.has(stack.itemID));
+        const limits = droneRaw === null ? null : decodeDroneLimits(droneRaw.shipInfo);
+        const companionDroneLimits =
+          limits === null || limits.droneBandwidth === null || limits.maxActiveDrones === null
+            ? null
+            : { bandwidthMbit: limits.droneBandwidth, maxActive: limits.maxActiveDrones };
+        const combatOutIDs = new Set(companionDroneRoles.out?.combat ?? []);
+        const companionDroneFacts = await combatDroneFacts([
+          ...(combatDroneStacks ?? []).map((stack) => stack.typeID),
+          ...(snapshot?.entities ?? [])
+            .filter((entity) => combatOutIDs.has(entity.itemID) && entity.typeID !== null)
+            .map((entity) => entity.typeID as number),
+        ]);
 
         // The roster is read EVERY tick and not gated, because a companion with
         // no fleet has nothing to obey — this is its most load-bearing read, not
@@ -20977,6 +21021,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           targetGroupNames,
           threatByTypeID,
           signatureByTypeID: ratSignaturesOnGrid(snapshot, origin),
+          hitPointsByTypeID: ratHitPointsOnGrid(snapshot, origin),
+          combatDroneStacks,
+          droneFactsByTypeID: companionDroneFacts,
+          droneLimits: companionDroneLimits,
           dronesOut:
             snapshot === null
               ? null
@@ -21227,7 +21275,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // refusal dict and the authoritative post-call target read.
           case "launchDrones":
             // ⚠ THE WHOLE STACK, NOT ONE FROM IT. See wholeStackLaunch.
-            await launchedThenRead(wholeStackLaunch(action.droneItemIDs, companionDroneStackSizes));
+            await launchedThenRead(
+              action.quantities === undefined
+                ? wholeStackLaunch(action.droneItemIDs, companionDroneStackSizes)
+                : action.droneItemIDs.map((itemID) => ({
+                    itemID,
+                    quantity: action.quantities?.[itemID] ?? companionDroneStackSizes.get(itemID) ?? 1,
+                  })),
+            );
             return;
           // ⚠ NO SCOOP FOLLOWS THIS. The server flies them home at full speed
           // and scoops them itself inside 2500 m; a scoop call would only ever
@@ -23127,7 +23182,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // `threatFromAttributes` reads only the ids it names.
         const attributes = await api.fetchTypeDogma(
           missing,
-          [...THREAT_ATTRIBUTE_IDS, ATTR_SIGNATURE_RADIUS],
+          [...THREAT_ATTRIBUTE_IDS, ATTR_SIGNATURE_RADIUS, ATTR_SHIELD_CAPACITY, ATTR_ARMOR_HP, ATTR_HULL_HP],
           callOptions,
         );
         for (const typeID of missing) {
@@ -23143,6 +23198,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             if (typeof signature === "number" && Number.isFinite(signature) && signature > 0) {
               ratSignatureByTypeID.set(typeID, signature);
             }
+            const layer = (id: number): number | null => {
+              const value = row[id];
+              return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+            };
+            ratHitPointsByTypeID.set(typeID, {
+              shield: layer(ATTR_SHIELD_CAPACITY),
+              armor: layer(ATTR_ARMOR_HP),
+              hull: layer(ATTR_HULL_HP),
+            });
           }
         }
       } catch {
@@ -23184,6 +23248,55 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
     }
     return signatures;
+  }
+
+  /** As `ratSignaturesOnGrid`, for the full hit points. Free; same ordering rule. */
+  function ratHitPointsOnGrid(
+    snapshot: ReturnType<typeof decodeSpaceSnapshot>,
+    origin: SpaceVector,
+  ): Readonly<Record<number, CompanionHitPoints>> | null {
+    if (snapshot === null) {
+      return null;
+    }
+    const hitPoints: Record<number, CompanionHitPoints> = {};
+    for (const row of hostileRows(snapshot, origin)) {
+      const full = row.typeID === null ? undefined : ratHitPointsByTypeID.get(row.typeID);
+      if (row.typeID !== null && full !== undefined) {
+        hitPoints[row.typeID] = full;
+      }
+    }
+    return hitPoints;
+  }
+
+  /**
+   * Sizing facts for these combat drone types, reading only the ones never
+   * looked up. One round trip per NEW drone type this tab ever sees. A failed
+   * read is not cached and costs only this tick's sizing: the rung then
+   * launches the whole bay as it always did.
+   */
+  async function combatDroneFacts(typeIDs: readonly number[]): Promise<ReadonlyMap<number, DroneFacts>> {
+    const missing = [...new Set(typeIDs)].filter((typeID) => !droneFactsByTypeID.has(typeID));
+    if (missing.length > 0) {
+      try {
+        const attributes = await api.fetchTypeDogma(missing, DRONE_SIZING_ATTRIBUTE_IDS, callOptions);
+        for (const typeID of missing) {
+          const row = attributes[typeID];
+          if (row !== undefined) {
+            droneFactsByTypeID.set(typeID, droneFactsFromAttributes(typeID, row));
+          }
+        }
+      } catch {
+        // Left uncached: asked again next tick.
+      }
+    }
+    const facts = new Map<number, DroneFacts>();
+    for (const typeID of typeIDs) {
+      const known = droneFactsByTypeID.get(typeID);
+      if (known !== undefined && known !== null) {
+        facts.set(typeID, known);
+      }
+    }
+    return facts;
   }
 
   // --- the drone leash, from the PILOT --------------------------------------

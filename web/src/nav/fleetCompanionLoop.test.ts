@@ -24,6 +24,7 @@ import {
 } from "./fleetCompanionLoop.ts";
 import type { ChatMessage, SpaceSnapshot } from "../store/types.ts";
 import type { FleetBroadcast } from "../bridge/fleetBroadcasts.ts";
+import type { DroneFacts } from "./droneSizing.ts";
 
 /**
  * Two obviously-synthetic character ids: the human whose presence satisfies the
@@ -8553,4 +8554,137 @@ test("free fire skips what this hull cannot lock and what it gave up on", () => 
     lockGaveUpOn: [FF_FRIGATE],
   });
   assert.deepEqual(gaveUp.action, { kind: "lock", targetID: FF_BATTLESHIP });
+});
+
+// --- drone sizing: which drones go out, and when they swap ------------------
+//
+// ⚠ SIZING IS AN IMPROVEMENT ON THE OLD LAUNCH, NEVER A NEW WAY TO SIT ON A
+// FULL BAY: every unread input falls back to the whole role bay.
+
+const SZ_LIGHT_TYPE = 2454;
+const SZ_HEAVY_TYPE = 2444;
+const SZ_LIGHT_STACK = 810001;
+const SZ_HEAVY_STACK = 810002;
+const SZ_HEAVY_OUT = [710001, 710002, 710003];
+
+const SZ_FACTS = new Map<number, DroneFacts>([
+  [SZ_LIGHT_TYPE, {
+    typeID: SZ_LIGHT_TYPE, shotDamage: { em: 0, thermal: 12, kinetic: 0, explosive: 0 }, cycleSeconds: 4,
+    optimalM: 2100, falloffM: 2000, trackingSpeed: 1.815, optimalSigRadius: 25, maxVelocityMs: 2800,
+    cruiseSpeedMs: 900, chaseM: 0, orbitRadiusM: 500, bandwidthMbit: 5, stationary: false,
+  }],
+  [SZ_HEAVY_TYPE, {
+    typeID: SZ_HEAVY_TYPE, shotDamage: { em: 0, thermal: 48, kinetic: 0, explosive: 0 }, cycleSeconds: 4,
+    optimalM: 5000, falloffM: 4200, trackingSpeed: 0.45, optimalSigRadius: 400, maxVelocityMs: 1000,
+    cruiseSpeedMs: 400, chaseM: 0, orbitRadiusM: 1000, bandwidthMbit: 25, stationary: false,
+  }],
+]);
+
+/** A fast frigate called by tag at 10 km, plus whatever drones are out. */
+function sizingGrid(dronesOut: readonly number[] = []): SpaceSnapshot {
+  return {
+    inSpace: true,
+    ship: { position: { x: 0, y: 0, z: 0 }, radius: 0, mode: null },
+    entities: [
+      { itemID: 1, kind: "ship", isSelf: true, position: { x: 0, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 }, radius: 0, mode: null },
+      {
+        itemID: FF_FRIGATE, typeID: TYPE_FRIGATE, kind: "ship", isSelf: false, isNpc: true, npcEntityType: "npc",
+        position: { x: 10_000, y: 0, z: 0 }, velocity: { x: 0, y: 400, z: 0 }, radius: 0, mode: null,
+        shieldRatio: 1, armorRatio: 1, hullRatio: 1,
+      },
+      ...dronesOut.map((itemID) => ({
+        itemID, typeID: SZ_HEAVY_TYPE, kind: "drone", isSelf: false,
+        position: { x: 9_000, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 }, radius: 0, mode: null,
+      })),
+    ],
+  } as unknown as SpaceSnapshot;
+}
+
+function sizingObs(overrides: Partial<FleetCompanionObservation> = {}): FleetCompanionObservation {
+  return obs({
+    snapshot: sizingGrid(),
+    hostileOnGrid: true,
+    fleetTargetTags: new Map([[FF_FRIGATE, "A"]]),
+    lockedTargetIDs: [],
+    myDroneIDs: [],
+    combatDroneIDs: [],
+    lowestDroneHealth: null,
+    droneBayItemIDs: [SZ_LIGHT_STACK, SZ_HEAVY_STACK],
+    combatDroneBayItemIDs: [SZ_LIGHT_STACK, SZ_HEAVY_STACK],
+    combatDroneStacks: [
+      { itemID: SZ_LIGHT_STACK, typeID: SZ_LIGHT_TYPE, quantity: 5 },
+      { itemID: SZ_HEAVY_STACK, typeID: SZ_HEAVY_TYPE, quantity: 3 },
+    ],
+    droneFactsByTypeID: SZ_FACTS,
+    droneLimits: { bandwidthMbit: 75, maxActive: 5 },
+    signatureByTypeID: { [TYPE_FRIGATE]: 35 },
+    hitPointsByTypeID: { [TYPE_FRIGATE]: { shield: 1500, armor: 1500, hull: 1500 } },
+    ...overrides,
+  });
+}
+
+test("sizing: a called frigate gets the light drones, five of them, and not the heavies", () => {
+  const decision = decideCompanionAction(REQUEST, sizingObs());
+  assert.deepEqual(decision.action, {
+    kind: "launchDrones",
+    droneItemIDs: [SZ_LIGHT_STACK],
+    quantities: { [SZ_LIGHT_STACK]: 5 },
+  });
+  assert.match(decision.why, /hit this target hardest/);
+});
+
+test("sizing: an unread hull limit falls back to the whole combat bay", () => {
+  const decision = decideCompanionAction(REQUEST, sizingObs({ droneLimits: null }));
+  assert.deepEqual(decision.action, {
+    kind: "launchDrones",
+    droneItemIDs: [SZ_LIGHT_STACK, SZ_HEAVY_STACK],
+  });
+});
+
+test("sizing: an unread target signature falls back to the whole combat bay", () => {
+  const decision = decideCompanionAction(REQUEST, sizingObs({ signatureByTypeID: {} }));
+  assert.equal(decision.action.kind, "launchDrones");
+  assert.equal((decision.action as { quantities?: unknown }).quantities, undefined);
+});
+
+function heaviesOut(): FleetCompanionObservation {
+  return sizingObs({
+    snapshot: sizingGrid(SZ_HEAVY_OUT),
+    lockedTargetIDs: [FF_FRIGATE],
+    myDroneIDs: SZ_HEAVY_OUT,
+    combatDroneIDs: SZ_HEAVY_OUT,
+    combatDroneBayItemIDs: [SZ_LIGHT_STACK],
+    combatDroneStacks: [{ itemID: SZ_LIGHT_STACK, typeID: SZ_LIGHT_TYPE, quantity: 5 }],
+  });
+}
+
+test("sizing: heavies out on a fast frigate come home for the lights", () => {
+  const decision = decideCompanionAction(REQUEST, heaviesOut(), freshLadderMemory(), 1_000_000);
+  assert.deepEqual(decision.action, { kind: "recallDrones", droneIDs: SZ_HEAVY_OUT });
+  assert.deepEqual(decision.memory.droneSizeRecalledIDs, SZ_HEAVY_OUT);
+  assert.equal(decision.memory.droneSizeSwitchAtMs, 1_000_000);
+});
+
+test("sizing: a swap's recall is not undone by an engage while the drones fly home", () => {
+  const first = decideCompanionAction(REQUEST, heaviesOut(), freshLadderMemory(), 1_000_000);
+  const next = decideCompanionAction(REQUEST, heaviesOut(), first.memory, 1_002_000);
+  assert.notEqual(next.action.kind, "engageDrones");
+  assert.notEqual(next.action.kind, "recallDrones", "and it does not recall them again either");
+});
+
+test("sizing: once they are home, the lights go out against the same target", () => {
+  const first = decideCompanionAction(REQUEST, heaviesOut(), freshLadderMemory(), 1_000_000);
+  const home = sizingObs({
+    lockedTargetIDs: [FF_FRIGATE],
+    combatDroneStacks: [
+      { itemID: SZ_LIGHT_STACK, typeID: SZ_LIGHT_TYPE, quantity: 5 },
+      { itemID: SZ_HEAVY_STACK, typeID: SZ_HEAVY_TYPE, quantity: 3 },
+    ],
+  });
+  const next = decideCompanionAction(REQUEST, home, first.memory, 1_010_000);
+  assert.deepEqual(next.action, {
+    kind: "launchDrones",
+    droneItemIDs: [SZ_LIGHT_STACK],
+    quantities: { [SZ_LIGHT_STACK]: 5 },
+  });
 });

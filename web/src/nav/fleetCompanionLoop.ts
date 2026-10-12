@@ -63,6 +63,21 @@ import type { SpaceEntity, SpaceSnapshot } from "../store/types.ts";
 import type { ChatMessage } from "../store/types.ts";
 import { isHostile } from "../space/overview.ts";
 import {
+  sizedLaunch,
+  sizeSwitchVerdict,
+  type BayStack,
+  type DroneFacts,
+  type ShipLimits,
+  type TargetFacts,
+} from "./droneSizing.ts";
+
+/** A hostile type's full layers, for pricing what is left of a target. */
+export interface CompanionHitPoints {
+  readonly shield: number | null;
+  readonly armor: number | null;
+  readonly hull: number | null;
+}
+import {
   COMPANION_FOLLOW_RANGE_M,
   isChatCommandSenderAllowed,
   parseChatCommand,
@@ -636,6 +651,23 @@ export interface FleetCompanionObservation extends ScriptObservation {
    */
   readonly signatureByTypeID?: Readonly<Record<number, number>> | null;
   /**
+   * Each hostile TYPE's full shield, armour and hull (dogma 263, 265, 9), so
+   * the drone rung can price a size switch against what is left of the target:
+   * a ship nearly dead is never worth recalling drones for. A null layer is one
+   * the read did not give.
+   */
+  readonly hitPointsByTypeID?: Readonly<Record<number, CompanionHitPoints>> | null;
+  /**
+   * The COMBAT stacks in the bay with their types and sizes, for drone sizing.
+   * `combatDroneBayItemIDs` is the same stacks as bare ids; sizing needs to
+   * know what each one is and how many it holds.
+   */
+  readonly combatDroneStacks?: readonly BayStack[] | null;
+  /** Each combat drone TYPE aboard or out, as the sizing rule reads it. */
+  readonly droneFactsByTypeID?: ReadonlyMap<number, DroneFacts> | null;
+  /** The hull's drone bandwidth and the pilot's active-drone cap, or null unread. */
+  readonly droneLimits?: ShipLimits | null;
+  /**
    * Whether THIS pilot's tag write can land, from the fleet roster's role/job.
    *
    * ⚠ THREE STATES. `null` (roster unreadable) and `false` (not a commander)
@@ -1005,7 +1037,16 @@ export type FleetCompanionAction =
    * ids - a stack and a drone in space live in different id spaces, and the
    * launch route takes the former.
    */
-  | { readonly kind: "launchDrones"; readonly droneItemIDs: readonly number[] }
+  | {
+      readonly kind: "launchDrones";
+      readonly droneItemIDs: readonly number[];
+      /**
+       * How many of each stack, by stack id, when a sized launch chose them.
+       * Absent means the whole of every stack (`wholeStackLaunch`), which is
+       * what every launch meant before drone sizing.
+       */
+      readonly quantities?: Readonly<Record<number, number>>;
+    }
   /**
    * Rung 6: bring drones home. `droneIDs` are the ENTITY ids of drones in
    * space, the other half of the pair above.
@@ -1459,6 +1500,19 @@ export interface CompanionLadderMemory {
    */
   readonly droneCyclesSpent: number;
   /**
+   * When this pilot last recalled its combat drones to swap them for a better
+   * size, or null. `shouldSwitch`'s minimum interval reads it, so a commander
+   * flicking between two targets does not keep the drones commuting.
+   */
+  readonly droneSizeSwitchAtMs: number | null;
+  /**
+   * The drones that swap called home, held until they are aboard. ⚠ WITHOUT
+   * THIS THE SWAP UNDOES ITSELF: the engage below the switch would see its
+   * flight still out and still on the target, and order the recalled drones
+   * straight back onto it.
+   */
+  readonly droneSizeRecalledIDs: readonly number[];
+  /**
    * The ship this pilot's repair drones were last sent to.
    *
    * ⚠ WITHOUT THIS THE RUNG RE-ISSUES ITS ORDER EVERY TICK. Drones already
@@ -1827,6 +1881,8 @@ export function freshLadderMemory(): CompanionLadderMemory {
     lockGaveUpOn: [],
     droneCycle: null,
     droneCyclesSpent: 0,
+    droneSizeSwitchAtMs: null,
+    droneSizeRecalledIDs: [],
     lastDroneRepairTargetID: null,
     lastDroneRepairIDs: [],
     lastDroneEngageTargetID: null,
@@ -2238,6 +2294,8 @@ function decideCompanionStep(
     lastWarpedToID: memory.lastWarpedToID,
     droneCycle: memory.droneCycle,
     droneCyclesSpent: memory.droneCyclesSpent,
+    droneSizeSwitchAtMs: memory.droneSizeSwitchAtMs,
+    droneSizeRecalledIDs: memory.droneSizeRecalledIDs,
     // ⚠ CARRIED, NOT CLEARED, and the difference from `abandonment` above is
     // the whole point. That one is cleared because a human coming back is
     // exactly the thing it was waiting for. A flee is about the ship's health
@@ -6688,6 +6746,156 @@ function withObservedDroneFlights(
   return memory;
 }
 
+// ── drone sizing (rung 6) ────────────────────────────────────────────────────
+//
+// ⚠ AN IMPROVEMENT ON THE OLD LAUNCH, NEVER A NEW WAY TO SIT ON A FULL BAY.
+// Every input below can be unread -- the bay, the hull's bandwidth, a drone
+// type's dogma, a target's signature -- and each helper answers "cannot judge"
+// for that, on which the rung launches the whole role bay exactly as it did
+// before sizing existed. See nav/droneSizing.ts for the rule itself.
+
+/** What the sizing rule needs to know about one ship on the grid. */
+function sizingTargetFacts(
+  entity: SpaceEntity,
+  obs: FleetCompanionObservation,
+  measurement: SpaceMeasurement | null,
+): TargetFacts {
+  const v = entity.velocity;
+  const speed =
+    v !== null && v !== undefined && Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z)
+      ? Math.hypot(v.x, v.y, v.z)
+      : null;
+  return {
+    signatureRadius: entity.typeID === null ? null : (obs.signatureByTypeID?.[entity.typeID] ?? null),
+    speed,
+    distanceFromShipM: measurement?.distances.get(entity.itemID) ?? null,
+  };
+}
+
+/**
+ * What the drones are sized FOR: the called (or free-fire) target when there
+ * is one on grid, otherwise every hostile NPC on it -- the launch that happens
+ * before anybody calls anything is still a choice of which drones go out.
+ */
+function sizingTargets(
+  request: FleetCompanionRequest,
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+): readonly TargetFacts[] {
+  const snapshot = obs.snapshot ?? null;
+  if (snapshot === null) {
+    return [];
+  }
+  const measurement = measureSpace(snapshot);
+  const called = calledCombatTargetID(request, obs, memory);
+  const target = called === null ? null : entityOnGrid(called, snapshot.entities);
+  if (target !== null) {
+    return [sizingTargetFacts(target, obs, measurement)];
+  }
+  return snapshot.entities.filter(isHostile).map((entity) => sizingTargetFacts(entity, obs, measurement));
+}
+
+/**
+ * The launch for this role: sized for combat when it can be judged, the whole
+ * role bay otherwise (and always for logistic and salvage drones, which have
+ * one job each and no size to choose).
+ */
+function roleLaunch(
+  request: FleetCompanionRequest,
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+  role: CompanionDroneRole,
+  bay: readonly number[],
+  why: string,
+): { readonly action: FleetCompanionAction; readonly why: string } {
+  const whole = { action: { kind: "launchDrones", droneItemIDs: bay } as const, why };
+  if (role !== "combat") {
+    return whole;
+  }
+  const plan = sizedLaunch(
+    obs.combatDroneStacks ?? null,
+    obs.droneFactsByTypeID ?? new Map(),
+    obs.droneLimits ?? null,
+    sizingTargets(request, obs, memory),
+  );
+  if (plan === null) {
+    return whole;
+  }
+  const quantities: Record<number, number> = {};
+  for (const stack of plan.stacks) {
+    quantities[stack.itemID] = stack.quantity;
+  }
+  return {
+    action: { kind: "launchDrones", droneItemIDs: plan.stacks.map((stack) => stack.itemID), quantities },
+    why:
+      calledCombatTargetID(request, obs, memory) === null
+        ? "Hostiles on grid. Putting out the drones that suit them best."
+        : "Putting out the drones that hit this target hardest.",
+  };
+}
+
+/** What is left of a ship, in hit points across its three layers, or null. */
+function remainingHitPoints(entity: SpaceEntity, obs: FleetCompanionObservation): number | null {
+  const full = entity.typeID === null ? null : (obs.hitPointsByTypeID?.[entity.typeID] ?? null);
+  if (full === null) {
+    return null;
+  }
+  const layers: [number | null, number | null][] = [
+    [full.shield, entity.shieldRatio],
+    [full.armor, entity.armorRatio],
+    [full.hull, entity.hullRatio],
+  ];
+  let total = 0;
+  for (const [capacity, ratio] of layers) {
+    if (capacity === null || ratio === null) {
+      return null;
+    }
+    total += capacity * Math.max(0, Math.min(1, ratio));
+  }
+  return total;
+}
+
+/**
+ * Bring the combat drones home to swap them for a better size, or null.
+ *
+ * ⚠ THE RECALL IS THE WHOLE OF THE SWITCH. Once they are in, the role's drones
+ * are not out, and the launch branch above sizes the next flight against this
+ * same target on a fresh bay read -- one atomic call per tick, and no second
+ * copy of the launch rule here.
+ */
+function decideDroneSizeSwitch(
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+  targetID: number,
+  flightIDs: readonly number[],
+  nowMs: number,
+): CompanionDecision | null {
+  const snapshot = obs.snapshot ?? null;
+  const target = snapshot === null ? null : entityOnGrid(targetID, snapshot.entities);
+  if (snapshot === null || target === null) {
+    return null;
+  }
+  const verdict = sizeSwitchVerdict({
+    flightTypeIDs: flightIDs.map((id) => entityOnGrid(id, snapshot.entities)?.typeID ?? null),
+    bay: obs.combatDroneStacks ?? null,
+    facts: obs.droneFactsByTypeID ?? new Map(),
+    limits: obs.droneLimits ?? null,
+    target: sizingTargetFacts(target, obs, measureSpace(snapshot)),
+    remainingEhp: remainingHitPoints(target, obs),
+    lastSwitchAtMs: memory.droneSizeSwitchAtMs,
+    nowMs,
+  });
+  if (verdict === null || !verdict.switch) {
+    return null;
+  }
+  return {
+    action: { kind: "recallDrones", droneIDs: flightIDs },
+    phase: "Drones",
+    why: verdict.why,
+    memory: { ...memory, droneSizeSwitchAtMs: nowMs, droneSizeRecalledIDs: [...flightIDs] },
+  };
+}
+
 function decideDrones(
   request: FleetCompanionRequest,
   obs: FleetCompanionObservation,
@@ -6759,11 +6967,12 @@ function decideDrones(
     if (role === null || bay === null || bay.length === 0) {
       return { decision: null, memory: { ...memory, droneCycle: null } };
     }
+    const relaunch = roleLaunch(request, obs, memory, role, bay, `Sending the ${DRONE_ROLE_WORDS[role]} back out.`);
     return {
       decision: {
-        action: { kind: "launchDrones", droneItemIDs: bay },
+        action: relaunch.action,
         phase: "Drones",
-        why: `Sending the ${DRONE_ROLE_WORDS[role]} back out.`,
+        why: relaunch.why,
         memory: { ...memory, droneCycle: null },
       },
       memory,
@@ -6860,13 +7069,9 @@ function decideDrones(
       // for this job simply does the job without them, or not at all.
       return nothing;
     }
+    const launch = roleLaunch(request, obs, memory, role, bay, DRONE_LAUNCH_WHY[role]);
     return {
-      decision: {
-        action: { kind: "launchDrones", droneItemIDs: bay },
-        phase: "Drones",
-        why: DRONE_LAUNCH_WHY[role],
-        memory,
-      },
+      decision: { action: launch.action, phase: "Drones", why: launch.why, memory },
       memory,
     };
   }
@@ -6900,6 +7105,18 @@ function decideDrones(
     }
     if (!isAlreadyLocked(called, obs.lockedTargetIDs, memory)) {
       return nothing;
+    }
+    // A swap's recall still landing: nothing to order until they are aboard,
+    // and the launch branch sizes the next flight once they are. Bounded by
+    // the same give-up as the hurt-drone recall, so a drone that never comes
+    // home (a full bay) cannot hold the engage for ever.
+    const homeward = memory.droneSizeRecalledIDs.filter((id) => roleOut.includes(id));
+    if (homeward.length > 0 && nowMs - (memory.droneSizeSwitchAtMs ?? nowMs) < DRONE_RECALL_GIVE_UP_MS) {
+      return nothing;
+    }
+    const swap = decideDroneSizeSwitch(obs, memory, called, roleOut, nowMs);
+    if (swap !== null) {
+      return { decision: swap, memory };
     }
     return { decision: decideDroneEngagement(memory, "combat", roleOut, called,
       "Putting the combat drones on the target the fleet called."), memory };
@@ -7832,6 +8049,8 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
           // undo - so the honest state is "no cycle", not a half-remembered one.
           droneCycle: null,
           droneCyclesSpent: 0,
+          droneSizeSwitchAtMs: null,
+          droneSizeRecalledIDs: [],
       // Run-local, both of them. See `CompanionFlee`'s header for why a flee is
       // not persisted the way an abandonment is: a companion coming back up
       // reads its own health on the first tick and leaves again within one tick
