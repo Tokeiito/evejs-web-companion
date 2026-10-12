@@ -83,6 +83,8 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
     logins: [],
     /** Each asking of the account's clone grade: what was sent with it, and how many calls by name had gone before it. */
     gradeAsks: [],
+    /** Each asking of the price table, likewise. */
+    priceAsks: [],
     async login(userName, password) {
       session.logins.push([userName, password]);
       if (loginError) throw loginError;
@@ -102,6 +104,13 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
         session.gradeAsks.push({ args, kwargs, before: session.calls.length });
         const grade = key in answers ? answers[key] : null;
         return typeof grade === "function" ? grade(args, kwargs) : grade;
+      }
+      // The price table is asked by a thread of the client's cfg, two seconds after it loads: its place among a
+      // login's calls is the clock's. It is listed apart too (session.priceAsks).
+      if (key === "config.GetAverageMarketPrices") {
+        session.priceAsks.push({ args, kwargs, before: session.calls.length });
+        const prices = key in answers ? answers[key] : { type: "dict", entries: [] };
+        return typeof prices === "function" ? prices(args, kwargs) : prices;
       }
       session.calls.push({ service, method, args, kwargs });
       session.sent.push(method);
@@ -247,6 +256,9 @@ function build(sessionOptions = {}, pilotOptions = {}) {
     sleep: async () => {},
     selectSettleMs: 200,
     releaseSettleMs: 300,
+    // The price table a client's cfg asks for two seconds after a login is asked for by the tests of it alone:
+    // a timer of this machine's going off in a test of something else would put a call among that test's.
+    averagePricesAfterMs: null,
     ...pilotOptions,
   });
   // Every choosing binds the corporation's registry and asks it its three. That bind and those calls are taken
@@ -6833,6 +6845,106 @@ test("an answer that is no list is handed on as it came with nothing kept, and a
   refuse = false;
   answer = { type: "list", items: [aGuest(PILOT)] };
   assert.deepEqual([(await guestsOf(pilots, handle)).items, (await guestsOf(pilots, handle)).items, asked], [[aGuest(PILOT)], [aGuest(PILOT)], 5]);
+});
+
+// ── the price table the client's cfg asks for ────────────────────────────────
+//
+// eveCfg.LoadCfgData (400 to 402): the client's cfg starts with no prices and starts a thread,
+// GetAveragePricesThread (522 to 525), which waits two seconds and asks
+// sm.RemoteSvc('config').GetAverageMarketPrices() once. What answers is kept for as long as the client runs:
+// {typeID: KeyVal(averagePrice, adjustedPrice)}, read by inventorycommon.typeHelpers (92 to 110). This server's log
+// of a retail client's login has the one asking, before a character is chosen. No Tranquility recording starts
+// early enough to have it.
+
+const pricesOf = (...rows) => ({ type: "dict", entries: rows.map(([typeID, averagePrice, adjustedPrice]) => [typeID, keyVal([["averagePrice", averagePrice], ["adjustedPrice", adjustedPrice]])]) });
+/** Timers that go off when a test says so, for a transport that asks for the price table as the client does. */
+function heldTimers(averagePricesAfterMs = 2000) {
+  const set = [];
+  return {
+    set,
+    options: {
+      averagePricesAfterMs,
+      timers: { setTimeout: (fn, ms) => { const timer = { fn, ms, cleared: false }; set.push(timer); return timer; }, clearTimeout: (timer) => { if (timer) timer.cleared = true; } },
+    },
+    /** The timers of two seconds: whether each was put out. */
+    twoSeconds: () => set.filter((timer) => timer.ms === 2000).map((timer) => timer.cleared),
+    /** Those that were not put out go off. */
+    goOff() { for (const timer of set.filter((each) => each.ms === 2000 && !each.cleared)) { timer.cleared = true; timer.fn(); } },
+  };
+}
+/** Until what nobody waits for is done. */
+const aMoment = () => new Promise((resolve) => { setTimeout(resolve, 5); });
+
+test("the price table is asked for once, two seconds after a login, and kept for the pilot", async () => {
+  const timers = heldTimers();
+  const table = pricesOf([34, 4.5, 4.25], [587, 400000, 380000.5], [79785, 7, 6], [36, 12n, "n/a"]);
+  // (And rows that are no type's prices: one that is nothing, one that is no KeyVal, and one under a key that is no type.)
+  table.entries.push([38, null], [39, 5], ["x", keyVal([["averagePrice", 1], ["adjustedPrice", 1]])]);
+  // How long after the login is the transport's own to say: two seconds, as the client's thread waits.
+  const { pilots, session, handle } = await selected({ answers: { "config.GetAverageMarketPrices": table } }, { ...timers.options, averagePricesAfterMs: undefined });
+  const price = (typeID) => pilots.averageMarketPrice(WHO, handle, typeID);
+  // The choosing is done and the two seconds are not: the timer is set, nothing is asked, and the pilot has no table.
+  assert.deepEqual([timers.twoSeconds(), session.priceAsks.length, price(34)], [[false], 0, null]);
+  timers.goOff();
+  await aMoment();
+  assert.deepEqual(session.priceAsks.map((asked) => [asked.args, asked.kwargs]), [[[], null]]);
+  // typeHelpers.GetAveragePrice and GetAdjustedAveragePrice: a type's two prices, and none of either for a type the table has not.
+  assert.deepEqual([price(34), price(587n), price(588), price(0)],
+    [{ averagePrice: 4.5, adjustedPrice: 4.25 }, { averagePrice: 400000, adjustedPrice: 380000.5 }, { averagePrice: null, adjustedPrice: null }, { averagePrice: null, adjustedPrice: null }]);
+  // One type's average is the client's own to say (101 to 104), whatever the table has of it.
+  assert.deepEqual(price(79785), { averagePrice: 1000, adjustedPrice: 6 });
+  // A price that came as a long is its number; one that is no number is none; a row that is no type's prices is no row.
+  assert.deepEqual([price(36), price(38), price(39)], [{ averagePrice: 12, adjustedPrice: null }, { averagePrice: null, adjustedPrice: null }, { averagePrice: null, adjustedPrice: null }]);
+  // Nothing more is asked: by a reading, or by anything the pilot does after.
+  await pilots.callMethod("station", "GetGuests", [], null, FIELDS, handle);
+  assert.deepEqual([session.priceAsks.length, timers.twoSeconds()], [1, [true]]);
+  // The transport's own call, the client's as it stands: no route's pair.
+  assert.deepEqual(ledgerOf(pilots, "config.GetAverageMarketPrices"), [{ same: 1 }, "eve/common/script/sys/eveCfg.py:524"]);
+  // Another account's session reads nothing.
+  assert.throws(() => pilots.averageMarketPrice({ userid: 9 }, handle, 34), (error) => error.code === "SESSION_NOT_FOUND");
+});
+
+test("a price table that could not be asked for is none and is not asked for again, and a pilot gone before the two seconds asks nothing", async () => {
+  // Refused: the client's thread ends with its cfg's prices as they were, none, and nothing asks again.
+  const refused = heldTimers();
+  const one = await selected({ answers: { "config.GetAverageMarketPrices": () => { throw refusedBy("NotNow"); } } }, refused.options);
+  refused.goOff();
+  await aMoment();
+  assert.deepEqual([one.session.priceAsks.length, one.pilots.averageMarketPrice(WHO, one.handle, 34), one.pilots.size], [1, null, 1]);
+  await one.pilots.callMethod("station", "GetGuests", [], null, FIELDS, one.handle);
+  assert.deepEqual([one.session.priceAsks.length, refused.twoSeconds()], [1, [true]]);
+
+  // What answers that is no table of prices is none; a table of nothing is a table, with no price for any type.
+  const odd = heldTimers();
+  const two = await selected({ answers: { "config.GetAverageMarketPrices": { type: "list", items: [] } } }, odd.options);
+  odd.goOff();
+  await aMoment();
+  assert.equal(two.pilots.averageMarketPrice(WHO, two.handle, 34), null);
+  const bare = heldTimers();
+  const three = await selected({}, bare.options);
+  bare.goOff();
+  await aMoment();
+  assert.deepEqual(three.pilots.averageMarketPrice(WHO, three.handle, 34), { averagePrice: null, adjustedPrice: null });
+
+  // A pilot released before the two seconds are up: its timer is put out, and nothing is asked.
+  const early = heldTimers();
+  const four = await selected({}, early.options);
+  await four.pilots.releaseBridgeSession(four.handle, { userid: ACCOUNT });
+  assert.deepEqual(early.twoSeconds(), [true]);
+  early.goOff();
+  await aMoment();
+  assert.equal(four.session.priceAsks.length, 0);
+
+  // A choosing that fails leaves no timer behind it.
+  const failing = heldTimers();
+  const built = build({}, failing.options);
+  await rejects(built.pilots.selectCharacter([PILOT + 99, null, true], null, FIELDS), "CALL_REFUSED");
+  assert.deepEqual(failing.twoSeconds(), [true]);
+
+  // And a transport told to ask for none sets no timer at all.
+  const none = heldTimers(null);
+  const five = await selected({}, none.options);
+  assert.deepEqual([none.set.length, five.pilots.averageMarketPrice(WHO, five.handle, 34)], [0, null]);
 });
 
 // ── the region's facilities, as the client's facility service keeps them ─────

@@ -396,6 +396,28 @@ function withBookmark(lists, made, bookmarkID) {
   return [folders, Array.isArray(bookmarks) ? all : { ...bookmarks, items: all }, subfolders];
 }
 
+/** eveCfg.GetAveragePricesThread (523): blue.pyos.synchro.SleepWallclock(2000), before the cfg's one asking for its prices. */
+const AVERAGE_PRICES_AFTER_MS = 2000;
+/** inventorycommon.typeHelpers.GetAveragePrice (103): the one type whose average price is the client's own to say, and what it says. */
+const TYPE_WITH_ITS_OWN_AVERAGE = 79785;
+const ITS_OWN_AVERAGE = 1000;
+/**
+ * The price table as it is kept: each type's average price and its adjusted price, by the type, out of
+ * config.GetAverageMarketPrices' answer ({typeID: KeyVal(averagePrice, adjustedPrice)}). Null for an answer that
+ * is no such dict. A price that is no number is none.
+ */
+function pricesByType(answered) {
+  if (!answered || answered.type !== "dict" || !Array.isArray(answered.entries)) return null;
+  const amount = (value) => (typeof value === "number" && Number.isFinite(value) ? value : typeof value === "bigint" ? Number(value) : null);
+  const prices = new Map();
+  for (const [typeID, row] of answered.entries) {
+    const type = positive(typeID);
+    if (type === null || !row) continue;
+    prices.set(type, [amount(dictValue(row.args, "averagePrice")), amount(dictValue(row.args, "adjustedPrice"))]);
+  }
+  return prices;
+}
+
 /** A facility's own ID off its row (the facility manager's KeyVal), or null. */
 const facilityIDOf = (row) => wholeOf(row && row.type === "object" && row.args ? dictValue(row.args, "facilityID") : undefined);
 /** The facility of an ID among the region's as they are kept, or null. */
@@ -863,6 +885,9 @@ function createGamePortPilots({
   // How long a question put to the user waits for an answer, and the timers that count it.
   questionWaitMs = QUESTION_WAIT_MS,
   timers = { setTimeout, clearTimeout },
+  // How long after a login the client's cfg asks for its price table (averagePricesThread). Null for a transport
+  // whose pilots ask for none.
+  averagePricesAfterMs = AVERAGE_PRICES_AFTER_MS,
   // How long an account's own connection is kept after the last thing asked on it.
   accountIdleMs = ACCOUNT_IDLE_MS,
 } = {}) {
@@ -879,6 +904,8 @@ function createGamePortPilots({
   const NPC_STANDINGS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/client/script/ui/services/standingsvc.py:115", note: null });
   /** facilitySvc: self.facilityManager.GetFacility(facilityID), one facility by itself (46, 71 and 103), which no route of the BFF's may ask by name. */
   const A_FACILITY_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/client/script/industry/facilitySvc.py:71", note: null });
+  /** eveCfg.GetAveragePricesThread: self.GetConfigSvc().GetAverageMarketPrices(), no arguments, which no route of the BFF's may ask by name. */
+  const PRICES_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/common/script/sys/eveCfg.py:524", note: null });
   /** cfg.eveowners' priming: config.GetMultiOwnersEx(list(keysToGet)), which no route of the BFF's may ask by name. */
   const OWNERS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbon/common/script/sys/cfg.py:579", note: null });
   /**
@@ -1146,6 +1173,7 @@ function createGamePortPilots({
     for (const asked of [...entry.questions.values()]) asked.settle(undefined, "session_ended");
     if (entry.space) entry.space.release();
     entry.space = null;
+    averagePricesThreadEnded(entry);
     sessions.delete(entry.handle);
     entry.session.close();
     for (const subscriber of [...entry.subscribers]) {
@@ -1248,6 +1276,10 @@ function createGamePortPilots({
       journalWork: Promise.resolve(),
       /** The facilities asked for by themselves at the server's word or a job's refusal, one after another (facilitiesAskedAfresh). */
       facilitiesWork: Promise.resolve(),
+      /** cfg._averageMarketPrice: the price table, by type, once the cfg's one asking for it is answered; null until then, and where it could not be asked. */
+      averagePrices: null,
+      /** The timer of the cfg's thread that asks for it, while it has not gone off. */
+      averagePricesTimer: null,
       /** agents.agentMonikers: the one object the client keeps for an agent, by agent, each as it is held in `bound`. */
       agents: new Map(),
       /** agents.allAgents: this pilot's own asking for the table of agents, once it has asked; over when it is answered. */
@@ -1421,6 +1453,8 @@ function createGamePortPilots({
       if (positive(session.attributes.userid) !== accountID) {
         throw fail("SESSION_SELECT_FAILED", "The game server logged that name in as a different account.");
       }
+      // eveCfg.LoadCfgData (400 to 402): the cfg starts the thread that asks for its prices in two seconds.
+      averagePricesThread(entry);
       // gameui.OnSessionChanged (449): an account come onto the session has its clone's grade asked. A grade that
       // could not be read is asked for when it is next wanted, as the client's service asks where it has none.
       await cloneGradeRead(entry).catch(() => {});
@@ -1485,6 +1519,7 @@ function createGamePortPilots({
       // on it, so it is asked for last: a call sent right behind it was answered 50 to 80 ms late (2026-10-09).
       agentsKnown(entry);
     } catch (error) {
+      averagePricesThreadEnded(entry);
       session.close();
       // The login failing is not the select call failing; say what the session said.
       if (/^(LOGIN_REFUSED|LOGON_QUEUE|BAD_SERVER_SIGNATURE|INCOMPATIBLE_PROTOCOL|HANDSHAKE_INCOMPATIBLE)/.test(String(error && error.code))) {
@@ -2075,6 +2110,47 @@ function createGamePortPilots({
       creatorID: entry.characterID,
     });
     entry.kept[BOOKMARK_MGR].amend("active", (lists) => (isTheThreeLists(lists) ? withBookmark(lists, made, bookmarkID) : undefined));
+  }
+
+  // ── the price table, as the client's cfg has it ───────────────────────────
+
+  /**
+   * eveCfg.LoadCfgData (400 to 402) and GetAveragePricesThread (522 to 525): the client's cfg starts with no prices
+   * and starts a thread that waits two seconds and asks sm.RemoteSvc('config').GetAverageMarketPrices() once. What
+   * answers is the cfg's for as long as the client runs. Here: once for a pilot's session, by a timer nobody waits
+   * on. A table that could not be asked for is none, as the cfg's stays empty, and is not asked for again.
+   */
+  function averagePricesThread(entry) {
+    if (averagePricesAfterMs === null) return;
+    entry.averagePricesTimer = timers.setTimeout(() => {
+      entry.averagePricesTimer = null;
+      ledger.note("config", "GetAverageMarketPrices", PRICES_AS_THE_CLIENT_ASKS);
+      Promise.resolve().then(() => entry.session.call("config", "GetAverageMarketPrices", [], null))
+        .then((answered) => { entry.averagePrices = pricesByType(answered); }, () => {});
+    }, averagePricesAfterMs);
+    // The timer is not what keeps this process up.
+    if (entry.averagePricesTimer && typeof entry.averagePricesTimer.unref === "function") entry.averagePricesTimer.unref();
+  }
+
+  /** The pilot's session is over, or never came to be: the thread that had not asked yet asks nothing. */
+  function averagePricesThreadEnded(entry) {
+    timers.clearTimeout(entry.averagePricesTimer);
+    entry.averagePricesTimer = null;
+  }
+
+  /**
+   * inventorycommon.typeHelpers.GetAveragePrice and GetAdjustedAveragePrice (92 to 110), off the price table the
+   * pilot's cfg has: a type's two prices, each null where the table has not the type (the client's KeyError). One
+   * type's average is the client's own to say (103), whatever the table has of it. Null where the pilot has no
+   * table: before its asking is answered, and where it could not be asked. (The client reads none of any type
+   * then; who reckons a number from prices is to know there are none.)
+   */
+  function averageMarketPrice(sessionFields = {}, bridgeSessionID = undefined, typeID = null) {
+    const entry = held(bridgeSessionID, sessionFields);
+    if (entry.averagePrices === null) return null;
+    const type = positive(typeID);
+    const [averagePrice, adjustedPrice] = (type === null ? undefined : entry.averagePrices.get(type)) ?? [null, null];
+    return { averagePrice: type === TYPE_WITH_ITS_OWN_AVERAGE ? ITS_OWN_AVERAGE : averagePrice, adjustedPrice };
   }
 
   // ── the facilities, as the client's facility service keeps them ──────────
@@ -3624,6 +3700,7 @@ function createGamePortPilots({
     skillSheet,
     skillLevels,
     freshFacility,
+    averageMarketPrice,
     serverNowMs,
     saveSkillQueue,
     journalKept,
