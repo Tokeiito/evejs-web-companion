@@ -935,8 +935,9 @@ object were counted (`ff7e1ec4`): none of the page's own goes by a service's nam
 object, and the audit fails for one that does. The page's other static reads were counted: nothing is asked in a loop but
 a mining support ship's compression table, and the map's graph, 745 KB an asking, is asked for twice at a
 pilot's choosing. The graph is read once for a page now
-(`09879964`), kept by the fetch it is asked with. The six pairs the page's source names that no test of the
-page's makes are next. In `eve.js` an advert's text outside ASCII goes as
+(`09879964`), kept by the fetch it is asked with. The audit looks at every call the page makes by the generic route now, a
+pilot's or not (`16242cd1`), and all 80 pairs the page's source names are made by a test of the page's. The
+bookmarks' answer set beside the recording is next. In `eve.js` an advert's text outside ASCII goes as
 unicode (`dcd459b0d`; on its origin since 2026-10-11, pushed by another hand than this loop's), and a dock
 asked from out of range of a station is finished by the server, as Tranquility finishes
 it (`869b28d2b`), and a pilot's client is sent no greatest speed for its ship

@@ -1584,6 +1584,13 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A window left open is mounted as the page loads, before a recorder is in.** An
   asking that comes some times and not others may be its. Close the window, load
   the page again, count from there; and put the window back as it was found.
+- **"No test makes it" is first a question of what the looking sees.** The audit said
+  six pairs of the page's were made by no test; three were made, by calls that did not
+  say `pilot`, which was all it looked at. Before a test is written for a thing a
+  measure says is untested, find a test that makes it and ask why it was not seen.
+- **A call of the page's own is told by its body, not by a flag.** An account's call
+  and a call on the session held go to the game port as a pilot's does. The audit
+  takes the four names the page builds a call of (`callMethod.ts`).
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
