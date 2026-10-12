@@ -1074,11 +1074,27 @@ to a generic sentence rather than leaking the code.
   and sent in the request and the install's, on both transports, for the server to
   hold against its own; **`materials`** is that map, each type to its quantity, and
   null where none were reckoned (an empty map then goes, which the server reads as
-  its own to work out). `ConnectJob` then **always** `DisconnectJob` — the preview
-  is not a pure read, so the monitor it opens is always released, **and the route
-  answers only after that release**: a pilot has one write at a time, and a write
-  that followed an earlier answer was refused `CHARACTER_IN_USE`. Needs no
-  confirmation: it spends nothing.
+  its own to work out). `ConnectJob` is not a pure read: it opens a monitor.
+  **Through the gateway** the route then **always** sends `DisconnectJob`, so the
+  monitor it opened is always released, **and the route answers only after that
+  release**: a pilot has one write at a time, and a write that followed an earlier
+  answer was refused `CHARACTER_IN_USE`. **On the game port** the route lets no
+  monitor go: the transport keeps the window's job as the retail client's window
+  keeps it (the monitor opened once for a job and answered from what is kept when
+  the same job is previewed again; a facility's places kept a minute; the job given
+  its facility once), and lets the monitor go at the window's close (below). Needs
+  no confirmation: it spends nothing.
+- `POST /api/bridge/industry/window` `{ event: "closed" | "job-let-go" }` →
+  `{ ok, kept }`. The Industry window's own two events, which the retail client
+  acts on in its window: `closed`, the window closed (the monitor of the window's
+  job is let go by its number where that job is the one monitored, `None` is sent
+  where the window has no job, and nothing where its job was installed), and
+  `job-let-go`, the window's job put away while the window stays (nothing is
+  sent). `kept` is true on the game port, where the transport keeps the window's
+  job and acts on the event, and false through the gateway, where nothing is
+  asked. Anything else is 400 `INVALID_WINDOW_EVENT`. The page sends `closed` when
+  its Industry window is closed (not when it is put away) and `job-let-go` at
+  "Never mind".
 - `POST /api/bridge/industry/install` `{ …, confirm: true }` → `{ ok, applied,
   declinedSilently, jobID, job, blueprint }`. **Refuses with 400
   `CONFIRMATION_REQUIRED` unless `confirm === true`** — installing consumes

@@ -1781,6 +1781,24 @@ Take these defaults, and list each under "For the operator" in the log so they c
   command to a pilot docked in the structure, stop the server, and set the item's
   flag (92 to 99) in the store's table of items (`rig-store.js`). The facility's row
   then lists the rig and its modifiers. `rig-restage.sh` is the whole of it.
+- **A thing the client keeps for a window has a life, and its end is a call too.** The
+  job a window has is made at one moment, kept, and let go at another, and the
+  client sends something at each: the unit that builds the keeping is not done till
+  it has read where the window lets go (`Close`, and every place the window's job is
+  set to another), and what the service's hold on it is (here a weak reference,
+  which is gone with the job).
+- **A page's part that goes away is not a window that closed.** The Industry panel is
+  taken off the page when its window is put away, when the pilot undocks, and when
+  another pilot is shown. Only the workspace's own close of the window is the
+  client's `Close`: hang a window's close on that, and not on the panel's going.
+- **A loop of changes in a test sets each beside the last, unless it is made to set
+  each beside the first.** Four ways of being another job, tried one after another,
+  were each another job than the one before for more than one reason, and three
+  breakages lived. Go back to the thing as it was between the changes.
+- **One failure in a whole run is looked at before the run is made again.** Run its
+  file alone, read what it tests, and write down what was found and what was not:
+  here a test of a socket's stream, nothing of the unit's, three passes alone, and a
+  clean run after. That is what was measured; why it failed is not known.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
