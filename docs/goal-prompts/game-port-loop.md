@@ -1963,6 +1963,24 @@ Take these defaults, and list each under "For the operator" in the log so they c
   "the server did not say why". A sentence that says so is to be set beside what
   the page itself was told a moment before. And it took a pick of two, one that
   goes and one that stays, to see it: try the mixed case in the tab.
+- **A refusal taken out is held by tests that do not name it.** The page's
+  refusal of an office in a structure was held in the call's own tests, which I
+  changed, and in the flow's, by other words ("and nothing in a structure"),
+  which the whole suite found. Before the suite, `grep -rn` every test folder
+  for the refusal's sense as well as its sentence.
+- **A blanket refusal can stand where a check was never made.** With the
+  structure refused, nobody had set the place of the offices' listing beside the
+  place the flight names; with it gone, a station's listing would have given up
+  an office in a structure. When a refusal goes, ask what else it was keeping
+  out, and run its old case to see what is sent.
+- **`innerText` leaves out what the window's width hides.** The panel's "1
+  rented" was in the page and not in its text: the counts are hidden in a narrow
+  window. Read `textContent`, or the computed `display`, before calling a thing
+  missing. And a press's refusal may be said at the panel's top, not where the
+  button is: read the whole panel after a press.
+- **A block moved is seen again where it was.** The station's Offices block
+  became a snippet for the structure's sake; the tab's station was looked at
+  again after, and all three calls made there.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
