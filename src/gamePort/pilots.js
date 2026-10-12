@@ -128,7 +128,6 @@ const FLEET_COMMANDER_ROLES = new Set([1, 2, 3]);
 /** idCheckers.IsNPC: maxSystemItem < ownerID < minPlayerOwner. */
 const MAX_SYSTEM_ITEM = 10000;
 const MIN_PLAYER_OWNER = 90000000;
-const CONTAINER_STRUCTURE = 10014;
 /**
  * Services whose object is bound for where the pilot is. The retail client's
  * moniker for one carries a session check, and is bound afresh when the pilot
@@ -255,6 +254,19 @@ const ACCOUNT_STATIC = new Set(["GetEntryTypes"]);
 const officesKeptAs = (method, form) => (method === "GetMyCorporationsOffices" && form.args.length === 0 && form.kwargs === null ? "corporation" : null);
 /** Whether a notice of an office (corporationID, officeID) is of the corporation the session is in (officeManager.py 72). */
 const ofOwnCorporation = (args, attributes) => wholeOf(Array.isArray(args) ? args[0] : null) === wholeOf(attributes.corpid);
+const STRUCTURE_SETTINGS = "structureSettings";
+/** The read the client's structure services service keeps (structureServices.onlineServices, structureServices.py 56). */
+const STRUCTURE_SERVICES = "CharacterGetServices";
+/** Whether a structure's ID is that of the structure the session is docked in. */
+const theStructureDockedIn = (structureID, attributes) => wholeOf(structureID) !== null && wholeOf(structureID) === wholeOf(attributes.structureid);
+/**
+ * What a read of the structure settings' is kept as: the services of the structure the pilot is docked in
+ * (structureServices.CharacterGetServices, 29 to 35). Null for another structure's, which the client asks for each
+ * time, and for any other read.
+ */
+const servicesKeptAs = (method, form, attributes) => (method === STRUCTURE_SERVICES && form.args.length === 1 && form.kwargs === null && theStructureDockedIn(form.args[0], attributes) ? "docked" : null);
+/** Whether a notice of a structure's services (structureID) is of the structure the session is docked in (structureServices.py 49). */
+const ofTheStructureDockedIn = (args, attributes) => theStructureDockedIn(Array.isArray(args) ? args[0] : null, attributes);
 /** What a read of the calendar's is kept as: a month's events, by the month (calendar.events[(month, year)]: GetEventList(month, year)). */
 const calendarKeptAs = (method, form) => (method === "GetEventList" ? `${form.args[1]}-${form.args[0]}` : null);
 const BOOKMARK_MGR = "accessGroupBookmarkMgr";
@@ -355,6 +367,16 @@ const KEPT_UNTIL_CHANGED = Object.freeze({
   [FACILITY_MANAGER]: Object.freeze({
     keptAs: facilitiesKeptAs,
     notices: new Set(["OnSystemActivityUpdated"]),
+    writes: Object.freeze({}),
+  }),
+  // structureServices: the services the structure the pilot is docked in has for it, asked as the pilot docks
+  // (OnSessionChanged, 21 to 24) and kept; let go when the server says that structure's changed
+  // (OnStructureServiceChanged, 48 to 52, at which the client asks at once). Out of the structure, or in another,
+  // what is kept is not its (31), which the session's change sees to.
+  [STRUCTURE_SETTINGS]: Object.freeze({
+    keptAs: servicesKeptAs,
+    notices: new Set(["OnStructureServiceChanged"]),
+    concerns: ofTheStructureDockedIn,
     writes: Object.freeze({}),
   }),
 });
@@ -1448,6 +1470,12 @@ function createGamePortPilots({
         entry.stationOffices.forget();
         entry.officePrimed.forget();
       }
+      // structureServices.OnSessionChanged (21 to 24): in another structure, or in none, the services kept are not
+      // its; docked in one, its services are asked for. (The choosing of the character asks them itself.)
+      if ("structureid" in changes) {
+        entry.kept[STRUCTURE_SETTINGS].forget();
+        if (sessions.has(entry.handle)) structureServicesRead(entry);
+      }
       // fleetSvc.ProcessSessionChange: in no fleet, there is no fleet's object.
       if ("fleetid" in changes) {
         entry.fleetKept.sessionChanged();
@@ -1552,6 +1580,8 @@ function createGamePortPilots({
       await addressBookRead(entry);
       // The lobby of a docked client is up from the first: its reads are asked as the character is chosen in a station.
       await lobbyRead(entry, { chosen: true });
+      // structureServices: chosen in a structure, its services are asked for, as a client logging in docked in one asks.
+      await structureServicesRead(entry);
       // bco_applications: the pilot's own applications, which the client asks for once.
       await corporationAsk(entry, "GetMyApplications").catch(() => {});
       // contracts.NeocomBlink: what of the pilot's contracts wants attention, asked once the notifications are ready.
@@ -1640,7 +1670,7 @@ function createGamePortPilots({
     }
     const form = shape(service, method, args, kwargs, contextFor(entry));
     // What a service of the client's keeps until it changes is that service's to answer, and is noted where it is asked for.
-    if (Object.hasOwn(KEPT_UNTIL_CHANGED, service) && KEPT_UNTIL_CHANGED[service].keptAs(method, form) !== null) {
+    if (Object.hasOwn(KEPT_UNTIL_CHANGED, service) && KEPT_UNTIL_CHANGED[service].keptAs(method, form, entry.session.attributes) !== null) {
       const kept = await run(entry, service, method, () => (service === BOOKMARK_MGR ? bookmarksRead(entry, form) : keptRead(entry, service, method, form)));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
@@ -2136,6 +2166,17 @@ function createGamePortPilots({
     if (chosen) await asks(entry, "map", "GetStationInfo").catch(() => {});
   }
 
+  /**
+   * structureServices._FetchOnlineServices (54 to 58): the services of the structure the pilot is docked in, asked
+   * as it docks and as its character is chosen in one, and kept as its service keeps them. A pilot in no structure
+   * is asked none. It fails for itself: what could not be asked is asked for when it is next wanted.
+   */
+  function structureServicesRead(entry) {
+    const structureID = attribute(entry, "structureid");
+    if (structureID === null) return Promise.resolve();
+    return keptRead(entry, STRUCTURE_SETTINGS, STRUCTURE_SERVICES, shape(STRUCTURE_SETTINGS, STRUCTURE_SERVICES, [structureID], null, contextFor(entry))).then(() => {}, () => {});
+  }
+
   /** Every colony kept is forgotten, and asked for when it is next wanted. What a planet carries stays. */
   function forgetColonies(entry) {
     for (const keptAs of [...entry.planetReads.keys()]) if (keptAs.startsWith(`${PLANET_INFO}:`)) entry.planetReads.delete(keptAs);
@@ -2150,7 +2191,7 @@ function createGamePortPilots({
 
   /** A read a service keeps the answer of (KEPT_UNTIL_CHANGED): answered from what is kept, and asked for, and noted, where nothing is. */
   function keptRead(entry, service, method, form) {
-    return entry.kept[service].read(KEPT_UNTIL_CHANGED[service].keptAs(method, form), () => {
+    return entry.kept[service].read(KEPT_UNTIL_CHANGED[service].keptAs(method, form, entry.session.attributes), () => {
       ledger.note(service, method, form);
       return byName(entry.session, service, method, form);
     });
@@ -3326,14 +3367,21 @@ function createGamePortPilots({
       return entry.space.remote();
     }
     if (service === "invbroker" && method === "GetInventory") {
-      // invCache.GetInventory(const.containerHangar): the station's hangar from
-      // the station's manager, or the structure's from the location's.
+      // invCache.GetInventory(const.containerHangar): the station's hangar from the station's manager.
+      //
+      // Docked in a structure the hangars are the structure's own inventory (invControllers.StructureItemHangar and
+      // StructureShipHangar, whose container is invCache.GetInventoryFromId(session.structureid)), which godma has
+      // bound already as the pilot docks, passively (godma.PrimeLocation, 2394: GetInventoryFromId(itemID, 1)), from
+      // the manager for where the pilot is. Every recording of a client docked in a structure has that one bind
+      // and no other for its hangars. (invCache.GetInventory(containerStructure) is the hangar view's, for the
+      // structure's type: hangarView.py 629. The page has no such view, and it is not asked.)
       const asked = positive(args[0]);
       const structureID = attribute(entry, "structureid");
       if (asked !== (structureID ?? attribute(entry, "stationid"))) {
         throw fail("CALL_REFUSED", "The pilot is not docked there.");
       }
-      return boundObjectID(await inventoryCall(entry, structureID === null ? "station" : "location", "GetInventory", [structureID === null ? CONTAINER_HANGAR : CONTAINER_STRUCTURE, null]));
+      if (structureID !== null) return boundObjectID(await inventoryCall(entry, "location", "GetInventoryFromId", [structureID, 1]));
+      return boundObjectID(await inventoryCall(entry, "station", "GetInventory", [CONTAINER_HANGAR, null]));
     }
     if (service === "invbroker" && method === "GetInventoryFromId") {
       // invCache.GetInventoryFromId(itemid, passive=0): both positional.

@@ -2201,7 +2201,8 @@ app.get("/api/bridge/inventory", requireAuth, async (req, res, next) => {
       const shipCapacity = cargoSpec && typeof gamePortPilots.shipAttribute === "function"
         ? await gamePortPilots.shipAttribute(ATTRIBUTE_CAPACITY, { userid: held.accountID }, held.bridgeSessionID)
         : null;
-      // Docked in a structure this route is refused above, so the hangar here is a station's.
+      // (A structure's hangar has no limit either, and the client shows none for it: its controllers have no
+      // capacity, invControllers.py 1796 to 1822. It is said here as a station's is.)
       const hangarOwn = reckonedCapacity(hangarList, ITEM_FLAG_HANGAR, STATION_CAPACITY, packaged);
       const cargoOwn = shipCapacity === null ? null : reckonedCapacity(cargoList, ITEM_FLAG_CARGO_HOLD, shipCapacity, packaged);
       [hangarCap, cargoCap] = await Promise.allSettled([
@@ -17271,8 +17272,75 @@ async function assertStructureDockAccess(held, webSessionID, structureID) {
   }
 }
 
+/**
+ * structures/services.py ONLINE_SERVICES_UNRESTRICTED_ACCESS: what a structure does for anyone docked in it,
+ * whatever its services say: its docking, which is its hangars, and its fitting.
+ */
+const STRUCTURE_SERVICES_OF_ANY_GUEST = new Set([1, 2]);
+/** structures.SERVICE_INDUSTRY, which stands for any of a structure's industry services (INDUSTRY_SERVICES). */
+const STRUCTURE_SERVICE_INDUSTRY = 20;
+const STRUCTURE_INDUSTRY_SERVICES = new Set([20, 21, 22, 23, 24, 30, 31, 32, 33, 34, 40, 41, 42, 43]);
+
+/** The services a dict of them names (structureSettings.CharacterGetServices: each service's ID to what it charges). */
+function structureServiceIDsFromDict(result) {
+  const entries = result && result.type === "dict" && Array.isArray(result.entries) ? result.entries : null;
+  const ids = entries === null ? null : entries.map((entry) => (Array.isArray(entry) ? entry[0] : null));
+  if (ids === null || ids.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
+    throw Object.assign(new Error("Structure service authority is unreadable."),
+      { code: "STRUCTURE_SERVICE_UNREADABLE", statusCode: 503 });
+  }
+  return new Set(ids);
+}
+
+/** Whether a held pilot is on the game port, where the server answers it as it answers a retail client. */
+const heldOnTheGamePort = (held) => Boolean(gamePortPilots) && isGamePortHandle(held.bridgeSessionID);
+
+/**
+ * A structure's services for the held pilot: the server's own answer to
+ * structureSettings.CharacterGetServices(structureID), which the retail client's structure services service asks as
+ * its pilot docks in a structure and keeps (structureServices.py), and the pilot's transport asks and keeps so.
+ *
+ * ⚠ ON THE GAME PORT ONLY, which who asks this sees to. The stock web gateway's list has nothing of the structure
+ * settings', so through the gateway there is no such answer and what stands on one is refused, deliberately
+ * (docs/stock-evejs-integration-policy.md; stockCompatibility.js). On the game port the BFF is a client of the
+ * original protocol, and asks what a client asks.
+ */
+async function structureServicesOnline(held, webSessionID, structureID) {
+  const answered = await heldTopLevelCall(held, webSessionID, "structureSettings", "CharacterGetServices", [structureID], null);
+  return structureServiceIDsFromDict(answered.result);
+}
+
+/**
+ * Whether the structure a pilot is docked in has a service for it by the services the server answered, as the
+ * client holds it (structureServices.IsServiceAvailableForCharacter, 42 to 45): a service that is among them, and
+ * industry where any industry service is. (Its docking and its fitting it has whatever they say, 38: who asks
+ * this sees to those two.)
+ */
+function structureServiceHeld(serviceID, online) {
+  return online.has(serviceID) ||
+    (serviceID === STRUCTURE_SERVICE_INDUSTRY && [...online].some((id) => STRUCTURE_INDUSTRY_SERVICES.has(id)));
+}
+
+/** Every service the structure a pilot is docked in has for it: the two it has for anyone, and each that structureServiceHeld says; in the order of their IDs. */
+function structureServicesHeld(online) {
+  return [...new Set([...STRUCTURE_SERVICES_OF_ANY_GUEST, ...online, ...(structureServiceHeld(STRUCTURE_SERVICE_INDUSTRY, online) ? [STRUCTURE_SERVICE_INDUSTRY] : [])])]
+    .sort((left, right) => left - right);
+}
+
+/**
+ * The BFF's own check that the structure a pilot is docked in has a service for it, before a route goes on:
+ * 409 STRUCTURE_SERVICE_UNAVAILABLE where it has not. (`structureID` is the held pilot's own, which every caller
+ * hands in.) On the game port it is held as the client holds it (structureServiceHeld), and nothing is asked for
+ * a service a structure has for anyone docked in it. Through the web gateway it is refused whatever the service
+ * (structureServicesOnline says why).
+ */
 async function assertStructureService(held, webSessionID, structureID, serviceID) {
-  require("./stockCompatibility").structureServices();
+  if (!heldOnTheGamePort(held)) require("./stockCompatibility").structureServices();
+  if (STRUCTURE_SERVICES_OF_ANY_GUEST.has(serviceID)) return;
+  if (!structureServiceHeld(serviceID, await structureServicesOnline(held, webSessionID, structureID))) {
+    throw Object.assign(new Error("The required structure service is unavailable."),
+      { code: "STRUCTURE_SERVICE_UNAVAILABLE", statusCode: 409 });
+  }
 }
 
 async function operationStructureAccessCall(req, method, args, characterID = 0) {
@@ -17347,6 +17415,13 @@ app.get("/api/dockable-structures/:id/services", requireAuth, async (req, res, n
     const id = Number(req.params.id);
     if (!isPlayerStructureID(id)) { res.status(400).json({ ok: false, error: "INVALID_STRUCTURE" }); return; }
     const characterID = Number(req.query.characterID || 0);
+    // The held pilot's own structure, on the game port: the services it has for the pilot, as the client's service
+    // has them of the structure it is docked in, with nothing else asked (the pilot is docked there).
+    const held = characterID ? null : bridgeSessions.get(req.webSessionID);
+    if (held && held.structureID === id && heldOnTheGamePort(held)) {
+      res.json({ ok: true, structureID: id, serviceIDs: structureServicesHeld(await structureServicesOnline(held, req.webSessionID, id)) });
+      return;
+    }
     const checked = await operationStructureAccessCall(req, "CheckMyDockingAccessToStructures", [[id]], characterID);
     if (!structureIDsFromList(checked.result).includes(id)) {
       res.status(409).json({ ok: false, error: "STRUCTURE_DOCK_ACCESS_DENIED" }); return;

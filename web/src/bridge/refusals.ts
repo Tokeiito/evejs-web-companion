@@ -287,6 +287,8 @@ const BRIDGE_REFUSALS: Readonly<Record<string, string>> = Object.freeze({
   PROVISIONING_OFFLINE_AUTHORITY_UNAVAILABLE: "Offline provisioning is unavailable on this server. Select the pilot and use Ready Fit or Replenish.",
   SKILL_ACQUISITION_UNAVAILABLE: "Direct skill purchase is unavailable through this server's web interface. Inject skillbooks in the game client, then refresh Training.",
   STRUCTURE_SERVICE_AUTHORITY_UNAVAILABLE: "Structure service permissions cannot be verified through this server's web interface. Station actions remain available.",
+  STRUCTURE_SERVICE_UNAVAILABLE: "This structure does not offer that service to you.",
+  STRUCTURE_SERVICE_UNREADABLE: "This structure's services could not be read.",
   PROVISIONING_RECOVERY_AUTHORITY_UNAVAILABLE: "Custody recovery cannot safely acquire an offline pilot through this server. Existing custody evidence remains reserved for recovery.",
   // --- eve.js gateway (evejsWebGatewayRuntime.js) ---
   CALL_FAILED: "The game server hit an error carrying that out.",

@@ -1202,13 +1202,26 @@ test("the hangar is bound as invCache binds it: the station's manager, then GetI
   assert.equal(session.boundCalls.filter((call) => call.method === "GetInventory").length, 2);
 });
 
-test("in a structure the hangar is containerStructure, from the manager for where the pilot is", async () => {
+test("in a structure the hangars are the structure's own inventory, bound as godma has bound it: GetInventoryFromId(structureID, 1), from the manager for where the pilot is", async () => {
+  // invControllers.StructureItemHangar and StructureShipHangar (1796 to 1822): their container is
+  // invCache.GetInventoryFromId(session.structureid), which godma binds passively as the pilot docks
+  // (godma.PrimeLocation, 2394). Every recording of a client docked in a structure has, bound to the system,
+  // ('GetInventoryFromId', (structureID, 1), {}), and no GetInventory for its hangars.
   const { pilots, session, handle } = await selected();
   delete session.attributes.stationid;
   Object.assign(session.attributes, { structureid: STRUCTURE, solarsystemid: SYSTEM });
-  await pilots.bindObject("invbroker", "GetInventory", [STRUCTURE], null, WHO, handle);
+  const bound = await pilots.bindObject("invbroker", "GetInventory", [STRUCTURE], null, WHO, handle);
   assert.deepEqual(session.binds, [{ service: "invbroker", params: [SYSTEM, 5] }]);
-  assert.deepEqual(session.boundCalls[0].args, [10014, null]);
+  assert.deepEqual(session.boundCalls, [{ objectID: "N=1:1", method: "GetInventoryFromId", args: [STRUCTURE, 1], kwargs: null }]);
+  // A call on the handle goes to the structure's inventory, which the manager handed back.
+  await pilots.callBoundMethod("invbroker", "StackAll", [4], null, WHO, handle, bound.boundHandle);
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:2", method: "StackAll", args: [4], kwargs: null });
+  // The ship's own inventory is from the same manager, which is bound the once (invCache.inventorymgr).
+  await pilots.bindObject("invbroker", "GetInventoryFromId", [SHIP], { passive: 0 }, WHO, handle);
+  assert.deepEqual([session.binds.length, session.boundCalls.at(-1)], [1, { objectID: "N=1:1", method: "GetInventoryFromId", args: [SHIP, 0], kwargs: null }]);
+  // A structure the pilot is not docked in is no hangar of its.
+  await rejects(pilots.bindObject("invbroker", "GetInventory", [STRUCTURE + 1], null, WHO, handle), "CALL_REFUSED", /not docked there/);
+  assert.equal(session.boundCalls.some((call) => call.method === "GetInventory"), false);
 });
 
 test("a hangar somewhere the pilot is not docked is refused before anything is sent", async () => {
@@ -9462,4 +9475,151 @@ test("a manager that refuses fails no choosing, an answer that is not its three 
   // The three lists: kept from then on.
   answer = threeLists(aBookmark(7));
   assert.deepEqual([bookmarkIDs(await read()), bookmarkIDs(await read()), bookmarkIDs(await read()), asked], [[7], [7], [7], 9]);
+});
+
+// ── a structure's services, as the client's structure services service keeps them ────────────────────────────
+//
+// eve/client/script/ui/services/structure/structureServices.py, whole. Tranquility's recordings of a client that
+// docks in a citadel, and of one that logs in docked in one, each have structureSettings::CharacterGetServices
+// args=(structureID,) once, answered a dict of each service to what it charges.
+
+const STRUCTURE_SERVICES = "structureSettings.CharacterGetServices";
+const OTHER_STRUCTURE = STRUCTURE + 7;
+const SERVICES_PAIRS = { allowed: new Set([STRUCTURE_SERVICES, "structureSettings.CharacterHasSetting"]) };
+
+/**
+ * A pilot chosen docked in a structure (the server's session change names the structure, and no station), or one
+ * chosen as the stand-in's is (`chosenIn`: null). Every asking of a structure's services is counted and listed,
+ * and answered a dict whose one service charges the count, so that one answer is told from another.
+ */
+async function withStructureServices({ chosenIn = STRUCTURE, refuses = () => false } = {}, pilotOptions = SERVICES_PAIRS) {
+  const asked = { times: 0, of: [] };
+  const answers = {
+    [STRUCTURE_SERVICES]: (args) => {
+      asked.times += 1;
+      asked.of.push(args[0]);
+      if (refuses(asked.times)) throw refusedBy("NotNow");
+      return { type: "dict", entries: [[8, asked.times]] };
+    },
+  };
+  let built = null;
+  if (chosenIn !== null) {
+    answers["charUnboundMgr.SelectCharacterID"] = (args) => {
+      const session = built.session;
+      Object.assign(session.attributes, { charid: BigInt(args[0]), corpid: 1000044, solarsystemid2: SYSTEM, solarsystemid: SYSTEM, shipid: SHIP, structureid: chosenIn });
+      session.change({ charid: [null, args[0]], corpid: [null, 1000044], solarsystemid: [null, SYSTEM], structureid: [null, chosenIn] });
+      return null;
+    };
+  }
+  built = build({ answers }, pilotOptions);
+  const outcome = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const { pilots, session } = built;
+  const handle = outcome.bridgeSessionID;
+  /** What the services of a structure are answered: the count their one service charges. */
+  const services = async (structureID = STRUCTURE) => (await pilots.callMethod("structureSettings", "CharacterGetServices", [structureID], null, FIELDS, handle)).result.entries[0][1];
+  /** The pilot docks in a structure, leaves one, or goes from one to another, as the server's session change says it. */
+  const moves = async (from, to) => {
+    if (to === null) delete session.attributes.structureid;
+    else session.attributes.structureid = to;
+    session.change({ structureid: [from, to] });
+    await settled();
+  };
+  return { pilots, session, handle, asked, services, moves };
+}
+
+test("a structure's services are asked once as its pilot is chosen docked in it, and answered from what is kept", async () => {
+  const { pilots, session, handle, asked, services } = await withStructureServices();
+  // structureServices._FetchOnlineServices (54 to 58), at the session change that has the structure: by name, with the structure's ID.
+  assert.deepEqual([asked.times, asked.of], [1, [STRUCTURE]]);
+  assert.deepEqual(session.calls.filter((call) => call.service === "structureSettings").map((call) => [call.method, call.args, call.kwargs]), [["CharacterGetServices", [STRUCTURE], null]]);
+  // Among a choosing's reads it comes where the lobby's come, before the pilot's applications are asked for.
+  assert.ok(session.sent.indexOf("CharacterGetServices") > session.sent.indexOf("GetInitialState"));
+  assert.ok(session.sent.indexOf("CharacterGetServices") < session.sent.indexOf("GetMyApplications"));
+  // structureServices.CharacterGetServices (29 to 33): the docked structure's are what is kept.
+  assert.deepEqual([await services(), await services(), await services(), asked.times], [1, 1, 1, 1]);
+  assert.deepEqual(ledgerOf(pilots, STRUCTURE_SERVICES), [{ same: 1 }, "eve/client/script/ui/services/structure/structureServices.py:56"]);
+  // Two at once that find nothing kept ask once.
+  session.notify("OnStructureServiceChanged", [STRUCTURE]);
+  assert.deepEqual([...(await Promise.all([services(), services()])), asked.times], [2, 2, 2]);
+  // Another structure's are asked for each time, and are not kept (35); nor do they take the place of what is.
+  assert.deepEqual([await services(OTHER_STRUCTURE), await services(OTHER_STRUCTURE), asked.of.slice(-2), await services()], [3, 4, [OTHER_STRUCTURE, OTHER_STRUCTURE], 2]);
+  assert.equal(asked.times, 4);
+  // Another read of the structure settings', of the same structure, is asked each time, and is not the services kept.
+  const setting = async () => (await pilots.callMethod("structureSettings", "CharacterHasSetting", [STRUCTURE], null, FIELDS, handle)).result;
+  assert.deepEqual([await setting(), await setting(), session.calls.filter((call) => call.method === "CharacterHasSetting").length, asked.times], [null, null, 2, 4]);
+});
+
+test("the services kept are let go when the server says that structure's changed, and in another structure or in none", async () => {
+  const { session, asked, services, moves } = await withStructureServices();
+  assert.equal(await services(), 1);
+  const forgets = async (what, change) => {
+    const before = asked.times;
+    await change();
+    assert.deepEqual([await services(), await services(), asked.times], [before + 1, before + 1, before + 1], what);
+  };
+  const keeps = async (what, change) => {
+    const before = asked.times;
+    await change();
+    assert.deepEqual([await services(), asked.times], [before, before], what);
+  };
+  // structureServices.OnStructureServiceChanged (48 to 52): of the structure the session is in, asked afresh.
+  await forgets("the structure's own services changed", () => session.notify("OnStructureServiceChanged", [STRUCTURE]));
+  await forgets("its ID as the wire has a big one", () => session.notify("OnStructureServiceChanged", [BigInt(STRUCTURE)]));
+  await forgets("told twice", () => { session.notify("OnStructureServiceChanged", [STRUCTURE]); session.notify("OnStructureServiceChanged", [STRUCTURE]); });
+  await keeps("another structure's services changed", () => session.notify("OnStructureServiceChanged", [OTHER_STRUCTURE]));
+  await keeps("a notice that names no structure", () => { session.notify("OnStructureServiceChanged", []); session.notify("OnStructureServiceChanged", [null]); });
+  await keeps("another notice", () => { session.notify("OnOfficeRentalChange", [STRUCTURE, 7]); session.notify("OnStructureSomethingElse", [STRUCTURE]); });
+  await keeps("another ship, in the same structure", async () => { session.change({ shipid: [SHIP, 77] }); await settled(); });
+
+  // structureServices.OnSessionChanged (21 to 24): docked in another structure, its services are asked for at
+  // once, and are what is kept from then on; the first structure's are another structure's now.
+  const before = asked.times;
+  await moves(STRUCTURE, OTHER_STRUCTURE);
+  assert.deepEqual([asked.times, asked.of.at(-1)], [before + 1, OTHER_STRUCTURE]);
+  assert.deepEqual([await services(OTHER_STRUCTURE), await services(OTHER_STRUCTURE), asked.times], [before + 1, before + 1, before + 1]);
+  assert.deepEqual([await services(STRUCTURE), await services(STRUCTURE), asked.times], [before + 2, before + 3, before + 3]);
+  // The notice is now of the structure the pilot is in.
+  const now = asked.times;
+  session.notify("OnStructureServiceChanged", [STRUCTURE]);
+  assert.deepEqual([await services(OTHER_STRUCTURE), asked.times], [before + 1, now]);
+  session.notify("OnStructureServiceChanged", [OTHER_STRUCTURE]);
+  assert.deepEqual([await services(OTHER_STRUCTURE), asked.times], [now + 1, now + 1]);
+
+  // Out of every structure nothing is asked for, and nothing is kept: a structure's are asked for each time.
+  const undocked = asked.times;
+  await moves(OTHER_STRUCTURE, null);
+  assert.equal(asked.times, undocked);
+  assert.deepEqual([await services(OTHER_STRUCTURE), await services(OTHER_STRUCTURE), asked.times], [undocked + 1, undocked + 2, undocked + 2]);
+  // Docked again, they are asked for as the pilot docks, once.
+  await moves(null, STRUCTURE);
+  assert.deepEqual([asked.times, asked.of.at(-1), await services(), asked.times], [undocked + 3, STRUCTURE, undocked + 3, undocked + 3]);
+});
+
+test("a pilot chosen in a station, or in space, is asked no structure's services, until it docks in one", async () => {
+  const docked = await withStructureServices({ chosenIn: null });
+  assert.deepEqual([docked.asked.times, docked.session.attributes.stationid], [0, STATION]);
+  // Out of the station and into a structure: asked as it docks.
+  delete docked.session.attributes.stationid;
+  docked.session.change({ stationid: [STATION, null] });
+  await settled();
+  assert.equal(docked.asked.times, 0);
+  await docked.moves(null, STRUCTURE);
+  assert.deepEqual([docked.asked.times, docked.asked.of, await docked.services(), docked.asked.times], [1, [STRUCTURE], 1, 1]);
+});
+
+test("a choosing does not fail for a structure's services that could not be asked, and the page's read of them is held to what the page may call", async () => {
+  // Refused as the character is chosen: the choosing goes on, nothing is kept, and the next read asks.
+  const refused = await withStructureServices({ refuses: (times) => times === 1 });
+  assert.equal(refused.asked.times, 1);
+  assert.deepEqual([await refused.services(), await refused.services(), refused.asked.times], [2, 2, 2]);
+  // Refused as it is read: the read fails for who asked, and the next asks again.
+  const later = await withStructureServices({ refuses: (times) => times === 2 });
+  later.session.notify("OnStructureServiceChanged", [STRUCTURE]);
+  await assert.rejects(later.services());
+  assert.deepEqual([await later.services(), later.asked.times], [3, 3]);
+  // The docking asks them whatever the page may ask: where the pair is not one the page may call, the page's read is refused.
+  const closed = await withStructureServices({}, { allowed: new Set(["crimewatch.GetClientStates"]) });
+  assert.equal(closed.asked.times, 1);
+  await rejects(closed.pilots.callMethod("structureSettings", "CharacterGetServices", [STRUCTURE], null, FIELDS, closed.handle), "CALL_NOT_ALLOWED");
+  assert.equal(closed.asked.times, 1);
 });

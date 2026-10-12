@@ -360,6 +360,10 @@ const repairingInAStructure = (args, kwargs, context) => {
 const aSlashCommand = (args, kwargs) => (args.length === 1 && typeof args[0] === "string" && args[0] !== "" && Object.keys(kwargs).length === 0
   ? {}
   : { status: "differs", note: "The client sends the command's one line of text, and nothing else." });
+/** structureServices.py 35 and 56: CharacterGetServices(structureID), the one structure's ID and nothing else. */
+const ofOneStructure = (args, kwargs) => (args.length === 1 && Number.isSafeInteger(args[0]) && args[0] > 0 && Object.keys(kwargs).length === 0
+  ? {}
+  : { status: "differs", note: "The client asks for one structure's services, by its ID, and nothing else." });
 const reshaped = (source, shape, note) => Object.freeze({ status: "reshaped", source, shape, note });
 const differs = (source, note) => Object.freeze({ status: "differs", source, note });
 /** Same or differs, depending on what the call carries: `judge` answers { status, note }. */
@@ -493,6 +497,10 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // The repair shop's two repairs by the client's names, on the shop's Moniker. The gateway's list has only the
   // server's own name for both, RepairItems, which the BFF asks there in their place (bridgeCallPolicy.js).
   "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure",
+  // A structure's services for the pilot, which the client's structure services service asks as the pilot docks
+  // in one (structureServices.py 56). The gateway's list has nothing of the structure settings': through the
+  // gateway a structure's services are not to be had, and what stands on them is refused (stockCompatibility.js).
+  "structureSettings.CharacterGetServices",
 ]);
 
 /**
@@ -1427,6 +1435,8 @@ const RETAIL_CALLS = Object.freeze({
   "station.GetGuests": same("eve/client/script/ui/station/base.py:103", "RemoteSvc('station').GetGuests(), no arguments, once for a station and kept, then changed at OnCharNowInStation and OnCharNoLongerInStation (86, 93); the transport keeps it so (pilotStation.js)"),
   "map.GetStationInfo": same("eve/client/script/ui/services/uisvc.py:246", "RemoteSvc('map').GetStationInfo(), no arguments"),
   "structureDirectory.GetStructureInfo": same("eve/client/script/ui/services/structure/structureDirectory.py:38", "RemoteSvc('structureDirectory').GetStructureInfo(structureID), kept by structure"),
+  "structureSettings.CharacterGetServices": judged("eve/client/script/ui/services/structure/structureServices.py:56", ofOneStructure,
+    "RemoteSvc('structureSettings').CharacterGetServices(structureID): asked as the pilot docks in a structure and kept for it, and asked again when the server says its services changed (21 to 24, 48 to 52); asked each time for any other structure (35). The transport keeps it so."),
 
   // ── an agent's place and a mission's keywords ─────────────────────────────
   "agentMgr.GetSolarSystemOfAgent": same(`${AGENTS}:801`, "RemoteSvc('agentMgr').GetSolarSystemOfAgent(agentID), kept by agent"),

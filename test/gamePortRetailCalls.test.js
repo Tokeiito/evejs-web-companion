@@ -1724,7 +1724,17 @@ test("the game port carries the customs office's transfer, the station's offices
     "userSvc.GetMultiCharactersTrainingSlots",
     // The repair shop's two repairs by the client's names. The gateway's list has the server's own name for both.
     "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure",
+    // A structure's services for the pilot. The gateway's list has nothing of the structure settings'.
+    "structureSettings.CharacterGetServices",
   ]);
+  // structureServices.py 56 (and 35): sm.RemoteSvc('structureSettings').CharacterGetServices(structureID), by the
+  // service's name, with the one structure's ID and nothing else.
+  const structure = retailForm("structureSettings", "CharacterGetServices", [1030000000002], null);
+  assert.deepEqual([structure.status, structure.source, structure.args, structure.kwargs, structure.moniker, structure.proxy],
+    ["same", "eve/client/script/ui/services/structure/structureServices.py:56", [1030000000002], null, false, false]);
+  for (const [args, kwargs] of [[[], null], [[1030000000002, 8], null], [[1030000000002], { serviceID: 8 }], [["1030000000002"], null], [[0], null], [[null], null], [[1.5], null]]) {
+    assert.equal(retailForm("structureSettings", "CharacterGetServices", args, kwargs).status, "differs", JSON.stringify([args, kwargs]));
+  }
   // skillQueueSvc.py 851: sm.RemoteSvc('userSvc').GetMultiCharactersTrainingSlots(), by the service's name and with nothing.
   const slots = retailForm("userSvc", "GetMultiCharactersTrainingSlots", [], null);
   assert.deepEqual([slots.status, slots.source, slots.args, slots.kwargs, slots.moniker], ["same", "eve/client/script/ui/services/skillQueueSvc.py:851", [], null, false]);
