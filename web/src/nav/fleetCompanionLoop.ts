@@ -269,6 +269,20 @@ export interface FleetCompanionRequest {
    */
   readonly salvagerModuleIDs: readonly number[];
   /**
+   * Fitted modules that make the DRONES better while they fight -- the game's
+   * "Drone Tracking Modules" (the Omnidirectional Tracking Link) and "Drone
+   * Navigation Computer" groups -- by item id, classified off the group name
+   * at start like every list here.
+   *
+   * ⚠ THEY DO NOTHING UNLESS SWITCHED ON, AND NOTHING SWITCHED THEM ON. A
+   * companion fought with its tracking link dark until 2026-10-12 (seen live:
+   * the operator noticed none of them lit it). The server builds each drone's
+   * tracking and speed from the controller's ACTIVE module effects
+   * (`buildActiveModuleContexts`, droneDogma.js), so a dark link is a drone
+   * fighting on its base numbers.
+   */
+  readonly droneAssistModuleIDs: readonly number[];
+  /**
    * Fitted PROPULSION modules — afterburners and microwarpdrives — classified
    * off SDE group 46 "Propulsion Module".
    *
@@ -523,6 +537,7 @@ export const DEFAULT_FLEET_COMPANION_REQUEST: FleetCompanionRequest = Object.fre
   remoteCapacitorModuleIDs: Object.freeze([]),
   weaponModuleIDs: Object.freeze([]),
   salvagerModuleIDs: Object.freeze([]),
+  droneAssistModuleIDs: Object.freeze([]),
   propulsionModules: Object.freeze([]),
   // Nothing fitted is nothing to vote with, which is exactly what `null` says.
   tankLayer: null,
@@ -1513,6 +1528,12 @@ export interface CompanionLadderMemory {
    */
   readonly droneSizeRecalledIDs: readonly number[];
   /**
+   * The drone assist modules this rung has switched on (or tried to) for the
+   * fight now on. Tried ONCE each: a module the server will not run is not
+   * asked again every tick. Cleared as the rung switches them back off.
+   */
+  readonly droneAssistLit: readonly number[];
+  /**
    * The ship this pilot's repair drones were last sent to.
    *
    * ⚠ WITHOUT THIS THE RUNG RE-ISSUES ITS ORDER EVERY TICK. Drones already
@@ -1883,6 +1904,7 @@ export function freshLadderMemory(): CompanionLadderMemory {
     droneCyclesSpent: 0,
     droneSizeSwitchAtMs: null,
     droneSizeRecalledIDs: [],
+    droneAssistLit: [],
     lastDroneRepairTargetID: null,
     lastDroneRepairIDs: [],
     lastDroneEngageTargetID: null,
@@ -2296,6 +2318,7 @@ function decideCompanionStep(
     droneCyclesSpent: memory.droneCyclesSpent,
     droneSizeSwitchAtMs: memory.droneSizeSwitchAtMs,
     droneSizeRecalledIDs: memory.droneSizeRecalledIDs,
+    droneAssistLit: memory.droneAssistLit,
     // ⚠ CARRIED, NOT CLEARED, and the difference from `abandonment` above is
     // the whole point. That one is cleared because a human coming back is
     // exactly the thing it was waiting for. A flee is about the ship's health
@@ -6754,6 +6777,66 @@ function withObservedDroneFlights(
 // for that, on which the rung launches the whole role bay exactly as it did
 // before sizing existed. See nav/droneSizing.ts for the rule itself.
 
+// ── drone assist modules (rung 6) ────────────────────────────────────────────
+
+/**
+ * Switch on one fitted drone assist module that is not running, once the
+ * combat drones are out and engaged. One per tick, each tried once per fight.
+ *
+ * ⚠ AFTER THE ENGAGE, NEVER BEFORE IT. A module cycle is worth something only
+ * to drones that are shooting; the engage is what makes them shoot, so it gets
+ * the tick first and this takes the next quiet one.
+ */
+function droneAssistOn(
+  request: FleetCompanionRequest,
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+): CompanionDecision | null {
+  const lit = memory.droneAssistLit ?? [];
+  const running = new Set(obs.snapshot?.ship?.activeModuleIDs ?? lit);
+  const next = request.droneAssistModuleIDs.find((id) => !running.has(id) && !lit.includes(id));
+  if (next === undefined) {
+    return null;
+  }
+  return {
+    action: { kind: "activate", moduleID: next, targetID: 0 },
+    phase: "Drones",
+    why: "The drones are fighting, so the drone tracking module is switching on.",
+    memory: { ...memory, droneAssistLit: [...lit, next] },
+  };
+}
+
+/**
+ * Switch off, one per tick, every drone assist module this rung lit, once the
+ * combat drones have no job. A module the read shows already stopped is just
+ * forgotten.
+ */
+function droneAssistOff(
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+): { readonly decision: CompanionDecision | null; readonly memory: CompanionLadderMemory } {
+  const lit = memory.droneAssistLit ?? [];
+  if (lit.length === 0) {
+    return { decision: null, memory };
+  }
+  const active = obs.snapshot?.ship?.activeModuleIDs ?? null;
+  const running = active === null ? lit : lit.filter((id) => active.includes(id));
+  if (running.length === 0) {
+    // All already stopped: forget them, and let the rest of the rung have the tick.
+    return { decision: null, memory: { ...memory, droneAssistLit: [] } };
+  }
+  const off = running[0]!;
+  return {
+    decision: {
+      action: { kind: "deactivate", moduleID: off },
+      phase: "Drones",
+      why: "The drones have no fight, so the drone tracking module is switching off.",
+      memory: { ...memory, droneAssistLit: lit.filter((id) => id !== off) },
+    },
+    memory,
+  };
+}
+
 /** What the sizing rule needs to know about one ship on the grid. */
 function sizingTargetFacts(
   entity: SpaceEntity,
@@ -6902,7 +6985,7 @@ function decideDrones(
   memory: CompanionLadderMemory,
   nowMs: number,
 ): { readonly decision: CompanionDecision | null; readonly memory: CompanionLadderMemory } {
-  const nothing = { decision: null, memory } as const;
+  let nothing: { readonly decision: null; readonly memory: CompanionLadderMemory } = { decision: null, memory };
   // ⚠ NO `useDrones` FLAG. A pilot uses the drones it is carrying. What it does
   // with them is decided by WHAT THEY ARE, not by a checkbox -- see
   // `wantedDroneRole`.
@@ -7044,6 +7127,14 @@ function decideDrones(
   // ⚠ ONLY ON A GRID WE CAN SEE. `hostileOnGrid` is three-state and `null` means
   // the read failed -- recalling on that would pull drones in every time a
   // snapshot stumbled, mid-fight. Only a confident `false` ends the job.
+  if (role !== "combat") {
+    const off = droneAssistOff(obs, memory);
+    if (off.decision !== null) {
+      return off;
+    }
+    memory = off.memory;
+    nothing = { decision: null, memory };
+  }
   if (role === null) {
     if (out.length > 0 && obs.hostileOnGrid === false) {
       return {
@@ -7110,7 +7201,7 @@ function decideDrones(
     // and the launch branch sizes the next flight once they are. Bounded by
     // the same give-up as the hurt-drone recall, so a drone that never comes
     // home (a full bay) cannot hold the engage for ever.
-    const homeward = memory.droneSizeRecalledIDs.filter((id) => roleOut.includes(id));
+    const homeward = (memory.droneSizeRecalledIDs ?? []).filter((id) => roleOut.includes(id));
     if (homeward.length > 0 && nowMs - (memory.droneSizeSwitchAtMs ?? nowMs) < DRONE_RECALL_GIVE_UP_MS) {
       return nothing;
     }
@@ -7118,8 +7209,12 @@ function decideDrones(
     if (swap !== null) {
       return { decision: swap, memory };
     }
-    return { decision: decideDroneEngagement(memory, "combat", roleOut, called,
-      "Putting the combat drones on the target the fleet called."), memory };
+    const engage = decideDroneEngagement(memory, "combat", roleOut, called,
+      "Putting the combat drones on the target the fleet called.");
+    if (engage !== null) {
+      return { decision: engage, memory };
+    }
+    return { decision: droneAssistOn(request, obs, memory), memory };
   }
   if (role === "salvage") {
     // Launched, nothing more: the salvage rung locks a wreck and sends these
@@ -8051,6 +8146,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
           droneCyclesSpent: 0,
           droneSizeSwitchAtMs: null,
           droneSizeRecalledIDs: [],
+          droneAssistLit: [],
       // Run-local, both of them. See `CompanionFlee`'s header for why a flee is
       // not persisted the way an abandonment is: a companion coming back up
       // reads its own health on the first tick and leaves again within one tick

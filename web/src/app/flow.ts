@@ -22225,6 +22225,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     remoteCapacitorModuleIDs: [],
     weaponModuleIDs: [],
     salvagerModuleIDs: [],
+    droneAssistModuleIDs: [],
     propulsionModules: [],
     modules: [],
     droneBay: null,
@@ -22449,6 +22450,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // game's own "Salvager" group in high slots only; reusing it means one
         // answer to "is this a salvager", not two that can drift.
         salvagerModuleIDs: resolveSalvageModuleIDs(),
+        droneAssistModuleIDs: resolveDroneAssistModuleIDs(),
         propulsionModules: defense.propulsion,
         modules,
         droneBay,
@@ -23513,6 +23515,32 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             bonusPerLevelM: bonuses.get(typeID) ?? null,
           }));
     return resolveDroneControlRangeM(null, droneControlRangeFromSkills(readings)).rangeM;
+  }
+
+  /**
+   * Fitted, online modules that boost the DRONES and must be switched on to do
+   * it: the game's "Drone Tracking Modules" (Omnidirectional Tracking Link) and
+   * "Drone Navigation Computer" groups, matched exactly. The passive "Drone
+   * Tracking Enhancer" group is a different name and is never matched, so
+   * nothing here is a module that cannot be activated.
+   */
+  function resolveDroneAssistModuleIDs(): readonly number[] {
+    const fit = store.fitting.get();
+    if (fit.slotsError !== null) {
+      return [];
+    }
+    const resolved = store.names.get().resolved;
+    const ids: number[] = [];
+    for (const slot of fit.slots) {
+      if (slot.module === null || !slot.module.online || slot.family === "rig" || slot.family === "subsystem") {
+        continue;
+      }
+      const group = resolved[nameKey("typeGroup", slot.module.typeID)] ?? null;
+      if (group !== null && /^(drone tracking modules|drone navigation computer)$/i.test(group.trim())) {
+        ids.push(slot.module.itemID);
+      }
+    }
+    return ids;
   }
 
   function resolveSalvageModuleIDs(): readonly number[] {

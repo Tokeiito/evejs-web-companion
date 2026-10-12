@@ -70,6 +70,8 @@ export interface CompanionFitFacts {
   readonly weaponModuleIDs: readonly number[];
   /** Fitted salvagers, for the `salvage` chat order. See the request's field. */
   readonly salvagerModuleIDs: readonly number[];
+  /** Fitted drone tracking links and navigation computers. See the request's field. */
+  readonly droneAssistModuleIDs: readonly number[];
   /**
    * Fitted afterburners/MWDs. Objects rather than ids because stopping one
    * needs its typeID and gating one on a scram needs to know which it is — see
@@ -146,6 +148,7 @@ export function requestForFit(
     remoteCapacitorModuleIDs: [...facts.remoteCapacitorModuleIDs],
     weaponModuleIDs: [...facts.weaponModuleIDs],
     salvagerModuleIDs: [...facts.salvagerModuleIDs],
+    droneAssistModuleIDs: [...facts.droneAssistModuleIDs],
     propulsionModules: [...facts.propulsionModules],
     tankLayer: facts.tankLayer,
   };
