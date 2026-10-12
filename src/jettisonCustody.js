@@ -21,30 +21,69 @@ function inventoryRows(result) {
     categoryID: row.categoryID ?? null }));
 }
 
-function sceneContext(scene, pilotID) {
+// Why a scene is not the pilot's own to act in: the first thing wrong with it, in
+// words for whoever reads the refusal. Null when nothing is.
+function sceneFault(scene, pilotID) {
   const ship = scene?.ship;
-  if (scene?.inSpace !== true || !positive(scene.shipID) || !positive(scene.solarSystemID) ||
-      ship?.itemID !== scene.shipID || ship.characterID !== pilotID || !Number.isFinite(scene.sampledAtMs) ||
-      !Array.isArray(scene.entities)) return null;
+  if (scene?.inSpace !== true) return "the pilot is not in space";
+  if (!positive(scene.shipID)) return "the scene names no ship of the pilot's";
+  if (!positive(scene.solarSystemID)) return "the scene names no solar system";
+  if (ship?.itemID !== scene.shipID) return "the scene has no record of the pilot's own ship";
+  if (ship.characterID !== pilotID) return "the scene's ship is not said to be flown by this pilot";
+  if (!Number.isFinite(scene.sampledAtMs)) return "the scene does not say when it was read";
+  if (!Array.isArray(scene.entities)) return "the scene has no list of what is in it";
   const containers = scene.entities.filter(row => row.kind === "container");
-  if (containers.some(row => !positive(row.itemID) || !positive(row.ownerID)) ||
-      new Set(containers.map(row => row.itemID)).size !== containers.length) return null;
+  if (containers.some(row => !positive(row.itemID) || !positive(row.ownerID))) return "a container in the scene has no id or no owner";
+  if (new Set(containers.map(row => row.itemID)).size !== containers.length) return "a container is in the scene twice";
+  return null;
+}
+
+function sceneContext(scene, pilotID) {
+  if (sceneFault(scene, pilotID) !== null) return null;
+  const containers = scene.entities.filter(row => row.kind === "container");
   return { shipID: scene.shipID, systemID: scene.solarSystemID, sceneSampledAtMs: scene.sampledAtMs,
     ownedContainerIDs: containers.filter(row => row.ownerID === pilotID).map(row => row.itemID) };
 }
 
+// What else is wrong before anything may be sent, the first of them, in words.
+function prepareFault({ scope, invocation, context, rows, itemIDs, nowMs }) {
+  if (!ids(itemIDs) || !itemIDs.length) return "the items asked for are not a list of item ids";
+  if (!Array.isArray(rows)) return "the ship's holds could not be read";
+  if (!invocation || typeof invocation.runID !== "string" || !invocation.runID || invocation.runID.length > 100 ||
+      !positive(invocation.invocationID) || typeof invocation.stepPath !== "string" || invocation.stepPath.length > 200)
+    return "the asking does not say which run, which of its askings and which step it is";
+  const missing = ["botID", "runGeneration", "operationID", "targetKey"].filter(key => !scope[key])
+    .concat(Number.isFinite(scope.targetClaimedAt) ? [] : ["targetClaimedAt"]);
+  if (missing.length) return `the bot's scope has no ${missing.join(", ")}`;
+  if (context.systemID !== scope.systemID) return "the pilot is in another solar system than its target's";
+  if (context.shipID !== scope.shipID) return "the pilot is in another ship than the bot's";
+  if (!Number.isFinite(nowMs)) return "the clock could not be read";
+  return null;
+}
+
+// Why an item is not one a hosted jettison takes. Null when it is.
+function itemFault(row, scope) {
+  if (!row) return "is not in the ship's holds";
+  if (row.ownerID !== scope.pilotID) return "is not the pilot's";
+  if (row.locationID !== scope.shipID) return "is not in this ship";
+  if (!SOURCE_FLAGS.has(row.flagID)) return "is not in a hold that ore is jettisoned from";
+  if (row.categoryID !== 25) return "is not ore";
+  if (!positive(row.quantity)) return "has no quantity";
+  return null;
+}
+
 function prepare({ scope, invocation, scene, rows, itemIDs, nowMs }) {
+  // Each refusal says which thing was wrong: a bot's log is all there is to go by
+  // when a hosted jettison is never issued.
   const context = sceneContext(scene, scope.pilotID);
-  if (!context || !ids(itemIDs) || !itemIDs.length || !Array.isArray(rows) ||
-      !invocation || typeof invocation.runID !== "string" || !invocation.runID || invocation.runID.length > 100 ||
-      !positive(invocation.invocationID) || typeof invocation.stepPath !== "string" || invocation.stepPath.length > 200 ||
-      !scope.botID || !scope.runGeneration || !scope.operationID || !scope.targetKey || !Number.isFinite(scope.targetClaimedAt) ||
-      context.systemID !== scope.systemID || context.shipID !== scope.shipID || !Number.isFinite(nowMs))
-    throw Object.assign(new Error("Jettison pre-dispatch authority is unreadable."), { code: "JETTISON_NOT_ISSUED" });
+  const fault = sceneFault(scene, scope.pilotID) ?? prepareFault({ scope, invocation, context, rows, itemIDs, nowMs });
+  if (fault !== null)
+    throw Object.assign(new Error(`Jettison pre-dispatch authority is unreadable: ${fault}.`), { code: "JETTISON_NOT_ISSUED" });
   const selected = itemIDs.map(id => rows.find(row => row.itemID === id));
-  if (selected.some(row => !row || row.ownerID !== scope.pilotID || row.locationID !== scope.shipID ||
-      !SOURCE_FLAGS.has(row.flagID) || row.categoryID !== 25 || !positive(row.quantity)))
-    throw Object.assign(new Error("Only exact owned whole ore stacks support hosted recovery."), { code: "JETTISON_NOT_ISSUED" });
+  const refused = selected.findIndex(row => itemFault(row, scope) !== null);
+  if (refused >= 0)
+    throw Object.assign(new Error(`Only exact owned whole ore stacks support hosted recovery: item ${itemIDs[refused]} ${itemFault(selected[refused], scope)}.`),
+      { code: "JETTISON_NOT_ISSUED" });
   const before = rows.filter(row => selected.some(item => item.flagID === row.flagID));
   return copy({ state: "not-issued", scope: { ...scope, ...invocation }, preparedAtMs: nowMs,
     sceneSampledAtMs: context.sceneSampledAtMs, sourceBefore: before, items: selected,

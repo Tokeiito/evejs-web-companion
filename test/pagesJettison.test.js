@@ -74,8 +74,11 @@ const belt = (targetName) => ({ targetType: "BELT", systemID: JITA, systemName: 
 const member = (pilot, role, automationID) => ({ ...pilot, accountName: ACCOUNT.username, role, automationID });
 const refusedAs = (status, code) => (error) => error.status === status && error.code === code;
 /** What the custody's asker throws for a jettison that is not settled: its name, whether it was issued, and its state. */
-const custodyError = (code, notIssued, state) => (error) => error.name !== "AssertionError" && error.code === code && error.notIssued === notIssued &&
-  (error.custody ? error.custody.state : null) === state;
+/** `says`: the refusal's own words, as the bot's log will have them after its code. Left out, the words are not looked at. */
+const custodyError = (code, notIssued, state, says = null) => (error) => error.name !== "AssertionError" && error.code === code && error.notIssued === notIssued &&
+  (error.custody ? error.custody.state : null) === state && (says === null || (says instanceof RegExp ? says.test(error.message) : error.message === says));
+/** What a refusal says when no cause was thrown: a custody stands, and that is all there is to say. */
+const STANDS = "Jettison custody requires reconciliation; no second jettison was issued.";
 const lost = () => Object.assign(new Error("the answer was lost"), { code: "TEST_ANSWER_LOST" });
 
 /**
@@ -115,7 +118,7 @@ function space() {
       if (world.arrivesAt !== null && world.looksSince >= world.arrivesAt) world.unseen.clear();
     }
     return { inSpace: true, shipID: shipOf(characterID), solarSystemID: world.system, sampledAtMs: START + world.tick,
-      ship: { itemID: shipOf(characterID), characterID },
+      ship: world.nobodyFlies ? { itemID: shipOf(characterID) } : { itemID: shipOf(characterID), characterID },
       entities: [{ kind: "asteroid", itemID: 40, ownerID: 1 }, ...[...world.cans].filter(([canID]) => !world.unseen.has(canID))
         .map(([canID, can]) => ({ kind: "container", itemID: canID, ownerID: can.ownerID }))] };
   };
@@ -539,11 +542,19 @@ test("a hosted miner's custody refuses before anything is sent: what is not ore,
   world.stack(7001, 971);
   world.stack(7001, 972, { flagID: CARGO, typeID: 18000, quantity: 2, categoryID: 8 });
   // No target yet: the custody has no scope.
-  await assert.rejects(api.jettisonItems([971], bots[7001].options, invocation(1)), custodyError("JETTISON_SCOPE_CHANGED", true, null));
+  await assert.rejects(api.jettisonItems([971], bots[7001].options, invocation(1)), custodyError("JETTISON_SCOPE_CHANGED", true, null, "The captured ore logistics assignment is unavailable."));
   assert.equal(await api.reserveMiningOperationTarget(belt("Belt I"), bots[7001].options), true);
-  await assert.rejects(api.jettisonItems([972], bots[7001].options, invocation(1)), custodyError("JETTISON_NOT_ISSUED", true, null));
-  await assert.rejects(api.jettisonItems([979], bots[7001].options, invocation(1)), custodyError("JETTISON_NOT_ISSUED", true, null));
-  await assert.rejects(api.jettisonItems([971], bots[7001].options, { runID: "", invocationID: 1, stepPath: "x" }), custodyError("JETTISON_NOT_ISSUED", true, null));
+  // Each refusal says its own cause: the bot's log has these words after the code.
+  await assert.rejects(api.jettisonItems([972], bots[7001].options, invocation(1)), custodyError("JETTISON_NOT_ISSUED", true, null, "Only exact owned whole ore stacks support hosted recovery: item 972 is not ore."));
+  await assert.rejects(api.jettisonItems([979], bots[7001].options, invocation(1)), custodyError("JETTISON_NOT_ISSUED", true, null, "Only exact owned whole ore stacks support hosted recovery: item 979 is not in the ship's holds."));
+  await assert.rejects(api.jettisonItems([971], bots[7001].options, { runID: "", invocationID: 1, stepPath: "x" }),
+    custodyError("JETTISON_NOT_ISSUED", true, null, "Jettison pre-dispatch authority is unreadable: the asking does not say which run, which of its askings and which step it is."));
+  // A scene whose ship is not said to be flown by the pilot, as the game port's was: said so, where it was one
+  // sentence for every cause.
+  world.nobodyFlies = true;
+  await assert.rejects(api.jettisonItems([971], bots[7001].options, invocation(1)),
+    custodyError("JETTISON_NOT_ISSUED", true, null, "Jettison pre-dispatch authority is unreadable: the scene's ship is not said to be flown by this pilot."));
+  world.nobodyFlies = false;
   assert.deepEqual([world.sent, bots[7001].custodyOf()], [[], null]);
   // The pilot in another system than its target's: no scope.
   world.system = 30004504;
@@ -557,7 +568,7 @@ test("a hosted miner's custody refuses before anything is sent: what is not ore,
   // The same, changed after the hold was read and before the call: the custody is begun, and refused before
   // anything is sent, which the host keeps and the page is told.
   world.amid = (what) => { if (what === "the holds listed") bots[7001].row.activeShipID = 1; };
-  await assert.rejects(api.jettisonItems([971], bots[7001].options, invocation(1)), custodyError("JETTISON_SCOPE_CHANGED", true, "refused-before-dispatch"));
+  await assert.rejects(api.jettisonItems([971], bots[7001].options, invocation(1)), custodyError("JETTISON_SCOPE_CHANGED", true, "refused-before-dispatch", "Jettison scope changed before dispatch."));
   world.amid = () => {};
   bots[7001].row.activeShipID = shipOf(7001);
   assert.deepEqual([world.sent, bots[7001].custodyOf().state, bots[7001].custodyOf().issuedAtMs], [[], "refused-before-dispatch", null]);
@@ -585,18 +596,18 @@ test("a hosted miner's jettison whose answer was lost: the page is told it is no
   // The call is made and its answer lost; the can is in space and its contents cannot be read just then.
   world.jettison = "lost";
   world.unreadable.add(9001);
-  await assert.rejects(api.jettisonItems([981], bots[7001].options, invocation(1)), custodyError("TEST_ANSWER_LOST", false, "ambiguous"));
+  await assert.rejects(api.jettisonItems([981], bots[7001].options, invocation(1)), custodyError("TEST_ANSWER_LOST", false, "ambiguous", "the answer was lost"));
   // The host has it as issued (by the BFF's own clock), whatever became of it.
   assert.deepEqual([world.sent.length, bots[7001].custodyOf().state, Number.isFinite(bots[7001].custodyOf().issuedAtMs)], [1, "ambiguous", true]);
   // Until it is settled the miner jettisons nothing more, whatever invocation it says: held back before anything
   // is read of the world, let alone sent.
   reset();
-  await assert.rejects(api.jettisonItems([982], bots[7001].options, invocation(2)), custodyError("TEST_ANSWER_LOST", false, "ambiguous"));
+  await assert.rejects(api.jettisonItems([982], bots[7001].options, invocation(2)), custodyError("TEST_ANSWER_LOST", false, "ambiguous", STANDS));
   assert.deepEqual([world.sent, world.asked], [[], []]);
 
   // Looked at while the can cannot be read: not settled, by name.
   reset();
-  await assert.rejects(api.reconcileHostedJettison(bots[7001].options), custodyError("JETTISON_CONTAINER_CONTENTS_UNKNOWN", false, "ambiguous"));
+  await assert.rejects(api.reconcileHostedJettison(bots[7001].options), custodyError("JETTISON_CONTAINER_CONTENTS_UNKNOWN", false, "ambiguous", STANDS));
   assert.deepEqual([paths, bodies], [["POST /api/bridge/ship/jettison/reconcile"], [{}]]);
   assert.deepEqual(world.asked, ["flight", "scene", `ListByFlags ${shipOf(7001)}`, "List 9001", "flight"]);
   // Looked at again once it can: settled, the can the operation's, and nothing sent by either look.

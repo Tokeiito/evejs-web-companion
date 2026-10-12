@@ -167,3 +167,100 @@ test("a proven can uses ordinary BFF claims so a recovered second hauler cannot 
   assert.equal(claims.claimContainer("recovered-hauler-session", "another", scope.systemID, proof.containerID), false);
   assert.deepEqual(claims.emptiedItemIDs(scope.systemID), []);
 });
+
+test("a refusal before dispatch says which thing was wrong, and a scene that is not the pilot's own is still no context", () => {
+  const refused = (change, says) => {
+    const input = { scope, invocation, scene: scene(), rows: [ore, crystal], itemIDs: [10], nowMs: 101 };
+    change(input);
+    assert.throws(() => model.prepare(input), (error) => {
+      assert.equal(error.code, "JETTISON_NOT_ISSUED");
+      assert.match(error.message, says);
+      return true;
+    });
+    return input;
+  };
+  // The scene, one thing at a time. Each is no context for anything else that asks.
+  for (const [change, says] of [
+    [(input) => { input.scene = { ...scene(), inSpace: false }; }, /unreadable: the pilot is not in space\.$/],
+    [(input) => { input.scene = null; }, /unreadable: the pilot is not in space\.$/],
+    [(input) => { input.scene = { ...scene(), shipID: 0 }; }, /unreadable: the scene names no ship of the pilot's\.$/],
+    [(input) => { input.scene = { ...scene(), solarSystemID: null }; }, /unreadable: the scene names no solar system\.$/],
+    [(input) => { input.scene = { ...scene(), ship: null }; }, /unreadable: the scene has no record of the pilot's own ship\.$/],
+    [(input) => { input.scene = { ...scene(), ship: { itemID: 77, characterID: 1 } }; }, /unreadable: the scene has no record of the pilot's own ship\.$/],
+    // As the game port's scene was until 2026-10-12: the ship's record with nobody said to fly it.
+    [(input) => { input.scene = { ...scene(), ship: { itemID: 2 } }; }, /unreadable: the scene's ship is not said to be flown by this pilot\.$/],
+    [(input) => { input.scene = { ...scene(), ship: { itemID: 2, characterID: 9 } }; }, /unreadable: the scene's ship is not said to be flown by this pilot\.$/],
+    [(input) => { input.scene = { ...scene(), sampledAtMs: null }; }, /unreadable: the scene does not say when it was read\.$/],
+    [(input) => { input.scene = { ...scene(), entities: null }; }, /unreadable: the scene has no list of what is in it\.$/],
+    [(input) => { input.scene = { ...scene(), entities: [{ kind: "container", itemID: 99, ownerID: null }] }; }, /unreadable: a container in the scene has no id or no owner\.$/],
+    [(input) => { input.scene = scene([99, 99]); }, /unreadable: a container is in the scene twice\.$/],
+  ]) {
+    const input = refused(change, says);
+    assert.equal(model.sceneContext(input.scene, 1), null);
+  }
+  assert.deepEqual(model.sceneContext(scene([99]), 1), { shipID: 2, systemID: 3, sceneSampledAtMs: 100, ownedContainerIDs: [99] });
+  // What was asked, what was read of the holds, who is asking, and for what.
+  refused((input) => { input.itemIDs = []; }, /unreadable: the items asked for are not a list of item ids\.$/);
+  refused((input) => { input.itemIDs = [10, 10]; }, /unreadable: the items asked for are not a list of item ids\.$/);
+  refused((input) => { input.itemIDs = "10"; }, /unreadable: the items asked for are not a list of item ids\.$/);
+  refused((input) => { input.rows = null; }, /unreadable: the ship's holds could not be read\.$/);
+  refused((input) => { input.invocation = { ...invocation, runID: "" }; }, /unreadable: the asking does not say which run, which of its askings and which step it is\.$/);
+  refused((input) => { input.invocation = { ...invocation, invocationID: 0 }; }, /which run, which of its askings and which step/);
+  refused((input) => { input.invocation = { ...invocation, stepPath: 7 }; }, /which run, which of its askings and which step/);
+  refused((input) => { input.invocation = null; }, /which run, which of its askings and which step/);
+  // A run's name of a hundred letters and a step's of two hundred are the longest taken.
+  refused((input) => { input.invocation = { ...invocation, runID: "r".repeat(101) }; }, /which run, which of its askings and which step/);
+  refused((input) => { input.invocation = { ...invocation, stepPath: "s".repeat(201) }; }, /which run, which of its askings and which step/);
+  assert.equal(model.prepare({ scope, invocation: { ...invocation, runID: "r".repeat(100), stepPath: "s".repeat(200) }, scene: scene(), rows: [ore, crystal], itemIDs: [10], nowMs: 101 }).state, "not-issued");
+  refused((input) => { input.scope = { ...scope, targetKey: null }; }, /unreadable: the bot's scope has no targetKey\.$/);
+  refused((input) => { input.scope = { ...scope, botID: "", operationID: null }; }, /unreadable: the bot's scope has no botID, operationID\.$/);
+  refused((input) => { input.scope = { ...scope, runGeneration: null, targetClaimedAt: "then" }; }, /unreadable: the bot's scope has no runGeneration, targetClaimedAt\.$/);
+  refused((input) => { input.scope = { ...scope, systemID: 4 }; }, /unreadable: the pilot is in another solar system than its target's\.$/);
+  refused((input) => { input.scope = { ...scope, shipID: 5 }; }, /unreadable: the pilot is in another ship than the bot's\.$/);
+  refused((input) => { input.nowMs = NaN; }, /unreadable: the clock could not be read\.$/);
+  // Read, and not what a hosted jettison takes: which item, and why.
+  refused((input) => { input.itemIDs = [12]; }, /whole ore stacks support hosted recovery: item 12 is not in the ship's holds\.$/);
+  refused((input) => { input.itemIDs = [10, 11]; }, /hosted recovery: item 11 is not ore\.$/);
+  // The item that is wrong is the one named, with its own fault: a good one before it changes neither.
+  refused((input) => { input.itemIDs = [10, 12]; }, /hosted recovery: item 12 is not in the ship's holds\.$/);
+  refused((input) => { input.rows = [{ ...ore, ownerID: 9 }]; }, /hosted recovery: item 10 is not the pilot's\.$/);
+  refused((input) => { input.rows = [{ ...ore, locationID: 8 }]; }, /hosted recovery: item 10 is not in this ship\.$/);
+  refused((input) => { input.rows = [{ ...ore, flagID: 27 }]; }, /hosted recovery: item 10 is not in a hold that ore is jettisoned from\.$/);
+  refused((input) => { input.rows = [{ ...ore, quantity: 0 }]; }, /hosted recovery: item 10 has no quantity\.$/);
+});
+
+test("a refusal that came of something thrown says that thing's own words; with nothing thrown it says only that a custody stands", async () => {
+  const STANDS = "Jettison custody requires reconciliation; no second jettison was issued.";
+  const thrown = (message, code) => async () => { throw Object.assign(new Error("x"), { message, ...(code ? { code } : {}) }); };
+  // Before any custody is begun: the scope could not be read.
+  let h = harness({ readScope: thrown("The captured ore logistics assignment is unavailable.", "JETTISON_SCOPE_CHANGED") });
+  let body = await h.invoke();
+  assert.deepEqual([body.accepted, body.notIssued, body.error, body.message, h.custody, h.calls],
+    [false, true, "JETTISON_SCOPE_CHANGED", "The captured ore logistics assignment is unavailable.", null, 0]);
+  // The model's own refusal, of a scene whose ship nobody is said to fly.
+  h = harness({ readEvidence: async () => ({ scene: { ...scene(), ship: { itemID: 2 } }, rows: [ore, crystal], containers: [] }) });
+  body = await h.invoke();
+  assert.deepEqual([body.error, body.message, body.notIssued, h.calls],
+    ["JETTISON_NOT_ISSUED", "Jettison pre-dispatch authority is unreadable: the scene's ship is not said to be flown by this pilot.", true, 0]);
+  // After the custody is begun and before anything is sent.
+  h = harness({ assertDispatch: thrown("Jettison scope changed before dispatch.", "JETTISON_SCOPE_CHANGED") });
+  body = await h.invoke();
+  assert.deepEqual([body.error, body.message, body.notIssued, h.custody.state], ["JETTISON_SCOPE_CHANGED", "Jettison scope changed before dispatch.", true, "refused-before-dispatch"]);
+  // The call sent and its answer lost: the words of what went wrong, trimmed; with no code, the custody's own.
+  h = harness({ dispatch: thrown("  the socket closed  ") });
+  body = await h.invoke();
+  assert.deepEqual([body.error, body.message, body.notIssued, h.custody.state], ["JETTISON_OBSERVATION_UNKNOWN", "the socket closed", false, "ambiguous"]);
+  // Asked again while that stands, nothing is thrown: the one sentence.
+  body = await h.invoke();
+  assert.deepEqual([body.accepted, body.error, body.message], [false, "JETTISON_OBSERVATION_UNKNOWN", STANDS]);
+  // Words that are none, or are not words, are not passed on; long ones are cut at four hundred letters.
+  for (const [message, said] of [["", STANDS], ["   ", STANDS], [undefined, STANDS], [7, STANDS], [null, STANDS], ["w".repeat(1000), "w".repeat(400)]]) {
+    h = harness({ readScope: thrown(message, "TEST_REFUSED") });
+    body = await h.invoke();
+    assert.deepEqual([body.error, body.message], ["TEST_REFUSED", said], String(JSON.stringify(message)).slice(0, 20));
+  }
+  // An answer that is no refusal says nothing of one.
+  h = harness();
+  body = await h.invoke();
+  assert.deepEqual([body.accepted, "error" in body, "message" in body], [true, false, false]);
+});

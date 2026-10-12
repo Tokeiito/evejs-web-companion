@@ -4544,8 +4544,9 @@ export type HostedJettisonReceipt = Readonly<Record<string, JsonValue>> & { read
 export class JettisonCustodyError extends BridgeCallError {
   readonly custody: HostedJettisonReceipt | null;
   readonly notIssued: boolean;
-  constructor(code: string, custody: HostedJettisonReceipt | null, notIssued = false) {
-    super(code, "Jettison custody requires reconciliation before another mutation.", 409);
+  /** `words` is the route's own sentence for the refusal, which names its cause when one was thrown. */
+  constructor(code: string, custody: HostedJettisonReceipt | null, notIssued = false, words: unknown = null) {
+    super(code, typeof words === "string" && words.trim() !== "" ? words.trim() : "Jettison custody requires reconciliation before another mutation.", 409);
     this.custody = custody;
     this.notIssued = notIssued;
   }
@@ -4559,7 +4560,7 @@ function hostedJettisonReceipt(data: Record<string, JsonValue>, allowNone: boole
   const object = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, JsonValue> : null;
   const custody = object && typeof object["state"] === "string" ? object as HostedJettisonReceipt : null;
   if (!custody || data["accepted"] !== true || !recoverableHostedJettison(custody))
-    throw new JettisonCustodyError(typeof data["error"] === "string" ? data["error"] : "JETTISON_CUSTODY_UNKNOWN", custody, data["notIssued"] === true);
+    throw new JettisonCustodyError(typeof data["error"] === "string" ? data["error"] : "JETTISON_CUSTODY_UNKNOWN", custody, data["notIssued"] === true, data["message"]);
   return custody;
 }
 export async function reconcileHostedJettison(options: ApiOptions = {}): Promise<HostedJettisonReceipt | null> {
