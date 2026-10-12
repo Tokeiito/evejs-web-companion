@@ -155415,7 +155415,7 @@ port's own arithmetic**, and every stamp is the state's.
 - **This server takes a missile from afar away when its flight time runs
   out, not when it hits.** A heavy missile launched from 45 km reached the
   ship in five seconds and was removed 19.6 s after its launch, each of
-  nine times, with no `TerminalPlayDestructionEffect`; a torpedo from 28 km
+  the eight times a removal was seen, with no `TerminalPlayDestructionEffect`; a torpedo from 28 km
   was still about the ship 45 s after its launch; a rocket from 3 km was
   removed 1.2 s after its launch, with the effect. Until then it flies about
   its target, as the source has a missile do. Tranquility takes each away at
