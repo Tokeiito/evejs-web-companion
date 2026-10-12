@@ -1767,6 +1767,20 @@ Take these defaults, and list each under "For the operator" in the log so they c
   before a sub-agent begins and its tests are run, and staged again after
   (`mat-restage.sh` is one script for it): no test of the server's meets a staged
   store, and the look at the fix starts from what the first look started from.
+- **Read every caller of the client's function, not the one the feature came from.**
+  `GetFreshFacility` was built for the job a window makes; it has two more callers,
+  and one of them is every job the server answers. A grep of the function's name
+  over the whole client, read to each caller's first line, is part of sizing a unit
+  that builds what a function does.
+- **What the server was asked is in its own log, and can be counted from a mark.**
+  `rig-asked.js mark` gives the log's length; `rig-asked.js <mark>` lists the
+  facility's and the industry's calls since, in their order, with runs of the same
+  call counted. One reading of a panel, counted so, shows a call made once for each
+  row where one was expected.
+- **A structure's rig is an item with a rig slot's flag.** Give the rig by the GM
+  command to a pilot docked in the structure, stop the server, and set the item's
+  flag (92 to 99) in the store's table of items (`rig-store.js`). The facility's row
+  then lists the rig and its modifiers. `rig-restage.sh` is the whole of it.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
