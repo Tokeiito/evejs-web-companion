@@ -121,6 +121,7 @@ test("a companion that has not reported yet falls back rather than saying no", (
 const LAST_RUN = {
   followingOrderFrom: "own-ladder" as const,
   lastOrderHeard: "align",
+  targetMode: "all" as const,
   canTag: false,
 };
 
@@ -133,6 +134,7 @@ test("⚠ a STOPPED companion's row stops talking about the run that ended", () 
   assert.deepEqual(runFactsFor(false, LAST_RUN), {
     followingOrderFrom: null,
     lastOrderHeard: null,
+    targetMode: null,
     canTag: null,
   });
 });
@@ -145,6 +147,7 @@ test("a pilot with no companion slice at all reads as unknown, never as no", () 
   assert.deepEqual(runFactsFor(true, null), {
     followingOrderFrom: null,
     lastOrderHeard: null,
+    targetMode: null,
     canTag: null,
   });
 });

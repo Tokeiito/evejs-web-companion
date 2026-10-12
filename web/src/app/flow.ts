@@ -8611,6 +8611,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           inFleet: progress.inFleet,
           followingOrderFrom: progress.followingOrderFrom,
           lastOrderHeard: progress.lastOrderHeard,
+          targetMode: progress.targetMode,
           canTag: progress.canTag,
           abandonment: progress.abandonment,
           failureReason: progress.failureReason,
