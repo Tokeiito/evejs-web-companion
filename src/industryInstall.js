@@ -1,25 +1,23 @@
 "use strict";
 
-// Invention with a decryptor: the materials an InstallJob request must carry.
+// What an InstallJob request carries that the client's own job reckons before it sends the job: a manufacturing
+// job's time, cost, tax and materials, and an invention's materials where it has a decryptor.
 //
 // ---------------------------------------------------------------------------
-// WHY THE BFF HAS TO SEND MATERIALS AT ALL. For every other install the
-// request's `materials` is advisory and the BFF sends an empty map, which the
-// server reads as "recompute from the blueprint" (industryRuntimeState.js,
-// after Job._get_errors). A decryptor is the exception: the server takes it
-// from the request's materials ONLY (resolveInventionDecryptorSelection: one
-// decryptor, quantity equal to the runs), and once that map is non-empty it
-// must match the server's own map EXACTLY (materialMapsMatchExactly) or the
-// install is refused with MISMATCH_MATERIAL. So the map is built here the way
-// the server builds it, which is the way the retail client builds it:
+// AN INVENTION WITH A DECRYPTOR. The client's job sends its materials with every job (industry/job.py dump, 637);
+// the BFF sends a manufacturing job's (manufacturingJobMaterials, below) and, for any other kind of work, an
+// empty map, which the server reads as "recompute from the blueprint" (industryRuntimeState.js, after
+// Job._get_errors). A decryptor is the exception among those: the server takes it from the request's materials
+// ONLY (resolveInventionDecryptorSelection: one decryptor, quantity equal to the runs), and once that map is
+// non-empty it must match the server's own map EXACTLY (materialMapsMatchExactly) or the install is refused
+// with MISMATCH_MATERIAL. So the map is built here as the client's job builds it (industry/job.py 470 to 485):
 //
-//     quantity = max(trunc(ceil(round(base x runs x facility, 2))), runs)
+//     quantity = float(base), times each material modifier in turn, times the runs
+//     max(int(math.ceil(round(quantity, 2))), runs)
 //
-// per invention material (industryParityHelpers.js buildIndustryActivityMaterials
-// and roundMaterialQuantity; no blueprint efficiency applies to invention),
-// where `facility` is the product of the facility's material modifiers for
-// invention that match the product (resolveFacilityActivityModifier), plus the
-// decryptor at one per run.
+// per invention material, where the modifiers are the facility's material modifiers for invention that are for
+// the product, in the facility's order (an invention has no material modifier of its own:
+// activities/invention.py's are of the probability), plus the decryptor at one per run.
 
 const DECRYPTOR_GROUP_ID = 1304;
 const INVENTION_ACTIVITY_ID = 8;
@@ -139,11 +137,6 @@ function modifierMatchesProduct(modifier, productType) {
   return toInt(productType.typeID) === typeID;
 }
 
-/** The server's roundMaterialQuantity (two decimals, then up, at least one per run). */
-function roundMaterialQuantity(quantity, runs) {
-  return Math.max(Math.trunc(Math.ceil(Math.round(quantity * 100) / 100)), runs);
-}
-
 /**
  * The exact materials map for an invention install with a decryptor, keyed by
  * typeID. `invention` is the blueprint definition's invention activity
@@ -151,16 +144,22 @@ function roundMaterialQuantity(quantity, runs) {
  * `productType` the invented blueprint's type record (for group and category).
  */
 function inventionRequestMaterials({ invention, runs, modifiers, productType, decryptorTypeID }) {
-  let facility = 1;
+  const amounts = [];
   for (const modifier of modifiers || []) {
     if (modifierMatchesProduct(modifier, productType)) {
-      facility *= Math.max(0, Number(modifier[0]) || 0);
+      amounts.push(Math.max(0, Number(modifier[0]) || 0));
     }
   }
   const materials = {};
   for (const material of (invention && invention.materials) || []) {
     const typeID = toInt(material && material.typeID);
-    const quantity = roundMaterialQuantity(Math.max(0, toInt(material && material.quantity)) * runs * facility, runs);
+    // The client's order and its rounding (manufacturingJobMaterials says why each matters).
+    let reckoned = Math.max(0, toInt(material && material.quantity));
+    for (const amount of amounts) {
+      reckoned *= amount;
+    }
+    reckoned *= runs;
+    const quantity = Math.max(Math.ceil(roundToTwoPlaces(reckoned)), runs);
     if (typeID > 0 && quantity > 0) {
       materials[String(typeID)] = (materials[String(typeID)] || 0) + quantity;
     }
@@ -505,6 +504,5 @@ module.exports = {
   manufacturingJobTax,
   manufacturingServiceID,
   modifierMatchesProduct,
-  roundMaterialQuantity,
   roundToTwoPlaces,
 };

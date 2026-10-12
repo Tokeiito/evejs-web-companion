@@ -12,7 +12,6 @@ const {
   inventionProductTypeID,
   inventionRequestMaterials,
   modifierMatchesProduct,
-  roundMaterialQuantity,
 } = require("../src/industryInstall");
 
 const DATACORE_A = 20418;
@@ -44,17 +43,28 @@ test("datacores per run times runs, and the decryptor at one per run", () => {
   );
 });
 
-test("a facility's invention material modifier applies, rounded the server's way, never below one a run", () => {
-  // 2 x 3 x 0.9 = 5.4 -> 6; 1 x 3 x 0.9 = 2.7 -> 3.
+test("a facility's invention material modifier applies, in the client's order and with its rounding, never below one a run", () => {
+  // 2 x 0.9 x 3 = 5.4 -> 6; 1 x 0.9 x 3 = 2.7 -> 3.
   assert.deepEqual(
     inventionRequestMaterials({ invention: INVENTION, runs: 3, modifiers: [[0.9, null, null, null, 6]], productType: PRODUCT, decryptorTypeID: PARITY }),
     { [DATACORE_A]: 3, [DATACORE_B]: 6, [PARITY]: 3 },
   );
-  // 1 x 3 x 0.5 = 1.5 -> 2, but at least one a run: 3.
-  assert.equal(roundMaterialQuantity(1.5, 3), 3);
+  /** What an invention takes of one material of `base` a run, through modifiers for anything. */
+  const taken = (base, amounts, runs) => inventionRequestMaterials({
+    invention: { materials: [{ typeID: DATACORE_B, quantity: base }] }, runs, modifiers: amounts.map((amount) => [amount, null, null, null, 6]), productType: PRODUCT, decryptorTypeID: PARITY,
+  })[DATACORE_B];
+  // 1 x 0.5 x 3 = 1.5 -> 2, but at least one a run: 3.
+  assert.equal(taken(1, [0.5], 3), 3);
   // Two decimals first: 4.001 is 4, not 5.
-  assert.equal(roundMaterialQuantity(4.001, 1), 4);
-  assert.equal(roundMaterialQuantity(4.01, 1), 5);
+  assert.equal(taken(4001, [0.001], 1), 4);
+  assert.equal(taken(401, [0.01], 1), 5);
+  // Each modifier in turn and the runs last, rounded as the client's Python rounds (industry/job.py 470 to 485;
+  // test/industryJobMaterials.test.js has the same numbers as the client's own Python answered them). The runs
+  // first, the modifiers multiplied together and the rounding by a hundred times and back come to 941.
+  assert.equal(taken(211, [0.9, 0.99], 5), 940);
+  // And two more of the same: the runs first come to 9850, and the modifiers multiplied together first to 10742.
+  assert.equal(taken(3685, [0.9, 0.99], 3), 9851);
+  assert.equal(taken(12055, [0.9, 0.99], 1), 10741);
 });
 
 test("a modifier for another category, group or type does not apply", () => {
