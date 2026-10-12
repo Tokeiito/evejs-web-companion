@@ -268,6 +268,7 @@ function startedStore(): ReturnType<typeof createClientStore> {
     canTag: false,
     abandonment: null,
     failureReason: null,
+    selfPaused: false,
   });
   return store;
 }
@@ -303,6 +304,7 @@ test("canTag is three-state: null reads as 'not known', never as a settled metho
     canTag: null,
     abandonment: null,
     failureReason: null,
+    selfPaused: false,
   });
   const text = visibleText(renderPanel(store));
   assert.match(text, /Calls targets.*not known/);
@@ -330,6 +332,7 @@ test("a PAUSED companion still reads as holding the ship, with the standard paus
     canTag: null,
     abandonment: null,
     failureReason: null,
+    selfPaused: false,
   });
   const text = visibleText(renderPanel(store));
   assert.match(text, /Paused/);
@@ -351,6 +354,7 @@ test("a failure reason is shown while running", () => {
     canTag: null,
     abandonment: null,
     failureReason: "The fleet roster could not be read.",
+    selfPaused: false,
   });
   // status "error" is not active, so this renders the SET-UP view's own
   // "last time it stopped" line.
