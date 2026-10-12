@@ -728,8 +728,8 @@
     ]
   },
   "bffWritePolicy": {
-    "count": 359,
-    "sha256": "7d9a77b8886738f9839e48f168defc23952d1607c411bbfdda534dc8b8290e8b",
+    "count": 361,
+    "sha256": "d3154d81ee60718f85ad71399fbcff557ab93ec4111fbc0b74320607e86b2b08",
     "pairs": [
       "LPStoreMgr.TakeOfferForCharacter",
       "LPStoreMgr.TakeOfferForCorporation",
@@ -743,12 +743,14 @@
       "abyssalMgr.AbyssalGateActivation",
       "abyssalMgr.ClientIsReady",
       "accessGroupBookmarkMgr.AddFolder",
+      "accessGroupBookmarkMgr.AddToKnownFolders",
       "accessGroupBookmarkMgr.BookmarkStaticLocation",
       "accessGroupBookmarkMgr.DeleteBookmarks",
       "accessGroupBookmarkMgr.DeleteFolder",
       "accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder",
       "accessGroupBookmarkMgr.UpdateBookmark",
       "accessGroupBookmarkMgr.UpdateFolder",
+      "accessGroupBookmarkMgr.UpdateKnownFolderState",
       "account.GiveCash",
       "account.GiveCashFromCorpAccount",
       "account.SetContactCost",
@@ -1095,6 +1097,8 @@
   "boundary": {
     "genericBridgeAllowsWrites": true,
     "genericBridgeWrites": [
+      "accessGroupBookmarkMgr.AddToKnownFolders",
+      "accessGroupBookmarkMgr.UpdateKnownFolderState",
       "agentMgr.WarpToLocation",
       "beyonce.BookmarkLocation",
       "beyonce.CmdAlignTo",

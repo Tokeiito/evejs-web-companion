@@ -1735,6 +1735,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "structureSettings.CharacterGetService",
     // A structure's guests. The gateway's list has a station's guests and nothing of a structure's.
     "structureGuests.GetGuests",
+    // A shared bookmark folder taken up, and a known one switched on or off (bookmarkSvc.py 357 and 483).
+    "accessGroupBookmarkMgr.AddToKnownFolders", "accessGroupBookmarkMgr.UpdateKnownFolderState",
   ]);
   // structureGuests.py 25: sm.RemoteSvc('structureGuests').GetGuests(session.structureid), by the service's name,
   // with the structure the session is docked in and nothing else.
