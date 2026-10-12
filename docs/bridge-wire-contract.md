@@ -1050,8 +1050,8 @@ to a generic sentence rather than leaking the code.
 #### BFF mutation routes
 
 - `POST /api/bridge/industry/preview` `{ blueprintItemID, blueprintTypeID,
-  activity, facilityID, runs, licensedRuns?, timeEfficiency? }` → `{ ok, available,
-  timeSeconds, fee, inputLocation, outputLocation }`. **`timeEfficiency`** is the
+  activity, facilityID, runs, licensedRuns?, timeEfficiency?, materialEfficiency? }` →
+  `{ ok, available, timeSeconds, fee, materials, inputLocation, outputLocation }`. **`timeEfficiency`** is the
   blueprint's own time research as the page read it (a whole number from 0 to 20,
   else 400 `INVALID_TIME_EFFICIENCY`). Where it is said and the work is
   manufacturing, the job's time is reckoned as the retail client's job reckons it
@@ -1066,7 +1066,15 @@ to a generic sentence rather than leaking the code.
   says no amount. The tax is by the facility's own rate, or in a structure by the
   access of the service the job is done by (`facilityTaxRate`). The `cost` and the
   `tax` of the fee are sent in the request, and in
-  the install's, for the server to hold against its own. `ConnectJob` then **always** `DisconnectJob` — the preview
+  the install's, for the server to hold against its own. **`materialEfficiency`** is
+  the blueprint's own material research as the page read it (a whole number from 0
+  to 10, else 400 `INVALID_MATERIAL_EFFICIENCY`). Where it is said and the work is
+  manufacturing, the job's materials are reckoned as the retail client's job
+  reckons them (`manufacturingJobMaterials`: its order, and its Python's rounding)
+  and sent in the request and the install's, on both transports, for the server to
+  hold against its own; **`materials`** is that map, each type to its quantity, and
+  null where none were reckoned (an empty map then goes, which the server reads as
+  its own to work out). `ConnectJob` then **always** `DisconnectJob` — the preview
   is not a pure read, so the monitor it opens is always released, **and the route
   answers only after that release**: a pilot has one write at a time, and a write
   that followed an earlier answer was refused `CHARACTER_IN_USE`. Needs no

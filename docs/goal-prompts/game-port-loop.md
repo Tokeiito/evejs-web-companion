@@ -1751,6 +1751,22 @@ Take these defaults, and list each under "For the operator" in the log so they c
   <id>` to dock in it; `/bpauto seed` seeds where the pilot is docked. A facility's
   tax is a row of the server's own table (`stx-tax.sh <facility>=<rate>`, the server
   stopped for it). All of it goes with the store's copy put back.
+- **A rounding is asked of the client's own Python, not remembered.** Its `round(x, 2)`
+  rounds by what the number is and a true half away from nought; `toFixed(2)` is the
+  same for a number not below nought, and `Math.round(x * 100) / 100` is not (2.675).
+  `scripts/py27-oracle.py` answers for thousands of numbers in a second: ask it for
+  the edges, and take a test's expected numbers from what it printed.
+- **Where two sums of floats can part, search the game's own numbers for where they
+  do.** Every quantity the blueprints list, every research, a hundred runs: two
+  million cases took seconds, said none part at a station and 209 in a complex, and
+  named the blueprint to stage. A defect found so is seen live at the first try.
+- **A test's vectors should each kill one wrong way of doing the sum.** Beside each
+  expected quantity is written which other order or rounding gets it wrong. A vector
+  that every wrong way gets right proves nothing but the arithmetic.
+- **A server's fix is looked at on a store staged afresh.** The store is put back
+  before a sub-agent begins and its tests are run, and staged again after
+  (`mat-restage.sh` is one script for it): no test of the server's meets a staged
+  store, and the look at the fix starts from what the first look started from.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
