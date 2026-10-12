@@ -6406,6 +6406,38 @@ test("the job-over recall is forgotten once the drones are home or the fight is 
   assert.deepEqual(over.action, { kind: "recallDrones", droneIDs: [DRONE_A] });
 });
 
+// ⚠ A FAILED RECALL IS NOT ONE TO WAIT ON (observed live 2026-10-12: a pilot's
+// first job-over recall came back CHARACTER_IN_USE). The ladder records the
+// recall when it chooses it, so without the loop dropping that record on a
+// failure the drones would sit out the whole half-minute bound.
+test("a job-over recall the server refused is sent again on the next tick, then once only", async () => {
+  const attempted: FleetCompanionAction[] = [];
+  const controller = createFleetCompanion({
+    observe: async () =>
+      mixedBayObs({ hostileOnGrid: false, myDroneIDs: [DRONE_A], combatDroneIDs: [DRONE_A] }),
+    issue: async (action) => {
+      attempted.push(action);
+      if (attempted.length === 1) {
+        throw Object.assign(new Error("CHARACTER_IN_USE"), { code: "CALL_REFUSED" });
+      }
+    },
+    sleep: async () => {},
+    now: () => 1_000_000,
+  });
+  controller.start(WITH_DRONES);
+  for (let tick = 0; tick < 4; tick += 1) {
+    await controller.tick();
+  }
+  assert.deepEqual(
+    attempted.filter((action) => action.kind === "recallDrones"),
+    [
+      { kind: "recallDrones", droneIDs: [DRONE_A] },
+      { kind: "recallDrones", droneIDs: [DRONE_A] },
+    ],
+  );
+  assert.equal(controller.snapshot().status, "running");
+});
+
 test("a grid we cannot READ does not pull the drones in", () => {
   // ⚠ `hostileOnGrid` is three-state and `null` is "the read failed". Recalling
   // on that would yank drones out of a live fight every time a snapshot
