@@ -303,3 +303,58 @@ test("decodeBoundFleet surfaces the no-fleet error path as empty with error code
   assert.deepEqual(fleet.joinRequests.value, []);
   assert.deepEqual(fleet.composition.value, []);
 });
+
+// --- as Tranquility answered it ---------------------------------------------
+//
+// "Join Fleet - Receive Boss - Set other as boss - leave fleet", the one recording with a fleet in it. GetInitState
+// answered a utillib.KeyVal of six names (motd, options, fleetID, members, isLootLogging, wings), with no `squads`
+// beside the wings; a wing its ID, its name and its squads; a squad its ID, its wing's ID and its name. A member
+// has the twelve names this server's has, in the same order. What follows is in that form; the numbers and the
+// texts are made up.
+
+function recordedKeyVal(entries: readonly (readonly [string, JsonValue])[]): JsonValue {
+  return { type: "object", name: "utillib.KeyVal", args: { type: "dict", entries: entries as JsonValue } };
+}
+const RECORDED_SQUAD = recordedKeyVal([["squadID", 3500000000077], ["wingID", 2200000000077], ["name", ""]]);
+const RECORDED_WING = recordedKeyVal([["wingID", 2200000000077], ["name", ""], ["squads", { type: "dict", entries: [[3500000000077, RECORDED_SQUAD]] }]]);
+const recordedMember = (charID: number, role: number, job: number, squadID: number, wingID: number): JsonValue => recordedKeyVal([
+  ["squadID", squadID], ["wingID", wingID], ["skills", { type: "list", items: [5, 0, 0] }], ["timestamp", "134275770400000000"], ["stationID", null],
+  ["clientID", 61000000000077], ["job", job], ["role", role], ["shipTypeID", 33470], ["solarSystemID", 30000142],
+  ["memberOptOuts", recordedKeyVal([["acceptsConduitJumps", true], ["acceptsFleetRegroups", true], ["acceptsFleetWarp", true]])], ["charID", charID],
+]);
+const RECORDED_STATE: JsonValue = recordedKeyVal([
+  ["motd", ""],
+  ["options", recordedKeyVal([["isFreeMove", false], ["isRegistered", false], ["autoJoinSquadID", null]])],
+  ["fleetID", 1100000000077],
+  ["members", { type: "dict", entries: [[90000001, recordedMember(90000001, 1, 2, -1, -1)], [90000002, recordedMember(90000002, 4, 0, 3500000000077, 2200000000077)]] }],
+  ["isLootLogging", true],
+  ["wings", { type: "dict", entries: [[2200000000077, RECORDED_WING]] }],
+]);
+
+test("a fleet's state as Tranquility answered it is read: no squads beside the wings, and a squad of a wing that carries its wing's ID", () => {
+  const s = decodeFleetInitState(RECORDED_STATE);
+  assert.deepEqual([s.motd, s.fleetID, s.isLootLogging, s.options], ["", 1100000000077, true, { isFreeMove: false, isRegistered: false, autoJoinSquadID: null }]);
+  // The squads are the wings' own: there are none beside them, and nothing of the page looks for any there.
+  assert.deepEqual(s.squads, []);
+  assert.deepEqual(s.wings, [{ wingID: 2200000000077, name: "", squads: [{ squadID: 3500000000077, name: "" }] }]);
+  // The fleet's commander is in no wing and no squad: -1 for each.
+  assert.deepEqual(s.members.map((m) => [m.charID, m.role, m.job, m.squadID, m.wingID]), [[90000001, 1, 2, -1, -1], [90000002, 4, 0, 3500000000077, 2200000000077]]);
+  assert.deepEqual(s.members[0]!.memberOptOuts, { acceptsConduitJumps: true, acceptsFleetRegroups: true, acceptsFleetWarp: true });
+  assert.deepEqual([s.members[0]!.skills, s.members[0]!.timestamp, s.members[0]!.stationID, s.members[0]!.shipTypeID], [[5, 0, 0], "134275770400000000", null, 33470]);
+  // GetWings is the wings alone, in the same form.
+  assert.deepEqual(decodeFleetWings({ type: "dict", entries: [[2200000000077, RECORDED_WING]] }), s.wings);
+});
+
+// The recording's names are all empty. Tranquility answers other texts a pilot wrote as unicode (an advert's name,
+// a bookmark's), which is a wire string; this server answers a plain one. Either is read.
+test("a name that is unicode is read as its text: a wing's, a squad's, and the fleet's message", () => {
+  const wide = (value: JsonValue): JsonValue => ({ type: "wstring", value });
+  const squad = recordedKeyVal([["squadID", 7], ["wingID", 5], ["name", wide("\u00c9claireurs")]]);
+  const wing = recordedKeyVal([["wingID", 5], ["name", wide("Aile \u00dcnie")], ["squads", { type: "dict", entries: [[7, squad]] }]]);
+  const s = decodeFleetInitState(recordedKeyVal([["motd", wide("Bienvenue \u00e0 bord")], ["fleetID", 9], ["wings", { type: "dict", entries: [[5, wing]] }]]));
+  assert.deepEqual([s.motd, s.wings[0]!.name, s.wings[0]!.squads[0]!.name], ["Bienvenue \u00e0 bord", "Aile \u00dcnie", "\u00c9claireurs"]);
+  assert.equal(decodeFleetMotd(wide("o7 \u00e0 tous")), "o7 \u00e0 tous");
+  assert.equal(decodeFleetWings({ type: "dict", entries: [[5, wing]] })[0]!.name, "Aile \u00dcnie");
+  // What is neither kind of text is no text: a number is no name, and nothing comes out as "[object Object]".
+  for (const none of [7, wide(7), wide(null), { type: "list", items: ["a"] }, ["a"], { type: "string", value: "a" }] as JsonValue[]) assert.equal(decodeFleetMotd(none), "", JSON.stringify(none));
+});

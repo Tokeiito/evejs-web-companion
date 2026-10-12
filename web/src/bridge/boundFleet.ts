@@ -45,6 +45,13 @@
 //  GetWings(): a BARE dict {wingID -> wing KeyVal} (same wing shape as above), NOT a
 //    util.KeyVal.
 //  GetMotd(): a plain STRING.
+//
+// BESIDE THE RECORDING ("Join Fleet - Receive Boss - Set other as boss - leave fleet", the one with a fleet in it):
+//  Tranquility's GetInitState has six names and NO top-level `squads`: that one is this server's own, the client
+//  reads no such thing (fleetSvc.InitFleet, 254 to 264, takes fleetID, members, wings, options and motd), and
+//  nothing of the page reads it either. A recorded squad carries its wing's ID beside its own and its name; this
+//  server's does not, and nothing of the client's reads a squad's wing off the squad. A member's twelve names are
+//  the same twelve, in the same order. The recorded names and message are all empty.
 //  GetJoinRequests(): a BARE dict {charID -> join-request KeyVal{charID, corpID(id|null),
 //    allianceID(id|null), warFactionID(id|null), securityStatus(double)}}.
 //  GetFleetComposition(): a list of composition KeyVals {characterID(id), solarSystemID(
@@ -124,9 +131,17 @@ function asBool(value: JsonValue | undefined): boolean {
   return value === true;
 }
 
-/** A string, or "" when absent/non-string. */
+/**
+ * Text as the wire has it: a plain string, as this server answers a fleet's names and its message, or a wire
+ * string ({type:"wstring", value}), which is how Tranquility answers a text a pilot wrote where it is unicode.
+ * "" when it is absent or neither.
+ */
 function asString(value: JsonValue | undefined): string {
-  return typeof value === "string" ? value : "";
+  if (typeof value === "string") {
+    return value;
+  }
+  const wide = asObject(value);
+  return wide.type === "wstring" && typeof wide.value === "string" ? wide.value : "";
 }
 
 /** The dict entries of a util.KeyVal / bare dict; [] when neither. */
