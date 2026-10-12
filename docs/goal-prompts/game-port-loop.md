@@ -2302,6 +2302,21 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A breakage of your own that survives may be saying what the test expects.** Read what it
   makes the code say before calling the test weak: a fallback in the breakage itself ("is not
   ore") was the very words the one case looked for.
+- **What the page is sent can be read off the tab's own socket, beside what it shows.** The
+  page's askers do not go through `window.fetch` (a wrapper there sees nothing) and each pilot's
+  token is kept in memory, so a script in the page cannot ask for the scene itself. Wrap
+  `WebSocket.prototype.send`: at the socket's next send, add a `message` listener to it and look
+  in each frame for an `entities` list. One recording then has the scene and the page's own
+  rows second by second. A reload takes the wrapper away.
+- **A pilot is held in the tab from the Pilots hangar**: press its row (which only selects it)
+  and then "Bring online ▶". A pilot a script left in space and logged out is where it was, its
+  rat still firing, so one staging serves a script on one BFF and then the tab on the other, one
+  transport at a time.
+- **What the client draws a thing as, and what its overview can list, are two tables.**
+  `spaceObject/repository.py` (a class by group, and a Missile for every group its data marks
+  "fittable non-singleton") and `parklife/tacticalConst.py` (the groups an overview is made
+  of). The client's own groups table is read with its loader (`scripts/client-built-data.py`,
+  `groupsLoader`; `cg-groups.js` in session 2e7ceba2's scratchpad sets it beside the BFF's data).
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
