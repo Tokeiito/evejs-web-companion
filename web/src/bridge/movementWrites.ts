@@ -142,7 +142,7 @@
 //
 // ⚠ A MISSION'S BOOKMARK IS NOT WARPED TO SO BY A CLIENT. One that has an agent and a location's number is asked
 // of the agent (GetAgentMoniker(agentID).WarpToLocation, 416), and never of the ballpark. The page's mission
-// block warps to this server's "Agent Missions" bookmarks by this call still, as its route did.
+// block asks the agent so too, since 2026-10-11 (warpToMissionLocation, below), and reads no folder of bookmarks.
 //
 // SENT INTO WARP, TO A LAUNCH. journal.py 452 to 453, the journal's "warp to" on a launch in the pilot's system
 // that is farther off than a warp's least distance (433 to 440):

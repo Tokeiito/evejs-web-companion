@@ -258,7 +258,7 @@ export const MACRO_SPECS: Readonly<Record<MacroID, MacroSpec>> = {
     ],
     untilRequired: false,
   },
-  // Warp to the accepted mission's own site (its "Agent Missions" bookmark).
+  // Warp to the accepted mission's own site (the journal's marked spot, asked of the mission's agent).
   "fly-to-mission-site": { args: [], untilRequired: false },
   // Restart every EXPIRED extractor program across all colonies, reusing each
   // extractor's own last resource. Runs from anywhere (PI is remote).

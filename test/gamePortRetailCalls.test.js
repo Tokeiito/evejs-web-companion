@@ -2622,7 +2622,7 @@ test("the fleet finder's adverts are asked for with nothing; the fleet's own adv
 });
 
 // bookmarkSvc.py 163: folders, bookmarks, subfolders = self.accessGroupBookmarkMgr.GetMyActiveBookmarks(), of the
-// bookmark manager by name and with nothing, once in a session. Tranquility's recordings have it so, in five. The
+// bookmark manager by name and with nothing, once in a session. Tranquility's recordings have it so, in three. The
 // page's bots and its Bot Builder read it, and the ledger had it unchecked.
 
 test("a pilot's bookmarks are asked of the bookmark manager by name, with nothing", () => {

@@ -8,9 +8,26 @@
 //
 //   folders, bookmarks, subfolders = self.accessGroupBookmarkMgr.GetMyActiveBookmarks()
 //
-// of the bookmark manager by its name, nothing sent. Recorded on Tranquility so, in five recordings. It answers
-// three lists for the session's own character: the folders it has active, the bookmarks in them, and their
-// subfolders.
+// of the bookmark manager by its name, nothing sent. Recorded on Tranquility so, in three recordings (four
+// askings, three with their answers; counted again 2026-10-11, and the five written here before is not what is
+// counted). It answers three lists for the session's own character.
+//
+// THE FOLDERS ARE THOSE THE PILOT KNOWS, ACTIVE OR NOT; the bookmarks and the subfolders are those of the active
+// folders alone. This server answers so (bookmarkRuntimeState.js, getMyActiveBookmarks), and the client is written
+// for it: what it keeps at a login is this answer, and its Locations panel lists the folders it keeps that are not
+// active under a heading of their own (bookmarksPanel.py, 272 to 276). No recording has a folder that is not
+// active. A FOLDER A CLIENT OFFERS TO SAVE IN IS AN ACTIVE ONE, not one it may only view, and not a full one
+// (bookmarkSvc.GetFilteredFoldersAndSubfolders, 395 to 412).
+//
+// ONE OF THE FOLDERS HERE IS THIS SERVER'S OWN: "Agent Missions", a personal folder it files a mission's spots in
+// and marks not active each time it does (agentMissionRuntime.js, ensureMissionBookmarkFolder). No recording has
+// such a folder. Its bookmarks are answered only while a pilot has marked it active. Nothing of the page reads it:
+// a mission's spots are the journal's (bridge/agents.ts), as they are a client's.
+//
+// WHAT A ROW IS. A recorded bookmark is a row of 14 columns; this server's is a KeyVal of 15 names, which are the
+// 15 of the KeyVal a client makes of a bookmark it has just saved and keeps beside the rows
+// (bookmarkSvc.NewBookmarkCreated, 635). A recorded folder has an ownerID this server's has not; nothing of the
+// client's reads one.
 //
 // WHAT IS KEPT. The client asks once in a session and keeps the three, changing what it keeps as it makes,
 // changes and deletes a bookmark itself, and as the server tells it a shared folder changed
@@ -27,7 +44,8 @@ import type { Ask } from "./ask.ts";
 import { decodeActiveBookmarks, type ActiveBookmarks } from "./bookmarks.ts";
 
 /**
- * The pilot's active folders, the bookmarks in them and their subfolders, as the server lists them. Fails as the
+ * The folders the pilot knows, active or not, and the bookmarks and subfolders of the active ones, as the server
+ * lists them. Fails as the
  * call fails; and where the server's answer is not its three lists, which is no list of bookmarks at all.
  */
 export async function readMyActiveBookmarks(ask: Ask): Promise<ActiveBookmarks> {
