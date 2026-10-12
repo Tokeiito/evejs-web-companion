@@ -6835,6 +6835,184 @@ test("an answer that is no list is handed on as it came with nothing kept, and a
   assert.deepEqual([(await guestsOf(pilots, handle)).items, (await guestsOf(pilots, handle)).items, asked], [[aGuest(PILOT)], [aGuest(PILOT)], 5]);
 });
 
+// ── the region's facilities, as the client's facility service keeps them ─────
+//
+// facilitySvc.py: the region's facilities are asked for once (GetFacilities(), 133) and kept until the region
+// changes (29) or the server says the system's activity changed (37); the largest system index of each activity
+// likewise (87), but for the region. A facility the server names (42), one a job was refused at
+// (industrySvc.InstallJob, 143) and one a job is given that has rig modifiers or is not among the region's (107,
+// 71) is asked for by itself (GetFacility) and kept by its ID in the place of what was kept of it. No recording
+// has any of the manager's calls; six have the notice of a system's activity, with nothing sent beside it.
+
+const FACILITIES = "facilityManager.GetFacilities";
+const LARGEST_INDICES = "facilityManager.GetMaxActivityModifiers";
+const ONE_FACILITY = "facilityManager.GetFacility";
+const FACILITY_PAIRS = { allowed: new Set([FACILITIES, LARGEST_INDICES, "industryManager.InstallJob", "industryMonitor.ConnectJob"]) };
+const A_STRUCTURE = 1030000000001;
+const SOME_RIGS = [[1, { type: "list", items: [] }]];
+const facilityOf = (facilityID, tax, rigs = []) => keyVal([["facilityID", BigInt(facilityID)], ["typeID", 35825], ["tax", tax], ["rigModifiers", { type: "dict", entries: rigs }]]);
+/** One field of a row as the transport hands it on. */
+const fieldIn = (row, name) => (row.args.entries.find(([key]) => key === name) ?? [])[1];
+/**
+ * A pilot whose facility manager answers the station and a structure. Each row's tax tells which asking it came
+ * of: the number of the asking for the region's, and a hundred and the number of the asking for one by itself.
+ * `rigs` are the structure's rig modifiers, and those of any facility asked for by itself.
+ */
+async function withFacilities(more = {}, rigs = []) {
+  const asked = { region: 0, largest: 0, one: [] };
+  const chosen = await selected({ answers: {
+    [FACILITIES]: () => { asked.region += 1; return { type: "list", items: [facilityOf(STATION, asked.region), facilityOf(A_STRUCTURE, asked.region, rigs)] }; },
+    [LARGEST_INDICES]: () => { asked.largest += 1; return { type: "dict", entries: [[1, asked.largest]] }; },
+    [ONE_FACILITY]: ([facilityID]) => { asked.one.push(Number(facilityID)); return facilityOf(facilityID, 100 + asked.one.length, rigs); },
+    ...more,
+  } }, FACILITY_PAIRS);
+  /** The region's facilities as a read of them answers now: each one's tax, by its ID. */
+  const region = async (args = [], kwargs = null) => {
+    const rows = (await chosen.pilots.callMethod("facilityManager", "GetFacilities", args, kwargs, FIELDS, chosen.handle)).result.items.map((row) => [fieldIn(row, "facilityID"), fieldIn(row, "tax")]);
+    assert.equal(new Set(rows.map(([facilityID]) => facilityID)).size, rows.length, "each facility is kept once");
+    return Object.fromEntries(rows);
+  };
+  const largest = async () => (await chosen.pilots.callMethod("facilityManager", "GetMaxActivityModifiers", [], null, FIELDS, chosen.handle)).result.entries[0][1];
+  /** Until the transport's own askings, which nobody waits for, are done. */
+  const settled = () => new Promise((resolve) => { setTimeout(resolve, 5); });
+  return { ...chosen, asked, region, largest, settled };
+}
+const A_PLACE_OF_WORK = { itemID: A_STRUCTURE, typeID: 35825, ownerID: PILOT, flagID: 4, solarSystemID: SYSTEM, canView: true, canTake: true };
+const jobAt = (facilityID) => ({
+  blueprintID: 9988400109051, blueprintTypeID: 811, activityID: 1, facilityID, solarSystemID: SYSTEM, characterID: PILOT, corporationID: 1000044,
+  account: [PILOT, 1000], runs: 3, licensedRuns: 1, cost: 0, tax: 0, time: 0, materials: {}, inputLocation: A_PLACE_OF_WORK, outputLocation: null, productTypeID: null,
+});
+
+test("the region's facilities and the largest indices are asked for once and kept, as the client's facility service keeps them", async () => {
+  const { pilots, session, asked, region, largest } = await withFacilities();
+  assert.deepEqual([await region(), await region()], [{ [STATION]: 1, [A_STRUCTURE]: 1 }, { [STATION]: 1, [A_STRUCTURE]: 1 }]);
+  assert.deepEqual([await largest(), await largest()], [1, 1]);
+  assert.deepEqual(session.calls.filter((call) => call.service === "facilityManager").map((call) => [call.method, call.args, call.kwargs]),
+    [["GetFacilities", [], null], ["GetMaxActivityModifiers", [], null]]);
+  assert.deepEqual([ledgerOf(pilots, FACILITIES), ledgerOf(pilots, LARGEST_INDICES)],
+    [[{ same: 1 }, "eve/client/script/industry/facilitySvc.py:133"], [{ same: 1 }, "eve/client/script/industry/facilitySvc.py:87"]]);
+  // Two at once that find nothing kept ask once.
+  session.notify("OnSystemActivityUpdated", []);
+  assert.deepEqual((await Promise.all([region(), region()])).map((rows) => rows[STATION]), [2, 2]);
+  assert.equal(asked.region, 2);
+  // A read of them with something sent beside it is no call of the client's: asked as it came, each time, and not kept.
+  assert.deepEqual([(await region([7]))[STATION], (await region([7]))[STATION], (await region())[STATION], asked.region], [3, 4, 2, 4]);
+});
+
+test("the facilities kept are let go when the system's activity changes and in another region, and the largest indices only at the first", async () => {
+  const { session, asked, region, largest } = await withFacilities();
+  assert.deepEqual([(await region())[STATION], await largest()], [1, 1]);
+  const after = async () => [(await region())[STATION], await largest(), asked.region, asked.largest];
+  // facilitySvc.OnSystemActivityUpdated (37): the largest indices are let go, and every facility (Reload).
+  session.notify("OnSystemActivityUpdated", []);
+  assert.deepEqual(await after(), [2, 2, 2, 2]);
+  // OnSessionChanged (29): in another region the facilities are let go, and the largest indices are kept.
+  session.change({ regionid: [10000002, 10000016] });
+  assert.deepEqual(await after(), [3, 2, 3, 2]);
+  // Another system of the same region: the client reckons its distances again, and asks nothing.
+  session.change({ solarsystemid2: [SYSTEM, SYSTEM + 1] });
+  // And a notice that is another service's.
+  session.notify("OnOfficeRentalChange", [98000001, 1054657764826n]);
+  assert.deepEqual(await after(), [3, 2, 3, 2]);
+});
+
+test("a facility the server names is asked for by itself and kept in the place of what was kept of it", async () => {
+  const { pilots, session, asked, region, settled } = await withFacilities();
+  await region();
+  // facilitySvc.OnFacilitiesUpdated (42 to 48): each one named is let go and asked for, GetFacility(facilityID),
+  // and what is answered is kept by its ID.
+  session.notify("OnFacilitiesUpdated", [{ type: "list", items: [A_STRUCTURE] }]);
+  await settled();
+  assert.deepEqual(session.calls.filter((call) => call.method === "GetFacility").map((call) => [call.service, call.args, call.kwargs]), [["facilityManager", [A_STRUCTURE], null]]);
+  assert.deepEqual([await region(), asked.region], [{ [STATION]: 1, [A_STRUCTURE]: 101 }, 1]);
+  assert.deepEqual(ledgerOf(pilots, ONE_FACILITY), [{ same: 1 }, "eve/client/script/industry/facilitySvc.py:71"]);
+  // Two named: one after the other, as the client asks them.
+  session.notify("OnFacilitiesUpdated", [[STATION, A_STRUCTURE]]);
+  await settled();
+  assert.deepEqual([asked.one, await region(), asked.region], [[A_STRUCTURE, STATION, A_STRUCTURE], { [STATION]: 102, [A_STRUCTURE]: 103 }, 1]);
+
+  // One the server will not answer for is left out of what is kept (the client's `except UserError: pass`), and nothing fails.
+  const gone = await withFacilities({ [ONE_FACILITY]: () => { throw refusedBy("CustomNotify", "That facility could not be found."); } });
+  await gone.region();
+  gone.session.notify("OnFacilitiesUpdated", [[A_STRUCTURE]]);
+  await gone.settled();
+  assert.deepEqual([await gone.region(), gone.asked.region], [{ [STATION]: 1 }, 1]);
+
+  // With nothing kept the facility is asked for all the same, as the client asks, and the next reading asks for the region's.
+  const none = await withFacilities();
+  none.session.notify("OnFacilitiesUpdated", [[A_STRUCTURE]]);
+  await none.settled();
+  assert.deepEqual([none.asked.one, none.asked.region, await none.region(), none.asked.region], [[A_STRUCTURE], 0, { [STATION]: 1, [A_STRUCTURE]: 1 }, 1]);
+  // What names no facility asks for none.
+  none.session.notify("OnFacilitiesUpdated", [[0, null, "x"]]);
+  none.session.notify("OnFacilitiesUpdated", []);
+  await none.settled();
+  assert.deepEqual(none.asked.one, [A_STRUCTURE]);
+});
+
+test("a job refused at a facility has the facility asked for afresh, as the client's industry service asks", async () => {
+  // industrySvc.InstallJob (139 to 144): `except UserError: self.facilitySvc.Reload(job.facilityID); raise`.
+  let refuse = true;
+  const taken = () => { if (refuse) throw refusedBy("IndustryValidationError", "MISMATCH_TIME"); return 970000000000005; };
+  const { pilots, handle, asked, region, settled } = await withFacilities({ "industryManager.InstallJob": taken, "industryMonitor.ConnectJob": taken });
+  await region();
+  await rejects(pilots.callMethod("industryManager", "InstallJob", [jobAt(A_STRUCTURE)], null, FIELDS, handle), "CALL_REFUSED");
+  await settled();
+  assert.deepEqual([asked.one, await region(), asked.region], [[A_STRUCTURE], { [STATION]: 1, [A_STRUCTURE]: 101 }, 1]);
+  // A preview refused asks nothing (ConnectJob has no such handler), nor a refused job that names no facility.
+  await rejects(pilots.callMethod("industryMonitor", "ConnectJob", [jobAt(A_STRUCTURE)], null, FIELDS, handle), "CALL_REFUSED");
+  await rejects(pilots.callMethod("industryManager", "InstallJob", [jobAt(0)], null, FIELDS, handle), "CALL_REFUSED");
+  // Nor a job that is taken.
+  refuse = false;
+  await pilots.callMethod("industryManager", "InstallJob", [jobAt(A_STRUCTURE)], null, FIELDS, handle);
+  await settled();
+  assert.deepEqual([asked.one, await region()], [[A_STRUCTURE], { [STATION]: 1, [A_STRUCTURE]: 101 }]);
+
+  // A job in the client's own dict, refused: the facility it names is asked for likewise.
+  refuse = true;
+  await rejects(pilots.callMethod("industryManager", "InstallJob", [{ type: "dict", entries: [["facilityID", STATION]] }], null, FIELDS, handle), "CALL_REFUSED");
+  await settled();
+  assert.deepEqual([asked.one, await region()], [[A_STRUCTURE, STATION], { [STATION]: 102, [A_STRUCTURE]: 101 }]);
+
+  // A job that was not answered in time was not refused (the client's handler is for a UserError): nothing is asked.
+  const slow = await withFacilities({ "industryManager.InstallJob": () => { throw sessionError("CALL_TIMEOUT"); } });
+  await rejects(slow.pilots.callMethod("industryManager", "InstallJob", [jobAt(A_STRUCTURE)], null, FIELDS, slow.handle), "EVE_GATEWAY_TIMEOUT");
+  await slow.settled();
+  assert.deepEqual(slow.asked.one, []);
+});
+
+test("the facility a job is given is the one kept, asked for afresh where it has rig modifiers or is not among the region's", async () => {
+  // industrySvc.CreateJob (109): job.facility = facilitySvc.GetFreshFacility(facilityID) (107 to 112; GetFacility, 66 to 74).
+  const { pilots, handle, asked } = await withFacilities();
+  const fresh = async (facilityID) => { const row = await pilots.freshFacility(WHO, handle, facilityID); return row === null ? null : [fieldIn(row, "facilityID"), fieldIn(row, "tax")]; };
+  // Nothing kept: the region's are asked for, and the facility is among them.
+  assert.deepEqual([await fresh(STATION), asked.region, asked.one], [[STATION, 1], 1, []]);
+  // Kept, with no rig modifiers: nothing is asked.
+  assert.deepEqual([await fresh(A_STRUCTURE), await fresh(STATION), asked.region, asked.one], [[A_STRUCTURE, 1], [STATION, 1], 1, []]);
+  // One that is not among the region's is asked for by itself, and kept from then on.
+  assert.deepEqual([await fresh(A_STRUCTURE + 1), await fresh(A_STRUCTURE + 1), asked.region, asked.one], [[A_STRUCTURE + 1, 101], [A_STRUCTURE + 1, 101], 1, [A_STRUCTURE + 1]]);
+  // No facility named: none (`if facilityID:`), and nothing asked.
+  assert.deepEqual([await fresh(0), await fresh(null), asked.region, asked.one.length], [null, null, 1, 1]);
+  assert.deepEqual([ledgerOf(pilots, FACILITIES)[0], ledgerOf(pilots, ONE_FACILITY)[0]], [{ same: 1 }, { same: 1 }]);
+  // Another account's session reads nothing.
+  await assert.rejects(pilots.freshFacility({ userid: 9 }, handle, STATION), (error) => error.code === "SESSION_NOT_FOUND");
+
+  // One kept with rig modifiers is let go and asked for by itself, each time a job is given it.
+  const rigged = await withFacilities({}, SOME_RIGS);
+  const again = async (facilityID) => fieldIn(await rigged.pilots.freshFacility(WHO, rigged.handle, facilityID), "tax");
+  // (Not kept yet, the region's are asked for and it is among them: the client looks for rig modifiers in what it holds, before it asks.)
+  assert.deepEqual([await again(A_STRUCTURE), rigged.asked.region, rigged.asked.one], [1, 1, []]);
+  assert.deepEqual([await again(A_STRUCTURE), await again(A_STRUCTURE), rigged.asked.region, rigged.asked.one], [101, 102, 1, [A_STRUCTURE, A_STRUCTURE]]);
+  // What was asked for by itself is what a reading of the region's has from then on. The station beside it has no rig modifiers, and is as kept.
+  assert.deepEqual([await rigged.region(), await again(STATION), rigged.asked.one.length], [{ [STATION]: 1, [A_STRUCTURE]: 102 }, 1, 2]);
+
+  // Refused, the asking fails as it failed, and the facility is not among what is kept.
+  const gone = await withFacilities({ [ONE_FACILITY]: () => { throw refusedBy("CustomNotify", "That facility could not be found."); } }, SOME_RIGS);
+  await gone.region();
+  await rejects(gone.pilots.freshFacility(WHO, gone.handle, A_STRUCTURE), "CALL_REFUSED");
+  assert.deepEqual(await gone.region(), { [STATION]: 1 });
+});
+
 // ── the offices the pilot's corporation rents ────────────────────────────────
 
 const OFFICES = "officeManager.GetMyCorporationsOffices";

@@ -270,6 +270,15 @@ const ACTIVE_BOOKMARKS = "GetMyActiveBookmarks";
 const bookmarksKeptAs = (method, form) => (method === ACTIVE_BOOKMARKS && form.args.length === 0 && form.kwargs === null ? "active" : null);
 /** bookmarkSvc.ACLBookmarkLocation (617): the park's call that bookmarks a place in space, which the client works into what it keeps. */
 const BOOKMARK_LOCATION = "BookmarkLocation";
+const FACILITY_MANAGER = "facilityManager";
+/**
+ * The two reads of the facility manager's the client's facility service keeps (facilitySvc.py): the region's
+ * facilities (GetFacilities(), 133) and the largest system index of each activity (GetMaxActivityModifiers(), 87),
+ * each asked with nothing. Null for any other read, and for one with something sent beside it, which is no call of
+ * the client's and is asked as it came.
+ */
+const FACILITIES_KEPT_AS = Object.freeze({ GetFacilities: "region", GetMaxActivityModifiers: "largest" });
+const facilitiesKeptAs = (method, form) => (Object.hasOwn(FACILITIES_KEPT_AS, method) && form.args.length === 0 && form.kwargs === null ? FACILITIES_KEPT_AS[method] : null);
 /**
  * The answers a service of the client's keeps until something changes them, by the service they are asked of
  * (keptReads.js). `keptAs` says what a read is kept as, or null for one that is not kept. What changes them is
@@ -325,6 +334,15 @@ const KEPT_UNTIL_CHANGED = Object.freeze({
       beyonce: new Set(["BookmarkScanResult"]),
     }),
   }),
+  // facilitySvc: the server says the system's activity changed (OnSystemActivityUpdated, 37), and the largest
+  // indices and every facility are let go. In another region the facilities alone are (29), which the session's
+  // change sees to. A facility the server names (42), one a job was refused at and one a job is given are asked
+  // for by themselves and worked into what is kept, where each happens (facilitiesAskedAfresh, freshFacility).
+  [FACILITY_MANAGER]: Object.freeze({
+    keptAs: facilitiesKeptAs,
+    notices: new Set(["OnSystemActivityUpdated"]),
+    writes: Object.freeze({}),
+  }),
 });
 /**
  * A container's two listings, which the client's inventory cache keeps (invCacheContainer.List, ListByFlags, in
@@ -377,6 +395,32 @@ function withBookmark(lists, made, bookmarkID) {
   const all = [...others, made];
   return [folders, Array.isArray(bookmarks) ? all : { ...bookmarks, items: all }, subfolders];
 }
+
+/** A facility's own ID off its row (the facility manager's KeyVal), or null. */
+const facilityIDOf = (row) => wholeOf(row && row.type === "object" && row.args ? dictValue(row.args, "facilityID") : undefined);
+/** The facility of an ID among the region's as they are kept, or null. */
+function facilityAmong(facilities, facilityID) {
+  const id = wholeOf(facilityID);
+  return id === null ? null : itemsOf(facilities).find((row) => facilityIDOf(row) === id) ?? null;
+}
+/** facilitySvc.GetFreshFacility (109): `self.facilities[facilityID].rigModifiers`, which is so where the facility's row lists any. */
+function hasRigModifiers(row) {
+  const rigs = row && row.type === "object" && row.args ? dictValue(row.args, "rigModifiers") : null;
+  return Boolean(rigs) && (itemsOf(rigs).length > 0 || (Array.isArray(rigs.entries) && rigs.entries.length > 0));
+}
+/**
+ * The region's facilities with the facility of an ID taken out and `row`, where there is one, put among them by
+ * its own ID: the client keeps its facilities by their IDs (facilities.pop, 44 and 102; _PrimeFacility, 141). The
+ * list kept is left as it was.
+ */
+function withFacility(facilities, facilityID, row = null) {
+  const out = new Set([wholeOf(facilityID), row ? facilityIDOf(row) : null].filter((id) => id !== null));
+  const others = itemsOf(facilities).filter((each) => !out.has(facilityIDOf(each)));
+  const all = row ? [...others, row] : others;
+  return Array.isArray(facilities) ? all : { ...facilities, items: all };
+}
+/** The facility a job names, as a route holds the job (a plain object) or as the client's dict has it. */
+const jobsFacility = (job) => positive(job && job.type === "dict" ? dictValue(job, "facilityID") : job && job.facilityID);
 
 /**
  * bookmarkSvc.RemoveExpiredBookmarks (186 to 192): the three lists less the bookmarks whose time has run out by the
@@ -833,6 +877,8 @@ function createGamePortPilots({
   const filetime = (ms) => (BigInt(Math.trunc(ms)) + 11644473600000n) * 10000n;
   /** standingsvc.__RefreshStandings: RemoteSvc('standingMgr').GetNPCNPCStandings(), no arguments. The web client never asks it. */
   const NPC_STANDINGS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/client/script/ui/services/standingsvc.py:115", note: null });
+  /** facilitySvc: self.facilityManager.GetFacility(facilityID), one facility by itself (46, 71 and 103), which no route of the BFF's may ask by name. */
+  const A_FACILITY_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/client/script/industry/facilitySvc.py:71", note: null });
   /** cfg.eveowners' priming: config.GetMultiOwnersEx(list(keysToGet)), which no route of the BFF's may ask by name. */
   const OWNERS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbon/common/script/sys/cfg.py:579", note: null });
   /**
@@ -1200,6 +1246,8 @@ function createGamePortPilots({
       /** The pilot's agents' journal as the client's journal service keeps it (pilotJournal.js), and the readings of it, one after another. */
       journal: createPilotJournal(),
       journalWork: Promise.resolve(),
+      /** The facilities asked for by themselves at the server's word or a job's refusal, one after another (facilitiesAskedAfresh). */
+      facilitiesWork: Promise.resolve(),
       /** agents.agentMonikers: the one object the client keeps for an agent, by agent, each as it is held in `bound`. */
       agents: new Map(),
       /** agents.allAgents: this pilot's own asking for the table of agents, once it has asked; over when it is answered. */
@@ -1291,6 +1339,8 @@ function createGamePortPilots({
       for (const [service, keeper] of Object.entries(KEPT_UNTIL_CHANGED)) {
         if (keeper.notices.has(notification.method) && (!keeper.concerns || keeper.concerns(notification.args, entry.session.attributes))) entry.kept[service].forget();
       }
+      // facilitySvc.OnFacilitiesUpdated (42): each facility the server names is asked for by itself.
+      if (notification.method === "OnFacilitiesUpdated") facilitiesAskedAfresh(entry, itemsOf((notification.args ?? [])[0]).map(positive).filter((facilityID) => facilityID !== null));
       if (COLONY_NOTICES.has(notification.method)) forgetColonies(entry);
       // A mission changed: what the client shows of its missions is drawn again from the journal, which reads it again.
       if (entry.journal.feed(notification)) journalUpToDate(entry);
@@ -1330,6 +1380,8 @@ function createGamePortPilots({
       if ("corpid" in changes || "allianceid" in changes) entry.kept[CALENDAR_PROXY].forget();
       // officeManager.OnSessionChanged: in another corporation the offices kept are not its.
       if ("corpid" in changes) entry.kept[OFFICE_MANAGER].forget();
+      // facilitySvc.OnSessionChanged (29): in another region the facilities kept are not its. The largest indices stay.
+      if ("regionid" in changes) entry.kept[FACILITY_MANAGER].amend("region", () => undefined);
       // home_station.OnSessionChanged (173): 'corpid' in change, and the home station kept is let go.
       if ("corpid" in changes) entry.homeStation.forget();
       // all_cso.OnSessionChanged: another alliance, another moniker, made and bound at once; no alliance, none.
@@ -1630,6 +1682,12 @@ function createGamePortPilots({
       : byName(entry.session, service, method, form))).finally(() => {
       forgetKeptAfter(entry, service, method);
       if (mayChangeContents(service, method)) entry.listings.forget();
+    }).catch((error) => {
+      // industrySvc.InstallJob (139 to 144): a job the server refuses has its facility asked for afresh
+      // (facilitySvc.Reload), and the refusal stands.
+      const facilityID = service === "industryManager" && method === "InstallJob" && error && error.code === "CALL_REFUSED" ? jobsFacility(Array.isArray(args) ? args[0] : null) : null;
+      if (facilityID !== null) facilitiesAskedAfresh(entry, [facilityID]);
+      throw error;
     });
     // crimewatchSvc.SetSafetyLevel (343 to 345): once the server has taken the level, it is the level the client has.
     // A call that is not the client's (a level that is none of its three) leaves nothing the client would keep:
@@ -2017,6 +2075,66 @@ function createGamePortPilots({
       creatorID: entry.characterID,
     });
     entry.kept[BOOKMARK_MGR].amend("active", (lists) => (isTheThreeLists(lists) ? withBookmark(lists, made, bookmarkID) : undefined));
+  }
+
+  // ── the facilities, as the client's facility service keeps them ──────────
+
+  /** The region's facilities as they are kept, asked for, and noted, where they are not (facilitySvc._PrimeFacilities, 128). */
+  const regionsFacilities = (entry) => keptRead(entry, FACILITY_MANAGER, "GetFacilities", shape(FACILITY_MANAGER, "GetFacilities", [], null, contextFor(entry)));
+
+  /**
+   * A facility asked for by itself, facilityManager.GetFacility(facilityID), and what is answered kept by its ID in
+   * the place of anything kept of it (_PrimeFacility, 141). Fails as the asking fails. Where the region's are not
+   * kept there is nothing to put it among, and the next reading of them asks for them all.
+   */
+  async function facilityAsked(entry, facilityID) {
+    ledger.note(FACILITY_MANAGER, "GetFacility", A_FACILITY_AS_THE_CLIENT_ASKS);
+    const row = await entry.session.call(FACILITY_MANAGER, "GetFacility", [facilityID], null);
+    entry.kept[FACILITY_MANAGER].amend("region", (facilities) => (isAList(facilities) ? withFacility(facilities, facilityID, row) : undefined));
+    return row;
+  }
+
+  /** A facility let go of what is kept (facilities.pop, 44 and 102; the `del`, 110), where `only` says so of it. */
+  function facilityLetGo(entry, facilityID, only = () => true) {
+    return entry.kept[FACILITY_MANAGER].amend("region", (facilities) => {
+      if (!isAList(facilities)) return undefined;
+      const kept = facilityAmong(facilities, facilityID);
+      return kept && only(kept) ? withFacility(facilities, facilityID) : facilities;
+    });
+  }
+
+  /**
+   * facilitySvc.Reload(facilityID) (102 to 103) and each turn of OnFacilitiesUpdated (44 to 48): the facility is
+   * let go and asked for by itself, one after another. Never fails: what the server will not answer for stays let
+   * go, as it does at the client's notice (its `except UserError: pass`), and nobody waits on this.
+   */
+  function facilitiesAskedAfresh(entry, facilityIDs) {
+    const asking = entry.facilitiesWork.then(async () => {
+      for (const facilityID of facilityIDs) {
+        facilityLetGo(entry, facilityID);
+        await facilityAsked(entry, facilityID).catch(() => {});
+      }
+    });
+    entry.facilitiesWork = asking.catch(() => {});
+    return asking;
+  }
+
+  /**
+   * facilitySvc.GetFreshFacility (107 to 112), which is what the client's industry service gives a job for its
+   * facility (industrySvc.CreateJob, 109). One that is kept and has rig modifiers is let go; the region's are asked
+   * for where they are not kept (GetFacility, 68); and the facility, where it is not among them, is asked for by
+   * itself and kept (71). Answers the facility's row, or null where none is named (`if facilityID:`). Fails as
+   * the asking of it fails: the server will not answer for a facility it does not know.
+   */
+  async function freshFacility(sessionFields = {}, bridgeSessionID = undefined, facilityID = null) {
+    const entry = held(bridgeSessionID, sessionFields);
+    const id = positive(facilityID);
+    if (id === null) return null;
+    return run(entry, FACILITY_MANAGER, "GetFacility", async () => {
+      facilityLetGo(entry, id, hasRigModifiers);
+      const kept = facilityAmong(await regionsFacilities(entry), id);
+      return wireToBridgeJson(kept ?? await facilityAsked(entry, id));
+    });
   }
 
   /** One of the client's own askings of a service by its name, with nothing: noted as it is sent. */
@@ -3505,6 +3623,7 @@ function createGamePortPilots({
     brokersFeeRate: brokersFeeRateFor,
     skillSheet,
     skillLevels,
+    freshFacility,
     serverNowMs,
     saveSkillQueue,
     journalKept,

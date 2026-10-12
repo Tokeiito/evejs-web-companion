@@ -370,6 +370,8 @@ async function startTestServer(options = {}) {
     eveGatewayClient: options.gateway,
     webAuth: fakeAuth(),
     staticData: options.staticData || fakeStaticData(),
+    // A test may send the pilot to the game port, where another stand-in answers for it.
+    ...(options.gamePortPilots ? { gamePortPilots: options.gamePortPilots, pilotTransportFor: () => "gameport" } : {}),
     errorLogger() {},
   });
   const server = app.listen(0, "127.0.0.1");
@@ -1038,6 +1040,72 @@ test("where a job's time cannot be reckoned whole it goes as nought, as it did, 
   // A blueprint the game's data has not: there is no time to start from.
   await apiRequest(third.baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ blueprintTypeID: 999_999, timeEfficiency: 5 }) });
   assert.equal(sentJobs(gateway, "InstallJob")[1].time, 0);
+});
+
+test("on the game port a job's facility is asked of the transport, which keeps the region's as the client's facility service does", async () => {
+  // industrySvc.CreateJob (109): job.facility = facilitySvc.GetFreshFacility(facilityID). The transport answers it
+  // (src/gamePort/pilots.js, freshFacility), and the pilot's level of each skill that has a time per level.
+  const TIMED_SKILL = 11452;
+  const plain = fakeStaticData();
+  const staticData = {
+    ...plain,
+    getIndustryBlueprint(blueprintTypeID) {
+      const definition = plain.getIndustryBlueprint(blueprintTypeID);
+      if (definition) definition.activities.manufacturing.skills = [{ typeID: TIMED_SKILL, level: 1 }];
+      return definition;
+    },
+    getTypeDogmaAttribute: (typeID, attributeID) => (Number(typeID) === TIMED_SKILL && Number(attributeID) === 1982 ? -1 : null),
+  };
+  const facility = facilityRow();
+  facility.args.entries.find(([name]) => name === "activities")[1] = dict([
+    [ACTIVITY_MANUFACTURING, { type: "tuple", items: [list([[0.85, null, null, null, 2]]), list([]), list([])] }],
+    [8, { type: "tuple", items: [list([]), list([[0.5, null, null, null, 2]]), list([])] }],
+  ]);
+  const asked = { fresh: [], levels: [] };
+  let refuse = false;
+  const gamePort = {
+    ...fakeIndustryGateway({ timeMultiplier: 0.68 }),
+    async selectCharacter() {
+      return {
+        bridgeSessionID: "gp:a-pilot-on-the-game-port", service: "charUnboundMgr", method: "SelectCharacterID", result: null, notifications: [],
+        session: { userid: 4, characterID: CHARACTER_ID, characterName: "Test Pilot", stationID: STATION_ID, structureID: null, solarSystemID: SOLAR_SYSTEM_ID, corporationID: 98000000, shipID: ACTIVE_SHIP_ID },
+      };
+    },
+    async freshFacility(sessionFields, bridgeSessionID, facilityID) {
+      asked.fresh.push([sessionFields, bridgeSessionID, facilityID]);
+      if (refuse) throw Object.assign(new Error("That facility could not be found."), { code: "CALL_REFUSED", statusCode: 409 });
+      return facility;
+    },
+    async skillLevels(sessionFields, bridgeSessionID, typeIDs) {
+      asked.levels.push([sessionFields, bridgeSessionID, typeIDs]);
+      return typeIDs.map(() => 2);
+    },
+  };
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, staticData });
+  await selectOnServer(baseUrl);
+
+  // 600 x 3 x 0.98 x 0.68 x 0.95 x 0.85 = 968.6124.
+  const preview = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ timeEfficiency: 5 }) });
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ timeEfficiency: 5 }) });
+  assert.deepEqual([preview.payload.timeSeconds, sentJobs(gamePort, "ConnectJob")[0].time, sentJobs(gamePort, "InstallJob")[0].time], [969, 969, 969]);
+  const who = [{ userid: 4 }, "gp:a-pilot-on-the-game-port"];
+  assert.deepEqual(asked, { fresh: [[...who, STATION_ID], [...who, STATION_ID]], levels: [[...who, [TIMED_SKILL]], [...who, [TIMED_SKILL]]] });
+  // The region's facilities are not asked for by the route, and nothing of the pilot's goes to the gateway.
+  assert.deepEqual([gamePort.calls.topLevel.some((call) => call.method === "GetFacilities"), gateway.calls.topLevel.length, gateway.calls.bound.length], [false, 0, 0]);
+
+  // An invention with a decryptor reads the same facility's material modifiers: 2 x 3 x 0.5 = 3 of the datacore.
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ activity: "invention", runs: 3, decryptorTypeID: DECRYPTOR_TYPE_ID }) });
+  assert.deepEqual([sentJobs(gamePort, "InstallJob")[1].materials, asked.fresh.length, gamePort.calls.topLevel.some((call) => call.method === "GetFacilities")],
+    [{ [DATACORE_TYPE_ID]: 3, [DECRYPTOR_TYPE_ID]: 3 }, 3, false]);
+
+  // A facility the server will not answer for: no time is reckoned, nought goes, and the job is the server's to judge.
+  refuse = true;
+  const unknown = await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ timeEfficiency: 5 }) });
+  assert.deepEqual([unknown.response.status, sentJobs(gamePort, "InstallJob")[2].time], [200, 0]);
+  // And the decryptor's materials are reckoned with no modifier of the facility's: 2 x 3 = 6.
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ activity: "invention", runs: 3, decryptorTypeID: DECRYPTOR_TYPE_ID }) });
+  assert.deepEqual(sentJobs(gamePort, "InstallJob")[3].materials, { [DATACORE_TYPE_ID]: 6, [DECRYPTOR_TYPE_ID]: 3 });
 });
 
 test("a blueprint's time research is a whole number from nought to twenty, or the request is refused before anything is asked", async () => {

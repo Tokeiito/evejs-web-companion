@@ -456,10 +456,12 @@ const PROXY_SERVICES = Object.freeze(new Set([
 /**
  * Calls of the client's own that the transport makes when a feature wants them, and that no route of the BFF's
  * may ask by name, so that they have no entry in the table below. Each is read against the client where the
- * transport makes it (pilots.js): cfg.eveowners' priming, for the names of players' owners.
+ * transport makes it (pilots.js): cfg.eveowners' priming, for the names of players' owners; and one facility
+ * asked for by itself, as the client's facility service asks where the server names it, where a job was refused
+ * at it, and where a job is given one that has rig modifiers or is not among the region's.
  */
 // (The station's office object's reads are the lobby's, which the gateway never had: see GAME_PORT_ONLY_CALLS.)
-const TRANSPORT_OWN_CALLS = Object.freeze(["config.GetMultiOwnersEx"]);
+const TRANSPORT_OWN_CALLS = Object.freeze(["config.GetMultiOwnersEx", "facilityManager.GetFacility"]);
 
 /**
  * Calls the game port carries that the web gateway's list has not got: a pilot on the game port may make them, and

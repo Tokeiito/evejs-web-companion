@@ -5425,8 +5425,9 @@ async function skillLevelsFor(account, held, typeIDs) {
  *                                                                                 the game port godma answers, with
  *                                                                                 nothing asked of the server
  *   the facility's time modifiers                                                 its facility service, which keeps
- *                                                                                 the region's facilities; asked for
- *                                                                                 here each time
+ *                                                                                 the region's facilities, as the
+ *                                                                                 transport does on the game port
+ *                                                                                 (jobFacilityRow)
  *
  * ⚠ ALL OR NOTHING. The server refuses a job whose time is not nought and is not its own to the second
  * (MISMATCH_TIME), so a time is sent only where every input was had. Null otherwise: any other kind of work
@@ -5459,8 +5460,7 @@ async function reckonedJobSeconds(account, held, webSessionID, request) {
     const levels = timed.length > 0 ? await skillLevelsFor(account, held, timed.map((skill) => skill.typeID)) : [];
     const character = await boundCall(held, webSessionID, dogmaBindSpec(), "QueryAttributeValue",
       [held.characterID, ATTRIBUTE_MANUFACTURE_TIME_MULTIPLIER], null);
-    const facilities = await heldTopLevelCall(held, webSessionID, "facilityManager", "GetFacilities", [], null);
-    const facilityRow = industryInstall.findFacilityRow(facilities.result, request.facilityID);
+    const facilityRow = await jobFacilityRow(held, webSessionID, request.facilityID);
     if (!facilityRow) {
       return null;
     }
@@ -5487,6 +5487,29 @@ async function reckonedJobSeconds(account, held, webSessionID, request) {
 }
 
 /**
+ * The facility a job is given, as the client's job has it (industrySvc.CreateJob, 109:
+ * facilitySvc.GetFreshFacility). On the game port the transport keeps the region's facilities as the client's
+ * facility service keeps them, and answers it (src/gamePort/pilots.js, freshFacility): asked for once, and one with
+ * rig modifiers asked afresh. On the gateway the region's are asked for each time, and the facility found among
+ * them. Null where the server will not answer for the facility, or it is not among them.
+ */
+async function jobFacilityRow(held, webSessionID, facilityID) {
+  if (gamePortPilots && isGamePortHandle(held.bridgeSessionID) && typeof gamePortPilots.freshFacility === "function") {
+    try {
+      return await heldRequest(held, webSessionID, false,
+        () => gamePortPilots.freshFacility({ userid: held.accountID }, held.bridgeSessionID, facilityID));
+    } catch (error) {
+      if (error && error.code === "CALL_REFUSED") {
+        return null;
+      }
+      throw error;
+    }
+  }
+  const facilities = await heldTopLevelCall(held, webSessionID, "facilityManager", "GetFacilities", [], null);
+  return industryInstall.findFacilityRow(facilities.result, facilityID);
+}
+
+/**
  * For an invention with a decryptor, the exact materials map the server will
  * compare against, with the facility's own invention material modifiers read
  * the way the retail client reads them (src/industryInstall.js says why).
@@ -5501,8 +5524,7 @@ async function decryptorInstallFields(held, webSessionID, request) {
     : null;
   const invention = definition && definition.activities ? definition.activities.invention : null;
   const productTypeID = industryInstall.inventionProductTypeID(invention, request.productTypeID);
-  const facilities = await heldTopLevelCall(held, webSessionID, "facilityManager", "GetFacilities", [], null);
-  const facilityRow = industryInstall.findFacilityRow(facilities.result, request.facilityID);
+  const facilityRow = await jobFacilityRow(held, webSessionID, request.facilityID);
   return {
     productTypeID,
     materials: industryInstall.inventionRequestMaterials({
