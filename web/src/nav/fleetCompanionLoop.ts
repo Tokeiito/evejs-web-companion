@@ -1134,6 +1134,12 @@ export interface FleetCompanionProgress {
    */
   readonly abandonment: CompanionAbandonmentRecord | null;
   readonly failureReason: string | null;
+  /**
+   * The run paused itself -- a ladder `pause` or a command whose outcome it
+   * could not confirm -- rather than being paused by the operator. The
+   * Fleet companions window restarts the first kind and never the second.
+   */
+  readonly selfPaused: boolean;
 }
 
 export interface FleetCompanionController {
@@ -7310,6 +7316,8 @@ interface CompanionMemory {
   lastOrderHeard: string | null;
   canTag: boolean | null;
   failureReason: string | null;
+  /** True when the run paused ITSELF (the ladder or an unconfirmed command), never for an operator pause. */
+  selfPaused: boolean;
   /** The live request. Null until `start()`; the ladder needs it every tick. */
   request: FleetCompanionRequest | null;
   /** The ladder's own threaded memory — see `CompanionLadderMemory`. */
@@ -7327,6 +7335,7 @@ function freshMemory(): CompanionMemory {
     lastOrderHeard: null,
     canTag: null,
     failureReason: null,
+    selfPaused: false,
     request: null,
     ladder: freshLadderMemory(),
   };
@@ -7399,6 +7408,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
       canTag: mem.canTag,
       abandonment: abandonmentRecord(mem.ladder),
       failureReason: mem.failureReason,
+      selfPaused: mem.status === "paused" && mem.selfPaused,
     };
   }
 
@@ -7505,6 +7515,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
     if (decision.pause !== undefined) {
       runToken += 1;
       mem.status = "paused";
+      mem.selfPaused = true;
       mem.action = null;
       mem.failureReason = decision.pause;
       report();
@@ -7566,6 +7577,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
         if (uncertainMovement || uncertainDrones) {
           runToken += 1;
           mem.status = "paused";
+          mem.selfPaused = true;
           mem.action = null;
           mem.why = "Cannot confirm the command's outcome. Pausing without repeating it.";
         }
@@ -7576,6 +7588,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
           if (!definite) {
             runToken += 1;
             mem.status = "paused";
+            mem.selfPaused = true;
             mem.action = null;
             mem.why = "Cannot confirm whether the alignment request took effect. Pausing for the operator.";
           }
@@ -7747,12 +7760,14 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
         // awaiting its observation or cadence timer before status changes.
         runToken += 1;
         mem.status = "paused";
+        mem.selfPaused = false;
         report();
       }
     },
     resume(): void {
       if (mem.status === "paused") {
         mem.status = "running";
+        mem.selfPaused = false;
         report();
       }
     },
@@ -7768,6 +7783,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
     beginGracefulStop(): Promise<void> {
       runToken += 1;
       mem.status = "paused";
+      mem.selfPaused = false;
       mem.phase = "Recalling drones";
       mem.why = "Stopping after controlled drones return.";
       mem.action = null;
