@@ -668,3 +668,116 @@ export function shouldSwitch(input: SwitchInput): { switch: boolean; why: string
     ? { switch: true, why: "Switching to bigger drones, this will be a long fight." }
     : no("Keeping the small drones, the fight is too short to swap.");
 }
+
+// ── the two questions a companion asks ───────────────────────────────────────
+//
+// Everything above answers "how good is this drone on that target". The fleet
+// companion asks two narrower things, once per tick: WHAT goes out when no
+// combat drone is out, and whether the flight that IS out should come home for
+// a better one. Both answer `null` for "cannot judge" -- an unread bay, an
+// unread hull limit, a drone type whose dogma has not landed, a target with no
+// signature -- and the caller then does exactly what it did before this module
+// existed. Sizing is an improvement on the old launch, never a new way to sit
+// on a full bay.
+
+/**
+ * The launch for these targets, or null when it cannot be judged OR when
+ * nothing in the bay can hurt them (the caller's old whole-bay launch is no
+ * worse than an empty one in that case, and it still defends the ship).
+ */
+export function sizedLaunch(
+  bay: readonly BayStack[] | null,
+  facts: ReadonlyMap<number, DroneFacts>,
+  limits: ShipLimits | null,
+  targets: readonly TargetFacts[],
+): LaunchPlan | null {
+  if (bay === null || limits === null || targets.length === 0) {
+    return null;
+  }
+  const plan = planLaunch(bay, facts, limits, targets.length === 1 ? targets[0]! : targets);
+  if (plan.expectedDps === null || plan.primaryTypeID === null || plan.stacks.length === 0) {
+    return null;
+  }
+  return plan;
+}
+
+export interface SwitchQuestion {
+  /** The typeID of every combat drone of this ship's out in space, one per drone. */
+  readonly flightTypeIDs: readonly (number | null)[];
+  /** What is still in the bay. The flight out joins it in the comparison. */
+  readonly bay: readonly BayStack[] | null;
+  readonly facts: ReadonlyMap<number, DroneFacts>;
+  readonly limits: ShipLimits | null;
+  readonly target: TargetFacts;
+  readonly remainingEhp: number | null;
+  readonly lastSwitchAtMs: number | null;
+  readonly nowMs: number;
+}
+
+/**
+ * Should the flight out come home for a better one against this target?
+ *
+ * The comparison is against the best flight the WHOLE pool could make -- the
+ * bay plus the drones out, since they are coming home if this says yes -- so a
+ * bay holding nothing better can never trigger a recall. A best flight of the
+ * same size as the one out (same largest bandwidth per drone) is no switch: a
+ * size switch is what this rule prices, and shuffling equals buys nothing.
+ */
+export function sizeSwitchVerdict(q: SwitchQuestion): { switch: boolean; why: string } | null {
+  if (q.bay === null || q.limits === null || q.flightTypeIDs.length === 0) {
+    return null;
+  }
+  const flight: DroneFacts[] = [];
+  for (const typeID of q.flightTypeIDs) {
+    const f = typeID === null ? undefined : q.facts.get(typeID);
+    if (f === undefined) {
+      return null;
+    }
+    flight.push(f);
+  }
+  let currentDps = 0;
+  for (const f of flight) {
+    const dps = expectedAppliedDps(f, q.target);
+    if (dps === null) {
+      return null;
+    }
+    currentDps += dps;
+  }
+  // The flight joins the pool under stand-in ids: only the plan's choice and
+  // its dps are read here, never which stack it would launch.
+  const counts = new Map<number, number>();
+  for (const f of flight) {
+    counts.set(f.typeID, (counts.get(f.typeID) ?? 0) + 1);
+  }
+  const pool: BayStack[] = [...q.bay];
+  for (const [typeID, quantity] of counts) {
+    pool.push({ itemID: -typeID, typeID, quantity });
+  }
+  const best = planLaunch(pool, q.facts, q.limits, q.target);
+  if (best.expectedDps === null || best.primaryTypeID === null) {
+    return null;
+  }
+  const primary = q.facts.get(best.primaryTypeID);
+  if (primary === undefined) {
+    return null;
+  }
+  const flightBandwidth = Math.max(...flight.map((f) => f.bandwidthMbit));
+  if (primary.bandwidthMbit === flightBandwidth) {
+    return { switch: false, why: "These drones are the right size for this target." };
+  }
+  const moving = flight.filter((f) => !f.stationary).map((f) => f.maxVelocityMs);
+  const switchCostS = switchCostSeconds({
+    distanceM: q.target.distanceFromShipM ?? 0,
+    currentMaxVelocityMs: moving.length === 0 ? 0 : Math.min(...moving),
+    newMaxVelocityMs: primary.stationary ? 0 : primary.maxVelocityMs,
+  });
+  return shouldSwitch({
+    currentDps,
+    bestDps: best.expectedDps,
+    direction: primary.bandwidthMbit < flightBandwidth ? "down" : "up",
+    remainingEhp: q.remainingEhp,
+    switchCostS,
+    lastSwitchAtMs: q.lastSwitchAtMs,
+    nowMs: q.nowMs,
+  });
+}
