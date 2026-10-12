@@ -959,8 +959,8 @@
   // give up, for a director whose corporation has one. Each is two presses, as
   // the retail lobby asks before it acts: the price is shown before the rent
   // is paid, and an office is given up only on a second press.
-  /** What the pilot is docked in, for the Offices block's own words. */
-  const officePlace = $derived($station.online?.structureID ? "structure" : "station");
+  /** What the pilot is docked in, for the lobby's own words: its guests' and its offices'. */
+  const dockedPlace = $derived($station.online?.structureID ? "structure" : "station");
   const canRentHere = $derived(Boolean($station.offices?.canRent && !$station.offices.ownOffice));
   const canGiveUpHere = $derived(Boolean($station.offices?.canGiveUp && $station.offices.ownOffice));
   let officeQuote = $state<StationOfficeQuote | null>(null);
@@ -1355,6 +1355,52 @@
   {/if}
 {/snippet}
 
+{#snippet guestsBlock()}
+  <!--
+    The lobby's guests (dockedUI/guests.py), in a station's services and in a structure's alike: who is docked
+    here, read from the station's guests or from the structure's.
+  -->
+  <div class="stn-group-head">
+    <span class="stn-group-title">Guests</span>
+    <span class="stn-group-count">{$station.guests.length} in {dockedPlace}</span>
+    <span class="stn-group-gap"></span>
+    <button
+      type="button"
+      class="stn-icon-btn"
+      title="Refresh the guest list"
+      aria-label="Refresh the guest list"
+      disabled={busy}
+      onclick={() => run(() => flow.refreshStationPanel())}
+    >
+      <span aria-hidden="true">↻</span>
+    </button>
+  </div>
+  {#if $station.guests.length === 0}
+    <p class="stn-note">No guests reported yet.</p>
+  {:else}
+    <div class="table-wrap overflow-x-auto">
+      <table class="guests reflow">
+        <thead>
+          <tr><th>Character</th><th>Corporation</th><th>Alliance</th></tr>
+        </thead>
+        <tbody>
+          {#each $station.guests as guest (guest.characterID)}
+            <tr class={guest.characterID === $station.online?.characterID ? "self" : ""}>
+              <td data-label="Character">
+                {guest.characterID === $station.online?.characterID
+                  ? `${$station.online?.characterName} (you)`
+                  : nameOnly(guest.characterID, "character")}
+              </td>
+              <td data-label="Corporation">{nameOnly(guest.corporationID, "corporation")}</td>
+              <td data-label="Alliance">{nameOnly(guest.allianceID, "alliance")}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+  {/if}
+{/snippet}
+
 {#snippet officesBlock()}
   <!--
     The lobby's offices (dockedUI/offices.py), in a station's services and in a structure's alike: the
@@ -1371,8 +1417,8 @@
     <button
       type="button"
       class="stn-icon-btn"
-      title={`List the offices in this ${officePlace}`}
-      aria-label={`List the offices in this ${officePlace}`}
+      title={`List the offices in this ${dockedPlace}`}
+      aria-label={`List the offices in this ${dockedPlace}`}
       disabled={busy}
       onclick={() => run(() => flow.loadStationOffices())}
     >
@@ -1380,9 +1426,9 @@
     </button>
   </div>
   {#if $station.offices === null}
-    <p class="stn-note">Not listed yet. Press ↻ to list this {officePlace}'s offices.</p>
+    <p class="stn-note">Not listed yet. Press ↻ to list this {dockedPlace}'s offices.</p>
   {:else if !$station.offices.available}
-    <p class="stn-note">This pilot's connection does not carry a {officePlace}'s offices.</p>
+    <p class="stn-note">This pilot's connection does not carry a {dockedPlace}'s offices.</p>
   {:else if officeRows.length === 0}
     <p class="stn-note">No corporation has an office here.</p>
   {:else}
@@ -1427,7 +1473,7 @@
         {#if officeHoldsItems}
           The office's hangars are not empty. Give it up, and what is in them is impounded here.
         {:else}
-          Give up your corporation's office in this {officePlace}?
+          Give up your corporation's office in this {dockedPlace}?
         {/if}
       </p>
       <p class="stn-controls">
@@ -1746,45 +1792,7 @@
       </div>
 
       <div class="stn-services-col">
-        <div class="stn-group-head">
-          <span class="stn-group-title">Guests</span>
-          <span class="stn-group-count">{$station.guests.length} in station</span>
-          <span class="stn-group-gap"></span>
-          <button
-            type="button"
-            class="stn-icon-btn"
-            title="Refresh the guest list"
-            aria-label="Refresh the guest list"
-            disabled={busy}
-            onclick={() => run(() => flow.refreshStationPanel())}
-          >
-            <span aria-hidden="true">↻</span>
-          </button>
-        </div>
-        {#if $station.guests.length === 0}
-          <p class="stn-note">No guests reported yet.</p>
-        {:else}
-          <div class="table-wrap overflow-x-auto">
-            <table class="guests reflow">
-              <thead>
-                <tr><th>Character</th><th>Corporation</th><th>Alliance</th></tr>
-              </thead>
-              <tbody>
-                {#each $station.guests as guest (guest.characterID)}
-                  <tr class={guest.characterID === $station.online?.characterID ? "self" : ""}>
-                    <td data-label="Character">
-                      {guest.characterID === $station.online?.characterID
-                        ? `${$station.online?.characterName} (you)`
-                        : nameOnly(guest.characterID, "character")}
-                    </td>
-                    <td data-label="Corporation">{nameOnly(guest.corporationID, "corporation")}</td>
-                    <td data-label="Alliance">{nameOnly(guest.allianceID, "alliance")}</td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          </div>
-        {/if}
+        {@render guestsBlock()}
 
         {@render officesBlock()}
       </div>
@@ -1809,9 +1817,14 @@
         {/if}
         {@render sessionControls()}
       </div>
-      {#if structureHasCapability($station.structureServiceIDs, "corporationHangar")}
+      {#if $station.guests.length > 0 || structureHasCapability($station.structureServiceIDs, "corporationHangar")}
       <div class="stn-services-col">
-        {@render officesBlock()}
+        {#if $station.guests.length > 0}
+          {@render guestsBlock()}
+        {/if}
+        {#if structureHasCapability($station.structureServiceIDs, "corporationHangar")}
+          {@render officesBlock()}
+        {/if}
       </div>
       {/if}
     </section>

@@ -278,8 +278,14 @@ test("a structure selection keeps its real identity and reads accessible service
   assert.equal(station.online?.stationID, null);
   assert.deepEqual(station.structureServiceIDs, [1, 2, 3]);
   assert.equal(station.station, null);
-  assert.equal(requests.filter((request) => request.path === "/api/bridge/call" &&
-    ["GetStationItemBits", "GetGuests", "GetStationInfo"].includes(String(request.body.method))).length, 0);
+  // None of an NPC station's three reads, each told by its service and its method.
+  const calls = requests.filter((request) => request.path === "/api/bridge/call").map((request) => `${String(request.body.service)}.${String(request.body.method)}`);
+  assert.deepEqual(calls.filter((pair) => ["stationSvc.GetStationItemBits", "station.GetGuests", "map.GetStationInfo"].includes(pair)), []);
+  // The guests asked for are the structure's, of the structure guests service and by the structure
+  // (structureGuests.py 25), and no other call names an NPC station's method.
+  assert.deepEqual(requests.filter((request) => request.path === "/api/bridge/call" &&
+    ["GetStationItemBits", "GetGuests", "GetStationInfo"].includes(String(request.body.method))).map((request) => [request.body.service, request.body.method, request.body.args]),
+  [["structureGuests", "GetGuests", [structureID]]]);
 });
 
 test("a failed GetStationInfo does not blank the services row or guests", async () => {

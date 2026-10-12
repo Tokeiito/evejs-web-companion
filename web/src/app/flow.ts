@@ -11,6 +11,7 @@ import {
   getStationGuests,
   getStationInfoCached,
   getStationItemBits,
+  getStructureGuests,
 } from "../bridge/stationPanel.ts";
 import { decodeCapacity, decodeContainer, decodeInventoryRows, decodeInventoryRowsChecked } from "../bridge/inventoryShip.ts";
 import { decodeShipBays, decodeShipBaysChecked } from "../bridge/shipBays.ts";
@@ -2292,6 +2293,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         .catch(() => {});
       return;
     }
+    if (method === "OnCharacterEnteredStructure" || method === "OnCharacterLeftStructure") {
+      // structureGuests.py 36 and 40: the client's own guests change at each. The page takes it as word that
+      // they changed and reads them again, once they have been read at all: the pilot's transport answers
+      // from what it keeps, changed as the notice said.
+      const structureID = store.station.get().online?.structureID;
+      if (structureID && store.station.get().guests.length > 0) {
+        void getStructureGuests(structureID, callOptions)
+          .then((guests) => {
+            if (guests !== null && store.station.get().online?.structureID === structureID) {
+              store.apply({ type: "station/guests", guests });
+            }
+          })
+          .catch(() => {});
+      }
+      return;
+    }
     if (method === "OnOfficeRentalChange") {
       // officeManager.py and invWindow.py: the client's inventory window draws
       // its tree again where the corporation is the session's. The page reads
@@ -2611,6 +2628,25 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         if (store.station.get().online?.structureID === structureID) {
           store.apply({ type: "station/structure-services", serviceIDs: null });
           store.apply({ type: "station/read-error", message: `Structure services are unreadable: ${errorWords(error)}` });
+        }
+      }
+      // dockedUI/guests.py (98 to 101): the lobby's guests panel asks for the structure's guests as it comes
+      // up. A read of its own: one that fails says so where the services' has said nothing, and leaves the
+      // services and the guests as they were. Through a connection that does not carry it there are none to
+      // show, and nothing is said.
+      try {
+        const guests = await getStructureGuests(structureID, callOptions);
+        if (guests !== null && store.station.get().online?.structureID === structureID) {
+          store.apply({ type: "station/guests", guests });
+        }
+      } catch (error) {
+        if (isSessionLost(error)) {
+          stopLiveStream();
+          store.apply({ type: "character/offline" });
+          throw error;
+        }
+        if (store.station.get().online?.structureID === structureID && store.station.get().readError === null) {
+          store.apply({ type: "station/read-error", message: `GetGuests: ${errorWords(error)}` });
         }
       }
       return;

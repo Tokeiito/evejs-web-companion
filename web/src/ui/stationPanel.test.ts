@@ -929,8 +929,8 @@ test("in a structure the rent button and the giving up are the lobby's, as in a 
   assert.deepEqual(officeButtons(inStructure({ canRent: false, canGiveUp: false, ownOffice: false })), []);
   assert.match(officesBlock(inStructure({ ownOffice: true })), /Your corporation has an office here\./);
   // The question before the giving up is drawn only after a press: its words name what the pilot is docked in.
-  assert.match(SOURCE, /Give up your corporation's office in this \{officePlace\}\?/);
-  assert.match(SOURCE, /const officePlace = \$derived\(\$station\.online\?\.structureID \? "structure" : "station"\);/);
+  assert.match(SOURCE, /Give up your corporation's office in this \{dockedPlace\}\?/);
+  assert.match(SOURCE, /const dockedPlace = \$derived\(\$station\.online\?\.structureID \? "structure" : "station"\);/);
 });
 
 test("a structure that has no offices for the pilot has no Offices block, and says its offices are unavailable", () => {
@@ -948,4 +948,50 @@ test("a station's Offices block is as it was: named for a station, with its coun
   assert.match(locationView(body, "services"), /<button[^>]*aria-label="List the offices in this station"/);
   assert.doesNotMatch(locationView(body, "services"), /this structure/);
   assert.deepEqual(officeButtons(body), ["Rent an office"]);
+});
+
+// --- The lobby's guests in a structure ----------------------------------------
+// The client's lobby has the same guests panel docked in a structure, fed by its structure guests service
+// (dockedUI/guests.py 98 to 101). The page shows a structure's guests once they are read: through a connection
+// that does not carry them there are none, and the panel has no block saying nobody is there.
+
+test("a structure's services list its guests once they are read, with the pilot marked as themselves, counted as in a structure", () => {
+  const body = locationView(panel({ structure: true, guests: true }), "services");
+  const services = visibleText(body);
+  assert.match(services, /Guests/);
+  assert.match(services, /2 in structure/);
+  assert.doesNotMatch(services, /in station/);
+  assert.match(services, /Farmer \(you\)/);
+  assert.match(services, /Another Pilot/);
+  assert.match(services, /Some Corporation/);
+  // The way to read them again is a real button, and the table keeps the reflow contract.
+  assert.match(body, /<button[^>]*aria-label="Refresh the guest list"/);
+  assert.match(body, /<table class="guests reflow">/);
+});
+
+test("a structure whose guests are not read has no Guests block, with offices or without", () => {
+  for (const scene of [{ structure: true }, { structure: true, structureOffices: false }] as const) {
+    const services = visibleText(locationView(panel(scene), "services"));
+    assert.doesNotMatch(services, /Guests|No guests reported yet|in structure/, JSON.stringify(scene));
+  }
+  // The offices are there all the same where the structure has them, and the guests where it has no offices.
+  assert.match(visibleText(locationView(panel({ structure: true }), "services")), /Offices/);
+  const guestsAlone = visibleText(locationView(panel({ structure: true, structureOffices: false, guests: true }), "services"));
+  assert.match(guestsAlone, /2 in structure/);
+  assert.doesNotMatch(guestsAlone, /Not listed yet/);
+});
+
+test("a station's Guests block is as it was: counted as in a station, and with none read it says so", () => {
+  assert.match(visibleText(locationView(panel({ guests: true }), "services")), /2 in station/);
+  const none = visibleText(locationView(panel(), "services"));
+  assert.match(none, /Guests/);
+  assert.match(none, /0 in station/);
+  assert.match(none, /No guests reported yet\./);
+});
+
+test("the guests come before the offices, in a station and in a structure", () => {
+  for (const scene of [{ guests: true }, { structure: true, guests: true }] as const) {
+    const services = visibleText(locationView(panel(scene), "services"));
+    assert.ok(services.indexOf("Guests") !== -1 && services.indexOf("Guests") < services.indexOf("Offices"), JSON.stringify(scene));
+  }
 });

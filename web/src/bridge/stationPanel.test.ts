@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import {
   decodeStationGuests,
   decodeStationItemBits,
+  decodeStructureGuests,
   isCachedMethodCallResult,
 } from "./stationPanel.ts";
 import type { JsonValue } from "./wire.ts";
@@ -89,4 +90,37 @@ test("isCachedMethodCallResult recognizes the retail cached envelope (rawstring 
   assert.equal(isCachedMethodCallResult({ type: "list", items: [] }), false);
   assert.equal(isCachedMethodCallResult(null), false);
   assert.equal(isCachedMethodCallResult([1, 2, 3]), false);
+});
+
+// structureGuests.GetGuests answers a dict: each guest's (corporationID, allianceID, factionID) by its character
+// (services/structure/structureGuests.py 25; dockedUI/guests.py 98 to 101). Tranquility's recording of a client
+// docked alone in its citadel has a dict of one, the corporation and two Nones. The numbers here are made up.
+
+test("decodeStructureGuests reads each guest's three by its character, and drops entries that name nobody", () => {
+  const wire = {
+    type: "dict",
+    entries: [
+      [140000003, [98000000, 99000000, 500001]],
+      [140000002, [98000000, null, null]],
+      ["not-a-charid", [1, 2, 3]],
+      [0, [1, 2, 3]],
+      "not-an-entry",
+      null,
+      // A guest whose three are not there is a guest still, with nothing known of it.
+      [140000005, null],
+      [140000006, [98000001]],
+    ],
+  } as unknown as JsonValue;
+  assert.deepEqual(decodeStructureGuests(wire), [
+    { characterID: 140000003, corporationID: 98000000, allianceID: 99000000, warFactionID: 500001 },
+    { characterID: 140000002, corporationID: 98000000, allianceID: null, warFactionID: null },
+    { characterID: 140000005, corporationID: null, allianceID: null, warFactionID: null },
+    { characterID: 140000006, corporationID: 98000001, allianceID: null, warFactionID: null },
+  ]);
+});
+
+test("decodeStructureGuests returns [] for what is no dict", () => {
+  for (const none of [null, [], "x", 7, { type: "dict" }, { type: "list", items: [[140000003, 98000000, null, null]] }, { entries: [[140000003, [98000000, null, null]]] }]) {
+    assert.deepEqual(decodeStructureGuests(none as unknown as JsonValue), [], JSON.stringify(none));
+  }
 });

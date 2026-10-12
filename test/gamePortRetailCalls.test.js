@@ -1729,7 +1729,22 @@ test("the game port carries the customs office's transfer, the station's offices
     "structureSettings.CharacterGetServices",
     // A structure's market tax for the pilot, which the client's market service asks before it names a rate there.
     "structureSettings.CharacterGetService",
+    // A structure's guests. The gateway's list has a station's guests and nothing of a structure's.
+    "structureGuests.GetGuests",
   ]);
+  // structureGuests.py 25: sm.RemoteSvc('structureGuests').GetGuests(session.structureid), by the service's name,
+  // with the structure the session is docked in and nothing else.
+  const IN_IT = { structureID: 1030000000002 };
+  const guests = retailForm("structureGuests", "GetGuests", [1030000000002], null, IN_IT);
+  assert.deepEqual([guests.status, guests.source, guests.args, guests.kwargs, guests.moniker, guests.proxy],
+    ["same", "eve/client/script/ui/services/structure/structureGuests.py:25", [1030000000002], null, false, false]);
+  for (const [args, kwargs, context] of [[[], null, IN_IT], [[1030000000002, 1], null, IN_IT], [[1030000000002], { all: true }, IN_IT], [["1030000000002"], null, IN_IT], [[null], null, IN_IT],
+    // Another structure's, a pilot in none, and a pilot in a station: the client asks of where it is docked alone.
+    [[1030000000003], null, IN_IT], [[1030000000002], null, {}], [[1030000000002], null, { structureID: null }], [[1030000000002], null, undefined], [[60003760], null, { stationID: 60003760, structureID: null }],
+    // Nothing named, of a pilot in no structure, is no structure's either.
+    [[null], null, { structureID: null }], [[undefined], null, {}]]) {
+    assert.equal(retailForm("structureGuests", "GetGuests", args, kwargs, context).status, "differs", JSON.stringify([args, kwargs, context]));
+  }
   // marketsvc.py 239: sm.RemoteSvc('structureSettings').CharacterGetService(structureID, structures.SERVICE_MARKET),
   // by the service's name, with the structure's ID and the market's (5): the client asks it of no other service.
   const tax = retailForm("structureSettings", "CharacterGetService", [1030000000002, 5], null);

@@ -369,6 +369,10 @@ const STRUCTURE_SERVICE_MARKET = 5;
 const ofAStructuresMarket = (args, kwargs) => (args.length === 2 && Number.isSafeInteger(args[0]) && args[0] > 0 && args[1] === STRUCTURE_SERVICE_MARKET && Object.keys(kwargs).length === 0
   ? {}
   : { status: "differs", note: "The client asks one thing of a structure's single service: its market's tax for the pilot, by the structure's ID and the market's (5), and nothing else." });
+/** structureGuests.py 25: GetGuests(session.structureid), the structure the session is docked in and nothing else. */
+const ofTheStructureDockedIn = (args, kwargs, context) => (args.length === 1 && Number.isSafeInteger(args[0]) && args[0] > 0 && args[0] === context.structureID && Object.keys(kwargs).length === 0
+  ? {}
+  : { status: "differs", note: "The client asks for the guests of the structure it is docked in, by its ID, and nothing else." });
 /** structureServices.py 35 and 56: CharacterGetServices(structureID), the one structure's ID and nothing else. */
 const ofOneStructure = (args, kwargs) => (args.length === 1 && Number.isSafeInteger(args[0]) && args[0] > 0 && Object.keys(kwargs).length === 0
   ? {}
@@ -560,6 +564,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // A structure's market tax for the pilot, which the client's market service asks before it names a broker's fee
   // rate there (marketsvc.py 239). The transport asks it for an order placed in a structure; no route does.
   "structureSettings.CharacterGetService",
+  // A structure's guests, which the client's lobby asks for as the pilot docks in one (structureGuests.py 25). The
+  // gateway's list has a station's guests and nothing of a structure's.
+  "structureGuests.GetGuests",
 ]);
 
 /**
@@ -1501,6 +1508,8 @@ const RETAIL_CALLS = Object.freeze({
     "GetReprocessingSvc().Reprocess(itemIDs, fromLocation, ownerID, outputLocationID, outputFlagID): the items a list, the output named always. Answers the items reprocessed and what they made, by type."),
   "structureSettings.CharacterGetService": judged("eve/client/script/ui/services/marketsvc.py:239", ofAStructuresMarket,
     "RemoteSvc('structureSettings').CharacterGetService(structureID, structures.SERVICE_MARKET): a structure's market tax for the pilot, a percentage, which the client's market service asks before it works out the broker's fee there, and keeps two minutes by the structure (GetMarketTaxAtStructure, Memoize(2), 237). The transport asks and keeps it so."),
+  "structureGuests.GetGuests": judged("eve/client/script/ui/services/structure/structureGuests.py:25", ofTheStructureDockedIn,
+    "RemoteSvc('structureGuests').GetGuests(session.structureid): asked once for the structure the pilot is docked in and kept, then changed at OnCharacterEnteredStructure and OnCharacterLeftStructure (36, 40), and let go when the session's structure changes (31). The transport keeps it so (pilotStructureGuests.js)."),
   "structureSettings.CharacterGetServices": judged("eve/client/script/ui/services/structure/structureServices.py:56", ofOneStructure,
     "RemoteSvc('structureSettings').CharacterGetServices(structureID): asked as the pilot docks in a structure and kept for it, and asked again when the server says its services changed (21 to 24, 48 to 52); asked each time for any other structure (35). The transport keeps it so."),
 

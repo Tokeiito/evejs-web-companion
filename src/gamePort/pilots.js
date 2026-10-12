@@ -67,6 +67,7 @@ const { createPilotSkills } = require("./pilotSkills");
 const { createPilotJournal } = require("./pilotJournal");
 const { createKeptReads } = require("./keptReads");
 const { createPilotStation } = require("./pilotStation");
+const { createPilotStructureGuests } = require("./pilotStructureGuests");
 const { CLIENT_STATE_NOTICES, statesAfter } = require("./crimewatchStates");
 const { isBridgeWritePair } = require("../bridgeCallPolicy");
 const { namedAfterCall, namedOnNotice, namedOnSessionChange } = require("./cachedCallsNamed");
@@ -255,6 +256,11 @@ const officesKeptAs = (method, form) => (method === "GetMyCorporationsOffices" &
 /** Whether a notice of an office (corporationID, officeID) is of the corporation the session is in (officeManager.py 72). */
 const ofOwnCorporation = (args, attributes) => wholeOf(Array.isArray(args) ? args[0] : null) === wholeOf(attributes.corpid);
 const STRUCTURE_SETTINGS = "structureSettings";
+/** The client's structure guests service, and its one read (structureGuests.GetGuests, 25). */
+const STRUCTURE_GUESTS = "structureGuests";
+const STRUCTURE_GUESTS_READ = "GetGuests";
+/** Whether an answer is a dict off the wire. */
+const isADict = (value) => Boolean(value && value.type === "dict" && Array.isArray(value.entries));
 /** The read the client's structure services service keeps (structureServices.onlineServices, structureServices.py 56). */
 const STRUCTURE_SERVICES = "CharacterGetServices";
 /** The read the client's market service asks a structure's market tax with (marketsvc.GetMarketTaxAtStructure, 239), and structures.SERVICE_MARKET. */
@@ -1375,6 +1381,9 @@ function createGamePortPilots({
       planetReads: new Map(),
       /** The station the pilot is docked in, as the client's station service keeps it; and its askings, one after another. */
       station: createPilotStation(),
+      /** The guests of the structure the pilot is docked in, as the client's structure guests service keeps them; and their askings, one after another. */
+      structureGuests: createPilotStructureGuests(),
+      structureGuestsWork: Promise.resolve(),
       /** The corporations with offices where the pilot is docked, as the station's office object answered (STATION_OFFICES). */
       stationOffices: createKeptReads(),
       /** crimewatchSvc's client states as last answered (CLIENT_STATES), and the pilot's security status (mySecurityStatus): undefined while none is had. */
@@ -1435,6 +1444,8 @@ function createGamePortPilots({
       entry.targets.feed(notification);
       // station/base.py: a pilot arrived in the station, or left it.
       entry.station.feed(notification);
+      // structureGuests (36, 40): a pilot entered the structure, or left it.
+      entry.structureGuests.feed(notification);
       // crimewatchSvc (222 to 288): a timer, a flag or an engagement changed. The client works the notice into what
       // it keeps and asks nothing; so here (crimewatchStates.js). States the notice cannot be worked into are let go.
       if (CLIENT_STATE_NOTICES.has(notification.method)) entry.clientStates.amend(CLIENT_STATES, (states) => statesAfter(states, notification.method, notification.args));
@@ -1485,9 +1496,12 @@ function createGamePortPilots({
       }
       // structureServices.OnSessionChanged (21 to 24): in another structure, or in none, the services kept are not
       // its; docked in one, its services are asked for. (The choosing of the character asks them itself.)
+      // structureGuests.DoSessionChanging (31): in another structure, or in none, the guests kept are not its.
+      // Docked in one, the lobby asks for its guests: after its services, as the recordings of a docking have them.
       if ("structureid" in changes) {
         entry.kept[STRUCTURE_SETTINGS].forget();
-        if (sessions.has(entry.handle)) structureServicesRead(entry);
+        entry.structureGuests.left();
+        if (sessions.has(entry.handle)) structureServicesRead(entry).then(() => structureGuestsAsked(entry));
       }
       // fleetSvc.ProcessSessionChange: in no fleet, there is no fleet's object.
       if ("fleetid" in changes) {
@@ -1595,6 +1609,8 @@ function createGamePortPilots({
       await lobbyRead(entry, { chosen: true });
       // structureServices: chosen in a structure, its services are asked for, as a client logging in docked in one asks.
       await structureServicesRead(entry);
+      // The lobby's guests panel: chosen in a structure, its guests are asked for, as a client logging in docked in one asks.
+      await structureGuestsAsked(entry);
       // bco_applications: the pilot's own applications, which the client asks for once.
       await corporationAsk(entry, "GetMyApplications").catch(() => {});
       // contracts.NeocomBlink: what of the pilot's contracts wants attention, asked once the notifications are ready.
@@ -1711,6 +1727,14 @@ function createGamePortPilots({
     // ever had, and each asking is sent.)
     if (STATION_KEPT.has(`${service}.${method}`) && form.args.length === 0 && form.kwargs === null) {
       const kept = await run(entry, service, method, () => stationRead(entry, service, method, form));
+      return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
+    }
+    // The guests of the structure a pilot is docked in are the client's structure guests service's to answer,
+    // where they are asked as the client asks them: of that structure, and with nothing else. (Another
+    // structure's the client never asks for: such an asking is sent as it came, each time.)
+    if (service === STRUCTURE_GUESTS && method === STRUCTURE_GUESTS_READ && form.args.length === 1 && form.kwargs === null
+      && positive(form.args[0]) !== null && positive(form.args[0]) === attribute(entry, "structureid")) {
+      const kept = await run(entry, service, method, () => structureGuestsRead(entry, form));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
     // The account's clone grade is the client's clone grade service's to answer, where it is asked as the client
@@ -2238,6 +2262,37 @@ function createGamePortPilots({
     const structureID = attribute(entry, "structureid");
     if (structureID === null) return Promise.resolve();
     return keptRead(entry, STRUCTURE_SETTINGS, STRUCTURE_SERVICES, shape(STRUCTURE_SETTINGS, STRUCTURE_SERVICES, [structureID], null, contextFor(entry))).then(() => {}, () => {});
+  }
+
+  /**
+   * structureGuests.GetGuests (21 to 26): the guests of the structure the pilot is docked in, answered from what is
+   * kept, and asked for, and noted, where none are. One reading at a time, so that two that find none kept ask
+   * once. An answer that is no dict is handed on as it came with nothing kept of it. (One that comes after the
+   * pilot has left the structure is kept as that structure's, and is never read: what is kept is let go at every
+   * change of the session's structure, the docking that would read it among them.)
+   */
+  function structureGuestsRead(entry, form) {
+    const reading = entry.structureGuestsWork.then(async () => {
+      const structureID = attribute(entry, "structureid");
+      if (entry.structureGuests.known(structureID)) return entry.structureGuests.read();
+      ledger.note(STRUCTURE_GUESTS, STRUCTURE_GUESTS_READ, form);
+      const answered = await byName(entry.session, STRUCTURE_GUESTS, STRUCTURE_GUESTS_READ, form);
+      if (isADict(answered)) entry.structureGuests.received(structureID, answered);
+      return answered;
+    });
+    entry.structureGuestsWork = reading.catch(() => {});
+    return reading;
+  }
+
+  /**
+   * The lobby's guests panel (dockedUI/guests.py 98 to 101), as a pilot docks in a structure and as its character
+   * is chosen in one: the structure's guests, asked for where none are kept. A pilot in no structure is asked
+   * none. It fails for itself: what could not be asked is asked for when it is next wanted.
+   */
+  function structureGuestsAsked(entry) {
+    const structureID = attribute(entry, "structureid");
+    if (structureID === null) return Promise.resolve();
+    return structureGuestsRead(entry, shape(STRUCTURE_GUESTS, STRUCTURE_GUESTS_READ, [structureID], null, contextFor(entry))).then(() => {}, () => {});
   }
 
   /** Every colony kept is forgotten, and asked for when it is next wanted. What a planet carries stays. */

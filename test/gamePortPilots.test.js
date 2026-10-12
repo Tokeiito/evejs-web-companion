@@ -9801,3 +9801,140 @@ test("the broker's fee rate in a structure is answered for whoever shows it as a
   assert.equal(await pilots.brokersFeeRate(A_STRUCTURE, WHO, handle), 0.025);
   assert.deepEqual([asked, taxAskings(session)], [1, [["CharacterGetService", [A_STRUCTURE, 5], null]]]);
 });
+
+// ── a structure's guests, as the client's structure guests service keeps them ────────────────────────────────
+//
+// eve/client/script/ui/services/structure/structureGuests.py, whole. Tranquility's recordings of a client that
+// docks in a citadel, and of one that logs in docked in one, each have structureGuests::GetGuests
+// args=(structureID,) after the structure's services, answered a dict of each guest's three by its character; and
+// OnCharacterEnteredStructure with (characterID, corporationID, None, None), OnCharacterLeftStructure with
+// (characterID,). The numbers here are made up.
+
+const STRUCTURE_GUESTS = "structureGuests.GetGuests";
+const GUESTS_PAIRS = { allowed: new Set([STRUCTURE_GUESTS, STRUCTURE_SERVICES]) };
+
+/**
+ * A pilot chosen docked in a structure, or one chosen as the stand-in's is (`chosenIn`: null). Every asking of a
+ * structure's guests is counted and listed, and answered a dict of the pilot alone, in a corporation that is the
+ * count, so that one answer is told from another.
+ */
+async function withStructureGuests({ chosenIn = STRUCTURE, refuses = () => false, answers: more = {} } = {}, pilotOptions = GUESTS_PAIRS) {
+  const asked = { times: 0, of: [] };
+  const answers = {
+    [STRUCTURE_GUESTS]: (args) => {
+      asked.times += 1;
+      asked.of.push(Number(args[0]));
+      if (refuses(asked.times)) throw refusedBy("NotNow");
+      return { type: "dict", entries: [[BigInt(PILOT), [asked.times, null, null]]] };
+    },
+    ...more,
+  };
+  let built = null;
+  if (chosenIn !== null) {
+    answers["charUnboundMgr.SelectCharacterID"] = (args) => {
+      const session = built.session;
+      Object.assign(session.attributes, { charid: BigInt(args[0]), corpid: 1000044, solarsystemid2: SYSTEM, solarsystemid: SYSTEM, shipid: SHIP, structureid: chosenIn });
+      session.change({ charid: [null, args[0]], corpid: [null, 1000044], solarsystemid: [null, SYSTEM], structureid: [null, chosenIn] });
+      return null;
+    };
+  }
+  built = build({ answers }, pilotOptions);
+  const outcome = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const { pilots, session } = built;
+  const handle = outcome.bridgeSessionID;
+  /** The guests of a structure as the page reads them: each character with its three. */
+  const guests = async (structureID = STRUCTURE) => (await pilots.callMethod("structureGuests", "GetGuests", [structureID], null, FIELDS, handle)).result.entries;
+  const moves = async (from, to) => {
+    if (to === null) delete session.attributes.structureid;
+    else session.attributes.structureid = to;
+    session.change({ structureid: [from, to] });
+    await settled();
+  };
+  return { pilots, session, handle, asked, guests, moves };
+}
+
+test("a structure's guests are asked once as its pilot is chosen docked in it, after its services, and answered from what is kept", async () => {
+  const { pilots, session, asked, guests } = await withStructureGuests();
+  // structureGuests.GetGuests (25): by name, with the structure the session is in.
+  assert.deepEqual([asked.times, asked.of], [1, [STRUCTURE]]);
+  assert.deepEqual(session.calls.filter((call) => call.service === "structureGuests").map((call) => [call.method, call.args, call.kwargs]), [["GetGuests", [STRUCTURE], null]]);
+  // As the recordings have it: after the structure's services, and among the lobby's reads.
+  assert.ok(session.sent.indexOf("GetGuests") > session.sent.indexOf("CharacterGetServices"));
+  assert.ok(session.sent.indexOf("GetGuests") < session.sent.indexOf("GetMyApplications"));
+  // The page's read is answered what is kept: a dict, each character with its three.
+  assert.deepEqual([await guests(), await guests(), await guests(), asked.times], [[[PILOT, [1, null, null]]], [[PILOT, [1, null, null]]], [[PILOT, [1, null, null]]], 1]);
+  assert.deepEqual(ledgerOf(pilots, STRUCTURE_GUESTS), [{ same: 1 }, "eve/client/script/ui/services/structure/structureGuests.py:25"]);
+});
+
+test("a pilot who enters the structure or leaves it changes the guests kept, and nothing is asked", async () => {
+  const { session, asked, guests } = await withStructureGuests();
+  session.notify("OnCharacterEnteredStructure", [140000003n, 98000000, 99000001, null]);
+  assert.deepEqual([await guests(), asked.times], [[[PILOT, [1, null, null]], [140000003, [98000000, 99000001, null]]], 1]);
+  session.notify("OnCharacterLeftStructure", [BigInt(PILOT)]);
+  assert.deepEqual([await guests(), asked.times], [[[140000003, [98000000, 99000001, null]]], 1]);
+  // A station's notices are not a structure's.
+  session.notify("OnCharNowInStation", [[140000004, 1000044, null, null]]);
+  session.notify("OnCharNoLongerInStation", [[140000003, 98000000, 99000001, null]]);
+  assert.deepEqual([await guests(), asked.times], [[[140000003, [98000000, 99000001, null]]], 1]);
+});
+
+test("the guests kept are let go in another structure or in none, and asked for as the pilot docks in one", async () => {
+  const { session, asked, guests, moves } = await withStructureGuests();
+  assert.equal((await guests()).length, 1);
+  // Another ship in the same structure: what is kept stays.
+  session.change({ shipid: [SHIP, 77] });
+  await settled();
+  assert.deepEqual([(await guests())[0][1][0], asked.times], [1, 1]);
+  // structureGuests.DoSessionChanging (31): another structure, and its guests are asked for as the pilot docks there.
+  await moves(STRUCTURE, OTHER_STRUCTURE);
+  assert.deepEqual([asked.times, asked.of.at(-1)], [2, OTHER_STRUCTURE]);
+  assert.deepEqual([(await guests(OTHER_STRUCTURE))[0][1][0], (await guests(OTHER_STRUCTURE))[0][1][0], asked.times], [2, 2, 2]);
+  // The first structure's are not the docked structure's now: asked each time, as it was sent, and nothing kept of it.
+  assert.deepEqual([(await guests(STRUCTURE))[0][1][0], (await guests(STRUCTURE))[0][1][0], asked.times, asked.of.slice(-2)], [3, 4, 4, [STRUCTURE, STRUCTURE]]);
+  assert.deepEqual([(await guests(OTHER_STRUCTURE))[0][1][0], asked.times], [2, 4]);
+  // Out of every structure nothing is asked for, nothing is kept, and a notice changes nothing.
+  await moves(OTHER_STRUCTURE, null);
+  assert.equal(asked.times, 4);
+  session.notify("OnCharacterEnteredStructure", [140000003, 98000000, null, null]);
+  assert.deepEqual([(await guests(OTHER_STRUCTURE)).length, asked.times], [1, 5]);
+  // Docked again: asked for as the pilot docks, once, and the page is answered that.
+  await moves(null, STRUCTURE);
+  assert.deepEqual([asked.times, asked.of.at(-1), (await guests())[0][1][0], asked.times], [6, STRUCTURE, 6, 6]);
+  // Out of the structure and into the same one: what was kept was let go at the leaving, and the docking asks.
+  await moves(STRUCTURE, null);
+  await moves(null, STRUCTURE);
+  assert.deepEqual([asked.times, (await guests())[0][1][0], asked.times], [7, 7, 7]);
+});
+
+test("a pilot chosen in a station, or in space, is asked no structure's guests, until it docks in one", async () => {
+  const docked = await withStructureGuests({ chosenIn: null });
+  assert.deepEqual([docked.asked.times, docked.session.attributes.stationid], [0, STATION]);
+  delete docked.session.attributes.stationid;
+  docked.session.change({ stationid: [STATION, null] });
+  await settled();
+  assert.equal(docked.asked.times, 0);
+  await docked.moves(null, STRUCTURE);
+  assert.deepEqual([docked.asked.times, docked.asked.of, (await docked.guests())[0][1][0], docked.asked.times], [1, [STRUCTURE], 1, 1]);
+  // As a pilot docks the services are asked first, then the guests.
+  assert.ok(docked.session.sent.lastIndexOf("GetGuests") > docked.session.sent.lastIndexOf("CharacterGetServices"));
+});
+
+test("a choosing does not fail for guests that could not be asked; an answer that is no dict is handed on and not kept; and the page's read is held to what the page may call", async () => {
+  // Refused as the character is chosen: the choosing goes on, nothing is kept, and the next read asks.
+  const refused = await withStructureGuests({ refuses: (times) => times === 1 });
+  assert.equal(refused.asked.times, 1);
+  assert.deepEqual([(await refused.guests())[0][1][0], (await refused.guests())[0][1][0], refused.asked.times], [2, 2, 2]);
+  // Two at once that find nothing kept ask once.
+  const twice = await withStructureGuests({ refuses: (times) => times === 1 });
+  assert.deepEqual([...(await Promise.all([twice.guests(), twice.guests()])).map((entries) => entries[0][1][0]), twice.asked.times], [2, 2, 2]);
+  // An answer that is no dict is what the page is answered, each time it asks.
+  let times = 0;
+  const odd = await withStructureGuests({ answers: { [STRUCTURE_GUESTS]: () => { times += 1; return null; } } });
+  const read = async () => (await odd.pilots.callMethod("structureGuests", "GetGuests", [STRUCTURE], null, FIELDS, odd.handle)).result;
+  assert.deepEqual([await read(), await read(), times], [null, null, 3]);
+  // The docking asks them whatever the page may ask: where the pair is not one the page may call, the page's read is refused.
+  const closed = await withStructureGuests({}, { allowed: new Set(["crimewatch.GetClientStates"]) });
+  assert.equal(closed.asked.times, 1);
+  await rejects(closed.pilots.callMethod("structureGuests", "GetGuests", [STRUCTURE], null, FIELDS, closed.handle), "CALL_NOT_ALLOWED");
+  assert.equal(closed.asked.times, 1);
+});
