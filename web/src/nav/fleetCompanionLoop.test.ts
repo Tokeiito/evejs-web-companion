@@ -8688,3 +8688,64 @@ test("sizing: once they are home, the lights go out against the same target", ()
     quantities: { [SZ_LIGHT_STACK]: 5 },
   });
 });
+
+// --- drone assist modules: the tracking link ---------------------------------
+
+const TRACKING_LINK = 920001;
+const WITH_LINK: FleetCompanionRequest = { ...REQUEST, droneAssistModuleIDs: [TRACKING_LINK] };
+
+test("the tracking link switches on once the combat drones are engaged", async () => {
+  const actions: FleetCompanionAction[] = [];
+  const companion = createFleetCompanion(makeDeps({
+    observe: async () => engagementObs("combat"),
+    issue: async (action) => { actions.push(action); },
+  }).deps);
+  companion.start(WITH_LINK);
+  for (let i = 0; i < 4; i += 1) await companion.tick();
+  const engagedAt = actions.findIndex((a) => a.kind === "engageDrones");
+  const litAt = actions.findIndex((a) => a.kind === "activate" && a.moduleID === TRACKING_LINK);
+  assert.ok(engagedAt >= 0, "the drones are engaged first");
+  assert.ok(litAt > engagedAt, "and the link comes on after the engage");
+  assert.equal(actions.filter((a) => a.kind === "activate" && a.moduleID === TRACKING_LINK).length, 1, "tried once");
+});
+
+test("a pilot with no tracking link fitted activates nothing for its drones", async () => {
+  const actions: FleetCompanionAction[] = [];
+  const companion = createFleetCompanion(makeDeps({
+    observe: async () => engagementObs("combat"),
+    issue: async (action) => { actions.push(action); },
+  }).deps);
+  companion.start(REQUEST);
+  for (let i = 0; i < 4; i += 1) await companion.tick();
+  assert.equal(actions.filter((a) => a.kind === "activate" && a.targetID === 0).length, 0);
+});
+
+test("the tracking link switches off when the drones have no fight", () => {
+  const quiet = obs({
+    snapshot: {
+      ...gridWithEntities([]),
+      ship: { position: { x: 0, y: 0, z: 0 }, radius: 0, mode: null, activeModuleIDs: [TRACKING_LINK] },
+    } as unknown as SpaceSnapshot,
+    hostileOnGrid: false,
+    myDroneIDs: [],
+    combatDroneIDs: [],
+  });
+  const decision = decideCompanionAction(WITH_LINK, quiet, { ...freshLadderMemory(), droneAssistLit: [TRACKING_LINK] });
+  assert.deepEqual(decision.action, { kind: "deactivate", moduleID: TRACKING_LINK });
+  assert.deepEqual(decision.memory.droneAssistLit, []);
+});
+
+test("a link already stopped is simply forgotten, and costs no tick", () => {
+  const quiet = obs({
+    snapshot: {
+      ...gridWithEntities([]),
+      ship: { position: { x: 0, y: 0, z: 0 }, radius: 0, mode: null, activeModuleIDs: [] },
+    } as unknown as SpaceSnapshot,
+    hostileOnGrid: false,
+    myDroneIDs: [],
+    combatDroneIDs: [],
+  });
+  const decision = decideCompanionAction(WITH_LINK, quiet, { ...freshLadderMemory(), droneAssistLit: [TRACKING_LINK] });
+  assert.notEqual(decision.action.kind, "deactivate");
+  assert.deepEqual(decision.memory.droneAssistLit, []);
+});
