@@ -1706,6 +1706,19 @@ Take these defaults, and list each under "For the operator" in the log so they c
   injectable `timers`, never by the tests' `sleep` (which is instant, and would put the
   call in every test's login). The stand-in session lists such a call apart, and the
   tests' transport is told not to make it; the tests of it hold the timers themselves.
+- **A number read back is named by where it was read.** A job's row carries the job's
+  total as its `cost`; the request carries the cost alone. Set beside each other they
+  looked like a server charging twice. Before writing that two numbers differ, write
+  for each the line it was read at and what that line says it is.
+- **A kind of account can be staged by the server's own setting.** Started with
+  `EVE_CLONE_GRADE=alpha` in its environment, EveJS answers every account's clone grade
+  as an alpha's; started again without, as its settings have it. Nothing on disk
+  changes. It showed a cost sent and held (an alpha's job refused), which an omega's
+  job, taken either way, could not.
+- **A stand-in that answers alike for every ID hides one refusal behind another.** A
+  test's lookup that made every type a blueprint had a price refused for a blueprint
+  among its own materials, and the breakage of the check it was written for lived.
+  Make a stand-in answer for the IDs meant, and nothing for the rest.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
