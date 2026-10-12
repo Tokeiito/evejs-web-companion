@@ -351,6 +351,9 @@ async function startTestServer(options = {}) {
     eveGatewayClient: options.gateway || fakeGateway(),
     webAuth: fakeAuth(),
     staticData: options.staticData || fakeStaticData(),
+    // A test whose pilot's ship change never settles brings its own clock for the wait.
+    transitionSleep: options.transitionSleep,
+    transitionNow: options.transitionNow,
     errorLogger() {},
   });
   const server = app.listen(0, "127.0.0.1");
@@ -375,7 +378,7 @@ async function apiRequest(baseUrl, path, options = {}) {
 
 async function docked(overrides, options = {}) {
   const gateway = fakeGateway(overrides);
-  const { baseUrl } = await startTestServer({ gateway, staticData: options.staticData });
+  const { baseUrl } = await startTestServer({ gateway, ...options });
   await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
   // Board the fixture ship so the ore-hold read has a ship to bind.
   await apiRequest(baseUrl, "/api/bridge/ship/board", {
@@ -476,12 +479,17 @@ test("a hull type the static data does not know still reads the whole ladder", a
 test("a hull type reported for a different ship than the bound one is not trusted", async () => {
   // Flight status names the ship it typed; while a ship change settles that
   // can be another ship than the one the read binds, so every hold is read.
+  //
+  // (The boarding that sets this up waits for the ship change to settle, which with this stand-in it never does.
+  // The wait is on a clock of the test's own, which each wait moves on: on the server's it was forty real seconds.)
+  let clockMs = 0;
   const { gateway, baseUrl } = await docked({
     async readFlightStatus() {
       return { flight: { docked: true, stationID: ORIGIN_STATION_ID, solarSystemID: ORIGIN_SYSTEM_ID,
         shipID: SHIP_ID + 1, shipTypeID: BARGE_TYPE_ID }, notifications: [] };
     },
-  }, { staticData: hullStaticData() });
+  }, { staticData: hullStaticData(), transitionNow: () => clockMs, transitionSleep: async (ms) => { clockMs += ms; } });
+  assert.ok(clockMs > 0, "the boarding waited for the ship to change");
   await apiRequest(baseUrl, "/api/bridge/ship/ore-hold");
   assert.equal(boundOf(gateway, "invbroker", "List").length, 5);
 });
@@ -826,6 +834,10 @@ test("the quote binds the STATION's refinery and reports the ISK tax separately"
   assert.equal(binds.length, 1);
   assert.equal(binds[0].method, "MachoBindObject");
   assert.deepEqual(binds[0].args, [ORIGIN_STATION_ID]);
+  // Asked with the items by their IDs. (Through the gateway nothing is listed for it first: the rows a client's
+  // quote goes with are the game port's to hand in.)
+  assert.deepEqual(boundOf(gateway, "reprocessingSvc", "GetQuotes").map((call) => [call.args, call.kwargs]), [[[[ORE_STACK_ID]], null]]);
+  assert.equal(boundOf(gateway, "invbroker", "List").length, 0);
 
   // The TAX is the headline: reprocessing debits it, so the page must be able
   // to show it BEFORE the player commits.
@@ -892,10 +904,10 @@ test("with confirm:true it reprocesses, and verifies by re-reading the hangar", 
 
   const runs = boundOf(gateway, "reprocessingSvc", "Reprocess");
   assert.equal(runs.length, 1);
-  // Reprocess(itemIDs, fromLocationID, ownerID, outputLocationID, outputFlagID)
-  assert.deepEqual(runs[0].args[0], [ORE_STACK_ID]);
-  assert.equal(runs[0].args[1], ORIGIN_STATION_ID, "the station is the source location");
-  assert.equal(runs[0].args[2], 7, "the character owns the output");
+  // Reprocess(itemIDs, fromLocationID, ownerID, outputLocationID, outputFlagID): the hangar is the source and
+  // the output, and the output is named (the client's window names that hangar, and never leaves it unnamed).
+  assert.deepEqual(runs[0].args, [[ORE_STACK_ID], ORIGIN_STATION_ID, 7, ORIGIN_STATION_ID, 4]);
+  assert.equal(runs[0].kwargs, null);
 });
 
 test("a reprocess the server ignores is reported as NOT processed", async () => {
@@ -1054,4 +1066,44 @@ test("a server REFUSAL is reported as compressed:false, never as a success", asy
   assert.equal(response.status, 200, "a refusal is an answer, not a transport failure");
   assert.equal(payload.compressed, false);
   assert.equal(payload.result, null);
+});
+
+test("a stack that is no whole number of portions stays in the hangar, the less, and is reprocessed all the same: what is reprocessed is what the server says it reprocessed", async () => {
+  // reprocessing/ui/controller.py 78 to 82: the window takes the first of Reprocess's two answers as what was
+  // reprocessed. Seen live 2026-10-12: 5,050 Veldspar reprocessed to 50, 10,000 Tritanium made, the tax taken, and
+  // the route's reading of the hangar for what was gone answering that nothing was reprocessed.
+  const OTHER_STACK_ID = ORE_STACK_ID + 1;
+  const { gateway, baseUrl } = await docked();
+  // Both stacks are in the hangar, and stay there: what is left over of each.
+  gateway.state.placement.set(ORE_STACK_ID, FLAG_HANGAR);
+  gateway.state.placement.set(OTHER_STACK_ID, FLAG_HANGAR);
+  gateway.state.inert.add("Reprocess");
+  const state = { answer: null };
+  const bound = gateway.callBoundMethod;
+  gateway.callBoundMethod = async (service, method, ...rest) => {
+    const outcome = await bound.call(gateway, service, method, ...rest);
+    return service === "reprocessingSvc" && method === "Reprocess" ? { ...outcome, result: state.answer } : outcome;
+  };
+  const answered = (...ids) => [{ type: "list", items: ids }, { type: "dict", entries: [[34, 1000]] }];
+  const reprocess = async (itemIDs = [ORE_STACK_ID, OTHER_STACK_ID]) => {
+    const lists = boundOf(gateway, "invbroker", "List").length;
+    const { payload } = await apiRequest(baseUrl, "/api/bridge/reprocessing/reprocess", { method: "POST", body: { itemIDs, confirm: true } });
+    return [payload.processed, payload.remaining, boundOf(gateway, "invbroker", "List").length - lists];
+  };
+  // The server names both: both are reprocessed, whatever is still in the hangar, and the hangar is not read again.
+  state.answer = answered(ORE_STACK_ID, OTHER_STACK_ID);
+  assert.deepEqual(await reprocess(), [[ORE_STACK_ID, OTHER_STACK_ID], [], 0]);
+  // It names one, or none: the rest were not reprocessed. One it names that was not asked for is nobody's.
+  state.answer = answered(OTHER_STACK_ID);
+  assert.deepEqual(await reprocess(), [[OTHER_STACK_ID], [ORE_STACK_ID], 0]);
+  state.answer = answered();
+  assert.deepEqual(await reprocess(), [[], [ORE_STACK_ID, OTHER_STACK_ID], 0]);
+  state.answer = answered(ORE_STACK_ID, 999);
+  assert.deepEqual(await reprocess([ORE_STACK_ID]), [[ORE_STACK_ID], [], 0]);
+  // An answer that does not say which: the hangar is read again, and a stack still in it is taken for not reprocessed.
+  for (const unsaid of [null, [{ type: "list", items: [ORE_STACK_ID] }], [{ type: "list", items: [ORE_STACK_ID] }, null, null], [[ORE_STACK_ID], null], [{ type: "list", items: ["x"] }, null], [{ type: "list", items: [0] }, null], [{ type: "dict", entries: [] }, null],
+    [{ type: "tuple", items: [ORE_STACK_ID] }, null], [{ type: "list", items: [String(ORE_STACK_ID)] }, null], [{ type: "list", items: [ORE_STACK_ID + 0.5] }, null]]) {
+    state.answer = unsaid;
+    assert.deepEqual(await reprocess(), [[], [ORE_STACK_ID, OTHER_STACK_ID], 1], JSON.stringify(unsaid));
+  }
 });

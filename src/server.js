@@ -21285,6 +21285,15 @@ app.get("/api/bridge/reprocessing/quote", requireAuth, async (req, res, next) =>
       return;
     }
     if (held.structureID) await assertDockedInventoryAccess(held, req.webSessionID, 4);
+    // The client's window asks its quote with each item's own row, which its inventory cache has from the hangar's
+    // listing (reprocessing/ui/quotes.py 20). On the game port the transport hands the rows in from the listings
+    // the pilot holds: the hangar's is read here, which is answered from what is held where it is. A listing that
+    // could not be read fails nothing: the quote is then asked for the items by their IDs alone.
+    if (heldOnTheGamePort(held)) {
+      await boundCall(held, req.webSessionID, hangarBindSpec(held), "List", [ITEM_FLAG_HANGAR], null).catch((error) => {
+        if (error && error.code === "SESSION_NOT_FOUND") throw error;
+      });
+    }
     const outcome = await boundCall(
       held,
       req.webSessionID,
@@ -21305,6 +21314,16 @@ app.get("/api/bridge/reprocessing/quote", requireAuth, async (req, res, next) =>
     next(error);
   }
 });
+
+/**
+ * The items a Reprocess answered as reprocessed: the first of the two it answers (the items, and what they made by
+ * type). Null where the answer is no such thing.
+ */
+function reprocessedItemIDs(result) {
+  const first = Array.isArray(result) && result.length === 2 ? result[0] : null;
+  const items = first && first.type === "list" && Array.isArray(first.items) ? first.items : null;
+  return items !== null && items.every((id) => Number.isSafeInteger(id) && id > 0) ? new Set(items) : null;
+}
 
 // ⚠ REPROCESS CONSUMES THE INPUT STACKS AND CHARGES ISK TAX. It is the only
 // destructive route in the mining loop, so it refuses outright unless the caller
@@ -21349,20 +21368,35 @@ app.post("/api/bridge/reprocessing/reprocess", requireAuth, async (req, res, nex
     }
     if (held.structureID) await assertDockedInventoryAccess(held, req.webSessionID, 4);
     const spec = reprocessingBindSpec(held);
-    // Reprocess(itemIDs, fromLocationID, ownerID, outputLocationID?, outputFlagID?)
-    // — the station hangar is both the source and the destination, so the
-    // minerals land where the ore was.
+    // Reprocess(itemIDs, fromLocationID, ownerID, outputLocationID, outputFlagID): the hangar where the pilot is
+    // docked is both the source and the output, so the minerals land where the ore was. The output is named, as
+    // the client's window names it (its own choice is that hangar: reprocessingWnd.py 344 to 367); the client
+    // never leaves it unnamed.
     const outcome = await boundCall(
       held,
       req.webSessionID,
       spec,
       "Reprocess",
-      [itemIDs, inventoryLocationID(held), held.characterID || 0, null, null],
+      [itemIDs, inventoryLocationID(held), held.characterID || 0, inventoryLocationID(held), ITEM_FLAG_HANGAR],
       null,
     );
-    // A 200 is not proof: re-read the hangar and report which stacks are
-    // actually gone. A stack still present was NOT reprocessed, whatever the
-    // call answered.
+    // The server answers which items it reprocessed, and what they made; the client's window goes by the first
+    // (reprocessing/ui/controller.py 78 to 82). A stack that is no whole number of portions stays in the hangar,
+    // the less, and is reprocessed all the same: seen live 2026-10-12, 5,050 Veldspar reprocessed to 50, which a
+    // reading of the hangar for what is gone took for not reprocessed.
+    const said = reprocessedItemIDs(outcome.result);
+    if (said !== null) {
+      res.json({
+        ok: true,
+        requested: itemIDs,
+        processed: itemIDs.filter((id) => said.has(id)),
+        remaining: itemIDs.filter((id) => !said.has(id)),
+        notifications: outcome.notifications,
+      });
+      return;
+    }
+    // An answer that does not say: re-read the hangar and report which stacks are
+    // actually gone. A stack still present is then taken for not reprocessed.
     let stillPresent = null;
     try {
       const listed = await boundCall(

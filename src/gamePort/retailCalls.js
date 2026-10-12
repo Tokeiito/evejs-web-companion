@@ -364,6 +364,44 @@ const aSlashCommand = (args, kwargs) => (args.length === 1 && typeof args[0] ===
 const ofOneStructure = (args, kwargs) => (args.length === 1 && Number.isSafeInteger(args[0]) && args[0] > 0 && Object.keys(kwargs).length === 0
   ? {}
   : { status: "differs", note: "The client asks for one structure's services, by its ID, and nothing else." });
+/**
+ * quotes.GetQuotes (reprocessing/ui/quotes.py 20): GetReprocessingSvc().GetQuotes(itemIDs, activeShipID). What the
+ * window hands in for the items is its own dict of them, each item's row by the item's ID (inputItemAdder.py 17 to
+ * 26 and 94), the rows being the inventory cache's as the server listed them; and the ship is the one the pilot is
+ * in (eveCfg.GetActiveShip, by reprocessingWnd.py 749). A call that names the items alone is given each one's row
+ * from what the pilot's own listings hold, and the ship from its session. Where a listing has not an item, the
+ * items go named alone, and the call is said not to be the client's.
+ */
+const quotingReprocessing = (args, kwargs, context) => {
+  if (!(args.length === 1 && itemIDsListed(args[0]) && Object.keys(kwargs).length === 0)) {
+    return { status: "differs", note: "The client asks a quote for the items in its window, each by its own row, and names the ship the pilot is in." };
+  }
+  const itemIDs = [...new Set(args[0])];
+  const rows = itemIDs.map((itemID) => (context && context.itemRow ? context.itemRow(itemID) : null));
+  if (rows.some((row) => row === null)) {
+    return { status: "differs", note: "The client hands the quote each item's own row. An item of this call is in no listing the pilot holds, and the items go named alone." };
+  }
+  return { args: [dict(itemIDs.map((itemID, index) => [itemID, rows[index]])), context.shipID ?? null], status: "reshaped" };
+};
+/**
+ * itemReprocessor.Reprocess and _DoReprocess (reprocessing/ui/itemReprocessor.py 18 to 44 and 71):
+ * GetReprocessingSvc().Reprocess(itemIDs, fromLocation, ownerID, outputLocationID, outputFlagID). The items are a
+ * list, all of one place. **The output is never left unnamed.** The window's own choice is the hangar of where the
+ * pilot is docked (reprocessingWnd.py 344 to 367: the place and the hangar's flag), with the pilot its owner; with
+ * "the input's place" chosen the reprocessor names the first item's place, owner and flag itself (31 to 35); a
+ * corporation's division has the corporation its owner; and for an output anywhere else the owner is None.
+ */
+const reprocessingItems = (args, kwargs) => {
+  const whole = (value) => Number.isSafeInteger(value) && value > 0;
+  const [itemIDs, from, owner, outputLocation, outputFlag] = args;
+  if (!(args.length === 5 && itemIDsListed(itemIDs) && whole(from) && (owner === null || whole(owner)) && Object.keys(kwargs).length === 0)) {
+    return { status: "differs", note: "The client reprocesses a list of items of one place, for an owner or none, to a place and a flag, and nothing else." };
+  }
+  if (!(whole(outputLocation) && whole(outputFlag))) {
+    return { status: "differs", note: "The client never leaves the output unnamed: its window names the hangar of where the pilot is docked, or the reprocessor the first item's own place and flag." };
+  }
+  return { args: [list(itemIDs), from, owner, outputLocation, outputFlag], status: "reshaped" };
+};
 const reshaped = (source, shape, note) => Object.freeze({ status: "reshaped", source, shape, note });
 const differs = (source, note) => Object.freeze({ status: "differs", source, note });
 /** Same or differs, depending on what the call carries: `judge` answers { status, note }. */
@@ -401,6 +439,10 @@ const MONIKER_SERVICES = Object.freeze({
   // repair.GetRemoteRepairMgr (base_repairshop.py 45 to 60): Moniker('repairSvc', (the dockable place, the place,
   // the place's group)), made anew at each use. Nothing of the repair service is asked by its name.
   repairSvc: new Set(),
+  // reprocessing.GetReprocessingSvc (reprocessingsvc.py 64 to 69): eveMoniker.GetReprocessingManager(), which is
+  // Moniker('reprocessingSvc', session.structureid or session.stationid), kept until the character, the station or
+  // the structure changes. Nothing of the reprocessing service is asked by its name.
+  reprocessingSvc: new Set(),
 });
 /**
  * Monikers for something a session may not have, by what it is in the call's context: the client cannot make one
@@ -427,6 +469,11 @@ const MONIKER_NEEDS = Object.freeze({
     has: "dockedAt",
     source: "eve/client/script/ui/station/repairshop/base_repairshop.py:56",
     note: "The client asks this on a moniker for the station or structure its session is docked in. In space its repair service raises instead of making one, and does not ask.",
+  }),
+  reprocessingSvc: Object.freeze({
+    has: "dockedAt",
+    source: "eve/common/script/net/eveMoniker.py:88",
+    note: "The client asks this on a moniker for the station or structure its session is docked in. In space the moniker's maker raises instead, and nothing is asked.",
   }),
   entity: Object.freeze({
     has: "solarSystemID",
@@ -1435,6 +1482,11 @@ const RETAIL_CALLS = Object.freeze({
   "station.GetGuests": same("eve/client/script/ui/station/base.py:103", "RemoteSvc('station').GetGuests(), no arguments, once for a station and kept, then changed at OnCharNowInStation and OnCharNoLongerInStation (86, 93); the transport keeps it so (pilotStation.js)"),
   "map.GetStationInfo": same("eve/client/script/ui/services/uisvc.py:246", "RemoteSvc('map').GetStationInfo(), no arguments"),
   "structureDirectory.GetStructureInfo": same("eve/client/script/ui/services/structure/structureDirectory.py:38", "RemoteSvc('structureDirectory').GetStructureInfo(structureID), kept by structure"),
+  // ── the reprocessing plant (the reprocessing service's Moniker) ───────────
+  "reprocessingSvc.GetQuotes": judged("reprocessing/ui/quotes.py:20", quotingReprocessing,
+    "GetReprocessingSvc().GetQuotes(itemIDs, activeShipID): the window's own dict of its items, each row by its item's ID, and the ship the pilot is in. Answers the place's tax, its efficiency by type, and each item's quote."),
+  "reprocessingSvc.Reprocess": judged("reprocessing/ui/itemReprocessor.py:71", reprocessingItems,
+    "GetReprocessingSvc().Reprocess(itemIDs, fromLocation, ownerID, outputLocationID, outputFlagID): the items a list, the output named always. Answers the items reprocessed and what they made, by type."),
   "structureSettings.CharacterGetServices": judged("eve/client/script/ui/services/structure/structureServices.py:56", ofOneStructure,
     "RemoteSvc('structureSettings').CharacterGetServices(structureID): asked as the pilot docks in a structure and kept for it, and asked again when the server says its services changed (21 to 24, 48 to 52); asked each time for any other structure (35). The transport keeps it so."),
 

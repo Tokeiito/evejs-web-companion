@@ -3297,6 +3297,24 @@ function createGamePortPilots({
     return null;
   }
 
+  /**
+   * An item's row as the client's inventory cache would have it, from a listing the pilot holds
+   * (INVENTORY_LISTINGS): the packed row the server listed, its text read as text, which the codec writes again as
+   * the bytes it was read from. Null for an item no listing held has, and for a row that is no packed row.
+   */
+  function rowOfItem(entry, itemID) {
+    const wanted = positive(itemID);
+    if (wanted === null) return null;
+    for (const listing of entry.listings.answers()) {
+      for (const row of itemsOf(listing)) {
+        const fields = rowFields(row);
+        if (fields === null || positive(fields.itemID) !== wanted) continue;
+        return row && row.type === "packedrow" ? wireToBridgeJson(row) : null;
+      }
+    }
+    return null;
+  }
+
   /** What only the pilot's own client would know, for a call to be sent as that client sends it (retailCalls.js). */
   function contextFor(entry) {
     const typeOf = (itemID) => entry.dogma.typeOf(positive(itemID) ?? 0);
@@ -3320,6 +3338,8 @@ function createGamePortPilots({
       },
       // invCache: the item as a listing has it.
       stackSize: (itemID) => stackSizeOf(entry, itemID),
+      // invCache: the item's own row, as a listing has it.
+      itemRow: (itemID) => rowOfItem(entry, itemID),
       // marketQuote.GetMyOrders: one of the pilot's own orders, as its row has it.
       ownOrder: (orderID) => ownOrderOf(entry, orderID),
       // marketQuote.GetBrokersFeeCommissionFromStationID: the rate the client names with an order there.

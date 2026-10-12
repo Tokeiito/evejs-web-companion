@@ -9623,3 +9623,61 @@ test("a choosing does not fail for a structure's services that could not be aske
   await rejects(closed.pilots.callMethod("structureSettings", "CharacterGetServices", [STRUCTURE], null, FIELDS, closed.handle), "CALL_NOT_ALLOWED");
   assert.equal(closed.asked.times, 1);
 });
+
+// ── the reprocessing plant's quote, asked with each item's own row ────────────────────────────────────────────
+//
+// reprocessing/ui/quotes.py 20: GetReprocessingSvc().GetQuotes(itemIDs, activeShipID), the items being the window's
+// own dict of them, each row by its item's ID. The rows are the inventory cache's. The BFF's route names the items
+// alone: the transport hands each one's row in from what the pilot's listings hold, read as the server listed it.
+
+const PLANT_PAIRS = new Set([...LIST_PAIRS, "reprocessingSvc.MachoBindObject", "reprocessingSvc.GetQuotes", "reprocessingSvc.Reprocess"]);
+
+test("the reprocessing plant's quote goes with each item's own row from what the pilot's listings hold, and with the ship; its reprocessing with the items a list", async () => {
+  const rows = (...items) => ({ type: "list", items: items.map((fields) => ({ type: "packedrow", header: Buffer.from("a descriptor"), columns: [], fields, rleData: Buffer.from([1, 2, 3]) })) });
+  const held = rows({ itemID: 501, typeID: 1230, quantity: 5000, flagID: 4 }, { itemID: 502, typeID: 1228, quantity: 300, flagID: 4 }, { itemID: 9988400109051n, typeID: 34, quantity: 7, flagID: 4 });
+  // (And in the same listing something that is no row at all, and a row that is no packed row: neither is one the codec could write.)
+  held.items.unshift(7, { fields: { itemID: 503, typeID: 1224, quantity: 9, flagID: 4 } });
+  const { pilots, session, handle } = await selected({ answers: {
+    "bound:List": () => held,
+    "bound:GetQuotes": () => [0.05, { type: "dict", entries: [] }, { type: "dict", entries: [] }],
+    "bound:Reprocess": () => [{ type: "list", items: [501] }, { type: "dict", entries: [] }],
+  } }, { allowed: PLANT_PAIRS });
+  const hangar = (await pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, handle)).boundHandle;
+  const plant = (await pilots.bindObject("reprocessingSvc", "MachoBindObject", [STATION], null, WHO, handle)).boundHandle;
+  const listed = () => pilots.callBoundMethod("invbroker", "List", [4], null, WHO, handle, hangar);
+  const quoted = async (itemIDs) => {
+    await pilots.callBoundMethod("reprocessingSvc", "GetQuotes", [itemIDs], null, WHO, handle, plant);
+    return session.boundCalls.findLast((call) => call.method === "GetQuotes").args;
+  };
+  // Nothing listed yet: the items are in no listing held, and go named alone.
+  assert.deepEqual(await quoted([501, 502]), [[501, 502]]);
+  // The plant is the reprocessing service's Moniker for where the pilot is docked, bound with its first call.
+  assert.deepEqual(session.binds.filter((bind) => bind.service === "reprocessingSvc"), [{ service: "reprocessingSvc", params: STATION }]);
+  assert.equal(session.carried.at(-1), "GetQuotes");
+
+  await listed();
+  const [items, ship] = await quoted([501, 502, 9988400109051]);
+  assert.equal(ship, SHIP);
+  assert.equal(items.type, "dict");
+  // Each row as the server listed it, its text read as text and its packed bytes left: the codec writes it again from its fields.
+  assert.deepEqual(items.entries.map(([itemID, row]) => [itemID, row.type, row.header, row.fields.typeID, row.fields.quantity, "rleData" in row]),
+    [[501, "packedrow", "a descriptor", 1230, 5000, false], [502, "packedrow", "a descriptor", 1228, 300, false], [9988400109051, "packedrow", "a descriptor", 34, 7, false]]);
+  assert.equal(items.entries[2][1].fields.itemID, 9988400109051);
+  // The Moniker is kept: no second bind.
+  assert.equal(session.binds.filter((bind) => bind.service === "reprocessingSvc").length, 1);
+  // One item in no listing held: every item goes named alone.
+  assert.deepEqual(await quoted([501, 777]), [[501, 777]]);
+  // Nor is an item whose row is no packed row one the quote can be handed the row of.
+  assert.deepEqual(await quoted([503]), [[503]]);
+  // The server's word of an item's change lets the listings go, and the rows with them, until they are listed again.
+  session.notify("OnItemChange", [1, 2]);
+  assert.deepEqual(await quoted([501]), [[501]]);
+  await listed();
+  assert.equal((await quoted([501]))[0].type, "dict");
+  assert.deepEqual(ledgerOf(pilots, "reprocessingSvc.GetQuotes"), [{ reshaped: 2, differs: 4 }, "reprocessing/ui/quotes.py:20"]);
+
+  // The reprocessing: the items a list, the rest as the route names it.
+  await pilots.callBoundMethod("reprocessingSvc", "Reprocess", [[501], STATION, PILOT, STATION, 4], null, WHO, handle, plant);
+  assert.deepEqual(session.boundCalls.findLast((call) => call.method === "Reprocess"), { objectID: session.boundCalls.findLast((call) => call.method === "GetQuotes").objectID, method: "Reprocess", args: [{ type: "list", items: [501] }, STATION, PILOT, STATION, 4], kwargs: null });
+  assert.deepEqual(ledgerOf(pilots, "reprocessingSvc.Reprocess"), [{ reshaped: 1 }, "reprocessing/ui/itemReprocessor.py:71"]);
+});

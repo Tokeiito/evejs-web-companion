@@ -328,6 +328,7 @@ test("everything of ship, dogmaIM, corpRegistry and the skill handler is made on
     officeManager: ["GetMyCorporationsOffices"],
     // Nor the repair shop: each use makes a moniker for where the session is docked and calls it.
     repairSvc: [],
+    reprocessingSvc: [],
   });
   assert.deepEqual([madeOnMoniker("corpRegistry", "GetCorporation"), madeOnMoniker("corpRegistry", "AddBulletin"), madeOnMoniker("corpRegistry", "MachoBindObject")], [true, true, false]);
   assert.deepEqual([madeOnMoniker("ship", "Undock"), madeOnMoniker("dogmaIM", "GetTargets"), madeOnMoniker("ship", "SomethingNobodyRead"), madeOnMoniker("dogmaIM", "Overload")], [true, true, true, true]);
@@ -2988,4 +2989,65 @@ test("an invention's job has the empty place of its optional material under None
   const made = retailForm("industryManager", "InstallJob", [JOB_HELD({ activityID: 8, materials: { 20172: 6, None: 3 } })], null, {});
   const written = Buffer.from(encodeClient(Object.fromEntries(made.args[0].entries).materials)).toString("hex");
   assert.equal(written, "7e000000001602060605cc4e060301");
+});
+
+test("the reprocessing plant's quote and its reprocessing are the client's on the plant's Moniker: each item's row by its ID with the ship, and an output that is named", () => {
+  // reprocessing/ui/quotes.py 20 and itemReprocessor.py 71, each on GetReprocessingSvc(), the Moniker the client's
+  // reprocessing service keeps for where the session is docked (reprocessingsvc.py 64 to 69). No Tranquility
+  // recording has either call.
+  const QUOTES = "reprocessing/ui/quotes.py:20";
+  const REPROCESS = "reprocessing/ui/itemReprocessor.py:71";
+  const row = (itemID) => ({ type: "packedrow", header: "a descriptor", columns: [], fields: { itemID, typeID: 1230 }, values: [] });
+  // The pilot holds a listing with every item but 77.
+  const DOCKED = { dockedAt: 60003760, structureID: null, shipID: 9001, itemRow: (itemID) => (itemID === 77 ? null : row(itemID)) };
+  const ask = (method, args, kwargs = null, context = DOCKED) => { const made = retailForm("reprocessingSvc", method, args, kwargs, context); return [made.status, made.args, made.kwargs, made.moniker, made.source]; };
+  const listed = (...ids) => ({ type: "list", items: ids });
+
+  // The quote: the window's dict of its items, each row by its item's ID, and the ship the pilot is in.
+  assert.deepEqual(ask("GetQuotes", [[5000, 5001]]), ["reshaped", [{ type: "dict", entries: [[5000, row(5000)], [5001, row(5001)]] }, 9001], null, true, QUOTES]);
+  // An item named twice is in the dict the once; a pilot in no ship names None.
+  assert.deepEqual(ask("GetQuotes", [[5000, 5000, 5001]])[1], [{ type: "dict", entries: [[5000, row(5000)], [5001, row(5001)]] }, 9001]);
+  assert.deepEqual(ask("GetQuotes", [[5000]], null, { ...DOCKED, shipID: null })[1], [{ type: "dict", entries: [[5000, row(5000)]] }, null]);
+  // An item in no listing the pilot holds: every item goes named alone, and the call is said not to be the client's.
+  for (const context of [DOCKED, { dockedAt: 60003760, shipID: 9001 }, { dockedAt: 60003760, shipID: 9001, itemRow: () => null }]) {
+    const unlisted = retailForm("reprocessingSvc", "GetQuotes", [[5000, 77]], null, context);
+    assert.deepEqual([unlisted.status, unlisted.args, unlisted.kwargs, unlisted.moniker], ["differs", [[5000, 77]], null, true]);
+    assert.match(unlisted.note, /in no listing the pilot holds/);
+  }
+  for (const [args, kwargs, why] of [
+    [[], null, "nothing"], [[[]], null, "no items"], [[[5000, 0]], null, "an item that is none"], [[["5000"]], null, "an item as text"], [[5000], null, "one item and no list"],
+    [[[5000], 9001], null, "a ship named already"], [[[5000]], { activeShipID: 9001 }, "a keyword"],
+  ]) {
+    const made = retailForm("reprocessingSvc", "GetQuotes", args, kwargs, DOCKED);
+    assert.deepEqual([made.status, made.args], ["differs", args], why);
+    assert.match(made.note, /each by its own row/, why);
+  }
+
+  // The reprocessing: the items a list, of one place, for an owner, to a place and a flag.
+  assert.deepEqual(ask("Reprocess", [[5000, 5001], 60003760, 7, 60003760, 4]), ["reshaped", [listed(5000, 5001), 60003760, 7, 60003760, 4], null, true, REPROCESS]);
+  // To a corporation's division the corporation is the owner; to anywhere else there is none (36 to 41).
+  assert.deepEqual(ask("Reprocess", [[5000], 60003760, 98000001, 1030000000077, 116])[1], [listed(5000), 60003760, 98000001, 1030000000077, 116]);
+  assert.deepEqual(ask("Reprocess", [[5000], 60003760, null, 1030000000078, 5])[0], "reshaped");
+  // The output is never left unnamed.
+  for (const [outputLocation, outputFlag] of [[null, null], [60003760, null], [null, 4], [0, 4], [60003760, 0], ["60003760", 4]]) {
+    const made = retailForm("reprocessingSvc", "Reprocess", [[5000], 60003760, 7, outputLocation, outputFlag], null, DOCKED);
+    assert.deepEqual([made.status, made.args], ["differs", [[5000], 60003760, 7, outputLocation, outputFlag]], JSON.stringify([outputLocation, outputFlag]));
+    assert.match(made.note, /never leaves the output unnamed/);
+  }
+  for (const [args, kwargs, why] of [
+    [[[5000], 60003760, 7], null, "no output at all"], [[[], 60003760, 7, 60003760, 4], null, "no items"], [[5000, 60003760, 7, 60003760, 4], null, "one item and no list"],
+    [[[5000], null, 7, 60003760, 4], null, "no place they are of"], [[[5000], 60003760, 0, 60003760, 4], null, "an owner of nought"], [[[5000], 60003760, "7", 60003760, 4], null, "an owner as text"],
+    [[[5000], 60003760, 7, 60003760, 4, true], null, "a sixth argument"], [[[5000], 60003760, 7, 60003760, 4], { confirm: true }, "a keyword"],
+  ]) {
+    const made = retailForm("reprocessingSvc", "Reprocess", args, kwargs, DOCKED);
+    assert.deepEqual([made.status, made.args], ["differs", args], why);
+    assert.match(made.note, /a list of items of one place/, why);
+  }
+
+  // The Moniker is for where the session is docked: in space the client cannot make one, and asks neither.
+  for (const [method, args] of [["GetQuotes", [[5000]]], ["Reprocess", [[5000], 60003760, 7, 60003760, 4]]]) {
+    const inSpace = retailForm("reprocessingSvc", method, args, null, { ...DOCKED, dockedAt: null });
+    assert.deepEqual([inSpace.status, inSpace.args, inSpace.moniker, inSpace.source], ["web-only", args, false, "eve/common/script/net/eveMoniker.py:88"], method);
+  }
+  assert.deepEqual([madeOnMoniker("reprocessingSvc", "GetQuotes"), madeOnMoniker("reprocessingSvc", "Reprocess"), madeOnMoniker("reprocessingSvc", "MachoBindObject")], [true, true, false]);
 });
