@@ -716,6 +716,23 @@ export function brokerFeeWords(fee: BrokerFeeEstimate | null): { heading: string
   };
 }
 
+/**
+ * What a known rate is made of, for the sentence under the fee. In a station it is the pilot's own, from its
+ * Broker Relations and the standings the station's owner and its faction have to it. In a structure it is the
+ * structure's own market tax (marketsvc.py 229 to 242: no skill is taken off there; 745: no standing counts for an
+ * owner that is no NPC), and a structure's market takes the SCC's surcharge on an order as well (marketsvc.py
+ * 182), which the page does not show.
+ */
+export function brokerFeeBasisWords(inStructure: boolean): { rate: string; madeOf: string; also: string } {
+  return inStructure
+    ? {
+        rate: "this structure's own rate",
+        madeOf: "which its owner sets; your skills and standings change nothing here",
+        also: " A structure's market also takes the SCC's surcharge on an order, which is not shown here.",
+      }
+    : { rate: "your own rate", madeOf: "from your Broker Relations skill and how this station's owner regards you", also: "" };
+}
+
 // --- Money formatting -------------------------------------------------------
 
 /**

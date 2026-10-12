@@ -3295,6 +3295,8 @@ async function marketRead({ transport = "gameport", rate = async () => 0.0295803
 test("on the game port the Market read says the broker's fee rate the pilot pays where it is docked", async () => {
   const { payload, asked } = await marketRead();
   assert.equal(payload.brokersFeeRate, 0.0295803);
+  // Where the pilot is docked: a station, and no structure.
+  assert.deepEqual([payload.stationID, payload.structureID], [SELECT_SESSION_ECHO.stationID, null]);
   assert.deepEqual(asked, [{ stationID: SELECT_SESSION_ECHO.stationID, sessionFields: { userid: 4 }, bridgeSessionID: GAME_PORT_SESSION_ID }]);
   // A rate of nought is a rate; one that cannot be worked out, or the working out failing, is none, and the read stands.
   assert.equal((await marketRead({ rate: async () => 0 })).payload.brokersFeeRate, 0);

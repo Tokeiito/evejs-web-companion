@@ -360,6 +360,15 @@ const repairingInAStructure = (args, kwargs, context) => {
 const aSlashCommand = (args, kwargs) => (args.length === 1 && typeof args[0] === "string" && args[0] !== "" && Object.keys(kwargs).length === 0
   ? {}
   : { status: "differs", note: "The client sends the command's one line of text, and nothing else." });
+/** structures.SERVICE_MARKET. */
+const STRUCTURE_SERVICE_MARKET = 5;
+/**
+ * marketsvc.py 239: CharacterGetService(structureID, structures.SERVICE_MARKET), the structure's ID and the market's,
+ * and nothing else. Nothing of the client asks it of another service.
+ */
+const ofAStructuresMarket = (args, kwargs) => (args.length === 2 && Number.isSafeInteger(args[0]) && args[0] > 0 && args[1] === STRUCTURE_SERVICE_MARKET && Object.keys(kwargs).length === 0
+  ? {}
+  : { status: "differs", note: "The client asks one thing of a structure's single service: its market's tax for the pilot, by the structure's ID and the market's (5), and nothing else." });
 /** structureServices.py 35 and 56: CharacterGetServices(structureID), the one structure's ID and nothing else. */
 const ofOneStructure = (args, kwargs) => (args.length === 1 && Number.isSafeInteger(args[0]) && args[0] > 0 && Object.keys(kwargs).length === 0
   ? {}
@@ -548,6 +557,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // in one (structureServices.py 56). The gateway's list has nothing of the structure settings': through the
   // gateway a structure's services are not to be had, and what stands on them is refused (stockCompatibility.js).
   "structureSettings.CharacterGetServices",
+  // A structure's market tax for the pilot, which the client's market service asks before it names a broker's fee
+  // rate there (marketsvc.py 239). The transport asks it for an order placed in a structure; no route does.
+  "structureSettings.CharacterGetService",
 ]);
 
 /**
@@ -1487,6 +1499,8 @@ const RETAIL_CALLS = Object.freeze({
     "GetReprocessingSvc().GetQuotes(itemIDs, activeShipID): the window's own dict of its items, each row by its item's ID, and the ship the pilot is in. Answers the place's tax, its efficiency by type, and each item's quote."),
   "reprocessingSvc.Reprocess": judged("reprocessing/ui/itemReprocessor.py:71", reprocessingItems,
     "GetReprocessingSvc().Reprocess(itemIDs, fromLocation, ownerID, outputLocationID, outputFlagID): the items a list, the output named always. Answers the items reprocessed and what they made, by type."),
+  "structureSettings.CharacterGetService": judged("eve/client/script/ui/services/marketsvc.py:239", ofAStructuresMarket,
+    "RemoteSvc('structureSettings').CharacterGetService(structureID, structures.SERVICE_MARKET): a structure's market tax for the pilot, a percentage, which the client's market service asks before it works out the broker's fee there, and keeps two minutes by the structure (GetMarketTaxAtStructure, Memoize(2), 237). The transport asks and keeps it so."),
   "structureSettings.CharacterGetServices": judged("eve/client/script/ui/services/structure/structureServices.py:56", ofOneStructure,
     "RemoteSvc('structureSettings').CharacterGetServices(structureID): asked as the pilot docks in a structure and kept for it, and asked again when the server says its services changed (21 to 24, 48 to 52); asked each time for any other structure (35). The transport keeps it so."),
 

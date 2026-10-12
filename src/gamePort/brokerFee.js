@@ -24,9 +24,12 @@
 // float is the client's to the last digit: the test holds it to the client's
 // own Python.
 //
-// Not here: a structure, whose base is asked of the server and where no skill
-// applies; and the upgrade level itself, which the client asks of the war's
-// manager for a system in a warzone. Whoever calls this names the level.
+// A structure's rate is the second function's: its base is the structure's own
+// market tax, which whoever calls it has asked of the server, and no skill and
+// no standing is in it.
+//
+// Not here: the upgrade level itself, which the client asks of the war's
+// manager for a system in a warzone. Whoever calls these names the level.
 
 const MARKET_COMMISSION_PERCENTAGE = 3.0;
 const BROKER_RELATIONS_SKILL_MODIFIER = 0.3;
@@ -46,4 +49,25 @@ function brokersFeeRate({ brokerRelations, factionToCharStanding, corpToCharStan
   return rate - factionToCharStanding * MARKET_FACTION_STANDING_MULTIPLIER - corpToCharStanding * MARKET_NPC_CORP_STANDING_MULTIPLIER;
 }
 
-module.exports = { brokersFeeRate };
+/**
+ * The rate in a structure, as a fraction (marketsvc.GetBrokersFeeCommissionFromStationID, 161, for what is no
+ * station). `marketTax` is what the structure's settings answered for its market and the pilot
+ * (marketsvc.GetBaseTax, 229 to 239): a percentage; True, which the client's Python divides as one; or null, which
+ * is no market there for the pilot.
+ *
+ *   SkillLimits.GetBrokersFeeForLocation                    (skilllimits.py 25)
+ *       no base, no rate; else the base over a hundred. No skill is taken off:
+ *       the limits are made with doSkillsApply as IsStation(stationID) (marketsvc.py 242)
+ *   "if not feePercentageAtLocation: return 0.0"              (marketsvc.py 165)
+ *   BrokerFeeProvider.GetAdjustedCommissionPercentage         (brokerFee.py 63)
+ *       a tenth off for each level the system is upgraded to; and no standing,
+ *       a structure's owner being no NPC (marketsvc.py 745 to 752)
+ *
+ * The client's two guards come of themselves here: no tax is nought to Number(), as False is and True is one, and
+ * nought over a hundred is the rate of nothing the client answers for it.
+ */
+function brokersFeeRateInStructure({ marketTax, upgradeLevel = 0 }) {
+  return (Number(marketTax) / 100.0) * (1 - 0.1 * upgradeLevel);
+}
+
+module.exports = { brokersFeeRate, brokersFeeRateInStructure };

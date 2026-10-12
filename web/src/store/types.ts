@@ -701,6 +701,8 @@ export interface MarketState {
   /** The item currently being looked at; null before one is chosen. */
   readonly typeID: number | null;
   readonly stationID: number | null;
+  /** The structure the pilot is docked in; null in a station and in space. A rate known there is the structure's own. */
+  readonly structureID: number | null;
   readonly solarSystemID: number | null;
   /** The broker's fee rate the pilot pays where it is docked, as a fraction; null where it is not known. */
   readonly brokersFeeRate: number | null;

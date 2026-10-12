@@ -9,7 +9,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { GamePortPilotError, argumentsToWire, boundObjectID, createGamePortPilots } = require("../src/gamePort/pilots");
-const { brokersFeeRate } = require("../src/gamePort/brokerFee");
+const { brokersFeeRate, brokersFeeRateInStructure } = require("../src/gamePort/brokerFee");
 const { GAME_PORT_HANDLE_PREFIX, PILOT_FUNCTIONS } = require("../src/pilotTransport");
 const { createPilotSpace } = require("../src/gamePort/pilotSpace");
 const undockRecording = require("./fixtures/destinyUndock.json");
@@ -6395,10 +6395,13 @@ test("a buy order goes out with the broker's fee rate worked out from the pilot'
   // A station whose owner is no NPC: no standing counts, and the skill does.
   await pilots.callMethod("marketProxy", "PlaceBuyOrder", buyOrder(60000004), null, WHO, handle);
   assert.equal(lastMarketCall(session).args[8], brokersFeeRate({ brokerRelations: 3, factionToCharStanding: 0.0, corpToCharStanding: 0.0 }));
-  // What is no station the game's data has (a structure): not worked out here, and the order goes as it came.
+  // Nothing was asked of a structure's settings for a station's order.
+  assert.deepEqual(session.calls.filter((call) => call.service === "structureSettings"), []);
+  // What is no station (a structure): its rate is its own market tax, asked of its settings (the tests of it are
+  // below). The stand-in answers none for it, which is no market for the pilot there: a rate of nothing.
   await pilots.callMethod("marketProxy", "PlaceBuyOrder", buyOrder(1030000000001), null, WHO, handle);
-  assert.equal(lastMarketCall(session).args[8], null);
-  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "marketProxy.PlaceBuyOrder").statuses, { reshaped: 2, differs: 1 });
+  assert.equal(lastMarketCall(session).args[8], 0);
+  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "marketProxy.PlaceBuyOrder").statuses, { reshaped: 3 });
 });
 
 // buySellItemContainerBase.py 28: the entry of a sale asks the market for the type's average price when it is
@@ -6519,12 +6522,20 @@ test("another corporation: the session forgets the pilot's employment record, as
 test("the broker's fee rate at a station is answered for a pilot as an order there would name it, its skills read first where they are not kept", async () => {
   let asked = 0;
   const skills = () => { asked += 1; if (asked === 1) throw refusedBy("NotNow"); return skillsOf(skillOf(BROKER_RELATIONS, 2, 2829, 2)); };
-  const { pilots, handle } = await selected({ answers: { ...STANDING_ANSWERS, ...handlerAnswers({ "bound:GetSkills": skills }) } }, { allowed: FEE_PAIRS, stationOwner: ownedStation });
+  const { pilots, session, handle } = await selected({ answers: { ...STANDING_ANSWERS, ...handlerAnswers({ "bound:GetSkills": skills }) } }, { allowed: FEE_PAIRS, stationOwner: ownedStation });
   assert.equal(await pilots.brokersFeeRate(60003760, WHO, handle), brokersFeeRate({ brokerRelations: 2, factionToCharStanding: -3.978, corpToCharStanding: 1.069 }));
   assert.equal(asked, 2, "the skills that could not be read at the choosing were asked for again");
-  // What is no station of the game's data: no rate.
-  assert.equal(await pilots.brokersFeeRate(1030000000001, WHO, handle), null);
+  // A station the game's data has not: no rate. And no place at all: none, and nothing asked for it.
+  assert.equal(await pilots.brokersFeeRate(60999999, WHO, handle), null);
   assert.equal(await pilots.brokersFeeRate(null, WHO, handle), null);
+  // A station is one by its number alone, from the first of the stations' to the last (idCheckers.IsStation): no
+  // structure's settings are asked for one, nor for no place.
+  assert.deepEqual([await pilots.brokersFeeRate(60000000, WHO, handle), await pilots.brokersFeeRate(63999999, WHO, handle)], [null, null]);
+  assert.deepEqual(session.calls.filter((call) => call.service === "structureSettings"), []);
+  // The numbers either side are no station's: each is asked of the structure's settings, as the client asks for
+  // whatever is no station. (The stand-in answers none: a rate of nothing.)
+  assert.deepEqual([await pilots.brokersFeeRate(59999999, WHO, handle), await pilots.brokersFeeRate(64000000, WHO, handle)], [0, 0]);
+  assert.deepEqual(session.calls.filter((call) => call.service === "structureSettings").map((call) => call.args), [[59999999, 5], [64000000, 5]]);
   // Not this pilot's session: the gateway's refusal.
   await rejects(pilots.brokersFeeRate(60003760, WHO, "nobody"), "SESSION_NOT_FOUND");
 });
@@ -9680,4 +9691,113 @@ test("the reprocessing plant's quote goes with each item's own row from what the
   await pilots.callBoundMethod("reprocessingSvc", "Reprocess", [[501], STATION, PILOT, STATION, 4], null, WHO, handle, plant);
   assert.deepEqual(session.boundCalls.findLast((call) => call.method === "Reprocess"), { objectID: session.boundCalls.findLast((call) => call.method === "GetQuotes").objectID, method: "Reprocess", args: [{ type: "list", items: [501] }, STATION, PILOT, STATION, 4], kwargs: null });
   assert.deepEqual(ledgerOf(pilots, "reprocessingSvc.Reprocess"), [{ reshaped: 1 }, "reprocessing/ui/itemReprocessor.py:71"]);
+});
+
+// marketsvc.GetBrokersFeeCommissionFromStationID (161) for what is no station: the base is the structure's own
+// market tax for the pilot, which marketsvc.GetMarketTaxAtStructure (237 to 239) asks of the structure's settings and
+// keeps two minutes by the structure; no skill applies (242), and no standing does (745). No Tranquility recording
+// has the call: the answers below are made up, in the kinds this server sends (a number, True, None).
+
+const MARKET_TAX = "structureSettings.CharacterGetService";
+const ANOTHER_STRUCTURE = 1030000000009;
+const taxAskings = (session) => session.calls.filter((call) => call.service === "structureSettings").map((call) => [call.method, call.args, call.kwargs]);
+
+test("an order in a structure names the structure's own market tax as its rate: asked of its settings as the client's market service asks it, kept two minutes by the structure, with no skill and no standing in it", async () => {
+  let clockMs = 5_000_000;
+  let tax = 2.5;
+  // Broker Relations at five, and a station's owner with standings to the pilot: neither is in a structure's rate.
+  const answers = { ...STANDING_ANSWERS, ...handlerAnswers({ "bound:GetSkills": skillsOf(skillOf(BROKER_RELATIONS, 5, 256000, 2)) }), [MARKET_TAX]: () => tax,
+    "marketProxy.GetOldPriceHistory": pricesRowset(), "marketProxy.GetNewPriceHistory": pricesRowset() };
+  const { pilots, session, handle } = await selected({ answers }, { allowed: FEE_PAIRS, stationOwner: ownedStation, now: () => clockMs });
+  const buy = (structureID, fee = null) => pilots.callMethod("marketProxy", "PlaceBuyOrder", buyOrder(structureID, fee), null, WHO, handle);
+  session.sent.length = 0;
+  await buy(A_STRUCTURE);
+  assert.deepEqual(lastMarketCall(session).args, buyOrder(A_STRUCTURE, 0.025));
+  assert.equal(brokersFeeRateInStructure({ marketTax: 2.5 }), 0.025);
+  // marketsvc.py 239: CharacterGetService(structureID, structures.SERVICE_MARKET), by the service's name, and
+  // before the order goes.
+  assert.deepEqual(taxAskings(session), [["CharacterGetService", [A_STRUCTURE, 5], null]]);
+  assert.deepEqual(session.sent, ["CharacterGetService", "PlaceBuyOrder"]);
+  const ledger = () => Object.fromEntries(pilots.callLedger().filter((row) => row.pair === MARKET_TAX || row.pair === "marketProxy.PlaceBuyOrder").map((row) => [row.pair, row.statuses]));
+  assert.deepEqual(ledger(), { [MARKET_TAX]: { same: 1 }, "marketProxy.PlaceBuyOrder": { reshaped: 1 } });
+  // Kept: two minutes on, an order asks nothing, whatever the tax is by then.
+  tax = 7.3;
+  clockMs += 120_000;
+  await buy(A_STRUCTURE);
+  assert.deepEqual([lastMarketCall(session).args[8], taxAskings(session).length], [0.025, 1]);
+  // A millisecond more than two minutes since it was answered: asked again.
+  clockMs += 1;
+  await buy(A_STRUCTURE);
+  assert.deepEqual([lastMarketCall(session).args[8], taxAskings(session).length], [0.073, 2]);
+  // Another structure's is its own, asked for by itself; the first one's stays kept.
+  tax = 10;
+  await buy(ANOTHER_STRUCTURE);
+  await buy(A_STRUCTURE);
+  assert.deepEqual([lastMarketCall(session).args[8], taxAskings(session).slice(2)], [0.073, [["CharacterGetService", [ANOTHER_STRUCTURE, 5], null]]]);
+  // An order that names its rate has it from its own asking: nothing is asked here, and it goes as it came.
+  clockMs += 500_000;
+  await buy(A_STRUCTURE, 0.05);
+  assert.deepEqual([lastMarketCall(session).args[8], taxAskings(session).length], [0.05, 3]);
+  // A sale in a structure: its item carries the rate, and the call names it, as a station's does.
+  tax = 4;
+  await pilots.callMethod("marketProxy", "PlaceMultiSellOrder", [[{ itemID: 9001, typeID: 34, stationID: A_STRUCTURE, price: 5.5, quantity: 2 }], false, 1, null], null, WHO, handle);
+  assert.deepEqual([lastMarketCall(session).args[3], fieldOfSaleItem(lastMarketCall(session), "rawBrokerFeePercentage"), taxAskings(session).length], [0.04, 0.04, 4]);
+  // Two items of a sale in two structures: each carries its own structure's rate (the first is kept; the other's
+  // was let go long since, and is asked for), and the call names the first's (sellMulti.py 444).
+  tax = 6;
+  await pilots.callMethod("marketProxy", "PlaceMultiSellOrder", [[{ itemID: 9001, typeID: 34, stationID: A_STRUCTURE, price: 5.5, quantity: 2 }, { itemID: 9002, typeID: 34, stationID: ANOTHER_STRUCTURE, price: 5.5, quantity: 1 }], false, 1, null], null, WHO, handle);
+  assert.deepEqual([lastMarketCall(session).args[3], lastMarketCall(session).args[0].items.map((item) => item.args.entries.find(([name]) => name === "rawBrokerFeePercentage")[1]), taxAskings(session).slice(4)],
+    [0.04, [0.04, 0.06], [["CharacterGetService", [ANOTHER_STRUCTURE, 5], null]]]);
+  // A sale whose item has its rate asks for none.
+  clockMs += 500_000;
+  await pilots.callMethod("marketProxy", "PlaceMultiSellOrder", [[{ itemID: 9001, typeID: 34, stationID: A_STRUCTURE, price: 5.5, quantity: 2, rawBrokerFeePercentage: 0.02 }], false, 1, null], null, WHO, handle);
+  assert.deepEqual([fieldOfSaleItem(lastMarketCall(session), "rawBrokerFeePercentage"), taxAskings(session).length], [0.02, 5]);
+  // What is no item of a sale asks for nothing, and the sale goes as it came.
+  await pilots.callMethod("marketProxy", "PlaceMultiSellOrder", [[null], false, 1, null], null, WHO, handle);
+  assert.deepEqual([lastMarketCall(session).args[0], taxAskings(session).length], [[null], 5]);
+});
+
+test("what a structure answers for its market tax makes the rate as the client's Python makes it; a tax that could not be asked, or is no tax, names no rate and is not kept", async () => {
+  const rateFor = async (answer) => {
+    const { pilots, session, handle } = await selected({ answers: { ...STANDING_ANSWERS, ...handlerAnswers(), [MARKET_TAX]: answer } }, { allowed: FEE_PAIRS, stationOwner: ownedStation });
+    await pilots.callMethod("marketProxy", "PlaceBuyOrder", buyOrder(A_STRUCTURE), null, WHO, handle);
+    return [lastMarketCall(session).args[8], Object.keys(pilots.callLedger().find((row) => row.pair === "marketProxy.PlaceBuyOrder").statuses)];
+  };
+  // True: a structure that names no tax of its own answers so on this server, and True over a hundred is one percent.
+  assert.deepEqual(await rateFor(true), [0.01, ["reshaped"]]);
+  // A whole number as the wire's long, and a real.
+  assert.deepEqual(await rateFor(3n), [0.03, ["reshaped"]]);
+  assert.deepEqual(await rateFor(11.5), [0.115, ["reshaped"]]);
+  // None is no market there for the pilot, and False and nought no tax: a rate of nothing (marketsvc.py 165).
+  for (const none of [null, false, 0]) assert.deepEqual(await rateFor(none), [0, ["reshaped"]], String(none));
+  // What is no tax, and a tax that could not be asked: no rate is made of a guess, and the order goes as it came.
+  for (const unknown of ["2.5", { type: "list", items: [] }, NaN, Infinity, () => { throw refusedBy("NotNow"); }]) {
+    assert.deepEqual(await rateFor(unknown), [null, ["differs"]], String(unknown));
+  }
+  // What is no tax is no rate to whoever shows one either: null, and not a number that is none.
+  const shown = await selected({ answers: { ...STANDING_ANSWERS, ...handlerAnswers(), [MARKET_TAX]: NaN } }, { allowed: FEE_PAIRS, stationOwner: ownedStation });
+  assert.equal(await shown.pilots.brokersFeeRate(A_STRUCTURE, WHO, shown.handle), null);
+  // A tax that could not be asked is not kept: the next order asks again.
+  let asked = 0;
+  const late = await selected({ answers: { ...STANDING_ANSWERS, ...handlerAnswers(), [MARKET_TAX]: () => { asked += 1; if (asked === 1) throw refusedBy("NotNow"); return 4; } } }, { allowed: FEE_PAIRS, stationOwner: ownedStation });
+  await late.pilots.callMethod("marketProxy", "PlaceBuyOrder", buyOrder(A_STRUCTURE), null, WHO, late.handle);
+  assert.equal(lastMarketCall(late.session).args[8], null);
+  await late.pilots.callMethod("marketProxy", "PlaceBuyOrder", buyOrder(A_STRUCTURE), null, WHO, late.handle);
+  assert.deepEqual([lastMarketCall(late.session).args[8], asked], [0.04, 2]);
+});
+
+test("the broker's fee rate in a structure is answered for whoever shows it as an order there would name it: the tax asked first, once for two at once, and kept", async () => {
+  let asked = 0;
+  let answer = () => {};
+  const waiting = () => { asked += 1; return new Promise((resolve) => { answer = () => resolve(2.5); }); };
+  const { pilots, session, handle } = await selected({ answers: { ...STANDING_ANSWERS, ...handlerAnswers(), [MARKET_TAX]: waiting } }, { allowed: FEE_PAIRS, stationOwner: ownedStation });
+  const both = Promise.all([pilots.brokersFeeRate(A_STRUCTURE, WHO, handle), pilots.brokersFeeRate(A_STRUCTURE, WHO, handle)]);
+  // Both wait on the one asking.
+  await new Promise((resolve) => { setImmediate(resolve); });
+  await new Promise((resolve) => { setImmediate(resolve); });
+  assert.equal(asked, 1);
+  answer();
+  assert.deepEqual(await both, [0.025, 0.025]);
+  assert.equal(await pilots.brokersFeeRate(A_STRUCTURE, WHO, handle), 0.025);
+  assert.deepEqual([asked, taxAskings(session)], [1, [["CharacterGetService", [A_STRUCTURE, 5], null]]]);
 });

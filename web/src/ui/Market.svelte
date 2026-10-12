@@ -22,6 +22,7 @@
     checkPrice,
     checkQuantity,
     distanceLabel,
+    brokerFeeBasisWords,
     brokerFeeWords,
     estimateBrokerFee,
     historyDayText,
@@ -202,6 +203,8 @@
     return estimateBrokerFee(draftPriceCheck.price, Number(draft.quantity), $market.brokersFeeRate);
   });
   const draftFeeWords = $derived(brokerFeeWords(draftFee));
+  // A rate known while docked in a structure is the structure's own, not the pilot's.
+  const draftFeeBasis = $derived(brokerFeeBasisWords($market.structureID !== null));
   const draftReady = $derived.by(() => {
     if (draft === null || draftPriceCheck?.ok !== true || draftQuantityCheck?.ok !== true) {
       return false;
@@ -797,9 +800,8 @@
         </div>
         {#if draftFee && !draftFee.estimated}
           <p class="note">
-            The broker's fee above is worked out at your own rate, {draftFeeWords.percent}%,
-            from your Broker Relations skill and how this station's owner regards
-            you{draftFee.atMinimum ? "; this order is small enough that the smallest fee there is applies" : ""}.
+            The broker's fee above is worked out at {draftFeeBasis.rate}, {draftFeeWords.percent}%,
+            {draftFeeBasis.madeOf}{draftFee.atMinimum ? "; this order is small enough that the smallest fee there is applies" : ""}.{draftFeeBasis.also}
             Once the order goes through, the amount you were actually charged is
             shown here.
           </p>

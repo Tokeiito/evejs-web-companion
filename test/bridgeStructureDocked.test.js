@@ -74,7 +74,7 @@ const fakeStaticData = () => ({
  * answered ("service.method": a value, or a function of its arguments).
  */
 function fakeTransport({ handle, answers = {} }) {
-  const calls = { call: [], bind: [], boundCall: [] };
+  const calls = { call: [], bind: [], boundCall: [], fee: [] };
   const placement = new Map([[100, { flag: FLAG_HANGAR, quantity: 5, typeID: 34 }], [101, { flag: FLAG_CARGO, quantity: 3, typeID: 35 }]]);
   /** The methods on a bound object that are refused, each asking of one listed in `refusals`. */
   const refused = new Set();
@@ -91,6 +91,8 @@ function fakeTransport({ handle, answers = {} }) {
       };
     },
     async releaseBridgeSession() { return { released: true, characterID: 7 }; },
+    /** The broker's fee rate where an order would be placed, as the game port's transport answers it: one percent, and the place asked for is listed. */
+    async brokersFeeRate(placeID) { calls.fee.push(placeID); return 0.01; },
     async readFlightStatus() {
       return { flight: { docked: true, inSpace: false, stationID: null, structureID: STRUCTURE_ID, solarSystemID: SYSTEM_ID, shipID: SHIP_ID }, notifications: [] };
     },
@@ -320,4 +322,18 @@ test("on the game port the reprocessing plant's quote has the hangar listed for 
   }
   assert.equal(own.calls.boundCall.length, before);
   assert.deepEqual([other.calls.call, other.calls.bind, other.calls.boundCall], [[], [], []]);
+});
+
+test("the Market read names the structure the pilot is docked in, and on the game port its rate is the one asked for the structure", async () => {
+  // The read is held to no service of the structure's: a client reads a region's market wherever it is.
+  const onGamePort = await startTestServer({ onGamePort: true, answers: { "structureSettings.CharacterGetServices": () => assert.fail("nothing is asked of the structure's services for a read") } });
+  const read = await onGamePort.ask("/api/bridge/market");
+  assert.equal(read.status, 200, JSON.stringify(read.payload));
+  assert.deepEqual([read.payload.stationID, read.payload.structureID, read.payload.brokersFeeRate], [null, STRUCTURE_ID, 0.01]);
+  assert.deepEqual([onGamePort.own.calls.fee, onGamePort.other.calls.fee], [[STRUCTURE_ID], []]);
+  // Through the gateway the read stands too, with the structure named and no rate.
+  const throughGateway = await startTestServer({ onGamePort: false });
+  const gatewayRead = await throughGateway.ask("/api/bridge/market");
+  assert.deepEqual([gatewayRead.status, gatewayRead.payload.stationID, gatewayRead.payload.structureID, gatewayRead.payload.brokersFeeRate], [200, null, STRUCTURE_ID, null]);
+  assert.deepEqual([throughGateway.own.calls.fee, throughGateway.other.calls.fee], [[], []]);
 });

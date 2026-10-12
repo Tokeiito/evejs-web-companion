@@ -311,6 +311,7 @@ const INITIAL_INDUSTRY: IndustryState = Object.freeze({
 const INITIAL_MARKET: MarketState = Object.freeze({
   typeID: null,
   stationID: null,
+  structureID: null,
   solarSystemID: null,
   brokersFeeRate: null,
   sells: Object.freeze([]) as readonly MarketOrderRow[],
@@ -1431,6 +1432,7 @@ export function createClientStore(): ClientStore {
           ...market.get(),
           typeID: event.typeID,
           stationID: event.stationID,
+          structureID: event.structureID ?? null,
           solarSystemID: event.solarSystemID,
           brokersFeeRate: event.brokersFeeRate ?? null,
           sells: [...event.sells],

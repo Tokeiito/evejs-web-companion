@@ -1727,7 +1727,18 @@ test("the game port carries the customs office's transfer, the station's offices
     "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure",
     // A structure's services for the pilot. The gateway's list has nothing of the structure settings'.
     "structureSettings.CharacterGetServices",
+    // A structure's market tax for the pilot, which the client's market service asks before it names a rate there.
+    "structureSettings.CharacterGetService",
   ]);
+  // marketsvc.py 239: sm.RemoteSvc('structureSettings').CharacterGetService(structureID, structures.SERVICE_MARKET),
+  // by the service's name, with the structure's ID and the market's (5): the client asks it of no other service.
+  const tax = retailForm("structureSettings", "CharacterGetService", [1030000000002, 5], null);
+  assert.deepEqual([tax.status, tax.source, tax.args, tax.kwargs, tax.moniker, tax.proxy],
+    ["same", "eve/client/script/ui/services/marketsvc.py:239", [1030000000002, 5], null, false, false]);
+  for (const [args, kwargs] of [[[], null], [[1030000000002], null], [[1030000000002, 5, 1], null], [[1030000000002, 5], { serviceID: 5 }], [["1030000000002", 5], null], [[0, 5], null], [[1.5, 5], null],
+    [[1030000000002, 4], null], [[1030000000002, "5"], null], [[1030000000002, null], null]]) {
+    assert.equal(retailForm("structureSettings", "CharacterGetService", args, kwargs).status, "differs", JSON.stringify([args, kwargs]));
+  }
   // structureServices.py 56 (and 35): sm.RemoteSvc('structureSettings').CharacterGetServices(structureID), by the
   // service's name, with the one structure's ID and nothing else.
   const structure = retailForm("structureSettings", "CharacterGetServices", [1030000000002], null);

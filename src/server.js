@@ -6478,6 +6478,8 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
       typeID: typeID > 0 ? typeID : null,
       characterID: held.characterID,
       stationID: held.stationID,
+      // The structure the pilot is docked in, where it is in one: the rate below is then the structure's own.
+      structureID: held.structureID ?? null,
       solarSystemID: held.solarSystemID ?? null,
       brokersFeeRate: typeof worked === "number" && Number.isFinite(worked) && worked >= 0 ? worked : null,
       book: { result: valueOf(book), error: codeOf(book) },

@@ -741,3 +741,15 @@ test("a lost session during a write unwinds to character select rather than repo
     }));
   assert.equal(store.get().market.lastOutcome, null);
 });
+
+test("the structure the Market read names is kept, and a read that names none keeps none", async () => {
+  const structureOf = async (structureID: unknown) => {
+    const { store, flow } = makeFlow(
+      respondOk((path) => (path.startsWith("/api/bridge/market") ? { status: 200, body: marketPanel({ stationID: null, structureID }) } : null)),
+    );
+    await flow.loadMarket(TYPE_ID);
+    return store.get().market.structureID;
+  };
+  assert.equal(await structureOf(1030000000002), 1030000000002);
+  for (const none of [null, undefined, "x"]) assert.equal(await structureOf(none), null, String(none));
+});

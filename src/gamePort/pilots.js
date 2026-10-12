@@ -70,7 +70,7 @@ const { createPilotStation } = require("./pilotStation");
 const { CLIENT_STATE_NOTICES, statesAfter } = require("./crimewatchStates");
 const { isBridgeWritePair } = require("../bridgeCallPolicy");
 const { namedAfterCall, namedOnNotice, namedOnSessionChange } = require("./cachedCallsNamed");
-const { brokersFeeRate } = require("./brokerFee");
+const { brokersFeeRate, brokersFeeRateInStructure } = require("./brokerFee");
 const { averagePrice, historyRows } = require("./priceHistory");
 const { TARGETS, TARGETERS, createPilotTargets } = require("./pilotTargets");
 const { buildSkillSheet } = require("./skillSheet");
@@ -257,6 +257,15 @@ const ofOwnCorporation = (args, attributes) => wholeOf(Array.isArray(args) ? arg
 const STRUCTURE_SETTINGS = "structureSettings";
 /** The read the client's structure services service keeps (structureServices.onlineServices, structureServices.py 56). */
 const STRUCTURE_SERVICES = "CharacterGetServices";
+/** The read the client's market service asks a structure's market tax with (marketsvc.GetMarketTaxAtStructure, 239), and structures.SERVICE_MARKET. */
+const STRUCTURE_SERVICE_VALUE = "CharacterGetService";
+const STRUCTURE_SERVICE_MARKET = 5;
+/**
+ * How long a structure's market tax is kept as it was answered, by the structure: marketsvc.GetMarketTaxAtStructure
+ * is @Memoize(2) (237), and what it kept is let go once more than two minutes have gone by since it was answered
+ * (caching/memoize.py 100).
+ */
+const MARKET_TAX_KEPT_MS = 120_000;
 /** Whether a structure's ID is that of the structure the session is docked in. */
 const theStructureDockedIn = (structureID, attributes) => wholeOf(structureID) !== null && wholeOf(structureID) === wholeOf(attributes.structureid);
 /**
@@ -836,6 +845,8 @@ const positive = (value) => {
   const number = typeof value === "number" || typeof value === "bigint" ? Number(value) : NaN;
   return Number.isSafeInteger(number) && number > 0 ? number : null;
 };
+/** idCheckers.IsStation: a station by its number alone (minStation to maxStation). */
+const isStation = (itemID) => itemID >= 60000000 && itemID <= 63999999;
 
 /** JSON arguments as the BFF sends them, into what the client's marshaller takes. */
 function argumentsToWire(value) {
@@ -1337,6 +1348,8 @@ function createGamePortPilots({
       facilitiesWork: Promise.resolve(),
       /** facilitySvc.GetFacilityLocations's own keeping: a facility's places for an owner, by the two, each with when it was answered. */
       facilityPlaces: new Map(),
+      /** marketsvc.GetMarketTaxAtStructure's own keeping: a structure's market tax for the pilot, by the structure, each with when it was answered. */
+      marketTaxes: new Map(),
       /**
        * The job the Industry window has, as the client's industry service has the one it monitors
        * (industrySvc.monitoring, a weak reference to the window's job): null where the window has none, what its
@@ -1656,7 +1669,7 @@ function createGamePortPilots({
     // What the client has to hand before it makes this call: godma primed for the ship, which it is from the moment it has one,
     // and anything just fitted answered for.
     if (retailNeeds(service, method) === "orders") await ownOrdersRead(entry);
-    if (retailNeeds(service, method) === "fee" || retailNeeds(service, method) === "sale") await feeInputsRead(entry);
+    if (retailNeeds(service, method) === "fee" || retailNeeds(service, method) === "sale") await feeInputsRead(entry, feePlaces(method, args));
     if (retailNeeds(service, method) === "sale") await saleAveragesRead(entry, args);
     if (retailNeeds(service, method) === "dogma") {
       await shipReadings(entry, whereabouts(entry));
@@ -1893,14 +1906,18 @@ function createGamePortPilots({
   /**
    * marketsvc.GetBrokersFeeCommissionFromStationID (161): the broker's fee rate at a station, from the pilot's
    * Broker Relations in effect and the standings the station's owner and its faction have to the pilot, where the
-   * owner is an NPC (brokerFee.js). Null where it cannot be worked out here: what is no station of the game's data
-   * (a structure's rate is asked of the server), or the pilot's skills or standings are not kept.
+   * owner is an NPC (brokerFee.js). Null where it cannot be worked out here: a station the game's data has not, or
+   * the pilot's skills or standings are not kept. What is no station is a structure, and has its own rate
+   * (brokersFeeInStructure).
    *
    * Not lowered for a system the militias have upgraded: the client asks the war's manager for that, and this
    * server does not lower its own rate for it either.
    */
   function brokersFeeAt(entry, stationID) {
-    const station = stationOwner(positive(stationID));
+    const placeID = positive(stationID);
+    // (No place at all is no station, and has no tax kept: null, either way.)
+    if (!isStation(placeID)) return brokersFeeInStructure(entry, placeID);
+    const station = stationOwner(placeID);
     if (!station) return null;
     // marketsvc.FactionAndCorpToCharStandings (745): an owner that is no NPC has no standing that counts, nor has its faction.
     const npc = station.ownerID > MAX_SYSTEM_ITEM && station.ownerID < MIN_PLAYER_OWNER;
@@ -1942,21 +1959,67 @@ function createGamePortPilots({
     }
   }
 
-  /** The rate for whoever wants to show it: what an order placed at that station would name, or null. */
+  /** The rate for whoever wants to show it: what an order placed at that station, or in that structure, would name, or null. */
   async function brokersFeeRateFor(stationID, sessionFields = {}, bridgeSessionID = undefined) {
     const entry = held(bridgeSessionID, sessionFields);
-    await feeInputsRead(entry);
+    await feeInputsRead(entry, [positive(stationID)]);
     return brokersFeeAt(entry, stationID);
   }
 
   /**
-   * What the rate is worked out from, read where it is not kept: the pilot's skills, as its skill service has them
-   * from the first thing that wants them, and its standings, which are read when it is chosen. Neither failing is
-   * this call's to tell: the order then names no rate.
+   * The rate in a structure, from its market tax as it is kept (marketTaxAt, which whoever wants a rate has asked
+   * first): the client's own sums of it (brokerFee.js). Null where no tax is kept, or one is still being asked
+   * for, and where what was answered is no tax: no rate is made of a guess.
    */
-  async function feeInputsRead(entry) {
+  function brokersFeeInStructure(entry, structureID) {
+    const said = (entry.marketTaxes.get(structureID) ?? {}).value;
+    // The wire's kinds: a real, a long, a bool, None.
+    const marketTax = said === null || typeof said === "boolean" ? said : typeof said === "bigint" ? Number(said) : typeof said === "number" && Number.isFinite(said) ? said : undefined;
+    return marketTax === undefined ? null : brokersFeeRateInStructure({ marketTax });
+  }
+
+  /**
+   * marketsvc.GetMarketTaxAtStructure (237 to 239): a structure's market tax for the pilot, which is
+   * RemoteSvc('structureSettings').CharacterGetService(structureID, structures.SERVICE_MARKET), kept by the structure
+   * until more than two minutes have gone by since it was answered. Two that find nothing kept ask once. What could
+   * not be asked is not kept. Noted as the client's own asking.
+   */
+  function marketTaxAt(entry, structureID) {
+    const kept = entry.marketTaxes.get(structureID);
+    if (kept && now() - kept.at <= MARKET_TAX_KEPT_MS) return kept.answer;
+    // One being asked for is kept from the asking, and has no time until it is answered.
+    const record = { at: Infinity, value: undefined, answer: null };
+    record.answer = Promise.resolve().then(() => {
+      const form = shape(STRUCTURE_SETTINGS, STRUCTURE_SERVICE_VALUE, [structureID, STRUCTURE_SERVICE_MARKET], null, contextFor(entry));
+      ledger.note(STRUCTURE_SETTINGS, STRUCTURE_SERVICE_VALUE, form);
+      return byName(entry.session, STRUCTURE_SETTINGS, STRUCTURE_SERVICE_VALUE, form);
+    }).then((answer) => { Object.assign(record, { at: now(), value: answer }); return answer; });
+    entry.marketTaxes.set(structureID, record);
+    record.answer.catch(() => { entry.marketTaxes.delete(structureID); });
+    return record.answer;
+  }
+
+  /**
+   * The places an order's rate is to be worked out for: a buy order's station where the order names no rate, and
+   * the station of each item of a sale that names none. (An order with its rate has it from its own asking.)
+   */
+  function feePlaces(method, args) {
+    if (method === "PlaceBuyOrder") return typeof args[8] === "number" ? [] : [positive(args[0])];
+    return itemsOf(args[0]).map((item) => (item && typeof item.rawBrokerFeePercentage !== "number" ? positive(item.stationID) : null));
+  }
+
+  /**
+   * What the rate is worked out from, read where it is not kept: the pilot's skills, as its skill service has them
+   * from the first thing that wants them, and its standings, which are read when it is chosen; and for each of
+   * `places` that is no station, the structure's market tax (marketTaxAt), which the client asks after it has made
+   * its skill limits (marketsvc.py 163, 164). None failing is this call's to tell: the order then names no rate.
+   */
+  async function feeInputsRead(entry, places = []) {
     if (!entry.skills.has("skills")) await skillRead(entry, "GetSkills", []).catch(() => {});
     if (!entry.standings.loaded) await (entry.standingsWork ?? refreshStandings(entry));
+    for (const placeID of places) {
+      if (placeID !== null && !isStation(placeID)) await marketTaxAt(entry, placeID).catch(() => {});
+    }
   }
 
   // ── an attribute's value, from what godma holds ──────────────────────────

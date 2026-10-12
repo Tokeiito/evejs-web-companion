@@ -3559,6 +3559,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       type: "market/loaded",
       typeID: reads.typeID,
       stationID: reads.stationID,
+      structureID: reads.structureID,
       solarSystemID: reads.solarSystemID,
       brokersFeeRate: reads.brokersFeeRate,
       sells: book.sells,

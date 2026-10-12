@@ -31,6 +31,7 @@ import {
   decodePriceHistory,
   decodeTransactions,
   distanceLabel,
+  brokerFeeBasisWords,
   brokerFeeWords,
   estimateBrokerFee,
   historyDayText,
@@ -713,4 +714,20 @@ test("a refusal with no reason at all says exactly that — no cause is ever inv
     marketRefusalMessage(new Error("")),
     "The server did not apply that change, and gave no reason.",
   );
+});
+
+test("what a known rate is made of is said for where the order is placed: the pilot's own skill and standings in a station, the structure's own rate in a structure, with the surcharge the page does not show", () => {
+  const station = brokerFeeBasisWords(false);
+  assert.match(station.rate, /^your own rate$/);
+  assert.match(station.madeOf, /Broker Relations/);
+  assert.match(station.madeOf, /station's owner/);
+  assert.equal(station.also, "");
+  // marketsvc.py 229 to 242 and 745: a structure's base is its own market tax; no skill is taken off, and no
+  // standing counts for an owner that is no NPC. And its market takes the SCC's surcharge as well (182).
+  const structure = brokerFeeBasisWords(true);
+  assert.match(structure.rate, /structure's own rate/);
+  assert.match(structure.madeOf, /owner sets/);
+  assert.match(structure.madeOf, /skills and standings change nothing/);
+  assert.doesNotMatch(`${structure.rate} ${structure.madeOf}`, /Broker Relations|station/);
+  assert.match(structure.also, /^ A structure's market also takes the SCC's surcharge.*not shown here\.$/);
 });
