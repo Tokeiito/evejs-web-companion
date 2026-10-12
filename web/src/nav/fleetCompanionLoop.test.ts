@@ -8387,3 +8387,170 @@ test("the burst is shorter than the cadence", () => {
     "a burst that is not shorter than the cadence is not a burst",
   );
 });
+
+// --- target modes: `targets called|all` ------------------------------------
+//
+// ⚠ "called" IS THE DEFAULT, and free fire is the answer to "nobody is calling
+// anything", never a second opinion against a call. These pin both halves.
+
+const FF_BATTLESHIP = 70000001;
+const FF_FRIGATE = 70000002;
+const FF_SCRAMMER = 70000003;
+const FF_PLAYER = 70000004;
+const FF_FAR_FRIGATE = 70000005;
+const TYPE_BATTLESHIP = 501;
+const TYPE_FRIGATE = 502;
+const TYPE_SCRAMMER = 503;
+const TYPE_PLAYER_HULL = 504;
+
+/** A grid of hostile rats (and anything else) at the given distances. */
+function freeFireGrid(
+  rows: readonly { itemID: number; typeID: number; distanceM: number; isNpc?: boolean }[],
+): SpaceSnapshot {
+  return {
+    inSpace: true,
+    ship: { position: { x: 0, y: 0, z: 0 }, radius: 0, mode: null },
+    entities: [
+      { itemID: 1, kind: "ship", isSelf: true, position: { x: 0, y: 0, z: 0 }, radius: 0, mode: null },
+      ...rows.map((row) => ({
+        itemID: row.itemID,
+        typeID: row.typeID,
+        kind: "ship",
+        isSelf: false,
+        isNpc: row.isNpc ?? true,
+        npcEntityType: row.isNpc === false ? null : "npc",
+        position: { x: row.distanceM, y: 0, z: 0 },
+        radius: 0,
+        mode: null,
+      })),
+    ],
+  } as unknown as SpaceSnapshot;
+}
+
+const NO_THREAT = { scram: false, scramRangeM: null, web: false, ewar: false, ecm: false };
+
+function freeFireObs(overrides: Partial<FleetCompanionObservation> = {}): FleetCompanionObservation {
+  return obs({
+    // The battleship is NEAREST, so a nearest-first pick would take it.
+    snapshot: freeFireGrid([
+      { itemID: FF_BATTLESHIP, typeID: TYPE_BATTLESHIP, distanceM: 10_000 },
+      { itemID: FF_FRIGATE, typeID: TYPE_FRIGATE, distanceM: 30_000 },
+    ]),
+    hostileOnGrid: true,
+    lockedTargetIDs: [],
+    threatByTypeID: { [TYPE_BATTLESHIP]: NO_THREAT, [TYPE_FRIGATE]: NO_THREAT },
+    signatureByTypeID: { [TYPE_BATTLESHIP]: 400, [TYPE_FRIGATE]: 35 },
+    ...overrides,
+  });
+}
+
+function inFreeFire(): CompanionLadderMemory {
+  return { ...freshLadderMemory(), targetMode: "all" };
+}
+
+test("target mode defaults to called: rats on grid and no call lock nothing", () => {
+  const decision = decideCompanionAction(REQUEST, freeFireObs());
+  assert.notEqual(decision.action.kind, "lock");
+  assert.equal(decision.memory.targetMode, "called");
+});
+
+test("`targets all` latches free fire, and `targets called` puts it back", () => {
+  const all = decideCompanionAction(REQUEST, obs({ chatMessages: [chatLine("targets all", HUMAN)] }));
+  assert.equal(all.memory.targetMode, "all");
+  const quiet = decideCompanionAction(REQUEST, obs(), all.memory);
+  assert.equal(quiet.memory.targetMode, "all", "silence must not undo the mode");
+  const called = decideCompanionAction(
+    REQUEST,
+    obs({ chatMessages: [chatLine("targets called", HUMAN, 2_000)] }),
+    quiet.memory,
+  );
+  assert.equal(called.memory.targetMode, "called");
+});
+
+test("`stop` does not reset the target mode: a mode is not an order", () => {
+  const decision = decideCompanionAction(
+    REQUEST,
+    obs({ chatMessages: [chatLine("stop", HUMAN, 2_000)] }),
+    inFreeFire(),
+  );
+  assert.equal(decision.memory.targetMode, "all");
+});
+
+test("only a commander can switch the mode", () => {
+  const decision = decideCompanionAction(
+    REQUEST,
+    obs({ chatMessages: [chatLine("targets all", COMPANION)] }),
+  );
+  assert.equal(decision.memory.targetMode, "called");
+});
+
+test("free fire goes up the size chain: the frigate before the nearer battleship", () => {
+  const decision = decideCompanionAction(REQUEST, freeFireObs(), inFreeFire());
+  assert.deepEqual(decision.action, { kind: "lock", targetID: FF_FRIGATE });
+  assert.equal(decision.phase, "Free fire");
+  assert.match(decision.why, /^Free fire:/);
+  assert.equal(decision.followingOrderFrom, undefined, "free fire obeys nobody");
+});
+
+test("free fire takes the scrambler before a smaller harmless rat", () => {
+  const decision = decideCompanionAction(
+    REQUEST,
+    freeFireObs({
+      snapshot: freeFireGrid([
+        { itemID: FF_FRIGATE, typeID: TYPE_FRIGATE, distanceM: 10_000 },
+        { itemID: FF_SCRAMMER, typeID: TYPE_SCRAMMER, distanceM: 30_000 },
+      ]),
+      threatByTypeID: {
+        [TYPE_FRIGATE]: NO_THREAT,
+        [TYPE_SCRAMMER]: { ...NO_THREAT, scram: true, scramRangeM: 20_000 },
+      },
+      signatureByTypeID: { [TYPE_FRIGATE]: 35, [TYPE_SCRAMMER]: 150 },
+    }),
+    inFreeFire(),
+  );
+  assert.deepEqual(decision.action, { kind: "lock", targetID: FF_SCRAMMER });
+  assert.match(decision.why, /warp scrambler/);
+});
+
+test("a fleet tag still wins in free fire", () => {
+  const decision = decideCompanionAction(
+    REQUEST,
+    freeFireObs({ fleetTargetTags: new Map([[FF_BATTLESHIP, "A"]]) }),
+    inFreeFire(),
+  );
+  assert.deepEqual(decision.action, { kind: "lock", targetID: FF_BATTLESHIP });
+  assert.equal(decision.followingOrderFrom, "tag");
+});
+
+test("free fire never picks a player ship", () => {
+  const decision = decideCompanionAction(
+    REQUEST,
+    freeFireObs({
+      snapshot: freeFireGrid([{ itemID: FF_PLAYER, typeID: TYPE_PLAYER_HULL, distanceM: 5_000, isNpc: false }]),
+      hostileOnGrid: false,
+    }),
+    inFreeFire(),
+  );
+  assert.notEqual(decision.action.kind, "lock");
+});
+
+test("free fire skips what this hull cannot lock and what it gave up on", () => {
+  const outOfReach = decideCompanionAction(
+    REQUEST,
+    freeFireObs({
+      snapshot: freeFireGrid([
+        { itemID: FF_BATTLESHIP, typeID: TYPE_BATTLESHIP, distanceM: 10_000 },
+        { itemID: FF_FAR_FRIGATE, typeID: TYPE_FRIGATE, distanceM: 90_000 },
+      ]),
+      maxTargetRangeM: 50_000,
+    }),
+    inFreeFire(),
+  );
+  assert.deepEqual(outOfReach.action, { kind: "lock", targetID: FF_BATTLESHIP });
+
+  const gaveUp = decideCompanionAction(REQUEST, freeFireObs(), {
+    ...inFreeFire(),
+    lockGaveUpOn: [FF_FRIGATE],
+  });
+  assert.deepEqual(gaveUp.action, { kind: "lock", targetID: FF_BATTLESHIP });
+});
