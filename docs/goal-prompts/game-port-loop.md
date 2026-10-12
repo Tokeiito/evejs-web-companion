@@ -2190,6 +2190,26 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A call asked by name of a Moniker's service is counted "reshaped", and that is the client's
   way.** The ledger's count for `ship.Jettison` after its entry was 4 reshaped and 1 differing,
   not "same": read the entry's source in the row to see that it was judged.
+- **A route that looks at space after a call that adds a ball waits on the game port, by the app's
+  own sleep, and its tests stand the game port in.** `createApp({ gamePortPilots: <the stand-in>,
+  pilotTransportFor: () => "gameport", transitionSleep })`, with a held pilot whose handle begins
+  `gp:`; the stand-in server has the ball come at the n-th look (`world.arrivesAt`,
+  `test/pagesJettison.test.js`). A wait is skipped where the answer says there is nothing to
+  wait for, and its bound is one already measured for (the launch's three seconds), not a new one.
+- **Where the thing itself cannot be seen live without a staging that is a unit of its own, say
+  what was seen, what stands for the rest, and which unit will see it.** A jettison's wait is a
+  hosted bot's of an operation: the cockpit's jettison and its refusal were seen in the tab, the
+  wait by tests that reproduce the measured late can.
+- **In the tab, since 2026-10-12.** The hangar's sign-in: set each input by the native value
+  setter with an `input` event, then `form.requestSubmit()` in a call of its own (a click on its
+  button in the call that typed did nothing). The pilot's row is `.hangar-row-main`, then
+  "Bring online ▶" and "Go to first pilot". The Mining window: a stack's checkbox, "Dump N into
+  space…", "Yes — dump N into space"; a refusal is the window's `p.error`. One `message`
+  listener a socket, in the wrap of `WebSocket.prototype.send`, pairs each frame with its answer
+  by `id`.
+- **A small ship wants small stacks.** A Reaper's hold is 120 m³: of 1,000 Veldspar and 1,000
+  Scordite asked into it, one went, and the transfer route said "applied". Read the hold after
+  a move before going by it (`jet-stage.js <bff> <account> <characterID> [typeID:quantity,...]`).
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
