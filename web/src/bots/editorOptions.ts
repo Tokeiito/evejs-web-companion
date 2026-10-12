@@ -61,6 +61,7 @@ export type WidgetKind =
   | "place-select"
   | "corp-division-select"
   | "bookmark-picker"
+  | "folder-picker"
   | "isk-input"
   | "qty-input"
   | "character-picker"
@@ -92,6 +93,7 @@ export const ARG_KIND_WIDGET: Readonly<Record<Arg["kind"], WidgetKind>> = {
   place: "place-select",
   corpDivision: "corp-division-select",
   bookmark: "bookmark-picker",
+  bookmarkFolder: "folder-picker",
   isk: "isk-input",
   qty: "qty-input",
   character: "character-picker",
@@ -125,6 +127,7 @@ export const ARG_KIND_LABEL: Readonly<Record<Arg["kind"], string>> = {
   place: "Place",
   corpDivision: "Corporation hangar",
   bookmark: "Saved spot",
+  bookmarkFolder: "Bookmark folder",
   isk: "ISK amount",
   qty: "Quantity",
   character: "Pilot",

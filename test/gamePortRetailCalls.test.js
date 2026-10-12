@@ -1724,6 +1724,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "userSvc.GetMultiCharactersTrainingSlots",
     // The repair shop's two repairs by the client's names. The gateway's list has the server's own name for both.
     "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure",
+    // A shared bookmark folder taken up, and a known one switched on or off (bookmarkSvc.py 357 and 483).
+    "accessGroupBookmarkMgr.AddToKnownFolders", "accessGroupBookmarkMgr.UpdateKnownFolderState",
   ]);
   // skillQueueSvc.py 851: sm.RemoteSvc('userSvc').GetMultiCharactersTrainingSlots(), by the service's name and with nothing.
   const slots = retailForm("userSvc", "GetMultiCharactersTrainingSlots", [], null);
