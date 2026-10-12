@@ -1050,8 +1050,16 @@ to a generic sentence rather than leaking the code.
 #### BFF mutation routes
 
 - `POST /api/bridge/industry/preview` `{ blueprintItemID, blueprintTypeID,
-  activity, facilityID, runs, licensedRuns? }` → `{ ok, available, inputLocation,
-  outputLocation }`. `ConnectJob` then **always** `DisconnectJob` — the preview
+  activity, facilityID, runs, licensedRuns?, timeEfficiency? }` → `{ ok, available,
+  timeSeconds, inputLocation, outputLocation }`. **`timeEfficiency`** is the
+  blueprint's own time research as the page read it (a whole number from 0 to 20,
+  else 400 `INVALID_TIME_EFFICIENCY`). Where it is said and the work is
+  manufacturing, the job's time is reckoned as the retail client's job reckons it
+  (`src/industryInstall.js`, `manufacturingJobSeconds`) and sent in the request,
+  for the server to hold against its own; **`timeSeconds`** is that time, and
+  null where none was reckoned (the request then carries nought, which the server
+  does not check). The install route takes the same field and sends the same
+  time. `ConnectJob` then **always** `DisconnectJob` — the preview
   is not a pure read, so the monitor it opens is always released, **and the route
   answers only after that release**: a pilot has one write at a time, and a write
   that followed an earlier answer was refused `CHARACTER_IN_USE`. Needs no

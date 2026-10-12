@@ -1671,6 +1671,20 @@ Take these defaults, and list each under "For the operator" in the log so they c
   work where the unit will not fit: what the client does, by its lines; what it wants
   that is not asked; what the server does with it; the steps in order. Build only
   what the sizing turned up that is whole by itself.
+- **Read every input of a reckoned number as the server has it, and write each beside the
+  result.** A first live run came out at the number expected for a reason not expected:
+  the blueprint had no time research, and the station had a time modifier of its own that
+  nothing had said. The number was right and the account of it was wrong. A facility's
+  row, a blueprint's, a pilot's attribute: each is read live before the proof is written.
+- **Floats multiplied in another order are another number.** Where the client reckons a
+  number the server holds against its own, the order and the grouping of the
+  multiplications are part of the reckoning: keep the client's, one factor at a time, and
+  hold it with a test that another order fails. Then sweep the game's own data for inputs
+  where the server's order rounds another way, kept to states the game can make, and
+  stage one: what the server says of it is the finding.
+- **The tab serves the built page.** `public/dist` is what a check BFF hands the
+  browser, and it is not built by a test or a restart: `npm run build:web` before a
+  change to the page is looked for in the tab, then load the tab again.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
