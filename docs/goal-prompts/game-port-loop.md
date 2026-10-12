@@ -137,6 +137,13 @@ When you find one:
 3. When it returns, read its diff yourself, restart the server, and re-run the check that failed.
 4. Log the defect, the fix's commit, and the re-check.
 
+**Since 2026-10-12 the operator's word is wider**: "This is a dev machine. You can do anything to
+the EveJS server, start it, find issues and fix them and commit based on what you find from the
+decompiled client." So a defect may be mended and committed by the loop itself as well as by a
+sub-agent, on the same evidence (the client's code, or a recording), by that repository's own rules
+(commit to `main`, own paths one by one, its tests by its own runner, no co-author line). It is
+still not pushed by this loop, and other sessions' files there are still left alone.
+
 One is already known and waiting: `corpRegistry.CanLeaveCurrentCorporation` returns a bare `{}`
 the marshaller refuses, so every client gets None (plan, Phase 2).
 
@@ -2167,6 +2174,22 @@ Take these defaults, and list each under "For the operator" in the log so they c
   that makes it differ, before the list is run.
 - **A route's clock may not be the one the fixture holds.** The custody's is
   the BFF's own `Date.now()`; the operations' is the test's.
+- **The servers, from nothing.** With EveJS down the store's three files are copied aside as
+  they lie (`gamestore.sqlite` with its `-wal` and `-shm`); then `start-evejs.ps1` (it writes
+  `evejs.pid`), and `restart-bffgw.sh` and `restart-bffgp.sh`, each given a pid file with a
+  number no process has. `store.sh restore <label>` from then on. The scripts name their own
+  scratch folder: a new session copies them and changes the folder's name in them.
+- **How soon a thing is in a pilot's scene is measured from the answer, more than once, on both
+  transports.** `jet-live.js <bff> <account> <characterID> [ledger.json]` gives minerals,
+  undocks, jettisons and looks every 25 ms: 1635, 944 and 1681 ms on the game port, 9 ms through
+  the gateway. One jettison a run: this server refuses a second for three minutes
+  (`ShpJettisonPending`), so the store goes back between runs. `jet-look.js` only reads.
+- **A listing is a list of rows, or a set of them.** A ship's hold on the game port is answered
+  as `__builtin__.set`, the hangar as a list. A script that takes `list.items` alone reads an
+  empty hold; print a row's shape with a look that only reads before a writer goes by it.
+- **A call asked by name of a Moniker's service is counted "reshaped", and that is the client's
+  way.** The ledger's count for `ship.Jettison` after its entry was 4 reshaped and 1 differing,
+  not "same": read the entry's source in the row to see that it was judged.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
