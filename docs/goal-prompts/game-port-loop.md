@@ -2259,6 +2259,36 @@ Take these defaults, and list each under "For the operator" in the log so they c
   account's name alone and with no pilot. Its Start and Delete ask with the browser's own box
   (`window.confirm` stood in beforehand). Its table shows a bot's phase, read at the page's own
   pace: a step of a few seconds falls between two reads.
+- **CCP's destiny has tests of its own for each mode** (`destiny/python/destiny/test/ballpark/
+  evolve/test_<mode>.py`, and `test_movement_controls.py` for the orders): carry them over
+  before writing any other, and say which could not be and why.
+- **Tranquility's ballpark states can be read out of the recordings.** michelle logs every
+  entry as `Action: <name> <stamp> - current: <tick> (<args>)`, and an `AddBalls2`'s first
+  argument is the state as a Python string. `ml-blob.js <repo> <recording> [n]` reads them
+  with the port's own reader and prints the balls of a mode; `ml-fixture.js <repo> <folder>
+  [<fixture>]` counts them by kind and writes a fixture of the bytes as hex. A claim about
+  what the server's park holds can be checked over every recorded ball in one script (502
+  missiles: each one's goto its velocity made one long and multiplied by 1e16, to the bit).
+- **A park that has stopped says so in the BFF's error output**, once a frame (`bffgp.err.log`:
+  `ballpark tick failed`), and an entry it could not apply once by name (`ballpark entry <name>
+  failed`). Count the distinct lines after any live check in space.
+- **A hostile for a live check**: `/npc 1 guristas` beside the pilot's ship, away from a
+  station's guns (a belt). It brings a battleship with torpedoes or a cruiser with heavy
+  missiles, and a belt may add a rat of its own: a Badger's shield lasts under a minute.
+  `ml-live.js <bff> <account> <pilot> <belt> <seconds> "<GM command>"` flies there, runs the
+  command and prints the scene every second (the park's tick, the pilot's health, each
+  hostile's distance, each charge's distance and speed).
+- **A real missile is at its speed within half a millisecond** (mass 100, agility 5.2), so a
+  knock it takes is undone inside the tick and a test of what turns one sees nothing. Fly a
+  sluggish one, and beside it an ordinary ball that is turned.
+- **The pilot workspace in the tab, by its own controls**: a pilot's row
+  (`.hangar-row.is-clickable`) selects it, "Bring online" brings it on; "Undock"; an overview
+  row is a button, and once it is pressed "Warp to" is one; the GM console is in the Settings
+  window (the text field whose placeholder begins `/giveitem`, then "Run command"), and
+  "Ship" in the same row of names goes back to the ship and its overview. Each press in a
+  call of its own, read in the next.
+- **Text for a test file is written to a scratch file and appended by a script**, never by a
+  shell's here-document: a backtick or a quote in it ends the document early.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
