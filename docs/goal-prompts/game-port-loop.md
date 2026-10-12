@@ -1731,6 +1731,26 @@ Take these defaults, and list each under "For the operator" in the log so they c
   wants: both were read before a line was built, and the unit said from its start
   which of its numbers would be in tests only and what would have to be staged to
   see them.
+- **A fault beyond 32 bits hides in every station.** An item's ID, a structure's, a
+  fleet's: the client holds each as a long, and blue writes a long its own way. A
+  station's ID is an int, and a check made only in a station shows nothing of how a
+  long goes. Where an ID goes out inside anything (a tuple, a dict, an object, an
+  extended object), try it once with one beyond 32 bits.
+- **When a reproduction and the live server disagree, read the sender.** The server's
+  own parser, fed what the server's own encoder wrote, threw for a station's job too;
+  live, it did not. The bytes on the wire were not the ones the reproduction made.
+  Make the reproduction from what is sent (`src/gamePort/clientMarshal.js`), and
+  read the file that writes it before the file that reads it.
+- **The server's log names a throw the route can only call a silent decline.**
+  `_local/logs/server.log` has a `[PKT] ERR` line with the error's words. Where it
+  was thrown can be had with no source of `eve.js` touched: start EveJS once with a
+  script of the scratchpad's loaded before it (`restart-evejs-diag.sh on`, which sets
+  `NODE_OPTIONS=--require`), read the stack it wrote, and start it again `off`.
+- **A structure for a check is three GM commands and a store edit.** `/upwellauto
+  raitaru` (online in under a minute), `/upwell service <id> 22 online`, `/tr me
+  <id>` to dock in it; `/bpauto seed` seeds where the pilot is docked. A facility's
+  tax is a row of the server's own table (`stx-tax.sh <facility>=<rate>`, the server
+  stopped for it). All of it goes with the store's copy put back.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

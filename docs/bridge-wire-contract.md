@@ -1063,7 +1063,9 @@ to a generic sentence rather than leaking the code.
   `{ cost, tax, sccSurcharge, securityTax, total }` in whole ISK
   (`manufacturingJobFee`), on the game port for manufacturing; null where any part
   of it could not be reckoned (through the gateway, always), and the page then
-  says no amount. The `cost` and the `tax` of it are sent in the request, and in
+  says no amount. The tax is by the facility's own rate, or in a structure by the
+  access of the service the job is done by (`facilityTaxRate`). The `cost` and the
+  `tax` of the fee are sent in the request, and in
   the install's, for the server to hold against its own. `ConnectJob` then **always** `DisconnectJob` — the preview
   is not a pure read, so the monitor it opens is always released, **and the route
   answers only after that release**: a pilot has one write at a time, and a write
