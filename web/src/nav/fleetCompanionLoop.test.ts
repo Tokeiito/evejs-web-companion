@@ -8749,3 +8749,130 @@ test("a link already stopped is simply forgotten, and costs no tick", () => {
   assert.notEqual(decision.action.kind, "deactivate");
   assert.deepEqual(decision.memory.droneAssistLit, []);
 });
+
+// --- the lock timer: wait on a pending lock, and lock the next ones ahead ----
+//
+// Measured 2026-10-12: each kill paid 3.5-7 s of lock timer before drones or
+// guns could move, and a pending lock was asked for again every ~400 ms.
+
+const LOCK_T0 = 1_000_000;
+
+test("a lock already asked for is waited on, not asked for again", () => {
+  const first = decideCompanionAction(REQUEST, freeFireObs(), inFreeFire(), LOCK_T0);
+  assert.deepEqual(first.action, { kind: "lock", targetID: FF_FRIGATE });
+  const second = decideCompanionAction(REQUEST, freeFireObs(), first.memory, LOCK_T0 + 400);
+  assert.notEqual(second.action.kind, "lock", "the lock is still on its timer");
+  assert.match(second.why, /Waiting for the lock to land/);
+});
+
+test("a lock that never lands is asked for again after the wait", () => {
+  const first = decideCompanionAction(REQUEST, freeFireObs(), inFreeFire(), LOCK_T0);
+  const later = decideCompanionAction(REQUEST, freeFireObs(), first.memory, LOCK_T0 + 10_000);
+  assert.deepEqual(later.action, { kind: "lock", targetID: FF_FRIGATE });
+});
+
+test("the lock-ahead locks the next rat while the first is shot", () => {
+  const decision = decideCompanionAction(
+    REQUEST,
+    freeFireObs({ lockedTargetIDs: [FF_FRIGATE], maxLockedTargets: 6 }),
+    inFreeFire(),
+    LOCK_T0,
+  );
+  assert.deepEqual(decision.action, { kind: "lock", targetID: FF_BATTLESHIP });
+  assert.equal(decision.preLock, true);
+  assert.equal(decision.phase, "Free fire");
+  assert.deepEqual(decision.memory.preLocked, [{ targetID: FF_BATTLESHIP, atMs: LOCK_T0 }]);
+});
+
+test("the lock-ahead also runs while the first lock is still on its timer", () => {
+  const first = decideCompanionAction(REQUEST, freeFireObs({ maxLockedTargets: 6 }), inFreeFire(), LOCK_T0);
+  assert.deepEqual(first.action, { kind: "lock", targetID: FF_FRIGATE });
+  const second = decideCompanionAction(REQUEST, freeFireObs({ maxLockedTargets: 6 }), first.memory, LOCK_T0 + 400);
+  assert.deepEqual(second.action, { kind: "lock", targetID: FF_BATTLESHIP });
+});
+
+test("the lock-ahead asks for each ship once", () => {
+  const view = freeFireObs({ lockedTargetIDs: [FF_FRIGATE], maxLockedTargets: 6 });
+  const first = decideCompanionAction(REQUEST, view, inFreeFire(), LOCK_T0);
+  assert.equal(first.preLock, true);
+  const second = decideCompanionAction(REQUEST, view, first.memory, LOCK_T0 + 20_000);
+  assert.notEqual(second.action.kind, "lock", "a pre-lock that did not land is not retried");
+});
+
+test("the lock-ahead does nothing while the lock count is unreadable", () => {
+  const decision = decideCompanionAction(
+    REQUEST,
+    freeFireObs({ lockedTargetIDs: [FF_FRIGATE] }),
+    inFreeFire(),
+    LOCK_T0,
+  );
+  assert.notEqual(decision.action.kind, "lock");
+});
+
+test("the lock-ahead always leaves one lock slot free", () => {
+  const decision = decideCompanionAction(
+    REQUEST,
+    freeFireObs({ lockedTargetIDs: [FF_FRIGATE], maxLockedTargets: 2 }),
+    inFreeFire(),
+    LOCK_T0,
+  );
+  assert.notEqual(decision.action.kind, "lock");
+});
+
+test("the lock-ahead stops at two ahead", () => {
+  const decision = decideCompanionAction(
+    REQUEST,
+    freeFireObs({
+      snapshot: freeFireGrid([
+        { itemID: FF_BATTLESHIP, typeID: TYPE_BATTLESHIP, distanceM: 10_000 },
+        { itemID: FF_FRIGATE, typeID: TYPE_FRIGATE, distanceM: 30_000 },
+        { itemID: FF_SCRAMMER, typeID: TYPE_SCRAMMER, distanceM: 20_000 },
+        { itemID: FF_FAR_FRIGATE, typeID: TYPE_FRIGATE, distanceM: 40_000 },
+      ]),
+      threatByTypeID: { [TYPE_BATTLESHIP]: NO_THREAT, [TYPE_FRIGATE]: NO_THREAT, [TYPE_SCRAMMER]: NO_THREAT },
+      signatureByTypeID: { [TYPE_BATTLESHIP]: 400, [TYPE_FRIGATE]: 35, [TYPE_SCRAMMER]: 150 },
+      lockedTargetIDs: [FF_FRIGATE, FF_FAR_FRIGATE, FF_SCRAMMER],
+      maxLockedTargets: 8,
+    }),
+    inFreeFire(),
+    LOCK_T0,
+  );
+  assert.notEqual(decision.action.kind, "lock");
+});
+
+test("on a called target the lock-ahead takes the fleet's next tag before the kill order", () => {
+  const decision = decideCompanionAction(
+    REQUEST,
+    freeFireObs({
+      snapshot: freeFireGrid([
+        { itemID: FF_BATTLESHIP, typeID: TYPE_BATTLESHIP, distanceM: 10_000 },
+        { itemID: FF_FRIGATE, typeID: TYPE_FRIGATE, distanceM: 30_000 },
+        { itemID: FF_SCRAMMER, typeID: TYPE_SCRAMMER, distanceM: 20_000 },
+      ]),
+      threatByTypeID: {
+        [TYPE_BATTLESHIP]: NO_THREAT,
+        [TYPE_FRIGATE]: NO_THREAT,
+        [TYPE_SCRAMMER]: { ...NO_THREAT, scram: true, scramRangeM: 20_000 },
+      },
+      signatureByTypeID: { [TYPE_BATTLESHIP]: 400, [TYPE_FRIGATE]: 35, [TYPE_SCRAMMER]: 150 },
+      fleetTargetTags: new Map([[FF_BATTLESHIP, "A"], [FF_FRIGATE, "B"]]),
+      lockedTargetIDs: [FF_BATTLESHIP],
+      maxLockedTargets: 6,
+    }),
+    freshLadderMemory(),
+    LOCK_T0,
+  );
+  assert.deepEqual(decision.action, { kind: "lock", targetID: FF_FRIGATE });
+  assert.equal(decision.followingOrderFrom, "tag");
+});
+
+test("a warp forgets the lock-ahead and the pending lock", () => {
+  const memory = {
+    ...inFreeFire(),
+    lockPending: { targetID: FF_FRIGATE, sinceMs: LOCK_T0 },
+    preLocked: [{ targetID: FF_BATTLESHIP, atMs: LOCK_T0 }],
+  };
+  const decision = decideCompanionAction(REQUEST, obs({ inWarp: true }), memory, LOCK_T0 + 1_000);
+  assert.equal(decision.memory.lockPending, null);
+  assert.deepEqual(decision.memory.preLocked, []);
+});
