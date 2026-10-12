@@ -1829,6 +1829,22 @@ Take these defaults, and list each under "For the operator" in the log so they c
   changed.** Two of this unit's did. One was my own sum in a comment (a product
   rounded the wrong way): the expectation was mine to correct. The other was the code
   taking the text "3" for the number 3: the code was made strict.
+- **Before the server is called wrong for a number, read what it serves the client that
+  number from.** The client priced a blueprint at nought because the table this server
+  serves it has no price for the materials; the BFF's table was the one served. That
+  settled whose fault it was before anything was changed, and it is one handler to
+  read (`configService.js`, `getAverageMarketPricesPayload`).
+- **When the server is made the client's, say what that does to the game.** A blueprint
+  priced as the shared code prices it made 411 rigs' jobs cost nothing here: right by
+  the code, and the operator's to know. Ask the sub-agent what else moves, and write
+  it under what is left.
+- **A sub-agent's count and one's own are set side by side, with what each counted.**
+  631 and 701 were both right: one was of blueprints that have a manufacturing, the
+  other of every blueprint for every activity.
+- **After the store is put back, check both of the server's doors.** A boot once
+  failed to start the web gateway (a lock file under `_local/certs` could not be
+  opened) with the game port up: `store.sh` says "the gateway did not come up" and
+  ends 1. Start EveJS again in the ordinary way (`restart-evejs-as.sh asitis`).
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
