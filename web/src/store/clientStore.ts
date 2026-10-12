@@ -681,6 +681,7 @@ const INITIAL_FLEET_COMPANION: FleetCompanionState = Object.freeze({
   startedAt: null,
   startError: null,
   failureReason: null,
+  selfPaused: false,
 });
 
 const INITIAL_MISSION_BOT: MissionBotState = Object.freeze({
@@ -2676,6 +2677,7 @@ export function createClientStore(): ClientStore {
           canTag: event.canTag,
           abandonment: event.abandonment,
           failureReason: event.failureReason,
+          selfPaused: event.selfPaused,
         });
         break;
       case "companion/start-error":

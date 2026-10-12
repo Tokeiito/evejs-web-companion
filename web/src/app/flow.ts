@@ -21356,6 +21356,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           canTag: progress.canTag,
           abandonment: progress.abandonment,
           failureReason: progress.failureReason,
+          selfPaused: progress.selfPaused,
         });
       },
     };

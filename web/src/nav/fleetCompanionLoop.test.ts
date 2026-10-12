@@ -1332,6 +1332,30 @@ test("an ambiguous alignment settling after pause and resume pauses the resumed 
   assert.equal(calls, 1);
 });
 
+test("a pause the run gives itself is marked selfPaused; the operator's pause and Carry on are not", async () => {
+  // The Fleet companions window restarts the first kind and must never restart
+  // the second: the operator's own Pause stays put.
+  const outcome = deferred<void>();
+  const companion = createFleetCompanion(makeDeps({
+    observe: async () => alignmentObs("broadcast", 1_000),
+    issue: async () => { await outcome.promise; },
+  }).deps);
+  companion.start(REQUEST);
+  assert.equal(companion.snapshot().selfPaused, false);
+  const first = companion.tick();
+  outcome.reject(Object.assign(new Error("Align response lost"), { code: "BRIDGE_NETWORK_ERROR" }));
+  await first;
+  assert.equal(companion.snapshot().status, "paused");
+  assert.equal(companion.snapshot().selfPaused, true);
+
+  companion.resume();
+  assert.equal(companion.snapshot().status, "running");
+  assert.equal(companion.snapshot().selfPaused, false);
+  companion.pause();
+  assert.equal(companion.snapshot().status, "paused");
+  assert.equal(companion.snapshot().selfPaused, false);
+});
+
 for (const oldOutcome of ["success", "CALL_REFUSED", "BRIDGE_NETWORK_ERROR"]) {
   test(`an old alignment ${oldOutcome} cannot settle a replacement Start with the same order identity`, async () => {
     const began = deferred<void>();

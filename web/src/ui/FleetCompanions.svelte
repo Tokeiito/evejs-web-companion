@@ -59,8 +59,12 @@
   // every field for one pilot rather than one field for every pilot.
   import { inFleetWords, orderFromWords } from "../bots/companionReadout.ts";
   import {
+    EMPTY_RESTART_MEMORY,
+    companionRestartWords,
     companionStatusWords,
     companionSummaryWords,
+    decideCompanionRestart,
+    type CompanionRestartMemory,
     inFleetFrom,
     runFactsFor,
     serverCompanions,
@@ -259,6 +263,14 @@
      * the roster is where that pilot is.
      */
     readonly refusal: string | null;
+    /**
+     * The restart bound for a companion that went down by itself. See
+     * `decideCompanionRestart`: the operator's own Stop and Pause are never
+     * restarted, and `started` above still guards the join-start.
+     */
+    readonly restart: CompanionRestartMemory;
+    /** Out of restarts: the row says it is waiting for the operator. */
+    readonly givenUp: boolean;
   }
 
   const EMPTY_WATCH: Watch = {
@@ -269,6 +281,8 @@
     started: false,
     stoodDown: false,
     refusal: null,
+    restart: EMPTY_RESTART_MEMORY,
+    givenUp: false,
   };
 
   let watches = $state<Record<number, Watch>>({});
@@ -379,6 +393,7 @@
       // and on this tab actually flying the pilot: a hull the SERVER is flying
       // is not ours to take.
       let started = verdict.state === "watching" ? false : watch.started;
+      let joinStarted = false;
       if (
         verdict.state === "in" &&
         !started &&
@@ -386,11 +401,39 @@
         !serverHeldCharacterIDs.has(characterID)
       ) {
         started = true;
+        joinStarted = true;
         try {
           await session.flow.startFleetCompanion(roster.setup);
         } catch {
           // The start's own refusal lands on the pilot's companion slice and is
           // shown by the embedded panel, which is the view that owns it.
+        }
+      }
+
+      // ⚠ THE OTHER START WITHOUT A PRESS: A COMPANION THAT WENT DOWN BY
+      // ITSELF. Not gated on the fleet verdict -- a run the operator had going
+      // is the operator's intent whether or not this tick could read the fleet,
+      // and the ladder decides for itself what being out of one means. It IS
+      // gated on the ship being this tab's: a hull the server is flying is not
+      // ours to restart. The abandonment record goes back in, so a restart in
+      // the middle of getting safe keeps the ORIGINAL thirty-minute clock
+      // rather than handing the pilot a fresh one.
+      const restartDecision = decideCompanionRestart(
+        {
+          status: companion?.status ?? null,
+          selfPaused: companion?.selfPaused ?? false,
+          failureReason: companion?.failureReason ?? null,
+          why: companion?.why ?? null,
+        },
+        watch.restart,
+        Date.now(),
+      );
+      if (restartDecision.restart && !joinStarted && !serverHeldCharacterIDs.has(characterID)) {
+        started = true;
+        try {
+          await session.flow.startFleetCompanion(roster.setup, companion?.abandonment ?? null);
+        } catch {
+          // As above: a refused start says so on the companion slice.
         }
       }
 
@@ -405,6 +448,12 @@
           started,
           stoodDown,
           refusal,
+          // A join-start this tick already brought the pilot up; that start is
+          // not one of the bounded restarts, so it is not counted as one.
+          restart: restartDecision.restart && joinStarted
+            ? { ...watch.restart, downSinceMs: null }
+            : restartDecision.memory,
+          givenUp: restartDecision.givenUp,
         });
       }
     } finally {
@@ -855,6 +904,16 @@
                 </td>
                 <td data-label="Companion">
                   {companionStatusWords(state?.status ?? null)}
+                  {#if watches[row.characterID]}
+                    {@const restartWords = companionRestartWords(
+                      watches[row.characterID].restart,
+                      watches[row.characterID].givenUp,
+                      Date.now(),
+                    )}
+                    {#if restartWords}
+                      <span class="note"> - {restartWords}</span>
+                    {/if}
+                  {/if}
                   <!-- ⚠ SAID OUT LOUD, THOUGH A BOT IS NOT THIS WINDOW'S
                        BUSINESS. Starting a companion on a hull a bot is flying
                        takes the ship off that bot; a roster that showed only

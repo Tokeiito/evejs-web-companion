@@ -1071,6 +1071,7 @@ export type FeedEvent =
        */
       readonly abandonment: CompanionAbandonmentRecord | null;
       readonly failureReason: string | null;
+      readonly selfPaused: boolean;
     }
   | { readonly type: "companion/start-error"; readonly message: string | null }
   | { readonly type: "companion/cleared" }
