@@ -454,6 +454,19 @@ and repair (8). The numbers are CCP's own (`structures/services.py`).
   `OnStructureServiceChanged(structureID)` and in another structure or none.
   Another structure's are asked each time. The gateway's list has not the call:
   the game port alone carries it.
+- **A structure's guests** are `structureGuests.GetGuests(structureID)`, by the
+  generic call, as the client's structure guests service asks: of the structure
+  the pilot is docked in, and with nothing else. It answers a dict, each
+  guest's `(corporationID, allianceID, factionID)` by its character. On the
+  game port the transport asks it as the pilot docks in a structure and as its
+  character is chosen in one, after the structure's services, keeps the answer,
+  works `OnCharacterEnteredStructure(characterID, corporationID, allianceID,
+  factionID)` and `OnCharacterLeftStructure(characterID)` into it, and lets it
+  go at every change of the session's structure: the page's read is answered
+  from what is kept. Asked of another structure, or by a pilot in none, it is
+  sent as it came each time. Through the web gateway it is 403
+  `CALL_NOT_ALLOWED`: its list has a station's guests and nothing of a
+  structure's, and the page shows none and says nothing.
 - `GET /api/dockable-structures/:id/services` → `{ ok, structureID, serviceIDs }`
   for the held pilot's own structure on the game port: the two a structure has for
   anyone docked in it (1, 2), each service in the server's answer, and 20

@@ -1981,6 +1981,31 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A block moved is seen again where it was.** The station's Offices block
   became a snippet for the structure's sake; the tab's station was looked at
   again after, and all three calls made there.
+- **A test that tells a call by its method alone fails for another service's
+  method of that name.** `structureGuests.GetGuests` failed a test that held
+  "no NPC station's reads in a structure" by the names `GetGuests`,
+  `GetStationItemBits` and `GetStationInfo`. Run the page's test folders by
+  themselves before the suite when a call is added (`node --test
+  "web/src/app/*.test.ts" "web/src/ui/*.test.ts" "web/src/bridge/*.test.ts"`,
+  about a minute), and make such a test tell its calls by service and method.
+- **A guard the breakages cannot reach may be the store's or the typecheck's
+  to hold.** Listing the breakages before running them found a guard of the
+  transport's that changed no answer (what is kept is let go at every change of
+  structure, so a late answer is never read): it was taken out and the reason
+  written in its place. One guard of the page's survived the tests and is held
+  by the typecheck alone: measure that (the breakage in, `tsc`, the source put
+  back from a copy), and say so.
+- **A notice is caused by every way a pilot can cause it.** The leaving of a
+  structure was sent at an undock and never at a move from one dock to another
+  (a GM's transfer, and a clone jump to a station): that transition announced
+  the arrival alone. A script that leaves its pilot's session at once also hides
+  an arrival behind the leaving its logout sends: hold the second pilot online
+  while the first is read. When a list is kept and changed by notices, cause
+  each notice the plain way first, then by each other transition the server has.
+- **A recording of a docking is the order to ask in.** The lines of one docking,
+  listed in order (`rec-seq.js` in the scratchpad: line, time, service, what
+  was sent), said at once what a client asks there, which the transport asked
+  already, and where the new call goes among them.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
