@@ -75,28 +75,25 @@ test("the op names ONE fleet, for every pilot in it", () => {
 
 test("⚠ the limits are asked for once, because adding a pilot STARTS it", () => {
   // A per-pilot form is a form nobody fills in before the start it gates. The
-  // six controls that used to live on the per-pilot panel live here now, and
-  // the panel is handed the answer.
+  // controls that used to live on the per-pilot panel live here now, and the
+  // panel is handed the answer.
   for (const control of [
     "companion-flee-floor",
     "companion-cap-floor",
     "companion-flee-attempts",
-    "companion-drone-floor",
-    "companion-drone-holdoff",
   ]) {
     assert.match(SOURCE, new RegExp(`id="${control}"`));
   }
   assert.match(SOURCE, /setup=\{roster\.setup\}/, "and the embedded panel flies it");
 });
 
-test("the drone number inputs are never disabled — there is no useDrones flag to gate them", () => {
+// The drone floor and hold-off were retired with the per-drone rotation
+// (2026-10-12): rung 6 pulls the drone whose shield is below full and sends it
+// straight back, so neither number has anything left to configure.
+test("the retired drone floor and hold-off are not offered any more", () => {
   const body = renderWindow({ sessions: [] });
-  const droneFloorInput = body.match(/<input[^>]*id="companion-drone-floor"[^>]*>/)?.[0] ?? "";
-  const droneHoldoffInput = body.match(/<input[^>]*id="companion-drone-holdoff"[^>]*>/)?.[0] ?? "";
-  assert.notEqual(droneFloorInput, "", "the drone floor input must render");
-  assert.notEqual(droneHoldoffInput, "", "the drone hold-off input must render");
-  assert.doesNotMatch(droneFloorInput, /disabled/);
-  assert.doesNotMatch(droneHoldoffInput, /disabled/);
+  assert.doesNotMatch(body, /id="companion-drone-floor"/);
+  assert.doesNotMatch(body, /id="companion-drone-holdoff"/);
 });
 
 // ─── the join, which is the other half of adding a pilot ─────────────────────
