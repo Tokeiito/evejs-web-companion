@@ -8763,29 +8763,105 @@ test("the bookmarks kept are let go at the server's word of a shared folder, and
   await keeps("other notices", () => { session.notify("OnOfficeRentalChange", [1000044, 7]); session.notify("OnSharedBookmarksSomethingElse", [500002]); session.notify("OnNewCalendarEvent", [1, 7]); });
 });
 
-test("a place bookmarked on the ballpark's object lets the bookmarks kept go, by beyonce's name and on a handle, and an order to the ship does not", async () => {
+// bookmarkSvc.ACLBookmarkLocation (617 to 619) and NewBookmarkCreated (634 to 640): the park answers the bookmark's
+// ID, its item, its type, its place, its system and when it runs out; with an ID among them the client makes a
+// bookmark of the eight and of what it sent, keeps it beside the rest, and asks nothing.
+
+/** A pilot in space whose bookmark manager answers one bookmark, numbered by the asking, and whose park answers a bookmarking as the test says. */
+async function inSpaceWithBookmarks(saved) {
   const hand = handTicked();
-  let times = 0;
+  const asked = { times: 0 };
   const allowed = new Set([BOOKMARKS, "beyonce.MachoBindObject", "beyonce.BookmarkLocation", "beyonce.BookmarkScanResult", "beyonce.CmdStop"]);
-  const saved = [900001, null, 5, 1.5, 2.5, 3.5, 30000142, null];
-  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, [BOOKMARKS]: () => { times += 1; return threeLists(aBookmark(900000 + times)); }, "bound:BookmarkLocation": saved, "bound:BookmarkScanResult": saved } }, { ...hand.options, allowed });
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, [BOOKMARKS]: () => { asked.times += 1; return threeLists(aBookmark(900000 + asked.times)); }, "bound:BookmarkLocation": saved, "bound:BookmarkScanResult": [900077, null, 5, 1.5, 2.5, 3.5, 30000142, null] } }, { ...hand.options, allowed });
   const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
-  const bookmarks = async () => bookmarkIDs((await built.pilots.callMethod("accessGroupBookmarkMgr", "GetMyActiveBookmarks", [], null, WHOSE, handle)).result)[0] - 900000;
-  assert.deepEqual([await bookmarks(), await bookmarks(), times], [1, 1, 1]);
-  // bookmarkSvc.ACLBookmarkLocation (617): on the park, asked by beyonce's name.
-  await built.pilots.callMethod("beyonce", "BookmarkLocation", [1000000012345, 7000001, "A spot", "a note", 2], { subfolderID: null }, WHOSE, handle);
-  assert.deepEqual([await bookmarks(), await bookmarks(), times], [2, 2, 2]);
-  // And on a handle of the park's.
-  const { boundHandle } = await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
-  await built.pilots.callBoundMethod("beyonce", "BookmarkLocation", [1000000012345, 7000001, "A spot", "a note", 2], { subfolderID: null }, WHOSE, handle, boundHandle);
-  assert.deepEqual([await bookmarks(), times], [3, 3]);
-  // bookmarkSvc.ACLBookmarkScanResult (629): a scan result's place, on the park too.
-  await built.pilots.callBoundMethod("beyonce", "BookmarkScanResult", [30000142, "A site", "", "ABC-123", 7000001, 0], { subfolderID: null }, WHOSE, handle, boundHandle);
-  assert.deepEqual([await bookmarks(), times], [4, 4]);
+  const read = async () => (await built.pilots.callMethod("accessGroupBookmarkMgr", "GetMyActiveBookmarks", [], null, WHOSE, handle)).result;
+  const bookmark = (args, kwargs = { subfolderID: null }) => built.pilots.callMethod("beyonce", "BookmarkLocation", args, kwargs, WHOSE, handle);
+  return { ...built, hand, handle, asked, read, bookmark };
+}
+/** The client's five for a place bookmarked: the item, the folder, the name, the comment, and how long it lasts. */
+const A_PLACE = [1000000012345, 7000001, "A spot", "a note", 2];
+/** A bookmark as the transport hands one on, by its names in order. */
+const namesAndValues = (row) => row.args.entries;
+
+test("a place bookmarked on the ballpark's object is kept beside the rest as the client keeps it, and nothing is asked for it", async () => {
+  const NOW = 1_700_000_000_000;
+  const runsOut = filetimeOf(NOW + 172_800_000);
+  let answer = [7000042, null, 5, 1.5, 2.5, 3.5, 30000142, runsOut];
+  const { session, asked, read, bookmark, hand, pilots, handle } = await inSpaceWithBookmarks(() => answer);
+  assert.deepEqual([bookmarkIDs(await read()), asked.times], [[900001], 1]);
+  // By beyonce's name, as the client asks it.
+  await bookmark(A_PLACE);
+  const after = await read();
+  assert.deepEqual([bookmarkIDs(after), bookmarkIDs(await read()), asked.times], [[900001, 7000042], [900001, 7000042], 1], "kept beside the rest, and nothing asked");
+  // The client's own fifteen, in its order: what the park answered, what was sent, the pilot, and the clock.
+  assert.deepEqual([after[1].items[1].type, after[1].items[1].name], ["object", "util.KeyVal"]);
+  assert.deepEqual(namesAndValues(after[1].items[1]), [
+    ["bookmarkID", 7000042], ["folderID", 7000001], ["itemID", null], ["typeID", 5], ["flag", null], ["memo", "A spot"],
+    ["created", { type: "long", value: String(filetimeOf(NOW)) }], ["expiry", { type: "long", value: String(runsOut) }],
+    ["x", 1.5], ["y", 2.5], ["z", 3.5], ["locationID", 30000142], ["note", "a note"], ["subfolderID", null], ["creatorID", PILOT],
+  ]);
+  // The folders and the subfolders are as they were answered.
+  assert.deepEqual([after.length, after[0].items.length, after[2].items.length], [3, 1, 0]);
+  // On a handle of the park's, into a subfolder: kept the same way, the subfolder with it.
+  const { boundHandle } = await pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
+  answer = [7000043, null, 5, 4.5, 5.5, 6.5, 30000142, null];
+  await pilots.callBoundMethod("beyonce", "BookmarkLocation", [1000000012345, 7000001, "Another", "", 0], { subfolderID: 7000009 }, WHOSE, handle, boundHandle);
+  const withThird = await read();
+  assert.deepEqual([bookmarkIDs(withThird), asked.times], [[900001, 7000042, 7000043], 1]);
+  const third = Object.fromEntries(namesAndValues(withThird[1].items[2]));
+  assert.deepEqual([third.memo, third.note, third.subfolderID, third.expiry, third.x], ["Another", "", 7000009, null, 4.5]);
+  // The one that runs out is gone by the clock, as any is; the rest stay, and nothing is asked.
+  session.serverNowMs = NOW + 172_800_001;
+  assert.deepEqual([bookmarkIDs(await read()).includes(7000042), asked.times], [false, 1]);
+  assert.deepEqual(hand.errors, []);
+});
+
+test("a bookmark answered with the ID of one that is kept takes its place, one answered with no ID changes nothing, and a refusal changes nothing", async () => {
+  let answer = [900001, null, 5, 9.5, 9.5, 9.5, 30000142, null];
+  let refuse = false;
+  const { asked, read, bookmark, hand } = await inSpaceWithBookmarks(() => { if (refuse) throw refusedBy("BkmNotAvailable"); return answer; });
+  assert.deepEqual([bookmarkIDs(await read()), asked.times], [[900001], 1]);
+  // The client keeps its bookmarks by their IDs: one of the same ID is the one kept from then on.
+  await bookmark(A_PLACE);
+  const kept = await read();
+  assert.deepEqual([bookmarkIDs(kept), Object.fromEntries(namesAndValues(kept[1].items[0])).x, asked.times], [[900001], 9.5, 1]);
+  // `if bookmarkID:` (618). With none, nothing is made.
+  for (const none of [0, null]) {
+    answer = [none, null, 5, 1.5, 2.5, 3.5, 30000142, null];
+    await bookmark(A_PLACE);
+    assert.deepEqual([bookmarkIDs(await read()), asked.times], [[900001], 1], String(none));
+  }
+  // A refusal reaches the client as an error, and its bookmarks are as they were.
+  refuse = true;
+  await rejects(bookmark(A_PLACE), "CALL_REFUSED");
+  assert.deepEqual([bookmarkIDs(await read()), asked.times], [[900001], 1]);
+  assert.deepEqual(hand.errors, []);
+});
+
+test("a bookmarking that is not the client's, or is answered with what is not the eight, lets the bookmarks kept go; a scan result's does; an order to the ship does not", async () => {
+  let answer = [7000042, null, 5, 1.5, 2.5, 3.5, 30000142, null];
+  const { asked, read, bookmark, hand, pilots, handle } = await inSpaceWithBookmarks(() => answer);
+  const lettingGo = async (what, change) => {
+    const before = asked.times;
+    await change();
+    assert.deepEqual([bookmarkIDs(await read()), bookmarkIDs(await read()), asked.times], [[900000 + before + 1], [900000 + before + 1], before + 1], what);
+  };
+  assert.deepEqual([bookmarkIDs(await read()), asked.times], [[900001], 1]);
+  // No name: the client names every bookmark it makes, and this is none of its calls (retailCalls.js, bookmarking).
+  await lettingGo("not the client's form", () => bookmark([1000000012345, 7000001, "", "a note", 2], null));
+  // What is not the eight is nothing to make a bookmark of.
+  for (const odd of [null, "saved", [7000042, null, 5], { type: "list", items: [] }]) {
+    answer = odd;
+    await lettingGo(`answered ${JSON.stringify(odd)}`, () => bookmark(A_PLACE));
+  }
+  // bookmarkSvc.ACLBookmarkScanResult (629): a scan result's place is the client's to work in too, and is not worked in here.
+  const { boundHandle } = await pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
+  await lettingGo("a scan result's place", () => pilots.callBoundMethod("beyonce", "BookmarkScanResult", [30000142, "A site", "", "ABC-123", 7000001, 0], { subfolderID: null }, WHOSE, handle, boundHandle));
   // An order to the ship changes no bookmark.
-  await built.pilots.callMethod("beyonce", "CmdStop", [], null, WHOSE, handle);
-  await built.pilots.callBoundMethod("beyonce", "CmdStop", [], null, WHOSE, handle, boundHandle);
-  assert.deepEqual([await bookmarks(), times], [4, 4]);
+  const before = asked.times;
+  await pilots.callMethod("beyonce", "CmdStop", [], null, WHOSE, handle);
+  await pilots.callBoundMethod("beyonce", "CmdStop", [], null, WHOSE, handle, boundHandle);
+  assert.deepEqual([bookmarkIDs(await read()), asked.times], [[900000 + before], before]);
   assert.deepEqual(hand.errors, []);
 });
 

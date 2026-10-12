@@ -3,6 +3,9 @@ import type { MiningOperationTarget } from "./scriptConditions.ts";
 
 /** Existing personal bookmarks are the travel authority after a scanner site
  * disappears. Read back the coordinate bookmark; a successful write is not proof.
+ * (On the game port the reading back is of what the transport keeps: the bookmark it
+ * made of the park's own answer to the bookmarking, as the client makes one. Its
+ * place, its system and its item are the server's word; its note is what was sent.)
  * Auto-expiry bounds orphaned bookmarks after a crash (no new persistence owner). */
 export async function ensureSiteLogisticsBookmark(target: MiningOperationTarget, operationID: string, shipID: number, deps: {
   read(): Promise<ActiveBookmarks>;

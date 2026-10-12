@@ -268,6 +268,8 @@ const ACTIVE_BOOKMARKS = "GetMyActiveBookmarks";
  * and for one with something sent beside it, which is no call of the client's and is asked as it came.
  */
 const bookmarksKeptAs = (method, form) => (method === ACTIVE_BOOKMARKS && form.args.length === 0 && form.kwargs === null ? "active" : null);
+/** bookmarkSvc.ACLBookmarkLocation (617): the park's call that bookmarks a place in space, which the client works into what it keeps. */
+const BOOKMARK_LOCATION = "BookmarkLocation";
 /**
  * The answers a service of the client's keeps until something changes them, by the service they are asked of
  * (keptReads.js). `keptAs` says what a read is kept as, or null for one that is not kept. What changes them is
@@ -311,15 +313,16 @@ const KEPT_UNTIL_CHANGED = Object.freeze({
   }),
   // bookmarkSvc: a shared folder changed, was deleted, is the pilot's to see no more, or is its to do other things
   // in (232, 322, 332, 343); and the pilot's own making, changing and deleting of a bookmark, a folder or a
-  // subfolder, on the manager (every such call of the service's) or on the ballpark's own object (617, 629). The
-  // client works each into what it keeps, and asks nothing.
+  // subfolder, on the manager (every such call of the service's) or on the ballpark's own object (a scan result's
+  // place, 629). The client works each into what it keeps, and asks nothing. A place bookmarked on the park (617)
+  // is worked in here too, as the client works it, and is not among these (afterBookmarkCall).
   [BOOKMARK_MGR]: Object.freeze({
     keptAs: bookmarksKeptAs,
     notices: new Set(["OnSharedBookmarksFolderUpdated", "OnSharedBookmarksFolderDeleted", "OnSharedBookmarksFoldersAccessLost", "OnSharedBookmarksFoldersAccessChanged"]),
     writes: Object.freeze({
       accessGroupBookmarkMgr: new Set(["AddFolder", "UpdateFolder", "DeleteFolder", "AddToKnownFolders", "RemoveFromKnownFolders", "UpdateKnownFolderState", "BookmarkStaticLocation",
         "UpdateBookmark", "DeleteBookmarks", "MoveBookmarksToFolderAndSubfolder", "CopyBookmarksToFolderAndSubfolder", "CreateSubfolder", "UpdateSubfolder", "DeleteSubfolder"]),
-      beyonce: new Set(["BookmarkLocation", "BookmarkScanResult"]),
+      beyonce: new Set(["BookmarkScanResult"]),
     }),
   }),
 });
@@ -349,6 +352,31 @@ function wholeOf(value) {
 
 /** Whether an answer is the bookmark manager's three lists: the folders, the bookmarks, the subfolders. */
 const isTheThreeLists = (answered) => Array.isArray(answered) && answered.length === 3 && answered.every(isAList);
+
+/**
+ * bookmarkSvc.NewBookmarkCreated (634 to 640): the bookmark the client makes of a place it has just bookmarked, of
+ * what the park answered and of what was sent, and keeps beside the server's own. Its fifteen names are a
+ * bookmark's as this server answers one, in the same order; its making is the clock's, and its maker the pilot.
+ */
+function bookmarkMade({ bookmarkID, folderID, itemID, typeID, name, comment, created, expiry, x, y, z, locationID, subfolderID, creatorID }) {
+  return { type: "object", name: "util.KeyVal", args: { type: "dict", entries: [
+    ["bookmarkID", bookmarkID], ["folderID", folderID], ["itemID", itemID], ["typeID", typeID], ["flag", null], ["memo", name],
+    ["created", created], ["expiry", expiry], ["x", x], ["y", y], ["z", z], ["locationID", locationID], ["note", comment],
+    ["subfolderID", subfolderID], ["creatorID", creatorID],
+  ] } };
+}
+
+/**
+ * The three lists with a bookmark among the bookmarks, in the place of any that has its ID: the client keeps its
+ * bookmarks by their IDs (bookmarkCache[bookmarkID] = bm, 636). The lists kept are left as they were.
+ */
+function withBookmark(lists, made, bookmarkID) {
+  const [folders, bookmarks, subfolders] = lists;
+  const id = wholeOf(bookmarkID);
+  const others = itemsOf(bookmarks).filter((row) => id === null || wholeOf(row && row.type === "object" && row.args ? dictValue(row.args, "bookmarkID") : undefined) !== id);
+  const all = [...others, made];
+  return [folders, Array.isArray(bookmarks) ? all : { ...bookmarks, items: all }, subfolders];
+}
 
 /**
  * bookmarkSvc.RemoveExpiredBookmarks (186 to 192): the three lists less the bookmarks whose time has run out by the
@@ -1618,6 +1646,8 @@ function createGamePortPilots({
     if (service === "dogmaIM") afterGroupingCall(entry, method, form.args, result);
     // An order to the ship made on the park's object is the pilot's last order, as one made on a handle is.
     if (park !== null) afterMovementCall(entry, method, form.args, form.kwargs);
+    // And a place bookmarked there is a bookmark the client has from then on.
+    if (park !== null) afterBookmarkCall(entry, service, method, form, result);
     return {
       service,
       method,
@@ -1959,6 +1989,34 @@ function createGamePortPilots({
     if (isTheThreeLists(answered)) return withoutExpiredBookmarks(answered, entry.session.serverNow());
     entry.kept[BOOKMARK_MGR].forget();
     return answered;
+  }
+
+  /**
+   * bookmarkSvc.ACLBookmarkLocation (617 to 619): a place bookmarked on the park is answered the bookmark's ID, its
+   * item, its type, its place, its system and when it runs out. With an ID among them the client makes a bookmark
+   * of the eight and of what it sent (NewBookmarkCreated), keeps it beside the rest, and asks nothing; with none it
+   * keeps what it has, as it does where the call is refused, which never comes here. So here, where the call was
+   * the client's own. One that was not, or an answer that is not the eight, leaves nothing the client would keep:
+   * what is kept is let go, and asked for when it is next wanted. Where nothing is kept there is nothing to work it
+   * into, and the next reading asks.
+   */
+  function afterBookmarkCall(entry, service, method, form, result) {
+    if (service !== "beyonce" || method !== BOOKMARK_LOCATION) return;
+    const answered = Array.isArray(result) || isAList(result) ? itemsOf(result) : [];
+    if (form.status === "differs" || answered.length !== 8) {
+      entry.kept[BOOKMARK_MGR].forget();
+      return;
+    }
+    const [bookmarkID, itemID, typeID, x, y, z, locationID, expiry] = answered;
+    if (!bookmarkID) return;
+    const [, folderID, name, comment] = form.args;
+    const made = bookmarkMade({
+      bookmarkID, folderID, itemID, typeID, name, comment, expiry, x, y, z, locationID,
+      created: BigInt(Math.trunc(entry.session.serverNow())) * 10000n + FILETIME_OF_UNIX_EPOCH,
+      subfolderID: (form.kwargs && form.kwargs.subfolderID) ?? null,
+      creatorID: entry.characterID,
+    });
+    entry.kept[BOOKMARK_MGR].amend("active", (lists) => (isTheThreeLists(lists) ? withBookmark(lists, made, bookmarkID) : undefined));
   }
 
   /** One of the client's own askings of a service by its name, with nothing: noted as it is sent. */
@@ -3335,6 +3393,7 @@ function createGamePortPilots({
     if (service === "scanMgr") afterScanManagerCall(entry, method, form.args, result);
     if (service === "dogmaIM") afterGroupingCall(entry, method, form.args, result);
     if (service === "beyonce") afterMovementCall(entry, method, form.args, kwargs);
+    afterBookmarkCall(entry, service, method, form, result);
     if (service === "fleetObjectHandler") await afterFleetCall(entry, object, method, result);
     return {
       service,

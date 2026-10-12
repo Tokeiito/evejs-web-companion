@@ -35,9 +35,12 @@
 //
 // ON THE GAME PORT THE TRANSPORT KEEPS THEM (src/gamePort/pilots.js, bookmarksRead). They are asked for as a
 // character is chosen, as a client asks, and from then on the page's asking is answered from what is kept, with
-// nothing sent. What is kept is let go at the pilot's own write of a bookmark, a folder or a subfolder, and at the
-// server's word of a shared folder, and is asked for when it is next wanted: once more than a client asks, which
-// works each into what it keeps. A bookmark whose time has run out by the server's clock is not handed on.
+// nothing sent. A PLACE BOOKMARKED ON THE BALLPARK'S OBJECT, the page's one write of a bookmark
+// (bridge/bookmarkWrites.ts), is worked into what is kept as the client works it (bookmarkSvc.NewBookmarkCreated,
+// 634 to 640): the bookmark is made of what the park answered and of what was sent, and nothing is asked. At any
+// other write of the pilot's own of a bookmark, a folder or a subfolder, and at the server's word of a shared
+// folder, what is kept is let go and asked for when it is next wanted: once more than a client asks, which works
+// each of those into what it keeps too. A bookmark whose time has run out by the server's clock is not handed on.
 // Through the gateway each asking is sent.
 //
 // AN ANSWER THAT IS NOT THE THREE LISTS IS NOT "NO BOOKMARKS". The route answered a read that had failed with
