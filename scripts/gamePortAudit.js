@@ -84,9 +84,14 @@ function createAudit({ retailForm, marshalEncode, isBridgeWritePair, currentRequ
     } });
   }
 
-  /** A value the page is writing as JSON: where it is a pilot's call of the page's own, it is looked at. */
+  /**
+   * A value the page is writing as JSON: where it is a call of the page's own, it is looked at. A call is told by
+   * its body as the page builds one (bridge/callMethod.ts): a service, a method, a list of arguments, and its
+   * keywords, whatever they are. Whether it says it is a pilot's is nothing to this: the account's own calls, and
+   * those made on the session held, go to the game port as a pilot's do.
+   */
   function auditPageCall(value) {
-    if (!value || typeof value !== "object" || value.pilot !== true || typeof value.service !== "string" || typeof value.method !== "string" || !Array.isArray(value.args)) return;
+    if (!value || typeof value !== "object" || typeof value.service !== "string" || typeof value.method !== "string" || !Array.isArray(value.args) || !Object.hasOwn(value, "kwargs")) return;
     saw(PAGES_OWN_CALL, "page", `${value.service}.${value.method}`);
     // What the BFF's parser makes of it: the page's body, read back.
     const body = JSON.parse(JSON.stringify({ args: value.args, kwargs: value.kwargs ?? null }));

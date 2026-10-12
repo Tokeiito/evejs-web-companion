@@ -172,12 +172,23 @@ test("the page's own call is looked at as the BFF would hand it on: read back fr
   seen.pop();
   assert.deepEqual(seen, [[PAGES_OWN_CALL, "page", "industryManager.CompleteJob"], [PAGES_OWN_CALL, "page", "beyonce.BookmarkLocation"], [PAGES_OWN_CALL, "page", "station.GetGuests"], [PAGES_OWN_CALL, "page", "planetMgr.UserUpdateNetwork"]]);
 
-  // What is not a pilot's call of the page's is nothing to it.
-  for (const other of [null, "text", [1], { service: "x", method: "y", args: [{}] }, { service: "x", method: "y", args: [{}], pilot: false }, { service: "x", args: [{}], pilot: true }, { service: "x", method: "y", args: "none", pilot: true }]) {
+  // A call that says nothing of a pilot is the page's own too: the account's, with no pilot chosen (a name
+  // checked), and one made on the session held (the station's guests). Each goes to the game port as a pilot's does.
+  auditPageCall({ service: "charUnboundMgr", method: "ValidateNameEx", args: ["A Name"], kwargs: null });
+  auditPageCall({ service: "map", method: "GetStationInfo", args: [], kwargs: null, session: { languageID: "EN" } });
+  assert.deepEqual(seen.slice(4), [[PAGES_OWN_CALL, "page", "charUnboundMgr.ValidateNameEx"], [PAGES_OWN_CALL, "page", "map.GetStationInfo"]]);
+  assert.equal(notes.length, 1);
+  auditPageCall({ service: "charUnboundMgr", method: "GetValidRandomName", args: [{ raceID: 1 }], kwargs: null });
+  assert.deepEqual([notes.length, notes[1].kind, notes[1].fn, notes[1].pair], [2, "unsendable", "page", "charUnboundMgr.GetValidRandomName"]);
+
+  // What is no call as the page builds one is nothing to it: a call has a service, a method, a list of arguments
+  // and its keywords, whatever they are (bridge/callMethod.ts).
+  for (const other of [null, "text", [1], { service: "x", method: "y", args: [{}] }, { service: "x", method: "y", args: [{}], pilot: true }, { service: "x", args: [{}], kwargs: null, pilot: true },
+    { service: "x", method: "y", args: "none", kwargs: null, pilot: true }, { service: 7, method: "y", args: [{}], kwargs: null }, { service: "x", method: ["y"], args: [{}], kwargs: null }]) {
     auditPageCall(other);
   }
-  assert.equal(notes.length, 1);
-  assert.equal(seen.length, 4);
+  assert.equal(notes.length, 2);
+  assert.equal(seen.length, 7);
 });
 
 // The app's own table of routes, as scripts/appRoutes.js lists it: in the app's order, whatever registered each.

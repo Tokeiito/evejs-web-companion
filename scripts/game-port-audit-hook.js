@@ -85,7 +85,7 @@ if (out && seenAt) {
   if (testFile.startsWith("web/")) {
     const stringify = JSON.stringify;
     JSON.stringify = function stringified(value, ...rest) {
-      if (value && typeof value === "object" && value.pilot === true) {
+      if (value && typeof value === "object" && typeof value.service === "string" && typeof value.method === "string") {
         try { theAudit().auditPageCall(value); } catch { /* left undone */ }
       }
       return stringify.call(JSON, value, ...rest);

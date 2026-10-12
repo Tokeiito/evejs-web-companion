@@ -3,6 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { bridgeDo } from "../app/api.ts";
 import type { Ask } from "./ask.ts";
 import { BOOKMARK_EXPIRY, bookmarkLocation } from "./bookmarkWrites.ts";
 import type { JsonValue } from "./wire.ts";
@@ -68,4 +69,22 @@ test("nothing is asked for what the client asks nothing for: no thing, no folder
     assert.equal(asked.length, 1, String(thing));
   }
   await assert.rejects(bookmarkLocation(asking(new Error("FolderAccessDenied")).act, 1000000012345, 7000001, "A spot", "", 0), /FolderAccessDenied/);
+});
+
+// The same, as it leaves the page: by the page's own asking of a write (app/api.ts, bridgeDo), which is the
+// generic route's call said to be a pilot's and meant. Until 2026-10-11 no test of the page's made this write, so
+// the game-port audit never looked at what the page sends for it.
+test("a place bookmarked leaves the page as a pilot's write, meant: the client's five by position and the subfolder by keyword, on no object the page names", async () => {
+  const sent: [string, unknown][] = [];
+  const act = bridgeDo({ token: "a-pilot's", fetch: (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    sent.push([String(input), JSON.parse(String(init?.body))]);
+    return Response.json({ ok: true, service: "beyonce", method: "BookmarkLocation", result: [7000042, 7000001, null, null], notifications: [] });
+  }) as typeof globalThis.fetch });
+  assert.equal(await bookmarkLocation(act, 1000000012345, 7000001, "A\tspot", "seen here", BOOKMARK_EXPIRY.twoDays), 7000042);
+  assert.deepEqual(sent, [["/api/bridge/call", { service: "beyonce", method: "BookmarkLocation", args: [1000000012345, 7000001, "A spot", "seen here", 2],
+    kwargs: { subfolderID: null }, pilot: true, confirm: true }]]);
+  // With a subfolder: by its keyword still, and the rest as it was.
+  await bookmarkLocation(act, 1000000012345, 7000001, "Another", "", BOOKMARK_EXPIRY.none, 7000009);
+  assert.deepEqual(sent[1], ["/api/bridge/call", { service: "beyonce", method: "BookmarkLocation", args: [1000000012345, 7000001, "Another", "", 0],
+    kwargs: { subfolderID: 7000009 }, pilot: true, confirm: true }]);
 });
