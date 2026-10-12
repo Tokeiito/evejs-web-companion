@@ -20584,6 +20584,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     cargoCharges: readonly CompanionCargoCharge[] | null;
     weaponChargeGroups: Readonly<Record<number, readonly number[]>> | null;
   } = { emptyWeaponModuleIDs: null, cargoCharges: null, weaponChargeGroups: null };
+  /**
+   * The hull's lock count and lock range, off the fit `readCompanionFitFacts`
+   * reads at start. The lock-ahead needs the count (unreadable means it never
+   * pre-locks) and free fire and the lock-ahead both need the range; neither
+   * was reaching the companion's observation before, so free fire's range gate
+   * was always open. `null` until a fit is read, and for a fit that said
+   * nothing -- never a guess.
+   */
+  let companionTargeting: { maxLockedTargets: number | null; maxTargetRangeM: number | null } = {
+    maxLockedTargets: null,
+    maxTargetRangeM: null,
+  };
 
   // --- waking the companion on a push ---------------------------------------
   //
@@ -21043,6 +21055,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           fleetTargetTags,
           fleetBroadcast,
           lockedTargetIDs,
+          maxLockedTargets: companionTargeting.maxLockedTargets,
+          maxTargetRangeM: companionTargeting.maxTargetRangeM,
           // ⚠ THE GATE IS CLIENT-SIDE BECAUSE THE SERVER REFUSES SILENTLY.
           // `setFleetTargetTag` returns a bare `false` for a non-commander and
           // its only caller discards that boolean, so the write's own ack says
@@ -22358,6 +22372,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     try {
       await loadFitting();
       const fit = store.fitting.get();
+      // Read before the slots gate: the stats come off the hull, not the slots.
+      companionTargeting = {
+        maxLockedTargets: fit.stats.targeting.maxLockedTargets.known
+          ? fit.stats.targeting.maxLockedTargets.value
+          : null,
+        maxTargetRangeM: fit.stats.targeting.maxTargetRange.known
+          ? fit.stats.targeting.maxTargetRange.value
+          : null,
+      };
       if (fit.slotsError !== null) {
         return UNREADABLE_COMPANION_FIT;
       }
