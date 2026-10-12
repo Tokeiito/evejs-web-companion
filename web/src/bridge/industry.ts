@@ -99,6 +99,18 @@ export function activityIsFor(activity: IndustryActivity, original: boolean): bo
 /** The most copies one copy job makes: the game's own client holds a job to it, and the server refuses more. */
 export const MOST_COPIES_A_JOB = 500;
 
+/** The most runs of one invention: the game's own client holds a job to it, and the server refuses more. */
+export const MOST_INVENTIONS_A_JOB = 500;
+
+/**
+ * The blueprints an invention could make, where its recipe has more than one: the job makes the one the pilot
+ * chooses, and the game's own client sends no such job until one is chosen. None where the recipe has the one,
+ * which the job makes with nothing said, and none for any other kind of work.
+ */
+export function inventionChoices(recipe: IndustryRecipe | null): readonly number[] {
+  return recipe && recipe.activity === "invention" && recipe.products.length > 1 ? recipe.products.map((product) => product.typeID) : [];
+}
+
 /** What one run of a research takes of its recipe's time, by the level the run starts from: the game's own table. */
 const RESEARCH_TIMES: readonly number[] = [1.0, 29 / 21.0, 23 / 7.0, 39 / 5.0, 278 / 15.0, 928 / 21.0, 2200 / 21.0, 5251 / 21.0, 4163 / 7.0, 29660 / 21.0];
 
@@ -143,6 +155,26 @@ export function researchStanding(
     from,
     to: Math.min(from + research.step * Math.max(0, Math.trunc(runs) || 0), research.most),
   };
+}
+
+/**
+ * The most runs a job of a kind of work could be asked for of a blueprint. A copy is finite; a copy job makes only
+ * so many copies; a research has only the levels that are left to the blueprint (one at the least, as the game's
+ * own client has it); and an invention has only so many runs, and no more than its copy has.
+ */
+export function mostRunsToAsk(
+  activity: IndustryActivity | null,
+  blueprint: Pick<IndustryBlueprintRow, "original" | "runs" | "timeEfficiency" | "materialEfficiency">,
+): number {
+  if (activity === "copying") {
+    return MOST_COPIES_A_JOB;
+  }
+  const research = activity === null ? null : researchStanding(activity, blueprint);
+  if (research) {
+    return Math.max(1, research.runsLeft);
+  }
+  const most = blueprint.original ? 1000 : Math.max(1, blueprint.runs);
+  return activity === "invention" ? Math.min(most, MOST_INVENTIONS_A_JOB) : most;
 }
 
 /** status code -> status name (industryConstants.INDUSTRY_STATUS). */
@@ -522,6 +554,9 @@ export function recipeFor(
  * A COPY JOB'S MATERIALS ARE FOR EVERY RUN OF EVERY COPY: `licensedRuns` is
  * the runs each copy is licensed for, and counts for a copy job alone.
  *
+ * AN INVENTION'S DECRYPTOR IS ONE OF ITS MATERIALS, one a run: `decryptorTypeID`,
+ * which counts for an invention alone, and is listed last.
+ *
  * ⚠ THIS IS A PREVIEW, NOT A PREDICTION. The server recomputes materials from
  * the same static definition PLUS facility rig/structure bonuses this cannot
  * see, so its final figure can be lower. The panel labels this "about", and
@@ -534,6 +569,7 @@ export function previewMaterials(
   runs: number,
   materialEfficiency: number,
   licensedRuns = 1,
+  decryptorTypeID = 0,
 ): readonly IndustryMaterial[] {
   if (!recipe || runs <= 0) {
     return [];
@@ -543,13 +579,14 @@ export function previewMaterials(
     recipe.activity === "manufacturing"
       ? Math.max(0, Math.min(100, materialEfficiency)) / 100
       : 0;
-  return recipe.materials.map((material) => ({
+  const listed = recipe.materials.map((material) => ({
     typeID: material.typeID,
     quantity: Math.max(
       runs,
       Math.ceil(material.quantity * materialRuns * (1 - efficiency)),
     ),
   }));
+  return recipe.activity === "invention" && decryptorTypeID > 0 ? [...listed, { typeID: decryptorTypeID, quantity: runs }] : listed;
 }
 
 /**

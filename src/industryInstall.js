@@ -1,25 +1,18 @@
 "use strict";
 
-// What an InstallJob request carries that the client's own job reckons before it sends the job: a manufacturing
-// job's time, cost, tax and materials, a copy job's and a research job's the same, and an invention's materials where
-// it has a decryptor.
+// What an InstallJob request carries that the client's own job reckons before it sends the job: the time, the cost,
+// the tax and the materials of a manufacturing job, a copy job, a research job and an invention.
 //
 // ---------------------------------------------------------------------------
-// AN INVENTION WITH A DECRYPTOR. The client's job sends its materials with every job (industry/job.py dump, 637);
-// the BFF sends a manufacturing job's and a copy job's (manufacturingJobMaterials and copyingJobMaterials, below)
-// and, for any other kind of work, an empty map, which the server reads as "recompute from the blueprint"
-// (industryRuntimeState.js, after
-// Job._get_errors). A decryptor is the exception among those: the server takes it from the request's materials
-// ONLY (resolveInventionDecryptorSelection: one decryptor, quantity equal to the runs), and once that map is
-// non-empty it must match the server's own map EXACTLY (materialMapsMatchExactly) or the install is refused
-// with MISMATCH_MATERIAL. So the map is built here as the client's job builds it (industry/job.py 470 to 485):
+// THE MATERIALS GO WITH EVERY JOB (industry/job.py dump, 637), each quantity made whole as the client's job makes
+// it (470 to 485):
 //
-//     quantity = float(base), times each material modifier in turn, times the runs
+//     quantity = float(base), times each material modifier in turn, times the runs the materials are for
 //     max(int(math.ceil(round(quantity, 2))), runs)
 //
-// per invention material, where the modifiers are the facility's material modifiers for invention that are for
-// the product, in the facility's order (an invention has no material modifier of its own:
-// activities/invention.py's are of the probability), plus the decryptor at one per run.
+// The server holds a map that is not empty against its own, and refuses one that is not its own to the unit
+// (MISMATCH_MATERIAL). AN INVENTION'S DECRYPTOR is in that map and nowhere else: the server takes it from the
+// request's materials ONLY (resolveInventionDecryptorSelection: one decryptor, at the job's runs).
 
 const DECRYPTOR_GROUP_ID = 1304;
 const INVENTION_ACTIVITY_ID = 8;
@@ -45,6 +38,17 @@ const SUPERCAPITAL_SHIP_GROUPS = new Set([659, 30]);
 const CAPITAL_SHIP_GROUPS = new Set([1538, 547, 5120, 485, 883, 4594]);
 /** structures/services.py: the service a structure copies a blueprint by. */
 const SERVICE_LABORATORY_COPYING = 33;
+/** structures/services.py: the service a structure invents by. */
+const SERVICE_LABORATORY_INVENTION = 34;
+/** activities/invention.py MAX_RUNS: the most runs one invention has. */
+const INVENTION_MAX_RUNS = 500;
+/**
+ * The name the empty place of an invention's optional material has in the BFF's own job. The client's job has the
+ * place among its materials whether a decryptor is in it or not, and its dump has it under None where none is
+ * (industryCommon.GetDecryptors, 458 to 482; industry/job.py 637); the game port writes this name as that None
+ * (src/gamePort/retailCalls.js, jobDumped).
+ */
+const NO_OPTIONAL_MATERIAL = "None";
 /** industry.COST_PERCENTAGE: what a copy job's base is of the blueprint's price, for each run of each copy. */
 const COST_PERCENTAGE = 0.02;
 /** activities/copying.py MAX_RUNS: the most copies one job makes. */
@@ -163,37 +167,6 @@ function modifierMatchesProduct(modifier, productType) {
   return toInt(productType.typeID) === typeID;
 }
 
-/**
- * The exact materials map for an invention install with a decryptor, keyed by
- * typeID. `invention` is the blueprint definition's invention activity
- * (static data), `modifiers` the facility's invention material modifiers, and
- * `productType` the invented blueprint's type record (for group and category).
- */
-function inventionRequestMaterials({ invention, runs, modifiers, productType, decryptorTypeID }) {
-  const amounts = [];
-  for (const modifier of modifiers || []) {
-    if (modifierMatchesProduct(modifier, productType)) {
-      amounts.push(Math.max(0, Number(modifier[0]) || 0));
-    }
-  }
-  const materials = {};
-  for (const material of (invention && invention.materials) || []) {
-    const typeID = toInt(material && material.typeID);
-    // The client's order and its rounding (manufacturingJobMaterials says why each matters).
-    let reckoned = Math.max(0, toInt(material && material.quantity));
-    for (const amount of amounts) {
-      reckoned *= amount;
-    }
-    reckoned *= runs;
-    const quantity = Math.max(Math.ceil(roundToTwoPlaces(reckoned)), runs);
-    if (typeID > 0 && quantity > 0) {
-      materials[String(typeID)] = (materials[String(typeID)] || 0) + quantity;
-    }
-  }
-  materials[String(decryptorTypeID)] = runs;
-  return materials;
-}
-
 const aNumber = (value) => typeof value === "number" && Number.isFinite(value);
 /** A whole number above nought: a job's runs, or the runs a copy is licensed for. */
 const aCount = (value) => Number.isSafeInteger(value) && value > 0;
@@ -304,6 +277,18 @@ function copyingJobSeconds({ activityTime, runs, licensedRuns, characterAmount, 
  * Null where an input is not what it should be, or the modifiers come to nothing a time can be divided by.
  */
 function copyingJobMostRuns({ activityTime, characterAmount, facilityModifiers, productType }) {
+  const most = runsThirtyDaysHold({ activityTime, characterAmount, facilityModifiers, productType });
+  return most === null ? null : Math.min(most, COPYING_MAX_RUNS);
+}
+
+/**
+ * The runs thirty days hold of an activity's time, as the client's activity reckons them for any job
+ * (activity.py job_max_runs, 34 to 36): MAX_RUN_LENGTH over the activity's time over the job's time modifiers
+ * multiplied together, taken up to the whole. The modifiers are the pilot's own time for the work and then the
+ * facility's for the blueprint's product. Null where an input is not what it should be, or the modifiers come to
+ * nothing a time can be divided by.
+ */
+function runsThirtyDaysHold({ activityTime, characterAmount, facilityModifiers, productType }) {
   const amounts = facilityAmounts(facilityModifiers, productType);
   if (!aNumber(activityTime) || activityTime <= 0 || !aNumber(characterAmount) || amounts === null) {
     return null;
@@ -314,7 +299,46 @@ function copyingJobMostRuns({ activityTime, characterAmount, facilityModifiers, 
     together *= amount;
   }
   const most = Math.ceil(MAX_RUN_LENGTH / activityTime / together);
-  return aCount(most) ? Math.min(most, COPYING_MAX_RUNS) : null;
+  return aCount(most) ? most : null;
+}
+
+/**
+ * An invention's time in whole seconds, as the client's own job reckons it (industry/job.py _get_time, 460 to 468):
+ * the activity's time for the job (activity.py job_time, 28: the time by the runs), times each time modifier the job
+ * has, in the order the job lists them, and rounded.
+ *
+ *   job.modifiers        industryCommon.GetJobModifiers (485): the pilot's own invention time, `characterAmount`
+ *                        (attribute 1959). No skill's time per level is among an invention's
+ *   facility.modifiers   each of the facility's time modifiers for invention that is for the blueprint's product,
+ *                        in the facility's own order
+ *
+ * An invention's own modifiers are of its chance, and a decryptor's of time is of what is invented, not of the job
+ * (activities/invention.py 13 to 18; industryCommon.GetDecryptors, 465: output=True). The order is the client's and
+ * must stay so. Null where any input is not what it should be, and nought is sent instead, which the server does
+ * not check.
+ */
+function inventionJobSeconds({ activityTime, runs, characterAmount, facilityModifiers, productType }) {
+  const amounts = facilityAmounts(facilityModifiers, productType);
+  if (!aNumber(activityTime) || activityTime <= 0 || !aCount(runs) || !aNumber(characterAmount) || amounts === null) {
+    return null;
+  }
+  let seconds = activityTime * runs;
+  seconds *= characterAmount;
+  for (const amount of amounts) {
+    seconds *= amount;
+  }
+  return Math.round(seconds);
+}
+
+/**
+ * The most runs any invention can have, as the client's activity has it (activity.py 34 to 36, with
+ * activities/invention.py's own MAX_RUNS): what thirty days hold of the activity's time, and never more than
+ * INVENTION_MAX_RUNS. (The client's job holds its runs to the fewer of this and the runs the copy has left,
+ * invention.py 36 to 37; those are the blueprint's, and are held by the page and by the server.)
+ */
+function inventionJobMostRuns({ activityTime, characterAmount, facilityModifiers, productType }) {
+  const most = runsThirtyDaysHold({ activityTime, characterAmount, facilityModifiers, productType });
+  return most === null ? null : Math.min(most, INVENTION_MAX_RUNS);
 }
 
 /**
@@ -398,16 +422,11 @@ function researchJobSeconds({ activityTime, level, runs, characterAmount, facili
  * Null where an input is not what it should be, or the modifiers come to nothing a time can be divided by.
  */
 function researchJobMostRuns({ activityTime, runsLeft, characterAmount, facilityModifiers, productType }) {
-  const amounts = facilityAmounts(facilityModifiers, productType);
-  if (!aNumber(activityTime) || activityTime <= 0 || !Number.isSafeInteger(runsLeft) || runsLeft < 0 || !aNumber(characterAmount) || amounts === null) {
+  const most = runsThirtyDaysHold({ activityTime, characterAmount, facilityModifiers, productType });
+  if (most === null || !Number.isSafeInteger(runsLeft) || runsLeft < 0) {
     return null;
   }
-  let together = 1.0 * characterAmount;
-  for (const amount of amounts) {
-    together *= amount;
-  }
-  const most = Math.ceil(MAX_RUN_LENGTH / activityTime / together);
-  return aCount(most) ? Math.min(most, runsLeft) : null;
+  return Math.min(most, runsLeft);
 }
 
 /**
@@ -485,6 +504,34 @@ function researchJobMaterials({ materials, runs, facilityModifiers, productType 
     return null;
   }
   return materialsTaken(materials, amounts, runs, runs);
+}
+
+/**
+ * An invention's materials, each type to its quantity, as the client's own job reckons them (industry/job.py
+ * _get_materials, 470 to 485): its own materials by its runs, through the facility's material modifiers for
+ * invention that are for the blueprint's product (an invention has no material modifier of its own: its own are
+ * of its chance), and the place of its optional material, the decryptor, which is one of the job's materials too
+ * and is made whole as the rest are (industryCommon.GetDecryptors, 458 to 482; industry/material.py):
+ *
+ *   a decryptor chosen (`decryptorTypeID`)   its type, from a base of one: one a run, at this server's modifiers
+ *   none chosen (nought, or not said)        NO_OPTIONAL_MATERIAL, from a base of nought: the job's runs, which is
+ *                                            what the client's job makes of it and sends under None
+ *
+ * Null where any input is not what it should be.
+ */
+function inventionJobMaterials({ materials, runs, facilityModifiers, productType, decryptorTypeID }) {
+  const amounts = facilityAmounts(facilityModifiers, productType);
+  const chosen = decryptorTypeID === undefined || decryptorTypeID === 0 ? null : decryptorTypeID;
+  if (!Array.isArray(materials) || !aCount(runs) || amounts === null) {
+    return null;
+  }
+  // (A decryptor that is no type is no material, and nothing is made of it: materialsTaken.)
+  const taken = materialsTaken(chosen === null ? materials : [...materials, { typeID: chosen, quantity: 1 }], amounts, runs, runs);
+  if (taken === null) {
+    return null;
+  }
+  // (None chosen: a base of nought comes to nought whatever it is multiplied by, and is never fewer than the runs.)
+  return chosen === null ? { ...taken, [NO_OPTIONAL_MATERIAL]: runs } : taken;
 }
 
 /**
@@ -582,6 +629,16 @@ function copyingJobBase({ blueprintPrice: price, runs, licensedRuns }) {
 }
 
 /**
+ * An invention's base, not rounded, of which its cost, its tax and its surcharges are taken
+ * (activities/invention.py job_cost, 27 to 31): the price of the blueprint invented (`blueprintPrice`: the job's
+ * product, priced as any blueprint is), times COST_PERCENTAGE, times the runs. Null where an input is not what it
+ * should be. (An invention that has no product has no job: the client's has an error for it, and sends none.)
+ */
+function inventionJobBase({ blueprintPrice: price, runs }) {
+  return aBase(price, runs) ? price * COST_PERCENTAGE * runs : null;
+}
+
+/**
  * A research job's base, not rounded, of which its cost, its tax and its surcharges are taken
  * (activities/research_time.py job_cost, 25): the blueprint's price, times COST_PERCENTAGE, times the research's own
  * time for the job (researchActivitySeconds), over the activity's time; in that order, the division last. Null
@@ -610,6 +667,12 @@ function manufacturingJobTax({ blueprintPrice: price, runs, facilityTax }) {
 /** A copy job's tax in whole ISK, likewise, of the copy job's own base (copyingJobBase). */
 function copyingJobTax({ blueprintPrice, runs, licensedRuns, facilityTax }) {
   const base = copyingJobBase({ blueprintPrice, runs, licensedRuns });
+  return base === null ? null : taxOn(base, facilityTax);
+}
+
+/** An invention's tax in whole ISK, likewise, of the invention's own base (inventionJobBase). */
+function inventionJobTax({ blueprintPrice, runs, facilityTax }) {
+  const base = inventionJobBase({ blueprintPrice, runs });
   return base === null ? null : taxOn(base, facilityTax);
 }
 
@@ -643,6 +706,12 @@ function manufacturingJobFee({ blueprintPrice: price, runs, ...charges }) {
  */
 function copyingJobFee({ blueprintPrice, runs, licensedRuns, ...charges }) {
   const base = copyingJobBase({ blueprintPrice, runs, licensedRuns });
+  return base === null ? null : feeOn(base, charges);
+}
+
+/** What an invention costs to start, likewise, of the invention's own base (inventionJobBase); the SCC's surcharge whole. */
+function inventionJobFee({ blueprintPrice, runs, ...charges }) {
+  const base = inventionJobBase({ blueprintPrice, runs });
   return base === null ? null : feeOn(base, charges);
 }
 
@@ -750,6 +819,15 @@ function copyingJobCost({ blueprintPrice, runs, licensedRuns, ...modifiers }) {
 }
 
 /**
+ * An invention's cost in whole ISK, likewise, of the invention's own base (inventionJobBase), through the cost
+ * modifiers the job has for invention.
+ */
+function inventionJobCost({ blueprintPrice, runs, ...modifiers }) {
+  const base = inventionJobBase({ blueprintPrice, runs });
+  return base === null ? null : costOn(base, modifiers);
+}
+
+/**
  * A research job's cost in whole ISK, likewise, of the research job's own base (researchJobBase), through the cost
  * modifiers the job has for that research.
  */
@@ -786,7 +864,11 @@ function costOn(base, { blueprintAmount, alpha, faction, system, facilityModifie
   return Math.round(cost + added);
 }
 
-/** The single product an invention makes, as the server resolves it when none is asked for. */
+/**
+ * The blueprint an invention's job is for the making of, as the client's job has its product (industry/job.py
+ * _get_product, 181 to 190): the only one the recipe has, or the one named where the recipe has it. Nought where
+ * there are several and none of them is named: that job has no product, and the client sends none such.
+ */
 function inventionProductTypeID(invention, requested) {
   const products = ((invention && invention.products) || []).filter((product) => toInt(product && product.typeID) > 0);
   if (requested > 0) {
@@ -799,7 +881,10 @@ module.exports = {
   COPYING_MAX_RUNS,
   DECRYPTOR_GROUP_ID,
   INVENTION_ACTIVITY_ID,
+  INVENTION_MAX_RUNS,
+  NO_OPTIONAL_MATERIAL,
   SERVICE_LABORATORY_COPYING,
+  SERVICE_LABORATORY_INVENTION,
   blueprintPrice,
   copyingJobCost,
   copyingJobFee,
@@ -814,8 +899,13 @@ module.exports = {
   facilityTaxRate,
   facilityTimeModifiers,
   findFacilityRow,
+  inventionJobCost,
+  inventionJobFee,
+  inventionJobMaterials,
+  inventionJobMostRuns,
+  inventionJobSeconds,
+  inventionJobTax,
   inventionProductTypeID,
-  inventionRequestMaterials,
   manufacturingJobCost,
   manufacturingJobFee,
   manufacturingJobMaterials,

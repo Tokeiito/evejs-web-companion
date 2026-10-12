@@ -960,7 +960,7 @@ test("a manufacturing job's materials are the client's own reckoning, in the pre
   const facility = facilityRow();
   facility.args.entries.find(([name]) => name === "activities")[1] = dict([
     [ACTIVITY_MANUFACTURING, { type: "tuple", items: [list([]), list([[0.99, null, null, null, 12]]), list([])] }],
-    [8, { type: "tuple", items: [list([]), list([[0.5, null, null, null, 12]]), list([])] }],
+    [9, { type: "tuple", items: [list([]), list([[0.5, null, null, null, 12]]), list([])] }],
   ]);
   const gateway = fakeIndustryGateway({ facility });
   const { baseUrl } = await startTestServer({ gateway });
@@ -980,10 +980,10 @@ test("a manufacturing job's materials are the client's own reckoning, in the pre
   const unsaid = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody() });
   await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody() });
   assert.deepEqual([unsaid.payload.materials, jobs("ConnectJob").at(-1).materials, jobs("InstallJob").at(-1).materials], [null, {}, {}]);
-  // A kind of work that is not reckoned (a copy job's are: below): none are reckoned, though the research is said
-  // and the facility has a modifier for it.
-  const invention = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ activity: "invention", materialEfficiency: 10 }) });
-  assert.deepEqual([invention.payload.materials, jobs("ConnectJob").at(-1).materials], [null, {}]);
+  // A kind of work that is not reckoned (a reaction; the others are, below): none are reckoned, though the research
+  // is said and the facility has a modifier for it.
+  const reaction = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ activity: "reaction", materialEfficiency: 10 }) });
+  assert.deepEqual([reaction.payload.materials, jobs("ConnectJob").at(-1).materials], [null, {}]);
   // A facility that is not among those read: none are reckoned.
   const elsewhere = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ facilityID: STATION_ID + 1, materialEfficiency: 10 }) });
   assert.deepEqual([elsewhere.payload.materials, jobs("ConnectJob").at(-1).materials], [null, {}]);
@@ -1111,13 +1111,14 @@ test("where a job's time cannot be reckoned whole it goes as nought, as it did, 
     assert.equal(sentJobs(unread, "InstallJob")[0].time, 0);
   }
 
-  // A kind of work that is not reckoned (a copy job's is: below): nothing is asked for its time, which goes as nought.
+  // A kind of work that is not reckoned (a reaction; the others are, below): nothing is asked for its time, which
+  // goes as nought.
   const gateway = fakeIndustryGateway({ timeMultiplier: 0.68 });
   const third = await startTestServer({ gateway });
   await selectOnServer(third.baseUrl);
-  const invention = await apiRequest(third.baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ activity: "invention", timeEfficiency: 5 }) });
-  await apiRequest(third.baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ activity: "invention" }) });
-  assert.deepEqual([invention.payload.timeSeconds, sentJobs(gateway, "ConnectJob")[0].time, sentJobs(gateway, "InstallJob")[0].time], [null, 0, 0]);
+  const reaction = await apiRequest(third.baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ activity: "reaction", timeEfficiency: 5 }) });
+  await apiRequest(third.baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ activity: "reaction" }) });
+  assert.deepEqual([reaction.payload.timeSeconds, sentJobs(gateway, "ConnectJob")[0].time, sentJobs(gateway, "InstallJob")[0].time], [null, 0, 0]);
   assert.deepEqual([gateway.calls.bound.length, gateway.calls.topLevel.some((call) => call.method === "GetFacilities")], [0, false]);
 
   // A blueprint the game's data has not: there is no time to start from.
@@ -1259,9 +1260,9 @@ test("on the game port a manufacturing job's cost is the client's own reckoning,
   state.table = false;
   assert.equal((await install()).cost, 0);
   state.table = true;
-  // A kind of work that is not reckoned (a copy job's is: below): nought goes, and no price is read for it.
+  // A kind of work that is not reckoned (a reaction; the others are, below): nought goes, and no price is read for it.
   const before = state.priced.length;
-  assert.deepEqual([(await install({ activity: "invention" })).cost, state.priced.length], [0, before]);
+  assert.deepEqual([(await install({ activity: "reaction" })).cost, state.priced.length], [0, before]);
   // The job's facility is asked for once for a request, whether the cost alone wants it or the time does too.
   const asked = state.fresh;
   await install();
@@ -1329,8 +1330,9 @@ test("on the game port the preview says what the job costs to start, as the clie
   assert.deepEqual(await previewed(), { cost: 5284, tax: 1321, sccSurcharge: 5284, securityTax: 0, total: 11889 });
   // The security read is the facility's system's, and not the pilot's.
   assert.deepEqual([asked.at(-1), A_SYSTEM_AWAY === SOLAR_SYSTEM_ID], [A_SYSTEM_AWAY, false]);
-  // A kind of work that is not reckoned (a copy job's is: below): no tax is reckoned, nought goes, and no fee is said.
-  const other = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ activity: "invention" }) });
+  // A kind of work that is not reckoned (a reaction; the others are, below): no tax is reckoned, nought goes, and no
+  // fee is said.
+  const other = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ activity: "reaction" }) });
   assert.deepEqual([other.payload.fee, sentJobs(gamePort, "ConnectJob").at(-1).tax], [null, 0]);
   await previewed();
   // The tax is in the job as the cost is: in the preview's request and the install's.
@@ -1855,12 +1857,18 @@ test("an invention with a decryptor sends the exact materials map and names the 
   assert.equal(payload.activityID, 8);
   assert.deepEqual(payload.materials, { [DATACORE_TYPE_ID]: 6, [DECRYPTOR_TYPE_ID]: 3 });
   assert.equal("optionalTypeID" in payload, false, "the client's dump names no decryptor: the server takes it from the materials");
-  assert.equal(payload.productTypeID, INVENTED_TYPE_ID, "the invented blueprint, as the server resolves it");
+  // No product is named where the recipe has the one: the client's job has none until one is chosen (industry/job.py
+  // 367 and 640), and the server finds the only one itself.
+  assert.equal(payload.productTypeID, null);
+  // The job's time goes with it: the activity's 7800 s by the three runs, the pilot's own time being 1.
+  assert.equal(payload.time, 23400);
   // The facility's modifiers are read for it, the way the retail client does.
   assert.ok(gateway.calls.topLevel.some((call) => call.method === "GetFacilities"));
 });
 
-test("without a decryptor, install keeps sending an empty materials map and reads no facility", async () => {
+test("without a decryptor an invention's materials have the empty place of one, as the client's job has it, and the facility is read for them", async () => {
+  // industryCommon.GetDecryptors (458 to 482) and industry/job.py 637: the optional material is one of the job's
+  // materials whether a decryptor is in it or not, and the dump has it under None, at the job's runs.
   const gateway = fakeIndustryGateway();
   const { baseUrl } = await startTestServer({ gateway });
   await selectOnServer(baseUrl);
@@ -1870,9 +1878,9 @@ test("without a decryptor, install keeps sending an empty materials map and read
     body: installBody({ activity: "invention", runs: 3 }),
   });
   const install = gateway.calls.topLevel.find((call) => call.method === "InstallJob");
-  assert.deepEqual(install.args[0].materials, {});
+  assert.deepEqual(install.args[0].materials, { [DATACORE_TYPE_ID]: 6, None: 3 });
   assert.equal("optionalTypeID" in install.args[0], false);
-  assert.equal(gateway.calls.topLevel.some((call) => call.method === "GetFacilities"), false);
+  assert.equal(gateway.calls.topLevel.some((call) => call.method === "GetFacilities"), true);
 });
 
 test("a decryptor is refused on anything but invention, and anything but a decryptor is refused as one", async () => {
@@ -2449,4 +2457,272 @@ test("on the game port a research job's cost, its tax and what it costs to start
   state.facility = facilityWith({ tax: 1 });
   const whole = await apiRequest(second.baseUrl, "/api/bridge/industry/preview", { method: "POST", body: researchBody("research_time", { runs: 1, timeEfficiency: 16 }) });
   assert.deepEqual([whole.payload.fee.tax, whole.payload.fee.cost], [27748477, 1109939]);
+});
+
+// --- an invention, by the client's own reckoning ------------------------------
+//
+// industry/activities/invention.py, and what a job has of every kind of work (src/industryInstall.js: the
+// invention's time, its most runs, its materials with the place of its decryptor, its cost, its tax and its fee;
+// test/industryJobInvention.test.js has each against the client's own Python's answers).
+
+const ACTIVITY_INVENTION = 8;
+
+/** The game's data with a blueprint's invention said as a test wants it, and what else of it a test wants changed. */
+function staticDataInventing(invention, more = {}) {
+  const plain = fakeStaticData();
+  return {
+    ...plain,
+    getIndustryBlueprint(blueprintTypeID) {
+      const definition = plain.getIndustryBlueprint(blueprintTypeID);
+      if (definition) definition.activities.invention = { ...definition.activities.invention, ...invention };
+      return definition;
+    },
+    // (A skill that takes 1% off a job's time a level: it is of a manufacturing job's time alone.)
+    getTypeDogmaAttribute: (typeID, attributeID) => (Number(typeID) === 11452 && Number(attributeID) === 1982 ? -1 : null),
+    ...more,
+  };
+}
+
+/** An invention's request, as the page sends it. */
+const inventionBody = (overrides = {}) => installBody({ activity: "invention", ...overrides });
+
+test("an invention's time and its materials are the client's own reckoning, the place of its decryptor among them, in the preview's request and the install's", async () => {
+  // The blueprint's invention takes 7800 s and 2 of a datacore a run, and requires a skill that has a time per
+  // level; a pilot whose own invention time is 0.6375; a facility that takes 15% off an invention's time and 2% off
+  // its materials, and half off a manufacturing job's of each.
+  const staticData = staticDataInventing({ skills: [{ typeID: 11452, level: 1 }] });
+  const facility = facilityRow();
+  facility.args.entries.find(([name]) => name === "activities")[1] = dict([
+    [ACTIVITY_MANUFACTURING, { type: "tuple", items: [list([[0.5, null, null, null, 12]]), list([[0.5, null, null, null, 12]]), list([])] }],
+    [ACTIVITY_INVENTION, { type: "tuple", items: [list([[0.85, null, null, null, 12]]), list([[0.98, null, null, null, 12]]), list([])] }],
+  ]);
+  const gateway = fakeIndustryGateway({ timeMultiplier: 0.6375, facility });
+  const sheets = [];
+  gateway.getSkills = async (...asked) => { sheets.push(asked); return { skills: [{ typeID: 11452, level: 5 }] }; };
+  const { baseUrl } = await startTestServer({ gateway, staticData });
+  await selectOnServer(baseUrl);
+
+  // Three runs, no decryptor: 7800 x 3 x 0.6375 x 0.85 = 12679.87 s; 2 x 0.98 x 3 = 5.88 of the datacore; and the
+  // empty place of the decryptor at the three runs, which the job has and the page is not told as something taken.
+  const body = inventionBody({ runs: 3, timeEfficiency: 4, materialEfficiency: 2 });
+  const preview = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body });
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body });
+  const [previewed, installed] = [sentJobs(gateway, "ConnectJob")[0], sentJobs(gateway, "InstallJob")[0]];
+  assert.deepEqual([preview.payload.timeSeconds, previewed.time, installed.time], [12680, 12680, 12680]);
+  assert.deepEqual([previewed.materials, installed.materials], [{ [DATACORE_TYPE_ID]: 6, None: 3 }, { [DATACORE_TYPE_ID]: 6, None: 3 }]);
+  assert.deepEqual(preview.payload.materials, { [DATACORE_TYPE_ID]: 6 });
+  // No product is named: the recipe has the one. The licensed runs are the blueprint's most, as any job's.
+  assert.deepEqual([previewed.activityID, previewed.runs, previewed.productTypeID, installed.productTypeID, previewed.licensedRuns], [ACTIVITY_INVENTION, 3, null, null, 300]);
+  // The pilot's own invention time is asked of its dogma location (1959); and no skill's level is asked for.
+  assert.deepEqual(gateway.calls.bound.map((call) => [call.method, call.args]), [["QueryAttributeValue", [CHARACTER_ID, 1959]], ["QueryAttributeValue", [CHARACTER_ID, 1959]]]);
+  assert.equal(sheets.length, 0);
+  // Through the gateway the cost and the tax go as nought still: a pilot there has no table of prices.
+  assert.deepEqual([installed.cost, installed.tax, preview.payload.fee], [0, 0, null]);
+
+  // With a decryptor it is in its place, one a run, in the preview's request as in the install's, and the page is
+  // told it with the rest.
+  const with_ = { ...body, decryptorTypeID: DECRYPTOR_TYPE_ID };
+  const again = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: with_ });
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: with_ });
+  const taken = { [DATACORE_TYPE_ID]: 6, [DECRYPTOR_TYPE_ID]: 3 };
+  assert.deepEqual([again.payload.materials, sentJobs(gateway, "ConnectJob")[1].materials, sentJobs(gateway, "InstallJob")[1].materials], [taken, taken, taken]);
+  // A decryptor is of what is invented and of its chance, and not of the job's time.
+  assert.equal(sentJobs(gateway, "InstallJob")[1].time, 12680);
+
+  // A facility that is not among those read: with no decryptor nothing is reckoned, and nought and an empty map go,
+  // as they did. With one, the map is made with no modifier of the facility's, that the decryptor is not left out:
+  // 2 x 3 = 6.
+  const elsewhere = { ...body, facilityID: STATION_ID + 1 };
+  const bare = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: elsewhere });
+  assert.deepEqual([bare.payload.materials, bare.payload.timeSeconds, sentJobs(gateway, "ConnectJob")[2].time, sentJobs(gateway, "ConnectJob")[2].materials], [null, null, 0, {}]);
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: { ...elsewhere, decryptorTypeID: DECRYPTOR_TYPE_ID } });
+  assert.deepEqual(sentJobs(gateway, "InstallJob")[2].materials, { [DATACORE_TYPE_ID]: 6, [DECRYPTOR_TYPE_ID]: 3 });
+});
+
+test("an invention that has a decryptor is not sent without it: where its materials could not be made, the request fails", async () => {
+  // The decryptor is in the job's materials and nowhere else. A facility's row that cannot be read, for a reason
+  // that is no refusal: with no decryptor the job goes with an empty map, and with one it does not go.
+  const gateway = fakeIndustryGateway();
+  const broken = { ...gateway };
+  broken.callMethod = async (service, method, ...rest) => {
+    if (service === "facilityManager" && method === "GetFacilities") throw new Error("The facilities could not be read.");
+    return gateway.callMethod(service, method, ...rest);
+  };
+  const { baseUrl } = await startTestServer({ gateway: broken });
+  await selectOnServer(baseUrl);
+  const without = await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: inventionBody({ runs: 3 }) });
+  assert.deepEqual([without.response.status, sentJobs(gateway, "InstallJob").map((job) => job.materials)], [200, [{}]]);
+  const with_ = await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: inventionBody({ runs: 3, decryptorTypeID: DECRYPTOR_TYPE_ID }) });
+  assert.equal(with_.response.status >= 500, true, String(with_.response.status));
+  assert.equal(sentJobs(gateway, "InstallJob").length, 1);
+});
+
+test("an invention of a blueprint that makes one of several is refused until one of them is named, before anything is asked", async () => {
+  // industry/job.py 181 to 190 and 562: a job whose recipe has several products has none until one is chosen, and
+  // the client's job has an error for it, INVALID_PRODUCT, and is not sent.
+  const OTHER_INVENTED = INVENTED_TYPE_ID + 1;
+  const several = staticDataInventing({ products: [{ typeID: INVENTED_TYPE_ID, quantity: 1 }, { typeID: OTHER_INVENTED, quantity: 1 }] });
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway, staticData: several });
+  await selectOnServer(baseUrl);
+  for (const route of ["preview", "install"]) {
+    for (const productTypeID of [undefined, 0, null, PRODUCT_TYPE_ID, "the second"]) {
+      const { response, payload } = await apiRequest(baseUrl, `/api/bridge/industry/${route}`, { method: "POST", body: inventionBody({ productTypeID }) });
+      assert.deepEqual([response.status, payload.error], [400, "INVALID_PRODUCT"], `${route} ${productTypeID}`);
+    }
+  }
+  assert.deepEqual([gateway.calls.topLevel.length, gateway.calls.bound.length], [0, 0]);
+  // One of them named: it goes, and is named in the job.
+  for (const productTypeID of [INVENTED_TYPE_ID, OTHER_INVENTED]) {
+    const { response } = await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: inventionBody({ productTypeID }) });
+    assert.deepEqual([response.status, sentJobs(gateway, "InstallJob").at(-1).productTypeID], [200, productTypeID]);
+  }
+  // No other kind of work is held to an invention's products.
+  const made = await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody() });
+  assert.equal(made.response.status, 200);
+
+  // A recipe that has the one: none need be named; the one named goes; and another than it does not.
+  const plain = fakeIndustryGateway();
+  const second = await startTestServer({ gateway: plain });
+  await selectOnServer(second.baseUrl);
+  const asked = async (productTypeID) => (await apiRequest(second.baseUrl, "/api/bridge/industry/install", { method: "POST", body: inventionBody({ productTypeID }) })).response.status;
+  assert.deepEqual([await asked(undefined), await asked(INVENTED_TYPE_ID), await asked(OTHER_INVENTED)], [200, 200, 400]);
+  assert.deepEqual(sentJobs(plain, "InstallJob").map((job) => job.productTypeID), [null, INVENTED_TYPE_ID]);
+  // A blueprint the game's data has not: there is no recipe to hold it to, and the job is the server's to judge.
+  const unknown = await apiRequest(second.baseUrl, "/api/bridge/industry/install", { method: "POST", body: inventionBody({ blueprintTypeID: 999_999 }) });
+  assert.equal(unknown.response.status, 200);
+});
+
+test("an invention of more runs than thirty days hold of its time, or than five hundred, is refused before the job is sent, where that could be reckoned", async () => {
+  // activity.py 34 to 36 with invention.py's MAX_RUNS. An invention that takes 1980000 s a run, and a pilot whose own
+  // invention time is 1: 2592000 / 1980000 = 1.3..., so two runs.
+  const gateway = fakeIndustryGateway({ timeMultiplier: 1 });
+  const { baseUrl } = await startTestServer({ gateway, staticData: staticDataInventing({ time: 1980000 }) });
+  await selectOnServer(baseUrl);
+  for (const route of ["preview", "install"]) {
+    const { response, payload } = await apiRequest(baseUrl, `/api/bridge/industry/${route}`, { method: "POST", body: inventionBody({ runs: 3 }) });
+    assert.deepEqual([response.status, payload.error], [400, "INVALID_RUNS"], route);
+    assert.match(payload.message, /inventing from this blueprint here has at most 2 runs/);
+  }
+  assert.deepEqual([sentJobs(gateway, "ConnectJob").length, sentJobs(gateway, "InstallJob").length], [0, 0]);
+  const most = await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: inventionBody({ runs: 2 }) });
+  assert.deepEqual([most.response.status, sentJobs(gateway, "InstallJob").map((job) => job.runs)], [200, [2]]);
+  // Never more than five hundred, however short the invention: one of 300 s a run.
+  const short = fakeIndustryGateway({ timeMultiplier: 1 });
+  const second = await startTestServer({ gateway: short, staticData: staticDataInventing({ time: 300 }) });
+  await selectOnServer(second.baseUrl);
+  const over = await apiRequest(second.baseUrl, "/api/bridge/industry/install", { method: "POST", body: inventionBody({ runs: 501 }) });
+  assert.deepEqual([over.response.status, over.payload.error, sentJobs(short, "InstallJob").length], [400, "INVALID_RUNS", 0]);
+  assert.match(over.payload.message, /at most 500 runs/);
+  await apiRequest(second.baseUrl, "/api/bridge/industry/install", { method: "POST", body: inventionBody({ runs: 500 }) });
+  assert.deepEqual(sentJobs(short, "InstallJob").map((job) => job.runs), [500]);
+});
+
+test("on the game port an invention's cost, its tax and what it costs to start are the client's own reckoning, of the price of the blueprint it is to make", async () => {
+  // invention.py 27 to 31: the price of the job's product x 0.02 x the runs. The blueprint invented is priced as any
+  // blueprint is: by its own manufacturing materials, ten of the one material at 512000, which is 5120000. Three
+  // runs: a base of 307200. The facility's cost modifier for invention is 0.04 (and for manufacturing another), its
+  // tax 0.01 and the SCC's modifier 1.
+  const A_SYSTEM_AWAY = 30000144;
+  const OTHER_INVENTED = INVENTED_TYPE_ID + 1;
+  const activities = dict([
+    [ACTIVITY_MANUFACTURING, { type: "tuple", items: [list([]), list([]), list([[0.5, null, null, null, 4]])] }],
+    [ACTIVITY_INVENTION, { type: "tuple", items: [list([]), list([]), list([[0.04, null, null, null, 4]])] }],
+  ]);
+  const facilityWith = (overrides = {}, [faction, manufacturingSystem, inventionSystem] = [1, 1, 1]) => {
+    const row = facilityRow({ solarSystemID: A_SYSTEM_AWAY, ...overrides });
+    row.args.entries.push(["globalModifiers", dict([["faction", faction], ["system", dict([[ACTIVITY_MANUFACTURING, manufacturingSystem], [ACTIVITY_INVENTION, inventionSystem]])]])]);
+    row.args.entries.find(([name]) => name === "activities")[1] = activities;
+    return row;
+  };
+  const state = { facility: facilityWith(), security: 0.9, grade: 1, prices: { [MATERIAL_TYPE_ID]: 512000 }, products: [{ typeID: INVENTED_TYPE_ID, quantity: 10 }] };
+  const plain = fakeIndustryGateway({ timeMultiplier: 0.75 });
+  const jobsSaid = [];
+  const gamePort = {
+    ...plain,
+    async selectCharacter() {
+      return {
+        bridgeSessionID: "gp:a-pilot-on-the-game-port", service: "charUnboundMgr", method: "SelectCharacterID", result: null, notifications: [],
+        session: { userid: 4, characterID: CHARACTER_ID, characterName: "Test Pilot", stationID: STATION_ID, structureID: null, solarSystemID: SOLAR_SYSTEM_ID, corporationID: 98000000, shipID: ACTIVE_SHIP_ID },
+      };
+    },
+    async callMethod(service, method, ...rest) {
+      if (service === "subscriptionMgr" && method === "GetCloneGrade") return { service, method, result: state.grade, notifications: [] };
+      return plain.callMethod(service, method, ...rest);
+    },
+    async freshFacility(sessionFields, bridgeSessionID, facilityID, job) {
+      jobsSaid.push(job);
+      return state.facility;
+    },
+    averageMarketPrice(sessionFields, bridgeSessionID, typeID) {
+      return Object.hasOwn(state.prices, typeID) ? { averagePrice: null, adjustedPrice: state.prices[typeID] } : { averagePrice: null, adjustedPrice: null };
+    },
+  };
+  // The game's data: the blueprint's invention makes what a test says, and each blueprint invented is one that is
+  // made of ten of the material (the second of twenty).
+  const base = fakeStaticData();
+  const staticData = {
+    ...base,
+    getSolarSystem: () => ({ security: state.security }),
+    getIndustryBlueprint(blueprintTypeID) {
+      const invented = { [INVENTED_TYPE_ID]: 10, [OTHER_INVENTED]: 20 }[Number(blueprintTypeID)];
+      if (invented) return { blueprintTypeID: Number(blueprintTypeID), activities: { manufacturing: { materials: [{ typeID: MATERIAL_TYPE_ID, quantity: invented }], products: [], time: 600 } } };
+      const definition = base.getIndustryBlueprint(blueprintTypeID);
+      if (definition) definition.activities.invention.products = state.products;
+      return definition;
+    },
+  };
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, staticData });
+  await selectOnServer(baseUrl);
+  const body = inventionBody({ runs: 3 });
+  const previewed = async (overrides = {}) => (await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: { ...body, ...overrides } })).payload.fee;
+  const installed = async (overrides = {}) => {
+    await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: { ...body, ...overrides } });
+    return sentJobs(gamePort, "InstallJob").at(-1);
+  };
+
+  // The cost 307200 x 0.04 = 12288; the tax 307200 x 0.01 = 3072; the surcharge 4% of the base, whole: 12288.
+  assert.deepEqual(await previewed(), { cost: 12288, tax: 3072, sccSurcharge: 12288, securityTax: 0, total: 27648 });
+  const sent = await installed();
+  assert.deepEqual([sentJobs(gamePort, "ConnectJob")[0].cost, sentJobs(gamePort, "ConnectJob")[0].tax, sent.cost, sent.tax], [12288, 3072, 12288, 3072]);
+  // The job's time is in it too, by the pilot's own invention time the transport answered: 7800 x 3 x 0.75.
+  assert.equal(sent.time, 17550);
+  // The facility was asked for as the facility of that job: its blueprint, and invention.
+  assert.deepEqual(jobsSaid.at(-1), { blueprintID: BLUEPRINT_ITEM_ID, activityID: ACTIVITY_INVENTION });
+  // An alpha clone's job costs a quarter of a percent of the base more: 12288 + 768.
+  state.grade = 0;
+  assert.equal((await installed()).cost, 13056);
+  state.grade = 1;
+  // A system of security 0.95 and over has a security tax of 5% of the base beside them: 15360.
+  state.security = 0.95;
+  assert.deepEqual(await previewed(), { cost: 12288, tax: 3072, sccSurcharge: 12288, securityTax: 15360, total: 43008 });
+  state.security = 0.9;
+  // In a structure the tax is by the access of the service a structure invents by (34), and of no other: 307200 x 0.0325.
+  state.facility = facilityWith({ tax: null, serviceAccess: dict([[22, 0.1], [33, 0.2], [34, 0.0325]]) });
+  assert.deepEqual([(await installed()).tax, (await previewed()).tax], [9984, 9984]);
+  state.facility = facilityWith({ tax: null, serviceAccess: dict([[22, 0.1]]) });
+  assert.equal((await previewed()).tax, 0);
+  // The faction's cost modifier and the system's are in the cost, and the system's is the one for invention:
+  // 307200 x 0.9 x 0.5 x 0.04 = 5529.6.
+  state.facility = facilityWith({}, [0.9, 0.25, 0.5]);
+  assert.equal((await installed()).cost, 5530);
+  state.facility = facilityWith();
+  // Of two blueprints it could make, the price is the one named's: the second is made of twenty of the material,
+  // a base of 614400, a cost of 24576 and a tax of 6144.
+  state.products = [{ typeID: INVENTED_TYPE_ID, quantity: 1 }, { typeID: OTHER_INVENTED, quantity: 1 }];
+  const second = await installed({ productTypeID: OTHER_INVENTED });
+  assert.deepEqual([second.productTypeID, second.cost, second.tax], [OTHER_INVENTED, 24576, 6144]);
+  assert.equal((await installed({ productTypeID: INVENTED_TYPE_ID })).cost, 12288);
+  state.products = [{ typeID: INVENTED_TYPE_ID, quantity: 10 }];
+  // A pilot with no price for the material: the blueprint invented is priced at nought, as the client prices it,
+  // and so is the job.
+  state.prices = {};
+  assert.deepEqual(await previewed(), { cost: 0, tax: 0, sccSurcharge: 0, securityTax: 0, total: 0 });
+  // An invention that makes nothing has no blueprint to price: nothing is reckoned of it, and nought goes.
+  state.prices = { [MATERIAL_TYPE_ID]: 512000 };
+  state.products = [];
+  assert.deepEqual([await previewed(), (await installed()).cost], [null, 0]);
+  // And nothing of the pilot's went to the gateway.
+  assert.equal(gateway.calls.topLevel.length, 0);
 });

@@ -739,6 +739,7 @@
       activity: check.activity,
       runs: check.runs,
       ...(check.decryptorTypeID !== null ? { decryptorTypeID: check.decryptorTypeID } : {}),
+      ...(check.productTypeID !== null ? { productTypeID: check.productTypeID } : {}),
     });
     onOpen?.("industry", session.session.id);
   }

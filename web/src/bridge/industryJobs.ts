@@ -182,6 +182,8 @@ export type InstallCheck =
       readonly runs: number;
       /** Invention only: the plan's decryptor, used one per run; null without one. */
       readonly decryptorTypeID: number | null;
+      /** Invention only: the blueprint the plan wants invented; null for any other work. */
+      readonly productTypeID: number | null;
     }
   | {
       readonly ok: false;
@@ -296,6 +298,8 @@ interface InstallSpec {
   readonly materialsFor: (copy: OwnedBlueprint) => ReadonlyMap<number, number>;
   /** Invention only: the decryptor the job adds. */
   readonly decryptorTypeID?: number | null;
+  /** Invention only: the blueprint to invent. */
+  readonly productTypeID?: number | null;
 }
 
 function checkInstall(
@@ -335,7 +339,7 @@ function checkInstall(
         continue;
       }
     }
-    return { ok: true, from: copy, activity, runs: spec.runsFor(copy), decryptorTypeID };
+    return { ok: true, from: copy, activity, runs: spec.runsFor(copy), decryptorTypeID, productTypeID: spec.productTypeID ?? null };
   }
   return furthest;
 }
@@ -372,6 +376,8 @@ export function installCheck(
  * from, so only copies are tried. A decryptor the plan chose goes with the
  * job, one per run like the datacores, and must be in the same hangar; the
  * Industry panel adds it to the install (src/industryInstall.js says how).
+ * The blueprint the row is for is named too: a T1 blueprint can invent one
+ * of several, and the job makes the one that is chosen.
  */
 export function inventionCheck(
   row: PlanInvention,
@@ -393,6 +399,7 @@ export function inventionCheck(
       return materials;
     },
     decryptorTypeID,
+    productTypeID: row.line.blueprint?.blueprintTypeID ?? null,
   }, owned, pilots, jumpsBetween);
 }
 

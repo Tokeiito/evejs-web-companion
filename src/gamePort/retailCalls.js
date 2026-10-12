@@ -47,6 +47,7 @@
 
 const { isDeepStrictEqual } = require("node:util");
 const { constructorKeywordOrder, dictOrder, orderEntries } = require("./py27");
+const { NO_OPTIONAL_MATERIAL } = require("../industryInstall");
 
 /** A Python list, from a JS array (which would go out as a tuple) or from one already wrapped. */
 const list = (value) => (Array.isArray(value) ? { type: "list", items: value } : value);
@@ -1004,18 +1005,21 @@ const withJustTheNames = (value, names) => heldPlainly(value) && Object.keys(val
  * industry.
  *
  * The BFF's routes hold the job as a plain object of the seventeen names, which the gateway takes as it is and
- * no marshal can write. Here it is made the client's dict. A manufacturing job's time, its cost, its tax and its
- * materials are the client's own reckoning (src/industryInstall.js, manufacturingJobSeconds, manufacturingJobCost,
- * manufacturingJobTax and manufacturingJobMaterials); any other job's go as nought and an empty map, where the
- * client sends what it reckoned: the server reckons each itself, and checks only a number that is not nought and
- * a map that is not empty. (The materials go in the order of their types, where the client's dict has its
- * Python's order for one filled in the blueprint's: the value read is the same.)
+ * no marshal can write. Here it is made the client's dict. A job's time, its cost, its tax and its materials are
+ * the client's own reckoning where the routes could make it (src/industryInstall.js), and nought and an empty map
+ * where they could not: the server reckons each itself, and checks only a number that is not nought and a map
+ * that is not empty. (The materials go in the order of their types, where the client's dict has its Python's
+ * order for one filled in the blueprint's: the value read is the same.)
+ *
+ * An invention's materials have the place of its optional material, the decryptor, whether one is in it or not:
+ * with none, the client's dict has the place under None (industryCommon.GetDecryptors, 458 to 482; job.py 637),
+ * and the routes' job has it under the name src/industryInstall.js gives it, which is written here as that None.
  */
 const jobDumped = (args, kwargs) => {
   const [job] = args;
   const aPlace = (value) => value === null || withJustTheNames(value, JOB_PLACE_NAMES);
   const anAccount = (value) => value === null || (Array.isArray(value) && value.length === 2);
-  const materialsHeld = (value) => heldPlainly(value) && Object.entries(value).every(([typeID, quantity]) => /^[1-9][0-9]*$/.test(typeID) && Number.isSafeInteger(quantity));
+  const materialsHeld = (value) => heldPlainly(value) && Object.entries(value).every(([typeID, quantity]) => (typeID === NO_OPTIONAL_MATERIAL || /^[1-9][0-9]*$/.test(typeID)) && Number.isSafeInteger(quantity));
   if (!(args.length === 1 && Object.keys(kwargs).length === 0 && withJustTheNames(job, JOB_DUMP_NAMES) && materialsHeld(job.materials) && typeof job.time === "number" && Number.isFinite(job.time)
     && aPlace(job.inputLocation) && aPlace(job.outputLocation) && anAccount(job.account))) {
     return { args, kwargs, status: "differs", note: "The client sends one dict and nothing else, its job's dump: seventeen names, the materials a dict of type to quantity, the time a number, the account a pair or None, and each place an industry.job.Location or None." };
@@ -1024,7 +1028,7 @@ const jobDumped = (args, kwargs) => {
   const sent = {
     ...job,
     time: { type: "real", value: job.time },
-    materials: dict(Object.entries(job.materials).map(([typeID, quantity]) => [Number(typeID), quantity])),
+    materials: dict(Object.entries(job.materials).map(([typeID, quantity]) => [typeID === NO_OPTIONAL_MATERIAL ? null : Number(typeID), quantity])),
     inputLocation: place(job.inputLocation),
     outputLocation: place(job.outputLocation),
   };

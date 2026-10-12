@@ -2955,3 +2955,27 @@ test("a facility's places, a blueprint and a job are asked as the client asks th
     assert.match(odd.note, /^The client asks with /, pair);
   }
 });
+
+test("an invention's job has the empty place of its optional material under None in its materials, as the client's dict has it", () => {
+  // industryCommon.GetDecryptors (458 to 482) and industry/job.py 637: the optional material is one of the job's
+  // materials whether a decryptor is in it or not, keyed by its type, which is None where none is. The routes' job
+  // has it under the name src/industryInstall.js gives it (NO_OPTIONAL_MATERIAL).
+  for (const [service, method] of JOB_ASKED) {
+    const made = retailForm(service, method, [JOB_HELD({ activityID: 8, materials: { 20172: 6, 20424: 6, None: 3 } })], null, {});
+    assert.equal(made.status, "reshaped", method);
+    assert.deepEqual(Object.fromEntries(made.args[0].entries).materials, { type: "dict", entries: [[20172, 6], [20424, 6], [null, 3]] }, method);
+    // With a decryptor in the place, there is no None.
+    const with_ = retailForm(service, method, [JOB_HELD({ activityID: 8, materials: { 20172: 6, 34204: 3 } })], null, {});
+    assert.deepEqual(Object.fromEntries(with_.args[0].entries).materials, { type: "dict", entries: [[20172, 6], [34204, 3]] }, method);
+    // No other name is a type's: such a job is not made the client's.
+    for (const name of ["none", "null", "0", "-1", "decryptor"]) {
+      assert.equal(retailForm(service, method, [JOB_HELD({ materials: { 20172: 6, [name]: 3 } })], null, {}).status, "differs", `${method} ${name}`);
+    }
+    assert.equal(retailForm(service, method, [JOB_HELD({ materials: { None: "3" } })], null, {}).status, "differs", method);
+  }
+  // And the marshal writes it: a dict whose last key is None (0x01).
+  const { encodeClient } = require("../src/gamePort/clientMarshal");
+  const made = retailForm("industryManager", "InstallJob", [JOB_HELD({ activityID: 8, materials: { 20172: 6, None: 3 } })], null, {});
+  const written = Buffer.from(encodeClient(Object.fromEntries(made.args[0].entries).materials)).toString("hex");
+  assert.equal(written, "7e000000001602060605cc4e060301");
+});

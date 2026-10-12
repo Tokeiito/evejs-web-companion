@@ -342,3 +342,13 @@ test("inventionCheck: a planned decryptor goes with the job, one per run, and mu
   const plain = inventionCheck(inventionRow(2), [t1Copy(1, 5)], new Map([[1, pilot({ stock: [datacores(5)] })]]), ONE_JUMP);
   assert.equal(plain.ok && plain.decryptorTypeID, null);
 });
+
+test("inventionCheck: the blueprint the plan wants invented is named, and no other work names one", () => {
+  // A T1 blueprint can invent one of several (industry/job.py 181 to 190): the Industry panel is told which.
+  const row = inventionRow(2);
+  const wanted = { ...row, line: { ...row.line, blueprint: { ...row.line.blueprint!, blueprintTypeID: 1900 } } };
+  const check = inventionCheck(wanted, [t1Copy(1, 5)], new Map([[1, pilot({ stock: [datacores(2)] })]]), ONE_JUMP);
+  assert.equal(check.ok && check.productTypeID, 1900);
+  const unknown = inventionCheck({ ...row, line: { ...row.line, blueprint: null } }, [t1Copy(1, 5)], new Map([[1, pilot({ stock: [datacores(2)] })]]), ONE_JUMP);
+  assert.equal(unknown.ok && unknown.productTypeID, null);
+});

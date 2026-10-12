@@ -18,6 +18,7 @@ import {
   ACTIVITY_LABELS,
   ACTIVITY_ORDER,
   MOST_COPIES_A_JOB,
+  MOST_INVENTIONS_A_JOB,
   STATUS_LABELS,
   activityIDOf,
   activityIsFor,
@@ -35,7 +36,9 @@ import {
   jobFeeParts,
   materialsToUse,
   industryRefusalMessage,
+  inventionChoices,
   isActiveJob,
+  mostRunsToAsk,
   previewMaterials,
   previewTimeSeconds,
   recipeFor,
@@ -615,4 +618,43 @@ test("a fee's parts are named in plain words, and one that is nought is not list
     ["the job itself", "the facility's tax", "the SCC surcharge", "the security tax"]);
   // A job that costs nothing to start has no parts.
   assert.deepEqual(jobFeeParts({ cost: 0, tax: 0, sccSurcharge: 0, securityTax: 0, total: 0 }), []);
+});
+
+test("an invention's decryptor is among its rough materials, one a run, and among no other work's", () => {
+  // industryCommon.GetDecryptors (458 to 482): the optional material is one of the job's materials, at a base of one.
+  const invention = { activity: "invention" as const, materials: [{ typeID: 20418, quantity: 2 }], products: [{ typeID: 1900, quantity: 10 }], timeSeconds: 7800 };
+  assert.deepEqual(previewMaterials(invention, 3, 10, 1, 34204), [{ typeID: 20418, quantity: 6 }, { typeID: 34204, quantity: 3 }]);
+  assert.deepEqual(previewMaterials(invention, 3, 10, 1), [{ typeID: 20418, quantity: 6 }]);
+  assert.deepEqual(previewMaterials(invention, 3, 10, 1, 0), [{ typeID: 20418, quantity: 6 }]);
+  // The preview's reckoning of them is then the page's own list, and exact.
+  assert.deepEqual(materialsToUse(previewMaterials(invention, 3, 10, 1, 34204), { "20418": 6, "34204": 3 }),
+    { materials: [{ typeID: 20418, quantity: 6 }, { typeID: 34204, quantity: 3 }], exact: true });
+  const manufacturing = recipeFor(decodeDefinition(RAW_DEFINITION), "manufacturing")!;
+  assert.deepEqual(previewMaterials(manufacturing, 3, 0, 1, 34204), [{ typeID: 38, quantity: 258 }]);
+  assert.deepEqual(previewMaterials({ ...invention, activity: "copying" as const }, 3, 0, 1, 34204), [{ typeID: 20418, quantity: 6 }]);
+});
+
+test("an invention that could make one of several blueprints has them to choose from, and one that makes the one has none", () => {
+  // industry/job.py 181 to 190: a job whose recipe has several products has none until one is chosen.
+  const invention = (products: readonly number[]) => ({ activity: "invention" as const, materials: [], products: products.map((typeID) => ({ typeID, quantity: 1 })), timeSeconds: 7800 });
+  assert.deepEqual(inventionChoices(invention([11372, 11401])), [11372, 11401]);
+  assert.deepEqual(inventionChoices(invention([11372])), []);
+  assert.deepEqual(inventionChoices(invention([])), []);
+  assert.deepEqual(inventionChoices(null), []);
+  // No other kind of work has a choice of what it makes.
+  assert.deepEqual(inventionChoices({ ...invention([11372, 11401]), activity: "manufacturing" as const }), []);
+});
+
+test("a job is asked for no more runs than its kind of work has of the blueprint", () => {
+  const blueprint = (original: boolean, runs: number, timeEfficiency = 0, materialEfficiency = 0) => ({ original, runs, timeEfficiency, materialEfficiency });
+  // An invention: what its copy has, and never more than five hundred (invention.py's MAX_RUNS).
+  assert.equal(MOST_INVENTIONS_A_JOB, 500);
+  assert.deepEqual([mostRunsToAsk("invention", blueprint(false, 10)), mostRunsToAsk("invention", blueprint(false, 501)), mostRunsToAsk("invention", blueprint(false, 500)), mostRunsToAsk("invention", blueprint(false, 0))], [10, 500, 500, 1]);
+  // A manufacturing job: what a copy has, which may be more than that; and an original's thousand.
+  assert.deepEqual([mostRunsToAsk("manufacturing", blueprint(false, 600)), mostRunsToAsk("manufacturing", blueprint(true, -1)), mostRunsToAsk("reaction", blueprint(true, -1))], [600, 1000, 1000]);
+  // A copy job: its most copies. A research: the levels that are left, and one at the least.
+  assert.equal(mostRunsToAsk("copying", blueprint(true, -1)), MOST_COPIES_A_JOB);
+  assert.deepEqual([mostRunsToAsk("research_time", blueprint(true, -1, 16, 3)), mostRunsToAsk("research_material", blueprint(true, -1, 16, 3)), mostRunsToAsk("research_material", blueprint(true, -1, 20, 10))], [2, 7, 1]);
+  // No work chosen: as a blueprint's own runs.
+  assert.deepEqual([mostRunsToAsk(null, blueprint(false, 7)), mostRunsToAsk(null, blueprint(true, -1))], [7, 1000]);
 });

@@ -1,7 +1,8 @@
 "use strict";
 
-// Invention with a decryptor: the exact materials map the server compares
-// against (src/industryInstall.js).
+// An invention's materials, its decryptor among them: the exact map the server compares against
+// (src/industryInstall.js, inventionJobMaterials; test/industryJobInvention.test.js has it against the client's own
+// Python's answers), and how a facility's modifiers are read off its row.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -9,8 +10,8 @@ const assert = require("node:assert/strict");
 const {
   facilityMaterialModifiers,
   findFacilityRow,
+  inventionJobMaterials,
   inventionProductTypeID,
-  inventionRequestMaterials,
   modifierMatchesProduct,
 } = require("../src/industryInstall");
 
@@ -38,7 +39,7 @@ function facility(facilityID, inventionMaterial) {
 
 test("datacores per run times runs, and the decryptor at one per run", () => {
   assert.deepEqual(
-    inventionRequestMaterials({ invention: INVENTION, runs: 3, modifiers: [], productType: PRODUCT, decryptorTypeID: PARITY }),
+    inventionJobMaterials({ materials: INVENTION.materials, runs: 3, facilityModifiers: [], productType: PRODUCT, decryptorTypeID: PARITY }),
     { [DATACORE_A]: 3, [DATACORE_B]: 6, [PARITY]: 3 },
   );
 });
@@ -46,12 +47,12 @@ test("datacores per run times runs, and the decryptor at one per run", () => {
 test("a facility's invention material modifier applies, in the client's order and with its rounding, never below one a run", () => {
   // 2 x 0.9 x 3 = 5.4 -> 6; 1 x 0.9 x 3 = 2.7 -> 3.
   assert.deepEqual(
-    inventionRequestMaterials({ invention: INVENTION, runs: 3, modifiers: [[0.9, null, null, null, 6]], productType: PRODUCT, decryptorTypeID: PARITY }),
+    inventionJobMaterials({ materials: INVENTION.materials, runs: 3, facilityModifiers: [[0.9, null, null, null, 6]], productType: PRODUCT, decryptorTypeID: PARITY }),
     { [DATACORE_A]: 3, [DATACORE_B]: 6, [PARITY]: 3 },
   );
   /** What an invention takes of one material of `base` a run, through modifiers for anything. */
-  const taken = (base, amounts, runs) => inventionRequestMaterials({
-    invention: { materials: [{ typeID: DATACORE_B, quantity: base }] }, runs, modifiers: amounts.map((amount) => [amount, null, null, null, 6]), productType: PRODUCT, decryptorTypeID: PARITY,
+  const taken = (base, amounts, runs) => inventionJobMaterials({
+    materials: [{ typeID: DATACORE_B, quantity: base }], runs, facilityModifiers: amounts.map((amount) => [amount, null, null, null, 6]), productType: PRODUCT, decryptorTypeID: PARITY,
   })[DATACORE_B];
   // 1 x 0.5 x 3 = 1.5 -> 2, but at least one a run: 3.
   assert.equal(taken(1, [0.5], 3), 3);
@@ -77,7 +78,7 @@ test("a modifier for another category, group or type does not apply", () => {
   assert.equal(modifierMatchesProduct([0.9, null, null, 2456], PRODUCT), false);
   assert.equal(modifierMatchesProduct([0.9, 9, null, null], null), false);
   const heavy = { materials: [{ typeID: DATACORE_B, quantity: 10 }] };
-  const halved = inventionRequestMaterials({ invention: heavy, runs: 2, modifiers: [[0.5, 6, null, null], [0.5, null, 176, null]], productType: PRODUCT, decryptorTypeID: PARITY });
+  const halved = inventionJobMaterials({ materials: heavy.materials, runs: 2, facilityModifiers: [[0.5, 6, null, null], [0.5, null, 176, null]], productType: PRODUCT, decryptorTypeID: PARITY });
   // Only the group modifier matches: 10 x 2 x 0.5 = 10, not 10 x 2 x 0.25 = 5.
   assert.equal(halved[DATACORE_B], 10);
 });

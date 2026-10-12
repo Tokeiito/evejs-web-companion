@@ -14,11 +14,12 @@
   import {
     ACTIVITY_LABELS,
     ACTIVITY_ORDER,
-    MOST_COPIES_A_JOB,
     STATUS_LABELS,
     activityIsFor,
     formatDuration,
+    inventionChoices,
     isActiveJob,
+    mostRunsToAsk,
     previewMaterials,
     previewTimeSeconds,
     jobFeeParts,
@@ -229,6 +230,11 @@
   let decryptorsAsked = false;
   /** The decryptor this job will send, or 0: only an invention carries one. */
   const decryptorForJob = $derived(chosenActivity === "invention" && chosenDecryptorTypeID !== null ? chosenDecryptorTypeID : 0);
+  /**
+   * Invention only, of a blueprint that could make one of several: the one this job is to make. The game's own
+   * client sends no such job until one is chosen, and names none where the recipe has the one.
+   */
+  let chosenProductTypeID = $state<number | null>(null);
   /** The job awaiting an explicit "yes, cancel it" — never a one-click loss. */
   let cancellingJobID = $state<number | null>(null);
 
@@ -248,13 +254,24 @@
     return recipeFor($industry.definitions[startingBlueprint.typeID], chosenActivity);
   });
 
+  /** The blueprints the chosen invention could make, where there is a choice of them; none otherwise. */
+  const productChoices = $derived(inventionChoices(chosenRecipe));
+  /** What goes with such an invention's request: the blueprint chosen of those. */
+  const productForJob = $derived(
+    chosenProductTypeID !== null && productChoices.includes(chosenProductTypeID) ? { productTypeID: chosenProductTypeID } : {},
+  );
+  /** True where the invention could make one of several and none of them is chosen yet. */
+  const productUnchosen = $derived(productChoices.length > 0 && !("productTypeID" in productForJob));
+
   /**
    * What this job will consume: the preview's own reckoning where it made one (which is what goes with the job),
    * and the page's estimate where it made none.
    */
   const materialsForJob = $derived.by(() =>
     materialsToUse(
-      startingBlueprint ? previewMaterials(chosenRecipe, chosenRuns, startingBlueprint.materialEfficiency, chosenLicensedRuns) : [],
+      startingBlueprint
+        ? previewMaterials(chosenRecipe, chosenRuns, startingBlueprint.materialEfficiency, chosenLicensedRuns, decryptorForJob)
+        : [],
       reckonedMaterials,
     ),
   );
@@ -264,10 +281,8 @@
     if (!startingBlueprint) {
       return [];
     }
-    const materials = materialsForJob.materials;
-    // The decryptor is used one per run, as the server takes it.
-    const all = decryptorForJob > 0 ? [...materials, { typeID: decryptorForJob, quantity: chosenRuns }] : materials;
-    return all.map((material) => {
+    // (An invention's decryptor is among them, one a run: previewMaterials lists it, and the preview reckons it.)
+    return materialsForJob.materials.map((material) => {
       const have =
         availableMaterials === null ? null : availableMaterials[String(material.typeID)] ?? 0;
       return {
@@ -293,22 +308,8 @@
       : 0,
   );
 
-  /**
-   * The most runs this blueprint could be asked for. A copy is finite, a copy job makes only so many copies, and a
-   * research has only the levels that are left to the blueprint (one at the least, as the game's own client has it).
-   */
-  const maxRuns = $derived.by(() => {
-    if (!startingBlueprint) {
-      return 1;
-    }
-    if (chosenActivity === "copying") {
-      return MOST_COPIES_A_JOB;
-    }
-    if (research) {
-      return Math.max(1, research.runsLeft);
-    }
-    return startingBlueprint.original ? 1000 : Math.max(1, startingBlueprint.runs);
-  });
+  /** The most runs this blueprint could be asked for, of the chosen kind of work (mostRunsToAsk). */
+  const maxRuns = $derived(startingBlueprint ? mostRunsToAsk(chosenActivity, startingBlueprint) : 1);
 
   function startJobFor(blueprint: IndustryBlueprintRow): void {
     startingBlueprint = blueprint;
@@ -323,6 +324,7 @@
     chosenActivity = activities.length > 0 ? activities[0]! : null;
     chosenFacilityID = null;
     chosenDecryptorTypeID = null;
+    chosenProductTypeID = null;
   }
 
   function closeStartJob(): void {
@@ -330,6 +332,7 @@
     chosenActivity = null;
     chosenFacilityID = null;
     chosenDecryptorTypeID = null;
+    chosenProductTypeID = null;
     availableMaterials = null;
     reckonedSeconds = null;
     reckonedFee = null;
@@ -393,6 +396,7 @@
         runs: chosenRuns,
         ...licensedForJob,
         ...(decryptorForJob > 0 ? { decryptorTypeID: decryptorForJob } : {}),
+        ...productForJob,
         ...researchOf(blueprint),
       });
       availableMaterials = previewed.available;
@@ -419,6 +423,7 @@
         runs: chosenRuns,
         ...licensedForJob,
         ...(decryptorForJob > 0 ? { decryptorTypeID: decryptorForJob } : {}),
+        ...productForJob,
         ...researchOf(blueprint),
       });
       closeStartJob();
@@ -461,8 +466,7 @@
       if (blueprintActivities(blueprint).includes(request.activity)) {
         chosenActivity = request.activity;
       }
-      const most = blueprint.original ? 1000 : Math.max(1, blueprint.runs);
-      chosenRuns = Math.min(Math.max(1, request.runs), most);
+      chosenRuns = Math.min(Math.max(1, request.runs), mostRunsToAsk(chosenActivity, blueprint));
       // The blueprint's own facility, when this panel offers it: the server
       // installs the job nowhere else.
       if (facilityChoices.some((facility) => facility.facilityID === request.facilityID)) {
@@ -470,6 +474,10 @@
       }
       if (request.activity === "invention" && request.decryptorTypeID !== undefined) {
         chosenDecryptorTypeID = request.decryptorTypeID;
+      }
+      // The blueprint the plan wants invented: it counts where the blueprint could make another too.
+      if (request.activity === "invention" && request.productTypeID !== undefined) {
+        chosenProductTypeID = request.productTypeID;
       }
     });
   });
@@ -762,6 +770,17 @@
               </select>
             </label>
           {/if}
+          {#if productChoices.length > 0}
+            <label>
+              To invent
+              <select bind:value={chosenProductTypeID} disabled={busy || confirming} data-job-product>
+                <option value={null}>Choose a blueprint…</option>
+                {#each productChoices as typeID (typeID)}
+                  <option value={typeID}>{typeName(typeID)}</option>
+                {/each}
+              </select>
+            </label>
+          {/if}
         </p>
 
         {#if facilityChoices.length === 0}
@@ -785,7 +804,7 @@
           <p class="controls">
             <button
               type="button"
-              disabled={busy || chosenActivity === null || chosenFacilityID === null || chosenRuns < 1 || (research !== null && research.finished) ||
+              disabled={busy || chosenActivity === null || chosenFacilityID === null || chosenRuns < 1 || (research !== null && research.finished) || productUnchosen ||
                 (chosenActivity === "copying" && !(chosenLicensedRuns >= 1 && chosenLicensedRuns <= mostLicensedRuns(startingBlueprint)))}
               onclick={askToConfirm}
             >
