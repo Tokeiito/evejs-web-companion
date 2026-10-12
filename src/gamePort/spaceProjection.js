@@ -288,6 +288,11 @@ function projectSpace(park, { solarSystemID, shipID, readings = null, warpDestin
       itemID: own.itemID,
       typeID: own.typeID,
       name: own.name,
+      // Whose it is: the character flying it and its owner, the ship's own slim item's charID and ownerID. What
+      // looks at a pilot's scene before acting for that pilot holds the ship to be that pilot's by these (a hosted
+      // miner's jettison, a support pilot's anchoring and stopping, the page's own checks before a write).
+      characterID: own.characterID,
+      ownerID: own.ownerID,
       mode: own.mode,
       // The range the ship was told to follow or orbit at: with its mode and whom it follows, what the
       // client's HUD says the ship is doing from (spaceMgr.GetHeaderAndSubtextForActionIndication). Null

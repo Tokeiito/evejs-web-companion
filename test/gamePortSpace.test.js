@@ -351,7 +351,8 @@ test("the snapshot of a real grid: every ball that has a slim item, in the gatew
     targetEntityID: null, capacitorRatio: null, isNpc: false, npcEntityType: null, compressionFacility: null,
   });
   assert.deepEqual(space.ship, {
-    itemID: undock.shipID, typeID: 588, name: "Reaper", mode: "GOTO", followRange: null, gotoPoint: { ...ball.goto }, alignTarget: null, warp: null, maxVelocity: 341, radius: ball.radius,
+    itemID: undock.shipID, typeID: 588, name: "Reaper", characterID: undock.characterID, ownerID: undock.characterID,
+    mode: "GOTO", followRange: null, gotoPoint: { ...ball.goto }, alignTarget: null, warp: null, maxVelocity: 341, radius: ball.radius,
     position: { ...ball.newPos }, velocity: { ...ball.newVel }, shieldRatio: 1, armorRatio: 1, hullRatio: 1,
     capacitorRatio: null, shieldCapacity: null, armorCapacity: null, hullCapacity: null,
     // Dogma has not been asked: what only it knows is not known, which is null and not "none".
@@ -806,6 +807,21 @@ test("the pilot's own ship says the range it was told to follow or orbit at, and
   park.ballpark.gotoDirection(undock.shipID, 1, 0, 0);
   park.ballpark.ball(undock.shipID).followRange = 900;
   assert.deepEqual([ship().mode, ship().followRange], ["GOTO", null]);
+});
+
+test("the pilot's own ship says whose it is, the character flying it and its owner, as its slim item does", () => {
+  const park = undockedPark();
+  const own = () => projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID }).ship;
+  // What looks at a pilot's scene before acting for that pilot holds the ship to be that pilot's by these: a hosted
+  // miner's jettison is not issued unless the scene's ship is flown by the miner.
+  assert.deepEqual([own().characterID, own().ownerID], [undock.characterID, undock.characterID]);
+  // They are the slim item's own, each by itself: a ship of the corporation's that the pilot flies.
+  const slimItem = park.slimItems.get(park.ego);
+  park.slimItems.set(park.ego, new Map([...slimItem, ["ownerID", 98000001]]));
+  assert.deepEqual([own().characterID, own().ownerID], [undock.characterID, 98000001]);
+  // A slim item that names nobody says nobody, and never the session's character in its place.
+  park.slimItems.set(park.ego, new Map([...slimItem].filter(([name]) => name !== "charID")));
+  assert.deepEqual([own().characterID, own().ownerID], [null, undock.characterID]);
 });
 
 // ── the warp, as the client's HUD is told of it ──────────────────────────────
