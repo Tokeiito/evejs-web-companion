@@ -5739,11 +5739,13 @@ async function reckonedJobCost(held, webSessionID, request, facilityOf) {
  * rig modifiers asked afresh. On the gateway the region's are asked for each time, and the facility found among
  * them. Null where the server will not answer for the facility, or it is not among them.
  */
-async function jobFacilityRow(held, webSessionID, facilityID) {
+async function jobFacilityRow(held, webSessionID, facilityID, job = null) {
   if (gamePortPilots && isGamePortHandle(held.bridgeSessionID) && typeof gamePortPilots.freshFacility === "function") {
     try {
+      // (The job the facility is for, by its blueprint and its work: the client's job is given its facility once,
+      // when it is made, and the transport keeps which job that was.)
       return await heldRequest(held, webSessionID, false,
-        () => gamePortPilots.freshFacility({ userid: held.accountID }, held.bridgeSessionID, facilityID));
+        () => gamePortPilots.freshFacility({ userid: held.accountID }, held.bridgeSessionID, facilityID, job));
     } catch (error) {
       if (error && error.code === "CALL_REFUSED") {
         return null;
@@ -5770,7 +5772,7 @@ async function decryptorInstallFields(held, webSessionID, request) {
     : null;
   const invention = definition && definition.activities ? definition.activities.invention : null;
   const productTypeID = industryInstall.inventionProductTypeID(invention, request.productTypeID);
-  const facilityRow = await jobFacilityRow(held, webSessionID, request.facilityID);
+  const facilityRow = await jobFacilityRow(held, webSessionID, request.facilityID, jobOf(request));
   return {
     productTypeID,
     materials: industryInstall.inventionRequestMaterials({
@@ -5785,13 +5787,29 @@ async function decryptorInstallFields(held, webSessionID, request) {
   };
 }
 
+/** By what a request's job is the one the window made: its blueprint and its work (the facility is said beside them). */
+const jobOf = (request) => ({ blueprintID: request.blueprintItemID, activityID: request.activityID });
+
+/**
+ * Whether a held pilot's transport keeps the job its Industry window has, as the client's industry service and
+ * its window keep theirs: on the game port (src/gamePort/pilots.js: the monitor opened once and kept, a job given
+ * its facility once, industryWindowClosed and industryJobLetGo).
+ */
+function keepsTheWindowsJob(held) {
+  return Boolean(gamePortPilots && isGamePortHandle(held.bridgeSessionID) && typeof gamePortPilots.industryWindowClosed === "function");
+}
+
 /**
  * The install PREVIEW: what the player actually HAS of each material this job
  * would consume, straight from the server.
  *
  * `industryMonitor.ConnectJob` is retail's own preview seam. It is NOT a pure
- * read — it persists a monitor row — so this route always releases the monitor
- * it opened, whatever happens.
+ * read — it persists a monitor row. The client opens it when its window's job
+ * is given a place to take from and lets it go only when the window closes on
+ * that job (industrySvc.ConnectJob, 303; industryWnd.Close, 107). On the game
+ * port the transport keeps the job so, and this route lets nothing go; through
+ * the gateway, where nothing keeps it, this route releases the monitor it
+ * opened, whatever happens.
  *
  * THE INSTALLATION FEE is not the server's to quote: no retail call quotes a
  * cost without also installing the job. The retail client reckons it itself,
@@ -5817,7 +5835,7 @@ app.post("/api/bridge/industry/preview", requireAuth, async (req, res, next) => 
     await readHeldFlight(held, req.webSessionID);
     const locations = await readIndustryLocations(held, req.webSessionID, request.facilityID);
     // The job's facility, as the client's job has the one it was given: asked for once for the two reckonings.
-    const facilityOf = askedOnce(() => jobFacilityRow(held, req.webSessionID, request.facilityID));
+    const facilityOf = askedOnce(() => jobFacilityRow(held, req.webSessionID, request.facilityID, jobOf(request)));
     const timeSeconds = await reckonedJobSeconds(req.account, held, req.webSessionID, request, facilityOf);
     const cost = await reckonedJobCost(held, req.webSessionID, request, facilityOf);
     const { tax, fee } = await reckonedJobFee(held, req.webSessionID, request, facilityOf, cost);
@@ -5841,7 +5859,8 @@ app.post("/api/bridge/industry/preview", requireAuth, async (req, res, next) => 
     );
     // [monitorID, dict<typeID -> availableQuantity>]
     const result = Array.isArray(outcome.result) ? outcome.result : [];
-    monitorID = Number(result[0]) || 0;
+    // (Kept by the transport on the game port, and none of this route's to let go.)
+    monitorID = keepsTheWindowsJob(held) ? 0 : Number(result[0]) || 0;
     const dict = result[1];
     const entries = dict && Array.isArray(dict.entries) ? dict.entries : [];
     const available = {};
@@ -5898,6 +5917,43 @@ app.post("/api/bridge/industry/preview", requireAuth, async (req, res, next) => 
 });
 
 /**
+ * The Industry window's own events, which the client acts on in its window and its industry service and which
+ * have no route else: `closed`, the window closed (industryWnd.Close, 107 to 110: the monitor of the window's job
+ * is let go where that job is the one monitored, None is sent where the window has no job, and nothing where its
+ * job was installed); and `job-let-go`, the window's job let go while the window stays (its blueprint taken
+ * away: nothing is sent). On the game port each is the transport's to act on, which keeps the window's job.
+ * Through the gateway nothing is kept and nothing is asked: `kept` says which.
+ */
+app.post("/api/bridge/industry/window", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const event = (req.body || {}).event;
+  if (event !== "closed" && event !== "job-let-go") {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_WINDOW_EVENT",
+      message: "The window's event is \"closed\" or \"job-let-go\".",
+    });
+    return;
+  }
+  if (!keepsTheWindowsJob(held)) {
+    res.json({ ok: true, kept: false });
+    return;
+  }
+  try {
+    const who = { userid: held.accountID };
+    await heldRequest(held, req.webSessionID, false, async () => (event === "closed"
+      ? gamePortPilots.industryWindowClosed(who, held.bridgeSessionID)
+      : gamePortPilots.industryJobLetGo(who, held.bridgeSessionID)));
+    res.json({ ok: true, kept: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * INSTALL a job. This CONSUMES MATERIALS out of a hangar and CHARGES THE
  * WALLET, so the route refuses outright without an explicit `confirm: true` —
  * the second gate behind the UI's two-step confirm, exactly as `destroy-rig`
@@ -5928,7 +5984,7 @@ app.post("/api/bridge/industry/install", requireAuth, async (req, res, next) => 
     await readHeldFlight(held, req.webSessionID);
     const locations = await readIndustryLocations(held, req.webSessionID, request.facilityID);
     const decryptorFields = await decryptorInstallFields(held, req.webSessionID, request);
-    const facilityOf = askedOnce(() => jobFacilityRow(held, req.webSessionID, request.facilityID));
+    const facilityOf = askedOnce(() => jobFacilityRow(held, req.webSessionID, request.facilityID, jobOf(request)));
     const timeSeconds = await reckonedJobSeconds(req.account, held, req.webSessionID, request, facilityOf);
     const cost = await reckonedJobCost(held, req.webSessionID, request, facilityOf);
     const { tax } = await reckonedJobFee(held, req.webSessionID, request, facilityOf, cost);

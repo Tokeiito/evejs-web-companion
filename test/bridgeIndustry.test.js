@@ -1142,6 +1142,8 @@ test("on the game port a job's facility is asked of the transport, which keeps t
     [8, { type: "tuple", items: [list([]), list([[0.5, null, null, null, 2]]), list([])] }],
   ]);
   const asked = { fresh: [], levels: [] };
+  /** The job each asking of the facility was for, as the route said it. */
+  const jobsSaid = [];
   let refuse = false;
   const gamePort = {
     ...fakeIndustryGateway({ timeMultiplier: 0.68 }),
@@ -1151,8 +1153,9 @@ test("on the game port a job's facility is asked of the transport, which keeps t
         session: { userid: 4, characterID: CHARACTER_ID, characterName: "Test Pilot", stationID: STATION_ID, structureID: null, solarSystemID: SOLAR_SYSTEM_ID, corporationID: 98000000, shipID: ACTIVE_SHIP_ID },
       };
     },
-    async freshFacility(sessionFields, bridgeSessionID, facilityID) {
+    async freshFacility(sessionFields, bridgeSessionID, facilityID, job) {
       asked.fresh.push([sessionFields, bridgeSessionID, facilityID]);
+      jobsSaid.push(job);
       if (refuse) throw Object.assign(new Error("That facility could not be found."), { code: "CALL_REFUSED", statusCode: 409 });
       return facility;
     },
@@ -1178,6 +1181,8 @@ test("on the game port a job's facility is asked of the transport, which keeps t
   await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ activity: "invention", runs: 3, decryptorTypeID: DECRYPTOR_TYPE_ID }) });
   assert.deepEqual([sentJobs(gamePort, "InstallJob")[1].materials, asked.fresh.length, gamePort.calls.topLevel.some((call) => call.method === "GetFacilities")],
     [{ [DATACORE_TYPE_ID]: 3, [DECRYPTOR_TYPE_ID]: 3 }, 3, false]);
+  // And it is asked for as the facility of that job: its blueprint, and invention.
+  assert.deepEqual(jobsSaid.at(-1), { blueprintID: BLUEPRINT_ITEM_ID, activityID: 8 });
 
   // A facility the server will not answer for: no time is reckoned, nought goes, and the job is the server's to judge.
   refuse = true;
@@ -1434,6 +1439,76 @@ test("on the game port a job in a structure is taxed by the access of the servic
   assert.equal((await installed()).tax, 1321);
   // And nothing of the pilot's went to the gateway.
   assert.equal(gateway.calls.topLevel.length, 0);
+});
+
+test("on the game port the preview's monitor is kept, the facility is asked for the job it is for, and the window's events are the transport's", async () => {
+  // The client's window keeps its job from its making to its letting go: its monitor is opened once
+  // (industrySvc.ConnectJob, 303) and let go at the window's close (industryWnd.Close, 107), and the job is given
+  // its facility once (CreateJob, 109). On the game port the transport keeps that job (src/gamePort/pilots.js,
+  // industryWindowClosed, industryJobLetGo, freshFacility), and the routes leave it to it.
+  const facility = facilityRow();
+  const said = [];
+  const plain = fakeIndustryGateway();
+  const gamePort = {
+    ...plain,
+    async selectCharacter() {
+      return {
+        bridgeSessionID: "gp:a-pilot-on-the-game-port", service: "charUnboundMgr", method: "SelectCharacterID", result: null, notifications: [],
+        session: { userid: 4, characterID: CHARACTER_ID, characterName: "Test Pilot", stationID: STATION_ID, structureID: null, solarSystemID: SOLAR_SYSTEM_ID, corporationID: 98000000, shipID: ACTIVE_SHIP_ID },
+      };
+    },
+    async freshFacility(sessionFields, bridgeSessionID, facilityID, job) {
+      said.push(["fresh", facilityID, job]);
+      return facility;
+    },
+    async industryWindowClosed(sessionFields, bridgeSessionID) {
+      said.push(["closed", sessionFields.userid, bridgeSessionID]);
+      return { sent: true };
+    },
+    industryJobLetGo(sessionFields, bridgeSessionID) {
+      said.push(["let go", sessionFields.userid, bridgeSessionID]);
+    },
+  };
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort });
+  await selectOnServer(baseUrl);
+  const preview = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ materialEfficiency: 0 }) });
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ materialEfficiency: 0 }) });
+  // The monitor is opened, what the pilot has is answered, and the monitor is not let go.
+  const methods = gamePort.calls.topLevel.map((call) => call.method);
+  assert.deepEqual([preview.payload.available, methods.filter((method) => method === "ConnectJob").length, methods.includes("DisconnectJob"), methods.includes("InstallJob")],
+    [{ [String(MATERIAL_TYPE_ID)]: 500 }, 1, false, true]);
+  // The facility is asked for with the job it is for, its blueprint and its work: by the preview, and by the install.
+  const theJob = { blueprintID: BLUEPRINT_ITEM_ID, activityID: ACTIVITY_MANUFACTURING };
+  assert.deepEqual(said, [["fresh", STATION_ID, theJob], ["fresh", STATION_ID, theJob]]);
+
+  // The window's two events go to the transport, as the pilot's own.
+  const closed = await apiRequest(baseUrl, "/api/bridge/industry/window", { method: "POST", body: { event: "closed" } });
+  const letGo = await apiRequest(baseUrl, "/api/bridge/industry/window", { method: "POST", body: { event: "job-let-go" } });
+  assert.deepEqual([closed.response.status, closed.payload, letGo.response.status, letGo.payload], [200, { ok: true, kept: true }, 200, { ok: true, kept: true }]);
+  assert.deepEqual(said.slice(2), [["closed", 4, "gp:a-pilot-on-the-game-port"], ["let go", 4, "gp:a-pilot-on-the-game-port"]]);
+  // Anything else is no event of the window's, and nothing is told.
+  for (const event of [undefined, "", "opened", 5, null, ["closed"]]) {
+    const { response, payload } = await apiRequest(baseUrl, "/api/bridge/industry/window", { method: "POST", body: { event } });
+    assert.deepEqual([response.status, payload.error], [400, "INVALID_WINDOW_EVENT"], JSON.stringify(event));
+  }
+  assert.equal(said.length, 4);
+  // And nothing of the pilot's went to the gateway.
+  assert.equal(gateway.calls.topLevel.length, 0);
+});
+
+test("through the gateway the preview's monitor is let go as it was, and the window's events ask nothing", async () => {
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody() });
+  const before = gateway.calls.topLevel.map((call) => call.method);
+  assert.deepEqual([before.filter((method) => method === "ConnectJob").length, before.filter((method) => method === "DisconnectJob").length], [1, 1]);
+  for (const event of ["closed", "job-let-go"]) {
+    const { response, payload } = await apiRequest(baseUrl, "/api/bridge/industry/window", { method: "POST", body: { event } });
+    assert.deepEqual([response.status, payload], [200, { ok: true, kept: false }], event);
+  }
+  assert.deepEqual([gateway.calls.topLevel.length, gateway.calls.bound.length], [before.length, 0]);
 });
 
 test("through the gateway the preview says no fee, and the job's tax goes as nought", async () => {

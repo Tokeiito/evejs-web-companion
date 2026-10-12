@@ -205,7 +205,12 @@
     ]),
   );
   const focus = (id: TabID): void => { wins = focusWindow(wins, id); };
-  const close = (id: TabID): void => { wins = closeWindow(wins, id); };
+  const close = (id: TabID): void => {
+    wins = closeWindow(wins, id);
+    // The Industry window's close is an act of its own to the game's client, which then lets go what it kept open
+    // for the job the window had. A window put away, or taken off the surface by an undock, is not closed.
+    if (id === "industry") void flow.industryWindowClosed();
+  };
   const move = (id: TabID, x: number, y: number): void => { wins = moveWindow(wins, id, x, y); };
   const resize = (id: TabID, w: number, h: number): void => { wins = resizeWindow(wins, id, w, h); };
   const minimize = (id: TabID): void => { wins = toggleMinimize(wins, id); };

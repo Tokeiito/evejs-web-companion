@@ -6961,7 +6961,11 @@ const LARGEST_INDICES = "facilityManager.GetMaxActivityModifiers";
 const ONE_FACILITY = "facilityManager.GetFacility";
 const OWNERS_JOBS = "industryManager.GetJobsByOwner";
 const ONE_JOB = "industryManager.GetJob";
-const FACILITY_PAIRS = { allowed: new Set([FACILITIES, LARGEST_INDICES, "industryManager.InstallJob", "industryMonitor.ConnectJob", OWNERS_JOBS, ONE_JOB]) };
+const PLACES = "facilityManager.GetFacilityLocations";
+const MONITOR_OPENED = "industryMonitor.ConnectJob";
+const MONITOR_LET_GO = "industryMonitor.DisconnectJob";
+const JOB_INSTALLED = "industryManager.InstallJob";
+const FACILITY_PAIRS = { allowed: new Set([FACILITIES, LARGEST_INDICES, JOB_INSTALLED, MONITOR_OPENED, MONITOR_LET_GO, PLACES, OWNERS_JOBS, ONE_JOB]) };
 const A_STRUCTURE = 1030000000001;
 const SOME_RIGS = [[1, { type: "list", items: [] }]];
 const facilityOf = (facilityID, tax, rigs = []) => keyVal([["facilityID", BigInt(facilityID)], ["typeID", 35825], ["tax", tax], ["rigModifiers", { type: "dict", entries: rigs }]]);
@@ -7175,6 +7179,142 @@ test("each job the server answers is given its facility afresh, as the client's 
   await gone.region();
   jobs.rows = [jobRow(1, A_STRUCTURE), jobRow(2, A_STRUCTURE + 1), jobRow(3, STATION)];
   assert.deepEqual([await reading(gone), gone.asked.one, await gone.region()], [[1, 2, 3], [A_STRUCTURE, A_STRUCTURE + 1], { [STATION]: 1 }]);
+});
+
+test("a facility's places are kept a minute by the facility and the owner they were asked for", async () => {
+  // facilitySvc.GetFacilityLocations (113 to 120) is @Memoize(1): what it answered for (facilityID, ownerID) is
+  // what it answers for a minute from then, with nothing asked.
+  const clock = { ms: 5_000_000 };
+  const asked = [];
+  const { pilots, handle } = await selected({ answers: {
+    [PLACES]: (args) => { if (Number(args[0]) === A_STRUCTURE + 9) throw refusedBy("CustomNotify", "No such facility."); asked.push(args.map(Number)); return { type: "list", items: [asked.length] }; },
+  } }, { ...FACILITY_PAIRS, now: () => clock.ms });
+  const places = async (facilityID, ownerID = PILOT) => (await pilots.callMethod("facilityManager", "GetFacilityLocations", [facilityID, ownerID], null, FIELDS, handle)).result.items[0];
+  assert.deepEqual([await places(STATION), await places(STATION), asked], [1, 1, [[STATION, PILOT]]]);
+  // Another facility, and another owner at the same one, are each asked for and kept by themselves.
+  assert.deepEqual([await places(A_STRUCTURE), await places(STATION, 1000044), await places(A_STRUCTURE), await places(STATION), asked.length], [2, 3, 2, 1, 3]);
+  // Kept till the minute is out (caching/memoize.py 100: saved_time + cache_seconds < time.time()), and asked for again after it.
+  clock.ms += 60_000;
+  assert.deepEqual([await places(STATION), asked.length], [1, 3]);
+  clock.ms += 1;
+  assert.deepEqual([await places(STATION), await places(STATION), asked.length], [4, 4, 4]);
+  // What could not be asked is not kept: asked again, it is asked again.
+  await rejects(places(A_STRUCTURE + 9), "CALL_REFUSED");
+  await rejects(places(A_STRUCTURE + 9), "CALL_REFUSED");
+  // Each asking that was sent is counted, and none that was answered from what is kept.
+  assert.deepEqual(ledgerOf(pilots, PLACES), [{ same: 6 }, "eve/client/script/industry/facilitySvc.py:118"]);
+});
+
+test("the job the Industry window has is monitored once, and its monitor is let go as the window lets it go", async () => {
+  // industrySvc.ConnectJob (303 to 308) is made when the window's job is given a place to take from, and that
+  // job is the one monitored from then on (self.monitoring). industryWnd.Close (107 to 110) is
+  // industrySvc.DisconnectJob(self.jobData): DisconnectJob(job.monitorID) where the window's job is the one
+  // monitored, DisconnectJob(None) where the window has no job, and nothing where its job is another (310 to 314).
+  const sent = [];
+  const state = { monitor: 500, refuse: false };
+  const { pilots, handle, session } = await selected({ answers: {
+    [MONITOR_OPENED]: ([job]) => { state.monitor += 1; sent.push(`opened ${state.monitor}`); return [state.monitor, { type: "dict", entries: [[34, 1000 + state.monitor]] }]; },
+    [MONITOR_LET_GO]: ([monitorID]) => { sent.push(`let go ${monitorID === null ? "None" : Number(monitorID)}`); return null; },
+    [JOB_INSTALLED]: () => { if (state.refuse) throw refusedBy("IndustryValidationError", "MISMATCH_COST"); sent.push("installed"); return 970000000000001n; },
+    [ONE_FACILITY]: ([facilityID]) => facilityOf(facilityID, 1),
+  } }, FACILITY_PAIRS);
+  const opened = async (job) => { const answer = (await pilots.callMethod("industryMonitor", "ConnectJob", [job], null, FIELDS, handle)).result; return [Number(answer[0]), Number(answer[1].entries[0][1])]; };
+  const installed = (job) => pilots.callMethod("industryManager", "InstallJob", [job], null, FIELDS, handle);
+  const closed = () => pilots.industryWindowClosed(WHO, handle);
+  const job = jobAt(A_STRUCTURE);
+
+  // The monitor is opened once. Asked again for the same job, with other runs, cost and materials, it is answered as it was.
+  assert.deepEqual([await opened(job), await opened({ ...job, runs: 7, cost: 99, materials: { 34: 5 } }), sent], [[501, 1501], [501, 1501], ["opened 501"]]);
+  // A job on another blueprint is another job: its monitor is opened, and the earlier one is not let go.
+  const other = { ...job, blueprintID: job.blueprintID + 1 };
+  assert.deepEqual([await opened(other), sent], [[502, 1502], ["opened 501", "opened 502"]]);
+  // So is the same blueprint at other work, at another facility, and with another place to take from: each by
+  // itself, set beside the job as it was (which is monitored anew between them, being another job than the last).
+  const changes = [{ activityID: 5 }, { facilityID: STATION }, { inputLocation: { ...A_PLACE_OF_WORK, flagID: 62 } }, { inputLocation: { ...A_PLACE_OF_WORK, itemID: A_STRUCTURE + 5 } }];
+  for (const changed of changes) {
+    await opened(other);
+    await opened({ ...other, ...changed });
+  }
+  assert.deepEqual(sent.slice(2), ["opened 503", "opened 504", "opened 505", "opened 506", "opened 507", "opened 508", "opened 509"]);
+  // The window closed with its job the one monitored: that monitor is let go. Closed again, it has no job: None.
+  await closed();
+  await closed();
+  assert.deepEqual(sent.slice(9), ["let go 509", "let go None"]);
+
+  // A job installed is the window's job no longer the one monitored: its monitor is left, and the window's close lets nothing go.
+  sent.length = 0;
+  await opened(job);
+  await installed(job);
+  await closed();
+  assert.deepEqual(sent, ["opened 510", "installed"]);
+  // After that close the window has no job: opened afresh it is monitored anew, and one refused is still the window's.
+  state.refuse = true;
+  assert.deepEqual(await opened(job), [511, 1511]);
+  await rejects(installed(job), "CALL_REFUSED");
+  await new Promise((resolve) => { setTimeout(resolve, 5); });
+  await closed();
+  assert.deepEqual(sent.slice(2), ["opened 511", "let go 511"]);
+  state.refuse = false;
+  // An install of another blueprint than the one monitored leaves the window's job as it is.
+  sent.length = 0;
+  await opened(job);
+  await installed(other);
+  await closed();
+  assert.deepEqual(sent, ["opened 512", "installed", "let go 512"]);
+
+  // The window's job let go without the window closing (its blueprint taken away): nothing is sent, the same job
+  // asked for again is monitored anew, and a window that closes with no job says None.
+  sent.length = 0;
+  await opened(job);
+  await pilots.industryJobLetGo(WHO, handle);
+  await opened(job);
+  await pilots.industryJobLetGo(WHO, handle);
+  await closed();
+  assert.deepEqual(sent, ["opened 513", "opened 514", "let go None"]);
+  // A monitor let go by a call that names it is the window's job's no longer.
+  sent.length = 0;
+  await opened(job);
+  await pilots.callMethod("industryMonitor", "DisconnectJob", [515], null, FIELDS, handle);
+  await opened(job);
+  assert.deepEqual(sent, ["opened 515", "let go 515", "opened 516"]);
+  // Every opening and letting go that was sent is counted, and none that was answered from what is kept.
+  assert.deepEqual([ledgerOf(pilots, MONITOR_OPENED)[0], ledgerOf(pilots, MONITOR_LET_GO)[0]], [{ reshaped: 16 }, { same: 6 }]);
+  assert.equal(session.calls.filter((call) => call.method === "ConnectJob").length, 16);
+  // Another account's session lets nothing go.
+  await assert.rejects(pilots.industryWindowClosed({ userid: 9 }, handle), (error) => error.code === "SESSION_NOT_FOUND");
+  assert.throws(() => pilots.industryJobLetGo({ userid: 9 }, handle), (error) => error.code === "SESSION_NOT_FOUND");
+});
+
+test("a job is given its facility afresh once, when it is made, and has it from then on", async () => {
+  // industrySvc.CreateJob (109) gives the job facilitySvc.GetFreshFacility(facilityID) once; the job the window
+  // has from then on is that one, whatever is asked of it after.
+  const { pilots, handle, asked } = await withFacilities({ [JOB_INSTALLED]: () => 970000000000002n, [MONITOR_LET_GO]: () => null }, SOME_RIGS);
+  const fresh = async (facilityID, job) => fieldIn(await pilots.freshFacility(WHO, handle, facilityID, job), "tax");
+  const aJob = { blueprintID: 9988400109051, activityID: 1 };
+  // Made (with nothing kept the region's are asked for, and the structure is among them), and asked for again: the same row, and nothing asked.
+  assert.deepEqual([await fresh(A_STRUCTURE, aJob), await fresh(A_STRUCTURE, aJob), asked.region, asked.one], [1, 1, 1, []]);
+  // Another job at the same facility is made: the facility, kept with rig modifiers, is let go and asked for by itself. Once.
+  const another = { blueprintID: 9988400109052, activityID: 1 };
+  assert.deepEqual([await fresh(A_STRUCTURE, another), await fresh(A_STRUCTURE, another), asked.one], [101, 101, [A_STRUCTURE]]);
+  // The same blueprint at other work is another job.
+  const copying = { ...another, activityID: 5 };
+  assert.deepEqual([await fresh(A_STRUCTURE, copying), asked.one.length], [102, 2]);
+  // And so is the same at another facility: made at the one and then the other and the first again, it is given
+  // each afresh each time (the other is asked for by itself, not being among the region's, and has rig modifiers).
+  assert.deepEqual([await fresh(A_STRUCTURE + 1, copying), await fresh(A_STRUCTURE, copying), await fresh(A_STRUCTURE + 1, copying), asked.one.length], [103, 104, 105, 5]);
+  // A station kept with no rig modifiers is as kept.
+  assert.deepEqual([await fresh(STATION, copying), asked.one.length], [1, 5]);
+  // Once a job is installed the window's job is made anew: the same blueprint asked for again is given its facility afresh.
+  await fresh(A_STRUCTURE, aJob);
+  await pilots.callMethod("industryManager", "InstallJob", [jobAt(A_STRUCTURE)], null, FIELDS, handle);
+  assert.deepEqual([await fresh(A_STRUCTURE, aJob), await fresh(A_STRUCTURE, aJob), asked.one.length], [107, 107, 7]);
+  // So is one let go by the window, and one of a window that closed.
+  pilots.industryJobLetGo(WHO, handle);
+  assert.deepEqual([await fresh(A_STRUCTURE, aJob), asked.one.length], [108, 8]);
+  await pilots.industryWindowClosed(WHO, handle);
+  assert.deepEqual([await fresh(A_STRUCTURE, aJob), asked.one.length], [109, 9]);
+  // With no job said it is as it was: afresh each time.
+  assert.deepEqual([await fresh(A_STRUCTURE), await fresh(A_STRUCTURE), asked.one.length], [110, 111, 11]);
 });
 
 // ── the offices the pilot's corporation rents ────────────────────────────────

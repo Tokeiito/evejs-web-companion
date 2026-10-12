@@ -300,6 +300,16 @@
   }
 
   /**
+   * "Never mind": the job is put away with nothing started. The game's own client keeps a job for as long as its
+   * window has the blueprint, and what it kept open for it is no longer the window's once the job is gone; the
+   * pilot's transport is told so.
+   */
+  function neverMind(): void {
+    closeStartJob();
+    void flow.industryJobLetGo();
+  }
+
+  /**
    * The blueprint's own time research and its material research, to go with a job's request: a job's time is
    * reckoned from the one, and a manufacturing job's materials from the other.
    */
@@ -632,7 +642,7 @@
                   {#if blueprint.jobID !== null}
                     <span class="note">Busy</span>
                   {:else if startingBlueprint?.itemID === blueprint.itemID}
-                    <button type="button" class="minor" disabled={busy} onclick={closeStartJob}>
+                    <button type="button" class="minor" disabled={busy} onclick={neverMind}>
                       Never mind
                     </button>
                   {:else}

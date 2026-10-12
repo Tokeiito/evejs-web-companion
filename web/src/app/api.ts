@@ -1214,6 +1214,20 @@ export async function installIndustryJob(
   return asIndustryChange(data);
 }
 
+/**
+ * One of the Industry window's own events, for the pilot's transport to act on as the game's own client does:
+ * `closed`, the window closed (the client lets go the monitor of the job it had, where it had one that was not
+ * yet started), and `job-let-go`, the window's job put away while the window stays. Answers whether anything
+ * keeps the window's job to act on it: on the game port the transport does, and through the gateway nothing does.
+ */
+export async function industryWindowEvent(
+  event: "closed" | "job-let-go",
+  options: ApiOptions = {},
+): Promise<boolean> {
+  const data = await postJson("/api/bridge/industry/window", { event }, options);
+  return data.kept === true;
+}
+
 // A finished job is delivered, and a job stopped, by the page's own calls (bridge/industryWrites.ts:
 // industryManager.CompleteJob and CancelJob, each with the job's own solar system, and judged by the job the
 // server answers). Each left its route (POST /api/bridge/industry/deliver, POST /api/bridge/industry/cancel)

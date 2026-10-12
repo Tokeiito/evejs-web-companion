@@ -805,6 +805,13 @@ export interface AppFlow {
    * panel confirms before calling it and the BFF confirms again.
    */
   installIndustryJob(request: api.IndustryJobRequest): Promise<void>;
+  /**
+   * The Industry window closed. The game's own client then lets go what it kept open for the job the window had;
+   * the pilot's transport is told, and does the same. Best effort: where it could not be told, nothing is said.
+   */
+  industryWindowClosed(): Promise<void>;
+  /** The window's job put away while the window stays ("Never mind"): told likewise, and as quietly. */
+  industryJobLetGo(): Promise<void>;
   /** DELIVER a finished job (the retail CompleteJob). */
   deliverIndustryJob(jobID: number): Promise<void>;
   /**
@@ -14425,6 +14432,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     async installIndustryJob(request) {
       await runIndustryAction(() => api.installIndustryJob(request, callOptions));
+    },
+
+    async industryWindowClosed() {
+      // The window is gone whether or not this is heard: there is nobody to tell of a failure.
+      await api.industryWindowEvent("closed", callOptions).catch(() => false);
+    },
+
+    async industryJobLetGo() {
+      await api.industryWindowEvent("job-let-go", callOptions).catch(() => false);
     },
 
     // The page's own calls (bridge/industryWrites.ts), each judged by the job the server answers.

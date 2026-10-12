@@ -626,6 +626,33 @@ test("the preview returns what the player HAS and the time the job will take, an
   );
 });
 
+test("the window's own events are told to the pilot's transport, and nothing is said where they could not be", async () => {
+  const store = createClientStore();
+  let status = 200;
+  const { fetch, requests } = makeFakeFetch(
+    respondOk((path) =>
+      path === "/api/bridge/industry/window"
+        ? (status === 200 ? { status: 200, body: { ok: true, kept: true } } : { status, body: { ok: false, error: "NO_LIVE_SESSION", message: "no pilot" } })
+        : null,
+    ),
+  );
+  const flow = createAppFlow(store, { fetch });
+  const told = () => requests.filter((entry) => entry.path === "/api/bridge/industry/window").map((entry) => [entry.method, entry.body]);
+
+  // The window closed, and its job let go while it stays: each is one event, and nothing else is asked.
+  await flow.industryWindowClosed();
+  await flow.industryJobLetGo();
+  assert.deepEqual(told(), [["POST", { event: "closed" }], ["POST", { event: "job-let-go" }]]);
+  assert.equal(requests.length, 2);
+  // Where it could not be told (no pilot is held, the BFF is gone) the window is closed all the same: nothing
+  // fails, and the panel says nothing of it.
+  status = 409;
+  await flow.industryWindowClosed();
+  await flow.industryJobLetGo();
+  assert.equal(told().length, 4);
+  assert.equal(store.get().industry.actionError, null);
+});
+
 test("a lost session during a mutation unwinds to character select", async () => {
   const store = createClientStore();
   const { fetch } = makeFakeFetch(() => ({

@@ -271,6 +271,19 @@ const bookmarksKeptAs = (method, form) => (method === ACTIVE_BOOKMARKS && form.a
 /** bookmarkSvc.ACLBookmarkLocation (617): the park's call that bookmarks a place in space, which the client works into what it keeps. */
 const BOOKMARK_LOCATION = "BookmarkLocation";
 const FACILITY_MANAGER = "facilityManager";
+const INDUSTRY_MONITOR = "industryMonitor";
+/**
+ * How long a facility's places are kept as they were answered, by the facility and the owner they were asked for:
+ * facilitySvc.GetFacilityLocations is @Memoize(1) (113), and what it kept is let go once more than a minute has
+ * gone by since it was answered (caching/memoize.py 100).
+ */
+const FACILITY_PLACES_KEPT_MS = 60_000;
+/**
+ * The window's job once it was installed. The window then has the job the server made of it
+ * (industryWnd.OnIndustryJobClient, 449 to 451), which is not the one monitored: the monitor is left as it is, and
+ * the window's close lets nothing go (industrySvc.DisconnectJob, 311).
+ */
+const A_JOB_INSTALLED = Object.freeze({ installed: true });
 /**
  * The two reads of the facility manager's the client's facility service keeps (facilitySvc.py): the region's
  * facilities (GetFacilities(), 133) and the largest system index of each activity (GetMaxActivityModifiers(), 87),
@@ -442,8 +455,29 @@ function withFacility(facilities, facilityID, row = null) {
   const all = row ? [...others, row] : others;
   return Array.isArray(facilities) ? all : { ...facilities, items: all };
 }
+/**
+ * By what a job is the one a window made: its blueprint, its work and its facility (industryWnd._OnBlueprintSelected
+ * makes another for another blueprint or other work, 139 to 152). Null where one of them is not said.
+ */
+const jobMadeAs = (blueprintID, activityID, facilityID) => {
+  const ids = [positive(blueprintID), positive(activityID), positive(facilityID)];
+  return ids.includes(null) ? null : ids.join(":");
+};
+/**
+ * By what a job is the one monitored: what it was made as, and the place it takes from (the monitor is opened
+ * when the job is given one, and again when it is given another: on_input_location, industrySvc.CreateJob 106).
+ * `job` is a job as a route holds it; null for anything else.
+ */
+const jobMonitoredAs = (job) => {
+  if (!job || typeof job !== "object" || Array.isArray(job) || job.type !== undefined) return null;
+  const made = jobMadeAs(job.blueprintID, job.activityID, job.facilityID);
+  const place = job.inputLocation;
+  return made === null ? null : `${made}:${place ? `${positive(place.itemID)}:${positive(place.flagID)}` : "nowhere"}`;
+};
 /** The facility a job's row names, as the server answers a job (industryCommon.JobData reads data.facilityID), or null. */
 const rowsFacility = (row) => positive(row && row.type === "object" && row.args ? dictValue(row.args, "facilityID") : null);
+/** The blueprint a job names, as a route holds the job (a plain object) or as the client's dict has it. */
+const jobsBlueprint = (job) => (job && job.type === "dict" ? dictValue(job, "blueprintID") : job && job.blueprintID);
 /** The facility a job names, as a route holds the job (a plain object) or as the client's dict has it. */
 const jobsFacility = (job) => positive(job && job.type === "dict" ? dictValue(job, "facilityID") : job && job.facilityID);
 
@@ -1279,6 +1313,16 @@ function createGamePortPilots({
       journalWork: Promise.resolve(),
       /** The facilities asked for by themselves at the server's word or a job's refusal, one after another (facilitiesAskedAfresh). */
       facilitiesWork: Promise.resolve(),
+      /** facilitySvc.GetFacilityLocations's own keeping: a facility's places for an owner, by the two, each with when it was answered. */
+      facilityPlaces: new Map(),
+      /**
+       * The job the Industry window has, as the client's industry service has the one it monitors
+       * (industrySvc.monitoring, a weak reference to the window's job): null where the window has none, what its
+       * monitor was opened as and answered while it is the one monitored, and A_JOB_INSTALLED once it was installed.
+       */
+      windowJob: null,
+      /** What the job the window made was made as (jobMadeAs): it was given its facility afresh then, and is not again. */
+      jobMade: null,
       /** cfg._averageMarketPrice: the price table, by type, once the cfg's one asking for it is answered; null until then, and where it could not be asked. */
       averagePrices: null,
       /** The timer of the cfg's thread that asks for it, while it has not gone off. */
@@ -1687,6 +1731,22 @@ function createGamePortPilots({
       }));
       return { service, method, result: wireToBridgeJson(kept), notifications: drain(entry) };
     }
+    // facilitySvc.GetFacilityLocations (113 to 120): what was answered for a facility and an owner is what is
+    // answered for a minute from then. Nothing is sent, and nothing is counted.
+    if (service === FACILITY_MANAGER && method === "GetFacilityLocations" && form.status === "same" && form.kwargs === null) {
+      const kept = await run(entry, service, method, () => facilityPlaces(entry, form.args, () => {
+        ledger.note(service, method, form);
+        return byName(entry.session, service, method, form);
+      }));
+      return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
+    }
+    // industrySvc.ConnectJob (303 to 308) is made when the window's job is given a place to take from, and that
+    // job is the one monitored from then on. Asked for the job that is the one monitored, it is answered as it
+    // was: nothing is sent, and nothing is counted.
+    const monitoredAs = service === INDUSTRY_MONITOR && method === "ConnectJob" && form.status !== "differs" ? jobMonitoredAs(Array.isArray(args) ? args[0] : null) : null;
+    if (monitoredAs !== null && entry.windowJob && entry.windowJob.monitoredAs === monitoredAs) {
+      return { service, method, result: wireToBridgeJson(entry.windowJob.answer), notifications: drain(entry) };
+    }
     // The account service's static data: asked once and kept, however many windows want it and however many at once.
     if (service === ACCOUNT && ACCOUNT_STATIC.has(method)) {
       const kept = await run(entry, service, method, () => entry.accountStatic.read(method, () => {
@@ -1732,6 +1792,22 @@ function createGamePortPilots({
     // are anyone's to read.
     if (service === "industryManager" && (method === "GetJobsByOwner" || method === "GetJob")) {
       await jobsGivenTheirFacilities(entry, method === "GetJob" ? [result] : itemsOf(result));
+    }
+    // The job whose monitor was opened is the one monitored from now on (self.monitoring = weakref.ref(job), 304).
+    // A monitor opened before it is not let go: the client lets none go but at its window's close.
+    if (monitoredAs !== null) {
+      entry.windowJob = { monitoredAs, blueprintID: positive(args[0].blueprintID), monitorID: positive(itemsOf(result)[0]), answer: result };
+    }
+    // A monitor let go by its number is no longer the window's job's.
+    if (service === INDUSTRY_MONITOR && method === "DisconnectJob" && entry.windowJob && entry.windowJob !== A_JOB_INSTALLED
+      && entry.windowJob.monitorID === positive(form.args[0])) {
+      entry.windowJob = null;
+    }
+    // A job the server took: the window has the server's job of it from now on, and the next job it makes is another.
+    if (service === "industryManager" && method === "InstallJob") {
+      const blueprintID = positive(jobsBlueprint(Array.isArray(args) ? args[0] : null));
+      if (entry.windowJob && entry.windowJob !== A_JOB_INSTALLED && entry.windowJob.blueprintID === blueprintID) entry.windowJob = A_JOB_INSTALLED;
+      if (entry.jobMade !== null && blueprintID !== null && entry.jobMade.startsWith(`${blueprintID}:`)) entry.jobMade = null;
     }
     // crimewatchSvc.SetSafetyLevel (343 to 345): once the server has taken the level, it is the level the client has.
     // A call that is not the client's (a level that is none of its three) leaves nothing the client would keep:
@@ -2211,11 +2287,70 @@ function createGamePortPilots({
    * itself and kept (71). Answers the facility's row, or null where none is named (`if facilityID:`). Fails as
    * the asking of it fails: the server will not answer for a facility it does not know.
    */
-  async function freshFacility(sessionFields = {}, bridgeSessionID = undefined, facilityID = null) {
+  async function freshFacility(sessionFields = {}, bridgeSessionID = undefined, facilityID = null, job = null) {
     const entry = held(bridgeSessionID, sessionFields);
     const id = positive(facilityID);
     if (id === null) return null;
-    return run(entry, FACILITY_MANAGER, "GetFacility", async () => wireToBridgeJson(await facilityGivenAfresh(entry, id)));
+    // The job a window has was given its facility when it was made, once (CreateJob, 109): asked of for the same
+    // job again, the facility is the one kept, where it is kept still.
+    const made = job ? jobMadeAs(job.blueprintID, job.activityID, id) : null;
+    return run(entry, FACILITY_MANAGER, "GetFacility", async () => {
+      const had = made !== null && entry.jobMade === made ? facilityAmong(await regionsFacilities(entry), id) : null;
+      const row = had ?? await facilityGivenAfresh(entry, id);
+      if (made !== null) entry.jobMade = made;
+      return wireToBridgeJson(row);
+    });
+  }
+
+  /**
+   * A facility's places for an owner, as facilitySvc.GetFacilityLocations keeps them: what was answered for the
+   * two is what is answered until more than a minute has gone by since. Two that find nothing kept ask once.
+   * What could not be asked is not kept.
+   */
+  function facilityPlaces(entry, args, ask) {
+    const keptAs = args.map((each) => String(positive(each))).join(":");
+    const kept = entry.facilityPlaces.get(keptAs);
+    if (kept && now() - kept.at <= FACILITY_PLACES_KEPT_MS) return kept.answer;
+    const record = { at: Infinity, answer: null };
+    record.answer = Promise.resolve().then(ask).then((answer) => { record.at = now(); return answer; });
+    entry.facilityPlaces.set(keptAs, record);
+    record.answer.catch(() => { if (entry.facilityPlaces.get(keptAs) === record) entry.facilityPlaces.delete(keptAs); });
+    return record.answer;
+  }
+
+  /** industryMonitor.DisconnectJob with a monitor's number or None, as the client's industry service sends it (313): noted as it is sent. */
+  function monitorLetGo(entry, monitorID) {
+    const form = shape(INDUSTRY_MONITOR, "DisconnectJob", [monitorID], null, contextFor(entry));
+    ledger.note(INDUSTRY_MONITOR, "DisconnectJob", form);
+    return byName(entry.session, INDUSTRY_MONITOR, "DisconnectJob", form);
+  }
+
+  /**
+   * The Industry window closed: industryWnd.Close (107 to 110) is industrySvc.DisconnectJob(self.jobData), which
+   * lets a monitor go `if job is None or self.monitoring() == job` (310 to 314). So a window whose job is the one
+   * monitored lets that monitor go by its number; one with no job sends None; and one whose job was installed
+   * sends nothing, its job being the server's and not the one monitored. The window has no job after.
+   * Fails as the sending fails.
+   */
+  async function industryWindowClosed(sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    const job = entry.windowJob;
+    entry.windowJob = null;
+    entry.jobMade = null;
+    if (job === A_JOB_INSTALLED) return { sent: false };
+    await run(entry, INDUSTRY_MONITOR, "DisconnectJob", () => monitorLetGo(entry, job ? job.monitorID : null));
+    return { sent: true };
+  }
+
+  /**
+   * The window's job let go while the window stays (industryWnd.OnIndustryRemoveBlueprint, 434 to 437:
+   * self.jobData = None). The job is gone and with it the service's hold on the one monitored, which is a weak
+   * one; nothing is sent, and its monitor is left. The next job the window makes is made anew.
+   */
+  function industryJobLetGo(sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    entry.windowJob = null;
+    entry.jobMade = null;
   }
 
   /** facilitySvc.GetFreshFacility (107 to 112), of a facility that is named: its row, as it is then kept. */
@@ -3728,6 +3863,8 @@ function createGamePortPilots({
     skillSheet,
     skillLevels,
     freshFacility,
+    industryJobLetGo,
+    industryWindowClosed,
     averageMarketPrice,
     serverNowMs,
     saveSkillQueue,
