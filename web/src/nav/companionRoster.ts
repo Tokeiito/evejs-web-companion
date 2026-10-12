@@ -146,6 +146,7 @@ export function inFleetFrom(
 export interface CompanionRunFacts<T> {
   readonly followingOrderFrom: T | null;
   readonly lastOrderHeard: string | null;
+  readonly targetMode: "called" | "all" | null;
   readonly canTag: boolean | null;
 }
 
@@ -154,11 +155,12 @@ export function runFactsFor<T>(
   facts: CompanionRunFacts<T> | null,
 ): CompanionRunFacts<T> {
   if (!holding || facts === null) {
-    return { followingOrderFrom: null, lastOrderHeard: null, canTag: null };
+    return { followingOrderFrom: null, lastOrderHeard: null, targetMode: null, canTag: null };
   }
   return {
     followingOrderFrom: facts.followingOrderFrom,
     lastOrderHeard: facts.lastOrderHeard,
+    targetMode: facts.targetMode,
     canTag: facts.canTag,
   };
 }
