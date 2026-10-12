@@ -2006,6 +2006,22 @@ Take these defaults, and list each under "For the operator" in the log so they c
   listed in order (`rec-seq.js` in the scratchpad: line, time, service, what
   was sent), said at once what a client asks there, which the transport asked
   already, and where the new call goes among them.
+- **Read every word on the page in the state a wording is for.** The unit named
+  one label ("Station hangar"). The tab docked in a complex showed two more
+  that no search for the label finds: "this station" in the header, and
+  "Station services" over the panel's own "Structure services". After a change
+  of words, in the tab: `document.body.innerText.match(/[^\n]*\bstation\b[^\n]*/gi)`.
+- **The Station panel's last tab is "Structure services" in a structure.** A
+  script that finds it by "Station services" finds nothing there: match
+  `/services/`.
+- **A test of a source's own line holds the line.** The fitting window's first
+  test matched the text of its source; it was replaced by one of what is
+  rendered, the store fed a module in the hangar and one in the hold. A source
+  match is for what nothing renders (a question behind a press), and for
+  nothing else.
+- **What is open in the tab is in its saved layout, in the order first opened.**
+  `JSON.parse(localStorage["evejs-web-desktop:v1:<pilot>"]).wins`, read before a
+  rail button is pressed, says whether the press opens a window or raises one.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
