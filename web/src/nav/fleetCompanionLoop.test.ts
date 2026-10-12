@@ -8411,6 +8411,8 @@ test("a WarpTo with drones out recalls them, waits, and warps once they are home
   assert.equal(gone.memory.lastWarpedToID, GATE);
 });
 
+// ⚠ NO lockedByIDs HERE: who has the ship locked could not be read, and that
+// keeps the operator's short wait rather than a longer one on a guess.
 test("a recall that does not finish in time is left behind, and the warp goes", () => {
   const order = { snapshot: gridWithGate(500_000), fleetBroadcast: fleetBroadcast("WarpTo", GATE), hostileOnGrid: true, myDroneIDs: [DRONE_A] };
   const t0 = 1_000_000;
@@ -8437,6 +8439,116 @@ test("a ship already below its flee floor obeys the order to leave at once, dron
     1_000_000,
   );
   assert.deepEqual(decision.action, { kind: "warp", targetID: GATE });
+});
+
+// --- ...and waits for them unless the ship is under fire (2026-10-12) --------
+//
+// Eight seconds left medium and heavy drones behind on grids where nothing was
+// shooting the ship. The operator's rule: wait for the drones "unless ship is
+// under fire", which is a hostile having this ship locked.
+
+/** A rat on the gate grid, at a distance that does not matter here. */
+const LOCKING_RAT = 200050;
+/** A fleet-mate's logistics ship, and the character flying it. */
+const LOGI_SHIP = 200051;
+const LOGI_PILOT = 90000002;
+
+function gateGridWith(extra: readonly Record<string, unknown>[]): SpaceSnapshot {
+  const grid = gridWithGate(500_000);
+  return { ...grid, entities: [...grid.entities, ...extra] } as unknown as SpaceSnapshot;
+}
+
+const RAT_ENTITY = {
+  itemID: LOCKING_RAT, kind: "ship", isSelf: false, isNpc: true, characterID: null,
+  position: { x: 20_000, y: 0, z: 0 }, radius: 0, mode: null,
+};
+const LOGI_ENTITY = {
+  itemID: LOGI_SHIP, kind: "ship", isSelf: false, isNpc: false, characterID: LOGI_PILOT,
+  position: { x: 5_000, y: 0, z: 0 }, radius: 0, mode: null,
+};
+
+test("with nothing locking the ship, the order waits past eight seconds for the drones", () => {
+  const order = {
+    snapshot: gateGridWith([]), fleetBroadcast: fleetBroadcast("WarpTo", GATE), hostileOnGrid: true,
+    myDroneIDs: [DRONE_A], lockedByIDs: [],
+  };
+  const t0 = 1_000_000;
+  const first = decideCompanionAction(REQUEST, obs(order), freshLadderMemory(), t0);
+  assert.equal(first.action.kind, "recallDrones");
+  const later = decideCompanionAction(REQUEST, obs(order), first.memory, t0 + 30_000);
+  assert.equal(later.action.kind, "wait", "half a minute in, still waiting for the drone");
+  assert.match(later.why, /every drone/);
+  const home = decideCompanionAction(REQUEST, obs({ ...order, myDroneIDs: [] }), later.memory, t0 + 31_000);
+  assert.deepEqual(home.action, { kind: "warp", targetID: GATE }, "and it goes the tick the drone is aboard");
+});
+
+test("...but not for ever: a drone that never comes home is left after a minute", () => {
+  const order = {
+    snapshot: gateGridWith([]), fleetBroadcast: fleetBroadcast("WarpTo", GATE), hostileOnGrid: true,
+    myDroneIDs: [DRONE_A], lockedByIDs: [],
+  };
+  const t0 = 1_000_000;
+  const first = decideCompanionAction(REQUEST, obs(order), freshLadderMemory(), t0);
+  assert.equal(decideCompanionAction(REQUEST, obs(order), first.memory, t0 + 59_999).action.kind, "wait");
+  assert.deepEqual(decideCompanionAction(REQUEST, obs(order), first.memory, t0 + 60_000).action, { kind: "warp", targetID: GATE });
+});
+
+test("a rat with the ship locked keeps the short wait", () => {
+  const order = {
+    snapshot: gateGridWith([RAT_ENTITY]), fleetBroadcast: fleetBroadcast("WarpTo", GATE), hostileOnGrid: true,
+    myDroneIDs: [DRONE_A], lockedByIDs: [LOCKING_RAT],
+  };
+  const t0 = 1_000_000;
+  const first = decideCompanionAction(REQUEST, obs(order), freshLadderMemory(), t0);
+  assert.equal(decideCompanionAction(REQUEST, obs(order), first.memory, t0 + 7_999).action.kind, "wait");
+  assert.deepEqual(decideCompanionAction(REQUEST, obs(order), first.memory, t0 + 8_000).action, { kind: "warp", targetID: GATE });
+});
+
+test("a locker that is not on the grid to be told apart counts as hostile", () => {
+  const order = {
+    snapshot: gateGridWith([]), fleetBroadcast: fleetBroadcast("WarpTo", GATE), hostileOnGrid: true,
+    myDroneIDs: [DRONE_A], lockedByIDs: [LOCKING_RAT],
+  };
+  const t0 = 1_000_000;
+  const first = decideCompanionAction(REQUEST, obs(order), freshLadderMemory(), t0);
+  assert.deepEqual(decideCompanionAction(REQUEST, obs(order), first.memory, t0 + 8_000).action, { kind: "warp", targetID: GATE });
+});
+
+test("a fleet-mate's lock is not fire: the logi repairing this ship does not cut the wait short", () => {
+  const order = {
+    snapshot: gateGridWith([LOGI_ENTITY]), fleetBroadcast: fleetBroadcast("WarpTo", GATE), hostileOnGrid: true,
+    myDroneIDs: [DRONE_A], lockedByIDs: [LOGI_SHIP], fleetMemberCharacterIDs: [LOGI_PILOT],
+  };
+  const t0 = 1_000_000;
+  const first = decideCompanionAction(REQUEST, obs(order), freshLadderMemory(), t0);
+  assert.equal(decideCompanionAction(REQUEST, obs(order), first.memory, t0 + 20_000).action.kind, "wait");
+});
+
+test("coming under fire part-way through the long wait leaves on that tick", () => {
+  const calm = {
+    snapshot: gateGridWith([RAT_ENTITY]), fleetBroadcast: fleetBroadcast("WarpTo", GATE), hostileOnGrid: true,
+    myDroneIDs: [DRONE_A], lockedByIDs: [] as number[],
+  };
+  const t0 = 1_000_000;
+  const first = decideCompanionAction(REQUEST, obs(calm), freshLadderMemory(), t0);
+  const waiting = decideCompanionAction(REQUEST, obs(calm), first.memory, t0 + 15_000);
+  assert.equal(waiting.action.kind, "wait");
+  const shot = decideCompanionAction(REQUEST, obs({ ...calm, lockedByIDs: [LOCKING_RAT] }), waiting.memory, t0 + 17_000);
+  assert.deepEqual(shot.action, { kind: "warp", targetID: GATE });
+});
+
+test("the drone rung stays down for the whole long wait, so nothing relaunches into it", () => {
+  const order = {
+    snapshot: gateGridWith([]), fleetBroadcast: fleetBroadcast("WarpTo", GATE), hostileOnGrid: true,
+    myDroneIDs: [DRONE_A, DRONE_B], combatDroneIDs: [DRONE_A, DRONE_B], lockedByIDs: [],
+    combatDroneBayItemIDs: [DRONE_BAY_STACK], droneBayItemIDs: [DRONE_BAY_STACK],
+  };
+  const t0 = 1_000_000;
+  const first = decideCompanionAction(REQUEST, obs(order), freshLadderMemory(), t0);
+  // One drone is aboard; one is still out 40 s on. Nothing goes back out.
+  const mid = decideCompanionAction(
+    REQUEST, obs({ ...order, myDroneIDs: [DRONE_B], combatDroneIDs: [DRONE_B] }), first.memory, t0 + 40_000);
+  assert.equal(mid.action.kind, "wait");
 });
 
 test("an order re-issued just after leaving is not held for another recall", () => {

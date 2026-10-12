@@ -20087,6 +20087,30 @@ async function readLockedTargetIDs(held, webSessionID) {
 }
 
 /**
+ * The itemIDs that have this ship locked RIGHT NOW (dogmaIM.GetTargeters), or
+ * null when that could not be read.
+ *
+ * The same authority and the same keeping as `readLockedTargetIDs`: on the game
+ * port the pilot's target service answers it from the server's own
+ * OnTarget('otheradd' / 'otherlost') notices (src/gamePort/pilotTargets.js),
+ * which is how the retail client knows what is targeting it. An NPC lock sends
+ * them too (`scene/targeting.js`).
+ *
+ * ⚠ A FAILURE IS null, NEVER A THROW. The lock list beside it is what the
+ * Targeting panel reads, and a page must not lose that because this half could
+ * not answer.
+ */
+async function readTargeterIDs(held, webSessionID) {
+  try {
+    const outcome = await heldTopLevelCall(held, webSessionID, "dogmaIM", "GetTargeters", [], null);
+    const raw = outcome.result;
+    return raw?.type === "list" && Array.isArray(raw.items) ? decodeTargetIDList(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Confirm the requested module, including an authoritative bank-master mapping.
  * Unrelated growth in the active set is not proof. Missing bank authority is
  * unknown rather than a guessed confirmation of a slave weapon.
@@ -20124,8 +20148,16 @@ app.get("/api/bridge/targets", requireAuth, async (req, res, next) => {
   }
   try {
     const locked = await readLockedTargetIDs(held, req.webSessionID);
+    // Only when asked: through the gateway it is a second call, and only the
+    // fleet companion's tick needs it.
+    const targeterIDs = req.query.targeters === "1" ? await readTargeterIDs(held, req.webSessionID) : null;
     // A malformed read cannot prove that the caller has no locked targets.
-    res.json({ ok: true, targetIDs: locked.readable ? locked.ids : null, notifications: locked.notifications });
+    res.json({
+      ok: true,
+      targetIDs: locked.readable ? locked.ids : null,
+      targeterIDs,
+      notifications: locked.notifications,
+    });
   } catch (error) {
     next(error);
   }
