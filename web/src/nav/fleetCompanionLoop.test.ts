@@ -23,6 +23,7 @@ import {
   type FleetCompanionRequest,
 } from "./fleetCompanionLoop.ts";
 import type { ChatMessage, SpaceSnapshot } from "../store/types.ts";
+import type { BotLogDraft } from "./botLog.ts";
 import type { FleetBroadcast } from "../bridge/fleetBroadcasts.ts";
 
 /**
@@ -8386,4 +8387,78 @@ test("the burst is shorter than the cadence", () => {
     FLEET_COMPANION_BURST_MS > 0 && FLEET_COMPANION_BURST_MS < FLEET_COMPANION_CADENCE_MS,
     "a burst that is not shorter than the cadence is not a burst",
   );
+});
+
+// --- the flight recorder (nav/companionLog.ts) --------------------------------
+
+function recordingDeps(overrides: Partial<FleetCompanionDeps> = {}): {
+  deps: FleetCompanionDeps;
+  lines: BotLogDraft[];
+} {
+  const lines: BotLogDraft[] = [];
+  let clock = 1_000_000;
+  const { deps } = makeDeps({
+    now: () => (clock += 100),
+    log: { write: (draft) => lines.push(draft) },
+    observe: async () => obs({
+      snapshot: gridWithEntities([TACKLE]),
+      fleetTargetTags: new Map([[TACKLE, "A"]]),
+      lockedTargetIDs: [],
+    }),
+    ...overrides,
+  });
+  return { deps, lines };
+}
+
+test("the recorder writes start, the decision, the call and its result, in that order", async () => {
+  const { deps, lines } = recordingDeps();
+  const controller = createFleetCompanion(deps);
+  controller.start(REQUEST);
+  await controller.tick();
+  assert.deepEqual(lines.map((line) => line.kind), ["start", "decide", "decide", "issue", "result"]);
+  const issue = lines.find((line) => line.kind === "issue")!;
+  assert.deepEqual(issue.action, { kind: "lock", targetID: TACKLE });
+  assert.equal(issue.says, `lock targetID=${TACKLE}`);
+  assert.equal(typeof issue.observeMs, "number");
+  const result = lines.find((line) => line.kind === "result")!;
+  assert.equal(result.ok, true);
+  assert.equal(typeof result.callMs, "number");
+  assert.ok(lines.every((line) => line.run === lines[0]!.run), "one run id across the run");
+});
+
+test("the recorder logs a refusal with the server's words", async () => {
+  const { deps, lines } = recordingDeps({
+    issue: async () => {
+      throw new Error("TargetNotWithinRangeGeneric");
+    },
+  });
+  const controller = createFleetCompanion(deps);
+  controller.start(REQUEST);
+  await controller.tick();
+  const result = lines.find((line) => line.kind === "result")!;
+  assert.equal(result.ok, false);
+  assert.equal(result.refusal, "TargetNotWithinRangeGeneric");
+});
+
+test("the recorder writes a decision only when it changes, and an end when the run does", async () => {
+  const { deps, lines } = recordingDeps({ observe: async () => obs() });
+  const controller = createFleetCompanion(deps);
+  controller.start(REQUEST);
+  await controller.tick();
+  await controller.tick();
+  await controller.tick();
+  const decides = lines.filter((line) => line.kind === "decide").length;
+  controller.stop();
+  assert.equal(lines.filter((line) => line.kind === "decide").length, decides + 1, "stop is one more decision");
+  assert.ok(decides <= 2, "three identical ticks are not three lines");
+  assert.equal(lines.at(-1)!.kind, "end");
+});
+
+test("a recorder that throws never stops the companion", async () => {
+  const { deps } = recordingDeps({ log: { write: () => { throw new Error("disk full"); } } });
+  const controller = createFleetCompanion(deps);
+  controller.start(REQUEST);
+  const action = await controller.tick();
+  assert.deepEqual(action, { kind: "lock", targetID: TACKLE });
+  assert.equal(controller.snapshot().status, "running");
 });
