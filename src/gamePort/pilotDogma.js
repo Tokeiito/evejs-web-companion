@@ -287,16 +287,41 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
   }
 
   /**
-   * godma.ProcessAllInfo, for the ship's items: what GetAllInfo answered.
+   * godma.RefreshItemAttributes(itemID, info, doUpdate=True) (1686): the attributes `info` lists, laid over what is
+   * held of the item. (The client leaves one be where it has taken a later change of it already; godma here is
+   * flushed before it is primed, and has taken none.)
+   */
+  function refreshAttributes(itemID, info) {
+    const fields = fieldsOf(info);
+    const given = fields.get("attributes");
+    if (!given || !Array.isArray(given.entries)) return;
+    const values = new Map(attributes.get(key(itemID)) ?? []);
+    for (const [attributeID, value] of given.entries) values.set(number(attributeID), number(value));
+    updateAttributes(itemID, values, clock(fields.get("time")) ?? now());
+  }
+
+  /**
+   * godma.ProcessAllInfo (2435), for the ship's items and the pilot's own character: what GetAllInfo answered.
    * Answers the IDs it now holds.
    */
   function loadAllInfo(allInfo) {
-    const shipInfo = fieldsOf(allInfo).get("shipInfo");
+    const all = fieldsOf(allInfo);
+    const shipInfo = all.get("shipInfo");
     const held = [];
     for (const [itemID, row] of shipInfo && Array.isArray(shipInfo.entries) ? shipInfo.entries : []) {
       loadRow(itemID, row);
       held.push(key(itemID));
     }
+    // 2443: the character's own items, the first of charInfo's two. (The second is the brain, which the client's
+    // dogma location works the character's values out of. Here each value held is the server's own, as the row
+    // gave it and as its notices change it.)
+    const characters = items(all.get("charInfo"))[0];
+    for (const [itemID, row] of characters && Array.isArray(characters.entries) ? characters.entries : []) {
+      loadRow(itemID, row);
+      held.push(key(itemID));
+    }
+    // 2446: the character's attributes the ship changes, laid over what is held of the character.
+    if (characterID !== null) refreshAttributes(characterID, all.get("shipModifiedCharAttribs"));
     // The ship item the client has is kept when that ship is loaded again; any other was unloaded, and its
     // heat with it. A module that is no longer among the ship's items heats nothing.
     for (const [id, racks] of [...heat]) {
@@ -305,7 +330,6 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     }
     // clientDogmaLocation._MakeShipActive: the ship's state is (instances, charges by flag, weapon banks, heat),
     // and the third is the active ship's banks.
-    const all = fieldsOf(allInfo);
     const shipState = all.get("shipState");
     const activeShip = all.get("activeShipID");
     if (Array.isArray(shipState) && shipState.length >= 3 && activeShip !== undefined && activeShip !== null) setWeaponBanks(activeShip, shipState[2]);

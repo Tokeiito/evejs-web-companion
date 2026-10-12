@@ -615,7 +615,7 @@ test("the recipe route dedupes and caps its input", async () => {
 
 /** A gateway fake with a mutable job world, for the mutating routes. */
 function fakeIndustryGateway(options = {}) {
-  const calls = { topLevel: [] };
+  const calls = { topLevel: [], bound: [] };
   const jobs = new Map();
   let nextJobID = JOB_ID;
   const installAnswersNull = options.installAnswersNull === true;
@@ -758,15 +758,25 @@ function fakeIndustryGateway(options = {}) {
         return { service, method, result: dict([]), notifications: [] };
       }
       if (service === "facilityManager" && method === "GetFacilities") {
-        return { service, method, result: list([facilityRow()]), notifications: [] };
+        return { service, method, result: list([options.facility || facilityRow()]), notifications: [] };
       }
       return { service, method, result: null, notifications: [] };
     },
-    async bindObject() {
-      throw new Error("industry needs no bound objects");
+    // The dogma location alone: a manufacturing job's time wants the pilot's own attribute of it.
+    async bindObject(service, method) {
+      if (service !== "dogmaIM") throw new Error("industry binds the dogma location and nothing else");
+      return { boundHandle: "dogma-handle", service, method, notifications: [] };
     },
-    async callBoundMethod() {
-      throw new Error("industry needs no bound objects");
+    async callBoundMethod(service, method, args, kwargs, sessionFields, bridgeSessionID, boundHandle) {
+      calls.bound.push({ service, method, args, kwargs, boundHandle });
+      if (service !== "dogmaIM" || method !== "QueryAttributeValue") throw new Error(`industry asks nothing else of a bound object: ${service}.${method}`);
+      if (options.attributeRefused) throw Object.assign(new Error("Not now."), { code: "CALL_REFUSED", statusCode: 409 });
+      return { service, method, result: options.timeMultiplier === undefined ? 1 : options.timeMultiplier, notifications: [] };
+    },
+    // The pilot's skills, as the gateway's own sheet lists them.
+    async getSkills() {
+      if (options.skillsRefused) throw Object.assign(new Error("Not now."), { code: "CALL_REFUSED", statusCode: 409 });
+      return options.sheet || { skills: options.skills || [] };
     },
   };
 }
@@ -904,6 +914,143 @@ test("the job's solar system is its facility's, as the place its materials are i
   await apiRequest(second.baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody() });
   const placeless = bare.calls.topLevel.find((call) => call.method === "InstallJob").args[0];
   assert.deepEqual([placeless.solarSystemID, placeless.inputLocation, placeless.outputLocation], [SOLAR_SYSTEM_ID, null, null]);
+});
+
+// --- a job's time, by the client's own reckoning ------------------------------
+//
+// industry/job.py 460 to 468: the activity's time for the runs, through each time modifier the job has (each
+// required skill's time per level, the pilot's own manufacturing time attribute, the blueprint's time research,
+// the facility's time modifiers for the product), rounded to the whole second (src/industryInstall.js). The
+// server holds a time that is not nought against its own, to the second.
+
+const sentJobs = (gateway, method) => gateway.calls.topLevel.filter((call) => call.method === method).map((call) => call.args[0]);
+
+test("a manufacturing job's time is the client's own reckoning, in the preview's request and the install's, and the preview says it", async () => {
+  // 600 s a run, three runs, a pilot whose manufacturing time attribute is 0.68 and a blueprint with five of time
+  // research: 600 x 3 x 0.68 x 0.95 = 1162.8.
+  const gateway = fakeIndustryGateway({ timeMultiplier: 0.68 });
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const preview = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ timeEfficiency: 5 }) });
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ timeEfficiency: 5 }) });
+  assert.deepEqual([sentJobs(gateway, "ConnectJob")[0].time, sentJobs(gateway, "InstallJob")[0].time, preview.payload.timeSeconds], [1163, 1163, 1163]);
+  // The pilot's own attribute is asked of its dogma location, by the character and the attribute (219), and the
+  // facility's modifiers are read for it; each once for the preview and once for the install.
+  assert.deepEqual(gateway.calls.bound.map((call) => [call.method, call.args]), [["QueryAttributeValue", [CHARACTER_ID, 219]], ["QueryAttributeValue", [CHARACTER_ID, 219]]]);
+  assert.equal(gateway.calls.topLevel.filter((call) => call.method === "GetFacilities").length, 2);
+  // The cost and the tax go as nought still: the server reckons each.
+  assert.deepEqual([sentJobs(gateway, "InstallJob")[0].cost, sentJobs(gateway, "InstallJob")[0].tax], [0, 0]);
+  // A blueprint said to have no time research: 600 x 3 x 0.68 = 1224. One of which nothing is said: no time is
+  // reckoned, nothing is asked for it, and nought goes.
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ timeEfficiency: 0 }) });
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody() });
+  assert.deepEqual(sentJobs(gateway, "InstallJob").slice(1).map((job) => job.time), [1224, 0]);
+  assert.deepEqual([gateway.calls.bound.length, gateway.calls.topLevel.filter((call) => call.method === "GetFacilities").length], [3, 3]);
+});
+
+test("a required skill's time per level and the facility's time modifiers for the product are in a job's time", async () => {
+  // A skill the blueprint requires that takes 1% a level (attribute 1982), the pilot at its second level; a facility
+  // that takes 15% off anything and has another modifier for another category of thing:
+  // 600 x 3 x 0.98 x 0.68 x 0.95 x 0.85 = 968.6124.
+  const TIMED_SKILL = 11452;
+  const withSkills = fakeStaticData();
+  const staticData = {
+    ...withSkills,
+    getIndustryBlueprint(blueprintTypeID) {
+      const definition = withSkills.getIndustryBlueprint(blueprintTypeID);
+      // (And one more that takes 1% a level, which the pilot has not: a level of nought, which changes nothing.)
+      if (definition) definition.activities.manufacturing.skills = [{ typeID: 3380, level: 1 }, { typeID: TIMED_SKILL, level: 1 }, { typeID: TIMED_SKILL + 1, level: 1 }];
+      return definition;
+    },
+    getTypeDogmaAttribute: (typeID, attributeID) => ([TIMED_SKILL, TIMED_SKILL + 1].includes(Number(typeID)) && Number(attributeID) === 1982 ? -1 : null),
+    getType: (typeID) => (Number(typeID) === PRODUCT_TYPE_ID ? { typeID: PRODUCT_TYPE_ID, groupID: 303, categoryID: 20 } : withSkills.getType(typeID)),
+  };
+  const facility = facilityRow();
+  facility.args.entries.find(([name]) => name === "activities")[1] = dict([
+    [ACTIVITY_MANUFACTURING, { type: "tuple", items: [list([[0.85, null, null, null, 2], [0.5, 6, null, null, 4]]), list([[0.99, null, null, null, 2]]), list([])] }],
+  ]);
+  const gateway = fakeIndustryGateway({ timeMultiplier: 0.68, skills: [{ typeID: 3380, level: 5 }, { typeID: TIMED_SKILL, level: 2 }], facility });
+  const { baseUrl } = await startTestServer({ gateway, staticData });
+  await selectOnServer(baseUrl);
+
+  const preview = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ timeEfficiency: 5 }) });
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ timeEfficiency: 5 }) });
+  assert.deepEqual([preview.payload.timeSeconds, sentJobs(gateway, "ConnectJob")[0].time, sentJobs(gateway, "InstallJob")[0].time], [969, 969, 969]);
+
+  // A modifier for the product's own category counts: 968.6124 x 0.5 = 484.3062.
+  staticData.getType = (typeID) => (Number(typeID) === PRODUCT_TYPE_ID ? { typeID: PRODUCT_TYPE_ID, groupID: 303, categoryID: 6 } : withSkills.getType(typeID));
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ timeEfficiency: 5 }) });
+  assert.equal(sentJobs(gateway, "InstallJob")[1].time, 484);
+});
+
+test("where a job's time cannot be reckoned whole it goes as nought, as it did, and the server reckons it", async () => {
+  // The pilot's attribute could not be asked.
+  const refused = fakeIndustryGateway({ attributeRefused: true });
+  const first = await startTestServer({ gateway: refused });
+  await selectOnServer(first.baseUrl);
+  const preview = await apiRequest(first.baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ timeEfficiency: 5 }) });
+  const installed = await apiRequest(first.baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ timeEfficiency: 5 }) });
+  assert.deepEqual([preview.response.status, preview.payload.timeSeconds, installed.response.status, installed.payload.applied], [200, null, 200, true]);
+  assert.deepEqual([sentJobs(refused, "ConnectJob")[0].time, sentJobs(refused, "InstallJob")[0].time], [0, 0]);
+
+  // What it answered is no number.
+  const odd = fakeIndustryGateway({ timeMultiplier: null });
+  const second = await startTestServer({ gateway: odd });
+  await selectOnServer(second.baseUrl);
+  await apiRequest(second.baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ timeEfficiency: 0 }) });
+  assert.equal(sentJobs(odd, "InstallJob")[0].time, 0);
+
+  // The facility is not among those read.
+  const elsewhere = fakeIndustryGateway({ timeMultiplier: 0.68, facility: facilityRow({ facilityID: STATION_ID + 1 }) });
+  const fourth = await startTestServer({ gateway: elsewhere });
+  await selectOnServer(fourth.baseUrl);
+  await apiRequest(fourth.baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ timeEfficiency: 0 }) });
+  assert.equal(sentJobs(elsewhere, "InstallJob")[0].time, 0);
+
+  // A required skill has a time per level, and the pilot's skills could not be read, or were read as no list.
+  const timedSkill = fakeStaticData();
+  const requiringIt = {
+    ...timedSkill,
+    getIndustryBlueprint(blueprintTypeID) {
+      const definition = timedSkill.getIndustryBlueprint(blueprintTypeID);
+      if (definition) definition.activities.manufacturing.skills = [{ typeID: 11452, level: 1 }];
+      return definition;
+    },
+    getTypeDogmaAttribute: (typeID, attributeID) => (Number(typeID) === 11452 && Number(attributeID) === 1982 ? -1 : null),
+  };
+  for (const unread of [fakeIndustryGateway({ timeMultiplier: 0.68, skillsRefused: true }), fakeIndustryGateway({ timeMultiplier: 0.68, sheet: {} })]) {
+    const { baseUrl } = await startTestServer({ gateway: unread, staticData: requiringIt });
+    await selectOnServer(baseUrl);
+    await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ timeEfficiency: 0 }) });
+    assert.equal(sentJobs(unread, "InstallJob")[0].time, 0);
+  }
+
+  // Any other kind of work: nothing is asked for its time, which goes as nought.
+  const gateway = fakeIndustryGateway({ timeMultiplier: 0.68 });
+  const third = await startTestServer({ gateway });
+  await selectOnServer(third.baseUrl);
+  const invention = await apiRequest(third.baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ activity: "invention", timeEfficiency: 5 }) });
+  await apiRequest(third.baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ activity: "copying" }) });
+  assert.deepEqual([invention.payload.timeSeconds, sentJobs(gateway, "ConnectJob")[0].time, sentJobs(gateway, "InstallJob")[0].time], [null, 0, 0]);
+  assert.deepEqual([gateway.calls.bound.length, gateway.calls.topLevel.some((call) => call.method === "GetFacilities")], [0, false]);
+
+  // A blueprint the game's data has not: there is no time to start from.
+  await apiRequest(third.baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ blueprintTypeID: 999_999, timeEfficiency: 5 }) });
+  assert.equal(sentJobs(gateway, "InstallJob")[1].time, 0);
+});
+
+test("a blueprint's time research is a whole number from nought to twenty, or the request is refused before anything is asked", async () => {
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  for (const timeEfficiency of [-1, 21, 2.5, "five", "5", true]) {
+    for (const route of ["preview", "install"]) {
+      const { response, payload } = await apiRequest(baseUrl, `/api/bridge/industry/${route}`, { method: "POST", body: installBody({ timeEfficiency }) });
+      assert.deepEqual([response.status, payload.error], [400, "INVALID_TIME_EFFICIENCY"], `${route} ${timeEfficiency}`);
+    }
+  }
+  assert.deepEqual([gateway.calls.topLevel.length, gateway.calls.bound.length], [0, 0]);
 });
 
 test("install resolves the input hangar from GetFacilityLocations, preferring one it may TAKE from", async () => {

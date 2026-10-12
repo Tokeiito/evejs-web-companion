@@ -568,24 +568,37 @@ test("a job that is not among those read is not asked for: its solar system is n
   assert.deepEqual(requests.filter((entry) => entry.path === "/api/bridge/call" || entry.path.startsWith("/api/bridge/industry/")), []);
 });
 
-test("the preview returns what the player HAS, and starts nothing", async () => {
+test("the preview returns what the player HAS and the time the job will take, and starts nothing", async () => {
   const store = createClientStore();
+  let timeSeconds: number | null | string = 1163;
   const { fetch, requests } = makeFakeFetch(
     respondOk((path) =>
       path === "/api/bridge/industry/preview"
-        ? { status: 200, body: { ok: true, available: { "38": 500 } } }
+        ? { status: 200, body: { ok: true, available: { "38": 500 }, timeSeconds } }
         : null,
     ),
   );
   const flow = createAppFlow(store, { fetch });
-
-  const available = await flow.previewIndustryJob({
+  const request = {
     blueprintItemID: BLUEPRINT_ITEM_ID,
     blueprintTypeID: BLUEPRINT_TYPE_ID,
-    activity: "manufacturing",
+    activity: "manufacturing" as const,
     facilityID: STATION_ID,
     runs: 3,
-  });
+    timeEfficiency: 5,
+  };
+
+  const previewed = await flow.previewIndustryJob(request);
+  assert.deepEqual(previewed, { available: { "38": 500 }, timeSeconds: 1163 });
+  // The blueprint's time research goes with the request: the job's time is reckoned from it.
+  const sent = requests.find((entry) => entry.path === "/api/bridge/industry/preview");
+  assert.equal((sent?.body as { timeEfficiency?: number }).timeEfficiency, 5);
+  // A time that could not be reckoned, or that is no time, is none.
+  for (const none of [null, "soon", 0, -4, 1.5]) {
+    timeSeconds = none as number | null | string;
+    assert.equal((await flow.previewIndustryJob(request)).timeSeconds, null, String(none));
+  }
+  const { available } = previewed;
   assert.deepEqual(available, { "38": 500 });
   assert.equal(
     requests.some((entry) => entry.path === "/api/bridge/industry/install"),

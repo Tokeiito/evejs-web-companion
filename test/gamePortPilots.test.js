@@ -5228,6 +5228,33 @@ test("the Skills window's sheet is made from what is kept, and asks only for wha
   await assert.rejects(pilots.skillSheet({ userid: 9 }, handle), (error) => error.code === "SESSION_NOT_FOUND");
 });
 
+test("a skill's level in effect is read off what the client's skill service keeps, as its industry reads it", async () => {
+  // industrySvc._UpdateSkills (224): skillInfo.effectiveSkillLevel of each skill a job names, or nought.
+  const answers = handlerAnswers({ "bound:GetSkills": skillsOf(skillOf(3300, 4, 45255), skillOf(3327, 3, 8000, 2, 5), skillOf(3380, 0, 0, 1, 2)) });
+  const { pilots, session, handle } = await selected({ answers }, SKILL_PAIRS);
+  const asked = session.boundCalls.length;
+  // The level trained, the level lent where it is the higher, a skill held by a lent level alone, and one the pilot has not.
+  assert.deepEqual(await pilots.skillLevels(WHO, handle, [3300, 3327, 3380, 11452]), [4, 5, 2, 0]);
+  // They were read at the choosing, and nothing is asked for them.
+  assert.deepEqual(handlerCalls(session, asked), []);
+  // The server's word of a skill trained is in the next reading.
+  session.notify("OnServerSkillsChanged", [skillsOf(skillOf(11452, 3, 8000)), null, 7n]);
+  assert.deepEqual(await pilots.skillLevels(WHO, handle, [11452, 3300]), [3, 4]);
+  assert.deepEqual(handlerCalls(session, asked), []);
+  // Another account's session reads nothing.
+  await assert.rejects(pilots.skillLevels({ userid: 9 }, handle, [3300]), (error) => error.code === "SESSION_NOT_FOUND");
+
+  // A pilot whose skills could not be read at the choosing: they are asked for, once, and a refusal is the reading's.
+  let refuse = true;
+  const late = await selected({ answers: handlerAnswers({ "bound:GetSkills": () => { if (refuse) throw refusedBy("NotNow"); return skillsOf(skillOf(3300, 2, 1415)); } }) }, SKILL_PAIRS);
+  await rejects(late.pilots.skillLevels(WHO, late.handle, [3300]), "CALL_REFUSED");
+  refuse = false;
+  const before = late.session.boundCalls.length;
+  assert.deepEqual(await late.pilots.skillLevels(WHO, late.handle, [3300, 3327]), [2, 0]);
+  assert.deepEqual(await late.pilots.skillLevels(WHO, late.handle, [3300]), [2]);
+  assert.deepEqual(handlerCalls(late.session, before), ["GetSkills"]);
+});
+
 test("with a skill in training the sheet asks for the character's attributes as the client does, once, and reckons the skill's points from them", async () => {
   const { pilots, session, handle } = await selected({ answers: handlerAnswers(TRAINING), serverNow: QUEUE_START_MS + 120_000 }, SHEET);
   const asked = session.boundCalls.length;
@@ -6038,6 +6065,50 @@ test("an attribute of an item godma holds is answered from what it holds, and th
   const row = pilots.callLedger().find((each) => each.pair === "dogmaIM.QueryAttributeValue");
   assert.deepEqual([row.calls, row.statuses], [4, { "web-only": 4 }]);
   assert.equal(session.boundCalls.filter((call) => call.method === "GetAllInfo").length, 1);
+});
+
+/**
+ * A GetAllInfo answer with the pilot's own character in it, as the server gives it: charInfo is the character's
+ * items by their IDs and then the brain, and shipModifiedCharAttribs the character's attributes the ship changes.
+ */
+const withCharacter = (attributes, shipModified = null) => keyVal([
+  ...shipAllInfo().args.entries.map(([name, value]) => [name.toString(), value]),
+  ["charInfo", [{ type: "dict", entries: [[BigInt(PILOT), keyVal([
+    ["itemID", BigInt(PILOT)], ["time", DOGMA_T], ["wallclockTime", DOGMA_T], ["activeEffects", { type: "dict", entries: [] }],
+    ["attributes", { type: "dict", entries: attributes }],
+  ])]] }, [0, [], [], []]]],
+  ["shipModifiedCharAttribs", shipModified],
+]);
+
+test("the pilot's own character is among what godma holds, so an attribute of it is answered and never asked", async () => {
+  // godma.ProcessAllInfo (2443 to 2447): the first of charInfo's two primes the character, and the attributes the
+  // ship changes are laid over it. The client's industry reads the pilot's manufacturing time so (attribute 219).
+  let asked = 0;
+  const shipModified = keyVal([["time", DOGMA_T], ["wallclockTime", DOGMA_T], ["attributes", { type: "dict", entries: [[352, 7]] }]]);
+  const { pilots, session, handle } = await selected(
+    { answers: { "bound:GetAllInfo": withCharacter([[219, 0.68], [196, 11], [352, 5]], shipModified), "bound:QueryAttributeValue": () => { asked += 1; return 777; } } },
+    { allowed: new Set(["dogmaIM.QueryAttributeValue", "dogmaIM.MachoBindObject"]) },
+  );
+  const value = async (...args) => (await pilots.callMethod("dogmaIM", "QueryAttributeValue", args, null, FIELDS, handle)).result;
+  assert.deepEqual([await value(PILOT, 219), await value(BigInt(PILOT), 196)], [0.68, 11]);
+  // What the ship changes of the character is over what the character's own row said.
+  assert.equal(await value(PILOT, 352), 7);
+  // The ship's are held as they were.
+  assert.equal(await value(SHIP, 482), 125);
+  assert.deepEqual([asked, session.boundCalls.map((call) => call.method)], [0, ["GetAllInfo"]]);
+  // The server's word of a change to the character's is what is answered after it (a skill trained).
+  session.notify("OnModuleAttributeChanges", [{ type: "list", items: [["OnModuleAttributeChange", PILOT, PILOT, 219, DOGMA_T + 10000000n, 0.64, 0.68, DOGMA_T + 10000000n]] }]);
+  assert.deepEqual([await value(PILOT, 219), asked], [0.64, 0]);
+  // An attribute the character's row has not is the server's to answer, as any other's.
+  assert.deepEqual([await value(PILOT, 2660), asked], [777, 1]);
+
+  // With nothing the ship changes, the character's own row stands.
+  const plain = await selected(
+    { answers: { "bound:GetAllInfo": withCharacter([[219, 0.8], [352, 5]]), "bound:QueryAttributeValue": () => 777 } },
+    { allowed: new Set(["dogmaIM.QueryAttributeValue", "dogmaIM.MachoBindObject"]) },
+  );
+  const plainly = async (...args) => (await plain.pilots.callMethod("dogmaIM", "QueryAttributeValue", args, null, FIELDS, plain.handle)).result;
+  assert.deepEqual([await plainly(PILOT, 219), await plainly(PILOT, 352)], [0.8, 5]);
 });
 
 test("where godma cannot be primed an attribute's value is asked of the server, as it was", async () => {

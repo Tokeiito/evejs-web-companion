@@ -794,9 +794,10 @@ export interface AppFlow {
   loadIndustry(): Promise<void>;
   /**
    * What the player HAS of each material an install would consume, read from
-   * the SERVER. Feeds the confirm step so the decision is informed.
+   * the SERVER, and the time the job will take where that was reckoned. Feeds
+   * the confirm step so the decision is informed.
    */
-  previewIndustryJob(request: api.IndustryJobRequest): Promise<Readonly<Record<string, number>>>;
+  previewIndustryJob(request: api.IndustryJobRequest): Promise<api.IndustryPreviewResult>;
   /** Every decryptor and what it does to an invention (static data). */
   loadDecryptors(): Promise<readonly DecryptorTerms[]>;
   /**
@@ -14412,8 +14413,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadIndustry,
 
     async previewIndustryJob(request) {
-      const result = await api.previewIndustryJob(request, callOptions);
-      return result.available;
+      return api.previewIndustryJob(request, callOptions);
     },
 
     async loadDecryptors() {

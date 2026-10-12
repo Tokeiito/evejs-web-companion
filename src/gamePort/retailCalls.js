@@ -1001,9 +1001,10 @@ const withJustTheNames = (value, names) => heldPlainly(value) && Object.keys(val
  * industry.
  *
  * The BFF's routes hold the job as a plain object of the seventeen names, which the gateway takes as it is and
- * no marshal can write. Here it is made the client's dict. What the routes send for the cost, the tax and the
- * time is nought, where the client sends what it reckoned: the server reckons each itself, and checks only one
- * that is not nought.
+ * no marshal can write. Here it is made the client's dict. What the routes send for the cost and the tax is
+ * nought, where the client sends what it reckoned: the server reckons each itself, and checks only one that is
+ * not nought. A manufacturing job's time is the client's own reckoning (src/industryInstall.js,
+ * manufacturingJobSeconds); any other job's goes as nought still.
  */
 const jobDumped = (args, kwargs) => {
   const [job] = args;
@@ -1468,7 +1469,7 @@ const RETAIL_CALLS = Object.freeze({
   "industryManager.GetJobCounts": same(`${INDUSTRY}/industrySvc.py:243`, "RemoteSvc('industryManager').GetJobCounts(session.charid)"),
   "industryManager.CompleteJob": judged(`${INDUSTRY}/industrySvc.py:150`, aJobAndItsSystem, "RemoteSvc('industryManager').CompleteJob(int(jobID), solarSystemID), the system the job's own, from a ready job's button. No recording has one."),
   "industryManager.CancelJob": judged(`${INDUSTRY}/industrySvc.py:160`, aJobAndItsSystem, "RemoteSvc('industryManager').CancelJob(int(jobID), solarSystemID), the system the job's own, from a running job's button, pressed twice. No recording has one."),
-  "industryManager.InstallJob": reshaped(`${INDUSTRY}/industrySvc.py:141`, jobDumped, "RemoteSvc('industryManager').InstallJob(job.dump()): the job's dump, a dict of seventeen names (industry/job.py 624 to 640). The route's plain object is made that dict, its places the client's own objects. The cost, the tax and the time go as nought. No recording has one."),
+  "industryManager.InstallJob": reshaped(`${INDUSTRY}/industrySvc.py:141`, jobDumped, "RemoteSvc('industryManager').InstallJob(job.dump()): the job's dump, a dict of seventeen names (industry/job.py 624 to 640). The route's plain object is made that dict, its places the client's own objects. A manufacturing job's time is the client's own reckoning (industry/job.py 460 to 468); any other job's time, and every job's cost and tax, go as nought. No recording has one."),
   "industryMonitor.ConnectJob": reshaped(`${INDUSTRY}/industrySvc.py:307`, jobDumped, "RemoteSvc('industryMonitor').ConnectJob(job.dump()), once the job has a place to take its materials from: the same dump, made the same dict."),
   "industryMonitor.DisconnectJob": judged(`${INDUSTRY}/industrySvc.py:313`, aMonitorLetGo, "RemoteSvc('industryMonitor').DisconnectJob(job.monitorID if job else None)."),
   "facilityManager.GetFacilityLocations": judged(`${INDUSTRY}/facilitySvc.py:118`, aFacilityAndAnOwner,

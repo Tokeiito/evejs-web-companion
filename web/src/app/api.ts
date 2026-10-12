@@ -1116,11 +1116,18 @@ export interface IndustryJobRequest {
   readonly productTypeID?: number;
   /** Invention only: a decryptor, used one per run. */
   readonly decryptorTypeID?: number;
+  /** The blueprint's own time research, as it was read of the blueprint: a job's time is reckoned from it. */
+  readonly timeEfficiency?: number;
 }
 
 export interface IndustryPreviewResult {
   /** typeID -> how much of it the player HAS at the input hangar (server-read). */
   readonly available: Readonly<Record<string, number>>;
+  /**
+   * The seconds the job will take, reckoned as the game's own client reckons them and sent with the job, which
+   * the server holds against its own. Null where they were not reckoned: the server then works the time out alone.
+   */
+  readonly timeSeconds: number | null;
 }
 
 /**
@@ -1145,7 +1152,11 @@ export async function previewIndustryJob(
       normalized[typeID] = Number(quantity) || 0;
     }
   }
-  return { available: normalized };
+  const reckoned = data.timeSeconds;
+  return {
+    available: normalized,
+    timeSeconds: typeof reckoned === "number" && Number.isSafeInteger(reckoned) && reckoned > 0 ? reckoned : null,
+  };
 }
 
 /**

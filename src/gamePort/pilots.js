@@ -2766,6 +2766,19 @@ function createGamePortPilots({
   }
 
   /**
+   * industrySvc._UpdateSkills (224): the pilot's level in effect of each skill named, as the client's skill service
+   * has it (skillInfo.effectiveSkillLevel, and nought for a skill the pilot has not). The skills are kept from the
+   * choosing; where they are not, they are asked for as that service asks for them.
+   */
+  async function skillLevels(sessionFields = {}, bridgeSessionID = undefined, typeIDs = []) {
+    const entry = held(bridgeSessionID, sessionFields);
+    return run(entry, SKILL_HANDLER, "GetSkills", () => skillsDoes(entry, async () => {
+      await skillRead(entry, "GetSkills", []);
+      return typeIDs.map((typeID) => entry.skills.effectiveLevel(typeID));
+    }));
+  }
+
+  /**
    * A queue saved as the client's queue panel saves one (skillQueuePanelNew.ApplySkillQueue, activate=True).
    * `entries` is the whole queue wanted, each [typeID, toLevel], in order.
    *
@@ -3491,6 +3504,7 @@ function createGamePortPilots({
     standingsKept,
     brokersFeeRate: brokersFeeRateFor,
     skillSheet,
+    skillLevels,
     serverNowMs,
     saveSkillQueue,
     journalKept,

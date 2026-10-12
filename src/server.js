@@ -5248,7 +5248,10 @@ const INDUSTRY_CASH_ACCOUNT_KEY = 1000;
  * from the blueprint definition plus the facility's modifiers, so `cost` /
  * `tax` / `time` / `materials` here are ADVISORY — sending them wrong does not
  * change what gets charged, and sending them right does not make them
- * authoritative (one that is not nought is checked against the server's own).
+ * authoritative (one that is not nought is checked against the server's own,
+ * and a job whose number is not the server's to the whole is REFUSED). The
+ * `time` of a manufacturing job is the client's own reckoning
+ * (reckonedJobSeconds); the cost and the tax go as nought.
  * The fields that genuinely decide the outcome are `blueprintID`,
  * `activityID`, `facilityID`, `runs` (plus `licensedRuns` for copying,
  * `productTypeID` for invention, and the two locations). They are all sent
@@ -5280,7 +5283,9 @@ function buildInstallJobPayload(held, request) {
     licensedRuns: request.licensedRuns,
     cost: 0,
     tax: 0,
-    time: 0,
+    // The job's time as the client's own job reckons it, where it could be reckoned whole; else nought, which
+    // the server does not check.
+    time: request.time || 0,
     // Empty means "recompute from the blueprint" to the server; only an
     // invention with a decryptor sends the exact map (src/industryInstall.js).
     materials: request.materials || {},
@@ -5336,6 +5341,17 @@ function normalizeIndustryRequest(req, res) {
     return null;
   }
   const licensedRuns = Number(body.licensedRuns) || 1;
+  // The blueprint's own time research, as the page read it of the blueprint: a manufacturing job's time is
+  // reckoned from it. Where nothing is said of it, no time is reckoned.
+  const timeEfficiency = body.timeEfficiency === undefined ? null : body.timeEfficiency;
+  if (timeEfficiency !== null && !(Number.isSafeInteger(timeEfficiency) && timeEfficiency >= 0 && timeEfficiency <= INDUSTRY_MAX_TIME_EFFICIENCY)) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_TIME_EFFICIENCY",
+      message: "A blueprint's time research is a whole number from 0 to 20.",
+    });
+    return null;
+  }
   // A decryptor is an invention input, and only a decryptor (group 1304) may be
   // named as one: the server picks it out of the request's materials by group.
   const decryptorTypeID = body.decryptorTypeID === undefined || body.decryptorTypeID === null
@@ -5369,7 +5385,105 @@ function normalizeIndustryRequest(req, res) {
     licensedRuns: licensedRuns > 0 ? licensedRuns : 1,
     productTypeID: Number(body.productTypeID) || 0,
     decryptorTypeID,
+    timeEfficiency,
   };
+}
+
+/** const.attributeManufactureTimeMultiplier: the pilot's own manufacturing time, which its skills and implants make. */
+const ATTRIBUTE_MANUFACTURE_TIME_MULTIPLIER = 219;
+/** const.attributeManufactureTimePerLevel: what a skill a blueprint requires takes off a manufacturing job's time, a level. */
+const ATTRIBUTE_MANUFACTURE_TIME_PER_LEVEL = 1982;
+/** The most time research a blueprint has. */
+const INDUSTRY_MAX_TIME_EFFICIENCY = 20;
+
+/**
+ * The pilot's level in effect of each skill named, as the client's industry reads it off its skill service
+ * (industrySvc._UpdateSkills, 224). On the game port it is what the transport keeps as that service keeps it. On
+ * the gateway it is the level trained, off the gateway's own sheet, and nought for a skill the sheet has not.
+ */
+async function skillLevelsFor(account, held, typeIDs) {
+  if (gamePortPilots && isGamePortHandle(held.bridgeSessionID)) {
+    return gamePortPilots.skillLevels({ userid: held.accountID }, held.bridgeSessionID, typeIDs);
+  }
+  const sheet = await gateway.getSkills(account.accountID, held.characterID);
+  const rows = sheet && Array.isArray(sheet.skills) ? sheet.skills : null;
+  return typeIDs.map((typeID) => {
+    const row = rows ? rows.find((each) => Number(each && each.typeID) === typeID) : null;
+    return rows === null ? null : row ? Number(row.level) : 0;
+  });
+}
+
+/**
+ * A manufacturing job's time in whole seconds, as the client's own job reckons it before sending the job
+ * (industry/job.py 460 to 468; src/industryInstall.js, manufacturingJobSeconds, has the order and why it matters).
+ * What it is reckoned from, and where the client has each:
+ *
+ *   the activity's time, the skills it requires and each one's time per level     the game's own data
+ *   the blueprint's time research                                                 the blueprint, as the page read it
+ *   the pilot's level in effect of each such skill                                its skill service
+ *   the pilot's manufacturing time attribute (219)                                its own dogma location, which on
+ *                                                                                 the game port godma answers, with
+ *                                                                                 nothing asked of the server
+ *   the facility's time modifiers                                                 its facility service, which keeps
+ *                                                                                 the region's facilities; asked for
+ *                                                                                 here each time
+ *
+ * ⚠ ALL OR NOTHING. The server refuses a job whose time is not nought and is not its own to the second
+ * (MISMATCH_TIME), so a time is sent only where every input was had. Null otherwise: any other kind of work
+ * (each has its own reckoning, and none has been seen accepted), a blueprint of which the page said no time
+ * research, one the game's data has not, a facility that is not among those read, an input that could not be
+ * asked. Nought then goes, as it always did, and the server reckons the time by itself.
+ */
+async function reckonedJobSeconds(account, held, webSessionID, request) {
+  if (request.activityID !== INDUSTRY_ACTIVITY_IDS.manufacturing || request.timeEfficiency === null) {
+    return null;
+  }
+  const definition = typeof staticData.getIndustryBlueprint === "function"
+    ? staticData.getIndustryBlueprint(request.blueprintTypeID)
+    : null;
+  const activity = definition && definition.activities ? definition.activities.manufacturing : null;
+  if (!activity || !(Number(activity.time) > 0)) {
+    return null;
+  }
+  const timed = [];
+  for (const skill of Array.isArray(activity.skills) ? activity.skills : []) {
+    const typeID = Number(skill && skill.typeID) || 0;
+    const perLevel = typeID > 0 && typeof staticData.getTypeDogmaAttribute === "function"
+      ? staticData.getTypeDogmaAttribute(typeID, ATTRIBUTE_MANUFACTURE_TIME_PER_LEVEL)
+      : null;
+    if (perLevel !== null && perLevel !== undefined) {
+      timed.push({ typeID, perLevel: Number(perLevel) });
+    }
+  }
+  try {
+    const levels = timed.length > 0 ? await skillLevelsFor(account, held, timed.map((skill) => skill.typeID)) : [];
+    const character = await boundCall(held, webSessionID, dogmaBindSpec(), "QueryAttributeValue",
+      [held.characterID, ATTRIBUTE_MANUFACTURE_TIME_MULTIPLIER], null);
+    const facilities = await heldTopLevelCall(held, webSessionID, "facilityManager", "GetFacilities", [], null);
+    const facilityRow = industryInstall.findFacilityRow(facilities.result, request.facilityID);
+    if (!facilityRow) {
+      return null;
+    }
+    const products = Array.isArray(activity.products) ? activity.products : [];
+    const productTypeID = Number(definition.productTypeID) || Number(products[0] && products[0].typeID) || 0;
+    return industryInstall.manufacturingJobSeconds({
+      activityTime: Number(activity.time),
+      runs: request.runs,
+      skills: timed.map((skill, index) => ({ perLevel: skill.perLevel, level: levels[index] })),
+      characterAmount: character.result,
+      timeEfficiency: request.timeEfficiency,
+      facilityModifiers: industryInstall.facilityTimeModifiers(facilityRow, request.activityID),
+      productType: productTypeID > 0 && typeof staticData.getType === "function" ? staticData.getType(productTypeID) : null,
+    });
+  } catch (error) {
+    // A pilot whose session went has no job to send; anything else that could not be asked leaves the time unreckoned.
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(webSessionID, held);
+      throw error;
+    }
+    assertCurrentHeldSession(held, webSessionID);
+    return null;
+  }
 }
 
 /**
@@ -5432,8 +5546,10 @@ app.post("/api/bridge/industry/preview", requireAuth, async (req, res, next) => 
   try {
     await readHeldFlight(held, req.webSessionID);
     const locations = await readIndustryLocations(held, req.webSessionID, request.facilityID);
+    const timeSeconds = await reckonedJobSeconds(req.account, held, req.webSessionID, request);
     const payload = buildInstallJobPayload(held, {
       ...request,
+      time: timeSeconds,
       inputLocation: locations.input,
       outputLocation: locations.output,
     });
@@ -5459,6 +5575,9 @@ app.post("/api/bridge/industry/preview", requireAuth, async (req, res, next) => 
     answer = {
       ok: true,
       available,
+      // The time the job will take, where it was reckoned as the client reckons it (and sent, for the server to
+      // hold against its own); null where it was not.
+      timeSeconds,
       inputLocation: locations.input,
       outputLocation: locations.output,
       notifications: outcome.notifications,
@@ -5525,9 +5644,11 @@ app.post("/api/bridge/industry/install", requireAuth, async (req, res, next) => 
     await readHeldFlight(held, req.webSessionID);
     const locations = await readIndustryLocations(held, req.webSessionID, request.facilityID);
     const decryptorFields = await decryptorInstallFields(held, req.webSessionID, request);
+    const timeSeconds = await reckonedJobSeconds(req.account, held, req.webSessionID, request);
     const payload = buildInstallJobPayload(held, {
       ...request,
       ...(decryptorFields || {}),
+      time: timeSeconds,
       inputLocation: locations.input,
       outputLocation: locations.output,
     });

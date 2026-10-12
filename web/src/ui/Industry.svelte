@@ -173,6 +173,8 @@
   let chosenRuns = $state(1);
   /** typeID -> how much of it the player HAS, read from the SERVER. */
   let availableMaterials = $state<Readonly<Record<string, number>> | null>(null);
+  /** The seconds the job will take, as the preview reckoned them; null where it reckoned none. */
+  let reckonedSeconds = $state<number | null>(null);
   /** True once the player has asked to see the cost — the second step. */
   let confirming = $state(false);
   /**
@@ -247,6 +249,7 @@
     startingBlueprint = blueprint;
     confirming = false;
     availableMaterials = null;
+    reckonedSeconds = null;
     chosenRuns = 1;
     const activities = blueprintActivities(blueprint.typeID);
     chosenActivity = activities.length > 0 ? activities[0]! : null;
@@ -260,7 +263,14 @@
     chosenFacilityID = null;
     chosenDecryptorTypeID = null;
     availableMaterials = null;
+    reckonedSeconds = null;
     confirming = false;
+  }
+
+  /** The blueprint's own time research, to go with a job's request: a job's time is reckoned from it. */
+  function timeResearchOf(blueprint: IndustryBlueprintRow): { timeEfficiency?: number } {
+    const said = blueprint.timeEfficiency;
+    return Number.isInteger(said) && said >= 0 && said <= 20 ? { timeEfficiency: said } : {};
   }
 
   // The decryptor list, once, the first time invention is the chosen work.
@@ -289,14 +299,17 @@
       return;
     }
     void run(async () => {
-      availableMaterials = await flow.previewIndustryJob({
+      const previewed = await flow.previewIndustryJob({
         blueprintItemID: blueprint.itemID,
         blueprintTypeID: blueprint.typeID,
         activity,
         facilityID,
         runs: chosenRuns,
         ...(decryptorForJob > 0 ? { decryptorTypeID: decryptorForJob } : {}),
+        ...timeResearchOf(blueprint),
       });
+      availableMaterials = previewed.available;
+      reckonedSeconds = previewed.timeSeconds;
       confirming = true;
     });
   }
@@ -316,6 +329,7 @@
         facilityID,
         runs: chosenRuns,
         ...(decryptorForJob > 0 ? { decryptorTypeID: decryptorForJob } : {}),
+        ...timeResearchOf(blueprint),
       });
       closeStartJob();
     });
@@ -696,7 +710,12 @@
             </div>
           {/if}
           <p class="note">
-            It should take about {formatDuration(previewTime)}. The amounts above
+            {#if reckonedSeconds !== null}
+              <span data-job-time="reckoned">It will take {formatDuration(reckonedSeconds)}.</span>
+            {:else}
+              <span data-job-time="rough">It should take about {formatDuration(previewTime)}.</span>
+            {/if}
+            The amounts above
             are an estimate — the facility you picked may work out cheaper, and
             the station also charges a fee to start the job. Both are worked out
             by the server when you confirm, and you will see what was actually
