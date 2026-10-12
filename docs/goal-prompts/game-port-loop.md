@@ -2071,6 +2071,17 @@ Take these defaults, and list each under "For the operator" in the log so they c
   log shows nothing.** A second asking of the job that is the one monitored is
   answered so. Before a call "not sent" is taken for a fault, read what the
   transport keeps for that call and by what.
+- **What a route starts is stood in for where no breakage can reach the real
+  one.** A route that spawns a program, writes a file of the operator's or
+  fetches from outside is not made safe by a stand-in handed to the app: a
+  breakage of the line that takes the stand-in puts the real thing back, and
+  the breakage tool runs it. Stand in for the thing itself before the server
+  is loaded (`child_process.spawn`, the data folder by its variable), and look
+  after the run that nothing was started and nothing of the operator's written.
+- **An asker that takes no options is asked through what it does take.** The
+  icons' three use the tab's own `fetch` and the tab's own token. Stand in for
+  those two (a path with no origin sent on to the BFF; the token set through
+  the page's own module) and the asker is the page's own still.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
