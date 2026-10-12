@@ -6959,7 +6959,9 @@ test("a price table that could not be asked for is none and is not asked for aga
 const FACILITIES = "facilityManager.GetFacilities";
 const LARGEST_INDICES = "facilityManager.GetMaxActivityModifiers";
 const ONE_FACILITY = "facilityManager.GetFacility";
-const FACILITY_PAIRS = { allowed: new Set([FACILITIES, LARGEST_INDICES, "industryManager.InstallJob", "industryMonitor.ConnectJob"]) };
+const OWNERS_JOBS = "industryManager.GetJobsByOwner";
+const ONE_JOB = "industryManager.GetJob";
+const FACILITY_PAIRS = { allowed: new Set([FACILITIES, LARGEST_INDICES, "industryManager.InstallJob", "industryMonitor.ConnectJob", OWNERS_JOBS, ONE_JOB]) };
 const A_STRUCTURE = 1030000000001;
 const SOME_RIGS = [[1, { type: "list", items: [] }]];
 const facilityOf = (facilityID, tax, rigs = []) => keyVal([["facilityID", BigInt(facilityID)], ["typeID", 35825], ["tax", tax], ["rigModifiers", { type: "dict", entries: rigs }]]);
@@ -7123,6 +7125,56 @@ test("the facility a job is given is the one kept, asked for afresh where it has
   await gone.region();
   await rejects(gone.pilots.freshFacility(WHO, gone.handle, A_STRUCTURE), "CALL_REFUSED");
   assert.deepEqual(await gone.region(), { [STATION]: 1 });
+});
+
+test("each job the server answers is given its facility afresh, as the client's industry service makes its jobs", async () => {
+  // industrySvc.GetOwnerJobs (73 to 74) and GetJobByID (60) make each row the client's job (_JobInstance, 190 to
+  // 197), and a job whose row names a facility is given facilitySvc.GetFreshFacility(data.facilityID): one that
+  // is kept and has rig modifiers is let go and asked for by itself, one that is not among the region's is asked
+  // for by itself, and any other is as kept.
+  /** A job's row as the server answers it: its facility among its fields. */
+  const jobRow = (jobID, facilityID) => keyVal([["jobID", jobID], ["facilityID", facilityID], ["activityID", 1]]);
+  const jobs = { rows: [] };
+  /** (A row as the server sends it has its names as bytes.) */
+  const sentJobID = (row) => (row.args.entries.find(([name]) => String(name) === "jobID") ?? [])[1];
+  const answers = { [OWNERS_JOBS]: () => ({ type: "list", items: jobs.rows }), [ONE_JOB]: ([jobID]) => jobs.rows.find((row) => sentJobID(row) === Number(jobID)) ?? null };
+  const reading = async (chosen) => (await chosen.pilots.callMethod("industryManager", "GetJobsByOwner", [PILOT, true], null, FIELDS, chosen.handle)).result.items.map((row) => fieldIn(row, "jobID"));
+  const sent = (chosen) => chosen.session.calls.filter((call) => call.service === "facilityManager" || call.service === "industryManager").map((call) => (call.method === "GetFacility" ? `GetFacility ${call.args[0]}` : call.method));
+
+  // No facility has rig modifiers. Two jobs at the station, one at the structure, one whose row names no
+  // facility, and two at a facility that is not among the region's.
+  const plain = await withFacilities(answers);
+  jobs.rows = [jobRow(1, STATION), jobRow(2, A_STRUCTURE), jobRow(3, STATION), jobRow(4, null), jobRow(5, A_STRUCTURE + 1), jobRow(6, A_STRUCTURE + 1), jobRow(7, 0)];
+  // The rows are answered as they came. With nothing kept the region's facilities are asked for, by the first job
+  // that is given one; the one that is not among them is asked for by itself, once, and kept.
+  assert.deepEqual(await reading(plain), [1, 2, 3, 4, 5, 6, 7]);
+  assert.deepEqual([sent(plain), plain.asked.region, plain.asked.one], [["GetJobsByOwner", "GetFacilities", `GetFacility ${A_STRUCTURE + 1}`], 1, [A_STRUCTURE + 1]]);
+  // Read again: every facility is kept and none has rig modifiers, so nothing is asked but the jobs.
+  await reading(plain);
+  assert.deepEqual([sent(plain).slice(3), plain.asked.region, plain.asked.one.length], [["GetJobsByOwner"], 1, 1]);
+  assert.deepEqual(ledgerOf(plain.pilots, ONE_FACILITY), [{ same: 1 }, "eve/client/script/industry/facilitySvc.py:71"]);
+
+  // The structure has rig modifiers. With nothing kept: the station's job has the region's asked for; each of the
+  // structure's two jobs then finds it kept with rig modifiers, lets it go and asks for it by itself.
+  const rigged = await withFacilities(answers, SOME_RIGS);
+  jobs.rows = [jobRow(1, STATION), jobRow(2, A_STRUCTURE), jobRow(3, A_STRUCTURE)];
+  await reading(rigged);
+  assert.deepEqual([sent(rigged), rigged.asked.region, rigged.asked.one], [["GetJobsByOwner", "GetFacilities", `GetFacility ${A_STRUCTURE}`, `GetFacility ${A_STRUCTURE}`], 1, [A_STRUCTURE, A_STRUCTURE]]);
+  // And again at each reading of the jobs, one for each job there; what was last asked for is what is kept.
+  await reading(rigged);
+  assert.deepEqual([rigged.asked.one.length, rigged.asked.region, await rigged.region()], [4, 1, { [STATION]: 1, [A_STRUCTURE]: 104 }]);
+  // One job asked for by its ID is made a job the same way.
+  const one = await rigged.pilots.callMethod("industryManager", "GetJob", [2], null, FIELDS, rigged.handle);
+  assert.deepEqual([fieldIn(one.result, "jobID"), rigged.asked.one.length, (await rigged.region())[A_STRUCTURE]], [2, 5, 105]);
+  // A job that is not there is no job to make, and nothing is asked for it.
+  assert.deepEqual([(await rigged.pilots.callMethod("industryManager", "GetJob", [99], null, FIELDS, rigged.handle)).result, rigged.asked.one.length], [null, 5]);
+
+  // A facility the server will not answer for: the jobs are answered all the same, the rest are given theirs,
+  // and the facility is not among what is kept.
+  const gone = await withFacilities({ ...answers, [ONE_FACILITY]: ([facilityID]) => { gone.asked.one.push(Number(facilityID)); throw refusedBy("CustomNotify", "That facility could not be found."); } }, SOME_RIGS);
+  await gone.region();
+  jobs.rows = [jobRow(1, A_STRUCTURE), jobRow(2, A_STRUCTURE + 1), jobRow(3, STATION)];
+  assert.deepEqual([await reading(gone), gone.asked.one, await gone.region()], [[1, 2, 3], [A_STRUCTURE, A_STRUCTURE + 1], { [STATION]: 1 }]);
 });
 
 // ── the offices the pilot's corporation rents ────────────────────────────────

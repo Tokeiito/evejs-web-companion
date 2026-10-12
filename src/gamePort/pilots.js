@@ -337,7 +337,8 @@ const KEPT_UNTIL_CHANGED = Object.freeze({
   // facilitySvc: the server says the system's activity changed (OnSystemActivityUpdated, 37), and the largest
   // indices and every facility are let go. In another region the facilities alone are (29), which the session's
   // change sees to. A facility the server names (42), one a job was refused at and one a job is given are asked
-  // for by themselves and worked into what is kept, where each happens (facilitiesAskedAfresh, freshFacility).
+  // for by themselves and worked into what is kept, where each happens (facilitiesAskedAfresh, freshFacility, and
+  // jobsGivenTheirFacilities for the jobs the server answers).
   [FACILITY_MANAGER]: Object.freeze({
     keptAs: facilitiesKeptAs,
     notices: new Set(["OnSystemActivityUpdated"]),
@@ -441,6 +442,8 @@ function withFacility(facilities, facilityID, row = null) {
   const all = row ? [...others, row] : others;
   return Array.isArray(facilities) ? all : { ...facilities, items: all };
 }
+/** The facility a job's row names, as the server answers a job (industryCommon.JobData reads data.facilityID), or null. */
+const rowsFacility = (row) => positive(row && row.type === "object" && row.args ? dictValue(row.args, "facilityID") : null);
 /** The facility a job names, as a route holds the job (a plain object) or as the client's dict has it. */
 const jobsFacility = (job) => positive(job && job.type === "dict" ? dictValue(job, "facilityID") : job && job.facilityID);
 
@@ -1724,6 +1727,12 @@ function createGamePortPilots({
       if (facilityID !== null) facilitiesAskedAfresh(entry, [facilityID]);
       throw error;
     });
+    // industrySvc.GetOwnerJobs (73 to 74) and GetJobByID (60): each row the server answers is made the client's
+    // job, and a job whose row names a facility is given it afresh (_JobInstance, 196 to 197), before the jobs
+    // are anyone's to read.
+    if (service === "industryManager" && (method === "GetJobsByOwner" || method === "GetJob")) {
+      await jobsGivenTheirFacilities(entry, method === "GetJob" ? [result] : itemsOf(result));
+    }
     // crimewatchSvc.SetSafetyLevel (343 to 345): once the server has taken the level, it is the level the client has.
     // A call that is not the client's (a level that is none of its three) leaves nothing the client would keep:
     // the states kept are let go, and the next reading asks the server what it made of it.
@@ -2206,11 +2215,30 @@ function createGamePortPilots({
     const entry = held(bridgeSessionID, sessionFields);
     const id = positive(facilityID);
     if (id === null) return null;
-    return run(entry, FACILITY_MANAGER, "GetFacility", async () => {
-      facilityLetGo(entry, id, hasRigModifiers);
-      const kept = facilityAmong(await regionsFacilities(entry), id);
-      return wireToBridgeJson(kept ?? await facilityAsked(entry, id));
-    });
+    return run(entry, FACILITY_MANAGER, "GetFacility", async () => wireToBridgeJson(await facilityGivenAfresh(entry, id)));
+  }
+
+  /** facilitySvc.GetFreshFacility (107 to 112), of a facility that is named: its row, as it is then kept. */
+  async function facilityGivenAfresh(entry, id) {
+    facilityLetGo(entry, id, hasRigModifiers);
+    const kept = facilityAmong(await regionsFacilities(entry), id);
+    return kept ?? await facilityAsked(entry, id);
+  }
+
+  /**
+   * industrySvc._JobInstance (190 to 197), for each row of jobs the server answered, in their order: `if
+   * data.facilityID: job.facility = self.facilitySvc.GetFreshFacility(data.facilityID)`. So a job at a facility
+   * with rig modifiers has it asked for by itself each time the job is made, one asking for each such job, and a
+   * job at a facility that is not among the region's has it asked for once.
+   *
+   * Never fails. At the client a facility the server will not answer for fails the making of the jobs; here the
+   * jobs are answered all the same, the facility is left not kept, and the rest are given theirs.
+   */
+  async function jobsGivenTheirFacilities(entry, rows) {
+    for (const row of rows) {
+      const id = rowsFacility(row);
+      if (id !== null) await run(entry, FACILITY_MANAGER, "GetFacility", () => facilityGivenAfresh(entry, id)).catch(() => {});
+    }
   }
 
   /** One of the client's own askings of a service by its name, with nothing: noted as it is sent. */
