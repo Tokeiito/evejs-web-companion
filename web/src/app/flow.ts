@@ -20677,7 +20677,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // "I locked that" and trusted the stamp would never retry —
           // permanently and silently, for the rest of the run. Reading the real
           // list every tick is what makes the fleet-order rung's already-locked
-          // check honest rather than hopeful.
+          // check honest rather than hopeful. It also says what has this ship
+          // locked, which a fleet order to leave reads to know whether to wait
+          // for the drones.
           api.getTargets(callOptions),
           botDrivenCharacterIDs(),
           // LOCAL, deliberately. Fleet chat is not reachable: the gateway's chat
@@ -20723,6 +20725,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // companion flies so the panel never shows a stale lock list.
         const lockedTargetIDs = decodeTargetIDs(targetsResult.targetIDs);
         store.apply({ type: "targeting/targets", targetIDs: lockedTargetIDs });
+        // Absent stays absent: `null` is "could not say who has us locked", and
+        // the fleet-order recall falls back to its short wait on it.
+        const lockedByIDs = targetsResult.targeterIDs == null ? null : decodeTargetIDs(targetsResult.targeterIDs);
         const status = decodeFlightStatus(statusStep.flight);
         void observeFlightStatus(status);
         // ⚠ THE REPAIR QUOTE IS GATED ON BEING DOCKED, AND ON NOTHING ELSE ANY
@@ -20985,6 +20990,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           fleetTargetTags,
           fleetBroadcast,
           lockedTargetIDs,
+          lockedByIDs,
           // ⚠ THE GATE IS CLIENT-SIDE BECAUSE THE SERVER REFUSES SILENTLY.
           // `setFleetTargetTag` returns a bare `false` for a non-commander and
           // its only caller discards that boolean, so the write's own ack says

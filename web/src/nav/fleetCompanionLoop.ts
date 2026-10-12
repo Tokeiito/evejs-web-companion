@@ -770,6 +770,13 @@ export interface FleetCompanionObservation extends ScriptObservation {
    * space snapshot the tick already read, never a call of its own.
    */
   readonly myDroneIDs?: readonly number[];
+  /**
+   * What has this ship locked, by item id: the server's own `GetTargeters`,
+   * kept from its OnTarget('otheradd' / 'otherlost') notices the way the retail
+   * client keeps its "targeted by" list. `null` or absent when it could not be
+   * read, which is never "nobody".
+   */
+  readonly lockedByIDs?: readonly number[] | null;
   // ─── The reload rung's three facts ────────────────────────────────────────
   //
   // ⚠ THESE ARE THROTTLED READS, NOT PER-TICK TRUTH. Each one costs a round
@@ -2624,7 +2631,8 @@ const MAX_GET_SAFE_WARP_ATTEMPTS = 3;
 const MAX_GET_SAFE_WARP_WAIT_TICKS = 60;
 
 /**
- * How long a fleet order to leave the grid waits for the drones it called home.
+ * How long a fleet order to leave the grid waits for the drones it called home
+ * while something hostile has this ship locked.
  *
  * ⚠ CHOSEN BY THE OPERATOR, 2026-10-10. Rung 7 used to obey a `WarpTo` the tick
  * it heard it, drones and all: three companions warped to a station within two
@@ -2632,9 +2640,26 @@ const MAX_GET_SAFE_WARP_WAIT_TICKS = 60;
  * one of them was killed. The answer asked for was "recall, short wait": call
  * them home, leave when they are scooped or this has passed, whichever is first,
  * and leave at once, abandoning them, if the ship is already below its flee
- * floor. Idle drones near the ship are scooped well inside it.
+ * floor.
+ *
+ * ⚠ AND ONLY UNDER FIRE, SINCE 2026-10-12. Eight seconds is not long enough for
+ * medium or heavy drones fighting 15-20 km out to fly home, so the short wait
+ * kept costing drones on grids where nothing was shooting the ship at all. The
+ * operator's rule now: wait for the drones "unless ship is under fire". Under
+ * fire is a hostile having this ship locked (`lockedByHostile`); then this
+ * short wait stands. Otherwise the wait is `ORDERED_LEAVE_CALM_RECALL_MS`.
  */
 const ORDERED_LEAVE_RECALL_MS = 8000;
+/**
+ * The wait for the drones when nothing hostile has this ship locked.
+ *
+ * ⚠ A BOUND, NOT A TARGET: the warp goes the tick the last drone is aboard. It
+ * is there for the drone that never comes home -- a full bay is refused in
+ * silence (see `DRONE_RECALL_GIVE_UP_MS`) -- and a fleet that has left this
+ * pilot behind for a minute has waited long enough. A heavy drone at its
+ * control range is home well inside it.
+ */
+const ORDERED_LEAVE_CALM_RECALL_MS = 60_000;
 /** How long after the order has gone out the drone rung stays down, so it does not launch into the align. */
 const ORDERED_LEAVE_SETTLE_MS = 5000;
 
@@ -2653,8 +2678,33 @@ function droneRungStoodDown(memory: CompanionLadderMemory, nowMs: number): boole
     return false;
   }
   return recall.leftAtMs === null
-    ? nowMs - recall.startedMs < ORDERED_LEAVE_RECALL_MS + ORDERED_LEAVE_SETTLE_MS
+    ? nowMs - recall.startedMs < ORDERED_LEAVE_CALM_RECALL_MS + ORDERED_LEAVE_SETTLE_MS
     : nowMs - recall.leftAtMs < ORDERED_LEAVE_SETTLE_MS;
+}
+
+/**
+ * Whether something hostile has this ship locked, or null when nobody can say.
+ *
+ * Hostile is anything that is not a fleet-mate's ship: an NPC, a player outside
+ * the fleet, or a ship that is not on the grid this tick to be told apart --
+ * the safe direction, since the cost of reading a locker as hostile is only the
+ * short wait the operator chose in the first place. A fleet-mate's lock (a
+ * logistics ship repairing this one) is not fire.
+ */
+function lockedByHostile(obs: FleetCompanionObservation): boolean | null {
+  const lockers = obs.lockedByIDs;
+  if (lockers == null) {
+    return null;
+  }
+  const fleet = new Set(obs.fleetMemberCharacterIDs ?? []);
+  const entities = obs.snapshot?.entities ?? [];
+  return lockers.some((id) => {
+    const entity = entities.find((candidate) => candidate.itemID === id);
+    if (entity === undefined || entity.isNpc) {
+      return true;
+    }
+    return entity.characterID === null || !fleet.has(entity.characterID);
+  });
 }
 
 /**
@@ -2708,13 +2758,19 @@ function recallBeforeLeavingOnOrder(
       lastOrderHeard: decision.lastOrderHeard,
     };
   }
-  if (nowMs - pending.startedMs >= ORDERED_LEAVE_RECALL_MS) {
+  const waited = nowMs - pending.startedMs;
+  // Under fire, or unable to tell: the operator's short wait. `null` keeps the
+  // rule this had before the lock list was read, never a longer one on a guess.
+  const underFire = lockedByHostile(obs) !== false;
+  if (waited >= (underFire ? ORDERED_LEAVE_RECALL_MS : ORDERED_LEAVE_CALM_RECALL_MS)) {
     return go();
   }
   return {
     action: WAIT,
     phase: decision.phase,
-    why: "Waiting for the drones to come home before obeying the fleet's order to leave.",
+    why: underFire
+      ? "Waiting for the drones to come home before obeying the fleet's order to leave."
+      : "Nothing has this ship locked. Waiting for every drone to come home before obeying the fleet's order to leave.",
     memory,
     followingOrderFrom: decision.followingOrderFrom,
     lastOrderHeard: decision.lastOrderHeard,

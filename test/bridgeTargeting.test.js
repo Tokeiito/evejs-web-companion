@@ -226,6 +226,13 @@ function fakeGateway(overrides = {}) {
             result: { type: "list", items: [...state.locked] },
             notifications: [],
           };
+        case "GetTargeters":
+          return {
+            service,
+            method,
+            result: { type: "list", items: [...(state.targeters ?? [])] },
+            notifications: [],
+          };
         case "Activate":
           if (!inert) {
             // WEAPON BANKING, as dogmaService.js Handle_Activate really does
