@@ -3036,6 +3036,14 @@ it was, the less, and is reprocessed all the same. Only where a call's answer
 does not say are the places read again, for that call's items, for which stacks
 are gone; where they cannot be read, `processed` and `remaining` are null.
 
+**A quote's two amounts are the server's own, nought included.**
+`quantityToProcess` and `leftOvers` are null only where the quote has none, or
+what it has is no amount. A stack of too few for one portion has
+`quantityToProcess: 0` and all of it left over: the page says it would make
+nothing, and does not offer it for refining. (The route made null of nought
+until 2026-10-12, and the page said "not known".) The items of either route may
+be a hangar's or a hold's: the Mining window lists both while docked.
+
 **`division` delivers into a CORPORATION hangar instead — and falls back.** The
 same `invbroker.Add`, with the corporation's office at the docked station as the
 bound object and the division's flag (`114 + N`, never sent by the browser) as

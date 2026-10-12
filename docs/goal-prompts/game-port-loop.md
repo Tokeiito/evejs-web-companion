@@ -1950,6 +1950,19 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **List a new function's breakages before running them, and take out what none of
   them changes.** Four guards of mine made no difference to any answer (nought is
   what `Number()` makes of None, and a rate of nothing comes of it by itself).
+- **A window offered in two states carries its picks from one to the other.** The
+  Mining window's ticks were the holds' alone while it was offered in space only.
+  Offered docked too, with the hangar's ore to tick, a hangar's stack would have
+  been counted, and asked for, by a dumping after an undock. When a window's reach
+  grows, read every use of its selection.
+- **`Number(x) || null` makes nought unknown.** The quote's route said a stack with
+  nothing to process had an amount that was not known, and the window offered to
+  refine it. Nought is an answer: look for `|| null` after a `Number(` in a decoder.
+- **What the page was told beforehand is not the server's silence afterwards.** A
+  refining that left the one stack its own quote called too few was told as
+  "the server did not say why". A sentence that says so is to be set beside what
+  the page itself was told a moment before. And it took a pick of two, one that
+  goes and one that stays, to see it: try the mixed case in the tab.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
