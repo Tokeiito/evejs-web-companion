@@ -500,6 +500,53 @@ export function previewTimeSeconds(
 }
 
 /**
+ * What a job costs to start, as the game's own client adds it up before it sends the job: the job's cost, the
+ * facility's tax, the SCC's surcharge and, in a safe system, a security tax. Whole ISK each, and their total.
+ */
+export interface IndustryJobFee {
+  readonly cost: number;
+  readonly tax: number;
+  readonly sccSurcharge: number;
+  readonly securityTax: number;
+  readonly total: number;
+}
+
+const FEE_PARTS = ["cost", "tax", "sccSurcharge", "securityTax"] as const;
+
+/** A fee out of the preview's answer: five whole amounts, the last the sum of the rest. Null for anything else. */
+export function decodeJobFee(value: JsonValue | undefined): IndustryJobFee | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const said = value as Record<string, JsonValue>;
+  const amount = (name: string): number | null => {
+    const each = said[name];
+    return typeof each === "number" && Number.isSafeInteger(each) && each >= 0 ? each : null;
+  };
+  const cost = amount("cost");
+  const tax = amount("tax");
+  const sccSurcharge = amount("sccSurcharge");
+  const securityTax = amount("securityTax");
+  const total = amount("total");
+  if (cost === null || tax === null || sccSurcharge === null || securityTax === null || total === null) {
+    return null;
+  }
+  return cost + tax + sccSurcharge + securityTax === total ? { cost, tax, sccSurcharge, securityTax, total } : null;
+}
+
+const FEE_WORDS: Readonly<Record<(typeof FEE_PARTS)[number], string>> = {
+  cost: "the job itself",
+  tax: "the facility's tax",
+  sccSurcharge: "the SCC surcharge",
+  securityTax: "the security tax",
+};
+
+/** The parts of a fee that are not nought, each with the words for it, in the order the game's client lists them. */
+export function jobFeeParts(fee: IndustryJobFee): readonly { readonly what: string; readonly amount: number }[] {
+  return FEE_PARTS.filter((part) => fee[part] > 0).map((part) => ({ what: FEE_WORDS[part], amount: fee[part] }));
+}
+
+/**
  * A duration in plain words: "2 hours 5 minutes", "45 seconds". Never a raw
  * second count, and never a bare "0" — an unknown duration reads as "unknown".
  */

@@ -28,6 +28,8 @@ import {
   decodeJobs,
   decodeSlotUsage,
   formatDuration,
+  decodeJobFee,
+  jobFeeParts,
   industryRefusalMessage,
   isActiveJob,
   previewMaterials,
@@ -484,4 +486,29 @@ test("a facility keeps its own time and material modifiers per activity, as the 
     ]),
   });
   assert.deepEqual(decodeFacilities(list([bare]))[0], facility);
+});
+
+// --- what a job costs to start ----------------------------------------------
+
+test("a fee out of the preview's answer is five whole amounts that add up, or none", () => {
+  const fee = { cost: 5284, tax: 1321, sccSurcharge: 5284, securityTax: 0, total: 11889 };
+  assert.deepEqual(decodeJobFee(fee), fee);
+  assert.deepEqual(decodeJobFee({ ...fee, more: "ignored" } as unknown as JsonValue), fee);
+  // (An amount below nought, and one that is no whole number, each in a fee that adds up all the same.)
+  const belowNought = { cost: 5284, tax: -1, sccSurcharge: 5284, securityTax: 0, total: 10567 };
+  const notWhole = { cost: 1.5, tax: 0.5, sccSurcharge: 0, securityTax: 0, total: 2 };
+  for (const none of [null, undefined, 11889, "11889", [], { cost: 5284 }, belowNought, notWhole, { ...fee, total: 11888 }, { ...fee, sccSurcharge: "5284" }]) {
+    assert.equal(decodeJobFee(none as unknown as JsonValue), null, JSON.stringify(none));
+  }
+});
+
+test("a fee's parts are named in plain words, and one that is nought is not listed", () => {
+  assert.deepEqual(jobFeeParts({ cost: 10240, tax: 0, sccSurcharge: 10240, securityTax: 0, total: 20480 }), [
+    { what: "the job itself", amount: 10240 },
+    { what: "the SCC surcharge", amount: 10240 },
+  ]);
+  assert.deepEqual(jobFeeParts({ cost: 10240, tax: 25600, sccSurcharge: 10240, securityTax: 12800, total: 58880 }).map((part) => part.what),
+    ["the job itself", "the facility's tax", "the SCC surcharge", "the security tax"]);
+  // A job that costs nothing to start has no parts.
+  assert.deepEqual(jobFeeParts({ cost: 0, tax: 0, sccSurcharge: 0, securityTax: 0, total: 0 }), []);
 });

@@ -29,6 +29,12 @@ const MATERIAL_MODIFIER_INDEX = 1;
 const COST_MODIFIER_INDEX = 2;
 /** clonegrade.CLONE_STATE_INDUSTRY_TAX: an alpha clone's job costs this much of the base, less one, beyond an omega's. */
 const ALPHA_INDUSTRY_TAX = 1.0025;
+/** industry.SCC_SURCHARGE_RATE: what the SCC takes of a job's rounded base, by the facility's modifier of it. (Research pays half of it; no research is reckoned here.) */
+const SCC_SURCHARGE_RATE = 0.04;
+/** security.common.const.INDUSTRY_SECURITY_TAX_RATE: what a job in a safe system pays of its rounded base beside the rest. */
+const INDUSTRY_SECURITY_TAX_RATE = 0.05;
+/** eveuniverse/security.py SecurityClassFromLevel: a system's security from which it is a safe one. */
+const SAFE_SECURITY_FROM = 0.95;
 
 function entriesOf(value) {
   if (value && typeof value === "object" && value.type === "dict" && Array.isArray(value.entries)) {
@@ -209,6 +215,56 @@ function manufacturingJobSeconds({ activityTime, runs, skills, characterAmount, 
 }
 
 /**
+ * What a facility's row says a job at it is charged by (industryCommon.Facility, 378 to 380): its tax, the SCC's
+ * modifier of its surcharge, and the system it is in. Null for one the row has not; a tax the row says is None (a
+ * structure's is by its services' access, activity.activity_tax) is none, which is not a tax of nought.
+ */
+function facilityCharges(facilityRow) {
+  const named = (name) => (entriesOf(facilityRow).find(([key]) => key === name) || [])[1];
+  const [tax, sccTaxModifier, solarSystemID] = [named("tax"), named("sccTaxModifier"), toInt(named("solarSystemID"))];
+  return {
+    tax: aNumber(tax) ? tax : null,
+    sccTaxModifier: aNumber(sccTaxModifier) ? sccTaxModifier : null,
+    solarSystemID: solarSystemID > 0 ? solarSystemID : null,
+  };
+}
+
+/** A blueprint's price and a job's runs that a base can be made of. */
+const aBase = (price, runs) => aNumber(price) && price >= 0 && Number.isSafeInteger(runs) && runs > 0;
+
+/**
+ * A manufacturing job's tax in whole ISK, as the client's own job reckons it (industry/job.py _get_tax, 450 to
+ * 458): the base rounded (base_cost, 127 to 130: int(round(job_cost))) times the facility's tax, rounded. Null
+ * where the facility says no tax of its own, or an input is not what it should be.
+ */
+function manufacturingJobTax({ blueprintPrice: price, runs, facilityTax }) {
+  if (!aBase(price, runs) || !aNumber(facilityTax)) {
+    return null;
+  }
+  return Math.round(Math.round(price * runs) * facilityTax);
+}
+
+/**
+ * What a manufacturing job costs to start, as the client's own job adds it up (industry/job.py total_cost, 132 to
+ * 135): its cost and its tax, each as it was reckoned; the SCC's surcharge (137 to 152), the rounded base times
+ * SCC_SURCHARGE_RATE by the facility's modifier of it, never below nought; and, in a system whose security is 0.95
+ * or more, an industry security tax (164 to 174) of the rounded base times INDUSTRY_SECURITY_TAX_RATE. Each part a
+ * whole amount, and their total.
+ *
+ * Null where a part is no whole amount or an input is no number: no fee is said of a guess.
+ */
+function manufacturingJobFee({ blueprintPrice: price, runs, cost, tax, sccTaxModifier, security }) {
+  const anAmount = (value) => Number.isSafeInteger(value) && value >= 0;
+  if (!aBase(price, runs) || !anAmount(cost) || !anAmount(tax) || !aNumber(sccTaxModifier) || !aNumber(security)) {
+    return null;
+  }
+  const baseCost = Math.round(price * runs);
+  const sccSurcharge = Math.round(baseCost * Math.max(0, SCC_SURCHARGE_RATE * sccTaxModifier));
+  const securityTax = security >= SAFE_SECURITY_FROM ? Math.round(baseCost * INDUSTRY_SECURITY_TAX_RATE) : 0;
+  return { cost, tax, sccSurcharge, securityTax, total: cost + tax + sccSurcharge + securityTax };
+}
+
+/**
  * A blueprint's price, as the client's industry prices one (industryCommon.GetBlueprintPrice, 520 to 543): each of
  * its manufacturing materials' own price times its quantity, summed in the blueprint's order. A type that is no
  * blueprint, or a blueprint that has no manufacturing, is priced at its adjusted average price, and at nought
@@ -312,6 +368,7 @@ module.exports = {
   DECRYPTOR_GROUP_ID,
   INVENTION_ACTIVITY_ID,
   blueprintPrice,
+  facilityCharges,
   facilityCostModifiers,
   facilityGlobalModifiers,
   facilityMaterialModifiers,
@@ -320,7 +377,9 @@ module.exports = {
   inventionProductTypeID,
   inventionRequestMaterials,
   manufacturingJobCost,
+  manufacturingJobFee,
   manufacturingJobSeconds,
+  manufacturingJobTax,
   modifierMatchesProduct,
   roundMaterialQuantity,
 };

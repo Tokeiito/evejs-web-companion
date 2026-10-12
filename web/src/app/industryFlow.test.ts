@@ -571,10 +571,11 @@ test("a job that is not among those read is not asked for: its solar system is n
 test("the preview returns what the player HAS and the time the job will take, and starts nothing", async () => {
   const store = createClientStore();
   let timeSeconds: number | null | string = 1163;
+  let fee: Record<string, number> | string | null | undefined = { cost: 5284, tax: 1321, sccSurcharge: 5284, securityTax: 0, total: 11889 };
   const { fetch, requests } = makeFakeFetch(
     respondOk((path) =>
       path === "/api/bridge/industry/preview"
-        ? { status: 200, body: { ok: true, available: { "38": 500 }, timeSeconds } }
+        ? { status: 200, body: { ok: true, available: { "38": 500 }, timeSeconds, fee } }
         : null,
     ),
   );
@@ -589,7 +590,14 @@ test("the preview returns what the player HAS and the time the job will take, an
   };
 
   const previewed = await flow.previewIndustryJob(request);
-  assert.deepEqual(previewed, { available: { "38": 500 }, timeSeconds: 1163 });
+  assert.deepEqual(previewed, { available: { "38": 500 }, timeSeconds: 1163, fee: { cost: 5284, tax: 1321, sccSurcharge: 5284, securityTax: 0, total: 11889 } });
+  // A fee that was not reckoned, or that is no fee, is none.
+  const noFees: (Record<string, number> | string | null | undefined)[] = [null, undefined, "11889", { cost: 5284 }, { cost: 5284, tax: 1321, sccSurcharge: 5284, securityTax: 0, total: 1 }];
+  for (const none of noFees) {
+    fee = none;
+    assert.equal((await flow.previewIndustryJob(request)).fee, null, JSON.stringify(none));
+  }
+  fee = null;
   // The blueprint's time research goes with the request: the job's time is reckoned from it.
   const sent = requests.find((entry) => entry.path === "/api/bridge/industry/preview");
   assert.equal((sent?.body as { timeEfficiency?: number }).timeEfficiency, 5);

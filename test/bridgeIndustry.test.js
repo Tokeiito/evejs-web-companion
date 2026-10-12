@@ -1155,8 +1155,9 @@ test("on the game port a manufacturing job's cost is the client's own reckoning,
   assert.deepEqual([sentJobs(gamePort, "ConnectJob")[0].cost, (await install()).cost], [5284, 5284]);
   // The price read is the adjusted one, of the blueprint's material, off the pilot's own table.
   assert.deepEqual(state.priced[0], [...who, MATERIAL_TYPE_ID]);
-  // The tax goes as nought still, and the time is its own reckoning's: none here, nothing being said of the blueprint's time research.
-  assert.deepEqual([(await install()).tax, (await install()).time, (await install({ timeEfficiency: 0 })).time], [0, 0, 1224]);
+  // The tax is its own reckoning's (the facility's 0.01 of the base: 1320.96), and the time its own: none here,
+  // nothing being said of the blueprint's time research.
+  assert.deepEqual([(await install()).tax, (await install()).time, (await install({ timeEfficiency: 0 })).time], [1321, 0, 1224]);
   // One run: 86 x 512 x 0.04 = 1761.28.
   assert.equal((await install({ runs: 1 })).cost, 1761);
   // An alpha clone's job costs a quarter of a percent of the base more: 5283.84 + 330.24.
@@ -1191,6 +1192,94 @@ test("on the game port a manufacturing job's cost is the client's own reckoning,
   await selectOnServer(second.baseUrl);
   await apiRequest(second.baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody() });
   assert.equal(sentJobs(gamePort, "InstallJob").at(-1).cost, 119);
+});
+
+test("on the game port the preview says what the job costs to start, as the client adds it up, and the job's tax goes with the job", async () => {
+  // industry/job.py 127 to 174 and 450 to 458 (src/industryInstall.js, manufacturingJobFee). A base of 132096 (86 of
+  // the material a run at 512, three runs); the facility's cost modifier 0.04, its tax 0.01 and the SCC's modifier 1.
+  // The facility is in another system than the pilot.
+  const A_SYSTEM_AWAY = 30000144;
+  const facility = facilityRow({ solarSystemID: A_SYSTEM_AWAY });
+  facility.args.entries.push(["globalModifiers", dict([["faction", 1], ["system", dict([[ACTIVITY_MANUFACTURING, 1]])]])]);
+  facility.args.entries.find(([name]) => name === "activities")[1] = dict([
+    [ACTIVITY_MANUFACTURING, { type: "tuple", items: [list([]), list([]), list([[0.04, null, null, null, 4]])] }],
+  ]);
+  const state = { facility, security: 0.9, table: true, grade: 1 };
+  const plain = fakeIndustryGateway({ timeMultiplier: 0.68 });
+  const gamePort = {
+    ...plain,
+    async selectCharacter() {
+      return {
+        bridgeSessionID: "gp:a-pilot-on-the-game-port", service: "charUnboundMgr", method: "SelectCharacterID", result: null, notifications: [],
+        session: { userid: 4, characterID: CHARACTER_ID, characterName: "Test Pilot", stationID: STATION_ID, structureID: null, solarSystemID: SOLAR_SYSTEM_ID, corporationID: 98000000, shipID: ACTIVE_SHIP_ID },
+      };
+    },
+    async callMethod(service, method, ...rest) {
+      if (service === "subscriptionMgr" && method === "GetCloneGrade") return { service, method, result: state.grade, notifications: [] };
+      return plain.callMethod(service, method, ...rest);
+    },
+    async freshFacility() {
+      return state.facility;
+    },
+    averageMarketPrice(sessionFields, bridgeSessionID, typeID) {
+      if (!state.table) return null;
+      return typeID === MATERIAL_TYPE_ID ? { averagePrice: 600, adjustedPrice: 512 } : { averagePrice: null, adjustedPrice: null };
+    },
+  };
+  // The facility's system and its security, as the game's own data has them.
+  const asked = [];
+  const staticData = { ...fakeStaticData(), getSolarSystem: (solarSystemID) => { asked.push(solarSystemID); return state.security === null ? null : { security: state.security }; } };
+  const { baseUrl } = await startTestServer({ gateway: fakeIndustryGateway(), gamePortPilots: gamePort, staticData });
+  await selectOnServer(baseUrl);
+  const previewed = async () => (await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody() })).payload.fee;
+  const installed = async () => {
+    await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody() });
+    return sentJobs(gamePort, "InstallJob").at(-1);
+  };
+
+  // The cost 5283.84; the tax 132096 x 0.01 = 1320.96; the surcharge 132096 x 0.04 = 5283.84; no security tax in a system of 0.9.
+  assert.deepEqual(await previewed(), { cost: 5284, tax: 1321, sccSurcharge: 5284, securityTax: 0, total: 11889 });
+  // The security read is the facility's system's, and not the pilot's.
+  assert.deepEqual([asked.at(-1), A_SYSTEM_AWAY === SOLAR_SYSTEM_ID], [A_SYSTEM_AWAY, false]);
+  // Any other kind of work: no tax is reckoned, nought goes, and no fee is said.
+  const other = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ activity: "copying" }) });
+  assert.deepEqual([other.payload.fee, sentJobs(gamePort, "ConnectJob").at(-1).tax], [null, 0]);
+  await previewed();
+  // The tax is in the job as the cost is: in the preview's request and the install's.
+  assert.deepEqual([sentJobs(gamePort, "ConnectJob").at(-1).tax, (await installed()).tax, (await installed()).cost], [1321, 1321, 5284]);
+  // A system of security 0.95 and over has a security tax of 5% of the base beside them: 6604.8.
+  state.security = 0.95;
+  assert.deepEqual(await previewed(), { cost: 5284, tax: 1321, sccSurcharge: 5284, securityTax: 6605, total: 18494 });
+  // A system whose security the data has not: there is no total to say, and the tax goes all the same.
+  state.security = null;
+  assert.deepEqual([await previewed(), (await installed()).tax], [null, 1321]);
+  state.security = 0.9;
+  // A cost that could not be reckoned (a clone grade that is neither): there is no total to say, and the tax goes all the same.
+  state.grade = null;
+  const ungraded = await installed();
+  assert.deepEqual([await previewed(), ungraded.tax, ungraded.cost], [null, 1321, 0]);
+  state.grade = 1;
+  // A facility that says no tax of its own (a structure's is by its services): no tax is reckoned, nought goes, and
+  // there is no total to say. The cost goes as it did.
+  state.facility = facilityRow({ tax: null });
+  state.facility.args.entries.push(...facility.args.entries.filter(([name]) => name === "globalModifiers"));
+  state.facility.args.entries.find(([name]) => name === "activities")[1] = facility.args.entries.find(([name]) => name === "activities")[1];
+  const untaxed = await installed();
+  assert.deepEqual([await previewed(), untaxed.tax, untaxed.cost], [null, 0, 5284]);
+  state.facility = facility;
+  // A pilot with no table of prices: nothing is reckoned, and nought goes for each.
+  state.table = false;
+  const unpriced = await installed();
+  assert.deepEqual([await previewed(), unpriced.tax, unpriced.cost], [null, 0, 0]);
+});
+
+test("through the gateway the preview says no fee, and the job's tax goes as nought", async () => {
+  const gateway = fakeIndustryGateway({ timeMultiplier: 0.68 });
+  const { baseUrl } = await startTestServer({ gateway, staticData: { ...fakeStaticData(), getSolarSystem: () => ({ security: 0.9 }) } });
+  await selectOnServer(baseUrl);
+  const preview = await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody({ timeEfficiency: 5 }) });
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ timeEfficiency: 5 }) });
+  assert.deepEqual([preview.payload.fee, preview.payload.timeSeconds, sentJobs(gateway, "InstallJob")[0].tax, sentJobs(gateway, "InstallJob")[0].cost], [null, 1163, 0, 0]);
 });
 
 test("a blueprint's time research is a whole number from nought to twenty, or the request is refused before anything is asked", async () => {

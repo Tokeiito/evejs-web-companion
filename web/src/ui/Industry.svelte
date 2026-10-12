@@ -19,6 +19,8 @@
     isActiveJob,
     previewMaterials,
     previewTimeSeconds,
+    jobFeeParts,
+    type IndustryJobFee,
     recipeFor,
     secondsUntil,
   } from "../bridge/industry.ts";
@@ -35,6 +37,7 @@
   import { resolvedName } from "../store/names.ts";
   // R27 — the shared item icon: one cached picture per thing, falling back
   // to a name-derived tile whenever the icon cache has no entry (or no cache).
+  import { formatIsk } from "./isk.ts";
   import TypeIcon from "./TypeIcon.svelte";
   import { panelErrorWords } from "../bridge/refusals.ts";
 
@@ -175,6 +178,21 @@
   let availableMaterials = $state<Readonly<Record<string, number>> | null>(null);
   /** The seconds the job will take, as the preview reckoned them; null where it reckoned none. */
   let reckonedSeconds = $state<number | null>(null);
+  /** What the job costs to start, as the preview reckoned it; null where it reckoned none. */
+  let reckonedFee = $state<IndustryJobFee | null>(null);
+  /** The fee in a sentence: its total, and what it is made of where that is more than one thing. */
+  const feeWords = $derived.by(() => {
+    if (reckonedFee === null) {
+      return null;
+    }
+    const isk = (amount: number): string => formatIsk(String(amount));
+    const parts = jobFeeParts(reckonedFee);
+    if (parts.length === 0) {
+      return "Starting it costs nothing.";
+    }
+    const made = parts.length > 1 ? `: ${parts.map((part) => `${isk(part.amount)} for ${part.what}`).join(", ")}` : "";
+    return `Starting it costs ${isk(reckonedFee.total)}${made}.`;
+  });
   /** True once the player has asked to see the cost — the second step. */
   let confirming = $state(false);
   /**
@@ -250,6 +268,7 @@
     confirming = false;
     availableMaterials = null;
     reckonedSeconds = null;
+    reckonedFee = null;
     chosenRuns = 1;
     const activities = blueprintActivities(blueprint.typeID);
     chosenActivity = activities.length > 0 ? activities[0]! : null;
@@ -264,6 +283,7 @@
     chosenDecryptorTypeID = null;
     availableMaterials = null;
     reckonedSeconds = null;
+    reckonedFee = null;
     confirming = false;
   }
 
@@ -310,6 +330,7 @@
       });
       availableMaterials = previewed.available;
       reckonedSeconds = previewed.timeSeconds;
+      reckonedFee = previewed.fee;
       confirming = true;
     });
   }
@@ -715,11 +736,17 @@
             {:else}
               <span data-job-time="rough">It should take about {formatDuration(previewTime)}.</span>
             {/if}
-            The amounts above
-            are an estimate — the facility you picked may work out cheaper, and
-            the station also charges a fee to start the job. Both are worked out
-            by the server when you confirm, and you will see what was actually
-            charged straight afterwards.
+            {#if feeWords !== null}
+              <span data-job-fee="reckoned">{feeWords}</span>
+              The amounts above are an estimate — the facility you picked may work
+              out cheaper, which the server works out when you confirm.
+            {:else}
+              <span data-job-fee="unknown">The amounts above
+              are an estimate — the facility you picked may work out cheaper, and
+              the station also charges a fee to start the job. Both are worked out
+              by the server when you confirm, and you will see what was actually
+              charged straight afterwards.</span>
+            {/if}
           </p>
           <p class="error">
             Starting this job spends the materials and the fee immediately.

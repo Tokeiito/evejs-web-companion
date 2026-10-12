@@ -33,6 +33,7 @@ import {
 } from "./transport.ts";
 import { pageCarries, pageFetch, pageSocket } from "./pageFetch.ts";
 import type { JsonValue } from "../bridge/wire.ts";
+import { decodeJobFee, type IndustryJobFee } from "../bridge/industry.ts";
 import type { SafetyLevel } from "../space/crimewatch.ts";
 import type { MinerTrainingRead, StageFittingSelection, TrainingCharacter, QueueReview, QueueApplyOutcome } from "../training/types.ts";
 import type {
@@ -1128,6 +1129,12 @@ export interface IndustryPreviewResult {
    * the server holds against its own. Null where they were not reckoned: the server then works the time out alone.
    */
   readonly timeSeconds: number | null;
+  /**
+   * What the job costs to start, reckoned as the game's own client reckons it: the job's cost, the facility's
+   * tax, the SCC's surcharge and a safe system's security tax, and their total. Null where it was not reckoned:
+   * what is charged is then the server's to work out.
+   */
+  readonly fee: IndustryJobFee | null;
 }
 
 /**
@@ -1156,6 +1163,7 @@ export async function previewIndustryJob(
   return {
     available: normalized,
     timeSeconds: typeof reckoned === "number" && Number.isSafeInteger(reckoned) && reckoned > 0 ? reckoned : null,
+    fee: decodeJobFee(data.fee),
   };
 }
 

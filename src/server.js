@@ -5251,8 +5251,8 @@ const INDUSTRY_CASH_ACCOUNT_KEY = 1000;
  * authoritative (one that is not nought is checked against the server's own,
  * and a job whose number is not the server's to the whole is REFUSED). The
  * `time` of a manufacturing job is the client's own reckoning
- * (reckonedJobSeconds), and on the game port its `cost` is too
- * (reckonedJobCost); the tax goes as nought.
+ * (reckonedJobSeconds), and on the game port its `cost` and its `tax` are
+ * too (reckonedJobCost, reckonedJobFee).
  * The fields that genuinely decide the outcome are `blueprintID`,
  * `activityID`, `facilityID`, `runs` (plus `licensedRuns` for copying,
  * `productTypeID` for invention, and the two locations). They are all sent
@@ -5284,7 +5284,8 @@ function buildInstallJobPayload(held, request) {
     licensedRuns: request.licensedRuns,
     // The job's cost as the client's own job reckons it, where it could be reckoned whole; else nought.
     cost: request.cost || 0,
-    tax: 0,
+    // And its tax, likewise.
+    tax: request.tax || 0,
     // The job's time as the client's own job reckons it, where it could be reckoned whole; else nought, which
     // the server does not check.
     time: request.time || 0,
@@ -5506,6 +5507,79 @@ function askedOnce(ask) {
 const ATTRIBUTE_JOB_COST_MULTIPLIER = 1954;
 
 /**
+ * The price of the blueprint a manufacturing job is for, off the pilot's own price table (src/industryInstall.js,
+ * blueprintPrice). Null where there is none to read: a pilot through the gateway, who has no table; one on the
+ * game port whose table has not come yet; a blueprint the game's data has no manufacturing for.
+ */
+function jobBlueprintPrice(held, request) {
+  if (!(gamePortPilots && isGamePortHandle(held.bridgeSessionID) && typeof gamePortPilots.averageMarketPrice === "function")) {
+    return null;
+  }
+  const activitiesOf = (typeID) => {
+    const each = typeof staticData.getIndustryBlueprint === "function" ? staticData.getIndustryBlueprint(typeID) : null;
+    return each && each.activities ? each.activities : null;
+  };
+  const activities = activitiesOf(request.blueprintTypeID);
+  if (!activities || !activities.manufacturing) {
+    return null;
+  }
+  return industryInstall.blueprintPrice(request.blueprintTypeID, {
+    activitiesOf,
+    adjustedPriceOf: (typeID) => {
+      const said = gamePortPilots.averageMarketPrice({ userid: held.accountID }, held.bridgeSessionID, typeID);
+      return said === null ? undefined : said.adjustedPrice;
+    },
+  });
+}
+
+/**
+ * A manufacturing job's tax, and what the job costs to start, as the client's own job reckons the one and adds up
+ * the other (industry/job.py 450 to 458 and 127 to 174; src/industryInstall.js, manufacturingJobTax and
+ * manufacturingJobFee). `cost` is the job's cost as it was reckoned (reckonedJobCost), or null.
+ *
+ * Answers { tax, fee }, each null where it could not be reckoned whole. The tax wants the blueprint's price and a
+ * facility whose row says a tax of its own (every station's does; a structure's is by its services' access, which
+ * is not read here). The fee wants the cost and the tax as well, the row's SCC modifier, and the security of the
+ * facility's system out of the game's own data. Where the tax is null nought goes in the job, as it always did.
+ */
+async function reckonedJobFee(held, webSessionID, request, facilityOf, cost) {
+  const none = { tax: null, fee: null };
+  if (request.activityID !== INDUSTRY_ACTIVITY_IDS.manufacturing) {
+    return none;
+  }
+  try {
+    assertCurrentHeldSession(held, webSessionID);
+    const price = jobBlueprintPrice(held, request);
+    if (price === null) {
+      return none;
+    }
+    const charges = industryInstall.facilityCharges(await facilityOf());
+    const tax = industryInstall.manufacturingJobTax({ blueprintPrice: price, runs: request.runs, facilityTax: charges.tax });
+    const system = charges.solarSystemID !== null && typeof staticData.getSolarSystem === "function"
+      ? staticData.getSolarSystem(charges.solarSystemID)
+      : null;
+    // (A cost or a tax that was not reckoned is no whole amount, and of those no fee is said.)
+    const fee = industryInstall.manufacturingJobFee({
+      blueprintPrice: price,
+      runs: request.runs,
+      cost,
+      tax,
+      sccTaxModifier: charges.sccTaxModifier,
+      security: system && typeof system.security === "number" ? system.security : null,
+    });
+    return { tax, fee };
+  } catch (error) {
+    // As for the time and the cost.
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(webSessionID, held);
+      throw error;
+    }
+    assertCurrentHeldSession(held, webSessionID);
+    return none;
+  }
+}
+
+/**
  * A manufacturing job's cost in whole ISK, as the client's own job reckons it before sending the job
  * (industry/job.py 310 to 320; src/industryInstall.js, manufacturingJobCost, has the order and why it matters).
  * What it is reckoned from, and where the client has each:
@@ -5527,13 +5601,6 @@ async function reckonedJobCost(held, webSessionID, request, facilityOf) {
   if (request.activityID !== INDUSTRY_ACTIVITY_IDS.manufacturing) {
     return null;
   }
-  if (!(gamePortPilots && isGamePortHandle(held.bridgeSessionID) && typeof gamePortPilots.averageMarketPrice === "function")) {
-    return null;
-  }
-  const activitiesOf = (typeID) => {
-    const each = typeof staticData.getIndustryBlueprint === "function" ? staticData.getIndustryBlueprint(typeID) : null;
-    return each && each.activities ? each.activities : null;
-  };
   const definition = typeof staticData.getIndustryBlueprint === "function"
     ? staticData.getIndustryBlueprint(request.blueprintTypeID)
     : null;
@@ -5543,13 +5610,7 @@ async function reckonedJobCost(held, webSessionID, request, facilityOf) {
   }
   try {
     assertCurrentHeldSession(held, webSessionID);
-    const price = industryInstall.blueprintPrice(request.blueprintTypeID, {
-      activitiesOf,
-      adjustedPriceOf: (typeID) => {
-        const said = gamePortPilots.averageMarketPrice({ userid: held.accountID }, held.bridgeSessionID, typeID);
-        return said === null ? undefined : said.adjustedPrice;
-      },
-    });
+    const price = jobBlueprintPrice(held, request);
     if (price === null) {
       return null;
     }
@@ -5647,11 +5708,13 @@ async function decryptorInstallFields(held, webSessionID, request) {
  * read — it persists a monitor row — so this route always releases the monitor
  * it opened, whatever happens.
  *
- * ⚠ WHAT THIS CANNOT TELL THE PLAYER: the installation FEE. No allowlisted
- * retail call quotes a cost without also installing the job, so the ISK figure
- * genuinely cannot be previewed. The panel says so plainly rather than showing
- * an invented estimate, and the install response reports the cost the server
- * actually charged.
+ * THE INSTALLATION FEE is not the server's to quote: no retail call quotes a
+ * cost without also installing the job. The retail client reckons it itself,
+ * and on the game port so does this route (reckonedJobFee), for a
+ * manufacturing job at a facility that says a tax of its own: `fee`, its four
+ * parts and their total. Where it could not be reckoned `fee` is null, the
+ * panel says the fee is the server's to work out, and the install response
+ * reports the cost the server actually charged.
  */
 app.post("/api/bridge/industry/preview", requireAuth, async (req, res, next) => {
   const held = requireHeldBridgeSession(req, res);
@@ -5672,10 +5735,12 @@ app.post("/api/bridge/industry/preview", requireAuth, async (req, res, next) => 
     const facilityOf = askedOnce(() => jobFacilityRow(held, req.webSessionID, request.facilityID));
     const timeSeconds = await reckonedJobSeconds(req.account, held, req.webSessionID, request, facilityOf);
     const cost = await reckonedJobCost(held, req.webSessionID, request, facilityOf);
+    const { tax, fee } = await reckonedJobFee(held, req.webSessionID, request, facilityOf, cost);
     const payload = buildInstallJobPayload(held, {
       ...request,
       time: timeSeconds,
       cost,
+      tax,
       inputLocation: locations.input,
       outputLocation: locations.output,
     });
@@ -5704,6 +5769,9 @@ app.post("/api/bridge/industry/preview", requireAuth, async (req, res, next) => 
       // The time the job will take, where it was reckoned as the client reckons it (and sent, for the server to
       // hold against its own); null where it was not.
       timeSeconds,
+      // What the job costs to start, as the client adds it up: its cost, its tax, the SCC's surcharge and a
+      // safe system's security tax, and their total; null where it could not be reckoned whole.
+      fee,
       inputLocation: locations.input,
       outputLocation: locations.output,
       notifications: outcome.notifications,
@@ -5773,11 +5841,13 @@ app.post("/api/bridge/industry/install", requireAuth, async (req, res, next) => 
     const facilityOf = askedOnce(() => jobFacilityRow(held, req.webSessionID, request.facilityID));
     const timeSeconds = await reckonedJobSeconds(req.account, held, req.webSessionID, request, facilityOf);
     const cost = await reckonedJobCost(held, req.webSessionID, request, facilityOf);
+    const { tax } = await reckonedJobFee(held, req.webSessionID, request, facilityOf, cost);
     const payload = buildInstallJobPayload(held, {
       ...request,
       ...(decryptorFields || {}),
       time: timeSeconds,
       cost,
+      tax,
       inputLocation: locations.input,
       outputLocation: locations.output,
     });
