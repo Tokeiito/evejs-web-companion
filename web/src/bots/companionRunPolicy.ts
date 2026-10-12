@@ -93,14 +93,10 @@ import type { MacroID } from "./botScript.ts";
 import {
   COMPANION_SETUP_KEYS,
   MAX_CAPACITOR_FLOOR,
-  MAX_DRONE_HOLD_OFF_SECONDS,
   MAX_FLEE_ATTEMPTS,
   MAX_FLEE_HEALTH_FLOOR,
   MIN_CAPACITOR_FLOOR,
-  MIN_DRONE_HOLD_OFF_SECONDS,
   MIN_FLEE_ATTEMPTS,
-  MAX_DRONE_HEALTH_FLOOR,
-  MIN_DRONE_HEALTH_FLOOR,
   MIN_FLEE_HEALTH_FLOOR,
   type CompanionAbandonmentRecord,
   type CompanionSetup,
@@ -194,7 +190,7 @@ export function analyzeCompanionRunPolicy(setup: CompanionSetup): BotRunPolicy {
 // treats a failed decode as "nothing was saved here" — so the visible symptom
 // of a plain deletion would be every existing squad quietly losing its setup
 // on the very next load. `COMPANION_RETIRED_KEYS` below names exactly those
-// fifteen: a key on that list is accepted, its value is thrown away without
+// fifteen, and the two drone settings retired the same way on 2026-10-12: a key on that list is accepted, its value is thrown away without
 // being looked at, and it is never written back. A key in NEITHER set is
 // still refused — that rule is exactly as strict as it always was. Do not
 // read this as "unknown keys are fine now": it is a closed, finite list of
@@ -244,6 +240,12 @@ const COMPANION_RETIRED_KEYS = new Set<string>([
   "obeys",
   "chatCommandSenders",
   "safeSpotBookmarkID",
+  // Retired 2026-10-12, when rung 6 began rotating the one drone whose shield
+  // is below full instead of recalling the flight at a floor and holding it.
+  // Neither number has anything left to configure; every saved squad carries
+  // both, so they are accepted and dropped like the names above.
+  "droneHealthFloor",
+  "droneRedeployHoldOffSeconds",
 ]);
 
 /**
@@ -257,11 +259,9 @@ const SAY = {
   notObject: "This companion setup is not a valid request.",
   unknownKey: "This companion setup has settings this app does not recognise.",
   badFleeHealthFloor: "This companion setup's flee-health threshold is not a valid number.",
-  badDroneHealthFloor: "This companion setup's drone-health threshold is not a valid number.",
   badCapacitorFloor: "This companion setup's capacitor threshold is not a valid number.",
   badMaxFleeAttempts: "This companion setup's flee-attempt limit is not a valid number.",
   badRepairsAtStation: "This companion setup's station-repair setting is not valid.",
-  badDroneRedeployHoldOffSeconds: "This companion setup's drone hold-off time is not a valid number.",
   badAbandonment: "This pilot's saved supervision state is not valid.",
 } as const;
 
@@ -309,11 +309,6 @@ export function decodeCompanionSetupValue(value: unknown): CompanionSetupVerdict
     return { ok: false, refusal: SAY.badFleeHealthFloor };
   }
 
-  const droneHealthFloor = obj["droneHealthFloor"];
-  if (!isFiniteNumberInRange(droneHealthFloor, MIN_DRONE_HEALTH_FLOOR, MAX_DRONE_HEALTH_FLOOR)) {
-    return { ok: false, refusal: SAY.badDroneHealthFloor };
-  }
-
   const capacitorFloor = obj["capacitorFloor"];
   if (!isFiniteNumberInRange(capacitorFloor, MIN_CAPACITOR_FLOOR, MAX_CAPACITOR_FLOOR)) {
     return { ok: false, refusal: SAY.badCapacitorFloor };
@@ -341,20 +336,11 @@ export function decodeCompanionSetupValue(value: unknown): CompanionSetupVerdict
     return { ok: false, refusal: SAY.badRepairsAtStation };
   }
 
-  const droneRedeployHoldOffSeconds = obj["droneRedeployHoldOffSeconds"];
-  if (
-    !isFiniteNumberInRange(droneRedeployHoldOffSeconds, MIN_DRONE_HOLD_OFF_SECONDS, MAX_DRONE_HOLD_OFF_SECONDS)
-  ) {
-    return { ok: false, refusal: SAY.badDroneRedeployHoldOffSeconds };
-  }
-
   const setup: CompanionSetup = {
     fleeHealthFloor,
     capacitorFloor,
     maxFleeAttempts,
     repairsAtStation,
-    droneHealthFloor,
-    droneRedeployHoldOffSeconds,
   };
   return { ok: true, setup: Object.freeze(setup) };
 }
