@@ -1662,6 +1662,15 @@ Take these defaults, and list each under "For the operator" in the log so they c
   `squads` beside its wings; the answer's own dict counts six entries, and the name
   stands once, inside the wing. A field was made in the server after that misreading.
   Count a dict's entries off the packet where the client's own line of it is cut short.
+- **A number the server holds against its own is all or nothing.** A job's cost, tax
+  and time go as nought, and the server reckons each; sent as anything else, each must
+  be the server's to the whole or the job is refused. Before building such a number,
+  list every input the client's reckoning takes and which of them nothing of ours
+  asks, and build one number a unit, each seen accepted live. Do not half-build one.
+- **A unit found to be four is written down as four.** The sizing is the iteration's
+  work where the unit will not fit: what the client does, by its lines; what it wants
+  that is not asked; what the server does with it; the steps in order. Build only
+  what the sizing turned up that is whole by itself.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
