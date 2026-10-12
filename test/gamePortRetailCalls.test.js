@@ -3159,3 +3159,23 @@ test("the survey scan is the client's with nothing sent", () => {
     assert.match(odd.note, /sends nothing/, why);
   }
 });
+
+test("a shared folder is taken up, switched and its bookmarks moved as the client's bookmark service asks: the move's bookmarks a set", () => {
+  // bookmarkSvc.py 357 and 483: AddToKnownFolders(folderID, isActive) and UpdateKnownFolderState(folderID, isActive).
+  for (const method of ["AddToKnownFolders", "UpdateKnownFolderState"]) {
+    const made = retailForm("accessGroupBookmarkMgr", method, [7000001, true], null, {});
+    assert.deepEqual([made.status, made.args], ["same", [7000001, true]], method);
+    assert.equal(retailForm("accessGroupBookmarkMgr", method, [7000001, 1], null, {}).status, "differs", method);
+  }
+  // bookmarkSvc.py 715: SearchFoldersWithAdminAccess(), with nothing.
+  assert.equal(retailForm("accessGroupBookmarkMgr", "SearchFoldersWithAdminAccess", [], null, {}).status, "same");
+  // bookmarkSvc.py 691: MoveBookmarksToFolderAndSubfolder(oldFolderID, folderID, subfolderID, bookmarkIDs), the
+  // bookmarks the values of a defaultdict(set): (set, ([...],)) on the wire.
+  const moved = retailForm("accessGroupBookmarkMgr", "MoveBookmarksToFolderAndSubfolder", [7000001, 7000002, null, [9000011]], null, {});
+  assert.equal(moved.status, "reshaped");
+  assert.deepEqual(moved.args.slice(0, 3), [7000001, 7000002, null]);
+  assert.equal(moved.args[3].type, "objectex1");
+  assert.equal(moved.args[3].header[0].value, "__builtin__.set");
+  assert.deepEqual(moved.args[3].header[1][0].items, [9000011]);
+  assert.equal(retailForm("accessGroupBookmarkMgr", "MoveBookmarksToFolderAndSubfolder", [7000001, 7000002, null, []], null, {}).status, "differs");
+});

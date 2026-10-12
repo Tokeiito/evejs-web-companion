@@ -64,6 +64,7 @@ const EVERY_ACTION: readonly ScriptAction[] = [
   { kind: "warpBookmark", bookmarkID: 71 },
   { kind: "addKnownFolder", folderID: 72 },
   { kind: "setFolderActive", folderID: 73, active: false },
+  { kind: "moveBookmarks", fromFolderID: 74, toFolderID: 75, bookmarkIDs: [76] },
   { kind: "warpLaunch", launchID: 72 },
   { kind: "warpMissionLocation", agentID: 3018920, locationType: "dungeon", locationNumber: 0 },
   { kind: "boardShip", shipID: 81 },

@@ -348,6 +348,12 @@ const ENTRIES: Readonly<Record<MacroID, MacroCatalogEntry>> = {
     "Warps to one of your saved spots — a mission site, a safe spot, a mining perch. Finishes when the warp lands.",
     "Being in space, in the saved spot's system",
   ),
+  "salvage-bookmarked-sites": entry(
+    "salvage-bookmarked-sites",
+    "hauling",
+    "A dedicated salvager: flies to each site bookmarked in one folder, loots your corporation's wrecks, salvages every wreck, and files the bookmark in another folder. Unloads at your station when the hold is full, and docks there to wait when no site is left.",
+    "A ship with salvagers or salvage drones",
+  ),
   "use-bookmark-folders": entry(
     "use-bookmark-folders",
     "movement",
