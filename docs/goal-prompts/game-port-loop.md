@@ -2102,6 +2102,30 @@ Take these defaults, and list each under "For the operator" in the log so they c
   policy's, and what a bot's page is answered turns on them. No test asked
   them through a route; ten breakages of the two modules were caught by the
   routes' own test.
+- **A request a test holds open is raced against its own ending.** A test
+  that waits for an Apply to reach the state it is held at waits for ever
+  where a breakage ends the Apply first. Wait on whichever comes first
+  (`held` in `test/pagesProvisioning.test.js`), and give every test of
+  such a file its own limit.
+- **A BFF's ending is two apps on one journal.** An Apply held open in the
+  first at a state it has journalled, and a second app started on the same
+  file: what the second finds is what a BFF started after a crash finds, and
+  no file is written by hand.
+- **Where a check reads two things of one answer, the stand-in says them
+  apart, and where two askings are to meet, it holds the first.** A server
+  whose "not online" and "let go of" were one switch could not show which a
+  recover reads. And a stand-in that answers within one turn cannot show two
+  askings meeting: a recover "asked twice at once" was said and its breakage
+  lived, until the release was held open and the second asking seen to reach
+  the BFF and wait.
+- **What a test does not hold can still be measured once**: a copy of the
+  test file that prints what it was answered, run and removed
+  (`pp-probe.js` in the scratchpad). It showed a recovered Apply keeping the
+  reason it was held for, which no assertion was about.
+- **Where an asker goes on from a route's answer, the test goes on as the
+  asker does.** A look at a ship being made answers `READY`, and the panel
+  then asks the plan again and applies it: followed by the page's own askers
+  to the finished ship, the wire's second half is in the test too.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
