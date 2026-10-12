@@ -2223,6 +2223,42 @@ Take these defaults, and list each under "For the operator" in the log so they c
   login brings a pilot online and the logout takes it off: nothing is changed.
 - **Two pilots of one account are online at once on the game-port BFF** (Test Two and Test
   Three, seen 2026-10-12). Of the test pilots only those two are of a player's corporation.
+- **When one of two pilots at one place sees less than the other, the server's own logs say
+  what each was sent.** They are in `eve.js/_local/logs`, timed in UTC: `server.log` (a warning
+  is `[WRN]`, not WARN), `space-destiny-debug.log` (each `destiny.send`, by character, with
+  the entries' names and how many balls an AddBalls2 has), `space-warp-debug.log`.
+  `mo-sent.js <logs> <characterID> <from> <to>` prints one pilot's. A pilot that keeps the
+  sentry guns of the station it warped from was sent nothing since.
+- **Two pilots of one account are two connections.** This server gave both one client ID until
+  `eve.js` `2c8eb9a6d`, and kept only the later one's session in a solar system. It showed as a
+  bot that found no rock at a belt. `mo-two-warp.js <bff> <belt> <account>:<pilot>
+  <account>:<pilot>` undocks two pilots, warps both and prints what each sees: run it for two
+  of one account and for two of two before blaming anything else. This server still lets both
+  fly; Tranquility closes the first, and that is the operator's to decide.
+- **A hosted pilot's scene is read without taking the pilot**: `GET
+  /api/bots/observation?characterID=` with a web session of the account that owns it, and `GET
+  /api/bots` for the account's bots, each with its `jettisonCustody` (`mo-observe.js`).
+- **A refusal that has one sentence for many causes is found with a line of the source**, for
+  one run: the cause's code and words written to the BFF's error output where the refusal is
+  made, the BFF started again, the run made, the line read, and the file put back (`git
+  checkout -- <file>` only when the line is the file's one change; `git diff --stat` first).
+  Nothing of it is committed.
+- **Git Bash rewrites an argument that begins with a slash**: `"/tr me 60000004"` reached the
+  GM route as `C:/Program Files/Git/tr me 60000004`. Put `MSYS_NO_PATHCONV=1` before the
+  command, and then write every path argument Windows-style (`C:/...`), since it stops that
+  rewriting too.
+- **A Mining Operation's scripts, for a run**: `mo-stage.js` (stages two pilots and the
+  corporation's two fittings; between `store.sh save` and `restore`), `mo-pieces.js` (the look
+  after it), `mo-plan.mjs save|plan|list|delete` and `mo-run.mjs start|watch|stop` (the page's
+  own askers loaded by `import()` of `web/src/app/api.ts`, with `{ baseUrl, token }`),
+  `mo-logs.js` (each bot's actions with their results, the BFF's errors, the ledger by status).
+  With the ore hold staged at 84 of 100, a run jettisons three and a half minutes after its
+  start, the hauler takes the can at six and unloads at eight. A hauler delivers only when
+  nine tenths full: give it a hold one can fills.
+- **The Mining Command Center is a page of its own**, `/mining-command-center`, signed in by an
+  account's name alone and with no pilot. Its Start and Delete ask with the browser's own box
+  (`window.confirm` stood in beforehand). Its table shows a bot's phase, read at the page's own
+  pace: a step of a few seconds falls between two reads.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
