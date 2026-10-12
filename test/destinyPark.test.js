@@ -572,12 +572,12 @@ test("an entry that fails does not stop the ones after it, and is counted by nam
   const park = simplePark();
   const told = [];
   park.onFail = (name, error) => told.push([name, error.message]);
-  park.flushState([[100, ["LaunchMissile", [1, 2, 3, 4]]], [100, ["NoSuchThing", [1]]], [100, ["GotoDirection", [1, 1, 0, 0]]]], false);
+  park.flushState([[100, ["AddMushroom", [1, 2, 3, 4]]], [100, ["NoSuchThing", [1]]], [100, ["GotoDirection", [1, 1, 0, 0]]]], false);
   park.doPreTick();
-  assert.deepEqual([...park.failed].sort(), [["LaunchMissile", 1], ["NoSuchThing", 1]]);
+  assert.deepEqual([...park.failed].sort(), [["AddMushroom", 1], ["NoSuchThing", 1]]);
   assert.equal(park.ballpark.ball(1).mode, MODE.GOTO);
   // Whoever keeps the park is told which and why, as the client's log is.
-  assert.deepEqual(told, [["LaunchMissile", "LaunchMissile cannot be applied"], ["NoSuchThing", "NoSuchThing cannot be applied"]]);
+  assert.deepEqual(told, [["AddMushroom", "AddMushroom cannot be applied"], ["NoSuchThing", "NoSuchThing cannot be applied"]]);
   park.doDestinyUpdate([[100, ["PackagedAction", Buffer.from("not marshal")]]], false);
   assert.equal(told.at(-1)[0], "PackagedAction");
 });
@@ -1208,4 +1208,89 @@ test("each step the driver takes is handed the clock's reading at the step befor
   // tick(), which steps without the clock, leaves a ball's times where they were.
   park.tick();
   assert.deepEqual([ball.oldTime, ball.newTime], [5_012_000, 5_013_000]);
+});
+
+// ── missiles ─────────────────────────────────────────────────────────────────
+
+test("the LaunchMissile order reaches the simulation: the missile, its target, its launcher, aimed, massive", () => {
+  const park = simplePark();
+  const ball = (id) => park.ballpark.ball(id);
+  const apply = (...entries) => { park.flushState(entries.map((entry) => [park.currentTime, entry]), false); park.doPreTick(); };
+  const extra = new Ballpark();
+  extra.addBall({ id: 7, isFree: true, mass: 100, radius: 300, maxVelocity: 2500, agility: 5, speedFraction: 1, y: 900 });
+  extra.currentTime = 100;
+  // As Tranquility sends a launch: the ball, its speed, and the order, all at one stamp. The ids as Python longs.
+  apply(["AddBalls2", [[extra.writeState([7]), { type: "list", items: [slim(7)] }]]], ["SetMaxSpeed", [7n, 2571.75]], ["LaunchMissile", [7n, 2n, 1n, 1, 1]]);
+  assert.deepEqual([...park.failed], []);
+  assert.deepEqual([ball(7).mode, ball(7).followId, ball(7).ownerId, ball(7).effectStamp, ball(7).followRange, ball(7).isMassive, ball(7).maxVelocity],
+    [MODE.MISSILE, 2, 1, 100, -(300 + 10), true, 2571.75]);
+  assert.deepEqual([ball(7).newPos, ball(7).newVel, ball(7).goto], [{ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }, { x: 1e16, y: 0, z: 0 }], "put where ball 1 is, and sent at ball 2");
+  // The flags come as the wire has them, a number or a Python bool.
+  apply(["LaunchMissile", [7, 2, 1, true, false]]);
+  assert.deepEqual([ball(7).mode, [...park.failed]], [MODE.MISSILE, []]);
+  // The park steps with a missile in it, and the missile is on its way.
+  park.tick();
+  park.tick();
+  assert.deepEqual([...park.failed], []);
+  assert.ok(ball(7).newPos.x > 2500 && ball(7).newPos.x < 5000 + 2571.75, `towards ball 2: ${ball(7).newPos.x}`);
+  // What the engine refuses: a target that may not be named, and an order short of its five. Each fails by name
+  // and the missile flies on.
+  apply(["SetBallVelocity", [1, 0, 50, 0]], ["LaunchMissile", [7, -2, 1, 1, 1]], ["LaunchMissile", [7, 2, 1]]);
+  assert.deepEqual([[...park.failed], ball(7).mode, ball(7).newPos.x > 2500], [[["LaunchMissile", 2]], MODE.MISSILE, true], "and it was not put back at its launcher");
+});
+
+test("Tranquility's missiles, played through the park as a witness gets them: none fails, and each flies at its target until it is taken away", () => {
+  const { readState } = require("../src/gamePort/destiny/state");
+  const { missiles } = require("./fixtures/destinyMissiles.json");
+  const wide = (text) => (BigInt(text) > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(text) : Number(text));
+  for (const sent of missiles) {
+    const what = `${sent.recording}, line ${sent.line}`;
+    const bytes = Buffer.from(sent.state, "hex");
+    const [record] = readState(bytes).balls;
+    const launch = sent.orders.find(([name]) => name === "LaunchMissile")[1];
+    const [missileId, targetId, ownerId] = launch.slice(0, 3).map(wide);
+    // A witness's park: the launcher where the missile was put, and its target 12 km along the way it was sent,
+    // flying across at 200 m/s. The target is of the size the missile's range says.
+    const source = new Ballpark();
+    const across = Math.abs(record.velocity.x) < 0.9 ? { vx: 200 } : { vy: 200 };
+    source.addBall({ id: targetId, isFree: true, isMassive: true, mass: 1.5e6, radius: -record.followRange - 300, maxVelocity: 200, agility: 3, speedFraction: 1,
+      x: record.position.x + record.velocity.x * 12000, y: record.position.y + record.velocity.y * 12000, z: record.position.z + record.velocity.z * 12000, ...across });
+    source.gotoDirection(targetId, across.vx ? 1 : 0, across.vy ? 1 : 0, 0);
+    source.addBall({ id: ownerId, isFree: true, isMassive: true, mass: 1e6, radius: 30, maxVelocity: 300, agility: 1, speedFraction: 1, ...record.position });
+    source.currentTime = sent.stamp;
+    const park = new Park();
+    const told = [];
+    park.onFail = (name, error) => told.push([name, error.message]);
+    park.flushState([[sent.stamp, ["SetState", [bag(source.writeState(), targetId, [slim(targetId), slim(ownerId)])]]]], false);
+    park.doPreTick();
+    // The server's own entries for the missile, at their stamp: its ball, and the orders.
+    const numbers = (args) => args.map((each, index) => (index < 3 && /^\d{6,}$/.test(each) ? wide(each) : Number(each)));
+    park.flushState([[sent.stamp, ["AddBalls2", [[bytes, { type: "list", items: [slim(missileId)] }]]]], ...sent.orders.map(([name, args]) => [sent.stamp, [name, numbers(args)]])], false);
+    park.doPreTick();
+    assert.deepEqual(told, [], what);
+    const missile = park.ballpark.ball(missileId);
+    const target = park.ballpark.ball(targetId);
+    assert.deepEqual([missile.mode, missile.followPtr, missile.followRange, missile.ownerId, missile.maxVelocity, missile.isMassive],
+      [MODE.MISSILE, target, record.followRange, ownerId, record.maxVelocity, true], what);
+    // Stepped for as long as Tranquility let this one fly, and a few ticks more: the park never stops, and the
+    // missile closes on its target at its own speed until it is upon it.
+    const apart = () => Math.hypot(missile.newPos.x - target.newPos.x, missile.newPos.y - target.newPos.y, missile.newPos.z - target.newPos.z);
+    let before = apart();
+    assert.ok(Math.abs(before - 12000) < 1, `${what}: where its launcher is, ${before} m from its target`);
+    let reached = false;
+    for (let tick = 1; tick <= (sent.removedAt - sent.stamp) + 6; tick += 1) {
+      park.tick();
+      const now = apart();
+      if (!reached && now < record.maxVelocity) reached = true;
+      else if (!reached) assert.ok(before - now > record.maxVelocity * 0.9, `${what}: tick ${tick} closed ${before - now} m of ${before}`);
+      before = now;
+    }
+    assert.ok(reached, `${what}: upon its target, ${before} m off at the last`);
+    assert.deepEqual(told, [], what);
+    assert.equal(target.mode, MODE.GOTO, "the target flies on as it was");
+    // Taken away as the server takes it: the park lets go of it and steps on.
+    park.flushState([[park.currentTime, ["TerminalPlayDestructionEffect", [missileId, null]]], [park.currentTime, ["RemoveBalls", [[missileId]]]]], false);
+    park.tick();
+    assert.deepEqual([park.ballpark.ball(missileId), [...target.followers], told], [null, [], []], what);
+  }
 });

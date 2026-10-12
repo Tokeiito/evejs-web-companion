@@ -9,17 +9,17 @@
 // client computes what the retail client computes.
 //
 //   destiny/src/Ballpark.cpp   Evolve (421), Integrate (751), EvolveBehaviorForBall (789),
-//                              EvolveFollow (1066), EvolveOldStyleOrbit (1249),
+//                              EvolveMissile (972), EvolveFollow (1066), EvolveOldStyleOrbit (1249),
 //                              EvolveStop (1339), GotoThrust (1398),
 //                              Gradient (2746), Potential (2789), AddBall (3303),
-//                              FollowBall (3879), Orbit (4007),
+//                              MissileFollow (3798), FollowBall (3879), Orbit (4007),
 //                              the orders (4471-4650) and the setters (4652-5090)
 //   destiny/src/Ball.cpp       ClientBall::InterpolatedPosition (1208) and InforceContinuity (877):
 //                              a ball between two ticks, as the client draws and measures it
 //   destiny/src/Collision.cpp  CollideTwoSpheres (108), Quadratic (136)
 //   destiny/src/Partition.cpp  which balls a ball can collide with (302, 344)
 //   destiny/src/Thunkers.cpp   reading a state into the park (2083, 2463, 2897) and
-//                              writing the park out as one (2145, 2202, 3180)
+//                              writing the park out as one (2145, 2202, 3180); PyLaunchMissile (857)
 //   destiny/src/Vector3d.h     the arithmetic, which is part of the result
 //
 // docs/game-port-destiny-notes.md is the map; this file is made from the source.
@@ -36,11 +36,14 @@
 // test/destinyBallpark.test.js requires them exactly.
 //
 // PORTED SO FAR: the integrator, STOP, GOTO, FOLLOW and ORBIT (the old style,
-// which is the library's default), WARP, a massive ball's collisions with
-// other balls, adding and removing balls, the orders and setters those need,
-// and reading and writing the state blob.
+// which is the library's default), WARP, MISSILE and the launch of one, a
+// massive ball's collisions with other balls, adding and removing balls, the
+// orders and setters those need, and reading and writing the state blob.
 // NOT YET, and each stops here or is counted rather than be guessed at:
-// MISSILE, FORMATION, MUSHROOM (evolve throws); a fixed ball's collision
+// FORMATION, MUSHROOM (evolve throws); an unaimed missile from a launcher at
+// rest (the launch throws: it goes by which way the launcher points); a
+// defender's missile's collisions (counted in `unported.defenderMissiles`:
+// it is stepped without them); a fixed ball's collision
 // shapes, its miniballs, capsules and boxes (counted in `unported.minis`: a
 // massive ball is stepped without them); the spatial partition, which here
 // only decides the order a ball's neighbours are taken in (counted in
@@ -171,8 +174,9 @@ class Ballpark {
      * What a step did without, because it is not ported: counted, never hidden.
      * `minis`: a massive ball stepped while a fixed ball in the park had collision shapes of its own.
      * `collisionOrder`: a ball that touched two others in one tick, taken here in order of id.
+     * `defenderMissiles`: a defender's missile stepped without the balls it could have hit.
      */
-    this.unported = { minis: 0, collisionOrder: 0 };
+    this.unported = { minis: 0, collisionOrder: 0, defenderMissiles: 0 };
   }
 
   /** Ballpark::ClearAll (5896). */
@@ -679,6 +683,69 @@ class Ballpark {
     this._follow(MODE.ORBIT, id, targetId, range);
   }
 
+  /**
+   * Ballpark::MissileFollow (3798): the missile follows its target with no thought for what is between them.
+   * Its range is the two radii taken off again, so that it makes for the middle of its target and not its skin;
+   * its goto is the way it is already going, sixteen noughts out, which is where it flies for its first tick.
+   * A negative owner is a defender's missile, and names the same launcher.
+   */
+  missileFollow(srcId, dstId, ownerId) {
+    if (byId(srcId, dstId) === 0 || byId(srcId, ownerId) === 0 || byId(dstId, ownerId) === 0) return;
+    const missile = this.balls.get(srcId);
+    const target = this.balls.get(dstId);
+    if (!missile || !target) return;
+    if (target.isMoribund) return; // a dead ball cannot be aimed at
+    // An owner that is not in the park is put up with.
+    this.stop(srcId);
+    if (target.isCloaked) return;
+    missile.followId = dstId;
+    missile.followPtr = target;
+    missile.followRange = f32(-f32(missile.radius + target.radius));
+    missile.ownerId = ownerId;
+    missile.effectStamp = this.currentTime;
+    missile.goto = scale(normalize(missile.newVel), 1.0e16);
+    missile.speedFraction = f32(1.0);
+    this._setMode(missile, MODE.MISSILE);
+    target.followers.add(srcId);
+  }
+
+  /**
+   * Ballpark::PyLaunchMissile (Thunkers.cpp 857), the LaunchMissile order: (missile, target, launcher, aimed,
+   * massive). The missile is put where its launcher is. Aimed, it is sent a metre a second straight at its
+   * target; otherwise it is thrown out the way the launcher is flying, at the launcher's top speed or 150 m/s,
+   * whichever is more, on top of the launcher's own. Then it follows its target, or with none flies on.
+   *
+   * A launcher at rest throws an unaimed missile the way it is pointing, and which way a ball points is not
+   * ported: that launch stops here by name. Tranquility sends every launch aimed (720 of 720 recorded).
+   */
+  launchMissile(srcId, dstId, ownerId, aimedLaunch = 0, massive = 0) {
+    if (dstId < 0) throw new Error("Can not launch missile on a negative ballID");
+    const launcher = this.balls.get(ownerId < 0 ? -ownerId : ownerId);
+    if (!launcher) return;
+    const target = byId(dstId, ownerId) !== 0 ? this.balls.get(dstId) ?? null : null;
+    let maxVelocity = 0.0;
+    const ps = launcher.newPos;
+    let v0;
+    if (target && Number(aimedLaunch) === 1 && !target.isCloaked) {
+      v0 = normalize(sub(target.newPos, ps));
+    } else {
+      const vs = launcher.newVel;
+      maxVelocity = launcher.maxVelocity;
+      const direction = normalize(vs);
+      if (lengthSq(direction) === 0.0) throw new DestinyNotPorted("An unaimed missile from a launcher at rest (which way the launcher points)");
+      v0 = add(vs, scale(direction, Math.max(150.0, maxVelocity)));
+    }
+    if (Number(massive)) this.setBallMassive(srcId, 1);
+    this.setBallPosition(srcId, ps.x, ps.y, ps.z);
+    this.setBallVelocity(srcId, v0.x, v0.y, v0.z);
+    if (target && target.isCloaked) return;
+    if (!target) {
+      if (maxVelocity > 0.0) this.gotoDirection(srcId, v0.x, v0.y, v0.z);
+      return;
+    }
+    this.missileFollow(srcId, dstId, ownerId);
+  }
+
   /** Ballpark::GotoPoint (4529). */
   gotoPoint(id, x, y, z) {
     const ball = this.balls.get(id);
@@ -1020,6 +1087,27 @@ class Ballpark {
   }
 
   /**
+   * Ballpark::EvolveMissile (972). The tick it was launched (800 ms of a 1000 ms tick: that tick alone) it
+   * flies at the point its launch left it, as a ball told to fly that way. After that it steers at where its
+   * target will be once it has covered the distance between them at its own top speed, at full thrust however
+   * near it is.
+   */
+  _evolveMissile(ball) {
+    if ((this.currentTime - ball.effectStamp) * this.tickInterval <= 800) return this.gotoThrust(ball, ball.goto);
+    const other = ball.followPtr;
+    const otherPos = other.newPos;
+    const delta = sub(ball.newPos, otherPos);
+    const dist = length(delta);
+    const cT = dist / ball.maxVelocity;
+    let target = add(otherPos, scale(other.newVel, cT));
+    const r = ball.followRange + ball.radius + other.radius;
+    // Right on top of it: go out along x.
+    target = dist === 0.0 ? add(otherPos, scale(vec(1.0, 0.0, 0.0), r)) : add(target, divide(scale(delta, r), dist));
+    ball.goto = target;
+    return this.gotoThrust(ball, target, ball.mode === MODE.MISSILE);
+  }
+
+  /**
    * Ballpark::EvolveOldStyleOrbit (1249). The plane of the orbit comes from the
    * low sixteen bits of the orbiter's id and from the tick counter, so two
    * simulations agree only if they agree on what tick it is.
@@ -1091,6 +1179,8 @@ class Ballpark {
         a = this._evolveWarp(ball);
         break;
       case MODE.MISSILE:
+        a = this._evolveMissile(ball);
+        break;
       case MODE.FORMATION:
         throw new DestinyNotPorted(`The ${MODE_NAME[ball.mode]} mode`);
       default:
@@ -1112,6 +1202,23 @@ class Ballpark {
    */
   _gradient(ball, all) {
     this.gradients += 1;
+    if (ball.mode === MODE.MISSILE) {
+      // Partition::GetCollisionCandidates (302): a missile sees only the ball it is aimed at. A defender's (a
+      // negative owner) sees everything that is not cloaked, missiles too: that is not ported, and is counted.
+      if (ball.ownerId < 0) {
+        this.unported.defenderMissiles += 1;
+        return;
+      }
+      const target = ball.followPtr;
+      // Gradient (2769): not its own launcher, nor a missile or a mushroom of its own, nor a missile aimed at
+      // it; and wreckage only troubles wreckage. Potential then notes the touch and does not turn it (2983).
+      if (!target || byId(target.id, ball.ownerId) === 0) return;
+      if ((target.mode === MODE.MISSILE || target.mode === MODE.MUSHROOM) && byId(ball.id, target.ownerId) === 0) return;
+      if (target.mode === MODE.MISSILE && byId(ball.id, target.followId) === 0) return;
+      if (target.isSpaceJunk && !ball.isSpaceJunk) return;
+      this._potential(ball, target, 0);
+      return;
+    }
     for (const neighbor of all) {
       // Partition::GetNearbyBalls (344): not itself, not the dead, not the cloaked or the massless, not a
       // missile; and a force field is no obstacle to its own.

@@ -1,0 +1,232 @@
+{
+ "about": "Missiles as Tranquility sent them to a witness: each one's AddBalls2 state (hex), the orders given for it at the same stamp, and the stamp it was removed at. From the client's own logs (michelle's \"Action:\" lines); made by the game-port loop's ml-fixture.js.",
+ "missiles": [
+  {
+   "recording": "AvengeAFallenComradeLevel1.txt",
+   "line": 28611,
+   "stamp": 30992,
+   "state": "0110790000188ae0e35384ee7c050000964334d40cebe6cf5b42f6def88130f36fc242b87e42fd2c7d4205000000000000594000ffffffffffffffffffffffffffffffff005212454902753ec7b9ef3f9f737e5a3c72c03f2b3d74515b4598bf450ba7400000803fff0e66fa64f50000000080a9c35084e0e35384ee7c107900003508321d7e9c4143ad1e0df94c421243bac8c13036f2eac2",
+   "orders": [
+    [
+     "SetMaxSpeed",
+     [
+      "9002278201000495640",
+      "2341.125"
+     ]
+    ],
+    [
+     "LaunchMissile",
+     [
+      "9002278201000495640",
+      "1053961119246",
+      "9002278201000494160",
+      "1",
+      "1"
+     ]
+    ]
+   ],
+   "removedAt": 30994
+  },
+  {
+   "recording": "AvengeAFallenComradeLevel1.txt",
+   "line": 30814,
+   "stamp": 31011,
+   "state": "0123790000838be0e35384ee7c050000964340a0d8ece6cf5b4207d85f8230f36fc2e8ce6442fd2c7d4205000000000000594000ffffffffffffffffffffffffffffffff00341545c1cebc454a0cee3fb836ba5d3410d23ff4a36d0b8727c9bf450ba7400000803fff0e66fa64f50000000080a9c35184e0e35384ee7c23790000f509962c14ae4043d0536dfbe50d2443b5dfc5cc4fed1bc3",
+   "orders": [
+    [
+     "SetMaxSpeed",
+     [
+      "9002278201000496003",
+      "2387.25"
+     ]
+    ],
+    [
+     "LaunchMissile",
+     [
+      "9002278201000496003",
+      "1053961119246",
+      "9002278201000494161",
+      "1",
+      "1"
+     ]
+    ]
+   ],
+   "removedAt": 31013
+  },
+  {
+   "recording": "AvengeAFallenComradeLevel1.txt",
+   "line": 51062,
+   "stamp": 31118,
+   "state": "018e790000fb92e0e35384ee7c05000096431a89af19e7cf5b42f6c8f97630f36fc2c789074ffd2c7d4205000000000000594000ffffffffffffffffffffffffffffffff00da1d45974ca4900960e5bf269f87a81f65cebfd6fbb559ad91e6bf450ba7400000803fff0e66fa64f50000000080a9c34684e0e35384ee7c8e79000008c62f8f2ebb37c31bc8e52d64df20c3de1b879c820e39c3",
+   "orders": [
+    [
+     "SetMaxSpeed",
+     [
+      "9002278201000497915",
+      "2525.625"
+     ]
+    ],
+    [
+     "LaunchMissile",
+     [
+      "9002278201000497915",
+      "1053961119246",
+      "9002278201000494150",
+      "1",
+      "1"
+     ]
+    ]
+   ],
+   "removedAt": 31120
+  },
+  {
+   "recording": "Cargo Delivery.txt",
+   "line": 30499,
+   "stamp": 30470,
+   "state": "0106770000be5708be7897ee7c0500009643447b39403807774293bd0e80d9ed6242d8576f7f39696942050000000000e0854000ffffffffffffffff6d420f00ffffffff00606a454bf99a39c159e8bf82b32eb1fe079ebf30559eca8fbde4bf638417390000803fff015708be7897ee7c0000afc39b082da9f500000006770000d730f2abdb083bc3c3ffd3c8b1abf0c291b2bb31cc0637c3",
+   "orders": [
+    [
+     "LaunchMissile",
+     [
+      "9002299250000287678",
+      "9002299250000287489",
+      "1055105288347",
+      "1",
+      "1"
+     ]
+    ]
+   ],
+   "removedAt": 30475
+  },
+  {
+   "recording": "Carrying AIMEDs - Cargo Container Spawns with the objective item.txt",
+   "line": 26739,
+   "stamp": 58680,
+   "state": "0138e50000b413acd1d190ee7c05000096439906c1f078a152c2893532fbf25155c22db007f36a5e58c2050000000000e0854000ffffffffffffffffffffffffffffffff00c8af457f0e3d68fe7ae4bf0b659263806dd2bfad315b52c4cbe6bf638417390000803fff91181c95f50000000080a4c36d11acd1d190ee7c38e500001d640175e4bc36c356fefe927a7524c3fd98c5b4004f39c3",
+   "orders": [
+    [
+     "SetMaxSpeed",
+     [
+      "9002291936000480180",
+      "5625.0"
+     ]
+    ],
+    [
+     "LaunchMissile",
+     [
+      "9002291936000480180",
+      "1054768634001",
+      "9002291936000479597",
+      "1",
+      "1"
+     ]
+    ]
+   ],
+   "removedAt": 58685
+  },
+  {
+   "recording": "The Seven's Brothel.txt",
+   "line": 53273,
+   "stamp": 29596,
+   "state": "019c7300003ed0927e7f97ee7c0500009643a69626ed2f031842211da01043f552c2a7c90b4c92277542050000000000408f4000ffffffffffffffffffffffffffffffff0090c94514e487a53cafe23f68609060998edabf8fc06b2b2454e63f638417390000803fff9b082da9f50000000000fbc35ac9927e7f97ee7c9c73000099f97cb175be34435d000917f67b2dc322bf3f1131ca3843",
+   "orders": [
+    [
+     "SetMaxSpeed",
+     [
+      "9002299279000391742",
+      "6450.0"
+     ]
+    ],
+    [
+     "LaunchMissile",
+     [
+      "9002299279000391742",
+      "1055105288347",
+      "9002299279000389978",
+      "1",
+      "1"
+     ]
+    ]
+   ],
+   "removedAt": 29602
+  },
+  {
+   "recording": "TheBlockadeLevel1.txt",
+   "line": 18899,
+   "stamp": 31872,
+   "state": "01807c000016c3e0e35384ee7c05000096437085d801847832c2412bbe800d34614260d96f0cde9f48c205000000000000594000ffffffffffffffffffffffffffffffff00bc2045f0c34daa5913713fc32608a613e4d83fa17d5f08fa7aedbf450ba7400000803fff0e66fa64f50000000080a9c3c5c0e0e35384ee7c807c00009c67b6772cf5c242e607a2236da22b43ce6091e4695d40c3",
+   "orders": [
+    [
+     "SetMaxSpeed",
+     [
+      "9002278201000510230",
+      "2571.75"
+     ]
+    ],
+    [
+     "LaunchMissile",
+     [
+      "9002278201000510230",
+      "1053961119246",
+      "9002278201000509637",
+      "1",
+      "1"
+     ]
+    ]
+   ],
+   "removedAt": 31874
+  },
+  {
+   "recording": "TheBlockadeLevel1.txt",
+   "line": 136397,
+   "stamp": 32462,
+   "state": "01ce7e000024e4e0e35384ee7c050000964384999afa837832c263576f7d0d346142090a7b4ede9f48c205000000000000594000ffffffffffffffffffffffffffffffff0028454589f4f0784bdcea3f456550aa79669ebffe3b87deed5de13f450ba7400000803fff0e66fa64f50000000080a9c322e3e0e35384ee7cce7e000087e51a8838d23d43c003724024e0f0c266327512f9473343",
+   "orders": [
+    [
+     "SetMaxSpeed",
+     [
+      "9002278201000518692",
+      "3154.5"
+     ]
+    ],
+    [
+     "LaunchMissile",
+     [
+      "9002278201000518692",
+      "1053961119246",
+      "9002278201000518434",
+      "1",
+      "1"
+     ]
+    ]
+   ],
+   "removedAt": 32464
+  },
+  {
+   "recording": "The Seven's Brothel.txt",
+   "line": 34491,
+   "stamp": 29497,
+   "state": "01397300000fcc927e7f97ee7c0500009643daeba139320318425f1d232843f552c26095595692277542050000000000e0854000ffffffffffffffffffffffffffffffff00c8af4543667350cbb4ea3ff6d768263e92e13f150393ab55c9a6bf638417390000803fff9b082da9f50000000000fbc364c9927e7f97ee7c3973000028dfe4c75da63d4352c7967d0d823343fcf3926c4d4cf9c2",
+   "orders": [
+    [
+     "SetMaxSpeed",
+     [
+      "9002299279000390671",
+      "5625.0"
+     ]
+    ],
+    [
+     "LaunchMissile",
+     [
+      "9002299279000390671",
+      "1055105288347",
+      "9002299279000389988",
+      "1",
+      "1"
+     ]
+    ]
+   ],
+   "removedAt": 29504
+  }
+ ]
+}

@@ -513,9 +513,13 @@ class Park {
       case "SetBallRigid": return park.setBallRigid(id);
       case "CloakBall": return park.cloakBall(id, n(1));
       case "UncloakBall": return park.uncloakBall(id);
+      case "LaunchMissile":
+        // Thunkers.cpp 857, "LLLbb": the missile, its target, its launcher, whether it is aimed, whether it is massive. All five.
+        if (args.length < 5) throw new Error("LaunchMissile takes the missile, its target, its launcher, and two flags");
+        return park.launchMissile(id, ballId(args[1]), ballId(args[2]), n(3), n(4));
       default:
-        // LaunchMissile, AddMushroom and the formation orders: not ported. Anything
-        // else: the client has no such method. Either way the entry fails.
+        // AddMushroom and the formation orders: not ported. Anything else: the
+        // client has no such method. Either way the entry fails.
         throw new Error(`${funcName} cannot be applied`);
     }
   }
