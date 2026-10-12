@@ -61,6 +61,8 @@ import {
 } from "./propulsion.ts";
 import type { SpaceEntity, SpaceSnapshot } from "../store/types.ts";
 import type { ChatMessage } from "../store/types.ts";
+import type { BotLogSink } from "./botLog.ts";
+import { createCompanionRecorder } from "./companionLog.ts";
 import {
   COMPANION_FOLLOW_RANGE_M,
   isChatCommandSenderAllowed,
@@ -848,6 +850,8 @@ export interface FleetCompanionDeps {
    * never clears.
    */
   onProgress?(progress: FleetCompanionProgress): void;
+  /** The flight recorder (nav/companionLog.ts). Absent records nothing. */
+  log?: BotLogSink | null;
 }
 
 /**
@@ -7384,9 +7388,12 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
   let runToken = 0;
   let activeTick: Promise<FleetCompanionAction> | null = null;
   let activeDriver: { token: number; promise: Promise<void> } | null = null;
+  const recorder = createCompanionRecorder(deps.log, () => deps.now?.() ?? Date.now());
 
   function report(): void {
-    deps.onProgress?.(snapshot());
+    const progress = snapshot();
+    recorder.progress(progress);
+    deps.onProgress?.(progress);
   }
 
   function snapshot(): FleetCompanionProgress {
@@ -7464,8 +7471,10 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
     }
     const token = runToken;
     let obs: FleetCompanionObservation;
+    const observeStartedMs = deps.now?.() ?? Date.now();
     try {
       obs = await deps.observe();
+      recorder.observed((deps.now?.() ?? Date.now()) - observeStartedMs);
     } catch (error) {
       if (token !== runToken || mem.status !== "running") {
         return { kind: "wait" };
@@ -7504,6 +7513,8 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
     // "Standing by" are all the companion's own ladder, not a fleet order.
     mem.followingOrderFrom = decision.followingOrderFrom ?? "own-ladder";
     mem.lastOrderHeard = decision.lastOrderHeard ?? null;
+    // The decision is logged before anything it sends, so the log reads in order.
+    recorder.progress(snapshot());
     if (decision.pause !== undefined) {
       runToken += 1;
       mem.status = "paused";
@@ -7525,12 +7536,15 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
       return { kind: "wait" };
     }
     if (decision.action.kind !== "wait") {
+      recorder.issue(decision.action, decision.phase, decision.why);
       try {
         await deps.issue(decision.action);
+        recorder.result(true);
         settleAlignment(decision, "issued");
         settleFollow(decision, true);
         settleDroneEngagement(decision, true);
       } catch (error) {
+        recorder.result(false, error);
         // ⚠ A REFUSED CALL IS AN ANSWER, NOT THE END OF THE RUN. This used to
         // propagate: the rejection came out of `tick`, out of `run`, and landed
         // on a `void run()` in flow.ts as an UNHANDLED PROMISE REJECTION. The
@@ -7621,6 +7635,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
 
   return {
     start(next: FleetCompanionRequest, resuming: CompanionAbandonmentRecord | null = null): void {
+      recorder.start();
       mem = freshMemory();
       mem.status = "running";
       mem.request = next;
