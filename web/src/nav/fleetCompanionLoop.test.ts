@@ -24,6 +24,7 @@ import {
 } from "./fleetCompanionLoop.ts";
 import type { ChatMessage, SpaceSnapshot } from "../store/types.ts";
 import type { FleetBroadcast } from "../bridge/fleetBroadcasts.ts";
+import { MAX_DRONE_ROTATIONS } from "./droneRotation.ts";
 
 /**
  * Two obviously-synthetic character ids: the human whose presence satisfies the
@@ -217,7 +218,6 @@ test("the default request is inside its own bounds", () => {
   assert.ok(request.fleeHealthFloor >= 0.05 && request.fleeHealthFloor <= 0.95);
   assert.ok(request.capacitorFloor >= 0.05 && request.capacitorFloor <= 0.95);
   assert.ok(request.maxFleeAttempts >= 1);
-  assert.ok(request.droneRedeployHoldOffSeconds >= 1);
 });
 
 test("the default request arms nothing, because nothing has been read off a hull yet", () => {
@@ -4113,16 +4113,19 @@ test("a flee recalls what is in space before it warps", () => {
 });
 
 // "Flee outranks drone redeploy", enforced at RUNTIME as the spec asked and not
-// merely by where the rung happens to be written. A redeploy record left
-// standing would have rung 6 putting drones back out of a ship that is leaving.
-test("latching a flee drops any drone redeploy cycle in flight", () => {
+// merely by where the rung happens to be written. A rotation left standing
+// would have rung 6 putting a drone back out of a ship that is leaving.
+test("latching a flee drops any drone rotation in flight", () => {
   const request: FleetCompanionRequest = REQUEST;
   const mid: CompanionLadderMemory = {
     ...freshLadderMemory(),
-    droneCycle: { stage: "holding-off", recalledIDs: [DRONE_A], stageSinceMs: 0 },
+    droneRotation: {
+      active: { itemID: DRONE_A, phase: "recalling", waitTicks: 0, missingTicks: 0 },
+      rotations: { [String(DRONE_A)]: 1 },
+    },
   };
   const decision = decideCompanionAction(request, fleeObs(), mid);
-  assert.equal(decision.memory.droneCycle, null, "a live redeploy must not survive a flee latching");
+  assert.equal(decision.memory.droneRotation.active, null, "a live rotation must not survive a flee latching");
 });
 
 // --- nowhere to go ------------------------------------------------------------
@@ -4796,199 +4799,197 @@ test("drones already out are not launched again", () => {
   assert.notEqual(decision.action.kind, "launchDrones");
 });
 
-test("a drone below the floor is recalled, and the readout says what that buys", () => {
+/** One drone's row as the observation carries it; whole unless told otherwise. */
+function droneRow(
+  itemID: number,
+  shieldRatio: number | null = 1,
+  armorRatio: number | null = 1,
+): NonNullable<FleetCompanionObservation["myDrones"]>[number] {
+  return { itemID, shieldRatio, armorRatio, hullRatio: 1 };
+}
+
+/**
+ * A fight with these drones out (each one's own row) and these ids in the bay.
+ * `myDroneIDs`, `combatDroneIDs` and `myDrones` always agree, the way the real
+ * fold writes them.
+ */
+function rotationObs(
+  out: readonly ReturnType<typeof droneRow>[],
+  bay: readonly number[] = [],
+  overrides: Partial<FleetCompanionObservation> = {},
+): FleetCompanionObservation {
+  const ids = out.map((row) => row.itemID);
+  return droneObs({
+    myDroneIDs: ids,
+    myDrones: out,
+    droneBayItemIDs: [DRONE_BAY_STACK, ...bay],
+    combatDroneBayItemIDs: [DRONE_BAY_STACK, ...bay],
+    ...overrides,
+  });
+}
+
+test("a drone losing shield is brought home ALONE, and the rest keep fighting", () => {
   const decision = decideCompanionAction(
     WITH_DRONES,
-    droneObs({ myDroneIDs: [DRONE_A, DRONE_B], lowestDroneHealth: 0.2 }),
+    rotationObs([droneRow(DRONE_A, 0.8), droneRow(DRONE_B)]),
   );
-  assert.deepEqual(decision.action, {
-    kind: "recallDrones",
-    droneIDs: [DRONE_A, DRONE_B],
-  });
+  assert.deepEqual(decision.action, { kind: "recallDrones", droneIDs: [DRONE_A] });
   assert.match(decision.why, /shield/i);
 });
 
-test("a healthy drone is left alone", () => {
+test("a whole drone is left alone", () => {
+  const decision = decideCompanionAction(WITH_DRONES, rotationObs([droneRow(DRONE_A)]));
+  assert.notEqual(decision.action.kind, "recallDrones");
+});
+
+// ⚠ THE BUG THAT SPENT THE OLD BUDGET. A recall gives a drone its shield back and
+// nothing else, so a trigger on the worst layer recalled an armour-damaged drone
+// again the tick it came back out, three times inside a minute, and then never
+// recalled anything again for the rest of the run.
+test("a drone with its shield back and its armour chewed is NOT pulled again", () => {
   const decision = decideCompanionAction(
     WITH_DRONES,
-    droneObs({ myDroneIDs: [DRONE_A], lowestDroneHealth: 0.9 }),
+    rotationObs([droneRow(DRONE_A, 1, 0.2)]),
   );
   assert.notEqual(decision.action.kind, "recallDrones");
 });
 
-// ⚠ null is "nothing out to judge", never "healthy" and never "hurt" - the same
-// rule the DSL's own drone-health condition follows.
-test("an unreadable drone health recalls nothing", () => {
+// ⚠ null is "that layer did not read", never "empty".
+test("an unreadable shield recalls nothing", () => {
+  const decision = decideCompanionAction(WITH_DRONES, rotationObs([droneRow(DRONE_A, null)]));
+  assert.notEqual(decision.action.kind, "recallDrones");
+});
+
+test("no per-drone rows at all recalls nothing", () => {
   const decision = decideCompanionAction(
     WITH_DRONES,
-    droneObs({ myDroneIDs: [DRONE_A], lowestDroneHealth: null }),
+    rotationObs([droneRow(DRONE_A, 0.2)], [], { myDrones: undefined }),
   );
   assert.notEqual(decision.action.kind, "recallDrones");
 });
 
-// ⚠ THE WHOLE POINT OF THE RECORD. Once the recall is issued the drones leave
-// space, so the trigger reads null - and a rung that re-derived its state from
-// the observation would forget it was ever in a cycle.
-test("the cycle survives its own trigger disappearing, and relaunches after the hold-off", () => {
-  let nowMs = 1_000_000;
-  let memory: CompanionLadderMemory = freshLadderMemory();
-
-  const recall = decideCompanionAction(
-    WITH_DRONES,
-    droneObs({ myDroneIDs: [DRONE_A], lowestDroneHealth: 0.2 }),
-    memory,
-    nowMs,
-  );
-  assert.equal(recall.action.kind, "recallDrones");
-  memory = recall.memory;
-
-  // The drones are gone from the grid and the trigger now reads null.
-  const gone = droneObs({ myDroneIDs: [], lowestDroneHealth: null });
-  const ticks: string[] = [];
-  for (let tick = 0; tick < 12; tick += 1) {
-    nowMs += 2_000;
-    const decision = decideCompanionAction(WITH_DRONES, gone, memory, nowMs);
-    memory = decision.memory;
-    ticks.push(decision.action.kind);
-    if (decision.action.kind === "launchDrones") {
-      break;
-    }
-  }
-  assert.ok(
-    ticks.includes("launchDrones"),
-    "the hold-off must end in a relaunch, not in the cycle being forgotten",
-  );
-  assert.ok(
-    ticks.filter((kind) => kind === "launchDrones").length === 1,
-    "and it relaunches once, not every tick after",
-  );
-});
-
-// ⚠ HOLDING OFF MUST NOT PARK THE TICK. The hold-off is a floor on a wait, not
-// a reason to stop obeying the fleet - a pilot that went quiet every time a
-// drone got shot would be worse than one with no drones at all.
-test("the pilot keeps obeying its fleet all the way through the hold-off", () => {
+// ⚠ THE WHOLE POINT OF THE RECORD. Once the recall lands the drone has no shield
+// to read, and a rung that re-derived its state from the observation would
+// forget it was ever rotating one.
+test("a pulled drone goes back out by itself the tick it is aboard", () => {
   let memory: CompanionLadderMemory = freshLadderMemory();
   const recall = decideCompanionAction(
-    WITH_DRONES,
-    droneObs({ myDroneIDs: [DRONE_A], lowestDroneHealth: 0.2 }),
-    memory,
-  );
+    WITH_DRONES, rotationObs([droneRow(DRONE_A, 0.6), droneRow(DRONE_B)]), memory);
+  assert.deepEqual(recall.action, { kind: "recallDrones", droneIDs: [DRONE_A] });
   memory = recall.memory;
 
-  // Mid-hold-off, with a fleet tag standing on a target that is not locked.
-  const holding = droneObs({
-    myDroneIDs: [],
-    lowestDroneHealth: null,
-    fleetTargetTags: new Map([[TACKLE, "A"]]),
-  });
-  const decision = decideCompanionAction(WITH_DRONES, holding, memory);
-  assert.deepEqual(
-    decision.action,
-    { kind: "lock", targetID: TACKLE },
-    "the drone rung is holding off and issuing nothing, so the fleet rung gets the tick",
-  );
+  // Still flying home: nothing is issued for it, and nothing relaunches.
+  const flying = decideCompanionAction(
+    WITH_DRONES, rotationObs([droneRow(DRONE_A, 0.5), droneRow(DRONE_B)]), memory);
+  assert.notEqual(flying.action.kind, "recallDrones");
+  assert.notEqual(flying.action.kind, "launchDrones");
+  memory = flying.memory;
+
+  // Aboard: back out, by its own id and nothing else.
+  const home = decideCompanionAction(
+    WITH_DRONES, rotationObs([droneRow(DRONE_B)], [DRONE_A]), memory);
+  assert.deepEqual(home.action, { kind: "launchDrones", droneItemIDs: [DRONE_A] });
+  memory = home.memory;
+
+  const out = decideCompanionAction(
+    WITH_DRONES, rotationObs([droneRow(DRONE_A), droneRow(DRONE_B)]), memory);
+  assert.equal(out.memory.droneRotation.active, null, "the rotation is over once it is out again");
 });
 
-// ⚠ WATCHED PER RECORDED DRONE, never off a coarse flag. This ship may launch
-// others mid-cycle, and a flag would call the recall finished the moment one
-// unrelated drone came home.
-test("the recall is not finished while one of the recalled drones is still out", () => {
+// ⚠ A ONE-DRONE FLIGHT IS THE CASE THE LAUNCH BRANCH WOULD STEAL: with the only
+// drone aboard, "nothing of this role is out" is true, and the launch branch
+// would put the whole bay out around it.
+test("a one-drone flight relaunches the pulled drone, not the whole bay", () => {
   let memory: CompanionLadderMemory = freshLadderMemory();
-  const recall = decideCompanionAction(
+  memory = decideCompanionAction(WITH_DRONES, rotationObs([droneRow(DRONE_A, 0.6)]), memory).memory;
+  const home = decideCompanionAction(WITH_DRONES, rotationObs([], [DRONE_A]), memory);
+  assert.deepEqual(home.action, { kind: "launchDrones", droneItemIDs: [DRONE_A] });
+});
+
+// ⚠ AN ENGAGE CANCELS A RECALL. While the hurt drone is flying home, a new call
+// must not send the flight -- that drone included -- back at a rat.
+test("no new drone order while a pulled drone is flying home", () => {
+  let memory: CompanionLadderMemory = freshLadderMemory();
+  memory = decideCompanionAction(
+    WITH_DRONES, rotationObs([droneRow(DRONE_A, 0.6), droneRow(DRONE_B)]), memory).memory;
+  const called = decideCompanionAction(
     WITH_DRONES,
-    droneObs({ myDroneIDs: [DRONE_A, DRONE_B], lowestDroneHealth: 0.2 }),
+    rotationObs([droneRow(DRONE_A, 0.5), droneRow(DRONE_B)], [], {
+      fleetTargetTags: new Map([[TACKLE, "A"]]),
+      lockedTargetIDs: [TACKLE],
+    }),
     memory,
   );
-  memory = recall.memory;
-
-  const oneStillOut = droneObs({ myDroneIDs: [DRONE_B], lowestDroneHealth: null });
-  for (let tick = 0; tick < 3; tick += 1) {
-    const decision = decideCompanionAction(WITH_DRONES, oneStillOut, memory);
-    memory = decision.memory;
-    assert.notEqual(
-      decision.action.kind,
-      "launchDrones",
-      "nothing relaunches while a recalled drone is still on grid",
-    );
-  }
+  assert.notEqual(called.action.kind, "engageDrones");
 });
 
-// ⚠ THE SILENT STUCK CASE. A drone that reaches scoop range to find a FULL BAY
-// is refused, and the tick-driven recall path throws that refusal away - nothing
-// reaches the client. The drone circles at 2500 m for ever, still on grid, with
-// no error anywhere. Without a bound the rung would wait on it until the run
-// ended.
-test("a recall that never completes is given up on rather than waited on for ever", () => {
-  // ⚠ THE CLOCK IS DRIVEN EXPLICITLY, because the bound is a DURATION and not a
-  // tick count any more (see `DRONE_RECALL_GIVE_UP_MS`). A loop that called the
-  // ladder twenty-five times inside one millisecond used to exhaust the bound;
-  // now it would prove nothing at all, so the test advances a clock by a
-  // plausible tick and asserts on the elapsed time it took to let go.
-  const TICK_MS = 2_000;
-  let nowMs = 1_000_000;
+// ⚠ AND IT DOES NOT PARK THE TICK. A pilot that stopped obeying its fleet every
+// time a drone got shot would be worse than one with no drones at all.
+test("the pilot keeps obeying its fleet while a drone flies home", () => {
   let memory: CompanionLadderMemory = freshLadderMemory();
-  const recall = decideCompanionAction(
+  memory = decideCompanionAction(
+    WITH_DRONES, rotationObs([droneRow(DRONE_A, 0.6), droneRow(DRONE_B)]), memory).memory;
+  const decision = decideCompanionAction(
     WITH_DRONES,
-    droneObs({ myDroneIDs: [DRONE_A], lowestDroneHealth: 0.2 }),
+    rotationObs([droneRow(DRONE_A, 0.5), droneRow(DRONE_B)], [], {
+      fleetTargetTags: new Map([[TACKLE, "A"]]),
+    }),
     memory,
-    nowMs,
   );
-  memory = recall.memory;
-  const startedAtMs = nowMs;
-
-  // The drone never leaves the grid, because the bay it is trying to enter is
-  // full and nothing will ever say so.
-  const stuck = droneObs({ myDroneIDs: [DRONE_A], lowestDroneHealth: 0.2 });
-  let letGo = false;
-  let waitedMs = 0;
-  for (let tick = 0; tick < 40; tick += 1) {
-    nowMs += TICK_MS;
-    memory = decideCompanionAction(WITH_DRONES, stuck, memory, nowMs).memory;
-    if (memory.droneCycle === null) {
-      letGo = true;
-      waitedMs = nowMs - startedAtMs;
-      break;
-    }
-  }
-  assert.ok(letGo, "the stuck cycle must be let go of rather than waited on for ever");
-  assert.ok(
-    waitedMs <= 30_000 + TICK_MS,
-    `the wait must be bounded near half a minute, saw ${waitedMs} ms`,
-  );
+  assert.deepEqual(decision.action, { kind: "lock", targetID: TACKLE });
 });
 
-// ⚠ THE SECOND CYCLE IS WORTH LESS THAN THE FIRST AND THE FOURTH IS WORTH
-// NOTHING: a recall refills shields but not armour, so once the damage is in
-// armour every later cycle returns the same hurt drone and re-trips the floor
-// immediately. Bounding the count is what stops that eating the run.
-test("the recall budget is spent, and then the pilot fights on without cycling", () => {
-  let memory: CompanionLadderMemory = freshLadderMemory();
-  const hurt = droneObs({ myDroneIDs: [DRONE_A], lowestDroneHealth: 0.2 });
-  const gone = droneObs({ myDroneIDs: [], lowestDroneHealth: null });
-  let recalls = 0;
-
-  for (let tick = 0; tick < 120; tick += 1) {
-    // Alternate what the grid says so a full cycle can complete each time.
-    const decision = decideCompanionAction(
-      WITH_DRONES,
-      memory.droneCycle === null ? hurt : gone,
-      memory,
-    );
-    memory = decision.memory;
-    if (decision.action.kind === "recallDrones") {
-      recalls += 1;
-    }
+/** Rotate DRONE_A once, start to finish, from `memory`. */
+function rotateOnce(memory: CompanionLadderMemory): {
+  readonly memory: CompanionLadderMemory;
+  readonly recalled: boolean;
+} {
+  const hurt = decideCompanionAction(WITH_DRONES, rotationObs([droneRow(DRONE_A, 0.6)]), memory);
+  if (hurt.action.kind !== "recallDrones") {
+    return { memory: hurt.memory, recalled: false };
   }
-  assert.ok(recalls > 0, "it must cycle at least once");
-  assert.ok(recalls <= 3, `the budget must bound the cycles, saw ${recalls}`);
+  const home = decideCompanionAction(WITH_DRONES, rotationObs([], [DRONE_A]), hurt.memory);
+  assert.equal(home.action.kind, "launchDrones");
+  const out = decideCompanionAction(WITH_DRONES, rotationObs([droneRow(DRONE_A)]), home.memory);
+  return { memory: out.memory, recalled: true };
+}
+
+// ⚠ PER FIGHT, NOT PER RUN, AND THIS IS THE DRONE LOSS IT FIXES. The old budget
+// was three recalls for the whole run and was never reset, so every fight after
+// the first had no protection at all.
+test("each fight gets its own rotations, so a drone is saved again in the next one", () => {
+  let memory: CompanionLadderMemory = freshLadderMemory();
+  for (let n = 0; n < MAX_DRONE_ROTATIONS; n += 1) {
+    const turn = rotateOnce(memory);
+    assert.ok(turn.recalled, `rotation ${n + 1} of the first fight`);
+    memory = turn.memory;
+  }
+  const spent = rotateOnce(memory);
+  assert.equal(spent.recalled, false, "past the cap the drone fights on in this fight");
+  memory = spent.memory;
+
+  // The grid goes quiet: the fight is over, and so are its counts.
+  memory = decideCompanionAction(
+    WITH_DRONES, rotationObs([droneRow(DRONE_A)], [], { hostileOnGrid: false }), memory).memory;
+  const nextFight = rotateOnce(memory);
+  assert.ok(nextFight.recalled, "the next fight saves the drone again");
+});
+
+test("a capped drone does not stop another drone being pulled", () => {
+  let memory: CompanionLadderMemory = freshLadderMemory();
+  for (let n = 0; n < MAX_DRONE_ROTATIONS; n += 1) {
+    memory = rotateOnce(memory).memory;
+  }
+  const decision = decideCompanionAction(
+    WITH_DRONES, rotationObs([droneRow(DRONE_A, 0.3), droneRow(DRONE_B, 0.9)]), memory);
+  assert.deepEqual(decision.action, { kind: "recallDrones", droneIDs: [DRONE_B] });
 });
 
 // Rung 1 still outranks everything.
 test("nothing about drones is decided mid-warp", () => {
   const decision = decideCompanionAction(
     WITH_DRONES,
-    droneObs({ inWarp: true, myDroneIDs: [DRONE_A], lowestDroneHealth: 0.2 }),
+    rotationObs([droneRow(DRONE_A, 0.2)], [], { inWarp: true }),
   );
   assert.deepEqual(decision.action, { kind: "wait" });
 });
@@ -4999,9 +5000,7 @@ test("nothing about drones is decided mid-warp", () => {
 test("a standing fleet order does not stop a hurt drone being recalled", () => {
   const decision = decideCompanionAction(
     WITH_DRONES,
-    droneObs({
-      myDroneIDs: [DRONE_A],
-      lowestDroneHealth: 0.2,
+    rotationObs([droneRow(DRONE_A, 0.2)], [], {
       fleetTargetTags: new Map([[TACKLE, "A"]]),
       lockedTargetIDs: [TACKLE],
     }),
@@ -5253,31 +5252,28 @@ test("a repair order is issued once, not re-sent every tick", () => {
 });
 
 for (const role of ["combat", "repair"] as const) {
-  test(`${role} drones engage the same target again after a complete hurt-drone cycle`, () => {
+  test(`${role} drones engage the same target again after a complete hurt-drone rotation`, () => {
     const targetID = role === "combat" ? TACKLE : LOGI;
     const droneID = role === "combat" ? DRONE_A : LOGI_DRONE_OUT;
+    const bayStack = role === "combat" ? DRONE_BAY_STACK : LOGI_BAY_STACK;
     const world = (out: boolean, hurt = false) => mixedBayObs({
       snapshot: gridWithEntities([targetID]),
       fleetTargetTags: role === "combat" ? new Map([[targetID, "A"]]) : new Map(),
       fleetBroadcast: role === "repair" ? fleetBroadcast("HealShield", targetID) : null,
       lockedTargetIDs: [targetID],
       myDroneIDs: out ? [droneID] : [],
+      myDrones: out ? [{ itemID: droneID, shieldRatio: hurt ? 0.4 : 1, armorRatio: 1, hullRatio: 1 }] : [],
       combatDroneIDs: role === "combat" && out ? [droneID] : [],
       logisticDroneIDs: role === "repair" && out ? [droneID] : [],
-      lowestDroneHealth: out ? (hurt ? 0.2 : 0.9) : null,
+      droneBayItemIDs: out ? [bayStack] : [bayStack, droneID],
     });
     let nowMs = 1_000_000;
     const engaged = decideCompanionAction(WITH_DRONES, world(true), undefined, nowMs);
     assert.equal(engaged.action.kind, "engageDrones");
     const recalled = decideCompanionAction(WITH_DRONES, world(true, true), engaged.memory, nowMs += 2_000);
-    assert.equal(recalled.action.kind, "recallDrones");
-    const holding = decideCompanionAction(WITH_DRONES, world(false), recalled.memory, nowMs += 2_000);
-    assert.equal(holding.memory.droneCycle?.stage, "holding-off");
-    const launched = decideCompanionAction(
-      WITH_DRONES, world(false), holding.memory,
-      nowMs += WITH_DRONES.droneRedeployHoldOffSeconds * 1_000,
-    );
-    assert.equal(launched.action.kind, "launchDrones");
+    assert.deepEqual(recalled.action, { kind: "recallDrones", droneIDs: [droneID] });
+    const launched = decideCompanionAction(WITH_DRONES, world(false), recalled.memory, nowMs += 2_000);
+    assert.deepEqual(launched.action, { kind: "launchDrones", droneItemIDs: [droneID] });
     const freshFlight = decideCompanionAction(WITH_DRONES, world(true), launched.memory, nowMs += 2_000);
     assert.deepEqual(freshFlight.action, { kind: "engageDrones", droneIDs: [droneID], targetID });
     const continuing = decideCompanionAction(WITH_DRONES, world(true), freshFlight.memory, nowMs += 2_000);

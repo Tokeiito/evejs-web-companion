@@ -87,13 +87,9 @@
   import { loadKnownAccounts, loadKnownCharacters } from "../app/knownCharacters.ts";
   import {
     MAX_CAPACITOR_FLOOR,
-    MAX_DRONE_HEALTH_FLOOR,
-    MAX_DRONE_HOLD_OFF_SECONDS,
     MAX_FLEE_ATTEMPTS,
     MAX_FLEE_HEALTH_FLOOR,
     MIN_CAPACITOR_FLOOR,
-    MIN_DRONE_HEALTH_FLOOR,
-    MIN_DRONE_HOLD_OFF_SECONDS,
     MIN_FLEE_ATTEMPTS,
     MIN_FLEE_HEALTH_FLOOR,
     type CompanionSetup,
@@ -652,7 +648,6 @@
   // same question, and only one of them would reach the loop.
 
   let fleeHealthFloorPercent = $state(Math.round(roster.setup.fleeHealthFloor * 100));
-  let droneHealthFloorPercent = $state(Math.round(roster.setup.droneHealthFloor * 100));
   let capacitorFloorPercent = $state(Math.round(roster.setup.capacitorFloor * 100));
   let maxFleeAttempts = $state(roster.setup.maxFleeAttempts);
   /**
@@ -662,7 +657,6 @@
    * leaving it off means such a pilot stays docked and says so.
    */
   let repairsAtStation = $state(roster.setup.repairsAtStation);
-  let droneHoldOffSeconds = $state(roster.setup.droneRedeployHoldOffSeconds);
 
   function clamp(value: number, min: number, max: number): number {
     return Math.min(max, Math.max(min, value));
@@ -687,17 +681,6 @@
           clamp(capacitorFloorPercent, MIN_CAPACITOR_FLOOR * 100, MAX_CAPACITOR_FLOOR * 100) / 100,
         maxFleeAttempts: clamp(maxFleeAttempts, MIN_FLEE_ATTEMPTS, MAX_FLEE_ATTEMPTS),
         repairsAtStation,
-        droneHealthFloor:
-          clamp(
-            droneHealthFloorPercent,
-            MIN_DRONE_HEALTH_FLOOR * 100,
-            MAX_DRONE_HEALTH_FLOOR * 100,
-          ) / 100,
-        droneRedeployHoldOffSeconds: clamp(
-          droneHoldOffSeconds,
-          MIN_DRONE_HOLD_OFF_SECONDS,
-          MAX_DRONE_HOLD_OFF_SECONDS,
-        ),
       } satisfies CompanionSetup),
     );
   }
@@ -1074,39 +1057,6 @@
         <input type="checkbox" bind:checked={repairsAtStation} onchange={keepSetup} />
         Pay a station to repair armour
       </label>
-    </div>
-
-    <div class="limit-group">
-      <h3>Drones</h3>
-
-      <label for="companion-drone-floor">Bring a drone home below</label>
-      <input
-        id="companion-drone-floor"
-        type="number"
-        min={Math.round(MIN_DRONE_HEALTH_FLOOR * 100)}
-        max={Math.round(MAX_DRONE_HEALTH_FLOOR * 100)}
-        step="5"
-        bind:value={droneHealthFloorPercent}
-        onchange={keepSetup}
-      />
-      <span class="note">% of its shield, armour or hull</span>
-
-      <label for="companion-drone-holdoff">Hold drones in the bay</label>
-      <input
-        id="companion-drone-holdoff"
-        type="number"
-        min={MIN_DRONE_HOLD_OFF_SECONDS}
-        max={MAX_DRONE_HOLD_OFF_SECONDS}
-        step="1"
-        bind:value={droneHoldOffSeconds}
-        onchange={keepSetup}
-      />
-      <span class="note">seconds before relaunching</span>
-
-      <!-- Not a unit on either row above, though it used to ride on the first
-           one: it is what COMING HOME does, which is the thing both rows are
-           about. Under them both, once. -->
-      <span class="note group-note">Coming home refills a drone's shield.</span>
     </div>
   </div>
 </section>
