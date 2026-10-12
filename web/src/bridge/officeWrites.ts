@@ -27,8 +27,11 @@
 // and the pilot's flight for where it is docked. Neither call lists the offices after: the server's notice of
 // the office does, as in the client.
 //
-// NOT DONE: an office in a structure. The client's lobby has the same buttons there. The routes refused it,
-// nothing of it has been seen working, and so does this.
+// IN A STRUCTURE the lobby's buttons and the three calls are the same: the office manager's object is for
+// session.stationid or session.structureid (officeManager.py 49 to 56), and the structure's controller has the
+// base controller's rent, price and giving up (dockedUI/controllers/structureController.py). Seen on this server
+// 2026-10-12: a price quoted in a complex, an office rented at it, its hangar's divisions listed and moved into.
+// The routes this stands in for refused a structure; this does not.
 
 import type { Ask } from "./ask.ts";
 import type { JsonValue } from "./wire.ts";
@@ -74,7 +77,7 @@ function priceOf(value: JsonValue | undefined): number | null {
   return Number.isSafeInteger(cost) ? cost : null;
 }
 
-/** The station's listed offices, for a pilot docked in a station whose connection carries them; or the reason there are none to act on. */
+/** The listed offices of where the pilot is docked, a station or a structure, on a connection that carries them; or the reason there are none to act on. */
 function officesIn(offices: OfficesHere | null, where: DockedIn): OfficesHere {
   if (where.stationID === null && where.structureID === null) {
     throw new Error("An office is rented or given up while docked in the station.");
@@ -84,9 +87,6 @@ function officesIn(offices: OfficesHere | null, where: DockedIn): OfficesHere {
   }
   if (!offices.available) {
     throw new Error("This pilot's connection does not carry a station's offices.");
-  }
-  if (where.structureID !== null) {
-    throw new Error("An office in a structure is not rented or given up from here.");
   }
   return offices;
 }

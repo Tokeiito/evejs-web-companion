@@ -127,6 +127,8 @@ const PROCURER_BAYS = [
 interface Scene {
   readonly structure?: boolean;
   readonly structureRepair?: boolean;
+  /** False for a structure that has no offices for the pilot (structures.SERVICE_OFFICES, 3, is not among its services). */
+  readonly structureOffices?: boolean;
   readonly docked?: boolean;
   readonly loaded?: boolean;
   readonly bays?: boolean;
@@ -170,7 +172,7 @@ function panel(options: Scene = {}): string {
   } as never);
   if (options.structure) {
     store.apply({ type: "station/structure-services",
-      serviceIDs: options.structureRepair === false ? [1, 2, 3] : [1, 2, 3, 8] } as never);
+      serviceIDs: [1, 2, ...(options.structureOffices === false ? [] : [3]), ...(options.structureRepair === false ? [] : [8])] } as never);
   }
   store.apply({
     type: "station/bits",
@@ -897,4 +899,53 @@ test("the block says whether the pilot's corporation has an office here, and whe
   assert.doesNotMatch(none, /Your corporation has an office here|impounded/);
   assert.match(officesBlock(listed({ ownOffice: false, impounded: true })), /Your corporation has items impounded here/);
   assert.doesNotMatch(officesBlock(listed({ ownOffice: true, impounded: false })), /impounded/);
+});
+
+// --- The lobby's Offices block in a structure ---------------------------------
+// The client's lobby has the same offices panel docked in a structure (dockedUI/offices.py, with the base
+// controller's CanRent, CanUnrent and RentOffice), and a structure has no count of free offices
+// (officeManager.GetNumberOfUnrentedOffices, 131 to 135).
+
+const inStructure = (offices: object | null, more: object = {}) => panel({ structure: true, ...(offices === null ? {} : { offices: { available: true, corporationIDs: [OFFICE_CORP_ELYSIAN], freeOffices: null, ...offices } }), ...more });
+
+test("a structure's services have the Offices block where the structure has offices for the pilot: listed by name, with no count of free ones", () => {
+  const block = officesBlock(inStructure({}));
+  assert.match(block, /Offices/);
+  assert.match(block, /1 rented/);
+  assert.doesNotMatch(block, /free/);
+  assert.match(block, /Elysian Industries/);
+  // Not listed yet says so, and its button is named for a structure.
+  const unlisted = inStructure(null);
+  assert.match(officesBlock(unlisted), /Not listed yet\. Press ↻ to list this structure's offices\./);
+  assert.match(locationView(unlisted, "services"), /<button[^>]*aria-label="List the offices in this structure"/);
+  assert.doesNotMatch(locationView(unlisted, "services"), /this station/);
+  // A connection that does not carry them (the gateway's) says so of a structure.
+  assert.match(officesBlock(inStructure({ available: false, corporationIDs: [] })), /does not carry a structure's offices/);
+});
+
+test("in a structure the rent button and the giving up are the lobby's, as in a station", () => {
+  assert.deepEqual(officeButtons(inStructure({ canRent: true, canGiveUp: true, ownOffice: false, corporationIDs: [] })), ["Rent an office"]);
+  assert.deepEqual(officeButtons(inStructure({ canRent: true, canGiveUp: true, ownOffice: true })), ["Give up the office"]);
+  assert.deepEqual(officeButtons(inStructure({ canRent: false, canGiveUp: false, ownOffice: false })), []);
+  assert.match(officesBlock(inStructure({ ownOffice: true })), /Your corporation has an office here\./);
+  // The question before the giving up is drawn only after a press: its words name what the pilot is docked in.
+  assert.match(SOURCE, /Give up your corporation's office in this \{officePlace\}\?/);
+  assert.match(SOURCE, /const officePlace = \$derived\(\$station\.online\?\.structureID \? "structure" : "station"\);/);
+});
+
+test("a structure that has no offices for the pilot has no Offices block, and says its offices are unavailable", () => {
+  const services = locationView(inStructure({ canRent: true }, { structureOffices: false }), "services");
+  assert.doesNotMatch(services, /stn-offices-head|Rent an office/);
+  assert.match(visibleText(services), /Corporation offices: unavailable/);
+  // Where it has them the line says so, and says no more than that: the block below it has the rest.
+  assert.match(visibleText(locationView(inStructure({}), "services")), /Corporation offices: available/);
+  assert.doesNotMatch(visibleText(locationView(inStructure({}), "services")), /office and division rights still required/);
+});
+
+test("a station's Offices block is as it was: named for a station, with its count of free offices", () => {
+  const body = panel({ offices: { available: true, corporationIDs: [OFFICE_CORP_ELYSIAN], freeOffices: 17, canRent: true } });
+  assert.match(officesBlock(body), /1 rented · 17 free/);
+  assert.match(locationView(body, "services"), /<button[^>]*aria-label="List the offices in this station"/);
+  assert.doesNotMatch(locationView(body, "services"), /this structure/);
+  assert.deepEqual(officeButtons(body), ["Rent an office"]);
 });

@@ -80,14 +80,14 @@ test("where the client's lobby has no button, nothing is asked: the role, and wh
   }
 });
 
-test("nothing is asked in space, before the offices are listed, on a connection that does not carry them, or in a structure", async () => {
+test("nothing is asked in space, before the offices are listed, or on a connection that does not carry them", async () => {
   const places: ReadonlyArray<readonly [string, OfficesHere | null, DockedIn, RegExp]> = [
     ["in space", AN_OFFICE, { stationID: null, structureID: null }, /An office is rented or given up while docked in the station\./],
     ["not listed yet", null, IN_A_STATION, /The station's offices have not been listed yet\./],
     ["the gateway", { ...AN_OFFICE, available: false }, IN_A_STATION, /This pilot's connection does not carry a station's offices\./],
-    ["a structure", AN_OFFICE, { stationID: null, structureID: 1030000000001 }, /An office in a structure is not rented or given up from here\./],
-    // A flight that names the structure as the station too: a structure's all the same, as the route took it.
-    ["a structure named twice", AN_OFFICE, { stationID: 1030000000001, structureID: 1030000000001 }, /An office in a structure is not rented or given up from here\./],
+    // In a structure the same three hold, each said as it is of a station.
+    ["a structure not listed yet", null, { stationID: null, structureID: 1030000000001 }, /The station's offices have not been listed yet\./],
+    ["a structure through the gateway", { ...AN_OFFICE, available: false }, { stationID: null, structureID: 1030000000001 }, /This pilot's connection does not carry a station's offices\./],
     // In space is said first, as the route said it.
     ["in space and not listed", null, { stationID: null, structureID: null }, /while docked in the station/],
   ];
@@ -117,4 +117,29 @@ test("the server's refusal is the caller's, as it came", async () => {
   await assert.rejects(quoteOffice(harness(null, refused).act, CORPORATION, NO_OFFICE, IN_A_STATION), /CrpAccessDenied/);
   await assert.rejects(rentOffice(harness(null, refused).act, NO_OFFICE, IN_A_STATION, 10000), /CrpAccessDenied/);
   await assert.rejects(giveUpOffice(harness(null, refused).act, AN_OFFICE, IN_A_STATION), /CrpAccessDenied/);
+});
+
+// officeManager.py 49 to 56 and 114 to 122: the office manager's object is for where the session is docked,
+// session.stationid or session.structureid, and the lobby's three calls are made on it in a structure as in a
+// station (dockedUI/controllers/structureController.py is the base controller's for all three). Seen on this
+// server 2026-10-12: a price of nought quoted in a complex, and an office rented at it.
+
+test("in a structure the office's price is asked, the office rented at it and given up, by the same three calls as in a station", async () => {
+  const IN_A_STRUCTURE: DockedIn = { stationID: null, structureID: 1030000000001 };
+  const quote = harness(0);
+  assert.deepEqual(await quoteOffice(quote.act, CORPORATION, NO_OFFICE, IN_A_STRUCTURE), { cost: 0, days: 30, quoted: 0 });
+  assert.deepEqual(quote.asked, [["officeManager", "GetPriceQuote", [CORPORATION]]]);
+  const rent = harness();
+  await rentOffice(rent.act, NO_OFFICE, IN_A_STRUCTURE, 0);
+  assert.deepEqual(rent.asked, [["officeManager", "RentOffice", [0]]]);
+  const giveUp = harness();
+  await giveUpOffice(giveUp.act, AN_OFFICE, IN_A_STRUCTURE);
+  assert.deepEqual(giveUp.asked, [["officeManager", "UnrentOffice", []]]);
+  // The lobby's buttons are the same there: no rent with an office or without the role, no giving up without one.
+  for (const [attempt, words] of [
+    [() => quoteOffice(harness(0).act, CORPORATION, AN_OFFICE, IN_A_STRUCTURE), /has an office in this station already/],
+    [() => rentOffice(harness().act, { ...NO_OFFICE, canRent: false }, IN_A_STRUCTURE, 0), /takes the role that may rent one/],
+    [() => giveUpOffice(harness().act, NO_OFFICE, IN_A_STRUCTURE), /has no office in this station/],
+    [() => giveUpOffice(harness().act, { ...AN_OFFICE, canGiveUp: false }, IN_A_STRUCTURE), /takes a director/],
+  ] as const) await assert.rejects(attempt(), words);
 });

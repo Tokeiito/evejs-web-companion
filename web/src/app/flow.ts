@@ -3092,19 +3092,33 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // dockedUI/offices.py, _rent_office and _unrent_office: the price asked,
   // the player asked, and the one call sent. Neither lists anything after:
   // the server says the office changed, and that lists them.
-  // Each is the page's own call of the station's office manager (bridge/officeWrites.ts). What the lobby's
-  // buttons go by is the page's listing of the offices; where the pilot is docked is its flight's, read as the
-  // press is made, as the routes read it.
+  // Each is the page's own call of the office manager of where the pilot is docked, a station or a structure
+  // (bridge/officeWrites.ts). What the lobby's buttons go by is the page's listing of the offices; where the
+  // pilot is docked is its flight's, read as the press is made, as the routes read it.
   const dockedIn = async (): Promise<DockedIn> => {
     const now = decodeFlightStatus((await api.getFlightStatus(callOptions)).flight);
     return { stationID: now.stationID, structureID: now.structureID };
   };
-  const quoteStationOffice = async (): Promise<StationOfficeQuote> =>
-    quoteOffice(bridgeAsk, store.station.get().online?.corporationID ?? null, store.station.get().offices, await dockedIn());
-  const rentStationOffice = async (quote: StationOfficeQuote): Promise<void> =>
-    rentOffice(bridgeDo, store.station.get().offices, await dockedIn(), quote.quoted);
-  const giveUpStationOffice = async (): Promise<void> =>
-    giveUpOffice(bridgeDo, store.station.get().offices, await dockedIn());
+  // The listing is of where the page has the pilot docked: it is dropped as the pilot docks elsewhere
+  // (station/relocated). Where the flight has the pilot docked in another place than that, this place's offices
+  // are not listed yet, and the server would rent or give up where the session is, not where the listing was.
+  const officesListedAt = (where: DockedIn) => {
+    const online = store.station.get().online;
+    const listed = online?.structureID ?? online?.stationID ?? null;
+    return listed === (where.structureID ?? where.stationID) ? store.station.get().offices : null;
+  };
+  const quoteStationOffice = async (): Promise<StationOfficeQuote> => {
+    const where = await dockedIn();
+    return quoteOffice(bridgeAsk, store.station.get().online?.corporationID ?? null, officesListedAt(where), where);
+  };
+  const rentStationOffice = async (quote: StationOfficeQuote): Promise<void> => {
+    const where = await dockedIn();
+    return rentOffice(bridgeDo, officesListedAt(where), where, quote.quoted);
+  };
+  const giveUpStationOffice = async (): Promise<void> => {
+    const where = await dockedIn();
+    return giveUpOffice(bridgeDo, officesListedAt(where), where);
+  };
 
   async function loadCorpHangar(): Promise<void> {
     let reads: Awaited<ReturnType<typeof api.loadCorpHangar>>;

@@ -959,6 +959,8 @@
   // give up, for a director whose corporation has one. Each is two presses, as
   // the retail lobby asks before it acts: the price is shown before the rent
   // is paid, and an office is given up only on a second press.
+  /** What the pilot is docked in, for the Offices block's own words. */
+  const officePlace = $derived($station.online?.structureID ? "structure" : "station");
   const canRentHere = $derived(Boolean($station.offices?.canRent && !$station.offices.ownOffice));
   const canGiveUpHere = $derived(Boolean($station.offices?.canGiveUp && $station.offices.ownOffice));
   let officeQuote = $state<StationOfficeQuote | null>(null);
@@ -1353,6 +1355,93 @@
   {/if}
 {/snippet}
 
+{#snippet officesBlock()}
+  <!--
+    The lobby's offices (dockedUI/offices.py), in a station's services and in a structure's alike: the
+    corporations with an office here, and the lobby's two buttons. A structure has no count of free offices.
+  -->
+  <div class="stn-group-head stn-offices-head">
+    <span class="stn-group-title">Offices</span>
+    {#if $station.offices?.available}
+      <span class="stn-group-count">
+        {$station.offices.corporationIDs.length} rented{$station.offices.freeOffices === null ? "" : ` · ${$station.offices.freeOffices} free`}
+      </span>
+    {/if}
+    <span class="stn-group-gap"></span>
+    <button
+      type="button"
+      class="stn-icon-btn"
+      title={`List the offices in this ${officePlace}`}
+      aria-label={`List the offices in this ${officePlace}`}
+      disabled={busy}
+      onclick={() => run(() => flow.loadStationOffices())}
+    >
+      <span aria-hidden="true">↻</span>
+    </button>
+  </div>
+  {#if $station.offices === null}
+    <p class="stn-note">Not listed yet. Press ↻ to list this {officePlace}'s offices.</p>
+  {:else if !$station.offices.available}
+    <p class="stn-note">This pilot's connection does not carry a {officePlace}'s offices.</p>
+  {:else if officeRows.length === 0}
+    <p class="stn-note">No corporation has an office here.</p>
+  {:else}
+    <ul class="stn-offices">
+      {#each officeRows as office (office.corporationID)}
+        <li>{office.name}</li>
+      {/each}
+    </ul>
+  {/if}
+  {#if $station.offices?.available}
+    {#if $station.offices.ownOffice}
+      <p class="stn-note">Your corporation has an office here.</p>
+    {:else if $station.offices.impounded}
+      <p class="stn-note">Your corporation has items impounded here.</p>
+    {/if}
+    {#if canRentHere && officeQuote === null}
+      <p class="stn-controls">
+        <button type="button" class="stn-btn stn-btn-wide" disabled={busy} onclick={() => run(askOfficeQuote)}>
+          Rent an office
+        </button>
+      </p>
+    {:else if canRentHere && officeQuote !== null}
+      <p class="stn-note">
+        An office here costs {formatIsk(officeQuote.cost.toFixed(2))} for {officeQuote.days} days, paid from your corporation's wallet.
+      </p>
+      <p class="stn-controls">
+        <button type="button" class="stn-btn stn-btn-go" disabled={busy} onclick={() => run(payOfficeRent)}>
+          Rent it and pay
+        </button>
+        <button type="button" class="stn-btn" disabled={busy} onclick={() => { officeQuote = null; }}>
+          Cancel
+        </button>
+      </p>
+    {:else if canGiveUpHere && !givingUpOffice}
+      <p class="stn-controls">
+        <button type="button" class="stn-btn stn-btn-wide" disabled={busy} onclick={() => { givingUpOffice = true; }}>
+          Give up the office
+        </button>
+      </p>
+    {:else if canGiveUpHere}
+      <p class="stn-note">
+        {#if officeHoldsItems}
+          The office's hangars are not empty. Give it up, and what is in them is impounded here.
+        {:else}
+          Give up your corporation's office in this {officePlace}?
+        {/if}
+      </p>
+      <p class="stn-controls">
+        <button type="button" class="stn-btn stn-btn-go" disabled={busy} onclick={() => run(giveUpOffice)}>
+          Give it up
+        </button>
+        <button type="button" class="stn-btn" disabled={busy} onclick={() => { givingUpOffice = false; }}>
+          Cancel
+        </button>
+      </p>
+    {/if}
+  {/if}
+{/snippet}
+
 {#snippet sessionControls()}
   <h3 class="stn-section">Session</h3>
   <p class="stn-controls">
@@ -1697,86 +1786,7 @@
           </div>
         {/if}
 
-        <div class="stn-group-head stn-offices-head">
-          <span class="stn-group-title">Offices</span>
-          {#if $station.offices?.available}
-            <span class="stn-group-count">
-              {$station.offices.corporationIDs.length} rented{$station.offices.freeOffices === null ? "" : ` · ${$station.offices.freeOffices} free`}
-            </span>
-          {/if}
-          <span class="stn-group-gap"></span>
-          <button
-            type="button"
-            class="stn-icon-btn"
-            title="List the offices in this station"
-            aria-label="List the offices in this station"
-            disabled={busy}
-            onclick={() => run(() => flow.loadStationOffices())}
-          >
-            <span aria-hidden="true">↻</span>
-          </button>
-        </div>
-        {#if $station.offices === null}
-          <p class="stn-note">Not listed yet. Press ↻ to list this station's offices.</p>
-        {:else if !$station.offices.available}
-          <p class="stn-note">This pilot's connection does not carry a station's offices.</p>
-        {:else if officeRows.length === 0}
-          <p class="stn-note">No corporation has an office here.</p>
-        {:else}
-          <ul class="stn-offices">
-            {#each officeRows as office (office.corporationID)}
-              <li>{office.name}</li>
-            {/each}
-          </ul>
-        {/if}
-        {#if $station.offices?.available}
-          {#if $station.offices.ownOffice}
-            <p class="stn-note">Your corporation has an office here.</p>
-          {:else if $station.offices.impounded}
-            <p class="stn-note">Your corporation has items impounded here.</p>
-          {/if}
-          {#if canRentHere && officeQuote === null}
-            <p class="stn-controls">
-              <button type="button" class="stn-btn stn-btn-wide" disabled={busy} onclick={() => run(askOfficeQuote)}>
-                Rent an office
-              </button>
-            </p>
-          {:else if canRentHere && officeQuote !== null}
-            <p class="stn-note">
-              An office here costs {formatIsk(officeQuote.cost.toFixed(2))} for {officeQuote.days} days, paid from your corporation's wallet.
-            </p>
-            <p class="stn-controls">
-              <button type="button" class="stn-btn stn-btn-go" disabled={busy} onclick={() => run(payOfficeRent)}>
-                Rent it and pay
-              </button>
-              <button type="button" class="stn-btn" disabled={busy} onclick={() => { officeQuote = null; }}>
-                Cancel
-              </button>
-            </p>
-          {:else if canGiveUpHere && !givingUpOffice}
-            <p class="stn-controls">
-              <button type="button" class="stn-btn stn-btn-wide" disabled={busy} onclick={() => { givingUpOffice = true; }}>
-                Give up the office
-              </button>
-            </p>
-          {:else if canGiveUpHere}
-            <p class="stn-note">
-              {#if officeHoldsItems}
-                The office's hangars are not empty. Give it up, and what is in them is impounded here.
-              {:else}
-                Give up your corporation's office in this station?
-              {/if}
-            </p>
-            <p class="stn-controls">
-              <button type="button" class="stn-btn stn-btn-go" disabled={busy} onclick={() => run(giveUpOffice)}>
-                Give it up
-              </button>
-              <button type="button" class="stn-btn" disabled={busy} onclick={() => { givingUpOffice = false; }}>
-                Cancel
-              </button>
-            </p>
-          {/if}
-        {/if}
+        {@render officesBlock()}
       </div>
     </section>
     {:else if isDocked}
@@ -1787,7 +1797,7 @@
           <p class="stn-note">{$station.readError ?? "Checking current structure services…"}</p>
         {:else}
           <p class="stn-note">Personal hangar: {structureHasCapability($station.structureServiceIDs, "personalInventory") ? "available" : "unavailable"}</p>
-          <p class="stn-note">Corporation office: {structureHasCapability($station.structureServiceIDs, "corporationHangar") ? "available; office and division rights still required" : "unavailable"}</p>
+          <p class="stn-note">Corporation offices: {structureHasCapability($station.structureServiceIDs, "corporationHangar") ? "available" : "unavailable"}</p>
           <p class="stn-note">Manual fitting: {structureHasCapability($station.structureServiceIDs, "fitting") ? "available" : "unavailable"}</p>
           <p class="stn-note">Reprocessing: {structureHasCapability($station.structureServiceIDs, "reprocessing") ? "online; refine from the Mining window" : "unavailable"}</p>
           <p class="stn-note">Market: {structureHasCapability($station.structureServiceIDs, "market") ? "online; action support is separate" : "unavailable"}</p>
@@ -1799,6 +1809,11 @@
         {/if}
         {@render sessionControls()}
       </div>
+      {#if structureHasCapability($station.structureServiceIDs, "corporationHangar")}
+      <div class="stn-services-col">
+        {@render officesBlock()}
+      </div>
+      {/if}
     </section>
     {/if}
   </div>

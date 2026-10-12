@@ -15,6 +15,7 @@ import { panelErrorWords } from "../bridge/refusals.ts";
 const PILOT = 140000003;
 const CORPORATION = 98000001;
 const STATION = 60003760;
+const A_STRUCTURE = 1030000000001;
 
 interface PushSource {
   onmessage: ((event: { data: string }) => void) | null;
@@ -23,15 +24,19 @@ interface PushSource {
   close(): void;
 }
 
-/** A docked pilot online with its live channel open. `answer` is what the offices read answers now; `hold` keeps an answer back until it is let go. */
-async function docked() {
+/**
+ * A docked pilot online with its live channel open: in the station, or in the structure named. `answer` is what
+ * the offices read answers now; `hold` keeps an answer back until it is let go.
+ */
+async function docked(structureID: number | null = null) {
+  const stationID = structureID === null ? STATION : null;
   const store = createClientStore();
   const state: { answer: unknown; fail: boolean; hold: Promise<void> | null; flight: unknown; price: unknown; refuse: string | null; refusal: { status: number; error: string; message: string } | null } = {
     answer: { ok: true, available: true, stationID: STATION, corporationIDs: [98000000, 98000003], freeOffices: 17 },
     fail: false,
     hold: null,
-    // The pilot's flight: docked in the station.
-    flight: { inSpace: false, docked: true, stationID: STATION, structureID: null, solarSystemID: 30000142, shipID: 9001 },
+    // The pilot's flight: docked where it came online.
+    flight: { inSpace: false, docked: true, stationID, structureID, solarSystemID: 30000142, shipID: 9001 },
     // What the station's office manager answers for a price.
     price: 10000,
     refuse: null,
@@ -46,7 +51,7 @@ async function docked() {
     let status = 200;
     let answer: unknown = { ok: true };
     if (path === "/api/bridge/select") {
-      answer = { ok: true, character: { characterID: PILOT, characterName: "Test Three", stationID: STATION, structureID: null, solarSystemID: 30000142, corporationID: CORPORATION }, droneRecoveryCheckID: "check-1" };
+      answer = { ok: true, character: { characterID: PILOT, characterName: "Test Three", stationID, structureID, solarSystemID: 30000142, corporationID: CORPORATION }, droneRecoveryCheckID: "check-1" };
     } else if (path === "/api/bridge/station/offices") {
       reads += 1;
       const answered = state.answer;
@@ -257,7 +262,7 @@ test("an office is given up with the player's yes, by the page's own call, and a
   await assert.rejects(renting.flow.rentStationOffice({ cost: 10000, days: 30, quoted: 10000 }), /too little for the rent/);
 });
 
-test("the page asks the office manager nothing where the client's lobby has no button, and nothing in a structure", async () => {
+test("the page asks the office manager nothing where the client's lobby has no button, in space, or by the listing of another place than the pilot is docked in", async () => {
   // Before the offices are listed there is no button on the page either.
   const unlisted = await docked();
   await assert.rejects(unlisted.flow.quoteStationOffice(), /have not been listed yet/);
@@ -267,16 +272,69 @@ test("the page asks the office manager nothing where the client's lobby has no b
   await noRole.flow.loadStationOffices();
   await assert.rejects(noRole.flow.giveUpStationOffice(), /takes a director/);
   await assert.rejects(noRole.flow.quoteStationOffice(), /role that may rent one/);
-  // The pilot's flight says where it is docked now: in a structure the page rents and gives up nothing.
-  const structure = await docked();
-  structure.state.answer = mayDoBoth(true);
-  await structure.flow.loadStationOffices();
-  structure.state.flight = { inSpace: false, docked: true, stationID: null, structureID: 1030000000001, solarSystemID: 30000142, shipID: 9001 };
-  await assert.rejects(structure.flow.giveUpStationOffice(), /in a structure/);
+  // The pilot's flight says where it is docked now. Where that is another place than the page has the pilot
+  // docked in, the listing shown is not that place's, and nothing is rented or given up by it.
+  const dockedAt = (place: { stationID: number | null; structureID: number | null }) => ({ inSpace: false, docked: true, ...place, solarSystemID: 30000142, shipID: 9001 });
+  const OTHER_PLACES = [
+    { stationID: null, structureID: A_STRUCTURE },
+    { stationID: A_STRUCTURE, structureID: A_STRUCTURE },
+    { stationID: 60000004, structureID: null },
+  ];
+  const leaving = await docked();
+  leaving.state.answer = mayDoBoth(true);
+  await leaving.flow.loadStationOffices();
+  const renting = await docked();
+  renting.state.answer = mayDoBoth(false);
+  await renting.flow.loadStationOffices();
+  for (const place of OTHER_PLACES) {
+    leaving.state.flight = dockedAt(place);
+    renting.state.flight = dockedAt(place);
+    await assert.rejects(leaving.flow.giveUpStationOffice(), /have not been listed yet/, JSON.stringify(place));
+    await assert.rejects(renting.flow.quoteStationOffice(), /have not been listed yet/, JSON.stringify(place));
+    await assert.rejects(renting.flow.rentStationOffice({ cost: 10000, days: 30, quoted: 10000 }), /have not been listed yet/, JSON.stringify(place));
+  }
+  // The same of a structure's listing: the station is another place, and so is another structure.
+  const inStructure = await docked(A_STRUCTURE);
+  inStructure.state.answer = { ...mayDoBoth(true), stationID: A_STRUCTURE, freeOffices: null };
+  await inStructure.flow.loadStationOffices();
+  for (const place of [{ stationID: STATION, structureID: null }, { stationID: null, structureID: 1030000000009 }]) {
+    inStructure.state.flight = dockedAt(place);
+    await assert.rejects(inStructure.flow.giveUpStationOffice(), /have not been listed yet/, JSON.stringify(place));
+  }
   // And in space nothing either.
-  structure.state.flight = { inSpace: true, docked: false, stationID: null, structureID: null, solarSystemID: 30000142, shipID: 9001 };
-  await assert.rejects(structure.flow.giveUpStationOffice(), /while docked/);
-  assert.deepEqual([unlisted.sent, noRole.sent, structure.sent], [[], [], []]);
+  leaving.state.flight = { inSpace: true, docked: false, stationID: null, structureID: null, solarSystemID: 30000142, shipID: 9001 };
+  await assert.rejects(leaving.flow.giveUpStationOffice(), /while docked/);
+  assert.deepEqual([unlisted.sent, noRole.sent, leaving.sent, renting.sent, inStructure.sent], [[], [], [], [], []]);
+});
+
+// officeManager.py 49 to 56: the office manager's object is for session.stationid or session.structureid, and the
+// lobby's buttons in a structure are the base controller's (dockedUI/controllers/structureController.py). Seen on
+// this server 2026-10-12, in a complex: a price of nought, an office rented at it, and the office given up.
+
+test("docked in a structure the office's price is asked, the office rented and given up by the page's own calls, as in a station", async () => {
+  const renting = await docked(A_STRUCTURE);
+  // A structure's listing has no count of free offices.
+  renting.state.answer = { ...mayDoBoth(false), stationID: A_STRUCTURE, freeOffices: null };
+  renting.state.price = 0;
+  await renting.flow.loadStationOffices();
+  assert.deepEqual(renting.shown(), { available: true, corporationIDs: [98000000, 98000003], freeOffices: null, ownOffice: false, impounded: false, canRent: true, canGiveUp: true });
+  const quote = await renting.flow.quoteStationOffice();
+  assert.deepEqual(quote, { cost: 0, days: 30, quoted: 0 });
+  await renting.flow.rentStationOffice(quote);
+  assert.deepEqual(renting.sent, [["GetPriceQuote", theCall("GetPriceQuote", [CORPORATION], false)], ["RentOffice", theCall("RentOffice", [0], true)]]);
+  // A flight that names the structure as the station too is the same place.
+  renting.state.flight = { inSpace: false, docked: true, stationID: A_STRUCTURE, structureID: A_STRUCTURE, solarSystemID: 30000142, shipID: 9001 };
+  await renting.flow.quoteStationOffice();
+  assert.equal(renting.sent.length, 3);
+  const leaving = await docked(A_STRUCTURE);
+  leaving.state.answer = { ...mayDoBoth(true), stationID: A_STRUCTURE, freeOffices: null };
+  await leaving.flow.loadStationOffices();
+  await leaving.flow.giveUpStationOffice();
+  assert.deepEqual(leaving.sent, [["UnrentOffice", theCall("UnrentOffice", [], true)]]);
+  // The server's notice of the office lists the structure's offices again, as a station's.
+  leaving.state.answer = { ...mayDoBoth(false), stationID: A_STRUCTURE, corporationIDs: [98000003], freeOffices: null };
+  await leaving.push("OnOfficeRentalChange", [CORPORATION, OFFICE]);
+  assert.deepEqual([leaving.shown()?.ownOffice, leaving.shown()?.corporationIDs, leaving.reads()], [false, [98000003], 2]);
 });
 
 test("a rent the corporation's wallet cannot pay is said in the panel's own words for that refusal", async () => {
