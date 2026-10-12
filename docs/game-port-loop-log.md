@@ -156872,7 +156872,7 @@ the scan was never asked for).
 **Proof.**
 
 - Tests watched to fail first: the model's ("a refusal before dispatch says
-  which thing was wrong", 37 cases), the route's by the page's own asker
+  which thing was wrong", 35 cases), the route's by the page's own asker
   (`test/pagesJettison.test.js`: each refusal's words, and a scene whose ship
   nobody is said to fly), the page's error
   (`web/src/app/jettisonCustodyApi.test.ts`) and the table's
