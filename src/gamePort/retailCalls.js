@@ -670,6 +670,14 @@ const scooping = (args, kwargs) => (args.length === 1 && Array.isArray(args[0]) 
   && Object.keys(kwargs).length === 0 ? {} : { status: "differs", note: "The client sends the drones as one list of their IDs, and nothing else." });
 
 /** industrySvc.CompleteJob (150) and CancelJob (160): the job, and the job's own solar system (idCheckers.IsSolarSystem), and nothing else. */
+/** One ID alone, a whole number above nought, and nothing by keyword. */
+const oneIDAlone = (what) => (args, kwargs) => (args.length === 1 && Number.isSafeInteger(args[0]) && args[0] > 0 && Object.keys(kwargs).length === 0
+  ? {}
+  : { status: "differs", note: `The client asks with ${what} alone.` });
+/** facilitySvc.GetFacilityLocations (114 to 120): the facility and the owner the job is for, each an ID, and nothing by keyword. */
+const aFacilityAndAnOwner = (args, kwargs) => (args.length === 2 && args.every((each) => Number.isSafeInteger(each) && each > 0) && Object.keys(kwargs).length === 0
+  ? {}
+  : { status: "differs", note: "The client asks with a facility and the owner the job is for, and nothing else." });
 const aJobAndItsSystem = (args, kwargs) => (args.length === 2 && Number.isSafeInteger(args[0]) && args[0] > 0 && Number.isSafeInteger(args[1]) && args[1] >= 30000000 && args[1] <= 39999999
   && Object.keys(kwargs).length === 0 ? {} : { status: "differs", note: "The client sends the job and its own solar system, and nothing else." });
 
@@ -1463,6 +1471,12 @@ const RETAIL_CALLS = Object.freeze({
   "industryManager.InstallJob": reshaped(`${INDUSTRY}/industrySvc.py:141`, jobDumped, "RemoteSvc('industryManager').InstallJob(job.dump()): the job's dump, a dict of seventeen names (industry/job.py 624 to 640). The route's plain object is made that dict, its places the client's own objects. The cost, the tax and the time go as nought. No recording has one."),
   "industryMonitor.ConnectJob": reshaped(`${INDUSTRY}/industrySvc.py:307`, jobDumped, "RemoteSvc('industryMonitor').ConnectJob(job.dump()), once the job has a place to take its materials from: the same dump, made the same dict."),
   "industryMonitor.DisconnectJob": judged(`${INDUSTRY}/industrySvc.py:313`, aMonitorLetGo, "RemoteSvc('industryMonitor').DisconnectJob(job.monitorID if job else None)."),
+  "facilityManager.GetFacilityLocations": judged(`${INDUSTRY}/facilitySvc.py:118`, aFacilityAndAnOwner,
+    "self.facilityManager.GetFacilityLocations(facilityID, ownerID): the facility, and the owner the job is for (the blueprint's: the pilot, or its corporation). Asked when a job is given a facility (industrySvc.LoadLocations, 319), and kept by the client's facility service a while (Memoize, 113). No recording has anything of industry."),
+  "blueprintManager.GetBlueprintData": judged(`${INDUSTRY}/blueprintSvc.py:96`, oneIDAlone("a blueprint's ID"),
+    "self.blueprintManager.GetBlueprintData(blueprintID): the blueprint's own item, alone (blueprintSvc.GetBlueprintItem). The BFF asks it once a job is installed, to see the blueprint is in the job."),
+  "industryManager.GetJob": judged(`${INDUSTRY}/industrySvc.py:60`, oneIDAlone("a job's ID"),
+    "sm.RemoteSvc('industryManager').GetJob(jobID): the job alone (industrySvc.GetJobByID). The BFF asks it once a job is installed, delivered or stopped, to see what became of it."),
   "facilityManager.GetFacilities": same(`${INDUSTRY}/facilitySvc.py:133`, "RemoteSvc('facilityManager').GetFacilities(), no arguments"),
   "facilityManager.GetMaxActivityModifiers": same(`${INDUSTRY}/facilitySvc.py:87`, "RemoteSvc('facilityManager').GetMaxActivityModifiers(), no arguments"),
 

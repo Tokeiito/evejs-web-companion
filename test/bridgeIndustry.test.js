@@ -861,6 +861,26 @@ test("install sends ONE POSITIONAL DICT with the fields the server actually read
   assert.deepEqual(payload.account, [CHARACTER_ID, 1000]);
 });
 
+test("the job's product is None where the page names none, as the client's job has none until one is chosen; named, it is the one named", async () => {
+  // industry/job.py 367 and 640: obj._productTypeID = None, and 'productTypeID': self.productTypeID. A product is
+  // set on a job only where there is a choice of them (192 to 206): manufacturing has the one, and names none.
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  await apiRequest(baseUrl, "/api/bridge/industry/preview", { method: "POST", body: installBody() });
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody() });
+  const sent = (method) => gateway.calls.topLevel.filter((call) => call.method === method).map((call) => call.args[0].productTypeID);
+  assert.deepEqual([sent("ConnectJob"), sent("InstallJob")], [[null], [null]]);
+  // A nought, or what is no number, is no product named.
+  for (const none of [0, "", null, "the product"]) {
+    await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ productTypeID: none }) });
+    assert.equal(sent("InstallJob").at(-1), null, JSON.stringify(none));
+  }
+  // Named, it goes as it was named.
+  await apiRequest(baseUrl, "/api/bridge/industry/install", { method: "POST", body: installBody({ productTypeID: PRODUCT_TYPE_ID }) });
+  assert.equal(sent("InstallJob").at(-1), PRODUCT_TYPE_ID);
+});
+
 test("the job's solar system is its facility's, as the place its materials are in has it, and not the pilot's", async () => {
   // industry/job.py 629: 'solarSystemID': self.facility.solarSystemID.
   const gateway = fakeIndustryGateway({ placesIn: 30000144 });

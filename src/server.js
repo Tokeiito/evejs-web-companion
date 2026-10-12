@@ -5286,7 +5286,9 @@ function buildInstallJobPayload(held, request) {
     materials: request.materials || {},
     inputLocation: request.inputLocation,
     outputLocation: request.outputLocation,
-    productTypeID: request.productTypeID || 0,
+    // None where the page names none: the client's job has no product until one is chosen
+    // (industry/job.py 367, 640), and one is chosen only where there is a choice of them.
+    productTypeID: request.productTypeID || null,
   };
 }
 

@@ -2912,3 +2912,46 @@ test("a fleet is formed by the service's name and with nothing: the one call of 
   });
   assert.match(RETAIL_CALLS["fleetObjectHandler.CreateFleet"].note, /sm\.RemoteSvc\('fleetObjectHandler'\)\.CreateFleet\(\)/);
 });
+
+// ── industry's three reads the ledger had not judged ─────────────────────────
+//
+// facilitySvc.py 118: self.facilityManager.GetFacilityLocations(facilityID, ownerID), the facility and the owner the
+// job is for. blueprintSvc.py 96: self.blueprintManager.GetBlueprintData(blueprintID). industrySvc.py 60:
+// sm.RemoteSvc('industryManager').GetJob(jobID). No recording has anything of industry. The BFF's preview and its
+// install ask the first, and its install, its delivering and its stopping ask the other two.
+
+test("a facility's places, a blueprint and a job are asked as the client asks them: the facility and the owner, and the one ID alone", () => {
+  for (const [pair, args, source] of [
+    ["facilityManager.GetFacilityLocations", [60003760, 140000001], /facilitySvc\.py:118$/],
+    ["facilityManager.GetFacilityLocations", [1000000012345, 98000001], /facilitySvc\.py:118$/],
+    ["blueprintManager.GetBlueprintData", [9988400103291], /blueprintSvc\.py:96$/],
+    ["industryManager.GetJob", [5000042], /industrySvc\.py:60$/],
+  ]) {
+    const asked = form(pair, args);
+    assert.deepEqual([asked.status, asked.args, asked.kwargs, asked.proxy], ["same", args, null, false], pair);
+    assert.match(asked.source, source, pair);
+  }
+  // What is not the client's form goes as it came, and is counted as not the client's.
+  for (const [pair, args, kwargs] of [
+    ["facilityManager.GetFacilityLocations", [60003760], null],
+    ["facilityManager.GetFacilityLocations", [60003760, 140000001, true], null],
+    ["facilityManager.GetFacilityLocations", [60003760, null], null],
+    ["facilityManager.GetFacilityLocations", [0, 140000001], null],
+    ["facilityManager.GetFacilityLocations", [60003760, "140000001"], null],
+    ["facilityManager.GetFacilityLocations", [60003760, 140000001], { all: true }],
+    ["blueprintManager.GetBlueprintData", [], null],
+    ["blueprintManager.GetBlueprintData", [9988400103291, 140000001], null],
+    ["blueprintManager.GetBlueprintData", ["9988400103291"], null],
+    ["blueprintManager.GetBlueprintData", [0], null],
+    ["blueprintManager.GetBlueprintData", [9988400103291], { all: true }],
+    ["industryManager.GetJob", [], null],
+    ["industryManager.GetJob", [5000042, true], null],
+    ["industryManager.GetJob", [5000042], { fetchBlueprint: true }],
+    ["industryManager.GetJob", [-1], null],
+    ["industryManager.GetJob", [1.5], null],
+  ]) {
+    const odd = form(pair, args, kwargs);
+    assert.deepEqual([odd.status, odd.args], ["differs", args], `${pair} ${JSON.stringify([args, kwargs])}`);
+    assert.match(odd.note, /^The client asks with /, pair);
+  }
+});
