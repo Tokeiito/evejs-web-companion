@@ -431,7 +431,9 @@ test("the BFF's own event stream on the socket: a tab there is sent what a tab o
 
   // Listened to again: a new gateway stream, from where the last one had got to.
   tab.send({ events: "open", n: 3 });
-  assert.ok(await until(() => gateway.streams.length === 2));
+  // (Waited for until the tab has the route's first frame too: on a busy machine it came after the gateway's stream
+  // was opened, and was counted among the frames of the release below, once, in a run of the whole suite.)
+  assert.ok(await until(() => gateway.streams.length === 2 && tab.frames.some((frame) => frame.events && frame.events.open === true && frame.events.n === 3)));
   assert.deepEqual(gateway.streams[1].options.cursor, { epoch: "e1", sequence: 3 });
 
   // The pilot released: the stream's last frame says so, and then that it has ended; the reply to the release is after both.

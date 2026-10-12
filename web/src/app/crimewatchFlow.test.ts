@@ -118,15 +118,25 @@ async function online(from: { fail?: boolean; grade?: { result: unknown } | "not
 }
 
 test("a pilot that comes online has crimewatch's states read, with the server's clock beside them", async () => {
-  const { shown, reads, asked } = await online();
-  assert.equal(reads(), 1);
-  // Both reads of the choosing are the client's own calls, each with nothing, asked as a pilot's.
-  assert.deepEqual(asked.map((body) => [body.service, body.method, body.args, body.kwargs, body.pilot]).sort(), [["crimewatch", "GetClientStates", [], null, true], ["subscriptionMgr", "GetCloneGrade", [], null, true]]);
-  const reading = shown();
-  assert.ok(reading !== null);
-  assert.deepEqual([reading.states.safetyLevel, reading.states.timers.map((timer) => timer.state)], [2, [100, 200, 400, 300, 500]]);
-  // The server's clock was five seconds ahead of the browser's at the read.
-  assert.ok(reading.clockOffsetMs > 4900 && reading.clockOffsetMs <= 5000, String(reading.clockOffsetMs));
+  // The browser's clock is held still for this test: the answer's clock is made when the pilot's stand-in is, and
+  // is read some while after, a while that is longer on a busy machine. (With the clock running, the five seconds
+  // came out as fewer than 4.9 once, in a run of the whole suite.)
+  const runningClock = Date.now;
+  const browserNow = runningClock();
+  Date.now = () => browserNow;
+  try {
+    const { shown, reads, asked } = await online();
+    assert.equal(reads(), 1);
+    // Both reads of the choosing are the client's own calls, each with nothing, asked as a pilot's.
+    assert.deepEqual(asked.map((body) => [body.service, body.method, body.args, body.kwargs, body.pilot]).sort(), [["crimewatch", "GetClientStates", [], null, true], ["subscriptionMgr", "GetCloneGrade", [], null, true]]);
+    const reading = shown();
+    assert.ok(reading !== null);
+    assert.deepEqual([reading.states.safetyLevel, reading.states.timers.map((timer) => timer.state)], [2, [100, 200, 400, 300, 500]]);
+    // The server's clock was five seconds ahead of the browser's at the read.
+    assert.equal(reading.clockOffsetMs, 5000);
+  } finally {
+    Date.now = runningClock;
+  }
 });
 
 test("the states are read again at each of the server's notices of a timer, a flag or an engagement", async () => {
