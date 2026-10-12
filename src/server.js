@@ -9336,6 +9336,18 @@ app.post("/api/bridge/ship/scoop-to-depot-hold", requireAuth, async (req, res, n
   await dispatchBridgeWrite(req, res, next, "ship", "ScoopToMobileDepotHold", [objectID]);
 });
 
+// On the game port a jettisoned can is a ball of the pilot's own park, and comes with the ballpark update that
+// follows the call's answer: seen 0.9 to 1.7 s after it in three runs on 2026-10-12, where the gateway's scene (the
+// server's own) had it at the first look. So a route that looks for the can gives the park as long as a launch
+// gives it for its drones (DRONE_ARRIVAL_WAIT_MS), and through the gateway the two short looks it always had.
+const JETTISON_CAN_WAIT_MS = 3000;
+const JETTISON_CAN_STEP_MS = 250;
+const JETTISON_CAN_GATEWAY_WAIT_MS = 400;
+const JETTISON_CAN_GATEWAY_STEP_MS = 200;
+const jettisonSleep = typeof options.transitionSleep === "function"
+  ? options.transitionSleep
+  : (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 const hostedJettison = createJettisonCustodyHandler({
   now: () => Date.now(),
   readScope: async (req, owner, notifications) => {
@@ -9358,18 +9370,34 @@ const hostedJettison = createJettisonCustodyHandler({
     owner.current(false);
     const held = bridgeSessions.get(req.webSessionID);
     assertCurrentHeldSession(held, req.webSessionID);
-    const space = await gateway.readSpaceSnapshot(held.bridgeSessionID, { userid: held.accountID });
-    if (Array.isArray(space.notifications)) notifications.push(...space.notifications);
-    owner.current(false); assertCurrentHeldSession(held, req.webSessionID);
+    const readScene = async () => {
+      const read = await gateway.readSpaceSnapshot(held.bridgeSessionID, { userid: held.accountID });
+      if (Array.isArray(read.notifications)) notifications.push(...read.notifications);
+      owner.current(false); assertCurrentHeldSession(held, req.webSessionID);
+      return read.space;
+    };
+    let scene = await readScene();
     const listed = await boundCall(held, req.webSessionID, cargoBindSpec(held, held.activeShipID),
       "ListByFlags", [[...jettisonCustody.SOURCE_FLAGS]], null, notifications);
     if (Array.isArray(listed.notifications)) notifications.push(...listed.notifications);
     owner.current(false); assertCurrentHeldSession(held, req.webSessionID);
     const rows = jettisonCustody.inventoryRows(listed.result);
-    const context = jettisonCustody.sceneContext(space.space, owner.scope.pilotID);
+    let context = jettisonCustody.sceneContext(scene, owner.scope.pilotID);
+    const unsettled = custody && jettisonCustody.unresolved(custody);
+    const newCans = () => context.ownedContainerIDs.filter(id => !custody.existingContainerIDs.includes(id));
+    // The ore gone from the holds and no can of the pilot's that was not there before: on the game port the can
+    // has not come yet. Ore that is in the holds still has gone nowhere, and no can is waited for.
+    if (unsettled && context && heldOnTheGamePort(held) && Array.isArray(rows) &&
+        custody.items.every(item => !rows.some(row => row.itemID === item.itemID))) {
+      for (let waited = 0; waited < JETTISON_CAN_WAIT_MS && context && newCans().length === 0; waited += JETTISON_CAN_STEP_MS) {
+        await jettisonSleep(JETTISON_CAN_STEP_MS);
+        scene = await readScene();
+        context = jettisonCustody.sceneContext(scene, owner.scope.pilotID);
+      }
+    }
     const containers = [];
-    if (custody && jettisonCustody.unresolved(custody) && context) {
-      const candidates = context.ownedContainerIDs.filter(id => !custody.existingContainerIDs.includes(id));
+    if (unsettled && context) {
+      const candidates = newCans();
       if (candidates.length <= 8) for (const itemID of candidates) {
         let items = null;
         try {
@@ -9381,7 +9409,7 @@ const hostedJettison = createJettisonCustodyHandler({
         containers.push({ itemID, ownerID: owner.scope.pilotID, items });
       }
     }
-    return { scene: space.space, rows, containers };
+    return { scene, rows, containers };
   },
   assertDispatch: async (req, owner, custody) => {
     owner.current(true);
@@ -9439,9 +9467,13 @@ app.post("/api/bridge/ship/jettison", requireAuth, async (req, res, next) => {
     const outcome = await heldTopLevelCall(held, req.webSessionID, "ship", "Jettison", [bridgeIDList((req.body || {}).itemIDs)], null);
     const first = Array.isArray(outcome.result) ? outcome.result[0] : outcome.result?.items?.[0];
     const moved = Array.isArray(first) ? first : Array.isArray(first?.items) ? first.items : null;
-    let created = [];
-    for (let attempt = 0; attempt < 3 && created.length === 0; attempt++) {
-      if (attempt > 0) await new Promise(resolve => setTimeout(resolve, 200));
+    // The can is looked for until it is there, for as long as the pilot's transport may take to show it; a
+    // jettison the server answered as moving nothing made none, and is not waited for.
+    const [waitMs, stepMs] = heldOnTheGamePort(held)
+      ? [JETTISON_CAN_WAIT_MS, JETTISON_CAN_STEP_MS] : [JETTISON_CAN_GATEWAY_WAIT_MS, JETTISON_CAN_GATEWAY_STEP_MS];
+    let created = (await readCans()).filter(id => !before.has(id));
+    for (let waited = 0; waited < waitMs && created.length === 0 && moved?.length !== 0; waited += stepMs) {
+      await jettisonSleep(stepMs);
       created = (await readCans()).filter(id => !before.has(id));
     }
     if (created.length === 0 && moved?.length === 0) {

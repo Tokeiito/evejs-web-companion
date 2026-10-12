@@ -82,14 +82,15 @@ const lost = () => Object.assign(new Error("the answer was lost"), { code: "TEST
  * The server: each pilot in its own ship in Jita, what its holds have (`world.stack`), the cans in space, and what
  * becomes of a jettison (`world.jettison`, or of each in turn): it "lands", its answer is "lost" after it landed,
  * it "never" happens and no answer comes, it is "refused" (nothing moved, and the answer says so), or it lands in
- * a can the scene does not show ("unseen"). `world.sent` is every call that changes anything, and `world.amid` is
+ * a can the scene does not show ("unseen"), or not until the look numbered `world.arrivesAt` after it.
+ * `world.sent` is every call that changes anything, and `world.amid` is
  * told of a read as it is answered, for what a test changes in the middle of a request.
  */
 function space() {
   const world = { tick: 0, system: JITA, holds: new Map(), cans: new Map(), unseen: new Set(), unreadable: new Set(), nextCan: 9001,
-    jettison: "lands", sent: [], asked: [], listedFlags: null, amid: () => {} };
+    jettison: "lands", arrivesAt: null, looksSince: null, sent: [], asked: [], listedFlags: null, amid: () => {} };
   const row = (fields) => ({ type: "packedrow", fields });
-  const pilotOf = (handle) => Number(String(handle).replace("held-", ""));
+  const pilotOf = (handle) => Number(String(handle).replace("gp:", "").replace("held-", ""));
   world.stack = (characterID, itemID, { typeID = 1230, quantity = 1000, flagID = ORE_HOLD, categoryID = 25 } = {}) => {
     const hold = world.holds.get(shipOf(characterID)) || [];
     hold.push({ itemID, typeID, quantity, ownerID: characterID, locationID: shipOf(characterID), flagID, categoryID });
@@ -108,6 +109,11 @@ function space() {
   };
   world.scene = (characterID) => {
     world.tick += 1;
+    // A can the scene has not got yet is in it at the look numbered `arrivesAt` after the jettison (1 is the first).
+    if (world.looksSince !== null) {
+      world.looksSince += 1;
+      if (world.arrivesAt !== null && world.looksSince >= world.arrivesAt) world.unseen.clear();
+    }
     return { inSpace: true, shipID: shipOf(characterID), solarSystemID: world.system, sampledAtMs: START + world.tick,
       ship: { itemID: shipOf(characterID), characterID },
       entities: [{ kind: "asteroid", itemID: 40, ownerID: 1 }, ...[...world.cans].filter(([canID]) => !world.unseen.has(canID))
@@ -143,6 +149,7 @@ function space() {
       if (how === "refused") return { result: [list([]), list([])], notifications: [] };
       if (how === "never") throw lost();
       world.land(pilotOf(bridgeSessionID), args[0], { seen: how !== "unseen" });
+      world.looksSince = 0;
       if (how === "lost") throw lost();
       // As the server answers the client: the items that went to a can, and those launched for themselves.
       return { result: [list(args[0]), list([])], notifications: [] };
@@ -156,8 +163,10 @@ function space() {
  * run by it, and the page's own askers. `tab` asks as a cockpit with pilot 7009 held; `hosted(pilot, more)` starts
  * a hosted bot for a pilot and answers the request options that bot's own flow is given.
  */
-async function crew(world) {
+async function crew(world, { gamePort = false } = {}) {
   const clock = { at: START };
+  /** What the BFF waited, by its own sleep, which a test's BFF does not sleep for. */
+  const slept = [];
   const now = () => clock.at;
   const store = createMiningOperationStore({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "evejs-web-jettison-store-")),
     resolveSystem: (id) => SYSTEMS[Number(id)] || null, resolveStation: () => null });
@@ -225,6 +234,9 @@ async function crew(world) {
       listCharactersForAccount: async () => PILOTS.map((each) => ({ ...each })),
     },
     eveGatewayClient: world.gateway,
+    // A pilot on the game port: the same server, reached by the transport that speaks the client's protocol.
+    ...(gamePort ? { gamePortPilots: world.gateway, pilotTransportFor: () => "gameport" } : {}),
+    transitionSleep: async (ms) => { slept.push(ms); },
     webAuth,
     botHost: host,
     bridgeSessionStore: held,
@@ -263,7 +275,7 @@ async function crew(world) {
   });
   /** A pilot in space in its own ship, held by a web session: a hosted bot's where its row has the bot's claim. */
   const online = (pilot, sessionID, secret = null) => {
-    const row = { characterID: pilot.characterID, accountID: ACCOUNT.accountID, bridgeSessionID: `held-${pilot.characterID}`, solarSystemID: JITA,
+    const row = { characterID: pilot.characterID, accountID: ACCOUNT.accountID, bridgeSessionID: `${gamePort ? "gp:" : ""}held-${pilot.characterID}`, solarSystemID: JITA,
       activeShipID: shipOf(pilot.characterID), boundHandles: new Map(), streamSubscribers: new Set(), transition: null, droneRecoveryReady: true,
       ...(secret ? { botClaimSecret: secret } : {}) };
     held.set(sessionID, row);
@@ -301,8 +313,8 @@ async function crew(world) {
     operations.finishLaunch(operationID);
     return { operationID, bots };
   }
-  const reset = () => { paths.length = 0; bodies.length = 0; answers.length = 0; world.sent.length = 0; world.asked.length = 0; };
-  return { app, api, host, clock, operations, board, held, errors, paths, bodies, answers, tab, asking, hosted, jetcanCrew, reset };
+  const reset = () => { paths.length = 0; bodies.length = 0; answers.length = 0; world.sent.length = 0; world.asked.length = 0; slept.length = 0; };
+  return { app, api, host, clock, operations, board, held, errors, paths, bodies, answers, slept, tab, asking, hosted, jetcanCrew, reset };
 }
 
 test.afterEach(async () => {
@@ -400,20 +412,17 @@ test("a hosted miner of an operation: the can its jettison made is found in the 
 
 test("a hosted miner of an operation: a can that shows a moment late is found, and a jettison that moved nothing and made no can is answered as done, with nothing given to the operation", { timeout: 20000 }, async () => {
   const world = space();
-  const { api, jetcanCrew, reset } = await crew(world);
+  const { api, jetcanCrew, slept, reset } = await crew(world);
   const { bots } = await jetcanCrew();
   assert.equal(await api.reserveMiningOperationTarget(belt("Belt I"), bots[7001].options), true);
   world.stack(7001, 931);
-  // The can is in space and the scene has not got it yet: it has it at the second look after.
-  world.jettison = "unseen";
-  const scene = world.scene;
-  let looks = 0;
-  world.scene = (characterID) => { looks += 1; if (looks === 3) world.unseen.clear(); return scene(characterID); };
+  // The can is in space and the scene has not got it yet: it has it at the second look after. Through the
+  // gateway the scene is the server's own, and the route looks twice more, a fifth of a second apart.
+  [world.jettison, world.arrivesAt] = ["unseen", 2];
   reset();
   assert.equal(await api.jettisonItems([931], bots[7001].options), null);
-  assert.deepEqual([world.asked, (await api.readMiningOperationAssignment(bots[7001].options)).ownedContainerIDs], [["scene", "scene", "scene"], [9001]]);
+  assert.deepEqual([world.asked, slept, (await api.readMiningOperationAssignment(bots[7001].options)).ownedContainerIDs], [["scene", "scene", "scene"], [200], [9001]]);
 
-  world.scene = scene;
   world.jettison = "refused";
   world.stack(7001, 932);
   assert.equal(await api.jettisonItems([932], bots[7001].options), null);
@@ -427,13 +436,17 @@ test("a hosted miner of an operation: where the can cannot be told, the jettison
     ["two new cans are seen", (world) => { const land = world.land; world.land = (pilot, items, more) => { land(pilot, []); return land(pilot, items, more); }; }],
   ]) {
     const world = space();
-    const { api, jetcanCrew } = await crew(world);
+    const fixture = await crew(world);
+    const { api, jetcanCrew } = fixture;
     const { bots } = await jetcanCrew();
     assert.equal(await api.reserveMiningOperationTarget(belt("Belt I"), bots[7001].options), true);
     world.stack(7001, 941);
     arrange(world);
+    fixture.reset();
     await assert.rejects(api.jettisonItems([941], bots[7001].options), refusedAs(409, "OPERATION_CONTAINER_PROVENANCE_UNCONFIRMED"), why);
     assert.equal(world.sent.length, 1, why);
+    // Through the gateway a can that is not seen at once is looked for twice more, and no longer.
+    assert.deepEqual(fixture.slept, why === "no new can is seen" ? [200, 200] : [], why);
     const told = await api.readMiningOperationAssignment(bots[7003].options);
     assert.deepEqual([told.ownedContainerIDs, told.containerProvenanceUnconfirmed, told.state], [[], true, "DEGRADED"], why);
   }
@@ -463,7 +476,7 @@ const invocation = (invocationID) => ({ runID: "run-of-the-bot", invocationID, s
 
 test("a hosted miner whose jettison the host keeps: the page posts the items and the invocation, and reads the custody settled: the ore gone from the hold, the one new can with exactly it, and the can given to the operation", { timeout: 20000 }, async () => {
   const world = space();
-  const { api, jetcanCrew, paths, bodies, answers, reset } = await crew(world);
+  const { api, jetcanCrew, paths, bodies, answers, slept, reset } = await crew(world);
   const { operationID, bots } = await jetcanCrew({ oreCustody: true });
   assert.equal(await api.reserveMiningOperationTarget(belt("Belt I"), bots[7001].options), true);
   world.stack(7001, 961, { quantity: 4000 });
@@ -479,6 +492,8 @@ test("a hosted miner whose jettison the host keeps: the page posts the items and
   assert.deepEqual([paths, bodies], [["POST /api/bridge/ship/jettison"], [{ itemIDs: [961, 962], confirm: true, invocation: invocation(1) }]]);
   // Before the call left the BFF the host had it as issued: a call whose answer never comes is still known of.
   assert.deepEqual(whenTheCallArrived, [["issued-pending", true]]);
+  // Through the gateway the can is in the scene when the call answers, and nothing is waited for.
+  assert.deepEqual(slept, []);
   assert.deepEqual(world.sent, [{ call: "ship.Jettison", args: [[961, 962]], kwargs: null, of: "held-7001" }]);
   // What the bot's flow goes by: a state it can go on from.
   assert.deepEqual([receipt.state, api.recoverableHostedJettison(receipt), receipt.containerID, receipt.reason], ["confirmed-created", true, 9002, null]);
@@ -629,4 +644,132 @@ test("a look at custody is the custody's owner's: a bot with none kept is answer
   await assert.rejects(api.reconcileHostedJettison((await hosted(ALONE)).options), refusedAs(409, "JETTISON_CUSTODY_UNAVAILABLE"));
   await assert.rejects(api.reconcileHostedJettison(tab), refusedAs(409, "JETTISON_CUSTODY_UNAVAILABLE"));
   assert.deepEqual(world.sent, []);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// On the game port
+// ---------------------------------------------------------------------------------------------------------------
+//
+// A pilot on the game port sees its own park, and a can is a ball that the ballpark update after the call's answer
+// brings. Seen on the running server on 2026-10-12: the can was in a game-port pilot's scene 1635, 944 and 1681 ms
+// after the answer in three runs, and 9 ms after it through the gateway, whose scene is the server's own. So on
+// the game port the route waits for the can, a quarter of a second at a time and three seconds at most, as a
+// launch waits for its drones; and it waits for nothing where the server has said that nothing went.
+
+test("on the game port a Mining Operation's can comes with the ballpark update after the answer: the route looks for it a quarter of a second at a time, finds it, and gives it to the operation", { timeout: 20000 }, async () => {
+  const world = space();
+  const { api, jetcanCrew, slept, reset } = await crew(world, { gamePort: true });
+  const { bots } = await jetcanCrew();
+  assert.equal(await api.reserveMiningOperationTarget(belt("Belt I"), bots[7001].options), true);
+  world.stack(7001, 1001);
+  // The can is in the pilot's park at the sixth look after the call: a second and a quarter on.
+  [world.jettison, world.arrivesAt] = ["unseen", 6];
+  reset();
+  assert.equal(await api.jettisonItems([1001], bots[7001].options), null);
+  assert.deepEqual(world.sent, [{ call: "ship.Jettison", args: [[1001]], kwargs: null, of: "gp:held-7001" }]);
+  // One look before the call, six after it, and five waits between those.
+  assert.deepEqual([world.asked, slept], [Array(7).fill("scene"), [250, 250, 250, 250, 250]]);
+  const mine = await api.readMiningOperationAssignment(bots[7003].options);
+  assert.deepEqual([mine.ownedContainerIDs, mine.containerProvenanceUnconfirmed], [[9001], false]);
+
+  // A can that is there at the first look is waited for not at all.
+  world.stack(7001, 1002);
+  [world.jettison, world.arrivesAt] = ["lands", null];
+  reset();
+  assert.equal(await api.jettisonItems([1002], bots[7001].options), null);
+  assert.deepEqual([world.asked, slept], [["scene", "scene"], []]);
+  // And a jettison the server answers as moving nothing has no can to wait for.
+  world.stack(7001, 1003);
+  world.jettison = "refused";
+  reset();
+  assert.equal(await api.jettisonItems([1003], bots[7001].options), null);
+  assert.deepEqual([world.asked, slept, (await api.readMiningOperationAssignment(bots[7003].options)).containerProvenanceUnconfirmed], [["scene", "scene"], [], false]);
+});
+
+test("on the game port a can that does not come is waited for three seconds, a quarter at a time, and the jettison then refused by name; one that comes at the last look is found", { timeout: 20000 }, async () => {
+  const world = space();
+  const { api, jetcanCrew, slept, reset } = await crew(world, { gamePort: true });
+  const { bots } = await jetcanCrew();
+  assert.equal(await api.reserveMiningOperationTarget(belt("Belt I"), bots[7001].options), true);
+  world.stack(7001, 1011);
+  // At the thirteenth look after the call, twelve waits on: the last there is.
+  [world.jettison, world.arrivesAt] = ["unseen", 13];
+  reset();
+  assert.equal(await api.jettisonItems([1011], bots[7001].options), null);
+  assert.deepEqual([slept.length, slept.reduce((sum, ms) => sum + ms, 0), new Set(slept).size, (await api.readMiningOperationAssignment(bots[7003].options)).ownedContainerIDs],
+    [12, 3000, 1, [9001]]);
+
+  world.stack(7001, 1012);
+  [world.jettison, world.arrivesAt] = ["unseen", 14];
+  reset();
+  await assert.rejects(api.jettisonItems([1012], bots[7001].options), refusedAs(409, "OPERATION_CONTAINER_PROVENANCE_UNCONFIRMED"));
+  const told = await api.readMiningOperationAssignment(bots[7003].options);
+  assert.deepEqual([slept.length, slept.reduce((sum, ms) => sum + ms, 0), told.ownedContainerIDs, told.containerProvenanceUnconfirmed], [12, 3000, [9001], true]);
+});
+
+test("on the game port a hosted miner's custody waits for the can too: the ore gone from the hold and no can yet is looked at again a quarter of a second at a time, and settled once the park has it", { timeout: 20000 }, async () => {
+  const world = space();
+  const { api, jetcanCrew, slept, reset } = await crew(world, { gamePort: true });
+  const { bots } = await jetcanCrew({ oreCustody: true });
+  assert.equal(await api.reserveMiningOperationTarget(belt("Belt I"), bots[7001].options), true);
+  world.stack(7001, 1021);
+  [world.jettison, world.arrivesAt] = ["unseen", 4];
+  reset();
+  const receipt = await api.jettisonItems([1021], bots[7001].options, invocation(1));
+  assert.deepEqual([receipt.state, receipt.containerID, receipt.reason, slept], ["confirmed-created", 9001, null, [250, 250, 250]]);
+  // The scene and the hold read after the call, the scene three times more, and then the can that came.
+  assert.deepEqual(world.asked, ["flight", "scene", `ListByFlags ${shipOf(7001)}`, "scene", `ListByFlags ${shipOf(7001)}`, "scene", "scene", "scene", "List 9001", "flight"]);
+  assert.deepEqual((await api.readMiningOperationAssignment(bots[7003].options)).ownedContainerIDs, [9001]);
+
+  // A jettison the server answers as moving nothing leaves the ore in the hold: no can is waited for.
+  world.stack(7001, 1022);
+  [world.jettison, world.arrivesAt] = ["refused", null];
+  reset();
+  assert.deepEqual([(await api.jettisonItems([1022], bots[7001].options, invocation(2))).state, slept], ["confirmed-no-ore-mutation", []]);
+});
+
+test("on the game port a hosted miner's can that does not come in three seconds leaves the custody unsettled by name; a look once the park has it settles it, with nothing waited for", { timeout: 20000 }, async () => {
+  const world = space();
+  const { api, jetcanCrew, slept, reset } = await crew(world, { gamePort: true });
+  const { bots } = await jetcanCrew({ oreCustody: true });
+  assert.equal(await api.reserveMiningOperationTarget(belt("Belt I"), bots[7001].options), true);
+  world.stack(7001, 1031);
+  [world.jettison, world.arrivesAt] = ["unseen", null];
+  reset();
+  await assert.rejects(api.jettisonItems([1031], bots[7001].options, invocation(1)), custodyError("JETTISON_OUTCOME_UNCONFIRMED", false, "ambiguous"));
+  assert.deepEqual([slept.length, slept.reduce((sum, ms) => sum + ms, 0), new Set(slept).size, world.sent.length], [12, 3000, 1, 1]);
+  // A look while it has still not come waits for it again, and no longer than that.
+  reset();
+  await assert.rejects(api.reconcileHostedJettison(bots[7001].options), custodyError("JETTISON_OUTCOME_UNCONFIRMED", false, "ambiguous"));
+  assert.equal(slept.length, 12);
+  // The park has it: a look finds it at once.
+  world.unseen.clear();
+  reset();
+  const settled = await api.reconcileHostedJettison(bots[7001].options);
+  assert.deepEqual([settled.state, settled.containerID, slept, world.sent], ["confirmed-created", 9001, [], []]);
+});
+
+test("on the game port a hosted miner's jettison that never happened is not waited for at any look: its ore is in the hold still", { timeout: 20000 }, async () => {
+  const world = space();
+  const { api, jetcanCrew, slept, reset } = await crew(world, { gamePort: true });
+  const { bots } = await jetcanCrew({ oreCustody: true });
+  assert.equal(await api.reserveMiningOperationTarget(belt("Belt I"), bots[7001].options), true);
+  world.stack(7001, 1041);
+  world.jettison = "never";
+  reset();
+  await assert.rejects(api.jettisonItems([1041], bots[7001].options, invocation(1)), custodyError("TEST_ANSWER_LOST", false, "ambiguous"));
+  await assert.rejects(api.reconcileHostedJettison(bots[7001].options), custodyError("JETTISON_OUTCOME_UNCONFIRMED", false, "ambiguous"));
+  assert.deepEqual(slept, []);
+});
+
+test("through the gateway a hosted miner's custody is not made to wait: a can the scene has not got leaves it unsettled at once", { timeout: 20000 }, async () => {
+  const world = space();
+  const { api, jetcanCrew, slept, reset } = await crew(world);
+  const { bots } = await jetcanCrew({ oreCustody: true });
+  assert.equal(await api.reserveMiningOperationTarget(belt("Belt I"), bots[7001].options), true);
+  world.stack(7001, 1051);
+  world.jettison = "unseen";
+  reset();
+  await assert.rejects(api.jettisonItems([1051], bots[7001].options, invocation(1)), custodyError("JETTISON_OUTCOME_UNCONFIRMED", false, "ambiguous"));
+  assert.deepEqual([slept, world.asked.filter((each) => each === "scene").length], [[], 2]);
 });
