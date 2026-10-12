@@ -940,8 +940,10 @@ pilot's or not (`16242cd1`), and all 80 pairs the page's source names are made b
 bookmarks' answer was set beside the recording (`78e11a7b`, comments alone): nothing a client meets in a row's
 form or in a folder's names, and two things named for the operator that no recording settles (this server's own
 "Agent Missions" folder, which a client would list among its folders that are not active, and its making of a
-pilot's first folder where a client makes its own). The bookmarks asked once in a session and kept, as the
-client keeps them, are next. In `eve.js` an advert's text outside ASCII goes as
+pilot's first folder where a client makes its own). A pilot's bookmarks are asked for as its character is chosen
+and kept by the game port's transport (`1d9703f3`), as the client's bookmark service keeps them: a bot's warp to a
+saved spot reached the server with one asking, where 18 had in its first 26 seconds. The fleet's answers set
+beside the recording are next. In `eve.js` an advert's text outside ASCII goes as
 unicode (`dcd459b0d`; on its origin since 2026-10-11, pushed by another hand than this loop's), and a dock
 asked from out of range of a station is finished by the server, as Tranquility finishes
 it (`869b28d2b`), and a pilot's client is sent no greatest speed for its ship

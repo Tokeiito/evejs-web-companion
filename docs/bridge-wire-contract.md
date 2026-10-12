@@ -897,6 +897,14 @@ subfolders of the active folders alone. One folder answered is this server's own
 "Agent Missions", not active unless a pilot has marked it so. The server
 reads nothing of what is sent with it. The page takes nothing but three lists for an
 answer: anything else is the bookmarks unread, never no bookmarks.
+**On the game port the transport keeps them** (`src/gamePort/pilots.js`, `bookmarksRead`):
+it asks as a character is chosen, as a client does, and answers this call from what it
+keeps, with nothing sent. What is kept is let go at the pilot's own write of a
+bookmark, a folder or a subfolder (on the manager, or on the ballpark's object) and at
+the server's four notices of a shared folder, and asked for when it is next wanted. A
+bookmark whose time has run out by the server's clock is not in the answer. An asking
+with something sent beside it is sent as it came. Through the gateway every asking is
+sent.
 `GET /api/bridge/bookmarks` still stands, and nothing of the page asks it. Where one of
 its reads fails it answers 200 all the same, with `null` for that read and the code in
 `errors`; a folder named that is not the session's to see comes back so

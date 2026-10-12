@@ -1606,6 +1606,22 @@ Take these defaults, and list each under "For the operator" in the log so they c
   a client lists its folders from. Where a server's own keeping is found in what a
   client is answered, say what a client would show of it, and find a recording before
   it is called a defect.
+- **What several of ours ask is kept where they all ask through.** The page has a flow
+  and each hosted bot has one, and a keeping in a flow is one for each. The game
+  port's transport is the one place they all ask through, and it has a table of reads
+  kept until something changes them (`pilots.js`, `KEPT_UNTIL_CHANGED`): a read the
+  client keeps is a line there (what it is kept as, the notices, the writes), and the
+  page is left as it was.
+- **A count an earlier unit made is the "before".** A bot's askings for its bookmarks
+  had been counted in the tab by the unit that made the read the page's. Look in the
+  log for a measure before staging to take it again.
+- **The server's own log counts what reaches it, on either transport.** A handler's
+  line for each asking it answers, by the character, is there for the gateway's calls
+  too, which have no packet line. Note the log's size before a check, and count from
+  there (`bkk-count.js`).
+- **"Kept as" is broken three ways, not two.** Something sent beside the call, a
+  keyword, and another read of the same service with nothing. The last lived until a
+  test asked one.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
