@@ -10,14 +10,10 @@ import {
 import {
   DEFAULT_COMPANION_SETUP,
   MAX_CAPACITOR_FLOOR,
-  MAX_DRONE_HOLD_OFF_SECONDS,
   MAX_FLEE_ATTEMPTS,
   MAX_FLEE_HEALTH_FLOOR,
   MIN_CAPACITOR_FLOOR,
-  MIN_DRONE_HOLD_OFF_SECONDS,
   MIN_FLEE_ATTEMPTS,
-  MAX_DRONE_HEALTH_FLOOR,
-  MIN_DRONE_HEALTH_FLOOR,
   MIN_FLEE_HEALTH_FLOOR,
   type CompanionSetup,
 } from "../nav/fleetCompanionLoop.ts";
@@ -94,11 +90,9 @@ test("validateBotLaunchGrant works on a companion's policy unchanged", () => {
 function validPayload(): Record<string, unknown> {
   return {
     fleeHealthFloor: 0.3,
-    droneHealthFloor: 0.5,
     capacitorFloor: 0.2,
     maxFleeAttempts: 3,
     repairsAtStation: false,
-    droneRedeployHoldOffSeconds: 10,
   };
 }
 
@@ -111,8 +105,6 @@ test("a well-formed setup round-trips", () => {
       capacitorFloor: 0.2,
       maxFleeAttempts: 3,
       repairsAtStation: false,
-      droneHealthFloor: 0.5,
-      droneRedeployHoldOffSeconds: 10,
     });
   }
 });
@@ -210,40 +202,14 @@ test("fleeHealthFloor refuses NaN, Infinity, and non-numbers", () => {
 // ⚠ THE CLOSED KEY SET IS WHAT MAKES THIS WORTH TESTING. A setup that reaches
 // the bot host has crossed a process boundary and been sat in a database; the
 // decoder refuses anything it does not recognise (outside the retired list)
-// and anything out of domain, which is why adding droneHealthFloor broke every
-// fixture in this file until they carried it. A field with no bounds test is
-// a field that can arrive as 47 and have a rung quietly compare a health
-// ratio against it.
-test("droneHealthFloor is refused outside its real domain bounds", () => {
-  assert.equal(
-    decodeCompanionSetupValue({ ...validPayload(), droneHealthFloor: MIN_DRONE_HEALTH_FLOOR - 0.01 }).ok,
-    false,
-  );
-  assert.equal(
-    decodeCompanionSetupValue({ ...validPayload(), droneHealthFloor: MAX_DRONE_HEALTH_FLOOR + 0.01 }).ok,
-    false,
-  );
-  assert.equal(
-    decodeCompanionSetupValue({ ...validPayload(), droneHealthFloor: MIN_DRONE_HEALTH_FLOOR }).ok,
-    true,
-    "the bound itself is inside the domain",
-  );
-});
-
-test("droneHealthFloor refuses NaN, Infinity, a string and an absent key", () => {
-  for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, "0.5", null]) {
-    assert.equal(
-      decodeCompanionSetupValue({ ...validPayload(), droneHealthFloor: bad }).ok,
-      false,
-      String(bad),
-    );
-  }
+// and anything out of domain.
+test("a missing threshold is refused, never defaulted", () => {
   const withoutIt: Record<string, unknown> = { ...validPayload() };
-  delete withoutIt.droneHealthFloor;
+  delete withoutIt.fleeHealthFloor;
   assert.equal(
     decodeCompanionSetupValue(withoutIt).ok,
     false,
-    "a missing threshold is refused, never defaulted -- a silent default here would fly a pilot on a number nobody chose",
+    "a silent default here would fly a pilot on a number nobody chose",
   );
 });
 
@@ -260,23 +226,6 @@ test("maxFleeAttempts is a bounded, positive, safe integer", () => {
   assert.equal(
     decodeCompanionSetupValue({ ...validPayload(), maxFleeAttempts: MAX_FLEE_ATTEMPTS }).ok,
     true,
-  );
-});
-
-test("droneRedeployHoldOffSeconds is refused outside its real domain bounds", () => {
-  assert.equal(
-    decodeCompanionSetupValue({
-      ...validPayload(),
-      droneRedeployHoldOffSeconds: MIN_DRONE_HOLD_OFF_SECONDS - 1,
-    }).ok,
-    false,
-  );
-  assert.equal(
-    decodeCompanionSetupValue({
-      ...validPayload(),
-      droneRedeployHoldOffSeconds: MAX_DRONE_HOLD_OFF_SECONDS + 1,
-    }).ok,
-    false,
   );
 });
 
@@ -304,6 +253,8 @@ function oldShapePayload(): Record<string, unknown> {
     obeys: ["broadcast", "tag"],
     chatCommandSenders: [SYNTHETIC_CHARACTER_ID],
     safeSpotBookmarkID: 4242,
+    droneHealthFloor: 0.5,
+    droneRedeployHoldOffSeconds: 10,
   };
 }
 
@@ -316,8 +267,6 @@ test("a stored old-shape config decodes to a valid setup — every retired key a
       capacitorFloor: 0.2,
       maxFleeAttempts: 3,
       repairsAtStation: false,
-      droneHealthFloor: 0.5,
-      droneRedeployHoldOffSeconds: 10,
     });
   }
 });
@@ -338,11 +287,17 @@ const RETIRED_KEYS = [
   "obeys",
   "chatCommandSenders",
   "safeSpotBookmarkID",
+  "droneHealthFloor",
+  "droneRedeployHoldOffSeconds",
 ] as const;
 
-test("each of the fifteen retired keys is accepted and dropped, one at a time", () => {
+test("each of the seventeen retired keys is accepted and dropped, one at a time", () => {
   const old = oldShapePayload();
-  assert.equal(RETIRED_KEYS.length, 15, "the list this test walks must match the spec's fifteen");
+  assert.equal(
+    RETIRED_KEYS.length,
+    17,
+    "the list this test walks must match the spec's fifteen plus the two drone settings",
+  );
   for (const key of RETIRED_KEYS) {
     const payload = { ...validPayload(), [key]: old[key] };
     const result = decodeCompanionSetupValue(payload);
