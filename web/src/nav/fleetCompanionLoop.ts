@@ -7506,6 +7506,17 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
     }
   }
 
+  // A job-over recall that failed is not one to wait on. The ladder recorded it
+  // when it chose the call, and this is the one place that knows the call did
+  // not land (seen live 2026-10-12: a first recall refused CHARACTER_IN_USE).
+  // Dropped, the next tick sends it again instead of after the half-minute.
+  function forgetFailedJobOverRecall(decision: CompanionDecision): void {
+    const held = decision.memory.jobOverRecall;
+    if (decision.action.kind === "recallDrones" && held !== null && mem.ladder.jobOverRecall === held) {
+      mem.ladder = { ...mem.ladder, jobOverRecall: null };
+    }
+  }
+
   async function tickBody(): Promise<FleetCompanionAction> {
     if (mem.status !== "running") {
       return { kind: "wait" };
@@ -7600,6 +7611,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
         settleAlignment(decision, isDefiniteCompanionRefusal(error) ? "refused" : "uncertain");
         settleFollow(decision, false, error);
         settleDroneEngagement(decision, false, error);
+        forgetFailedJobOverRecall(decision);
         if (token !== runToken || mem.status !== "running") {
           return { kind: "wait" };
         }
