@@ -2535,6 +2535,11 @@ Take these defaults, and list each under "For the operator" in the log so they c
   still passed: it read the structure's entry in `structureInfo`, which is
   built elsewhere. The breakage that is not caught says which place has no
   test; the place is read before the test is written.
+- **What a thing lists and what kind its values are, are two differences.**
+  A module's attribute values were to be made floats; the tally that showed
+  which stay integers showed also that Tranquility lists a module's charge
+  and this server does not. One is mended and the other is put on the list
+  by name, with its tally, and not folded into the first.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
