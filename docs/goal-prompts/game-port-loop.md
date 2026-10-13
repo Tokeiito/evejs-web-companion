@@ -2675,6 +2675,25 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A notice the client lives by and no recording has is read before it is
   sent**: when the thing it tells of changes here, to whom, and by what
   address. `OnSubscriptionChangedServer` is such a one.
+- **Sizing a notice that is not recorded, count its siblings that are.**
+  `OnSubscriptionChangedServer` is in no recording; a count of every
+  recorded broadcast by its name and idtype (one grep over every folder)
+  showed `OnSubscriptionTimeUpdateServer` seven times, which this server
+  did not send either, and gave the first its address. The count is cheap,
+  and is made before a decision is taken in a recording's place.
+- **A guard no input reaches is taken out, not tested around.** A notifier
+  that compares before and after needs no check for a replay: a replay
+  changes nothing. Ask of each `if` what input reaches it, before the
+  breakages do.
+- **Nothing is run against the live store outside the test runner**, a
+  one-line look at the tests' fixtures included (2026-10-13: the store
+  refused a reader's write; it need not have). The fixtures' identities are
+  read in `_shared/fixtureIdentities.js`, and in a test by
+  `installCoreFixtures`.
+- **A server wanted with a setting changed for a look** is started so by
+  the store's own script (`EVEJS_OMEGA_LICENSE=false bash store.sh save
+  <label>`): the setting is that server's alone, and the putting back
+  starts the next without it.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

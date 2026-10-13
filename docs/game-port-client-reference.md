@@ -1157,8 +1157,19 @@ word (`pilots.js`, `cloneGradeRead`). The web gateway's list has no call of the 
 manager's: the pair is on the game port's own list, and a gateway pilot has no grade. The page
 reads `GET /api/bridge/clone-grade` once as a pilot comes online and keeps it
 (`store.station.cloneGrade`). What goes by it so far is the safety selector's None button.
-This server sends no `OnSubscriptionChangedServer`. For a check, the server answers an
-alpha's grade when started with `EVE_CLONE_GRADE=alpha`.
+This server sent no `OnSubscriptionChangedServer` until 2026-10-13. It sends it now, by
+`clientID`, to each of an account's sessions when Omega days bought in the store change the
+account's grade (`eve.js` `6ad3fcf68`). The notice is in no recording: its address is its
+recorded sibling's. The sibling is `OnSubscriptionTimeUpdateServer(omegaTime)`, which
+Tranquility sends by `clientID` as the first thing of every
+`charUnboundMgr.SelectCharacterID`, ahead of the session change and ahead of the error of a
+selection its node turns away (seven in four recorded logins). It carries the end of the
+account's Omega time, a long, and the character sheet's PLEX panel reads it
+(`charsheet/plexPanel.py` 160). This server sends it there too (`eve.js` `6fac42e03`), None
+for an Alpha, and again when days are bought. The page has no reader of the end time. For a
+check, the server answers an alpha's grade when started with `EVE_CLONE_GRADE=alpha`, and
+makes Alphas of the accounts that have bought nothing when started with
+`EVEJS_OMEGA_LICENSE=false`.
 
 **Crimewatch's notices, 2026-10-10.** Each changes one thing the service keeps, and nothing
 is asked after it (`crimewatchSvc.py` 222 to 288).
