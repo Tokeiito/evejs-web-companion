@@ -1723,6 +1723,10 @@ test("the game port carries the customs office's transfer, the station's offices
     "subscriptionMgr.GetCloneGrade",
     // The ship's fighters, asked at every change of the session's ship. The gateway's list has the manager's writes only.
     "fighterMgr.GetFightersForShip",
+    // What is left of each accepted mission, asked at every change of the session and as each warp ends. The gateway's list has nothing of the mission tracker's.
+    "missionTrackerMgr.GetMissionInfoItems",
+    // The pilot's jump timers, asked once by the client's crimewatch service. The gateway's list has nothing of the jump timers' service.
+    "jumpTimers.GetTimers",
     "skillHandler.GetSkillQueueAndFreePoints",
     "home_station.get_home_station",
     "skillHandler.SaveNewQueue",

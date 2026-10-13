@@ -49,6 +49,8 @@ const CHOSEN_ASKS = [
   "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler", "agentMgr.GetMyJournalDetails",
   "fighterMgr.GetFightersForShip",
   "accessGroupBookmarkMgr.GetMyActiveBookmarks",
+  // crimewatchSvc.GetJumpTimers (crimewatchSvc.py 605 to 608), which its timer panel reads as it is made (crimewatchTimers.py 335, 355).
+  "jumpTimers.GetTimers",
   "charMgr.GetContactList", "onlineStatus.GetInitialState",
   // The stand-in's pilot is chosen in a station: its lobby's four.
   "officeManager.GetMyCorporationsOffices", "stationSvc.GetStationItemBits", "station.GetGuests", "map.GetStationInfo",
@@ -324,6 +326,9 @@ test("select logs in as the account and makes the retail client's three calls, i
     "fighterMgr.GetFightersForShip",
     // And its bookmarks, with the folders it knows, as the client's bookmark service asks for them.
     "accessGroupBookmarkMgr.GetMyActiveBookmarks",
+    // And its jump timers, which the client's crimewatch service asks once, by the service's name, for its timer
+    // panel as that is made (crimewatchSvc.py 605 to 608, crimewatchTimers.py 335 and 355).
+    "jumpTimers.GetTimers",
     // And its contacts and who of them is online, as the client's address book asks. (Its corporation's contacts
     // are asked of the registry, and not at all of an NPC corporation, which the stand-in pilot's is.)
     "charMgr.GetContactList",
@@ -1634,6 +1639,8 @@ test("the transport keeps a tally of what it called and how each compared with t
     "agentMgr.GetMyJournalDetails": { same: 1 },
     "fighterMgr.GetFightersForShip": { same: 1 },
     "accessGroupBookmarkMgr.GetMyActiveBookmarks": { same: 1 },
+    // The pilot's jump timers, asked once at the choosing as the client's crimewatch service asks them (crimewatchSvc.py 607).
+    "jumpTimers.GetTimers": { same: 1 },
     "agentMgr.GetAgents": { same: 1 },
     "notificationMgr.GetAllNotifications": { same: 1 },
     "contractProxy.GetLoginInfo": { same: 1 },
@@ -5255,7 +5262,7 @@ test("a character chosen has its skill handler asked for and bound, and asked wh
   const { pilots, session, handle } = await selected({ answers: handlerAnswers() }, SKILL_PAIRS);
   // Asked of skillMgr2 by name, with nothing, after the standings; the moniker it answered is bound by the first read,
   // by the character, and the rest go to the object, in the order a real client asked this server.
-  assert.deepEqual(session.calls.slice(3).map((call) => [`${call.service}.${call.method}`, call.args, call.kwargs]), CHOSEN_ASKS.map((pair) => [pair, [], pair === "notificationMgr.GetAllNotifications" ? { fromID: 0 } : null]));
+  assert.deepEqual(session.calls.slice(3).map((call) => [`${call.service}.${call.method}`, call.args, call.kwargs]), CHOSEN_ASKS.map((pair) => [pair, pair === "jumpTimers.GetTimers" ? [PILOT] : [], pair === "notificationMgr.GetAllNotifications" ? { fromID: 0 } : null]));
   assert.deepEqual([session.binds, session.carried, session.nodes], [[{ service: "skillHandler", params: PILOT }], ["GetSkills"], []]);
   assert.deepEqual(handlerCalls(session), LOGIN_READS);
   assert.deepEqual([...new Set(session.boundCalls.map((call) => call.objectID))], ["N=1:1"]);
