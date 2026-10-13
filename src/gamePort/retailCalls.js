@@ -1337,6 +1337,7 @@ const RETAIL_CALLS = Object.freeze({
   "allianceFittingMgr.GetFittings": reshaped(`${FITTING_SVC}:430`, fittingsOf("allianceID", "alliance"), "GetFittingMgr(session.allianceid).GetFittings(session.allianceid), and only for a pilot in an alliance"),
 
   // ── an inventory (a bound invbroker object) ───────────────────────────────
+  "invbroker.GetAvailableTurretSlots": judged("achievements/client/eventHandler.py:427", sentWithNothing, "invCache.GetInventoryFromId(shipID).GetAvailableTurretSlots(), nothing sent, on the ship's own inventory: how many of its turret hardpoints are free. The achievements' event handler asks it at every change of the session's ship to a ship (251 to 260, 419 to 429: godma's item of the ship first, and only for one of the ship category) and when what is fitted high changes (inventorysvc.py 124). Tranquility's recordings have it in 20: at a login, an ejection, a boarding."),
   "invbroker.List": reshaped(
     `${INV_CACHE}:1138`,
     // self.moniker.List(flag=flag): the flag is always a keyword, None when there is none.

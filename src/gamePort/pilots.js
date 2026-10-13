@@ -118,6 +118,8 @@ const SUPPRESSED_NOTIFICATIONS = new Set(["DoDestinyUpdate"]);
 /** appConst.charLockInTransferQueue, charLockOnSale: what characterSelection.py refuses with. */
 const LOCK_REFUSALS = new Map([[1, "CharacterTransferring"], [2, "CharacterOnSale"]]);
 const GROUP_CAPSULE = 29;
+/** const.categoryShip (idCheckers.IsShip). */
+const CATEGORY_SHIP = 6;
 const GROUP_SCANNER_PROBE = 479;
 const GROUP_SCAN_PROBE_LAUNCHER = 481;
 /** inventorycommon/const.py */
@@ -1383,6 +1385,9 @@ function createGamePortPilots({
       journalWork: Promise.resolve(),
       /** The askings after each accepted mission, one after another (missionInfoAsked). */
       missionInfoWork: Promise.resolve(),
+      /** The askings of the ship's free turret slots, one after another (turretSlotsAsked), and whether one is owed: the ship changed, and godma has not been primed since. */
+      turretSlotsWork: Promise.resolve(),
+      turretSlotsOwed: false,
       /** The facilities asked for by themselves at the server's word or a job's refusal, one after another (facilitiesAskedAfresh). */
       facilitiesWork: Promise.resolve(),
       /** facilitySvc.GetFacilityLocations's own keeping: a facility's places for an owner, by the two, each with when it was answered. */
@@ -1522,6 +1527,10 @@ function createGamePortPilots({
       // missionObjectivesTracker.OnSessionChanged (89 to 94): at any change of the session with a character on it,
       // each accepted mission's agent is asked what is left of it. (The choosing of the character asks them itself.)
       if (sessions.has(entry.handle)) missionInfoAsked(entry).catch(() => {});
+      // The achievements' eventHandler.OnSessionChanged (251 to 260): the ship changed, and to a ship: its free
+      // turret slots are owed, and asked of its own inventory once godma has the ship. (The choosing of the
+      // character owes them itself.)
+      if ("shipid" in changes && changes.shipid[1] !== null && sessions.has(entry.handle)) entry.turretSlotsOwed = true;
       // gameui.OnSessionChanged (462 to 469) and _HandleSessionChangeInSpace (619 to 630): in space after the
       // change, in another ship, in the same system, and with a ballpark. In another system the ballpark is a new
       // one, with a state of its own; docked, it is the station's or the structure's arm of gameui, which does neither.
@@ -1672,6 +1681,9 @@ function createGamePortPilots({
       for (const monthAndYear of monthAndNext(session.serverNow())) {
         await keptRead(entry, CALENDAR_PROXY, "GetEventList", shape(CALENDAR_PROXY, "GetEventList", monthAndYear, null, contextFor(entry))).catch(() => {});
       }
+      // The achievements' eventHandler.OnSessionChanged: a character chosen has a ship on its session where it had
+      // none, and that ship's free turret slots are owed: asked once godma has the ship.
+      entry.turretSlotsOwed = attribute(entry, "shipid") !== null;
       // agents.__GetAllAgents: the table of agents is asked for as a character is chosen. The choosing does not wait
       // on it, so it is asked for last: a call sent right behind it was answered 50 to 80 ms late (2026-10-09).
       agentsKnown(entry);
@@ -2652,6 +2664,37 @@ function createGamePortPilots({
   }
 
   /**
+   * The achievements' event handler (achievements/client/eventHandler.py). At every change of the session's ship
+   * to a ship (OnSessionChanged, 251 to 260: 'shipid' in the change and the new one not None) it reckons whether two
+   * turret hardpoints have come free (OnHighSlotFittingChanged, 419 to 429): godma's item of the session's ship,
+   * and where that is of the ship category, invCache.GetInventoryFromId(shipID).GetAvailableTurretSlots(): the
+   * ship's own inventory, bound of the manager where the pilot is, asked with nothing sent. A capsule is a ship.
+   * The choosing of a character is such a change. In the client godma has the ship by then: it primes at the
+   * session's change, before this in every recording. The game port's godma primes when something first wants the
+   * ship's readings, so the asking is owed from the change and made as godma is next primed (primeGodma), which a
+   * page's first reading of the flight brings about. Tranquility's recordings have the call in 20, at a login, at
+   * an ejection and at a boarding. Nothing is kept of the answer: it feeds the client's own operations, which no
+   * page has.
+   */
+  function turretSlotsAsked(entry) {
+    const asking = entry.turretSlotsWork.then(async () => {
+      if (!entry.turretSlotsOwed) return;
+      entry.turretSlotsOwed = false;
+      const place = whereabouts(entry);
+      if (place.shipID === null) return;
+      const item = entry.dogma.item(place.shipID);
+      if (!item || positive(item.categoryID) !== CATEGORY_SHIP) return;
+      // invCache.GetInventoryFromId(itemid, passive=0), noted as the bind of an inventory it is.
+      ledger.note("invbroker", "GetInventoryFromId", BOUND_AS_THE_CLIENT_BINDS);
+      const shipInventory = boundObjectID(await inventoryCall(entry, "location", "GetInventoryFromId", [argumentsToWire(place.shipID), 0]));
+      ledger.note("invbroker", "GetAvailableTurretSlots", shape("invbroker", "GetAvailableTurretSlots", [], null, contextFor(entry)));
+      await entry.session.callBound(shipInventory, "GetAvailableTurretSlots", [], null);
+    });
+    entry.turretSlotsWork = asking.catch(() => {});
+    return asking;
+  }
+
+  /**
    * An account's connection: the retail client at its character selection and
    * creation screens, logged in as the account and nothing more. One for an
    * account, opened by the first thing asked on it.
@@ -2838,6 +2881,8 @@ function createGamePortPilots({
       entry.dogma.loadAllInfo(allInfo);
       entry.dogmaLoaded = loadedFor;
       if (entry.targetsOwed) targetsRefreshed(entry).catch(() => {});
+      // The achievements' eventHandler.OnHighSlotFittingChanged: godma has the ship now, and its turret slots were owed.
+      if (entry.turretSlotsOwed) turretSlotsAsked(entry).catch(() => {});
       // The ship's own row, as the server gave it: what ShipGetInfo would answer, were it asked.
       const rows = keyValField(wireToBridgeJson(allInfo), "shipInfo");
       const own = rows && Array.isArray(rows.entries) ? rows.entries.find(([itemID]) => positive(itemID) === place.shipID) : null;
