@@ -1417,6 +1417,16 @@ active or completed (78 to 83, 95 to 99), keeps it by character, and takes `OnAi
 new_state_id)` for it from then (63 to 70). On this server that asking is what resumes the tutorial for the
 session (`server/src/services/npe/airNpeService.js`, after the call). The game port does not make it: the
 operator's to say.
+The insurgency campaign service (`eve/client/script/ui/services/insurgencyCampaignSvc.py`).
+`GetCurrentCampaignSnapshots_Memoized` (92 to 98) asks
+`sm.RemoteSvc('insurgencySolarsystem').GetAllVisibleCampaigns()` with nothing and keeps the list half a minute
+(`@Memoize(0.5)`: minutes, `caching/memoize.py` 14 to 37; with no argument a memoize keeps 108000 seconds, thirty
+hours); the server's notices of a campaign started, updated or ending where the client is let it go (59 to 90).
+Its readers are the insurgency's dashboard service, the agency and the map; the insurgency's info panel asks of
+itself, its `IsAvailable` (`ui/shared/infoPanels/infoPanelInsurgency.py` 287 to 290) asking whether the session's
+system is in a campaign each time the info panels are looked over. Tranquility's recordings have the call once at
+each login and once after each change of solar system. The game port asks it so since `5cd1aa7b`. The local
+campaign's own read (`GetLocalCampaignClientSnapshot`, 47 to 57) is not asked at a login, and is not made.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened

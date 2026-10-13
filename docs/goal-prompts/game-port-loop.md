@@ -3425,6 +3425,16 @@ Take these defaults, and list each under "For the operator" in the log so they c
   the server before the first look with it.** `ProcessCharacterLogon`
   answers nothing and looked like a notice of no weight; the handler
   starts a timer, sends a notice and writes the account's progress.
+- **`caching.Memoize` keeps for minutes, and with no argument for
+  thirty hours** (`caching/memoize.py` 12 to 37: `Memoize(0.5)` is
+  half a minute; a bare `@Memoize` is 108000 seconds), not "for as long
+  as the client runs". `threadutils.expiring_memoize(n)` is seconds.
+- **What the client keeps a while is seen live by two changes**, one
+  inside the time and one after it: `ins-live.js <bff> <account>
+  <character> <first system> <second system> <seconds between>
+  <server.log>` (session 2aba99c0's scratchpad) moves a pilot twice
+  with the GM's `/solar`, and `call-answers.js` shows which change the
+  call followed. Between a copy of the store and its putting back.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
