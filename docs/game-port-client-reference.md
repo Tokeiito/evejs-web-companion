@@ -1381,6 +1381,14 @@ minutes otherwise, and as the client shuts down (194 to 230). Its event handler 
 slots (above). Tranquility's recordings, of a later build, have the same call under the service name
 `monolithTaskTrackerMgr`. The game port asks it since `c89be25f`, at the choosing between the journal and the
 fighters, and sends nothing back.
+The non-diminishing injection service (`eve/client/script/ui/services/nonDiminishingInjectionService.py`) keeps how
+many skill injections the character may still take at their full worth. At every change of the session's
+character (`OnCharacterSessionChanged`, 23 to 25, scattered by `carbon/common/script/sys/sessions.py` 586 to 590)
+it asks `sm.RemoteSvc('nonDiminishingInjectionMgr').GetAvailableNonDiminishingInjections()` with nothing (49 to 51)
+and keeps the number; `OnNonDiminishingInjectionsAdded(amount)` and `OnNonDiminishingInjectionsUsed(amount)` count
+it up and down, `OnNonDiminishingInjectionsRemoved()` sets it to nought (27 to 42); `GetRemaining` answers what is
+kept (44 to 47). Tranquility's recordings of a login each have the one call, answered 0. The game port asks it so
+since `a293316f`, at the choosing between the bookmarks and the character's settings.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
