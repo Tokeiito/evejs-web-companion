@@ -1736,6 +1736,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "dynamicBountyMgr.GetOutputForClientSolarSystem",
     // The solar systems whose security is other than the map's, asked once by the client's security service. The gateway's list has the map service's read of them only.
     "securityMgr.get_modified_systems",
+    // The character's settings, asked once by the client's character settings service. The gateway's list has GetSettingsInfo, another thing.
+    "charMgr.GetCharacterSettings",
     "skillHandler.GetSkillQueueAndFreePoints",
     "home_station.get_home_station",
     "skillHandler.SaveNewQueue",
