@@ -2410,6 +2410,19 @@ Take these defaults, and list each under "For the operator" in the log so they c
   test account, between a copy of the store and its putting back.
 - **A regular expression written through a shell's here-document loses its backslashes.**
   Write that line of a test with the Edit tool, or look for the words with `includes`.
+- **Two requests of the same call at a login may be one call.** The first call of a service
+  goes to `Address::Any(service=...)`, is answered with an `ErrorResponse`, and is sent again
+  to `Address::Node(...)`. Count a recording's calls by their answers
+  (`grep -ac "<service>::<Method> args=" <recording>`), not by their requests.
+- **A stand-in that leaves a name out of a session change hides what goes by that name.** The
+  pilots' stand-in changed the session at a choosing without the ship, where the server's
+  change has it; a guard for "the choosing's own change" could not be broken by any test until
+  it did. Read the server's own change in a recording (`grep -a "ProcessSessionChange:  {"`).
+- **A call the game port begins to make at a login is shown in the login's report**, made
+  again in two steps (above: `login-only.js`, `login-report.js`, in session 2aba99c0's
+  scratchpad), and the report is committed with the unit's docs. A call that is not on the
+  gateway's list is added to `GAME_PORT_ONLY_CALLS` beside its entry, and a test pins that
+  list whole.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

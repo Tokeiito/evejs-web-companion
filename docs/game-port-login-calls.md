@@ -10,10 +10,10 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 
 | The game port | Kinds | Calls | Meaning |
 |---|---|---|---|
-| at login | 39 | 46 | The game port asks this at login too. |
+| at login | 40 | 47 | The game port asks this at login too. |
 | by a feature | 8 | 13 | A feature of the web client asks this when it is wanted, in a form read against the client's. |
 | by a route | 9 | 10 | The BFF has a route that can ask this. It has not been read against the client's. |
-| never | 44 | 48 | Nothing of ours asks this. |
+| never | 43 | 47 | Nothing of ours asks this. |
 
 ## Before a character is chosen
 
@@ -71,7 +71,7 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `securityMgr.get_modified_systems` | 1 | never |
 | `agentMgr.GetMyJournalDetails` | 1 | at login |
 | `achievementTrackerMgr.GetCompletedAchievementsAndClientEventCount` | 1 | never |
-| `fighterMgr.GetFightersForShip` | 1 | never |
+| `fighterMgr.GetFightersForShip` | 1 | at login |
 | `charMgr.GetSettingsInfo` | 1 | by a route |
 | `accessGroupBookmarkMgr.GetMyActiveBookmarks` | 1 | at login |
 | `localizationServer.UpdateLocalizationQAWrap` | 1 | never |
