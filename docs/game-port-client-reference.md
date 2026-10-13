@@ -1252,6 +1252,8 @@ starts it before any state has come); a whole state sets the tick's number, not 
 server, whose stamps for one moment are spread from its own to four past it, a park stood 0 to 3 ticks ahead of the
 server's stamp in six recordings, went back 11 times and stepped three ticks forward at once twice, and asked for a
 new state in none (`scripts/park-tick-against-stamps.js`). On Tranquility an entry arrives none or one ahead.
+Tranquility sends a ship that lies still nothing (5 `SetBallPosition` in its 46 recordings, none periodic); this
+server sent each one its own place again every five seconds until `eve.js` `37e38b889`.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened

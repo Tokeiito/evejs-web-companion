@@ -3053,6 +3053,18 @@ Take these defaults, and list each under "For the operator" in the log so they c
   park forward" was written from a list of arrivals; the park's own count
   of its steps forward said never (a nearer entry queued before it
   shields it).
+- **Read an entry's arguments and not only its name.** "A ball stopped
+  with a correction of its place" (`Stop` with `SetBallPosition`) was a
+  ship at rest sent its own place again every five seconds: the same
+  three numbers each time.
+- **What a correction corrects is measured**: the scratch
+  `anchor-moves.js <repo> <recording.jsonl> [connection]` lists every
+  `SetBallPosition` as the client's park applied it, how far it moved
+  the ball, and how it came against the park's tick. A net that moves
+  nothing in 29 tries and makes the client go back is not a net.
+- **The pilot's own ship told from the rest**: `lead-by-name.js <repo>
+  <recording.jsonl> <ms to add> <ball> [others]` counts only the entries
+  naming that ball first, or only those that do not.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
