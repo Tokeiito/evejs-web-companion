@@ -359,6 +359,7 @@ import { readCorporationMemberIDs } from "../bridge/corpMemberReads.ts";
 import {
   authoritativeFleetMemberCharacterIDs,
   fleetCommanderCharacterIDs,
+  fleetCommanderWhereabouts,
   decodeFleetCenter,
   decodeFleetInviteAnswerNotification,
   decodeFleetInviteNotification,
@@ -8556,6 +8557,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // orders", never as "anybody will do".
           fleetCommanderCharacterIDs:
             fleetSnapshot === null ? null : fleetCommanderCharacterIDs(fleetSnapshot),
+          // Where those commanders are, off the same rows: the rejoin warp
+          // (rung 9b) does not warp to one that is docked or in another system.
+          fleetCommanderWhereabouts:
+            fleetSnapshot === null ? null : fleetCommanderWhereabouts(fleetSnapshot),
           // The reload rung's three facts. ⚠ THE REQUEST IS WHAT SAYS WHICH
           // MODULES ARE GUNS — `weaponModuleIDs` is derived from the hull at
           // start (`requestForFit`), and without it this read cannot tell a
