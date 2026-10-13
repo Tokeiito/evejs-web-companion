@@ -2464,6 +2464,19 @@ Take these defaults, and list each under "For the operator" in the log so they c
   (`git show HEAD:<file> > <file>`), run, and put the edits back (`cmp`).
   Three reds of this unit's runs were there without it: a test that fails
   one run in five, and two files red before.
+- **The client's log prints what its own functions were handed.** Beside the
+  "MethodCalls" lines, which are cut at about 2,600 characters, it has "PAT:
+  Wrap: Enter <function> with self= ... args= (...)" lines for some of the
+  client's own functions. "Enter MakeShipActive with" has the ship's state of
+  every priming: 83 of them, where two of the 82 answers' own lines were
+  whole. Before a cut line is taken for the end of the evidence, `grep` the
+  recordings for the thing's own form (a row's columns) and for the function
+  the client hands it to.
+- **What a store keeps and what a client is told may be in different units.**
+  This server keeps a ship's condition as fractions and sent them in a row
+  the client reads as amounts. Read both ends before a number is called
+  right: what the store's own name for it means, and what the client's table
+  says the column is (`dgmAttributesByIdx`).
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
