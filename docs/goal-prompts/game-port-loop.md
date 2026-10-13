@@ -3003,15 +3003,22 @@ Take these defaults, and list each under "For the operator" in the log so they c
   each entry's stamp against the server's as it arrived, and
   `first-updates.js <repo> <recording.jsonl> <how many> [ball]` lists
   them.
-- **A measure by stamps is good only where the server's cadence is on
-  the second.** Its movement begins each second at a part of the second
-  that moves when a scene with no pilot in it wakes. Until the Next
-  list's cadence unit is done: a server just started (`store.sh save`
-  or `restore`), one undock, and nothing measured after a docking or a
-  logout. To see the cadence: the first row of a ship's or a rat's
-  movement after an undock or a command (the scratch `ego-ticks.js
-  <repo> <recording.jsonl> <movement log> <ball> <x,y,z of where it was
-  put>` prints the park's ball tick by tick beside the server's rows).
+- **This server's movement begins on the clock's second** (since
+  `eve.js` `ba3422279`; before, a scene with no pilot in it that woke began
+  its seconds where the waking fell, and a measure by stamps was out by
+  that part of a second). To see when a ball begins to move: the first
+  row of a ship's or a rat's movement after an undock or a command (the
+  scratch `ego-ticks.js <repo> <recording.jsonl> <movement log> <ball>
+  <x,y,z of where it was put>` prints the park's ball tick by tick beside
+  the server's rows). To see the cadence itself: the scratch
+  `cadence-probe.js <eve.js/server> [wake ms]` calls the server's
+  movement controller across a quiet stretch and says where its frames
+  fall.
+- **An old test that states what a change undoes** is read line by line
+  against CCP's code: the lines that state CCP's rule stay, the lines
+  that state this server's old way go, and which lines the change makes
+  untrue is found by calling the same code from a scratch script (as
+  `cadence-probe2.js` does), not by running the test.
 - **A pilot brought into space at a chosen part of the second**: the
   scratch `state-live.js <T> <bff> <account> <character> "<undocks:
   ms,ms>" "<logins: ms,ms>"` undocks (docking between), then warps to a

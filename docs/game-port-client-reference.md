@@ -1240,9 +1240,9 @@ ticks are a whole second apart from its own first (`Ballpark.cpp` `OnTick`; `doc
 3.2), and a stamp in CCP's library is the server park's own count of ticks. This server's stamps are the clock's
 seconds. Its first whole state is stamped the second after the one it is built in, with its moving balls where
 the scene will have them as that second begins (since `eve.js` `23459f2b3`; before, where they stood as it was
-built). Its movement is authored once a second on a cadence of its own, which begins on the clock's second on a
-server just started and at another part of the second after a scene with no pilot in it wakes (measured
-2026-10-13: 0.36, 0.60 and 0.86 s in).
+built). Its movement is authored once a second, on the clock's second (since `eve.js` `ba3422279`; before, a scene
+with no pilot in it that woke began its seconds where the waking fell: 0.36, 0.60 and 0.86 s in, measured
+2026-10-13).
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
