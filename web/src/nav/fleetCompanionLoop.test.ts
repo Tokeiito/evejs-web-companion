@@ -8,6 +8,7 @@ import {
   FLEET_COMPANION_BURST_MS,
   FLEET_COMPANION_CADENCE_MS,
   TANK_LAYER_HURT_THRESHOLD,
+  abandonDronesFloor,
   createFleetCompanion,
   decideCompanionAction,
   freshLadderMemory,
@@ -4108,8 +4109,55 @@ test("a fleeing ship still lights an idle hardener first", () => {
 
 test("a flee recalls what is in space before it warps", () => {
   const request: FleetCompanionRequest = REQUEST;
-  const decision = decideCompanionAction(request, fleeObs({ myDroneIDs: [DRONE_A] }));
+  const decision = decideCompanionAction(request, fleeObs({ health: 0.25, myDroneIDs: [DRONE_A] }));
   assert.deepEqual(decision.action, { kind: "recallDrones", droneIDs: [DRONE_A] });
+});
+
+// --- the second floor: the tank is done, the drones are left -------------------
+//
+// Seen live 2026-10-12: a pilot crossed its floor, waited 16 s for its drones,
+// and was destroyed two seconds after its warp went out. The operator's rule:
+// below the flee floor recall and wait; below the second floor go now.
+
+test("a ship below its second floor warps at once and sends no recall", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, fleeHealthFloor: 0.3, abandonDronesHealthFloor: 0.15 };
+  const decision = decideCompanionAction(request, fleeObs({ health: 0.1, myDroneIDs: [DRONE_A] }));
+  assert.deepEqual(decision.action, { kind: "warp", targetID: 60000001 });
+  assert.equal(decision.phase, "Getting clear");
+});
+
+test("a ship that crosses its second floor while waiting stops waiting", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, fleeHealthFloor: 0.3, abandonDronesHealthFloor: 0.15 };
+  const recall = decideCompanionAction(request, fleeObs({ health: 0.25, myDroneIDs: [DRONE_A] }));
+  assert.equal(recall.action.kind, "recallDrones");
+  const holding = decideCompanionAction(request, fleeObs({ health: 0.2, myDroneIDs: [DRONE_A] }), recall.memory);
+  assert.equal(holding.action.kind, "wait", "between the floors the wait stands");
+  const done = decideCompanionAction(request, fleeObs({ health: 0.12, myDroneIDs: [DRONE_A] }), holding.memory);
+  assert.deepEqual(done.action, { kind: "warp", targetID: 60000001 });
+});
+
+test("an unreadable health mid-wait keeps the wait rather than leaving the drones", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, fleeHealthFloor: 0.3, abandonDronesHealthFloor: 0.15 };
+  const recall = decideCompanionAction(request, fleeObs({ health: 0.25, myDroneIDs: [DRONE_A] }));
+  const blind = decideCompanionAction(request, fleeObs({ health: null, myDroneIDs: [DRONE_A] }), recall.memory);
+  assert.equal(blind.action.kind, "wait");
+});
+
+test("a setup saved before the second floor existed leaves its drones at half its flee floor", () => {
+  const { abandonDronesHealthFloor: _dropped, ...older } = { ...REQUEST, fleeHealthFloor: 0.4 };
+  const request: FleetCompanionRequest = older;
+  assert.equal(abandonDronesFloor(request), 0.2);
+  assert.equal(
+    decideCompanionAction(request, fleeObs({ health: 0.21, myDroneIDs: [DRONE_A] })).action.kind,
+    "recallDrones",
+  );
+  assert.equal(decideCompanionAction(request, fleeObs({ health: 0.19, myDroneIDs: [DRONE_A] })).action.kind, "warp");
+});
+
+test("a second floor of zero never leaves the drones before the wait runs out", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, fleeHealthFloor: 0.3, abandonDronesHealthFloor: 0 };
+  const decision = decideCompanionAction(request, fleeObs({ health: 0.01, myDroneIDs: [DRONE_A] }));
+  assert.equal(decision.action.kind, "recallDrones");
 });
 
 // "Flee outranks drone redeploy", enforced at RUNTIME as the spec asked and not
