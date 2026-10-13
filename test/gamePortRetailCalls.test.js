@@ -1740,6 +1740,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "charMgr.GetCharacterSettings",
     // What the character has completed of the client's achievements, asked once by the client's achievement service. The gateway's list has nothing of the tracker's.
     "achievementTrackerMgr.GetCompletedAchievementsAndClientEventCount",
+    // How many non-diminishing skill injections the character has left, asked as a character comes onto the session. The gateway's list has nothing of that manager's.
+    "nonDiminishingInjectionMgr.GetAvailableNonDiminishingInjections",
     "skillHandler.GetSkillQueueAndFreePoints",
     "home_station.get_home_station",
     "skillHandler.SaveNewQueue",

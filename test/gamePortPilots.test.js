@@ -54,6 +54,8 @@ const CHOSEN_ASKS = [
   "achievementTrackerMgr.GetCompletedAchievementsAndClientEventCount",
   "fighterMgr.GetFightersForShip",
   "accessGroupBookmarkMgr.GetMyActiveBookmarks",
+  // nonDiminishingInjection.OnCharacterSessionChanged (nonDiminishingInjectionService.py 23 to 25, 49 to 51); ahead of the settings in the client's own login.
+  "nonDiminishingInjectionMgr.GetAvailableNonDiminishingInjections",
   // characterSettingsSvc._GetSettings (characterSettingsSvc.py 31 to 34), as the first of the client's services wants a setting.
   "charMgr.GetCharacterSettings",
   // crimewatchSvc.GetJumpTimers (crimewatchSvc.py 605 to 608), which its timer panel reads as it is made (crimewatchTimers.py 335, 355).
@@ -390,6 +392,9 @@ test("select logs in as the account and makes the retail client's three calls, i
     "fighterMgr.GetFightersForShip",
     // And its bookmarks, with the folders it knows, as the client's bookmark service asks for them.
     "accessGroupBookmarkMgr.GetMyActiveBookmarks",
+    // And how many non-diminishing skill injections it has left, which the client's service for them asks as a
+    // character comes onto the session (nonDiminishingInjectionService.py 23 to 25, 49 to 51).
+    "nonDiminishingInjectionMgr.GetAvailableNonDiminishingInjections",
     // And the settings the client keeps at the server for the character, which its character settings service
     // asks once, when something first wants one (characterSettingsSvc.py 31 to 34).
     "charMgr.GetCharacterSettings",
@@ -1714,6 +1719,8 @@ test("the transport keeps a tally of what it called and how each compared with t
     "accessGroupBookmarkMgr.GetMyActiveBookmarks": { same: 1 },
     // The character's settings, asked once at the choosing (characterSettingsSvc.py 33).
     "charMgr.GetCharacterSettings": { same: 1 },
+    // How many non-diminishing injections the character has left, asked at the choosing (nonDiminishingInjectionService.py 50).
+    "nonDiminishingInjectionMgr.GetAvailableNonDiminishingInjections": { same: 1 },
     // The pilot's jump timers, asked once at the choosing as the client's crimewatch service asks them (crimewatchSvc.py 607).
     "jumpTimers.GetTimers": { same: 1 },
     // The wars of the pilot's corporation, asked of the war registry's moniker at the choosing (war_cso.py 103).
