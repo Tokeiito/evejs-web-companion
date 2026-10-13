@@ -2561,14 +2561,23 @@ Take these defaults, and list each under "For the operator" in the log so they c
   `baseDogmaItem.Load`), and where this server cannot know it the thing is
   left and said to be left.
 - **A reader that says "unsure" is followed, not rounded.** Six of a
-  character's attributes were in both forms in the bytes of one answer: the
-  first answer carries the character's attributes twice (its item, and
-  `shipModifiedCharAttribs`), and only one had been mended. A reader of
+  character's attributes were in both forms in the bytes of one answer: this
+  server's first answer carried the character's attributes twice (its item,
+  and `shipModifiedCharAttribs`), and only one had been mended. A reader of
   bytes names what it cannot tell, and a thing an answer has twice is read
-  twice. The client's log has what godma was handed at such a refresh, each
-  value in its own form ("UpdateAttributeIDs" lines, `refresh-recorded.js`);
-  with "godma UpdateItem:" these are the two places the log has attribute
-  values whole.
+  twice.
+- **Who prints a log line is read in the client's code before the line is
+  evidence.** "UpdateAttributeIDs" lines are printed by
+  `RefreshItemAttributes`, which godma's `UpdateItem` calls for every item
+  it loads: a run of them after an item is that item's loading. On
+  2026-10-13 such runs were taken for the refresh from
+  `shipModifiedCharAttribs`, a mend was built on it, and it was taken back
+  a unit later: there was one run after each item where the claim wanted
+  two. Count what a claim predicts. And a field of an answer is looked for
+  by its own name first: `GetAllInfo`'s "MethodCalls" line is cut at about
+  2,600 characters, but its first fields (`systemWideEffectsOnShip`,
+  `shipModifiedCharAttribs`) are whole in every one
+  (`allinfo-recorded.js`).
 - **A breakage that no test catches is a test to write or a line to take
   out.** Five things read alike are each given a value of their own in a
   test, or two of them crossed pass it; and a guard that every test passes
@@ -2577,6 +2586,18 @@ Take these defaults, and list each under "For the operator" in the log so they c
   the putting back.** The store is put back, the server's tests are run, and
   the store is copied again for the recording: twice the restarts, and no
   test on a staged store.
+- **An attribute that is not listed is read as its default** (godma's
+  `GetAttribute`, and the dogma location's `itemAttributeFactory`). So
+  what a type has may not be left out of an item, and what it has not may be
+  where it holds the default: that is how Tranquility's character lists 68
+  and no more.
+- **A test with nobody in it finds what a pilot hides.** A character that is
+  in no store has no industry figures, and the reckoning of them is no
+  number; a real pilot never shows it. A value is laid over another only
+  where it is a number.
+- **An older test that asks for what Tranquility does not send is read to
+  its reason and rewritten to ask for that**: here the value a client would
+  read of an attribute, not the attribute's being listed.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
