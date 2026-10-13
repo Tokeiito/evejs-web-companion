@@ -3243,6 +3243,23 @@ function createGamePortPilots({
     return names.map((name) => packets.text(name)).filter((name) => typeof name === "string" && name.length > 0);
   }
 
+  /**
+   * XmppChat.OnSessionChanged (149 to 164): the chat service hears each change of the session, and leaves the
+   * channel of each of its session categories whose value changed from something. Here the chat's connection is
+   * the BFF's, not this transport's, so it is told: each change of the pilot's session, as { name: [old, new] }
+   * with each value a whole number above nought or null. Answers what stops the telling.
+   */
+  function chatSessionChanges(listener, sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    return entry.session.onSessionChange((changes) => {
+      const told = {};
+      for (const [name, pair] of Object.entries(changes || {})) {
+        if (Array.isArray(pair)) told[name] = [positive(pair[0]), positive(pair[1])];
+      }
+      listener(told);
+    });
+  }
+
   // ── the price table, as the client's cfg has it ───────────────────────────
 
   /**
@@ -5074,6 +5091,7 @@ function createGamePortPilots({
     chatConnection,
     chatSecret,
     chatChannels,
+    chatSessionChanges,
     shutdown,
     /** Every pair called since this transport was made, most called first, with how each compares with the retail client's. */
     callLedger: () => ledger.rows(),

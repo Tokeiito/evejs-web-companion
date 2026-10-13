@@ -106,6 +106,17 @@ const LOCAL_CATEGORIES = new Set(["local", "nolocal", "wormhole", "nullsec", "tr
 // Local with nothing joined: for this category the client makes the window and
 // sends no presence (xmppchatsvc.py 1050 to 1054).
 const SUPPRESSED_LOCAL_CATEGORY = "nolocal";
+// SESSION_CHANGE_CATEGORIES (xmppchatsvc.py 35 to 45): the values of the
+// session a channel hangs on, each with its channel's category, in the client's
+// own order. Here a category is also the word a page reads the channel by.
+const SESSION_CHANGE_CATEGORIES = [
+  ["solarsystemid2", "local"],
+  ["allianceid", "alliance"],
+  ["corpid", "corp"],
+  ["fleetid", "fleet"],
+  ["warfactionid", "faction"],
+];
+const SESSION_CHANNELS = new Set(SESSION_CHANGE_CATEGORIES.map(([, channel]) => channel));
 // chatutil.TruncateVeryLongText (chatutil/__init__.py 11, 302 to 305): a line
 // longer than this is cut five short of it and ends ' ...'.
 const MAX_TEXT_LEN_SAFEGUARD = 2048;
@@ -345,6 +356,16 @@ class XmppChatSession {
     // joins, and the second joins still waiting for the server's answer.
     this.systemChannelsJoinedOnce = false;
     this.joinEchoes = new Map();
+    // The session's channels this connection has been in, by category and the
+    // value of the session each hung on ("local:30000142" -> the room's JID):
+    // what a change of the session leaves (`onSessionChanged`). And the rooms
+    // left at a change, which a late presence from one must not bring back.
+    this.sessionRooms = new Map();
+    this.leftRooms = new Set();
+    this.stopHearingSession =
+      this.login && typeof this.login.onSessionChange === "function"
+        ? this.login.onSessionChange((changes) => this.onSessionChanged(changes))
+        : null;
     this.socket = null;
     this.buffer = "";
     this.ready = false;
@@ -809,6 +830,8 @@ class XmppChatSession {
       );
     }
     this.rooms.clear();
+    this.sessionRooms.clear();
+    this.leftRooms.clear();
     this.systemChannelsAskedAtMs = 0;
   }
 
@@ -816,6 +839,8 @@ class XmppChatSession {
     this.stopPing();
     this.ready = false;
     this.rooms.clear();
+    this.sessionRooms.clear();
+    this.leftRooms.clear();
     this.systemChannelsAskedAtMs = 0;
     if (this.socket) {
       this.socket.removeAllListeners();
@@ -873,6 +898,9 @@ class XmppChatSession {
     if (!characterID) {
       return;
     }
+    if (this.login && !/\btype=['"](unavailable|leave)['"]/i.test(xml)) {
+      this.takeSessionChannel(roomJid, roomName, characterID);
+    }
     if (!this.rosters.has(roomName)) {
       this.rosters.set(roomName, new Map());
     }
@@ -918,6 +946,9 @@ class XmppChatSession {
    */
   onMessage(xml) {
     const from = attr(xml, "from");
+    if (this.login && this.takeInvite(from, xml)) {
+      return;
+    }
     const slash = from.indexOf("/");
     if (slash === -1) {
       return;
@@ -1013,6 +1044,7 @@ class XmppChatSession {
       const pending = room.pending;
       room.pending = null;
       this.rooms.set(channel, room);
+      this.rememberSessionRoom(channel, roomName, roomJid);
       pending.resolve(room);
       return;
     }
@@ -1067,10 +1099,12 @@ class XmppChatSession {
    * game-port session, each is joined as named, and `channel` is answered with
    * the room of its category.
    *
-   * ⚠ A MOVE IS STILL NOTICED THIS MODULE'S WAY, NOT THE CLIENT'S. The client
-   * leaves and joins at its session's changes; that is a later step. Until
-   * then a pilot whose tracked system is no longer the one its Local was
-   * joined for leaves that room and asks the server for its channels again.
+   * A move is not noticed here. The client leaves a session channel at the
+   * session's own change and takes the new one from what the server sends
+   * (`onSessionChanged`, `takeSessionChannel`, `takeInvite`), and so does this.
+   * A channel with no room is asked for again of the server, no sooner than
+   * five seconds after the last asking or the last change of the session: the
+   * time the server has to send the new room before this asks.
    */
   async ensureSystemChannel(channel, solarSystemID) {
     const existing = this.rooms.get(channel) || null;
@@ -1078,15 +1112,7 @@ class XmppChatSession {
       return existing.pending.promise;
     }
     if (existing) {
-      const moved =
-        channel === "local" &&
-        solarSystemID > 0 &&
-        existing.joinedFor > 0 &&
-        existing.joinedFor !== solarSystemID;
-      if (!moved) {
-        return existing;
-      }
-      this.leaveRoom(existing);
+      return existing;
     }
     await this.joinSystemChannels(solarSystemID);
     const room = this.rooms.get(channel) || null;
@@ -1096,6 +1122,139 @@ class XmppChatSession {
       });
     }
     return room.pending ? room.pending.promise : room;
+  }
+
+  /** A channel's category as a page reads it: the local kinds are all Local. */
+  channelOf(roomName) {
+    const category = String(roomName).split("_")[0];
+    return LOCAL_CATEGORIES.has(category) ? "local" : category;
+  }
+
+  /** Keep which room a session channel was, by the session's value it hung on. */
+  rememberSessionRoom(channel, roomName, roomJid) {
+    if (!this.login || !SESSION_CHANNELS.has(channel)) {
+      return;
+    }
+    const hungOn = positiveInt(String(roomName).split("_").pop());
+    if (hungOn) {
+      this.sessionRooms.set(`${channel}:${hungOn}`, roomJid);
+      this.leftRooms.delete(roomJid);
+    }
+  }
+
+  /**
+   * XmppChat.OnSessionChanged (xmppchatsvc.py 149 to 164): for each of the
+   * session's values a channel hangs on, in the client's order, where the
+   * value changed from something, the channel of the old value is left. The
+   * client names that channel from the old value; here it is the room this
+   * connection was in for that value, and `<category>_<old>` where it was in
+   * none (the client sends its leave whether or not it had joined, 1154 to
+   * 1162).
+   *
+   * Nothing is joined here. The new channel comes from the server: an invite
+   * from `admin` (`takeInvite`), or the new room's own presences
+   * (`takeSessionChannel`), which is what this server sends.
+   */
+  onSessionChanged(changes) {
+    if (this.closed || !this.ready || !changes) {
+      return;
+    }
+    for (const [sessionValue, channel] of SESSION_CHANGE_CATEGORIES) {
+      const change = changes[sessionValue];
+      const old = Array.isArray(change) ? positiveInt(change[0]) : 0;
+      if (!old) {
+        continue;
+      }
+      const roomJid =
+        this.sessionRooms.get(`${channel}:${old}`) || `${channel}_${old}@${this.conferenceDomain}`;
+      this.sessionRooms.delete(`${channel}:${old}`);
+      this.leftRooms.add(roomJid);
+      this.write(this.retailStanzas().leave(roomJid));
+      const room = this.rooms.get(channel) || null;
+      if (room && !room.pending && (room.roomJid === roomJid || room.roomJid === null)) {
+        this.rooms.delete(channel);
+        this.messages.delete(room.roomName);
+        this.rosters.delete(room.roomName);
+      }
+      // Coming back to what was left is a new channel again.
+      const now = Array.isArray(change) ? positiveInt(change[1]) : 0;
+      if (now) {
+        for (const left of [...this.leftRooms]) {
+          if (this.channelOf(left.split("@")[0]) === channel && left.split("@")[0].endsWith(`_${now}`)) {
+            this.leftRooms.delete(left);
+          }
+        }
+      }
+    }
+    // The server has until five seconds from now to send the new rooms before
+    // a reader's asking has the channels asked for again.
+    this.systemChannelsAskedAtMs = Date.now();
+  }
+
+  /**
+   * A presence from a session channel's room that is not the room kept for its
+   * category: that room is the category's from here on.
+   *
+   * The client's own rule: a presence in a channel has the window of the
+   * channel's category made or found and set to that channel
+   * (`_HandleXmppPresence`, xmppchatsvc.py 632 to 687, and
+   * `GetOrCreateGroupChatWindow`, 853 to 881), so a Local window shows
+   * whichever Local the server last sent a presence of. In the wormhole,
+   * nullsec and Triglavian kinds the client passes over its own presence (652
+   * to 654). A room left at a change of the session is not taken back by a
+   * presence that was already on its way.
+   */
+  takeSessionChannel(roomJid, roomName, characterID) {
+    const category = String(roomName).split("_")[0];
+    const channel = this.channelOf(roomName);
+    if (!SESSION_CHANNELS.has(channel) || this.leftRooms.has(roomJid)) {
+      return;
+    }
+    if (characterID === this.characterID && ["wormhole", "nullsec", "triglavian"].includes(category)) {
+      return;
+    }
+    const kept = this.rooms.get(channel) || null;
+    if (kept && (kept.pending || kept.roomJid === roomJid)) {
+      return;
+    }
+    this.rooms.set(channel, {
+      channel,
+      roomJid,
+      roomName,
+      alias: `${roomJid}/${this.characterID}`,
+      joinedAtMs: Date.now(),
+      joinedFor: channel === "local" ? positiveInt(roomName.split("_").pop()) : 0,
+      pending: null,
+    });
+    this.rememberSessionRoom(channel, roomName, roomJid);
+  }
+
+  /**
+   * An invite to a channel: from `admin`, the channel is joined
+   * (`_HandleInvite`, xmppchatsvc.py 550 to 559; the sender is the invite's
+   * `from` up to its `@`, chatutil/__init__.py 56 to 64). An invite from
+   * anybody else is a player's to accept in a dialog, which no page has, and
+   * is passed over. Answers whether the message was an invite.
+   */
+  takeInvite(from, xml) {
+    if (!/<x\b[^>]*xmlns=['"]http:\/\/jabber\.org\/protocol\/muc#user['"]/i.test(xml)) {
+      return false;
+    }
+    const invite = /<invite\b[^>]*>/i.exec(xml);
+    if (!invite) {
+      return false;
+    }
+    const sender = attr(invite[0], "from").split("@")[0];
+    const roomName = from.split("@")[0];
+    if (sender === "admin" && roomName) {
+      const channel = this.channelOf(roomName);
+      const kept = this.rooms.get(channel) || null;
+      if (!(kept && (kept.pending || kept.roomName === roomName))) {
+        this.leftRooms.delete(`${roomName}@${this.conferenceDomain}`);
+        this.joinChannel(channel, 0, roomName).catch(() => {});
+      }
+    }
+    return true;
   }
 
   /**
@@ -1372,6 +1531,10 @@ class XmppChatSession {
 
   close() {
     this.closed = true;
+    if (this.stopHearingSession) {
+      this.stopHearingSession();
+      this.stopHearingSession = null;
+    }
     // Politeness, not bookkeeping: the server drops us from every room on the
     // socket's own close (`removeClientFromRooms`), so this only spares it the
     // half-open reap and makes the transcript read like a client leaving.
@@ -1383,7 +1546,7 @@ class XmppChatSession {
     // faction's), and then the stream closed (OnSessionReset, 170 to 171).
     if (this.login && this.ready) {
       const leaves = [];
-      for (const channel of ["local", "alliance", "corp", "fleet", "faction"]) {
+      for (const [, channel] of SESSION_CHANGE_CATEGORIES) {
         const room = this.rooms.get(channel) || null;
         if (room && room.roomJid) {
           leaves.push(this.retailStanzas().leave(room.roomJid));

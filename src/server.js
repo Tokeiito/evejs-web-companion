@@ -18348,6 +18348,12 @@ function heldChatLogin(held) {
     connection: () => gamePortPilots.chatConnection(...whose()),
     secret: () => gamePortPilots.chatSecret(...whose()),
     channels: () => gamePortPilots.chatChannels(...whose()),
+    // The session's changes, at which the client's chat service leaves the
+    // channels of what changed (xmppchatsvc.py 149 to 164).
+    onSessionChange: (listener) =>
+      (typeof gamePortPilots.chatSessionChanges === "function"
+        ? gamePortPilots.chatSessionChanges(listener, ...whose())
+        : () => {}),
   };
 }
 
