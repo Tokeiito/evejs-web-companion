@@ -456,6 +456,10 @@ const MONIKER_SERVICES = Object.freeze({
   // Moniker('reprocessingSvc', session.structureid or session.stationid), kept until the character, the station or
   // the structure changes. Nothing of the reprocessing service is asked by its name.
   reprocessingSvc: new Set(),
+  // war_cso.GetMoniker (57 to 67): eveMoniker.GetWar(), which is Moniker('warRegistry', (session.allianceid or
+  // session.corpid, 1)), kept until that owner is another's and bound before each use. The client reaches the war
+  // registry by nothing else: nothing of it is asked by its name.
+  warRegistry: new Set(),
 });
 /**
  * Monikers for something a session may not have, by what it is in the call's context: the client cannot make one
@@ -771,6 +775,23 @@ const ownCharacterAlone = (args, kwargs, context) => (args.length === 1 && conte
   && Number(args[0]) === Number(context.characterID) && Object.keys(kwargs).length === 0
   ? {}
   : { status: "differs", note: "The client asks with the pilot's own character alone." });
+/**
+ * war_cso.GetWars (95 to 104): self.GetMoniker().GetWars(ownerID), the owner always named and nothing else sent.
+ * A route that names none means the pilot's own: its alliance, or its corporation where it is in none, the owner
+ * the client's own askings name (IsPlayerCurrentlyAtWarOrInFW, 302 to 306; _CheckForWarStartingOrEnding, 185).
+ */
+const ofAWarOwner = (args, kwargs, context) => {
+  if (Object.keys(kwargs).length > 0 || args.length > 1) return { args, kwargs, status: "differs", note: "The client asks the war registry for one owner's wars, with the owner alone." };
+  if (args.length === 1) {
+    return Number.isSafeInteger(args[0]) && args[0] > 0
+      ? { args, kwargs, status: "same" }
+      : { args, kwargs, status: "differs", note: "The client asks the war registry for one owner's wars, with the owner alone." };
+  }
+  const ownerID = context.allianceID ?? context.corporationID ?? null;
+  return ownerID === null
+    ? { args, kwargs, status: "differs", note: "The client names the owner whose wars it asks for. With no corporation known there is none to name, and the call goes as it was given." }
+    : { args: [ownerID], kwargs, status: "reshaped" };
+};
 /** facilitySvc.GetFacilityLocations (114 to 120): the facility and the owner the job is for, each an ID, and nothing by keyword. */
 const aFacilityAndAnOwner = (args, kwargs) => (args.length === 2 && args.every((each) => Number.isSafeInteger(each) && each > 0) && Object.keys(kwargs).length === 0
   ? {}
@@ -1900,6 +1921,7 @@ const RETAIL_CALLS = Object.freeze({
   "dogmaIM.ShipOnlineModules": webOnly(`${GODMA}:697`, "godma has a wrapper for this that nothing in the client calls, and throws its answer away. Which modules are online the client reads from the effects GetAllInfo lists. eve.js answers with the online modules, and the BFF reads that."),
   "ship.LaunchDrones": reshaped(`${EVE_MISC}:29`, launching, "GetShipAccess().LaunchDrones([(itemID, quantity), ...], whoseBehalfID, ignoreWarning): a list of pairs, and None for whose behalf when it is the pilot's own"),
   "ship.ScoopDrone": judged(`${DRONE_FUNCTIONS}:195`, scooping, "GetShipAccess().ScoopDrone(droneIDs), the drones as one list, from a drone's menu. No recording has one."),
+  "warRegistry.GetWars": reshaped("eve/client/script/ui/services/wars/war_cso.py:103", ofAWarOwner, "self.GetMoniker().GetWars(ownerID), on the war service's moniker for the pilot's alliance or corporation (eveMoniker.GetWar, bound before it is used): an owner's wars, each by its ID. The war service keeps an owner's for twelve hours (95 to 104) and works the server's OnWarChanged into them (82 to 93); its timer panel asks for the pilot's own owner's as it is made (crimewatchTimers.py 356) and its thread reads them every ten seconds (166 to 176). Tranquility's recordings of a login have MachoBindObject((owner, 1), None) and then the one GetWars(owner) on the object."),
   "jumpTimers.GetTimers": judged("eve/client/script/ui/services/crimewatchSvc.py:607", ownCharacterAlone, "sm.RemoteSvc('jumpTimers').GetTimers(session.charid): the end of the pilot's jump activation, the end of its jump fatigue and when they were last reckoned, each a time or None. crimewatchSvc asks it once, as its timer panel is first made (ui/crimewatch/crimewatchTimers.py 355), keeps it, and from then on takes the server's OnJumpTimersUpdated for what they are (605 to 612). Tranquility's four recordings of a login each have the one call, answered (None, None, None)."),
   "missionTrackerMgr.GetMissionInfoItems": judged("missions/client/missionObjectivesTracker.py:275", oneIDAlone("the mission's agent"), "sm.RemoteSvc('missionTrackerMgr').GetMissionInfoItems(agentID): what is left to do of the mission that agent gave, as a list of words (['TravelTo', '30011392'], ['TransportItemsMissing', '3814', '30']). The client's mission tracker asks it for each mission the pilot has accepted and that has not run out, one after another, at every change of the session once a character is on it (89 to 94, 213, 267 to 279) and as each warp ends (84 to 87). Tranquility's recordings have it in 24, three at a time for a pilot on three missions."),
   "fighterMgr.GetFightersForShip": judged("eve/client/script/parklife/fightersSvc.py:99", sentWithNothing, "sm.RemoteSvc('fighterMgr').GetFightersForShip(), nothing sent: the fighters in the ship's tubes, those of its in space, and their abilities' states. The client's ship fighter state asks it at every session change that names the ship (ui/inflight/squadrons/shipFighterState.py 72 to 74), from whatever ship, docked or in space; the choosing of a character is one. The game port asks it then, of its own accord, and keeps nothing of the answer. Recorded on Tranquility twelve times, at logins and at changes of ship, each answered ([], [], {})."),

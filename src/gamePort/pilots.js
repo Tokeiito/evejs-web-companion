@@ -69,6 +69,7 @@ const { createKeptReads } = require("./keptReads");
 const { createPilotStation } = require("./pilotStation");
 const { createPilotStructureGuests } = require("./pilotStructureGuests");
 const { CLIENT_STATE_NOTICES, statesAfter } = require("./crimewatchStates");
+const { GOOD_FOR_MS: WARS_GOOD_FOR_MS, createPilotWars } = require("./pilotWars");
 const { isBridgeWritePair } = require("../bridgeCallPolicy");
 const { namedAfterCall, namedOnNotice, namedOnSessionChange } = require("./cachedCallsNamed");
 const { brokersFeeRate, brokersFeeRateInStructure } = require("./brokerFee");
@@ -151,6 +152,23 @@ const CORP_REGISTRY = "corpRegistry";
  */
 const ALLIANCE_REGISTRY = "allianceRegistry";
 /**
+ * The service whose moniker is for the pilot's alliance, or for its corporation where it is in none
+ * (eveMoniker.GetWar, 184 to 192: Moniker('warRegistry', (session.allianceid or session.corpid, 1)), its session
+ * check on that owner). The war service keeps it through a move, and makes another when that owner is another's
+ * (war_cso.GetMoniker, 57 to 67).
+ */
+const WAR_REGISTRY = "warRegistry";
+/** The war registry's read whose answer the war service keeps: an owner's wars, for twelve hours (war_cso.GetWars, 95 to 104). */
+const WARS_READ = "GetWars";
+/** Whether a call is the war service's read of an owner's wars, asked as the client asks it: with the owner alone. */
+const keptWars = (service, method, args, kwargs) => service === WAR_REGISTRY && method === WARS_READ && args.length === 1 && kwargs === null && positive(args[0]) !== null;
+/**
+ * war_cso.CheckForStartOrEndOfWar (166 to 176): the war service's thread reads its owner's wars every ten seconds,
+ * which asks for them again once they are more than twelve hours old (GetWars, 97). So: twelve hours after an
+ * asking, by the thread's next round, which is ten seconds on at the latest.
+ */
+const WARS_AGAIN_AFTER_MS = WARS_GOOD_FOR_MS + 10 * 1000;
+/**
  * The registry's read whose answer is kept as the client keeps it: the corporation's aggression settings
  * (crimewatchSvc.corpAggressionSettings). Asked when the client asks, and from then on answered from what is kept.
  */
@@ -158,10 +176,11 @@ const AGGRESSION_SETTINGS = "GetAggressionSettings";
 /**
  * Monikers the client binds for their own sake before it calls anything on them: base_corporation.GetCorpRegistry
  * makes the corporation's and calls Bind() on it, which sends MachoBindObject(params, None), and all_cso.GetMoniker
- * does the same with the alliance's. Any other binds when it is first called, with that call riding along
- * (moniker.py).
+ * does the same with the alliance's, and war_cso.GetMoniker with the war registry's (Tranquility's recordings
+ * of a login have it so: MachoBindObject((owner, 1), None), and GetWars on the object). Any other binds when it
+ * is first called, with that call riding along (moniker.py).
  */
-const BOUND_BEFORE_USE = new Set(["corpRegistry", "allianceRegistry"]);
+const BOUND_BEFORE_USE = new Set(["corpRegistry", "allianceRegistry", "warRegistry"]);
 const NOTIFICATION_MGR = "notificationMgr";
 const CALENDAR_PROXY = "calendarProxy";
 /**
@@ -989,6 +1008,9 @@ function createGamePortPilots({
   // How long after a login the client's cfg asks for its price table (averagePricesThread). Null for a transport
   // whose pilots ask for none.
   averagePricesAfterMs = AVERAGE_PRICES_AFTER_MS,
+  // How long after its owner's wars were asked for the war service's thread asks for them again (warsThread). Null
+  // for a transport whose pilots' wars are asked for again only when something wants them.
+  warsAgainAfterMs = WARS_AGAIN_AFTER_MS,
   // How long an account's own connection is kept after the last thing asked on it.
   accountIdleMs = ACCOUNT_IDLE_MS,
 } = {}) {
@@ -1288,6 +1310,7 @@ function createGamePortPilots({
     if (entry.space) entry.space.release();
     entry.space = null;
     averagePricesThreadEnded(entry);
+    warsThreadEnded(entry);
     sessions.delete(entry.handle);
     entry.session.close();
     for (const subscriber of [...entry.subscribers]) {
@@ -1434,6 +1457,14 @@ function createGamePortPilots({
       securityStatus: undefined,
       /** crimewatchSvc.jumpTimers: the jump activation's end, the jump fatigue's end and when they were last reckoned, as last answered or told: undefined while none is had. */
       jumpTimers: undefined,
+      /**
+       * The war service's wars as it keeps them (pilotWars.js); the owner its moniker was made for
+       * (war_cso.__warMonikerOwnerID); its askings, one after another; and its thread's timer.
+       */
+      wars: createPilotWars(),
+      warMonikerOwner: null,
+      warsWork: Promise.resolve(),
+      warsTimer: null,
       /** The account's clone grade as the server last said it (clonegrade/const.py: 0 alpha, 1 omega): undefined while none is had. */
       cloneGrade: undefined,
       /** Whether the office's item was primed on the Moniker for where the pilot is docked (PRIME_OFFICE): its answer, kept while docked there. */
@@ -1504,6 +1535,8 @@ function createGamePortPilots({
       // they came. A notice of another number is no such three (the timer panel's handler takes three,
       // crimewatchTimers.py 456): what is kept is let go, and asked for when next wanted.
       if (notification.method === "OnJumpTimersUpdated") entry.jumpTimers = Array.isArray(notification.args) && notification.args.length === 3 ? notification.args : undefined;
+      // war_cso.OnWarChanged(war, ownerIDs, change) (82 to 93): a war changed, and it is worked into the wars kept.
+      if (notification.method === "OnWarChanged") entry.wars.changed(notification.args);
       // home_station (163, 168): the home station changed, or was moved from its structure. What is kept is let go.
       if (HOME_STATION_NOTICES.has(notification.method)) entry.homeStation.forget();
       // officeManager.OnOfficeRentalChange (71): an office rented or given up, whoever's, and the station's are not as kept.
@@ -1587,6 +1620,14 @@ function createGamePortPilots({
       if ("allianceid" in changes) {
         entry.monikers.delete(ALLIANCE_REGISTRY);
         if (sessions.has(entry.handle)) allianceBound(entry).catch(() => {});
+      }
+      // war_cso.OnSessionChanged (69 to 78): in another alliance or corporation, what is kept of the wars of the
+      // alliance the pilot is in now and of its corporation now is let go. Not at the choosing of a character.
+      // (The client then reckons whether the pilot is at war, which asks its owner's wars at once: not built yet.
+      // Until it is, they are asked for when next wanted, on a moniker made for the owner of then.)
+      if (("allianceid" in changes || "corpid" in changes) && !("charid" in changes && changes.charid[0] === null)) {
+        entry.wars.forget(attribute(entry, "allianceid"));
+        entry.wars.forget(attribute(entry, "corpid"));
       }
       // base_corporation.GetCorpRegistry: another corporation, another registry.
       if ("corpid" in changes) {
@@ -1675,6 +1716,12 @@ function createGamePortPilots({
       // crimewatchTimers (335, 355): the timer panel is made as the pilot comes in, docked or in space, and reads
       // the jump timers of crimewatchSvc, which asks for them once. A service that refuses fails no choosing.
       await jumpTimersRead(entry).catch(() => {});
+      // crimewatchTimers (356): the panel then has the war service say whether the pilot is at war, which asks for
+      // the wars of its alliance, or of its corporation where it is in none (war_cso.IsPlayerCurrentlyAtWarOrInFW,
+      // 302 to 311). A pilot in a faction's militia is at war with nothing asked, and of such a one the service's
+      // own thread asks for the same wars within ten seconds (166 to 176, 185): here they are asked for at once,
+      // for either. A registry that refuses fails no choosing.
+      await warsRead(entry, warOwner(entry)).catch(() => {});
       // crimewatchSvc and bco_members: the corporation's registry is bound, and asked its settings and its members' names.
       await corporationRead(entry);
       // addressbook.GetContacts: the pilot's contacts, its corporation's, and who of the watched is online.
@@ -1703,6 +1750,7 @@ function createGamePortPilots({
       agentsKnown(entry);
     } catch (error) {
       averagePricesThreadEnded(entry);
+      warsThreadEnded(entry);
       session.close();
       // The login failing is not the select call failing; say what the session said.
       if (/^(LOGIN_REFUSED|LOGON_QUEUE|BAD_SERVER_SIGNATURE|INCOMPATIBLE_PROTOCOL|HANDSHAKE_INCOMPATIBLE)/.test(String(error && error.code))) {
@@ -1914,7 +1962,9 @@ function createGamePortPilots({
     // Asked of the service by name and made on its moniker: the arguments may be the client's as they stand, the call was not.
     // What the client's skill services keep is noted where it is asked for, which is not every time it is wanted (skillRead).
     const keptByAService = (service === SKILL_HANDLER && (Object.hasOwn(SKILL_KEPT, method) || isSkillQueueRead(method, form.args, form.kwargs))) ||
-      (service === CORP_REGISTRY && method === AGGRESSION_SETTINGS);
+      (service === CORP_REGISTRY && method === AGGRESSION_SETTINGS) ||
+      // An owner's wars are the war service's to answer, and are noted where they are asked for (warsRead).
+      (form.moniker && keptWars(service, method, argumentsToWire(form.args), form.kwargs));
     // A call on the park is made on the park's own object. With no park it is refused here, before it is counted:
     // nothing is sent, and the ledger is of what was asked.
     const park = service === "beyonce" && ON_THE_PARK.has(method) ? await run(entry, service, method, () => parkObject(entry)) : null;
@@ -2299,6 +2349,75 @@ function createGamePortPilots({
   const crimewatchKept = (entry, method) => (method === CLIENT_STATES
     ? entry.clientStates.read(method, () => crimewatchAsked(entry, method))
     : securityStatusRead(entry));
+
+  // ── the wars, as the client's war service has them ────────────────────────
+
+  /** The owner the war service's moniker is for (eveMoniker.GetWar, 184 to 192): the session's alliance, or its corporation where it has none. */
+  const warOwner = (entry) => attribute(entry, "allianceid") ?? attribute(entry, "corpid");
+
+  /**
+   * war_cso.GetMoniker (57 to 67): the moniker is the one made for the session's owner. Where that owner is
+   * another's by now, the old one is let go and another is made, which the next call binds before it is asked.
+   */
+  function warMonikerIsItsOwners(entry) {
+    const owner = warOwner(entry);
+    if (entry.warMonikerOwner !== owner) entry.monikers.delete(WAR_REGISTRY);
+    entry.warMonikerOwner = owner;
+  }
+
+  /**
+   * war_cso.GetWars(ownerID, forceRefresh) (95 to 104): an owner's wars as the war service keeps them, good for
+   * twelve hours. Where none are kept, or they are older, they are asked for: self.GetMoniker().GetWars(ownerID),
+   * on the service's moniker, with the owner alone, and what answers is kept (pilotWars.js). One asking after
+   * another: of two askers at once the second is answered from what the first kept. An answer that cannot be kept
+   * is handed on as it came. Tranquility's recordings of a login have the bind and the one call so, the owner the
+   * pilot's corporation. With no owner to name nothing is asked.
+   */
+  function warsRead(entry, ownerID, forceRefresh = false) {
+    const reading = entry.warsWork.then(async () => {
+      if (ownerID === null) return undefined;
+      const kept = entry.wars.kept(ownerID, now(), forceRefresh);
+      if (kept !== undefined) return kept;
+      warMonikerIsItsOwners(entry);
+      ledger.note(WAR_REGISTRY, WARS_READ, shape(WAR_REGISTRY, WARS_READ, [ownerID], null, contextFor(entry)));
+      const answer = await keptCall(entry, entry.monikers, WAR_REGISTRY, WAR_REGISTRY, () => monikerParams(entry, WAR_REGISTRY, undefined), WARS_READ, [ownerID], null);
+      entry.wars.keep(ownerID, answer, now());
+      // The thread reads the wars of the session's own owner: from this asking of them it has twelve hours.
+      if (ownerID === warOwner(entry)) warsThread(entry);
+      return answer;
+    });
+    entry.warsWork = reading.catch(() => {});
+    return reading;
+  }
+
+  /**
+   * war_cso.CheckForStartOrEndOfWar (166 to 176) and _CheckForWarStartingOrEnding (185): every ten seconds, with a
+   * character on the session, the war service's thread reads GetWars(session.allianceid or session.corpid). That
+   * is answered from what is kept until it is more than twelve hours old, and asked of the server then. Here: one
+   * timer from each asking of the owner's wars, which asks again when the thread would (WARS_AGAIN_AFTER_MS), and
+   * which nobody waits on. What the thread does with the wars it reads (which have just begun or ended) is the
+   * client's own drawing, and nothing is asked for it.
+   */
+  function warsThread(entry) {
+    warsThreadEnded(entry);
+    if (warsAgainAfterMs === null || entry.ended) return;
+    entry.warsTimer = timers.setTimeout(() => {
+      entry.warsTimer = null;
+      if (!sessions.has(entry.handle)) return;
+      // Asked, and the thread goes on from that asking; where nothing was asked after all, it goes on from now.
+      warsRead(entry, warOwner(entry)).catch(() => {}).then(() => {
+        if (entry.warsTimer === null && sessions.has(entry.handle)) warsThread(entry);
+      });
+    }, warsAgainAfterMs);
+    // The timer is not what keeps this process up.
+    if (entry.warsTimer && typeof entry.warsTimer.unref === "function") entry.warsTimer.unref();
+  }
+
+  /** The pilot's session is over, or never came to be: the thread asks nothing more. */
+  function warsThreadEnded(entry) {
+    timers.clearTimeout(entry.warsTimer);
+    entry.warsTimer = null;
+  }
 
   /**
    * clone_grade_svc.get_clone_grade_with_grace_period (113): sm.RemoteSvc('subscriptionMgr').GetCloneGrade(), by the
@@ -3224,7 +3343,8 @@ function createGamePortPilots({
     entry.inventoryManagers.clear();
     for (const service of [...entry.monikers.keys()]) {
       // The skill handler is the character's, wherever it is: skillsvc keeps its moniker until it forgets everything.
-      if (!CORPORATION_SERVICES.has(service) && service !== ALLIANCE_REGISTRY && service !== SKILL_HANDLER) entry.monikers.delete(service);
+      // The war registry's is its owner's, wherever the pilot is: the war service keeps it until that owner is another's.
+      if (!CORPORATION_SERVICES.has(service) && service !== ALLIANCE_REGISTRY && service !== SKILL_HANDLER && service !== WAR_REGISTRY) entry.monikers.delete(service);
     }
     for (const [handle, object] of entry.bound) {
       if (LOCATION_SERVICES.has(object.service)) entry.bound.delete(handle);
@@ -3289,6 +3409,8 @@ function createGamePortPilots({
         return attribute(entry, "corpid") ?? undefined;
       case "allianceRegistry": // GetAlliance: Moniker('allianceRegistry', (session.allianceid, 1)), the 1 for "is master"
         return [attribute(entry, "allianceid"), 1];
+      case WAR_REGISTRY: // GetWar: Moniker('warRegistry', (session.allianceid or session.corpid, 1)), the 1 for "is master"
+        return [warOwner(entry), 1];
       case "fleetObjectHandler": // GetFleet: Moniker(fleetID or session.fleetid), which is None outside a fleet
         return positive(Array.isArray(given) ? given[0] : given) ?? attribute(entry, "fleetid");
       default: // agentMgr (agentID), planetMgr (planetID), charMgr ((charid, containerGlobal)): as given
@@ -3367,6 +3489,12 @@ function createGamePortPilots({
     }
     // crimewatchSvc.GetCorpAggressionSettings: the settings as they are kept, asked for where none are.
     if (service === CORP_REGISTRY && method === AGGRESSION_SETTINGS) return corporationDoes(entry, () => entry.aggression ?? aggressionRefreshed(entry));
+    // What the war service keeps of an owner's wars is its to answer. Anything else of the war registry's is asked
+    // on the service's moniker, which is another where its owner is another's by now.
+    if (service === WAR_REGISTRY) {
+      if (keptWars(service, method, args, kwargs)) return warsRead(entry, positive(args[0]));
+      warMonikerIsItsOwners(entry);
+    }
     if (service !== SKILL_HANDLER) {
       return keptCall(entry, entry.monikers, service, service, () => monikerParams(entry, service, undefined), method, args, kwargs);
     }
