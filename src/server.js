@@ -14868,7 +14868,10 @@ app.get("/api/bots/bot-log", requireAuth, (req, res, next) => {
     if (!held) {
       return;
     }
-    const which = req.query.which === "previous" ? "previous" : "current";
+    const which =
+      req.query.which === "previous" || req.query.which === "previous2"
+        ? req.query.which
+        : "current";
     res.json({
       ok: true,
       characterID: held.characterID,
