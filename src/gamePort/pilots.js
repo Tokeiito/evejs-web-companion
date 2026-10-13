@@ -254,6 +254,13 @@ const LOCAL_OCCUPATION = "GetLocalOccupationState";
 const keptLocalOccupation = (service, method, form) => service === FW_WARZONE && method === LOCAL_OCCUPATION && form.args.length === 0 && form.kwargs === null;
 /** idCheckers.IsKnownSpaceSystem and IsWormholeSystem (inventorycommon/const.py 42 to 45): a solar system of known space, or of a wormhole's. */
 const inKnownOrWormholeSpace = (solarSystemID) => solarSystemID !== null && solarSystemID >= 30000000 && solarSystemID <= 31999999;
+/** The dynamic resource service's read of the bounty output of the system the session is in (dynamicResourceSvc.py 58 to 65). */
+const BOUNTY_MGR = "dynamicBountyMgr";
+const BOUNTY_OUTPUT = "GetOutputForClientSolarSystem";
+/** Whether a call is the dynamic resource service's read of the system's bounty output, asked as the client asks it: with nothing. */
+const keptBountyOutput = (service, method, form) => service === BOUNTY_MGR && method === BOUNTY_OUTPUT && form.args.length === 0 && form.kwargs === null;
+/** @expiring_memoize(5400) on that read (dynamicResourceSvc.py 58): what is kept is good for ninety minutes from its keeping. */
+const BOUNTY_OUTPUT_GOOD_FOR_MS = 5400 * 1000;
 const OFFICE_MANAGER = "officeManager";
 /**
  * What the client hands back to the server as it was answered, and so with the Python type it came with:
@@ -1478,6 +1485,13 @@ function createGamePortPilots({
        */
       localOccupation: undefined,
       localOccupationWork: Promise.resolve(),
+      /**
+       * dynamicResourceSvc's kept bounty output of the system the session is in: { answer, until }, undefined while
+       * none is kept; how many times it was let go; and its askings, one after another.
+       */
+      bountyOutput: undefined,
+      bountyOutputLetGo: 0,
+      bountyOutputWork: Promise.resolve(),
       /** The account's clone grade as the server last said it (clonegrade/const.py: 0 alpha, 1 omega): undefined while none is had. */
       cloneGrade: undefined,
       /** Whether the office's item was primed on the Moniker for where the pilot is docked (PRIME_OFFICE): its answer, kept while docked there. */
@@ -1556,6 +1570,12 @@ function createGamePortPilots({
         && positive(notification.args[0]) !== null && positive(notification.args[0]) === attribute(entry, "solarsystemid2")) {
         entry.localOccupation = [notification.args[0], notification.args[1]];
       }
+      // dynamicResourceSvc.OnSystemDynamicBountyStateChanged(systemID, rate) (160 to 165): of the system the session
+      // is in, the output kept is (rate, True) from now, good for its ninety minutes; of another system, nothing.
+      if (notification.method === "OnSystemDynamicBountyStateChanged" && Array.isArray(notification.args) && notification.args.length === 2
+        && positive(notification.args[0]) !== null && positive(notification.args[0]) === attribute(entry, "solarsystemid2")) {
+        entry.bountyOutput = { answer: [notification.args[1], true], until: now() + BOUNTY_OUTPUT_GOOD_FOR_MS };
+      }
       // home_station (163, 168): the home station changed, or was moved from its structure. What is kept is let go.
       if (HOME_STATION_NOTICES.has(notification.method)) entry.homeStation.forget();
       // officeManager.OnOfficeRentalChange (71): an office rented or given up, whoever's, and the station's are not as kept.
@@ -1590,6 +1610,13 @@ function createGamePortPilots({
       if ("solarsystemid2" in changes) {
         entry.localOccupation = undefined;
         if (sessions.has(entry.handle)) localOccupationWanted(entry).catch(() => {});
+      }
+      // dynamicResourceSvc.OnSessionChanged (175 to 182): in another solar system the bounty output kept is let go, and
+      // the location panel is told to draw it again, which asks for it. (The choosing asks for it itself.)
+      if ("solarsystemid2" in changes) {
+        entry.bountyOutput = undefined;
+        entry.bountyOutputLetGo += 1;
+        if (sessions.has(entry.handle)) bountyOutputRead(entry).catch(() => {});
       }
       // shipFighterState.OnSessionChanged: the ship's fighters are asked for again at any change of the ship, to
       // whatever. (The choosing of the character asks them itself.)
@@ -1747,6 +1774,9 @@ function createGamePortPilots({
       // space, and has the warzone service say the occupation state of the system the pilot is in. In the retail
       // client's own login it is asked just ahead of the jump timers. A service that refuses fails no choosing.
       await localOccupationWanted(entry).catch(() => {});
+      // And, in the same drawing, the system's bounty output (UpdateDynamicResourceInfo, 328 to 332, by a tasklet
+      // of its own). A manager that refuses fails no choosing.
+      await bountyOutputRead(entry).catch(() => {});
       // crimewatchTimers (335, 355): the timer panel is made as the pilot comes in, docked or in space, and reads
       // the jump timers of crimewatchSvc, which asks for them once. A service that refuses fails no choosing.
       await jumpTimersRead(entry).catch(() => {});
@@ -1918,6 +1948,12 @@ function createGamePortPilots({
     // as the client asks it: with nothing. Answered in the server's own form, the system and its state.
     if (keptLocalOccupation(service, method, form)) {
       const kept = await run(entry, service, method, () => localOccupationRead(entry));
+      return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
+    }
+    // The bounty output of the system the session is in is the dynamic resource service's to answer, where it is
+    // asked as the client asks it: with nothing.
+    if (keptBountyOutput(service, method, form)) {
+      const kept = await run(entry, service, method, () => bountyOutputRead(entry));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
     // The corporations with offices where a pilot is docked are the client's office manager's to answer, where
@@ -2433,6 +2469,33 @@ function createGamePortPilots({
    */
   function localOccupationWanted(entry) {
     return inKnownOrWormholeSpace(attribute(entry, "solarsystemid2")) ? localOccupationRead(entry) : Promise.resolve(undefined);
+  }
+
+  /**
+   * dynamicResourceSvc.GetDynamicBountySettingForCurrentSystem (58 to 65): the bounty output of the system the
+   * session is in, sm.RemoteSvc('dynamicBountyMgr').GetOutputForClientSolarSystem(), by the service's name with
+   * nothing: (output, whether the dynamic bounty system is at work there). Kept ninety minutes from its keeping
+   * (@expiring_memoize(5400): brennivin/threadutils.py 262 to 320), let go at a change of the session's solar
+   * system (175 to 182), and replaced by the server's OnSystemDynamicBountyStateChanged (160 to 165). Its one
+   * reader is the location panel (infoPanelLocationInfo.py 319 to 326), as it is drawn: as the pilot comes in, and
+   * for each solar system. Where the server's global config has the dynamic bounty system switched off the client
+   * asks nothing and takes (1.0, False); the game port keeps no global config and takes the switch as it is until
+   * set: not thrown. Tranquility's recordings have the call once at each login and once after each change of solar
+   * system, answered (1.0, False). One asking at a time; an answer that came for a system since left is not kept.
+   */
+  function bountyOutputRead(entry) {
+    const reading = entry.bountyOutputWork.then(async () => {
+      if (attribute(entry, "solarsystemid2") === null) return undefined;
+      if (entry.bountyOutput && now() < entry.bountyOutput.until) return entry.bountyOutput.answer;
+      const letGo = entry.bountyOutputLetGo;
+      const form = shape(BOUNTY_MGR, BOUNTY_OUTPUT, [], null, contextFor(entry));
+      ledger.note(BOUNTY_MGR, BOUNTY_OUTPUT, form);
+      const answer = await byName(entry.session, BOUNTY_MGR, BOUNTY_OUTPUT, form);
+      if (letGo === entry.bountyOutputLetGo) entry.bountyOutput = { answer, until: now() + BOUNTY_OUTPUT_GOOD_FOR_MS };
+      return answer;
+    });
+    entry.bountyOutputWork = reading.catch(() => {});
+    return reading;
   }
 
   // ── the wars, as the client's war service has them ────────────────────────
