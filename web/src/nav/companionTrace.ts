@@ -66,6 +66,11 @@ export interface CombatTrace {
   readonly leashed: boolean;
   /** Commander ship to target, metres; null when no commander on grid. */
   readonly leashApartM: number | null;
+  /**
+   * The leash would have tripped, but a gun measured in reach of the target kept the
+   * ship on it. Present (true) only then, so a record that never met this is unchanged.
+   */
+  readonly leashOverridden?: boolean;
   /** At least one hostile on grid whose type facts are unread (so it was never kited). */
   readonly ratFactsMissing: boolean;
   /** A re-issue was suppressed because the hold moved less than the margin. */
@@ -202,7 +207,7 @@ export function coarseTraceKey(trace: CompanionTrace | null | undefined): string
   const parts: string[] = [];
   const c = trace.combat;
   if (c !== undefined) {
-    parts.push(`c:${c.mode}/${c.outcome}/${c.targetID ?? "-"}/${c.holdOrder ?? "-"}/${c.far ? 1 : 0}/${c.leashed ? 1 : 0}/${c.latch?.status ?? "-"}`);
+    parts.push(`c:${c.mode}/${c.outcome}/${c.targetID ?? "-"}/${c.holdOrder ?? "-"}/${c.far ? 1 : 0}/${c.leashed ? 1 : 0}${c.leashOverridden === true ? "o" : ""}/${c.latch?.status ?? "-"}`);
   }
   const g = trace.guns;
   if (g !== undefined) {
