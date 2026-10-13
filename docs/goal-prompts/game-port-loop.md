@@ -2867,6 +2867,25 @@ Take these defaults, and list each under "For the operator" in the log so they c
   `values` by place and a string of digits. A reader of the page's takes
   a row by `readRowField`, and is run on both running BFFs' answers
   (`hist-decode.mjs` is the pattern).
+- **Where the client shows a thing is read before it is built**: the
+  skill history is in the character sheet's History panel, not in the
+  skills window the Next list had named. `grep -rn "<the panel's class>"`
+  in the client finds who makes it.
+- **The client's words come by their labels from the player's install**
+  (`flow.requestWords`, `$words.templates`), a date's form among them
+  (`FmtDate(date, 'ls')` is the label
+  `/Carbon/UI/Common/DateTime/DateLongShort` with `datetime`,
+  `formatTemplate`). A window that shows the client's word and the page's
+  own stand-in differently proves which it has: "Skill Training Canceled"
+  was the install's, "Training stopped" the page's.
+- **A read the page makes for itself is tried on both running BFFs before
+  it is built on** (`ask-live.js <service.method>[=<file>]`, the generic
+  call with no arguments): that the pair is allowed on each, and the answer
+  kept for the reader to be run on.
+- **The origin of `eve.js` is read at a unit's end as at its start.** On
+  2026-10-13 it moved between the two, "by push", with fifty-two of this
+  loop's commits, and this loop had pushed nothing: what the log says of
+  it is what `git ls-remote` and `git reflog show origin/main` say then.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

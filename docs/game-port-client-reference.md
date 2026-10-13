@@ -1216,7 +1216,12 @@ row of a start or a stop.
 This server answers so since `eve.js` `54125d9ff`, and writes no row at a start since `a0fd2e19c`. A packed row
 reaches the page through the game port with its fields by name and its date a long, and through the gateway with
 its values by place and its date a string of digits; the page's reader takes either
-(`web/src/bridge/boundSkills.ts`, `a51216b2`). No window of the page shows the history yet.
+(`web/src/bridge/boundSkills.ts`, `a51216b2`). Since `ff0e09f3` the page's Character Sheet lists it, as the client's History panel's skills tab does
+(`charsheet/historyPanel.py` 21 to 32): a line of each row whose skill the pilot has, with the date by the label
+`/Carbon/UI/Common/DateTime/DateLongShort`, the event's word by `ACTIONS`, and the level reckoned by
+`GetSPForLevelRaw` (`characterskills/util.py` 40 to 46), the newest first (`web/src/bridge/skillHistoryPanel.ts`).
+The page asks the history with no count said and the pilot's skills, by the generic call; on the game port the
+answer is the one the transport keeps from the login's asking of ten, as the client's skill service keeps its own.
 
 **The Industry window's monitor, 2026-10-13.** `industrySvc.ConnectJob` (299 to 301) makes the job the one
 monitored and has `(monitorID, available)` of `industryMonitor.ConnectJob(job.dump())`: what the job's input
