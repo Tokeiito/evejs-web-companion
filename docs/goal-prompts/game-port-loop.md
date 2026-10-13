@@ -2948,6 +2948,29 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **Tranquility's count of an order is one grep**: `grep -rhao
   "Action:\s*<the name's first twelve letters>" <recordings> | sort |
   uniq -c`. michelle's log cuts a name at twelve.
+- **A rat that chases, for a measure**: `MSYS_NO_PATHCONV=1 node
+  msp-live.js <T> <bff> test2 140000002 75 "/npc 1
+  parity_dire_guristas_destructor; wait 6; away 22000"` flies Test Two to
+  a belt, brings the rat about 17 km off, and moves the pilot 22 km
+  straight away from it (a GM's `/tr me offset=x,y,z`): the rat, then 39
+  km off, follows at its chase speed (1,440 m/s), goes back to its cruise
+  speed (180) and orbits at 16.5 km, with missiles every 15 seconds. The
+  script takes several commands parted by ";", "wait <seconds>" and
+  "away <metres>". `/npc 1 guristas` brings a hull of a pool, which may
+  not chase; a profile's name is in the server's
+  `tools/DatabaseCreator/staticTables/npcProfiles`, and whether it chases
+  in `npcBehaviorProfiles` (`useSdeChaseVelocity`).
+- **`/invu` makes rats ignore the pilot**: it is not a way to keep a
+  ship alive under a rat that is wanted to shoot. A rat 75 km off does
+  not see the pilot; 39 km is seen.
+- **A change is measured before and after by the same instrument, and a
+  try that makes the measure worse is as good as one that mends it**: the
+  first stamp tried for an NPC's speed left the ball twice as far off, by
+  exactly two of the model's seconds, which said the model was right and
+  the stamp wrong.
+- **A recording with several logins in it**: the park's tools take the
+  connection with the most frames. Keep one flight to a recording, or cut
+  the wanted connection's lines out to a file of their own.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
