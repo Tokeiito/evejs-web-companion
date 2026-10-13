@@ -3459,6 +3459,20 @@ Take these defaults, and list each under "For the operator" in the log so they c
   folder gave the text of three on 2026-10-13. A call whose
   arguments matter is looked for there before it is said that they
   are not on record.
+- **The chat stub writes every stanza, in and out, to
+  `eve.js/_local/logs/xmpp-stub.log`.** A look at the chat is that
+  log read from the line it had before the look, beside the
+  recording of the game port: the calls are in the one and the
+  stanzas in the other.
+- **A JS array answered by a handler of the server's goes on the wire
+  as a tuple.** Where Tranquility's recorded answer opens with 0x15
+  it is a list (`TY_LIST = 21`, CCP's `blue/src/Marshal.h` 92), and
+  the handler answers `buildList(...)`. A recording of a game-port
+  session shows which went: `(...)` a tuple, `[...]` a list.
+- **The login's report wants a login of its own, between a copy of
+  the store and its putting back.** On 2026-10-13 it was forgotten
+  inside the look's own copy, and a second copy and putting back were
+  made for it: `login-only.js` is run while the look's copy stands.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

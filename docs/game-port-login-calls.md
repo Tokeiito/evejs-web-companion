@@ -10,10 +10,10 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 
 | The game port | Kinds | Calls | Meaning |
 |---|---|---|---|
-| at login | 62 | 71 | The game port asks this at login too. |
+| at login | 66 | 75 | The game port asks this at login too. |
 | by a feature | 6 | 10 | A feature of the web client asks this when it is wanted, in a form read against the client's. |
 | by a route | 7 | 8 | The BFF has a route that can ask this. It has not been read against the client's. |
-| never | 25 | 28 | Nothing of ours asks this. |
+| never | 21 | 24 | Nothing of ours asks this. |
 
 ## Before a character is chosen
 
@@ -78,11 +78,11 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `ProjectDiscovery.initialize_tutorial_status` | 1 | at login |
 | `milestoneMgr.ProcessCharacterLogon` | 1 | at login |
 | `nonDiminishingInjectionMgr.GetAvailableNonDiminishingInjections` | 1 | at login |
-| `XmppChatMgr.Hostname` | 1 | never |
+| `XmppChatMgr.Hostname` | 1 | at login |
 | `charMgr.GetCharacterSettings` | 1 | at login |
 | `skillHandler.GetBoosters` (inferred) | 1 | at login |
 | `structureDirectory.GetMyDockableStructures` | 1 | by a route |
-| `XmppChatMgr.GetDeprecatedPrefsFallback` | 1 | never |
+| `XmppChatMgr.GetDeprecatedPrefsFallback` | 1 | at login |
 | `fwWarzoneSolarsystem.GetLocalOccupationState` | 1 | at login |
 | `jumpTimers.GetTimers` | 1 | at login |
 | `warRegistry.MachoResolveObject` | 1 | at login |
@@ -94,7 +94,7 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `onlineStatus.GetInitialState` | 1 | at login |
 | `stationSvc.GetStationItemBits` | 1 | at login |
 | `station.GetGuests` | 1 | at login |
-| `chatAuthenticationService.GetAuthenticationToken` | 1 | never |
+| `chatAuthenticationService.GetAuthenticationToken` | 1 | at login |
 | `agentMgr.GetAgents` | 1 | at login |
 | `invbroker.GetSelfInvItem` (inferred) | 2 | never |
 | `invbroker.GetAvailableTurretSlots` (inferred) | 1 | at login |
@@ -102,7 +102,7 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `skillHandler.GetAllSkills` (inferred) | 1 | at login |
 | `dynamicBountyMgr.GetOutputForClientSolarSystem` | 1 | at login |
 | `skillHandler.GetSkillQueueAndFreePoints` (inferred) | 1 | at login |
-| `XmppChatMgr.ResyncSystemChannelAccess` | 1 | never |
+| `XmppChatMgr.ResyncSystemChannelAccess` | 1 | at login |
 | `browserLockdownSvc.GetFlaggedSitesHash` | 1 | never |
 | `map.GetStationInfo` | 1 | at login |
 | `objectCaching.GetCachableObject` | 1 | at login |

@@ -1458,6 +1458,21 @@ config has `useClientSideJumpMonitor` (`eve/client/script/util/jumpMonitor.py` 4
 Tranquility's recordings have the first in 27 files; the second after a login into space, and not after a docked
 one. The game port makes neither: it has nothing of what the first carries, and not the failure the second
 reports.
+The chat's login (`xmppchatclient/xmppchatsvc.py`, `xmpp/xmppConnection.py`, `xmpp/xmpphandler.py`). A character on
+the session, and the chat logs in (149 to 151, 109 to 112, 247 to 271). `self.XmppChatMgr.Hostname()` at the proxy
+(284) is the chat's hostname, on which every JID is built: the pilot's `<charID>@<hostname>`, a room's
+`<channel>@conference.<hostname>` (1190 to 1195), the stream's `to` (`xmpphandler.py` 55). The address the socket
+dials (`xmppConnection.py` 413) is the global config's `ejabberd_client_address` or, where it names none,
+`self.XmppChatMgr.GetDeprecatedPrefsFallback()` (307 to 312). The secret is
+`sm.RemoteSvc('chatAuthenticationService').GetAuthenticationToken()`, read once the socket is up
+(`xmppConnection.py` 423), or the word `ejabberd` where that answers nothing (317 to 325); the name in the SASL
+word is the character's number, and the resource bound is `eveclient` (257). Logged in, it asks
+`self.XmppChatMgr.ResyncSystemChannelAccess()` (345 to 368), again every five seconds while that names none, and
+joins each channel named by the channel's own name; a channel's category is its name up to the first underscore
+(`chatutil/__init__.py` 257 to 258), the kinds `nolocal`, `wormhole`, `nullsec` and `triglavian` are Local to it
+(359 to 360), and for `nolocal` no presence is sent (1050 to 1054). Tranquility answers its chat domain for the
+hostname and connects at another address; its resync is a list of two names. A pilot on the game port logs in so
+since `3d9530a7`; the stanzas are still the BFF's own.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
