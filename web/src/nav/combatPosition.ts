@@ -34,9 +34,21 @@
 // reach because a gun at its maximum reach is hitting at the tail of its falloff
 // curve; at optimal it is hitting at full.
 //
-// FLOOR — `scramFloorM`, kiteBand's floor (largest scram reach on grid that
-// scrams, plus THREAT_BUFFER_M; 0 when nothing scrams). Passed in rather than
-// recomputed because the caller already reads the grid for kiteBand's sake.
+// FLOOR — kiteBand's floor (largest scram reach on grid among hostiles that
+// scram, plus THREAT_BUFFER_M; 0 when nothing scrams), for BOTH hull types. The
+// caller passes the per-hostile `threats` and this module asks `kiteBand()` for
+// `floorM`, so there is exactly one rule for "how far out does the thing that can
+// hold me reach?" and a gun boat cannot drift from the drone boat's answer. For a
+// gun boat only the floor is taken; kiteBand's hold and ceiling are about drone
+// leashes and mean nothing to a turret fit.
+//
+// ⚠ A SCRAMMER WHOSE SCRAM RANGE IS UNKNOWN CONTRIBUTES NOTHING TO THE FLOOR.
+// That is kiteBand's established rule (a row counts only when `scramRangeM` is a
+// number) and it is inherited as it stands, not patched here. It is acceptable
+// because the range is read from the same dogma that sets the scram flag, so
+// "scrams but the range is unknown" is rare: the flag and the number arrive
+// together or not at all. Do not special-case it here; fix it in kiteBand if it
+// ever turns out to matter, so both hull types move together.
 //
 // CEILING — `min(longest weapon reach, lock range) - LEASH_BUFFER_M`. Lock range
 // is also the leash (operator decision, plan §5.4): the FC must stay reachable
@@ -52,10 +64,14 @@
 // when kiting - when the ship is outside the rats' guns altogether - is
 // keepAtRange (a straight line away) the right shape.
 //
-// ⚠ AN UNKNOWN GRID IS NEVER KITED. `gridRatReachM` of 0 means "we could not
-// read any rat's reach", not "no rat can hurt us", and 0 + THREAT_BUFFER_M is
-// below every gun in the game, so reading it literally would announce a kite at
-// 5 km against rats of unknown guns. Zero means: fall back to the orbit.
+// ⚠ AN UNKNOWN GRID IS NEVER KITED - AND A PARTLY UNKNOWN GRID IS UNKNOWN.
+// `gridRatReachM` is null when at least one hostile on grid has type facts that
+// have not been read. The maximum over the rats we DID read is then a lower bound
+// on the truth and nothing more: one known short-range frigate beside an unread
+// battleship was being kited at the frigate's reach, i.e. inside the battleship's
+// guns. Null means: orbit, never kite. A 0 is also never kited (a rat read with
+// no reach attributes, or a grid with nothing on it): 0 + THREAT_BUFFER_M is below
+// every gun in the game, so reading it literally would announce a kite at 5 km.
 //
 // ⚠ AN UNKNOWN REACH FAILS OPEN. `inReach` answers true when the reach is not
 // known, because a gun that might hit beats a gun that certainly does not: the
@@ -67,28 +83,37 @@
 // Rats orbit their target at a fixed per-profile distance whatever our guns
 // want (plan §2). If the target is faster than we are and orbits inside the
 // hold we wanted, no amount of burning closes the gap the OTHER way - it stays
-// where it wants to be. So we ACCEPT its distance (but never inside the floor)
-// and let the guns that reach from there fire, rather than chase it for ever.
-// `reason: "unreachable"` carries that sentence to the readout.
+// where it wants to be. So we ACCEPT its orbit distance (but never inside the
+// floor) and let the guns that reach from there fire, rather than chase it for
+// ever. `reason: "unreachable"` carries that sentence to the readout.
+//
+// ⚠ THE ACCEPTED DISTANCE IS A FIXED NUMBER, NOT THE LIVE ONE. Re-reading the
+// current distance every tick would make the hold wobble with every metre the rat
+// drifts, and each wobble past RANGE_HYSTERESIS_M re-aims the ship (stops it and
+// turns it). The rat's own `orbitRangeM` is what it will keep, so that is the
+// hold. (The orbit range is always known on this path: not knowing it is exactly
+// what stops a rat being called unreachable in the first place.)
 //
 // ⚠ THE CLOSING BUDGET IS A BOUND ON TRYING, NOT A PROMISE OF ARRIVAL. A hold
 // that is reachable but not yet reached gets `MAX_CLOSE_TICKS` ticks. When the
-// caller says it is spent (`closingSpent`), the CURRENT distance becomes the
-// hold (never inside the floor), and `reason: "closing-spent"` says so. Where
-// the target is already unreachable by the rule above, "unreachable" is the
-// better word - it names the cause, not the symptom - and wins.
+// caller says it is spent it passes `closingSpentAtM`, the distance FROZEN at the
+// moment the budget ran out, and the hold becomes `max(closingSpentAtM, floor)`
+// with `reason: "closing-spent"`. A frozen number and not the current distance,
+// for the same reason as above: a drifting rat must not re-aim the ship every
+// 2 km. Where the target is already unreachable by the rule above, "unreachable"
+// is the better word - it names the cause, not the symptom - and wins.
 //
 // ⚠ AN EMPTY BAND (floor > ceiling) HOLDS AT THE CEILING, exactly as kiteBand
 // does and for the same reason: the floor is a wish about what can grab you,
 // the ceiling is the edge of what the ship can actually use. The readout says
 // "no room", it does not fly to a distance that means nothing.
 //
-// ⚠ THE ALL-UNKNOWN-REACH FALLBACK. A gun boat whose every weapon has an
-// unreadable reach orbits at half the lock range (10 km when that too is
-// unknown), clamped into the band. Half the lock range is a guess with a story:
-// most guns' optimal sits well inside the lock range, and orbiting too close
-// beats orbiting where nothing reaches. It is a fallback, not a measurement, and
-// reports `orbit-optimal` because the order is the same one.
+// ⚠ A GUN BOAT WITH NO KNOWN REACH ON ANY WEAPON IS NOT POSITIONED (null). A
+// blaster boat with dry guns, or a fit that has not been read yet, has no reach
+// to position for, and the old answer - orbit at half the lock range - sent it to
+// circle at 25 km with guns that reach 2 km: a ship flying away from the only
+// distance at which it can do anything. The pilot stays in formation until a
+// reach is readable. There is deliberately no guess to fall back on here.
 //
 // This module is PURE. No store, no bridge, no loop, no clock - plain objects in,
 // plain object out - so the whole thing is tested as arithmetic.
@@ -226,16 +251,22 @@ export interface HoldInputs {
   readonly droneControlRangeM: number | null;
   /** Also the leash (operator decision). */
   readonly lockRangeM: number | null;
-  /** Max ratReachM over hostile rats on grid; 0 when unknown. */
-  readonly gridRatReachM: number;
-  /** kiteBand-style floor: largest scram reach on grid + THREAT_BUFFER_M, 0 when none scram. */
-  readonly scramFloorM: number;
+  /**
+   * Max ratReachM over the hostiles on grid; null when at least one hostile's
+   * type facts have not been read (a gun boat never kites then).
+   */
+  readonly gridRatReachM: number | null;
+  /** Every hostile on grid; kiteBand derives the scram floor from these. */
+  readonly threats: readonly BandThreat[];
   /** Surface distance to the engaged target. */
   readonly targetDistanceM: number | null;
   readonly target: RatCombatFacts | null;
   readonly ownMaxVelocity: number | null;
-  /** The closing budget for this target is used up. */
-  readonly closingSpent: boolean;
+  /**
+   * The distance FROZEN when the closing budget for this target ran out; null
+   * while it is not spent.
+   */
+  readonly closingSpentAtM: number | null;
 }
 
 export type HoldReason =
@@ -244,8 +275,7 @@ export type HoldReason =
   | "drone-band"
   | "empty-band"
   | "unreachable"
-  | "closing-spent"
-  | "no-weapons";
+  | "closing-spent";
 
 export interface Hold {
   readonly order: "orbit" | "keepAtRange";
@@ -253,7 +283,7 @@ export interface Hold {
   /** True only for a real kite: keepAtRange outside every rat's reach. */
   readonly kiting: boolean;
   readonly reason: HoldReason;
-  /** Null when neither a weapon reach nor a lock range is known. */
+  /** Always known now (a gun boat needs one reach, a drone boat has a leash); typed nullable for callers. */
   readonly ceilingM: number | null;
   readonly floorM: number;
 }
@@ -261,13 +291,9 @@ export interface Hold {
 /** ~2 min at the 2 s cadence; same value and reason as droneBoatLadder.ts. */
 export const MAX_CLOSE_TICKS = 60;
 
-/** Orbit distance when no weapon reach is readable and the lock range is not either. */
-const FALLBACK_ORBIT_M = 10_000;
-
-/** v clamped into [floor, ceiling]; an empty band (floor > ceiling) yields the ceiling; no ceiling -> only the floor binds. */
-function clampBand(v: number, floorM: number, ceilingM: number | null): number {
+/** v clamped into [floor, ceiling]; an empty band (floor > ceiling) yields the ceiling. */
+function clampBand(v: number, floorM: number, ceilingM: number): number {
   const lifted = Math.max(v, floorM);
-  if (ceilingM === null) return Math.max(0, lifted);
   return Math.max(0, Math.min(lifted, ceilingM));
 }
 
@@ -277,55 +303,53 @@ function safeRange(v: number): number {
 }
 
 /**
- * Where to be. `null` = nothing to position for (no guns and no combat drones).
+ * Where to be. `null` = nothing to position for: no guns and no combat drones,
+ * or a gun boat with no weapon whose reach is known.
  *
  * Pure: call it every tick. Whether to ACT on the answer is `holdNeedsReissue`'s
  * question, and the closing budget's bookkeeping lives with the caller
- * (`closingSpent`), because a counter is state and this module has none.
+ * (`closingSpentAtM`), because a counter is state and this module has none.
  */
 export function wantedHold(inputs: HoldInputs): Hold | null {
   const weapons = Array.isArray(inputs?.weapons) ? inputs.weapons : [];
-  const floorM = metres(inputs?.scramFloorM) ?? 0;
   const lockM = metres(inputs?.lockRangeM);
   const distanceM = metres(inputs?.targetDistanceM);
+  const spentAtM = metres(inputs?.closingSpentAtM);
+
+  // The floor for BOTH hull types comes from kiteBand's own rule; see the header.
+  const band = kiteBand({
+    threats: Array.isArray(inputs?.threats) ? inputs.threats : [],
+    droneControlRangeM: inputs?.droneControlRangeM ?? null,
+    maxTargetRangeM: lockM,
+    overrideHoldM: null,
+  });
+  const floorM = band.floorM;
 
   if (weapons.length === 0) {
     if (inputs?.hasCombatDrones !== true) return null;
-    return droneBoatHold(inputs, floorM, lockM, distanceM);
+    return droneBoatHold(band, spentAtM);
   }
 
   // ─── GUN BOAT ─────────────────────────────────────────────────────────────
   const reachable = weapons.filter((w) => metres(w?.reachM) !== null);
-  const longestM =
-    reachable.length === 0
-      ? null
-      : Math.max(...reachable.map((w) => metres(w.reachM) as number));
+  // No weapon will say how far it reaches: nothing to position for. See the header.
+  if (reachable.length === 0) return null;
+  const longestM = Math.max(...reachable.map((w) => metres(w.reachM) as number));
 
-  // Both bounds unknown -> no ceiling at all (null), not Infinity: nothing
-  // infinite may reach the Hold we return.
-  const edgeM =
-    longestM === null && lockM === null
-      ? null
-      : Math.min(longestM ?? Number.POSITIVE_INFINITY, lockM ?? Number.POSITIVE_INFINITY);
-  const ceilingM = edgeM === null ? null : Math.max(0, edgeM - LEASH_BUFFER_M);
-  const empty = ceilingM !== null && floorM > ceilingM;
+  const edgeM = Math.min(longestM, lockM ?? Number.POSITIVE_INFINITY);
+  const ceilingM = Math.max(0, edgeM - LEASH_BUFFER_M);
+  const empty = floorM > ceilingM;
 
-  const gridReachM = metres(inputs?.gridRatReachM) ?? 0;
-  const kiting =
-    longestM !== null && gridReachM > 0 && longestM > gridReachM + THREAT_BUFFER_M;
+  const gridReachM = metres(inputs?.gridRatReachM);
+  const kiting = gridReachM !== null && gridReachM > 0 && longestM > gridReachM + THREAT_BUFFER_M;
 
   let order: Hold["order"];
   let wantM: number;
   let reason: HoldReason;
   if (kiting) {
     order = "keepAtRange";
-    wantM = clampBand(gridReachM + THREAT_BUFFER_M, floorM, ceilingM);
+    wantM = clampBand((gridReachM as number) + THREAT_BUFFER_M, floorM, ceilingM);
     reason = "kite";
-  } else if (reachable.length === 0) {
-    // Fallback: no weapon will say how far it reaches. See the header.
-    order = "orbit";
-    wantM = clampBand(lockM !== null ? lockM / 2 : FALLBACK_ORBIT_M, floorM, ceilingM);
-    reason = "orbit-optimal";
   } else {
     order = "orbit";
     // Shortest reach first; ties go to the lowest moduleID so the answer does
@@ -362,16 +386,18 @@ export function wantedHold(inputs: HoldInputs): Hold | null {
     targetOrbit !== null &&
     targetOrbit < hold.rangeM
   ) {
+    // The rat's own orbit range, a fixed number. It is always known on this path
+    // (the condition above needs it), so there is no live distance to fall back to.
     hold = {
       ...hold,
-      rangeM: safeRange(Math.max(distanceM ?? targetOrbit, floorM)),
+      rangeM: safeRange(Math.max(targetOrbit, floorM)),
       kiting: false,
       reason: "unreachable",
     };
-  } else if (inputs?.closingSpent === true && distanceM !== null) {
+  } else if (spentAtM !== null) {
     hold = {
       ...hold,
-      rangeM: safeRange(Math.max(distanceM, floorM)),
+      rangeM: safeRange(Math.max(spentAtM, floorM)),
       kiting: false,
       reason: "closing-spent",
     };
@@ -382,43 +408,12 @@ export function wantedHold(inputs: HoldInputs): Hold | null {
 /**
  * The drone-boat hold: kiteBand's holdM, as a keepAtRange.
  *
- * kiteBand takes per-rat scram facts (`BandThreat`), which this module does not
- * have and does not need: the caller has already reduced the grid to one number,
- * `scramFloorM`. To make kiteBand's floor equal that number exactly, ONE
- * synthetic scrammer is passed whose reach is `scramFloorM - THREAT_BUFFER_M`
- * (kiteBand adds the buffer back). When nothing scrams (`scramFloorM` 0) the
- * threat list is EMPTY, so kiteBand holds at its ceiling - which is the same
- * place it holds with non-scramming rats on grid ("no-tackle"), and the anchor
- * is irrelevant here because the engaged target is always the anchor (plan §5.4).
- *
- * ⚠ A positive floor below THREAT_BUFFER_M cannot be produced by this encoding
- * (the synthetic reach is clamped at 0, giving a floor of THREAT_BUFFER_M).
- * Real floors are always >= THREAT_BUFFER_M because they are a scram reach plus
- * it, so this only matters for a malformed input, which errs outward.
+ * kiteBand already holds at its ceiling when nothing on grid scrams ("no-tackle")
+ * and at the floor when something does; the anchor is irrelevant here because the
+ * engaged target is always the anchor (plan §5.4), so only the band's numbers are
+ * used.
  */
-function droneBoatHold(
-  inputs: HoldInputs,
-  floorM: number,
-  lockM: number | null,
-  distanceM: number | null,
-): Hold {
-  const threats: BandThreat[] =
-    floorM > 0
-      ? [
-          {
-            itemID: 0,
-            distanceM: distanceM ?? 0,
-            scramRangeM: Math.max(0, floorM - THREAT_BUFFER_M),
-            webs: false,
-          },
-        ]
-      : [];
-  const band = kiteBand({
-    threats,
-    droneControlRangeM: inputs.droneControlRangeM,
-    maxTargetRangeM: lockM,
-    overrideHoldM: null,
-  });
+function droneBoatHold(band: ReturnType<typeof kiteBand>, spentAtM: number | null): Hold {
   let hold: Hold = {
     order: "keepAtRange",
     rangeM: safeRange(band.holdM),
@@ -427,10 +422,10 @@ function droneBoatHold(
     ceilingM: band.ceilingM,
     floorM: band.floorM,
   };
-  if (inputs.closingSpent === true && distanceM !== null) {
+  if (spentAtM !== null) {
     hold = {
       ...hold,
-      rangeM: safeRange(Math.max(distanceM, hold.floorM)),
+      rangeM: safeRange(Math.max(spentAtM, hold.floorM)),
       reason: "closing-spent",
     };
   }

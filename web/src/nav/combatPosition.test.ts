@@ -20,7 +20,12 @@ import {
   type RatCombatFacts,
   type WeaponReach,
 } from "./combatPosition.ts";
-import { LEASH_BUFFER_M, RANGE_HYSTERESIS_M, THREAT_BUFFER_M } from "./kiteBand.ts";
+import {
+  LEASH_BUFFER_M,
+  RANGE_HYSTERESIS_M,
+  THREAT_BUFFER_M,
+  type BandThreat,
+} from "./kiteBand.ts";
 
 const NO_FACTS: RatCombatFacts = {
   missile: null,
@@ -36,18 +41,33 @@ function gun(moduleID: number, reachM: number | null, optimalM: number | null): 
   return { moduleID, reachM, optimalM };
 }
 
+/** A hostile that scrams out to `scramRangeM`; its floor is that plus THREAT_BUFFER_M. */
+function scrammer(itemID: number, scramRangeM: number | null): BandThreat {
+  return { itemID, distanceM: 10_000, scramRangeM, webs: false };
+}
+
+/** A hostile that cannot scram. */
+function harmless(itemID: number): BandThreat {
+  return { itemID, distanceM: 10_000, scramRangeM: null, webs: false };
+}
+
+/** The `threats` that give kiteBand a floor of exactly `floorM` (>= THREAT_BUFFER_M). */
+function floorOf(floorM: number): BandThreat[] {
+  return [scrammer(900, floorM - THREAT_BUFFER_M)];
+}
+
 function inputs(over: Partial<HoldInputs> = {}): HoldInputs {
   return {
     weapons: [gun(1, 40_000, 30_000)],
     hasCombatDrones: false,
     droneControlRangeM: null,
     lockRangeM: 60_000,
-    gridRatReachM: 0,
-    scramFloorM: 0,
+    gridRatReachM: null,
+    threats: [],
     targetDistanceM: null,
     target: null,
     ownMaxVelocity: null,
-    closingSpent: false,
+    closingSpentAtM: null,
     ...over,
   };
 }
@@ -135,6 +155,37 @@ test("inReach: a short gun's hysteresis is capped so it can still be entered", (
   assert.equal(inReach(751, 1_000, false), false);
 });
 
+test("reach rule matches the ammo module's table", () => {
+  // The identical table is pinned in the ammo module's tests: two copies of the
+  // reach rule must keep giving the same answers. Default margin throughout.
+  const rows: ReadonlyArray<
+    readonly [number | null, number | null, boolean | null, boolean]
+  > = [
+    // [reach, distance, wasInReach, expected]
+    [10_000, 9_400, false, true],
+    [10_000, 9_600, false, false],
+    [10_000, 10_400, true, true],
+    [10_000, 10_600, true, false],
+    [10_000, 10_000, null, true],
+    [10_000, 10_001, null, false],
+    [1_500, 1_125, false, true],
+    [1_500, 1_200, false, false],
+    [1_500, 1_875, true, true],
+    [1_500, 1_876, true, false],
+    [null, 50_000, false, true],
+    [10_000, null, false, false],
+    [10_000, null, true, true],
+    [10_000, null, null, true],
+  ];
+  for (const [reach, distance, was, expected] of rows) {
+    assert.equal(
+      inReach(distance, reach, was),
+      expected,
+      `reach=${reach} distance=${distance} was=${was}`,
+    );
+  }
+});
+
 // ─── wantedHold: gun boat ────────────────────────────────────────────────────
 
 test("no guns and no combat drones: nothing to position for", () => {
@@ -167,16 +218,74 @@ test("a kite is clamped under the ceiling", () => {
 });
 
 test("a kite is lifted to the floor", () => {
-  const h = hold({ gridRatReachM: 10_000, scramFloorM: 22_000 });
+  const h = hold({ gridRatReachM: 10_000, threats: floorOf(22_000) });
   assert.equal(h.reason, "kite");
   assert.equal(h.rangeM, 22_000);
   assert.equal(h.floorM, 22_000);
 });
 
-test("an unknown grid (reach 0) is never kited, however short the guns", () => {
-  const h = hold({ gridRatReachM: 0, weapons: [gun(1, 8_000, 5_000)] });
+test("an unknown grid (reach null) is never kited, however short the guns", () => {
+  const h = hold({ gridRatReachM: null, weapons: [gun(1, 40_000, 30_000)] });
   assert.equal(h.kiting, false);
   assert.equal(h.order, "orbit");
+  assert.equal(h.reason, "orbit-optimal");
+});
+
+test("a partly unknown grid never kites: a known short-range frigate beside an unread battleship", () => {
+  // The caller reports null as soon as ONE hostile is unread, so the frigate's
+  // 10 km is not allowed to stand for the grid.
+  const known = hold({ gridRatReachM: 10_000 });
+  assert.equal(known.reason, "kite");
+  const partial = hold({ gridRatReachM: null });
+  assert.equal(partial.kiting, false);
+  assert.equal(partial.order, "orbit");
+  assert.equal(partial.rangeM, 30_000);
+});
+
+test("a grid reach of 0 is never kited either", () => {
+  const h = hold({ gridRatReachM: 0 });
+  assert.equal(h.kiting, false);
+  assert.equal(h.order, "orbit");
+});
+
+test("the floor comes from the threats by kiteBand's rule: worst scrammer wins, non-scrammers do not count", () => {
+  const h = hold({
+    gridRatReachM: null,
+    threats: [harmless(1), scrammer(2, 12_000), scrammer(3, 18_000), harmless(4)],
+  });
+  assert.equal(h.floorM, 18_000 + THREAT_BUFFER_M);
+  assert.equal(hold({ threats: [harmless(1), harmless(2)] }).floorM, 0);
+  assert.equal(hold({ threats: [] }).floorM, 0);
+});
+
+test("a scrammer with an unknown scram range contributes nothing to the floor", () => {
+  // kiteBand's established rule: a row counts only when its range is a number.
+  const only = hold({ threats: [scrammer(1, null)] });
+  assert.equal(only.floorM, 0);
+  const beside = hold({ threats: [scrammer(1, null), scrammer(2, 12_000)] });
+  assert.equal(beside.floorM, 12_000 + THREAT_BUFFER_M);
+  const drone = wantedHold(
+    inputs({
+      weapons: [],
+      hasCombatDrones: true,
+      droneControlRangeM: 27_500,
+      threats: [scrammer(1, null)],
+    }),
+  )!;
+  assert.equal(drone.floorM, 0);
+});
+
+test("a gun boat with no known reach on any weapon is not positioned", () => {
+  assert.equal(wantedHold(inputs({ weapons: [gun(1, null, null)] })), null);
+  assert.equal(wantedHold(inputs({ weapons: [gun(1, null, 5_000), gun(2, null, null)] })), null);
+  assert.equal(wantedHold(inputs({ weapons: [gun(1, null, null)], lockRangeM: null })), null);
+  // ...but drones riding along do not rescue it: guns decide the hull type.
+  assert.equal(
+    wantedHold(
+      inputs({ weapons: [gun(1, null, null)], hasCombatDrones: true, droneControlRangeM: 27_500 }),
+    ),
+    null,
+  );
 });
 
 test("reason orbit-optimal: orbit at the optimal of the SHORTEST-reach weapon", () => {
@@ -201,18 +310,10 @@ test("weapons with unknown reach are ignored for the choice when others are know
   assert.equal(h.ceilingM, 17_000);
 });
 
-test("every reach unknown: orbit at half the lock range, clamped into the band", () => {
-  const h = hold({ weapons: [gun(1, null, null)], lockRangeM: 60_000 });
-  assert.equal(h.order, "orbit");
+test("a known reach with no lock range: the weapon alone sets the ceiling", () => {
+  const h = hold({ lockRangeM: null });
+  assert.equal(h.ceilingM, 37_000);
   assert.equal(h.rangeM, 30_000);
-  assert.equal(h.reason, "orbit-optimal");
-  assert.equal(h.ceilingM, 57_000);
-});
-
-test("every reach unknown and no lock range: 10 km, no ceiling", () => {
-  const h = hold({ weapons: [gun(1, null, null)], lockRangeM: null });
-  assert.equal(h.rangeM, 10_000);
-  assert.equal(h.ceilingM, null);
 });
 
 test("lock range shorter than the guns is the ceiling", () => {
@@ -222,29 +323,39 @@ test("lock range shorter than the guns is the ceiling", () => {
 });
 
 test("reason empty-band: the floor above the ceiling holds at the ceiling", () => {
-  const h = hold({ scramFloorM: 45_000, gridRatReachM: 10_000 });
+  const h = hold({ threats: floorOf(45_000), gridRatReachM: 10_000 });
   assert.equal(h.reason, "empty-band");
   assert.equal(h.rangeM, 37_000);
   assert.equal(h.kiting, false);
   assert.equal(h.floorM, 45_000);
 });
 
-test("reason unreachable: a faster rat orbiting inside the hold sets the hold at its distance", () => {
+test("reason unreachable: a faster rat orbiting inside the hold sets the hold at its orbit range", () => {
   const target: RatCombatFacts = { ...NO_FACTS, maxVelocity: 500, orbitRangeM: 5_000 };
   const h = hold({ target, ownMaxVelocity: 300, targetDistanceM: 8_000 });
   assert.equal(h.reason, "unreachable");
-  assert.equal(h.rangeM, 8_000);
+  assert.equal(h.rangeM, 5_000);
   assert.equal(h.kiting, false);
 });
 
-test("unreachable never accepts a distance inside the floor, and falls back to the rat's orbit", () => {
+test("unreachable is a fixed number: the live distance does not move it", () => {
   const target: RatCombatFacts = { ...NO_FACTS, maxVelocity: 500, orbitRangeM: 5_000 };
-  const floored = hold({ target, ownMaxVelocity: 300, targetDistanceM: 8_000, scramFloorM: 15_000 });
+  const ranges = [3_000, 8_000, 8_500, 12_000, null].map(
+    (targetDistanceM) => hold({ target, ownMaxVelocity: 300, targetDistanceM }).rangeM,
+  );
+  assert.deepEqual(ranges, [5_000, 5_000, 5_000, 5_000, 5_000]);
+});
+
+test("unreachable never accepts a distance inside the floor", () => {
+  const target: RatCombatFacts = { ...NO_FACTS, maxVelocity: 500, orbitRangeM: 5_000 };
+  const floored = hold({
+    target,
+    ownMaxVelocity: 300,
+    targetDistanceM: 8_000,
+    threats: floorOf(15_000),
+  });
   assert.equal(floored.reason, "unreachable");
   assert.equal(floored.rangeM, 15_000);
-  const blind = hold({ target, ownMaxVelocity: 300, targetDistanceM: null });
-  assert.equal(blind.reason, "unreachable");
-  assert.equal(blind.rangeM, 5_000);
 });
 
 test("a slower rat, an unknown speed, or an orbit outside the hold is not unreachable", () => {
@@ -258,24 +369,63 @@ test("a slower rat, an unknown speed, or an orbit outside the hold is not unreac
   assert.equal(hold({ target: noOrbit, ownMaxVelocity: 300 }).reason, "orbit-optimal");
 });
 
-test("reason closing-spent: the current distance becomes the hold", () => {
-  const h = hold({ closingSpent: true, targetDistanceM: 12_000 });
+test("reason closing-spent: the frozen distance becomes the hold", () => {
+  const h = hold({ closingSpentAtM: 12_000, targetDistanceM: 12_000 });
   assert.equal(h.reason, "closing-spent");
   assert.equal(h.rangeM, 12_000);
   assert.equal(h.order, "orbit");
   assert.equal(h.kiting, false);
 });
 
-test("closing-spent respects the floor and needs a known distance", () => {
-  assert.equal(hold({ closingSpent: true, targetDistanceM: 12_000, scramFloorM: 20_000 }).rangeM, 20_000);
-  assert.equal(hold({ closingSpent: true, targetDistanceM: null }).reason, "orbit-optimal");
+test("a frozen closing hold does not move with the live distance", () => {
+  const ranges = [4_000, 12_000, 14_500, 30_000, null].map(
+    (targetDistanceM) => hold({ closingSpentAtM: 12_000, targetDistanceM }).rangeM,
+  );
+  assert.deepEqual(ranges, [12_000, 12_000, 12_000, 12_000, 12_000]);
+  // ...for a drone boat as well.
+  const drone = [10_000, 21_000, 40_000].map(
+    (targetDistanceM) =>
+      wantedHold(
+        inputs({
+          weapons: [],
+          hasCombatDrones: true,
+          droneControlRangeM: 27_500,
+          threats: floorOf(15_000),
+          closingSpentAtM: 21_000,
+          targetDistanceM,
+        }),
+      )!.rangeM,
+  );
+  assert.deepEqual(drone, [21_000, 21_000, 21_000]);
+});
+
+test("closing-spent respects the floor and does not need a live distance", () => {
+  assert.equal(
+    hold({ closingSpentAtM: 12_000, targetDistanceM: 12_000, threats: floorOf(20_000) }).rangeM,
+    20_000,
+  );
+  const h = hold({ closingSpentAtM: 12_000, targetDistanceM: null });
+  assert.equal(h.reason, "closing-spent");
+  assert.equal(h.rangeM, 12_000);
+});
+
+test("an unspent budget (null) is not closing-spent; neither is an unreadable frozen number", () => {
+  assert.equal(hold({ closingSpentAtM: null, targetDistanceM: 12_000 }).reason, "orbit-optimal");
+  assert.equal(hold({ closingSpentAtM: Number.NaN }).reason, "orbit-optimal");
 });
 
 test("closing-spent on a kite keeps the keepAtRange order but stops claiming a kite", () => {
-  const h = hold({ gridRatReachM: 10_000, closingSpent: true, targetDistanceM: 30_000 });
+  const h = hold({ gridRatReachM: 10_000, closingSpentAtM: 30_000, targetDistanceM: 31_000 });
   assert.equal(h.order, "keepAtRange");
   assert.equal(h.rangeM, 30_000);
   assert.equal(h.kiting, false);
+});
+
+test("unreachable wins over closing-spent", () => {
+  const target: RatCombatFacts = { ...NO_FACTS, maxVelocity: 500, orbitRangeM: 5_000 };
+  const h = hold({ target, ownMaxVelocity: 300, closingSpentAtM: 12_000 });
+  assert.equal(h.reason, "unreachable");
+  assert.equal(h.rangeM, 5_000);
 });
 
 test("guns decide even when drones are along", () => {
@@ -290,7 +440,7 @@ const drones = (over: Partial<HoldInputs> = {}) =>
   inputs({ weapons: [], hasCombatDrones: true, droneControlRangeM: 27_500, ...over });
 
 test("reason drone-band: keepAtRange at the kiteBand floor", () => {
-  const h = wantedHold(drones({ scramFloorM: 15_000 }))!;
+  const h = wantedHold(drones({ threats: floorOf(15_000) }))!;
   assert.equal(h.order, "keepAtRange");
   assert.equal(h.rangeM, 15_000);
   assert.equal(h.reason, "drone-band");
@@ -300,26 +450,26 @@ test("reason drone-band: keepAtRange at the kiteBand floor", () => {
 });
 
 test("a drone boat with nothing scramming holds at the far end of its leash", () => {
-  const h = wantedHold(drones({ scramFloorM: 0 }))!;
+  const h = wantedHold(drones({ threats: [harmless(1)] }))!;
   assert.equal(h.rangeM, 24_500);
   assert.equal(h.reason, "drone-band");
 });
 
 test("the drone leash is the control range, and lock range does not stand in for it", () => {
   // No control range: the 20 km fallback leash, not the 60 km lock range.
-  const h = wantedHold(drones({ droneControlRangeM: null, scramFloorM: 0 }))!;
+  const h = wantedHold(drones({ droneControlRangeM: null, threats: [harmless(1)] }))!;
   assert.equal(h.ceilingM, 17_000);
 });
 
 test("reason empty-band for a drone boat: ceiling under the floor", () => {
-  const h = wantedHold(drones({ scramFloorM: 25_000 }))!;
+  const h = wantedHold(drones({ threats: floorOf(25_000) }))!;
   assert.equal(h.reason, "empty-band");
   assert.equal(h.rangeM, 24_500);
   assert.equal(h.floorM, 25_000);
 });
 
 test("a drone boat can run out its closing budget too", () => {
-  const h = wantedHold(drones({ scramFloorM: 15_000, closingSpent: true, targetDistanceM: 21_000 }))!;
+  const h = wantedHold(drones({ threats: floorOf(15_000), closingSpentAtM: 21_000, targetDistanceM: 21_000 }))!;
   assert.equal(h.reason, "closing-spent");
   assert.equal(h.rangeM, 21_000);
 });
@@ -328,27 +478,60 @@ test("a drone boat can run out its closing budget too", () => {
 
 test("no combination of nasty inputs yields a negative or non-finite range", () => {
   const nasty = [null, -5, 0, 1, 500, 10_000, 60_000, Number.NaN, Number.POSITIVE_INFINITY];
+  const scramNasty = [null, 0, 5_000, 85_000, -3, Number.NaN];
   for (const lockRangeM of nasty) {
     for (const reach of nasty) {
-      for (const scramFloorM of [0, 5_000, 90_000, -3, Number.NaN]) {
+      for (const scramRangeM of scramNasty) {
         for (const targetDistanceM of nasty) {
-          for (const closingSpent of [false, true]) {
-            const h = wantedHold(
-              inputs({
-                lockRangeM,
-                weapons: [gun(1, reach, reach)],
-                scramFloorM,
-                targetDistanceM,
-                closingSpent,
-                gridRatReachM: 12_000,
-                target: { ...NO_FACTS, maxVelocity: 500, orbitRangeM: 100 },
-                ownMaxVelocity: 300,
-              }),
-            );
-            assert.ok(h !== null);
-            assert.ok(Number.isFinite(h.rangeM) && h.rangeM >= 0, JSON.stringify(h));
-            assert.ok(h.ceilingM === null || (Number.isFinite(h.ceilingM) && h.ceilingM >= 0));
+          for (const closingSpentAtM of nasty) {
+            for (const gridRatReachM of [null, 12_000]) {
+              const h = wantedHold(
+                inputs({
+                  lockRangeM,
+                  weapons: [gun(1, reach, reach)],
+                  threats: [scrammer(1, scramRangeM)],
+                  targetDistanceM,
+                  closingSpentAtM,
+                  gridRatReachM,
+                  target: { ...NO_FACTS, maxVelocity: 500, orbitRangeM: 100 },
+                  ownMaxVelocity: 300,
+                }),
+              );
+              // A gun boat whose reach is not a finite number has none to position for.
+              if (typeof reach !== "number" || !Number.isFinite(reach)) {
+                assert.equal(h, null);
+                continue;
+              }
+              assert.ok(h !== null);
+              assert.ok(Number.isFinite(h.rangeM) && h.rangeM >= 0, JSON.stringify(h));
+              assert.ok(h.ceilingM === null || (Number.isFinite(h.ceilingM) && h.ceilingM >= 0));
+              assert.ok(Number.isFinite(h.floorM) && h.floorM >= 0);
+            }
           }
+        }
+      }
+    }
+  }
+});
+
+test("a drone boat never yields a negative or non-finite range either", () => {
+  const nasty = [null, -5, 0, 500, 60_000, Number.NaN, Number.POSITIVE_INFINITY];
+  for (const lockRangeM of nasty) {
+    for (const droneControlRangeM of nasty) {
+      for (const scramRangeM of [null, 0, 85_000, Number.NaN]) {
+        for (const closingSpentAtM of nasty) {
+          const h = wantedHold(
+            inputs({
+              weapons: [],
+              hasCombatDrones: true,
+              lockRangeM,
+              droneControlRangeM,
+              threats: [scrammer(1, scramRangeM)],
+              closingSpentAtM,
+            }),
+          );
+          assert.ok(h !== null);
+          assert.ok(Number.isFinite(h.rangeM) && h.rangeM >= 0, JSON.stringify(h));
         }
       }
     }
@@ -357,7 +540,7 @@ test("no combination of nasty inputs yields a negative or non-finite range", () 
 
 // ─── holdNeedsReissue ────────────────────────────────────────────────────────
 
-test("MAX_CLOSE_TICKS matches the drone boat ladder", () => {
+test("MAX_CLOSE_TICKS is the 60-tick closing budget (about 2 min at a 2 s cadence)", () => {
   assert.equal(MAX_CLOSE_TICKS, 60);
 });
 
