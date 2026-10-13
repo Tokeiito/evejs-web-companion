@@ -48,7 +48,9 @@
   // companion doing something else.
   import { onMount } from "svelte";
   import FleetCompanion from "./FleetCompanion.svelte";
-  import { stopServerBot, type ServerBot } from "../app/api.ts";
+  import { readBotLog, stopServerBot, type ServerBot } from "../app/api.ts";
+  import { buildLogView, parseLogLines } from "./companionLogView.ts";
+  import type { BotLogEntry } from "../nav/botLog.ts";
   import { createPilotReach } from "../app/pilotReach.ts";
   import { skipWhileBusy } from "../app/skipWhileBusy.ts";
   import { holdsTheShip, type ShipControllerID } from "../nav/botRegistry.ts";
@@ -628,6 +630,78 @@
   function goToSelectedPilot(): void {
     const id = selectedSession?.id;
     if (id !== undefined) onGoToPilot?.(id);
+  }
+
+  // --- the flight log ---------------------------------------------------------
+  //
+  // READ-ONLY, ONE PILOT AT A TIME, AND ONLY WHEN ASKED. The log is the file the
+  // BFF keeps for the character of the session the request is made as, so the
+  // read goes through THAT pilot's own flow options (`flow.requestOptions()`,
+  // which carries its session token) and can never show another pilot's lines.
+  // No polling: Refresh is the only thing that reads it.
+  interface PilotLog {
+    open: boolean;
+    which: "current" | "previous";
+    loading: boolean;
+    error: string;
+    /** Null until the first read has landed. */
+    entries: readonly BotLogEntry[] | null;
+    /** Row indexes whose full trace is open. */
+    expanded: readonly number[];
+  }
+  const NO_LOG: PilotLog = {
+    open: false,
+    which: "current",
+    loading: false,
+    error: "",
+    entries: null,
+    expanded: [],
+  };
+
+  let logs = $state<Record<string, PilotLog>>({});
+  let logFilter = $state("");
+  // A read that comes back after a newer one was asked for is dropped.
+  const logReads = new Map<string, number>();
+
+  function logOf(sessionID: string): PilotLog {
+    return logs[sessionID] ?? NO_LOG;
+  }
+
+  function patchLog(sessionID: string, patch: Partial<PilotLog>): void {
+    logs = { ...logs, [sessionID]: { ...logOf(sessionID), ...patch } };
+  }
+
+  async function loadLog(session: Session): Promise<void> {
+    const ticket = (logReads.get(session.id) ?? 0) + 1;
+    logReads.set(session.id, ticket);
+    patchLog(session.id, { loading: true, error: "" });
+    try {
+      const raw = await readBotLog(logOf(session.id).which, session.flow.requestOptions());
+      if (logReads.get(session.id) !== ticket) return;
+      patchLog(session.id, { loading: false, entries: parseLogLines(raw), expanded: [] });
+    } catch (cause) {
+      if (logReads.get(session.id) !== ticket) return;
+      patchLog(session.id, { loading: false, error: panelErrorWords(cause) });
+    }
+  }
+
+  function toggleLog(session: Session): void {
+    const next = !logOf(session.id).open;
+    patchLog(session.id, { open: next });
+    if (next && logOf(session.id).entries === null) void loadLog(session);
+  }
+
+  function pickLogRun(session: Session, which: "current" | "previous"): void {
+    if (logOf(session.id).which === which) return;
+    patchLog(session.id, { which, entries: null, expanded: [] });
+    void loadLog(session);
+  }
+
+  function toggleTrace(sessionID: string, index: number): void {
+    const open = logOf(sessionID).expanded;
+    patchLog(sessionID, {
+      expanded: open.includes(index) ? open.filter((entry) => entry !== index) : [...open, index],
+    });
   }
 
   let busy = $state(false);
@@ -1227,6 +1301,107 @@
       onGoToPilot={onGoToPilot ? goToSelectedPilot : undefined}
     />
   {/key}
+  <!-- THE FLIGHT LOG for the pilot above: read-only, closed until asked for,
+       and read again only by Refresh. The line wording is companionLogView.ts. -->
+  {@const logSession = selectedSession}
+  {@const log = logOf(logSession.id)}
+  {@const logView = buildLogView(log.entries ?? [], logFilter)}
+  <section class="panel log-panel">
+    <header class="panel-head">
+      <h2>Log</h2>
+      <span class="controls">
+        <button
+          type="button"
+          class="minor"
+          aria-pressed={log.open}
+          onclick={() => toggleLog(logSession)}
+        >
+          {log.open ? "Hide log" : "Show log"}
+        </button>
+      </span>
+    </header>
+    {#if log.open}
+      <div class="log-bar">
+        <button
+          type="button"
+          class="minor"
+          aria-pressed={log.which === "current"}
+          onclick={() => pickLogRun(logSession, "current")}
+        >
+          This run
+        </button>
+        <button
+          type="button"
+          class="minor"
+          aria-pressed={log.which === "previous"}
+          onclick={() => pickLogRun(logSession, "previous")}
+        >
+          Previous run
+        </button>
+        <button type="button" disabled={log.loading} onclick={() => loadLog(logSession)}>
+          {log.loading ? "Loading" : "Refresh"}
+        </button>
+        <input
+          type="text"
+          class="log-filter"
+          aria-label="Filter the log"
+          placeholder="filter the log"
+          bind:value={logFilter}
+        />
+      </div>
+      {#if log.error}
+        <p class="note log-error">{log.error}</p>
+      {/if}
+      {#if log.entries === null}
+        {#if !log.error}
+          <p class="note">Loading the log.</p>
+        {/if}
+      {:else if log.entries.length === 0}
+        <p class="note">Nothing logged for the {log.which} run.</p>
+      {:else}
+        <p class="note">
+          {logView.matched} of {logView.total} lines, newest first, times in UTC.
+          {#if logView.hidden > 0}{logView.hidden} older lines are not drawn; filter to find them.{/if}
+        </p>
+        <div class="log-rows">
+          {#each logView.rows as row (row.index)}
+            <div
+              class="log-row"
+              class:log-grouped={row.inGroup}
+              class:log-start={row.groupStart}
+              class:log-heartbeat={row.heartbeat}
+            >
+              <span class="log-time">{row.time}</span>
+              <span class="log-kind">{row.kind}</span>
+              <span class="log-phase">{row.phase}</span>
+              <span
+                class="log-text"
+                class:log-good={row.tone === "good"}
+                class:log-warn={row.tone === "warn"}
+                class:log-bad={row.tone === "bad"}
+              >
+                {row.text}{row.heartbeat ? " (heartbeat)" : ""}
+              </span>
+              {#if row.summary !== null && row.trace !== null}
+                {@const traceOpen = log.expanded.includes(row.index)}
+                <button
+                  type="button"
+                  class="log-trace"
+                  aria-expanded={traceOpen}
+                  onclick={() => toggleTrace(logSession.id, row.index)}
+                >
+                  {row.summary === "" ? "(empty trace)" : row.summary}
+                </button>
+                {#if traceOpen}
+                  <pre class="log-json">{JSON.stringify(row.trace, null, 2)}</pre>
+                {/if}
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
+    {/if}
+  </section>
 {:else if selectedServerBot}
   <!-- The server row keeps its panel: unlike the bar above, this one has a body
        — what the run is doing, why, and what is wrong with the fit. -->
@@ -1581,6 +1756,125 @@
     }
     .limit-group > .check {
       margin-top: 0.5rem;
+    }
+  }
+
+  /* ------------------------------------------------------- the flight log --
+     Compact rows in the window's own width: time, kind and phase are narrow
+     columns, the sentence takes the rest and wraps. The kind is a word, not a
+     colour; only a result's outcome is toned, and it says ok or the refusal in
+     words as well. */
+  .log-panel {
+    container-type: inline-size;
+  }
+  .log-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0.4rem 0;
+  }
+  .log-bar > button[aria-pressed="true"] {
+    border-color: var(--color-accent-dim);
+    color: var(--color-accent);
+  }
+  .log-filter {
+    flex: 1 1 12rem;
+    min-width: 8rem;
+  }
+  .log-error {
+    color: var(--color-danger);
+  }
+  .log-rows {
+    max-height: 32rem;
+    overflow: auto;
+    border: 1px solid var(--color-line);
+    font-family: var(--font-mono, monospace);
+    font-size: 0.85em;
+  }
+  .log-row {
+    display: grid;
+    grid-template-columns: 4.5rem 3.8rem 6rem minmax(0, 1fr);
+    gap: 0 0.5rem;
+    padding: 0.1rem 0.4rem;
+    border-bottom: 1px solid var(--color-row-line);
+  }
+  /* A tick's decide, issue and result: one block with a rule down its left. */
+  .log-row.log-grouped {
+    border-left: 2px solid var(--color-accent-dim);
+  }
+  .log-row.log-start:not(:first-child) {
+    border-top: 1px solid var(--color-line-strong);
+  }
+  .log-row.log-heartbeat {
+    opacity: 0.5;
+  }
+  .log-time,
+  .log-kind {
+    color: var(--color-muted);
+  }
+  .log-phase {
+    color: var(--color-cell);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .log-text {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: var(--color-text);
+  }
+  .log-text.log-good {
+    color: var(--color-good);
+  }
+  .log-text.log-warn {
+    color: var(--color-warn);
+  }
+  .log-text.log-bad {
+    color: var(--color-danger);
+  }
+  .log-trace,
+  .log-json {
+    grid-column: 4;
+  }
+  /* The trace summary is a button so it can be reached by keyboard, but it is
+     drawn as text: the global button chrome would make each row a slab. */
+  .log-trace {
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--color-accent);
+    text-align: left;
+    font: inherit;
+    letter-spacing: 0;
+    overflow-wrap: anywhere;
+  }
+  .log-trace:hover:not(:disabled) {
+    background: none;
+    color: var(--color-accent-bright);
+  }
+  .log-json {
+    margin: 0.2rem 0;
+    padding: 0.3rem 0.4rem;
+    overflow: auto;
+    max-height: 18rem;
+    border: 1px solid var(--color-line);
+    background: var(--color-field);
+    color: var(--color-cell);
+  }
+  /* Narrow window: the sentence goes under the columns instead of crushing. */
+  @container (max-width: 34rem) {
+    .log-row {
+      grid-template-columns: 4.5rem 3.8rem minmax(0, 1fr);
+    }
+    .log-phase {
+      display: none;
+    }
+    .log-text,
+    .log-trace,
+    .log-json {
+      grid-column: 1 / -1;
     }
   }
 
