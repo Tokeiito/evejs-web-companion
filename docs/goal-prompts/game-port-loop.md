@@ -2909,6 +2909,24 @@ Take these defaults, and list each under "For the operator" in the log so they c
   `AddBalls2` of a few balls, and every order by name with its stamp.
 - **A pilot chosen in space has no scene for a few seconds**: a script that
   reads the scene at once finds it empty.
+- **The server has its own ledger of what is law and what is open**
+  (`eve.js` `doc/PARITY_DESTINY_LAWS_AUDIT.md`, `doc/README.md` for the
+  rest): it is read before a part of the server is sized, and written to
+  when that part is changed. The missile's had, open in its owner's
+  words, the very thing this loop had sized without it.
+- **The server's missile debug log**: `EVEJS_SPACE_MISSILE_DEBUG_ENABLED=true
+  bash store.sh save <label>` starts the server with it
+  (`_local/logs/space-missile-debug.log`, one JSON a line: a launch with
+  the attacker's and the target's places, each tick, each stamp given a
+  session). Copy it aside before the store is put back; the putting back
+  starts the server with it off.
+- **A client's stamps are this server's raw ones and two more** (a
+  launch, a removal; recorded 2026-10-13). What the server reckons in raw
+  stamps is set beside a recording with two added.
+- **A module ported from CCP's library is set beside this repository's
+  port of the same** (`mcb-beside.js` is the pattern, and loads nothing of
+  the store): the same case given to both, stepped side by side, the two
+  places compared to the bit.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

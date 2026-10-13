@@ -1202,6 +1202,22 @@ Neither the transport nor the page reads the tales or the end of the Omega time.
 is also sent to a system (by `solarsystemid2`, 17 times, one tale each) far from any session
 change: a tale of the system's own, which this server does not send.
 
+**A missile in the client, 2026-10-13.** The client's missile object (`spaceObject/missile.py`) reckons its
+time to its target once, as it is prepared (`_GetTimeToTarget`, 144 to 154: under 1.6 seconds it does not spread),
+and flies its warhead by that time. It is "collided" at once where it does not spread (`Prepare`, 188), and
+otherwise when destiny's ball touches the ball it follows (`DoCollision`, 208: the model is then put on a ball of
+the client's own, and the warhead flies on to its explosion whatever becomes of the server's ball). `Release`
+(243) clears the model only of a missile that has not collided and is removed with an explosion; a removal with no
+explosion clears nothing. Tranquility removes every missile with `TerminalPlayDestructionEffect(missile, None)`
+(None is an explosion to `michelle.py`, 1205), so there the ball has touched by the removal's stamp. An entry
+stamped R is applied before the park's step from R: a ball that touched in the step from t has collided by the
+time an entry stamped t + 1 is applied.
+
+This server gives a client stamps two more than its raw dispatch stamp, for a launch and for a removal alike
+(recorded, 2026-10-13). It removes a missile from afar late and with no entry, which `Release`'s rule makes safe.
+Since `eve.js` `6117e48fe` it also keeps the ball a client's park makes of each missile and knows the step that ball
+touches in, to a step (`scripts/missiles-in-park.js` measures a recording of it).
+
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
 (`ACTIONS`, by `eventTypeID`) and a level it reckons from `absolutePoints` and the skill's rank
