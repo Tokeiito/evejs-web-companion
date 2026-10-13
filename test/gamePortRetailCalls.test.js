@@ -1746,6 +1746,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "seasonManager.get_season_data_for_character", "seasonManager.get_character_progress_by_character_id",
     // The logon told to the milestone manager, as a character comes onto the session. The gateway's list has nothing of that manager's.
     "milestoneMgr.ProcessCharacterLogon",
+    // Whether the character may play the tutorial, asked once for the character. The gateway's list has nothing of the operations manager's.
+    "operationsManager.can_character_play_the_tutorial",
     "skillHandler.GetSkillQueueAndFreePoints",
     "home_station.get_home_station",
     "skillHandler.SaveNewQueue",

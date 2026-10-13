@@ -65,6 +65,8 @@ const CHOSEN_ASKS = [
   "charMgr.GetCharacterSettings",
   // crimewatchSvc.GetJumpTimers (crimewatchSvc.py 605 to 608), which its timer panel reads as it is made (crimewatchTimers.py 335, 355).
   "jumpTimers.GetTimers",
+  // is_npe_enabled_for_character (operations/common/util.py 93 to 101), as the first of the client's services that mind the tutorial's operations starts.
+  "operationsManager.can_character_play_the_tutorial",
   "charMgr.GetContactList", "onlineStatus.GetInitialState",
   // The stand-in's pilot is chosen in a station: its lobby's four.
   "officeManager.GetMyCorporationsOffices", "stationSvc.GetStationItemBits", "station.GetGuests", "map.GetStationInfo",
@@ -412,6 +414,9 @@ test("select logs in as the account and makes the retail client's three calls, i
     // And its jump timers, which the client's crimewatch service asks once, by the service's name, for its timer
     // panel as that is made (crimewatchSvc.py 605 to 608, crimewatchTimers.py 335 and 355).
     "jumpTimers.GetTimers",
+    // And whether it may play the tutorial, which the client asks once for a character, of the character alone
+    // (operations/common/util.py 93 to 101; operations/client/util.py 12 to 13).
+    "operationsManager.can_character_play_the_tutorial",
     // And its contacts and who of them is online, as the client's address book asks. (Its corporation's contacts
     // are asked of the registry, and not at all of an NPC corporation, which the stand-in pilot's is.)
     "charMgr.GetContactList",
@@ -1738,6 +1743,8 @@ test("the transport keeps a tally of what it called and how each compared with t
     "milestoneMgr.ProcessCharacterLogon": { same: 1 },
     // The pilot's jump timers, asked once at the choosing as the client's crimewatch service asks them (crimewatchSvc.py 607).
     "jumpTimers.GetTimers": { same: 1 },
+    // Whether the character may play the tutorial, asked once at the choosing (operations/common/util.py 99).
+    "operationsManager.can_character_play_the_tutorial": { same: 1 },
     // The wars of the pilot's corporation, asked of the war registry's moniker at the choosing (war_cso.py 103).
     "warRegistry.GetWars": { same: 1 },
     // The occupation state of the system the pilot is in, asked at the choosing as the client's location panel has it asked (fwWarzoneSvc.py 52).
@@ -5365,7 +5372,7 @@ test("a character chosen has its skill handler asked for and bound, and asked wh
   const { pilots, session, handle } = await selected({ answers: handlerAnswers() }, SKILL_PAIRS);
   // Asked of skillMgr2 by name, with nothing, after the standings; the moniker it answered is bound by the first read,
   // by the character, and the rest go to the object, in the order a real client asked this server.
-  assert.deepEqual(session.calls.slice(3).map((call) => [`${call.service}.${call.method}`, call.args, call.kwargs]), CHOSEN_ASKS.map((pair) => [pair, pair === "jumpTimers.GetTimers" ? [PILOT] : [], pair === "notificationMgr.GetAllNotifications" ? { fromID: 0 } : null]));
+  assert.deepEqual(session.calls.slice(3).map((call) => [`${call.service}.${call.method}`, call.args, call.kwargs]), CHOSEN_ASKS.map((pair) => [pair, pair === "jumpTimers.GetTimers" || pair === "operationsManager.can_character_play_the_tutorial" ? [PILOT] : [], pair === "notificationMgr.GetAllNotifications" ? { fromID: 0 } : null]));
   assert.deepEqual([session.binds, session.carried, session.nodes], [[{ service: "skillHandler", params: PILOT }], ["GetSkills"], []]);
   assert.deepEqual(handlerCalls(session), LOGIN_READS);
   assert.deepEqual([...new Set(session.boundCalls.map((call) => call.objectID))], ["N=1:1"]);
