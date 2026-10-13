@@ -1621,13 +1621,17 @@ function createGamePortPilots({
         entry.monikers.delete(ALLIANCE_REGISTRY);
         if (sessions.has(entry.handle)) allianceBound(entry).catch(() => {});
       }
-      // war_cso.OnSessionChanged (69 to 78): in another alliance or corporation, what is kept of the wars of the
-      // alliance the pilot is in now and of its corporation now is let go. Not at the choosing of a character.
-      // (The client then reckons whether the pilot is at war, which asks its owner's wars at once: not built yet.
-      // Until it is, they are asked for when next wanted, on a moniker made for the owner of then.)
+      // war_cso.OnSessionChanged (69 to 80): in another alliance or corporation, what is kept of the wars of the
+      // alliance the pilot is in now and of its corporation now is let go, and the service reckons again whether
+      // the pilot is at war, which asks for its owner's wars at once (IsPlayerCurrentlyAtWarOrInFW, 302 to 311),
+      // on a moniker made for that owner where it is another's (GetMoniker). Not at the choosing of a character,
+      // which the timer panel's own reading covers. A pilot in a faction's militia is at war with nothing asked,
+      // and of such a one the service's thread asks within ten seconds: here at once for either, as at the
+      // choosing. With no corporation on the session there is no owner, and nothing is asked.
       if (("allianceid" in changes || "corpid" in changes) && !("charid" in changes && changes.charid[0] === null)) {
         entry.wars.forget(attribute(entry, "allianceid"));
         entry.wars.forget(attribute(entry, "corpid"));
+        if (sessions.has(entry.handle)) warsRead(entry, warOwner(entry)).catch(() => {});
       }
       // base_corporation.GetCorpRegistry: another corporation, another registry.
       if ("corpid" in changes) {
