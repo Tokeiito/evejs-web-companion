@@ -210,9 +210,12 @@ Ammo (sequence per gun, one call per tick, banked guns as one)
 
 1. **Reach first.** Charges that keep the target inside the gun's reach *with
    hysteresis* outrank every charge that does not. A charge whose reach puts
-   the target within `RANGE_HYSTERESIS_M` (2 km, `kiteBand.ts:127`) of the edge
-   counts as out of reach for the purpose of swapping INTO it, and as in reach
-   for the purpose of staying ON it.
+   the target within the reach margin of the edge counts as out of reach for
+   the purpose of swapping INTO it, and as in reach for the purpose of staying
+   ON it. **The margin is 500 m, capped at a quarter of the reach** (as built,
+   2026-10-13), the same rule the range gate uses. kiteBand's 2 km was the
+   first proposal and was wrong for this job: as a reach margin it would mean a
+   1.5 km blaster charge could never count as entering reach.
 2. **Then damage through resists.** Among in-reach charges, the one whose
    damage split applied to the target's resonances for the layer currently
    being hit is highest. The layer is the first of shield / armour / hull whose
@@ -321,12 +324,14 @@ empty band : floorM > ceilingM → hold at ceilingM, say so (existing kiteBand b
 ```
 
 **The leash.** The FC must stay reachable: a companion that wanders 60 km from
-its commander is not a companion. Proposal: `leashM` defaults to the pilot's own
-lock range, and chat `leash N km` overrides it (same shape as `follow N km`).
-When the target is further from the FC than the leash allows, the wanted hold is
-the point on the FC–target line at the leash edge, held as KEEP AT RANGE on the
-**FC** at `leashM`; whatever guns reach from there fire, and the readout says
-"at the leash, N of M guns reach". ⚠ Open: §7.
+its commander is not a companion. The leash is the pilot's own lock range
+(decided, §7 item 3). **As built (2026-10-13), a target further from the FC's
+ship than the leash is simply not chased:** R8 falls through, R9 keeps the
+pilot in formation, and the range gate fires whatever reaches from there. The
+first draft held the pilot at the leash edge on the FC-target line; that needs
+a point-in-space order the action vocabulary does not have, and falling through
+reaches the same safe state with no new path to get stuck on. A chat `leash N
+km` override is left for later if the lock range proves wrong in play.
 
 **Can the hold be held?** Rats orbit at their profile distance and some are
 faster than us. If the rat's max velocity (attribute 37) exceeds ours and its
