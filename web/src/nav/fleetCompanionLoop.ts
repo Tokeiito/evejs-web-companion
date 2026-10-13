@@ -306,7 +306,7 @@ export interface FleetCompanionRequest {
   // ⚠ THE FIELDS BELOW ARE THE ONLY ONES AN OPERATOR EVER SETS, and the only
   // ones that are persisted against a pilot in a squad. Everything above is read
   // off the hull at start. The dividing line is exactly "can this be read off
-  // the ship" -- these six cannot: three of them are thresholds nobody could
+  // the ship" -- these seven cannot: four of them are thresholds nobody could
   // derive, one is a budget, one is a wait, and one spends money.
   //
   // ⚠ `deriveModulesFromFit` USED TO LIVE HERE AND IS GONE. It was the flag that
@@ -317,6 +317,22 @@ export interface FleetCompanionRequest {
 
   /** Remaining fraction (0-1) of any health layer that starts a flee. */
   readonly fleeHealthFloor: number;
+  /**
+   * Remaining fraction (0-1) of the tank below which a run to safety stops
+   * waiting for its drones and warps at once, leaving them behind.
+   *
+   * ⚠ THE SECOND OF TWO FLEE THRESHOLDS, CHOSEN BY THE OPERATOR 2026-10-13.
+   * Below `fleeHealthFloor` the tank is breaking: the drones are called home
+   * and the warp waits for them, bounded. Below this one the tank is done: the
+   * ship goes now and sends no recall. Seen live 2026-10-12: a pilot crossed its
+   * floor, sat 16 s "waiting for the drones to come home", and was destroyed two
+   * seconds after its warp went out.
+   *
+   * ⚠ OPTIONAL, AND ABSENT IS HALF THE FLEE FLOOR (`abandonDronesFloor`). A
+   * setup saved before this existed decodes to exactly what it did, so the
+   * hash a resumed server run is checked against does not change under it.
+   */
+  readonly abandonDronesHealthFloor?: number;
   /**
    * Bring a drone home when its worst layer drops below this, 0..1.
    *
@@ -413,10 +429,12 @@ export interface FleetCompanionRequest {
  * ⚠ THE TEST FOR MEMBERSHIP IS "CAN THIS BE READ OFF THE SHIP". If it can, it is
  * derived and does not belong here. Everything that survived the 2026-09-11
  * simplification failed that test: three thresholds nobody could derive, a
- * budget, a wait, and one setting that spends money.
+ * budget, a wait, and one setting that spends money. The fourth threshold,
+ * `abandonDronesHealthFloor`, came later (2026-10-13) and fails it the same way.
  */
 export const COMPANION_SETUP_KEYS = [
   "fleeHealthFloor",
+  "abandonDronesHealthFloor",
   "capacitorFloor",
   "maxFleeAttempts",
   "repairsAtStation",
@@ -438,6 +456,9 @@ export type CompanionSetup = Pick<FleetCompanionRequest, CompanionSetupKey>;
 /** Bounds. Stated together rather than scattered, so they can be read at once. */
 export const MIN_FLEE_HEALTH_FLOOR = 0.05;
 export const MAX_FLEE_HEALTH_FLOOR = 0.95;
+/** Zero is "never leave them": the wait always runs to its bound. */
+export const MIN_ABANDON_DRONES_HEALTH_FLOOR = 0;
+export const MAX_ABANDON_DRONES_HEALTH_FLOOR = MAX_FLEE_HEALTH_FLOOR;
 export const MIN_DRONE_HEALTH_FLOOR = 0.05;
 export const MAX_DRONE_HEALTH_FLOOR = 0.95;
 export const MIN_CAPACITOR_FLOOR = 0.05;
@@ -465,6 +486,11 @@ export const MAX_DRONE_HOLD_OFF_SECONDS = 300;
  */
 export const DEFAULT_COMPANION_SETUP: CompanionSetup = Object.freeze({
   fleeHealthFloor: 0.3,
+  // Half the flee floor, the same answer `abandonDronesFloor` gives a setup
+  // that predates the field. A guess, not a measurement: the 2026-10-12 loss
+  // went from its floor to destroyed in 19 s, and the hull is still whole at
+  // half an armour floor, so this should leave time to align.
+  abandonDronesHealthFloor: 0.15,
   // Half of the worst layer. In a fight that layer is the shield, and a recall
   // gives a shield back whole - so pulling at a half shield costs one round
   // trip and returns a fresh drone, while waiting for armour damage returns a
@@ -2476,7 +2502,7 @@ function decideAbandonment(
 
   // 2. Get safe.
   if (!reachedSafety(obs, running)) {
-    const safe = runToSafety(obs, mem, {
+    const safe = runToSafety(request, obs, mem, {
       run: running,
       phase: "Getting safe",
       because: "there is nobody left in the fleet to fly with",
@@ -2610,9 +2636,10 @@ const MAX_GET_SAFE_WARP_WAIT_TICKS = 60;
  * Returns null in three different situations that must not be conflated:
  * nothing is out, the recall has finished, or the wait has been given up on.
  * All three mean the same thing to the caller -- go -- and none of them is an
- * error.
+ * error. A fourth joins them: the tank is done (`abandonDronesHealthFloor`).
  */
 function recallBeforeLeaving(
+  request: FleetCompanionRequest,
   obs: FleetCompanionObservation,
   mem: CompanionLadderMemory,
   leg: SafetyLeg,
@@ -2623,6 +2650,14 @@ function recallBeforeLeaving(
     // when the read is simply absent: a host that does not wire `myDroneIDs` up
     // gets the behaviour it had before this existed, rather than a pilot that
     // refuses to leave over drones nobody can see.
+    return null;
+  }
+  // ⚠ THE TANK IS DONE: GO NOW, AND SEND NO RECALL. Asked before the recall and
+  // on every tick of the wait, so a ship still losing health while it waits
+  // stops waiting the tick it crosses. Unreadable health is not "done": it
+  // keeps the bounded wait, as it did before this existed.
+  const health = tankHealth(request, obs);
+  if (health !== null && health < abandonDronesFloor(request)) {
     return null;
   }
   const waited = leg.run.droneRecallWaited;
@@ -2660,6 +2695,7 @@ function recallBeforeLeaving(
  * one. So the branch is left to the caller rather than decided here.
  */
 function runToSafety(
+  request: FleetCompanionRequest,
   obs: FleetCompanionObservation,
   mem: CompanionLadderMemory,
   leg: SafetyLeg,
@@ -2675,7 +2711,7 @@ function runToSafety(
   // `droneRecallWaited`. Docking and approaching are not departures and are
   // left alone -- a dock is the destination, and the recall happens before the
   // warp that reaches it.
-  const recall = recallBeforeLeaving(obs, mem, leg);
+  const recall = recallBeforeLeaving(request, obs, mem, leg);
   if (recall !== null) {
     return recall;
   }
@@ -4789,6 +4825,17 @@ function returnMark(request: FleetCompanionRequest): number {
 }
 
 /**
+ * The tank fraction below which a run to safety leaves its drones: the
+ * operator's own number, or half the flee floor for a setup saved before there
+ * was one. See `abandonDronesHealthFloor`.
+ */
+export function abandonDronesFloor(
+  setup: Pick<CompanionSetup, "fleeHealthFloor" | "abandonDronesHealthFloor">,
+): number {
+  return setup.abandonDronesHealthFloor ?? setup.fleeHealthFloor / 2;
+}
+
+/**
  * Whether the armour AND the hull are both readable and both already clear of
  * the return mark — i.e. whatever is wrong with this ship is wrong with its
  * SHIELD, which a dock puts back in full.
@@ -5067,7 +5114,7 @@ function flyTheFlee(
     };
   }
 
-  const safe = runToSafety(obs, mem, {
+  const safe = runToSafety(request, obs, mem, {
     run: running,
     phase: "Getting clear",
     because: "this ship is hurt",

@@ -95,12 +95,14 @@ import {
   MAX_CAPACITOR_FLOOR,
   MAX_DRONE_HOLD_OFF_SECONDS,
   MAX_FLEE_ATTEMPTS,
+  MAX_ABANDON_DRONES_HEALTH_FLOOR,
   MAX_FLEE_HEALTH_FLOOR,
   MIN_CAPACITOR_FLOOR,
   MIN_DRONE_HOLD_OFF_SECONDS,
   MIN_FLEE_ATTEMPTS,
   MAX_DRONE_HEALTH_FLOOR,
   MIN_DRONE_HEALTH_FLOOR,
+  MIN_ABANDON_DRONES_HEALTH_FLOOR,
   MIN_FLEE_HEALTH_FLOOR,
   type CompanionAbandonmentRecord,
   type CompanionSetup,
@@ -257,6 +259,7 @@ const SAY = {
   notObject: "This companion setup is not a valid request.",
   unknownKey: "This companion setup has settings this app does not recognise.",
   badFleeHealthFloor: "This companion setup's flee-health threshold is not a valid number.",
+  badAbandonDronesHealthFloor: "This companion setup's leave-the-drones threshold is not a valid number.",
   badDroneHealthFloor: "This companion setup's drone-health threshold is not a valid number.",
   badCapacitorFloor: "This companion setup's capacitor threshold is not a valid number.",
   badMaxFleeAttempts: "This companion setup's flee-attempt limit is not a valid number.",
@@ -309,6 +312,18 @@ export function decodeCompanionSetupValue(value: unknown): CompanionSetupVerdict
     return { ok: false, refusal: SAY.badFleeHealthFloor };
   }
 
+  // ABSENT STAYS ABSENT, not a default filled in here. A setup saved before
+  // this field existed must decode to exactly what it did: `src/botHost.js`
+  // hashes the decoded setup and refuses a resumed run whose hash moved. The
+  // loop reads absence as half the flee floor (`abandonDronesFloor`).
+  const abandonDronesHealthFloor = obj["abandonDronesHealthFloor"];
+  if (
+    abandonDronesHealthFloor !== undefined &&
+    !isFiniteNumberInRange(abandonDronesHealthFloor, MIN_ABANDON_DRONES_HEALTH_FLOOR, MAX_ABANDON_DRONES_HEALTH_FLOOR)
+  ) {
+    return { ok: false, refusal: SAY.badAbandonDronesHealthFloor };
+  }
+
   const droneHealthFloor = obj["droneHealthFloor"];
   if (!isFiniteNumberInRange(droneHealthFloor, MIN_DRONE_HEALTH_FLOOR, MAX_DRONE_HEALTH_FLOOR)) {
     return { ok: false, refusal: SAY.badDroneHealthFloor };
@@ -355,6 +370,7 @@ export function decodeCompanionSetupValue(value: unknown): CompanionSetupVerdict
     repairsAtStation,
     droneHealthFloor,
     droneRedeployHoldOffSeconds,
+    ...(abandonDronesHealthFloor === undefined ? {} : { abandonDronesHealthFloor }),
   };
   return { ok: true, setup: Object.freeze(setup) };
 }
