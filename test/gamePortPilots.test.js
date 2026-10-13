@@ -165,12 +165,21 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
         const answer = `bound:${method}` in answers ? answers[`bound:${method}`] : null;
         return { objectID, nodeID: CRIMEWATCH_NODE, result: await (typeof answer === "function" ? answer(args, kwargs, objectID) : answer) };
       }
+      // The war registry's Moniker is the war service's own: bound at every choosing, and again where the pilot's
+      // alliance or corporation is another's, and asked that owner's wars at each (war_cso.py 57 to 80, 95 to 104).
+      // It is listed and counted apart (session.wars, "N=4:<n>"), and so is every call on one (session.warCalls,
+      // in callBound), so that the binds, the objects and the bound calls of the rest are what a test caused.
+      if (service === "warRegistry") {
+        session.warRegistries += 1;
+        const objectID = `N=${WAR_NODE}:${session.warRegistries}`;
+        session.wars.push({ objectID, params, carried: call === null ? null : call[0] });
+        return { objectID, nodeID: WAR_NODE, result: call === null ? null : await session.callBound(objectID, call[0], call[1], call[2]) };
+      }
       session.binds.push({ service, params });
       session.carried.push(call === null ? null : call[0]);
       const answer = answers[`bind:${service}`];
       if (typeof answer === "function") return answer(params, call);
-      // The war registry lives on a node of its own too, "N=4:<n>": every choosing binds one (war_cso.GetMoniker).
-      const [nodeID, counted] = service === "corpRegistry" ? [REGISTRY_NODE, "registries"] : service === "warRegistry" ? [WAR_NODE, "warRegistries"] : [1, "objects"];
+      const [nodeID, counted] = service === "corpRegistry" ? [REGISTRY_NODE, "registries"] : [1, "objects"];
       session[counted] += 1;
       const objectID = `N=${nodeID}:${session[counted]}`;
       return { objectID, nodeID, result: call === null ? null : await session.callBound(objectID, call[0], call[1], call[2]) };
@@ -178,6 +187,13 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
     /** A call on a bound object. The inventory managers hand back another bound object. */
     async callBound(objectID, method, args = [], kwargs = null) {
       if (session.closed) throw sessionError("CONNECTION_CLOSED");
+      // A call on a war registry's object is listed apart (session.warCalls), and is among `sent` with every other.
+      if (onWarRegistry({ objectID })) {
+        session.warCalls.push({ objectID, method, args, kwargs });
+        session.sent.push(method);
+        const answer = `bound:${method}` in answers ? answers[`bound:${method}`] : null;
+        return typeof answer === "function" ? answer(args, kwargs, objectID) : answer;
+      }
       session.boundCalls.push({ objectID, method, args, kwargs });
       session.sent.push(method);
       const key = `bound:${method}`;
@@ -203,6 +219,9 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
     sent: [],
     objects: 0,
     registries: 0,
+    /** The war registry's Monikers, each as it was bound: { objectID, params, carried }; and every call on one. */
+    wars: [],
+    warCalls: [],
     warRegistries: 0,
     /** Crimewatch's Monikers, each with the call it carried: { objectID, params, method, args, kwargs }. */
     crimewatch: [],
@@ -282,16 +301,8 @@ function build(sessionOptions = {}, pilotOptions = {}) {
     const session = made[made.length - 1];
     // Empties the list, puts back what is not `taken`, and answers what is.
     const take = (list, taken) => list.splice(0, list.length).reduce((aside, item, index) => { (taken(item, index) ? aside : list).push(item); return aside; }, []);
-    // Every choosing binds the war registry too, for the pilot's alliance or its corporation, and asks it that
-    // owner's wars, as the client's timer panel has the war service do (war_cso.py 57 to 67 and 95 to 104,
-    // crimewatchTimers.py 356; Tranquility's recordings of a login). That bind and that call are taken out
-    // likewise, first, and kept as the session's `warsAtChoosing`.
-    const ofWars = session.binds.map((bind) => bind.service === "warRegistry");
-    session.warsAtChoosing = {
-      carried: take(session.carried, (method, index) => ofWars[index]),
-      binds: take(session.binds, (bind, index) => ofWars[index]),
-      boundCalls: take(session.boundCalls, onWarRegistry),
-    };
+    // (Every choosing binds the war registry too, and asks it its owner's wars: the stand-in lists those apart
+    // from the first, as session.wars and session.warCalls.)
     const ofRegistry = session.binds.map((bind) => bind.service === "corpRegistry");
     session.registryAtChoosing = {
       carried: take(session.carried, (method, index) => ofRegistry[index]),
