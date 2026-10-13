@@ -19,6 +19,8 @@ import {
   MAX_DRONE_HEALTH_FLOOR,
   MIN_DRONE_HEALTH_FLOOR,
   MIN_FLEE_HEALTH_FLOOR,
+  MIN_ABANDON_DRONES_HEALTH_FLOOR,
+  MAX_ABANDON_DRONES_HEALTH_FLOOR,
   type CompanionSetup,
 } from "../nav/fleetCompanionLoop.ts";
 
@@ -245,6 +247,40 @@ test("droneHealthFloor refuses NaN, Infinity, a string and an absent key", () =>
     false,
     "a missing threshold is refused, never defaulted -- a silent default here would fly a pilot on a number nobody chose",
   );
+});
+
+// ⚠ THE ONE THRESHOLD THAT MAY BE MISSING, and it stays missing. Every setup
+// saved before 2026-10-13 lacks it: refusing would drop every saved squad's
+// setup, and filling it in here would move the hash a resumed server run is
+// checked against. The loop reads absence as half the flee floor.
+test("abandonDronesHealthFloor is optional, and absent stays absent", () => {
+  const without = decodeCompanionSetupValue(validPayload());
+  assert.equal(without.ok, true);
+  if (without.ok) {
+    assert.equal("abandonDronesHealthFloor" in without.setup, false);
+  }
+  const withIt = decodeCompanionSetupValue({ ...validPayload(), abandonDronesHealthFloor: 0.1 });
+  assert.equal(withIt.ok, true);
+  if (withIt.ok) {
+    assert.equal(withIt.setup.abandonDronesHealthFloor, 0.1);
+  }
+  assert.equal(decodeCompanionSetupValue({ ...validPayload(), abandonDronesHealthFloor: 0 }).ok, true);
+});
+
+test("abandonDronesHealthFloor is refused outside its bounds and when not a number", () => {
+  for (const bad of [
+    MIN_ABANDON_DRONES_HEALTH_FLOOR - 0.01,
+    MAX_ABANDON_DRONES_HEALTH_FLOOR + 0.01,
+    Number.NaN,
+    "0.1",
+    null,
+  ]) {
+    assert.equal(
+      decodeCompanionSetupValue({ ...validPayload(), abandonDronesHealthFloor: bad }).ok,
+      false,
+      String(bad),
+    );
+  }
 });
 
 test("maxFleeAttempts is a bounded, positive, safe integer", () => {

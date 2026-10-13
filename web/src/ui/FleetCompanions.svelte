@@ -96,6 +96,8 @@
     MIN_DRONE_HOLD_OFF_SECONDS,
     MIN_FLEE_ATTEMPTS,
     MIN_FLEE_HEALTH_FLOOR,
+    MIN_ABANDON_DRONES_HEALTH_FLOOR,
+    abandonDronesFloor,
     type CompanionSetup,
   } from "../nav/fleetCompanionLoop.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
@@ -652,6 +654,7 @@
   // same question, and only one of them would reach the loop.
 
   let fleeHealthFloorPercent = $state(Math.round(roster.setup.fleeHealthFloor * 100));
+  let abandonDronesFloorPercent = $state(Math.round(abandonDronesFloor(roster.setup) * 100));
   let droneHealthFloorPercent = $state(Math.round(roster.setup.droneHealthFloor * 100));
   let capacitorFloorPercent = $state(Math.round(roster.setup.capacitorFloor * 100));
   let maxFleeAttempts = $state(roster.setup.maxFleeAttempts);
@@ -678,11 +681,14 @@
    * window already refuses to show for the same reason.
    */
   function keepSetup(): void {
+    const fleePercent = clamp(fleeHealthFloorPercent, MIN_FLEE_HEALTH_FLOOR * 100, MAX_FLEE_HEALTH_FLOOR * 100);
     keepRoster(
       setRosterSetup(roster, {
-        fleeHealthFloor:
-          clamp(fleeHealthFloorPercent, MIN_FLEE_HEALTH_FLOOR * 100, MAX_FLEE_HEALTH_FLOOR * 100) /
-          100,
+        fleeHealthFloor: fleePercent / 100,
+        // Never above the flee floor: the drones are left only once the flee
+        // has already started, so a higher number would just mean "never wait".
+        abandonDronesHealthFloor:
+          clamp(abandonDronesFloorPercent, MIN_ABANDON_DRONES_HEALTH_FLOOR * 100, fleePercent) / 100,
         capacitorFloor:
           clamp(capacitorFloorPercent, MIN_CAPACITOR_FLOOR * 100, MAX_CAPACITOR_FLOOR * 100) / 100,
         maxFleeAttempts: clamp(maxFleeAttempts, MIN_FLEE_ATTEMPTS, MAX_FLEE_ATTEMPTS),
@@ -1040,6 +1046,18 @@
         onchange={keepSetup}
       />
       <span class="note">% of shield, armour or hull</span>
+
+      <label for="companion-abandon-drones-floor">Leave the drones below</label>
+      <input
+        id="companion-abandon-drones-floor"
+        type="number"
+        min={Math.round(MIN_ABANDON_DRONES_HEALTH_FLOOR * 100)}
+        max={fleeHealthFloorPercent}
+        step="5"
+        bind:value={abandonDronesFloorPercent}
+        onchange={keepSetup}
+      />
+      <span class="note">% and warp at once</span>
 
       <label for="companion-cap-floor">Do not run repairers below</label>
       <input
