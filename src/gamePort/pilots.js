@@ -261,6 +261,11 @@ const BOUNTY_OUTPUT = "GetOutputForClientSolarSystem";
 const keptBountyOutput = (service, method, form) => service === BOUNTY_MGR && method === BOUNTY_OUTPUT && form.args.length === 0 && form.kwargs === null;
 /** @expiring_memoize(5400) on that read (dynamicResourceSvc.py 58): what is kept is good for ninety minutes from its keeping. */
 const BOUNTY_OUTPUT_GOOD_FOR_MS = 5400 * 1000;
+/** The security service's read of the solar systems whose security is other than the map's (security/client/securitySvc.py 39 to 43). */
+const SECURITY_MGR = "securityMgr";
+const MODIFIED_SYSTEMS = "get_modified_systems";
+/** securitySvc.calculate_pseudo_security (18 to 21): a level above nought and under 0.05 is 0.05. */
+const pseudoSecurity = (security) => (security > 0 && security < 0.05 ? 0.05 : security);
 const OFFICE_MANAGER = "officeManager";
 /**
  * What the client hands back to the server as it was answered, and so with the Python type it came with:
@@ -1492,6 +1497,13 @@ function createGamePortPilots({
       bountyOutput: undefined,
       bountyOutputLetGo: 0,
       bountyOutputWork: Promise.resolve(),
+      /**
+       * securitySvc.modified_security_levels: what the server answered of the solar systems whose security is other
+       * than the map's, as it came (undefined while it was not asked), and each system's level as the server has
+       * said it since.
+       */
+      modifiedSystems: undefined,
+      modifiedSecurity: new Map(),
       /** The account's clone grade as the server last said it (clonegrade/const.py: 0 alpha, 1 omega): undefined while none is had. */
       cloneGrade: undefined,
       /** Whether the office's item was primed on the Moniker for where the pilot is docked (PRIME_OFFICE): its answer, kept while docked there. */
@@ -1575,6 +1587,12 @@ function createGamePortPilots({
       if (notification.method === "OnSystemDynamicBountyStateChanged" && Array.isArray(notification.args) && notification.args.length === 2
         && positive(notification.args[0]) !== null && positive(notification.args[0]) === attribute(entry, "solarsystemid2")) {
         entry.bountyOutput = { answer: [notification.args[1], true], until: now() + BOUNTY_OUTPUT_GOOD_FOR_MS };
+      }
+      // securitySvc.OnSecurityModified(solar_system_id, modifier_amount, new_security) (50 to 54): that system's
+      // level is the new one from now, as the service keeps it.
+      if (notification.method === "OnSecurityModified" && Array.isArray(notification.args) && notification.args.length === 3
+        && positive(notification.args[0]) !== null && typeof notification.args[2] === "number") {
+        entry.modifiedSecurity.set(positive(notification.args[0]), pseudoSecurity(notification.args[2]));
       }
       // home_station (163, 168): the home station changed, or was moved from its structure. What is kept is let go.
       if (HOME_STATION_NOTICES.has(notification.method)) entry.homeStation.forget();
@@ -1754,6 +1772,10 @@ function createGamePortPilots({
       await refreshStandings(entry);
       // skillsvc, skillQueueSvc and the notifications: a character chosen has its skills, its queue and its history read.
       await primeSkills(entry);
+      // securitySvc.OnSessionChanged (45 to 48): the session has a solar system where it had none, and the service
+      // asks for the systems whose security is other than the map's (Initialize, 39 to 43). In the retail client's
+      // own login it is asked ahead of the journal. A manager that refuses fails no choosing.
+      await modifiedSystemsAsked(entry).catch(() => {});
       // journal._UpdateMissionDataFull: a character chosen has its agents' journal read, for the missions it is on.
       await journalUpToDate(entry).catch(() => {});
       // missionObjectivesTracker.OnSessionChanged: a character chosen has each mission it has accepted asked after,
@@ -2425,6 +2447,23 @@ function createGamePortPilots({
   const crimewatchKept = (entry, method) => (method === CLIENT_STATES
     ? entry.clientStates.read(method, () => crimewatchAsked(entry, method))
     : securityStatusRead(entry));
+
+  /**
+   * securitySvc.Initialize (security/client/securitySvc.py 39 to 43): sm.RemoteSvc('securityMgr').get_modified_systems(),
+   * by the service's name with nothing: the solar systems whose security is other than the map's, each by its ID
+   * with a row of (solarSystemID, security, modifiedSecurity). The service keeps each one's modified level and asks
+   * once, as its session first has a solar system (OnSessionChanged, 45 to 48), which is the choosing of a
+   * character; from then on the server's OnSecurityModified says a system's level (50 to 54). Tranquility's
+   * recordings of a login each have the one call, answered an indexed rowset with no rows. The answer is kept as
+   * it came. Its rows are not read into the levels kept: no answer on record has a row to read one from. No page
+   * reads either yet.
+   */
+  async function modifiedSystemsAsked(entry) {
+    const form = shape(SECURITY_MGR, MODIFIED_SYSTEMS, [], null, contextFor(entry));
+    ledger.note(SECURITY_MGR, MODIFIED_SYSTEMS, form);
+    entry.modifiedSystems = await byName(entry.session, SECURITY_MGR, MODIFIED_SYSTEMS, form);
+    return entry.modifiedSystems;
+  }
 
   // ── the occupation of the system, as the client's warzone service has it ──
 
