@@ -60,13 +60,15 @@ test("GetAllInfo from a real server: the ship and its module are held, and the s
   // The ship, its module, and the pilot's own character, which godma primes from the first of charInfo's two.
   assert.deepEqual(held, [SHIP, flight.moduleID, PILOT]);
   assert.deepEqual([dogma.has(SHIP), dogma.has(flight.moduleID), dogma.has(PILOT), dogma.has(1)], [true, true, true, false]);
-  // Of the character: its manufacturing time (219) off its own row of 21 attributes, which no skill of this pilot's
-  // shortens; and one of the 46 the ship changes (shipModifiedCharAttribs), laid over the row, which has it not.
-  assert.deepEqual([dogma.attribute(PILOT, 219), dogma.attribute(PILOT, 187), dogma.attributesOf(PILOT).length], [1, 0.1, 67]);
+  // Of the character: its manufacturing time (219), which no skill of this pilot's shortens, and its repair cost
+  // (187), off its own row of 66 attributes, the whole character as Tranquility's item lists it; and one of the 4
+  // more that this server's second dict has (shipModifiedCharAttribs: 979, 1921, 2610, 2662), laid over the row,
+  // which has it not.
+  assert.deepEqual([dogma.attribute(PILOT, 219), dogma.attribute(PILOT, 187), dogma.attribute(PILOT, 979), dogma.attributesOf(PILOT).length], [1, 0.1, 0, 70]);
   // In space the server says nothing of what the ship changes, and the character's are its row's.
   const flying = createPilotDogma({ characterID: PILOT });
   flying.loadAllInfo(allInfo("GetAllInfo in space"));
-  assert.deepEqual([flying.attribute(PILOT, 219), flying.attribute(PILOT, 187), flying.attributesOf(PILOT).length], [1, null, 21]);
+  assert.deepEqual([flying.attribute(PILOT, 219), flying.attribute(PILOT, 187), flying.attribute(PILOT, 979), flying.attributesOf(PILOT).length], [1, 0.1, null, 66]);
   assert.deepEqual([ATTRIBUTE.HP, ATTRIBUTE.ARMOR_HP, ATTRIBUTE.SHIELD_CAPACITY, ATTRIBUTE.CAPACITOR_CAPACITY, ATTRIBUTE.RECHARGE_RATE, ATTRIBUTE.SHIELD_RECHARGE_RATE, ATTRIBUTE.DAMAGE, ATTRIBUTE.ARMOR_DAMAGE].map((id) => dogma.attribute(SHIP, id)),
     [150, 150, 175, 125, 62500, 730000, 0, 0]);
   // What the gateway's snapshot said of the same ship: capacitor 1, capacities 175, 150, 150.
