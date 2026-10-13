@@ -2499,6 +2499,31 @@ Take these defaults, and list each under "For the operator" in the log so they c
   recordings, 79 of ships, 11 of structures, the longest 2,192 characters).
   Where a `GetAllInfo` answer's line is cut inside `shipInfo`, the line
   after it has the ship: `grep -rha "godma.UpdateItem: " <recordings>`.
+- **A breakage that no test catches is read before a test is written for
+  it.** A write of a ship's heat at its pilot's leaving the scene was taken
+  out and every test still passed: not for want of a test, but because the
+  write did nothing (taking an entity out of a scene persists it already).
+  The code was taken out, not a test added.
+- **A decoded number does not say what it was on the wire.** The game port's
+  decoder gives a number for an integer and for a float alike. What this
+  server sent is read from the frame's bytes: a dict's value comes before
+  its key, a float is 0x0a and eight bytes (0x0b for 0.0), an integer 0x08,
+  0x09, 0x06, 0x05 or 0x04.
+- **A server test run while the store is staged reads the staging.** The
+  isolated runner copies the live store. A test of a cold docked ship read
+  11.2 in a rack: the store had a ship staged warm for the live look. The
+  store is put back before any server test is run, and the live look made
+  again afterwards if it is still wanted.
+- **A thing that changes with the time wants a test whose clock moves.** A
+  docked answer cooled a stored heat to the time of each reading: its two
+  places differed by the milliseconds between them, and a cache went on
+  serving the first. The test had a clock that stood still and one answer,
+  and passed; the live look read two answers and showed both. Its clock now
+  moves on at every reading, and it asks twice.
+- **Before a move, a test that the moved code is run by.** A rack's cooling
+  was about to be moved and no test noticed it gone: two breakages of it
+  passed three test files. A test of the cooling was written and committed
+  first, and the move after it.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
