@@ -1752,6 +1752,10 @@ test("the game port carries the customs office's transfer, the station's offices
     "insurgencySolarsystem.GetAllVisibleCampaigns",
     // What the account may redeem, fetched as the neocom is set up. The gateway's list has nothing of the user service's.
     "userSvc.GetRedeemTokens",
+    // Whether the character has done Project Discovery's tutorial and whether the project is enabled, asked by its client service. The gateway's list has nothing of Project Discovery's.
+    "ProjectDiscovery.initialize_tutorial_status", "ProjectDiscovery.is_enabled",
+    // Whether the client wraps its texts for QA, told on a session of the QA role. The gateway's list has nothing of the localization server's.
+    "localizationServer.UpdateLocalizationQAWrap",
     "skillHandler.GetSkillQueueAndFreePoints",
     "home_station.get_home_station",
     "skillHandler.SaveNewQueue",

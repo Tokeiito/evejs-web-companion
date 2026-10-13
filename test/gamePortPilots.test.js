@@ -57,6 +57,8 @@ const CHOSEN_ASKS = [
   "achievementTrackerMgr.GetCompletedAchievementsAndClientEventCount",
   "fighterMgr.GetFightersForShip",
   "accessGroupBookmarkMgr.GetMyActiveBookmarks",
+  // The Project Discovery client service's OnCharacterSessionChanged (projectdiscovery/client/projects/covid/service.py 22 to 30); just ahead of the milestone's logon in the client's own login.
+  "ProjectDiscovery.initialize_tutorial_status",
   // milestoneSvc.OnCharacterSessionChanged (milestones/client/milestoneSvc.py 20 to 23); just ahead of the injections in the client's own login.
   "milestoneMgr.ProcessCharacterLogon",
   // nonDiminishingInjection.OnCharacterSessionChanged (nonDiminishingInjectionService.py 23 to 25, 49 to 51); ahead of the settings in the client's own login.
@@ -72,15 +74,18 @@ const CHOSEN_ASKS = [
   "officeManager.GetMyCorporationsOffices", "stationSvc.GetStationItemBits", "station.GetGuests", "map.GetStationInfo",
   // redeem.InitializeNeocomExtension (redeemsvc.py 37 to 46, 63 to 65), as the neocom is set up; just ahead of the pilot's applications in the client's own login.
   "userSvc.GetRedeemTokens",
+  // ProjectDiscoveryClient.is_enabled (projectdiscovery/client/baseservice.py 39 to 42), for the neocom's button (btnDataNode.py 485); behind the pilot's applications in the client's own login.
+  "ProjectDiscovery.is_enabled",
   "notificationMgr.GetAllNotifications", "agentMgr.GetAgents",
 ];
 /** The lobby's four reads of a pilot chosen in a station, as a choosing sends them. */
 const CHOSEN_LOBBY = ["GetMyCorporationsOffices", "GetStationItemBits", "GetGuests", "GetStationInfo"];
 /**
  * What a choosing in a station sends last, by name, at the proxy node or on an object, after the corporation's
- * reads and the address book's: the lobby's four, the redeeming's tokens, and the rest.
+ * reads and the address book's: the lobby's four, the redeeming's tokens, the pilot's applications, whether
+ * Project Discovery is enabled, and the rest.
  */
-const CHOSEN_LAST = [...CHOSEN_LOBBY, "GetRedeemTokens", "GetMyApplications", "GetLoginInfo", "GetAllNotifications", "GetEventList", "GetEventList", "GetAgents"];
+const CHOSEN_LAST = [...CHOSEN_LOBBY, "GetRedeemTokens", "GetMyApplications", "is_enabled", "GetLoginInfo", "GetAllNotifications", "GetEventList", "GetEventList", "GetAgents"];
 /** The last `count` things a choosing sent before those, and those. */
 const sentLast = (session, count) => session.sent.slice(-(count + CHOSEN_LAST.length));
 
@@ -415,6 +420,9 @@ test("select logs in as the account and makes the retail client's three calls, i
     "fighterMgr.GetFightersForShip",
     // And its bookmarks, with the folders it knows, as the client's bookmark service asks for them.
     "accessGroupBookmarkMgr.GetMyActiveBookmarks",
+    // And whether it has done Project Discovery's tutorial, which that project's client service asks at a change of
+    // the session's character (projectdiscovery/client/projects/covid/service.py 22 to 30).
+    "ProjectDiscovery.initialize_tutorial_status",
     // And the logon is told to the milestone manager, as the client's milestone service tells it at every change
     // of the session's character (milestones/client/milestoneSvc.py 20 to 23).
     "milestoneMgr.ProcessCharacterLogon",
@@ -443,6 +451,9 @@ test("select logs in as the account and makes the retail client's three calls, i
     // And what the account may redeem, which the client's redeem service fetches as the neocom is set up
     // (redeemsvc.py 37 to 46, 63 to 65).
     "userSvc.GetRedeemTokens",
+    // And whether Project Discovery is enabled, which its client service asks once, for the neocom's button
+    // (projectdiscovery/client/baseservice.py 39 to 42; btnDataNode.py 485).
+    "ProjectDiscovery.is_enabled",
     // And all its notifications, as the client's notification window asks for them.
     "notificationMgr.GetAllNotifications",
     // And the table of agents, as the client's agents service asks for it. The choosing does not wait on that one.
@@ -1791,6 +1802,10 @@ test("the transport keeps a tally of what it called and how each compared with t
     "map.GetStationInfo": { same: 1 },
     // What the account may redeem, fetched as the neocom is set up at the choosing (redeemsvc.py 64).
     "userSvc.GetRedeemTokens": { same: 1 },
+    // Whether the character has done Project Discovery's tutorial, asked at the choosing (projectdiscovery/client/projects/covid/service.py 25).
+    "ProjectDiscovery.initialize_tutorial_status": { same: 1 },
+    // And whether Project Discovery is enabled, asked once as the neocom is set up (projectdiscovery/client/baseservice.py 41).
+    "ProjectDiscovery.is_enabled": { same: 1 },
     "someService.SomeMethod": { unchecked: 1 },
   });
   assert.equal(pilots.callLedger()[0].pair, "invbroker.GetCapacity", "most called first");
