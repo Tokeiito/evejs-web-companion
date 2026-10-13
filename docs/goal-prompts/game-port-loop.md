@@ -3205,6 +3205,24 @@ Take these defaults, and list each under "For the operator" in the log so they c
   "I haven't got a clue where ... should run" and "Redirecting call to
   node" are the client's own lines of machoNet finding a service; a
   `grep -rh` of each, counted, is what the server did.
+- **A pilot with a mission accepted, and flown**: the scratch
+  `mti-live.js <bff> <account> <character> [agentID]` (beside
+  `bff-session.js` in this loop's first scratchpad) finds a level 1
+  agent in the pilot's own station (`/api/agents/find?kind=courier&level=1`),
+  presses its buttons (3 is accept), undocks and warps to a belt.
+  **Do not ask for a docking from the belt**: the server turns it into
+  an approach across the system and the ship never docks; dock before
+  the warp, or warp back first.
+- **What a pilot was asked at a moment, from the server's own log**:
+  `sed 's/\x1b\[[0-9;]*m//g' server.log | grep "T<hh:mm>"`, then the
+  lines `Call: method="..."`, `SessionChange` and the service's
+  `CALL_REQ`. No recorder is needed to see that a call was made and
+  when.
+- **A thing the game port asks of its own accord is added in four
+  places** of `src/gamePort/pilots.js` and two of `retailCalls.js`: the
+  asking itself, the choosing, the session's change, the park's event if
+  it has one; and the call's name among those the gateway's list has
+  not, with its entry judged against the client's line.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

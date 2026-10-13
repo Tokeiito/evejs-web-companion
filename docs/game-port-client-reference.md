@@ -1278,6 +1278,14 @@ the park reaches each stamp, whenever it arrived (`michelle.py` `FlushState`, 10
 of 2,621 balls that are not rigid are added in orbit, in 46 recordings) and stamps the first order naming it the
 `AddBalls2`'s own stamp (189 of 283), or one to three ticks after (6). This server held a new ball's movement
 three ticks past the acquisition until `eve.js` `3c96302d8`.
+The mission tracker (`missions/client/missionObjectivesTracker.py`). For each mission of the journal that the pilot
+has accepted and that has not run out, in the order of their running out (52 to 82), the client asks
+`sm.RemoteSvc('missionTrackerMgr').GetMissionInfoItems(agentID)` (275), one after another: at every change of the
+session once a character is on it (89 to 94, 213), as each warp ends (84 to 87), and when the server says a mission's
+objectives are done or failed (180 to 186). With none accepted it asks nothing. Tranquility's recordings have it in
+24, three at a time for a pilot on three missions. The game port asks it so since `40c02295`, taking a warp's end
+from the pilot's ball leaving warp; nothing is kept of the answer yet. Not asked yet: `UpdateAllMissions`,
+`GetAllMissionObjectives`, `IsInActiveDungeonID`.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
