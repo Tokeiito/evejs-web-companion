@@ -50,6 +50,8 @@ const CHOSEN_ASKS = [
   // securitySvc.Initialize (security/client/securitySvc.py 39 to 48), as its session first has a solar system; ahead of the journal in the client's own login.
   "securityMgr.get_modified_systems",
   "agentMgr.GetMyJournalDetails",
+  // achievementSvc.FetchMyAchievementStatus (achievements/client/achievementSvc.py 128 to 134, 182 to 188); between the journal and the fighters in the client's own login.
+  "achievementTrackerMgr.GetCompletedAchievementsAndClientEventCount",
   "fighterMgr.GetFightersForShip",
   "accessGroupBookmarkMgr.GetMyActiveBookmarks",
   // characterSettingsSvc._GetSettings (characterSettingsSvc.py 31 to 34), as the first of the client's services wants a setting.
@@ -380,6 +382,9 @@ test("select logs in as the account and makes the retail client's three calls, i
     "securityMgr.get_modified_systems",
     // And its agents' journal, as the client's journal service asks for it.
     "agentMgr.GetMyJournalDetails",
+    // And what it has completed of the client's achievements, which the client's achievement service asks once, as
+    // a character comes onto its session (achievements/client/achievementSvc.py 128 to 134, 182 to 188).
+    "achievementTrackerMgr.GetCompletedAchievementsAndClientEventCount",
     // And the fighters of the ship it is in, as the client's ship fighter state asks at any change of the session's
     // ship: the choosing is one. In the client's own login it comes after the journal and before the bookmarks.
     "fighterMgr.GetFightersForShip",
@@ -1703,6 +1708,8 @@ test("the transport keeps a tally of what it called and how each compared with t
     // The solar systems whose security is other than the map's, asked once at the choosing (security/client/securitySvc.py 41).
     "securityMgr.get_modified_systems": { same: 1 },
     "agentMgr.GetMyJournalDetails": { same: 1 },
+    // What the character has completed of the client's achievements, asked once at the choosing (achievements/client/achievementSvc.py 129).
+    "achievementTrackerMgr.GetCompletedAchievementsAndClientEventCount": { same: 1 },
     "fighterMgr.GetFightersForShip": { same: 1 },
     "accessGroupBookmarkMgr.GetMyActiveBookmarks": { same: 1 },
     // The character's settings, asked once at the choosing (characterSettingsSvc.py 33).

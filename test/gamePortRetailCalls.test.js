@@ -1738,6 +1738,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "securityMgr.get_modified_systems",
     // The character's settings, asked once by the client's character settings service. The gateway's list has GetSettingsInfo, another thing.
     "charMgr.GetCharacterSettings",
+    // What the character has completed of the client's achievements, asked once by the client's achievement service. The gateway's list has nothing of the tracker's.
+    "achievementTrackerMgr.GetCompletedAchievementsAndClientEventCount",
     "skillHandler.GetSkillQueueAndFreePoints",
     "home_station.get_home_station",
     "skillHandler.SaveNewQueue",
