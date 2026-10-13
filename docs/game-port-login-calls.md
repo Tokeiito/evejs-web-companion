@@ -10,10 +10,10 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 
 | The game port | Kinds | Calls | Meaning |
 |---|---|---|---|
-| at login | 57 | 65 | The game port asks this at login too. |
+| at login | 59 | 68 | The game port asks this at login too. |
 | by a feature | 6 | 10 | A feature of the web client asks this when it is wanted, in a form read against the client's. |
 | by a route | 7 | 8 | The BFF has a route that can ask this. It has not been read against the client's. |
-| never | 30 | 34 | Nothing of ours asks this. |
+| never | 28 | 31 | Nothing of ours asks this. |
 
 ## Before a character is chosen
 
@@ -32,7 +32,7 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `loginCampaignManager.get_client_campaign_state` | 1 | never |
 | `seasonalLoginCampaignManager.get_active_campaign` | 1 | never |
 | `map.GetSecurityModifiedSystems` | 2 | by a route |
-| `userSvc.GetRedeemTokens` | 2 | never |
+| `userSvc.GetRedeemTokens` | 2 | at login |
 | `charUnboundMgr.GetCharOmegaDowngradeStatus` | 2 | never |
 | `paperDollServer.GetPaperDollDataBatch` | 1 | never |
 | `charMgr.GetPublicInfo` | 1 | by a route |
@@ -110,7 +110,7 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `ship.MachoBindObject` | 2 | by a feature |
 | `shipKillCounter.GetItemKillCountPlayer` | 1 | never |
 | `shipCosmeticsMgr.GetEnabledCosmetics` | 1 | never |
-| `userSvc.GetRedeemTokens` | 1 | never |
+| `userSvc.GetRedeemTokens` | 1 | at login |
 | `corpRegistry.GetMyApplications` (inferred) | 1 | at login |
 | `userSvc.GetMultiCharactersTrainingSlots` | 1 | by a feature |
 | `ProjectDiscovery.is_enabled` | 1 | never |

@@ -1427,6 +1427,13 @@ itself, its `IsAvailable` (`ui/shared/infoPanels/infoPanelInsurgency.py` 287 to 
 system is in a campaign each time the info panels are looked over. Tranquility's recordings have the call once at
 each login and once after each change of solar system. The game port asks it so since `5cd1aa7b`. The local
 campaign's own read (`GetLocalCampaignClientSnapshot`, 47 to 57) is not asked at a login, and is not made.
+The redeem service (`eve/client/script/ui/services/redeemsvc.py`). `FetchRedeemTokens` (63 to 65) asks
+`sm.RemoteSvc('userSvc').GetRedeemTokens()` with nothing and keeps the rowset of what the account may redeem;
+`GetRedeemTokens` (51 to 54) answers what is kept. It fetches as its neocom extension is set up
+(`InitializeNeocomExtension`, 37 to 46, called by `neocomSvc.py` 258 as a pilot comes in), at the server's
+`OnRedeemingQueueUpdated` (162 to 169), and at a claim's end (127); `ClaimRedeemTokens(tokens, charID,
+useHomeStation)` is the player's (99 to 131). The character selection screen reads the tokens too, before a
+character is chosen. The game port fetches so since `bf601703`, from the choosing on; the claiming is not made.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened

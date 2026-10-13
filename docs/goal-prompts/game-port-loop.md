@@ -3435,6 +3435,14 @@ Take these defaults, and list each under "For the operator" in the log so they c
   <server.log>` (session 2aba99c0's scratchpad) moves a pilot twice
   with the GM's `/solar`, and `call-answers.js` shows which change the
   call followed. Between a copy of the store and its putting back.
+- **The login's report goes by a call's name.** A call the client
+  makes before a character is chosen and again after shows as asked
+  in both places once the game port makes it in either
+  (`scripts/login-calls-report.js` 98): the count that falls is the
+  report's, and the entry says how many are left by the moment of
+  asking (the redeeming's tokens: asked at the character selection
+  screen, which the game port has none of, and again from the choosing
+  on).
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
