@@ -329,6 +329,9 @@ test("everything of ship, dogmaIM, corpRegistry and the skill handler is made on
     // Nor the repair shop: each use makes a moniker for where the session is docked and calls it.
     repairSvc: [],
     reprocessingSvc: [],
+    // Nor the war registry: the war service keeps a moniker for the session's alliance or corporation and asks
+    // everything of it (war_cso.py 57 to 67; nothing in the client asks the registry by its name).
+    warRegistry: [],
   });
   assert.deepEqual([madeOnMoniker("corpRegistry", "GetCorporation"), madeOnMoniker("corpRegistry", "AddBulletin"), madeOnMoniker("corpRegistry", "MachoBindObject")], [true, true, false]);
   assert.deepEqual([madeOnMoniker("ship", "Undock"), madeOnMoniker("dogmaIM", "GetTargets"), madeOnMoniker("ship", "SomethingNobodyRead"), madeOnMoniker("dogmaIM", "Overload")], [true, true, true, true]);

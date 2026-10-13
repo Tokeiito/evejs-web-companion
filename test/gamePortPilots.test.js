@@ -71,6 +71,9 @@ const REGISTRY_NODE = 2;
 /** The node the stand-in's crimewatch objects live on. */
 const CRIMEWATCH_NODE = 3;
 const onRegistry = (call) => call.objectID.startsWith(`N=${REGISTRY_NODE}:`);
+/** The node the stand-in's war registries live on, and whether a call was made on one of them. */
+const WAR_NODE = 4;
+const onWarRegistry = (call) => call.objectID.startsWith(`N=${WAR_NODE}:`);
 
 /**
  * A stand-in GamePortSession. `answers` maps "service.method" to a value or to
@@ -166,7 +169,8 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
       session.carried.push(call === null ? null : call[0]);
       const answer = answers[`bind:${service}`];
       if (typeof answer === "function") return answer(params, call);
-      const [nodeID, counted] = service === "corpRegistry" ? [REGISTRY_NODE, "registries"] : [1, "objects"];
+      // The war registry lives on a node of its own too, "N=4:<n>": every choosing binds one (war_cso.GetMoniker).
+      const [nodeID, counted] = service === "corpRegistry" ? [REGISTRY_NODE, "registries"] : service === "warRegistry" ? [WAR_NODE, "warRegistries"] : [1, "objects"];
       session[counted] += 1;
       const objectID = `N=${nodeID}:${session[counted]}`;
       return { objectID, nodeID, result: call === null ? null : await session.callBound(objectID, call[0], call[1], call[2]) };
@@ -199,6 +203,7 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
     sent: [],
     objects: 0,
     registries: 0,
+    warRegistries: 0,
     /** Crimewatch's Monikers, each with the call it carried: { objectID, params, method, args, kwargs }. */
     crimewatch: [],
     crimewatchObjects: 0,
@@ -263,6 +268,9 @@ function build(sessionOptions = {}, pilotOptions = {}) {
     // The price table a client's cfg asks for two seconds after a login is asked for by the tests of it alone:
     // a timer of this machine's going off in a test of something else would put a call among that test's.
     averagePricesAfterMs: null,
+    // The war service's thread asks for its owner's wars again twelve hours after an asking
+    // (war_cso.CheckForStartOrEndOfWar): a timer that a test of something else neither waits on nor counts.
+    warsAgainAfterMs: null,
     ...pilotOptions,
   });
   // Every choosing binds the corporation's registry and asks it its three. That bind and those calls are taken
@@ -272,9 +280,19 @@ function build(sessionOptions = {}, pilotOptions = {}) {
   pilots.selectCharacter = async (...given) => {
     const outcome = await select(...given);
     const session = made[made.length - 1];
-    const ofRegistry = session.binds.map((bind) => bind.service === "corpRegistry");
     // Empties the list, puts back what is not `taken`, and answers what is.
     const take = (list, taken) => list.splice(0, list.length).reduce((aside, item, index) => { (taken(item, index) ? aside : list).push(item); return aside; }, []);
+    // Every choosing binds the war registry too, for the pilot's alliance or its corporation, and asks it that
+    // owner's wars, as the client's timer panel has the war service do (war_cso.py 57 to 67 and 95 to 104,
+    // crimewatchTimers.py 356; Tranquility's recordings of a login). That bind and that call are taken out
+    // likewise, first, and kept as the session's `warsAtChoosing`.
+    const ofWars = session.binds.map((bind) => bind.service === "warRegistry");
+    session.warsAtChoosing = {
+      carried: take(session.carried, (method, index) => ofWars[index]),
+      binds: take(session.binds, (bind, index) => ofWars[index]),
+      boundCalls: take(session.boundCalls, onWarRegistry),
+    };
+    const ofRegistry = session.binds.map((bind) => bind.service === "corpRegistry");
     session.registryAtChoosing = {
       carried: take(session.carried, (method, index) => ofRegistry[index]),
       binds: take(session.binds, (bind, index) => ofRegistry[index]),
@@ -1641,6 +1659,8 @@ test("the transport keeps a tally of what it called and how each compared with t
     "accessGroupBookmarkMgr.GetMyActiveBookmarks": { same: 1 },
     // The pilot's jump timers, asked once at the choosing as the client's crimewatch service asks them (crimewatchSvc.py 607).
     "jumpTimers.GetTimers": { same: 1 },
+    // The wars of the pilot's corporation, asked of the war registry's moniker at the choosing (war_cso.py 103).
+    "warRegistry.GetWars": { same: 1 },
     "agentMgr.GetAgents": { same: 1 },
     "notificationMgr.GetAllNotifications": { same: 1 },
     "contractProxy.GetLoginInfo": { same: 1 },
