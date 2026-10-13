@@ -2560,6 +2560,23 @@ Take these defaults, and list each under "For the operator" in the log so they c
   one: what tells them apart is read first (here the client's own
   `baseDogmaItem.Load`), and where this server cannot know it the thing is
   left and said to be left.
+- **A reader that says "unsure" is followed, not rounded.** Six of a
+  character's attributes were in both forms in the bytes of one answer: the
+  first answer carries the character's attributes twice (its item, and
+  `shipModifiedCharAttribs`), and only one had been mended. A reader of
+  bytes names what it cannot tell, and a thing an answer has twice is read
+  twice. The client's log has what godma was handed at such a refresh, each
+  value in its own form ("UpdateAttributeIDs" lines, `refresh-recorded.js`);
+  with "godma UpdateItem:" these are the two places the log has attribute
+  values whole.
+- **A breakage that no test catches is a test to write or a line to take
+  out.** Five things read alike are each given a value of their own in a
+  test, or two of them crossed pass it; and a guard that every test passes
+  without is taken out, not tested into staying.
+- **A mend found between a copy of the store and its putting back waits for
+  the putting back.** The store is put back, the server's tests are run, and
+  the store is copied again for the recording: twice the restarts, and no
+  test on a staged store.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
