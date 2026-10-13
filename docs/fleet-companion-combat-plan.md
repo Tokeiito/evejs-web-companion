@@ -28,8 +28,9 @@ damage, in this order:
    "firing".
 2. **Signature.** The prop mod lights whenever the ship mode is GOTO or FOLLOW
    (`isUnderWay`, L6315). Keep-at-range is `CmdFollowBall`, which is FOLLOW mode
-   and stays FOLLOW while holding station, so a MWD companion very likely fights
-   with its signature bloomed for the whole fight. ⚠ Not yet seen live; see §7.
+   and stays FOLLOW while holding station (the server only leaves FOLLOW when
+   the followed ship vanishes; §7 item 1), so a MWD companion fights with its
+   signature bloomed for the whole fight.
 3. **Ammo.** The reload rung loads the largest compatible stack and only when a
    gun reads empty (`pickChargeFor`, L6680). Nothing considers the target.
 
@@ -66,10 +67,11 @@ Consequences:
 - **Rats come to us.** They orbit at their profile distance whatever our guns
   want. A companion that wants more range than the rat's orbit has to be faster
   than the rat to keep it, and gets a bounded attempt, not a chase.
-- **Positioning changes who gets shot.** A companion that closes on the rats
-  becomes the nearest player and takes the aggro off the FC. That is a doctrine
-  question (§7), not a bug: the flee floors already exist for the pilot that
-  cannot hold it.
+- **Positioning may change who gets shot**, since the server scores the
+  nearest player. Recorded as a fact and nothing more: the operator ruled that
+  aggro cannot be steered reliably in EVE and the plan does not try (§7, item
+  4). The flee floors already cover the pilot that ends up holding more than
+  it can.
 
 ## 3. Decisions already taken by the operator
 
@@ -109,8 +111,8 @@ live session and is bounded at 500 types × 32 attributes per call.
 | Rat position, velocity, max velocity, health ratios | exists | `SpaceEntity` (`web/src/store/types.ts:1705-1822`) |
 | Who has this ship locked | exists | `obs.lockedByIDs` |
 | **Rat weapon kind: missile (507 present) or turret** | NEW | dogma route, attribute 507 |
-| **Rat turret optimal / falloff / tracking (54, 158, 160)** | NEW, to confirm (§7) | dogma route |
-| **Rat orbit distance and speed (416, 508, 37)** | NEW, to confirm (§7) | dogma route; the server's per-profile orbit is the true answer, the attributes are the approximation we can read |
+| **Rat turret optimal / falloff / tracking (54, 158, 160)** | NEW, confirmed present (§7 item 2) | dogma route |
+| **Rat orbit distance and speed (416, 508, 37)** | NEW, confirmed present (§7 item 2) | dogma route; the server's per-profile orbit is the true answer, the attributes are the approximation we can read |
 | **Rat resonances (shield 271-274, armour 267-270, hull 109-113)** | NEW | dogma route |
 | **Own signature radius and max velocity** | NEW | bound dogma (552, 37), same read `combatFit` makes |
 | **Per charge aboard: damage split (114/116/117/118) and the reach it would give the gun** | NEW | dogma route for the charge type; turret reach via `weaponRangeMultiplier` (120) and falloff mult, missile reach via charge velocity × flight time (37 × 281) |
@@ -411,31 +413,48 @@ Paths this plan deliberately does NOT add:
 
 ## 7. Open before design, and the live checks
 
-1. **Does `ship.mode` read FOLLOW while holding station on the FC?** One tick of
-   the flight recorder on a live companion answers it. If it reads something
-   else once arrived, §1 item 2 is smaller than stated and 5.1 is simpler.
-2. **Do rat types carry 54 / 158 / 160 / 507 / 37 / 416 / 508 and the
-   resonances in this build's static tables?** Check inside the Docker image
-   (`getTypeDogma` in `src/staticData.js:466`); the host probe loaded zero
-   types. Drone sizing already relies on the same ids for drones.
-3. **The leash default.** Lock range is proposed. Alternatives: drone control
-   range, a fixed 30 km, or the follow range (2 km, which would make R8 nearly
-   inert). The operator decides.
-4. **Aggro doctrine.** R8 puts companions closer to the rats than the FC in
-   many fights, and the server targets the nearest player. Do we want
-   companions to pull aggro? If not, `leashM` is also a "stay behind the FC"
-   rule and the hold is clamped to ≥ the FC's own distance to the target.
+1. ~~**Does `ship.mode` read FOLLOW while holding station on the FC?**~~
+   **SETTLED BY CODE 2026-10-13: yes, for the whole fight.** The question was
+   whether the server ever drops a following ship back to STOP once it is at
+   range, which would have made §1 item 2 a non-issue. It does not:
+   `advanceFollowMovement` (`D:\evet\server\src\space\destiny\simulation\movement.js:1022`)
+   leaves FOLLOW only when the followed entity vanishes, and the three other
+   STOP transitions in that file are the orbit, the warp and the missile. The
+   BFF names the mode from the same ball (`src/gamePort/spaceProjection.js:207`).
+   So a companion keeping station is FOLLOW from the order to the end of the
+   fight, `isUnderWay` reads it as travelling, and the prop mod stays lit. No
+   live sighting needed; 5.1 stands as written.
+2. ~~**Do rat types carry the weapon, speed, orbit and resist attributes?**~~
+   **SETTLED 2026-10-13 inside the running BFF container**, through the same
+   `readTypeAttributes` the dogma route serves. Every rat type probed (Sansha
+   and Blood Raider frigates to battleships) carries 54/158/160, 37, 247, 416,
+   508, 552, the three HP attributes and all twelve resonances; the missile rat
+   among them carries 507 and the turret rats do not. The host probe failed only
+   because the static tables live in the image. §4's "to confirm" rows are
+   confirmed.
+3. ~~**The leash default.**~~ **DECIDED 2026-10-13: the pilot's lock range,
+   as the ship and its skills give it, read once and cached.** That is already
+   how the companion holds it: `readCompanionFitFacts` (`flow.ts:9730`) reads
+   `fit.stats.targeting.maxTargetRange` off the fit at START, with skills
+   applied server-side, into `companionTargeting`, and every tick reads the
+   cached value as `obs.maxTargetRangeM`. The leash reuses that field and adds
+   no read. Unreadable (a fit that said nothing) means no leash, the same
+   "unreadable is no gate" reading free fire gives it.
+4. ~~**Aggro doctrine.**~~ **DROPPED 2026-10-13.** The operator's words: there
+   is no such thing as pulling aggro in EVE, or not reliably, and it cannot
+   work while the FC warps to the site with or ahead of the fleet. §2's note on
+   nearest-player targeting stays as a server fact; nothing in the tree is
+   built on it.
 5. **Orbit vs keep-at-range for gun boats under the 50 % floor.** Orbit buys
    transversal worth at most half the incoming turret damage and costs some of
    our own tracking. Keep-at-range is simpler and loses that half. Proposal is
    orbit; a live comparison on the same site decides.
 6. **Hysteresis and persistence numbers** in 5.2 and 5.4 are proposals.
-7. **The flight-mode verb.** It must not collide with the existing verbs
+7. ~~**The flight-mode verb.**~~ **DECIDED 2026-10-13: `flight follow` /
+   `flight auto`**, mirroring `targets called` / `targets all` (a mode, not an
+   order; `chatCommands.ts:180`). It collides with none of the existing verbs
    (`align destination follow jump loot props salvage stop target targets travel
-   warp`), and `follow` is taken by `follow N km`. Proposal: `flight follow` /
-   `flight auto`, mirroring `targets called` / `targets all` (a mode, not an
-   order; `chatCommands.ts:180`). Alternatives: `fly auto`, `position auto`,
-   `mode auto`. The operator picks the word.
+   warp`); `follow` alone stays `follow N km`.
 8. **What `auto` does with no target.** Proposal: nothing — R8 falls through
    and R9 holds station as today, so `auto` only ever differs while a target
    is engaged, and the pilot is always back in formation between fights.
