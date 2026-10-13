@@ -3,6 +3,7 @@
 // (util.KeyVal rows, {type:"long"} wrappers, ...) live in ../bridge/wire.ts.
 
 import type { BoundDogmaAllInfo } from "../bridge/boundDogma.ts";
+import type { SkillHistoryLine } from "../bridge/skillHistoryPanel.ts";
 import type { MissionTimes } from "../bridge/missionTime.ts";
 import type { MissionObjectives } from "../bridge/missionObjectives.ts";
 import type { MiningBurstServices, CompressionServiceObservation } from "../bridge/miningSupportServices.ts";
@@ -1528,6 +1529,12 @@ export interface CharacterSheetState {
   readonly homeStationError: string | null;
   readonly clone: CloneSummary | null;
   readonly cloneError: string | null;
+  /**
+   * The skill history's lines, as the client's panel makes them (bridge/skillHistoryPanel.ts): null while unread
+   * and where the read failed (why is in `skillHistoryError`). No lines is a real answer.
+   */
+  readonly skillHistory: readonly SkillHistoryLine[] | null;
+  readonly skillHistoryError: string | null;
   readonly loaded: boolean;
 }
 

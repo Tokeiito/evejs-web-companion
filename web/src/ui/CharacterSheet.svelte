@@ -15,10 +15,21 @@
   // ⚠ empty vs failed, per section. Each field is null while unread OR when its
   // read FAILED (the reason rides in the matching *Error); an empty bio ("") and
   // a clean clone (no implants) are REAL answers shown honestly, not failures.
+  //
+  // The skill history is the client's History panel's skills tab (bridge/skillHistoryPanel.ts): the date, the
+  // skill, what happened and the level, the newest first, in the client's own words where the player's install
+  // has them.
   import { onMount } from "svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { isSessionLost } from "../app/flow.ts";
   import { formatSecurityStatus } from "../bridge/characterSheet.ts";
+  import { formatTemplate } from "../bridge/clientWords.ts";
+  import {
+    SKILL_HISTORY_DATE_LABEL,
+    SKILL_HISTORY_HEADER_LABELS,
+    SKILL_HISTORY_WORD_LABELS,
+    skillHistoryActionLabel,
+  } from "../bridge/skillHistoryPanel.ts";
   import { resolvedName } from "../store/names.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -30,6 +41,8 @@
   const sheet = store.characterSheet;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
 
   let busy = $state(false);
   let error = $state("");
@@ -51,12 +64,41 @@
   }
 
   function refresh(): void {
-    void run(() => flow.loadCharacterSheet());
+    void run(async () => {
+      await Promise.all([flow.loadCharacterSheet(), flow.loadSkillHistory()]);
+    });
   }
 
   onMount(() => {
+    flow.requestWords(SKILL_HISTORY_WORD_LABELS);
     refresh();
   });
+
+  /** The client's word for a label, from the player's install; the page's own where there is none to read. */
+  function word(label: string, own: string): string {
+    const template = $words.templates[label];
+    return typeof template === "string" ? template : own;
+  }
+
+  // The page's own words for what happened, where the client's are not to be read.
+  const OWN_ACTION_WORDS: Readonly<Record<number, string>> = {
+    24: "Gift",
+    34: "Clone penalty",
+    36: "Training started",
+    37: "Training complete",
+    38: "Training stopped",
+    39: "Given by a GM",
+    53: "Training complete",
+    307: "Free skill points applied",
+    431: "Skill level extracted",
+  };
+
+  /** FmtDate(logDate, 'ls'): the client's label with the date in it; the game's date and time plainly without it. */
+  function historyDate(logDate: string): string {
+    return formatTemplate(word(SKILL_HISTORY_DATE_LABEL, "{[datetime]datetime}"), { datetime: logDate }, {
+      nameOf: (kind, id) => resolvedName($names.resolved, kind, id, ""),
+    });
+  }
 
   // The security-status colour band, matching the retail scale: positive is
   // lawful (good), negative is an outlaw (bad), exactly 0 is neutral.
@@ -166,6 +208,39 @@
         <li>{resolvedName($names.resolved, "type", implant.typeID, "Unknown implant")}</li>
       {/each}
     </ul>
+  {/if}
+
+  <!-- The skill history, as the client's History panel's skills tab lists it. No rows is a real answer. -->
+  <h3>Skill history</h3>
+  {#if $sheet.skillHistoryError}
+    <p class="error">{$sheet.skillHistoryError}</p>
+  {:else if $sheet.skillHistory === null}
+    <p class="empty">Reading your skill history…</p>
+  {:else if $sheet.skillHistory.length === 0}
+    <p class="empty">{word(SKILL_HISTORY_HEADER_LABELS.none, "No records found.")}</p>
+  {:else}
+    <div class="table-wrap overflow-x-auto">
+      <table class="guests reflow skill-history">
+        <thead>
+          <tr>
+            <th>{word(SKILL_HISTORY_HEADER_LABELS.date, "Date")}</th>
+            <th>{word(SKILL_HISTORY_HEADER_LABELS.skill, "Skill")}</th>
+            <th>{word(SKILL_HISTORY_HEADER_LABELS.action, "Action")}</th>
+            <th>{word(SKILL_HISTORY_HEADER_LABELS.level, "Level")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each $sheet.skillHistory as line, place (place)}
+            <tr>
+              <td class="value">{historyDate(line.logDate)}</td>
+              <td>{resolvedName($names.resolved, "type", line.skillTypeID, "Unknown skill")}</td>
+              <td>{word(skillHistoryActionLabel(line.eventTypeID), OWN_ACTION_WORDS[line.eventTypeID] ?? "Unknown")}</td>
+              <td class="value">{line.level}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
   {/if}
 
 </section>

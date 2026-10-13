@@ -64,6 +64,8 @@ import {
 } from "../bridge/contracts.ts";
 import { decodeAssetItems } from "../bridge/personalAssets.ts";
 import { failsTheReading, failureCode } from "../bridge/ask.ts";
+import { decodeSkillHistory, decodeSkills } from "../bridge/boundSkills.ts";
+import { skillHistoryLines } from "../bridge/skillHistoryPanel.ts";
 import { readAssetStationItems, readAssetStations, type AssetStationItemsRead, type AssetStationsRead } from "../bridge/assetReads.ts";
 import {
   AGENT_BUTTON,
@@ -1084,6 +1086,11 @@ export interface AppFlow {
    * with every entity id resolved to a name (R7d). Called on the panel's mount.
    */
   loadCharacterSheet(): Promise<void>;
+  /**
+   * The Character Sheet's skill history, as the client's History panel asks for it (bridge/skillHistoryPanel.ts):
+   * the skill handler's history and the pilot's skills, made into the panel's lines.
+   */
+  loadSkillHistory(): Promise<void>;
   /** Refresh the flight status (location + ship movement state). */
   loadFlightStatus(): Promise<void>;
   /** Undock from the station (the session enters space). */
@@ -5375,6 +5382,27 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
     }
     requestNames(refs);
+  }
+
+  // The Character Sheet's skill history, as the client's panel asks for it (skillHistoryPanel.py 54 to 58): the
+  // skill service's history, which is the skill handler's with no count said (the client's fifty; the game
+  // port's transport says it, and keeps the answer as the service does), and the pilot's own skills, whose ranks
+  // the levels are reckoned by. Either call failing is the history's failing; what fails a whole reading is thrown.
+  async function loadSkillHistory(): Promise<void> {
+    try {
+      const [history, skills] = await Promise.all([
+        bridgeAsk("skillHandler", "GetSkillHistory", []),
+        bridgeAsk("skillHandler", "GetSkills", []),
+      ]);
+      const lines = skillHistoryLines(decodeSkillHistory(history), decodeSkills(skills));
+      store.apply({ type: "character-sheet/skill-history", lines, error: null });
+      requestNames(lines.map((line) => ({ kind: "type", id: line.skillTypeID })));
+    } catch (error) {
+      if (failsTheReading(error)) {
+        throw error;
+      }
+      store.apply({ type: "character-sheet/skill-history", lines: null, error: `your skill history: ${failureCode(error)}` });
+    }
   }
 
   // R7 — read a chat channel's roster + backlog and push it to the store. The
@@ -14703,6 +14731,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     closeStandingDetail,
 
     loadCharacterSheet,
+    loadSkillHistory,
 
     async loadPackageIntoShip(cargoTypeID, cargoQuantity) {
       await runAgentAction(async () => {
