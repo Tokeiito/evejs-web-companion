@@ -51,6 +51,7 @@ import {
 // "where does this tag rank", shared with the combat priority list.
 import { fleetTagRank, pickPrimary } from "./targetPriority.ts";
 import { isTransitionTimeout, isTransportTransient, panelErrorWords } from "../bridge/refusals.ts";
+import { FLEET_BROADCAST_TTL_MS } from "../bridge/fleetBroadcasts.ts";
 // Rung 6's hurt-drone rotation: the drone-boat block's own machine, one drone at
 // a time on its own shield, so the companion and the block judge a hurt drone the
 // same way.
@@ -1574,11 +1575,32 @@ export interface CompanionLadderMemory {
    * `lastHealTargetID` above: a snapshot says a module is cycling and never
    * says what it is cycling AT, so a gun still chewing on the rat the commander
    * has moved off looks identical to one obeying the current call. Reset to a
-   * fresh list the moment the call names a different ship, which is what makes
-   * a new call re-aim the whole rack.
+   * fresh list the moment the call names a different ship; `gunAimedAt` below
+   * is what remembers where the rest of the rack still is.
    */
   readonly lastFireTargetID: number | null;
   readonly lastFireModuleIDs: readonly number[];
+  /**
+   * The target rung 7 last ACTIVATED each weapon on, by module id, kept across
+   * calls. `lastFireTargetID` above forgets every gun the moment the call moves,
+   * and this is the half that does not: it is what lets a re-aim tell "running
+   * on the ship we left" (stop it) from "running, and we never aimed it" (leave
+   * it alone). See `decideOpenFire`. Optional: a memory written before it
+   * existed reads as "no aim known".
+   */
+  readonly gunAimedAt?: Readonly<Record<number, number>>;
+  /**
+   * The modules (a bank's master for a banked gun) rung 7 has switched OFF to
+   * re-aim them, and that still read as cycling. Each is stopped ONCE: a stop
+   * that is still finishing its cycle is waited on, never re-sent. Dropped the
+   * tick the module reads idle.
+   */
+  readonly gunStops?: readonly number[];
+  /**
+   * The newest `Target` broadcast this pilot heard, held past a LATER broadcast
+   * of another kind. See `heldTargetCallID`.
+   */
+  readonly targetCall?: HeardTargetCall | null;
   readonly lastRoutedSystemID: number | null;
   /**
    * The ship rung 4 (tackle → tag) last issued a `setFleetTargetTag` for, and
@@ -2174,6 +2196,9 @@ export function freshLadderMemory(): CompanionLadderMemory {
     lastHealModuleIDs: [],
     lastFireTargetID: null,
     lastFireModuleIDs: [],
+    gunAimedAt: {},
+    gunStops: [],
+    targetCall: null,
     lastRoutedSystemID: null,
     lastTagIssuedFor: null,
     lastTagAttempts: 0,
@@ -2680,6 +2705,8 @@ function decideCompanionStep(
   // A readable flight change retires its old order even when a higher rung
   // consumes this tick. An unreadable list says nothing about a recall.
   memory = withObservedDroneFlights(obs, memory);
+  // Every tick, warp included: a call heard mid-warp is still the call on landing.
+  memory = withHeardTargetCall(obs, memory, nowMs);
   // ⚠ ABOVE THE WARP YIELD, because the capsule's run records its own warp as
   // the yield does for the flee, and above supervision, because a pod docks
   // whoever is in the fleet. `true` only: an older BFF omits the field.
@@ -2773,6 +2800,9 @@ function decideCompanionStep(
     lastLockIssuedFor: memory.lastLockIssuedFor,
     lastFireTargetID: memory.lastFireTargetID,
     lastFireModuleIDs: memory.lastFireModuleIDs,
+    gunAimedAt: memory.gunAimedAt ?? {},
+    gunStops: memory.gunStops ?? [],
+    targetCall: memory.targetCall ?? null,
     lastHealTargetID: memory.lastHealTargetID,
     lastHealModuleIDs: memory.lastHealModuleIDs,
     lastRoutedSystemID: memory.lastRoutedSystemID,
@@ -4381,66 +4411,132 @@ function cyclingWeapons(snapshot: SpaceSnapshot | null): ReadonlySet<number> {
 }
 
 /**
- * Is this weapon already firing at THIS target?
- *
- * The same two-part test `isHealModuleAlreadyRunning` makes, for the same
- * reason: a snapshot says a module is cycling, and never says what it is
- * cycling AT. So "cycling" alone cannot answer this -- a gun happily chewing on
- * the rat the commander has just moved off is cycling, and it is exactly the
- * gun that needs re-issuing. The memory of what this rung aimed where is the
- * half that knows the target, and it is reset the moment the call names a
- * different ship, so a new call re-aims the whole rack a gun at a time.
- *
- * When `activeModuleIDs` is unreadable the memory is trusted ALONE, which is
- * what stops an unreadable snapshot re-firing the rack every tick.
+ * Which target this rung last activated each weapon on: `gunAimedAt`, with the
+ * older `lastFireTargetID`/`lastFireModuleIDs` pair folded in beneath it, so a
+ * memory written before the map existed still knows the guns of its own call.
  */
-function isWeaponAlreadyFiringAt(
-  moduleID: number,
-  targetID: number,
-  cycling: ReadonlySet<number>,
-  activeModuleIDs: readonly number[] | null,
-  memory: CompanionLadderMemory,
-): boolean {
-  const issuedAtThisTarget =
-    memory.lastFireTargetID === targetID && memory.lastFireModuleIDs.includes(moduleID);
-  if (activeModuleIDs !== null) {
-    return cycling.has(moduleID) && issuedAtThisTarget;
+function gunAims(memory: CompanionLadderMemory): Readonly<Record<number, number>> {
+  const aims: Record<number, number> = {};
+  const legacyTarget = memory.lastFireTargetID;
+  if (legacyTarget !== null) {
+    for (const id of memory.lastFireModuleIDs) {
+      aims[id] = legacyTarget;
+    }
   }
-  return issuedAtThisTarget;
+  return { ...aims, ...(memory.gunAimedAt ?? {}) };
+}
+
+/** Each banked slave's master, from the snapshot's `weaponBanks`. */
+function bankMasters(snapshot: SpaceSnapshot | null): ReadonlyMap<number, number> {
+  const masters = new Map<number, number>();
+  const banks = snapshot?.ship?.weaponBanks ?? null;
+  for (const masterID of Object.keys(banks ?? {})) {
+    for (const slaveID of banks?.[Number(masterID)] ?? []) {
+      masters.set(slaveID, Number(masterID));
+    }
+  }
+  return masters;
+}
+
+/** What `decideOpenFire` wants this tick. */
+interface OpenFire {
+  /** The one call, or null: nothing new to start and nothing to stop. */
+  readonly action: { readonly kind: "activate" | "deactivate"; readonly moduleID: number } | null;
+  readonly memory: CompanionLadderMemory;
+  /** Guns still running on the ship the call moved off: being stopped, or stopped this tick. */
+  readonly switching: readonly number[];
 }
 
 /**
  * The fleet called this target and the lock has landed: open fire.
  *
- * One weapon per tick, the same discipline `hardenersOn` uses on a rack of
+ * One call per tick, the same discipline `hardenersOn` uses on a rack of
  * hardeners -- the guns come up over a few ticks rather than in one burst of
  * calls, and every tick re-reads what is actually cycling before it picks the
  * next one.
  *
- * `null` is "nothing NEW to start", covering no weapon picked and every picked
- * weapon already firing at this target alike, and the caller falls through on
- * both -- the same shape, and the same reason, as `decideHealOrder`.
+ * ⚠ A GUN THE SERVER SAYS IS CYCLING IS NEVER ACTIVATED, WHATEVER IT IS AIMED
+ * AT. This used to re-issue every cycling gun the moment the call named another
+ * ship, on the theory that a new activate re-aims it. It does not: this server
+ * refuses an activate on a running module (`EffectAlreadyActive2`) and the gun
+ * stays on its old target. Worse, the old memory followed the CALL, so a call
+ * that went A, B, A (live 2026-10-13: free fire on A, a broadcast on B, then A)
+ * forgot at B that the guns were already on A and re-sent all four at A, one
+ * refusal per tick for eight seconds, while every rung beneath starved.
+ *
+ * ⚠ THE WIRE SAYS WHAT IS RUNNING, NEVER AT WHOM. `activeModuleIDs` is godma's
+ * running effects by module (pilotDogma.js `shipReadings`); godma does hold
+ * each effect's target, but no snapshot carries it. So the target half comes
+ * from `gunAimedAt`, what this rung last activated each gun on, kept across
+ * calls, and the rule is:
+ *   - idle: activate it on the call, the first such gun per tick;
+ *   - cycling on the call, or on something this rung never aimed it at: leave it;
+ *   - cycling on the ship the call moved OFF, and that ship still locked: stop
+ *     it ONCE (`gunStops`) and activate it on the call once it reads idle. A stop
+ *     finishes its cycle first, so it is waited on, never re-sent. If the old
+ *     ship is no longer locked the server ends the cycle itself, so nothing is
+ *     sent. A banked gun is stopped through its master, which is the module
+ *     `activeModuleIDs` names.
+ * Starting an idle gun outranks stopping a busy one: damage on the call first.
+ *
+ * When `activeModuleIDs` is unreadable the memory is trusted ALONE, which is
+ * what stops an unreadable snapshot re-firing the rack every tick, and nothing
+ * is stopped: a stop on an unread rack would be a guess.
  */
 function decideOpenFire(
   targetID: number,
   request: FleetCompanionRequest,
   obs: FleetCompanionObservation,
   memory: CompanionLadderMemory,
-): { readonly moduleID: number; readonly memory: CompanionLadderMemory } | null {
-  const activeModuleIDs = obs.snapshot?.ship?.activeModuleIDs ?? null;
-  const cycling = cyclingWeapons(obs.snapshot ?? null);
-  const next = request.weaponModuleIDs.find(
-    (id) => !isWeaponAlreadyFiringAt(id, targetID, cycling, activeModuleIDs, memory),
-  );
-  if (next === undefined) {
-    return null;
+): OpenFire {
+  const aims = gunAims(memory);
+  const aimAt = (id: number, base: CompanionLadderMemory): CompanionLadderMemory => ({
+    ...base,
+    lastFireTargetID: targetID,
+    lastFireModuleIDs: base.lastFireTargetID === targetID ? [...base.lastFireModuleIDs, id] : [id],
+    gunAimedAt: { ...aims, [id]: targetID },
+  });
+  if ((obs.snapshot?.ship?.activeModuleIDs ?? null) === null) {
+    const next = request.weaponModuleIDs.find((id) => aims[id] !== targetID);
+    return next === undefined
+      ? { action: null, memory, switching: [] }
+      : { action: { kind: "activate", moduleID: next }, memory: aimAt(next, memory), switching: [] };
   }
-  const aimed =
-    memory.lastFireTargetID === targetID ? [...memory.lastFireModuleIDs, next] : [next];
-  return {
-    moduleID: next,
-    memory: { ...memory, lastFireTargetID: targetID, lastFireModuleIDs: aimed },
-  };
+  const cycling = cyclingWeapons(obs.snapshot ?? null);
+  const priorStops = memory.gunStops ?? [];
+  // A stop that has landed reads idle: forget it.
+  const stops = priorStops.filter((id) => cycling.has(id));
+  const settled = stops.length === priorStops.length ? memory : { ...memory, gunStops: stops };
+  const masters = bankMasters(obs.snapshot ?? null);
+  const locked = obs.lockedTargetIDs ?? null;
+  const switching: number[] = [];
+  let stop: number | null = null;
+  for (const id of request.weaponModuleIDs) {
+    const was = aims[id];
+    if (!cycling.has(id) || was === undefined || was === targetID) {
+      continue;
+    }
+    if (locked !== null && !locked.includes(was)) {
+      continue;
+    }
+    switching.push(id);
+    const stopID = masters.get(id) ?? id;
+    if (stop === null && !stops.includes(stopID)) {
+      stop = stopID;
+    }
+  }
+  const idle = request.weaponModuleIDs.find((id) => !cycling.has(id));
+  if (idle !== undefined) {
+    return { action: { kind: "activate", moduleID: idle }, memory: aimAt(idle, settled), switching };
+  }
+  if (stop !== null) {
+    return {
+      action: { kind: "deactivate", moduleID: stop },
+      memory: { ...settled, gunStops: [...stops, stop] },
+      switching,
+    };
+  }
+  return { action: null, memory: settled, switching };
 }
 
 /**
@@ -4502,15 +4598,33 @@ function lockThenEngage(
   noteTrace("guns", gated.trace);
   memory = gated.memory;
   const fire = decideOpenFire(targetID, { ...request, weaponModuleIDs: gated.inReach }, obs, memory);
-  if (fire !== null) {
+  if (fire.switching.length > 0) {
+    noteTrace("guns", { ...gated.trace, switching: fire.switching });
+  }
+  memory = fire.memory;
+  if (fire.action?.kind === "activate") {
     return {
-      action: { kind: "activate", moduleID: fire.moduleID, targetID },
+      action: { kind: "activate", moduleID: fire.action.moduleID, targetID },
       ...authority,
       why: why + " Opening fire on it.",
-      memory: fire.memory,
+      memory,
       lastOrderHeard: heard,
     };
   }
+  if (fire.action?.kind === "deactivate") {
+    return {
+      action: { kind: "deactivate", moduleID: fire.action.moduleID },
+      ...authority,
+      why: why + " Stopping a gun still firing on the last target, to turn it onto this one.",
+      memory,
+      lastOrderHeard: heard,
+    };
+  }
+  // Guns stopped for the switch and still finishing their cycle: say so, as
+  // "firing on it" alone would be false for them.
+  const finishing = fire.switching.length === 0
+    ? ""
+    : ` ${fire.switching.length} gun${fire.switching.length === 1 ? " is" : "s are"} finishing a cycle on the last target.`;
   // ⚠ STANDING, NOT PARKED -- see `CompanionDecision.standing`. Everything
   // above issues a real call; this branch has nothing left to issue, so it
   // hands back a readout the ladder uses only if no rung beneath it acts.
@@ -4528,7 +4642,7 @@ function lockThenEngage(
       why +
       (request.weaponModuleIDs.length === 0
         ? " Locked. No weapon is picked for this pilot, so it holds the lock without firing."
-        : gunsInReachWords(gated.inReach.length - gated.assumed.length, request.weaponModuleIDs.length, gated.assumed.length)),
+        : gunsInReachWords(gated.inReach.length - gated.assumed.length, request.weaponModuleIDs.length, gated.assumed.length) + finishing),
     memory,
     lastOrderHeard: heard,
     engagedTargetID: targetID,
@@ -5530,9 +5644,10 @@ function decideTackleTag(
   //      alone) and `tackleCalledOut` bounds the broadcast arm to one call per
   //      ship per pilot (so two pilots cannot re-call each other's tackler
   //      back and forth).
-  //   3. THE TRIGGER IS NARROW: only ships tackling THIS pilot are candidates.
-  //      Two companions collide only if one ship has tackled both of them in
-  //      the same tick, before either call is visible.
+  //   3. THE TRIGGER IS NARROW: only ships tackling THIS pilot are candidates,
+  //      and the broadcast arm stays quiet while a `Target` call already stands
+  //      on this grid (two pilots held by two different ships otherwise pull
+  //      the fleet back and forth between them; see `decideTackleBroadcast`).
   //
   // The `attemptsTagging` checkbox that used to stand here gated behaviour that
   // was already exactly what was asked for -- call out what is holding you
@@ -5681,6 +5796,19 @@ function decideTackleBroadcast(
 ): { readonly decision: CompanionDecision | null; readonly memory: CompanionLadderMemory } {
   const nothing = { decision: null, memory } as const;
   if (obs.canBroadcast !== true) {
+    return nothing;
+  }
+  // ⚠ A STANDING `Target` CALL IS NOT SHOVED ASIDE, the broadcast twin of the
+  // lettered-ship filter below. A broadcast is the NEWEST call every companion
+  // obeys, so two pilots held by two DIFFERENT ships (the header's "two
+  // companions collide only if one ship has tackled both" missed this) each
+  // called their own and pulled the whole fleet from one to the other and
+  // back, every gun re-aimed at each turn: one of the two code paths to the
+  // A, B, A seen live 2026-10-13 (the other: `withHeardTargetCall`).
+  // While a call stands on this grid the fleet is already shooting something;
+  // this pilot's tackler is called the tick that call lapses or dies, and
+  // `tackleCalledOut` is untouched here so that later call is still made.
+  if (standingTargetCallID(obs, memory, snapshot.entities) !== null) {
     return nothing;
   }
 
@@ -8099,10 +8227,107 @@ function calledTarget(
       why: order.why,
     };
   }
+  // The `Target` call a later broadcast of another kind pushed out of the slot:
+  // still the fleet's call, so it still outranks free fire. See `heldTargetCallID`.
+  const held = order === null ? heldTargetCallID(obs, memory, entities) : null;
+  if (held !== null) {
+    return {
+      itemID: held,
+      source: "broadcast",
+      heard: ORDER_HEARD.Target.broadcast,
+      why: ORDER_WHY.Target.broadcast,
+    };
+  }
   if (memory.targetMode === "all" && order === null) {
     return freeFireTarget(obs, entities, measurement, memory);
   }
   return null;
+}
+
+/** A `Target` broadcast as this pilot heard it: see `CompanionLadderMemory.targetCall`. */
+export interface HeardTargetCall {
+  readonly itemID: number;
+  readonly receivedAtMs: number;
+}
+
+/**
+ * Record the newest `Target` broadcast, and retire it when it lapses or a newer
+ * named order replaces it. Runs at the top of every tick, before any rung reads it.
+ *
+ * ⚠ THE STORE KEEPS ONE BROADCAST, OF ANY KIND, AND THE NEWEST WINS THE SLOT.
+ * `fleet/broadcast` overwrites `lastBroadcast` whatever its name, so an
+ * `EnemySpotted` or `NeedBackup` a second after a `Target` call erased the call
+ * from the observation: `resolveNamedOrder` then found no order, `calledTarget`
+ * fell through to free fire, and an engaged pilot turned its guns back onto its
+ * own kill-order pick while the fleet's call was still standing. That is one of
+ * the two code paths to the A, B, A seen live 2026-10-13 (free fire on A, a
+ * broadcast on B, then A again inside five seconds, every gun re-sent at each
+ * turn); the other is rung 4's broadcast arm, see `decideTackleBroadcast`.
+ *
+ * ⚠ ONLY ANOTHER NAMED ORDER OR THE TTL ENDS IT, which is exactly what ends a
+ * call that stays in the slot: a newer `Target` replaces it, an `AlignTo` or a
+ * `WarpTo` outranks it there too, and `FLEET_BROADCAST_TTL_MS` is the same clock
+ * the observation builder applies. A Heal broadcast does not end it: a logi call
+ * is not a cease-fire.
+ */
+function withHeardTargetCall(
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+  nowMs: number,
+): CompanionLadderMemory {
+  const heard = obs.fleetBroadcast ?? null;
+  const prior = memory.targetCall ?? null;
+  let next: HeardTargetCall | null = prior;
+  if (obs.inFleet === false) {
+    next = null;
+  } else if (heard !== null && heard.name === "Target" && heard.itemID !== null) {
+    next = prior !== null && prior.itemID === heard.itemID && prior.receivedAtMs === heard.receivedAtMs
+      ? prior
+      : { itemID: heard.itemID, receivedAtMs: heard.receivedAtMs };
+  } else if (heard !== null && asNamedOrderName(heard.name) !== null) {
+    next = null;
+  } else if (prior !== null && nowMs - prior.receivedAtMs >= FLEET_BROADCAST_TTL_MS) {
+    next = null;
+  }
+  return next === prior ? memory : { ...memory, targetCall: next };
+}
+
+/**
+ * The ship a `Target` call still names when the broadcast slot has since been
+ * taken by a broadcast that is NOT an order (`EnemySpotted`, a Heal call, ...),
+ * and only while that ship is on this grid. See `withHeardTargetCall`.
+ *
+ * ⚠ AN EMPTY SLOT IS NOT AN OVERWRITTEN ONE. `null` means the call lapsed or the
+ * store cleared it (fleet left or switched), and neither may be resurrected
+ * from memory; only a slot holding something else hides a call that stands.
+ */
+function heldTargetCallID(
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+  entities: readonly SpaceEntity[],
+): number | null {
+  const heard = obs.fleetBroadcast ?? null;
+  const held = memory.targetCall ?? null;
+  if (heard === null || held === null || heard.name === "Target" || asNamedOrderName(heard.name) !== null) {
+    return null;
+  }
+  return entityOnGrid(held.itemID, entities) === null ? null : held.itemID;
+}
+
+/**
+ * The ship a standing `Target` call names on this grid, from the slot or held
+ * past it, or null. What rung 4's broadcast arm keeps quiet for.
+ */
+function standingTargetCallID(
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+  entities: readonly SpaceEntity[],
+): number | null {
+  const heard = obs.fleetBroadcast ?? null;
+  if (heard !== null && heard.name === "Target") {
+    return heard.itemID !== null && entityOnGrid(heard.itemID, entities) !== null ? heard.itemID : null;
+  }
+  return heldTargetCallID(obs, memory, entities);
 }
 
 /**
@@ -9955,6 +10180,9 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
           lastLockIssuedFor: null,
           lastFireTargetID: null,
           lastFireModuleIDs: [],
+          gunAimedAt: {},
+          gunStops: [],
+          targetCall: null,
           lastHealTargetID: null,
           lastHealModuleIDs: [],
           lastRoutedSystemID: null,
