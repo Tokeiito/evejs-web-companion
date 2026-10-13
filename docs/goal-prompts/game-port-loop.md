@@ -3003,6 +3003,32 @@ Take these defaults, and list each under "For the operator" in the log so they c
   each entry's stamp against the server's as it arrived, and
   `first-updates.js <repo> <recording.jsonl> <how many> [ball]` lists
   them.
+- **A measure by stamps is good only where the server's cadence is on
+  the second.** Its movement begins each second at a part of the second
+  that moves when a scene with no pilot in it wakes. Until the Next
+  list's cadence unit is done: a server just started (`store.sh save`
+  or `restore`), one undock, and nothing measured after a docking or a
+  logout. To see the cadence: the first row of a ship's or a rat's
+  movement after an undock or a command (the scratch `ego-ticks.js
+  <repo> <recording.jsonl> <movement log> <ball> <x,y,z of where it was
+  put>` prints the park's ball tick by tick beside the server's rows).
+- **A pilot brought into space at a chosen part of the second**: the
+  scratch `state-live.js <T> <bff> <account> <character> "<undocks:
+  ms,ms>" "<logins: ms,ms>"` undocks (docking between), then warps to a
+  belt and is chosen in space beside its rats. An undock asked at a part
+  of the second has its whole state built 0.11 to 0.21 s later, a
+  choosing 0.24 to 0.30 s later; the authority's trace says when, to the
+  ms (`emit-steps.js <missile debug log> <from ms> SetState`).
+- **The old code beside the new, by the same flight, without a commit**:
+  copy the changed file aside, write the committed one in its place
+  (`git show HEAD:<path> > <path>`), restart, fly, then copy the changed
+  file back and compare it with the copy. Never the other way about (the
+  memory "old-code check destroys uncommitted work").
+- **The tool's rows with the server's own time on them, inside
+  windows**: the scratch `rows-at.js <repo> <recording.jsonl> <log>
+  <ball> <from ms-to ms,...> [rows]`: for a ball just after each of
+  several whole states. Each login is a connection of its own in a
+  recording (`grep '"connection":N,'` into a file).
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
