@@ -12,11 +12,11 @@
 // construction, but "by construction" is a claim about types, and two loops
 // steering one ship is a runtime disaster. These drive it for real.
 
-import test from "node:test";
+import test, { afterEach } from "node:test";
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 
-import { createAppFlow } from "./flow.ts";
+import { createAppFlow as createUntrackedAppFlow } from "./flow.ts";
 import { createClientStore } from "../store/clientStore.ts";
 import {
   DEFAULT_COMPANION_SETUP,
@@ -36,6 +36,26 @@ import {
   namesBody,
   spaceBody,
 } from "./botFixtures.ts";
+
+// ⚠ EVERY FLOW A TEST BUILDS IS STOPPED AFTER IT, PASS OR FAIL. Most tests here
+// end with a bare `flow.stopFleetCompanion()`, which a failed assertion above it
+// skips: the companion loop's timer then keeps the process alive and the file
+// never exits (it hung the Docker gate for twenty minutes on 2026-10-14). The
+// hook is the `finally` every one of them would otherwise need.
+const liveFlows = new Set<ReturnType<typeof createUntrackedAppFlow>>();
+
+function createAppFlow(...args: Parameters<typeof createUntrackedAppFlow>): ReturnType<typeof createUntrackedAppFlow> {
+  const flow = createUntrackedAppFlow(...args);
+  liveFlows.add(flow);
+  return flow;
+}
+
+afterEach(() => {
+  for (const flow of liveFlows) {
+    flow.stopFleetCompanion();
+  }
+  liveFlows.clear();
+});
 
 const BELT = 40000123;
 const STATION = 60003760;
@@ -224,6 +244,8 @@ function chatHarness(
   options: {
     readonly humanMemberCharacterID?: number;
     readonly chatEntries?: readonly unknown[];
+    /** The station the roster says the commander is docked in; absent says nothing. */
+    readonly commanderStationID?: number;
   } = {},
 ) {
   const calls: string[] = [];
@@ -263,6 +285,9 @@ function chatHarness(
                     keyVal([
                       ["charID", ALLOWED_CHAT_SENDER],
                       ["role", 1],
+                      ...(options.commanderStationID === undefined
+                        ? []
+                        : [["stationID", options.commanderStationID] as const]),
                     ]),
                   ],
                 ],
@@ -620,25 +645,33 @@ test("a chat order older than FLEET_BROADCAST_TTL_MS does not reach the loop", a
   const { store, flow, calls } = chatHarness({
     humanMemberCharacterID: HUMAN_FLEET_MEMBER,
     chatEntries: [alignChatLine(FLEET_BROADCAST_TTL_MS + 5_000)],
+    // The commander is docked, by the roster's own word. Off this grid and
+    // somewhere unknown, it would be warped to (rung 9b, the rejoin) and the
+    // pilot would not be idle; docked, there is nothing to rejoin, so "Standing
+    // by" is still the answer to the question this test asks.
+    commanderStationID: STATION,
   });
   const request: FleetCompanionRequest = {
     ...DEFAULT_FLEET_COMPANION_REQUEST,
   };
 
-  await flow.startFleetCompanion(request);
-  await waitForCompanionTick(() => store.get().companion.why);
+  try {
+    await flow.startFleetCompanion(request);
+    await waitForCompanionTick(() => store.get().companion.why);
 
-  assert.ok(calls.includes("/api/bridge/chat/local"), "the read itself still happens");
-  assert.ok(
-    !calls.some((each) => each.startsWith("beyonce.CmdAlignTo") || each === "/api/bridge/flight/align"),
-    "a chat order past its TTL must not be obeyed -- a lapsed order is exactly as stale as a lapsed broadcast",
-  );
-  assert.equal(
-    store.get().companion.phase,
-    "Standing by",
-    "with the order dropped as stale, this supervised pilot has nothing to obey",
-  );
-  flow.stopFleetCompanion();
+    assert.ok(calls.includes("/api/bridge/chat/local"), "the read itself still happens");
+    assert.ok(
+      !calls.some((each) => each.startsWith("beyonce.CmdAlignTo") || each === "/api/bridge/flight/align"),
+      "a chat order past its TTL must not be obeyed -- a lapsed order is exactly as stale as a lapsed broadcast",
+    );
+    assert.equal(
+      store.get().companion.phase,
+      "Standing by",
+      "with the order dropped as stale, this supervised pilot has nothing to obey",
+    );
+  } finally {
+    flow.stopFleetCompanion();
+  }
 });
 
 test("a chat order inside FLEET_BROADCAST_TTL_MS reaches the loop and is obeyed", async () => {
