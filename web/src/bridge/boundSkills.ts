@@ -34,8 +34,9 @@
 //  GetFreeSkillPoints: a BARE number (Farmer 0). Kept exact.
 //  GetDiminishedSpFromInjectors(typeID,qty,nonDim): a BARE number (0 for a
 //    non-injector typeID). Kept exact.
-//  GetSkillHistory: {type:"list", items:[utillib.KeyVal{logDate:long FILETIME,
-//    eventTypeID, skillTypeID, absolutePoints, level}, …]} (empty for Farmer).
+//  GetSkillHistory: a carbon CRowset, {type:"objectex2", header, list:[packedrow
+//    {logDate:long FILETIME, eventTypeID, skillTypeID, relativePoints,
+//    absolutePoints}, …]}, as Tranquility answers it (no rows for Farmer).
 //  GetSkillChangesForISIS: a BARE ARRAY of [skillTypeID, spChange] 2-tuples.
 //  GetRespecInfo: util.KeyVal{freeRespecs, lastRespecDate, nextTimedRespec}
 //    (the dates are long FILETIMEs or null — null for Farmer).
@@ -55,7 +56,7 @@
 // "util.KeyVal", so a util.KeyVal-only reader would silently drop every queue
 // field. The local readObjectDict below is NAME-AGNOSTIC on purpose.
 
-import { unwrapLong, type JsonValue } from "./wire.ts";
+import { readRowField, unwrapLong, type JsonValue } from "./wire.ts";
 
 // --- local coercions (do NOT import from market*.ts — separate session) -----
 
@@ -271,28 +272,37 @@ export function decodeDiminishedSp(result: JsonValue | undefined): string | null
 }
 
 // --- GetSkillHistory --------------------------------------------------------
+//
+// Tranquility's answer, recorded at three logins of the retail client (GetSkillHistory(10): ten rows, the newest
+// first), and this server's since 2026-10-13: a carbon CRowset whose rows are packed rows of logDate, eventTypeID,
+// skillTypeID, relativePoints and absolutePoints. The client reads the date, the event, the skill and the points
+// the skill had, and reckons the level from those points and the skill's rank (skillHistoryPanel.py, 54 to 64):
+// no row says a level.
 
 export interface BoundSkillHistoryRow {
   /** ⚠ EXACT FILETIME decimal string (100ns ticks since 1601), or null. */
   readonly logDate: string | null;
   readonly eventTypeID: number;
   readonly skillTypeID: number;
-  /** ⚠ EXACT decimal string (SP), never a JS number. */
+  /** ⚠ EXACT decimal string (SP), never a JS number: the points the event gave the skill. */
+  readonly relativePoints: string | null;
+  /** ⚠ EXACT decimal string (SP), never a JS number: the points the skill had then. */
   readonly absolutePoints: string | null;
-  readonly level: number;
 }
 
 export function decodeSkillHistory(result: JsonValue | undefined): readonly BoundSkillHistoryRow[] {
   const obj = asObject(result);
-  const items = obj.type === "list" && Array.isArray(obj.items)
-    ? (obj.items as readonly JsonValue[])
+  // A CRowset's rows are on its `list`. Each is a packed row, which the game port hands on with its fields by
+  // name and the gateway with its values by place: readRowField reads either.
+  const rows = obj.type === "objectex2" && Array.isArray(obj.list)
+    ? (obj.list as readonly JsonValue[])
     : [];
-  return items.map((row) => ({
-    logDate: exactInt(readField(row, "logDate")),
-    eventTypeID: smallInt(readField(row, "eventTypeID"), 0),
-    skillTypeID: smallInt(readField(row, "skillTypeID"), 0),
-    absolutePoints: exactInt(readField(row, "absolutePoints")),
-    level: smallInt(readField(row, "level"), 0),
+  return rows.map((row) => ({
+    logDate: exactInt(readRowField(row, "logDate")),
+    eventTypeID: smallInt(readRowField(row, "eventTypeID"), 0),
+    skillTypeID: smallInt(readRowField(row, "skillTypeID"), 0),
+    relativePoints: exactInt(readRowField(row, "relativePoints")),
+    absolutePoints: exactInt(readRowField(row, "absolutePoints")),
   }));
 }
 

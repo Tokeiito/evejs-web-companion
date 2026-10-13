@@ -197,35 +197,37 @@ test("decodeFreeSkillPoints / decodeDiminishedSp: exact, zero stays '0'", () => 
 
 // --- GetSkillHistory --------------------------------------------------------
 
-test("decodeSkillHistory: empty for Farmer (a legitimate state)", () => {
-  assert.deepEqual(decodeSkillHistory(EMPTY_LIST), []);
+// The answer's form is Tranquility's, recorded at three logins of the retail client: a carbon CRowset of packed
+// rows (logDate, eventTypeID, skillTypeID, relativePoints, absolutePoints). The rows below have the values of two
+// recorded rows, in the two shapes a packed row reaches the page in (read off the running BFFs, 2026-10-13): the
+// game port's with its fields by name, the gateway's with its values by place. Until then this file had a list of
+// KeyVal with a "level", which no recording has.
+const HISTORY_COLUMNS = [["logDate", 64], ["eventTypeID", 2], ["skillTypeID", 3], ["relativePoints", 3], ["absolutePoints", 3]];
+const HISTORY_DESCRIPTOR = { type: "objectex1", header: [{ type: "token", value: "blue.DBRowDescriptor" }, [HISTORY_COLUMNS]], list: [], dict: [] };
+const historyOf = (rows: readonly unknown[]) => ({
+  type: "objectex2",
+  header: [[{ type: "token", value: "carbon.common.script.sys.crowset.CRowset" }], { type: "dict", entries: [["header", HISTORY_DESCRIPTOR]] }],
+  list: rows,
+  dict: [],
+}) as never;
+
+test("decodeSkillHistory: a rowset of no rows is no history (a legitimate state)", () => {
+  assert.deepEqual(decodeSkillHistory(historyOf([])), []);
 });
 
-test("decodeSkillHistory: a synthetic populated row keeps FILETIME + SP exact", () => {
-  const row = decodeSkillHistory({
-    type: "list",
-    items: [
-      {
-        type: "object",
-        name: "utillib.KeyVal",
-        args: {
-          type: "dict",
-          entries: [
-            ["logDate", { type: "long", value: "134296439593290000" }],
-            ["eventTypeID", 33],
-            ["skillTypeID", 3300],
-            ["absolutePoints", 256000],
-            ["level", 5],
-          ],
-        },
-      },
-    ],
-  })[0]!;
-  assert.equal(row.logDate, "134296439593290000");
-  assert.equal(row.eventTypeID, 33);
-  assert.equal(row.skillTypeID, 3300);
-  assert.equal(row.absolutePoints, "256000");
-  assert.equal(row.level, 5);
+test("decodeSkillHistory: Tranquility's rows, as either transport hands a packed row on, dates and points exact", () => {
+  const rows = decodeSkillHistory(historyOf([
+    {
+      type: "packedrow", header: HISTORY_DESCRIPTOR, columns: HISTORY_COLUMNS,
+      fields: { logDate: { type: "long", value: "134282810790000000" }, eventTypeID: 53, skillTypeID: 3424, relativePoints: 2307, absolutePoints: 2829 },
+      values: [{ type: "long", value: "134282810790000000" }, 53, 3424, 2307, 2829],
+    },
+    { type: "packedrow", header: HISTORY_DESCRIPTOR, columns: HISTORY_COLUMNS, values: ["134276504640000000", 307, 81032, 908, 1000] },
+  ]));
+  assert.deepEqual(rows, [
+    { logDate: "134282810790000000", eventTypeID: 53, skillTypeID: 3424, relativePoints: "2307", absolutePoints: "2829" },
+    { logDate: "134276504640000000", eventTypeID: 307, skillTypeID: 81032, relativePoints: "908", absolutePoints: "1000" },
+  ]);
 });
 
 // --- GetSkillChangesForISIS -------------------------------------------------
@@ -325,7 +327,7 @@ test("decodeBoundSkills: folds each read's {result|error} into typed data", () =
       GetSkills: { result: SKILLS_SAMPLE },
       GetAllSkills: { result: SKILLS_SAMPLE },
       GetAttributes: { result: ATTRIBUTES },
-      GetSkillHistory: { result: EMPTY_LIST },
+      GetSkillHistory: { result: historyOf([]) },
       GetSkillChangesForISIS: { result: CHANGES_FOR_ISIS },
       GetRespecInfo: { result: RESPEC_INFO },
       GetFreeSkillPoints: { result: 0 },
