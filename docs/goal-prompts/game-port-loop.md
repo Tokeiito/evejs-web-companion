@@ -2524,6 +2524,17 @@ Take these defaults, and list each under "For the operator" in the log so they c
   was about to be moved and no test noticed it gone: two breakages of it
   passed three test files. A test of the cooling was written and committed
   first, and the move after it.
+- **A value made a float for the wire is an object to everything else.**
+  `{ type: "real", value }` is how this server sends a whole number as a
+  float, and the web gateway makes JSON of an answer as it stands: the
+  browser reads attribute values with `typeof value === "number"`. Where
+  only the wire is to change, the marshaller is given a mark instead (a
+  dict's `realValues: true`), and the values stay the numbers they were.
+- **A test that passes with its part broken may be reading another part.**
+  With a structure's mark taken away one test of a controlled structure
+  still passed: it read the structure's entry in `structureInfo`, which is
+  built elsewhere. The breakage that is not caught says which place has no
+  test; the place is read before the test is written.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
