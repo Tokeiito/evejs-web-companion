@@ -275,6 +275,11 @@ const ACHIEVEMENT_MGR = "achievementTrackerMgr";
 const ACHIEVEMENT_STATUS = "GetCompletedAchievementsAndClientEventCount";
 /** Whether a call is the achievement service's read, asked as the client asks it: with nothing. */
 const keptAchievementStatus = (service, method, form) => service === ACHIEVEMENT_MGR && method === ACHIEVEMENT_STATUS && form.args.length === 0 && form.kwargs === null;
+/** The non-diminishing injection service's read of how many the character has left (eve/client/script/ui/services/nonDiminishingInjectionService.py 49 to 51). */
+const INJECTION_MGR = "nonDiminishingInjectionMgr";
+const INJECTIONS_LEFT = "GetAvailableNonDiminishingInjections";
+/** Whether a call is that service's read, asked as the client asks it: with nothing. */
+const keptInjectionsLeft = (service, method, form) => service === INJECTION_MGR && method === INJECTIONS_LEFT && form.args.length === 0 && form.kwargs === null;
 const OFFICE_MANAGER = "officeManager";
 /**
  * What the client hands back to the server as it was answered, and so with the Python type it came with:
@@ -1519,6 +1524,9 @@ function createGamePortPilots({
       /** achievementSvc's completedDict and event counts as the server answered them, undefined while they were not asked; and their askings, one after another. */
       achievementStatus: undefined,
       achievementStatusWork: Promise.resolve(),
+      /** nonDiminishingInjection.availableInjections: how many non-diminishing injections the character has left, as the server answered and has told since; undefined while it was not asked. And its askings, one after another. */
+      injectionsLeft: undefined,
+      injectionsLeftWork: Promise.resolve(),
       /** The account's clone grade as the server last said it (clonegrade/const.py: 0 alpha, 1 omega): undefined while none is had. */
       cloneGrade: undefined,
       /** Whether the office's item was primed on the Moniker for where the pilot is docked (PRIME_OFFICE): its answer, kept while docked there. */
@@ -1603,6 +1611,12 @@ function createGamePortPilots({
         && positive(notification.args[0]) !== null && positive(notification.args[0]) === attribute(entry, "solarsystemid2")) {
         entry.bountyOutput = { answer: [notification.args[1], true], until: now() + BOUNTY_OUTPUT_GOOD_FOR_MS };
       }
+      // nonDiminishingInjection's three notices (27 to 42): so many more, so many used, or none left. What is kept
+      // is counted up or down where something is kept (a count not yet asked for is asked for when it is wanted),
+      // and "none left" is nought whether or not anything was.
+      if (notification.method === "OnNonDiminishingInjectionsAdded" && typeof entry.injectionsLeft === "number" && typeof notification.args?.[0] === "number") entry.injectionsLeft += notification.args[0];
+      if (notification.method === "OnNonDiminishingInjectionsUsed" && typeof entry.injectionsLeft === "number" && typeof notification.args?.[0] === "number") entry.injectionsLeft -= notification.args[0];
+      if (notification.method === "OnNonDiminishingInjectionsRemoved") entry.injectionsLeft = 0;
       // securitySvc.OnSecurityModified(solar_system_id, modifier_amount, new_security) (50 to 54): that system's
       // level is the new one from now, as the service keeps it.
       if (notification.method === "OnSecurityModified" && Array.isArray(notification.args) && notification.args.length === 3
@@ -1807,6 +1821,10 @@ function createGamePortPilots({
       // after the journal, as a client asks this server. A manager that refuses fails no choosing: they are asked
       // for when they are next wanted.
       await bookmarksRead(entry, shape(BOOKMARK_MGR, ACTIVE_BOOKMARKS, [], null, contextFor(entry))).catch(() => {});
+      // nonDiminishingInjection.OnCharacterSessionChanged (23 to 25): a character on the session, and how many
+      // non-diminishing injections it has left is asked for. In the retail client's own login, ahead of the
+      // character's settings. A manager that refuses fails no choosing.
+      await injectionsLeftAsked(entry).catch(() => {});
       // characterSettingsSvc._GetSettings (31 to 34): the character's settings are asked for when something first
       // wants one, and the client's services want some as they start (the chat's filters, the sensor overlay's
       // folders, the mail's settings): in every recorded login, once. A manager that refuses fails no choosing.
@@ -2011,6 +2029,12 @@ function createGamePortPilots({
     // asked as the client asks it: with nothing.
     if (keptAchievementStatus(service, method, form)) {
       const kept = await run(entry, service, method, () => achievementStatusRead(entry));
+      return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
+    }
+    // How many non-diminishing injections the character has left is that service's to answer, where it is asked as
+    // the client asks it: with nothing (GetRemaining, 44 to 47: what is kept, asked for where nothing is).
+    if (keptInjectionsLeft(service, method, form)) {
+      const kept = await run(entry, service, method, () => (entry.injectionsLeft === undefined ? injectionsLeftAsked(entry) : entry.injectionsLeft));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
     // The corporations with offices where a pilot is docked are the client's office manager's to answer, where
@@ -2550,6 +2574,27 @@ function createGamePortPilots({
     });
     entry.achievementStatusWork = reading.catch(() => {});
     return reading;
+  }
+
+  /**
+   * nonDiminishingInjection._UpdateAvailableNonDiminishingInjections (eve/client/script/ui/services/
+   * nonDiminishingInjectionService.py 49 to 51): sm.RemoteSvc('nonDiminishingInjectionMgr').
+   * GetAvailableNonDiminishingInjections(), by the service's name with nothing: how many skill injections the
+   * character may still take at their full worth. The service asks at every change of the session's character
+   * (OnCharacterSessionChanged, 23 to 25, which the client scatters at any session change with the character in
+   * it: carbon/common/script/sys/sessions.py 586 to 590), which is the choosing, and keeps the number; the server's
+   * notices count it up and down from then (27 to 42), and its GetRemaining answers what is kept (44 to 47).
+   * Tranquility's recordings of a login each have the one call, answered 0. One asking at a time.
+   */
+  function injectionsLeftAsked(entry) {
+    const asking = entry.injectionsLeftWork.then(async () => {
+      const form = shape(INJECTION_MGR, INJECTIONS_LEFT, [], null, contextFor(entry));
+      ledger.note(INJECTION_MGR, INJECTIONS_LEFT, form);
+      entry.injectionsLeft = await byName(entry.session, INJECTION_MGR, INJECTIONS_LEFT, form);
+      return entry.injectionsLeft;
+    });
+    entry.injectionsLeftWork = asking.catch(() => {});
+    return asking;
   }
 
   // ── the occupation of the system, as the client's warzone service has it ──
