@@ -2658,6 +2658,23 @@ Take these defaults, and list each under "For the operator" in the log so they c
   compared), and the scenario run again. Two were red before the units that
   met them; they are on the Next list to be read, not on this loop's
   account.
+- **Some harness scenarios are red on the tree as it stands** (2026-10-13:
+  crimewatch's CONCORD, the office's home station reset, the container's
+  second jettison, the tractor beam's parking, the customs officers'
+  surrender; the AIR mining file times out). None is on the list of known
+  reds, and each was red with this loop's change taken out. Other sessions'
+  uncommitted files are in the tree. So a harness scenario's red is no word
+  on a unit until it has been run with the unit's own source files put as
+  they were; and it is written for the operator, not chased through files
+  that are another's.
+- **A tolerant reader makes a change of form free.** The BFF's route and the
+  page's decoder of a jettison read a list or an array at each level, and
+  the server's change needed nothing of either. A reader written for one
+  form (the guests' decoder, an office's price) is the one that has to be
+  mended first. New readers of an answer's sequences take both.
+- **A notice the client lives by and no recording has is read before it is
+  sent**: when the thing it tells of changes here, to whom, and by what
+  address. `OnSubscriptionChangedServer` is such a one.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
