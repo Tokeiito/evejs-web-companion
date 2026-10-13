@@ -1213,7 +1213,10 @@ This server sends it since `eve.js` `83c66feb6`: by `clientID`, to the session t
 it opened last), after an item change that session is told of, where what the place has is not what it was last
 told. The transport keeps a monitor's answer and answers a later `ConnectJob` for the same job from it, and puts
 the notice's word into what it keeps (`pilots.js`, `monitoredJobHas`, `8f8621c0`). The page's next preview has
-it; the page does not ask again of itself when the notice comes.
+it. Since `68d3eb62` the page's window shows the notice's word at once, as the client's does: the BFF's preview
+says the monitor's number where the transport keeps the monitor, and the window shows the materials of a notice
+that names that number and came after the preview was asked (`web/src/bridge/industryMaterials.ts`). Through the
+gateway the preview's monitor is let go at once, and the preview says no number.
 
 **Crimewatch's notices, 2026-10-10.** Each changes one thing the service keeps, and nothing
 is asked after it (`crimewatchSvc.py` 222 to 288).

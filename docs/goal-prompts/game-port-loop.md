@@ -47,14 +47,50 @@ or put it right before starting anything new.
    is the retail client's behaviour, feature by feature: the same calls, the same arguments, the
    same order. "The server accepted it" is not the standard.
 3. **Build it.**
-4. **Prove it**, in this order: a test that you have watched fail; the whole suite; the real thing
-   against the running server. A unit that touches what the browser shows is proven in the
-   browser. Say what you saw, with the output.
+4. **Prove it** by the real thing against the running server, with the client's own code read
+   beside the change. A unit that touches what the browser shows is proven in the browser. Say
+   what you saw, with the output. **No test is run** (the operator's word of 2026-10-13: the
+   section "Tests" below).
 5. **Commit it and push it.** Web changes in `evejs-web-poc`; server fixes are a separate matter
    (below).
 6. **Write the log entry**: what was done, the evidence, the commit, any decision you took in the
    operator's place, and what is next. Update the plan's status when a phase's "done when" is met.
 7. **Go straight on to the next unit.** There is nothing to wait for between units.
+
+## Tests: the operator's word of 2026-10-13
+
+> I am finding tests are going "red" but those tests have bad assumptions or
+> testing mechanics wrong. I don't trust any of the old tests. We need to stop
+> skipping them and rarely writing tests. Any new test or old test needs to
+> only be verified against a deep-decompiled client (not just the python), or
+> the open source CCP repos. Also, stop wasting time running tests here. They
+> are proving to be wrong.
+
+From that day, in this loop:
+
+- **No test is run.** Not a unit's own, not `eve.js`'s by its isolated runner, not the whole suite
+  (`scripts/game-port-audit.js`), not a breakage run. Whatever this file says further down of
+  running a test, of watching one fail, or of breaking a fix to watch a test catch it, is the
+  older arrangement: it is kept for what it says of the machine and the tools, and is not
+  followed. The type check and the page's build (`npm run typecheck`, `npm run build:web`) are
+  not tests and are still run.
+- **A unit is proven** by the client's own code read beside the change (its lines named in the
+  commit and the log), by a recording where there is one, and by the real thing against the
+  running server, in the browser where the browser shows it.
+- **A test is written rarely**, and only for a rule that is the client's. Each assertion names
+  where the rule is: in the decompiled client (its Python where the rule is there, and its
+  binaries and data where it is there: the Python alone is not the whole client), or in CCP's
+  open-source repositories (`destiny`, `blue`, `io`, `core`, `fsd`, `trinity`). A test of this
+  repository's own plumbing (what a store keeps, what a route calls a field, the text of a
+  source file) is not written.
+- **An old test is not evidence.** A red one is not a finding about the code and a green one is
+  not proof of it. Where an old test says what a unit's change makes untrue, it is read against
+  the client's code or CCP's source: where it is right the code is mended, where it is wrong the
+  test is mended or taken out, and the log says which and by what lines. It is not marked
+  skipped, and it is not put on a list for the operator.
+- **This loop's reading of one phrase**, for the operator to overrule: "stop skipping them and
+  rarely writing tests" is taken as "no test is skipped or put aside, and tests are written
+  rarely". If it meant that more are to be written, the third point changes and the rest stands.
 
 ## Where the truth is
 
@@ -2797,6 +2833,19 @@ Take these defaults, and list each under "For the operator" in the log so they c
   its first answer; the server's notice of the materials had to go into
   that kept answer, or the server's telling would have reached nobody. Each
   thing the transport keeps is listed with the notice that changes it.
+- **The browser pane has no size, and the page is in its one-panel layout
+  there**, where one panel replaces another. Size it (`resize_window`, 1500
+  by 950) and send the window a `resize` event by hand (the sizing alone
+  sends none): the page is then its desktop, and two windows are open at
+  once. So a change can be staged from the page's own GM console
+  (Settings) while the window under look stays open. The page's session is
+  in memory only: a bare `fetch` from the pane is refused, and the page's
+  own calls are not `window.fetch`'s.
+- **This hour's `server.log` has the server tests' lines in it** (each
+  test process writes "role=standalone ... acquired persistence owner",
+  and its own `[ERR]` lines). The live server's starts are the lines with
+  "role=world": an error line is the live server's only between one of
+  those and the next.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
