@@ -144,6 +144,20 @@ sub-agent, on the same evidence (the client's code, or a recording), by that rep
 (commit to `main`, own paths one by one, its tests by its own runner, no co-author line). It is
 still not pushed by this loop, and other sessions' files there are still left alone.
 
+**The operator said it again that day**, after fifteen iterations that had written the server's
+differences down as "found and left" or "the operator's to say" and gone on with the game port:
+"Just a reminder: Any issue you find with the EveJS server, please fix and commit as you go." So:
+
+- A difference between this server and a recording, or the client's own code, is **mended in the
+  iteration that finds it**, or made the very next unit where it is large. It is not put under
+  "Found and left".
+- Those already written down come before any new unit of the game port's (the log's Next list has
+  them at its head).
+- "The operator's to say" is for a choice of what the product is to do, not for a defect, however
+  large its mending. A defect whose proof this loop cannot see (the retail client's own picture)
+  is mended as far as can be measured, and the operator's eye asked for the rest.
+- A difference with no recording and nothing in the client's code is still not called a defect.
+
 One is already known and waiting: `corpRegistry.CanLeaveCurrentCorporation` returns a bare `{}`
 the marshaller refuses, so every client gets None (plan, Phase 2).
 
@@ -2423,6 +2437,10 @@ Take these defaults, and list each under "For the operator" in the log so they c
   scratchpad), and the report is committed with the unit's docs. A call that is not on the
   gateway's list is added to `GAME_PORT_ONLY_CALLS` beside its entry, and a test pins that
   list whole.
+- **The server is stopped without `/F`, at the loop's end as in a check.** On 2026-10-12, told
+  to stop everything, the loop killed EveJS with `taskkill /T /F`; the store had been put back
+  five minutes before, and the next start is to put it back again (`store.sh restore fg-before`),
+  which is all that makes that harmless. `store.sh`'s own stop waits for the server to go.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
