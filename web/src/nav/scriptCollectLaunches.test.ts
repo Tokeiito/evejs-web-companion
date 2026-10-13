@@ -310,9 +310,34 @@ test("board-planetary-hauler: unreadable holds wait, and only a long blind spell
   assert.equal(late.outcome.kind, "blocked");
 });
 
-test("board-planetary-hauler: not docked -> blocked", () => {
-  const t = boardHauler(haulerStep, obs(), {}, NB);
+test("board-planetary-hauler: in space in a planetary hauler -> done, it hauls from where it is", () => {
+  const t = boardHauler(haulerStep, obs({ activeShipID: 5002, planetaryHaulerShipIDs: [5002], homeStationID: 60000004 } as never), {}, NB);
+  assert.equal(t.outcome.kind, "done");
+  assert.equal(t.boardPatch, undefined);
+});
+
+test("board-planetary-hauler: in space in another ship -> flies home to board there", () => {
+  const t = boardHauler(haulerStep, obs({ activeShipID: 5001, planetaryHaulerShipIDs: [], homeStationID: 60000004 } as never), {}, NB);
+  assert.equal(t.outcome.kind, "acting");
+  assert.notEqual(t.action.kind, "wait");
+  assert.equal(t.phase, "Flying home to board the hauler");
+  // Docked there on a later tick, the parked hauler is boarded as ever.
+  const there = boardHauler(haulerStep, docked({ stationHangar: hangar, activeShipID: 5001, planetaryHaulerShipIDs: [5002] } as never), t.nextMem, NB);
+  assert.deepEqual(there.action, { kind: "boardShip", shipID: 5002 });
+});
+
+test("board-planetary-hauler: in space in another ship with no home known -> blocked, never a guessed station", () => {
+  const t = boardHauler(haulerStep, obs({ activeShipID: 5001, planetaryHaulerShipIDs: [], homeStationID: null } as never), {}, NB);
   assert.equal(t.outcome.kind, "blocked");
+  assert.match(t.outcome.kind === "blocked" ? t.outcome.reason : "", /does not know which station is home/);
+});
+
+test("board-planetary-hauler: in space with the ship's holds unread waits, and only a long blind spell blocks", () => {
+  const t = boardHauler(haulerStep, obs({ activeShipID: 5001, planetaryHaulerShipIDs: null, homeStationID: 60000004 } as never), {}, NB);
+  assert.equal(t.outcome.kind, "acting");
+  assert.equal(t.action.kind, "wait");
+  const late = boardHauler(haulerStep, obs({ activeShipID: 5001, planetaryHaulerShipIDs: null } as never), { blindChecks: 99 }, NB);
+  assert.equal(late.outcome.kind, "blocked");
 });
 
 test("a planet-limited launch reads with its colonies, never their ids", () => {
