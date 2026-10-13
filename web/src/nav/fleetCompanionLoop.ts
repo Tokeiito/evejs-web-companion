@@ -42,6 +42,7 @@ import {
   measureSpace,
   MAX_STARGATE_JUMPING_DISTANCE_M,
   STATION_DOCKING_RADIUS_M,
+  WARP_EXIT_VARIANCE_M,
   type SpaceMeasurement,
 } from "./autopilotLoop.ts";
 // The kill-order authority (rung 7, "obeying the fleet"). Imported rather than
@@ -1564,6 +1565,9 @@ export interface CompanionLadderMemory {
    * is already on its way is at best a wasted call and at worst a second warp
    * the moment the first lands, so the order is answered ONCE per destination
    * and a repeat of the same call is heard without being obeyed again.
+   *
+   * Finding the ship already there answers it as well: a fleet warp lands the
+   * ship without this pilot warping, and the order still stands after it.
    */
   readonly lastWarpedToID: number | null;
   /** Rung 5's flee, or null when the pilot is not running from anything. */
@@ -3602,6 +3606,16 @@ function noteHealFailure(memory: CompanionLadderMemory, action: FleetCompanionAc
 type NamedOrderName = "Target" | "AlignTo" | "TravelTo" | "JumpTo" | "WarpTo";
 
 const MAX_COMPANION_ALIGN_REFUSALS = 3;
+
+/**
+ * How near a `WarpTo` order's object counts as being there already: where this
+ * pilot's own warp to it would have left the ship. That warp is the client's
+ * autopilot's, which this server stops `AUTOPILOT_WARP_STOPS_SHORT_M` short,
+ * and a gate's warp-in point scatters up to `WARP_EXIT_VARIANCE_M` beyond it
+ * (measured 2026-10-11: 10,022 to 11,850 m off). Nearer than this, warping
+ * again could bring the ship no closer, and the server refuses it anyway.
+ */
+const WARP_TO_ARRIVED_M = AUTOPILOT_WARP_STOPS_SHORT_M + WARP_EXIT_VARIANCE_M;
 
 /**
  * One order this pilot is being given, with the source it came from already
@@ -7163,6 +7177,12 @@ function decideFleetOrders(
   //    a `WarpTo` broadcast was simply being ignored, and a fleet that told this
   //    pilot to warp watched it sit still.
   if (order?.name === "WarpTo") {
+    // ⚠ MEASURED BEFORE IT IS WARPED TO, as every other warp this ladder makes
+    // is. Only an object on this grid has a distance; a fleet-mate's character
+    // id has none and goes to the member warp below unmeasured.
+    const step = entityOnGrid(order.itemID, entities) === null
+      ? null
+      : decideCloseIn(order.itemID, WARP_TO_ARRIVED_M, measurement, memory.closingOn, AUTOPILOT_WARP_STOPS_SHORT_M);
     // ⚠ ANSWERED ONCE PER DESTINATION. A broadcast stands for its whole
     // freshness window, so a rung that re-warped on every tick would re-issue
     // the same warp for thirty seconds -- and land, then immediately warp again.
@@ -7170,11 +7190,56 @@ function decideFleetOrders(
       return {
         action: WAIT,
         phase: "Obeying fleet",
-        why: order.why + " Already on the way.",
+        why: order.why + (step?.kind === "arrive" ? " Already there." : " Already on the way."),
         memory,
         followingOrderFrom: order.source,
         lastOrderHeard: order.heard,
         standing: true,
+      };
+    }
+    // ⚠ ALREADY THERE IS AN ANSWER TOO, and the latch above never sees it when
+    // somebody else's warp brought the ship. The FC's fleet warp
+    // (`CmdWarpToStuff` with `fleet=1`) moves every member server-side, and a
+    // `WarpTo` broadcast for the same place stands for thirty seconds after it
+    // lands, so this pilot heard an order it had never answered and warped to a
+    // station 260 m off: `WARP_DISTANCE_TOO_CLOSE`, "You cannot warp there right
+    // now." Being there stamps the latch, so the order is answered once whoever
+    // flew the ship.
+    //
+    // ⚠ NOT STANDING, for one tick. The memory of a standing decision is dropped
+    // when the follow beneath it acts, and the stamp would go with it; a plain
+    // wait keeps it, and the next tick is the standing readout above.
+    if (step?.kind === "arrive") {
+      return {
+        action: WAIT,
+        phase: "Obeying fleet",
+        why: order.why + " Already there.",
+        memory: { ...memory, lastWarpedToID: order.itemID },
+        followingOrderFrom: order.source,
+        lastOrderHeard: order.heard,
+      };
+    }
+    // ⚠ INSIDE THE WARP FLOOR, APPROACH, as a client's autopilot does under
+    // `minWarpDistance` (autopilot.py, `AP_ApproachDestID`: `CmdFollowBall` at
+    // nought). Warping there is refused by the server, not by us.
+    if (step?.kind === "closing") {
+      return {
+        action: WAIT,
+        phase: "Obeying fleet",
+        why: order.why + " Closing on it.",
+        memory,
+        followingOrderFrom: order.source,
+        lastOrderHeard: order.heard,
+      };
+    }
+    if (step?.kind === "approach") {
+      return {
+        action: { kind: "approach", targetID: order.itemID },
+        phase: "Obeying fleet",
+        why: order.why + " It is too close to warp to, so closing on it.",
+        memory: { ...memory, closingOn: order.itemID },
+        followingOrderFrom: order.source,
+        lastOrderHeard: order.heard,
       };
     }
     // ⚠ TWO WARPS, AND THE GRID DECIDES WHICH. An id this pilot can SEE is an
