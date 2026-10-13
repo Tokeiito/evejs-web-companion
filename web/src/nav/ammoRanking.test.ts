@@ -1,4 +1,4 @@
-// Ammo ranking — guarding the swap gate of §5.2 of docs/fleet-companion-combat-plan.md.
+// Ammo ranking — guarding the swap gate of §5.2 of the fleet companion combat plan.
 //
 // The tidy cases (rank by reach, then damage, then stack) are quick. The tests
 // this file exists for are the ones where a swap would cost real damage:
@@ -14,12 +14,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  AMMO_NEXT_TARGET_MIN_INTERVAL_MS,
   AMMO_RANGE_HYSTERESIS_M,
+  AMMO_RELOAD_PENDING_MS,
   AMMO_SWAP_COOLDOWN_MS,
   AMMO_SWAP_PERSIST_TICKS,
   FRESH_SWAP_MEMORY,
   appliedDamage,
   decideSwap,
+  inReach,
   layerUnderFire,
   rankCharges,
   type ChargeOption,
@@ -65,7 +68,7 @@ function tick(
     resonances,
     targetID: 1,
     targetRemainingHp: null,
-    gunDpsWhileReloading: null,
+    damageLostToReload: null,
     canClose: false,
     nextTargetMoment: false,
     nowMs: 1_000_000,
@@ -94,16 +97,23 @@ function run(
 
 // ── layerUnderFire ───────────────────────────────────────────────────────────
 
-test("layerUnderFire: the first layer below 1, shield when all full or unknown", () => {
+test("layerUnderFire: the outermost layer with hit points left; shield when all unknown", () => {
   assert.equal(layerUnderFire(0.5, 1, 1), "shield");
   assert.equal(layerUnderFire(0.5, 0.5, 0.5), "shield");
-  assert.equal(layerUnderFire(1, 0.8, 1), "armor");
-  assert.equal(layerUnderFire(1, 0.8, 0.9), "armor");
-  assert.equal(layerUnderFire(1, 1, 0.9), "hull");
+  assert.equal(layerUnderFire(1, 0.8, 1), "shield");
   assert.equal(layerUnderFire(1, 1, 1), "shield");
   assert.equal(layerUnderFire(null, null, null), "shield");
   assert.equal(layerUnderFire(null, 0.7, null), "armor");
   assert.equal(layerUnderFire(null, null, 0.7), "hull");
+});
+
+test("layerUnderFire: a stripped layer is not under fire; all stripped is hull", () => {
+  assert.equal(layerUnderFire(0, 0.6, 1), "armor");
+  assert.equal(layerUnderFire(0, 0, 0.5), "hull");
+  assert.equal(layerUnderFire(0, 0, 0), "hull");
+  assert.equal(layerUnderFire(0, 1, 1), "armor");
+  assert.equal(layerUnderFire(0, null, null), "hull");
+  assert.equal(layerUnderFire(Number.NaN, 0.6, 1), "armor");
 });
 
 // ── appliedDamage ────────────────────────────────────────────────────────────
@@ -158,11 +168,41 @@ test("rankCharges: unknown damage everywhere falls back to stack, then item id",
   assert.deepEqual(rankCharges([a, b, c], 5_000, null, null).map((x) => x.typeID), [3, 2, 1]);
 });
 
-test("rankCharges: null reach or null distance counts as in reach", () => {
+test("rankCharges: null reach counts as in reach; null distance keeps the loaded charge in reach", () => {
   const unknownReach = charge(1, { reachM: null, total: 1 });
   const shortReach = charge(2, { reachM: 1_000, total: 100 });
   assert.deepEqual(rankCharges([shortReach, unknownReach], 50_000, NO_RESIST, null).map((c) => c.typeID), [1, 2]);
-  assert.deepEqual(rankCharges([unknownReach, shortReach], null, NO_RESIST, null).map((c) => c.typeID), [2, 1]);
+  // Unknown distance, nothing loaded: a bounded reach is not known to reach, so the unbounded one leads.
+  assert.deepEqual(rankCharges([shortReach, unknownReach], null, NO_RESIST, null).map((c) => c.typeID), [1, 2]);
+  // Unknown distance: the loaded charge keeps its place in reach over a stronger candidate.
+  const strong = charge(3, { reachM: 1_000, total: 500 });
+  assert.deepEqual(rankCharges([strong, shortReach], null, NO_RESIST, 2).map((c) => c.typeID), [2, 3]);
+});
+
+test("rankCharges: unusable stacks are dropped and the comparator never returns NaN", () => {
+  const good = charge(1, { total: 10 });
+  const empty = charge(2, { quantity: 0, total: 999 });
+  const negative = charge(3, { quantity: -5, total: 999 });
+  const nanQty = charge(4, { quantity: Number.NaN, total: 999 });
+  const nanReach = charge(5, { reachM: Number.NaN, total: 999 });
+  const negReach = charge(6, { reachM: -1, total: 999 });
+  const nanDamage: ChargeOption = { ...charge(7), damage: { em: Number.NaN, thermal: 5, kinetic: 0, explosive: 0 } };
+  const infDamage: ChargeOption = { ...charge(8), damage: { em: Number.POSITIVE_INFINITY, thermal: 0, kinetic: 0, explosive: 0 } };
+  const all = [empty, negative, nanQty, nanReach, negReach, nanDamage, infDamage, good];
+  assert.deepEqual(rankCharges(all, 5_000, NO_RESIST, null).map((c) => c.typeID), [1]);
+  assert.deepEqual(rankCharges(all, 5_000, NO_RESIST, 7).map((c) => c.typeID), [1]);
+  // A NaN resonance makes the damage unreadable for everyone (0 x NaN is NaN):
+  // the order falls back to stack, then item id, never to a NaN comparison.
+  const nanResist: Resonances = { em: Number.NaN, thermal: 1, kinetic: 1, explosive: 1 };
+  const ranked = rankCharges([charge(10, { total: 1 }), charge(9, { total: 5 })], 5_000, nanResist, null);
+  assert.deepEqual(ranked.map((c) => c.typeID), [9, 10]);
+  assert.equal(appliedDamage(charge(9), nanResist), null);
+  // A NaN distance is an unknown one, not "out of reach for everything".
+  assert.deepEqual(rankCharges([good], Number.NaN, NO_RESIST, 1).map((c) => c.typeID), [1]);
+  // Whatever the order of a mixed list, the sort is stable and deterministic.
+  const a = rankCharges([good, empty, nanQty], 5_000, NO_RESIST, null).map((c) => c.typeID);
+  const b = rankCharges([nanQty, empty, good], 5_000, NO_RESIST, null).map((c) => c.typeID);
+  assert.deepEqual(a, b);
 });
 
 test("rankCharges: the loaded charge is sticky past its reach, another is not", () => {
@@ -199,12 +239,30 @@ test("rankCharges: the margin is capped at a quarter of the reach (1500 m charge
   assert.equal(first(1_876, 1), 2);
 });
 
-test("rankCharges: a custom hysteresis is honoured", () => {
-  const a = charge(1, { reachM: 10_000 });
-  const b = charge(2, { reachM: 10_000, total: 50 });
-  // hysteresis 0: loaded a at 10.5 km is out; b (not loaded) also out.
-  assert.equal(rankCharges([a, b], 9_500, NO_RESIST, 1, 0)[0]!.typeID, 2);
-  assert.equal(rankCharges([a, b], 9_500, NO_RESIST, 1, 1_000)[0]!.typeID, 1);
+test("reach rule matches the positioning module's table", () => {
+  // The fight branch's positioning module pins the identical table.
+  const table: ReadonlyArray<readonly [number | null, number | null, boolean | null, boolean]> = [
+    [10_000, 9_400, false, true],
+    [10_000, 9_600, false, false],
+    [10_000, 10_400, true, true],
+    [10_000, 10_600, true, false],
+    [10_000, 10_000, null, true],
+    [10_000, 10_001, null, false],
+    [1_500, 1_125, false, true],
+    [1_500, 1_200, false, false],
+    [1_500, 1_875, true, true],
+    [1_500, 1_876, true, false],
+    [null, 50_000, false, true],
+    [10_000, null, false, false],
+    [10_000, null, true, true],
+    [10_000, null, null, true],
+  ];
+  for (const [reach, distance, was, expected] of table) {
+    assert.equal(inReach(distance, reach, was), expected, `reach ${reach} distance ${distance} was ${was}`);
+  }
+  // An unreadable reach is no reach limit at all.
+  assert.equal(inReach(50_000, Number.NaN, false), true);
+  assert.equal(inReach(50_000, Number.POSITIVE_INFINITY, true), true);
 });
 
 // ── decideSwap: the empty gun ────────────────────────────────────────────────
@@ -222,7 +280,7 @@ test("empty gun loads the top-ranked charge and does not stamp a swap", () => {
 
 test("empty gun loads immediately even inside the cooldown and on the same target", () => {
   const a = charge(1);
-  const d = tick([a], null, { wantedTypeID: null, wantedTicks: 0, lastSwapAtMs: 999_999, swappedForTargetID: 1 });
+  const d = tick([a], null, { ...FRESH_SWAP_MEMORY, wantedTypeID: null, wantedTicks: 0, lastSwapAtMs: 999_999, swappedForTargetID: 1 });
   assert.equal(d.kind, "load");
 });
 
@@ -233,6 +291,16 @@ test("empty gun with nothing compatible keeps, and says so", () => {
 });
 
 // ── decideSwap: nothing to change ────────────────────────────────────────────
+
+test("a loaded gun with nothing ranked says so, not 'only one ammo type'", () => {
+  const a = charge(1);
+  const d = tick([], a, FRESH_SWAP_MEMORY);
+  assert.equal(d.kind, "keep");
+  assert.equal(d.why, "nothing compatible aboard to change to");
+  // Every stack unusable is the same case.
+  const dead = tick([charge(2, { quantity: 0 })], a, FRESH_SWAP_MEMORY);
+  assert.equal(dead.why, "nothing compatible aboard to change to");
+});
 
 test("a single ammo type never swaps, however long it runs", () => {
   const a = charge(1);
@@ -245,7 +313,7 @@ test("a single ammo type never swaps, however long it runs", () => {
 test("ranked top is the loaded type: keep, and the persistence count restarts", () => {
   const a = charge(1, { total: 50 });
   const b = charge(2, { total: 10 });
-  const d = tick([a, b], a, { wantedTypeID: 2, wantedTicks: 4, lastSwapAtMs: null, swappedForTargetID: null });
+  const d = tick([a, b], a, { ...FRESH_SWAP_MEMORY, wantedTypeID: 2, wantedTicks: 4, lastSwapAtMs: null, swappedForTargetID: null });
   assert.equal(d.kind, "keep");
   assert.equal(d.memory.wantedTypeID, null);
   assert.equal(d.memory.wantedTicks, 0);
@@ -380,7 +448,7 @@ test("out of reach swap ignores damage gain and remaining HP", () => {
     distance: 20_000,
     canClose: false,
     targetRemainingHp: 10,
-    gunDpsWhileReloading: 1_000,
+    damageLostToReload: 1_000,
   });
   assert.equal(results[results.length - 1]!.kind, "swap");
 });
@@ -457,22 +525,22 @@ test("unknown damage on either side never swaps while the loaded charge is hitti
 test("remaining HP below the reload's lost damage keeps the loaded charge", () => {
   const a = charge(1, { total: 10 });
   const b = charge(2, { total: 100 });
-  const dying = run(20, [a, b], a, { targetRemainingHp: 500, gunDpsWhileReloading: 800 });
+  const dying = run(20, [a, b], a, { targetRemainingHp: 500, damageLostToReload: 800 });
   assert.equal(dying.length, 20);
   assert.ok(dying.every((d) => d.kind === "keep"));
-  const equal = run(20, [a, b], a, { targetRemainingHp: 800, gunDpsWhileReloading: 800 });
+  const equal = run(20, [a, b], a, { targetRemainingHp: 800, damageLostToReload: 800 });
   assert.ok(equal.every((d) => d.kind === "keep"));
   // Lots of HP left: swap.
-  const healthy = run(20, [a, b], a, { targetRemainingHp: 5_000, gunDpsWhileReloading: 800 });
+  const healthy = run(20, [a, b], a, { targetRemainingHp: 5_000, damageLostToReload: 800 });
   assert.equal(healthy[healthy.length - 1]!.kind, "swap");
 });
 
 test("unknown remaining HP or unknown reload loss does not block a swap", () => {
   const a = charge(1, { total: 10 });
   const b = charge(2, { total: 100 });
-  const noHp = run(20, [a, b], a, { targetRemainingHp: null, gunDpsWhileReloading: 800 });
+  const noHp = run(20, [a, b], a, { targetRemainingHp: null, damageLostToReload: 800 });
   assert.equal(noHp[noHp.length - 1]!.kind, "swap");
-  const noDps = run(20, [a, b], a, { targetRemainingHp: 1, gunDpsWhileReloading: null });
+  const noDps = run(20, [a, b], a, { targetRemainingHp: 1, damageLostToReload: null });
   assert.equal(noDps[noDps.length - 1]!.kind, "swap");
 });
 
@@ -482,6 +550,7 @@ test("cooldown blocks a second swap within 60 s, and allows it afterwards (new t
   const a = charge(1, { total: 10 });
   const b = charge(2, { total: 100 });
   const justSwapped: SwapMemory = {
+    ...FRESH_SWAP_MEMORY,
     wantedTypeID: null,
     wantedTicks: 0,
     lastSwapAtMs: 1_000_000,
@@ -505,6 +574,7 @@ test("at most one swap per target, even after the cooldown", () => {
   const a = charge(1, { total: 10 });
   const b = charge(2, { total: 100 });
   let memory: SwapMemory = {
+    ...FRESH_SWAP_MEMORY,
     wantedTypeID: 2,
     wantedTicks: 50,
     lastSwapAtMs: 0,
@@ -531,12 +601,115 @@ test("nextTargetMoment swaps on the first tick: no persistence", () => {
 test("nextTargetMoment ignores the cooldown and the one-swap-per-target limit", () => {
   const a = charge(1, { total: 10 });
   const b = charge(2, { total: 100 });
-  const d = tick([a, b], a, { wantedTypeID: null, wantedTicks: 0, lastSwapAtMs: 999_000, swappedForTargetID: 2 }, {
+  // 30 s since the last swap: inside the 60 s cooldown, outside the next-target minimum interval.
+  const d = tick([a, b], a, { ...FRESH_SWAP_MEMORY, wantedTypeID: null, wantedTicks: 0, lastSwapAtMs: 970_000, swappedForTargetID: 2 }, {
     nextTargetMoment: true,
     targetID: 2,
     nowMs: 1_000_000,
   });
   assert.equal(d.kind, "swap");
+});
+
+test("nextTargetMoment still needs AMMO_NEXT_TARGET_MIN_INTERVAL_MS since the last swap", () => {
+  const a = charge(1, { total: 10 });
+  const b = charge(2, { total: 100 });
+  const last = 1_000_000;
+  const memory: SwapMemory = { ...FRESH_SWAP_MEMORY, lastSwapAtMs: last, swappedForTargetID: 4 };
+  const early = tick([a, b], a, memory, {
+    nextTargetMoment: true,
+    targetID: 5,
+    nowMs: last + AMMO_NEXT_TARGET_MIN_INTERVAL_MS - 1,
+  });
+  assert.equal(early.kind, "keep");
+  const onTime = tick([a, b], a, memory, {
+    nextTargetMoment: true,
+    targetID: 5,
+    nowMs: last + AMMO_NEXT_TARGET_MIN_INTERVAL_MS,
+  });
+  assert.equal(onTime.kind, "swap");
+  // No A -> B -> A across successive kills, 6 s apart.
+  const em: ChargeOption = { ...charge(3), damage: { em: 100, thermal: 0, kinetic: 0, explosive: 0 } };
+  const th: ChargeOption = { ...charge(4), damage: { em: 0, thermal: 100, kinetic: 0, explosive: 0 } };
+  const emHard: Resonances = { em: 0.1, thermal: 1, kinetic: 1, explosive: 1 };
+  const thHard: Resonances = { em: 1, thermal: 0.1, kinetic: 1, explosive: 1 };
+  const first = tick([em, th], em, FRESH_SWAP_MEMORY, { nextTargetMoment: true, targetID: 1, nowMs: last, resonances: emHard });
+  assert.equal(first.kind, "swap");
+  assert.equal(first.kind === "swap" && first.charge.typeID, 4);
+  // th is now loaded and the next rat resists thermal: em is much better, but too soon.
+  const soon = tick([em, th], th, first.memory, { nextTargetMoment: true, targetID: 2, nowMs: last + 6_000, resonances: thHard });
+  assert.equal(soon.kind, "keep");
+  const later = tick([em, th], th, soon.memory, { nextTargetMoment: true, targetID: 2, nowMs: last + AMMO_NEXT_TARGET_MIN_INTERVAL_MS, resonances: thHard });
+  assert.equal(later.kind, "swap");
+});
+
+// ── decideSwap: the pending latch ────────────────────────────────────────────
+
+test("pending latch: a lock-ahead swap is not re-issued while the loaded charge has not changed", () => {
+  const a = charge(1, { total: 10 });
+  const b = charge(2, { total: 100 });
+  const first = tick([a, b], a, FRESH_SWAP_MEMORY, { nextTargetMoment: true, nowMs: 1_000_000 });
+  assert.equal(first.kind, "swap");
+  assert.equal(first.memory.pendingTypeID, 2);
+  assert.equal(first.memory.pendingSinceMs, 1_000_000);
+  // Loaded-charge facts refresh about every 10 s: the loaded type is still A.
+  let memory = first.memory;
+  for (let i = 1; i <= 7; i += 1) {
+    // Targets change each tick and the interval is long past, so only the latch holds this back.
+    const d = tick([a, b], a, memory, {
+      nextTargetMoment: true,
+      targetID: 100 + i,
+      nowMs: 1_000_000 + i * 2000,
+    });
+    assert.equal(d.kind, "keep", `tick ${i}`);
+    assert.match(d.why, /reload under way/);
+    memory = d.memory;
+  }
+  assert.equal(memory.pendingTypeID, 2);
+  assert.equal(memory.lastSwapAtMs, 1_000_000);
+});
+
+test("pending latch: it clears once the loaded type is the pending one", () => {
+  const a = charge(1, { total: 10 });
+  const b = charge(2, { total: 100 });
+  const first = tick([a, b], a, FRESH_SWAP_MEMORY, { nextTargetMoment: true, nowMs: 1_000_000 });
+  assert.equal(first.kind, "swap");
+  const arrived = tick([a, b], b, first.memory, { nowMs: 1_002_000 });
+  assert.equal(arrived.kind, "keep");
+  assert.doesNotMatch(arrived.why, /reload under way/);
+  assert.equal(arrived.memory.pendingTypeID, null);
+  assert.equal(arrived.memory.pendingSinceMs, null);
+});
+
+test("pending latch: it expires after AMMO_RELOAD_PENDING_MS and the gate decides again", () => {
+  const a = charge(1, { total: 10 });
+  const b = charge(2, { total: 100 });
+  const memory: SwapMemory = { ...FRESH_SWAP_MEMORY, pendingTypeID: 2, pendingSinceMs: 1_000_000 };
+  // lastSwapAtMs stays null here: only the latch is under test.
+  const before = tick([a, b], a, memory, { nextTargetMoment: true, nowMs: 1_000_000 + AMMO_RELOAD_PENDING_MS - 1 });
+  assert.equal(before.kind, "keep");
+  assert.match(before.why, /reload under way/);
+  const after = tick([a, b], a, memory, { nextTargetMoment: true, nowMs: 1_000_000 + AMMO_RELOAD_PENDING_MS });
+  assert.equal(after.kind, "swap");
+  assert.equal(after.memory.pendingSinceMs, 1_000_000 + AMMO_RELOAD_PENDING_MS);
+});
+
+test("pending latch: a load into an empty gun is not re-issued while the gun still reads empty", () => {
+  const a = charge(1, { total: 10 });
+  const first = tick([a], null, FRESH_SWAP_MEMORY, { nowMs: 1_000_000 });
+  assert.equal(first.kind, "load");
+  assert.equal(first.memory.pendingTypeID, 1);
+  assert.equal(first.memory.lastSwapAtMs, null);
+  const second = tick([a], null, first.memory, { nowMs: 1_002_000 });
+  assert.equal(second.kind, "keep");
+  assert.match(second.why, /reload under way/);
+  const third = tick([a], null, first.memory, { nowMs: 1_000_000 + AMMO_RELOAD_PENDING_MS });
+  assert.equal(third.kind, "load");
+});
+
+test("pending latch: the memory still survives a JSON round trip", () => {
+  const memory: SwapMemory = { ...FRESH_SWAP_MEMORY, pendingTypeID: 3, pendingSinceMs: 12_345 };
+  assert.deepEqual(JSON.parse(JSON.stringify(memory)), memory);
+  assert.deepEqual(JSON.parse(JSON.stringify(FRESH_SWAP_MEMORY)), FRESH_SWAP_MEMORY);
 });
 
 test("nextTargetMoment ignores the remaining-HP test (the current target is dying anyway)", () => {
@@ -545,7 +718,7 @@ test("nextTargetMoment ignores the remaining-HP test (the current target is dyin
   const d = tick([a, b], a, FRESH_SWAP_MEMORY, {
     nextTargetMoment: true,
     targetRemainingHp: 5,
-    gunDpsWhileReloading: 800,
+    damageLostToReload: 800,
   });
   assert.equal(d.kind, "swap");
 });
@@ -587,9 +760,12 @@ test("every decision carries a non-empty, plain-ASCII why", () => {
     tick([a, b], a, FRESH_SWAP_MEMORY, { distance: 20_000, canClose: false }),
     tick([a, b], a, { ...FRESH_SWAP_MEMORY, wantedTypeID: 2, wantedTicks: 9 }, { distance: 20_000 }),
     tick([a, b], a, FRESH_SWAP_MEMORY, { nextTargetMoment: true, distance: 5_000 }),
-    tick([a, b], a, { wantedTypeID: 2, wantedTicks: 9, lastSwapAtMs: 999_999, swappedForTargetID: null }, { distance: 20_000 }),
-    tick([a, b], a, { wantedTypeID: 2, wantedTicks: 9, lastSwapAtMs: null, swappedForTargetID: 1 }, { distance: 20_000 }),
-    tick([a, b], a, { wantedTypeID: 2, wantedTicks: 9, lastSwapAtMs: null, swappedForTargetID: null }, { distance: 5_000, targetRemainingHp: 1, gunDpsWhileReloading: 9 }),
+    tick([a, b], a, { ...FRESH_SWAP_MEMORY, pendingTypeID: 2, pendingSinceMs: 999_999 }, { nextTargetMoment: true, distance: 5_000 }),
+    tick([a, b], a, { ...FRESH_SWAP_MEMORY, lastSwapAtMs: 999_999 }, { nextTargetMoment: true, distance: 5_000 }),
+    tick([], a, FRESH_SWAP_MEMORY),
+    tick([a, b], a, { ...FRESH_SWAP_MEMORY, wantedTypeID: 2, wantedTicks: 9, lastSwapAtMs: 999_999, swappedForTargetID: null }, { distance: 20_000 }),
+    tick([a, b], a, { ...FRESH_SWAP_MEMORY, wantedTypeID: 2, wantedTicks: 9, lastSwapAtMs: null, swappedForTargetID: 1 }, { distance: 20_000 }),
+    tick([a, b], a, { ...FRESH_SWAP_MEMORY, wantedTypeID: 2, wantedTicks: 9, lastSwapAtMs: null, swappedForTargetID: null }, { distance: 5_000, targetRemainingHp: 1, damageLostToReload: 9 }),
   ];
   for (const d of decisions) {
     assert.ok(d.why.length > 0);
