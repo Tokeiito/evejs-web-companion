@@ -93,6 +93,8 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
     priceAsks: [],
     /** Each asking of the occupation state of the system the session is in, likewise. */
     occupationAsks: [],
+    /** Each asking of the bounty output of the system the session is in, likewise. */
+    bountyAsks: [],
     async login(userName, password) {
       session.logins.push([userName, password]);
       if (loginError) throw loginError;
@@ -119,6 +121,15 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
         session.priceAsks.push({ args, kwargs, before: session.calls.length });
         const prices = key in answers ? answers[key] : { type: "dict", entries: [] };
         return typeof prices === "function" ? prices(args, kwargs) : prices;
+      }
+      // The bounty output of the system the session is in is asked at every choosing and again at every change of
+      // solar system, as the client's location panel has its dynamic resource service ask it
+      // (dynamicResourceSvc.py 58 to 65 and 175 to 182, infoPanelLocationInfo.py 320). It is listed apart too
+      // (session.bountyAsks), and answered as Tranquility answers where the dynamic bounty system is not at work.
+      if (key === "dynamicBountyMgr.GetOutputForClientSolarSystem") {
+        session.bountyAsks.push({ args, kwargs, before: session.calls.length });
+        const output = key in answers ? answers[key] : [1, false];
+        return typeof output === "function" ? output(args, kwargs) : output;
       }
       // The occupation state of the system the session is in is asked at every choosing and again at every change
       // of solar system, as the client's location panel has its warzone service ask it (fwWarzoneSvc.py 34 to 60,
@@ -1687,6 +1698,8 @@ test("the transport keeps a tally of what it called and how each compared with t
     "warRegistry.GetWars": { same: 1 },
     // The occupation state of the system the pilot is in, asked at the choosing as the client's location panel has it asked (fwWarzoneSvc.py 52).
     "fwWarzoneSolarsystem.GetLocalOccupationState": { same: 1 },
+    // And the system's bounty output, in the same drawing of the panel (dynamicResourceSvc.py 64).
+    "dynamicBountyMgr.GetOutputForClientSolarSystem": { same: 1 },
     "agentMgr.GetAgents": { same: 1 },
     "notificationMgr.GetAllNotifications": { same: 1 },
     "contractProxy.GetLoginInfo": { same: 1 },
