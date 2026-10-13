@@ -1294,6 +1294,25 @@ ship category, asks `invCache.GetInventoryFromId(shipID).GetAvailableTurretSlots
 ship. The client's godma has primed by then, at the session's change. Tranquility's recordings have the call in 20.
 The game port asks it since `873de6dd`, owed from the change and made as godma is next primed, which here is when
 something first wants the ship's readings.
+Godma's priming (`eve/client/script/environment/godma.py`). With a character on the session, at any change of the
+station, the solar system, the ship, the character or the structure, godma lets go its inventories, primes
+(`GetAllInfo(character, ship, structure)`, `Prime` 2399 to 2410) and binds its dogma location afresh
+(`ProcessSessionChange` 1154 to 1200). The game port primes when something first wants the ship's readings: read
+2026-10-13 and left so (the log's entry of that day has why).
+At a change of ship the recordings also have `GetSelfInvItem` and `List(flag=5)` on the ships' inventories, and
+`shipCosmeticsMgr.GetEnabledCosmetics(shipID)`. The first two are an inventory controller's
+(`environment/invControllers.py` 95 to 110, 134 to 138), made by the inventory window's tree
+(`ui/services/inventorysvc.py` 325) and other windows; the third a drawn ship's (the fitting window's scene, the
+hangar's). No service was found that asks them at a change: a page with no such window and no hull asks none.
+The jump timers (`eve/client/script/ui/services/crimewatchSvc.py` 605 to 612). `GetJumpTimers` asks
+`sm.RemoteSvc('jumpTimers').GetTimers(session.charid)` while it has none and keeps what answers: the jump
+activation's end, the jump fatigue's end and when they were last reckoned, each a time or `None` (three `None`s are
+kept as any answer). `OnJumpTimersUpdated(*args)` replaces what is kept. What is kept is let go as the service
+starts and at a reset of the session, and at no change of place. The timer panel reads them as it is made, at a
+login docked or in space (`ui/crimewatch/crimewatchTimers.py` 335, 355), and draws the fatigue's and the
+activation's timers from them (456 to 466). Tranquility's four recordings of a login each have the one call,
+answered `(None, None, None)`. The game port asks it since `501c5a84`, at the choosing behind the pilot's security
+status, and keeps it so; no page shows the timers yet.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened

@@ -3247,6 +3247,37 @@ Take these defaults, and list each under "For the operator" in the log so they c
   written. An earlier unit's file was used again where no server commit
   had been made, and the origin had been moved by another's push in the
   meantime: the entry said three commits were not on it when none was.
+- **An asking added to a choosing by a service's name is said in four
+  places of the old pilot tests**, and they are mended by reading in
+  the unit's own sitting (`test/gamePortPilots.test.js`): the list every
+  choosing is held to (`CHOSEN_ASKS`, near the top), the first
+  choosing's list spelled out (the test "select logs in as the
+  account"), the line that says what each asking carries (it maps
+  `CHOSEN_ASKS` to `[pair, [], ...]`: an asking that carries something
+  is said there), and the whole tally of a session (the test "the
+  transport keeps a tally"). Nothing else there reads a choosing by a
+  position that an asking before the corporation's reads moves. An
+  asking on a bound object, or one that waits on godma, is in none of
+  them.
+- **The game port's own list is spelled out in an old test too**
+  (`test/gamePortRetailCalls.test.js`, "the game port carries the
+  customs office's transfer"): a name added to
+  `GAME_PORT_ONLY_CALLS` is added there, in the list's own order. The
+  scratch `jtm-tests.js` ends by setting the spelled list beside the
+  list itself, from the test's text. One unit added to the list and
+  not there, and the next found it.
+- **The login's report is made from Test Pilot's login** (`test`,
+  140000001), the retail login's own character:
+  `login-only.js <bff> test 140000001 <server.log> 8`, then
+  `login-report.js <repo> <logs dir> <from> <to>`. Made from another
+  pilot's it lists that pilot's corporation's and alliance's reads as
+  calls the client did not make. `login-what.json` beside the scripts
+  has the report's two descriptions, and its date is changed by hand.
+- **A call's arguments and answer in one of Tranquility's `.txt`
+  recordings**: the file is binary to grep, so
+  `grep -a "<service>" "<file>" | tr -c '\40-\176\n' ' ' | grep -o "<service>::<method>.\{0,170\}"`
+  gives `args=(...), retval=...`, and the same with
+  `Packet::CallReq` gives whom it was sent to.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
