@@ -1269,6 +1269,12 @@ pilot's own ship `SetBallMassive(ship, 0)` with the undock, `1` with the first c
 `Stop` of a docking, and none at any other `WarpTo` (28 recordings: 27, 26, 28, and 54 `WarpTo` with none). This
 server writes a ship's ball non-massive and sends `SetBallMassive(ship, 0)` twice after each dropout: it has no
 collisions for ships.
+A ball's first order. The client sorts what it is sent into its history by stamp and applies it in that order as
+the park reaches each stamp, whenever it arrived (`michelle.py` `FlushState`, 1098 to 1140; `DoPreTick`, 900 to
+917): an order stamped after a ball's `AddBalls2` needs no wait. Tranquility adds a ball already in its mode (477
+of 2,621 balls that are not rigid are added in orbit, in 46 recordings) and stamps the first order naming it the
+`AddBalls2`'s own stamp (189 of 283), or one to three ticks after (6). This server held a new ball's movement
+three ticks past the acquisition until `eve.js` `3c96302d8`.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened

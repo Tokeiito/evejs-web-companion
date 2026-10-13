@@ -3114,10 +3114,32 @@ Take these defaults, and list each under "For the operator" in the log so they c
   `addballs-in.js <repo> <recording.jsonl> [entries] [balls]` (each
   ball's id, mode, flags, speed, and its slim item's type, group and
   name). An `AddBalls2` is handed one chunk: the state and the slim
-  items together. Tranquility's own come inside a `PackagedAction` and
-  were not decoded here.
+  items together. Tranquility's own come inside a `PackagedAction`
+  (`tq-first-order.js` decodes them: the lesson further down).
 - **`--timeline` of the park tool needs `--server-clock`**; alone it
   prints nothing more.
+- **When a group was sent is in the delivery's trace, to the
+  millisecond** (`emit-steps.js <missile debug log> <from ms>
+  Orbit,FollowBall`: "raw 600 (025 ms in)"). The recorder's clock counts
+  from the recorder's start, and a moment reckoned from it was a second
+  out. The rows of the park beside the movement log do not show lateness
+  at all: the park is played to each stamp, so an entry sent late and
+  stamped rightly reads as right.
+- **Tranquility's `AddBalls2` can be decoded**: it comes inside a
+  `PackagedAction`, a `MarshalStream` printed as a Python string; the
+  scratch `tq-first-order.js <marshal.js> <repo> <root> [1] [orders]`
+  reads the string, decodes it with the server's marshal decoder and
+  reads each state with `src/gamePort/destiny/state.js`: each ball
+  added, its mode, and the first entry (or the first steering order)
+  that names it after.
+- **A reading from a trial's flight is not how the server stands.** The
+  stamp of an `AddBalls2` was read with the lead at 1 and written as the
+  server's; it is the lead less one. Say which flight a number is from,
+  and with what on disk.
+- **A hold in the server's delivery is weighed by what the client does
+  with a stamp**, not by when an entry arrives: the client orders what
+  it is sent by stamp. A wait "until the client has surely applied it"
+  buys nothing that a later stamp does not.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
