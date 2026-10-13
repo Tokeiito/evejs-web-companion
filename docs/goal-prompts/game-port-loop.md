@@ -2540,6 +2540,19 @@ Take these defaults, and list each under "For the operator" in the log so they c
   which stay integers showed also that Tranquility lists a module's charge
   and this server does not. One is mended and the other is put on the list
   by name, with its tally, and not folded into the first.
+- **Where many send one thing, it is mended where it leaves.** Eleven
+  places send the notice of a changed attribute, and each transport has one
+  place where a notification goes out: the game's own session marshals it
+  (`ClientSession.sendNotification`), the web gateway's keeps it as JSON.
+  What only the wire is to have is made there, in a copy.
+- **A stand-in first, where the thing to be written is a new file.** A test
+  of a module that is not there fails for the missing file and says nothing.
+  The module was written first handing its argument back, the tests run
+  (three failed for what they say, two passed that say what is left alone),
+  and then it was written.
+- **No look at the live server while the server's tests run.** A test file
+  copies the live store as it begins; a pilot logged in and out then is a
+  write under the copy. The look waits for the run to end.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
