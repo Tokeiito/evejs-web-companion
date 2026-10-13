@@ -37,6 +37,7 @@ import { REPAIR_CAP_FLOOR } from "./scriptDecide.ts";
 // it would couple this file to the editor it exists not to be part of. These
 // three names live in `autopilotLoop.ts`, which the DSL does not own.
 import {
+  APPROACH_SETTLE_MS,
   AUTOPILOT_WARP_STOPS_SHORT_M,
   decideCloseIn,
   measureSpace,
@@ -1508,6 +1509,8 @@ export interface CompanionLadderMemory {
   readonly abandonment: CompanionAbandonment | null;
   /** The target of an approach this loop started, for `decideCloseIn`. */
   readonly closingOn: number | null;
+  /** When `closingOn` was last stamped by an approach; `null` whenever `closingOn` is. See `APPROACH_SETTLE_MS`. */
+  readonly closingOnAtMs: number | null;
   /**
    * Modules RUNG 3 (tank up) has switched on and not yet switched back off —
    * the stand-down record. Mirrors `standDownAfterFight`'s own `hardened`
@@ -1762,6 +1765,12 @@ export interface CompanionLadderMemory {
   readonly lootedItemIDs: readonly number[];
   readonly lootApproaching: number | null;
   /**
+   * When `lootApproaching` was last issued, so the rung can tell "just sent" from
+   * "sent a while ago and not running". `null` whenever the latch is clear. See
+   * `APPROACH_SETTLE_MS`.
+   */
+  readonly lootApproachAtMs: number | null;
+  /**
    * The can or wreck this pilot has committed to opening.
    *
    * ⚠ WITHOUT THIS THE RUNG WANDERS, and it did (observed live, 2026-09-11: a
@@ -1800,6 +1809,8 @@ export interface CompanionLadderMemory {
    * run's one call on a move the server is already making.
    */
   readonly salvageApproachIssued: boolean;
+  /** When `salvageApproachIssued` was set; `null` whenever it is false. See `APPROACH_SETTLE_MS`. */
+  readonly salvageApproachAtMs: number | null;
   /**
    * The standing area job -- `salvage`, `loot`, or none.
    *
@@ -2108,6 +2119,7 @@ export function freshLadderMemory(): CompanionLadderMemory {
     lastSupervisorIDs: [],
     abandonment: null,
     closingOn: null,
+    closingOnAtMs: null,
     lastTankUpModuleIDs: [],
     lastLockIssuedFor: null,
     lastHealTargetID: null,
@@ -2140,11 +2152,13 @@ export function freshLadderMemory(): CompanionLadderMemory {
     salvageDronesWreckID: null,
     lootedItemIDs: [],
     lootApproaching: null,
+    lootApproachAtMs: null,
     lootTargetID: null,
     salvageWreckID: null,
     salvageLockIssued: false,
     salvageLockWaited: 0,
     salvageApproachIssued: false,
+    salvageApproachAtMs: null,
     areaJob: null,
     lastWarpedToID: null,
     orderedLeaveRecall: null,
@@ -2562,7 +2576,7 @@ function clearMovementLatches(
 function withoutStaleCloseIn(action: FleetCompanionAction, memory: CompanionLadderMemory): CompanionLadderMemory {
   return memory.closingOn === null || (action.kind === "approach" && action.targetID === memory.closingOn)
     ? memory
-    : { ...memory, closingOn: null };
+    : { ...memory, closingOn: null, closingOnAtMs: null };
 }
 
 /**
@@ -2578,8 +2592,8 @@ function withoutStaleApproaches(memory: CompanionLadderMemory, action: FleetComp
     ? memory
     : {
         ...memory,
-        ...(loot ? { lootApproaching: null } : {}),
-        ...(salvage ? { salvageApproachIssued: false } : {}),
+        ...(loot ? { lootApproaching: null, lootApproachAtMs: null } : {}),
+        ...(salvage ? { salvageApproachIssued: false, salvageApproachAtMs: null } : {}),
       };
 }
 
@@ -2609,7 +2623,7 @@ function decideCompanionStep(
   // the yield does for the flee, and above supervision, because a pod docks
   // whoever is in the fleet. `true` only: an older BFF omits the field.
   if (obs.flightStatus?.shipIsCapsule === true) {
-    return decideShipLost(request, obs, memory);
+    return decideShipLost(request, obs, memory, nowMs);
   }
   if (obs.inWarp === true) {
     // The one thing a mid-warp tick still RECORDS. Nothing may be issued here,
@@ -2687,6 +2701,7 @@ function decideCompanionStep(
     lastSupervisorIDs: [...supervisors],
     abandonment: null,
     closingOn: memory.closingOn,
+    closingOnAtMs: memory.closingOnAtMs,
     lastTankUpModuleIDs: memory.lastTankUpModuleIDs,
     lastLockIssuedFor: memory.lastLockIssuedFor,
     lastFireTargetID: memory.lastFireTargetID,
@@ -2713,11 +2728,13 @@ function decideCompanionStep(
     salvageDronesWreckID: memory.salvageDronesWreckID,
     lootedItemIDs: memory.lootedItemIDs,
     lootApproaching: memory.lootApproaching,
+    lootApproachAtMs: memory.lootApproachAtMs,
     lootTargetID: memory.lootTargetID,
     salvageWreckID: memory.salvageWreckID,
     salvageLockIssued: memory.salvageLockIssued,
     salvageLockWaited: memory.salvageLockWaited,
     salvageApproachIssued: memory.salvageApproachIssued,
+    salvageApproachAtMs: memory.salvageApproachAtMs,
     areaJob: memory.areaJob,
     lastWarpedToID: memory.lastWarpedToID,
     orderedLeaveRecall: memory.orderedLeaveRecall,
@@ -3013,12 +3030,12 @@ function decideCompanionStep(
   }
   obeying = obeying === null ? null : { ...obeying, memory: lowerMemory };
 
-  const salvaging = decideSalvaging(request, obs, lowerMemory);
+  const salvaging = decideSalvaging(request, obs, lowerMemory, nowMs);
   if (salvaging !== null && !(obeying?.holdsNavigation === true && changesShipMovement(salvaging.action))) {
     return salvaging;
   }
 
-  const looting = decideLooting(obs, lowerMemory);
+  const looting = decideLooting(obs, lowerMemory, nowMs);
   if (looting !== null && !(obeying?.holdsNavigation === true && changesShipMovement(looting.action))) {
     return looting;
   }
@@ -3103,7 +3120,7 @@ function decideAbandonment(
       phase: "Getting safe",
       because: "there is nobody left in the fleet to fly with",
       write: (m, run) => ({ ...m, abandonment: { ...running, ...run } }),
-    });
+    }, nowMs);
     if (safe !== null) {
       return safe;
     }
@@ -3484,6 +3501,7 @@ function runToSafety(
   obs: FleetCompanionObservation,
   mem: CompanionLadderMemory,
   leg: SafetyLeg,
+  nowMs: number,
 ): CompanionDecision | null {
   const snapshot = obs.snapshot ?? null;
   if (obs.inSpace !== true || snapshot === null) {
@@ -3516,7 +3534,7 @@ function runToSafety(
   );
   if (target !== null) {
     // The companion's warp is the client's autopilot's own call, and the floor is that call's.
-    const step = decideCloseIn(target.itemID, STATION_DOCKING_RADIUS_M, measurement, mem.closingOn, AUTOPILOT_WARP_STOPS_SHORT_M);
+    const step = decideCloseIn(target.itemID, STATION_DOCKING_RADIUS_M, measurement, mem.closingOn, AUTOPILOT_WARP_STOPS_SHORT_M, mem.closingOnAtMs, nowMs);
     if (step === null || step.kind === "arrive") {
       return {
         action: { kind: "dock", stationID: target.itemID },
@@ -3533,7 +3551,7 @@ function runToSafety(
         action: { kind: "approach", targetID: target.itemID },
         phase: leg.phase,
         why: "Closing on the station.",
-        memory: { ...mem, closingOn: target.itemID },
+        memory: { ...mem, closingOn: target.itemID, closingOnAtMs: nowMs },
       };
     }
     return {
@@ -3658,6 +3676,7 @@ function decideShipLost(
   request: FleetCompanionRequest,
   obs: FleetCompanionObservation,
   memory: CompanionLadderMemory,
+  nowMs: number,
 ): CompanionDecision {
   const running: SafetyRun = memory.shipLost ?? {
     safeSpotWarpIssued: false,
@@ -3685,7 +3704,7 @@ function decideShipLost(
     phase: SHIP_LOST_PHASE,
     because: "this pilot's ship was destroyed",
     write: (m, run) => ({ ...m, shipLost: run }),
-  });
+  }, nowMs);
   if (safe !== null) {
     return safe;
   }
@@ -5684,7 +5703,7 @@ function decideFlee(
 ): FleeStep {
   const running = memory.flee;
   if (running !== null) {
-    return flyTheFlee(request, obs, memory, running);
+    return flyTheFlee(request, obs, memory, running, nowMs);
   }
 
   // ⚠ NULL IS NOT "HEALTHY", and this is the same three-state discipline the
@@ -5737,7 +5756,7 @@ function decideFlee(
     // launched it.
     droneRotation: emptyDroneRotationMemory(),
   };
-  return flyTheFlee(request, obs, started, latched);
+  return flyTheFlee(request, obs, started, latched, nowMs);
 }
 
 /**
@@ -6113,6 +6132,7 @@ function flyTheFlee(
   obs: FleetCompanionObservation,
   mem: CompanionLadderMemory,
   running: CompanionFlee,
+  nowMs: number,
 ): FleeStep {
   if (reachedSafety(obs, running)) {
     // Stamped on the first tick that sees it, and only for what the next branch
@@ -6155,7 +6175,7 @@ function flyTheFlee(
     phase: "Getting clear",
     because: "this ship is hurt",
     write: (m, run) => ({ ...m, flee: { ...running, ...run } }),
-  });
+  }, nowMs);
   if (safe !== null) {
     return { decision: safe, memory: safe.memory };
   }
@@ -6399,6 +6419,17 @@ function isClosing(obs: FleetCompanionObservation): boolean {
   return mode !== null && NO_REAPPROACH_SHIP_MODES.includes(mode.toUpperCase());
 }
 
+// `APPROACH_SETTLE_MS` (autopilotLoop.ts) is how long a fresh approach is believed whatever the mode says.
+
+/** Whether an approach issued at `issuedAtMs` is still to be believed. See `APPROACH_SETTLE_MS`. */
+function approachHolds(
+  obs: FleetCompanionObservation,
+  issuedAtMs: number | null,
+  nowMs: number,
+): boolean {
+  return (issuedAtMs !== null && nowMs - issuedAtMs < APPROACH_SETTLE_MS) || isClosing(obs);
+}
+
 /**
  * Straight-line metres between two things that carry a position.
  *
@@ -6557,6 +6588,7 @@ function companionMayOpen(entity: SpaceEntity): boolean {
 function decideLooting(
   obs: FleetCompanionObservation,
   memory: CompanionLadderMemory,
+  nowMs: number,
 ): CompanionDecision | null {
   if (memory.areaJob !== "loot") {
     return null;
@@ -6583,7 +6615,7 @@ function decideLooting(
     if (target === null) {
       return null;
     }
-    mem = { ...memory, lootTargetID: target.itemID, lootApproaching: null };
+    mem = { ...memory, lootTargetID: target.itemID, lootApproaching: null, lootApproachAtMs: null };
   }
   // ⚠ CENTRE TO CENTRE, THE WAY THE SERVER MEASURES IT. See
   // `COMPANION_LOOT_REACH_M`: the surface distance this used to ask for is
@@ -6596,7 +6628,9 @@ function decideLooting(
     // spend the run's one call per tick re-ordering a move already under way.
     // Same rule as the salvage rung: an approach that is no longer running is
     // not an approach, however recently it was sent.
-    if (mem.lootApproaching === target.itemID && isClosing(obs)) {
+    // ⚠ THE SETTLE WINDOW, NOT THE MODE ALONE: the first snapshot after the order
+    // can still read GOTO. See `APPROACH_SETTLE_MS`.
+    if (mem.lootApproaching === target.itemID && approachHolds(obs, mem.lootApproachAtMs, nowMs)) {
       return waiting("Looting", "Closing on something to loot.", mem);
     }
     return {
@@ -6604,7 +6638,7 @@ function decideLooting(
       action: { kind: "approach", targetID: target.itemID },
       phase: "Looting",
       why: "Closing on something to loot, as asked.",
-      memory: { ...mem, lootApproaching: target.itemID },
+      memory: { ...mem, lootApproaching: target.itemID, lootApproachAtMs: nowMs },
     };
   }
   // ⚠ MARKED LOOTED ON THE ASKING, NOT ON THE ANSWER, AND THAT IS A KNOWN
@@ -6625,7 +6659,7 @@ function decideLooting(
     // moved. Marking it on the asking is what had a pilot take one stack of
     // three and fly off. The latch is kept for the same reason: this can is
     // still the target until somebody says it is done.
-    memory: { ...mem, lootApproaching: null },
+    memory: { ...mem, lootApproaching: null, lootApproachAtMs: null },
   };
 }
 
@@ -7536,6 +7570,7 @@ function decideSalvaging(
   request: FleetCompanionRequest,
   obs: FleetCompanionObservation,
   memory: CompanionLadderMemory,
+  nowMs: number,
 ): CompanionDecision | null {
   const salvageDrones = obs.salvageDroneIDs ?? [];
   const salvagers = request.salvagerModuleIDs;
@@ -7579,6 +7614,7 @@ function decideSalvaging(
       salvageLockIssued: false,
       salvageLockWaited: 0,
       salvageApproachIssued: false,
+      salvageApproachAtMs: null,
     };
   }
 
@@ -7595,14 +7631,18 @@ function decideSalvaging(
     // GOTO, flying somewhere that is not the wreck. A rung that trusted its own
     // "already issued" flag would wait on that for the rest of the run, which is
     // why GOTO is not in `NO_REAPPROACH_SHIP_MODES`.
-    if (mem.salvageApproachIssued && isClosing(obs)) {
+    //
+    // ⚠ BUT A FRESH ORDER IS TRUSTED FOR `APPROACH_SETTLE_MS` WHATEVER THE MODE
+    // SAYS: the first snapshot after it often still reads GOTO, and re-sending
+    // then is refused (ThrottleGeneric). Only after the window does the mode decide.
+    if (mem.salvageApproachIssued && approachHolds(obs, mem.salvageApproachAtMs, nowMs)) {
       return waiting("Salvaging", "Flying to the wreck.", mem);
     }
     return {
       action: { kind: "approach", targetID: wreckID, range: SALVAGE_APPROACH_STOP_M },
       phase: "Salvaging",
       why: "Closing on a wreck to salvage it, as asked.",
-      memory: { ...mem, salvageApproachIssued: true },
+      memory: { ...mem, salvageApproachIssued: true, salvageApproachAtMs: nowMs },
     };
   }
   if (!(obs.lockedTargetIDs ?? []).includes(wreckID)) {
@@ -8922,7 +8962,7 @@ function decideFleetOrders(
     // id has none and goes to the member warp below unmeasured.
     const step = entityOnGrid(order.itemID, entities) === null
       ? null
-      : decideCloseIn(order.itemID, WARP_TO_ARRIVED_M, measurement, memory.closingOn, AUTOPILOT_WARP_STOPS_SHORT_M);
+      : decideCloseIn(order.itemID, WARP_TO_ARRIVED_M, measurement, memory.closingOn, AUTOPILOT_WARP_STOPS_SHORT_M, memory.closingOnAtMs, nowMs);
     // ⚠ ANSWERED ONCE PER DESTINATION. A broadcast stands for its whole
     // freshness window, so a rung that re-warped on every tick would re-issue
     // the same warp for thirty seconds -- and land, then immediately warp again.
@@ -8977,7 +9017,7 @@ function decideFleetOrders(
         action: { kind: "approach", targetID: order.itemID },
         phase: "Obeying fleet",
         why: order.why + " It is too close to warp to, so closing on it.",
-        memory: { ...memory, closingOn: order.itemID },
+        memory: { ...memory, closingOn: order.itemID, closingOnAtMs: nowMs },
         followingOrderFrom: order.source,
         lastOrderHeard: order.heard,
       };
@@ -9033,7 +9073,7 @@ function decideFleetOrders(
   //    firing it from further out is refused by the server, not by us.
   if (order?.name === "JumpTo") {
     const gateID = order.itemID;
-    const step = decideCloseIn(gateID, MAX_STARGATE_JUMPING_DISTANCE_M, measurement, memory.closingOn, AUTOPILOT_WARP_STOPS_SHORT_M);
+    const step = decideCloseIn(gateID, MAX_STARGATE_JUMPING_DISTANCE_M, measurement, memory.closingOn, AUTOPILOT_WARP_STOPS_SHORT_M, memory.closingOnAtMs, nowMs);
     if (step === null) {
       return {
         action: WAIT,
@@ -9069,7 +9109,7 @@ function decideFleetOrders(
         action: { kind: "approach", targetID: gateID },
         phase: "Obeying fleet",
         why: order.why + " Starting to close on it.",
-        memory: { ...memory, closingOn: gateID },
+        memory: { ...memory, closingOn: gateID, closingOnAtMs: nowMs },
         followingOrderFrom: order.source,
         lastOrderHeard: order.heard,
       };
@@ -9542,6 +9582,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
             droneRecallWaited: null,
           },
           closingOn: null,
+          closingOnAtMs: null,
           // A resumed run has ordered no drones and looted nothing either: the
           // drones the dead process had out were abandoned by the server on the
           // session drop, and a wreck this run has not emptied is a wreck it
@@ -9556,11 +9597,13 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
           salvageDronesWreckID: null,
           lootedItemIDs: [],
           lootApproaching: null,
+          lootApproachAtMs: null,
           lootTargetID: null,
           salvageWreckID: null,
           salvageLockIssued: false,
           salvageLockWaited: 0,
           salvageApproachIssued: false,
+          salvageApproachAtMs: null,
           areaJob: null,
           lastWarpedToID: null,
           orderedLeaveRecall: null,
