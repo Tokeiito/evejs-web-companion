@@ -3330,6 +3330,17 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **After a commit in `eve.js`, `git show --stat HEAD`** says what the
   commit holds. `git diff HEAD~1 --stat` there counts the six files of
   others that lie changed in the working tree.
+- **What the BFF keeps of a session is set at the choosing and kept
+  current at the flight's reading** (`makeHeldCharacter` and
+  `readHeldFlight` in `src/server.js`): the station, the structure, the
+  system, the roles, and the corporation. A thing of the session's that
+  a route goes by and that can change under the pilot is said by the
+  transport in the flight's status (`readFlightStatus` in
+  `src/gamePort/pilots.js`), adopted there, and taken out of what the
+  page is handed. The alliance is kept nowhere in the BFF. A route's
+  own echo of `held.<something>` in its answer is a quick live look at
+  what the BFF holds (`/api/bridge/bound-small-services` says the
+  corporation).
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
