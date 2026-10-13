@@ -3223,6 +3223,25 @@ Take these defaults, and list each under "For the operator" in the log so they c
   asking itself, the choosing, the session's change, the park's event if
   it has one; and the call's name among those the gateway's list has
   not, with its entry judged against the client's line.
+- **Read what the older tests' stand-in writes down before building an
+  asking of the game port's own.** `test/gamePortPilots.test.js` keeps
+  every call by name (`session.calls`), every bind (`session.binds`)
+  and every call on a bound object (`session.boundCalls`), and its ship
+  as godma has it is a type and a group with no category (`shipInfo`,
+  line 32). An asking that binds at a choosing makes untrue what a
+  hundred lines read; one that waits on godma's priming and on the
+  ship's category does not. A first build was seen working and then put
+  aside for this.
+- **Whose an asking is**: `sl-calls.js <recording>` (in the second
+  scratchpad) lists every call the client made with its time and each
+  session change; then `grep -rn "<method>" --include=*.py` in the
+  decompiled client for who calls it, and that caller's own callers. A
+  service's `OnSessionChanged` is a service's own; a class under
+  `ui/` is a window's.
+- **A change of ship while docked**: the scratch `tsl-live.js <bff>
+  <account> <character>` leaves the ship for the capsule
+  (`/api/bridge/ship/leave`) and boards it again
+  (`/api/bridge/ship/board`), reading the flight after each.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

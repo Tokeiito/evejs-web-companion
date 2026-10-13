@@ -1285,7 +1285,15 @@ session once a character is on it (89 to 94, 213), as each warp ends (84 to 87),
 objectives are done or failed (180 to 186). With none accepted it asks nothing. Tranquility's recordings have it in
 24, three at a time for a pilot on three missions. The game port asks it so since `40c02295`, taking a warp's end
 from the pilot's ball leaving warp; nothing is kept of the answer yet. Not asked yet: `UpdateAllMissions`,
-`GetAllMissionObjectives`, `IsInActiveDungeonID`.
+`GetAllMissionObjectives`, `IsInActiveDungeonID`. The last is the info panel's: the mission's objective as it is
+drawn asks it (`missions/client/ui/missionObjectiveData.py` 169, 233, 292), right behind `GetMissionInfoItems` at a
+change of ship in the recordings.
+The achievements' event handler (`achievements/client/eventHandler.py`). At a change of the session with the ship
+in it and the new ship not `None` (251 to 260) it takes godma's item of the session's ship and, where that is of the
+ship category, asks `invCache.GetInventoryFromId(shipID).GetAvailableTurretSlots()` (419 to 429); a capsule is a
+ship. The client's godma has primed by then, at the session's change. Tranquility's recordings have the call in 20.
+The game port asks it since `873de6dd`, owed from the change and made as godma is next primed, which here is when
+something first wants the ship's readings.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
