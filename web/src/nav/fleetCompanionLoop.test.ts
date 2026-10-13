@@ -4213,6 +4213,115 @@ test("a mid-warp tick records the flee's safe-spot warp, not just the abandonmen
   assert.equal(decision.memory.flee?.safeSpotWarpSeen, true);
 });
 
+// --- the ship is gone ---------------------------------------------------------
+//
+// Seen 2026-10-12: a ship destroyed while it aligned out of a flee left its
+// pilot in a capsule with the flee still latched. The capsule warped to the sun
+// and landed, and the flee then asked for that same warp every two seconds for
+// ten minutes, refused each time as too close.
+
+/** The pilot in its capsule, in space, with its old flee and whatever overrides a test needs. */
+function capsuleObs(overrides: Partial<FleetCompanionObservation> = {}): FleetCompanionObservation {
+  return fleeObs({
+    // Nothing of a capsule's health is a reason to do anything but this.
+    health: 1,
+    flightStatus: { solarSystemID: HOME_SYSTEM, shipIsCapsule: true } as FleetCompanionObservation["flightStatus"],
+    ...overrides,
+  });
+}
+
+test("a pilot in its capsule drops the flee and docks the capsule at the nearest station", () => {
+  const decision = decideCompanionAction(REQUEST, capsuleObs(), fleeing({ safeSpotWarpIssued: true }));
+  assert.equal(decision.phase, "Ship lost");
+  assert.deepEqual(decision.action, { kind: "warp", targetID: 60000001 });
+  assert.equal(decision.memory.flee, null);
+  assert.notEqual(decision.memory.shipLost, null);
+});
+
+test("a capsule beside a station docks it", () => {
+  const decision = decideCompanionAction(REQUEST, capsuleObs({ snapshot: gridWithStation(1_000) }));
+  assert.deepEqual(decision.action, { kind: "dock", stationID: 60000001 });
+  assert.match(decision.why, /ship was destroyed/);
+});
+
+test("a docked capsule ends the run, saying the ship was destroyed", async () => {
+  const { deps, issued } = makeDeps({
+    observe: async () => capsuleObs({ docked: true, inSpace: false, snapshot: null }),
+  });
+  const companion = createFleetCompanion(deps);
+  companion.start(REQUEST);
+  await companion.tick();
+  const readout = companion.snapshot();
+  assert.equal(readout.status, "stopped");
+  assert.match(readout.failureReason as string, /ship was destroyed.*docked/);
+  assert.deepEqual(issued, []);
+});
+
+test("a capsule does not wait on the dead ship's drones before it leaves", () => {
+  const decision = decideCompanionAction(REQUEST, capsuleObs({ myDroneIDs: [900101, 900102] }));
+  assert.deepEqual(decision.action, { kind: "warp", targetID: 60000001 });
+});
+
+// The incident's own sequence: no station on the grid, a warp to the sun seen
+// under way, then landed. The run ends there instead of asking again.
+test("a capsule with no station warps to the sun once, and stops when it has landed", () => {
+  const sunOnly = capsuleObs({ snapshot: gridWithSunOnly() });
+  const first = decideCompanionAction(REQUEST, sunOnly, fleeing({ safeSpotWarpIssued: true, safeSpotWarpSeen: true }));
+  assert.deepEqual(first.action, { kind: "warp", targetID: SUN });
+  assert.equal(first.memory.flee, null);
+
+  const midWarp = decideCompanionAction(REQUEST, { ...sunOnly, inWarp: true }, first.memory);
+  assert.equal(midWarp.action.kind, "wait");
+  assert.equal(midWarp.memory.shipLost?.safeSpotWarpSeen, true);
+
+  const landed = decideCompanionAction(REQUEST, sunOnly, midWarp.memory);
+  assert.equal(landed.action.kind, "wait");
+  assert.match(landed.stop as string, /ship was destroyed.*sun/);
+});
+
+test("a capsule with no station and no sun stops at once", () => {
+  const decision = decideCompanionAction(REQUEST, capsuleObs({ snapshot: gridWithStation(null) }));
+  assert.equal(decision.action.kind, "wait");
+  assert.match(decision.stop as string, /no station or sun/);
+});
+
+test("an unread capsule flag is not a lost ship", () => {
+  const decision = decideCompanionAction(
+    REQUEST,
+    capsuleObs({ flightStatus: { solarSystemID: HOME_SYSTEM, shipIsCapsule: null } as FleetCompanionObservation["flightStatus"] }),
+    fleeing(),
+  );
+  assert.notEqual(decision.phase, "Ship lost");
+  assert.notEqual(decision.memory.flee, null);
+});
+
+/**
+ * The snapshot the capsule had on 2026-10-12: the game port's park still held
+ * the destroyed ship as its own, so the scene had a station and the sun but no
+ * row of the pilot's own and no `ship` block.
+ */
+function gridWithoutOwnShip(): SpaceSnapshot {
+  const grid = gridWithSunOnly() as unknown as { ship: unknown; entities: { isSelf: boolean }[] };
+  grid.ship = null;
+  grid.entities = grid.entities.filter((entity) => !entity.isSelf);
+  grid.entities.push({
+    itemID: 60000001,
+    kind: "station",
+    isSelf: false,
+    position: { x: 200_000, y: 0, z: 0 },
+    radius: 0,
+    mode: null,
+  } as unknown as { isSelf: boolean });
+  return grid as unknown as SpaceSnapshot;
+}
+
+test("a run to safety that cannot measure where the ship is does not call the station gone", () => {
+  const decision = decideCompanionAction(REQUEST, fleeObs({ snapshot: gridWithoutOwnShip() }), fleeing());
+  assert.equal(decision.action.kind, "wait");
+  assert.equal(decision.phase, "Getting clear");
+  assert.match(decision.why, /cannot tell where this ship is/i);
+});
+
 /** Synthetic item ids for the repair shop's quote. */
 const SHIP_ITEM = 900001;
 const RIG_ITEM = 900002;
