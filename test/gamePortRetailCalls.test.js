@@ -1734,6 +1734,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "fwWarzoneSolarsystem.GetLocalOccupationState",
     // The bounty output of the system the session is in, asked for the same panel. The gateway's list has nothing of the dynamic bounty manager's.
     "dynamicBountyMgr.GetOutputForClientSolarSystem",
+    // The solar systems whose security is other than the map's, asked once by the client's security service. The gateway's list has the map service's read of them only.
+    "securityMgr.get_modified_systems",
     "skillHandler.GetSkillQueueAndFreePoints",
     "home_station.get_home_station",
     "skillHandler.SaveNewQueue",

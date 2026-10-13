@@ -46,7 +46,10 @@ const refusedBy = (key, reason = key) => sessionError("GAME_CALL_REFUSED", `refu
  * choosing itself. The first test of a choosing spells the list out; the others hold a choosing to this.
  */
 const CHOSEN_ASKS = [
-  "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler", "agentMgr.GetMyJournalDetails",
+  "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler",
+  // securitySvc.Initialize (security/client/securitySvc.py 39 to 48), as its session first has a solar system; ahead of the journal in the client's own login.
+  "securityMgr.get_modified_systems",
+  "agentMgr.GetMyJournalDetails",
   "fighterMgr.GetFightersForShip",
   "accessGroupBookmarkMgr.GetMyActiveBookmarks",
   // crimewatchSvc.GetJumpTimers (crimewatchSvc.py 605 to 608), which its timer panel reads as it is made (crimewatchTimers.py 335, 355).
@@ -370,6 +373,9 @@ test("select logs in as the account and makes the retail client's three calls, i
     "standingMgr.GetCharStandings",
     // And its skill handler is asked for, as the client's skill service asks. This stand-in answers none, so nothing is asked of one.
     "skillMgr2.GetMySkillHandler",
+    // And the solar systems whose security is other than the map's, which the client's security service asks once
+    // as its session first has a solar system (security/client/securitySvc.py 39 to 48).
+    "securityMgr.get_modified_systems",
     // And its agents' journal, as the client's journal service asks for it.
     "agentMgr.GetMyJournalDetails",
     // And the fighters of the ship it is in, as the client's ship fighter state asks at any change of the session's
@@ -1689,6 +1695,8 @@ test("the transport keeps a tally of what it called and how each compared with t
     "standingMgr.GetCharStandings": { same: 1 },
     // Asked for and not answered by this stand-in: nothing was asked of a handler, and nothing of one is tallied.
     "skillMgr2.GetMySkillHandler": { same: 1 },
+    // The solar systems whose security is other than the map's, asked once at the choosing (security/client/securitySvc.py 41).
+    "securityMgr.get_modified_systems": { same: 1 },
     "agentMgr.GetMyJournalDetails": { same: 1 },
     "fighterMgr.GetFightersForShip": { same: 1 },
     "accessGroupBookmarkMgr.GetMyActiveBookmarks": { same: 1 },
@@ -5820,8 +5828,8 @@ const journalAsked = (session) => session.calls.filter((call) => call.service ==
 
 test("a character chosen has its agents' journal read as the client's journal service reads it, and it is kept", async () => {
   const { pilots, session, handle } = await selected({ answers: { "agentMgr.GetMyJournalDetails": journalWith(missionOf(3008416)) } }, JOURNAL_PAIRS);
-  // By name, with nothing, after the standings and the skill handler.
-  assert.deepEqual(session.calls.slice(3).map((call) => [`${call.service}.${call.method}`, call.args, call.kwargs])[3], ["agentMgr.GetMyJournalDetails", [], null]);
+  // By name, with nothing, after the standings, the skill handler and the modified systems.
+  assert.deepEqual(session.calls.slice(3).map((call) => [`${call.service}.${call.method}`, call.args, call.kwargs])[4], ["agentMgr.GetMyJournalDetails", [], null]);
   assert.deepEqual(ledgerOf(pilots, "agentMgr.GetMyJournalDetails"), [{ same: 1 }, "eve/client/script/ui/shared/neocom/journal.py:312"]);
   // Read from what is kept, in the gateway's form, with nothing asked.
   const kept = await pilots.journalKept(WHO, handle);
