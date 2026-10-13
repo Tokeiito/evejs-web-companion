@@ -5,7 +5,8 @@
 //  - stationSvc.GetStationItemBits() -> (ownerID, itemID, operationID,
 //    stationTypeID), the Row the docked station-services panel builds
 //    (eve/client/script/ui/station/base.py:575).
-//  - station.GetGuests() -> [(charID, corp, alliance, warFaction), ...]
+//  - station.GetGuests() -> [[charID, corp, alliance, warFaction], ...] (a list
+//    of lists on Tranquility; a tuple in the list is read the same)
 //    for the guest panel (station/base.py:103).
 //  - map.GetStationInfo() -> the all-station table. EveJS answers with the
 //    retail CachedMethodCallResult envelope whose rowset rides the retail
@@ -46,13 +47,17 @@ export function decodeStationItemBits(result: JsonValue): StationServiceBits {
   };
 }
 
-/** Decode the GetGuests list; rows without a positive charID are dropped. */
+/**
+ * Decode the GetGuests list; rows without a positive charID are dropped. A guest's four are a list on
+ * Tranquility ([charID, corpID, allianceID, warFactionID]); a tuple is read the same.
+ */
 export function decodeStationGuests(result: JsonValue): StationGuest[] {
   if (!isListValue(result)) {
     return [];
   }
   const guests: StationGuest[] = [];
-  for (const item of result.items) {
+  for (const each of result.items) {
+    const item = isListValue(each) ? each.items : each;
     if (!Array.isArray(item)) {
       continue;
     }

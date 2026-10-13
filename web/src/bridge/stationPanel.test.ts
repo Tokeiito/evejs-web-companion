@@ -62,6 +62,33 @@ test("decodeStationGuests decodes the guest tuple list and drops malformed rows"
   ]);
 });
 
+test("decodeStationGuests reads a guest's four as Tranquility sends them, a list in the list", () => {
+  // station::GetGuests retval=[[2124510715, 1000169, None, None], [2123487805, 98651234, 99001234, None]]
+  const wire: JsonValue = {
+    type: "list",
+    items: [
+      { type: "list", items: [140000003, 98000000, 99000000, null] },
+      { type: "list", items: [140000002, 98000000, null, null] },
+      { type: "list", items: ["not-a-charid", 1, 2, 3] },
+      { type: "dict", entries: [] },
+    ],
+  };
+  assert.deepEqual(decodeStationGuests(wire), [
+    {
+      characterID: 140000003,
+      corporationID: 98000000,
+      allianceID: 99000000,
+      warFactionID: null,
+    },
+    {
+      characterID: 140000002,
+      corporationID: 98000000,
+      allianceID: null,
+      warFactionID: null,
+    },
+  ]);
+});
+
 test("decodeStationGuests returns [] for non-list results", () => {
   assert.deepEqual(decodeStationGuests(null), []);
   assert.deepEqual(decodeStationGuests({ type: "dict", entries: [] }), []);
