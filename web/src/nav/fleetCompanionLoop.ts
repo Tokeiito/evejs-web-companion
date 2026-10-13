@@ -5614,11 +5614,33 @@ const CLOSING_SHIP_MODES: readonly string[] = ["GOTO", "FOLLOW"];
  * with a commander who is pulling away -- and the autopilot test keeps the rung
  * honest about the pilot's OWN trips, including the moments between legs when
  * the hull is briefly in no interesting mode at all.
+ *
+ * ⚠ FOLLOW IS NOT TRAVELLING WHILE HOSTILES ARE ON THE GRID, AND THE MODE TEST
+ * ALONE LIT A MICROWARPDRIVE FOR EVERY FIGHT. A companion keeps station on its
+ * fleet commander with keep-at-range, and on the server that is FOLLOW for the
+ * WHOLE of the time it holds station: FOLLOW only ends when the followed ship
+ * vanishes. So "FOLLOW means closing" was true for the few seconds it was
+ * written for and then stayed true for as long as the fight lasted -- the prop
+ * mod burned throughout, and the server blooms a microwarpdrive's signature
+ * radius, which makes the ship easier for the NPCs to hit. With hostiles about,
+ * FOLLOW is station-keeping, not a trip, and the burner stays out.
+ * `hostileOnGrid` is three-state and only `true` counts: false and null (the
+ * read failed) keep the FOLLOW test exactly as it was, so keeping up with an FC
+ * who is pulling away and closing the last km off a gate are unchanged when
+ * nothing hostile is around. GOTO is a heading of the pilot's own and the
+ * autopilot is its own route, so neither is affected, and `props on` still
+ * beats all of it (see `decidePropulsion`).
  */
 function isUnderWay(obs: FleetCompanionObservation): boolean {
   const mode = obs.snapshot?.ship?.mode ?? null;
-  if (mode !== null && CLOSING_SHIP_MODES.includes(mode.toUpperCase())) {
-    return true;
+  if (mode !== null) {
+    const upper = mode.toUpperCase();
+    if (upper === "GOTO") {
+      return true;
+    }
+    if (CLOSING_SHIP_MODES.includes(upper) && obs.hostileOnGrid !== true) {
+      return true;
+    }
   }
   return obs.travel?.status === "running";
 }
