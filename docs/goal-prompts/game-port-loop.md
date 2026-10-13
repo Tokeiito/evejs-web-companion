@@ -2553,6 +2553,13 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **No look at the live server while the server's tests run.** A test file
   copies the live store as it begins; a pilot logged in and out then is a
   write under the copy. The look waits for the run to end.
+- **Where Tranquility has two forms, this server's being one of them is no
+  defect.** A module's online flag and damage are listed as nought here;
+  Tranquility lists nought for a module that was online or damaged once, and
+  nothing for one that never was. The commoner form is not the only right
+  one: what tells them apart is read first (here the client's own
+  `baseDogmaItem.Load`), and where this server cannot know it the thing is
+  left and said to be left.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
