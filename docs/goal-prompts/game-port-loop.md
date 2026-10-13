@@ -3306,6 +3306,30 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **The server's log starts afresh on the hour**: line numbers taken
   before the hour are the old file's. `login-only.js` prints the
   hour's own (a small FROM just after the hour is right).
+- **A GM's command not yet seen working in this loop is run for its
+  own sake first**, after the copy of the store: one that fails half
+  way leaves the store half-changed (`/corpcreate` had the corporation
+  made and the character in it, and the session never told). The
+  server's log has only the error's words for a failed slash command
+  (`[SlashService] Command failed: ...`): its path is read from the
+  command down (`services/chat/chatCommands.js`).
+- **A change of corporation, live**: `warc-live.js <bff> <account>
+  <character> "<corporation name>" <server.log>` (session 2aba99c0's
+  scratchpad) has a docked pilot found a corporation by the GM's
+  `/corpcreate`, with the war registry's reads asked before and after;
+  through the recorder its calls are in `describe`'s lines. The session
+  changes `corpid` and `corpAccountKey`. Between a copy of the store
+  and its putting back.
+- **What every choosing binds and a later change binds again is listed
+  apart in the old pilot tests' stand-in** (crimewatch's Monikers, the
+  war registry's and the calls on them: `session.crimewatch`,
+  `session.wars`, `session.warCalls`), not set aside by the builder's
+  wrapper, which runs only at the choosing: the tests that change a
+  corporation or an alliance state the exact lists of binds and bound
+  calls afterwards.
+- **After a commit in `eve.js`, `git show --stat HEAD`** says what the
+  commit holds. `git diff HEAD~1 --stat` there counts the six files of
+  others that lie changed in the working tree.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

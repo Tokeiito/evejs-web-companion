@@ -1324,8 +1324,9 @@ At a login the timer panel has the service say whether the pilot is at war, whic
 wars every ten seconds (166 to 176), which asks again once they are twelve hours old. At a change of alliance or
 corporation what is kept of both is let go and the reckoning is made again (69 to 80). Tranquility's recordings of
 a login have `MachoResolveObject((owner, 1))`, `MachoBindObject((owner, 1), None)` and `GetWars(owner)` on the
-object. The game port has all of it since `cee8eb78` but the reckoning at a change of alliance or corporation;
-everything a page asks of the war registry goes on that moniker.
+object. The game port has all of it since `cee8eb78`, and the asking at a change of alliance or corporation since
+`f2ce8c39` (at once for a pilot in a militia too, where the client's thread asks within ten seconds); everything a
+page asks of the war registry goes on that moniker.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
