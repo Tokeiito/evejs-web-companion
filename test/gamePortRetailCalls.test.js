@@ -1744,6 +1744,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "nonDiminishingInjectionMgr.GetAvailableNonDiminishingInjections",
     // The season the character may play and its progress in it, asked as a character comes onto the session. The gateway's list has nothing of the season manager's.
     "seasonManager.get_season_data_for_character", "seasonManager.get_character_progress_by_character_id",
+    // The logon told to the milestone manager, as a character comes onto the session. The gateway's list has nothing of that manager's.
+    "milestoneMgr.ProcessCharacterLogon",
     "skillHandler.GetSkillQueueAndFreePoints",
     "home_station.get_home_station",
     "skillHandler.SaveNewQueue",

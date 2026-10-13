@@ -57,6 +57,8 @@ const CHOSEN_ASKS = [
   "achievementTrackerMgr.GetCompletedAchievementsAndClientEventCount",
   "fighterMgr.GetFightersForShip",
   "accessGroupBookmarkMgr.GetMyActiveBookmarks",
+  // milestoneSvc.OnCharacterSessionChanged (milestones/client/milestoneSvc.py 20 to 23); just ahead of the injections in the client's own login.
+  "milestoneMgr.ProcessCharacterLogon",
   // nonDiminishingInjection.OnCharacterSessionChanged (nonDiminishingInjectionService.py 23 to 25, 49 to 51); ahead of the settings in the client's own login.
   "nonDiminishingInjectionMgr.GetAvailableNonDiminishingInjections",
   // characterSettingsSvc._GetSettings (characterSettingsSvc.py 31 to 34), as the first of the client's services wants a setting.
@@ -398,6 +400,9 @@ test("select logs in as the account and makes the retail client's three calls, i
     "fighterMgr.GetFightersForShip",
     // And its bookmarks, with the folders it knows, as the client's bookmark service asks for them.
     "accessGroupBookmarkMgr.GetMyActiveBookmarks",
+    // And the logon is told to the milestone manager, as the client's milestone service tells it at every change
+    // of the session's character (milestones/client/milestoneSvc.py 20 to 23).
+    "milestoneMgr.ProcessCharacterLogon",
     // And how many non-diminishing skill injections it has left, which the client's service for them asks as a
     // character comes onto the session (nonDiminishingInjectionService.py 23 to 25, 49 to 51).
     "nonDiminishingInjectionMgr.GetAvailableNonDiminishingInjections",
@@ -1729,6 +1734,8 @@ test("the transport keeps a tally of what it called and how each compared with t
     "charMgr.GetCharacterSettings": { same: 1 },
     // How many non-diminishing injections the character has left, asked at the choosing (nonDiminishingInjectionService.py 50).
     "nonDiminishingInjectionMgr.GetAvailableNonDiminishingInjections": { same: 1 },
+    // The logon told to the milestone manager at the choosing (milestones/client/milestoneSvc.py 22).
+    "milestoneMgr.ProcessCharacterLogon": { same: 1 },
     // The pilot's jump timers, asked once at the choosing as the client's crimewatch service asks them (crimewatchSvc.py 607).
     "jumpTimers.GetTimers": { same: 1 },
     // The wars of the pilot's corporation, asked of the war registry's moniker at the choosing (war_cso.py 103).
