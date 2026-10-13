@@ -305,6 +305,11 @@ const keptVisibleCampaigns = (service, method, form) => service === INSURGENCY &
 const VISIBLE_CAMPAIGNS_GOOD_FOR_MS = 30 * 1000;
 /** The server's notices at which the campaigns kept are let go (insurgencyCampaignSvc.py 59 to 90: clear_memoized). */
 const CAMPAIGN_NOTICES = new Set(["OnInsurgencyCampaignStartedForLocation", "OnInsurgencyCampaignUpdatedForLocation", "OnInsurgencyCampaignEndingForLocation"]);
+/** The redeem service's fetch of the account's tokens (eve/client/script/ui/services/redeemsvc.py 63 to 65). */
+const USER_SVC = "userSvc";
+const REDEEM_TOKENS = "GetRedeemTokens";
+/** Whether a call is that fetch, asked as the client asks it: with nothing. */
+const keptRedeemTokens = (service, method, form) => service === USER_SVC && method === REDEEM_TOKENS && form.args.length === 0 && form.kwargs === null;
 const OFFICE_MANAGER = "officeManager";
 /**
  * What the client hands back to the server as it was answered, and so with the Python type it came with:
@@ -1560,6 +1565,9 @@ function createGamePortPilots({
       /** insurgencyCampaignSvc's memoized campaigns, as { answer, until }; undefined while none are kept. And their askings, one after another. */
       visibleCampaigns: undefined,
       visibleCampaignsWork: Promise.resolve(),
+      /** redeem.tokens: what the account may redeem, as the server last answered; undefined while it was not fetched. And the fetches, one after another. */
+      redeemTokens: undefined,
+      redeemTokensWork: Promise.resolve(),
       /** The account's clone grade as the server last said it (clonegrade/const.py: 0 alpha, 1 omega): undefined while none is had. */
       cloneGrade: undefined,
       /** Whether the office's item was primed on the Moniker for where the pilot is docked (PRIME_OFFICE): its answer, kept while docked there. */
@@ -1644,6 +1652,8 @@ function createGamePortPilots({
         && positive(notification.args[0]) !== null && positive(notification.args[0]) === attribute(entry, "solarsystemid2")) {
         entry.bountyOutput = { answer: [notification.args[1], true], until: now() + BOUNTY_OUTPUT_GOOD_FOR_MS };
       }
+      // redeem.OnRedeemingQueueUpdated (162 to 169): what the account may redeem has changed, and it is fetched again.
+      if (notification.method === "OnRedeemingQueueUpdated") redeemTokensFetched(entry).catch(() => {});
       // insurgencyCampaignSvc's three notices of a campaign where the client is (59 to 90): the campaigns kept are
       // let go, and are asked for when they are next wanted.
       if (CAMPAIGN_NOTICES.has(notification.method)) entry.visibleCampaigns = undefined;
@@ -1914,6 +1924,10 @@ function createGamePortPilots({
       await structureServicesRead(entry);
       // The lobby's guests panel: chosen in a structure, its guests are asked for, as a client logging in docked in one asks.
       await structureGuestsAsked(entry);
+      // neocomSvc (258) and redeem.InitializeNeocomExtension (37 to 46): the neocom is set up as the pilot comes in,
+      // and its redeeming button has the account's tokens fetched. In the retail client's own login, just ahead of
+      // the pilot's applications. A service that refuses fails no choosing.
+      await redeemTokensFetched(entry).catch(() => {});
       // bco_applications: the pilot's own applications, which the client asks for once.
       await corporationAsk(entry, "GetMyApplications").catch(() => {});
       // contracts.NeocomBlink: what of the pilot's contracts wants attention, asked once the notifications are ready.
@@ -2100,6 +2114,12 @@ function createGamePortPilots({
     // client asks them: with nothing.
     if (keptVisibleCampaigns(service, method, form)) {
       const kept = await run(entry, service, method, () => visibleCampaignsRead(entry));
+      return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
+    }
+    // What the account may redeem is the redeem service's to answer, where it is asked as the client asks it: with
+    // nothing (GetRedeemTokens, 51 to 54: what is kept, fetched where nothing is).
+    if (keptRedeemTokens(service, method, form)) {
+      const kept = await run(entry, service, method, () => (entry.redeemTokens === undefined ? redeemTokensFetched(entry) : entry.redeemTokens));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
     // How many non-diminishing injections the character has left is that service's to answer, where it is asked as
@@ -2750,6 +2770,27 @@ function createGamePortPilots({
     });
     entry.visibleCampaignsWork = reading.catch(() => {});
     return reading;
+  }
+
+  /**
+   * redeem.FetchRedeemTokens (eve/client/script/ui/services/redeemsvc.py 63 to 65):
+   * sm.RemoteSvc('userSvc').GetRedeemTokens(), by the service's name with nothing: what the account may redeem, a
+   * rowset of tokens, and what answers is kept. The service fetches as its neocom extension is set up
+   * (InitializeNeocomExtension, 37 to 46, which the neocom service calls as a pilot comes in: neocomSvc.py 258), at
+   * the server's OnRedeemingQueueUpdated (162 to 169), and after a claim; its GetRedeemTokens answers what is kept
+   * (51 to 54). Tranquility's recordings of a login have the fetch once from the choosing on (and twice before it,
+   * the character selection screen's own). The claiming (ClaimRedeemTokens(tokens, charID, useHomeStation), 99 to
+   * 131) is the player's, and is not made here. One fetch at a time.
+   */
+  function redeemTokensFetched(entry) {
+    const fetching = entry.redeemTokensWork.then(async () => {
+      const form = shape(USER_SVC, REDEEM_TOKENS, [], null, contextFor(entry));
+      ledger.note(USER_SVC, REDEEM_TOKENS, form);
+      entry.redeemTokens = await byName(entry.session, USER_SVC, REDEEM_TOKENS, form);
+      return entry.redeemTokens;
+    });
+    entry.redeemTokensWork = fetching.catch(() => {});
+    return fetching;
   }
 
   // ── the occupation of the system, as the client's warzone service has it ──
