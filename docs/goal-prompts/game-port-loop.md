@@ -2927,6 +2927,27 @@ Take these defaults, and list each under "For the operator" in the log so they c
   port of the same** (`mcb-beside.js` is the pattern, and loads nothing of
   the store): the same case given to both, stepped side by side, the two
   places compared to the bit.
+- **Any ball in a client's park can be set beside the server's own
+  places for it**: `node scripts/park-against-movement-log.js
+  <recording.jsonl> <copy of space-movement-debug.log> --ship=<id>
+  [--summary]`. The server's log has an NPC's commands and, for five
+  seconds after each, its place at every step. The pilot's own ship, by
+  its id, is the control: within a metre.
+  `npc-orders.js <repo> <recording.json> <log> <id>` (scratch) lists the
+  server's commands and the client's entries for one ball by time.
+- **A client's park keeps the server's own stamps.** An entry stamped
+  ahead is applied that many seconds after it is sent. A count "from the
+  launch" on each side hides a difference of two seconds between the two
+  launches: set the two side by side by stamp, not by count.
+- **What the server sent, and when by its own clock, is in its missile
+  debug log** (`destiny.send-request`: the time, the raw stamp, each
+  payload's name and stamp) for the lanes that log there; a ship's prime
+  updates (`SetMaxSpeed`) are not among them, and their time is had from
+  the recording's arrival times, set to the server's clock by a send that
+  is in both.
+- **Tranquility's count of an order is one grep**: `grep -rhao
+  "Action:\s*<the name's first twelve letters>" <recordings> | sort |
+  uniq -c`. michelle's log cuts a name at twelve.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

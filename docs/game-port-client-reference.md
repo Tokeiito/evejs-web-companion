@@ -1214,7 +1214,9 @@ stamped R is applied before the park's step from R: a ball that touched in the s
 time an entry stamped t + 1 is applied.
 
 This server gives a client stamps two more than its raw dispatch stamp, for a launch and for a removal alike
-(recorded, 2026-10-13). It removes a missile from afar late and with no entry, which `Release`'s rule makes safe.
+(recorded, 2026-10-13). A client's park keeps the server's own stamps (the pilot's ship in the park is within a
+metre of the server's, stamp for stamp), so such an entry is applied two seconds after it is sent: the client's
+missile is launched two seconds after the server's, from where the launcher's ball is then. It removes a missile from afar late and with no entry, which `Release`'s rule makes safe.
 Since `eve.js` `6117e48fe` it also keeps the ball a client's park makes of each missile and knows the step that ball
 touches in, to a step (`scripts/missiles-in-park.js` measures a recording of it).
 
