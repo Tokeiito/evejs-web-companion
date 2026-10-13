@@ -92,6 +92,10 @@ Consequences:
   called|all` sets the target mode. The FC decides when formation may break: a
   fleet moving through gates, camping one, or one whose FC wants the aggro,
   stays in the follow mode. See 5.4 and §7 for the verb.
+- **A gun boat never stands still.** (Operator, 2026-10-13.) It orbits its
+  target, because movement is what makes signature tanking work; the one
+  exception is kiting, when the fit out-ranges every rat on grid and the ship
+  keeps at range outside their guns instead. See 5.4.
 - **Plan first.** No implementation until this document is agreed.
 
 ## 4. Inputs the tree needs each tick
@@ -303,10 +307,16 @@ floorM   = largest scram reach among rats on grid that scram + THREAT_BUFFER_M  
 leashM   = distance from the FC's ship this pilot may stray while fighting      (§7, default below)
 ceilingM = min(longest weapon or drone reach, lock range, leashM) - LEASH_BUFFER_M
 
-gun boat   : wantM = optimal of the SHORTEST gun that can reach at all, clamped into [floorM, ceilingM]
-             order = ORBIT target at wantM            (transversal against turret rats; speed against missile rats)
-drone boat : wantM = kiteBand(...).holdM              (existing arithmetic; floor, else ceiling when nothing scrams)
-             order = KEEP AT RANGE target at wantM    (drones do the flying; no transversal needed)
+gun boat   : kiting?  = longest gun reach > ratReachM + THREAT_BUFFER_M       (this fit out-ranges every rat on grid)
+             wantM    = kiting ? clamp(ratReachM + THREAT_BUFFER_M, floorM, ceilingM)
+                               : clamp(optimal of the SHORTEST gun that can reach, floorM, ceilingM)
+             order    = kiting ? KEEP AT RANGE target at wantM   (stay outside their guns; speed is the tank)
+                               : ORBIT target at wantM           (always moving: transversal and signature)
+drone boat : wantM    = kiteBand(...).holdM              (existing arithmetic; floor, else ceiling when nothing scrams)
+             order    = KEEP AT RANGE target at wantM    (drones do the flying; the rat's own orbit keeps us moving)
+
+ratReachM  = largest over rats on grid of max(entityAttackRange 247, optimal 54 + falloff 158), or the missile
+             rat's approxRange; unreadable → 0, so an unreadable grid is never "kited"
 empty band : floorM > ceilingM → hold at ceilingM, say so (existing kiteBand behaviour: "no room to kite, fighting at X")
 ```
 
@@ -445,7 +455,13 @@ Paths this plan deliberately does NOT add:
    work while the FC warps to the site with or ahead of the fleet. §2's note on
    nearest-player targeting stays as a server fact; nothing in the tree is
    built on it.
-5. **Orbit vs keep-at-range for gun boats under the 50 % floor.** Orbit buys
+5. ~~**Orbit vs keep-at-range for gun boats under the 50 % floor.**~~
+   **DECIDED 2026-10-13: a gun boat ALWAYS orbits unless it is kiting.** The
+   operator's words: gun boats never stand still, because moving is what makes
+   signature tanking work. Kiting is the one exception, and it is defined in
+   5.4 as "this fit out-ranges every rat on grid", in which case the ship keeps
+   at range outside their guns instead. The paragraph below is kept as the
+   reasoning that was weighed, not as an open question. Orbit buys
    transversal worth at most half the incoming turret damage and costs some of
    our own tracking. Keep-at-range is simpler and loses that half. Proposal is
    orbit; a live comparison on the same site decides.
