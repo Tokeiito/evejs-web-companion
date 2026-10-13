@@ -286,6 +286,9 @@ const SEASON_DATA = "get_season_data_for_character";
 const SEASON_PROGRESS = "get_character_progress_by_character_id";
 /** isinstance(season_data, list) (seasonservice.py 274): a list off the wire, which a tuple is not. */
 const isAPythonList = (value) => Boolean(value && value.type === "list" && Array.isArray(value.items));
+/** The milestone service's telling of a logon (milestones/client/milestoneSvc.py 20 to 23). */
+const MILESTONE_MGR = "milestoneMgr";
+const MILESTONE_LOGON = "ProcessCharacterLogon";
 const OFFICE_MANAGER = "officeManager";
 /**
  * What the client hands back to the server as it was answered, and so with the Python type it came with:
@@ -1533,6 +1536,8 @@ function createGamePortPilots({
       /** nonDiminishingInjection.availableInjections: how many non-diminishing injections the character has left, as the server answered and has told since; undefined while it was not asked. And its askings, one after another. */
       injectionsLeft: undefined,
       injectionsLeftWork: Promise.resolve(),
+      /** milestoneSvc.timeLeft: when the login milestone's timer runs out, as the server last said it (OnMilestoneTimerStarted); null while it has said none since the logon. */
+      milestoneTimeLeft: null,
       /** The account's clone grade as the server last said it (clonegrade/const.py: 0 alpha, 1 omega): undefined while none is had. */
       cloneGrade: undefined,
       /** Whether the office's item was primed on the Moniker for where the pilot is docked (PRIME_OFFICE): its answer, kept while docked there. */
@@ -1617,6 +1622,8 @@ function createGamePortPilots({
         && positive(notification.args[0]) !== null && positive(notification.args[0]) === attribute(entry, "solarsystemid2")) {
         entry.bountyOutput = { answer: [notification.args[1], true], until: now() + BOUNTY_OUTPUT_GOOD_FOR_MS };
       }
+      // milestoneSvc.OnMilestoneTimerStarted(timeLeft) (25 to 27): when the login milestone's timer runs out.
+      if (notification.method === "OnMilestoneTimerStarted" && Array.isArray(notification.args) && notification.args.length === 1) entry.milestoneTimeLeft = notification.args[0];
       // nonDiminishingInjection's three notices (27 to 42): so many more, so many used, or none left. What is kept
       // is counted up or down where something is kept (a count not yet asked for is asked for when it is wanted),
       // and "none left" is nought whether or not anything was.
@@ -1831,6 +1838,10 @@ function createGamePortPilots({
       // after the journal, as a client asks this server. A manager that refuses fails no choosing: they are asked
       // for when they are next wanted.
       await bookmarksRead(entry, shape(BOOKMARK_MGR, ACTIVE_BOOKMARKS, [], null, contextFor(entry))).catch(() => {});
+      // milestoneSvc.OnCharacterSessionChanged (20 to 23): a character on the session, and the server is told of the
+      // logon, at which it starts the login milestone's timer. In the retail client's own login, just ahead of the
+      // non-diminishing injections. A manager that refuses fails no choosing.
+      await milestoneLogon(entry).catch(() => {});
       // nonDiminishingInjection.OnCharacterSessionChanged (23 to 25): a character on the session, and how many
       // non-diminishing injections it has left is asked for. In the retail client's own login, ahead of the
       // character's settings. A manager that refuses fails no choosing.
@@ -2625,6 +2636,23 @@ function createGamePortPilots({
     const progress = shape(SEASON_MGR, SEASON_PROGRESS, [], null, contextFor(entry));
     ledger.note(SEASON_MGR, SEASON_PROGRESS, progress);
     await byName(entry.session, SEASON_MGR, SEASON_PROGRESS, progress);
+  }
+
+  /**
+   * milestoneSvc.OnCharacterSessionChanged (milestones/client/milestoneSvc.py 20 to 23): at every change of the
+   * session's character the service forgets the time it had left and calls
+   * sm.RemoteSvc('milestoneMgr').ProcessCharacterLogon(), by the service's name with nothing. It answers nothing:
+   * the server starts the login milestone's timer for the account and tells the client when it runs out
+   * (OnMilestoneTimerStarted(timeLeft), 25 to 27, which the service keeps). Without the call no timer runs, and a
+   * pilot on the game port earned nothing of the milestone. Tranquility's recordings of a login each have the one
+   * call, answered nothing. The claiming of a reward (ClaimRewards(milestoneID), 32 to 35) is the player's, and is
+   * not made here.
+   */
+  async function milestoneLogon(entry) {
+    entry.milestoneTimeLeft = null;
+    const form = shape(MILESTONE_MGR, MILESTONE_LOGON, [], null, contextFor(entry));
+    ledger.note(MILESTONE_MGR, MILESTONE_LOGON, form);
+    await byName(entry.session, MILESTONE_MGR, MILESTONE_LOGON, form);
   }
 
   // ── the occupation of the system, as the client's warzone service has it ──
