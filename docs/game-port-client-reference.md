@@ -1202,6 +1202,22 @@ Neither the transport nor the page reads the tales or the end of the Omega time.
 is also sent to a system (by `solarsystemid2`, 17 times, one tale each) far from any session
 change: a tale of the system's own, which this server does not send.
 
+**The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
+handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
+(`ACTIONS`, by `eventTypeID`) and a level it reckons from `absolutePoints` and the skill's rank
+(`skillHistoryPanel.py` 54 to 64). At login `skillHistoryProvider.py` asks for 10 and makes a notification of
+every row. Tranquility's answer, recorded at three logins: a `carbon.common.script.sys.crowset.CRowset` whose
+header is a `blue.DBRowDescriptor` of `logDate` (64), `eventTypeID` (2), `skillTypeID` (3), `relativePoints` (3)
+and `absolutePoints` (3), with packed rows, the newest first. The three logins overlap into eighteen rows one
+after the other: seventeen levels trained (53) and one use of free points (307, the points used and what the
+skill then had), every date a whole second, a level trained after another its training time after it, and no
+row of a start or a stop.
+
+This server answers so since `eve.js` `54125d9ff`, and writes no row at a start since `a0fd2e19c`. A packed row
+reaches the page through the game port with its fields by name and its date a long, and through the gateway with
+its values by place and its date a string of digits; the page's reader takes either
+(`web/src/bridge/boundSkills.ts`, `a51216b2`). No window of the page shows the history yet.
+
 **The Industry window's monitor, 2026-10-13.** `industrySvc.ConnectJob` (299 to 301) makes the job the one
 monitored and has `(monitorID, available)` of `industryMonitor.ConnectJob(job.dump())`: what the job's input
 place has, by type. One job is monitored, the last connected. `OnIndustryMaterials(jobID, materials)` (324 to

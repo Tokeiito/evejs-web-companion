@@ -2846,6 +2846,27 @@ Take these defaults, and list each under "For the operator" in the log so they c
   and its own `[ERR]` lines). The live server's starts are the lines with
   "role=world": an error line is the live server's only between one of
   those and the next.
+- **A row of the skill history is staged by training**, with the server
+  started fast: `EVEJS_SKILL_TRAINING_SPEED=200 bash store.sh save
+  <label>` (a level of a rank-1 skill in seconds; the putting back starts
+  the server at the usual speed). The pilot wants a skill whose next level
+  has its requirements: Test Two has many, Test Pilot's one has not. No GM
+  command gives free points.
+- **What an answer does NOT have is read from several recordings laid end
+  to end.** Three logins' ten newest rows of one pilot's history overlap
+  into eighteen rows one after the other, and it is that run which shows
+  no row of a start: one answer of ten could not.
+- **A recorded answer is set beside this server's own building of it**
+  (`hist-same.js` is the pattern, and loads nothing of the store): the
+  recorded bytes decoded, the same rows given to the server's builder,
+  encoded and decoded. The object, the descriptor and each row's packed
+  bytes are compared; the whole answer's bytes differ for every rowset
+  (the Next list's (4b)).
+- **The two transports hand a packed row on in two shapes**: the game
+  port's with `fields` by name and a long for a date, the gateway's with
+  `values` by place and a string of digits. A reader of the page's takes
+  a row by `readRowField`, and is run on both running BFFs' answers
+  (`hist-decode.mjs` is the pattern).
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
