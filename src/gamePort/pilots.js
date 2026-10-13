@@ -1142,6 +1142,19 @@ function createGamePortPilots({
   }
 
   /**
+   * gameui._HandleSessionChangeInSpace (619 to 630): in another ship in the same space, one boarded there or the
+   * capsule a pilot is left in when its ship is destroyed. The client asks its dogma location to let every lock go
+   * (621: a thread of target.ClearTargets, which is GetDogmaLM().ClearTargets(), targetMgr.py 1419), and makes the
+   * ship its ballpark's ego itself, now or when its ball comes. The server sends no state for it. Both of
+   * Tranquility's recordings of such a change have the call, within a third of a second of the session's change.
+   */
+  function shipChangedInSpace(entry, shipID) {
+    // A thread of its own in the client: nothing waits on its answer, and a refusal of it is nobody's to hear.
+    ownDogmaCall(entry, "ClearTargets", []).catch(() => {});
+    entry.space.park.egoIs(shipID);
+  }
+
+  /**
    * godma.UpdateItem, for a module the server says is in a slot of the ship the pilot is in: the client asks what
    * dogma has of it, ItemGetInfo(itemID), and holds the answer. With no answer the module is held as it was.
    */
@@ -1481,10 +1494,10 @@ function createGamePortPilots({
       }
       // gameui.GetShipAccess: the ship's moniker it keeps is for the ship the pilot is in.
       if ("shipid" in changes) entry.monikers.delete("ship");
-      // gameui._HandleSessionChangeInSpace (620 to 630): in another ship in the same space (one boarded there, or
-      // the capsule a pilot is left in), the client makes that ship its ballpark's ego itself, now or when its ball
-      // comes. The server sends no state for it. In another system the ballpark is a new one, with a state of its own.
-      if ("shipid" in changes && changes.shipid[1] !== null && !("solarsystemid" in changes) && entry.space) entry.space.park.egoIs(changes.shipid[1]);
+      // gameui.OnSessionChanged (462 to 469) and _HandleSessionChangeInSpace (619 to 630): in space after the
+      // change, in another ship, in the same system, and with a ballpark. In another system the ballpark is a new
+      // one, with a state of its own; docked, it is the station's or the structure's arm of gameui, which does neither.
+      if ("shipid" in changes && changes.shipid[1] !== null && !("solarsystemid" in changes) && entry.space && whereabouts(entry).inSpace) shipChangedInSpace(entry, changes.shipid[1]);
       // station/base.py OnSessionChanged and ProcessSessionChange: out of a station, its guests and its item are let go.
       if ("stationid" in changes) entry.station.left();
       // crimewatchSvc.ProcessSessionChange and OnSessionChanged: the states asked for at a change of place, and

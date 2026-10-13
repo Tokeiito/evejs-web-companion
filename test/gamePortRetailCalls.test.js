@@ -3097,6 +3097,26 @@ test("the reprocessing plant's quote and its reprocessing are the client's on th
   assert.deepEqual([madeOnMoniker("reprocessingSvc", "GetQuotes"), madeOnMoniker("reprocessingSvc", "Reprocess"), madeOnMoniker("reprocessingSvc", "MachoBindObject")], [true, true, false]);
 });
 
+test("clearing every lock is the client's with nothing sent, on its dogma location", () => {
+  // targetMgr.py 1419: self.GetDogmaLM().ClearTargets(). Its one caller in the client is gameui (621), at a change
+  // of ship in space. Recorded on Tranquility three times (a pilot killed to its capsule, an eject and a boarding
+  // in space), each the same bytes: the dogma location's bound object, the method, and an empty tuple.
+  const { madeOnAnObject } = require("../src/gamePort/retailCalls");
+  const clear = (args, kwargs = null) => retailForm("dogmaIM", "ClearTargets", args, kwargs, {});
+  const made = clear([]);
+  assert.deepEqual([made.status, made.args, made.kwargs], ["same", [], null]);
+  assert.match(made.source, /parklife\/targetMgr\.py:1420$/);
+  assert.equal(madeOnAnObject("dogmaIM", "ClearTargets"), true, "on the dogma location's object, as every lock is made and let go");
+  // The entry says who asks and when, which the form of the call cannot show.
+  assert.match(RETAIL_CALLS["dogmaIM.ClearTargets"].note, /gameui/);
+  assert.match(RETAIL_CALLS["dogmaIM.ClearTargets"].note, /change of ship in space/);
+  for (const [args, kwargs, why] of [[[9001], null, "a target"], [[[9001, 9002]], null, "a list of targets"], [[null], null, "nothing, said"], [[], { all: true }, "a keyword"]]) {
+    const odd = clear(args, kwargs);
+    assert.deepEqual([odd.status, odd.args, odd.kwargs], ["differs", args, kwargs], why);
+    assert.match(odd.note, /sends nothing/, why);
+  }
+});
+
 test("the survey scan is the client's with nothing sent", () => {
   // asteroid_scanning_service.py 134: sm.RemoteSvc('miningScanMgr').perform_scan(), by the service's name and
   // with no argument. No recording has one.

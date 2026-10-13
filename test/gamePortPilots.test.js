@@ -565,18 +565,36 @@ test("in space, in another ship, the scene's own ship is that ship: the client m
   // Another ball of this grid, for the ship the pilot is now in.
   const other = before.entities.find((row) => !row.isSelf && row.kind === "ship") ?? before.entities.find((row) => !row.isSelf);
   const shipIs = (shipID, from) => { built.session.attributes.shipid = shipID; built.session.change({ shipid: [from, shipID] }); };
+  /** What the dogma location was asked to clear: gameui 621 starts target.ClearTargets, which is its ClearTargets() (targetMgr.py 1419). */
+  const cleared = () => built.session.boundCalls.filter((call) => call.method === "ClearTargets").map((call) => [call.args, call.kwargs]);
+  const settle = async () => { for (let turn = 0; turn < 10; turn += 1) await new Promise((resolve) => setImmediate(resolve)); };
+  assert.deepEqual(cleared(), []);
   shipIs(other.itemID, SHIP);
+  await settle();
+  // The client asks its dogma location to clear every lock, with nothing sent, once. Both of Tranquility's
+  // recordings of a change of ship in space have it within a third of a second of the session's change.
+  assert.deepEqual(cleared(), [[[], null]]);
+  assert.deepEqual(built.pilots.callLedger().find((row) => row.pair === "dogmaIM.ClearTargets").statuses, { same: 1 });
   const after = (await built.pilots.readSpaceSnapshot(handle)).space;
   assert.deepEqual([after.shipID, after.ship.itemID, after.entities.filter((row) => row.isSelf).map((row) => row.itemID)], [other.itemID, other.itemID, [other.itemID]]);
   assert.equal(after.entities.length, before.entities.length, "the same park: nothing was asked for again");
   // A ship whose ball has not come: the ego waits for it, and is the old one meanwhile, as the client's is.
   shipIs(987654321, other.itemID);
+  await settle();
+  assert.equal(cleared().length, 2, "at each change of ship in space, whether its ball has come or not");
   const waiting = (await built.pilots.readSpaceSnapshot(handle)).space;
   assert.deepEqual([waiting.shipID, waiting.ship.itemID, hand.parks[0].space.park.wannaBeEgo], [987654321, other.itemID, 987654321]);
   // No ship at all (the session's ship let go): nothing is changed, and nothing waited for anew.
   built.session.attributes.shipid = null;
   built.session.change({ shipid: [987654321, null] });
+  await settle();
   assert.deepEqual([hand.parks[0].space.park.ego, hand.parks[0].space.park.wannaBeEgo], [other.itemID, 987654321]);
+  assert.equal(cleared().length, 2, "and not for no ship");
+  // A change that is not the ship's asks nothing either.
+  built.session.attributes.fleetid = 77;
+  built.session.change({ fleetid: [null, 77] });
+  await settle();
+  assert.equal(cleared().length, 2);
   assert.deepEqual(hand.errors, []);
 });
 
@@ -592,16 +610,52 @@ test("a change of ship that comes with a change of system is the new ballpark's 
   const old = hand.parks[0].space.park;
   Object.assign(built.session.attributes, { shipid: other.itemID, solarsystemid: SYSTEM + 1, solarsystemid2: SYSTEM + 1 });
   built.session.change({ shipid: [SHIP, other.itemID], solarsystemid: [SYSTEM, SYSTEM + 1], solarsystemid2: [SYSTEM, SYSTEM + 1], locationid: [SYSTEM, SYSTEM + 1] });
+  for (let turn = 0; turn < 10; turn += 1) await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual([old.ego, old.wannaBeEgo], [SHIP, null]);
+  // Nor is the dogma location asked to clear anything: that is the same arm of gameui's as the ego's.
+  assert.deepEqual(built.session.boundCalls.filter((call) => call.method === "ClearTargets"), []);
   // And the pilot has a ballpark of the new system, with a state of its own to come.
   assert.equal(hand.parks.length, 2);
   assert.deepEqual([hand.parks[1].space.park.ego, hand.parks[1].space.park.wannaBeEgo], [null, null]);
 });
 
-test("docked, a change of ship has no ballpark to tell", async () => {
+test("a change of ship that leaves the pilot docked in a structure is the structure's arm of gameui: no lock is cleared, and the ballpark is told nothing", async () => {
+  // gameui.OnSessionChanged (466): session.structureid is not None, and it is _HandleSessionChangeInStructure.
+  const hand = handTicked();
+  const built = build(IN_SPACE, hand.options);
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
+  for (const update of recordedUpdates.slice(0, 5)) built.session.notify("DoDestinyUpdate", update.args);
+  hand.parks[0].tick();
+  const other = (await built.pilots.readSpaceSnapshot(handle)).space.entities.find((row) => !row.isSelf);
+  const park = hand.parks[0].space.park;
+  Object.assign(built.session.attributes, { shipid: other.itemID, structureid: 1030000000001 });
+  built.session.change({ shipid: [SHIP, other.itemID], structureid: [null, 1030000000001] });
+  for (let turn = 0; turn < 10; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(built.session.boundCalls.filter((call) => call.method === "ClearTargets"), []);
+  assert.deepEqual([park.ego, park.wannaBeEgo], [SHIP, null]);
+  assert.deepEqual(hand.errors, []);
+});
+
+test("out of a structure and into another ship, with no ballpark made yet: nothing is told, and nothing fails", async () => {
+  const STRUCTURE_HELD = 1030000000001;
+  // (The ballpark the pilot is given once it is in space is one whose clock the test holds.)
+  const hand = handTicked();
+  const built = build({ answers: { "charUnboundMgr.GetCharacterSelectionData": selectionData([characterRow({ stationID: null, structureID: STRUCTURE_HELD })]) } }, hand.options);
+  await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  Object.assign(built.session.attributes, { stationid: null, structureid: null, solarsystemid: SYSTEM, shipid: 77 });
+  built.session.change({ shipid: [SHIP, 77], structureid: [STRUCTURE_HELD, null] });
+  for (let turn = 0; turn < 10; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(built.session.boundCalls.filter((call) => call.method === "ClearTargets"), []);
+  assert.deepEqual(hand.errors, []);
+});
+
+test("docked, a change of ship has no ballpark to tell, and no lock to clear", async () => {
   const { session, pilots, handle } = await selected();
   session.attributes.shipid = 77;
   session.change({ shipid: [SHIP, 77] });
+  for (let turn = 0; turn < 10; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(session.boundCalls.filter((call) => call.method === "ClearTargets"), []);
   assert.equal((await pilots.readFlightStatus(handle, FIELDS)).flight.shipID, 77);
 });
 

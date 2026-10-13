@@ -1875,6 +1875,7 @@ const RETAIL_CALLS = Object.freeze({
   "dogmaIM.GetTargets": same(`${GODMA}:2361`, "GetDogmaLM().GetTargets(), no arguments"),
   "dogmaIM.AddTarget": judged(`${TARGET_MGR}:1366`, lockingATarget, "GetDogmaLM().AddTarget(targetID), by TryLockTarget (1305): for no thing the client has locked or is locking. Recorded on Tranquility 223 times, the target a long."),
   "dogmaIM.CancelAddTarget": judged(`${TARGET_MGR}:1303`, callingOffALock, "GetDogmaLM().CancelAddTarget(targetID), of a lock still being made. No recording has one."),
+  "dogmaIM.ClearTargets": judged(`${TARGET_MGR}:1420`, sentWithNothing, "GetDogmaLM().ClearTargets(), nothing sent: every lock the ship has is let go. Its one caller in the client is gameui (parklife/gameui.py 621), at a change of ship in space with the system the same: a ship boarded there, or the capsule a pilot is left in when its ship is destroyed. The game port asks it then, of its own accord. Recorded on Tranquility three times (a pilot killed to its capsule, an eject and a boarding in space), each the same bytes, within a third of a second of the session's change."),
   "dogmaIM.RemoveTarget": judged(`${TARGET_MGR}:1385`, lettingGoOfATarget, "GetDogmaLM().RemoveTarget(targetID), of a thing the client has locked (1384). Recorded on Tranquility 4 times, the target a long."),
   "dogmaIM.SetModuleOnline": same(`${CLIENT_DOGMA}:702`, "SetModuleOnline(the ship the module is in, moduleID)"),
   "dogmaIM.TakeModuleOffline": same(`${CLIENT_DOGMA}:718`, "TakeModuleOffline(the ship the module is in, moduleID)"),
