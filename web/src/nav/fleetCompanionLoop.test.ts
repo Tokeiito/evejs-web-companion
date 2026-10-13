@@ -3382,8 +3382,10 @@ test("the stand-down clears its record once everything it lit is off, issuing NO
   const decision = decideCompanionAction(
     REQUEST,
     // Nothing in the record is cycling any more -- ended on its own, or already
-    // switched off over the last few ticks.
-    tankObs({ hostileOnGrid: false, snapshot: gridWithShipsAndActive([], []) }),
+    // switched off over the last few ticks. The commander is docked, so the
+    // rejoin warp (rung 9b) has nowhere to go and the tick stays a plain wait.
+    tankObs({ hostileOnGrid: false, snapshot: gridWithShipsAndActive([], []),
+      fleetCommanderWhereabouts: [{ characterID: HUMAN, solarSystemID: null, stationID: 60000001 }] }),
     memory,
   );
   assert.equal(decision.action.kind, "wait");
@@ -11360,4 +11362,193 @@ test("a failed call's result line carries the ladder's verdict", async () => {
   controller.start(REQUEST);
   await controller.tick();
   assert.equal(lines.find((line) => line.kind === "result")!.verdict, undefined, "a call that landed has none");
+});
+
+// --- rung 9b: rejoin the commander --------------------------------------------
+//
+// Seen live 2026-10-13, three pilots, each the same: a pilot hurt in a site fled,
+// repaired, undocked "to rejoin the fleet" -- and then stood by for minutes,
+// "no commander on this grid", with the commander at the site in the same
+// system. The return leg ended at the undock. These pin the rest of it.
+
+/** Out in space beside the station it fled to, whole, with the commander elsewhere. */
+function rejoinObs(overrides: Partial<FleetCompanionObservation> = {}): FleetCompanionObservation {
+  return obs({
+    health: 1,
+    hostileOnGrid: false,
+    snapshot: gridWithStation(5_000),
+    flightStatus: inSystem(HOME_SYSTEM),
+    ...overrides,
+  });
+}
+
+const REJOIN_WARP = { kind: "warpToFleetMember", characterID: HUMAN } as const;
+
+test("after the flee's undock, a pilot whose commander is elsewhere warps to it, and holds station on landing", () => {
+  const undocked = decideCompanionAction(REQUEST, dockedAfterFleeing(), fleeing(SHIELD_ONLY));
+  assert.deepEqual(undocked.action, { kind: "undock" });
+
+  const warp = decideCompanionAction(REQUEST, rejoinObs(), undocked.memory);
+  assert.deepEqual(warp.action, REJOIN_WARP);
+  assert.equal(warp.phase, "Rejoining the fleet");
+  assert.equal(warp.why, "Rejoining the fleet: warping to the commander.");
+
+  const midWarp = decideCompanionAction(REQUEST, rejoinObs({ inWarp: true }), warp.memory);
+  assert.equal(midWarp.phase, "In warp");
+  assert.equal(midWarp.memory.rejoin?.seen, true, "the mid-warp tick is the one that sees the warp");
+
+  const landed = decideCompanionAction(REQUEST, rejoinObs({ snapshot: fcGrid() }), midWarp.memory);
+  assert.deepEqual(landed.action, { kind: "keepAtRange", targetID: FC_SHIP, range: DEFAULT_FOLLOW_M });
+  assert.equal(landed.memory.rejoin, null, "the commander found, the rejoin is over");
+});
+
+test("a commander on this grid is followed, never warped to", () => {
+  const decision = decideCompanionAction(REQUEST, rejoinObs({ snapshot: fcGrid() }));
+  assert.deepEqual(decision.action, { kind: "keepAtRange", targetID: FC_SHIP, range: DEFAULT_FOLLOW_M });
+});
+
+test("one warp per landing: a warp the server took is waited on while the ship aligns", () => {
+  const warp = decideCompanionAction(REQUEST, rejoinObs());
+  const taken: CompanionLadderMemory = { ...warp.memory, rejoin: { ...warp.memory.rejoin!, status: "issued" } };
+  const aligning = decideCompanionAction(REQUEST, rejoinObs(), taken);
+  assert.deepEqual(aligning.action, { kind: "wait" });
+  assert.equal(aligning.phase, "Rejoining the fleet");
+});
+
+test("landings that do not find the commander are tries spent, and the rejoin backs off after three", () => {
+  let memory = freshLadderMemory();
+  const sent: string[] = [];
+  for (let landing = 0; landing < 4; landing += 1) {
+    const decision = decideCompanionAction(REQUEST, rejoinObs(), memory);
+    sent.push(decision.action.kind);
+    memory = decideCompanionAction(REQUEST, rejoinObs({ inWarp: true }), decision.memory).memory;
+  }
+  assert.deepEqual(sent, ["warpToFleetMember", "warpToFleetMember", "warpToFleetMember", "wait"]);
+  const backedOff = decideCompanionAction(REQUEST, rejoinObs(), memory);
+  assert.equal(backedOff.phase, "Standing by");
+  assert.match(backedOff.why, /^Cannot warp to the commander: the warp landed where the commander was not\./);
+});
+
+test("a refused rejoin warp is tried a bounded number of times, then says why and backs off", async () => {
+  let warps = 0;
+  const companion = createFleetCompanion(makeDeps({
+    observe: async () => rejoinObs(),
+    issue: async (action) => {
+      if (action.kind === "warpToFleetMember") {
+        warps += 1;
+        throw Object.assign(new Error("Refused"), { code: "CALL_REFUSED" });
+      }
+    },
+  }).deps);
+  companion.start(REQUEST);
+  for (let tick = 0; tick < 4; tick += 1) await companion.tick();
+  assert.equal(warps, 3);
+  assert.equal(companion.snapshot().phase, "Standing by");
+  assert.match(companion.snapshot().why ?? "", /^Cannot warp to the commander: the server refused the warp\./);
+  for (let tick = 0; tick < COMPANION_RETRY_BACKOFF_TICKS - 2; tick += 1) await companion.tick();
+  assert.equal(warps, 3, "nothing is sent during the back-off");
+  for (let tick = 0; tick < 2; tick += 1) await companion.tick();
+  assert.equal(warps, 4, "the tries start over once the back-off is spent");
+  assert.equal(companion.snapshot().status, "running");
+});
+
+test("a lost answer is resent after a short wait, and counts as a try", async () => {
+  let warps = 0;
+  const companion = createFleetCompanion(makeDeps({
+    observe: async () => rejoinObs(),
+    issue: async (action) => {
+      if (action.kind === "warpToFleetMember") {
+        warps += 1;
+        throw Object.assign(new Error("socket hang up"), { code: "BRIDGE_NETWORK_ERROR" });
+      }
+    },
+  }).deps);
+  companion.start(REQUEST);
+  await companion.tick();
+  assert.equal(warps, 1);
+  for (let tick = 0; tick < COMPANION_RESEND_WAIT_TICKS; tick += 1) await companion.tick();
+  assert.equal(warps, 1, "not resent inside the wait");
+  await companion.tick();
+  assert.equal(warps, 2);
+  for (let tick = 0; tick < 12; tick += 1) await companion.tick();
+  assert.equal(warps, 3, "bounded: three tries, then the back-off");
+  assert.match(companion.snapshot().why ?? "", /^Cannot warp to the commander: the server did not answer\./);
+});
+
+test("the rejoin goes only where the roster does not say the commander is docked or elsewhere", () => {
+  const docked = decideCompanionAction(REQUEST, rejoinObs({
+    fleetCommanderWhereabouts: [{ characterID: HUMAN, solarSystemID: HOME_SYSTEM, stationID: 60000001 }],
+  }));
+  assert.deepEqual(docked.action, { kind: "wait" });
+  assert.match(docked.why, /commander is docked/);
+
+  const elsewhere = decideCompanionAction(REQUEST, rejoinObs({
+    fleetCommanderWhereabouts: [{ characterID: HUMAN, solarSystemID: SYSTEM_B, stationID: null }],
+  }));
+  assert.deepEqual(elsewhere.action, { kind: "wait" });
+  assert.match(elsewhere.why, /another solar system/);
+
+  const here = decideCompanionAction(REQUEST, rejoinObs({
+    fleetCommanderWhereabouts: [{ characterID: HUMAN, solarSystemID: HOME_SYSTEM, stationID: null }],
+  }));
+  assert.deepEqual(here.action, REJOIN_WARP);
+
+  const unsaid = decideCompanionAction(REQUEST, rejoinObs({ fleetCommanderWhereabouts: null }));
+  assert.deepEqual(unsaid.action, REJOIN_WARP, "not knowing is a reason to try, not to stay");
+});
+
+test("a pilot that is itself the commander has nobody to rejoin", () => {
+  const decision = decideCompanionAction(REQUEST, rejoinObs({ fleetCommanderCharacterIDs: [COMPANION] }));
+  assert.notEqual(decision.action.kind, "warpToFleetMember");
+});
+
+test("drones out come home before the rejoin warp", () => {
+  // Rung 6 calls idle drones home first; the rejoin then holds on the rules a
+  // fleet order to leave keeps (`recallBeforeLeavingOnOrder`) until they are in.
+  let memory = freshLadderMemory();
+  for (let tick = 0; tick < 3; tick += 1) {
+    const decision = decideCompanionAction(REQUEST, rejoinObs({ myDroneIDs: [DRONE_A] }), memory, 1_000 + tick * 2_000);
+    assert.notEqual(decision.action.kind, "warpToFleetMember", `tick ${tick}`);
+    memory = decision.memory;
+  }
+  const home = decideCompanionAction(REQUEST, rejoinObs({ myDroneIDs: [] }), memory, 8_000);
+  assert.deepEqual(home.action, REJOIN_WARP);
+});
+
+test("the rejoin never fights the flee, a stop, a fleet order, a trip, the warp or an empty fleet", () => {
+  const rejoined = (decision: CompanionDecision): boolean => decision.action.kind === "warpToFleetMember";
+
+  const notWell = decideCompanionAction(REQUEST, rejoinObs({ health: REQUEST.fleeHealthFloor + 0.1 }));
+  assert.ok(!rejoined(notWell), "below the return mark");
+  assert.match(notWell.why, /not well enough/);
+
+  const repairing = decideCompanionAction(REQUEST, dockedAfterFleeing({ damagedItemIDs: [SHIP_ITEM] }), fleeing());
+  assert.ok(!rejoined(repairing), "docked waiting for repairs");
+  assert.equal(repairing.phase, "Safe");
+
+  const spent = decideCompanionAction(REQUEST, rejoinObs(),
+    { ...freshLadderMemory(), fleeTripsSpent: REQUEST.maxFleeAttempts });
+  assert.ok(!rejoined(spent), "out of flee trips");
+  assert.match(spent.why, /flee round trips/);
+
+  const held = decideCompanionAction(REQUEST, rejoinObs(), { ...freshLadderMemory(), followHeld: true });
+  assert.ok(!rejoined(held), "a stop holds it");
+
+  const trip = decideCompanionAction(REQUEST, rejoinObs(),
+    { ...freshLadderMemory(), destinationSystemID: SYSTEM_B, destinationRoutedFor: SYSTEM_B });
+  assert.ok(!rejoined(trip), "a destination trip");
+  assert.equal(trip.phase, "Travelling");
+
+  const ordered = decideCompanionAction(REQUEST,
+    rejoinObs({ fleetBroadcast: fleetBroadcast("WarpTo", 60000001) }),
+    { ...freshLadderMemory(), lastWarpedToID: 60000001 });
+  assert.ok(!rejoined(ordered), "a standing fleet order");
+  assert.equal(ordered.phase, "Obeying fleet");
+
+  const unsupervised = decideCompanionAction(REQUEST, rejoinObs({ botDrivenCharacterIDs: [HUMAN, COMPANION] }));
+  assert.ok(!rejoined(unsupervised), "nobody is supervising");
+
+  const warping = decideCompanionAction(REQUEST, rejoinObs({ inWarp: true }));
+  assert.deepEqual(warping.action, { kind: "wait" });
+  assert.equal(warping.phase, "In warp");
 });
