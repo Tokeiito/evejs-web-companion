@@ -1389,6 +1389,15 @@ and keeps the number; `OnNonDiminishingInjectionsAdded(amount)` and `OnNonDimini
 it up and down, `OnNonDiminishingInjectionsRemoved()` sets it to nought (27 to 42); `GetRemaining` answers what is
 kept (44 to 47). Tranquility's recordings of a login each have the one call, answered 0. The game port asks it so
 since `a293316f`, at the choosing between the bookmarks and the character's settings.
+The season service (`seasons/client/seasonservice.py`). As a character comes onto the session
+(`ProcessSessionChange`, 64 to 67) it initialises once for that character (69 to 82): it asks
+`sm.RemoteSvc('seasonManager').get_season_data_for_character()` with nothing (`_fetch_season_data`, 268 to 279),
+which answers nothing where no season runs, a list where the character is to choose among several, or the
+season it is in; and where a season is the character's own (103 to 104) it asks its progress,
+`get_character_progress_by_character_id()` (`_fetch_character_data`, 281 to 288). The server's notices (a
+challenge's progress, completion, rewards and expiry, the seasonal goals, a season chosen, started or ended)
+change what it keeps from then. Tranquility's recordings of a login have the first call, answered nothing. The
+game port asks both so since `f020fef7`, at the choosing behind the standings, and keeps nothing.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
