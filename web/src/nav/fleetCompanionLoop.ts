@@ -1742,6 +1742,11 @@ export interface CompanionLadderMemory {
   /** Rung 5's flee, or null when the pilot is not running from anything. */
   readonly flee: CompanionFlee | null;
   /**
+   * The capsule's run to a station, from the first tick that reads the pilot in
+   * a capsule; null otherwise. See `decideShipLost`.
+   */
+  readonly shipLost: SafetyRun | null;
+  /**
    * Round trips this run has spent, against `request.maxFleeAttempts`.
    *
    * Counted UP rather than down so the readout can say "2 of 3" without
@@ -2002,6 +2007,7 @@ export function freshLadderMemory(): CompanionLadderMemory {
     lastWarpedToID: null,
     orderedLeaveRecall: null,
     flee: null,
+    shipLost: null,
     fleeTripsSpent: 0,
     fleeRecoverySinceMs: null,
     // ⚠ THE DEFAULT RANGE, NOT NULL. Following is the standing behaviour, so a
@@ -2186,6 +2192,7 @@ function nearestOf(
  * several left the prose behind, so it is written out here once rather than
  * assembled from the rung comments below:
  *
+ *     0  ship lost                  in a capsule: dock it, then stop
  *     1  yield to warp              server fleet warp wins, unconditionally
  *     2  supervision / abandonment  decision 5; getting safe lives here
  *     3  tank up                    hardeners, then each layer's repairer
@@ -2310,6 +2317,12 @@ function decideCompanionStep(
   // A readable flight change retires its old order even when a higher rung
   // consumes this tick. An unreadable list says nothing about a recall.
   memory = withObservedDroneFlights(obs, memory);
+  // ⚠ ABOVE THE WARP YIELD, because the capsule's run records its own warp as
+  // the yield does for the flee, and above supervision, because a pod docks
+  // whoever is in the fleet. `true` only: an older BFF omits the field.
+  if (obs.flightStatus?.shipIsCapsule === true) {
+    return decideShipLost(request, obs, memory);
+  }
   if (obs.inWarp === true) {
     // The one thing a mid-warp tick still RECORDS. Nothing may be issued here,
     // but this reading is the only confirmation the get-safe step ever gets
@@ -2433,6 +2446,7 @@ function decideCompanionStep(
     // mean a supervisor logging back in cancelled a flee mid-warp and left a
     // hurt pilot sitting on the grid it was leaving.
     flee: memory.flee,
+    shipLost: memory.shipLost,
     fleeTripsSpent: memory.fleeTripsSpent,
     fleeRecoverySinceMs: memory.fleeRecoverySinceMs,
     // Carried, every one of them. A human turning up says nothing about where
@@ -3128,6 +3142,15 @@ function runToSafety(
     return recall;
   }
   const measurement = measureSpace(snapshot);
+  // ⚠ NO SHIP IN THE SNAPSHOT IS NOT "NO STATION IN VIEW". Without the ship's
+  // own row nothing can be measured, so `nearestOf` finds no station however
+  // many there are, and a warp to the sun could never be seen to start or land.
+  // Seen 2026-10-12: the game port's park kept a destroyed ship as its own, the
+  // capsule's snapshot had no ship of its own, and the pilot warped to the sun
+  // from beside a station it could not see.
+  if (measurement === null) {
+    return waiting(leg.phase, "Cannot tell where this ship is in space, so nothing is decided this tick.", mem);
+  }
   const target = nearestOf(
     snapshot.entities.filter((entity) => DOCKABLE_KINDS.has(entity.kind ?? "")),
     measurement,
@@ -3245,6 +3268,69 @@ function sunOnGrid(obs: FleetCompanionObservation): number | null {
     }
   }
   return null;
+}
+
+// ─── The ship is gone ────────────────────────────────────────────────────────
+
+const SHIP_LOST_PHASE = "Ship lost";
+const SHIP_LOST_DOCKED = "This pilot's ship was destroyed. Its capsule is docked, and the run has stopped.";
+const SHIP_LOST_AT_THE_SUN =
+  "This pilot's ship was destroyed. With no station in view its capsule warped to the sun, and the run has stopped there.";
+const SHIP_LOST_NOWHERE =
+  "This pilot's ship was destroyed, and there is no station or sun in view for its capsule. The run has stopped.";
+
+/**
+ * The pilot is in its capsule: the ship this run was flying is gone, and with
+ * it every module and drone the request names. Get the pod docked, then stop.
+ *
+ * ⚠ THE FLEE IS DROPPED. It was latched for a hull that no longer exists. Seen
+ * 2026-10-12: a ship destroyed while aligning out kept its flee, the capsule
+ * warped to the sun and landed, and the flee then asked for that same warp
+ * every two seconds for ten minutes, refused each time as too close
+ * (`WARP_DISTANCE_TOO_CLOSE`, warpCommands.js `warpToPoint`: under 150 km).
+ *
+ * ⚠ DOCKED, NOT WHERE IT FLOATS. The script runner's rule for a capsule
+ * (`IN_A_CAPSULE`, scriptRunner.ts): a pod parked in space is still a target,
+ * and it can dock. So the flee's own ladder flies it, nearest station else the
+ * sun, and the run stops docked, at the sun, or at once with neither. A stop,
+ * not a pause: nothing the operator could resume has a ship to fly.
+ */
+function decideShipLost(
+  request: FleetCompanionRequest,
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+): CompanionDecision {
+  const running: SafetyRun = memory.shipLost ?? {
+    safeSpotWarpIssued: false,
+    safeSpotWarpSeen: false,
+    safeSpotWarpAttempts: 0,
+    safeSpotWarpWaited: 0,
+    // Spent from the start: a capsule has no drones to call home. Those still in
+    // space were the ship's, and the server abandoned them with it.
+    droneRecallWaited: MAX_GET_SAFE_RECALL_WAIT_TICKS,
+  };
+  const mem: CompanionLadderMemory = { ...memory, flee: null, shipLost: running };
+  if (obs.docked === true) {
+    return { ...waiting(SHIP_LOST_PHASE, "The capsule is docked.", mem), stop: SHIP_LOST_DOCKED };
+  }
+  if (obs.inWarp === true) {
+    // The one tick that can see the capsule's warp to the sun, as rung 1 is for the flee.
+    const seen = running.safeSpotWarpIssued ? { ...running, safeSpotWarpSeen: true } : running;
+    return waiting(SHIP_LOST_PHASE, "The capsule is in warp.", { ...mem, shipLost: seen });
+  }
+  if (reachedSafety(obs, running)) {
+    return { ...waiting(SHIP_LOST_PHASE, "The capsule is at the sun.", mem), stop: SHIP_LOST_AT_THE_SUN };
+  }
+  const safe = runToSafety(request, obs, mem, {
+    run: running,
+    phase: SHIP_LOST_PHASE,
+    because: "this pilot's ship was destroyed",
+    write: (m, run) => ({ ...m, shipLost: run }),
+  });
+  if (safe !== null) {
+    return safe;
+  }
+  return { ...waiting(SHIP_LOST_PHASE, "No station or sun in view.", mem), stop: SHIP_LOST_NOWHERE };
 }
 
 // ─── Rung 3: tank up ─────────────────────────────────────────────────────────
@@ -8833,6 +8919,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
       // reads its own health on the first tick and leaves again within one tick
       // if it still needs to.
       flee: null,
+      shipLost: null,
       fleeTripsSpent: 0,
       fleeRecoverySinceMs: null,
           // ⚠ A RESUMED RUN IS NOT FOLLOWING ANYBODY AND IS NOT ON A TRIP, and
