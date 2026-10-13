@@ -1447,6 +1447,17 @@ port makes the three so since `1b180463`: the wrap with False, on a session of t
 not kept. `browserLockdownSvc.GetFlaggedSitesHash` at a login is the sites service's, asked as its lists are
 populated for the chat's spam check (`chatutil/spam.py` 23; `carbonui/control/browser/sites.py` 348 to 354, 380 to
 398), and is not made.
+The client's own logging. `eventLog.LogClientStats(session.sid, locationID, package, crashes)`
+(`eve/client/script/sys/clientStatsSvc.py` 893, at the proxy) is the client's statistics of its own machine and
+drawing: gathered as the game is entered and at its states after (362 to 384), at each change of location (899 to
+903) and at its exit (311), each package the state's name, the character, the user, the session's sid, the date
+and the statistics' values (906 to 925; 928 on: the graphics card, the operating system, the graphics settings,
+frame times). `clientStatLogger.LogString(text)` is the report that no ballpark came after thirty tries a second
+apart (`eve/client/script/remote/michelle.py` 343 to 370), and the jump monitor's line where the server's global
+config has `useClientSideJumpMonitor` (`eve/client/script/util/jumpMonitor.py` 47 to 49, 97, 128, 132).
+Tranquility's recordings have the first in 27 files; the second after a login into space, and not after a docked
+one. The game port makes neither: it has nothing of what the first carries, and not the failure the second
+reports.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened

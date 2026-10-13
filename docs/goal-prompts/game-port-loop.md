@@ -3452,6 +3452,13 @@ Take these defaults, and list each under "For the operator" in the log so they c
   login's lines were looked for in the hour's file a minute after the
   hour had turned, and the count before the login and after it was
   the same.
+- **What a client told the server's loggers is in the hour logs at
+  debug level**, and not in a capture of the server's stdout
+  (`direct-tcp-real-client-*.stdout.log`), which has a call's name
+  alone: `grep -rhas "ClientStatLogger\] LogString"` over the logs
+  folder gave the text of three on 2026-10-13. A call whose
+  arguments matter is looked for there before it is said that they
+  are not on record.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
