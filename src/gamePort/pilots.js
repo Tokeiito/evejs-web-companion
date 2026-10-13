@@ -294,6 +294,17 @@ const OPERATIONS_MGR = "operationsManager";
 const MAY_PLAY_TUTORIAL = "can_character_play_the_tutorial";
 /** Whether a call is that read, asked as the client asks it: with the pilot's own character alone. */
 const keptMayPlayTutorial = (service, method, form, characterID) => service === OPERATIONS_MGR && method === MAY_PLAY_TUTORIAL && form.args.length === 1 && form.kwargs === null && positive(form.args[0]) === characterID;
+/** caching.Memoize with no argument (caching/memoize.py 12 to 34): what is kept is good for 108000 seconds, thirty hours. */
+const MEMOIZED_FOR_MS = 108000 * 1000;
+/** The insurgency campaign service's read of the campaigns a client may see (eve/client/script/ui/services/insurgencyCampaignSvc.py 92 to 98). */
+const INSURGENCY = "insurgencySolarsystem";
+const VISIBLE_CAMPAIGNS = "GetAllVisibleCampaigns";
+/** Whether a call is that read, asked as the client asks it: with nothing. */
+const keptVisibleCampaigns = (service, method, form) => service === INSURGENCY && method === VISIBLE_CAMPAIGNS && form.args.length === 0 && form.kwargs === null;
+/** @Memoize(0.5) on that read (insurgencyCampaignSvc.py 96; caching/memoize.py 35 to 36): half a minute. */
+const VISIBLE_CAMPAIGNS_GOOD_FOR_MS = 30 * 1000;
+/** The server's notices at which the campaigns kept are let go (insurgencyCampaignSvc.py 59 to 90: clear_memoized). */
+const CAMPAIGN_NOTICES = new Set(["OnInsurgencyCampaignStartedForLocation", "OnInsurgencyCampaignUpdatedForLocation", "OnInsurgencyCampaignEndingForLocation"]);
 const OFFICE_MANAGER = "officeManager";
 /**
  * What the client hands back to the server as it was answered, and so with the Python type it came with:
@@ -1543,9 +1554,12 @@ function createGamePortPilots({
       injectionsLeftWork: Promise.resolve(),
       /** milestoneSvc.timeLeft: when the login milestone's timer runs out, as the server last said it (OnMilestoneTimerStarted); null while it has said none since the logon. */
       milestoneTimeLeft: null,
-      /** is_npe_enabled_for_character's memoized answer for the pilot: whether it may play the tutorial; undefined while it was not asked. And its askings, one after another. */
+      /** is_npe_enabled_for_character's memoized answer for the pilot, whether it may play the tutorial, as { answer, until }; undefined while it was not asked. And its askings, one after another. */
       mayPlayTutorial: undefined,
       mayPlayTutorialWork: Promise.resolve(),
+      /** insurgencyCampaignSvc's memoized campaigns, as { answer, until }; undefined while none are kept. And their askings, one after another. */
+      visibleCampaigns: undefined,
+      visibleCampaignsWork: Promise.resolve(),
       /** The account's clone grade as the server last said it (clonegrade/const.py: 0 alpha, 1 omega): undefined while none is had. */
       cloneGrade: undefined,
       /** Whether the office's item was primed on the Moniker for where the pilot is docked (PRIME_OFFICE): its answer, kept while docked there. */
@@ -1630,6 +1644,9 @@ function createGamePortPilots({
         && positive(notification.args[0]) !== null && positive(notification.args[0]) === attribute(entry, "solarsystemid2")) {
         entry.bountyOutput = { answer: [notification.args[1], true], until: now() + BOUNTY_OUTPUT_GOOD_FOR_MS };
       }
+      // insurgencyCampaignSvc's three notices of a campaign where the client is (59 to 90): the campaigns kept are
+      // let go, and are asked for when they are next wanted.
+      if (CAMPAIGN_NOTICES.has(notification.method)) entry.visibleCampaigns = undefined;
       // milestoneSvc.OnMilestoneTimerStarted(timeLeft) (25 to 27): when the login milestone's timer runs out.
       if (notification.method === "OnMilestoneTimerStarted" && Array.isArray(notification.args) && notification.args.length === 1) entry.milestoneTimeLeft = notification.args[0];
       // nonDiminishingInjection's three notices (27 to 42): so many more, so many used, or none left. What is kept
@@ -1686,6 +1703,10 @@ function createGamePortPilots({
         entry.bountyOutputLetGo += 1;
         if (sessions.has(entry.handle)) bountyOutputRead(entry).catch(() => {});
       }
+      // The info panels are looked over again in another solar system, and the insurgency's asks whether the system
+      // is in a campaign (InfoPanelInsurgency.IsAvailable, 287 to 290): the campaigns, where those kept are more
+      // than half a minute old. (The choosing asks for them itself.)
+      if ("solarsystemid2" in changes && sessions.has(entry.handle)) visibleCampaignsRead(entry).catch(() => {});
       // shipFighterState.OnSessionChanged: the ship's fighters are asked for again at any change of the ship, to
       // whatever. (The choosing of the character asks them itself.)
       if ("shipid" in changes && sessions.has(entry.handle)) fightersAsked(entry).catch(() => {});
@@ -1903,6 +1924,10 @@ function createGamePortPilots({
       for (const monthAndYear of monthAndNext(session.serverNow())) {
         await keptRead(entry, CALENDAR_PROXY, "GetEventList", shape(CALENDAR_PROXY, "GetEventList", monthAndYear, null, contextFor(entry))).catch(() => {});
       }
+      // InfoPanelInsurgency.IsAvailable (287 to 290): the info panels are looked over as the pilot comes in, and the
+      // insurgency's asks whether the system is in a campaign, which reads the campaigns a client may see. In the
+      // retail client's own login, behind the calendar's events. A service that refuses fails no choosing.
+      await visibleCampaignsRead(entry).catch(() => {});
       // The achievements' eventHandler.OnSessionChanged: a character chosen has a ship on its session where it had
       // none, and that ship's free turret slots are owed: asked once godma has the ship.
       entry.turretSlotsOwed = attribute(entry, "shipid") !== null;
@@ -2069,6 +2094,12 @@ function createGamePortPilots({
     // the pilot's own character alone.
     if (keptMayPlayTutorial(service, method, form, entry.characterID)) {
       const kept = await run(entry, service, method, () => mayPlayTutorialRead(entry));
+      return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
+    }
+    // The campaigns a client may see are the insurgency campaign service's to answer, where they are asked as the
+    // client asks them: with nothing.
+    if (keptVisibleCampaigns(service, method, form)) {
+      const kept = await run(entry, service, method, () => visibleCampaignsRead(entry));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
     // How many non-diminishing injections the character has left is that service's to answer, where it is asked as
@@ -2677,7 +2708,8 @@ function createGamePortPilots({
   /**
    * operations.common.util.is_npe_enabled_for_character (operations/common/util.py 93 to 101):
    * sm.RemoteSvc('operationsManager').can_character_play_the_tutorial(character_id), by the service's name with the
-   * character alone, memoized for the character: asked once, and the answer kept as long as the client runs. Its
+   * character alone, memoized for the character: asked once, and the answer kept thirty hours (@Memoize with no
+   * argument, caching/memoize.py 12 to 34). Its
    * askers go by are_operations_active (operations/client/util.py 12 to 13), which is that of the session's own
    * character: the achievements' event handler, the operations' info panel and controller, the undock's questions,
    * the camera's tracker. Some of them start as a pilot comes in, so the one asking comes at a login. Tranquility's
@@ -2685,14 +2717,38 @@ function createGamePortPilots({
    */
   function mayPlayTutorialRead(entry) {
     const reading = entry.mayPlayTutorialWork.then(async () => {
-      if (entry.mayPlayTutorial === undefined) {
+      if (entry.mayPlayTutorial === undefined || now() >= entry.mayPlayTutorial.until) {
         const form = shape(OPERATIONS_MGR, MAY_PLAY_TUTORIAL, [entry.characterID], null, contextFor(entry));
         ledger.note(OPERATIONS_MGR, MAY_PLAY_TUTORIAL, form);
-        entry.mayPlayTutorial = await byName(entry.session, OPERATIONS_MGR, MAY_PLAY_TUTORIAL, form);
+        entry.mayPlayTutorial = { answer: await byName(entry.session, OPERATIONS_MGR, MAY_PLAY_TUTORIAL, form), until: now() + MEMOIZED_FOR_MS };
       }
-      return entry.mayPlayTutorial;
+      return entry.mayPlayTutorial.answer;
     });
     entry.mayPlayTutorialWork = reading.catch(() => {});
+    return reading;
+  }
+
+  /**
+   * insurgencyCampaignSvc.GetCurrentCampaignSnapshots_Memoized (eve/client/script/ui/services/
+   * insurgencyCampaignSvc.py 92 to 98): sm.RemoteSvc('insurgencySolarsystem').GetAllVisibleCampaigns(), by the
+   * service's name with nothing: the insurgency campaigns a client may see, a list. Kept half a minute
+   * (@Memoize(0.5)), and let go at the server's notices of a campaign where the client is (59 to 90). Its readers
+   * are the insurgency's dashboard service, the agency and the map; the one that asks of itself is the insurgency's
+   * info panel, whose IsAvailable (ui/shared/infoPanels/infoPanelInsurgency.py 287 to 290) asks whether the session's
+   * system is in a campaign each time the info panels are looked over: as the pilot comes in, and in each solar
+   * system. Tranquility's recordings have the call once at each login and once after each change of solar system.
+   * One asking at a time.
+   */
+  function visibleCampaignsRead(entry) {
+    const reading = entry.visibleCampaignsWork.then(async () => {
+      if (entry.visibleCampaigns && now() < entry.visibleCampaigns.until) return entry.visibleCampaigns.answer;
+      const form = shape(INSURGENCY, VISIBLE_CAMPAIGNS, [], null, contextFor(entry));
+      ledger.note(INSURGENCY, VISIBLE_CAMPAIGNS, form);
+      const answer = await byName(entry.session, INSURGENCY, VISIBLE_CAMPAIGNS, form);
+      entry.visibleCampaigns = { answer, until: now() + VISIBLE_CAMPAIGNS_GOOD_FOR_MS };
+      return answer;
+    });
+    entry.visibleCampaignsWork = reading.catch(() => {});
     return reading;
   }
 
