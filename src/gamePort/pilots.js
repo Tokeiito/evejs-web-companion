@@ -1381,6 +1381,8 @@ function createGamePortPilots({
       /** The pilot's agents' journal as the client's journal service keeps it (pilotJournal.js), and the readings of it, one after another. */
       journal: createPilotJournal(),
       journalWork: Promise.resolve(),
+      /** The askings after each accepted mission, one after another (missionInfoAsked). */
+      missionInfoWork: Promise.resolve(),
       /** The facilities asked for by themselves at the server's word or a job's refusal, one after another (facilitiesAskedAfresh). */
       facilitiesWork: Promise.resolve(),
       /** facilitySvc.GetFacilityLocations's own keeping: a facility's places for an owner, by the two, each with when it was answered. */
@@ -1517,6 +1519,9 @@ function createGamePortPilots({
       // shipFighterState.OnSessionChanged: the ship's fighters are asked for again at any change of the ship, to
       // whatever. (The choosing of the character asks them itself.)
       if ("shipid" in changes && sessions.has(entry.handle)) fightersAsked(entry).catch(() => {});
+      // missionObjectivesTracker.OnSessionChanged (89 to 94): at any change of the session with a character on it,
+      // each accepted mission's agent is asked what is left of it. (The choosing of the character asks them itself.)
+      if (sessions.has(entry.handle)) missionInfoAsked(entry).catch(() => {});
       // gameui.OnSessionChanged (462 to 469) and _HandleSessionChangeInSpace (619 to 630): in space after the
       // change, in another ship, in the same system, and with a ballpark. In another system the ballpark is a new
       // one, with a state of its own; docked, it is the station's or the structure's arm of gameui, which does neither.
@@ -1633,6 +1638,9 @@ function createGamePortPilots({
       await primeSkills(entry);
       // journal._UpdateMissionDataFull: a character chosen has its agents' journal read, for the missions it is on.
       await journalUpToDate(entry).catch(() => {});
+      // missionObjectivesTracker.OnSessionChanged: a character chosen has each mission it has accepted asked after,
+      // of the journal just read. A manager that refuses fails no choosing.
+      await missionInfoAsked(entry).catch(() => {});
       // shipFighterState.OnSessionChanged: the ship on the session, its fighters are asked for. After the journal and
       // before the bookmarks, as the client's own login has it. A manager that refuses fails no choosing.
       await fightersAsked(entry).catch(() => {});
@@ -2595,6 +2603,54 @@ function createGamePortPilots({
    */
   const fightersAsked = (entry) => asks(entry, "fighterMgr", "GetFightersForShip");
 
+  /** appConst.agentMissionStateAccepted. */
+  const AGENT_MISSION_STATE_ACCEPTED = 2;
+  /** A journal's time as a number to put in order by; null where it has none. */
+  const journalTime = (value) => (typeof value === "bigint" ? value : typeof value === "number" && Number.isFinite(value) ? BigInt(Math.trunc(value)) : null);
+
+  /**
+   * missionObjectivesTracker.GetAgentMissions (missions/client/missionObjectivesTracker.py 52 to 82): the agents of
+   * the journal's missions that the pilot has accepted and that have not run out, in the order of their running
+   * out (SortListOfTuples by expirationTime; one with no time comes first, as Python 2 puts None before a number).
+   */
+  function acceptedMissionAgents(journal, wallclock) {
+    const missions = [];
+    for (const mission of journal ? journal[0].items : []) {
+      if (!Array.isArray(mission)) continue;
+      const expirationTime = journalTime(mission[5]);
+      if (Number(mission[0]) !== AGENT_MISSION_STATE_ACCEPTED || (expirationTime && expirationTime < wallclock)) continue;
+      const agentID = positive(mission[4]);
+      if (agentID !== null) missions.push({ expirationTime, agentID });
+    }
+    // Array.prototype.sort is stable, as Python's sorted is.
+    missions.sort((a, b) => (a.expirationTime === b.expirationTime ? 0 : a.expirationTime === null ? -1 : b.expirationTime === null ? 1 : a.expirationTime < b.expirationTime ? -1 : 1));
+    return missions.map((mission) => mission.agentID);
+  }
+
+  /**
+   * missionObjectivesTracker._InitializeCurrentAgentMissionInfo (267 to 272) and _UpdateCurrentAgentMissionInfo (274
+   * to 279): the client keeps, for each mission the pilot has accepted, what the server says is left of it, and
+   * asks it afresh of every one, one after another: sm.RemoteSvc('missionTrackerMgr').GetMissionInfoItems(agentID),
+   * by the service's name. It does so at every change of its session once a character is on it (OnSessionChanged,
+   * 89 to 94, by UpdateMissionStatusForSessionChange, 213) and as each warp ends (OnClientEvent_WarpFinished, 84 to
+   * 87). The missions are read from the journal (GetAgentMissions asks the journal service for them, which reads
+   * what it has to). With none accepted nothing is asked. Tranquility's recordings have it so: a pilot on three
+   * missions, three calls at each session change and three at each warp's end. No page shows what is answered
+   * yet: it is asked as the client asks it, and nothing is kept of the answer.
+   */
+  function missionInfoAsked(entry) {
+    const asking = entry.missionInfoWork.then(async () => {
+      await journalUpToDate(entry);
+      for (const agentID of acceptedMissionAgents(entry.journal.read(), filetime(now()))) {
+        const form = shape("missionTrackerMgr", "GetMissionInfoItems", [agentID], null, contextFor(entry));
+        ledger.note("missionTrackerMgr", "GetMissionInfoItems", form);
+        await byName(entry.session, "missionTrackerMgr", "GetMissionInfoItems", form);
+      }
+    });
+    entry.missionInfoWork = asking.catch(() => {});
+    return asking;
+  }
+
   /**
    * An account's connection: the retail client at its character selection and
    * creation screens, logged in as the account and nothing more. One for an
@@ -2811,7 +2867,21 @@ function createGamePortPilots({
       entry.lastMove = null;
     }
     if (wanted !== null && !entry.space) {
-      entry.space = createSpace({ session: entry.session, solarSystemID: wanted, sleep, simTime: entry.clock.simTime, askFormations: () => formationsKnown(entry), onError: (error, what) => onSpaceError(error, what, entry.characterID) });
+      entry.space = createSpace({
+        session: entry.session,
+        solarSystemID: wanted,
+        sleep,
+        simTime: entry.clock.simTime,
+        askFormations: () => formationsKnown(entry),
+        onError: (error, what) => onSpaceError(error, what, entry.characterID),
+        // missionObjectivesTracker.OnClientEvent_WarpFinished (84 to 87): as a warp of the pilot's own ship ends, each
+        // accepted mission's agent is asked what is left of it. The client's event comes of its warp effect, which
+        // looks every half second of the simulation whether the ship's ball is still in warp
+        // (environment/effects/Warp.py, 523); here it is the ball's own leaving of warp.
+        onPost: (name, id) => {
+          if (name === "OnDeactivatingWarp" && sessions.has(entry.handle) && positive(id) === positive(attribute(entry, "shipid"))) missionInfoAsked(entry).catch(() => {});
+        },
+      });
       // michelle.DoDestinyUpdate: the dogma messages riding with a ballpark update are scattered as OnMultiEvent, which is godma's.
       entry.space.park.onMultiEvent = (messages) => entry.dogma.multiEvent(messages);
       // targetMgr.DoBallsRemove: a ball that goes is no target any more.
