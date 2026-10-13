@@ -1434,6 +1434,19 @@ The redeem service (`eve/client/script/ui/services/redeemsvc.py`). `FetchRedeemT
 `OnRedeemingQueueUpdated` (162 to 169), and at a claim's end (127); `ClaimRedeemTokens(tokens, charID,
 useHomeStation)` is the player's (99 to 131). The character selection screen reads the tokens too, before a
 character is chosen. The game port fetches so since `bf601703`, from the choosing on; the claiming is not made.
+Project Discovery's client service (`projectdiscovery/client/baseservice.py`, and the Covid project's over it,
+`projects/covid/service.py`, which is the one the client runs: `projectdiscoveryClientSvc.py` 10 to 16). At a
+change of the session's character, where the character is not the one it had, it asks
+`sm.RemoteSvc('ProjectDiscovery').initialize_tutorial_status()` with nothing and keeps the bool (22 to 30); its
+`is_enabled` (`baseservice.py` 39 to 42) asks `is_enabled()` with nothing while none is kept, and the neocom asks
+that of its button for the project (`btnDataNode.py` 478 to 485). The localization client
+(`carbon/client/script/localization/localizationClient.py` 24 to 27), as a first character comes onto a session
+whose role has `ROLE_QA` (`serviceConst.py` 30), tells `localizationServer.UpdateLocalizationQAWrap` whether any of
+the client's QA settings of its texts is on (`localization/settings/qaSettings.py` 53 to 65), one bool. The game
+port makes the three so since `1b180463`: the wrap with False, on a session of the role alone; the tutorial's answer
+not kept. `browserLockdownSvc.GetFlaggedSitesHash` at a login is the sites service's, asked as its lists are
+populated for the chat's spam check (`chatutil/spam.py` 23; `carbonui/control/browser/sites.py` 348 to 354, 380 to
+398), and is not made.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened

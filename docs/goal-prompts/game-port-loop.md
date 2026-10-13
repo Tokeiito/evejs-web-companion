@@ -3443,6 +3443,15 @@ Take these defaults, and list each under "For the operator" in the log so they c
   asking (the redeeming's tokens: asked at the character selection
   screen, which the game port has none of, and again from the choosing
   on).
+- **The server's live log is `server.log`.** It has the lines of
+  the hour that is running; an hour gone by is in
+  `server.<date>_<hour>.log` (measured 2026-10-13: the 22nd hour's
+  file ran from 22:00:46 to 22:59:46 and `server.log` began at
+  23:00:46). A login's lines are counted in `server.log`, and the
+  login's report is made within the hour of the login. That day a
+  login's lines were looked for in the hour's file a minute after the
+  hour had turned, and the count before the login and after it was
+  the same.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
