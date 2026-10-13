@@ -304,6 +304,7 @@ const INITIAL_INDUSTRY: IndustryState = Object.freeze({
   jobsError: null,
   facilitiesError: null,
   actionError: null,
+  materialsSaid: null,
 });
 
 // R16 market. Every read is independent, so each keeps its own error: a public
@@ -1421,6 +1422,17 @@ export function createClientStore(): ClientStore {
         break;
       case "industry/action-error":
         industry.set({ ...industry.get(), actionError: event.message });
+        break;
+      case "industry/materials-said":
+        // Each telling is counted: a window knows by the count what was said since it last asked.
+        industry.set({
+          ...industry.get(),
+          materialsSaid: {
+            monitorID: event.monitorID,
+            available: event.available,
+            seq: (industry.get().materialsSaid?.seq ?? 0) + 1,
+          },
+        });
         break;
       case "industry/cleared":
         industry.set(INITIAL_INDUSTRY);

@@ -1142,6 +1142,11 @@ export interface IndustryPreviewResult {
    * which the server holds against its own. Null where they were not reckoned: the server then works them out alone.
    */
   readonly materials: Readonly<Record<string, number>> | null;
+  /**
+   * The number of the monitor the server keeps for the job, where the pilot's transport keeps it open: the
+   * server's notice of what the job's place has names it (OnIndustryMaterials). Null where it was let go.
+   */
+  readonly monitorID: number | null;
 }
 
 /**
@@ -1172,6 +1177,7 @@ export async function previewIndustryJob(
     timeSeconds: typeof reckoned === "number" && Number.isSafeInteger(reckoned) && reckoned > 0 ? reckoned : null,
     fee: decodeJobFee(data.fee),
     materials: decodeJobMaterials(data.materials),
+    monitorID: typeof data.monitorID === "number" && Number.isSafeInteger(data.monitorID) && data.monitorID > 0 ? data.monitorID : null,
   };
 }
 

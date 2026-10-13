@@ -33,6 +33,7 @@
   } from "../bridge/industry.ts";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { decryptorEffectWords, type DecryptorTerms } from "../bridge/industryInvention.ts";
+  import { placeHasNow } from "../bridge/industryMaterials.ts";
   import { isSessionLost } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -206,6 +207,15 @@
   const licensedForJob = $derived(chosenActivity === "copying" ? { licensedRuns: chosenLicensedRuns } : {});
   /** typeID -> how much of it the player HAS, read from the SERVER. */
   let availableMaterials = $state<Readonly<Record<string, number>> | null>(null);
+  /** The number of the job's monitor, as the preview said it; null where it said none. */
+  let previewMonitorID = $state<number | null>(null);
+  /** The count of the server's tellings of a monitored place as the preview was asked: one counted by then is no later than it. */
+  let previewedAtTelling = $state(0);
+  /**
+   * What the job's place has now: what the server last said of the job's monitor since the preview, or what the
+   * preview had (industrySvc.OnIndustryMaterials sets the client's job.available, and its window shows it at once).
+   */
+  const placeHas = $derived(placeHasNow(availableMaterials, previewMonitorID, previewedAtTelling, $industry.materialsSaid));
   /** The seconds the job will take, as the preview reckoned them; null where it reckoned none. */
   let reckonedSeconds = $state<number | null>(null);
   /** What the job costs to start, as the preview reckoned it; null where it reckoned none. */
@@ -292,7 +302,7 @@
     // (An invention's decryptor is among them, one a run: previewMaterials lists it, and the preview reckons it.)
     return materialsForJob.materials.map((material) => {
       const have =
-        availableMaterials === null ? null : availableMaterials[String(material.typeID)] ?? 0;
+        placeHas === null ? null : placeHas[String(material.typeID)] ?? 0;
       return {
         typeID: material.typeID,
         need: material.quantity,
@@ -337,6 +347,7 @@
     startingBlueprint = blueprint;
     confirming = false;
     availableMaterials = null;
+    previewMonitorID = null;
     reckonedSeconds = null;
     reckonedFee = null;
     reckonedMaterials = null;
@@ -371,6 +382,7 @@
     chosenDecryptorTypeID = null;
     chosenProductTypeID = null;
     availableMaterials = null;
+    previewMonitorID = null;
     reckonedSeconds = null;
     reckonedFee = null;
     reckonedMaterials = null;
@@ -424,6 +436,7 @@
     if (!blueprint || !activity || facilityID === null) {
       return;
     }
+    const tellingsAsAsked = untrack(() => $industry.materialsSaid?.seq ?? 0);
     void run(async () => {
       const previewed = await flow.previewIndustryJob({
         blueprintItemID: blueprint.itemID,
@@ -437,6 +450,8 @@
         ...researchOf(blueprint),
       });
       availableMaterials = previewed.available;
+      previewMonitorID = previewed.monitorID;
+      previewedAtTelling = tellingsAsAsked;
       reckonedSeconds = previewed.timeSeconds;
       reckonedFee = previewed.fee;
       reckonedMaterials = previewed.materials;

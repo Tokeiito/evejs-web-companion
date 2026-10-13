@@ -595,6 +595,15 @@ export interface IndustryState {
   readonly facilitiesError: string | null;
   /** Non-null when the last install/deliver/cancel failed or was declined. */
   readonly actionError: string | null;
+  /**
+   * What the server last said a monitored job's place has (OnIndustryMaterials: the monitor's number, and typeID
+   * -> how much), with the count of its tellings since the pilot came online. Null where it has said nothing.
+   */
+  readonly materialsSaid: {
+    readonly monitorID: number;
+    readonly available: Readonly<Record<string, number>>;
+    readonly seq: number;
+  } | null;
 }
 
 // --- R16 Market ------------------------------------------------------------

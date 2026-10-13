@@ -306,6 +306,12 @@ export type FeedEvent =
   // An industry action (install/deliver/cancel) failed or was declined; null
   // clears the error after a clean action.
   | { readonly type: "industry/action-error"; readonly message: string | null }
+  // The server's word of what a monitored job's place has (OnIndustryMaterials).
+  | {
+      readonly type: "industry/materials-said";
+      readonly monitorID: number;
+      readonly available: Readonly<Record<string, number>>;
+    }
   // Drop the industry state (character offline / logged out).
   | { readonly type: "industry/cleared" }
   // Goal R16 — the Market page. One event carries all six reads; each keeps

@@ -6112,6 +6112,10 @@ app.post("/api/bridge/industry/preview", requireAuth, async (req, res, next) => 
     answer = {
       ok: true,
       available,
+      // The monitor's number where the pilot's transport keeps the monitor open (the game port): the server's
+      // notice of what the job's place has names it (industrySvc.OnIndustryMaterials, 324), and the page knows its
+      // job's by it. Null where this route lets the monitor go: nothing said of it after is the page's.
+      monitorID: keepsTheWindowsJob(held) ? Number(result[0]) || null : null,
       // The time the job will take, where it was reckoned as the client reckons it (and sent, for the server to
       // hold against its own); null where it was not.
       timeSeconds,

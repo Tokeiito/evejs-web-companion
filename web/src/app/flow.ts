@@ -37,6 +37,7 @@ import {
   industryRefusalMessage,
 } from "../bridge/industry.ts";
 import { decodeInventionTerms, type DecryptorTerms } from "../bridge/industryInvention.ts";
+import { decodeIndustryMaterials } from "../bridge/industryMaterials.ts";
 import { cancelIndustryJob as cancelIndustryJobCall, deliverIndustryJob as deliverIndustryJobCall, type JobAsked } from "../bridge/industryWrites.ts";
 import {
   decodeEscrow,
@@ -2362,6 +2363,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (chargeLoad !== null) {
       store.apply({ type: "fitting/reload-started", ...chargeLoad, atMs: receivedAtMs });
       scheduleReloadRefresh(chargeLoad.durationMs);
+      return;
+    }
+    if (method === "OnIndustryMaterials") {
+      // industrySvc.OnIndustryMaterials (324 to 327): what a monitored job's place has. It is kept for the window
+      // whose job's monitor it names (bridge/industryMaterials.ts); what is no such notice is let go.
+      const said = decodeIndustryMaterials(args);
+      if (said !== null) {
+        store.apply({ type: "industry/materials-said", ...said });
+      }
       return;
     }
     if (method === "OnItemsChanged") {

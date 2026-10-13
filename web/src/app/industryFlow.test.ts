@@ -592,7 +592,7 @@ test("the preview returns what the player HAS and the time the job will take, an
   };
 
   const previewed = await flow.previewIndustryJob(request);
-  assert.deepEqual(previewed, { available: { "38": 500 }, timeSeconds: 1163, fee: { cost: 5284, tax: 1321, sccSurcharge: 5284, securityTax: 0, total: 11889 }, materials: { "38": 230 } });
+  assert.deepEqual(previewed, { available: { "38": 500 }, timeSeconds: 1163, fee: { cost: 5284, tax: 1321, sccSurcharge: 5284, securityTax: 0, total: 11889 }, materials: { "38": 230 }, monitorID: null });
   // Materials that were not reckoned, or that are none, are none.
   const noMaterials: (Record<string, number | string> | string | null | undefined)[] = [null, undefined, "230", { "38": "230" }, { "38": 0 }];
   for (const none of noMaterials) {
