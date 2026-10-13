@@ -3992,14 +3992,28 @@ test("a standing fleet tag order does not starve the tackle rung", () => {
 });
 
 // ...and the cost of that placement is bounded: once there is nothing left to
-// tag, the very next tick obeys the fleet again.
-test("with nothing left to tag the pilot goes back to obeying the fleet", () => {
+// tag, the very next tick fights again -- on its own tackler first, above the
+// fleet's tag on LOGI (operator, 2026-10-13: tacklers die first).
+test("with nothing left to tag the pilot goes back to fighting, its tackler first", () => {
   const decision = decideCompanionAction(
     TAGGING,
     taggingObs({
       snapshot: gridWithEntities([LOGI, TACKLE]),
       fleetTargetTags: new Map([[LOGI, "A"], [TACKLE, "B"]]),
       tackledBy: [TACKLE],
+    }),
+  );
+  assert.equal(decision.phase, "Tackled");
+  assert.deepEqual(decision.action, { kind: "lock", targetID: TACKLE });
+});
+
+test("an untackled pilot with nothing to tag obeys the fleet", () => {
+  const decision = decideCompanionAction(
+    TAGGING,
+    taggingObs({
+      snapshot: gridWithEntities([LOGI, TACKLE]),
+      fleetTargetTags: new Map([[LOGI, "A"], [TACKLE, "B"]]),
+      tackledBy: [],
     }),
   );
   assert.equal(decision.phase, "Obeying fleet");
@@ -4114,38 +4128,179 @@ test("a tackler the commander has already lettered is not broadcast", () => {
   assert.notEqual(decision.action.kind, "broadcastFleetTarget");
 });
 
-// ⚠ THE BROADCAST TWIN OF THE TEST ABOVE, and one path to the live A, B, A
-// (2026-10-13). Two pilots held by two DIFFERENT ships each called their own,
-// and since every companion obeys the newest call, the fleet went from one to
-// the other and back, re-aiming every gun at each turn.
-test("a tackled member does not broadcast over a Target call already standing on this grid", () => {
-  const grid = gridWithEntities([TACKLE, OTHER]);
-  const standing = decideCompanionAction(
-    TAGGING,
-    memberObs({ snapshot: grid, fleetBroadcast: fleetBroadcast("Target", OTHER) }),
-  );
-  assert.notEqual(standing.action.kind, "broadcastFleetTarget");
-  assert.deepEqual(standing.memory.tackleCalledOut, [], "not spent: it is called once the call lapses");
+// --- tacklers first (operator, 2026-10-13) ----------------------------------
+//
+// "Tackle callouts should be loud and clear, as tacklers should be killed
+// first, no matter FC instructions." The callout goes out over a standing call,
+// the tackled pilot shoots its own tackler above any call, and the callout is
+// re-sent when the fleet is called off it -- rate limited, never every tick.
 
-  // The call held past a later broadcast of another kind still stands.
-  const held = decideCompanionAction(
-    TAGGING,
-    memberObs({ snapshot: grid, fleetBroadcast: fleetBroadcast("EnemySpotted", null) }),
-    { ...freshLadderMemory(), targetCall: { itemID: OTHER, receivedAtMs: Date.now() } },
-  );
-  assert.notEqual(held.action.kind, "broadcastFleetTarget");
+/** A plain member tackled by TACKLE, OTHER on grid too, both locked, one idle gun. */
+function tackledMemberObs(overrides: Partial<FleetCompanionObservation> = {}): FleetCompanionObservation {
+  return memberObs({
+    snapshot: gridWithEntitiesAndRack([TACKLE, OTHER], []),
+    lockedTargetIDs: [TACKLE, OTHER],
+    ...overrides,
+  });
+}
 
-  // A call on a ship that is not on this grid is not standing HERE: call the tackler.
-  const elsewhere = decideCompanionAction(TAGGING, memberObs({ fleetBroadcast: fleetBroadcast("Target", OTHER) }));
-  assert.deepEqual(elsewhere.action, { kind: "broadcastFleetTarget", targetID: TACKLE });
+const TACKLED_GUN: FleetCompanionRequest = { ...TAGGING, weaponModuleIDs: [GUN_1] };
+
+/** A `Target` broadcast received at `atMs`. */
+function targetHeardAt(itemID: number, atMs: number): FleetBroadcast {
+  return { ...fleetBroadcast("Target", itemID), receivedAtMs: atMs };
+}
+
+test("a tackled member broadcasts its tackler even while the commander's Target call stands", () => {
+  const T = 20_000_000;
+  const decision = decideCompanionAction(
+    TACKLED_GUN,
+    tackledMemberObs({ fleetBroadcast: targetHeardAt(OTHER, T - 1_000) }),
+    freshLadderMemory(),
+    T,
+  );
+  assert.deepEqual(decision.action, { kind: "broadcastFleetTarget", targetID: TACKLE });
 });
 
-// ⚠ ONCE PER SHIP, AND THIS IS WHAT STOPS TWO COMPANIONS SHOUTING AT EACH
-// OTHER. A broadcast leaves nothing behind to re-read, so a second send could
-// learn nothing a first did not -- it would just be the same shout every two
-// seconds for as long as the ship held this pilot. And since a `Target`
-// broadcast is an ORDER to every companion that hears it, two pilots tackled by
-// one ship would re-call it in turn without a per-ship memory.
+test("a tackled pilot shoots its own tackler over the commander's call, and says so", () => {
+  const T = 20_000_000;
+  // Already called out: the tick goes to the guns.
+  const called: CompanionLadderMemory = {
+    ...freshLadderMemory(), tackleCalledOut: [TACKLE], tackleCalledAtMs: { [TACKLE]: T - 1_000 },
+  };
+  for (const over of [
+    { fleetBroadcast: targetHeardAt(OTHER, T - 500) },
+    { fleetTargetTags: new Map([[OTHER, "A"]]) },
+  ]) {
+    const decision = decideCompanionAction(TACKLED_GUN, tackledMemberObs(over), called, T);
+    assert.deepEqual(decision.action, { kind: "activate", moduleID: GUN_1, targetID: TACKLE });
+    assert.equal(decision.phase, "Tackled");
+    assert.equal(decision.followingOrderFrom, undefined, "its own call, not the fleet's");
+    assert.match(decision.why, /^Tackled: shooting the ship holding me first\./);
+  }
+});
+
+test("several tacklers: the scrambler before the webber, whatever is nearer", () => {
+  const T = 20_000_000;
+  const WEBBER = 200061;
+  const SCRAMBLER = 200062;
+  const TYPE_WEBBER = 561;
+  const TYPE_SCRAMBLER = 562;
+  const calm = { scram: false, scramRangeM: null, web: false, ewar: false, ecm: false };
+  const grid = gridWithEntitiesAndRack([WEBBER, SCRAMBLER], []); // the webber nearer
+  const typed = {
+    ...grid,
+    entities: grid.entities.map((entity) =>
+      entity.itemID === WEBBER ? { ...entity, typeID: TYPE_WEBBER }
+        : entity.itemID === SCRAMBLER ? { ...entity, typeID: TYPE_SCRAMBLER } : entity),
+  } as SpaceSnapshot;
+  const decision = decideCompanionAction(
+    TACKLED_GUN,
+    tackledMemberObs({
+      snapshot: typed,
+      tackledBy: [WEBBER, SCRAMBLER],
+      lockedTargetIDs: [WEBBER, SCRAMBLER],
+      threatByTypeID: {
+        [TYPE_WEBBER]: { ...calm, web: true },
+        [TYPE_SCRAMBLER]: { ...calm, scram: true, scramRangeM: 20_000 },
+      },
+    }),
+    { ...freshLadderMemory(), tackleCalledOut: [WEBBER, SCRAMBLER],
+      tackleCalledAtMs: { [WEBBER]: T - 1_000, [SCRAMBLER]: T - 1_000 } },
+    T,
+  );
+  assert.deepEqual(decision.action, { kind: "activate", moduleID: GUN_1, targetID: SCRAMBLER });
+});
+
+test("the callout is re-sent once the fleet is called off the tackler: not before 10 s, never every tick", () => {
+  const T = 20_000_000;
+  let memory = freshLadderMemory();
+  let slot: FleetBroadcast | null = null;
+  const callouts: number[] = [];
+  // Tick every 2 s for 40 s. The pilot's own callout comes back as the slot
+  // (the server echoes a broadcast to its sender); at 6 s the FC calls OTHER,
+  // and at 24 s calls OTHER again.
+  for (let tick = 0; tick <= 20; tick += 1) {
+    const now = T + tick * 2_000;
+    if (tick === 3 || tick === 12) {
+      slot = targetHeardAt(OTHER, now - 100);
+    }
+    const decision = decideCompanionAction(TACKLED_GUN, tackledMemberObs({ fleetBroadcast: slot }), memory, now);
+    memory = decision.memory;
+    if (decision.action.kind === "broadcastFleetTarget") {
+      callouts.push((now - T) / 1_000);
+      slot = targetHeardAt(decision.action.targetID, now + 100);
+    } else {
+      assert.deepEqual(decision.action, { kind: "activate", moduleID: GUN_1, targetID: TACKLE }, `tick ${tick}`);
+    }
+  }
+  // 0 s: the first call. 6 s: the FC moves the fleet, but 10 s have not passed.
+  // 10 s: re-sent. 24 s: the FC again, re-sent at once (14 s since the last).
+  assert.deepEqual(callouts, [0, 10, 24]);
+});
+
+test("two pilots tackled by different ships do not ping-pong the fleet every tick", () => {
+  // ⚠ THE A, B, A AS A FLEET. Each pilot calls its own tackler, so the slot
+  // flips between them -- but each re-sends at most once per TACKLE_RECALL_MS,
+  // and each shoots its own tackler on every other tick regardless.
+  const T = 20_000_000;
+  const pilots = [
+    { tackler: TACKLE, memory: freshLadderMemory(), callouts: [] as number[] },
+    { tackler: OTHER, memory: freshLadderMemory(), callouts: [] as number[] },
+  ];
+  let slot: FleetBroadcast | null = null;
+  const seconds = 60;
+  for (let tick = 0; tick <= seconds / 2; tick += 1) {
+    const now = T + tick * 2_000;
+    let next = slot;
+    for (const pilot of pilots) {
+      const decision = decideCompanionAction(
+        TACKLED_GUN,
+        tackledMemberObs({ tackledBy: [pilot.tackler], fleetBroadcast: slot }),
+        pilot.memory,
+        now,
+      );
+      pilot.memory = decision.memory;
+      if (decision.action.kind === "broadcastFleetTarget") {
+        pilot.callouts.push(now);
+        next = targetHeardAt(decision.action.targetID, now + 100);
+      } else {
+        assert.deepEqual(decision.action, { kind: "activate", moduleID: GUN_1, targetID: pilot.tackler });
+      }
+    }
+    slot = next;
+  }
+  for (const pilot of pilots) {
+    pilot.callouts.slice(1).forEach((at, index) => {
+      assert.ok(at - pilot.callouts[index]! >= 10_000, `re-sent ${at - pilot.callouts[index]!} ms after the last`);
+    });
+    assert.ok(pilot.callouts.length <= seconds / 10 + 1, `${pilot.callouts.length} callouts in ${seconds} s`);
+    assert.ok(pilot.callouts.length >= 2, "the callout is kept standing, not sent once and dropped");
+  }
+});
+
+test("an untackled pilot follows the newest call, a companion's callout included", () => {
+  const T = 20_000_000;
+  const untackled = { tackledBy: [] as number[] };
+  const fc = decideCompanionAction(
+    TACKLED_GUN, tackledMemberObs({ ...untackled, fleetBroadcast: targetHeardAt(OTHER, T - 3_000) }), freshLadderMemory(), T,
+  );
+  assert.deepEqual(fc.action, { kind: "activate", moduleID: GUN_1, targetID: OTHER });
+  const callout = decideCompanionAction(
+    TACKLED_GUN, tackledMemberObs({ ...untackled, fleetBroadcast: targetHeardAt(TACKLE, T + 1_000) }), fc.memory, T + 2_000,
+  );
+  assert.deepEqual(callout.action, { kind: "activate", moduleID: GUN_1, targetID: TACKLE });
+  assert.equal(callout.followingOrderFrom, "broadcast");
+});
+
+// ⚠ ONCE PER SHIP INSIDE THE RE-CALL INTERVAL, AND THIS IS WHAT STOPS TWO
+// COMPANIONS SHOUTING AT EACH OTHER. A broadcast leaves nothing behind to
+// re-read, so a second send could learn nothing a first did not -- it would just
+// be the same shout every two seconds for as long as the ship held this pilot.
+// And since a `Target` broadcast is an ORDER to every companion that hears it,
+// two pilots tackled by one ship would re-call it in turn without a per-ship
+// memory. (A re-send after `TACKLE_RECALL_MS`, once the fleet is called off it,
+// is the test above.)
 test("one broadcast per ship, however long it keeps this pilot tackled", () => {
   let memory: CompanionLadderMemory = freshLadderMemory();
   const calls: number[] = [];
