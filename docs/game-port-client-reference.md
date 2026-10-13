@@ -1327,6 +1327,22 @@ a login have `MachoResolveObject((owner, 1))`, `MachoBindObject((owner, 1), None
 object. The game port has all of it since `cee8eb78`, and the asking at a change of alliance or corporation since
 `f2ce8c39` (at once for a pilot in a militia too, where the client's thread asks within ten seconds); everything a
 page asks of the war registry goes on that moniker.
+The location panel (`eve/client/script/ui/shared/infoPanels/infoPanelLocationInfo.py`), up from the first, docked or
+in space. `UpdateLocationInfo` (155 to 162), with a system and a character on the session, draws the system, the
+nearest thing or the station, the system's bounty output (`_UpdateDynamicResourceInfoAsync`, 319 to 326:
+`dynamicResourceSvc.GetDynamicBountySettingForCurrentSystem()`, which is
+`dynamicBountyMgr.GetOutputForClientSolarSystem()` kept by a memoize of ninety minutes), and whose the system is
+(`UpdateSOVLocationInfo`, 335 to 352): in known space or a wormhole's, with the pilot's setting to show
+sovereignty on, it reads `fwWarzoneSvc.GetLocalOccupationState()`, and in a system no faction holds goes on to
+the system's sovereignty structures (348).
+The warzone service (`eve/client/script/ui/services/fwWarzoneSvc.py`) keeps (solar system, occupation state) for
+the system the session is in. `GetLocalOccupationState` (47 to 60) asks
+`sm.RemoteSvc('fwWarzoneSolarsystem').GetLocalOccupationState()` with nothing where what it keeps is not of the
+session's system, asks once more where the answer is for another system, and raises after two such; a change of
+`solarsystemid2` lets go what is kept (34 to 37); `OnWarzoneOccupationStateUpdated(solarsystemID, state)` of the
+session's system is the state from then (78 to 93). Tranquility's recordings have the call once at each login and
+once after each change of solar system, answered `(system, None)`. The game port asks it so since `fd0c7cda`; of
+the panel's other askings, none yet.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened

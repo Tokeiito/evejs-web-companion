@@ -3348,6 +3348,20 @@ Take these defaults, and list each under "For the operator" in the log so they c
   `fwWarzoneSvc.py`'s handlers likewise, in comments, in a call's note
   and in commit messages. `grep -n "    def " <file>` gives every
   method's first line, and the next one's less two is its last.
+- **An asking by a service's name that comes at every choosing and
+  again at a later change of the session is listed apart in the old
+  pilot tests' stand-in** (`call` in `fakeSession`:
+  `session.gradeAsks`, `priceAsks`, `occupationAsks`), with an answer
+  that suits it (the occupation's is of the system the session is in,
+  or the game port asks twice and fails). `calls` and `sent` then hold
+  what a test caused, and only the whole tally of a session gains the
+  pair.
+- **A change of solar system, live**: `occ-live.js <bff> <account>
+  <character> <system name> <server.log>` (session 2aba99c0's
+  scratchpad) logs a pilot in and moves it with the GM's
+  `/solar <system name>`, which puts a docked pilot in space by a gate
+  of that system: the session changes `solarsystemid2` and the rest.
+  Between a copy of the store and its putting back.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
