@@ -470,6 +470,15 @@ import {
 import { decodeInstanceRows, decodeWeaponBanks, infoTimeMs, itemHasActivationCycle } from "../bridge/boundDogma.ts";
 import { combatFit, weaponHasCycle } from "../nav/combatFit.ts";
 import type { CombatWeapons } from "../nav/combatWeapons.ts";
+import {
+  RAT_RESONANCE_ATTRIBUTE_IDS,
+  WEAPON_CYCLE_ATTRIBUTE_IDS,
+  ratResonancesFromAttributes,
+  weaponCycleFromAttributes,
+  type RatResonances,
+  type WeaponCycleFacts,
+} from "../nav/companionAmmo.ts";
+import { CHARGE_ATTRIBUTE_IDS, chargeFactsFromAttributes, type ChargeFacts } from "../nav/ammoReach.ts";
 import { RAT_COMBAT_ATTRIBUTE_IDS, ratCombatFromAttributes, type RatCombatFacts } from "../nav/combatPosition.ts";
 import { issueCombatReload } from "../nav/combatReloadIssue.ts";
 import { requireModuleOutcome, moduleSettlementNote } from "../nav/moduleOutcome.ts";
@@ -3820,6 +3829,8 @@ const ratHitPointsByTypeID = new Map<number, CompanionHitPoints>();
  * three caches above: static type dogma, permanent, one round trip per new type.
  */
 const ratCombatByTypeID = new Map<number, RatCombatFacts>();
+/** Each rat type's resonances by layer, for ammo by target. Same fetch, same rules. */
+const ratResonancesByTypeID = new Map<number, RatResonances>();
 const ATTR_SHIELD_CAPACITY = 263;
 const ATTR_ARMOR_HP = 265;
 const ATTR_HULL_HP = 9;
@@ -20633,6 +20644,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * the snapshot every tick. `null` until read and whenever the read fails.
    */
   let companionCombatUtilities: CombatUtilities | null = null;
+  /**
+   * Ammo by target: each charge type aboard or loaded, and each gun type's
+   * cycle, from static type dogma via `attributesOfTypes` (kept per type, so a
+   * type costs one read ever). `null` is unread, which ranks on nothing.
+   */
+  let companionChargeFacts: {
+    chargeFactsByTypeID: Readonly<Record<number, ChargeFacts>> | null;
+    weaponCycleByTypeID: Readonly<Record<number, WeaponCycleFacts>> | null;
+  } = { chargeFactsByTypeID: null, weaponCycleByTypeID: null };
 
   // --- waking the companion on a push ---------------------------------------
   //
@@ -21086,6 +21106,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           signatureByTypeID: ratSignaturesOnGrid(snapshot, origin),
           hitPointsByTypeID: ratHitPointsOnGrid(snapshot, origin),
           ratCombatByTypeID: ratCombatOnGrid(snapshot, origin),
+          ratResonancesByTypeID: ratResonancesOnGrid(snapshot, origin),
           droneControlRangeM: companionDroneControlRangeM,
           combatDroneStacks,
           droneFactsByTypeID: companionDroneFacts,
@@ -21219,6 +21240,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           combatWeapons: companionCombatWeapons,
           // Rung 8a's fit facts, filled by the same read (and the same order rule).
           combatUtilities: companionCombatUtilities,
+          // Ammo by target's static facts, filled by the same ammo read.
+          chargeFactsByTypeID: companionChargeFacts.chargeFactsByTypeID,
+          weaponCycleByTypeID: companionChargeFacts.weaponCycleByTypeID,
         };
       },
       issue: async (action) => {
@@ -22440,7 +22464,56 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     companionAmmoFacts = { emptyWeaponModuleIDs, cargoCharges, weaponChargeGroups };
     companionCombatWeapons = await readCompanionCombatWeapons(request, fitReads);
+    companionChargeFacts = await readCompanionChargeFacts(cargoCharges, companionCombatWeapons);
     return companionAmmoFacts;
+  }
+
+  /**
+   * The static facts ammo by target ranks with (companionAmmo.ts): every charge
+   * type in the cargo or in a gun, and every gun type. `attributesOfTypes`
+   * keeps what it was told per type, so after the first read of a type this
+   * costs no call. A failure leaves that half `null`; names are warmed with the
+   * same cache the panels use and are only ever a readout nicety.
+   */
+  async function readCompanionChargeFacts(
+    cargo: readonly CompanionCargoCharge[] | null,
+    weapons: CombatWeapons | null,
+  ): Promise<typeof companionChargeFacts> {
+    const chargeTypes = [...new Set([
+      ...(cargo ?? []).map((charge) => charge.typeID),
+      ...(weapons?.weapons ?? []).flatMap((weapon) => (weapon.chargeTypeID === null ? [] : [weapon.chargeTypeID])),
+    ])];
+    const weaponTypes = [...new Set((weapons?.weapons ?? []).map((weapon) => weapon.typeID))];
+    let chargeFactsByTypeID: Record<number, ChargeFacts> | null = null;
+    let weaponCycleByTypeID: Record<number, WeaponCycleFacts> | null = null;
+    try {
+      await resolveNamesNow(chargeTypes.map((id) => ({ kind: "type" as const, id }))).catch(() => {});
+      const rows: Readonly<Record<number, Readonly<Record<number, number>>>> =
+        chargeTypes.length > 0 ? await attributesOfTypes(chargeTypes, CHARGE_ATTRIBUTE_IDS) : {};
+      const resolved = store.names.get().resolved;
+      chargeFactsByTypeID = {};
+      for (const typeID of chargeTypes) {
+        if (rows[typeID] !== undefined) {
+          chargeFactsByTypeID[typeID] = chargeFactsFromAttributes(rows[typeID], resolved[nameKey("type", typeID)] ?? null);
+        }
+      }
+    } catch {
+      chargeFactsByTypeID = null;
+    }
+    try {
+      const rows: Readonly<Record<number, Readonly<Record<number, number>>>> =
+        weaponTypes.length > 0 ? await attributesOfTypes(weaponTypes, WEAPON_CYCLE_ATTRIBUTE_IDS) : {};
+      weaponCycleByTypeID = {};
+      for (const typeID of weaponTypes) {
+        const cycle = weaponCycleFromAttributes(rows[typeID]);
+        if (cycle !== null) {
+          weaponCycleByTypeID[typeID] = cycle;
+        }
+      }
+    } catch {
+      weaponCycleByTypeID = null;
+    }
+    return { chargeFactsByTypeID, weaponCycleByTypeID };
   }
 
   /**
@@ -23362,7 +23435,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // `threatFromAttributes` reads only the ids it names.
         const attributes = await api.fetchTypeDogma(
           missing,
-          [...THREAT_ATTRIBUTE_IDS, ATTR_SIGNATURE_RADIUS, ATTR_SHIELD_CAPACITY, ATTR_ARMOR_HP, ATTR_HULL_HP, ...RAT_COMBAT_ATTRIBUTE_IDS],
+          // ⚠ 30 IDS OF THE ROUTE'S 32 (TYPE_ATTRIBUTES_MAX_ATTRIBUTES): one more
+          // set of this size needs its own call, never a silently short answer.
+          [...THREAT_ATTRIBUTE_IDS, ATTR_SIGNATURE_RADIUS, ATTR_SHIELD_CAPACITY, ATTR_ARMOR_HP, ATTR_HULL_HP, ...RAT_COMBAT_ATTRIBUTE_IDS,
+            ...RAT_RESONANCE_ATTRIBUTE_IDS],
           callOptions,
         );
         for (const typeID of missing) {
@@ -23388,6 +23464,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
               hull: layer(ATTR_HULL_HP),
             });
             ratCombatByTypeID.set(typeID, ratCombatFromAttributes(row));
+            const resonances = ratResonancesFromAttributes(row);
+            if (resonances !== null) {
+              ratResonancesByTypeID.set(typeID, resonances);
+            }
           }
         }
       } catch {
@@ -23447,6 +23527,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
     }
     return facts;
+  }
+
+  /** As `ratSignaturesOnGrid`, for the resonances ammo is ranked on. Free; same ordering rule. */
+  function ratResonancesOnGrid(
+    snapshot: ReturnType<typeof decodeSpaceSnapshot>,
+    origin: SpaceVector,
+  ): Readonly<Record<number, RatResonances>> | null {
+    if (snapshot === null) {
+      return null;
+    }
+    const resonances: Record<number, RatResonances> = {};
+    for (const row of hostileRows(snapshot, origin)) {
+      const known = row.typeID === null ? undefined : ratResonancesByTypeID.get(row.typeID);
+      if (row.typeID !== null && known !== undefined) {
+        resonances[row.typeID] = known;
+      }
+    }
+    return resonances;
   }
 
   /** As `ratSignaturesOnGrid`, for the full hit points. Free; same ordering rule. */
