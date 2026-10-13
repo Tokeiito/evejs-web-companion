@@ -2734,6 +2734,25 @@ Take these defaults, and list each under "For the operator" in the log so they c
   difference (the skills primed at a login, `c6ea2ff44`; the six places).
 - **`/solar <system's ID>`** moves a pilot in space to a system for a look
   (`tale-live.js`); a session change of `solarsystemid2` follows it.
+- **The BFF's own bytes are seen with the recorder between it and EveJS.**
+  `node scripts/record-game-port.js record 26006 26000 <file>` in the
+  background, the game port's BFF restarted with `EVEJS_GAME_PORT=26006`
+  (`EVEJS_GAME_PORT=26006 bash restart-bffgp.sh`), the look made, the
+  recorder stopped and the BFF restarted plainly. `price-frames.js` prints
+  the bytes after a method's name. The server's log cannot tell a long
+  from an int: its decoder reads blue's long as a plain number.
+- **The client's own bytes of a call are in a recording's `Write:` line**
+  (`<MarshalStream '...'>`), opcodes and all: `%` a tuple of one, `/` a
+  long, `\x04` an int of 32 bits. A form is compared byte for byte with
+  it, not by the value it decodes to.
+- **A value the client hands back keeps its Python type; the page's JSON
+  does not, for a small long.** The transport names the answers that are
+  handed back (`pilots.js`, `HANDED_BACK_AS_ANSWERED`) and hands the page
+  those with the long kept. One found is added there, with its line of the
+  client's code.
+- **A breakage that nothing catches says what test is missing**, not that
+  the line is idle: "every call's answer keeps its long" passed until a
+  test held another call's long to a number.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

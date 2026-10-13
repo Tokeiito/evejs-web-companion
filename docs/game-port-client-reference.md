@@ -1065,6 +1065,14 @@ None (False where nothing was rented, which no recording has), and the price a l
 `corpid` to the corporation's, the office's ID a long (`215874210`, `4f0cf3057`), where both went to every
 session. The client uses neither answer for anything but the price's value.
 
+The client's own bytes of the two calls are in the recording, after each method's name: `GetPriceQuote`'s
+`25 04 50 26 e4 05` (a tuple of one, the corporation an int of 32 bits) and `RentOffice`'s `25 2f 03 11 87 01`
+(a tuple of one, the price a Python long: the object it was answered, handed back). The game port's rent
+carries a long too since 2026-10-13 (`00cc731a`): the page is handed the price with its long kept
+(`{type: "long", value}`; `pilots.js`, `HANDED_BACK_AS_ANSWERED`) and hands back what it was handed. Seen with
+the recorder between the BFF and this server: `25 04 80 5c d7 05`, then `25 2f 02 10 27`. Until then a price
+that a number holds went to the page a number, and came back an int.
+
 **The lobby at a docked login, 2026-10-10.** The server's log of a retail client logging in
 docked in a station, with nothing opened, has four reads that the log of one logging in in
 space has none of: `officeManager.GetMyCorporationsOffices`, `stationSvc.GetStationItemBits`,
