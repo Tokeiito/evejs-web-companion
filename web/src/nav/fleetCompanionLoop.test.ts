@@ -30,7 +30,7 @@ import {
 import type { ChatMessage, SpaceSnapshot } from "../store/types.ts";
 import type { CombatUtilities, CombatUtility } from "./combatUtilities.ts";
 import type { BotLogDraft } from "./botLog.ts";
-import type { FleetBroadcast } from "../bridge/fleetBroadcasts.ts";
+import { FLEET_BROADCAST_TTL_MS, type FleetBroadcast } from "../bridge/fleetBroadcasts.ts";
 import type { DroneFacts } from "./droneSizing.ts";
 import { MAX_DRONE_ROTATIONS } from "./droneRotation.ts";
 import { MISSILE_ORBIT_WHY, MWD_STAYS_OFF_WHY } from "./companionPropulsion.ts";
@@ -2171,53 +2171,127 @@ test("the rack comes up ONE WEAPON PER TICK, and each confirmed weapon is skippe
   assert.match(fourth.why, /firing on it/i);
 });
 
-test("A NEW CALL RE-AIMS THE WHOLE RACK, even while the old guns still read as cycling", () => {
-  // ⚠ THIS IS THE ONE THAT MATTERS MOST. `activeModuleIDs` says a module is
-  // cycling and never says AT WHOM — see `lastFireTargetID`'s own comment. A
-  // commander who re-tags OTHER must see every gun re-issued, gun by gun, not
-  // a pilot that reads the still-cycling old guns as already answering the
-  // new call.
+test("A NEW CALL STOPS EACH GUN STILL ON THE OLD TARGET ONCE, and re-aims it only once it reads idle", () => {
+  // ⚠ THIS IS THE ONE THAT MATTERS MOST. An activate on a cycling gun does not
+  // re-aim it on this server: it is refused (`EffectAlreadyActive2`) and the
+  // gun stays where it was. This test used to demand exactly that re-issue, gun
+  // by gun -- the bug seen live 2026-10-13. The switch is a stop, once per gun,
+  // then an activate on the new call once the server reports the gun idle.
   const request: FleetCompanionRequest = { ...REQUEST, weaponModuleIDs: [GUN_1, GUN_2, GUN_3] };
   const firingOnTackle: CompanionLadderMemory = {
     ...freshLadderMemory(),
     lastFireTargetID: TACKLE,
     lastFireModuleIDs: [GUN_1, GUN_2, GUN_3],
   };
-  // The server has not caught up: all three old guns still read as cycling,
-  // unchanged, through every tick below — only the CALL has moved to OTHER.
-  const stillCyclingFromTackle = [GUN_1, GUN_2, GUN_3];
-  const called = { fleetTargetTags: new Map([[OTHER, "A"]]), lockedTargetIDs: [OTHER] };
+  // The old target is still locked (and alive), so its guns would chew on it
+  // for ever: the switch has to be made, it will not happen by itself.
+  const called = { fleetTargetTags: new Map([[OTHER, "A"]]), lockedTargetIDs: [OTHER, TACKLE] };
+  const racks: (readonly number[])[] = [
+    [GUN_1, GUN_2, GUN_3], // stop GUN_1
+    [GUN_1, GUN_2, GUN_3], // GUN_1 finishing its cycle: stop GUN_2, never GUN_1 again
+    [GUN_1, GUN_2, GUN_3], // stop GUN_3
+    [GUN_1, GUN_2, GUN_3], // all three finishing: nothing to send
+    [GUN_2, GUN_3], //        GUN_1 idle: onto OTHER
+    [GUN_1], //               GUN_2 and GUN_3 idle, GUN_1 now on OTHER
+    [GUN_1, GUN_2],
+    [GUN_1, GUN_2, GUN_3], // the rack is on OTHER
+  ];
+  let memory = firingOnTackle;
+  const decisions: CompanionDecision[] = [];
+  for (const rack of racks) {
+    const decision = decideCompanionAction(
+      request,
+      obs({ ...called, snapshot: gridWithEntitiesAndRack([OTHER, TACKLE], rack) }),
+      memory,
+    );
+    if (decision.action.kind === "activate") {
+      assert.ok(!rack.includes(decision.action.moduleID), `never activate a gun the server says is cycling (${decision.action.moduleID})`);
+    }
+    decisions.push(decision);
+    memory = decision.memory;
+  }
+  assert.deepEqual(decisions.map((decision) => decision.action), [
+    { kind: "deactivate", moduleID: GUN_1 },
+    { kind: "deactivate", moduleID: GUN_2 },
+    { kind: "deactivate", moduleID: GUN_3 },
+    { kind: "wait" },
+    { kind: "activate", moduleID: GUN_1, targetID: OTHER },
+    { kind: "activate", moduleID: GUN_2, targetID: OTHER },
+    { kind: "activate", moduleID: GUN_3, targetID: OTHER },
+    { kind: "wait" },
+  ]);
+  // The wait says why the guns are not yet on the call, and the trace names them.
+  assert.match(decisions[3]!.why, /3 guns are finishing a cycle on the last target/);
+  assert.deepEqual(decisions[3]!.trace?.guns?.switching, [GUN_1, GUN_2, GUN_3]);
+  assert.match(decisions[7]!.why, /firing on it/i);
+  assert.doesNotMatch(decisions[7]!.why, /finishing/);
+  assert.deepEqual(memory.gunStops, [], "every stop landed and was forgotten");
+});
 
+test("a gun running on an old target that is no longer locked is left to finish, not stopped", () => {
+  // The server ends a cycle whose target lock is gone by itself; a stop on top
+  // of that would be a call spent on nothing.
+  const request: FleetCompanionRequest = { ...REQUEST, weaponModuleIDs: [GUN_1] };
+  const decision = decideCompanionAction(
+    request,
+    obs({
+      fleetTargetTags: new Map([[OTHER, "A"]]),
+      lockedTargetIDs: [OTHER],
+      snapshot: gridWithEntitiesAndRack([OTHER], [GUN_1]),
+    }),
+    { ...freshLadderMemory(), gunAimedAt: { [GUN_1]: TACKLE } },
+  );
+  assert.equal(decision.action.kind, "wait");
+});
+
+test("a cycling gun this pilot never aimed is neither re-activated nor stopped", () => {
+  // Somebody else lit it (the player, or a run before a restart): what it is
+  // shooting is unknown, so it is not this rung's to touch.
+  const request: FleetCompanionRequest = { ...REQUEST, weaponModuleIDs: [GUN_1, GUN_2] };
+  const decision = decideCompanionAction(
+    request,
+    obs({
+      fleetTargetTags: new Map([[OTHER, "A"]]),
+      lockedTargetIDs: [OTHER, TACKLE],
+      snapshot: gridWithEntitiesAndRack([OTHER, TACKLE], [GUN_1]),
+    }),
+  );
+  assert.deepEqual(decision.action, { kind: "activate", moduleID: GUN_2, targetID: OTHER });
+  const next = decideCompanionAction(
+    request,
+    obs({
+      fleetTargetTags: new Map([[OTHER, "A"]]),
+      lockedTargetIDs: [OTHER, TACKLE],
+      snapshot: gridWithEntitiesAndRack([OTHER, TACKLE], [GUN_1, GUN_2]),
+    }),
+    decision.memory,
+  );
+  assert.equal(next.action.kind, "wait");
+});
+
+test("a banked gun is stopped through its MASTER, the module the server says is running", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, weaponModuleIDs: [GUN_SLAVE] };
+  const banks: Readonly<Record<number, readonly number[]>> = { [GUN_MASTER]: [GUN_SLAVE] };
+  const called = { fleetTargetTags: new Map([[OTHER, "A"]]), lockedTargetIDs: [OTHER, TACKLE] };
+  const memory: CompanionLadderMemory = { ...freshLadderMemory(), gunAimedAt: { [GUN_SLAVE]: TACKLE } };
   const first = decideCompanionAction(
     request,
-    obs({ ...called, snapshot: gridWithEntitiesAndRack([OTHER], stillCyclingFromTackle) }),
-    firingOnTackle,
+    obs({ ...called, snapshot: gridWithEntitiesAndRack([OTHER, TACKLE], [GUN_MASTER], banks) }),
+    memory,
   );
-  assert.deepEqual(first.action, { kind: "activate", moduleID: GUN_1, targetID: OTHER });
-
+  assert.deepEqual(first.action, { kind: "deactivate", moduleID: GUN_MASTER });
   const second = decideCompanionAction(
     request,
-    obs({ ...called, snapshot: gridWithEntitiesAndRack([OTHER], stillCyclingFromTackle) }),
+    obs({ ...called, snapshot: gridWithEntitiesAndRack([OTHER, TACKLE], [GUN_MASTER], banks) }),
     first.memory,
   );
-  assert.deepEqual(second.action, { kind: "activate", moduleID: GUN_2, targetID: OTHER });
-
+  assert.equal(second.action.kind, "wait", "the stop is waited on, never re-sent");
   const third = decideCompanionAction(
     request,
-    obs({ ...called, snapshot: gridWithEntitiesAndRack([OTHER], stillCyclingFromTackle) }),
+    obs({ ...called, snapshot: gridWithEntitiesAndRack([OTHER, TACKLE], [], banks) }),
     second.memory,
   );
-  assert.deepEqual(third.action, { kind: "activate", moduleID: GUN_3, targetID: OTHER });
-
-  // All three re-aimed at OTHER — the rack is done, and never once did a gun
-  // read as already answering the new call just because it was still cycling.
-  const fourth = decideCompanionAction(
-    request,
-    obs({ ...called, snapshot: gridWithEntitiesAndRack([OTHER], stillCyclingFromTackle) }),
-    third.memory,
-  );
-  assert.equal(fourth.action.kind, "wait");
-  assert.match(fourth.why, /firing on it/i);
+  assert.deepEqual(third.action, { kind: "activate", moduleID: GUN_SLAVE, targetID: OTHER });
 });
 
 test("a banked SLAVE counts as already firing the moment its MASTER is seen cycling", () => {
@@ -4040,6 +4114,32 @@ test("a tackler the commander has already lettered is not broadcast", () => {
   assert.notEqual(decision.action.kind, "broadcastFleetTarget");
 });
 
+// ⚠ THE BROADCAST TWIN OF THE TEST ABOVE, and one path to the live A, B, A
+// (2026-10-13). Two pilots held by two DIFFERENT ships each called their own,
+// and since every companion obeys the newest call, the fleet went from one to
+// the other and back, re-aiming every gun at each turn.
+test("a tackled member does not broadcast over a Target call already standing on this grid", () => {
+  const grid = gridWithEntities([TACKLE, OTHER]);
+  const standing = decideCompanionAction(
+    TAGGING,
+    memberObs({ snapshot: grid, fleetBroadcast: fleetBroadcast("Target", OTHER) }),
+  );
+  assert.notEqual(standing.action.kind, "broadcastFleetTarget");
+  assert.deepEqual(standing.memory.tackleCalledOut, [], "not spent: it is called once the call lapses");
+
+  // The call held past a later broadcast of another kind still stands.
+  const held = decideCompanionAction(
+    TAGGING,
+    memberObs({ snapshot: grid, fleetBroadcast: fleetBroadcast("EnemySpotted", null) }),
+    { ...freshLadderMemory(), targetCall: { itemID: OTHER, receivedAtMs: Date.now() } },
+  );
+  assert.notEqual(held.action.kind, "broadcastFleetTarget");
+
+  // A call on a ship that is not on this grid is not standing HERE: call the tackler.
+  const elsewhere = decideCompanionAction(TAGGING, memberObs({ fleetBroadcast: fleetBroadcast("Target", OTHER) }));
+  assert.deepEqual(elsewhere.action, { kind: "broadcastFleetTarget", targetID: TACKLE });
+});
+
 // ⚠ ONCE PER SHIP, AND THIS IS WHAT STOPS TWO COMPANIONS SHOUTING AT EACH
 // OTHER. A broadcast leaves nothing behind to re-read, so a second send could
 // learn nothing a first did not -- it would just be the same shout every two
@@ -4147,13 +4247,15 @@ function standingEngagement(
 }
 
 /**
- * The tick AFTER the rack is running. A snapshot says a gun is cycling and
- * never says what it is cycling AT, so the first tick still has a weapon to
- * start and only the next one has nothing left to issue -- which is the tick
- * the standing case is about.
+ * The tick AFTER the rack is running: the first tick starts the idle gun, the
+ * next reads it cycling and has nothing left to issue -- which is the tick the
+ * standing case is about.
  */
 function afterTheGunsAreUp(): CompanionDecision {
-  const first = decideCompanionAction(ENGAGING, standingEngagement());
+  const first = decideCompanionAction(
+    ENGAGING,
+    standingEngagement({ snapshot: gridWithEntitiesAndRack([TACKLE], []) }),
+  );
   assert.equal(first.action.kind, "activate", "the first tick starts the gun");
   return decideCompanionAction(ENGAGING, standingEngagement(), first.memory);
 }
@@ -9852,6 +9954,135 @@ test("free fire skips what this hull cannot lock and what it gave up on", () => 
     lockGaveUpOn: [FF_FRIGATE],
   });
   assert.deepEqual(gaveUp.action, { kind: "lock", targetID: FF_BATTLESHIP });
+});
+
+// --- the live A, B, A (2026-10-13) -------------------------------------------
+//
+// Free fire opened on A with four guns, a broadcast called B, and A came back
+// inside five seconds. Every turn re-sent every gun, and the server refused
+// each one `EffectAlreadyActive2`: a running gun is not re-aimed by an activate.
+
+const GUN_4 = 11300004;
+
+/** `freeFireGrid` with the rack the server reports, which the fire rung reads. */
+function freeFireRack(activeModuleIDs: readonly number[]): SpaceSnapshot {
+  const grid = freeFireGrid([
+    { itemID: FF_BATTLESHIP, typeID: TYPE_BATTLESHIP, distanceM: 10_000 },
+    { itemID: FF_FRIGATE, typeID: TYPE_FRIGATE, distanceM: 30_000 },
+  ]);
+  return { ...grid, ship: { ...(grid.ship ?? {}), activeModuleIDs, weaponBanks: {} } } as unknown as SpaceSnapshot;
+}
+
+/** A `Target` broadcast heard at `atMs`. */
+function targetCallAt(itemID: number, atMs: number): FleetBroadcast {
+  return { ...fleetBroadcast("Target", itemID), receivedAtMs: atMs };
+}
+
+test("the live A, B, A end to end: no gun the server reports cycling is ever activated", () => {
+  const A = FF_FRIGATE; // free fire's pick: the frigate before the battleship
+  const B = FF_BATTLESHIP;
+  const request: FleetCompanionRequest = { ...REQUEST, weaponModuleIDs: [GUN_1, GUN_2, GUN_3, GUN_4] };
+  const all = [GUN_1, GUN_2, GUN_3, GUN_4];
+  const T = 10_000_000;
+  // The server's rack tick by tick: the guns come up on A and keep cycling
+  // through both calls; GUN_1's stop (sent at B) lands two ticks later.
+  const ticks: readonly { readonly rack: readonly number[]; readonly call: FleetBroadcast | null }[] = [
+    { rack: [], call: null },
+    { rack: [GUN_1], call: null },
+    { rack: [GUN_1, GUN_2], call: null },
+    { rack: [GUN_1, GUN_2, GUN_3], call: null },
+    { rack: all, call: null },
+    { rack: all, call: targetCallAt(B, T + 9_000) },
+    { rack: all, call: targetCallAt(A, T + 11_000) },
+    { rack: [GUN_2, GUN_3, GUN_4], call: targetCallAt(A, T + 11_000) },
+    { rack: all, call: targetCallAt(A, T + 11_000) },
+  ];
+  let memory = inFreeFire();
+  const calls: string[] = [];
+  ticks.forEach(({ rack, call }, index) => {
+    const decision = decideCompanionAction(
+      request,
+      freeFireObs({ snapshot: freeFireRack(rack), lockedTargetIDs: [A, B], fleetBroadcast: call }),
+      memory,
+      T + index * 2_000,
+    );
+    const action = decision.action;
+    if (action.kind === "activate") {
+      assert.ok(!rack.includes(action.moduleID), `tick ${index}: activated ${action.moduleID}, which is cycling`);
+      calls.push(`activate ${action.moduleID} on ${action.targetID}`);
+    } else if (action.kind === "deactivate") {
+      calls.push(`deactivate ${action.moduleID}`);
+    }
+    memory = decision.memory;
+  });
+  assert.deepEqual(calls, [
+    `activate ${GUN_1} on ${A}`,
+    `activate ${GUN_2} on ${A}`,
+    `activate ${GUN_3} on ${A}`,
+    `activate ${GUN_4} on ${A}`,
+    // B: the switch starts with one stop. Back on A next tick, the three guns
+    // still on A are left alone; GUN_1 goes back onto A once its stop lands.
+    `deactivate ${GUN_1}`,
+    `activate ${GUN_1} on ${A}`,
+  ]);
+});
+
+test("a standing Target broadcast holds against a later broadcast of another kind, until it lapses", () => {
+  // ⚠ THE STORE KEEPS ONE BROADCAST OF ANY KIND. Before `targetCall`, an
+  // `EnemySpotted` a second after the call emptied the order and free fire took
+  // its own pick back: A, B, A.
+  const A = FF_FRIGATE;
+  const B = FF_BATTLESHIP;
+  const request: FleetCompanionRequest = { ...REQUEST, weaponModuleIDs: [GUN_1] };
+  const T = 10_000_000;
+  // An idle rack every tick, so each decision names the ship it is engaged on.
+  const idle = { snapshot: freeFireRack([]), lockedTargetIDs: [A, B] };
+  const spotted: FleetBroadcast = { ...fleetBroadcast("EnemySpotted", null), receivedAtMs: T + 3_000 };
+
+  const first = decideCompanionAction(request, freeFireObs(idle), inFreeFire(), T);
+  assert.deepEqual(first.action, { kind: "activate", moduleID: GUN_1, targetID: A });
+  assert.equal(first.phase, "Free fire");
+
+  const called = decideCompanionAction(
+    request,
+    freeFireObs({ ...idle, fleetBroadcast: targetCallAt(B, T + 1_000) }),
+    first.memory,
+    T + 2_000,
+  );
+  assert.deepEqual(called.action, { kind: "activate", moduleID: GUN_1, targetID: B });
+  assert.equal(called.followingOrderFrom, "broadcast");
+
+  const overwritten = decideCompanionAction(request, freeFireObs({ ...idle, fleetBroadcast: spotted }), called.memory, T + 4_000);
+  assert.deepEqual(overwritten.action, { kind: "activate", moduleID: GUN_1, targetID: B }, "no bounce back to A");
+  assert.equal(overwritten.followingOrderFrom, "broadcast");
+
+  // Bounded: the call lapses on the observation's own clock, and free fire resumes.
+  const lapsed = decideCompanionAction(
+    request,
+    freeFireObs({ ...idle, fleetBroadcast: spotted }),
+    overwritten.memory,
+    T + 1_000 + FLEET_BROADCAST_TTL_MS,
+  );
+  assert.deepEqual(lapsed.action, { kind: "activate", moduleID: GUN_1, targetID: A });
+  assert.equal(lapsed.phase, "Free fire");
+});
+
+test("a newer named order ends a held Target call, and an empty slot never resurrects one", () => {
+  const A = FF_FRIGATE;
+  const B = FF_BATTLESHIP;
+  const request: FleetCompanionRequest = { ...REQUEST, weaponModuleIDs: [GUN_1] };
+  const T = 10_000_000;
+  const idle = { snapshot: freeFireRack([]), lockedTargetIDs: [A, B] };
+  const heldOnB: CompanionLadderMemory = { ...inFreeFire(), targetCall: { itemID: B, receivedAtMs: T } };
+  const cleared = decideCompanionAction(request, freeFireObs({ ...idle, fleetBroadcast: null }), heldOnB, T + 2_000);
+  assert.deepEqual(cleared.action, { kind: "activate", moduleID: GUN_1, targetID: A });
+  const aligned = decideCompanionAction(
+    request,
+    freeFireObs({ ...idle, fleetBroadcast: { ...fleetBroadcast("AlignTo", A), receivedAtMs: T + 1_000 } }),
+    heldOnB,
+    T + 2_000,
+  );
+  assert.equal(aligned.memory.targetCall, null);
 });
 
 // --- drone sizing: which drones go out, and when they swap ------------------
