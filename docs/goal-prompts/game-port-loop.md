@@ -2753,6 +2753,26 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A breakage that nothing catches says what test is missing**, not that
   the line is idle: "every call's answer keeps its long" passed until a
   test held another call's long to a number.
+- **A look at the game's own data is made in the server's test runner**: a
+  scratch test file under `server/tests`, run by
+  `run-isolated-tests.js`, printed from and deleted (the safe systems and
+  their stations were found so). It reads the static data with a copy of
+  the store, and touches nothing live.
+- **Several fixes in one file's tests are split by a script that takes a
+  part's name** (`ind-part.js`): each commit carries its own tests, and a
+  test is watched to fail on the thing itself, after what it calls is
+  exported, not on the missing export.
+- **A breakage that changes nothing is said to be none**, with the reason: a
+  system that is not known reads as a security of nought whichever way the
+  comparison is written. It is not counted as caught.
+- **Doubles are held to the client's own double**, not to the rounded
+  amount: a test of every blueprint by `Object.is` tells an order of
+  multiplying from another in thousands of cases, where the rounded amounts
+  part in two of the game's.
+- **A pilot is put in a station by `/tr me <stationID>`**, a blueprint and
+  its materials by `/bpauto seed <name> <runs> copy` (`mat-live.js`), the
+  skills by `/allskills`: a job can then be installed through the BFF
+  (`sectax-live.js`).
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
