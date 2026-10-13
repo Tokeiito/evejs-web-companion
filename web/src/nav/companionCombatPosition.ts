@@ -118,7 +118,21 @@ export interface CombatPositionMemory {
    * resumes, by a `stop`, and when the fight ends.
    */
   readonly reform: boolean;
+  /**
+   * CONSECUTIVE ticks spent between targets: our hold stands, nothing is engaged,
+   * and rats remain (`holdBetweenTargets`). Absent (not 0) when the pilot is not
+   * between targets, so a fresh record stays `{ hold, target, reform }`. Cleared
+   * by the next engagement and by every path that drops the hold.
+   */
+  readonly betweenTicks?: number;
 }
+
+/**
+ * How many consecutive ticks rung 8 holds its place between targets before it
+ * lets go and re-forms on the commander (about 60 s at the 2 s cadence). Bounds
+ * the one wait that would otherwise last as long as nobody broadcasts a target.
+ */
+export const MAX_BETWEEN_TARGET_TICKS = 30;
 
 export const FRESH_COMBAT_POSITION: CombatPositionMemory = Object.freeze({ hold: null, target: null, reform: false });
 
@@ -157,6 +171,15 @@ function withPosition(memory: CompanionLadderMemory, patch: Partial<CombatPositi
   return { ...memory, combatPosition: { ...memory.combatPosition, ...patch } };
 }
 
+/** The memory without the between-targets count (the key is removed, not zeroed). */
+function withoutBetween(memory: CompanionLadderMemory): CompanionLadderMemory {
+  if (memory.combatPosition.betweenTicks === undefined) {
+    return memory;
+  }
+  const { betweenTicks: _gone, ...rest } = memory.combatPosition;
+  return { ...memory, combatPosition: rest };
+}
+
 /**
  * The memory without rung 8's standing order and its closing budget: what any
  * movement this rung did not send leaves behind. The leash flag survives,
@@ -164,6 +187,9 @@ function withPosition(memory: CompanionLadderMemory, patch: Partial<CombatPositi
  * -- dropping it on the formation order would undo its hysteresis.
  */
 export function withoutCombatHold(memory: CompanionLadderMemory): CompanionLadderMemory {
+  if (memory.combatPosition.hold !== null) {
+    memory = withoutBetween(memory);
+  }
   const { hold, target } = memory.combatPosition;
   const reset = target === null || (target.farTicks === 0 && target.spentAtM === null && !target.closing)
     ? target
@@ -598,6 +624,73 @@ function backToFormation(
 }
 
 /**
+ * The snapshot itself shows no hostile on grid. `hostileOnGrid` may be null (or
+ * absent) when the overview could not say, but a readable snapshot with no
+ * hostile in it is a clear grid: re-form rather than wait for a call that has
+ * nothing to be aimed at. No snapshot is "cannot say", which holds.
+ */
+function gridShowsNoHostile(obs: FleetCompanionObservation): boolean {
+  const snapshot = obs.snapshot ?? null;
+  return snapshot !== null && !snapshot.entities.some(isHostile);
+}
+
+/** The readout while holding between targets. Plain ASCII: player-facing. */
+const BETWEEN_TARGETS_WORDS = "Between targets: holding here until the next call.";
+
+/**
+ * Between targets: the engaged target is gone (it died, or left the grid), our
+ * own hold still stands, and rats remain. Hold here instead of re-forming, so
+ * the next call starts from the fight and not from the commander's side.
+ *
+ * ⚠ IT SENDS NOTHING. The dead rat's orbit has ended server-side and the ship
+ * coasts where it is, which is near the fight; a new order would be a trip for
+ * nothing. The decision is a STANDING readout that HOLDS NAVIGATION: rung 9 does
+ * not run (the ladder returns the readout before it), and loot and salvage do
+ * not move the ship.
+ *
+ * ⚠ BOUNDED, so it can never become a stuck path. It applies only in
+ * `flight auto`, in space, not in warp, with no `stop` and no fleet order that
+ * holds navigation, and only while `hostileOnGrid` is not `false` (grid
+ * confirmed clear re-forms at once, whether `hostileOnGrid` says so or the
+ * snapshot shows no hostile; `null`, cannot say, holds). After
+ * `MAX_BETWEEN_TARGET_TICKS` consecutive ticks it returns null and the caller
+ * drops the hold exactly as before. A new engagement resets the count.
+ */
+function holdBetweenTargets(
+  obs: FleetCompanionObservation,
+  engaged: CompanionDecision | null,
+  memory: CompanionLadderMemory,
+): CombatPositionStep | null {
+  const hold = memory.combatPosition.hold;
+  if (hold === null || memory.flightMode !== "auto" || memory.followHeld ||
+    engaged?.holdsNavigation === true || obs.inSpace !== true || obs.inWarp === true ||
+    obs.hostileOnGrid === false || gridShowsNoHostile(obs)) {
+    return null;
+  }
+  const ticks = (memory.combatPosition.betweenTicks ?? 0) + 1;
+  if (ticks > MAX_BETWEEN_TARGET_TICKS) {
+    return null;
+  }
+  const next = withPosition(memory, { target: null, betweenTicks: ticks });
+  return {
+    decision: {
+      action: { kind: "wait" },
+      phase: engaged?.phase ?? "Obeying fleet",
+      why: BETWEEN_TARGETS_WORDS,
+      memory: next,
+      standing: true,
+      holdsNavigation: true,
+      ...(engaged === null ? {} : authorityOf(engaged)),
+    },
+    memory: next,
+    trace: combatTrace(memory.flightMode, "between-targets", null, {
+      standingRangeM: standingRangeM(hold),
+      latch: latchTrace(hold, null),
+    }),
+  };
+}
+
+/**
  * Rung 8, `flight auto`: be where the engaged target can be shot (plan §5.4).
  * `engaged` is rung 7's decision (null when it had none); the step's `memory`
  * is what the rungs beneath carry, whatever it decides.
@@ -649,15 +742,21 @@ export function decideCombatPosition(
   const mode = memory.flightMode;
   const targetID = engaged?.engagedTargetID;
   if (engaged === null || targetID === undefined) {
+    const between = holdBetweenTargets(obs, engaged, memory);
+    if (between !== null) {
+      return between;
+    }
     // ⚠ THE FIGHT HAS ENDED (or never began): nothing of it is kept, so nothing
     // believes the ship is still "in position", still closing (the burner), or
     // still owed a formation order on a later fight. Rung 9 brings it home.
     return {
       decision: null,
-      memory: withPosition(memory, FRESH_COMBAT_POSITION),
+      memory: { ...memory, combatPosition: FRESH_COMBAT_POSITION },
       trace: combatTrace(mode, "no-target", null, {}),
     };
   }
+  // A new engagement ends any between-targets wait, so its count starts again.
+  memory = withoutBetween(memory);
   const position = memory.combatPosition;
   const ours = position.hold !== null;
   const state = position.target?.targetID === targetID ? position.target : null;
