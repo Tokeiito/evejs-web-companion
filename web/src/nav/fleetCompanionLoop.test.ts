@@ -32,6 +32,8 @@ import type { BotLogDraft } from "./botLog.ts";
 import type { FleetBroadcast } from "../bridge/fleetBroadcasts.ts";
 import type { DroneFacts } from "./droneSizing.ts";
 import { MAX_DRONE_ROTATIONS } from "./droneRotation.ts";
+import { MAX_CLOSE_TICKS, type RatCombatFacts } from "./combatPosition.ts";
+import type { CombatWeapon } from "./combatWeapons.ts";
 
 /**
  * Two obviously-synthetic character ids: the human whose presence satisfies the
@@ -9946,4 +9948,392 @@ test("a recorder that throws never stops the companion", async () => {
   const action = await controller.tick();
   assert.deepEqual(action, { kind: "lock", targetID: TACKLE });
   assert.equal(controller.snapshot().status, "running");
+});
+
+// --- flight auto: the range gate (rung 7) and combat positioning (rung 8b) ---
+//
+// docs/fleet-companion-combat-plan.md §5.3-§5.5. The arithmetic of WHERE to
+// hold is combatPosition.ts's and is tested there; these pin the ladder's half:
+// when the rung acts, what it sends, when it does NOT re-send, and that the
+// pilot comes home to formation after the fight.
+
+const RAT = 200100;
+const RAT_2 = 200101;
+/** A turret rat that reaches 30 km (20 km optimal + 10 km falloff). */
+const TYPE_LONG_RAT = 601;
+/** A turret rat that reaches 10 km. */
+const TYPE_SHORT_RAT = 602;
+
+const LONG_RAT: RatCombatFacts = {
+  missile: false, optimalM: 20_000, falloffM: 10_000, trackingSpeed: null,
+  attackRangeM: null, orbitRangeM: null, maxVelocity: null,
+};
+const SHORT_RAT: RatCombatFacts = { ...LONG_RAT, optimalM: 6_000, falloffM: 4_000 };
+
+/** A fitted gun with its LOADED charge's reach, as `combatFit` reports it. */
+function gun(itemID: number, reachM: number | null, optimalM: number | null): CombatWeapon {
+  return {
+    itemID, typeID: 1, chargeTypeID: 2, chargeQuantity: 100, acceptedGroups: null,
+    chargeSize: null, reachM, optimalM, tracking: null,
+  };
+}
+
+/** Short guns: 20 km and 10 km reach, so a rat at 30 km is out of both. */
+const SHORT_GUNS = [gun(GUN_1, 20_000, 15_000), gun(GUN_2, 10_000, 8_000)];
+/** Long guns: 40 km reach, which out-ranges a 10 km rat by more than the buffer. */
+const LONG_GUNS = [gun(GUN_1, 40_000, 30_000), gun(GUN_2, 40_000, 30_000)];
+const TWO_GUNS: FleetCompanionRequest = { ...REQUEST, weaponModuleIDs: [GUN_1, GUN_2] };
+
+/**
+ * This ship at the origin, the commander's ship (HUMAN) at `fcAt` on the x axis,
+ * and NPC rats at their own x. Radii are 0, so surface distance is x.
+ */
+function fightGrid(options: {
+  readonly rats?: readonly { readonly itemID: number; readonly typeID: number; readonly x: number }[];
+  readonly fcAt?: number | null;
+  readonly activeModuleIDs?: readonly number[];
+  readonly extra?: readonly Record<string, unknown>[];
+} = {}): SpaceSnapshot {
+  const rats = options.rats ?? [{ itemID: RAT, typeID: TYPE_LONG_RAT, x: 30_000 }];
+  const fcAt = options.fcAt === undefined ? -5_000 : options.fcAt;
+  return {
+    inSpace: true,
+    ship: {
+      position: { x: 0, y: 0, z: 0 }, radius: 0, mode: null, maxVelocity: 300,
+      activeModuleIDs: options.activeModuleIDs ?? [], weaponBanks: {},
+    },
+    entities: [
+      { itemID: 1, kind: "ship", isSelf: true, position: { x: 0, y: 0, z: 0 }, radius: 0, mode: null },
+      ...(fcAt === null ? [] : [{
+        itemID: FC_SHIP, kind: "ship", isSelf: false, characterID: HUMAN,
+        position: { x: fcAt, y: 0, z: 0 }, radius: 0, mode: null,
+      }]),
+      ...rats.map((rat) => ({
+        itemID: rat.itemID, typeID: rat.typeID, kind: "ship", isSelf: false, isNpc: true,
+        npcEntityType: "npc", position: { x: rat.x, y: 0, z: 0 }, radius: 0, mode: null,
+      })),
+      ...(options.extra ?? []),
+    ],
+  } as unknown as SpaceSnapshot;
+}
+
+/** The fleet has tagged `target`, it is locked, and the grid's rat facts are read. */
+function fightObs(
+  weapons: readonly CombatWeapon[] | null,
+  grid: SpaceSnapshot = fightGrid(),
+  target: number = RAT,
+  overrides: Partial<FleetCompanionObservation> = {},
+): FleetCompanionObservation {
+  return obs({
+    snapshot: grid,
+    fleetTargetTags: new Map([[target, "A"]]),
+    lockedTargetIDs: [target],
+    hostileOnGrid: true,
+    combatWeapons: weapons === null ? null : { shipID: 1, weapons, cargo: null },
+    ratCombatByTypeID: { [TYPE_LONG_RAT]: LONG_RAT, [TYPE_SHORT_RAT]: SHORT_RAT },
+    threatByTypeID: { [TYPE_LONG_RAT]: NO_THREAT, [TYPE_SHORT_RAT]: NO_THREAT },
+    maxTargetRangeM: 60_000,
+    ...overrides,
+  });
+}
+
+function flyingAuto(overrides: Partial<CompanionLadderMemory> = {}): CompanionLadderMemory {
+  return { ...freshLadderMemory(), flightMode: "auto", ...overrides };
+}
+
+/** A quiet tick on the commander: the formation order goes out and its latch is set. */
+function inFormation(memory: CompanionLadderMemory = freshLadderMemory()): CompanionDecision {
+  const formed = decideCompanionAction(TWO_GUNS, obs({ snapshot: fightGrid({ rats: [] }) }), memory);
+  assert.deepEqual(formed.action, { kind: "keepAtRange", targetID: FC_SHIP, range: DEFAULT_FOLLOW_M });
+  assert.equal(formed.memory.followAnchorID, FC_SHIP);
+  return formed;
+}
+
+const isMove = (action: FleetCompanionAction): boolean =>
+  action.kind === "orbit" || action.kind === "keepAtRange" || action.kind === "approach";
+
+test("`flight auto` heard in chat sets the flight mode, and `flight follow` puts it back", () => {
+  const fresh = decideCompanionAction(REQUEST, obs());
+  assert.equal(fresh.memory.flightMode, "follow", "follow is the default");
+  const auto = decideCompanionAction(REQUEST, obs({ chatMessages: [chatLine("flight auto", HUMAN)] }));
+  assert.equal(auto.memory.flightMode, "auto");
+  const quiet = decideCompanionAction(REQUEST, obs(), auto.memory);
+  assert.equal(quiet.memory.flightMode, "auto", "silence must not undo the mode");
+  const stopped = decideCompanionAction(REQUEST, obs({ chatMessages: [chatLine("stop", HUMAN, 2_000)] }), quiet.memory);
+  assert.equal(stopped.memory.flightMode, "auto", "a mode is not an order: stop leaves it");
+  const back = decideCompanionAction(
+    REQUEST, obs({ chatMessages: [chatLine("flight follow", HUMAN, 3_000)] }), stopped.memory,
+  );
+  assert.equal(back.memory.flightMode, "follow");
+  const stranger = decideCompanionAction(REQUEST, obs({ chatMessages: [chatLine("flight auto", COMPANION)] }));
+  assert.equal(stranger.memory.flightMode, "follow", "only a commander can switch it");
+});
+
+test("the flight mode is carried across a supervisor leaving and coming back", () => {
+  const unsupervised = decideCompanionAction(REQUEST, alone({ snapshot: gridWithStation(200_000) }), flyingAuto());
+  assert.equal(unsupervised.memory.flightMode, "auto");
+  const back = decideCompanionAction(REQUEST, obs(), unsupervised.memory);
+  assert.equal(back.memory.flightMode, "auto");
+});
+
+test("a resumed run flies in follow mode: the `flight auto` that set it cannot be re-heard", async () => {
+  const issued: FleetCompanionAction[] = [];
+  const companion = createFleetCompanion({
+    observe: async () => fightObs(SHORT_GUNS, fightGrid(), RAT, { maxTargetRangeM: 60_000 }),
+    issue: async (action) => { issued.push(action); },
+    sleep: async () => {},
+  });
+  companion.start(TWO_GUNS, { abandonedAtMs: Date.now(), supervisorCharacterIDs: [HUMAN] });
+  for (let tick = 0; tick < 4; tick += 1) await companion.tick();
+  assert.ok(!issued.some((action) => action.kind === "orbit" ||
+    (action.kind === "keepAtRange" && action.targetID === RAT)), JSON.stringify(issued));
+});
+
+test("follow mode: an engaged pilot issues no positioning order and keeps its formation", () => {
+  const formed = inFormation();
+  let memory = formed.memory;
+  for (let tick = 0; tick < 3; tick += 1) {
+    const decision = decideCompanionAction(TWO_GUNS, fightObs(SHORT_GUNS), memory);
+    assert.ok(!isMove(decision.action), JSON.stringify(decision.action));
+    memory = decision.memory;
+  }
+  assert.equal(memory.followAnchorID, FC_SHIP, "the formation latch is untouched");
+  assert.equal(memory.combatHold, null);
+});
+
+test("auto, gun boat in reach of the rats: orbit the target at the shortest gun's optimal", () => {
+  const decision = decideCompanionAction(TWO_GUNS, fightObs(SHORT_GUNS), flyingAuto());
+  assert.deepEqual(decision.action, { kind: "orbit", targetID: RAT, range: 8_000 });
+  assert.match(decision.why, /orbiting the target at 8 km/i);
+  assert.equal(decision.holdsNavigation, true);
+});
+
+test("auto, gun boat out-ranging every rat: keep at range outside their guns (kiting)", () => {
+  const grid = fightGrid({ rats: [{ itemID: RAT, typeID: TYPE_SHORT_RAT, x: 50_000 }] });
+  const decision = decideCompanionAction(TWO_GUNS, fightObs(LONG_GUNS, grid), flyingAuto());
+  // The rats reach 10 km, plus the 5 km buffer.
+  assert.deepEqual(decision.action, { kind: "keepAtRange", targetID: RAT, range: 15_000 });
+  assert.match(decision.why, /out-range everything/i);
+});
+
+test("auto, drone boat: keep at range on the target at the drone band's hold", () => {
+  const observation = fightObs(null, fightGrid(), RAT, {
+    combatDroneIDs: [DRONE_A], combatDroneBayItemIDs: [], droneControlRangeM: 40_000,
+  });
+  let memory = flyingAuto();
+  let moved: FleetCompanionAction | null = null;
+  for (let tick = 0; tick < 6 && moved === null; tick += 1) {
+    const decision = decideCompanionAction(REQUEST, observation, memory);
+    memory = decision.memory;
+    if (isMove(decision.action)) moved = decision.action;
+  }
+  // Nothing scrams, so the band holds at its ceiling: min(40 km drone leash, 60 km lock) - 3 km.
+  assert.deepEqual(moved, { kind: "keepAtRange", targetID: RAT, range: 37_000 });
+});
+
+test("the positioning order is not re-sent inside the hysteresis, and is when the hold moves or the target changes", () => {
+  const first = decideCompanionAction(TWO_GUNS, fightObs(SHORT_GUNS), flyingAuto());
+  assert.deepEqual(first.action, { kind: "orbit", targetID: RAT, range: 8_000 });
+
+  // The shortest gun's optimal moves 1.5 km: inside the 2 km hysteresis, so no re-aim.
+  const wobble = decideCompanionAction(
+    TWO_GUNS, fightObs([SHORT_GUNS[0]!, gun(GUN_2, 10_000, 9_500)]), first.memory,
+  );
+  assert.equal(wobble.action.kind, "wait");
+  assert.equal(wobble.standing, true);
+  assert.equal(wobble.holdsNavigation, true);
+
+  // 2.5 km: a real move.
+  const moved = decideCompanionAction(
+    TWO_GUNS, fightObs([SHORT_GUNS[0]!, gun(GUN_2, 12_000, 10_500)]), wobble.memory,
+  );
+  assert.deepEqual(moved.action, { kind: "orbit", targetID: RAT, range: 10_500 });
+
+  // A new target is a new anchor, whatever the range.
+  const grid = fightGrid({ rats: [
+    { itemID: RAT, typeID: TYPE_LONG_RAT, x: 30_000 }, { itemID: RAT_2, typeID: TYPE_LONG_RAT, x: 31_000 },
+  ] });
+  const retarget = decideCompanionAction(
+    TWO_GUNS, fightObs([SHORT_GUNS[0]!, gun(GUN_2, 12_000, 10_500)], grid, RAT_2), moved.memory,
+  );
+  assert.deepEqual(retarget.action, { kind: "orbit", targetID: RAT_2, range: 10_500 });
+});
+
+test("closing budget: after MAX_CLOSE_TICKS ticks of closing, the hold becomes the current distance", () => {
+  let memory = flyingAuto();
+  const moves: { readonly tick: number; readonly action: FleetCompanionAction; readonly why: string }[] = [];
+  let lastWhy = "";
+  for (let tick = 0; tick <= MAX_CLOSE_TICKS + 1; tick += 1) {
+    // The ship never gets closer: the rat holds 30 km whatever we do.
+    const decision = decideCompanionAction(TWO_GUNS, fightObs(SHORT_GUNS), memory);
+    memory = decision.memory;
+    lastWhy = decision.why;
+    if (isMove(decision.action)) moves.push({ tick, action: decision.action, why: decision.why });
+  }
+  assert.equal(moves.length, 2, JSON.stringify(moves));
+  assert.deepEqual(moves[0]!.action, { kind: "orbit", targetID: RAT, range: 8_000 });
+  assert.equal(moves[1]!.tick, MAX_CLOSE_TICKS);
+  assert.deepEqual(moves[1]!.action, { kind: "orbit", targetID: RAT, range: 30_000 });
+  assert.match(moves[1]!.why, /could not close in/i);
+  assert.match(lastWhy, /in position/i);
+});
+
+test("leash: a target further from the FC than lock range gets no positioning order, and formation holds", () => {
+  const formed = inFormation(flyingAuto());
+  // The FC at -5 km, the rat at 70 km: 75 km apart, past the 60 km lock range.
+  const far = fightGrid({ rats: [{ itemID: RAT, typeID: TYPE_LONG_RAT, x: 70_000 }] });
+  let memory = formed.memory;
+  for (let tick = 0; tick < 3; tick += 1) {
+    const decision = decideCompanionAction(TWO_GUNS, fightObs(SHORT_GUNS, far), memory);
+    assert.ok(!isMove(decision.action), JSON.stringify(decision.action));
+    memory = decision.memory;
+  }
+  assert.equal(memory.followAnchorID, FC_SHIP);
+  assert.equal(memory.combatHold, null);
+});
+
+test("leash: a pilot already orbiting a rat that strays past the leash re-forms on the FC", () => {
+  const orbiting = decideCompanionAction(TWO_GUNS, fightObs(SHORT_GUNS), inFormation(flyingAuto()).memory);
+  assert.equal(orbiting.action.kind, "orbit");
+  const far = fightGrid({ rats: [{ itemID: RAT, typeID: TYPE_LONG_RAT, x: 70_000 }] });
+  const reform = decideCompanionAction(TWO_GUNS, fightObs(SHORT_GUNS, far), orbiting.memory);
+  assert.deepEqual(reform.action, { kind: "keepAtRange", targetID: FC_SHIP, range: DEFAULT_FOLLOW_M });
+  assert.equal(reform.memory.combatHold, null);
+});
+
+test("latch: a keepAtRange on a non-FC target clears the follow latch, and after the fight formation is re-issued", () => {
+  const formed = inFormation(flyingAuto());
+  // Long guns against a 10 km rat at 50 km: a kite, so the order is a keep-at-range on the RAT.
+  const grid = fightGrid({ rats: [{ itemID: RAT, typeID: TYPE_SHORT_RAT, x: 50_000 }] });
+  const kiting = decideCompanionAction(TWO_GUNS, fightObs(LONG_GUNS, grid), formed.memory);
+  assert.deepEqual(kiting.action, { kind: "keepAtRange", targetID: RAT, range: 15_000 });
+  assert.equal(kiting.memory.followAnchorID, null, "a keep-at-range on a rat is not the formation order");
+  assert.equal(kiting.memory.followOrder, null);
+
+  let memory = kiting.memory;
+  for (let tick = 0; tick < 3; tick += 1) {
+    const holding = decideCompanionAction(TWO_GUNS, fightObs(LONG_GUNS, grid), memory);
+    assert.equal(holding.action.kind, "wait");
+    memory = holding.memory;
+  }
+
+  // The rat is dead: gone from the grid and from the tags.
+  const quiet = decideCompanionAction(TWO_GUNS, obs({ snapshot: fightGrid({ rats: [] }) }), memory);
+  assert.deepEqual(quiet.action, { kind: "keepAtRange", targetID: FC_SHIP, range: DEFAULT_FOLLOW_M });
+  assert.equal(quiet.memory.combatHold, null);
+  const settled = decideCompanionAction(TWO_GUNS, obs({ snapshot: fightGrid({ rats: [] }) }), quiet.memory);
+  assert.equal(settled.action.kind, "wait");
+  assert.equal(settled.phase, "Following");
+});
+
+test("an orbit clears the follow latch", () => {
+  const formed = inFormation(flyingAuto());
+  const orbiting = decideCompanionAction(TWO_GUNS, fightObs(SHORT_GUNS), formed.memory);
+  assert.equal(orbiting.action.kind, "orbit");
+  assert.equal(orbiting.memory.followAnchorID, null);
+  assert.equal(orbiting.memory.followRangeIssuedM, null);
+  assert.equal(orbiting.memory.followOrder, null);
+});
+
+test("any movement the positioning rung did not send drops its 'in position' record", () => {
+  const orbiting = decideCompanionAction(TWO_GUNS, fightObs(SHORT_GUNS), flyingAuto());
+  assert.notEqual(orbiting.memory.combatHold, null);
+  const stopped = decideCompanionAction(
+    TWO_GUNS, fightObs(SHORT_GUNS, fightGrid(), RAT, { chatMessages: [chatLine("stop", HUMAN, 2_000)] }),
+    orbiting.memory,
+  );
+  assert.equal(stopped.action.kind, "stopShip");
+  assert.equal(stopped.memory.combatHold, null);
+});
+
+test("a refused positioning order is retried, then backs off like formation does", async () => {
+  let orbits = 0;
+  const companion = createFleetCompanion({
+    observe: async () => fightObs(SHORT_GUNS, fightGrid(), RAT, { chatMessages: [chatLine("flight auto", HUMAN)] }),
+    issue: async (action) => {
+      if (action.kind === "orbit") {
+        orbits += 1;
+        throw Object.assign(new Error("Orbit refused"), { code: "CALL_REFUSED" });
+      }
+    },
+    sleep: async () => {},
+  });
+  companion.start(TWO_GUNS);
+  for (let tick = 0; tick < 8; tick += 1) await companion.tick();
+  assert.equal(orbits, 3);
+  assert.equal(companion.snapshot().status, "running");
+  for (let tick = 0; tick < COMPANION_RETRY_BACKOFF_TICKS; tick += 1) await companion.tick();
+  assert.ok(orbits > 3, "the attempts start over once the back-off is spent");
+});
+
+test("range gate: a gun that does not reach the target is not started, one that does is", () => {
+  const grid = fightGrid({ rats: [{ itemID: RAT, typeID: TYPE_LONG_RAT, x: 15_000 }] });
+  const guns = [gun(GUN_1, 10_000, 8_000), gun(GUN_2, 20_000, 15_000)];
+  const first = decideCompanionAction(TWO_GUNS, fightObs(guns, grid));
+  assert.deepEqual(first.action, { kind: "activate", moduleID: GUN_2, targetID: RAT });
+  const standing = decideCompanionAction(TWO_GUNS, fightObs(guns, fightGrid({
+    rats: [{ itemID: RAT, typeID: TYPE_LONG_RAT, x: 15_000 }], activeModuleIDs: [GUN_2],
+  })), first.memory);
+  assert.equal(standing.action.kind, "wait", "GUN_1 is never started");
+  assert.match(standing.why, /1 of 2 guns in reach/);
+});
+
+test("range gate fails open: an unknown reach, an unread fit, or a gun missing from the fit still fires", () => {
+  const grid = fightGrid({ rats: [{ itemID: RAT, typeID: TYPE_LONG_RAT, x: 15_000 }] });
+  const unknownReach = decideCompanionAction(TWO_GUNS, fightObs([gun(GUN_1, null, null), gun(GUN_2, 10_000, 8_000)], grid));
+  assert.deepEqual(unknownReach.action, { kind: "activate", moduleID: GUN_1, targetID: RAT });
+  const unread = decideCompanionAction(TWO_GUNS, fightObs(null, grid));
+  assert.deepEqual(unread.action, { kind: "activate", moduleID: GUN_1, targetID: RAT });
+  const missingRow = decideCompanionAction(TWO_GUNS, fightObs([gun(GUN_2, 10_000, 8_000)], grid));
+  assert.deepEqual(missingRow.action, { kind: "activate", moduleID: GUN_1, targetID: RAT });
+});
+
+test("range gate: an x / x+1 / x wobble across a gun's reach edge does not toggle it", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, weaponModuleIDs: [GUN_1] };
+  const guns = [gun(GUN_1, 10_000, 8_000)];
+  const at = (x: number): FleetCompanionObservation =>
+    fightObs(guns, fightGrid({ rats: [{ itemID: RAT, typeID: TYPE_LONG_RAT, x }] }));
+
+  // In reach, then just past the edge, then back: it stays in reach throughout.
+  // The gun is never seen cycling, so each tick asks to start it again -- which
+  // is how the test can see the gate's answer.
+  let memory = freshLadderMemory();
+  for (const x of [9_800, 10_200, 9_800]) {
+    const decision = decideCompanionAction(request, at(x), memory);
+    assert.deepEqual(decision.action, { kind: "activate", moduleID: GUN_1, targetID: RAT }, `at ${x}`);
+    memory = decision.memory;
+  }
+  // The same 10.2 km with no history is out: the plain edge.
+  assert.notEqual(decideCompanionAction(request, at(10_200)).action.kind, "activate");
+
+  // Out of reach, then just inside the edge, then out: it stays out throughout,
+  // and only a real move inside comes back.
+  memory = freshLadderMemory();
+  for (const x of [10_600, 9_800, 10_200]) {
+    const decision = decideCompanionAction(request, at(x), memory);
+    assert.notEqual(decision.action.kind, "activate", `at ${x}`);
+    memory = decision.memory;
+  }
+  const inside = decideCompanionAction(request, at(9_400), memory);
+  assert.deepEqual(inside.action, { kind: "activate", moduleID: GUN_1, targetID: RAT });
+});
+
+test("loot and salvage do not move the ship while the positioning rung holds navigation", () => {
+  const can = {
+    itemID: CAN, kind: "container", isSelf: false, ownerID: null,
+    position: { x: -40_000, y: 0, z: 0 }, radius: 0, mode: null,
+  };
+  const grid = fightGrid({ extra: [can] });
+  const looting = { chatMessages: [areaOrder("loot")] };
+
+  // The control: in follow mode nothing holds navigation, and the loot rung
+  // approaches the can between shots, as it always has.
+  const follow = decideCompanionAction(TWO_GUNS, fightObs(SHORT_GUNS, grid, RAT, looting));
+  assert.deepEqual(follow.action, { kind: "approach", targetID: CAN });
+
+  const orbiting = decideCompanionAction(TWO_GUNS, fightObs(SHORT_GUNS, grid, RAT, looting), flyingAuto());
+  assert.equal(orbiting.action.kind, "orbit");
+  const held = decideCompanionAction(TWO_GUNS, fightObs(SHORT_GUNS, grid, RAT, looting), orbiting.memory);
+  assert.notEqual(held.action.kind, "approach");
+  assert.equal(held.holdsNavigation, true);
 });
