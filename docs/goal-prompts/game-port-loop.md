@@ -2485,6 +2485,20 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **The client's "Enter <function>" lines are whole.** Where its
   "MethodCalls" lines stop at about 2,600 characters, the longest "Enter
   MakeShipActive with" line is 24,607: every row of every state is there.
+- **A recorded print tells a number's kind.** Tranquility's
+  `(0.0, 100.0, 0, 1.0, 0.01)` is four floats and an integer. This server
+  sends a whole number as an integer unless it is marked a real
+  (`{ type: "real", value }`), so a constant written `100.0` in its source
+  went out as the integer 100.
+- **What a recorded line answers is read before it is used.** The one state
+  with heat left in a rack was a docked ship's: the call it answers, some
+  eight hundred lines above it, is bound for a station. Read as a thing of
+  space it would have been mended in the wrong place.
+- **The client's godma prints every item it loads, whole.** "godma
+  UpdateItem:" lines have the item's row and all its attributes (1,059 in the
+  recordings, 79 of ships, 11 of structures, the longest 2,192 characters).
+  Where a `GetAllInfo` answer's line is cut inside `shipInfo`, the line
+  after it has the ship: `grep -rha "godma.UpdateItem: " <recordings>`.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
