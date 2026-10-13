@@ -177,7 +177,7 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
         return { objectID, nodeID: CRIMEWATCH_NODE, result: await (typeof answer === "function" ? answer(args, kwargs, objectID) : answer) };
       }
       // The war registry's Moniker is the war service's own: bound at every choosing, and again where the pilot's
-      // alliance or corporation is another's, and asked that owner's wars at each (war_cso.py 57 to 80, 95 to 104).
+      // alliance or corporation is another's, and asked that owner's wars at each (war_cso.py 57 to 80, 98 to 106).
       // It is listed and counted apart (session.wars, "N=4:<n>"), and so is every call on one (session.warCalls,
       // in callBound), so that the binds, the objects and the bound calls of the rest are what a test caused.
       if (service === "warRegistry") {

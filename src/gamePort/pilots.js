@@ -158,13 +158,13 @@ const ALLIANCE_REGISTRY = "allianceRegistry";
  * (war_cso.GetMoniker, 57 to 67).
  */
 const WAR_REGISTRY = "warRegistry";
-/** The war registry's read whose answer the war service keeps: an owner's wars, for twelve hours (war_cso.GetWars, 95 to 104). */
+/** The war registry's read whose answer the war service keeps: an owner's wars, for twelve hours (war_cso.GetWars, 98 to 106). */
 const WARS_READ = "GetWars";
 /** Whether a call is the war service's read of an owner's wars, asked as the client asks it: with the owner alone. */
 const keptWars = (service, method, args, kwargs) => service === WAR_REGISTRY && method === WARS_READ && args.length === 1 && kwargs === null && positive(args[0]) !== null;
 /**
- * war_cso.CheckForStartOrEndOfWar (166 to 176): the war service's thread reads its owner's wars every ten seconds,
- * which asks for them again once they are more than twelve hours old (GetWars, 97). So: twelve hours after an
+ * war_cso.CheckForStartOrEndOfWar (172 to 182): the war service's thread reads its owner's wars every ten seconds,
+ * which asks for them again once they are more than twelve hours old (GetWars, 100). So: twelve hours after an
  * asking, by the thread's next round, which is ten seconds on at the latest.
  */
 const WARS_AGAIN_AFTER_MS = WARS_GOOD_FOR_MS + 10 * 1000;
@@ -1548,7 +1548,7 @@ function createGamePortPilots({
       // they came. A notice of another number is no such three (the timer panel's handler takes three,
       // crimewatchTimers.py 456): what is kept is let go, and asked for when next wanted.
       if (notification.method === "OnJumpTimersUpdated") entry.jumpTimers = Array.isArray(notification.args) && notification.args.length === 3 ? notification.args : undefined;
-      // war_cso.OnWarChanged(war, ownerIDs, change) (82 to 93): a war changed, and it is worked into the wars kept.
+      // war_cso.OnWarChanged(war, ownerIDs, change) (82 to 96): a war changed, and it is worked into the wars kept.
       if (notification.method === "OnWarChanged") entry.wars.changed(notification.args);
       // fwWarzoneSvc.OnWarzoneOccupationStateUpdated(solarsystemID, newOccupationState) (78 to 93): of the system the
       // session is in, it is that system's state from now; of another system, nothing.
@@ -1753,7 +1753,7 @@ function createGamePortPilots({
       // crimewatchTimers (356): the panel then has the war service say whether the pilot is at war, which asks for
       // the wars of its alliance, or of its corporation where it is in none (war_cso.IsPlayerCurrentlyAtWarOrInFW,
       // 302 to 311). A pilot in a faction's militia is at war with nothing asked, and of such a one the service's
-      // own thread asks for the same wars within ten seconds (166 to 176, 185): here they are asked for at once,
+      // own thread asks for the same wars within ten seconds (172 to 182, 185): here they are asked for at once,
       // for either. A registry that refuses fails no choosing.
       await warsRead(entry, warOwner(entry)).catch(() => {});
       // crimewatchSvc and bco_members: the corporation's registry is bound, and asked its settings and its members' names.
@@ -2451,7 +2451,7 @@ function createGamePortPilots({
   }
 
   /**
-   * war_cso.GetWars(ownerID, forceRefresh) (95 to 104): an owner's wars as the war service keeps them, good for
+   * war_cso.GetWars(ownerID, forceRefresh) (98 to 106): an owner's wars as the war service keeps them, good for
    * twelve hours. Where none are kept, or they are older, they are asked for: self.GetMoniker().GetWars(ownerID),
    * on the service's moniker, with the owner alone, and what answers is kept (pilotWars.js). One asking after
    * another: of two askers at once the second is answered from what the first kept. An answer that cannot be kept
@@ -2476,7 +2476,7 @@ function createGamePortPilots({
   }
 
   /**
-   * war_cso.CheckForStartOrEndOfWar (166 to 176) and _CheckForWarStartingOrEnding (185): every ten seconds, with a
+   * war_cso.CheckForStartOrEndOfWar (172 to 182) and _CheckForWarStartingOrEnding (185): every ten seconds, with a
    * character on the session, the war service's thread reads GetWars(session.allianceid or session.corpid). That
    * is answered from what is kept until it is more than twelve hours old, and asked of the server then. Here: one
    * timer from each asking of the owner's wars, which asks again when the thread would (WARS_AGAIN_AFTER_MS), and

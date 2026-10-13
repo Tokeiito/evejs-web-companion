@@ -3341,6 +3341,13 @@ Take these defaults, and list each under "For the operator" in the log so they c
   own echo of `held.<something>` in its answer is a quick live look at
   what the BFF holds (`/api/bridge/bound-small-services` says the
   corporation).
+- **A line of the client's is named from `grep -n`, at the writing.**
+  Counted down a printout that began part way into a file, the numbers
+  drift: two units named `war_cso.py`'s `GetWars` as 95 to 104 (it is
+  98 to 106) and its thread as 166 to 176 (172 to 182), and
+  `fwWarzoneSvc.py`'s handlers likewise, in comments, in a call's note
+  and in commit messages. `grep -n "    def " <file>` gives every
+  method's first line, and the next one's less two is its last.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

@@ -5,12 +5,12 @@
  * (eve/client/script/ui/services/wars/war_cso.py).
  *
  * The service keeps the wars it was told of by their IDs (warsByWarID), and for each owner it asked about, when
- * it asked and which wars answered (warsByOwnerID). An owner's wars are good for twelve hours (GetWars, 95 to
- * 104): after that, or when the asker forces it, what was kept of the owner is let go and the server is asked.
+ * it asked and which wars answered (warsByOwnerID). An owner's wars are good for twelve hours (GetWars, 98 to
+ * 106): after that, or when the asker forces it, what was kept of the owner is let go and the server is asked.
  * What it answers is that owner's from then on, and wars that no owner kept names any more are let go
- * (PopulateCacheAndCleanupWars, 106 to 118).
+ * (PopulateCacheAndCleanupWars, 108 to 121).
  *
- * The server's OnWarChanged(war, ownerIDs, change) is worked into what is kept, and nothing is asked (82 to 93,
+ * The server's OnWarChanged(war, ownerIDs, change) is worked into what is kept, and nothing is asked (82 to 96,
  * by evewar/util.py HandleWarChange, 183 to 202): where the change says the war's ID is gone, the war of the old
  * ID is taken out; otherwise the war is the war of its ID from then on, and is among the wars of each of its
  * owners that is kept.
@@ -21,7 +21,7 @@
  * notice the client's handler fails on changes nothing there.
  */
 
-/** GetWars (97): an owner's wars are asked for again once they are more than twelve hours old. */
+/** GetWars (100): an owner's wars are asked for again once they are more than twelve hours old. */
 const GOOD_FOR_MS = 12 * 60 * 60 * 1000;
 
 const text = (value) => (Buffer.isBuffer(value) ? value.toString("utf8") : typeof value === "string" ? value : null);
@@ -45,7 +45,7 @@ function createPilotWars() {
 
   return {
     /**
-     * GetWars(ownerID, forceRefresh), up to its asking (95 to 104): the owner's wars as they are kept, each by its
+     * GetWars(ownerID, forceRefresh), up to its asking (98 to 106): the owner's wars as they are kept, each by its
      * ID, in the form the server answers in. Undefined where none are kept of the owner, where they are more than
      * twelve hours old, or where the asker forces it: what was kept of the owner is let go then, and is to be
      * asked for.
@@ -61,7 +61,7 @@ function createPilotWars() {
       return { type: "dict", entries: [...had.warIDs].filter((id) => byWarID.has(id)).map((id) => [byWarID.get(id).id, byWarID.get(id).war]) };
     },
     /**
-     * PopulateCacheAndCleanupWars (106 to 118): what the server answered of an owner's wars is that owner's from
+     * PopulateCacheAndCleanupWars (108 to 121): what the server answered of an owner's wars is that owner's from
      * now, and wars no owner kept names any more are let go. Answers whether it was kept: false for an answer in
      * a form this does not read, which changes nothing.
      */
@@ -103,7 +103,7 @@ function createPilotWars() {
         if (had) had.warIDs.add(key);
       }
     },
-    /** warsByOwnerID.pop(ownerID, None) (OnSessionChanged, 76 to 78): what is kept of an owner's wars is let go. */
+    /** warsByOwnerID.pop(ownerID, None) (OnSessionChanged, 75 to 77): what is kept of an owner's wars is let go. */
     forget(ownerID) {
       const key = keyOf(ownerID);
       if (key !== null) byOwner.delete(key);
