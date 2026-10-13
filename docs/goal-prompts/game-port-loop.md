@@ -3242,6 +3242,11 @@ Take these defaults, and list each under "For the operator" in the log so they c
   <account> <character>` leaves the ship for the capsule
   (`/api/bridge/ship/leave`) and boards it again
   (`/api/bridge/ship/board`), reading the flight after each.
+- **The state file of `eve.js` is written afresh for every entry**, from
+  `git rev-parse HEAD` and `git ls-remote origin` read as the entry is
+  written. An earlier unit's file was used again where no server commit
+  had been made, and the origin had been moved by another's push in the
+  meantime: the entry said three commits were not on it when none was.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
