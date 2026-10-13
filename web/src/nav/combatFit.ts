@@ -35,6 +35,6 @@ export function combatFit(shipID: number, slots: readonly FittingSlot[],
     return [{ itemID: module.itemID, typeID: module.typeID,
       chargeTypeID: module.charge?.typeID ?? null, chargeQuantity: module.charge?.quantity ?? 0,
       acceptedGroups: fits[module.typeID]?.groups ?? null, chargeSize: fits[module.typeID]?.size ?? null,
-      reachM, tracking }];
+      reachM, optimalM: turret && charge != null && optimal !== null && optimal > 0 ? optimal : null, tracking }];
   }) };
 }
