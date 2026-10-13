@@ -1220,6 +1220,21 @@ missile is launched two seconds after the server's, from where the launcher's ba
 Since `eve.js` `6117e48fe` it also keeps the ball a client's park makes of each missile and knows the step that ball
 touches in, to a step (`scripts/missiles-in-park.js` measures a recording of it).
 
+**When an entry is applied, 2026-10-13.** `michelle.py` sorts what arrives into a history by stamp (`FlushState`,
+1098 to 1140) and looks at it before each tick (`DoPreTick`, 900 to 917): an entry one or two past the park's
+tick is left until then; one at the tick or before is applied at once, the park first taken back to a kept state
+of that tick or an earlier one (`SynchroniseToSimulationTime`, 1074 to 1096; with no such state a new whole state
+is asked for); one three or more past makes the park step forward to it at once. Each entry is logged as it is
+applied ("Action: <name> <stamp> - current: <tick>", `RealFlushState`, 1163), so those two numbers are the same;
+the lead as an update arrived is in the dump of the history written then ("------ History Dump <tick>", after
+"DoDestinyUpdate call for tick <stamp>"). Over the 46 of Tranquility's recordings that have those dumps, an
+update's stamp less the park's tick as it arrived was -1 for 77, 0 for 3,597 and +1 for 2,529, and never 2.
+
+This server stamps what it sends one or two after its own stamp (a whole state one; a missile's launch and removal
+two; an NPC's follow and orbit orders one since `eve.js` `3378afe85`, where its delivery does not raise them), and
+its delivery was seen to raise an NPC's order to the stamp it had last sent the session. The client's history takes
+an entry under one it has not yet applied: it is sorted in.
+
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
 (`ACTIONS`, by `eventTypeID`) and a level it reckons from `absolutePoints` and the skill's rank

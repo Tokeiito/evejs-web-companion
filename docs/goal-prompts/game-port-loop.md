@@ -2971,6 +2971,38 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A recording with several logins in it**: the park's tools take the
   connection with the most frames. Keep one flight to a recording, or cut
   the wanted connection's lines out to a file of their own.
+- **What the server's delivery did to a stamp is in its own trace.** With
+  the missile debug log on (`EVEJS_SPACE_MISSILE_DEBUG_ENABLED=true`),
+  each `destiny.emit-group` row has the stamp a group was authored at,
+  the scene's stamp, and `restampSteps`: every step's name, the stamp
+  before and after, and whether it was applied. The scratch
+  `emit-steps.js <missile debug log> <from ms> <name,name>` lists them.
+  Read it before saying why an entry came with the stamp it did.
+- **A stamp can be tried on an old recording before a line of the server
+  is changed**: `scripts/park-against-movement-log.js
+  --restamp=<entry>:-1` plays the recording with every update holding
+  that entry one stamp sooner.
+- **A proof from one quiet flight is of that flight.** With one rat, its
+  change of top speed came one stamp after five times of five; with three
+  rats the delivery raised it. Fly the busier scene too.
+- **The pilot's own ship is not a control that always holds**: it was a
+  second out in one flight of four. Look at its first rows
+  (`--ship=9988400091900`, no `--summary`) before measuring anything
+  against it.
+- **The server's debug logs rotate on the hour** (`space-movement-debug.
+  <date>_<hour>.log`): a flight across the hour is in two files, and the
+  park's tool takes several logs.
+- **michelle's "Action … current" line is written as an entry is
+  applied**, so its two numbers are the same. The lead at arrival is in
+  the history's dump (the reference, "When an entry is applied"; the
+  scratch `tq-arrival.js <recordings>` counts it).
+- **The recorder's clock is set to the server's** by a frame that follows
+  a logged command by a known time (the `WarpTo` after
+  `warp.requested`; an NPC's order after its `cmd.` row); the scratch
+  `lead-by-name.js <repo> <recording.jsonl> <ms to add>` then counts
+  each entry's stamp against the server's as it arrived, and
+  `first-updates.js <repo> <recording.jsonl> <how many> [ball]` lists
+  them.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
