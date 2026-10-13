@@ -289,6 +289,11 @@ const isAPythonList = (value) => Boolean(value && value.type === "list" && Array
 /** The milestone service's telling of a logon (milestones/client/milestoneSvc.py 20 to 23). */
 const MILESTONE_MGR = "milestoneMgr";
 const MILESTONE_LOGON = "ProcessCharacterLogon";
+/** The operations' read of whether the character may play the tutorial, kept for the character (operations/common/util.py 93 to 101). */
+const OPERATIONS_MGR = "operationsManager";
+const MAY_PLAY_TUTORIAL = "can_character_play_the_tutorial";
+/** Whether a call is that read, asked as the client asks it: with the pilot's own character alone. */
+const keptMayPlayTutorial = (service, method, form, characterID) => service === OPERATIONS_MGR && method === MAY_PLAY_TUTORIAL && form.args.length === 1 && form.kwargs === null && positive(form.args[0]) === characterID;
 const OFFICE_MANAGER = "officeManager";
 /**
  * What the client hands back to the server as it was answered, and so with the Python type it came with:
@@ -1538,6 +1543,9 @@ function createGamePortPilots({
       injectionsLeftWork: Promise.resolve(),
       /** milestoneSvc.timeLeft: when the login milestone's timer runs out, as the server last said it (OnMilestoneTimerStarted); null while it has said none since the logon. */
       milestoneTimeLeft: null,
+      /** is_npe_enabled_for_character's memoized answer for the pilot: whether it may play the tutorial; undefined while it was not asked. And its askings, one after another. */
+      mayPlayTutorial: undefined,
+      mayPlayTutorialWork: Promise.resolve(),
       /** The account's clone grade as the server last said it (clonegrade/const.py: 0 alpha, 1 omega): undefined while none is had. */
       cloneGrade: undefined,
       /** Whether the office's item was primed on the Moniker for where the pilot is docked (PRIME_OFFICE): its answer, kept while docked there. */
@@ -1864,6 +1872,11 @@ function createGamePortPilots({
       // crimewatchTimers (335, 355): the timer panel is made as the pilot comes in, docked or in space, and reads
       // the jump timers of crimewatchSvc, which asks for them once. A service that refuses fails no choosing.
       await jumpTimersRead(entry).catch(() => {});
+      // operations.client.util.are_operations_active (12 to 13): the client's services that mind the tutorial's
+      // operations ask whether the character may play it as they start (the achievements' event handler, the
+      // operations' panel and controller): once for the character. In the retail client's own login, between
+      // the jump timers and the war registry's bind. A manager that refuses fails no choosing.
+      await mayPlayTutorialRead(entry).catch(() => {});
       // crimewatchTimers (356): the panel then has the war service say whether the pilot is at war, which asks for
       // the wars of its alliance, or of its corporation where it is in none (war_cso.IsPlayerCurrentlyAtWarOrInFW,
       // 302 to 311). A pilot in a faction's militia is at war with nothing asked, and of such a one the service's
@@ -2050,6 +2063,12 @@ function createGamePortPilots({
     // asked as the client asks it: with nothing.
     if (keptAchievementStatus(service, method, form)) {
       const kept = await run(entry, service, method, () => achievementStatusRead(entry));
+      return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
+    }
+    // Whether the pilot may play the tutorial is kept for the pilot, where it is asked as the client asks it: of
+    // the pilot's own character alone.
+    if (keptMayPlayTutorial(service, method, form, entry.characterID)) {
+      const kept = await run(entry, service, method, () => mayPlayTutorialRead(entry));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
     // How many non-diminishing injections the character has left is that service's to answer, where it is asked as
@@ -2653,6 +2672,28 @@ function createGamePortPilots({
     const form = shape(MILESTONE_MGR, MILESTONE_LOGON, [], null, contextFor(entry));
     ledger.note(MILESTONE_MGR, MILESTONE_LOGON, form);
     await byName(entry.session, MILESTONE_MGR, MILESTONE_LOGON, form);
+  }
+
+  /**
+   * operations.common.util.is_npe_enabled_for_character (operations/common/util.py 93 to 101):
+   * sm.RemoteSvc('operationsManager').can_character_play_the_tutorial(character_id), by the service's name with the
+   * character alone, memoized for the character: asked once, and the answer kept as long as the client runs. Its
+   * askers go by are_operations_active (operations/client/util.py 12 to 13), which is that of the session's own
+   * character: the achievements' event handler, the operations' info panel and controller, the undock's questions,
+   * the camera's tracker. Some of them start as a pilot comes in, so the one asking comes at a login. Tranquility's
+   * recordings of a login have it once, with the character, answered True. One asking at a time.
+   */
+  function mayPlayTutorialRead(entry) {
+    const reading = entry.mayPlayTutorialWork.then(async () => {
+      if (entry.mayPlayTutorial === undefined) {
+        const form = shape(OPERATIONS_MGR, MAY_PLAY_TUTORIAL, [entry.characterID], null, contextFor(entry));
+        ledger.note(OPERATIONS_MGR, MAY_PLAY_TUTORIAL, form);
+        entry.mayPlayTutorial = await byName(entry.session, OPERATIONS_MGR, MAY_PLAY_TUTORIAL, form);
+      }
+      return entry.mayPlayTutorial;
+    });
+    entry.mayPlayTutorialWork = reading.catch(() => {});
+    return reading;
   }
 
   // ── the occupation of the system, as the client's warzone service has it ──
