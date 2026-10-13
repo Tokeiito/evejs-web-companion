@@ -2598,6 +2598,25 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **An older test that asks for what Tranquility does not send is read to
   its reason and rewritten to ask for that**: here the value a client would
   read of an attribute, not the attribute's being listed.
+- **Tranquility's own number, asked of this server, is the sharpest test
+  there is.** Where a recording has a reckoned value and what it was reckoned
+  from, fit the same and ask for the same digits. A line cut short may be
+  made up from another kind of line: godma's "UpdateItem:" lines have every
+  module of a ship that a "MethodCalls" line stops short of, and
+  `allinfo-by-file.js` sets each recorded answer beside its ship.
+- **The end of every chain of modifiers is rounded to six places here**
+  (`applyModifierGroups` in `fitting/liveFittingState.js`), and Tranquility's
+  is not: its `1.1804337950307635` is `1.180434` on this server. The
+  rounding is the operator's decision (`3a4ff978c`, with a note not to
+  remove it without the owner's word), so this loop does not touch it: a
+  test of a recorded value asks for the six places and says why, and the
+  difference is written for the operator. A note in the code that says whose
+  decision a thing is, is that decision.
+- **What one carrier carried is moved to the right one before the first is
+  put right.** The character's attributes went in the second dict; the item
+  was made whole first, and the dict given Tranquility's form after, so that
+  no client was ever short of its character. The older tests of the first
+  carrier are each rewritten to what they were written for.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
