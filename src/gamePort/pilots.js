@@ -310,6 +310,17 @@ const USER_SVC = "userSvc";
 const REDEEM_TOKENS = "GetRedeemTokens";
 /** Whether a call is that fetch, asked as the client asks it: with nothing. */
 const keptRedeemTokens = (service, method, form) => service === USER_SVC && method === REDEEM_TOKENS && form.args.length === 0 && form.kwargs === null;
+/** The Project Discovery client service's two askings of itself (projectdiscovery/client/projects/covid/service.py 25; projectdiscovery/client/baseservice.py 41). */
+const PROJECT_DISCOVERY = "ProjectDiscovery";
+const DISCOVERY_TUTORIAL_AT_LOGON = "initialize_tutorial_status";
+const DISCOVERY_ENABLED = "is_enabled";
+/** Whether a call is the service's read of whether Project Discovery is enabled, asked as the client asks it: with nothing. */
+const keptDiscoveryEnabled = (service, method, form) => service === PROJECT_DISCOVERY && method === DISCOVERY_ENABLED && form.args.length === 0 && form.kwargs === null;
+/** The localization client's telling of its QA wrap (carbon/client/script/localization/localizationClient.py 26 to 27). */
+const LOCALIZATION_SERVER = "localizationServer";
+const QA_WRAP = "UpdateLocalizationQAWrap";
+/** ROLE_QA (carbon/common/script/sys/serviceConst.py 30). */
+const ROLE_QA = 4503599627370496n;
 const OFFICE_MANAGER = "officeManager";
 /**
  * What the client hands back to the server as it was answered, and so with the Python type it came with:
@@ -1568,6 +1579,9 @@ function createGamePortPilots({
       /** redeem.tokens: what the account may redeem, as the server last answered; undefined while it was not fetched. And the fetches, one after another. */
       redeemTokens: undefined,
       redeemTokensWork: Promise.resolve(),
+      /** ProjectDiscoveryClient._is_enabled: whether Project Discovery is enabled, as the server answered once; undefined while it was not asked. And its askings, one after another. */
+      discoveryEnabled: undefined,
+      discoveryEnabledWork: Promise.resolve(),
       /** The account's clone grade as the server last said it (clonegrade/const.py: 0 alpha, 1 omega): undefined while none is had. */
       cloneGrade: undefined,
       /** Whether the office's item was primed on the Moniker for where the pilot is docked (PRIME_OFFICE): its answer, kept while docked there. */
@@ -1877,6 +1891,14 @@ function createGamePortPilots({
       // after the journal, as a client asks this server. A manager that refuses fails no choosing: they are asked
       // for when they are next wanted.
       await bookmarksRead(entry, shape(BOOKMARK_MGR, ACTIVE_BOOKMARKS, [], null, contextFor(entry))).catch(() => {});
+      // localizationClient.OnCharacterSessionChanged (24 to 27): a first character on a session of the QA role, and
+      // the server is told whether the client wraps its texts for QA. In the retail client's own login on this
+      // server, behind the bookmarks. A server that refuses fails no choosing.
+      await qaWrapTold(entry).catch(() => {});
+      // The Project Discovery client service's OnCharacterSessionChanged (covid/service.py 22 to 30): a character on
+      // the session, and whether it has done the project's tutorial is asked for. In the retail client's own login,
+      // just ahead of the milestone's logon. A service that refuses fails no choosing.
+      await discoveryTutorialAsked(entry).catch(() => {});
       // milestoneSvc.OnCharacterSessionChanged (20 to 23): a character on the session, and the server is told of the
       // logon, at which it starts the login milestone's timer. In the retail client's own login, just ahead of the
       // non-diminishing injections. A manager that refuses fails no choosing.
@@ -1930,6 +1952,10 @@ function createGamePortPilots({
       await redeemTokensFetched(entry).catch(() => {});
       // bco_applications: the pilot's own applications, which the client asks for once.
       await corporationAsk(entry, "GetMyApplications").catch(() => {});
+      // btnDataNode.IsButtonInScope (478 to 485): the neocom's button for Project Discovery is in scope where the
+      // project is enabled, which its client service asks once. In the retail client's own login, behind the pilot's
+      // applications as the neocom is set up. A service that refuses fails no choosing.
+      await discoveryEnabledRead(entry).catch(() => {});
       // contracts.NeocomBlink: what of the pilot's contracts wants attention, asked once the notifications are ready.
       await asks(entry, "contractProxy", "GetLoginInfo").catch(() => {});
       // notificationUI._NotificationProvider: all the pilot's notifications, from the first, for the notification window.
@@ -2120,6 +2146,12 @@ function createGamePortPilots({
     // nothing (GetRedeemTokens, 51 to 54: what is kept, fetched where nothing is).
     if (keptRedeemTokens(service, method, form)) {
       const kept = await run(entry, service, method, () => (entry.redeemTokens === undefined ? redeemTokensFetched(entry) : entry.redeemTokens));
+      return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
+    }
+    // Whether Project Discovery is enabled is its client service's to answer, where it is asked as the client asks
+    // it: with nothing (is_enabled, baseservice.py 39 to 42: what is kept, asked for where nothing is).
+    if (keptDiscoveryEnabled(service, method, form)) {
+      const kept = await run(entry, service, method, () => discoveryEnabledRead(entry));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
     // How many non-diminishing injections the character has left is that service's to answer, where it is asked as
@@ -2791,6 +2823,61 @@ function createGamePortPilots({
     });
     entry.redeemTokensWork = fetching.catch(() => {});
     return fetching;
+  }
+
+  /**
+   * localizationClient.OnCharacterSessionChanged (carbon/client/script/localization/localizationClient.py 24 to
+   * 27): as a first character comes onto a session whose role has ROLE_QA (serviceConst.py 30), the server is told
+   * whether the client wraps its texts for QA: sm.RemoteSvc('localizationServer').UpdateLocalizationQAWrap(
+   * LocWrapSettingsActive()), by the service's name with the one bool. That is whether any of the client's QA
+   * settings of its texts is on (localization/settings/qaSettings.py 53 to 65: hardcoded strings shown, message IDs
+   * shown, boundary markers, a replacement of characters), each off unless the client's prefs say otherwise; the
+   * game port has none of them and says False. A session without the role tells nothing, and Tranquility's
+   * recordings, which are of players, have no such call. The same handler's GetAllTextChanges (28 to 32) is a
+   * client's that is not packaged, which the retail client is; it is not made.
+   */
+  async function qaWrapTold(entry) {
+    const role = wholeOf(entry.session.attributes.role);
+    if (role === null || (role & ROLE_QA) !== ROLE_QA) return;
+    const form = shape(LOCALIZATION_SERVER, QA_WRAP, [false], null, contextFor(entry));
+    ledger.note(LOCALIZATION_SERVER, QA_WRAP, form);
+    await byName(entry.session, LOCALIZATION_SERVER, QA_WRAP, form);
+  }
+
+  /**
+   * The Project Discovery client service's OnCharacterSessionChanged (projectdiscovery/client/projects/covid/
+   * service.py 22 to 30; the service is the Covid project's, projectdiscoveryClientSvc.py 10 to 16): where the
+   * session's character is not the one it had, sm.RemoteSvc('ProjectDiscovery').initialize_tutorial_status(), by
+   * the service's name with nothing: whether the character has done the project's tutorial, a bool. The client
+   * keeps it for its Project Discovery window (is_tutorial_complete, 83 to 86); no page has that window, and the
+   * answer is not kept here. Tranquility's recordings of a login have the call once, answered False.
+   */
+  async function discoveryTutorialAsked(entry) {
+    const form = shape(PROJECT_DISCOVERY, DISCOVERY_TUTORIAL_AT_LOGON, [], null, contextFor(entry));
+    ledger.note(PROJECT_DISCOVERY, DISCOVERY_TUTORIAL_AT_LOGON, form);
+    await byName(entry.session, PROJECT_DISCOVERY, DISCOVERY_TUTORIAL_AT_LOGON, form);
+  }
+
+  /**
+   * ProjectDiscoveryClient.is_enabled (projectdiscovery/client/baseservice.py 39 to 42):
+   * sm.RemoteSvc('ProjectDiscovery').is_enabled(), by the service's name with nothing: whether Project Discovery
+   * is enabled, a bool, asked while none is kept and kept as long as the client runs. Its asker is the neocom: a
+   * button is in scope (btnDataNode.IsButtonInScope, 478 to 485) where, for Project Discovery's, the service says
+   * the project is enabled, and that button is among the neocom's own (neocomConst.py 66), so the asking comes as
+   * the neocom is set up for a pilot come in. Tranquility's recordings of a login have it once, answered True. One
+   * asking at a time.
+   */
+  function discoveryEnabledRead(entry) {
+    const reading = entry.discoveryEnabledWork.then(async () => {
+      if (entry.discoveryEnabled === undefined || entry.discoveryEnabled === null) {
+        const form = shape(PROJECT_DISCOVERY, DISCOVERY_ENABLED, [], null, contextFor(entry));
+        ledger.note(PROJECT_DISCOVERY, DISCOVERY_ENABLED, form);
+        entry.discoveryEnabled = await byName(entry.session, PROJECT_DISCOVERY, DISCOVERY_ENABLED, form);
+      }
+      return entry.discoveryEnabled;
+    });
+    entry.discoveryEnabledWork = reading.catch(() => {});
+    return reading;
   }
 
   // ── the occupation of the system, as the client's warzone service has it ──
