@@ -3491,6 +3491,16 @@ Take these defaults, and list each under "For the operator" in the log so they c
   other `.pyd` there). A table had from it is put into the source by
   a script that reads the oracle's output, and checked whole against
   it as it is written.
+- **What a service of the client's hears is by its handlers' names
+  where the decompile has numbers for its notices** (`__notifyevents__
+  = [3, 4, ...]`): the `On...`, `Process...` and `Do...` methods of
+  the class are the notices, one for one. The chat service's eight
+  were read so on 2026-10-13.
+- **The chat and the game port are two sockets, and what the server
+  sends on each at one change comes in either order.** At a move the
+  stub's presences of the new room came 67 ms ahead of the session's
+  change reaching the chat's connection. What is kept of a room is
+  made right for both orders, and a look says which came first.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

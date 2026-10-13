@@ -1489,6 +1489,18 @@ leaves its session's channels in the order of its session categories and closes 
 (`eve.js/_local/logs/xmpp-stub.*.log`). A pilot on the game port sends these since `20a843e9`. The client's Python is
 a narrow build with Unicode 5.2.0 data (asked of its `python27.dll` with its `unicodedata.pyd`): 383 ranges below
 0x10000 are of a C category, the surrogates among them (`withoutCategoryC`, `src/gamePort/py27.js`).
+The chat at a change of the session (`xmppchatclient/xmppchatsvc.py`). `OnSessionChanged` (149 to 164) goes
+through `SESSION_CHANGE_CATEGORIES` (35 to 45: `solarsystemid2` Local, `allianceid`, `corpid`, `fleetid`,
+`warfactionid`) and, where a value is in the change and was something, leaves the channel named from the old value
+(`LeaveChannel`, 1154 to 1162, which sends its leave whether or not the channel was joined). It joins nothing
+there. The service hears eight notices (the three of a ban, the session's change and its reset, a disconnect, a GM's
+poke), none of a channel to join. The new channel comes from the chat server: an invite from `admin` has the
+channel joined (542 to 559), and a presence in a channel has the window of the channel's category made or found and
+set to that channel (632 to 687, 853 to 881; `xmppchatwindow.py` 611 to 633), the client's own presence passed
+over in the wormhole, nullsec and Triglavian kinds (652 to 654). EveJS takes the chat connection out of the old
+rooms and puts it into the new at a session's change, and sends their presences
+(`services/chat/sessionChatSync.js`, `xmppStubServer.js` 2490 to 2550); it sends no invite. A pilot on the game
+port follows so since `82986a37`.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
