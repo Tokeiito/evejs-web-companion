@@ -246388,11 +246388,14 @@ not asked. No statement of theirs is made untrue. Not run.
 - **No test written.**
 - **The live looks were made between copies of the store and their
   putting back.**
-- **`eve.js` has three commits not on its origin, read as this was
-  written** (`main` at `2f6b99e18`, its origin, asked afresh, at
-  `3c96302d8`, and nothing on the origin that `main` has not): the three
-  units before's. This loop pushes nothing there. Six files of others
-  are changed there, as before, and were not touched.
+- **`eve.js` has no commit that is not on its origin, read as this was
+  written** (`main` and its origin, asked afresh, both at `2f6b99e18`):
+  the origin was moved during this unit by another's push from this
+  clone, which took this loop's three commits there. This loop pushes
+  nothing there. Six files of others are changed there, as before, and
+  were not touched. (Put right in a commit of its own: the entry first
+  said three commits were not on the origin, from a reading made before
+  the push.)
 
 
 ### Next
