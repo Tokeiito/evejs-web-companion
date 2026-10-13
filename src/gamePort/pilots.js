@@ -319,6 +319,17 @@ const FACILITY_PLACES_KEPT_MS = 60_000;
  */
 const A_JOB_INSTALLED = Object.freeze({ installed: true });
 /**
+ * industrySvc.OnIndustryMaterials(jobID, materials) (324 to 327): what the monitored job's place has is what the
+ * server says (job.available = materials), where the job's monitor is the notice's number. The monitor's answer
+ * is kept and answered again (ConnectJob, below), so the kept answer is where the notice's word goes. A job once
+ * installed is not the one monitored (it has no monitor's number), and a notice that says no materials is none.
+ */
+function monitoredJobHas(entry, args) {
+  const job = entry.windowJob;
+  if (!job || !Array.isArray(args) || args.length < 2 || job.monitorID !== positive(args[0])) return;
+  job.answer = [itemsOf(job.answer)[0], args[1]];
+}
+/**
  * The two reads of the facility manager's the client's facility service keeps (facilitySvc.py): the region's
  * facilities (GetFacilities(), 133) and the largest system index of each activity (GetMaxActivityModifiers(), 87),
  * each asked with nothing. Null for any other read, and for one with something sent beside it, which is no call of
@@ -1469,6 +1480,8 @@ function createGamePortPilots({
       // crimewatchSvc (222 to 288): a timer, a flag or an engagement changed. The client works the notice into what
       // it keeps and asks nothing; so here (crimewatchStates.js). States the notice cannot be worked into are let go.
       if (CLIENT_STATE_NOTICES.has(notification.method)) entry.clientStates.amend(CLIENT_STATES, (states) => statesAfter(states, notification.method, notification.args));
+      // industrySvc.OnIndustryMaterials: what the monitored job's place has is what the server says.
+      if (notification.method === "OnIndustryMaterials") monitoredJobHas(entry, notification.args);
       // clone_grade_svc.OnSubscriptionChangedServer(new_state): the grade is what the server says.
       if (notification.method === "OnSubscriptionChangedServer" && typeof notification.args?.[0] === "number") entry.cloneGrade = notification.args[0];
       // crimewatchSvc.OnSecurityStatusUpdate(newSecurityStatus): the status is what the server says.

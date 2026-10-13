@@ -7545,6 +7545,45 @@ test("the job the Industry window has is monitored once, and its monitor is let 
   assert.throws(() => pilots.industryJobLetGo({ userid: 9 }, handle), (error) => error.code === "SESSION_NOT_FOUND");
 });
 
+test("what the monitored job's place has is what the server last said of it", async () => {
+  // industrySvc.OnIndustryMaterials (324 to 327): job.available = materials, where the monitored job's monitor is
+  // the notice's number. The monitor is opened once and its answer kept (above): the notice is what changes it.
+  const { pilots, handle, session } = await selected({ answers: {
+    [MONITOR_OPENED]: () => [501, { type: "dict", entries: [[34, 1000]] }],
+    [MONITOR_LET_GO]: () => null,
+    [JOB_INSTALLED]: () => 970000000000001n,
+    [ONE_FACILITY]: ([facilityID]) => facilityOf(facilityID, 1),
+  } }, FACILITY_PAIRS);
+  const opened = async (job) => (await pilots.callMethod("industryMonitor", "ConnectJob", [job], null, FIELDS, handle)).result;
+  const sentOpenings = () => session.calls.filter((call) => call.method === "ConnectJob").length;
+  const job = jobAt(A_STRUCTURE);
+  const said = [501, { type: "dict", entries: [[34, 400], [35, 7]] }];
+  assert.deepEqual(await opened(job), [501, { type: "dict", entries: [[34, 1000]] }]);
+
+  // The server's notice for the job's monitor: asked again, nothing is sent, and the answer has what the notice said.
+  session.notify("OnIndustryMaterials", [501, { type: "dict", entries: [[34, 400], [35, 7]] }]);
+  assert.deepEqual([await opened(job), sentOpenings()], [said, 1]);
+  // A notice of another monitor's number is not this job's (job.monitorID == jobID), and one that says no
+  // materials is no notice: each leaves what is kept.
+  session.notify("OnIndustryMaterials", [777, { type: "dict", entries: [] }]);
+  session.notify("OnIndustryMaterials", [501]);
+  session.notify("OnIndustryMaterials", []);
+  session.notify("OnIndustryMaterials", null);
+  assert.deepEqual([await opened(job), sentOpenings()], [said, 1]);
+  // A place that has nothing left is a notice like another.
+  session.notify("OnIndustryMaterials", [501, { type: "dict", entries: [] }]);
+  assert.deepEqual(await opened(job), [501, { type: "dict", entries: [] }]);
+
+  // A job installed is the window's job no longer the one monitored: a notice finds none to tell, and nothing is thrown.
+  await pilots.callMethod("industryManager", "InstallJob", [job], null, FIELDS, handle);
+  session.notify("OnIndustryMaterials", [501, { type: "dict", entries: [[34, 9]] }]);
+  // Nor with no job at all, the window closed.
+  await pilots.industryWindowClosed(WHO, handle);
+  session.notify("OnIndustryMaterials", [501, { type: "dict", entries: [[34, 9]] }]);
+  // The job asked for afresh is monitored anew, with the server's own answer.
+  assert.deepEqual([await opened(job), sentOpenings()], [[501, { type: "dict", entries: [[34, 1000]] }], 2]);
+});
+
 test("a job is given its facility afresh once, when it is made, and has it from then on", async () => {
   // industrySvc.CreateJob (109) gives the job facilitySvc.GetFreshFacility(facilityID) once; the job the window
   // has from then on is that one, whatever is asked of it after.
