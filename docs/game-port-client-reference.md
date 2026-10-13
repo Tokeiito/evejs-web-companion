@@ -1254,6 +1254,9 @@ server's stamp in six recordings, went back 11 times and stepped three ticks for
 new state in none (`scripts/park-tick-against-stamps.js`). On Tranquility an entry arrives none or one ahead.
 Tranquility sends a ship that lies still nothing (5 `SetBallPosition` in its 46 recordings, none periodic); this
 server sent each one its own place again every five seconds until `eve.js` `37e38b889`.
+`OnDamageStateChange` is applied in its turn without the park being moved to its stamp (`michelle.py` 1165), but it
+is held until its stamp and is a stamp in the queue, so it counts for the park's extra step (912 to 915). On
+Tranquility a damage state carries the stamp of the missile's removal for 485 of 507.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened

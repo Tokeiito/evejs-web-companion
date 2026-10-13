@@ -3065,6 +3065,18 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **The pilot's own ship told from the rest**: `lead-by-name.js <repo>
   <recording.jsonl> <ms to add> <ball> [others]` counts only the entries
   naming that ball first, or only those that do not.
+- **Senders that share a lead are tried together.** A hit's damage, its
+  effect and a missile's removal come at one stamp because each is two
+  after the server's; one moved alone parts them. The lead is one
+  constant (`MICHELLE_HELD_FUTURE_DESTINY_LEAD`), and whether it is 1 or
+  2 is **the operator's to say**: this loop does not change it.
+- **A trial is not a commit.** A constant tried on disk: the committed
+  file copied aside first (`git show HEAD:<path>` into the scratchpad),
+  put back after and compared with `cmp`, and `git status` read. The
+  server's ledger takes the trial's numbers, and says "not kept".
+- **A copied log holds the flights before it too.** A rat of the unit
+  before's has another number; "no ship in the park at that time" for
+  every row is the wrong ball or the wrong minutes, not a finding.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
