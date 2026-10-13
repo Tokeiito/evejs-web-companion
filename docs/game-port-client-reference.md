@@ -1398,6 +1398,15 @@ season it is in; and where a season is the character's own (103 to 104) it asks 
 challenge's progress, completion, rewards and expiry, the seasonal goals, a season chosen, started or ended)
 change what it keeps from then. Tranquility's recordings of a login have the first call, answered nothing. The
 game port asks both so since `f020fef7`, at the choosing behind the standings, and keeps nothing.
+The milestone service (`milestones/client/milestoneSvc.py`). At every change of the session's character
+(`OnCharacterSessionChanged`, 20 to 23) it forgets the time it had left and calls
+`sm.RemoteSvc('milestoneMgr').ProcessCharacterLogon()` with nothing, which answers nothing; the server's
+`OnMilestoneTimerStarted(timeLeft)` is kept (25 to 27) and `GetTimeLeftInMilestone` answers it (29 to 30);
+`ClaimRewards(milestoneID)` is the player's (32 to 35). On this server the logon's call starts the account's login
+milestone: two hours online, then `OnLoginMilestoneAchieved` and a reward to claim, the time online written as
+the session ends. Tranquility's recordings of a login each have the one call. The game port makes it since
+`d1298c33`, at the choosing between the bookmarks and the non-diminishing injections, and keeps the time; the
+claiming is not made yet.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened

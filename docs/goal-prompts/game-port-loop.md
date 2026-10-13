@@ -3413,6 +3413,18 @@ Take these defaults, and list each under "For the operator" in the log so they c
   searched for by its own name. What the game port asks is this
   build's: the decompiled client's own line, and the retail client's
   login on this server (`docs/game-port-login-calls.md`).
+- **A login through the game port runs the account's login
+  milestone** (since `d1298c33`, as a retail client's does:
+  `milestoneMgr.ProcessCharacterLogon`), and the server writes the
+  account's time online as the session ends
+  (`server/src/services/character/milestoneMgrService.js`). A look that
+  is only a login leaves its seconds in the store; after two hours of
+  them the account's milestone stands achieved. A look that must leave
+  nothing is made between a copy of the store and its putting back.
+- **A call of the client's that tells the server something is read at
+  the server before the first look with it.** `ProcessCharacterLogon`
+  answers nothing and looked like a notice of no weight; the handler
+  starts a timer, sends a notice and writes the account's progress.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

@@ -10,10 +10,10 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 
 | The game port | Kinds | Calls | Meaning |
 |---|---|---|---|
-| at login | 54 | 62 | The game port asks this at login too. |
+| at login | 55 | 63 | The game port asks this at login too. |
 | by a feature | 6 | 10 | A feature of the web client asks this when it is wanted, in a form read against the client's. |
 | by a route | 7 | 8 | The BFF has a route that can ask this. It has not been read against the client's. |
-| never | 33 | 37 | Nothing of ours asks this. |
+| never | 32 | 36 | Nothing of ours asks this. |
 
 ## Before a character is chosen
 
@@ -76,7 +76,7 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `accessGroupBookmarkMgr.GetMyActiveBookmarks` | 1 | at login |
 | `localizationServer.UpdateLocalizationQAWrap` | 1 | never |
 | `ProjectDiscovery.initialize_tutorial_status` | 1 | never |
-| `milestoneMgr.ProcessCharacterLogon` | 1 | never |
+| `milestoneMgr.ProcessCharacterLogon` | 1 | at login |
 | `nonDiminishingInjectionMgr.GetAvailableNonDiminishingInjections` | 1 | at login |
 | `XmppChatMgr.Hostname` | 1 | never |
 | `charMgr.GetCharacterSettings` | 1 | at login |
