@@ -46,7 +46,10 @@ const refusedBy = (key, reason = key) => sessionError("GAME_CALL_REFUSED", `refu
  * choosing itself. The first test of a choosing spells the list out; the others hold a choosing to this.
  */
 const CHOSEN_ASKS = [
-  "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler",
+  "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings",
+  // seasonService._fetch_season_data (seasons/client/seasonservice.py 64 to 82, 268 to 279); behind the standings in the client's own login.
+  "seasonManager.get_season_data_for_character",
+  "skillMgr2.GetMySkillHandler",
   // securitySvc.Initialize (security/client/securitySvc.py 39 to 48), as its session first has a solar system; ahead of the journal in the client's own login.
   "securityMgr.get_modified_systems",
   "agentMgr.GetMyJournalDetails",
@@ -377,6 +380,9 @@ test("select logs in as the account and makes the retail client's three calls, i
     // The character is chosen: its standings are read, as the client's standing service reads them then.
     "standingMgr.GetNPCNPCStandings",
     "standingMgr.GetCharStandings",
+    // And the season it may play, which the client's season service asks once for a character on the session
+    // (seasons/client/seasonservice.py 64 to 82, 268 to 279). The stand-in answers none, and no progress is asked.
+    "seasonManager.get_season_data_for_character",
     // And its skill handler is asked for, as the client's skill service asks. This stand-in answers none, so nothing is asked of one.
     "skillMgr2.GetMySkillHandler",
     // And the solar systems whose security is other than the map's, which the client's security service asks once
@@ -1708,6 +1714,8 @@ test("the transport keeps a tally of what it called and how each compared with t
     "charUnboundMgr.SelectCharacterID": { same: 1 },
     "standingMgr.GetNPCNPCStandings": { same: 1 },
     "standingMgr.GetCharStandings": { same: 1 },
+    // The season the character may play, asked once at the choosing (seasons/client/seasonservice.py 269).
+    "seasonManager.get_season_data_for_character": { same: 1 },
     // Asked for and not answered by this stand-in: nothing was asked of a handler, and nothing of one is tallied.
     "skillMgr2.GetMySkillHandler": { same: 1 },
     // The solar systems whose security is other than the map's, asked once at the choosing (security/client/securitySvc.py 41).
@@ -5849,8 +5857,8 @@ const journalAsked = (session) => session.calls.filter((call) => call.service ==
 
 test("a character chosen has its agents' journal read as the client's journal service reads it, and it is kept", async () => {
   const { pilots, session, handle } = await selected({ answers: { "agentMgr.GetMyJournalDetails": journalWith(missionOf(3008416)) } }, JOURNAL_PAIRS);
-  // By name, with nothing, after the standings, the skill handler and the modified systems.
-  assert.deepEqual(session.calls.slice(3).map((call) => [`${call.service}.${call.method}`, call.args, call.kwargs])[4], ["agentMgr.GetMyJournalDetails", [], null]);
+  // By name, with nothing, after the standings, the season, the skill handler and the modified systems.
+  assert.deepEqual(session.calls.slice(3).map((call) => [`${call.service}.${call.method}`, call.args, call.kwargs])[5], ["agentMgr.GetMyJournalDetails", [], null]);
   assert.deepEqual(ledgerOf(pilots, "agentMgr.GetMyJournalDetails"), [{ same: 1 }, "eve/client/script/ui/shared/neocom/journal.py:312"]);
   // Read from what is kept, in the gateway's form, with nothing asked.
   const kept = await pilots.journalKept(WHO, handle);
