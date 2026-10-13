@@ -2359,6 +2359,26 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **`/npc 1 guristas` brings a different rat each time** (light missiles from 35 km once,
   rockets and a laser from 7 km the next). Read what came, and what it fires, before a
   measure of damage is believed: with a turret firing, a damage state belongs to no missile.
+- **A recording of the very thing is looked for by its name first.** `ls` the recordings'
+  folder and its `Archive` before reading the client's code for what the server sends:
+  `Getting Killed to POD.txt` and `Eject from Ship and Board ship.txt` were there all along.
+  `sl-calls.js <recording>` lists every call the client made, in order, with each session
+  change of the ship; the park's actions are the `Action:` lines.
+- **What the client changes by itself at a session change is in gameui**
+  (`parklife/gameui.py`: `_HandleSessionChangeInSpace`, `InStation`, `InStructure`), not in
+  the service whose state it is. michelle's park takes its ego from a whole state alone; it is
+  gameui that makes another ship the ego, and that asks for the targets to be cleared.
+- **A ship is lost with nobody's hand on its session** by `sl-rats.js`: a second pilot brings
+  the rats to the belt and leaves, and they turn to who is left. That is how a loss is seen in
+  the tab, where the pilot's own session cannot be asked for a GM's command. `sl-live.js` loses
+  one by script and prints what the flight status, the Fitting read and a bot's observation
+  say as it goes (`AFTER_MS` for a longer look after).
+- **A route that reads the flight for a guard of its own must not be made to adopt what it
+  reads.** Six tests of other routes failed when every read of the flight took the new ship,
+  and they were right: each refuses a request made for a ship the pilot is no longer in. What
+  follows the server's own change belongs to the read the page makes to learn it.
+- **Keep a live run's whole output, and filter the file.** A filter on the lines as they came
+  dropped every line after the loss, because the thing looked for had the value filtered on.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
