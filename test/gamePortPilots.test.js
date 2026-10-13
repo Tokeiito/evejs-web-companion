@@ -121,7 +121,7 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
         return typeof prices === "function" ? prices(args, kwargs) : prices;
       }
       // The occupation state of the system the session is in is asked at every choosing and again at every change
-      // of solar system, as the client's location panel has its warzone service ask it (fwWarzoneSvc.py 32 to 61,
+      // of solar system, as the client's location panel has its warzone service ask it (fwWarzoneSvc.py 34 to 60,
       // infoPanelLocationInfo.py 341). It is listed apart too (session.occupationAsks), and answered for the
       // system the session is in, with no state: a system in no warzone.
       if (key === "fwWarzoneSolarsystem.GetLocalOccupationState") {

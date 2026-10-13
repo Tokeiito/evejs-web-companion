@@ -247,7 +247,7 @@ const JUMP_TIMERS = "jumpTimers";
 const JUMP_TIMERS_READ = "GetTimers";
 /** Whether a call is crimewatchSvc's read of the jump timers, asked as the client asks it: with the pilot's own character alone. */
 const keptJumpTimers = (service, method, form, characterID) => service === JUMP_TIMERS && method === JUMP_TIMERS_READ && form.args.length === 1 && form.kwargs === null && positive(form.args[0]) === characterID;
-/** The warzone service's read of the system the session is in, which it keeps for as long as the session is there (fwWarzoneSvc.py 47 to 61). */
+/** The warzone service's read of the system the session is in, which it keeps for as long as the session is there (fwWarzoneSvc.py 47 to 60). */
 const FW_WARZONE = "fwWarzoneSolarsystem";
 const LOCAL_OCCUPATION = "GetLocalOccupationState";
 /** Whether a call is the warzone service's read of the local occupation state, asked as the client asks it: with nothing. */
@@ -1550,7 +1550,7 @@ function createGamePortPilots({
       if (notification.method === "OnJumpTimersUpdated") entry.jumpTimers = Array.isArray(notification.args) && notification.args.length === 3 ? notification.args : undefined;
       // war_cso.OnWarChanged(war, ownerIDs, change) (82 to 93): a war changed, and it is worked into the wars kept.
       if (notification.method === "OnWarChanged") entry.wars.changed(notification.args);
-      // fwWarzoneSvc.OnWarzoneOccupationStateUpdated(solarsystemID, newOccupationState) (75 to 83): of the system the
+      // fwWarzoneSvc.OnWarzoneOccupationStateUpdated(solarsystemID, newOccupationState) (78 to 93): of the system the
       // session is in, it is that system's state from now; of another system, nothing.
       if (notification.method === "OnWarzoneOccupationStateUpdated" && Array.isArray(notification.args) && notification.args.length === 2
         && positive(notification.args[0]) !== null && positive(notification.args[0]) === attribute(entry, "solarsystemid2")) {
@@ -1584,7 +1584,7 @@ function createGamePortPilots({
       }
       // gameui.GetShipAccess: the ship's moniker it keeps is for the ship the pilot is in.
       if ("shipid" in changes) entry.monikers.delete("ship");
-      // fwWarzoneSvc.OnSessionChanged (32 to 35): in another solar system what is kept of the local occupation is
+      // fwWarzoneSvc.OnSessionChanged (34 to 37): in another solar system what is kept of the local occupation is
       // let go; and the location panel, drawn again for the system, has it asked for (localOccupationWanted).
       // (The choosing of the character asks for it itself.)
       if ("solarsystemid2" in changes) {
@@ -2393,7 +2393,7 @@ function createGamePortPilots({
   // ── the occupation of the system, as the client's warzone service has it ──
 
   /**
-   * fwWarzoneSvc.GetLocalOccupationState (47 to 61): the occupation state of the solar system the session is in.
+   * fwWarzoneSvc.GetLocalOccupationState (47 to 60): the occupation state of the solar system the session is in.
    * Kept as (system, state) while the session is in that system; where what is kept is of another system, or
    * nothing is, sm.RemoteSvc('fwWarzoneSolarsystem').GetLocalOccupationState() is asked, by the service's name
    * with nothing, and it answers (system, state). An answer for a system the session is not in (it was asked as
