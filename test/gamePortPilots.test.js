@@ -111,6 +111,8 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
     occupationAsks: [],
     /** Each asking of the bounty output of the system the session is in, likewise. */
     bountyAsks: [],
+    /** Each asking of the insurgency campaigns a client may see, likewise. */
+    campaignAsks: [],
     async login(userName, password) {
       session.logins.push([userName, password]);
       if (loginError) throw loginError;
@@ -137,6 +139,15 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
         session.priceAsks.push({ args, kwargs, before: session.calls.length });
         const prices = key in answers ? answers[key] : { type: "dict", entries: [] };
         return typeof prices === "function" ? prices(args, kwargs) : prices;
+      }
+      // The insurgency campaigns a client may see are asked at every choosing and again at a change of solar system,
+      // as the client's insurgency info panel has them asked when the info panels are looked over
+      // (infoPanelInsurgency.py 287 to 290, insurgencyCampaignSvc.py 92 to 98). Listed apart too
+      // (session.campaignAsks), and answered with none.
+      if (key === "insurgencySolarsystem.GetAllVisibleCampaigns") {
+        session.campaignAsks.push({ args, kwargs, before: session.calls.length });
+        const campaigns = key in answers ? answers[key] : { type: "list", items: [] };
+        return typeof campaigns === "function" ? campaigns(args, kwargs) : campaigns;
       }
       // The bounty output of the system the session is in is asked at every choosing and again at every change of
       // solar system, as the client's location panel has its dynamic resource service ask it
@@ -1751,6 +1762,8 @@ test("the transport keeps a tally of what it called and how each compared with t
     "fwWarzoneSolarsystem.GetLocalOccupationState": { same: 1 },
     // And the system's bounty output, in the same drawing of the panel (dynamicResourceSvc.py 64).
     "dynamicBountyMgr.GetOutputForClientSolarSystem": { same: 1 },
+    // And the insurgency campaigns a client may see, as the info panels are looked over (insurgencyCampaignSvc.py 93).
+    "insurgencySolarsystem.GetAllVisibleCampaigns": { same: 1 },
     "agentMgr.GetAgents": { same: 1 },
     "notificationMgr.GetAllNotifications": { same: 1 },
     "contractProxy.GetLoginInfo": { same: 1 },
