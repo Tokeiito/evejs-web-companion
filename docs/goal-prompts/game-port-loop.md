@@ -3140,6 +3140,30 @@ Take these defaults, and list each under "For the operator" in the log so they c
   with a stamp**, not by when an entry arrives: the client orders what
   it is sent by stamp. A wait "until the client has surely applied it"
   buys nothing that a later stamp does not.
+- **Never read "not sent" off a line cut short.** `first-updates.js`
+  with a ball's number prints each entry's arguments, and a line cut at
+  some width lost the fourth entry of an update: a `Stop` that was
+  sent. Without the ball's number it prints names only, a count for
+  each ("OnSpecialFX x3, Stop"): read that for what an update holds.
+- **What the server sent, by its own record**: the sync ledger
+  (`eve.js/_local/logs/sync-ledger.log`, the hour's; rotated like the
+  debug logs): each group as it is queued and each packet as it is sent,
+  with the entries' names, stamps and balls. It has what the delivery's
+  trace leaves out (an NPC's `Stop`).
+- **A thing found is not said to the operator until it is checked.** A
+  line of progress said the client was never sent a `Stop`; it had
+  been.
+- **A rat's number comes again after each restart of the server.** With
+  a copied log that holds earlier flights, the time tells one rat from
+  another, not the number.
+- **A rat that loses its target while its pilot looks on**:
+  `msp-live.js <T> <bff> <account> <character> 30 "/npc 1
+  parity_dire_guristas_destructor; wait 6; away 22000; wait 14; /invu"`.
+  It is stopped, and half a second later heads home by a direction given
+  anew each second. A belt's own rats may not come at all in 40 s
+  (`state-live.js` waited for them and got none).
+- **Whose ball Tranquility steers and by what**: the scratch
+  `tq-steering.js <root> [name]`.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
