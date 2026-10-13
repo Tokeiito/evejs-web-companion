@@ -4252,7 +4252,7 @@ test("two pilots tackled by different ships do not ping-pong the fleet every tic
   const seconds = 60;
   for (let tick = 0; tick <= seconds / 2; tick += 1) {
     const now = T + tick * 2_000;
-    let next = slot;
+    let next: FleetBroadcast | null = slot;
     for (const pilot of pilots) {
       const decision = decideCompanionAction(
         TACKLED_GUN,
