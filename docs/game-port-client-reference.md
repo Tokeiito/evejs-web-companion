@@ -1351,6 +1351,15 @@ change of `solarsystemid2` lets it go and has the panel draw again, which asks (
 Tranquility's recordings have the call once at each login and once after each change of solar system, answered
 `(1.0, False)`. The game port asks it so since `77010339`, the global config's switch taken as not set. Of the
 panel's askings the sovereignty structures of a system no faction holds are left.
+The security service (`security/client/securitySvc.py`) keeps the modified security level of each solar system
+whose security is other than the map's. `Initialize` (39 to 43) asks
+`sm.RemoteSvc('securityMgr').get_modified_systems()` with nothing and keeps each row's `modifiedSecurity`, a level
+above nought and under 0.05 as 0.05 (18 to 21); it runs as the session first has a solar system (`OnSessionChanged`,
+45 to 48), once. `OnSecurityModified(solar_system_id, modifier_amount, new_security)` sets a system's level from
+then (50 to 54). Tranquility answers a `CIndexedRowset` keyed on `solarSystemID`, its rows of
+(`solarSystemID` I4, `security` R8, `modifiedSecurity` R8), with none in the recordings. The game port asks it so
+since `1c682e45` and keeps the answer and the notices' levels; an answer's rows are not read yet. (The character
+selection screen's `map.GetSecurityModifiedSystems` is another read, asked before a character is chosen.)
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened

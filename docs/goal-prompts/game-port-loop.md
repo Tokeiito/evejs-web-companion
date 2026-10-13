@@ -3379,6 +3379,17 @@ Take these defaults, and list each under "For the operator" in the log so they c
   '\40-\176\n' ' ' | grep -o "<service>::<method>.\{0,170\}"`) and
   set beside what the handler builds; where they differ the server is
   mended first.
+- **A server answer is set beside Tranquility's byte for byte** where
+  the recording has the answer's stream (the `MarshalStream '...'` in
+  the `.txt`): a scratch probe requires the handler and the server's
+  encoder (`server/src/network/tcp/utils/marshal`, `marshalEncode`),
+  prints the bytes as text with the unprintable ones as dots and as
+  hex, and the two are read side by side; then the frame's hex of a
+  game-port recording is searched for them. The server's rowset helper
+  `buildDbIndexRowset` puts an `idName` in an indexed rowset's state
+  that the one recorded answer read so far has not.
+- **`store.sh save <label>` is also how EveJS is restarted onto mended
+  code** with nothing staged: the copy it makes is deleted at once.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
