@@ -1360,6 +1360,17 @@ then (50 to 54). Tranquility answers a `CIndexedRowset` keyed on `solarSystemID`
 (`solarSystemID` I4, `security` R8, `modifiedSecurity` R8), with none in the recordings. The game port asks it so
 since `1c682e45` and keeps the answer and the notices' levels; an answer's rows are not read yet. (The character
 selection screen's `map.GetSecurityModifiedSystems` is another read, asked before a character is chosen.)
+The character settings service (`eve/client/script/ui/services/characterSettingsSvc.py`) keeps the settings the
+client stores at the server for the character, each under a key: `_GetSettings` (31 to 34) asks
+`session.ConnectToRemoteService('charMgr').GetCharacterSettings()` with nothing while it has none and keeps what
+answers until the session is reset (26 to 29). `Get(key)` reads one out of it (36 to 42); `Save(key, value)` calls
+`charMgr.SaveCharacterSetting(key, value)` and sets the kept one, a value of nothing or of no text being deleted
+and one over 102400 long refused (44 to 51); `Delete(key)` calls `charMgr.DeleteCharacterSetting(key)` where the
+key is kept (53 to 58). Its readers are the mail's settings, the fleet's setups, the inventory's and the chat's
+filters, the sensor overlay's folders, the wallet's own payments and two of the settings menu's. Tranquility
+answers a `utillib.KeyVal` of the settings, each a unicode string, with a `__doc__` beside them, and its
+recordings of a login each have the one call. The game port asks it so since `168bc37b`, at the choosing; the
+saving and the deleting are not made yet.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened

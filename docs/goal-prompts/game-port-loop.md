@@ -3390,6 +3390,21 @@ Take these defaults, and list each under "For the operator" in the log so they c
   that the one recorded answer read so far has not.
 - **`store.sh save <label>` is also how EveJS is restarted onto mended
   code** with nothing staged: the copy it makes is deleted at once.
+- **A scratch probe of the server's does not require a service that
+  reads the store.** Requiring `charMgrService.js` loads the
+  character's state modules, which open the live store from a second
+  process. The answer's expression is probed with the helpers alone
+  (`services/_shared/serviceHelpers`, `network/tcp/utils/marshal`), and
+  the handler's own answer is read out of a game-port recording
+  (`call-answers.js`, and the frame's hex).
+- **The server's tests are searched for a method before its answer's
+  form is changed** (`grep -rn "<Method>" server/tests`): one of them
+  may read the old form, and is then read against the recording and
+  mended in the same commit, unrun
+  (`characterSettingsParity.test.js` read the settings as a dict of
+  plain strings). The harness's verbs decode an answer through
+  `tests/harness/verbs/verbEncoding.js`, whose `decodeKeyVal` takes a
+  dict or a KeyVal alike.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

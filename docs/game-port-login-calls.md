@@ -10,10 +10,10 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 
 | The game port | Kinds | Calls | Meaning |
 |---|---|---|---|
-| at login | 50 | 58 | The game port asks this at login too. |
+| at login | 51 | 59 | The game port asks this at login too. |
 | by a feature | 6 | 10 | A feature of the web client asks this when it is wanted, in a form read against the client's. |
 | by a route | 7 | 8 | The BFF has a route that can ask this. It has not been read against the client's. |
-| never | 37 | 41 | Nothing of ours asks this. |
+| never | 36 | 40 | Nothing of ours asks this. |
 
 ## Before a character is chosen
 
@@ -79,7 +79,7 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `milestoneMgr.ProcessCharacterLogon` | 1 | never |
 | `nonDiminishingInjectionMgr.GetAvailableNonDiminishingInjections` | 1 | never |
 | `XmppChatMgr.Hostname` | 1 | never |
-| `charMgr.GetCharacterSettings` | 1 | never |
+| `charMgr.GetCharacterSettings` | 1 | at login |
 | `skillHandler.GetBoosters` (inferred) | 1 | at login |
 | `structureDirectory.GetMyDockableStructures` | 1 | by a route |
 | `XmppChatMgr.GetDeprecatedPrefsFallback` | 1 | never |
