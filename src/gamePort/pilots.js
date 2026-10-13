@@ -1494,6 +1494,9 @@ function createGamePortPilots({
       }
       // gameui.GetShipAccess: the ship's moniker it keeps is for the ship the pilot is in.
       if ("shipid" in changes) entry.monikers.delete("ship");
+      // shipFighterState.OnSessionChanged: the ship's fighters are asked for again at any change of the ship, to
+      // whatever. (The choosing of the character asks them itself.)
+      if ("shipid" in changes && sessions.has(entry.handle)) fightersAsked(entry).catch(() => {});
       // gameui.OnSessionChanged (462 to 469) and _HandleSessionChangeInSpace (619 to 630): in space after the
       // change, in another ship, in the same system, and with a ballpark. In another system the ballpark is a new
       // one, with a state of its own; docked, it is the station's or the structure's arm of gameui, which does neither.
@@ -1610,6 +1613,9 @@ function createGamePortPilots({
       await primeSkills(entry);
       // journal._UpdateMissionDataFull: a character chosen has its agents' journal read, for the missions it is on.
       await journalUpToDate(entry).catch(() => {});
+      // shipFighterState.OnSessionChanged: the ship on the session, its fighters are asked for. After the journal and
+      // before the bookmarks, as the client's own login has it. A manager that refuses fails no choosing.
+      await fightersAsked(entry).catch(() => {});
       // bookmarkSvc.ACLPrimeBookmarks: a character chosen has its bookmarks read, and the folders it knows with them,
       // after the journal, as a client asks this server. A manager that refuses fails no choosing: they are asked
       // for when they are next wanted.
@@ -2558,6 +2564,16 @@ function createGamePortPilots({
     ledger.note(service, method, form);
     return byName(entry.session, service, method, form);
   }
+
+  /**
+   * shipFighterState.OnSessionChanged (ui/inflight/squadrons/shipFighterState.py 72 to 74): at any change of the
+   * session's ship the client's ship fighter state asks the ship's fighters again, fightersSvc.GetFightersForShip
+   * (parklife/fightersSvc.py 99), which is sm.RemoteSvc('fighterMgr').GetFightersForShip(): by the service's name,
+   * with nothing sent, from whatever ship and wherever. The choosing of a character is such a change. Tranquility's
+   * recordings have it twelve times, each answered ([], [], {}). No page shows a ship's fighters yet: it is asked
+   * as the client asks it, and nothing is kept of the answer.
+   */
+  const fightersAsked = (entry) => asks(entry, "fighterMgr", "GetFightersForShip");
 
   /**
    * An account's connection: the retail client at its character selection and

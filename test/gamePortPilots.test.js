@@ -47,6 +47,7 @@ const refusedBy = (key, reason = key) => sessionError("GAME_CALL_REFUSED", `refu
  */
 const CHOSEN_ASKS = [
   "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler", "agentMgr.GetMyJournalDetails",
+  "fighterMgr.GetFightersForShip",
   "accessGroupBookmarkMgr.GetMyActiveBookmarks",
   "charMgr.GetContactList", "onlineStatus.GetInitialState",
   // The stand-in's pilot is chosen in a station: its lobby's four.
@@ -121,7 +122,8 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
           Object.assign(session.attributes, { charid: BigInt(args[0]), corpid, solarsystemid2: SYSTEM, shipid: SHIP, ...alliance, ...place });
           // The server's session change for a character chosen names its corporation among the rest, and its alliance if it is in one.
           // It names the place too: a solar system for a pilot in space, as the server names it for one who logs in there, and a station for one docked.
-          session.change({ charid: [null, args[0]], corpid: [null, corpid], ...(inSpace ? { solarsystemid: [null, SYSTEM] } : { stationid: [null, STATION] }), ...(allianceid === null ? {} : { allianceid: [null, allianceid] }) });
+          // And the ship: Tranquility's own change at a choosing has 'shipid': (None, the ship) among the rest.
+          session.change({ charid: [null, args[0]], corpid: [null, corpid], shipid: [null, SHIP], ...(inSpace ? { solarsystemid: [null, SYSTEM] } : { stationid: [null, STATION] }), ...(allianceid === null ? {} : { allianceid: [null, allianceid] }) });
         }
         return null;
       }
@@ -317,6 +319,9 @@ test("select logs in as the account and makes the retail client's three calls, i
     "skillMgr2.GetMySkillHandler",
     // And its agents' journal, as the client's journal service asks for it.
     "agentMgr.GetMyJournalDetails",
+    // And the fighters of the ship it is in, as the client's ship fighter state asks at any change of the session's
+    // ship: the choosing is one. In the client's own login it comes after the journal and before the bookmarks.
+    "fighterMgr.GetFightersForShip",
     // And its bookmarks, with the folders it knows, as the client's bookmark service asks for them.
     "accessGroupBookmarkMgr.GetMyActiveBookmarks",
     // And its contacts and who of them is online, as the client's address book asks. (Its corporation's contacts
@@ -364,7 +369,7 @@ test("select answers as the gateway's does: the call, the session echo, and what
   const { cursor, ...change } = outcome.notifications[0];
   assert.deepEqual(change, {
     kind: "sessionchange", service: null, method: "OnSessionChanged",
-    args: [{ charid: [null, PILOT], corpid: [null, 1000044], stationid: [null, STATION] }], kwargs: null,
+    args: [{ charid: [null, PILOT], corpid: [null, 1000044], shipid: [null, SHIP], stationid: [null, STATION] }], kwargs: null,
   });
   assert.equal(cursor.sequence, 1);
   assert.equal(typeof cursor.epoch === "string" && cursor.epoch.length > 0, true);
@@ -647,6 +652,49 @@ test("out of a structure and into another ship, with no ballpark made yet: nothi
   built.session.change({ shipid: [SHIP, 77], structureid: [STRUCTURE_HELD, null] });
   for (let turn = 0; turn < 10; turn += 1) await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(built.session.boundCalls.filter((call) => call.method === "ClearTargets"), []);
+  assert.deepEqual(hand.errors, []);
+});
+
+test("the ship's fighters are asked for at every change of the session's ship, from whatever ship and wherever, and at no other change", async () => {
+  // shipFighterState.OnSessionChanged (72 to 74): `if 'shipid' in change: self._UpdateStateForShip()`, which is
+  // fightersSvc.GetFightersForShip (99): sm.RemoteSvc('fighterMgr').GetFightersForShip(). Twelve times in
+  // Tranquility's recordings: at each login and each change of ship, docked or in space.
+  const settle = async () => { for (let turn = 0; turn < 10; turn += 1) await new Promise((resolve) => setImmediate(resolve)); };
+  const { pilots, session } = await selected();
+  const asked = () => session.calls.filter((call) => call.service === "fighterMgr").map((call) => [call.method, call.args, call.kwargs]);
+  // The choosing's own.
+  assert.deepEqual(asked(), [["GetFightersForShip", [], null]]);
+  // Another ship, docked.
+  session.attributes.shipid = 77;
+  session.change({ shipid: [SHIP, 77] });
+  await settle();
+  assert.deepEqual(asked(), [["GetFightersForShip", [], null], ["GetFightersForShip", [], null]]);
+  // No ship at all: the client looks at nothing but that the ship is in the change.
+  session.attributes.shipid = null;
+  session.change({ shipid: [77, null] });
+  await settle();
+  assert.equal(asked().length, 3);
+  // A change that is not the ship's: a fleet, and another station.
+  session.attributes.fleetid = 9;
+  session.change({ fleetid: [null, 9] });
+  session.attributes.stationid = 60000004;
+  session.change({ stationid: [STATION, 60000004], locationid: [STATION, 60000004] });
+  await settle();
+  assert.equal(asked().length, 3);
+  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "fighterMgr.GetFightersForShip").statuses, { same: 3 });
+});
+
+test("in space too the ship's fighters are asked for at a change of ship, beside the clearing of the locks", async () => {
+  const hand = handTicked();
+  const built = build(IN_SPACE, hand.options);
+  await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const asked = () => built.session.calls.filter((call) => call.service === "fighterMgr").length;
+  assert.equal(asked(), 1);
+  built.session.attributes.shipid = 77;
+  built.session.change({ shipid: [SHIP, 77] });
+  for (let turn = 0; turn < 10; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(asked(), 2);
+  assert.equal(built.session.boundCalls.filter((call) => call.method === "ClearTargets").length, 1);
   assert.deepEqual(hand.errors, []);
 });
 
@@ -1584,6 +1632,7 @@ test("the transport keeps a tally of what it called and how each compared with t
     // Asked for and not answered by this stand-in: nothing was asked of a handler, and nothing of one is tallied.
     "skillMgr2.GetMySkillHandler": { same: 1 },
     "agentMgr.GetMyJournalDetails": { same: 1 },
+    "fighterMgr.GetFightersForShip": { same: 1 },
     "accessGroupBookmarkMgr.GetMyActiveBookmarks": { same: 1 },
     "agentMgr.GetAgents": { same: 1 },
     "notificationMgr.GetAllNotifications": { same: 1 },
@@ -9471,9 +9520,10 @@ async function withBookmarks(more = {}) {
 
 test("a pilot's bookmarks are asked for as its character is chosen, once, and kept, as the client's bookmark service keeps them", async () => {
   const { pilots, session, handle, asked, bookmarks } = await withBookmarks({ "accessGroupBookmarkMgr.SearchFoldersWithAdminAccess": "the folders administered" });
-  // bookmarkSvc.ACLPrimeBookmarks (163): by name, with nothing, after the journal's asking, as a client asks this server.
+  // bookmarkSvc.ACLPrimeBookmarks (163): by name, with nothing, after the journal's asking and the fighters', as a
+  // client asks this server (its own login has them in that order).
   const chosen = session.calls.map((call) => `${call.service}.${call.method}`);
-  assert.equal(chosen[chosen.indexOf("agentMgr.GetMyJournalDetails") + 1], BOOKMARKS);
+  assert.deepEqual(chosen.slice(chosen.indexOf("agentMgr.GetMyJournalDetails") + 1, chosen.indexOf("agentMgr.GetMyJournalDetails") + 3), ["fighterMgr.GetFightersForShip", BOOKMARKS]);
   assert.deepEqual(session.calls.filter((call) => call.service === "accessGroupBookmarkMgr").map((call) => [call.method, call.args, call.kwargs]), [["GetMyActiveBookmarks", [], null]]);
   // Read as often as it is wanted, by name and with nothing: what was answered at the choosing, and nothing sent.
   assert.deepEqual([await bookmarks(), await bookmarks(), await bookmarks(), asked.times], [1, 1, 1, 1]);

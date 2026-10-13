@@ -1721,6 +1721,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "invbroker.ImportExportWithPlanet", "officeManager.GetCorporationsWithOffices", "officeManager.GetEmptyOfficeCount",
     "officeManager.GetPriceQuote", "officeManager.HasCorpImpoundedItems", "officeManager.PrimeOfficeItem", "officeManager.RentOffice", "officeManager.UnrentOffice",
     "subscriptionMgr.GetCloneGrade",
+    // The ship's fighters, asked at every change of the session's ship. The gateway's list has the manager's writes only.
+    "fighterMgr.GetFightersForShip",
     "skillHandler.GetSkillQueueAndFreePoints",
     "home_station.get_home_station",
     "skillHandler.SaveNewQueue",
@@ -3116,6 +3118,24 @@ test("clearing every lock is the client's with nothing sent, on its dogma locati
     const odd = clear(args, kwargs);
     assert.deepEqual([odd.status, odd.args, odd.kwargs], ["differs", args, kwargs], why);
     assert.match(odd.note, /sends nothing/, why);
+  }
+});
+
+test("the ship's fighters are asked for by the service's name, with nothing sent", () => {
+  // fightersSvc.py 99: sm.RemoteSvc('fighterMgr').GetFightersForShip(). The ship's fighter state asks it at every
+  // session change that names the ship (shipFighterState.py 72 to 74), from whatever ship, docked or in space.
+  // Recorded on Tranquility twelve times, at logins and at changes of ship, each answered ([], [], {}).
+  const ask = (args, kwargs = null) => retailForm("fighterMgr", "GetFightersForShip", args, kwargs, {});
+  const made = ask([]);
+  assert.deepEqual([made.status, made.args, made.kwargs], ["same", [], null]);
+  assert.equal(made.moniker ?? false, false, "asked of the service by its name, not on a Moniker");
+  assert.match(made.source, /parklife\/fightersSvc\.py:99$/);
+  // The entry says who asks and when, which the form of the call cannot show.
+  assert.ok(RETAIL_CALLS["fighterMgr.GetFightersForShip"].note.includes("shipFighterState.py 72 to 74"), RETAIL_CALLS["fighterMgr.GetFightersForShip"].note);
+  assert.ok(RETAIL_CALLS["fighterMgr.GetFightersForShip"].note.includes("at every session change that names the ship"));
+  for (const [args, kwargs, why] of [[[9001], null, "a ship"], [[null], null, "nothing, said"], [[], { shipID: 9001 }, "a keyword"]]) {
+    const odd = ask(args, kwargs);
+    assert.deepEqual([odd.status, odd.args, odd.kwargs], ["differs", args, kwargs], why);
   }
 });
 
