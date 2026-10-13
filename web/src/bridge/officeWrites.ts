@@ -15,8 +15,10 @@
 // the station; the other for a director, where it has one (_load_buttons, 108 to 116).
 //
 // Tranquility's recordings have all three: GetPriceQuote(98838096) answered the LONG 100113, and RentOffice was
-// sent that long back; UnrentOffice went with nothing. So the price goes back as the station said it: this
-// server says a whole number, and gets a whole number.
+// sent that long back; UnrentOffice went with nothing. So the price goes back as the station said it. This
+// server says a long too (eve.js 75b222d73), and the game port hands the page that answer with its long kept
+// (src/gamePort/pilots.js, HANDED_BACK_AS_ANSWERED): the price is {type: "long", value: "<digits>"} here, and
+// what is handed back is that. A station that says a plain whole number gets a plain whole number.
 //
 // WHAT THE SERVER TAKES FROM THE CALLER: nothing. It rents for the session's own corporation, where the session
 // is, at its own price, and refuses a session without the role (CrpAccessDenied) or the ISK; it gives up the

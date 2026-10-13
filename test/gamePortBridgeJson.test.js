@@ -15,7 +15,7 @@ const zlib = require("node:zlib");
 const wire = require("../web/src/bridge/wire.ts");
 const { marshalDecodeExact } = require("../src/gameProtocol/marshal");
 const { GamePortSession } = require("../src/gamePort/session");
-const { notificationToBridgeJson, sessionChangeToBridgeJson, wireToBridgeJson } = require("../src/gamePort/bridgeJson");
+const { longKeptToBridgeJson, notificationToBridgeJson, sessionChangeToBridgeJson, wireToBridgeJson } = require("../src/gamePort/bridgeJson");
 const { converse, recordingSessionOptions } = require("../scripts/capture-game-frames");
 const fixture = require("./fixtures/gamePortFrames.json");
 
@@ -140,6 +140,23 @@ test("an integer a number holds exactly becomes a number; a larger one a long th
   assert.equal(wire.unwrapLong(filetime), 134358883852740000n);
   assert.equal(wire.unwrapLong(wireToBridgeJson(9988400103291n)), 9988400103291n);
   assert.equal(wire.unwrapReal(wireToBridgeJson(1939882211.6)), 1939882211.6);
+});
+
+test("an answer the client hands back as it got it keeps its long for the page, however small", () => {
+  // officeManager.py 114 to 117: cost = GetPriceQuote(corpid), then RentOffice(cost). Tranquility answered the
+  // long 100113 and was sent that long back.
+  assert.deepEqual(longKeptToBridgeJson(100113n), { type: "long", value: "100113" });
+  assert.deepEqual(longKeptToBridgeJson(0n), { type: "long", value: "0" });
+  // The same long as any other answer is a number, as an item's ID is.
+  assert.equal(wireToBridgeJson(100113n), 100113);
+  // The page's reader takes either.
+  assert.equal(wire.unwrapLong(longKeptToBridgeJson(100113n)), 100113n);
+  // What is no long is as any answer is: a whole number that came as an int stays a number.
+  assert.equal(longKeptToBridgeJson(100113), 100113);
+  assert.equal(longKeptToBridgeJson(null), null);
+  assert.equal(longKeptToBridgeJson(undefined), null);
+  // The answer itself, not what an answer holds.
+  assert.deepEqual(longKeptToBridgeJson([5n]), [5]);
 });
 
 test("the containers keep their gateway spellings", () => {

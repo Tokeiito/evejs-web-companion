@@ -54,7 +54,7 @@
 const crypto = require("node:crypto");
 const { GamePortSession } = require("./session");
 const { connectTcp, gameEndpoint } = require("./tcp");
-const { notificationToBridgeJson, sessionChangeToBridgeJson, wireToBridgeJson } = require("./bridgeJson");
+const { longKeptToBridgeJson, notificationToBridgeJson, sessionChangeToBridgeJson, wireToBridgeJson } = require("./bridgeJson");
 const { GAME_PORT_HANDLE_PREFIX } = require("../pilotTransport");
 const { GAME_PORT_ONLY_CALLS, ON_AN_ANSWERED_OBJECT, ON_THE_PARK, couldBeAPilot, createCallLedger, madeAfresh, retailForm, retailNeeds } = require("./retailCalls");
 const { createPilotSpace } = require("./pilotSpace");
@@ -222,6 +222,13 @@ const CLONE_GRADE = "GetCloneGrade";
 const keptCloneGrade = (service, method, form) => service === SUBSCRIPTION_MGR && method === CLONE_GRADE && form.args.length === 0 && form.kwargs === null;
 const keptOfCrimewatch = (service, method, form) => service === CRIMEWATCH && (method === CLIENT_STATES || method === OWN_SECURITY_STATUS) && form.args.length === 0 && form.kwargs === null;
 const OFFICE_MANAGER = "officeManager";
+/**
+ * What the client hands back to the server as it was answered, and so with the Python type it came with:
+ * officeManager.py 114 to 117, cost = GetPriceQuote(session.corpid) and then RentOffice(cost). Tranquility's
+ * station answered the long 100113 and was sent that long. The page is handed such an answer with its long kept,
+ * and hands it back as it got it (web/src/bridge/officeWrites.ts).
+ */
+const HANDED_BACK_AS_ANSWERED = new Set([`${OFFICE_MANAGER}.GetPriceQuote`]);
 /**
  * The read of the station's own office object that the client's office manager keeps (officeManager.offices,
  * officeManager.py 34): the corporations with an office where the session is docked.
@@ -1919,7 +1926,7 @@ function createGamePortPilots({
     return {
       service,
       method,
-      result: wireToBridgeJson(result === undefined ? null : result),
+      result: HANDED_BACK_AS_ANSWERED.has(`${service}.${method}`) ? longKeptToBridgeJson(result) : wireToBridgeJson(result === undefined ? null : result),
       notifications: drain(entry),
     };
   }

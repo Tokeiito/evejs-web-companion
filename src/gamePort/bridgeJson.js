@@ -25,6 +25,11 @@
 //                   which the decoders' unwrapLong reads. The gateway prints a
 //                   bare BigInt as a bare string of digits instead; the parity
 //                   report counts those.
+//                   The number has lost what the client keeps: whether the
+//                   value was a Python long. A whole number beyond 32 bits is
+//                   one again on its way back (clientMarshal.js), and a small
+//                   one is not. So an answer the client hands back as it got
+//                   it is kept a long, however small (longKeptToBridgeJson).
 //   real wrappers   {type:"real", value:x} arrives as the number x. unwrapReal
 //                   reads both.
 //
@@ -106,6 +111,15 @@ function wireToBridgeJson(value) {
 }
 
 /**
+ * An answer the client hands back to the server as it got it: where it is a long (which the codec decodes this
+ * server's to a bigint), it is a long for the page too, however small, and goes back a Python long as the
+ * client's does. The gateway prints a handler's {type:"long"} the same way. Anything else is as any answer is.
+ */
+function longKeptToBridgeJson(value) {
+  return typeof value === "bigint" ? { type: "long", value: value.toString() } : wireToBridgeJson(value);
+}
+
+/**
  * A notification from the game-port session, in the shape the gateway hands
  * the BFF one: {kind, service, method, idType, args, kwargs}.
  *
@@ -139,4 +153,4 @@ function sessionChangeToBridgeJson(changes) {
   };
 }
 
-module.exports = { notificationToBridgeJson, sessionChangeToBridgeJson, wireToBridgeJson };
+module.exports = { longKeptToBridgeJson, notificationToBridgeJson, sessionChangeToBridgeJson, wireToBridgeJson };

@@ -7790,12 +7790,15 @@ test("in space the station's office object is not the client's to ask, and an as
 // ── an office rented and given up ────────────────────────────────────────────
 
 const RENTING_PAIRS = { allowed: new Set([OFFICES, WITH_OFFICES, FREE_OFFICES, "officeManager.GetPriceQuote", "officeManager.RentOffice", "officeManager.UnrentOffice", "officeManager.PrimeOfficeItem", "officeManager.HasCorpImpoundedItems", "station.GetGuests"]) };
-/** A docked pilot of a player's corporation whose station's office object quotes 10,000 and counts what it is asked. */
-async function atTheOffices(sessionOptions = {}) {
+/**
+ * A docked pilot of a player's corporation whose station's office object quotes 10,000 (or the price it is given,
+ * as the wire's decoder hands it on) and counts what it is asked.
+ */
+async function atTheOffices(sessionOptions = {}, price = 10000, rented = null) {
   const asked = { primed: 0, impounded: 0 };
   const chosen = await selected({ corpid: OWN_CORPORATION, ...sessionOptions, answers: {
-    "bound:GetPriceQuote": () => 10000,
-    "bound:RentOffice": () => null,
+    "bound:GetPriceQuote": () => price,
+    "bound:RentOffice": () => rented,
     "bound:UnrentOffice": () => null,
     "bound:PrimeOfficeItem": () => { asked.primed += 1; return null; },
     "bound:HasCorpImpoundedItems": () => { asked.impounded += 1; return false; },
@@ -7825,6 +7828,28 @@ test("an office's price, its renting and its giving up are asked of the station'
   // A price asked for another corporation is no call of the client's, and is sent as it is asked.
   await ask("GetPriceQuote", [OWN_CORPORATION + 1]);
   assert.deepEqual([onObjects().at(-1), ledgerOf(pilots, "officeManager.GetPriceQuote")[0]], [[object, "GetPriceQuote", [OWN_CORPORATION + 1], null], { differs: 1, reshaped: 1 }]);
+});
+
+test("an office's price the station answers as a long is handed the page a long, and goes back the long it came", async () => {
+  // Tranquility: GetPriceQuote(98838096) answered the long 100113, and RentOffice was sent that long back. This
+  // server answers a long too, and the decoder hands a long on as a bigint.
+  const { pilots, ask, onObjects } = await atTheOffices({}, 100113n, 7n);
+  const quoted = await ask("GetPriceQuote", [OWN_CORPORATION]);
+  assert.deepEqual(quoted, { type: "long", value: "100113" });
+  // What the page hands back is what it was handed (web/src/bridge/officeWrites.ts, rentOffice). And a long that
+  // another call answers (the station's rent answers None; this one is made to answer a long) is a number for
+  // the page, as an item's ID is: only what is handed back keeps its form.
+  assert.equal(await ask("RentOffice", [quoted]), 7);
+  const [, [, method, args, kwargs]] = onObjects();
+  assert.deepEqual([method, args, kwargs], ["RentOffice", [{ type: "long", value: "100113" }], null]);
+  // On the wire that is a Python long of the client's (blue's 0x2f), where a number the page made is an int.
+  const { encodeClient, long } = require("../src/gamePort/clientMarshal");
+  assert.equal(encodeClient(args).toString("hex"), encodeClient([long(100113n)]).toString("hex"));
+  assert.match(encodeClient(args).toString("hex"), /2f03118701$/);
+  assert.notEqual(encodeClient(args).toString("hex"), encodeClient([100113]).toString("hex"));
+  assert.deepEqual([ledgerOf(pilots, "officeManager.GetPriceQuote"), ledgerOf(pilots, "officeManager.RentOffice")], [
+    [{ reshaped: 1 }, `${OFFICE_MANAGER_SOURCE}:114`], [{ reshaped: 1 }, `${OFFICE_MANAGER_SOURCE}:117`],
+  ]);
 });
 
 test("the office's item is primed once for a station's Moniker, and the impound is asked each time", async () => {
