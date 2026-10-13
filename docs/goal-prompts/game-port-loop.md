@@ -2394,6 +2394,22 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A slip of the client's own is followed, not mended.** Its target manager asks whether
   `'ship' in change`, which no session change has, so it never clears its locks at a change of
   ship by itself; gameui asks the server to, and that is the call the game port makes.
+- **The client's own log has the server's answers.** A `MethodCalls` line of a recording,
+  `dogmaIM::MachoBindObject args=(...), retval=(<RemoteObject:...>, <KeyVal: {...}>)`, has
+  Tranquility's answer whole (`grep -n "<Method>', (<args>), {})), retval" <recording>`). What
+  the server sends is read there, and set beside what this server sends
+  (`scripts/record-godma-priming.js` prints the shape of each of its answers).
+- **This server's handler may already tell the client's forms apart.** Read it before the
+  BFF's form is kept or changed: `GetAllInfo`'s takes its three arguments as the client means
+  them and has an arm for the client's later form docked, which the BFF's own form never
+  reached. Its notes are its authors', with what they saw: a "DO NOT" there is theirs to lift.
+- **A fixture of the server's answers has its recorder beside it**, as the dogma fixtures have:
+  a login, a choosing, the bound call in each form, an undock and a docking
+  (`scripts/record-godma-priming.js` is the smallest). `answers(fixture)`
+  (`test/helpers/destinyRecording.js`) reads them by the step each was asked in. Record with a
+  test account, between a copy of the store and its putting back.
+- **A regular expression written through a shell's here-document loses its backslashes.**
+  Write that line of a test with the Edit tool, or look for the words with `includes`.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
