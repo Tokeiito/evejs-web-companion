@@ -1730,6 +1730,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "missionTrackerMgr.GetMissionInfoItems",
     // The pilot's jump timers, asked once by the client's crimewatch service. The gateway's list has nothing of the jump timers' service.
     "jumpTimers.GetTimers",
+    // The occupation state of the system the session is in, asked once for a system by the client's warzone service. The gateway's list has nothing of the warzone service's.
+    "fwWarzoneSolarsystem.GetLocalOccupationState",
     "skillHandler.GetSkillQueueAndFreePoints",
     "home_station.get_home_station",
     "skillHandler.SaveNewQueue",

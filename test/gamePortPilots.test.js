@@ -91,6 +91,8 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
     gradeAsks: [],
     /** Each asking of the price table, likewise. */
     priceAsks: [],
+    /** Each asking of the occupation state of the system the session is in, likewise. */
+    occupationAsks: [],
     async login(userName, password) {
       session.logins.push([userName, password]);
       if (loginError) throw loginError;
@@ -117,6 +119,15 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
         session.priceAsks.push({ args, kwargs, before: session.calls.length });
         const prices = key in answers ? answers[key] : { type: "dict", entries: [] };
         return typeof prices === "function" ? prices(args, kwargs) : prices;
+      }
+      // The occupation state of the system the session is in is asked at every choosing and again at every change
+      // of solar system, as the client's location panel has its warzone service ask it (fwWarzoneSvc.py 32 to 61,
+      // infoPanelLocationInfo.py 341). It is listed apart too (session.occupationAsks), and answered for the
+      // system the session is in, with no state: a system in no warzone.
+      if (key === "fwWarzoneSolarsystem.GetLocalOccupationState") {
+        session.occupationAsks.push({ args, kwargs, before: session.calls.length });
+        const state = key in answers ? answers[key] : [session.attributes.solarsystemid2 ?? null, null];
+        return typeof state === "function" ? state(args, kwargs) : state;
       }
       session.calls.push({ service, method, args, kwargs });
       session.sent.push(method);
@@ -1674,6 +1685,8 @@ test("the transport keeps a tally of what it called and how each compared with t
     "jumpTimers.GetTimers": { same: 1 },
     // The wars of the pilot's corporation, asked of the war registry's moniker at the choosing (war_cso.py 103).
     "warRegistry.GetWars": { same: 1 },
+    // The occupation state of the system the pilot is in, asked at the choosing as the client's location panel has it asked (fwWarzoneSvc.py 52).
+    "fwWarzoneSolarsystem.GetLocalOccupationState": { same: 1 },
     "agentMgr.GetAgents": { same: 1 },
     "notificationMgr.GetAllNotifications": { same: 1 },
     "contractProxy.GetLoginInfo": { same: 1 },
