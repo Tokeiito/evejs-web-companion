@@ -2317,6 +2317,29 @@ Take these defaults, and list each under "For the operator" in the log so they c
   "fittable non-singleton") and `parklife/tacticalConst.py` (the groups an overview is made
   of). The client's own groups table is read with its loader (`scripts/client-built-data.py`,
   `groupsLoader`; `cg-groups.js` in session 2e7ceba2's scratchpad sets it beside the BFF's data).
+- **When the client asks at all is in the callers above the call.** The ledger judges a call's
+  form. Whether the client would make it is in what stands between the button and the
+  `RemoteSvc` line: read every `return` on the way down (for the survey scan: the command, in
+  space; the overlay's controller, not in warp and no wave playing; the service, the ship's
+  upgrade from godma; the throttle).
+- **An attribute the client reads from godma is the game port's to read**:
+  `gamePortPilots.shipAttribute(attributeID, { userid }, bridgeSessionID)`, whose null is the
+  client's "godma has none". A route held to it is tested by the page's own asker over a
+  transport that answers the attribute: `test/pagesSurveyScan.test.js` is the smallest model
+  (a held row in `bridgeSessionStore`, a handle that begins `gp:`, and `pilotTransportFor`).
+- **Which types carry an attribute, and what gives a ship one**: `ss-types.js <repo>` reads
+  every type's dogma of the BFF's static data for an attribute and prints the effects of the
+  modules that have it; an effect's `modifierInfo` says what it does to the ship.
+- **A bot's "once and never again" wants the bot's clock turned.** In the 150 ms a flow test
+  waits, a bot looks once. `context.mock.timers.enable({ apis: ["setTimeout"] })`, a tick of
+  2000 and twenty turns of `setImmediate`, six times over, is six looks
+  (`web/src/app/botApproachFlow.test.ts` is the model).
+- **A belt may have rats of its own.** A staged miner in a bare Venture was destroyed two
+  minutes into a run by two native rats, where no earlier run met any. A live run that must
+  reach its jettison wants looking at the grid's hostiles first (`ml-live.js` prints them), and
+  a run that is cut short is said so in the entry, with what it did reach.
+- **The BFF's ledger is written a little after a call.** Read `call-ledger.json` at the end of
+  a run, not a second after the call it is read for.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
