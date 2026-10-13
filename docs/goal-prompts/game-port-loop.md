@@ -3278,6 +3278,34 @@ Take these defaults, and list each under "For the operator" in the log so they c
   `grep -a "<service>" "<file>" | tr -c '\40-\176\n' ' ' | grep -o "<service>::<method>.\{0,170\}"`
   gives `args=(...), retval=...`, and the same with
   `Packet::CallReq` gives whom it was sent to.
+- **A moniker that every choosing binds is set aside by the old pilot
+  tests' own builder**, and another is added the same way, by reading
+  (`test/gamePortPilots.test.js`): its objects counted on a node of
+  their own in the stand-in's `bind` (`REGISTRY_NODE`, `WAR_NODE`), and
+  its bind and its calls at the choosing taken out of the session's
+  lists in the wrapper round `selectCharacter` (`registryAtChoosing`,
+  `warsAtChoosing`), so that every count and object number of the rest
+  stands. A thread's timer is switched off in the builder's own options
+  (`averagePricesAfterMs: null`, `warsAgainAfterMs: null`): old tests
+  count the timers a session set.
+- **The moniker services are spelled out in an old test too**
+  (`test/gamePortRetailCalls.test.js`, "everything of ship, dogmaIM,
+  corpRegistry and the skill handler is made on a moniker"): a service
+  added to `MONIKER_SERVICES` is added there. The scratch
+  `war-tests.js` ends by setting the spelled services beside the list.
+- **A call's arguments as the game port sent them**:
+  `node scripts/record-game-port.js describe <recording> | grep -a "<service>\|<method>"`
+  prints each call with its arguments and whom it was sent to
+  (`warRegistry.MachoBindObject((int(99000000), int(1)), None)`), to be
+  set beside Tranquility's line.
+- **The war registry's reads through the BFF**:
+  `/api/bridge/bound-small-services` asks its four (with
+  `?ownerID=` for another owner's wars); the scratch `war-live.js <bff>
+  <account> <character> <another owner> <server.log>` asks them three
+  times and says where the server's log stood at each.
+- **The server's log starts afresh on the hour**: line numbers taken
+  before the hour are the old file's. `login-only.js` prints the
+  hour's own (a small FROM just after the hour is right).
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

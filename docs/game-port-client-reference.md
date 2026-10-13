@@ -1313,6 +1313,19 @@ login docked or in space (`ui/crimewatch/crimewatchTimers.py` 335, 355), and dra
 activation's timers from them (456 to 466). Tranquility's four recordings of a login each have the one call,
 answered `(None, None, None)`. The game port asks it since `501c5a84`, at the choosing behind the pilot's security
 status, and keeps it so; no page shows the timers yet.
+The wars (`eve/client/script/ui/services/wars/war_cso.py`). The war registry is reached by one moniker and by
+nothing else: `eveMoniker.GetWar()`, `Moniker('warRegistry', (session.allianceid or session.corpid, 1))`, kept
+until that owner is another's and bound before each use (`GetMoniker`, 57 to 67). `GetWars(ownerID)` keeps an
+owner's wars twelve hours and asks `GetMoniker().GetWars(ownerID)` where it has none or they are older (95 to
+104); `OnWarChanged(war, ownerIDs, change)` is worked into what is kept (82 to 93; `evewar/util.py` 183 to 202: a
+war whose change says its ID is gone is taken out, any other is the war of its ID and is among its kept owners').
+At a login the timer panel has the service say whether the pilot is at war, which asks its owner's wars
+(`crimewatchTimers.py` 356; 302 to 311; not for a pilot in a militia), and the service's thread reads the same
+wars every ten seconds (166 to 176), which asks again once they are twelve hours old. At a change of alliance or
+corporation what is kept of both is let go and the reckoning is made again (69 to 80). Tranquility's recordings of
+a login have `MachoResolveObject((owner, 1))`, `MachoBindObject((owner, 1), None)` and `GetWars(owner)` on the
+object. The game port has all of it since `cee8eb78` but the reckoning at a change of alliance or corporation;
+everything a page asks of the war registry goes on that moniker.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened

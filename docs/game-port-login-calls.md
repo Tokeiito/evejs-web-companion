@@ -10,10 +10,10 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 
 | The game port | Kinds | Calls | Meaning |
 |---|---|---|---|
-| at login | 44 | 52 | The game port asks this at login too. |
+| at login | 47 | 55 | The game port asks this at login too. |
 | by a feature | 6 | 10 | A feature of the web client asks this when it is wanted, in a form read against the client's. |
-| by a route | 8 | 9 | The BFF has a route that can ask this. It has not been read against the client's. |
-| never | 42 | 46 | Nothing of ours asks this. |
+| by a route | 7 | 8 | The BFF has a route that can ask this. It has not been read against the client's. |
+| never | 40 | 44 | Nothing of ours asks this. |
 
 ## Before a character is chosen
 
@@ -85,11 +85,11 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `XmppChatMgr.GetDeprecatedPrefsFallback` | 1 | never |
 | `fwWarzoneSolarsystem.GetLocalOccupationState` | 1 | never |
 | `jumpTimers.GetTimers` | 1 | at login |
-| `warRegistry.MachoResolveObject` | 1 | never |
+| `warRegistry.MachoResolveObject` | 1 | at login |
 | `operationsManager.can_character_play_the_tutorial` | 1 | never |
-| `warRegistry.MachoBindObject` | 1 | never |
+| `warRegistry.MachoBindObject` | 1 | at login |
 | `officeManager.GetMyCorporationsOffices` | 1 | at login |
-| `warRegistry.GetWars` (inferred) | 1 | by a route |
+| `warRegistry.GetWars` (inferred) | 1 | at login |
 | `charMgr.GetContactList` | 1 | at login |
 | `onlineStatus.GetInitialState` | 1 | at login |
 | `stationSvc.GetStationItemBits` | 1 | at login |
