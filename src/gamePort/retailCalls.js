@@ -529,11 +529,16 @@ const PROXY_SERVICES = Object.freeze(new Set([
  * may ask by name, so that they have no entry in the table below. Each is read against the client where the
  * transport makes it (pilots.js): cfg.eveowners' priming, for the names of players' owners; one facility
  * asked for by itself, as the client's facility service asks where the server names it, where a job was refused
- * at it, and where a job is given one that has rig modifiers or is not among the region's; and the price table
- * the client's cfg asks for two seconds after it loads.
+ * at it, and where a job is given one that has rig modifiers or is not among the region's; the price table
+ * the client's cfg asks for two seconds after it loads; and the chat service's four as it logs in to the chat
+ * server (xmppchatclient/xmppchatsvc.py 284, 312, 318, 350): the chat's hostname, the address where the global
+ * config names none, the secret, and the system channels to join.
  */
 // (The station's office object's reads are the lobby's, which the gateway never had: see GAME_PORT_ONLY_CALLS.)
-const TRANSPORT_OWN_CALLS = Object.freeze(["config.GetMultiOwnersEx", "facilityManager.GetFacility", "config.GetAverageMarketPrices"]);
+const TRANSPORT_OWN_CALLS = Object.freeze([
+  "config.GetMultiOwnersEx", "facilityManager.GetFacility", "config.GetAverageMarketPrices",
+  "XmppChatMgr.Hostname", "XmppChatMgr.GetDeprecatedPrefsFallback", "chatAuthenticationService.GetAuthenticationToken", "XmppChatMgr.ResyncSystemChannelAccess",
+]);
 
 /**
  * Calls the game port carries that the web gateway's list has not got: a pilot on the game port may make them, and

@@ -53,6 +53,7 @@
 
 const crypto = require("node:crypto");
 const { GamePortSession } = require("./session");
+const packets = require("./packets");
 const { connectTcp, gameEndpoint } = require("./tcp");
 const { longKeptToBridgeJson, notificationToBridgeJson, sessionChangeToBridgeJson, wireToBridgeJson } = require("./bridgeJson");
 const { GAME_PORT_HANDLE_PREFIX } = require("../pilotTransport");
@@ -321,6 +322,11 @@ const LOCALIZATION_SERVER = "localizationServer";
 const QA_WRAP = "UpdateLocalizationQAWrap";
 /** ROLE_QA (carbon/common/script/sys/serviceConst.py 30). */
 const ROLE_QA = 4503599627370496n;
+/** The services the chat service asks as it logs in to the chat server (xmppchatclient/xmppchatsvc.py 284, 312, 318, 350). */
+const XMPP_CHAT_MGR = "XmppChatMgr";
+const CHAT_AUTHENTICATION = "chatAuthenticationService";
+/** The global config's name for the chat server's address (globalConfig/const.py 57). */
+const EJABBERD_CLIENT_ADDRESS_CONFIG = "ejabberd_client_address";
 const OFFICE_MANAGER = "officeManager";
 /**
  * What the client hands back to the server as it was answered, and so with the Python type it came with:
@@ -1103,6 +1109,14 @@ function createGamePortPilots({
   const A_FACILITY_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/client/script/industry/facilitySvc.py:71", note: null });
   /** eveCfg.GetAveragePricesThread: self.GetConfigSvc().GetAverageMarketPrices(), no arguments, which no route of the BFF's may ask by name. */
   const PRICES_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/common/script/sys/eveCfg.py:524", note: null });
+  /** XmppChat._CreateConnection: self.XmppChatMgr.Hostname(), at the proxy with nothing, which no route of the BFF's may ask by name. */
+  const CHAT_HOSTNAME_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "xmppchatclient/xmppchatsvc.py:284", note: null });
+  /** XmppChat.get_ejabberd_address: self.XmppChatMgr.GetDeprecatedPrefsFallback(), at the proxy with nothing, where the global config names no address. */
+  const CHAT_ADDRESS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "xmppchatclient/xmppchatsvc.py:312", note: null });
+  /** XmppChat.GetAuthenticationToken: sm.RemoteSvc('chatAuthenticationService').GetAuthenticationToken(), with nothing. */
+  const CHAT_TOKEN_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "xmppchatclient/xmppchatsvc.py:318", note: null });
+  /** XmppChat._JoinSystemChannels: self.XmppChatMgr.ResyncSystemChannelAccess(), at the proxy with nothing. */
+  const CHAT_RESYNC_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "xmppchatclient/xmppchatsvc.py:350", note: null });
   /** cfg.eveowners' priming: config.GetMultiOwnersEx(list(keysToGet)), which no route of the BFF's may ask by name. */
   const OWNERS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbon/common/script/sys/cfg.py:579", note: null });
   /**
@@ -3178,6 +3192,57 @@ function createGamePortPilots({
     entry.kept[BOOKMARK_MGR].amend("active", (lists) => (isTheThreeLists(lists) ? withBookmark(lists, made, bookmarkID) : undefined));
   }
 
+  // ── the chat's login, as the client's chat service makes it ──────────────
+
+  /**
+   * XmppChat._CreateConnection (xmppchatclient/xmppchatsvc.py 283 to 305), the first thing Login does (247 to 248):
+   * the chat's hostname is asked of the proxy, self.XmppChatMgr.Hostname() (284; sm.ProxySvc('XmppChatMgr'), 1819),
+   * and the chat server's address is the global config's ('ejabberd_client_address', globalConfig/getFunctions.py
+   * 166 to 168, which a client has from its login) or, where that names none,
+   * self.XmppChatMgr.GetDeprecatedPrefsFallback() (307 to 312). Every JID is built on the hostname (the pilot's,
+   * each room's, the stream's own); the address is what the socket dials. Tranquility's recordings have Hostname()
+   * once at a login, answered its chat domain, and no fallback, its global config naming the address.
+   */
+  async function chatConnection(sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    ledger.note(XMPP_CHAT_MGR, "Hostname", CHAT_HOSTNAME_AS_THE_CLIENT_ASKS);
+    const hostname = packets.text(await entry.session.proxyCall(XMPP_CHAT_MGR, "Hostname", [], null));
+    let address = packets.text(packets.dictGet(packets.dictGet(entry.session.loginResponse, "config_vals"), EJABBERD_CLIENT_ADDRESS_CONFIG));
+    if (address === null || address.length === 0) {
+      ledger.note(XMPP_CHAT_MGR, "GetDeprecatedPrefsFallback", CHAT_ADDRESS_AS_THE_CLIENT_ASKS);
+      address = packets.text(await entry.session.proxyCall(XMPP_CHAT_MGR, "GetDeprecatedPrefsFallback", [], null));
+    }
+    return { hostname, address };
+  }
+
+  /**
+   * XmppChat.GetAuthenticationToken (317 to 325), the connection's get_password (302), which is read once the
+   * socket is up and before the stream is opened (xmpp/xmppConnection.py 423):
+   * sm.RemoteSvc('chatAuthenticationService').GetAuthenticationToken(), by the service's name with nothing, and the
+   * word 'ejabberd' where that answers nothing. Asked at every connection. Tranquility answers a bearer token.
+   */
+  async function chatSecret(sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    ledger.note(CHAT_AUTHENTICATION, "GetAuthenticationToken", CHAT_TOKEN_AS_THE_CLIENT_ASKS);
+    const token = packets.text(await entry.session.call(CHAT_AUTHENTICATION, "GetAuthenticationToken", [], null));
+    return token || "ejabberd";
+  }
+
+  /**
+   * XmppChat._JoinSystemChannels (345 to 368), started as the chat is logged in (383):
+   * self.XmppChatMgr.ResyncSystemChannelAccess(), at the proxy with nothing: the system channels the session is to
+   * be in, a list of their names (Tranquility: ['local_30000142', 'corp_1000171']). The client asks again every
+   * five seconds while it is answered none; here the names answered are given back, and it is the asker's to ask
+   * again.
+   */
+  async function chatChannels(sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    ledger.note(XMPP_CHAT_MGR, "ResyncSystemChannelAccess", CHAT_RESYNC_AS_THE_CLIENT_ASKS);
+    const answered = await entry.session.proxyCall(XMPP_CHAT_MGR, "ResyncSystemChannelAccess", [], null);
+    const names = Array.isArray(answered) ? answered : answered && Array.isArray(answered.items) ? answered.items : [];
+    return names.map((name) => packets.text(name)).filter((name) => typeof name === "string" && name.length > 0);
+  }
+
   // ── the price table, as the client's cfg has it ───────────────────────────
 
   /**
@@ -5006,6 +5071,9 @@ function createGamePortPilots({
     ownersNamed,
     shipInfo,
     shipAttribute,
+    chatConnection,
+    chatSecret,
+    chatChannels,
     shutdown,
     /** Every pair called since this transport was made, most called first, with how each compares with the retail client's. */
     callLedger: () => ledger.rows(),

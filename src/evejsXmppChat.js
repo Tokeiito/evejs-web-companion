@@ -90,6 +90,21 @@ const DEFAULT_XMPP_DOMAIN = "localhost";
 // different: nothing keys on it, and a transcript that says which connection is
 // the companion is worth more than a perfect impersonation.
 const XMPP_RESOURCE = "evejs-web-companion";
+// A pilot on the game port logs in as the retail client's chat service does (see
+// `loginDetails`), and binds what that binds: `self.xmppConnection.Connect(
+// self.myName, 'eveclient')` (xmppchatclient/xmppchatsvc.py 257).
+const RETAIL_XMPP_RESOURCE = "eveclient";
+// `_JoinSystemChannels` asks again every five seconds while the server names no
+// channel (xmppchatsvc.py 347 to 352). The floor between two askings here.
+const RESYNC_RETRY_MS = 5000;
+// A channel's category is its name up to the first underscore
+// (chatutil.GetChannelCategory, chatutil/__init__.py 257 to 258), and these
+// categories are all Local to the client: one window, whichever the system has
+// (xmppchatsvc.py 359 to 360; chatutil/const.py 14 to 22).
+const LOCAL_CATEGORIES = new Set(["local", "nolocal", "wormhole", "nullsec", "triglavian"]);
+// Local with nothing joined: for this category the client makes the window and
+// sends no presence (xmppchatsvc.py 1050 to 1054).
+const SUPPRESSED_LOCAL_CATEGORY = "nolocal";
 const CONNECT_TIMEOUT_MS = 4000;
 const HANDSHAKE_TIMEOUT_MS = 4000;
 // How long a join is given to come back with its self-presence before a read
@@ -184,7 +199,7 @@ function xmppConferenceDomain() {
  * for a server old enough to predate the TLS edge; the framing above it is
  * identical either way.
  */
-function connectChatSocket(host, port, onReady) {
+function connectChatSocket(host, port, onReady, domain = xmppDomain()) {
   if (trimmedEnv("EVEJS_XMPP_TLS") === "0") {
     return net.createConnection({ host, port }, onReady);
   }
@@ -192,11 +207,36 @@ function connectChatSocket(host, port, onReady) {
     {
       host,
       port,
-      servername: xmppDomain(),
+      servername: domain,
       rejectUnauthorized: trimmedEnv("EVEJS_XMPP_TLS_REJECT_UNAUTHORIZED") === "1",
     },
     onReady,
   );
+}
+
+const LOOPBACK_NAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+/**
+ * The host to dial for a pilot logged in the retail client's way, given the
+ * address the game server named for its chat server.
+ *
+ * The retail client dials that address as it stands. This BFF may reach the
+ * server by another road than a client beside it does — from inside a
+ * container the server's "localhost" is the container — so an address that
+ * says "this machine" means the machine the server is on, which is the host
+ * this BFF already reaches it by (`xmppHost`). `EVEJS_XMPP_HOST` overrides
+ * either way, as it always has.
+ */
+function dialHostFor(address) {
+  const explicit = trimmedEnv("EVEJS_XMPP_HOST");
+  if (explicit) {
+    return explicit;
+  }
+  const named = String(address || "").trim();
+  if (!named || LOOPBACK_NAMES.has(named.toLowerCase())) {
+    return xmppHost();
+  }
+  return named;
 }
 
 function escapeXml(value) {
@@ -283,6 +323,16 @@ class XmppChatSession {
       });
     }
     this.log = typeof options.log === "function" ? options.log : () => {};
+    // What the game server is asked as the retail client's chat service asks
+    // it at its login: `{ connection(), secret(), channels() }`, each a call
+    // made through the pilot's own game-port session. Null for a pilot on the
+    // gateway, which has no such session to ask: see `loginDetails`.
+    this.login = options.login && typeof options.login === "object" ? options.login : null;
+    this.domain = xmppDomain();
+    this.conferenceDomain = xmppConferenceDomain();
+    this.resource = XMPP_RESOURCE;
+    this.systemChannelsAskedAtMs = 0;
+    this.systemChannelsWork = null;
     this.socket = null;
     this.buffer = "";
     this.ready = false;
@@ -306,11 +356,61 @@ class XmppChatSession {
   }
 
   jid() {
-    return `${this.characterID}@${xmppDomain()}/${XMPP_RESOURCE}`;
+    return `${this.characterID}@${this.domain}/${this.resource}`;
   }
 
   aliasJid(channel) {
-    return `${channel}@${xmppConferenceDomain()}/${this.characterID}`;
+    return `${channel}@${this.conferenceDomain}/${this.characterID}`;
+  }
+
+  /**
+   * Where to connect, on what domain, and with what secret.
+   *
+   * A pilot on the gateway comes in as this module always has: the host and
+   * the domain from this BFF's own environment, no secret, a resource of its
+   * own, and rooms by the stub's aliases.
+   *
+   * A pilot on the game port logs in as the retail client's chat service does
+   * (xmppchatclient/xmppchatsvc.py 247 to 325): the chat's hostname and the
+   * server's address are asked of the game server, every JID is built on that
+   * hostname (1190 to 1195; xmpp/xmpphandler.py 55), the resource is
+   * `eveclient` (257), and the secret is asked once the socket is up
+   * (xmpp/xmppConnection.py 423). The stanzas themselves are still this
+   * module's: they are set beside the client's in a later step.
+   */
+  async loginDetails() {
+    const port = xmppPort();
+    if (!this.login) {
+      this.domain = xmppDomain();
+      this.conferenceDomain = xmppConferenceDomain();
+      this.resource = XMPP_RESOURCE;
+      return { host: xmppHost(), port, domain: this.domain, secret: async () => "" };
+    }
+    let asked = null;
+    try {
+      asked = await this.login.connection();
+    } catch (error) {
+      throw new XmppChatError(
+        `The game server could not be asked for the chat's login: ${error.message}`,
+        { code: "CHAT_LOGIN_UNAVAILABLE" },
+      );
+    }
+    const hostname = String((asked && asked.hostname) || "").trim();
+    if (!hostname) {
+      throw new XmppChatError("The game server named no chat hostname.", {
+        code: "CHAT_LOGIN_UNAVAILABLE",
+      });
+    }
+    this.domain = hostname;
+    // GetFullRoomName: '{0}@conference.{1}'.format(channelName, self.hostname).
+    this.conferenceDomain = `conference.${hostname}`;
+    this.resource = RETAIL_XMPP_RESOURCE;
+    return {
+      host: dialHostFor(asked.address),
+      port,
+      domain: hostname,
+      secret: () => this.login.secret(),
+    };
   }
 
   write(xml) {
@@ -372,26 +472,48 @@ class XmppChatSession {
     return this.readyPromise;
   }
 
-  handshake() {
+  async handshake() {
+    return this.handshakeWith(await this.loginDetails());
+  }
+
+  handshakeWith({ host, port, domain, secret }) {
     return new Promise((resolve, reject) => {
-      const host = xmppHost();
-      const port = xmppPort();
-      const domain = xmppDomain();
       let stage = "connect";
       let settled = false;
+      let password = "";
       // ⚠ THE READY CALLBACK, NOT A `connect` LISTENER. On a TLS socket the
       // stream is not usable until `secureConnect`, and `connect` fires before
       // the handshake — a stream header written there goes out before the
       // cipher is up. Both connectors take this callback and fire it on their
       // own ready event, which is the one line that keeps the plain and TLS
       // paths identical above the socket.
+      // The secret is read once the socket is up and before the stream is
+      // opened, as the client's connection reads its password. A pilot on the
+      // gateway has none to read.
       const socket = connectChatSocket(host, port, () => {
-        stage = "stream";
-        this.write(
-          `<?xml version='1.0'?><stream:stream to='${escapeXml(domain)}' ` +
-            "xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams' version='1.0'>",
-        );
-      });
+        stage = "secret";
+        Promise.resolve()
+          .then(secret)
+          .then(
+            (word) => {
+              if (settled) {
+                return;
+              }
+              password = String(word ?? "");
+              stage = "stream";
+              this.write(
+                `<?xml version='1.0'?><stream:stream to='${escapeXml(domain)}' ` +
+                  "xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams' version='1.0'>",
+              );
+            },
+            (error) => {
+              fail(
+                "CHAT_LOGIN_UNAVAILABLE",
+                `The game server could not be asked for the chat's secret: ${error.message}`,
+              );
+            },
+          );
+      }, domain);
       this.socket = socket;
       this.buffer = "";
       socket.setKeepAlive(true, 15_000);
@@ -456,15 +578,18 @@ class XmppChatSession {
           }
           this.buffer = "";
           stage = "auth";
-          // ⚠ AN EMPTY PASSWORD, ON PURPOSE. `parsePlainAuth` reads the
-          // authorization identity and ignores the secret entirely — the JID's
-          // local part is the whole of the identity. Sending a made-up secret
-          // would imply a check that does not exist; the real protection is
-          // that `characterID` comes from the held session and from nowhere
-          // else.
-          const payload = Buffer.from(`\u0000${this.characterID}\u0000`, "utf8").toString(
-            "base64",
-          );
+          // ⚠ AN EMPTY PASSWORD FOR A PILOT ON THE GATEWAY, ON PURPOSE.
+          // `parsePlainAuth` reads the authorization identity and ignores the
+          // secret entirely — the JID's local part is the whole of the
+          // identity. Sending a made-up secret would imply a check that does
+          // not exist; the real protection is that `characterID` comes from the
+          // held session and from nowhere else. A pilot on the game port sends
+          // what the retail client sends: the token the game server gave it,
+          // or the word the client falls back on (`loginDetails`).
+          const payload = Buffer.from(
+            `\u0000${this.characterID}\u0000${password}`,
+            "utf8",
+          ).toString("base64");
           this.write(
             `<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>${payload}</auth>`,
           );
@@ -488,7 +613,7 @@ class XmppChatSession {
           stage = "bind";
           this.write(
             `<iq type='set' id='bind'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'>` +
-              `<resource>${escapeXml(XMPP_RESOURCE)}</resource></bind></iq>`,
+              `<resource>${escapeXml(this.resource)}</resource></bind></iq>`,
           );
           return;
         }
@@ -522,7 +647,7 @@ class XmppChatSession {
     // round trip rather than a write into a socket that may already be dead.
     this.pingTimer = setInterval(() => {
       this.write(
-        `<iq type='get' id='${this.nextID("ping")}' to='${escapeXml(xmppDomain())}'>` +
+        `<iq type='get' id='${this.nextID("ping")}' to='${escapeXml(this.domain)}'>` +
           "<ping xmlns='urn:xmpp:ping'/></iq>",
       );
     }, PING_INTERVAL_MS);
@@ -558,12 +683,14 @@ class XmppChatSession {
       );
     }
     this.rooms.clear();
+    this.systemChannelsAskedAtMs = 0;
   }
 
   teardownSocket() {
     this.stopPing();
     this.ready = false;
     this.rooms.clear();
+    this.systemChannelsAskedAtMs = 0;
     if (this.socket) {
       this.socket.removeAllListeners();
       this.socket.destroy();
@@ -772,6 +899,9 @@ class XmppChatSession {
   async ensureChannel(channel, context = {}) {
     await this.ensureReady();
     const solarSystemID = positiveInt(context.solarSystemID);
+    if (this.login) {
+      return this.ensureSystemChannel(channel, solarSystemID);
+    }
     const existing = this.rooms.get(channel) || null;
     if (existing && !existing.pending) {
       const moved =
@@ -790,7 +920,119 @@ class XmppChatSession {
     return this.joinChannel(channel, solarSystemID);
   }
 
-  joinChannel(channel, solarSystemID) {
+  /**
+   * The room of one of the session's own channels, for a pilot logged in the
+   * retail client's way.
+   *
+   * The client does not work out which rooms it is to be in: logged in, it asks
+   * the game server (`XmppChatMgr.ResyncSystemChannelAccess()`,
+   * xmppchatsvc.py 345 to 368) and joins each channel that names, by the
+   * channel's own name. So here: the names are asked for through the pilot's
+   * game-port session, each is joined as named, and `channel` is answered with
+   * the room of its category.
+   *
+   * ⚠ A MOVE IS STILL NOTICED THIS MODULE'S WAY, NOT THE CLIENT'S. The client
+   * leaves and joins at its session's changes; that is a later step. Until
+   * then a pilot whose tracked system is no longer the one its Local was
+   * joined for leaves that room and asks the server for its channels again.
+   */
+  async ensureSystemChannel(channel, solarSystemID) {
+    const existing = this.rooms.get(channel) || null;
+    if (existing && existing.pending) {
+      return existing.pending.promise;
+    }
+    if (existing) {
+      const moved =
+        channel === "local" &&
+        solarSystemID > 0 &&
+        existing.joinedFor > 0 &&
+        existing.joinedFor !== solarSystemID;
+      if (!moved) {
+        return existing;
+      }
+      this.leaveRoom(existing);
+    }
+    await this.joinSystemChannels(solarSystemID);
+    const room = this.rooms.get(channel) || null;
+    if (!room) {
+      throw new XmppChatError(`The game server named no ${channel} channel for this pilot.`, {
+        code: "CHAT_NO_CHANNEL",
+      });
+    }
+    return room.pending ? room.pending.promise : room;
+  }
+
+  /**
+   * Ask the game server which system channels this pilot is to be in, and join
+   * each one not already joined.
+   *
+   * One asking at a time, and no sooner than five seconds after the last: the
+   * client's own wait between two askings that named nothing.
+   */
+  joinSystemChannels(solarSystemID) {
+    if (this.systemChannelsWork) {
+      return this.systemChannelsWork;
+    }
+    if (
+      this.systemChannelsAskedAtMs > 0 &&
+      Date.now() - this.systemChannelsAskedAtMs < RESYNC_RETRY_MS
+    ) {
+      return Promise.resolve();
+    }
+    this.systemChannelsAskedAtMs = Date.now();
+    this.systemChannelsWork = Promise.resolve()
+      .then(() => this.login.channels())
+      .then(
+        (names) => {
+          for (const name of Array.isArray(names) ? names : []) {
+            const category = String(name).split("_")[0];
+            const channel = LOCAL_CATEGORIES.has(category) ? "local" : category;
+            const had = this.rooms.get(channel) || null;
+            if (had && (had.pending || had.roomName === name)) {
+              continue;
+            }
+            if (had) {
+              this.leaveRoom(had);
+            }
+            if (category === SUPPRESSED_LOCAL_CATEGORY) {
+              this.rooms.set(channel, {
+                channel,
+                roomJid: null,
+                roomName: name,
+                alias: null,
+                joinedAtMs: Date.now(),
+                joinedFor: positiveInt(String(name).split("_").pop()),
+                pending: null,
+              });
+              continue;
+            }
+            // The join's own failure is its caller's to hear, from the promise
+            // the room keeps; an unanswered join of a channel nobody reads
+            // must not become an unhandled rejection.
+            this.joinChannel(channel, solarSystemID, name).catch(() => {});
+          }
+        },
+        (error) => {
+          throw new XmppChatError(
+            `The game server could not be asked for this pilot's chat channels: ${error.message}`,
+            { code: "CHAT_LOGIN_UNAVAILABLE" },
+          );
+        },
+      )
+      .finally(() => {
+        this.systemChannelsWork = null;
+      });
+    return this.systemChannelsWork;
+  }
+
+  /**
+   * Join a room and wait for the server's answer to the join.
+   *
+   * `roomName` is what the presence is addressed to: the stub's alias for a
+   * pilot on the gateway (the channel's own word), the channel's real name for
+   * a pilot logged in the retail client's way.
+   */
+  joinChannel(channel, solarSystemID, roomName = channel) {
     let resolve = null;
     let reject = null;
     const promise = new Promise((res, rej) => {
@@ -802,7 +1044,7 @@ class XmppChatSession {
       channel,
       roomJid: null,
       roomName: null,
-      alias: this.aliasJid(channel),
+      alias: this.aliasJid(roomName),
       joinedAtMs: 0,
       joinedFor: solarSystemID,
       pending: { promise, resolve, reject, joinID },
@@ -813,7 +1055,7 @@ class XmppChatSession {
         ? ""
         : `<history seconds='${CORP_HISTORY_SECONDS}'/>`;
     this.write(
-      `<presence id='${escapeXml(joinID)}' to='${escapeXml(this.aliasJid(channel))}'>` +
+      `<presence id='${escapeXml(joinID)}' to='${escapeXml(room.alias)}'>` +
         `<x xmlns='http://jabber.org/protocol/muc'>${history}</x></presence>`,
     );
     const timer = setTimeout(() => {
@@ -835,12 +1077,20 @@ class XmppChatSession {
   }
 
   leaveRoom(room) {
-    if (!room || !room.roomJid) {
+    if (!room) {
       return;
     }
-    this.write(
-      `<presence type='unavailable' to='${escapeXml(room.roomJid)}/${this.characterID}'/>`,
-    );
+    // A Local nothing was joined for (the suppressed kind, which has no
+    // address) is forgotten with nothing sent: there is no room to leave.
+    const neverJoined = room.alias === null;
+    if (!room.roomJid && !neverJoined) {
+      return;
+    }
+    if (room.roomJid) {
+      this.write(
+        `<presence type='unavailable' to='${escapeXml(room.roomJid)}/${this.characterID}'/>`,
+      );
+    }
     this.rooms.delete(room.channel);
     // The tail of what was said in a system this pilot has left is not this
     // pilot's chat any more.
@@ -890,6 +1140,12 @@ class XmppChatSession {
       throw new XmppChatError("A chat message cannot be empty.", {
         code: "CHAT_EMPTY_MESSAGE",
         statusCode: 400,
+      });
+    }
+    if (!room.roomJid && !room.alias) {
+      throw new XmppChatError(`There is no ${channel} room to speak in here.`, {
+        code: "CHAT_NO_CHANNEL",
+        statusCode: 409,
       });
     }
     this.write(

@@ -18322,9 +18322,33 @@ function heldChatSession(held) {
     held.chat = gateway.createChatSession({
       characterID: held.characterID,
       log: (line) => console.log(line),
+      login: heldChatLogin(held),
     });
   }
   return held.chat;
+}
+
+/**
+ * What a pilot on the game port asks the game server as its chat logs in, the
+ * way the retail client's chat service asks it (xmppchatclient/xmppchatsvc.py
+ * 247 to 368): the chat's hostname and the server's address, the secret, and
+ * the system channels to join. Each is a call on the pilot's own game-port
+ * session, made when the chat connection wants it.
+ *
+ * Null for a pilot on the gateway: it has no such session to ask, and its chat
+ * comes in as it always has.
+ */
+function heldChatLogin(held) {
+  const onGamePort = Boolean(gamePortPilots) && isGamePortHandle(held.bridgeSessionID);
+  if (!onGamePort || typeof gamePortPilots.chatConnection !== "function") {
+    return null;
+  }
+  const whose = () => [{ userid: held.accountID }, held.bridgeSessionID];
+  return {
+    connection: () => gamePortPilots.chatConnection(...whose()),
+    secret: () => gamePortPilots.chatSecret(...whose()),
+    channels: () => gamePortPilots.chatChannels(...whose()),
+  };
 }
 
 /** The error a chat route answers with when this app has no chat transport. */
