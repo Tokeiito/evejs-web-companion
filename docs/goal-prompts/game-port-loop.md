@@ -3164,6 +3164,20 @@ Take these defaults, and list each under "For the operator" in the log so they c
   (`state-live.js` waited for them and got none).
 - **Whose ball Tranquility steers and by what**: the scratch
   `tq-steering.js <root> [name]`.
+- **To make the server send a whole state in mid-session**:
+  `EVEJS_GAME_PORT=26006 node scripts/record-destiny.js test2 140000002 30
+  <scratch>/x.fixture.json 2.3`, through the recorder. It logs in on the
+  game port by itself (the pilot docked, and not in the BFF's hands),
+  undocks, asks for the state every 2.3 s, stops half-way and docks.
+  **Give it the file's path**: without one it writes over
+  `test/fixtures/destinyUndock.json`.
+- **Before and after within one copy of the store**: save, fly, change
+  the code, `store.sh restore <label>` (with the debug setting: it
+  starts the server again, on the code now on disk), fly, restore, and
+  only then delete the copy.
+- **The road a thing takes is read from its start.** Why a GM's rat
+  waits a second was in the GM's spawn (six lines), not in the rat's
+  thinking, which was read first.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

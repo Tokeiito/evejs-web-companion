@@ -1261,7 +1261,9 @@ A whole state sets the park's time to its stamp and each ball to the place writt
 968 to 975; CCP's `destiny/src/Thunkers.cpp` `Ballpark::ReadFullStateFromStream`, 2463 to 2469), and entries
 stamped before it are thrown away (`FlushState`, 1103 to 1111). This server reads its clock as it builds a state
 and again as it sends it; since `eve.js` `869ee9c0f` the first whole state's balls are those of the stamp it is
-sent with.
+sent with. So, since `689de3af3`, are those of a whole state sent again in mid-session (the answer to
+`UpdateStateRequest`, which the client asks when it has lost its place: michelle's `RequestReset`); until then each
+moving ball in it was written as it stood, its travel to the state's stamp behind.
 A ship's massive flag. The client's own simulation clears it as real warp begins and sets it at dropout (CCP's
 `destiny/src/Ballpark.cpp`, 4160 to 4162 and 4330 to 4332), clears it at a cloak and sets it at an uncloak out of
 warp (5250, 5276); the browser's park does the same (`src/gamePort/destiny/ballpark.js`). Tranquility sends the
