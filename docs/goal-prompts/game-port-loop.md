@@ -2773,6 +2773,30 @@ Take these defaults, and list each under "For the operator" in the log so they c
   its materials by `/bpauto seed <name> <runs> copy` (`mat-live.js`), the
   skills by `/allskills`: a job can then be installed through the BFF
   (`sectax-live.js`).
+- **The breakage runners copy aside every file the breaks script names**
+  (`break-run.sh`, `web-break-run.sh`, since 2026-10-13), before each
+  breakage, and put every one back after it. Until then the one file was
+  found by the breakage's name, and a name that ends another's
+  ("nosession", "servicenosession") had the wrong file copied and the
+  broken one left broken. The line the runner prints for a breakage names
+  the file it changed: read it each time, and read the source's whole
+  change against the commit before it is committed.
+- **A red file is measured before a cause is written anywhere, the source
+  included.** Two files red beside this unit's were taken for an import
+  cycle and a require moved with a comment saying so; with the unit's files
+  put as committed they were red the same. The changed files are copied
+  aside, put as `git show HEAD:<file>` has them, the test run, and the
+  copies put back and compared.
+- **A test that stands in for a module can go stale without a word**:
+  `repackagingSupport`'s stand-in for the shared helpers lacks a helper
+  the source began to call a fortnight after the test was written. "X is
+  not a function" in a test that loads its subject through the module
+  loader is read in the test's own stand-ins first.
+- **A notice that changes what the transport keeps is taken where the
+  client takes it.** The transport answers a monitor's second asking from
+  its first answer; the server's notice of the materials had to go into
+  that kept answer, or the server's telling would have reached nobody. Each
+  thing the transport keeps is listed with the notice that changes it.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

@@ -1202,6 +1202,19 @@ Neither the transport nor the page reads the tales or the end of the Omega time.
 is also sent to a system (by `solarsystemid2`, 17 times, one tale each) far from any session
 change: a tale of the system's own, which this server does not send.
 
+**The Industry window's monitor, 2026-10-13.** `industrySvc.ConnectJob` (299 to 301) makes the job the one
+monitored and has `(monitorID, available)` of `industryMonitor.ConnectJob(job.dump())`: what the job's input
+place has, by type. One job is monitored, the last connected. `OnIndustryMaterials(jobID, materials)` (324 to
+327) sets `job.available` where the monitored job's monitor is that number, and the window shows it. The
+window's close lets the monitor go (`DisconnectJob`, 304 to 307). No recording has the notice, nor any of
+industry's.
+
+This server sends it since `eve.js` `83c66feb6`: by `clientID`, to the session that opened the monitor (the one
+it opened last), after an item change that session is told of, where what the place has is not what it was last
+told. The transport keeps a monitor's answer and answers a later `ConnectJob` for the same job from it, and puts
+the notice's word into what it keeps (`pilots.js`, `monitoredJobHas`, `8f8621c0`). The page's next preview has
+it; the page does not ask again of itself when the notice comes.
+
 **Crimewatch's notices, 2026-10-10.** Each changes one thing the service keeps, and nothing
 is asked after it (`crimewatchSvc.py` 222 to 288).
 
