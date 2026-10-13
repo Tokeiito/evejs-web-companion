@@ -3178,6 +3178,22 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **The road a thing takes is read from its start.** Why a GM's rat
   waits a second was in the GM's spawn (six lines), not in the rat's
   thinking, which was read first.
+- **A recording's name is not used twice.** `scripts/record-game-port.js`
+  writes on at the end of a file that is there, and a name of an
+  earlier unit's (`mcb.jsonl`) came back holding two flights: the park
+  tool went wild (entries 15,289 stamps ahead). Look for the name
+  before recording (`ls <scratch>/<name>.jsonl`). A file that holds two
+  is cut where the recorder's clock goes back (`awk -F'"at":'`, then
+  `sed -n '<line>,$p'`).
+- **The server's copy of a missile's client ball beside the client's**:
+  `node scripts/missiles-in-park.js <recording>` ("launched", "touched
+  in the tick from") beside the missile debug log's
+  `missile.client-ball.launched` ("stamp") and
+  `missile.client-ball.touched` ("touchedInStepFrom", "whenInStep").
+- **A gate in the server's ledger is read as it is written.** "Before
+  changing collision, impact, or release timing" is before: the Next
+  list had the acting at the touch done first and the retail client
+  looked at after.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
