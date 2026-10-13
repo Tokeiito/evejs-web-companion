@@ -1407,6 +1407,16 @@ milestone: two hours online, then `OnLoginMilestoneAchieved` and a reward to cla
 the session ends. Tranquility's recordings of a login each have the one call. The game port makes it since
 `d1298c33`, at the choosing between the bookmarks and the non-diminishing injections, and keeps the time; the
 claiming is not made yet.
+The tutorial's two reads. `operations/common/util.py` `is_npe_enabled_for_character` (93 to 101) asks
+`sm.RemoteSvc('operationsManager').can_character_play_the_tutorial(character_id)` with the character alone, once
+for a character (it is memoized); its askers go by `operations/client/util.py` `are_operations_active` (12 to 13)
+for the session's own character, and some of the client's services ask as a pilot comes in. The game port asks
+it so since `73f82d5f`. The AIR tutorial's controller (`storylines/client/airnpe.py`) asks
+`sm.RemoteSvc('air_npe').get_air_npe_state()` with nothing the first time something asks whether the tutorial is
+active or completed (78 to 83, 95 to 99), keeps it by character, and takes `OnAirNpeStateChanged(character_id,
+new_state_id)` for it from then (63 to 70). On this server that asking is what resumes the tutorial for the
+session (`server/src/services/npe/airNpeService.js`, after the call). The game port does not make it: the
+operator's to say.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
