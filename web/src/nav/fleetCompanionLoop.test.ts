@@ -8124,6 +8124,68 @@ test("FOLLOW lights it too — keeping up with a commander who is pulling away",
   assert.deepEqual(decision.action, { kind: "activate", moduleID: MWD.itemID, targetID: 0 });
 });
 
+// ⚠ FOLLOW IS STATION-KEEPING, NOT A TRIP, WHILE HOSTILES ARE ON THE GRID. A
+// companion holds station on its FC with keep-at-range, which the server keeps
+// as FOLLOW for the whole time, so the mode test alone lit a microwarpdrive for
+// every fight -- and the server blooms an MWD's signature radius, which makes
+// the ship easier for the NPCs to hit. `hostileOnGrid` is three-state: only
+// `true` stands the burner down; false and null keep today's behaviour.
+test("FOLLOW with hostiles on grid stands a lit prop mod down — station-keeping, not a trip", () => {
+  const decision = decideCompanionAction(
+    withProps(),
+    obs({ snapshot: gridInMode("FOLLOW", [MWD.itemID]), hostileOnGrid: true }),
+  );
+  assert.deepEqual(decision.action, {
+    kind: "deactivate",
+    moduleID: MWD.itemID,
+    typeID: MWD.typeID,
+  });
+});
+
+test("FOLLOW with hostiles on grid does not light an unlit prop mod", () => {
+  const decision = decideCompanionAction(
+    withProps(),
+    obs({ snapshot: gridInMode("FOLLOW"), hostileOnGrid: true }),
+  );
+  assert.notEqual(decision.phase, "Propulsion");
+});
+
+test("FOLLOW with no hostiles on grid lights it, as before", () => {
+  const decision = decideCompanionAction(
+    withProps(),
+    obs({ snapshot: gridInMode("FOLLOW"), hostileOnGrid: false }),
+  );
+  assert.deepEqual(decision.action, { kind: "activate", moduleID: MWD.itemID, targetID: 0 });
+});
+
+test("FOLLOW with hostileOnGrid unreadable (null) lights it, as before", () => {
+  const decision = decideCompanionAction(
+    withProps(),
+    obs({ snapshot: gridInMode("FOLLOW"), hostileOnGrid: null }),
+  );
+  assert.deepEqual(decision.action, { kind: "activate", moduleID: MWD.itemID, targetID: 0 });
+});
+
+test("GOTO still lights it with hostiles on grid — a heading of its own is a trip", () => {
+  const decision = decideCompanionAction(
+    withProps(),
+    obs({ snapshot: gridInMode("GOTO"), hostileOnGrid: true }),
+  );
+  assert.deepEqual(decision.action, { kind: "activate", moduleID: MWD.itemID, targetID: 0 });
+});
+
+test("`props on` beats the hostile-FOLLOW stand-down", () => {
+  const decision = decideCompanionAction(
+    withProps(),
+    obs({
+      snapshot: gridInMode("FOLLOW"),
+      hostileOnGrid: true,
+      chatMessages: [chatLine("props on", HUMAN)],
+    }),
+  );
+  assert.deepEqual(decision.action, { kind: "activate", moduleID: MWD.itemID, targetID: 0 });
+});
+
 // ⚠ THE WHOLE POINT OF THE REGRESSION. No autopilot anywhere in this
 // observation — exactly the shape of a companion following its FC through a
 // dozen systems — and it must still burn.
