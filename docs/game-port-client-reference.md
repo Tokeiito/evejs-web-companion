@@ -1341,8 +1341,16 @@ the system the session is in. `GetLocalOccupationState` (47 to 60) asks
 session's system, asks once more where the answer is for another system, and raises after two such; a change of
 `solarsystemid2` lets go what is kept (34 to 37); `OnWarzoneOccupationStateUpdated(solarsystemID, state)` of the
 session's system is the state from then (78 to 93). Tranquility's recordings have the call once at each login and
-once after each change of solar system, answered `(system, None)`. The game port asks it so since `fd0c7cda`; of
-the panel's other askings, none yet.
+once after each change of solar system, answered `(system, None)`. The game port asks it so since `fd0c7cda`.
+The dynamic resource service (`eve/client/script/ui/shared/dynamicResource/dynamicResourceSvc.py`) keeps the system's
+bounty output ninety minutes (`GetDynamicBountySettingForCurrentSystem`, 58 to 65, under `@expiring_memoize(5400)`):
+`sm.RemoteSvc('dynamicBountyMgr').GetOutputForClientSolarSystem()` with nothing, answering `(output, dbsIsActive)`,
+or `(1.0, False)` with nothing asked where the server's global config has `dynamic_bounty_system_disabled` set. A
+change of `solarsystemid2` lets it go and has the panel draw again, which asks (175 to 182);
+`OnSystemDynamicBountyStateChanged(systemID, rate)` of the session's system makes it `(rate, True)` (160 to 165).
+Tranquility's recordings have the call once at each login and once after each change of solar system, answered
+`(1.0, False)`. The game port asks it so since `77010339`, the global config's switch taken as not set. Of the
+panel's askings the sovereignty structures of a system no faction holds are left.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened

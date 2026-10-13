@@ -3362,6 +3362,23 @@ Take these defaults, and list each under "For the operator" in the log so they c
   `/solar <system name>`, which puts a docked pilot in space by a gate
   of that system: the session changes `solarsystemid2` and the rest.
   Between a copy of the store and its putting back.
+- **What the server answered a call, out of a game-port recording**:
+  `call-answers.js <repo> <recording> <text>` (session 2aba99c0's
+  scratchpad) prints each call whose service or method has the text,
+  whom it was sent to, its arguments and the answer. It shows a float
+  that is a whole number as an int (the decoder's numbers are
+  JavaScript's): whether the wire had a float is read from the frame's
+  bytes (`0a` and eight bytes; `2c0a000000000000f03f20` is the tuple
+  `(1.0, False)`).
+- **This server's "safe" answers are set beside Tranquility's.** A
+  handler that answers zeros or nothing "safely" may answer what the
+  retail client never shows and Tranquility never sends
+  (`dynamicBountyMgr.GetOutputForClientSolarSystem` answered `(0, 0)`
+  for Tranquility's `(1.0, False)`). For each call a unit adds, the
+  recordings' `retval=` is read (`grep -a "<service>" <file> | tr -c
+  '\40-\176\n' ' ' | grep -o "<service>::<method>.\{0,170\}"`) and
+  set beside what the handler builds; where they differ the server is
+  mended first.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
