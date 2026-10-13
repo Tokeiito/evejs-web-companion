@@ -3098,6 +3098,26 @@ Take these defaults, and list each under "For the operator" in the log so they c
   date and the UTC hour.
 - **`pilot-ships.js` is in this loop's first scratchpad**, given the
   other (with `bff-session.js`) as its first argument.
+- **What turns on a constant is found by two flights with it at two
+  values**, `scripts/park-tick-against-stamps.js` on each, side by side:
+  a row that moves with it is inside it. "Outside the lead" was said of
+  three senders from their names, and all three moved.
+- **What a thing is sent with is not when it is sent.** The server's
+  authors read "`SetBallMassive 1` comes with `WarpTo`" in
+  Tranquility's recordings as the flag tracking warp. Read in order for
+  the pilot's own ship (the scratch `tq-massive-order.js <root> [1]`: the
+  ship is the "ego" of the recording's states and its session's shipid)
+  it comes with the first command after an undock only.
+  `tq-massive-shapes.js <root>` counts the entries that come together,
+  the pilot's ship apart from the rest.
+- **What an `AddBalls2` or a whole state carries**: the scratch
+  `addballs-in.js <repo> <recording.jsonl> [entries] [balls]` (each
+  ball's id, mode, flags, speed, and its slim item's type, group and
+  name). An `AddBalls2` is handed one chunk: the state and the slim
+  items together. Tranquility's own come inside a `PackagedAction` and
+  were not decoded here.
+- **`--timeline` of the park tool needs `--server-clock`**; alone it
+  prints nothing more.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

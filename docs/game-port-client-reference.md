@@ -1262,6 +1262,13 @@ A whole state sets the park's time to its stamp and each ball to the place writt
 stamped before it are thrown away (`FlushState`, 1103 to 1111). This server reads its clock as it builds a state
 and again as it sends it; since `eve.js` `869ee9c0f` the first whole state's balls are those of the stamp it is
 sent with.
+A ship's massive flag. The client's own simulation clears it as real warp begins and sets it at dropout (CCP's
+`destiny/src/Ballpark.cpp`, 4160 to 4162 and 4330 to 4332), clears it at a cloak and sets it at an uncloak out of
+warp (5250, 5276); the browser's park does the same (`src/gamePort/destiny/ballpark.js`). Tranquility sends the
+pilot's own ship `SetBallMassive(ship, 0)` with the undock, `1` with the first command after it and `0` with the
+`Stop` of a docking, and none at any other `WarpTo` (28 recordings: 27, 26, 28, and 54 `WarpTo` with none). This
+server writes a ship's ball non-massive and sends `SetBallMassive(ship, 0)` twice after each dropout: it has no
+collisions for ships.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
