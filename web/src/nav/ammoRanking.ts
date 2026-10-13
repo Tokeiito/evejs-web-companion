@@ -113,6 +113,8 @@
 // `why` strings are shown to the player: plain ASCII, no names (the caller
 // words the names in).
 
+import type { AmmoCode } from "./companionTrace.ts";
+
 export const AMMO_RANGE_HYSTERESIS_M = 500;
 export const AMMO_SWAP_PERSIST_TICKS = 5;
 export const AMMO_SWAP_COOLDOWN_MS = 60_000;
@@ -296,10 +298,15 @@ export interface SwapInputs {
   readonly memory: SwapMemory;
 }
 
+/**
+ * `code` names exactly one return path of `decideSwap` (see `AmmoCode` in
+ * companionTrace.ts); `why` is the sentence for a player, several paths of which
+ * could share one.
+ */
 export type SwapDecision =
-  | { readonly kind: "load"; readonly charge: ChargeOption; readonly memory: SwapMemory; readonly why: string }
-  | { readonly kind: "swap"; readonly charge: ChargeOption; readonly memory: SwapMemory; readonly why: string }
-  | { readonly kind: "keep"; readonly memory: SwapMemory; readonly why: string };
+  | { readonly kind: "load"; readonly code: AmmoCode; readonly charge: ChargeOption; readonly memory: SwapMemory; readonly why: string }
+  | { readonly kind: "swap"; readonly code: AmmoCode; readonly charge: ChargeOption; readonly memory: SwapMemory; readonly why: string }
+  | { readonly kind: "keep"; readonly code: AmmoCode; readonly memory: SwapMemory; readonly why: string };
 
 /**
  * One tick of the swap gate for one gun: load, swap or keep, with a `why` the
@@ -339,7 +346,7 @@ export function decideSwap(inputs: SwapInputs): SwapDecision {
     const arrived = loaded !== null && loaded.typeID === memory.pendingTypeID;
     const expired = memory.pendingSinceMs === null || nowMs - memory.pendingSinceMs >= AMMO_RELOAD_PENDING_MS;
     if (!arrived && !expired) {
-      return { kind: "keep", memory, why: "reload under way, waiting for the new charge to load" };
+      return { kind: "keep", code: "reload-pending", memory, why: "reload under way, waiting for the new charge to load" };
     }
     memory = { ...memory, pendingTypeID: null, pendingSinceMs: null };
   }
@@ -349,10 +356,11 @@ export function decideSwap(inputs: SwapInputs): SwapDecision {
   if (loaded === null) {
     const best = ranked[0];
     if (best === undefined) {
-      return { kind: "keep", memory: cleared, why: "nothing compatible aboard" };
+      return { kind: "keep", code: "nothing-compatible", memory: cleared, why: "nothing compatible aboard" };
     }
     return {
       kind: "load",
+      code: "load",
       charge: best,
       memory: { ...cleared, pendingTypeID: best.typeID, pendingSinceMs: nowMs },
       why: "loading the best charge aboard into the empty gun",
@@ -361,12 +369,13 @@ export function decideSwap(inputs: SwapInputs): SwapDecision {
 
   const best = ranked[0];
   if (best === undefined) {
-    return { kind: "keep", memory: cleared, why: "nothing compatible aboard to change to" };
+    return { kind: "keep", code: "nothing-to-change-to", memory: cleared, why: "nothing compatible aboard to change to" };
   }
   if (best.typeID === loaded.typeID) {
     const onlyOne = ranked.every((c) => c.typeID === loaded.typeID);
     return {
       kind: "keep",
+      code: "already-best",
       memory: cleared,
       why: onlyOne ? "only one ammo type aboard" : "keeping the loaded charge: it is still the best choice",
     };
@@ -375,7 +384,7 @@ export function decideSwap(inputs: SwapInputs): SwapDecision {
   // The verdict differs from what is loaded: count how long it has held.
   const ticks = best.typeID === memory.wantedTypeID ? memory.wantedTicks + 1 : 1;
   const counting: SwapMemory = { ...memory, wantedTypeID: best.typeID, wantedTicks: ticks };
-  const keep = (why: string): SwapDecision => ({ kind: "keep", memory: counting, why });
+  const keep = (code: AmmoCode, why: string): SwapDecision => ({ kind: "keep", code, memory: counting, why });
 
   const loadedApplies = inReach(distanceM, loaded.reachM, true);
   const bestReaches = inReach(distanceM, best.reachM, false);
@@ -385,24 +394,24 @@ export function decideSwap(inputs: SwapInputs): SwapDecision {
   // Is the swap worth making at all? (reach and damage, before any timing.)
   let reason: string;
   if (!loadedApplies) {
-    if (inputs.canClose) return keep("closing in instead of reloading");
-    if (!bestReaches) return keep("no charge aboard reaches the target");
+    if (inputs.canClose) return keep("closing-instead", "closing in instead of reloading");
+    if (!bestReaches) return keep("none-reaches", "no charge aboard reaches the target");
     reason = "loading the longer-range charge: the target is out of reach and the ship cannot close";
   } else {
     if (bestDamage === null || loadedDamage === null) {
-      return keep("keeping the loaded charge: it still reaches and the damage of the other is unknown");
+      return keep("damage-unknown", "keeping the loaded charge: it still reaches and the damage of the other is unknown");
     }
     if (!(bestDamage > 0 && bestDamage >= loadedDamage * (1 + AMMO_SWAP_MIN_GAIN))) {
-      return keep("keeping the loaded charge: it still reaches and the other is not enough better");
+      return keep("gain-too-small", "keeping the loaded charge: it still reaches and the other is not enough better");
     }
-    if (!bestReaches) return keep("keeping the loaded charge: the better one would not reach");
+    if (!bestReaches) return keep("better-out-of-reach", "keeping the loaded charge: the better one would not reach");
     if (
       !nextTargetMoment &&
       inputs.targetRemainingHp !== null &&
       inputs.damageLostToReload !== null &&
       !(inputs.targetRemainingHp > inputs.damageLostToReload)
     ) {
-      return keep("keeping the loaded charge: the target will die before a reload pays off");
+      return keep("target-dies-first", "keeping the loaded charge: the target will die before a reload pays off");
     }
     reason = nextTargetMoment
       ? "loading the better charge for the next target"
@@ -413,22 +422,23 @@ export function decideSwap(inputs: SwapInputs): SwapDecision {
   // exempt from those, but not from a short minimum interval since the last swap.
   if (nextTargetMoment) {
     if (memory.lastSwapAtMs !== null && nowMs - memory.lastSwapAtMs < AMMO_NEXT_TARGET_MIN_INTERVAL_MS) {
-      return keep("not swapping again so soon, even for the next target");
+      return keep("next-target-interval", "not swapping again so soon, even for the next target");
     }
   } else {
     if (ticks < AMMO_SWAP_PERSIST_TICKS) {
-      return keep("waiting to be sure the other charge stays the better one");
+      return keep("persisting", "waiting to be sure the other charge stays the better one");
     }
     if (memory.lastSwapAtMs !== null && nowMs - memory.lastSwapAtMs < AMMO_SWAP_COOLDOWN_MS) {
-      return keep("not swapping again so soon after the last swap");
+      return keep("cooldown", "not swapping again so soon after the last swap");
     }
     if (inputs.targetID !== null && memory.swappedForTargetID === inputs.targetID) {
-      return keep("already swapped once for this target");
+      return keep("swapped-this-target", "already swapped once for this target");
     }
   }
 
   return {
     kind: "swap",
+    code: "swap",
     charge: best,
     memory: {
       wantedTypeID: null,
