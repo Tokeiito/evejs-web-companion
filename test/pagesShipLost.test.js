@@ -146,8 +146,10 @@ test("a read that is not the flight status's own adopts nothing: it goes on by t
   const fitting = await api.loadFitting(options);
   assert.equal(fitting.activeShipID, VENTURE);
   assert.deepEqual([row.activeShipID, row.transitionEpoch, row.boundHandles.has(`cargo:${VENTURE}`)], [VENTURE, 0, true]);
-  // As it was: godma's ship is not this session's, so the server is asked.
-  assert.deepEqual(dogma(), ["dogmaIM.ShipGetInfo", "dogmaIM.ShipOnlineModules"]);
+  // Godma's ship is the session's, which is the ship the server would answer of: it answers, and dogma is not asked.
+  assert.deepEqual(dogma(), []);
+  assert.deepEqual(fitting.shipInfo, { type: "dict", entries: [[CAPSULE, rowOf(CAPSULE)]] });
+  // What was bound for the held ship is used as it stands: nothing is bound anew.
   assert.deepEqual(binds(), []);
 });
 

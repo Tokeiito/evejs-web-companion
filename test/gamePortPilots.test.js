@@ -552,6 +552,59 @@ test("the space snapshot and the flight status are read from the pilot's own bal
   assert.deepEqual(hand.errors, []);
 });
 
+test("in space, in another ship, the scene's own ship is that ship: the client makes it its ballpark's ego itself, and the server sends no state for it", async () => {
+  // gameui._HandleSessionChangeInSpace (620 to 630). The recording of a pilot killed to its capsule has no SetState.
+  const hand = handTicked();
+  const built = build(IN_SPACE, hand.options);
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
+  for (const update of recordedUpdates.slice(0, 5)) built.session.notify("DoDestinyUpdate", update.args);
+  hand.parks[0].tick();
+  const before = (await built.pilots.readSpaceSnapshot(handle)).space;
+  assert.deepEqual([before.ship.itemID, before.entities.filter((row) => row.isSelf).map((row) => row.itemID)], [SHIP, [SHIP]]);
+  // Another ball of this grid, for the ship the pilot is now in.
+  const other = before.entities.find((row) => !row.isSelf && row.kind === "ship") ?? before.entities.find((row) => !row.isSelf);
+  const shipIs = (shipID, from) => { built.session.attributes.shipid = shipID; built.session.change({ shipid: [from, shipID] }); };
+  shipIs(other.itemID, SHIP);
+  const after = (await built.pilots.readSpaceSnapshot(handle)).space;
+  assert.deepEqual([after.shipID, after.ship.itemID, after.entities.filter((row) => row.isSelf).map((row) => row.itemID)], [other.itemID, other.itemID, [other.itemID]]);
+  assert.equal(after.entities.length, before.entities.length, "the same park: nothing was asked for again");
+  // A ship whose ball has not come: the ego waits for it, and is the old one meanwhile, as the client's is.
+  shipIs(987654321, other.itemID);
+  const waiting = (await built.pilots.readSpaceSnapshot(handle)).space;
+  assert.deepEqual([waiting.shipID, waiting.ship.itemID, hand.parks[0].space.park.wannaBeEgo], [987654321, other.itemID, 987654321]);
+  // No ship at all (the session's ship let go): nothing is changed, and nothing waited for anew.
+  built.session.attributes.shipid = null;
+  built.session.change({ shipid: [987654321, null] });
+  assert.deepEqual([hand.parks[0].space.park.ego, hand.parks[0].space.park.wannaBeEgo], [other.itemID, 987654321]);
+  assert.deepEqual(hand.errors, []);
+});
+
+test("a change of ship that comes with a change of system is the new ballpark's own state to say: the old one is told nothing", async () => {
+  // gameui._HandleSessionChangeInSpace: `if 'solarsystemid' in change` is the first arm, and the ship's is its elif.
+  const hand = handTicked();
+  const built = build(IN_SPACE, hand.options);
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
+  for (const update of recordedUpdates.slice(0, 5)) built.session.notify("DoDestinyUpdate", update.args);
+  hand.parks[0].tick();
+  const other = (await built.pilots.readSpaceSnapshot(handle)).space.entities.find((row) => !row.isSelf);
+  const old = hand.parks[0].space.park;
+  Object.assign(built.session.attributes, { shipid: other.itemID, solarsystemid: SYSTEM + 1, solarsystemid2: SYSTEM + 1 });
+  built.session.change({ shipid: [SHIP, other.itemID], solarsystemid: [SYSTEM, SYSTEM + 1], solarsystemid2: [SYSTEM, SYSTEM + 1], locationid: [SYSTEM, SYSTEM + 1] });
+  assert.deepEqual([old.ego, old.wannaBeEgo], [SHIP, null]);
+  // And the pilot has a ballpark of the new system, with a state of its own to come.
+  assert.equal(hand.parks.length, 2);
+  assert.deepEqual([hand.parks[1].space.park.ego, hand.parks[1].space.park.wannaBeEgo], [null, null]);
+});
+
+test("docked, a change of ship has no ballpark to tell", async () => {
+  const { session, pilots, handle } = await selected();
+  session.attributes.shipid = 77;
+  session.change({ shipid: [SHIP, 77] });
+  assert.equal((await pilots.readFlightStatus(handle, FIELDS)).flight.shipID, 77);
+});
+
 test("a pilot docked in a structure is docked", async () => {
   const built = build({ answers: { "charUnboundMgr.GetCharacterSelectionData": selectionData([characterRow({ stationID: null, structureID: 1030000000001 })]) } });
   const outcome = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);

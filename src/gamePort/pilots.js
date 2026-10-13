@@ -1481,6 +1481,10 @@ function createGamePortPilots({
       }
       // gameui.GetShipAccess: the ship's moniker it keeps is for the ship the pilot is in.
       if ("shipid" in changes) entry.monikers.delete("ship");
+      // gameui._HandleSessionChangeInSpace (620 to 630): in another ship in the same space (one boarded there, or
+      // the capsule a pilot is left in), the client makes that ship its ballpark's ego itself, now or when its ball
+      // comes. The server sends no state for it. In another system the ballpark is a new one, with a state of its own.
+      if ("shipid" in changes && changes.shipid[1] !== null && !("solarsystemid" in changes) && entry.space) entry.space.park.egoIs(changes.shipid[1]);
       // station/base.py OnSessionChanged and ProcessSessionChange: out of a station, its guests and its item are let go.
       if ("stationid" in changes) entry.station.left();
       // crimewatchSvc.ProcessSessionChange and OnSessionChanged: the states asked for at a change of place, and

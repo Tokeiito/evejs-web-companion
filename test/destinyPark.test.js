@@ -1294,3 +1294,69 @@ test("Tranquility's missiles, played through the park as a witness gets them: no
     assert.deepEqual([park.ballpark.ball(missileId), [...target.followers], told], [null, [], []], what);
   }
 });
+
+// ── The park's ego at a change of ship ───────────────────────────────────────
+//
+// michelle's park takes its ego from a whole state (Park.SetState, 976) and from nothing else the server sends.
+// When the session's ship changes in the same space (a ship boarded there, or the capsule a pilot is left in when
+// its ship is destroyed) it is gameui that changes it (parklife/gameui.py, _HandleSessionChangeInSpace, 620 to
+// 630): `bp.ego = session.shipid` where that ball is in the park, and otherwise it keeps the ship as its
+// "wannaBeEgo" and makes it the ego when its ball is added (DoBallAdd, 857 to 866). Tranquility sends no state for
+// it: its recording of a pilot killed to its capsule (Getting Killed to POD.txt) has a RemoveBalls of the ship and
+// an AddBalls2 of the capsule at one stamp, and no SetState.
+
+test("the park's ego is made the ship the session is in: at once where its ball is here, and when its ball comes where it is not", () => {
+  const park = simplePark();
+  assert.deepEqual([park.ego, park.wannaBeEgo], [1, null]);
+  // Another ship of this park, as one boarded in space: at once. The session's number is a long.
+  park.egoIs(2n);
+  assert.deepEqual([park.ego, park.wannaBeEgo], [2, null]);
+  // A ship whose ball has not come, as the capsule of a pilot whose ship was just destroyed: the ego stays, and waits.
+  park.egoIs(7);
+  assert.deepEqual([park.ego, park.wannaBeEgo], [2, 7]);
+  const added = (form, id, x) => {
+    const extra = new Ballpark();
+    extra.addBall({ id, isFree: true, mass: 1e6, x });
+    extra.currentTime = 100;
+    const slims = { type: "list", items: [slim(id)] };
+    park.flushState([[100, [form, [form === "AddBalls2" ? [extra.writeState([id]), slims] : [extra.writeState([id]), slims, { type: "dict", entries: [] }]]]]], false);
+    park.doPreTick();
+  };
+  // Another ball comes: it is not the one waited for.
+  added("AddBalls2", 8, 9500);
+  assert.deepEqual([park.ego, park.wannaBeEgo], [2, 7]);
+  // The one waited for comes: it is the ego, and nothing waits.
+  added("AddBalls2", 7, 9000);
+  assert.deepEqual([park.ego, park.wannaBeEgo], [7, null]);
+  // By the older form of adding as well.
+  park.egoIs(9);
+  assert.deepEqual([park.ego, park.wannaBeEgo], [7, 9]);
+  added("AddBalls", 9, 12000);
+  assert.deepEqual([park.ego, park.wannaBeEgo], [9, null]);
+  // Asked for the ship it has already, or one that is here while another was waited for: nothing waits any more.
+  park.egoIs(55);
+  park.egoIs(9);
+  assert.deepEqual([park.ego, park.wannaBeEgo], [9, null]);
+});
+
+test("a whole state names its own ego, and a ship still waited for takes it once it is in that state", () => {
+  const park = simplePark();
+  park.egoIs(5);
+  assert.deepEqual([park.ego, park.wannaBeEgo], [1, 5]);
+  const state = (ids, ego) => {
+    const source = new Ballpark();
+    for (const id of ids) source.addBall({ id, isFree: true, mass: 1e6, radius: 10, maxVelocity: 100, agility: 1, speedFraction: 1, x: id * 1000 });
+    source.currentTime = 100;
+    park.flushState([[100, ["SetState", [bag(source.writeState(), ego, ids.map((id) => slim(id)))]]]], false);
+    park.doPreTick();
+  };
+  // A state without the awaited ship: its own ego stands, and the wait goes on.
+  state([1, 2], 2);
+  assert.deepEqual([park.ego, park.wannaBeEgo], [2, 5]);
+  // A state with it: gameui is told of each ball of a state as it is of one added, and the awaited one is the ego.
+  state([1, 2, 5], 1);
+  assert.deepEqual([park.ego, park.wannaBeEgo], [5, null]);
+  // With nothing waited for, the state's ego is the ego.
+  state([1, 2, 5], 2);
+  assert.deepEqual([park.ego, park.wannaBeEgo], [2, null]);
+});

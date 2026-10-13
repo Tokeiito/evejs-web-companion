@@ -4740,7 +4740,10 @@ function resolveSlotFlag(family, index) {
 async function shipAsGodmaHoldsIt(held) {
   if (!gamePortPilots || !isGamePortHandle(held.bridgeSessionID) || typeof gamePortPilots.shipInfo !== "function") return null;
   const own = await gamePortPilots.shipInfo({ userid: held.accountID }, held.bridgeSessionID);
-  if (!own.row || Number(own.shipID) !== Number(held.activeShipID)) return null;
+  // Godma is primed for the ship the session is in, which is the ship the server would answer of: its row is
+  // the answer whatever ship the BFF holds for itself (after a ship's loss that is the lost one, until the flight
+  // status is read again).
+  if (!own.row) return null;
   return {
     shipInfo: { result: { type: "dict", entries: [[own.shipID, own.row]] }, notifications: [] },
     online: { result: { type: "list", items: own.online }, notifications: [] },

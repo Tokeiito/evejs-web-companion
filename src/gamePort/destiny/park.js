@@ -150,6 +150,10 @@ class Park {
     this.shouldRebase = false;
     this.ego = null;
     /**
+     * gameui.wannaBeEgo: the ship that is to be this park's ego once its ball is here; null for none. See egoIs.
+     */
+    this.wannaBeEgo = null;
+    /**
      * Where the pilot's own ship was last sent in warp: the point in the server's WarpTo. The client's space
      * service keeps it from the same call (spaceMgr.OnBallparkCall) and words its warp from it.
      */
@@ -557,6 +561,33 @@ class Park {
     this.damageSeen = new Map();
     for (const [id, damage] of fieldsOf(fields.get("damageState"))) this._damage(ballId(id), damage);
     this.solItem = fields.get("solItem") ?? null;
+    // gameui is told of each ball of a state as it is of one added (ProcessBallAdd, then DoBallsAdded).
+    this._egoAwaited();
+  }
+
+  /**
+   * The session is in this ship, in this same space: one boarded here, or the capsule a pilot is left in when its
+   * ship is destroyed. michelle's park takes its ego from a whole state and from nothing else the server sends,
+   * and the server sends no state for this (Tranquility's own recording of a pilot killed to its capsule has a
+   * RemoveBalls and an AddBalls2, and no SetState). It is the client that changes it, in gameui
+   * (_HandleSessionChangeInSpace, 620 to 630): the ship is the ego at once where its ball is in the park, and
+   * otherwise it is kept as the "wannaBeEgo" and made the ego when its ball is added (DoBallAdd, 857 to 866).
+   */
+  egoIs(shipID) {
+    const id = ballId(shipID);
+    if (this.ballpark.balls.has(id)) {
+      this.ego = id;
+      this.wannaBeEgo = null;
+    } else {
+      this.wannaBeEgo = id;
+    }
+  }
+
+  /** gameui.DoBallAdd (857 to 866): the ball the ego waits for has come. */
+  _egoAwaited() {
+    if (this.wannaBeEgo === null || !this.ballpark.balls.has(this.wannaBeEgo)) return;
+    this.ego = this.wannaBeEgo;
+    this.wannaBeEgo = null;
   }
 
   /** Park.AddBalls (1235): (state, slims, damageDict). */
@@ -569,6 +600,7 @@ class Park {
       if (!this.slimItems.has(itemID)) this.slimItems.set(itemID, slim);
     }
     for (const [id, damage] of fieldsOf(damageDict)) this._damage(ballId(id), damage);
+    this._egoAwaited();
   }
 
   /** Park.AddBalls2 (1256): (state, extraBallData), each of which is a slim item or a (slim item, damage) pair. */
@@ -583,6 +615,7 @@ class Park {
       this._damage(itemID, damageState ?? null);
       if (!this.slimItems.has(itemID)) this.slimItems.set(itemID, slim);
     }
+    this._egoAwaited();
   }
 
   /** Park.TerminalPlayDestructionEffect (1197): only what to show when the ball goes. */

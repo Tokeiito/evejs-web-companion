@@ -2159,8 +2159,8 @@ test("on the game port the Drones panel's ship is godma's too", async () => {
 });
 
 test("where godma cannot say, and on the gateway, the ship's dogma is asked of the server as before", async () => {
-  // Godma not primed; godma holding another ship than this session's own; a transport with no godma; the gateway.
-  for (const options of [{ own: { shipID: 9001, row: null, online: [] } }, { own: { shipID: 9555, row: GODMA_SHIP_ROW, online: [9002] } }, { knows: false }, { transport: "gateway" }]) {
+  // Godma not primed; a transport with no godma; the gateway.
+  for (const options of [{ own: { shipID: 9001, row: null, online: [] } }, { knows: false }, { transport: "gateway" }]) {
     const fitting = await shipDogmaRoute("/api/bridge/fitting", options);
     assert.deepEqual([fitting.dogma, fitting.payload.shipInfo, fitting.payload.online], [["dogmaIM.ShipGetInfo", "dogmaIM.ShipOnlineModules"], FROM_SERVER.shipInfo, FROM_SERVER.online], JSON.stringify(options));
     const drones = await shipDogmaRoute("/api/bridge/drones", options);
@@ -2168,6 +2168,17 @@ test("where godma cannot say, and on the gateway, the ship's dogma is asked of t
   }
   // On the gateway the transport that keeps a godma is not asked for it.
   assert.deepEqual((await shipDogmaRoute("/api/bridge/fitting", { transport: "gateway" })).given, []);
+});
+
+test("godma's ship is the session's ship, whatever ship the BFF holds for itself: it answers, and the server is not asked what it would answer of that same ship", async () => {
+  // The server answers ShipGetInfo of the ship the session is in, which is the ship godma is primed for. Where
+  // the BFF's own held ship is another (a ship just destroyed, in the moment before the flight status is read
+  // again), asking the server would get godma's own row back, by a call the client never makes.
+  const own = { shipID: 9555, row: GODMA_SHIP_ROW, online: [9002] };
+  const fitting = await shipDogmaRoute("/api/bridge/fitting", { own });
+  assert.deepEqual([fitting.dogma, fitting.payload.shipInfo, fitting.payload.online], [[], { type: "dict", entries: [[9555, GODMA_SHIP_ROW]] }, { type: "list", items: [9002] }]);
+  const drones = await shipDogmaRoute("/api/bridge/drones", { own });
+  assert.deepEqual([drones.dogma, drones.payload.shipInfo], [[], { type: "dict", entries: [[9555, GODMA_SHIP_ROW]] }]);
 });
 
 // ── The Fitting window's dogma (GET /api/bridge/bound-dogma) ─────────────────
