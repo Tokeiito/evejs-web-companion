@@ -3877,8 +3877,9 @@ interface TankUpStep {
  *   3. INVERTED below `request.capacitorFloor`: a RUNNING repairer switches
  *      OFF instead of another one starting, even while that layer is still
  *      hurt — see `decideLayerRepairer`'s own comment for why
- *   4. once the fight is confirmed over, every module THIS rung switched on
- *      switches back off, one per tick
+ *   4. once the fight is confirmed over, every HARDENER this rung switched on
+ *      switches back off, one per tick; repairers are never stood down here,
+ *      only by steps 2/3's own rule (layer whole again, or capacitor floor)
  *
  * ⚠ NEVER STAND DOWN ON A BLIND READ. Step 4 fires only on an explicit
  * `hostileOnGrid === false`, never on `null` (cannot tell) — the same rule
@@ -3993,9 +3994,31 @@ function decideTankUp(
     };
   }
 
-  // 4. Stand down once the fight is confirmed over — never on a blind read.
+  // 4. Stand the HARDENERS down once the fight is confirmed over -- never on a
+  //    blind read. Repairers are not this step's to switch off.
+  //
+  //    WHY: a hardener is lit by "a fight is on" (step 1), so "the fight is
+  //    over" is the matching off-switch. A repairer is lit by "a layer is hurt"
+  //    (step 2), and a wave that ends with armour still chewed leaves that
+  //    layer hurt after the last hostile is gone -- the repairer's own off
+  //    rules (layer whole again, capacitor under the floor) are the only ones
+  //    that describe when it has finished its job.
+  //
+  //    ⚠ THIS STEP USED TO STAND DOWN EVERY MODULE IN THE RECORD, REPAIRERS
+  //    INCLUDED, AND THAT LOOPED. Fight over, armour hurt: step 2 lit the
+  //    repairer, next tick step 2 had nothing NEW to say (it is running, the
+  //    layer is still hurt) and fell through to here, which switched it off;
+  //    next tick the layer was still hurt and the repairer was off, so step 2
+  //    lit it again. Seen live: on/off every ~10 s (each deactivate took ~9 s
+  //    to answer), the repairer never completed a cycle, and the pilot crossed
+  //    its return mark and flew to a station to repair instead.
+  const repairerIDs = new Set<number>([
+    ...request.shieldBoosterModuleIDs,
+    ...request.armorRepairerModuleIDs,
+    ...request.hullRepairerModuleIDs,
+  ]);
   if (obs.hostileOnGrid === false && memory.lastTankUpModuleIDs.length > 0) {
-    const stillOn = memory.lastTankUpModuleIDs.find((id) => active.has(id));
+    const stillOn = memory.lastTankUpModuleIDs.find((id) => !repairerIDs.has(id) && active.has(id));
     if (stillOn !== undefined) {
       const remaining: CompanionLadderMemory = {
         ...memory,
@@ -4011,10 +4034,17 @@ function decideTankUp(
         memory: remaining,
       };
     }
-    // Everything this rung lit is already off (switched off here over the
-    // last few ticks, or ended on its own) — forget the record so the next
-    // fight starts clean, with no action issued this tick.
-    return { decision: null, memory: { ...memory, lastTankUpModuleIDs: [] } };
+    // Every hardener this rung lit is already off (switched off here over the
+    // last few ticks, or ended on its own) -- forget those so the next fight
+    // starts clean, with no action issued this tick. A repairer that is still
+    // running stays in the record: step 2/3 is holding it on and will say when
+    // it stops, and dropping it here would let a later stand-down or rebuild
+    // lose track of a module this rung still owns.
+    const kept = memory.lastTankUpModuleIDs.filter((id) => repairerIDs.has(id) && active.has(id));
+    return {
+      decision: null,
+      memory: kept.length === memory.lastTankUpModuleIDs.length ? memory : { ...memory, lastTankUpModuleIDs: kept },
+    };
   }
 
   return { decision: null, memory };
