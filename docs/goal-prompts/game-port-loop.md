@@ -3473,6 +3473,24 @@ Take these defaults, and list each under "For the operator" in the log so they c
   the store and its putting back.** On 2026-10-13 it was forgotten
   inside the look's own copy, and a second copy and putting back were
   made for it: `login-only.js` is run while the look's copy stands.
+- **A retail client's own chat stanzas are on this machine**: the
+  chat stub's hour logs (`eve.js/_local/logs/xmpp-stub.<date>_<hour>.log`)
+  have every stanza of every connection, a retail client's among
+  them (grep `id='id1' type='set'`). What the web client's chat
+  sends is set beside one of those, stanza for stanza, and the
+  reading of the code is checked by it: on 2026-10-13 the login's
+  second join of each channel was in the code (`xmppchatsvc.py` 363)
+  and plain in the log.
+- **A socket destroyed straight after several writes loses the later
+  ones.** Three stanzas written and the socket destroyed: the stub
+  logged the first. It is ended (`socket.end`), with a timer to
+  destroy it should the other side never close.
+- **The client's own Python answers what its standard modules say**:
+  `scripts/py27-oracle.py` with the client's `bin64` put on
+  `sys.path` inside the snippet loads `unicodedata.pyd` (and the
+  other `.pyd` there). A table had from it is put into the source by
+  a script that reads the oracle's output, and checked whole against
+  it as it is written.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

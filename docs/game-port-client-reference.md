@@ -1472,7 +1472,23 @@ joins each channel named by the channel's own name; a channel's category is its 
 (`chatutil/__init__.py` 257 to 258), the kinds `nolocal`, `wormhole`, `nullsec` and `triglavian` are Local to it
 (359 to 360), and for `nolocal` no presence is sent (1050 to 1054). Tranquility answers its chat domain for the
 hostname and connects at another address; its resync is a list of two names. A pilot on the game port logs in so
-since `3d9530a7`; the stanzas are still the BFF's own.
+since `3d9530a7`.
+The chat's stanzas (`xmpp/xmpphandler.py`). The stream opens with `to`, `version`, `xmlns`, `xmlns:stream` in that
+order (51 to 58), twice. A request is an `iq` with `id`, `type`, `from` and a space before the closing bracket
+where it has no `to` (283 to 294), its id `id1`, `id2` and on from one at each connection, one count for requests,
+joins, leaves and lines (320 to 323): the bind first, from the name (70 to 73), the session second, from the JID
+the bind answered (75 to 90). Then `<presence><show/></presence>` (97 to 101), and the client is logged in at the
+next thing the server sends (242 to 245). A join is a presence with `from`, an id, `to` the room and the nick, and
+an empty MUC element unless a password or a history is asked (296 to 310); a leave the same with
+`type='unavailable'` (312 to 318). A line is a message from the bare name with `type='groupchat'`, `xml:lang='en'`
+and an id, its text cut past 2048 (`chatutil/__init__.py` 302 to 305), the characters of a C category taken out
+and `&`, `<`, `>` replaced (110 to 120). The client pings nothing and answers the server's ping (148 to 175). At a
+login it joins each channel the resync named and then each once more (`xmppchatsvc.py` 355 to 363); at a logoff it
+leaves its session's channels in the order of its session categories and closes the stream (35 to 45, 153 to 162,
+170 to 171). A retail client's own connection is in the chat stub's hour logs on this machine
+(`eve.js/_local/logs/xmpp-stub.*.log`). A pilot on the game port sends these since `20a843e9`. The client's Python is
+a narrow build with Unicode 5.2.0 data (asked of its `python27.dll` with its `unicodedata.pyd`): 383 ranges below
+0x10000 are of a C category, the surrogates among them (`withoutCategoryC`, `src/gamePort/py27.js`).
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
