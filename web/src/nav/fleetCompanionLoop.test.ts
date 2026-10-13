@@ -6230,12 +6230,18 @@ test("a container is looted whoever owns it - the server applies no check either
   assert.deepEqual(decision.action, { kind: "lootContainer", containerID: CAN });
 });
 
+// ⚠ THE APPROACH RUNGS TRUST A FRESH ORDER FOR `APPROACH_SETTLE_MS` (4 s), so a
+// test that is about the ship's MODE has to say which side of that window its
+// second tick is on. T0 is when the approach goes out; SETTLED is well past it.
+const APPROACH_T0 = 1_700_000_000_000;
+const APPROACH_SETTLED = APPROACH_T0 + 10_000;
+
 test("something out of reach is approached first, and the approach is issued ONCE", () => {
   const observation = obs({
     snapshot: lootGrid({ containerDistance: 40_000 }),
     chatMessages: [areaOrder("loot")],
   });
-  const first = decideCompanionAction(WITH_DRONES, observation);
+  const first = decideCompanionAction(WITH_DRONES, observation, undefined, APPROACH_T0);
   // ⚠ NO RANGE ON THE APPROACH: a looter flies all the way in, by the
   // operator's own call ("for loot do not use range, for salvage do"). It has
   // nothing to gain by standing off, and hugging the can is what keeps it
@@ -6250,11 +6256,11 @@ test("something out of reach is approached first, and the approach is issued ONC
     snapshot: lootGrid({ containerDistance: 40_000, shipMode: "FOLLOW" }),
     chatMessages: [areaOrder("loot")],
   });
-  const second = decideCompanionAction(WITH_DRONES, stillFlying, first.memory);
+  const second = decideCompanionAction(WITH_DRONES, stillFlying, first.memory, APPROACH_SETTLED);
   assert.notEqual(second.action.kind, "approach");
 
   // ...and a ship that has STOPPED short gets a fresh approach.
-  const stalled = decideCompanionAction(WITH_DRONES, observation, first.memory);
+  const stalled = decideCompanionAction(WITH_DRONES, observation, first.memory, APPROACH_SETTLED);
   assert.equal(stalled.action.kind, "approach");
 });
 
@@ -7094,6 +7100,8 @@ test("a can being approached is not abandoned when another becomes nearer", () =
   const start = decideCompanionAction(
     WITH_DRONES,
     obs({ snapshot: twoCanGrid(null, 20_000), chatMessages: [areaOrder("loot")] }),
+    undefined,
+    APPROACH_T0,
   );
   assert.deepEqual(start.action, { kind: "approach", targetID: CAN });
   assert.equal(start.memory.lootTargetID, CAN);
@@ -7106,6 +7114,7 @@ test("a can being approached is not abandoned when another becomes nearer", () =
       fleetMemberCharacterIDs: [HUMAN, COMPANION, MATE],
     }),
     start.memory,
+    APPROACH_SETTLED,
   );
   assert.equal(tempted.memory.lootTargetID, CAN, "it must stay committed");
   // ⚠ STILL THE SAME CAN. It is out of reach and the fixture's ship is not
@@ -9078,7 +9087,7 @@ function salvagingInMode(mode: string | null): FleetCompanionObservation {
 
 /** The memory left behind by the first tick, which issued the approach. */
 function approachIssued(): CompanionLadderMemory {
-  const first = decideCompanionAction(WITH_SALVAGER, salvagingInMode(null));
+  const first = decideCompanionAction(WITH_SALVAGER, salvagingInMode(null), undefined, APPROACH_T0);
   assert.deepEqual(first.action, { kind: "approach", targetID: WRECK_NEAR, range: 3000 });
   assert.equal(first.memory.salvageApproachIssued, true);
   return first.memory;
@@ -9089,6 +9098,7 @@ test("FOLLOW is believed — the mode an approach actually sets, so the rung wai
     WITH_SALVAGER,
     salvagingInMode("FOLLOW"),
     approachIssued(),
+    APPROACH_SETTLED,
   );
   assert.notEqual(decision.action.kind, "approach");
   assert.equal(decision.phase, "Salvaging");
@@ -9100,14 +9110,14 @@ test("FOLLOW is believed — the mode an approach actually sets, so the rung wai
 // so the ship is under way at full speed somewhere that is not the wreck.
 // Believing that mode would park the rung on one wreck for the rest of the run.
 test("GOTO is NOT believed — a refused approach leaves the hull flying elsewhere", () => {
-  const decision = decideCompanionAction(WITH_SALVAGER, salvagingInMode("GOTO"), approachIssued());
+  const decision = decideCompanionAction(WITH_SALVAGER, salvagingInMode("GOTO"), approachIssued(), APPROACH_SETTLED);
   assert.deepEqual(decision.action, { kind: "approach", targetID: WRECK_NEAR, range: 3000 });
 });
 
 test("an align by another rung does not hold the salvage latch either", () => {
   // CmdAlignTo also sets GOTO, and an align is a heading, not an approach: the
   // ship is burning away from the wreck on somebody else's order.
-  const decision = decideCompanionAction(WITH_SALVAGER, salvagingInMode("GOTO"), approachIssued());
+  const decision = decideCompanionAction(WITH_SALVAGER, salvagingInMode("GOTO"), approachIssued(), APPROACH_SETTLED);
   assert.equal(decision.action.kind, "approach");
 });
 
@@ -9117,6 +9127,7 @@ test("STOP and ORBIT get a fresh approach — neither is a move toward the wreck
       WITH_SALVAGER,
       salvagingInMode(mode),
       approachIssued(),
+      APPROACH_SETTLED,
     );
     assert.equal(decision.action.kind, "approach", `${mode} must not hold the latch`);
   }
@@ -9131,12 +9142,13 @@ test("WARP holds the latch — an approach sent mid-warp is a call spent to be r
     WITH_SALVAGER,
     salvageObs(salvageGrid(30_000, [], "WARP"), { inWarp: false }),
     approachIssued(),
+    APPROACH_SETTLED,
   );
   assert.notEqual(decision.action.kind, "approach");
 });
 
 test("an unreadable mode re-issues rather than waiting on a move it cannot see", () => {
-  const decision = decideCompanionAction(WITH_SALVAGER, salvagingInMode(null), approachIssued());
+  const decision = decideCompanionAction(WITH_SALVAGER, salvagingInMode(null), approachIssued(), APPROACH_SETTLED);
   assert.equal(decision.action.kind, "approach");
 });
 
@@ -9144,7 +9156,7 @@ test("an unreadable mode re-issues rather than waiting on a move it cannot see",
 // that changed it must not silently have every rung re-ordering a move that is
 // already under way.
 test("the latch is case-insensitive", () => {
-  const decision = decideCompanionAction(WITH_SALVAGER, salvagingInMode("follow"), approachIssued());
+  const decision = decideCompanionAction(WITH_SALVAGER, salvagingInMode("follow"), approachIssued(), APPROACH_SETTLED);
   assert.notEqual(decision.action.kind, "approach");
 });
 
@@ -9156,7 +9168,7 @@ test("the loot rung reads the same vocabulary — FOLLOW waits, GOTO re-approach
     snapshot: lootGrid({ containerDistance: 40_000 }),
     chatMessages: [areaOrder("loot")],
   });
-  const first = decideCompanionAction(WITH_DRONES, out);
+  const first = decideCompanionAction(WITH_DRONES, out, undefined, APPROACH_T0);
   assert.deepEqual(first.action, { kind: "approach", targetID: CAN });
 
   const following = decideCompanionAction(
@@ -9166,6 +9178,7 @@ test("the loot rung reads the same vocabulary — FOLLOW waits, GOTO re-approach
       chatMessages: [areaOrder("loot")],
     }),
     first.memory,
+    APPROACH_SETTLED,
   );
   assert.notEqual(following.action.kind, "approach");
 
@@ -9176,9 +9189,104 @@ test("the loot rung reads the same vocabulary — FOLLOW waits, GOTO re-approach
       chatMessages: [areaOrder("loot")],
     }),
     first.memory,
+    APPROACH_SETTLED,
   );
   assert.deepEqual(goingSomewhereElse.action, { kind: "approach", targetID: CAN });
 });
+
+// --- the settle window: the first snapshot after an approach reads GOTO ------
+//
+// ⚠ SEEN LIVE: the gateway opens the throttle BEFORE the follow, and a ship
+// coasting after its orbit target died is in GOTO, so the mode reads GOTO for one
+// tick after the order and FOLLOW from the next. The rungs re-sent the approach
+// on that tick and the server refused it (ThrottleGeneric). A fresh order is
+// believed for APPROACH_SETTLE_MS whatever the mode says; after that the mode
+// decides again, so an approach that really did not take is still re-sent.
+
+const ONE_TICK_LATER = APPROACH_T0 + 2_000;
+
+test("loot: a GOTO on the tick after the approach is waited on, not re-sent", () => {
+  const first = decideCompanionAction(
+    WITH_DRONES,
+    obs({ snapshot: lootGrid({ containerDistance: 40_000 }), chatMessages: [areaOrder("loot")] }),
+    undefined,
+    APPROACH_T0,
+  );
+  assert.deepEqual(first.action, { kind: "approach", targetID: CAN });
+  const next = decideCompanionAction(
+    WITH_DRONES,
+    obs({
+      snapshot: lootGrid({ containerDistance: 40_000, shipMode: "GOTO" }),
+      chatMessages: [areaOrder("loot")],
+    }),
+    first.memory,
+    ONE_TICK_LATER,
+  );
+  assert.equal(next.action.kind, "wait", JSON.stringify([next.phase, next.why]));
+  assert.equal(next.phase, "Looting");
+});
+
+test("loot: a GOTO that outlasts the settle window is a failed approach and is re-sent", () => {
+  const first = decideCompanionAction(
+    WITH_DRONES,
+    obs({ snapshot: lootGrid({ containerDistance: 40_000 }), chatMessages: [areaOrder("loot")] }),
+    undefined,
+    APPROACH_T0,
+  );
+  const next = decideCompanionAction(
+    WITH_DRONES,
+    obs({
+      snapshot: lootGrid({ containerDistance: 40_000, shipMode: "GOTO" }),
+      chatMessages: [areaOrder("loot")],
+    }),
+    first.memory,
+    APPROACH_SETTLED,
+  );
+  assert.deepEqual(next.action, { kind: "approach", targetID: CAN });
+});
+
+test("salvage: a GOTO on the tick after the approach is waited on, not re-sent", () => {
+  const first = decideCompanionAction(WITH_SALVAGER, salvagingInMode(null), undefined, APPROACH_T0);
+  assert.deepEqual(first.action, { kind: "approach", targetID: WRECK_NEAR, range: 3000 });
+  const next = decideCompanionAction(WITH_SALVAGER, salvagingInMode("GOTO"), first.memory, ONE_TICK_LATER);
+  assert.equal(next.action.kind, "wait", JSON.stringify([next.phase, next.why]));
+  assert.equal(next.phase, "Salvaging");
+});
+
+test("salvage: a GOTO that outlasts the settle window is a failed approach and is re-sent", () => {
+  const first = decideCompanionAction(WITH_SALVAGER, salvagingInMode(null), undefined, APPROACH_T0);
+  const next = decideCompanionAction(WITH_SALVAGER, salvagingInMode("GOTO"), first.memory, APPROACH_SETTLED);
+  assert.deepEqual(next.action, { kind: "approach", targetID: WRECK_NEAR, range: 3000 });
+});
+
+/** A grid with the ship reading `mode`, built from the plain gate grid. */
+function gateGridInMode(distanceM: number, mode: string): SpaceSnapshot {
+  const grid = gridWithGate(distanceM);
+  return { ...grid, ship: { ...grid.ship, mode } } as unknown as SpaceSnapshot;
+}
+
+for (const verb of ["JumpTo", "WarpTo"] as const) {
+  // JumpTo closes on the gate before jumping; WarpTo closes on a target inside the
+  // warp floor. Both read `decideCloseIn`, and both are stamped with `closingOnAtMs`.
+  const order = (snapshot: SpaceSnapshot) =>
+    obs({ snapshot: gridWithAnchor(snapshot), fleetBroadcast: fleetBroadcast(verb, GATE) });
+
+  test(`${verb}: a GOTO on the tick after the close-in approach is waited on, not re-sent`, () => {
+    const first = decideCompanionAction(REQUEST, order(gridWithGate(50_000)), undefined, APPROACH_T0);
+    assert.deepEqual(first.action, { kind: "approach", targetID: GATE });
+    assert.equal(first.memory.closingOn, GATE);
+    assert.equal(first.memory.closingOnAtMs, APPROACH_T0);
+    const next = decideCompanionAction(REQUEST, order(gateGridInMode(50_000, "GOTO")), first.memory, ONE_TICK_LATER);
+    assert.equal(next.action.kind, "wait", JSON.stringify([next.phase, next.why]));
+    assert.match(next.why, /closing on it/i);
+  });
+
+  test(`${verb}: a GOTO that outlasts the settle window is a failed approach and is re-sent`, () => {
+    const first = decideCompanionAction(REQUEST, order(gridWithGate(50_000)), undefined, APPROACH_T0);
+    const next = decideCompanionAction(REQUEST, order(gateGridInMode(50_000, "GOTO")), first.memory, APPROACH_SETTLED);
+    assert.deepEqual(next.action, { kind: "approach", targetID: GATE });
+  });
+}
 
 // ⚠ THE REGRESSION THE OLD REGEX WOULD PASS AND THE NEW LIST MUST NOT. A mode
 // that merely CONTAINS one of the old alternatives is not that mode. Nothing in
@@ -9189,6 +9297,7 @@ test("a mode is matched whole, not as a substring", () => {
     WITH_SALVAGER,
     salvagingInMode("NOTFOLLOWING"),
     approachIssued(),
+    APPROACH_SETTLED,
   );
   assert.equal(decision.action.kind, "approach");
 });
