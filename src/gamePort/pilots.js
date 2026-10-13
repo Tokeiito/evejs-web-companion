@@ -266,6 +266,10 @@ const SECURITY_MGR = "securityMgr";
 const MODIFIED_SYSTEMS = "get_modified_systems";
 /** securitySvc.calculate_pseudo_security (18 to 21): a level above nought and under 0.05 is 0.05. */
 const pseudoSecurity = (security) => (security > 0 && security < 0.05 ? 0.05 : security);
+/** The character settings service's one read, which it keeps for the session (eve/client/script/ui/services/characterSettingsSvc.py 31 to 34). */
+const CHARACTER_SETTINGS = "GetCharacterSettings";
+/** Whether a call is the character settings service's read, asked as the client asks it: with nothing. */
+const keptCharacterSettings = (service, method, form) => service === "charMgr" && method === CHARACTER_SETTINGS && form.args.length === 0 && form.kwargs === null;
 const OFFICE_MANAGER = "officeManager";
 /**
  * What the client hands back to the server as it was answered, and so with the Python type it came with:
@@ -1504,6 +1508,9 @@ function createGamePortPilots({
        */
       modifiedSystems: undefined,
       modifiedSecurity: new Map(),
+      /** characterSettingsSvc._settings: the character's settings as the server answered them, undefined while they were not asked; and their askings, one after another. */
+      characterSettings: undefined,
+      characterSettingsWork: Promise.resolve(),
       /** The account's clone grade as the server last said it (clonegrade/const.py: 0 alpha, 1 omega): undefined while none is had. */
       cloneGrade: undefined,
       /** Whether the office's item was primed on the Moniker for where the pilot is docked (PRIME_OFFICE): its answer, kept while docked there. */
@@ -1788,6 +1795,10 @@ function createGamePortPilots({
       // after the journal, as a client asks this server. A manager that refuses fails no choosing: they are asked
       // for when they are next wanted.
       await bookmarksRead(entry, shape(BOOKMARK_MGR, ACTIVE_BOOKMARKS, [], null, contextFor(entry))).catch(() => {});
+      // characterSettingsSvc._GetSettings (31 to 34): the character's settings are asked for when something first
+      // wants one, and the client's services want some as they start (the chat's filters, the sensor overlay's
+      // folders, the mail's settings): in every recorded login, once. A manager that refuses fails no choosing.
+      await characterSettingsRead(entry).catch(() => {});
       // crimewatchSvc: the client's states, as a character on the session and a system under it each ask them; and
       // the pilot's own security status, which the client asks for once.
       await clientStatesAtAChange(entry, { charid: [null, characterID], ...(attribute(entry, "solarsystemid") === null ? {} : { solarsystemid: [null, attribute(entry, "solarsystemid")] }) });
@@ -1976,6 +1987,12 @@ function createGamePortPilots({
     // asked as the client asks it: with nothing.
     if (keptBountyOutput(service, method, form)) {
       const kept = await run(entry, service, method, () => bountyOutputRead(entry));
+      return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
+    }
+    // The character's settings are the character settings service's to answer, where they are asked as the client
+    // asks them: with nothing.
+    if (keptCharacterSettings(service, method, form)) {
+      const kept = await run(entry, service, method, () => characterSettingsRead(entry));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
     // The corporations with offices where a pilot is docked are the client's office manager's to answer, where
@@ -2463,6 +2480,31 @@ function createGamePortPilots({
     ledger.note(SECURITY_MGR, MODIFIED_SYSTEMS, form);
     entry.modifiedSystems = await byName(entry.session, SECURITY_MGR, MODIFIED_SYSTEMS, form);
     return entry.modifiedSystems;
+  }
+
+  /**
+   * characterSettingsSvc._GetSettings (eve/client/script/ui/services/characterSettingsSvc.py 31 to 34): the
+   * character's settings, charMgr.GetCharacterSettings() of the service by its name with nothing, asked while none
+   * are kept and kept for the session (a reset of the session lets them go, 26 to 29). They are the client's own
+   * settings that it keeps at the server by a key each: the mail's, the fleet's setups, the inventory's and the
+   * chat's filters, the sensor overlay's folders, the wallet's own payments, two of the settings menu's. Its Get
+   * reads one by its key out of what is kept (36 to 42). Tranquility answers a utillib.KeyVal of them, each a
+   * unicode string, and its recordings of a login each have the one call. One asking at a time.
+   *
+   * The service's Save and Delete are not made here yet (44 to 58: charMgr.SaveCharacterSetting(key, value) and
+   * charMgr.DeleteCharacterSetting(key), each worked into what is kept): no page sets one.
+   */
+  function characterSettingsRead(entry) {
+    const reading = entry.characterSettingsWork.then(async () => {
+      if (entry.characterSettings === undefined) {
+        const form = shape("charMgr", CHARACTER_SETTINGS, [], null, contextFor(entry));
+        ledger.note("charMgr", CHARACTER_SETTINGS, form);
+        entry.characterSettings = await byName(entry.session, "charMgr", CHARACTER_SETTINGS, form);
+      }
+      return entry.characterSettings;
+    });
+    entry.characterSettingsWork = reading.catch(() => {});
+    return reading;
   }
 
   // ── the occupation of the system, as the client's warzone service has it ──
