@@ -1,0 +1,176 @@
+# Release pipeline: a release/* tag becomes a published image and a deploy/prod
+# bump, which Portainer's poll then picks up.
+#
+# Adapted from Tokeiito/evej's .gitea/workflows/release.yaml. Only IMAGE_NAME,
+# the compose filename and the variable name being rewritten differ; everything
+# else is the generic pattern from doc/DEPLOYMENT_PLAYBOOK.md.
+#
+# ⚠ THIS RUNS ON GITEA, NOT GITHUB. Development stays on GitHub (`origin` is
+# rrfarmer upstream, `fork` is the personal fork). The `hive` remote carries the
+# integration branch, the release tags and deploy/prod, because the registry,
+# the Actions runner and the package-prune API are all Gitea's. See
+# docs/DEPLOYMENT.md.
+#
+# Nothing here deploys directly. The only thing this workflow does to production
+# is move one line in deploy/prod; Portainer decides when to act on it. That is
+# what makes a rollback a `git revert` rather than a rebuild.
+#
+# Required secrets (repo settings -> Actions -> Secrets):
+#   REGISTRY_USER   Gitea username with package:write
+#   REGISTRY_TOKEN  token for that user
+#   DEPLOY_TOKEN    token with repo:write, used to push the deploy/prod bump
+#
+# The runner must have a working docker socket and be able to reach the registry.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "release/*"
+
+env:
+  REGISTRY: git.airplane-rooster.ts.net:3000
+  IMAGE_NAME: tokeiito/evejs-web-companion
+  # How many published tags to keep in the registry. Older ones are deleted at
+  # the end of a successful run.
+  KEEP_RELEASES: "5"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      # An unset secret interpolates to an empty string rather than failing, so
+      # without this the first symptom is `docker login` reporting "username is
+      # empty" several steps later. Checked before checkout: it costs seconds and
+      # needs nothing from the repo.
+      - name: Check the secrets are set
+        env:
+          REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+        run: |
+          missing=""
+          [ -n "${REGISTRY_USER}" ] || missing="$missing REGISTRY_USER"
+          [ -n "${REGISTRY_TOKEN}" ] || missing="$missing REGISTRY_TOKEN"
+          [ -n "${DEPLOY_TOKEN}" ] || missing="$missing DEPLOY_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "::error::unset repository secret(s):$missing -- add them under Settings -> Actions -> Secrets"
+            exit 1
+          fi
+
+      - name: Check out the tagged tree
+        uses: actions/checkout@v4
+        with:
+          # The build needs the tagged tree and no history.
+          fetch-depth: 1
+
+      - name: Derive the image tag
+        id: tag
+        run: |
+          # refs/tags/release/v0.1.0-3 -> v0.1.0-3
+          # Docker tags cannot contain '/', so the release/ prefix is stripped
+          # rather than substituted: the prefix is a branch-namespace convention,
+          # not part of the version.
+          version="${GITHUB_REF_NAME#release/}"
+          case "$version" in
+            ""|*/*) echo "::error::malformed release tag '$GITHUB_REF_NAME'"; exit 1 ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "image=$REGISTRY/$IMAGE_NAME:$version" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to the registry
+        run: |
+          echo "${{ secrets.REGISTRY_TOKEN }}" \
+            | docker login "$REGISTRY" -u "${{ secrets.REGISTRY_USER }}" --password-stdin
+
+      # The image builds the Vite bundle itself -- public/dist is excluded from
+      # the build context -- so this is also the typecheck gate. A TS error in
+      # web/src fails the release here rather than shipping a stale bundle.
+      - name: Build
+        run: docker build --pull -t "${{ steps.tag.outputs.image }}" .
+
+      - name: Push
+        run: docker push "${{ steps.tag.outputs.image }}"
+
+      - name: Bump deploy/prod
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+        run: |
+          set -eu
+          version="${{ steps.tag.outputs.version }}"
+          remote="https://${{ secrets.REGISTRY_USER }}:${DEPLOY_TOKEN}@${REGISTRY}/${GITHUB_REPOSITORY}.git"
+
+          work="$(mktemp -d)"
+          git clone --depth 1 --branch deploy/prod "$remote" "$work"
+
+          # compose.hive.yaml on the integration branch is the source of truth;
+          # deploy/prod carries a copy named compose.yaml so Portainer finds it
+          # without being told a filename.
+          cp compose.hive.yaml "$work/compose.yaml"
+          # The deployed compose file must resolve with NO external environment.
+          # Portainer does not apply the repo's stack.env to interpolation, so the
+          # release tag is written into the file itself, as the default of
+          # EVEJS_WEB_IMAGE_TAG. A Portainer UI variable still wins where one is
+          # set -- this only removes the dependency on one existing.
+          sed -i "s|{EVEJS_WEB_IMAGE_TAG:-[^}]*}|{EVEJS_WEB_IMAGE_TAG:-${version}}|" "$work/compose.yaml"
+          grep -q "EVEJS_WEB_IMAGE_TAG:-${version}}" "$work/compose.yaml" \
+            || { echo "::error::image tag rewrite did not take in compose.yaml"; exit 1; }
+
+          # Kept in step so the two never disagree, even though nothing is
+          # currently proven to read it.
+          sed -i "s|^EVEJS_WEB_IMAGE_TAG=.*|EVEJS_WEB_IMAGE_TAG=${version}|" "$work/stack.env"
+
+          cd "$work"
+          git config user.name "gitea-actions"
+          git config user.email "gitea-actions@localhost"
+          if git diff --quiet; then
+            echo "deploy/prod already at ${version}; nothing to bump"
+            exit 0
+          fi
+          git add -A
+          git commit -m "deploy: evejs-web-companion ${version}"
+          git push origin deploy/prod
+
+      - name: Prune registry to the last ${{ env.KEEP_RELEASES }} releases
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+        run: |
+          set -eu
+          api="https://${REGISTRY}/api/v1"
+          owner="${IMAGE_NAME%%/*}"
+          name="${IMAGE_NAME#*/}"
+
+          # Gitea lists untagged manifest digests as package "versions" alongside
+          # real tags, so the list must be filtered to the release tag shape
+          # (<version>-<n>) before counting. Without that filter the digests eat
+          # into KEEP_RELEASES, and deleting one that a kept tag still references
+          # breaks that image's pull.
+          #
+          # Ordering is not documented, so sort rather than trusting the API to
+          # return newest first: -V puts v0.1.0-10 after -9, which a plain
+          # lexical sort does not.
+          curl -sf -H "Authorization: token ${DEPLOY_TOKEN}" \
+            "${api}/packages/${owner}?type=container&q=${name}&limit=100" \
+            | grep -o '"version":"[^"]*"' | sed 's/"version":"//;s/"//' \
+            | grep -E '^v[0-9][0-9.]*-[0-9]+$' \
+            | sort -Vr \
+            | tail -n "+$((KEEP_RELEASES + 1))" \
+            | while read -r old; do
+                echo "deleting ${name}:${old}"
+                curl -sf -X DELETE -H "Authorization: token ${DEPLOY_TOKEN}" \
+                  "${api}/packages/${owner}/container/${name}/${old}" \
+                  || echo "  (delete failed, continuing)"
+              done
+
+      - name: Reclaim runner disk
+        if: always()
+        run: |
+          # A runner that fills its disk fails the NEXT release, not this one --
+          # so this runs even when the build failed. This image is smaller than
+          # evej's, but it shares a runner with it, and `npm ci` plus the Vite
+          # build is still a builder cache worth reclaiming every run.
+          docker image rm -f "${{ steps.tag.outputs.image }}" 2>/dev/null || true
+          docker image prune --force
+          docker builder prune --force --all
+          docker logout "$REGISTRY" 2>/dev/null || true
