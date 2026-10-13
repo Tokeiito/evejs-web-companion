@@ -280,6 +280,12 @@ const INJECTION_MGR = "nonDiminishingInjectionMgr";
 const INJECTIONS_LEFT = "GetAvailableNonDiminishingInjections";
 /** Whether a call is that service's read, asked as the client asks it: with nothing. */
 const keptInjectionsLeft = (service, method, form) => service === INJECTION_MGR && method === INJECTIONS_LEFT && form.args.length === 0 && form.kwargs === null;
+/** The season service's two reads as a character comes onto the session (seasons/client/seasonservice.py 268 to 288). */
+const SEASON_MGR = "seasonManager";
+const SEASON_DATA = "get_season_data_for_character";
+const SEASON_PROGRESS = "get_character_progress_by_character_id";
+/** isinstance(season_data, list) (seasonservice.py 274): a list off the wire, which a tuple is not. */
+const isAPythonList = (value) => Boolean(value && value.type === "list" && Array.isArray(value.items));
 const OFFICE_MANAGER = "officeManager";
 /**
  * What the client hands back to the server as it was answered, and so with the Python type it came with:
@@ -1799,6 +1805,10 @@ function createGamePortPilots({
       }
       // standingsvc.ProcessSessionChange: a character chosen has its standings read.
       await refreshStandings(entry);
+      // seasonService.ProcessSessionChange (64 to 82): a character on the session, and the season it may play is
+      // asked for; where one is its own, its progress in it too. In the retail client's own login, behind the
+      // standings. A manager that refuses fails no choosing.
+      await seasonAsked(entry).catch(() => {});
       // skillsvc, skillQueueSvc and the notifications: a character chosen has its skills, its queue and its history read.
       await primeSkills(entry);
       // securitySvc.OnSessionChanged (45 to 48): the session has a solar system where it had none, and the service
@@ -2595,6 +2605,26 @@ function createGamePortPilots({
     });
     entry.injectionsLeftWork = asking.catch(() => {});
     return asking;
+  }
+
+  /**
+   * seasonService._initialize (seasons/client/seasonservice.py 69 to 82), once for a character on the session.
+   * _fetch_season_data (268 to 279): sm.RemoteSvc('seasonManager').get_season_data_for_character(), by the service's
+   * name with nothing. It answers nothing where no season runs; a list where the character is to choose among
+   * several; or the season it is in. Then _fetch_character_data (281 to 288): where a season is the character's
+   * own (the answer neither nothing nor a list: is_season_active, 103 to 104), its progress in it,
+   * get_character_progress_by_character_id(), with nothing. Tranquility's recordings of a login have the first,
+   * answered nothing, and none has the second. Nothing is kept of either: the service changes what it has at a
+   * dozen notices of the server's, none of which is worked in here, and no page has the seasons.
+   */
+  async function seasonAsked(entry) {
+    const data = shape(SEASON_MGR, SEASON_DATA, [], null, contextFor(entry));
+    ledger.note(SEASON_MGR, SEASON_DATA, data);
+    const season = await byName(entry.session, SEASON_MGR, SEASON_DATA, data);
+    if (season === null || season === undefined || isAPythonList(season)) return;
+    const progress = shape(SEASON_MGR, SEASON_PROGRESS, [], null, contextFor(entry));
+    ledger.note(SEASON_MGR, SEASON_PROGRESS, progress);
+    await byName(entry.session, SEASON_MGR, SEASON_PROGRESS, progress);
   }
 
   // ── the occupation of the system, as the client's warzone service has it ──
