@@ -138,6 +138,9 @@ retail client's set beside the game port's: `docs/game-port-login-calls.md`; the
 clients on this server are `eve.js/_local/logs/direct-tcp-real-client-*.stdout.log`, docked, and
 `server.2026-10-06_15.log`, in space),
 `scripts/parity-harness.js`,
+`scripts/missiles-in-park.js` (a recording of the game port played through the client's park:
+for each missile, the tick its ball touched its target, the stamp the server removed it at,
+whether the explosion's entry came, and the stamps of its target's damage),
 `scripts/soak-game-session.js`, `scripts/py27-oracle.py` with `scripts/build-py27-fixture.js`,
 `scripts/vendor-marshal.js`.
 
@@ -2886,6 +2889,26 @@ Take these defaults, and list each under "For the operator" in the log so they c
   2026-10-13 it moved between the two, "by push", with fifty-two of this
   loop's commits, and this loop had pushed nothing: what the log says of
   it is what `git ls-remote` and `git reflog show origin/main` say then.
+- **A node script given an argument that begins with a slash is run with
+  `MSYS_NO_PATHCONV=1`**: without it the shell makes a path of the
+  argument ("/npc 1 guristas" became a path under the shell's own folder,
+  the server answered COMMAND_INVALID, and a pilot sat at a belt for 70
+  seconds with no hostile). The loop's `.sh` scripts are still run
+  without it.
+- **A recording of the BFF's own game port, for a measure**: the recorder
+  started in the background (`node scripts/record-game-port.js record
+  26006 26000 <file>`), the BFF started at it (`EVEJS_GAME_PORT=26006
+  bash restart-bffgp.sh`), the flight flown, the BFF restarted plainly,
+  and then the recorder's process stopped by its pid (the listener on
+  26006). The recording's frames are by connection; the pilot's is the one
+  with ballpark updates.
+- **Tranquility's whole states are cut by the client's logger at 64 KB**
+  (`tq-state.js <repo> <recording>` says how many balls of each are left
+  and whether the pilot's ship is among them): a recording cannot be
+  played through the park from its start. What is whole there: every
+  `AddBalls2` of a few balls, and every order by name with its stamp.
+- **A pilot chosen in space has no scene for a few seconds**: a script that
+  reads the scene at once finds it empty.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
