@@ -250,4 +250,68 @@ function monikerKeywordOrder(written) {
   return sent.keys();
 }
 
-module.exports = { Dict, constructorKeywordOrder, dictOrder, hashKey, hashLong, hashString, keywordOrder, monikerKeywordOrder, orderEntries };
+/**
+ * The code units whose Unicode category is one of the C ones (control, format, surrogate, private use, not
+ * assigned) to the client's own Python: unicodedata.category(ch)[0] == 'C' for each unichr below 0x10000, asked of
+ * the client's python27.dll with its unicodedata.pyd (scripts/py27-oracle.py). Its Unicode data is 5.2.0, so a
+ * character that was given a meaning later is not assigned to it; and its build is narrow (sys.maxunicode is
+ * 65535), so a character beyond the first plane is two surrogates, each of them here. 383 ranges, in hex.
+ */
+const CATEGORY_C_RANGES = [
+  "0-1F,7F-9F,AD,378-379,37F-383,38B,38D,3A2,526-530,557-558,560,588,58B-590,5C8-5CF," +
+  "5EB-5EF,5F5-605,61C-61D,620,65F,6DD,70E-70F,74B-74C,7B2-7BF,7FB-7FF,82E-82F,83F-8FF,93A-93B,94F," +
+  "956-957,973-978,980,984,98D-98E,991-992,9A9,9B1,9B3-9B5,9BA-9BB,9C5-9C6,9C9-9CA,9CF-9D6,9D8-9DB," +
+  "9DE,9E4-9E5,9FC-A00,A04,A0B-A0E,A11-A12,A29,A31,A34,A37,A3A-A3B,A3D,A43-A46,A49-A4A," +
+  "A4E-A50,A52-A58,A5D,A5F-A65,A76-A80,A84,A8E,A92,AA9,AB1,AB4,ABA-ABB,AC6,ACA," +
+  "ACE-ACF,AD1-ADF,AE4-AE5,AF0,AF2-B00,B04,B0D-B0E,B11-B12,B29,B31,B34,B3A-B3B,B45-B46,B49-B4A," +
+  "B4E-B55,B58-B5B,B5E,B64-B65,B72-B81,B84,B8B-B8D,B91,B96-B98,B9B,B9D,BA0-BA2,BA5-BA7,BAB-BAD," +
+  "BBA-BBD,BC3-BC5,BC9,BCE-BCF,BD1-BD6,BD8-BE5,BFB-C00,C04,C0D,C11,C29,C34,C3A-C3C,C45," +
+  "C49,C4E-C54,C57,C5A-C5F,C64-C65,C70-C77,C80-C81,C84,C8D,C91,CA9,CB4,CBA-CBB,CC5," +
+  "CC9,CCE-CD4,CD7-CDD,CDF,CE4-CE5,CF0,CF3-D01,D04,D0D,D11,D29,D3A-D3C,D45,D49," +
+  "D4E-D56,D58-D5F,D64-D65,D76-D78,D80-D81,D84,D97-D99,DB2,DBC,DBE-DBF,DC7-DC9,DCB-DCE,DD5,DD7," +
+  "DE0-DF1,DF5-E00,E3B-E3E,E5C-E80,E83,E85-E86,E89,E8B-E8C,E8E-E93,E98,EA0,EA4,EA6,EA8-EA9," +
+  "EAC,EBA,EBE-EBF,EC5,EC7,ECE-ECF,EDA-EDB,EDE-EFF,F48,F6D-F70,F8C-F8F,F98,FBD,FCD," +
+  "FD9-FFF,10C6-10CF,10FD-10FF,1249,124E-124F,1257,1259,125E-125F,1289,128E-128F,12B1,12B6-12B7,12BF,12C1," +
+  "12C6-12C7,12D7,1311,1316-1317,135B-135E,137D-137F,139A-139F,13F5-13FF,169D-169F,16F1-16FF,170D,1715-171F,1737-173F,1754-175F," +
+  "176D,1771,1774-177F,17B4-17B5,17DE-17DF,17EA-17EF,17FA-17FF,180F,181A-181F,1878-187F,18AB-18AF,18F6-18FF,191D-191F,192C-192F," +
+  "193C-193F,1941-1943,196E-196F,1975-197F,19AC-19AF,19CA-19CF,19DB-19DD,1A1C-1A1D,1A5F,1A7D-1A7E,1A8A-1A8F,1A9A-1A9F,1AAE-1AFF,1B4C-1B4F," +
+  "1B7D-1B7F,1BAB-1BAD,1BBA-1BFF,1C38-1C3A,1C4A-1C4C,1C80-1CCF,1CF3-1CFF,1DE7-1DFC,1F16-1F17,1F1E-1F1F,1F46-1F47,1F4E-1F4F,1F58,1F5A," +
+  "1F5C,1F5E,1F7E-1F7F,1FB5,1FC5,1FD4-1FD5,1FDC,1FF0-1FF1,1FF5,1FFF,200B-200F,202A-202E,2060-206F,2072-2073," +
+  "208F,2095-209F,20B9-20CF,20F1-20FF,218A-218F,23E9-23FF,2427-243F,244B-245F,26CE,26E2,26E4-26E7,2700,2705,270A-270B," +
+  "2728,274C,274E,2753-2755,275F-2760,2795-2797,27B0,27BF,27CB,27CD-27CF,2B4D-2B4F,2B5A-2BFF,2C2F,2C5F," +
+  "2CF2-2CF8,2D26-2D2F,2D66-2D6E,2D70-2D7F,2D97-2D9F,2DA7,2DAF,2DB7,2DBF,2DC7,2DCF,2DD7,2DDF,2E32-2E7F," +
+  "2E9A,2EF4-2EFF,2FD6-2FEF,2FFC-2FFF,3040,3097-3098,3100-3104,312E-3130,318F,31B8-31BF,31E4-31EF,321F,32FF,4DB6-4DBF," +
+  "9FCC-9FFF,A48D-A48F,A4C7-A4CF,A62C-A63F,A660-A661,A674-A67B,A698-A69F,A6F8-A6FF,A78D-A7FA,A82C-A82F,A83A-A83F,A878-A87F,A8C5-A8CD,A8DA-A8DF," +
+  "A8FC-A8FF,A954-A95E,A97D-A97F,A9CE,A9DA-A9DD,A9E0-A9FF,AA37-AA3F,AA4E-AA4F,AA5A-AA5B,AA7C-AA7F,AAC3-AADA,AAE0-ABBF,ABEE-ABEF,ABFA-ABFF," +
+  "D7A4-D7AF,D7C7-D7CA,D7FC-F8FF,FA2E-FA2F,FA6E-FA6F,FADA-FAFF,FB07-FB12,FB18-FB1C,FB37,FB3D,FB3F,FB42,FB45,FBB2-FBD2," +
+  "FD40-FD4F,FD90-FD91,FDC8-FDEF,FDFE-FDFF,FE1A-FE1F,FE27-FE2F,FE53,FE67,FE6C-FE6F,FE75,FEFD-FF00,FFBF-FFC1,FFC8-FFC9,FFD0-FFD1," +
+  "FFD8-FFD9,FFDD-FFDF,FFE7,FFEF-FFFB,FFFE-FFFF",
+].join("").split(",").map((range) => range.split("-").map((end) => parseInt(end, 16))).map(([from, to = from]) => [from, to]);
+
+/** Whether a code unit is of a C category to the client's Python: a search of the ranges, which are in order. */
+function isCategoryC(unit) {
+  let low = 0;
+  let high = CATEGORY_C_RANGES.length - 1;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    const [from, to] = CATEGORY_C_RANGES[middle];
+    if (unit < from) high = middle - 1;
+    else if (unit > to) low = middle + 1;
+    else return true;
+  }
+  return false;
+}
+
+/**
+ * u''.join(ch for ch in text if unicodedata.category(ch)[0] != 'C'), as the client's Python does it: a JS string's
+ * code units are a narrow build's characters, one for one.
+ */
+function withoutCategoryC(text) {
+  let kept = "";
+  for (let at = 0; at < text.length; at += 1) {
+    if (!isCategoryC(text.charCodeAt(at))) kept += text[at];
+  }
+  return kept;
+}
+
+module.exports = { Dict, constructorKeywordOrder, dictOrder, hashKey, hashLong, hashString, keywordOrder, monikerKeywordOrder, orderEntries, withoutCategoryC };

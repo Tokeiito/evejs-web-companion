@@ -74,6 +74,7 @@
 
 const net = require("net");
 const tls = require("tls");
+const { withoutCategoryC } = require("./gamePort/py27");
 
 class XmppChatError extends Error {
   constructor(message, options = {}) {
@@ -105,6 +106,9 @@ const LOCAL_CATEGORIES = new Set(["local", "nolocal", "wormhole", "nullsec", "tr
 // Local with nothing joined: for this category the client makes the window and
 // sends no presence (xmppchatsvc.py 1050 to 1054).
 const SUPPRESSED_LOCAL_CATEGORY = "nolocal";
+// chatutil.TruncateVeryLongText (chatutil/__init__.py 11, 302 to 305): a line
+// longer than this is cut five short of it and ends ' ...'.
+const MAX_TEXT_LEN_SAFEGUARD = 2048;
 const CONNECT_TIMEOUT_MS = 4000;
 const HANDSHAKE_TIMEOUT_MS = 4000;
 // How long a join is given to come back with its self-presence before a read
@@ -333,6 +337,14 @@ class XmppChatSession {
     this.resource = XMPP_RESOURCE;
     this.systemChannelsAskedAtMs = 0;
     this.systemChannelsWork = null;
+    // The retail client's own stanzas (see `retailStanzas`): the JID the
+    // server bound this connection to, and the count its request ids run on.
+    this.boundJid = null;
+    this.requestCounter = 0;
+    // Whether this connection's system channels have had their login's two
+    // joins, and the second joins still waiting for the server's answer.
+    this.systemChannelsJoinedOnce = false;
+    this.joinEchoes = new Map();
     this.socket = null;
     this.buffer = "";
     this.ready = false;
@@ -357,6 +369,81 @@ class XmppChatSession {
 
   jid() {
     return `${this.characterID}@${this.domain}/${this.resource}`;
+  }
+
+  /**
+   * The stanzas a pilot on the game port sends, each as the retail client's
+   * XMPP handler writes it (xmpp/xmpphandler.py), attribute for attribute and
+   * in its order, so that the chat server reads from this connection what it
+   * reads from a client's. The line numbers are that file's.
+   *
+   * A pilot on the gateway sends this module's own stanzas, as it always has:
+   * each writer below asks `this.login` which.
+   */
+  retailStanzas() {
+    // connect (41 to 49): the name is `<charID>@<hostname>`, and is the JID
+    // until the bind answers one.
+    const username = `${this.characterID}@${this.domain}`;
+    // Read at each use: the bind's answer changes it between two requests of
+    // one login (handle_bind, 75 to 85).
+    const jid = () => this.boundJid || username;
+    const nick = this.characterID;
+    // get_request_id (320 to 323): 'id1', 'id2' and on, from one at each
+    // connection, and one count for requests, joins, leaves and lines alike.
+    const requestID = () => {
+      this.requestCounter += 1;
+      return `id${this.requestCounter}`;
+    };
+    // issue_request (283 to 294). With no `to`, the client's own text has a
+    // space before the closing bracket.
+    const request = (type, payload) => `<iq id='${requestID()}' type='${type}' from='${escapeXml(jid())}' >${payload}</iq>`;
+    return {
+      // start_stream (51 to 58).
+      stream: () =>
+        `<?xml version='1.0'?><stream:stream to='${escapeXml(this.domain)}' version='1.0' ` +
+        "xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'>",
+      // bind (70 to 73).
+      bind: () =>
+        request(
+          "set",
+          `<bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><resource>${escapeXml(this.resource)}</resource></bind>`,
+        ),
+      // start_session (87 to 90).
+      session: () => request("set", "<session xmlns='urn:ietf:params:xml:ns:xmpp-session'/>"),
+      // send_initial_presence (97 to 101).
+      firstPresence: () => "<presence><show/></presence>",
+      // join_room (296 to 310). No password and no history: a system channel
+      // has no password, and the client asks history only of a window checking
+      // its connection after a reconnect (xmppchatclient/xmppchatwindow.py 1360).
+      join: (roomJid) => {
+        const id = requestID();
+        return {
+          id,
+          xml:
+            `<presence from='${escapeXml(jid())}' id='${id}' to='${escapeXml(roomJid)}/${nick}'>` +
+            "<x xmlns='http://jabber.org/protocol/muc'></x></presence>",
+        };
+      },
+      // leave_room (312 to 318).
+      leave: (roomJid) =>
+        `<presence from='${escapeXml(jid())}' id='${requestID()}' to='${escapeXml(roomJid)}/${nick}' type='unavailable'/>`,
+      // groupchat (110 to 116), with the line as sanitize_text leaves it (118
+      // to 120): the characters of the control categories taken out, and the
+      // three that xml.sax.saxutils.escape replaces replaced.
+      line: (roomJid, text) => {
+        const id = requestID();
+        const body = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        return {
+          id,
+          xml:
+            `<message from='${escapeXml(username)}' to='${escapeXml(roomJid)}' type='groupchat' xml:lang='en' id='${id}'>` +
+            `<body>${body}</body></message>`,
+        };
+      },
+      // _handle_ping (168 to 175): the server's ping answered, its `to` for
+      // this answer's `from` and its `from` for the `to`.
+      pong: (id, to, from) => `<iq id='${escapeXml(id)}' type='result' from='${escapeXml(to)}' to='${escapeXml(from)}'/>`,
+    };
   }
 
   aliasJid(channel) {
@@ -477,6 +564,18 @@ class XmppChatSession {
   }
 
   handshakeWith({ host, port, domain, secret }) {
+    // A new connection is a new handler to the client: no JID bound yet, and
+    // its request ids from one again.
+    this.boundJid = null;
+    this.requestCounter = 0;
+    this.systemChannelsJoinedOnce = false;
+    this.joinEchoes.clear();
+    const retail = this.login ? this.retailStanzas() : null;
+    const streamHeader = () =>
+      (retail
+        ? retail.stream()
+        : `<?xml version='1.0'?><stream:stream to='${escapeXml(domain)}' ` +
+          "xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams' version='1.0'>");
     return new Promise((resolve, reject) => {
       let stage = "connect";
       let settled = false;
@@ -501,10 +600,7 @@ class XmppChatSession {
               }
               password = String(word ?? "");
               stage = "stream";
-              this.write(
-                `<?xml version='1.0'?><stream:stream to='${escapeXml(domain)}' ` +
-                  "xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams' version='1.0'>",
-              );
+              this.write(streamHeader());
             },
             (error) => {
               fail(
@@ -598,10 +694,7 @@ class XmppChatSession {
         if (stage === "auth" && this.buffer.includes("<success")) {
           this.buffer = "";
           stage = "stream2";
-          this.write(
-            `<?xml version='1.0'?><stream:stream to='${escapeXml(domain)}' ` +
-              "xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams' version='1.0'>",
-          );
+          this.write(streamHeader());
           return;
         }
         if (stage === "auth" && this.buffer.includes("<failure")) {
@@ -612,30 +705,63 @@ class XmppChatSession {
           this.buffer = "";
           stage = "bind";
           this.write(
-            `<iq type='set' id='bind'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'>` +
-              `<resource>${escapeXml(this.resource)}</resource></bind></iq>`,
+            retail
+              ? retail.bind()
+              : `<iq type='set' id='bind'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'>` +
+                `<resource>${escapeXml(this.resource)}</resource></bind></iq>`,
           );
           return;
         }
         if (stage === "bind" && this.buffer.includes("</bind>")) {
+          // handle_bind (75 to 85): the JID the server bound is the client's
+          // from here on.
+          const bound = /<jid>([^<]*)<\/jid>/i.exec(this.buffer);
+          this.boundJid = bound ? decodeXml(bound[1]) : null;
           this.buffer = "";
           stage = "session";
           this.write(
-            "<iq type='set' id='sess'><session xmlns='urn:ietf:params:xml:ns:xmpp-session'/></iq>",
+            retail
+              ? retail.session()
+              : "<iq type='set' id='sess'><session xmlns='urn:ietf:params:xml:ns:xmpp-session'/></iq>",
           );
           return;
         }
-        if (stage === "session" && /<iq[^>]*type=['"]result['"]/i.test(this.buffer)) {
+        if (retail && stage === "session" && /<iq[^>]*type=['"]result['"]/i.test(this.buffer)) {
+          // handle_session (92 to 95): the first presence goes out, and the
+          // client holds itself logged in at the next thing the server sends
+          // (handle_response_state_not_ready, 242 to 245). The stub answers
+          // that presence with one of its own.
           this.buffer = "";
+          stage = "presence";
+          this.write(retail.firstPresence());
+          return;
+        }
+        const loggedIn = retail
+          ? stage === "presence" && this.buffer.length > 0
+          : stage === "session" && /<iq[^>]*type=['"]result['"]/i.test(this.buffer);
+        if (loggedIn) {
+          // A pilot on the gateway drops the session's answer; what a pilot on
+          // the game port was just sent is a stanza like any other, and is
+          // read as one once this connection is ready.
+          if (!retail) {
+            this.buffer = "";
+          }
           stage = "ready";
           settled = true;
           clearTimeout(timer);
           this.ready = true;
-          this.startPing();
+          // The client sends no ping of its own: it answers the server's
+          // (`drain`). A pilot on the gateway keeps this module's.
+          if (!retail) {
+            this.startPing();
+          }
           this.log(
             `[chat] connected to ${host}:${port} as character ${this.characterID}`,
           );
           resolve(this);
+          if (retail) {
+            this.drain();
+          }
         }
       });
     });
@@ -710,6 +836,10 @@ class XmppChatSession {
         this.onPresence(xml);
       } else if (/^<message\b/i.test(xml)) {
         this.onMessage(xml);
+      } else if (this.login && /^<iq\b[^>]*\btype=['"]get['"]/i.test(xml) && /<ping\b/i.test(xml)) {
+        // process_single_queue_item (148 to 166): an iq of type get whose
+        // child is a ping is answered, as the client answers it.
+        this.write(this.retailStanzas().pong(attr(xml, "id"), attr(xml, "to"), attr(xml, "from")));
       }
       // Everything else (iq results, ping answers, disco) needs no reaction:
       // this client asks no questions whose answers it acts on.
@@ -860,6 +990,12 @@ class XmppChatSession {
     if (!stanzaID) {
       return;
     }
+    const echoed = this.joinEchoes.get(stanzaID);
+    if (echoed) {
+      this.joinEchoes.delete(stanzaID);
+      echoed();
+      return;
+    }
     for (const [channel, room] of this.rooms.entries()) {
       if (!room.pending || room.pending.joinID !== stanzaID) {
         continue;
@@ -983,7 +1119,10 @@ class XmppChatSession {
     this.systemChannelsWork = Promise.resolve()
       .then(() => this.login.channels())
       .then(
-        (names) => {
+        async (names) => {
+          // _JoinSystemChannels (xmppchatsvc.py 355 to 356): each channel named
+          // is joined in turn, the next once the one before has answered.
+          const joined = [];
           for (const name of Array.isArray(names) ? names : []) {
             const category = String(name).split("_")[0];
             const channel = LOCAL_CATEGORIES.has(category) ? "local" : category;
@@ -1006,10 +1145,22 @@ class XmppChatSession {
               });
               continue;
             }
-            // The join's own failure is its caller's to hear, from the promise
-            // the room keeps; an unanswered join of a channel nobody reads
-            // must not become an unhandled rejection.
-            this.joinChannel(channel, solarSystemID, name).catch(() => {});
+            // The join's own failure is its reader's to hear, when the room is
+            // found missing; it stops no other channel's join.
+            // eslint-disable-next-line no-await-in-loop
+            const room = await this.joinChannel(channel, solarSystemID, name).catch(() => null);
+            if (room && room.roomJid) {
+              joined.push(room.roomJid);
+            }
+          }
+          // And then the same channels are joined once more, by a thread of
+          // their own that nothing waits on (363: `_JoinChannels` started with
+          // the list the loop has just been through). A retail client's login
+          // on this server shows each channel's presence twice. Only at the
+          // login: what the client does at a move is a later step.
+          if (!this.systemChannelsJoinedOnce) {
+            this.systemChannelsJoinedOnce = true;
+            this.joinAgain(joined).catch(() => {});
           }
         },
         (error) => {
@@ -1026,6 +1177,36 @@ class XmppChatSession {
   }
 
   /**
+   * The login's second join of each system channel: the join's presence again,
+   * each once the one before has been answered or has waited its time out.
+   * The rooms are joined already and nothing here changes what is kept of
+   * them; the server's answers are read as any presence is.
+   */
+  async joinAgain(roomJids) {
+    for (const roomJid of roomJids) {
+      if (!this.ready || this.closed) {
+        return;
+      }
+      const again = this.retailStanzas().join(roomJid);
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          this.joinEchoes.delete(again.id);
+          resolve();
+        }, JOIN_TIMEOUT_MS);
+        if (typeof timer.unref === "function") {
+          timer.unref();
+        }
+        this.joinEchoes.set(again.id, () => {
+          clearTimeout(timer);
+          resolve();
+        });
+        this.write(again.xml);
+      });
+    }
+  }
+
+  /**
    * Join a room and wait for the server's answer to the join.
    *
    * `roomName` is what the presence is addressed to: the stub's alias for a
@@ -1039,7 +1220,10 @@ class XmppChatSession {
       resolve = res;
       reject = rej;
     });
-    const joinID = this.nextID("join");
+    const retail = this.login
+      ? this.retailStanzas().join(`${roomName}@${this.conferenceDomain}`)
+      : null;
+    const joinID = retail ? retail.id : this.nextID("join");
     const room = {
       channel,
       roomJid: null,
@@ -1055,8 +1239,10 @@ class XmppChatSession {
         ? ""
         : `<history seconds='${CORP_HISTORY_SECONDS}'/>`;
     this.write(
-      `<presence id='${escapeXml(joinID)}' to='${escapeXml(room.alias)}'>` +
-        `<x xmlns='http://jabber.org/protocol/muc'>${history}</x></presence>`,
+      retail
+        ? retail.xml
+        : `<presence id='${escapeXml(joinID)}' to='${escapeXml(room.alias)}'>` +
+          `<x xmlns='http://jabber.org/protocol/muc'>${history}</x></presence>`,
     );
     const timer = setTimeout(() => {
       if (room.pending) {
@@ -1088,7 +1274,9 @@ class XmppChatSession {
     }
     if (room.roomJid) {
       this.write(
-        `<presence type='unavailable' to='${escapeXml(room.roomJid)}/${this.characterID}'/>`,
+        this.login
+          ? this.retailStanzas().leave(room.roomJid)
+          : `<presence type='unavailable' to='${escapeXml(room.roomJid)}/${this.characterID}'/>`,
       );
     }
     this.rooms.delete(room.channel);
@@ -1135,7 +1323,16 @@ class XmppChatSession {
 
   async send(channel, message, context = {}) {
     const room = await this.ensureChannel(channel, context);
-    const text = String(message || "").trim();
+    const typed = String(message || "").trim();
+    // What the client's chat service and its XMPP handler make of a line
+    // before it goes out (xmppchatsvc.py 342: TruncateVeryLongText; xmpphandler
+    // 118 to 120: the characters of the control categories taken out). A pilot
+    // on the gateway sends the line as it was typed, as it always has.
+    const text = this.login
+      ? withoutCategoryC(
+        typed.length > MAX_TEXT_LEN_SAFEGUARD ? `${typed.slice(0, MAX_TEXT_LEN_SAFEGUARD - 5)} ...` : typed,
+      )
+      : typed;
     if (!text) {
       throw new XmppChatError("A chat message cannot be empty.", {
         code: "CHAT_EMPTY_MESSAGE",
@@ -1149,8 +1346,10 @@ class XmppChatSession {
       });
     }
     this.write(
-      `<message type='groupchat' id='${this.nextID("msg")}' ` +
-        `to='${escapeXml(room.roomJid || room.alias)}'><body>${escapeXml(text)}</body></message>`,
+      this.login
+        ? this.retailStanzas().line(room.roomJid || room.alias.split("/")[0], text).xml
+        : `<message type='groupchat' id='${this.nextID("msg")}' ` +
+          `to='${escapeXml(room.roomJid || room.alias)}'><body>${escapeXml(text)}</body></message>`,
     );
     // ⚠ PROVISIONAL, AND SAID SO BY BEING BUILT HERE. The server echoes the
     // real line back to every occupant including us, and that echo — not this
@@ -1176,7 +1375,43 @@ class XmppChatSession {
     // Politeness, not bookkeeping: the server drops us from every room on the
     // socket's own close (`removeClientFromRooms`), so this only spares it the
     // half-open reap and makes the transcript read like a client leaving.
-    this.write("</stream:stream>");
+    //
+    // A pilot logged in the retail client's way leaves as that client does at
+    // a logoff: its session's channels left first, each in the order the
+    // client's session categories are in (xmppchatsvc.py 35 to 45, 153 to 162:
+    // the system's, the alliance's, the corporation's, the fleet's, the
+    // faction's), and then the stream closed (OnSessionReset, 170 to 171).
+    if (this.login && this.ready) {
+      const leaves = [];
+      for (const channel of ["local", "alliance", "corp", "fleet", "faction"]) {
+        const room = this.rooms.get(channel) || null;
+        if (room && room.roomJid) {
+          leaves.push(this.retailStanzas().leave(room.roomJid));
+        }
+      }
+      // ⚠ THE SOCKET IS ENDED BEHIND THESE, NOT DESTROYED. Several writes
+      // followed at once by a destroy lost all but the first (seen in the
+      // stub's log: the first leave arrived, the second and the stream's close
+      // did not). `end` lets what was written go out; the reap is for a server
+      // that never closes its own side.
+      const socket = this.socket;
+      this.socket = null;
+      if (socket && !socket.destroyed) {
+        socket.removeAllListeners();
+        socket.on("error", () => {});
+        const reap = setTimeout(() => socket.destroy(), 2000);
+        if (typeof reap.unref === "function") {
+          reap.unref();
+        }
+        socket.on("close", () => clearTimeout(reap));
+        for (const leave of leaves) {
+          socket.write(leave);
+        }
+        socket.end("</stream:stream>");
+      }
+    } else {
+      this.write("</stream:stream>");
+    }
     this.teardownSocket();
     this.messages.clear();
     this.rosters.clear();
