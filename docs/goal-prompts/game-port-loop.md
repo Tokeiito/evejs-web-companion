@@ -2379,6 +2379,21 @@ Take these defaults, and list each under "For the operator" in the log so they c
   follows the server's own change belongs to the read the page makes to learn it.
 - **Keep a live run's whole output, and filter the file.** A filter on the lines as they came
   dropped every line after the loss, because the thing looked for had the value filtered on.
+- **A recording's call is read by its line.** A `Packet::CallReq` line has the service it was
+  addressed to and, for a call by name, the method and its arguments in plain text
+  (`sed -n "<line>p" <recording>`): `(1, 'MachoBindObject', ((30004971, 5), ('GetAllInfo',
+  (False, True, None), {})), {'machoVersion': 1})`. A call on a bound object is bytes: the
+  object's name, the method, `$` for an empty tuple, and the keywords.
+- **A form counted across every recording settles what the client sends**:
+  `grep -rhoE "'<Method>', \([^)]*\)" <recordings> | sort | uniq -c`. Godma's priming was
+  `(True, True, None)` in the BFF and in its entry's note; the recordings have it so 4 times
+  in 164.
+- **A test that puts a pilot in space wants a ballpark whose clock the test holds**
+  (`handTicked().options`): a real one keeps the file from ending, and the run is cut off with
+  every test passed and the file failed.
+- **A slip of the client's own is followed, not mended.** Its target manager asks whether
+  `'ship' in change`, which no session change has, so it never clears its locks at a change of
+  ship by itself; gameui asks the server to, and that is the call the game port makes.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
