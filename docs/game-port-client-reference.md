@@ -1176,6 +1176,24 @@ check, the server answers an alpha's grade when started with `EVE_CLONE_GRADE=al
 makes Alphas of the accounts that have bought nothing when started with
 `EVEJS_OMEGA_LICENSE=false`.
 
+**A selection's packets, 2026-10-13.** What the server sends between
+`charUnboundMgr.SelectCharacterID` and its answer, in the four recorded logins and here. The
+client asks `dogmaIM`'s `GetAllInfo` as soon as it has read the session change, before the
+selection's answer.
+
+| Packet, in its order | On Tranquility | What the client does | This server |
+|---|---|---|---|
+| `OnSubscriptionTimeUpdateServer` by `clientID` | every selection, first; a selection its node turns away too | the PLEX panel's days left | the same (`eve.js` `6fac42e03`) |
+| `OnMultiEvent` by `clientID` (3,966 bytes) | one login of the four, the one docked in a station: module attribute changes of the ship and its fitted items from their types' values towards their modified ones, some in steps, and `OnGodmaShipEffect`s of the online effect | drops it: `godma.OnModuleAttributeChange_` returns where `session.charid` is None (1324), and it scattered `OnAttributes` with nothing, four times | not sent: the trail of Tranquility's own dogma loading a ship |
+| the session change | | | |
+| `OnTaleData` by `charid`: `(solarSystemID, {taleID: KeyVal(templateClassID, locationID, taleID)})` | after 19 of the 20 recorded session changes of `solarsystemid2` (logins and jumps), two to six packets later, one to six tales; none at the login in Jita, and none empty | the tale service keeps a tale that has an `objectiveChainID` (the recorded have none); the incursion service acts on an incursion's class (the recorded are class 3) | the same, for the four systems it knows tales of (`eve.js` `9da9aa017`); a call of `taleMgr` sends none (`e4700d089`), as Tranquility's one recorded call sends none |
+| `OnServerSkillsChanged` by `charid` | none at a login (four in all the recordings, elsewhere) | refreshes its skills | sent after the session change: this server's own priming of the client's skills (`c6ea2ff44`) |
+| the call's answer, None | | | |
+
+Neither the transport nor the page reads the tales or the end of the Omega time. `OnTaleData`
+is also sent to a system (by `solarsystemid2`, 17 times, one tale each) far from any session
+change: a tale of the system's own, which this server does not send.
+
 **Crimewatch's notices, 2026-10-10.** Each changes one thing the service keeps, and nothing
 is asked after it (`crimewatchSvc.py` 222 to 288).
 

@@ -2714,6 +2714,26 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A second pilot on the BFF beside a session of one's own** shows both
   ends of a notice in one look: the wire, with its times, and what the
   transport keeps of it. Two accounts were staged alike for it.
+- **A notice is counted by its `Read:` lines.** A notice that waits for a
+  session change is logged again as `packet=`, and each is scattered once
+  more: a count of the name alone gave 75 `OnTaleData` where 36 were read.
+- **What goes before a notice says what sends it.** For every recorded
+  `OnTaleData`: the last session change before it, how many packets back,
+  and the calls written before it (`tale-recorded.js`); then the other way,
+  every session change of the kind and whether the notice follows
+  (`tale-changes.js`). 19 of 20 is a rule; one login is a guess. The one
+  that does not follow is read too: it was a system with nothing to send.
+- **Before a recorded notice is mended, the client's reader of it is read
+  for a guard.** The fitting's events ahead of a docked login are dropped:
+  godma returns where `session.charid` is None, and the notice comes ahead
+  of the session change that sets it. The recording says so itself
+  (`OnAttributes` with an empty list).
+- **A model of the operator's that a recording contradicts is mended to the
+  recording, and its scenario rewritten; a device of the operator's with a
+  commit that says what it is for is left** and written down as a
+  difference (the skills primed at a login, `c6ea2ff44`; the six places).
+- **`/solar <system's ID>`** moves a pilot in space to a system for a look
+  (`tale-live.js`); a session change of `solarsystemid2` follows it.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
