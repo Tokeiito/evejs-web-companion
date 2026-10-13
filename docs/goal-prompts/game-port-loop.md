@@ -3194,6 +3194,17 @@ Take these defaults, and list each under "For the operator" in the log so they c
   changing collision, impact, or release timing" is before: the Next
   list had the acting at the touch done first and the retail client
   looked at after.
+- **How a session's calls were addressed, by service**, from this
+  server's log: `sed 's/\x1b\[[0-9;]*m//g' <log> | grep "CALL_REQ
+  src=client"`, then the service's name and `dst=any` or `dst=node`
+  counted. The logs of a real client (`direct-tcp-real-client-*`) have
+  colour codes in them and their fields one place to the left of
+  `server.log`'s; a tally by `awk` comes out empty until the codes are
+  off.
+- **What Tranquility's client says of itself is in its recordings**:
+  "I haven't got a clue where ... should run" and "Redirecting call to
+  node" are the client's own lines of machoNet finding a service; a
+  `grep -rh` of each, counted, is what the server did.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
