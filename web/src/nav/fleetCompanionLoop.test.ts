@@ -8124,16 +8124,23 @@ test("FOLLOW lights it too — keeping up with a commander who is pulling away",
   assert.deepEqual(decision.action, { kind: "activate", moduleID: MWD.itemID, targetID: 0 });
 });
 
-// ⚠ FOLLOW IS STATION-KEEPING, NOT A TRIP, WHILE HOSTILES ARE ON THE GRID. A
-// companion holds station on its FC with keep-at-range, which the server keeps
-// as FOLLOW for the whole time, so the mode test alone lit a microwarpdrive for
-// every fight -- and the server blooms an MWD's signature radius, which makes
-// the ship easier for the NPCs to hit. `hostileOnGrid` is three-state: only
+// ⚠ FOLLOW IS STATION-KEEPING, NOT A TRIP, WHILE HOSTILES ARE ON THE GRID AND
+// THE SHIP IS HOLDING THE FORMATION. A companion holds station on its FC with
+// keep-at-range, which the server keeps as FOLLOW for the whole time, so the
+// mode test alone lit a microwarpdrive for every fight -- and the server blooms
+// an MWD's signature radius, which makes the ship easier for the NPCs to hit.
+// But every approach (flee to a station, gate, loot, salvage) is FOLLOW too and
+// keeps its burner. The formation is `followAnchorID`, which the ladder clears
+// when it sends any other movement call. `hostileOnGrid` is three-state: only
 // `true` stands the burner down; false and null keep today's behaviour.
-test("FOLLOW with hostiles on grid stands a lit prop mod down — station-keeping, not a trip", () => {
+const FORMATION_ANCHOR = 2;
+const holdingFormation: CompanionLadderMemory = { ...freshLadderMemory(), followAnchorID: FORMATION_ANCHOR };
+
+test("FOLLOW with hostiles on grid stands a lit prop mod down — holding formation, not a trip", () => {
   const decision = decideCompanionAction(
     withProps(),
     obs({ snapshot: gridInMode("FOLLOW", [MWD.itemID]), hostileOnGrid: true }),
+    holdingFormation,
   );
   assert.deepEqual(decision.action, {
     kind: "deactivate",
@@ -8142,18 +8149,52 @@ test("FOLLOW with hostiles on grid stands a lit prop mod down — station-keepin
   });
 });
 
-test("FOLLOW with hostiles on grid does not light an unlit prop mod", () => {
+test("FOLLOW with hostiles on grid, holding formation, does not light an unlit prop mod", () => {
   const decision = decideCompanionAction(
     withProps(),
     obs({ snapshot: gridInMode("FOLLOW"), hostileOnGrid: true }),
+    holdingFormation,
   );
+  assert.notDeepEqual(decision.action, { kind: "activate", moduleID: MWD.itemID, targetID: 0 });
   assert.notEqual(decision.phase, "Propulsion");
+});
+
+test("FOLLOW with hostiles on grid and no formation anchor is an approach — it lights", () => {
+  const decision = decideCompanionAction(
+    withProps(),
+    obs({ snapshot: gridInMode("FOLLOW"), hostileOnGrid: true }),
+    freshLadderMemory(),
+  );
+  assert.deepEqual(decision.action, { kind: "activate", moduleID: MWD.itemID, targetID: 0 });
+});
+
+test("FOLLOW with hostiles on grid and a closing latch set is an approach — it lights", () => {
+  // The ladder clears `followAnchorID` when it sends an approach, so a set
+  // anchor with a live approach latch is the stale-record case the veto covers.
+  for (const latch of [{ lootApproaching: 77 }, { salvageApproachIssued: true }]) {
+    const decision = decideCompanionAction(
+      withProps(),
+      obs({ snapshot: gridInMode("FOLLOW"), hostileOnGrid: true }),
+      { ...holdingFormation, ...latch },
+    );
+    assert.deepEqual(decision.action, { kind: "activate", moduleID: MWD.itemID, targetID: 0 });
+  }
+});
+
+test("FOLLOW with hostiles on grid and its own route running lights it, formation or not", () => {
+  const decision = decideCompanionAction(
+    withProps(),
+    obs({ snapshot: gridInMode("FOLLOW"), hostileOnGrid: true, travel: travelling() }),
+    holdingFormation,
+  );
+  assert.deepEqual(decision.action, { kind: "activate", moduleID: MWD.itemID, targetID: 0 });
 });
 
 test("FOLLOW with no hostiles on grid lights it, as before", () => {
   const decision = decideCompanionAction(
     withProps(),
     obs({ snapshot: gridInMode("FOLLOW"), hostileOnGrid: false }),
+    holdingFormation,
   );
   assert.deepEqual(decision.action, { kind: "activate", moduleID: MWD.itemID, targetID: 0 });
 });
@@ -8162,6 +8203,7 @@ test("FOLLOW with hostileOnGrid unreadable (null) lights it, as before", () => {
   const decision = decideCompanionAction(
     withProps(),
     obs({ snapshot: gridInMode("FOLLOW"), hostileOnGrid: null }),
+    holdingFormation,
   );
   assert.deepEqual(decision.action, { kind: "activate", moduleID: MWD.itemID, targetID: 0 });
 });
@@ -8170,6 +8212,7 @@ test("GOTO still lights it with hostiles on grid — a heading of its own is a t
   const decision = decideCompanionAction(
     withProps(),
     obs({ snapshot: gridInMode("GOTO"), hostileOnGrid: true }),
+    holdingFormation,
   );
   assert.deepEqual(decision.action, { kind: "activate", moduleID: MWD.itemID, targetID: 0 });
 });
@@ -8182,6 +8225,7 @@ test("`props on` beats the hostile-FOLLOW stand-down", () => {
       hostileOnGrid: true,
       chatMessages: [chatLine("props on", HUMAN)],
     }),
+    holdingFormation,
   );
   assert.deepEqual(decision.action, { kind: "activate", moduleID: MWD.itemID, targetID: 0 });
 });

@@ -5576,7 +5576,9 @@ function decideLooting(
  * **FOLLOW** is a hull flying at another object: `followShipEntity`, which is
  * `keepAtRange`, the follow rung, and -- the one that is easy to get wrong --
  * an APPROACH, which is `CmdFollowBall(targetID, 0)` and not a goto at all.
- * Both are the burn this rung exists to help, which is why both are here.
+ * Both are the burn this rung exists to help, which is why both are here --
+ * except that `isUnderWay` drops FOLLOW (and only FOLLOW) while hostiles are on
+ * the grid and the ship is merely holding formation on its commander.
  *
  * ⚠ THE WORD "APPROACH" NEVER APPEARS IN IT, which is the trap this constant
  * exists to avoid: `isClosing` above used to test `/follow|approach|warp/i`,
@@ -5615,34 +5617,56 @@ const CLOSING_SHIP_MODES: readonly string[] = ["GOTO", "FOLLOW"];
  * honest about the pilot's OWN trips, including the moments between legs when
  * the hull is briefly in no interesting mode at all.
  *
- * ⚠ FOLLOW IS NOT TRAVELLING WHILE HOSTILES ARE ON THE GRID, AND THE MODE TEST
- * ALONE LIT A MICROWARPDRIVE FOR EVERY FIGHT. A companion keeps station on its
- * fleet commander with keep-at-range, and on the server that is FOLLOW for the
- * WHOLE of the time it holds station: FOLLOW only ends when the followed ship
- * vanishes. So "FOLLOW means closing" was true for the few seconds it was
- * written for and then stayed true for as long as the fight lasted -- the prop
- * mod burned throughout, and the server blooms a microwarpdrive's signature
- * radius, which makes the ship easier for the NPCs to hit. With hostiles about,
- * FOLLOW is station-keeping, not a trip, and the burner stays out.
- * `hostileOnGrid` is three-state and only `true` counts: false and null (the
- * read failed) keep the FOLLOW test exactly as it was, so keeping up with an FC
- * who is pulling away and closing the last km off a gate are unchanged when
- * nothing hostile is around. GOTO is a heading of the pilot's own and the
- * autopilot is its own route, so neither is affected, and `props on` still
- * beats all of it (see `decidePropulsion`).
+ * ⚠ FOLLOW IS NOT TRAVELLING WHEN IT IS THE FORMATION HELD IN A FIGHT, AND THE
+ * MODE TEST ALONE LIT A MICROWARPDRIVE FOR EVERY FIGHT. A companion keeps
+ * station on its fleet commander with keep-at-range, and on the server that is
+ * FOLLOW for the WHOLE of the time it holds station: FOLLOW only ends when the
+ * followed ship vanishes. So "FOLLOW means closing" was true for the few
+ * seconds it was written for and then stayed true for as long as the fight
+ * lasted -- the prop mod burned throughout, and the server blooms a
+ * microwarpdrive's signature radius, which makes the ship easier for the NPCs
+ * to hit.
+ *
+ * ⚠ BUT FOLLOW IS ALSO EVERY APPROACH, SO ONLY THE FORMATION LOSES THE BURNER.
+ * The flee's run at a station, the gate approach, the loot and salvage
+ * approaches are all FOLLOW too, and a pilot fleeing a fight needs its burner
+ * most of all. The stand-down is therefore: hostiles on the grid (`true` only;
+ * false and null keep the FOLLOW test exactly as it was) AND `holdsFormation`.
+ * GOTO is a heading of the pilot's own and the autopilot is its own route, so
+ * neither is affected, and `props on` still beats all of it (see
+ * `decidePropulsion`).
  */
-function isUnderWay(obs: FleetCompanionObservation): boolean {
+function isUnderWay(obs: FleetCompanionObservation, memory: CompanionLadderMemory): boolean {
   const mode = obs.snapshot?.ship?.mode ?? null;
-  if (mode !== null) {
-    const upper = mode.toUpperCase();
-    if (upper === "GOTO") {
-      return true;
-    }
-    if (CLOSING_SHIP_MODES.includes(upper) && obs.hostileOnGrid !== true) {
-      return true;
-    }
+  if (mode !== null && CLOSING_SHIP_MODES.includes(mode.toUpperCase())
+    && !(mode.toUpperCase() === "FOLLOW" && obs.hostileOnGrid === true && holdsFormation(memory))) {
+    return true;
   }
   return obs.travel?.status === "running";
+}
+
+/**
+ * Whether the FOLLOW the ship is in is the formation station on the commander.
+ *
+ * ⚠ THE FOLLOWED BALL CANNOT BE READ, SO THIS IS READ OFF THE LADDER'S OWN
+ * RECORD. The snapshot's `ship` has the mode and no target, and
+ * `SpaceEntity.targetEntityID` is filled for DRONE rows only. What the ladder
+ * knows is `followAnchorID`: set when it sends `keepAtRange` at the commander
+ * and cleared by `decideCompanionAction` the moment ANY other movement call goes
+ * out (approach, dock, jump, warp, align, travel, stop). So a non-null anchor
+ * means the last move this ladder sent was the formation order, and a FOLLOW
+ * under it is that order.
+ *
+ * ⚠ THE APPROACH LATCHES ARE A SECOND, BELT-AND-BRACES VETO: `lootApproaching`
+ * and `salvageApproachIssued`. `closingOn` (dock and gate approaches) is
+ * deliberately NOT one -- nothing ever clears it, so it would veto the
+ * formation for the rest of the run after the first gate; those approaches are
+ * already excluded because issuing them clears `followAnchorID`.
+ */
+function holdsFormation(memory: CompanionLadderMemory): boolean {
+  return memory.followAnchorID !== null
+    && memory.lootApproaching === null
+    && !memory.salvageApproachIssued;
 }
 
 /**
@@ -5654,13 +5678,17 @@ function isUnderWay(obs: FleetCompanionObservation): boolean {
  * ordinary fleet play never runs its own autopilot, so the first cut of this
  * rung was correct and never fired. What fires is the ship's own movement MODE
  * -- GOTO (flying a heading of its own) or FOLLOW (approaching something, or
- * keeping up with the commander) -- which is the burn a player actually makes:
+ * keeping up with the commander, though not holding formation in a fight; see
+ * `isUnderWay`) -- which is the burn a player actually makes:
  * landing off a gate and covering the last few km, or chasing an FC who is
  * pulling away.
  *
  * ⚠ A FLEE STILL GETS ONE, NOW, AND BY ACCIDENT RATHER THAN BY DESIGN. The
  * get-safe ladder approaches a station before docking, and an approach is
- * FOLLOW, so the burner lights for that leg. The WARP leg of a flee gets nothing,
+ * FOLLOW, so the burner lights for that leg -- even with hostiles on the grid,
+ * because only the formation station (`holdsFormation`: the ladder's own
+ * keep-at-range record, cleared by the approach it sends) loses the burner in a
+ * fight, never an approach. The WARP leg of a flee gets nothing,
  * because the ladder never reaches this rung mid-warp (rung 1 yields first) and
  * a prop mod is no use in warp anyway. `props on` remains the way to say "keep
  * it lit regardless".
@@ -5715,7 +5743,7 @@ function decidePropulsion(
     activeModuleIDs: new Set(active),
     capacitorRatio: obs.capacitorRatio ?? null,
     scrammed: obs.scrammed ?? null,
-    wantBurn: memory.propsHeld ?? isUnderWay(obs),
+    wantBurn: memory.propsHeld ?? isUnderWay(obs, memory),
     capFloor: request.capacitorFloor,
   };
   const call = decidePropulsionModule(inputs);
