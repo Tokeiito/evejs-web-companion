@@ -974,7 +974,9 @@ transfer from across the system is in no recording.
 It lets both go when the session leaves the station. Tranquility's recordings have each call
 with nothing beside it. The guests come as a list of `[charID, corpID, allianceID,
 warFactionID]`, with None where a pilot has no alliance or no war faction; each notice carries
-one guest's four in the same form; the item comes as a tuple.
+one guest's four in the same form; the item comes as a tuple. (This server sent a guest's four as a
+tuple, in the answer and in the notices, until 2026-10-13, `eve.js` `d31b58021`. The page on the gateway
+reads either.)
 
 The transport keeps both the same way (`src/gamePort/pilotStation.js`; `stationRead` in
 `pilots.js`), for a read asked with nothing beside it. An answer that is no list is handed on
@@ -1161,7 +1163,7 @@ is asked after it (`crimewatchSvc.py` 222 to 288).
 | Notice | Carries | What the client does | On Tranquility | This server |
 |---|---|---|---|---|
 | `OnWeaponsTimerUpdate`, `OnPvpTimerUpdate`, `OnNpcTimerUpdate`, `OnCriminalTimerUpdate`, `OnDisapprovalTimerUpdate` | `(state, expiryTime)` | that timer is in that state until that time | the NPC one, 86 times in 17 files: by `charid`, as `(400, None)`, `(401, None)`, `(402, a long)` | by `charid`, as `(x02, a long)` and `(x00, None)`; to a pilot in space only |
-| `OnSystemCriminalFlagUpdates` | `(newIdles, newSuspects, newCriminals)` | the idle forgotten, then the criminals, then the suspects (`UpdateSuspectsAndCriminals`, 195) | 9 times in 6 files: by `solarsystemid2`, three sets | by `solarsystemid2`, three tuples |
+| `OnSystemCriminalFlagUpdates` | `(newIdles, newSuspects, newCriminals)` | the idle forgotten, then the criminals, then the suspects (`UpdateSuspectsAndCriminals`, 195) | 9 times in 6 files: by `solarsystemid2`, three sets | by `solarsystemid2`, three sets (tuples until 2026-10-13, `eve.js` `49c3c99fa`) |
 | `OnCrimewatchEngagementCreated`, `...StartTimeout` | `(otherCharID, timeout)` | the engagement with that pilot ends then | not recorded | by `clientID` |
 | `OnCrimewatchEngagementStopTimeout` | `(otherCharID)` | it goes on with no end (`crimewatchEngagementTimeoutOngoing`, -1) | not recorded | not seen |
 | `OnCrimewatchEngagementEnded` | `(otherCharID)` | it is gone | not recorded | by `clientID` |

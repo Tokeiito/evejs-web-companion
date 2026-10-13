@@ -2617,6 +2617,24 @@ Take these defaults, and list each under "For the operator" in the log so they c
   was made whole first, and the dict given Tranquility's form after, so that
   no client was ever short of its character. The older tests of the first
   carrier are each rewritten to what they were written for.
+- **A change of form on this server's wire is a change for every reader of
+  the gateway's JSON.** The game port reads a sequence by its items, list or
+  tuple; the page on the gateway reads the JSON's own shape, where a tuple
+  is an array and a list an object with items. Before a tuple is made a list
+  (or a set) in `eve.js`: find the page's and the BFF's readers of that
+  answer and that notice, mend them to read either, commit that first; and
+  open every test file a search for the name lists, for each has an
+  expectation of the old form.
+- **A log's printing of a marshal stream can be read back.** The client's
+  "Read:" lines print a notice's bytes as Python prints a string;
+  `stream-recorded.js <game port> <recordings> <notice>` makes them bytes
+  again and decodes them. A Python set is an object of `__builtin__.set`
+  made of one list, which is what this server's `buildPythonSet` makes.
+- **A live look at a form on the wire is two small scripts away**:
+  `guests-live.js` (two docked pilots, one watching the other come and go)
+  and `flags-live.js` (a pilot made a suspect by `/cwatch`) say of each
+  sequence whether it is a list, a tuple or an object; the pattern serves
+  any answer or notice a second pilot or a GM command can raise.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
