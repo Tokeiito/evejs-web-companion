@@ -2174,6 +2174,16 @@ export interface CompanionRejoin {
   readonly reason: string | null;
   /** Ticks left before the attempts start over. See `COMPANION_RETRY_BACKOFF_TICKS`. */
   readonly cooldown?: number;
+  /** Where the roster put the commander when the warp went out (`commanderPlaceKey`). */
+  readonly sentAt?: string;
+  /** When the warp went out, in ms. */
+  readonly sentAtMs?: number;
+  /**
+   * The server refused the warp as "the commander is not here". The rejoin then
+   * waits for the commander's whereabouts to change, or for
+   * `REJOIN_NOT_HERE_RECHECK_MS`, instead of spending tries.
+   */
+  readonly notHere?: boolean;
 }
 
 /** A job's launch in flight: which bay items it sent out, and when. */
@@ -7868,6 +7878,14 @@ const MAX_COMPANION_REJOIN_TRIES = 3;
  * cover the slowest hull's align (about 20 s) at the measured ~2-4 s tick.
  */
 const REJOIN_WARP_START_WAIT_TICKS = 15;
+/** The readout while a "the commander is not here" refusal is being waited out. */
+const REJOIN_NOT_HERE_WHY = "The commander is not in this system: waiting for the fleet.";
+/**
+ * How long a "the commander is not here" refusal stands when the roster never
+ * reports the commander anywhere new. The roster is the way out; this is the
+ * way out when it never updates.
+ */
+const REJOIN_NOT_HERE_RECHECK_MS = 60_000;
 
 /**
  * Rung 9b: a companion whose commander is in the fleet but not on its grid warps
@@ -7907,6 +7925,19 @@ const REJOIN_WARP_START_WAIT_TICKS = 15;
  * `MAX_COMPANION_REJOIN_TRIES` it reads "Standing by" with the reason for
  * `COMPANION_RETRY_BACKOFF_TICKS` and starts over -- back off, not give up, as
  * the formation order does. A lost answer waits `COMPANION_RESEND_WAIT_TICKS`.
+ *
+ * ⚠ A REFUSAL THAT MEANS "THE COMMANDER IS NOT HERE" IS NOT A TRY, IT IS AN
+ * ANSWER. Seen live 2026-10-13 21:10: the commander jumped a gate and the roster
+ * (its composition is cached briefly server-side) still put them in this
+ * system, so the warp went out; the server refused it with "You cannot warp
+ * there right now." (`CmdWarpToStuff failed ...: FLEET_MEMBER_WARP_TARGET_NOT_FOUND`).
+ * Each pilot tried three times in four seconds, backed off, and started over --
+ * stranded, and spamming refused warps. Asking again says nothing new, so the
+ * rejoin stops AT ONCE and asks again only when the roster puts the commander
+ * somewhere else (`commanderPlaceKey`) or `REJOIN_NOT_HERE_RECHECK_MS` has
+ * passed (the roster may never update). The server gives that unnamed reason
+ * the same words as every other it has no sentence for (`isCommanderNotHereRefusal`),
+ * so a named blocker (scrambled, bubble, cloak...) keeps the three tries.
  */
 function decideRejoinCommander(
   request: FleetCompanionRequest,
@@ -7937,9 +7968,20 @@ function decideRejoinCommander(
   }
   const characterID = target.characterID;
   let previous = memory.rejoin?.characterID === characterID ? memory.rejoin : null;
+  const place = commanderPlaceKey(obs, characterID);
   const backOff = (rejoin: CompanionRejoin): CompanionDecision => waiting("Standing by",
     `Cannot warp to the commander: ${rejoin.reason ?? "the warp did not work"}. Trying again shortly.`,
     { ...memory, rejoin: { ...rejoin, cooldown: COMPANION_RETRY_BACKOFF_TICKS } });
+
+  // The server said the commander is not here: nothing is sent until the roster
+  // puts them somewhere else, or the quiet period is over. Then it starts fresh.
+  if (previous !== null && previous.notHere === true) {
+    const quiet = nowMs - (previous.sentAtMs ?? nowMs) < REJOIN_NOT_HERE_RECHECK_MS;
+    if (previous.sentAt === place && quiet) {
+      return waiting("Standing by", REJOIN_NOT_HERE_WHY, { ...memory, rejoin: previous });
+    }
+    previous = null;
+  }
 
   // Landed: the warp the last tick saw is over, and the commander is not here
   // (rung 9 above would have anchored, and the step drops this record when the
@@ -7998,6 +8040,7 @@ function decideRejoinCommander(
   const sent: CompanionRejoin = {
     characterID, status: "pending", tries: previous?.tries ?? 0, deferrals: previous?.deferrals ?? 0,
     deferralWait: false, waited: 0, seen: false, reason: previous?.reason ?? null,
+    sentAt: place, sentAtMs: nowMs,
   };
   const warp: CompanionDecision = {
     action: { kind: "warpToFleetMember", characterID },
@@ -8045,6 +8088,29 @@ function rejoinTarget(obs: FleetCompanionObservation): { readonly characterID: n
     return { characterID: commanderID, why: null };
   }
   return { characterID: null, why };
+}
+
+/**
+ * Where the roster puts a commander, as one comparable string: system and
+ * station, "?" where it does not say, and "unlisted" when the roster has no row.
+ * Two different keys are the commander having moved.
+ */
+function commanderPlaceKey(obs: FleetCompanionObservation, characterID: number): string {
+  const at = obs.fleetCommanderWhereabouts?.find((entry) => entry.characterID === characterID) ?? null;
+  return at === null ? "unlisted" : `${at.solarSystemID ?? "?"}/${at.stationID ?? "?"}`;
+}
+
+/**
+ * A refused fleet-member warp that says the member is not to be found. The
+ * server's own sentence for this is "You cannot warp there right now." -- the
+ * words it gives every reason it has no sentence for -- and its code
+ * (FLEET_MEMBER_WARP_TARGET_NOT_FOUND) goes to its log, not the wire; the code
+ * is matched too, in case a message carries it. A refusal with a sentence of its
+ * own (scrambled, bubble, cloak, immobile) is not this one.
+ */
+function isCommanderNotHereRefusal(error: unknown): boolean {
+  const raw = error instanceof Error ? error.message : String(error);
+  return /FLEET_MEMBER_WARP_TARGET_NOT_FOUND|cannot warp there right now/i.test(raw);
 }
 
 /** A refused rejoin warp's reason, as the give-up readout's tail. */
@@ -10135,6 +10201,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
     mem.ladder = { ...mem.ladder, rejoin: { ...pending, status,
       tries: pending.tries + (status === "refused" ? 1 : 0),
       reason: status === "refused" ? rejoinRefusalReason(error) : pending.reason,
+      ...(status === "refused" && isCommanderNotHereRefusal(error) ? { notHere: true } : {}),
       deferrals: status === "deferred" ? pending.deferrals + 1 : 0, deferralWait: status === "deferred",
     } };
   }

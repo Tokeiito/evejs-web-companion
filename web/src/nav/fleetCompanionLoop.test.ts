@@ -11998,6 +11998,97 @@ test("a refused rejoin warp is tried a bounded number of times, then says why an
   assert.equal(companion.snapshot().status, "running");
 });
 
+// Seen live 2026-10-13 21:10: the commander jumped a gate while the roster still
+// put them here; the server refused the warp ("You cannot warp there right now.",
+// FLEET_MEMBER_WARP_TARGET_NOT_FOUND in its log) and each pilot tried three
+// times in four seconds, backed off, and started over.
+const NOT_HERE_WORDS = "Warp was refused by the server: You cannot warp there right now.";
+const COMMANDER_AT_HOME = [{ characterID: HUMAN, solarSystemID: HOME_SYSTEM, stationID: null }];
+const COMMANDER_UNSAID = [{ characterID: HUMAN, solarSystemID: null, stationID: null }];
+
+function notHereCompanion(refusal: string, state: { where: FleetCompanionObservation["fleetCommanderWhereabouts"]; now: number }) {
+  const counter = { warps: 0 };
+  const companion = createFleetCompanion(makeDeps({
+    observe: async () => rejoinObs({ fleetCommanderWhereabouts: state.where }),
+    now: () => state.now,
+    issue: async (action) => {
+      if (action.kind === "warpToFleetMember") {
+        counter.warps += 1;
+        throw Object.assign(new Error(refusal), { code: "CALL_REFUSED" });
+      }
+    },
+  }).deps);
+  return { companion, counter };
+}
+
+test("a refusal that means the commander is not here stops the rejoin at once, and waits while the whereabouts stand", async () => {
+  const state = { where: COMMANDER_AT_HOME as FleetCompanionObservation["fleetCommanderWhereabouts"], now: 1_000_000 };
+  const { companion, counter } = notHereCompanion(NOT_HERE_WORDS, state);
+  companion.start(REQUEST);
+  await companion.tick();
+  assert.equal(counter.warps, 1);
+  for (let tick = 0; tick < 30; tick += 1) {
+    state.now += 1_000;
+    await companion.tick();
+  }
+  assert.equal(counter.warps, 1, "no second warp while the roster says the same");
+  assert.equal(companion.snapshot().phase, "Standing by");
+  assert.equal(companion.snapshot().why, "The commander is not in this system: waiting for the fleet.");
+  assert.doesNotMatch(companion.snapshot().why ?? "", /Trying again shortly/);
+});
+
+test("a not-here refusal is asked again once the roster puts the commander somewhere else", async () => {
+  const state = { where: COMMANDER_AT_HOME as FleetCompanionObservation["fleetCommanderWhereabouts"], now: 1_000_000 };
+  const { companion, counter } = notHereCompanion(NOT_HERE_WORDS, state);
+  companion.start(REQUEST);
+  await companion.tick();
+  state.now += 2_000;
+  await companion.tick();
+  assert.equal(counter.warps, 1);
+  // In the next system the roster says so, and the rejoin stands down for it.
+  state.where = [{ characterID: HUMAN, solarSystemID: SYSTEM_B, stationID: null }];
+  state.now += 2_000;
+  await companion.tick();
+  assert.equal(counter.warps, 1);
+  // The roster moves again: that is a change from where the warp was refused.
+  state.where = COMMANDER_UNSAID;
+  state.now += 2_000;
+  await companion.tick();
+  assert.equal(counter.warps, 2, "the whereabouts changed, so it asks again");
+  // And that refusal waits in turn.
+  state.now += 2_000;
+  await companion.tick();
+  assert.equal(counter.warps, 2);
+});
+
+test("a not-here refusal is asked again after a quiet minute even if the roster never changes", async () => {
+  const state = { where: COMMANDER_AT_HOME as FleetCompanionObservation["fleetCommanderWhereabouts"], now: 1_000_000 };
+  const { companion, counter } = notHereCompanion(NOT_HERE_WORDS, state);
+  companion.start(REQUEST);
+  await companion.tick();
+  state.now += 59_000;
+  await companion.tick();
+  assert.equal(counter.warps, 1, "not before the minute is up");
+  state.now += 2_000;
+  await companion.tick();
+  assert.equal(counter.warps, 2, "the minute is up");
+  state.now += 2_000;
+  await companion.tick();
+  assert.equal(counter.warps, 2, "and that refusal waits a minute in turn");
+});
+
+test("a refusal that names its blocker keeps the three tries and the back-off", async () => {
+  const state = { where: COMMANDER_AT_HOME as FleetCompanionObservation["fleetCommanderWhereabouts"], now: 1_000_000 };
+  const { companion, counter } = notHereCompanion("Warp was refused by the server: You cannot warp because you are warp scrambled.", state);
+  companion.start(REQUEST);
+  for (let tick = 0; tick < 4; tick += 1) {
+    state.now += 1_000;
+    await companion.tick();
+  }
+  assert.equal(counter.warps, 3);
+  assert.match(companion.snapshot().why ?? "", /^Cannot warp to the commander: .*Trying again shortly\.$/);
+});
+
 test("a lost answer is resent after a short wait, and counts as a try", async () => {
   let warps = 0;
   const companion = createFleetCompanion(makeDeps({
