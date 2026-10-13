@@ -223,6 +223,11 @@ const SUBSCRIPTION_MGR = "subscriptionMgr";
 const CLONE_GRADE = "GetCloneGrade";
 const keptCloneGrade = (service, method, form) => service === SUBSCRIPTION_MGR && method === CLONE_GRADE && form.args.length === 0 && form.kwargs === null;
 const keptOfCrimewatch = (service, method, form) => service === CRIMEWATCH && (method === CLIENT_STATES || method === OWN_SECURITY_STATUS) && form.args.length === 0 && form.kwargs === null;
+/** The pilot's jump timers, which crimewatchSvc asks once of the service by its name and keeps (crimewatchSvc.py 605 to 608). */
+const JUMP_TIMERS = "jumpTimers";
+const JUMP_TIMERS_READ = "GetTimers";
+/** Whether a call is crimewatchSvc's read of the jump timers, asked as the client asks it: with the pilot's own character alone. */
+const keptJumpTimers = (service, method, form, characterID) => service === JUMP_TIMERS && method === JUMP_TIMERS_READ && form.args.length === 1 && form.kwargs === null && positive(form.args[0]) === characterID;
 const OFFICE_MANAGER = "officeManager";
 /**
  * What the client hands back to the server as it was answered, and so with the Python type it came with:
@@ -1427,6 +1432,8 @@ function createGamePortPilots({
       /** crimewatchSvc's client states as last answered (CLIENT_STATES), and the pilot's security status (mySecurityStatus): undefined while none is had. */
       clientStates: createKeptReads(),
       securityStatus: undefined,
+      /** crimewatchSvc.jumpTimers: the jump activation's end, the jump fatigue's end and when they were last reckoned, as last answered or told: undefined while none is had. */
+      jumpTimers: undefined,
       /** The account's clone grade as the server last said it (clonegrade/const.py: 0 alpha, 1 omega): undefined while none is had. */
       cloneGrade: undefined,
       /** Whether the office's item was primed on the Moniker for where the pilot is docked (PRIME_OFFICE): its answer, kept while docked there. */
@@ -1493,6 +1500,10 @@ function createGamePortPilots({
       if (notification.method === "OnSubscriptionChangedServer" && typeof notification.args?.[0] === "number") entry.cloneGrade = notification.args[0];
       // crimewatchSvc.OnSecurityStatusUpdate(newSecurityStatus): the status is what the server says.
       if (notification.method === "OnSecurityStatusUpdate" && typeof notification.args?.[0] === "number") entry.securityStatus = notification.args[0];
+      // crimewatchSvc.OnJumpTimersUpdated(*args) (610 to 612): the jump timers are what the server says, the three as
+      // they came. A notice of another number is no such three (the timer panel's handler takes three,
+      // crimewatchTimers.py 456): what is kept is let go, and asked for when next wanted.
+      if (notification.method === "OnJumpTimersUpdated") entry.jumpTimers = Array.isArray(notification.args) && notification.args.length === 3 ? notification.args : undefined;
       // home_station (163, 168): the home station changed, or was moved from its structure. What is kept is let go.
       if (HOME_STATION_NOTICES.has(notification.method)) entry.homeStation.forget();
       // officeManager.OnOfficeRentalChange (71): an office rented or given up, whoever's, and the station's are not as kept.
@@ -1661,6 +1672,9 @@ function createGamePortPilots({
       // the pilot's own security status, which the client asks for once.
       await clientStatesAtAChange(entry, { charid: [null, characterID], ...(attribute(entry, "solarsystemid") === null ? {} : { solarsystemid: [null, attribute(entry, "solarsystemid")] }) });
       await securityStatusRead(entry).catch(() => {});
+      // crimewatchTimers (335, 355): the timer panel is made as the pilot comes in, docked or in space, and reads
+      // the jump timers of crimewatchSvc, which asks for them once. A service that refuses fails no choosing.
+      await jumpTimersRead(entry).catch(() => {});
       // crimewatchSvc and bco_members: the corporation's registry is bound, and asked its settings and its members' names.
       await corporationRead(entry);
       // addressbook.GetContacts: the pilot's contacts, its corporation's, and who of the watched is online.
@@ -1810,6 +1824,12 @@ function createGamePortPilots({
     // asked as the client asks them: with nothing.
     if (keptOfCrimewatch(service, method, form)) {
       const kept = await run(entry, service, method, () => crimewatchKept(entry, method));
+      return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
+    }
+    // The jump timers are that service's to answer too, where they are asked as the client asks them: of the
+    // pilot's own character alone.
+    if (keptJumpTimers(service, method, form, entry.characterID)) {
+      const kept = await run(entry, service, method, () => jumpTimersRead(entry));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
     // The corporations with offices where a pilot is docked are the client's office manager's to answer, where
@@ -2296,6 +2316,24 @@ function createGamePortPilots({
   async function securityStatusRead(entry) {
     if (entry.securityStatus === undefined) entry.securityStatus = await crimewatchAsked(entry, OWN_SECURITY_STATUS);
     return entry.securityStatus;
+  }
+
+  /**
+   * crimewatchSvc.GetJumpTimers (605 to 608): sm.RemoteSvc('jumpTimers').GetTimers(session.charid), by the service's
+   * name, asked for while there is none and kept: the jump activation's end, the jump fatigue's end and when they
+   * were last reckoned, each a time or None. The client's timer panel wants them as it is made
+   * (ui/crimewatch/crimewatchTimers.py 335, 355), which is as a pilot comes in, docked or in space; from then on
+   * the server's OnJumpTimersUpdated says what they are (610 to 612) and nothing is asked. An answer of three Nones
+   * is an answer, and is kept as any. Tranquility's four recordings of a login each have the one call, answered
+   * (None, None, None).
+   */
+  async function jumpTimersRead(entry) {
+    if (entry.jumpTimers === undefined) {
+      const form = shape(JUMP_TIMERS, JUMP_TIMERS_READ, [entry.characterID], null, contextFor(entry));
+      ledger.note(JUMP_TIMERS, JUMP_TIMERS_READ, form);
+      entry.jumpTimers = await byName(entry.session, JUMP_TIMERS, JUMP_TIMERS_READ, form);
+    }
+    return entry.jumpTimers;
   }
 
   /**

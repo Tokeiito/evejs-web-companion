@@ -547,6 +547,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // What is left of each mission the pilot has accepted, which the client's mission tracker asks at every change
   // of the session and as each warp ends. The gateway's list has nothing of the mission tracker's.
   "missionTrackerMgr.GetMissionInfoItems",
+  // The pilot's jump timers, which the client's crimewatch service asks once, for its timer panel. The gateway's
+  // list has nothing of the jump timers' service.
+  "jumpTimers.GetTimers",
   // The queue service's priming. The page asks for it by name to make the Skills window's sheet itself (the plan's
   // Phase 6b), and is answered from what the transport keeps. The gateway's list has not got it: through the
   // gateway the sheet is the gateway's own.
@@ -763,6 +766,11 @@ const jettisoning = (args, kwargs) => (args.length === 1 && Array.isArray(args[0
 const oneIDAlone = (what) => (args, kwargs) => (args.length === 1 && Number.isSafeInteger(args[0]) && args[0] > 0 && Object.keys(kwargs).length === 0
   ? {}
   : { status: "differs", note: `The client asks with ${what} alone.` });
+/** The pilot's own character alone, and nothing by keyword. */
+const ownCharacterAlone = (args, kwargs, context) => (args.length === 1 && context.characterID !== undefined && context.characterID !== null
+  && Number(args[0]) === Number(context.characterID) && Object.keys(kwargs).length === 0
+  ? {}
+  : { status: "differs", note: "The client asks with the pilot's own character alone." });
 /** facilitySvc.GetFacilityLocations (114 to 120): the facility and the owner the job is for, each an ID, and nothing by keyword. */
 const aFacilityAndAnOwner = (args, kwargs) => (args.length === 2 && args.every((each) => Number.isSafeInteger(each) && each > 0) && Object.keys(kwargs).length === 0
   ? {}
@@ -1892,6 +1900,7 @@ const RETAIL_CALLS = Object.freeze({
   "dogmaIM.ShipOnlineModules": webOnly(`${GODMA}:697`, "godma has a wrapper for this that nothing in the client calls, and throws its answer away. Which modules are online the client reads from the effects GetAllInfo lists. eve.js answers with the online modules, and the BFF reads that."),
   "ship.LaunchDrones": reshaped(`${EVE_MISC}:29`, launching, "GetShipAccess().LaunchDrones([(itemID, quantity), ...], whoseBehalfID, ignoreWarning): a list of pairs, and None for whose behalf when it is the pilot's own"),
   "ship.ScoopDrone": judged(`${DRONE_FUNCTIONS}:195`, scooping, "GetShipAccess().ScoopDrone(droneIDs), the drones as one list, from a drone's menu. No recording has one."),
+  "jumpTimers.GetTimers": judged("eve/client/script/ui/services/crimewatchSvc.py:607", ownCharacterAlone, "sm.RemoteSvc('jumpTimers').GetTimers(session.charid): the end of the pilot's jump activation, the end of its jump fatigue and when they were last reckoned, each a time or None. crimewatchSvc asks it once, as its timer panel is first made (ui/crimewatch/crimewatchTimers.py 355), keeps it, and from then on takes the server's OnJumpTimersUpdated for what they are (605 to 612). Tranquility's four recordings of a login each have the one call, answered (None, None, None)."),
   "missionTrackerMgr.GetMissionInfoItems": judged("missions/client/missionObjectivesTracker.py:275", oneIDAlone("the mission's agent"), "sm.RemoteSvc('missionTrackerMgr').GetMissionInfoItems(agentID): what is left to do of the mission that agent gave, as a list of words (['TravelTo', '30011392'], ['TransportItemsMissing', '3814', '30']). The client's mission tracker asks it for each mission the pilot has accepted and that has not run out, one after another, at every change of the session once a character is on it (89 to 94, 213, 267 to 279) and as each warp ends (84 to 87). Tranquility's recordings have it in 24, three at a time for a pilot on three missions."),
   "fighterMgr.GetFightersForShip": judged("eve/client/script/parklife/fightersSvc.py:99", sentWithNothing, "sm.RemoteSvc('fighterMgr').GetFightersForShip(), nothing sent: the fighters in the ship's tubes, those of its in space, and their abilities' states. The client's ship fighter state asks it at every session change that names the ship (ui/inflight/squadrons/shipFighterState.py 72 to 74), from whatever ship, docked or in space; the choosing of a character is one. The game port asks it then, of its own accord, and keeps nothing of the answer. Recorded on Tranquility twelve times, at logins and at changes of ship, each answered ([], [], {})."),
   "miningScanMgr.perform_scan": judged("mining/client/asteroid_scanning_service.py:134", sentWithNothing, "sm.RemoteSvc('miningScanMgr').perform_scan(), nothing sent: each asteroid about the ship with what it yields and how much is left, for the survey scan. The client asks only from a ship whose miningScannerUpgrade (attribute 5979) is 1 or more, and at most ten times a minute; from any other ship the scan asks nothing (perform_scan, 103). The BFF's route holds to this on the game port, where it has godma's value of the attribute for the ship being flown (GET /api/bridge/mining/scan); off the game port it has none and asks from any ship. No recording has one: in the one recording of a ship with a survey chipset fitted, the scan was never asked for."),
