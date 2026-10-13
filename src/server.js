@@ -18679,8 +18679,13 @@ async function readHeldFlight(held, webSessionID, { adoptShip = false } = {}) {
     // The roles the session has in its corporation, where the transport says them (the game port does, as the
     // digits of session.corprole; the gateway does not). Kept here for the routes that go by them, and left out
     // of what the page is handed.
-    const { corpRole = null, ...flight } = outcome && outcome.flight ? outcome.flight : {};
+    const { corpRole = null, corporationID, ...flight } = outcome && outcome.flight ? outcome.flight : {};
     held.corpRole = corpRole;
+    // The corporation the session is in now, where the transport says it (the game port does, the gateway does
+    // not). held.corporationID is otherwise set only at select, so after the pilot joins, leaves or founds a
+    // corporation the routes that go by it (the offices' rent, a contract's corporation, the corporation's
+    // wallet) would go by the select-time corporation until a full re-login. Left out of what the page is handed.
+    if (corporationID !== undefined) held.corporationID = Number(corporationID) || null;
     if (flight.docked === true && Number(flight.stationID) > 0) {
       held.stationID = Number(flight.stationID);
       held.structureID = null;

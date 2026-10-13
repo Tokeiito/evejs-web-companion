@@ -1234,6 +1234,8 @@ test("flight status while docked is the gateway's, with the ship's type as godma
     shipID: SHIP, shipTypeID: 588, shipGroupID: 237, shipIsCapsule: false, shipMode: null, shipSpeedFraction: null,
     // And what the gateway does not say: the roles the session has in its corporation, which the BFF keeps for itself.
     corpRole: "0",
+    // And the corporation the session is in now (the stand-in's), which the BFF keeps for itself too.
+    corporationID: 1000044,
   });
   assert.deepEqual(notifications, []);
   // Godma is primed once for a ship in a place, as the client primes it, not once per poll; and the ship is

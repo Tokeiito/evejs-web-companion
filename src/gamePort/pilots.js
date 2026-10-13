@@ -3118,6 +3118,11 @@ function createGamePortPilots({
         // client's lobby reads its buttons off it (dockedUI/controllers/baseController.py, _HasRole). A 64-bit
         // mask, so as its digits. The BFF keeps it for itself and hands the page none of it.
         corpRole: String(wholeOf(entry.session.attributes.corprole) ?? 0n),
+        // session.corpid: the corporation the pilot is in, as the server's session has it now. A pilot's
+        // corporation changes under it (one joined, left or founded), and the BFF's routes that go by the pilot's
+        // corporation are to go by this one. The gateway's flight does not say it. The BFF keeps it for itself, as
+        // it keeps the roles, and hands the page none of it.
+        corporationID: attribute(entry, "corpid"),
         // Movement is the pilot's own ball in its ballpark; nothing to say when docked or before the state has come.
         ...(place.inSpace && entry.space && entry.space.park.validState ? projectFlight(entry.space.park) : { shipMode: null, shipSpeedFraction: null }),
       },
