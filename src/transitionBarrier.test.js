@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   SESSION_CHANGE_COOLDOWN_MS,
+  adoptObservedShip,
   beginHeldTransition,
   evaluateReadiness,
   markTransitionFailed,
@@ -264,4 +265,67 @@ test("an unstable read resolves nothing and the latch holds", () => {
   beginHeldTransition(live, "stargate", { fromSolarSystemID: 3001, shipID: 44 }, 0);
   assert.equal(resolveFailedTransition(live, { inSpace: true, docked: false, solarSystemID: 3001, shipID: 44 }), null);
   assert.equal(live.transition.phase, "requested");
+});
+
+// ── A ship the server changed by itself ──────────────────────────────────────
+//
+// The retail client goes by session.shipid for the ship it is in (eveCfg.GetActiveShip, 1510), and the server
+// changes it with no word from the pilot: a ship destroyed, and the pilot is in a capsule. Godma primes itself
+// again and the inventory cache lets the old ship go (godma.py 1156 and 1202, invCache.py 156). No transition of
+// the BFF's began that change, so none adopts the new ship by its postcondition: a read of the flight status does.
+
+test("a ship the server put the pilot in is adopted from a flight read, as a session change is: a new epoch, and the old ship's bindings gone", () => {
+  const state = held();
+  assert.equal(adoptObservedShip(state, { inSpace: true, solarSystemID: 3001, shipID: 91 }, 0, 50_000), true);
+  assert.equal(state.activeShipID, 91);
+  assert.equal(state.transitionEpoch, 1);
+  assert.equal(state.boundHandles.size, 0);
+  // It is no transition: nothing is afoot, nothing waits, and the mutation cooldown is as it was.
+  assert.equal(state.transition, null);
+  assert.equal(state.cooldownUntilMs, 0);
+  assert.deepEqual([publicTransition(state).epoch, publicTransition(state).kind, publicTransition(state).sessionStable], [1, "idle", true]);
+  // The same ship read again is nothing new.
+  state.boundHandles.set("capsule", "oid");
+  assert.equal(adoptObservedShip(state, { inSpace: true, solarSystemID: 3001, shipID: 91 }, 1, 51_000), false);
+  assert.deepEqual([state.activeShipID, state.transitionEpoch, state.boundHandles.size], [91, 1, 1]);
+  // A session that had no ship takes the one it is told.
+  const none = { ...held(), activeShipID: null };
+  assert.equal(adoptObservedShip(none, { docked: true, stationID: 6001, shipID: 44 }, 0, 50_000), true);
+  assert.equal(none.activeShipID, 44);
+});
+
+test("a read that names no ship changes nothing", () => {
+  for (const flight of [{ inSpace: true }, { inSpace: true, shipID: null }, { inSpace: true, shipID: 0 }, { inSpace: true, shipID: "none" }, { inSpace: true, shipID: -5 }, null, undefined]) {
+    const state = held();
+    assert.equal(adoptObservedShip(state, flight, 0, 50_000), false, JSON.stringify(flight));
+    assert.deepEqual([state.activeShipID, state.transitionEpoch, state.boundHandles.size], [44, 0, 1], JSON.stringify(flight));
+  }
+  // A ship's number said as text is that number.
+  const state = held();
+  assert.equal(adoptObservedShip(state, { inSpace: true, shipID: "91" }, 0, 50_000), true);
+  assert.equal(state.activeShipID, 91);
+  assert.equal(adoptObservedShip(null, { shipID: 91 }, 0, 50_000), false);
+});
+
+test("a transition of the BFF's own adopts its ship itself: a read made while one is afoot, or failed, or asked before one began, or within its cooldown, adopts nothing", () => {
+  const other = { inSpace: true, solarSystemID: 3001, shipID: 91 };
+  // Afoot: a boarding asked for and not yet seen to have landed.
+  const boarding = held();
+  beginHeldTransition(boarding, "board", { shipID: 77, fromShipID: 44 }, 1_000);
+  assert.equal(adoptObservedShip(boarding, other, 1, 60_000), false);
+  assert.equal(boarding.activeShipID, 44);
+  // Failed and latched: resolveFailedTransition's to settle, not this.
+  markTransitionFailed(boarding, "not seen to land");
+  assert.equal(adoptObservedShip(boarding, other, 1, 60_000), false);
+  // Ready, but the read was asked under an earlier epoch: it may be from before the boarding.
+  boarding.transition.phase = "ready";
+  boarding.activeShipID = 77;
+  assert.equal(adoptObservedShip(boarding, { ...other, shipID: 44 }, 0, 60_000), false);
+  assert.equal(boarding.activeShipID, 77);
+  // Ready and asked under this epoch, but within the ten seconds its own change keeps: left for the next read.
+  assert.equal(adoptObservedShip(boarding, other, 1, 1_000 + SESSION_CHANGE_COOLDOWN_MS - 1), false);
+  assert.equal(boarding.activeShipID, 77);
+  // And once those are past, it is adopted.
+  assert.equal(adoptObservedShip(boarding, other, 1, 1_000 + SESSION_CHANGE_COOLDOWN_MS), true);
+  assert.deepEqual([boarding.activeShipID, boarding.transitionEpoch, boarding.boundHandles.size], [91, 2, 0]);
 });

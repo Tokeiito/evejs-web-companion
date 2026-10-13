@@ -80,6 +80,7 @@ const {
   swapsThePilotsShip,
 } = require("./bridgeCallPolicy");
 const {
+  adoptObservedShip,
   beginHeldTransition,
   cancelHeldTransition,
   markTransitionAccepted,
@@ -18650,9 +18651,11 @@ async function reparkAfterArrival(held, solarSystemID) {
 // Read the held session's current flight status (location + ship movement
 // state). A lost persistent session drops the held session (the page returns to
 // character select), as with every held call.
-async function readHeldFlight(held, webSessionID) {
+async function readHeldFlight(held, webSessionID, { adoptShip = false } = {}) {
   try {
     assertCurrentHeldSession(held, webSessionID);
+    // The epoch this read is asked under: a read from before a transition says nothing of the ship after it.
+    const epochAtRead = Number(held.transitionEpoch) || 0;
     const outcome = await gateway.readFlightStatus(held.bridgeSessionID, {
       userid: held.accountID,
     });
@@ -18663,7 +18666,9 @@ async function readHeldFlight(held, webSessionID) {
     // reads (agents, inventory bind) would still target the select-time station
     // until a full re-login. Adopt a real docked station here; leave the last
     // station in place while in space (agents/inventory are docked-only). The
-    // active ship is owned by the board flow, so it is not synced here.
+    // active ship is a boarding's to change by its own postcondition; a ship the
+    // server changed by itself (one destroyed, and the pilot in a capsule) is
+    // adopted below, for the flight status's own route alone.
     // The roles the session has in its corporation, where the transport says them (the game port does, as the
     // digits of session.corprole; the gateway does not). Kept here for the routes that go by them, and left out
     // of what the page is handed.
@@ -18705,6 +18710,11 @@ async function readHeldFlight(held, webSessionID) {
     // so a session recovers within a poll cycle of the world settling instead
     // of demanding a character re-select.
     resolveFailedTransition(held, flight);
+    // The ship the session is in, where the server changed it and no transition of ours did. Only the read the
+    // page makes to learn where its pilot is adopts it: a route that reads the flight for a guard of its own
+    // (the ship it was asked about is still the pilot's) must go on seeing the ship it was asked under, and
+    // refuse. The page hears of the new ship and the new epoch from this read, and asks again by them.
+    if (adoptShip) adoptObservedShip(held, flight, epochAtRead, routeTransitionNow());
     return {
       ...outcome,
       flight: {
@@ -18939,7 +18949,7 @@ app.get("/api/bridge/flight/status", requireAuth, async (req, res, next) => {
     return;
   }
   try {
-    const outcome = await readHeldFlight(held, req.webSessionID);
+    const outcome = await readHeldFlight(held, req.webSessionID, { adoptShip: true });
     res.json({ ok: true, flight: outcome.flight, notifications: outcome.notifications });
   } catch (error) {
     next(error);

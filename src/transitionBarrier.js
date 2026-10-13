@@ -335,10 +335,59 @@ function resolveFailedTransition(held, flight, space = null) {
   return null;
 }
 
+/**
+ * The ship the session is in, taken from a flight read where no transition of
+ * the BFF's own says it.
+ *
+ * The retail client goes by session.shipid for the ship it is in
+ * (eveCfg.GetActiveShip, 1510), and the server changes that by itself: a ship
+ * is destroyed and the pilot is in a capsule. Godma primes itself again and the
+ * inventory cache lets the old ship go (godma.py 1156 and 1202, invCache.py
+ * 156). The BFF began no transition for it, so none adopts the new ship by its
+ * postcondition, and the held session went on binding a ship that was no more.
+ *
+ * So a read that names another ship than the held one is taken for what a
+ * session change is: the ship adopted, a new epoch, and every bound object of
+ * the old one let go. It is no transition. Nothing waits on it and the
+ * mutation cooldown is not touched: when the server made the change is not
+ * known, and the server keeps its own timer.
+ *
+ * A transition of the BFF's own adopts its ship itself. A read is therefore
+ * left alone while one is afoot or latched, when it was asked under an earlier
+ * epoch (it may be from before a boarding), and inside the cooldown a
+ * transition began (its own reads are still settling). The next read is seconds
+ * away.
+ *
+ * `epochAtRead` is `held.transitionEpoch` as it was when the read was asked.
+ * True where a ship was adopted.
+ */
+function adoptObservedShip(held, flight, epochAtRead, nowMs = Date.now()) {
+  const observed = numberOrNull(flight && flight.shipID);
+  if (!held || observed === null || observed === numberOrNull(held.activeShipID)) {
+    return false;
+  }
+  if (held.transition && !TERMINAL_PHASES.has(held.transition.phase)) {
+    return false;
+  }
+  if ((Number(held.transitionEpoch) || 0) !== (Number(epochAtRead) || 0)) {
+    return false;
+  }
+  if (nowMs < (Number(held.cooldownUntilMs) || 0)) {
+    return false;
+  }
+  held.activeShipID = observed;
+  held.transitionEpoch = (Number(held.transitionEpoch) || 0) + 1;
+  if (held.boundHandles && typeof held.boundHandles.clear === "function") {
+    held.boundHandles.clear();
+  }
+  return true;
+}
+
 module.exports = {
   SESSION_CHANGE_COOLDOWN_MS,
   TRANSITION_POLL_MS,
   TRANSITION_READY_TIMEOUT_MS,
+  adoptObservedShip,
   beginHeldTransition,
   cancelHeldTransition,
   evaluateReadiness,
