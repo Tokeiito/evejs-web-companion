@@ -247,6 +247,13 @@ const JUMP_TIMERS = "jumpTimers";
 const JUMP_TIMERS_READ = "GetTimers";
 /** Whether a call is crimewatchSvc's read of the jump timers, asked as the client asks it: with the pilot's own character alone. */
 const keptJumpTimers = (service, method, form, characterID) => service === JUMP_TIMERS && method === JUMP_TIMERS_READ && form.args.length === 1 && form.kwargs === null && positive(form.args[0]) === characterID;
+/** The warzone service's read of the system the session is in, which it keeps for as long as the session is there (fwWarzoneSvc.py 47 to 61). */
+const FW_WARZONE = "fwWarzoneSolarsystem";
+const LOCAL_OCCUPATION = "GetLocalOccupationState";
+/** Whether a call is the warzone service's read of the local occupation state, asked as the client asks it: with nothing. */
+const keptLocalOccupation = (service, method, form) => service === FW_WARZONE && method === LOCAL_OCCUPATION && form.args.length === 0 && form.kwargs === null;
+/** idCheckers.IsKnownSpaceSystem and IsWormholeSystem (inventorycommon/const.py 42 to 45): a solar system of known space, or of a wormhole's. */
+const inKnownOrWormholeSpace = (solarSystemID) => solarSystemID !== null && solarSystemID >= 30000000 && solarSystemID <= 31999999;
 const OFFICE_MANAGER = "officeManager";
 /**
  * What the client hands back to the server as it was answered, and so with the Python type it came with:
@@ -1465,6 +1472,12 @@ function createGamePortPilots({
       warMonikerOwner: null,
       warsWork: Promise.resolve(),
       warsTimer: null,
+      /**
+       * fwWarzoneSvc._localOccupationSystemAndState: the solar system and its occupation state as the server last
+       * answered or told them, (system, state), undefined while none is had; and its askings, one after another.
+       */
+      localOccupation: undefined,
+      localOccupationWork: Promise.resolve(),
       /** The account's clone grade as the server last said it (clonegrade/const.py: 0 alpha, 1 omega): undefined while none is had. */
       cloneGrade: undefined,
       /** Whether the office's item was primed on the Moniker for where the pilot is docked (PRIME_OFFICE): its answer, kept while docked there. */
@@ -1537,6 +1550,12 @@ function createGamePortPilots({
       if (notification.method === "OnJumpTimersUpdated") entry.jumpTimers = Array.isArray(notification.args) && notification.args.length === 3 ? notification.args : undefined;
       // war_cso.OnWarChanged(war, ownerIDs, change) (82 to 93): a war changed, and it is worked into the wars kept.
       if (notification.method === "OnWarChanged") entry.wars.changed(notification.args);
+      // fwWarzoneSvc.OnWarzoneOccupationStateUpdated(solarsystemID, newOccupationState) (75 to 83): of the system the
+      // session is in, it is that system's state from now; of another system, nothing.
+      if (notification.method === "OnWarzoneOccupationStateUpdated" && Array.isArray(notification.args) && notification.args.length === 2
+        && positive(notification.args[0]) !== null && positive(notification.args[0]) === attribute(entry, "solarsystemid2")) {
+        entry.localOccupation = [notification.args[0], notification.args[1]];
+      }
       // home_station (163, 168): the home station changed, or was moved from its structure. What is kept is let go.
       if (HOME_STATION_NOTICES.has(notification.method)) entry.homeStation.forget();
       // officeManager.OnOfficeRentalChange (71): an office rented or given up, whoever's, and the station's are not as kept.
@@ -1565,6 +1584,13 @@ function createGamePortPilots({
       }
       // gameui.GetShipAccess: the ship's moniker it keeps is for the ship the pilot is in.
       if ("shipid" in changes) entry.monikers.delete("ship");
+      // fwWarzoneSvc.OnSessionChanged (32 to 35): in another solar system what is kept of the local occupation is
+      // let go; and the location panel, drawn again for the system, has it asked for (localOccupationWanted).
+      // (The choosing of the character asks for it itself.)
+      if ("solarsystemid2" in changes) {
+        entry.localOccupation = undefined;
+        if (sessions.has(entry.handle)) localOccupationWanted(entry).catch(() => {});
+      }
       // shipFighterState.OnSessionChanged: the ship's fighters are asked for again at any change of the ship, to
       // whatever. (The choosing of the character asks them itself.)
       if ("shipid" in changes && sessions.has(entry.handle)) fightersAsked(entry).catch(() => {});
@@ -1717,6 +1743,10 @@ function createGamePortPilots({
       // the pilot's own security status, which the client asks for once.
       await clientStatesAtAChange(entry, { charid: [null, characterID], ...(attribute(entry, "solarsystemid") === null ? {} : { solarsystemid: [null, attribute(entry, "solarsystemid")] }) });
       await securityStatusRead(entry).catch(() => {});
+      // infoPanelLocationInfo.UpdateLocationInfo (155 to 162): the location panel is up from the first, docked or in
+      // space, and has the warzone service say the occupation state of the system the pilot is in. In the retail
+      // client's own login it is asked just ahead of the jump timers. A service that refuses fails no choosing.
+      await localOccupationWanted(entry).catch(() => {});
       // crimewatchTimers (335, 355): the timer panel is made as the pilot comes in, docked or in space, and reads
       // the jump timers of crimewatchSvc, which asks for them once. A service that refuses fails no choosing.
       await jumpTimersRead(entry).catch(() => {});
@@ -1882,6 +1912,12 @@ function createGamePortPilots({
     // pilot's own character alone.
     if (keptJumpTimers(service, method, form, entry.characterID)) {
       const kept = await run(entry, service, method, () => jumpTimersRead(entry));
+      return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
+    }
+    // The occupation state of the system the session is in is the warzone service's to answer, where it is asked
+    // as the client asks it: with nothing. Answered in the server's own form, the system and its state.
+    if (keptLocalOccupation(service, method, form)) {
+      const kept = await run(entry, service, method, () => localOccupationRead(entry));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
     // The corporations with offices where a pilot is docked are the client's office manager's to answer, where
@@ -2353,6 +2389,51 @@ function createGamePortPilots({
   const crimewatchKept = (entry, method) => (method === CLIENT_STATES
     ? entry.clientStates.read(method, () => crimewatchAsked(entry, method))
     : securityStatusRead(entry));
+
+  // ── the occupation of the system, as the client's warzone service has it ──
+
+  /**
+   * fwWarzoneSvc.GetLocalOccupationState (47 to 61): the occupation state of the solar system the session is in.
+   * Kept as (system, state) while the session is in that system; where what is kept is of another system, or
+   * nothing is, sm.RemoteSvc('fwWarzoneSolarsystem').GetLocalOccupationState() is asked, by the service's name
+   * with nothing, and it answers (system, state). An answer for a system the session is not in (it was asked as
+   * the session moved) is asked for once more; one that is the session's is kept, and after two that are not the
+   * asking fails, as the client's raises. One asking at a time (the service's lock). Answers the pair as the
+   * server gave it: the client's own readers take the state out of it. Tranquility's recordings have the call
+   * once at each login and once after each change of solar system, answered (system, None) in high security.
+   */
+  function localOccupationRead(entry) {
+    const reading = entry.localOccupationWork.then(async () => {
+      const here = () => attribute(entry, "solarsystemid2");
+      const of = (pair) => (Array.isArray(pair) && pair.length === 2 ? positive(pair[0]) : undefined);
+      if (here() === null) return undefined;
+      if (of(entry.localOccupation) === here()) return entry.localOccupation;
+      const asked = () => {
+        const form = shape(FW_WARZONE, LOCAL_OCCUPATION, [], null, contextFor(entry));
+        ledger.note(FW_WARZONE, LOCAL_OCCUPATION, form);
+        return byName(entry.session, FW_WARZONE, LOCAL_OCCUPATION, form);
+      };
+      let answer = await asked();
+      if (of(answer) === undefined) throw fail("CALL_FAILED", "fwWarzoneSolarsystem.GetLocalOccupationState did not answer a solar system and its state.");
+      if (of(answer) !== here()) answer = await asked();
+      if (of(answer) === undefined || of(answer) !== here()) throw fail("CALL_FAILED", "fwWarzoneSolarsystem.GetLocalOccupationState did not answer for the solar system the session is in, asked twice.");
+      entry.localOccupation = answer;
+      return answer;
+    });
+    entry.localOccupationWork = reading.catch(() => {});
+    return reading;
+  }
+
+  /**
+   * infoPanelLocationInfo.UpdateSOVLocationInfo (335 to 341): the location panel shows whose the system is, and to
+   * say it reads the local occupation state, where the session is in a solar system of known space or a
+   * wormhole's (and its setting to show sovereignty is on, as it is until the pilot turns it off). The panel is
+   * drawn as the pilot comes in and again for each solar system. In a system no faction holds it goes on to ask
+   * for the system's sovereignty structures, which is not asked here yet.
+   */
+  function localOccupationWanted(entry) {
+    return inKnownOrWormholeSpace(attribute(entry, "solarsystemid2")) ? localOccupationRead(entry) : Promise.resolve(undefined);
+  }
 
   // ── the wars, as the client's war service has them ────────────────────────
 
