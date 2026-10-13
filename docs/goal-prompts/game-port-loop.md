@@ -2477,6 +2477,14 @@ Take these defaults, and list each under "For the operator" in the log so they c
   the client reads as amounts. Read both ends before a number is called
   right: what the store's own name for it means, and what the client's table
   says the column is (`dgmAttributesByIdx`).
+- **A patch that adds a name looks for the name first.** A patch script
+  checks that each text it replaces is there once; it does not check what it
+  adds. One added a `const` the file already declared sixty lines on, and the
+  service would not load. `grep -n "const <NAME>\b"` before a constant is
+  added; and load the module after every patch, before any test.
+- **The client's "Enter <function>" lines are whole.** Where its
+  "MethodCalls" lines stop at about 2,600 characters, the longest "Enter
+  MakeShipActive with" line is 24,607: every row of every state is there.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
