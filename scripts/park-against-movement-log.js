@@ -6,7 +6,10 @@
 //        [--rows=tick|trace] [--summary] [--ship=<itemID>] [--restamp=<entry name>:<ticks>]
 //
 // The recording is one of this repository's (scripts/record-warp.js,
-// scripts/record-destiny.js). The logs are eve.js's
+// scripts/record-destiny.js), or one of the game port made by
+// scripts/record-game-port.js (a .jsonl, one frame a line: the pilot's
+// connection is taken, the one with the most frames, and --ship says whose
+// ball; an NPC's will do, where the server traces it). The logs are eve.js's
 // _local/logs/space-movement-debug*.log for the same minutes (one file an
 // hour, named by the hour in UTC). With verbose debugging on, the server
 // writes there where it has each piloted ship: about every two seconds
@@ -269,6 +272,19 @@ function summary(rows) {
   });
 }
 
+/** A recording of the game port (scripts/record-game-port.js) in the form the park's tools take: the frames of the connection that has the most. */
+function gamePortRecording(file) {
+  const byConnection = new Map();
+  for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    const frame = JSON.parse(line);
+    if (!byConnection.has(frame.connection)) byConnection.set(frame.connection, []);
+    byConnection.get(frame.connection).push({ from: frame.from, atMs: frame.at, hex: frame.hex });
+  }
+  const frames = [...byConnection.values()].sort((a, b) => b.length - a.length)[0] ?? [];
+  return { shipID: null, frames };
+}
+
 function main(argv = process.argv.slice(2)) {
   const flags = new Map(argv.filter((arg) => arg.startsWith("--")).map((arg) => arg.slice(2).split("=")).map(([name, value = "true"]) => [name, value]));
   const [recordingPath, ...logs] = argv.filter((arg) => !arg.startsWith("--"));
@@ -277,7 +293,7 @@ function main(argv = process.argv.slice(2)) {
     process.exitCode = 2;
     return;
   }
-  const recording = require(path.resolve(recordingPath));
+  const recording = recordingPath.endsWith(".jsonl") ? gamePortRecording(path.resolve(recordingPath)) : require(path.resolve(recordingPath));
   const shipID = flags.has("ship") ? Number(flags.get("ship")) : recording.shipID;
   const wanted = { tick: ["tick"], trace: ["trace.tick"] }[flags.get("rows")] ?? null;
   const logged = readMovementLogs(logs.map((file) => path.resolve(file)), shipID).filter((row) => wanted === null || wanted.includes(row.event));
