@@ -3405,6 +3405,14 @@ Take these defaults, and list each under "For the operator" in the log so they c
   plain strings). The harness's verbs decode an answer through
   `tests/harness/verbs/verbEncoding.js`, whose `decodeKeyVal` takes a
   dict or a KeyVal alike.
+- **Tranquility's recordings are of a later build than the client
+  decompiled here**, and a service may have another name in them
+  (`monolithTaskTrackerMgr` there for this build's
+  `achievementTrackerMgr`). A search for `<service>::<method>` then
+  finds nothing though the method is in the file: the method is
+  searched for by its own name. What the game port asks is this
+  build's: the decompiled client's own line, and the retail client's
+  login on this server (`docs/game-port-login-calls.md`).
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

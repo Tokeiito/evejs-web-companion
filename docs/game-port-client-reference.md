@@ -1371,6 +1371,16 @@ filters, the sensor overlay's folders, the wallet's own payments and two of the 
 answers a `utillib.KeyVal` of the settings, each a unicode string, with a `__doc__` beside them, and its
 recordings of a login each have the one call. The game port asks it so since `168bc37b`, at the choosing; the
 saving and the deleting are not made yet.
+The achievement service (`achievements/client/achievementSvc.py`), the client's own "opportunities". As a character
+comes onto the session and it has no data yet (`OnSessionChanged`, 182 to 188) it asks
+`sm.RemoteSvc('achievementTrackerMgr').GetCompletedAchievementsAndClientEventCount()` with nothing
+(`FetchMyAchievementStatus`, 128 to 134) and keeps the answer's `completedDict` and the counts of its `eventDict`
+until the session is reset (190 to 192). It counts the client's own doings and sends them back,
+`UpdateClientAchievmentsAndCounters(completedDict, stats)`, when an achievement is completed, at most every three
+minutes otherwise, and as the client shuts down (194 to 230). Its event handler is what asks the ship's free turret
+slots (above). Tranquility's recordings, of a later build, have the same call under the service name
+`monolithTaskTrackerMgr`. The game port asks it since `c89be25f`, at the choosing between the journal and the
+fighters, and sends nothing back.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
