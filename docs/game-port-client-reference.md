@@ -1166,7 +1166,12 @@ Tranquility sends by `clientID` as the first thing of every
 selection its node turns away (seven in four recorded logins). It carries the end of the
 account's Omega time, a long, and the character sheet's PLEX panel reads it
 (`charsheet/plexPanel.py` 160). This server sends it there too (`eve.js` `6fac42e03`), None
-for an Alpha, and again when days are bought. The page has no reader of the end time. For a
+for an Alpha, and again when days are bought. Both are sent, too, when an account's Omega
+time runs out under a client that is online: the end time as None, then an Alpha's grade
+(`eve.js` `4413af1a1`: a watch is kept on the end from every telling of a subscription). The
+client then asks the grade again of itself and opens its lapse window
+(`clone_grade_fanfare_ui_controller.py` 59); the transport takes the notice's word, and the
+page shows nothing of the change. The page has no reader of the end time. For a
 check, the server answers an alpha's grade when started with `EVE_CLONE_GRADE=alpha`, and
 makes Alphas of the accounts that have bought nothing when started with
 `EVEJS_OMEGA_LICENSE=false`.

@@ -2694,6 +2694,26 @@ Take these defaults, and list each under "For the operator" in the log so they c
   the store's own script (`EVEJS_OMEGA_LICENSE=false bash store.sh save
   <label>`): the setting is that server's alone, and the putting back
   starts the next without it.
+- **An outgoing packet's line in `server.log` once carried the time of the
+  line after it** (until `eve.js` `13b3507ea`, 2026-10-13): the logger holds
+  the last `[PKT] OUT` line back to count repeats, and stamped it when it
+  wrote it. A log written before that commit is not a measure of when a
+  packet went out. A client's own frame clock is (`sub-live.js`,
+  `lapse-live.js`: every frame kept with its time). A held line still
+  stands under the debug lines logged after it; its own time says where it
+  belongs.
+- **A test's stand-in for the process's output can swallow the runner's
+  report.** A helper that passed on only the lines that did not quote the
+  test's own text hid three failing tests: the runner's report of a failure
+  quotes what failed. The count of tests the runner prints is read against
+  the count written, each time a file is new.
+- **A thing that happens at a time is staged by moving the time in the
+  store**, with EveJS stopped, between a copy of the store and its putting
+  back (`lapse-stage.sh`, after `ecu-expire.sh`): a row is read on a
+  saved copy first (`store-rows.js`), to know its key and its form.
+- **A second pilot on the BFF beside a session of one's own** shows both
+  ends of a notice in one look: the wire, with its times, and what the
+  transport keeps of it. Two accounts were staged alike for it.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
