@@ -2340,6 +2340,25 @@ Take these defaults, and list each under "For the operator" in the log so they c
   a run that is cut short is said so in the entry, with what it did reach.
 - **The BFF's ledger is written a little after a call.** Read `call-ledger.json` at the end of
   a run, not a second after the call it is read for.
+- **What the server does on purpose for the client's eye is sized and left.** Where the
+  server's own comments say what was seen in the retail client, and a recording says
+  Tranquility does otherwise, the entry sets the two measures beside each other with what a
+  change would need and what the choice costs meanwhile, and nothing is changed: the proof of
+  such a change is a picture this loop cannot look at. (The missile's lifecycle, 2026-10-12.)
+- **A missile of the recordings and of this server, measured the same way**: `ms-size.js
+  <recordings>` (every `LaunchMissile` to its `RemoveBalls`, the terminal entry and the
+  target's damage state by their stamps) and `ms-evejs.js <eve.js _local/logs> <characterID>
+  <from HH:MM:SS>` (the same of `space-destiny-debug.log`). A recording's `Action:` name is
+  cut at twelve letters (`LaunchMissil`, `TerminalPlay`); a `DoDestinyUpdate` line has every
+  entry with its stamp.
+- **`TerminalPlayDestructionEffect(id, None)` is an explosion to the client**
+  (`michelle.py` 1205): None is not "none", and nought is.
+- **The server's destiny log is added to across its restarts, and the numbers of its missiles
+  and its rats begin again at each.** A reader that goes by a number alone joins one run's
+  launch to another's removal: begin a new thing at each launch, and read from a time.
+- **`/npc 1 guristas` brings a different rat each time** (light missiles from 35 km once,
+  rockets and a laser from 7 km the next). Read what came, and what it fires, before a
+  measure of damage is believed: with a turret firing, a damage state belongs to no missile.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
