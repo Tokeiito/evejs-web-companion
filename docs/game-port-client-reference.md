@@ -1059,8 +1059,11 @@ roles come to it with the transport's flight status (`corpRole`, the digits of
 `session.corprole`) and go no further. Not built: an office in a structure, the headquarters
 moved, impounded items released (`GetImpoundReleasePrice`, `GetItemsFromImpound`).
 
-This server answers `RentOffice` True (False where nothing was rented, by its code), and its
-price as a plain number. The client uses neither answer for anything but the price's value.
+This server answered `RentOffice` True and its price as a plain number until 2026-10-13. It answers a rent
+None (False where nothing was rented, which no recording has), and the price a long (`eve.js` `f89da41c0`,
+`75b222d73`); and its notice of an office goes by `stationid` to the sessions docked where the office is and by
+`corpid` to the corporation's, the office's ID a long (`215874210`, `4f0cf3057`), where both went to every
+session. The client uses neither answer for anything but the price's value.
 
 **The lobby at a docked login, 2026-10-10.** The server's log of a retail client logging in
 docked in a station, with nothing opened, has four reads that the log of one logging in in

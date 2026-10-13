@@ -2635,6 +2635,29 @@ Take these defaults, and list each under "For the operator" in the log so they c
   and `flags-live.js` (a pilot made a suspect by `/cwatch`) say of each
   sequence whether it is a list, a tuple or an object; the pattern serves
   any answer or notice a second pilot or a GM command can raise.
+- **A long has two spellings through the web gateway.** A bare BigInt in a
+  handler's answer goes to the page as a string of digits; this server's
+  wire long (`{ type: "long", value }`) goes with its type, and is what
+  the page's and the BFF's readers of a long take. Both are a long on the
+  game's own wire. An answer that the page reads is made a wire long; a
+  value in a notice that no reader takes may be a bare BigInt, which the
+  server's own tests read with `Number()`.
+- **An answer on a bound object is in the packets, not in a "MethodCalls"
+  line.** The call's "Write: Packet::CallReq" has its callID and the
+  method's name in the bytes; the "Read: Packet::CallRsp" with that callID
+  has the answer's bytes, which may come after the notices the call raised
+  (`\x01` is None; `/\x03...` a long of three bytes).
+- **Who is sent a notice is in its address**: by `stationid` the sessions
+  in those stations, by `corpid` those corporations' (the client's own
+  `machoNet.py`, `FindClientsAndHoles`). A sender here that sends "to all
+  sessions" under such an address is read for whether it should.
+  `office-live.js` shows the pattern for seeing it: an actor and a watcher
+  who shares one of the two and not the other.
+- **A harness scenario that is red is measured before it is blamed**: the
+  unit's own source files put as they were (copied aside, put back,
+  compared), and the scenario run again. Two were red before the units that
+  met them; they are on the Next list to be read, not on this loop's
+  account.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
