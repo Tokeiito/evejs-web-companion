@@ -1244,6 +1244,15 @@ built). Its movement is authored once a second, on the clock's second (since `ev
 with no pilot in it that woke began its seconds where the waking fell: 0.36, 0.60 and 0.86 s in, measured
 2026-10-13).
 
+A park is not at one tick a second. Before each tick it applies what is due, and while more than one later stamp is
+still queued it steps once more and looks again (`DoPreTick`, 912 to 915); an entry behind its tick takes it back to
+that tick, where it stays, and with no kept state at or before that tick it asks for the whole state again
+(`SynchroniseToSimulationTime`, 1076 to 1088). Its ticks begin when the client makes it (`AddBallpark`, 315 to 333,
+starts it before any state has come); a whole state sets the tick's number, not when in the second it falls. On this
+server, whose stamps for one moment are spread from its own to four past it, a park stood 0 to 3 ticks ahead of the
+server's stamp in six recordings, went back 11 times and stepped three ticks forward at once twice, and asked for a
+new state in none (`scripts/park-tick-against-stamps.js`). On Tranquility an entry arrives none or one ahead.
+
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
 (`ACTIONS`, by `eventTypeID`) and a level it reckons from `absolutePoints` and the skill's rank

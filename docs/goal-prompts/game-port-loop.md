@@ -3036,6 +3036,23 @@ Take these defaults, and list each under "For the operator" in the log so they c
   <ball> <from ms-to ms,...> [rows]`: for a ball just after each of
   several whole states. Each login is a connection of its own in a
   recording (`grep '"connection":N,'` into a file).
+- **A stamp is measured against the client's own tick too**:
+  `scripts/park-tick-against-stamps.js <recording.jsonl>
+  [--server-clock=<ms>] [--timeline]` plays a recording through the park
+  clocked as the client clocks it and says, by the entry's name, how far
+  each stamp was past the park's tick, and how often the park went back,
+  asked for a new state, or stepped forward. A change of a stamp is held
+  to it as well as to the park's tool for place. The server's clock for a
+  recording: the ms into its second that a whole state was built (the
+  authority's trace, `emit-steps.js <missile debug log> <from ms>
+  SetState`) set against the first update's arrival (`first-updates.js`).
+- **Read the client's side of a server's rule before sizing a change to
+  it.** The delivery's floors looked like a lag to be removed; the
+  client's code and a measure said what they keep from happening.
+- **A count before a cause, again**: "the entry four ahead pushed the
+  park forward" was written from a list of arrivals; the park's own count
+  of its steps forward said never (a nearer entry queued before it
+  shields it).
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
