@@ -1478,7 +1478,7 @@ const RETAIL_CALLS = Object.freeze({
   "dogmaIM.GetAllInfo": Object.freeze({
     status: "same",
     source: `${GODMA}:2409`,
-    note: "GetDogmaLM().GetAllInfo(primeCharacter, primeShip, primeStructure): three positional, each saying whether that one is to be primed. Asked with fewer, it goes out as godma's first priming does: (True, True, None)",
+    note: "GetDogmaLM().GetAllInfo(primeCharacter, primeShip, primeStructure): three positional, each saying whether that one is to be primed, which is whether godma holds it not: (True, True, None) at a session's first priming, (False, True, None) at each after it, the third True in a structure. The game port's own priming asks so. Asked with fewer by a route, it goes out as godma's first priming does: (True, True, None)",
     shape: (args, kwargs) => (args.length === 3 ? { args, kwargs } : { args: [true, true, null], kwargs, status: "reshaped" }),
   }),
   "dogmaIM.ItemGetInfo": judged(

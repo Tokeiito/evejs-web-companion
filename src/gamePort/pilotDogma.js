@@ -252,6 +252,8 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
   const banks = new Map();
   /** item key -> Map(heatID -> { value, at, sources: Set(moduleID) }): the item's HeatAttributes. */
   const heat = new Map();
+  /** godma's `session.charid in self.invByID`: whether a priming has brought the character. */
+  let characterPrimed = false;
 
   /** godma.GetAttribute. */
   function attribute(itemID, attributeID, at = now()) {
@@ -320,6 +322,9 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       loadRow(itemID, row);
       held.push(key(itemID));
     }
+    // 2443: `if allInfo.charInfo`, and the character's inventory is primed. An answer with none of it (the
+    // server's to a later priming in space, and Tranquility's empty one) primes nothing of the character.
+    if (items(all.get("charInfo")).length > 0) characterPrimed = true;
     // 2446: the character's attributes the ship changes, laid over what is held of the character.
     if (characterID !== null) refreshAttributes(characterID, all.get("shipModifiedCharAttribs"));
     // The ship item the client has is kept when that ship is loaded again; any other was unloaded, and its
@@ -813,6 +818,30 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     multiEvent,
     shipReadings,
     has: (itemID) => attributes.has(key(itemID)),
+    /**
+     * Whether godma holds the character: `session.charid in self.invByID`, by which Prime (2405) asks for the
+     * character or does not. True from the priming that brought it, until everything is let go.
+     */
+    holdsCharacter: () => characterID !== null && characterPrimed,
+    /**
+     * godma.ProcessSessionChange (1154 to 1170), before it primes again at a change of place or of ship: every
+     * inventory it holds is let go but the character's (`keepList`, PurgeInventories), and the ship's own is let
+     * go by name just after (`del self.invByID[session.shipid]`), so that Prime asks for the ship again and never
+     * for the character. What is kept here is the character's own row and what is in the character; when each
+     * attribute last changed is forgotten (1169).
+     *
+     * Not the ship's weapon banks: they are the dogma location's (slaveModulesByMasterModule), which no purge of
+     * godma's touches, and the server's answer to a later priming in space has no ship's state to give them
+     * again. An answer that has one replaces them (setWeaponBanks). Nor the racks' heat, as in clear().
+     */
+    purge() {
+      for (const [id, racks] of heat) for (const heatID of racks.keys()) updateHeat(id, heatID, now());
+      const mine = characterID === null ? null : key(characterID);
+      const kept = new Set();
+      if (mine !== null) for (const id of attributes.keys()) if (id === mine || identity.get(id)?.locationID === mine) kept.add(id);
+      for (const held of [attributes, charged, effects, identity]) for (const id of [...held.keys()]) if (!kept.has(id)) held.delete(id);
+      lastChange.clear();
+    },
     clear() {
       // Not the racks' heat: that is the ship item's, which outlives godma's flush (see the top of the file).
       // It is brought to now first, so what went before is reckoned by what was known before; loadAllInfo
@@ -824,6 +853,7 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       effects.clear();
       identity.clear();
       banks.clear();
+      characterPrimed = false;
     },
   };
 }

@@ -708,6 +708,8 @@ test("the wallet's reads: the balance, the entry types and the divisions as they
 
 test("dogma's reads: all info as godma first primes it, an item by its ID, and what the client never asks marked as the web client's own", () => {
   // GetAllInfo(primeCharacter, primeShip, primeStructure): three, as given; with fewer, godma's first priming.
+  // The entry says which the client sends when (godma.py 2405 to 2409): the first of a session, and each after it.
+  assert.ok(RETAIL_CALLS["dogmaIM.GetAllInfo"].note.includes("(True, True, None) at a session's first priming, (False, True, None) at each after it, the third True in a structure"), RETAIL_CALLS["dogmaIM.GetAllInfo"].note);
   assert.deepEqual([retailForm("dogmaIM", "GetAllInfo", [true, false, null], null).status, retailForm("dogmaIM", "GetAllInfo", [true, false, null], null).args], ["same", [true, false, null]]);
   for (const given of [[], [true], [true, true]]) {
     const form = retailForm("dogmaIM", "GetAllInfo", given, null);

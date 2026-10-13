@@ -659,6 +659,86 @@ test("docked, a change of ship has no ballpark to tell, and no lock to clear", a
   assert.equal((await pilots.readFlightStatus(handle, FIELDS)).flight.shipID, 77);
 });
 
+// godma.py, Prime (2399 to 2409): GetAllInfo(primeCharacter, primeShip, primeStructure), each true for what godma
+// does not hold. At a change of place or of ship it keeps the character and lets the ship go (1154 to 1170), so
+// only a session's first priming asks for the character. Tranquility's recordings have (False, True, None) 144
+// times, (False, True, True) 14, (True, True, None) 4 and (True, True, True) twice. The answers are a real
+// server's to each form (test/fixtures/godmaPriming.json).
+const primingRecording = require("./fixtures/godmaPriming.json");
+const primedAs = (during) => recordedAnswers(primingRecording).find((answer) => answer.during === during && answer.value && answer.value.type === "object").value;
+
+test("godma's priming asks for what godma does not hold: the character at a session's first, and after it the ship alone", async () => {
+  let answer = primedAs("first, docked");
+  const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": () => answer } });
+  const asked = () => session.boundCalls.filter((call) => call.method === "GetAllInfo").map((call) => call.args);
+  const shipIs = (shipID, from) => { session.attributes.shipid = shipID; session.change({ shipid: [from, shipID] }); };
+  await pilots.readFlightStatus(handle, FIELDS);
+  assert.deepEqual(asked(), [[true, true, null]]);
+  // Another ship in the same place: godma lets the ship go and keeps the character.
+  shipIs(77, SHIP);
+  await pilots.readFlightStatus(handle, FIELDS);
+  assert.deepEqual(asked(), [[true, true, null], [false, true, null]]);
+  // The server's later answer in space has nothing of the character. It is held all the same, and not asked for.
+  answer = primedAs("later, in space");
+  shipIs(78, 77);
+  await pilots.readFlightStatus(handle, FIELDS);
+  shipIs(79, 78);
+  await pilots.readFlightStatus(handle, FIELDS);
+  assert.deepEqual(asked().slice(2), [[false, true, null], [false, true, null]]);
+  // Each is godma's own call, in the client's form.
+  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "dogmaIM.GetAllInfo").statuses, { same: 4 });
+  // No ship at all: godma asks for none.
+  session.attributes.shipid = null;
+  session.change({ shipid: [79, null] });
+  assert.equal(await pilots.shipAttribute(38, FIELDS, handle), null);
+  assert.deepEqual(asked().at(-1), [false, null, null]);
+});
+
+test("at a priming after the first, what godma held of the ship the pilot was in is let go: the server is asked of it again", async () => {
+  // godma.ProcessSessionChange (1154 to 1170): every inventory but the character's, before it primes.
+  let answer = shipAllInfo();
+  let asked = 0;
+  const { pilots, session, handle } = await selected(
+    { answers: { "bound:GetAllInfo": () => answer, "bound:QueryAttributeValue": () => { asked += 1; return 777; } } },
+    { allowed: new Set(["dogmaIM.QueryAttributeValue", "dogmaIM.MachoBindObject"]) },
+  );
+  const value = async (...args) => (await pilots.callMethod("dogmaIM", "QueryAttributeValue", args, null, FIELDS, handle)).result;
+  // Godma's, of the ship's module, from its first priming.
+  assert.deepEqual([await value(FITTED_MODULE, 9), asked], [40, 0]);
+  // Another ship, and the server's answer for it has neither the old ship nor its module.
+  answer = primedAs("later, in space");
+  session.attributes.shipid = 77;
+  session.change({ shipid: [SHIP, 77] });
+  assert.deepEqual([await value(FITTED_MODULE, 9), await value(SHIP, 482), asked], [777, 777, 2]);
+  assert.equal(session.boundCalls.filter((call) => call.method === "GetAllInfo").length, 2);
+});
+
+test("a first priming that brought no character leaves the character to be asked for at the next", async () => {
+  const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": () => primedAs("later, in space") } });
+  const asked = () => session.boundCalls.filter((call) => call.method === "GetAllInfo").map((call) => call.args);
+  await pilots.readFlightStatus(handle, FIELDS);
+  session.attributes.shipid = 77;
+  session.change({ shipid: [SHIP, 77] });
+  await pilots.readFlightStatus(handle, FIELDS);
+  assert.deepEqual(asked(), [[true, true, null], [true, true, null]]);
+});
+
+test("docked in a structure, godma's priming asks for the structure too, at its first and at each after it", async () => {
+  const STRUCTURE_IN = 1030000000001;
+  const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": () => primedAs("first, docked") } });
+  const asked = () => session.boundCalls.filter((call) => call.method === "GetAllInfo").map((call) => call.args);
+  // Out of the station and into a structure, as the session says it: nothing has primed godma yet.
+  Object.assign(session.attributes, { stationid: null, structureid: STRUCTURE_IN, solarsystemid: SYSTEM });
+  session.change({ stationid: [STATION, null], structureid: [null, STRUCTURE_IN], solarsystemid: [null, SYSTEM] });
+  assert.deepEqual(asked(), []);
+  await pilots.readFlightStatus(handle, FIELDS);
+  assert.deepEqual(asked(), [[true, true, true]]);
+  session.attributes.shipid = 77;
+  session.change({ shipid: [SHIP, 77] });
+  await pilots.readFlightStatus(handle, FIELDS);
+  assert.deepEqual(asked(), [[true, true, true], [false, true, true]]);
+});
+
 test("a pilot docked in a structure is docked", async () => {
   const built = build({ answers: { "charUnboundMgr.GetCharacterSelectionData": selectionData([characterRow({ stationID: null, structureID: 1030000000001 })]) } });
   const outcome = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);

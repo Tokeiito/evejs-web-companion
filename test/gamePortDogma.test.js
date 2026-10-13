@@ -957,3 +957,121 @@ test("what the server answers of an item that is held is held: its attributes an
   dogma.feed(itemsChanged([movedRow({ ...EXPANDER, locationID: HANGAR, flagID: 4 })], [[3, 5001], [4, 11]]));
   assert.deepEqual([dogma.updateItem(7001, row([online])), dogma.has(7001), dogma.item(7001)], [false, false, null]);
 });
+
+// ── godma's priming after the first ──────────────────────────────────────────
+//
+// godma.py, Prime (2399 to 2409): the dogma location is asked for what godma does not hold,
+//
+//   primeCharacter = session.charid and session.charid not in self.invByID
+//   primeShip      = session.shipid and session.shipid not in self.invByID
+//   GetDogmaLM().GetAllInfo(primeCharacter, primeShip, primeStructure)
+//
+// and at a change of place or of ship (ProcessSessionChange, 1154 to 1170) it lets every inventory go but the
+// character's, and the ship's by name just after, so that every priming after a session's first asks for the
+// ship and not the character: (False, True, None), 144 times of 164 in Tranquility's recordings.
+//
+// The bytes are a real server's (test/fixtures/godmaPriming.json, made by scripts/record-godma-priming.js): its
+// answer to the first form docked, and to the later form docked, in space and docked again. In space the later
+// answer has no charInfo and no shipState at all.
+const priming = require("./fixtures/godmaPriming.json");
+const primed = (during) => answers(priming).find((answer) => answer.during === during && answer.value && answer.value.type === "object").value;
+const [P_SHIP, P_PILOT] = [priming.shipID, priming.characterID];
+
+test("godma holds the character from the priming that brought it, and from no other", () => {
+  const dogma = createPilotDogma({ characterID: P_PILOT });
+  assert.equal(dogma.holdsCharacter(), false);
+  dogma.loadAllInfo(primed("first, docked"));
+  assert.equal(dogma.holdsCharacter(), true);
+  // An answer with nothing of the character brings none, though it has the ship.
+  const late = createPilotDogma({ characterID: P_PILOT });
+  assert.deepEqual(late.loadAllInfo(primed("later, in space")), [P_SHIP]);
+  assert.equal(late.holdsCharacter(), false);
+  // Everything let go, the character is let go.
+  dogma.clear();
+  assert.deepEqual([dogma.holdsCharacter(), dogma.has(P_PILOT)], [false, false]);
+  // A godma that is nobody's holds no character, whatever it is given.
+  const nobodys = createPilotDogma();
+  nobodys.loadAllInfo(primed("first, docked"));
+  assert.equal(nobodys.holdsCharacter(), false);
+});
+
+test("at a priming after the first the ship is let go and loaded anew, and what godma held of the character is kept", () => {
+  const dogma = createPilotDogma({ characterID: P_PILOT, now: () => T0 });
+  dogma.loadAllInfo(primed("first, docked"));
+  const [ofCharacter, whatItIs] = [dogma.attributesOf(P_PILOT), dogma.item(P_PILOT)];
+  assert.ok(ofCharacter.length > 20, `${ofCharacter.length} attributes of the character`);
+  // Something of the ship's the server's next answer will not have: told of since, by a notice.
+  assert.equal(dogma.applyAttributeChange(P_SHIP, 990001, T0, 5), true);
+  assert.equal(dogma.attribute(P_SHIP, 990001), 5);
+  // And an effect of the ship's, and its capacitor, which godma reckons by itself between the server's words.
+  dogma.setEffect(P_SHIP, EFFECT_ONLINE, true);
+  assert.ok(dogma.effect(P_SHIP, EFFECT_ONLINE) !== null);
+  assert.ok(dogma.attribute(P_SHIP, ATTRIBUTE.CHARGE) > 0);
+  // godma.ProcessSessionChange: every inventory but the character's.
+  dogma.purge();
+  assert.deepEqual([dogma.effect(P_SHIP, EFFECT_ONLINE), dogma.attribute(P_SHIP, ATTRIBUTE.CHARGE)], [null, null]);
+  assert.deepEqual([dogma.has(P_SHIP), dogma.item(P_SHIP), dogma.attribute(P_SHIP, 990001), dogma.shipReadings(P_SHIP)], [false, null, null, null]);
+  assert.deepEqual([dogma.has(P_PILOT), dogma.holdsCharacter(), dogma.item(P_PILOT)], [true, true, whatItIs]);
+  assert.deepEqual(dogma.attributesOf(P_PILOT), ofCharacter);
+  // The later answer in space: the ship, and nothing of the character.
+  assert.deepEqual(dogma.loadAllInfo(primed("later, in space")), [P_SHIP]);
+  assert.deepEqual([dogma.has(P_SHIP), dogma.attribute(P_SHIP, 990001), dogma.holdsCharacter()], [true, null, true]);
+  assert.ok(dogma.shipReadings(P_SHIP) !== null);
+  assert.deepEqual(dogma.attributesOf(P_PILOT), ofCharacter);
+  // The later answer docked has the character again: it is loaded as the answer has it.
+  dogma.purge();
+  assert.deepEqual(dogma.loadAllInfo(primed("later, docked again")), [P_SHIP, P_PILOT]);
+  assert.equal(dogma.holdsCharacter(), true);
+});
+
+test("a purge forgets when each attribute last changed, as godma does, and keeps what the character's are", () => {
+  // godma.ProcessSessionChange (1169): self.lastAttributeChange = {}.
+  const dogma = createPilotDogma({ characterID: P_PILOT, now: () => T0 });
+  dogma.loadAllInfo(primed("first, docked"));
+  const later = T0 + 50n * MS;
+  dogma.feed(changes(change(P_PILOT, 990002, later, 7, { owner: P_PILOT })));
+  assert.equal(dogma.attribute(P_PILOT, 990002), 7);
+  // An older change of the same attribute is not taken while the newer is remembered.
+  dogma.feed(changes(change(P_PILOT, 990002, T0, 3, { owner: P_PILOT })));
+  assert.equal(dogma.attribute(P_PILOT, 990002), 7);
+  dogma.purge();
+  assert.equal(dogma.attribute(P_PILOT, 990002), 7, "the character's own are kept");
+  dogma.feed(changes(change(P_PILOT, 990002, T0, 3, { owner: P_PILOT })));
+  assert.equal(dogma.attribute(P_PILOT, 990002), 3, "and the next change is taken whatever its time");
+});
+
+test("a ship's weapon banks are the dogma location's and outlive godma's purge; a ship's state in an answer replaces them", () => {
+  const dogma = createPilotDogma({ characterID: P_PILOT });
+  dogma.loadAllInfo(primed("first, docked"));
+  dogma.setWeaponBanks(P_SHIP, { type: "dict", entries: [[7001, { type: "list", items: [7002, 7003] }]] });
+  assert.deepEqual(dogma.weaponBanks(P_SHIP), { 7001: [7002, 7003] });
+  // In space the server's later answer has no state of the ship at all: what was held of its banks stands.
+  dogma.purge();
+  dogma.loadAllInfo(primed("later, in space"));
+  assert.deepEqual(dogma.weaponBanks(P_SHIP), { 7001: [7002, 7003] });
+  // Docked it has one, with no banks in it, and that is what the ship has.
+  dogma.purge();
+  dogma.loadAllInfo(primed("later, docked again"));
+  assert.deepEqual(dogma.weaponBanks(P_SHIP), {});
+  // And everything let go lets them go.
+  dogma.setWeaponBanks(P_SHIP, { type: "dict", entries: [[7001, { type: "list", items: [7002] }]] });
+  dogma.clear();
+  assert.equal(dogma.weaponBanks(P_SHIP), null);
+});
+
+test("what is in the character is the character's: an implant godma holds outlives the purge with it, and the ship and its module do not", () => {
+  const dogma = createPilotDogma({ characterID: PILOT, now: () => T0 });
+  const keyVal = (entries) => ({ type: "object", name: Buffer.from("util.KeyVal"), args: { type: "dict", entries: entries.map(([name, value]) => [Buffer.from(name), value]) } });
+  /** An item's row as godma is primed with one: what it is, where it is, and an attribute. */
+  const item = (itemID, locationID, typeID) => [itemID, keyVal([["itemID", itemID], ["time", T0],
+    ["invItem", { fields: { itemID, typeID, groupID: 300, categoryID: 20, flagID: 89, locationID } }], ["attributes", { type: "dict", entries: [[4, 1]] }], ["activeEffects", { type: "dict", entries: [] }]])];
+  const [ship, module, implant] = [5001n, 5003n, 8001n];
+  dogma.loadAllInfo(keyVal([
+    ["shipInfo", { type: "dict", entries: [item(ship, 60000004n, 588), item(module, ship, 438)] }],
+    ["charInfo", [{ type: "dict", entries: [item(BigInt(PILOT), ship, 1373), item(implant, BigInt(PILOT), 9899)] }, null]],
+  ]));
+  assert.deepEqual([dogma.has(PILOT), dogma.has(8001), dogma.has(5001), dogma.has(5003)], [true, true, true, true]);
+  dogma.purge();
+  assert.deepEqual([dogma.has(PILOT), dogma.has(8001), dogma.has(5001), dogma.has(5003)], [true, true, false, false]);
+  assert.deepEqual([dogma.item(8001).typeID, dogma.item(8001).locationID, dogma.attribute(8001, 4), dogma.item(5003)], [9899, PILOT, 1, null]);
+});

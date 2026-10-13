@@ -2733,9 +2733,16 @@ function createGamePortPilots({
     try {
       // godma.GetDogmaLM: the dogma location bound for where the pilot is, kept and asked everything of.
       ledger.note("dogmaIM", "GetAllInfo", DOGMA_AS_GODMA_PRIMES);
-      // primeCharacter, primeShip, primeStructure: a character and a ship, and no structure.
-      const allInfo = await monikerCall(entry, "dogmaIM", "GetAllInfo", [true, true, null]);
-      entry.dogma.clear();
+      // godma.Prime (2405 to 2409): each of the three is asked for where godma does not hold it. The character
+      // is held from the priming that brought it; the ship is let go at every change that primes again
+      // (ProcessSessionChange, 1154 to 1170: `del self.invByID[session.shipid]`), and so is the structure, which is
+      // not on its list of what to keep. `session.shipid and ...` and `session.structureid and ...` are None
+      // where the session has none. So a session's first priming is (True, True, None), and each after it
+      // (False, True, None); in a structure the third is True.
+      const asking = [!entry.dogma.holdsCharacter(), place.shipID ? true : null, place.structureID ? true : null];
+      const allInfo = await monikerCall(entry, "dogmaIM", "GetAllInfo", asking);
+      // What godma let go before it asked: every inventory but the character's.
+      entry.dogma.purge();
       entry.dogma.loadAllInfo(allInfo);
       entry.dogmaLoaded = loadedFor;
       if (entry.targetsOwed) targetsRefreshed(entry).catch(() => {});
