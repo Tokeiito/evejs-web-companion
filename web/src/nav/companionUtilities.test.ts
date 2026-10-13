@@ -8,6 +8,7 @@ import {
   UTILITY_ACTIVATION_GRACE_MS,
   UTILITY_STOP_RETRY_MS,
   decideCompanionUtilities,
+  decideUtilityRung,
   utilitiesAfterWarp,
   type CompanionUtilityFamily,
   type CompanionUtilityInputs,
@@ -71,7 +72,7 @@ function owning(family: CompanionUtilityFamily, itemID: number, targetID: number
   return {
     ...FRESH_COMPANION_UTILITIES,
     shipID: SHIP,
-    owned: [{ itemID, typeID: 5000 + SPEC[family][0], family, targetID, sinceMs: T0 - 60_000 }],
+    owned: [{ itemID, typeID: 5000 + SPEC[family][0], family, targetID, sinceMs: T0 - 60_000, seen: true }],
     ...extra,
   };
 }
@@ -138,7 +139,7 @@ test("an owned web goes off when the engagement moves on, or the target is gone"
   const gone = decideCompanionUtilities(
     inputs({ facts: web, engagedTargetID: null, targetLocked: false, activeModuleIDs: [WEB] }), memory);
   assert.deepEqual(gone.call, { kind: "deactivate", moduleID: WEB, typeID: 5065 });
-  assert.equal(gone.why, "The target is gone: switching the stasis webifier off.");
+  assert.equal(gone.why, "No target engaged: switching the stasis webifier off.");
 });
 
 test("a web that stopped on its own (the target died) is forgotten without a call", () => {
@@ -322,4 +323,238 @@ test("a warp forgets the targeted modules and keeps the self-buffs", () => {
   assert.deepEqual(after.stopping, []);
   assert.deepEqual(after.attempts, {});
   assert.equal(utilitiesAfterWarp(undefined), FRESH_COMPANION_UTILITIES);
+});
+
+// --- the decision trace --------------------------------------------------------
+
+/** The trace's skip codes by module id, for a compact assertion. */
+const codes = (step: { readonly trace: { readonly skipped: readonly { readonly moduleID: number; readonly code: string }[] } }) =>
+  Object.fromEntries(step.trace.skipped.map((entry) => [entry.moduleID, entry.code]));
+
+const NOTHING = { skipped: [], gaveUp: [] };
+
+test("a quiet grid reports nothing: modules correctly off are not skipped", () => {
+  const step = decideCompanionUtilities(
+    inputs({ engagedTargetID: null, targetLocked: false, fightOn: false }), FRESH_COMPANION_UTILITIES);
+  assert.deepEqual(step.trace, NOTHING);
+  // The sensor runs (not ours) and the web has no target to be on.
+  const fight = decideCompanionUtilities(
+    inputs({ facts: only(utility(WEB, "web"), utility(SENSOR, "sensor")), engagedTargetID: null, targetLocked: false,
+      activeModuleIDs: [SENSOR] }), FRESH_COMPANION_UTILITIES);
+  assert.deepEqual(fight.trace, NOTHING);
+});
+
+test("an activation reports no skip for the module it starts", () => {
+  const step = decideCompanionUtilities(inputs(), FRESH_COMPANION_UTILITIES);
+  assert.equal(step.call?.kind, "activate");
+  assert.deepEqual(step.trace, NOTHING);
+});
+
+test("no-rack: an unreadable rack names what was wanted, and what we own", () => {
+  const step = decideCompanionUtilities(inputs({ activeModuleIDs: null }), owning("sensor", SENSOR, 0));
+  assert.equal(step.call, null);
+  assert.deepEqual(codes(step), { [WEB]: "no-rack", [PAINTER]: "no-rack", [SENSOR]: "no-rack", [TRACKING]: "no-rack" });
+  const quiet = decideCompanionUtilities(
+    inputs({ activeModuleIDs: null, engagedTargetID: null, targetLocked: false, fightOn: false }), FRESH_COMPANION_UTILITIES);
+  assert.deepEqual(quiet.trace.skipped, []);
+});
+
+test("no-facts: no fit read, or another ship's, is one entry for no module, and only in a fight", () => {
+  for (const over of [{ facts: null }, { facts: { ...ALL, shipID: SHIP + 1 } }] as Partial<CompanionUtilityInputs>[]) {
+    const step = decideCompanionUtilities(inputs(over), FRESH_COMPANION_UTILITIES);
+    assert.deepEqual(step.trace.skipped, [{ moduleID: 0, family: "all", code: "no-facts" }]);
+    const quiet = decideCompanionUtilities(
+      inputs({ ...over, fightOn: false, engagedTargetID: null, targetLocked: false }), FRESH_COMPANION_UTILITIES);
+    assert.deepEqual(quiet.trace.skipped, []);
+  }
+  const noRack = decideCompanionUtilities(inputs({ facts: null, activeModuleIDs: null }), FRESH_COMPANION_UTILITIES);
+  assert.deepEqual(noRack.trace.skipped, [{ moduleID: 0, family: "all", code: "no-rack" }]);
+});
+
+test("cap-floor: below the floor every wanted module is held, and a quiet grid holds nothing", () => {
+  const step = decideCompanionUtilities(inputs({ capacitorRatio: 0.1 }), FRESH_COMPANION_UTILITIES);
+  assert.equal(step.call, null);
+  assert.deepEqual(codes(step), { [WEB]: "cap-floor", [PAINTER]: "cap-floor", [SENSOR]: "cap-floor", [TRACKING]: "cap-floor" });
+  const quiet = decideCompanionUtilities(
+    inputs({ capacitorRatio: 0.1, engagedTargetID: null, targetLocked: false, fightOn: false }), FRESH_COMPANION_UTILITIES);
+  assert.deepEqual(quiet.trace.skipped, []);
+});
+
+test("cap-need: too little for one cycle of this module", () => {
+  const step = decideCompanionUtilities(
+    inputs({ facts: only(utility(SENSOR, "sensor", { capNeed: 500 })), capacitorRatio: 0.3 }), FRESH_COMPANION_UTILITIES);
+  assert.deepEqual(codes(step), { [SENSOR]: "cap-need" });
+});
+
+test("mode-unknown: a script the framework does not understand", () => {
+  const step = decideCompanionUtilities(
+    inputs({ facts: only(utility(SENSOR, "sensor", { modeKnown: false })) }), FRESH_COMPANION_UTILITIES);
+  assert.deepEqual(codes(step), { [SENSOR]: "mode-unknown" });
+});
+
+test("not-locked: a target is engaged but not yet locked", () => {
+  const step = decideCompanionUtilities(inputs({ facts: only(utility(WEB, "web")), targetLocked: false }), FRESH_COMPANION_UTILITIES);
+  assert.deepEqual(codes(step), { [WEB]: "not-locked" });
+});
+
+test("optimal-unknown: no optimal read, or no distance to hold it against", () => {
+  const noRange = decideCompanionUtilities(
+    inputs({ facts: only(utility(WEB, "web", { rangeM: null })) }), FRESH_COMPANION_UTILITIES);
+  assert.deepEqual(codes(noRange), { [WEB]: "optimal-unknown" });
+  const noDistance = decideCompanionUtilities(
+    inputs({ facts: only(utility(WEB, "web")), targetDistanceM: null }), FRESH_COMPANION_UTILITIES);
+  assert.deepEqual(codes(noDistance), { [WEB]: "optimal-unknown" });
+});
+
+test("out-of-optimal: measured, and past the module's optimal", () => {
+  const step = decideCompanionUtilities(
+    inputs({ facts: only(utility(WEB, "web"), utility(PAINTER, "painter")), targetDistanceM: 12_000 }), FRESH_COMPANION_UTILITIES);
+  assert.deepEqual(codes(step), { [WEB]: "out-of-optimal", [PAINTER]: "out-of-optimal" });
+});
+
+test("no-damage: a painter with nothing shooting", () => {
+  const step = decideCompanionUtilities(
+    inputs({ facts: only(utility(PAINTER, "painter")), hasDamage: false }), FRESH_COMPANION_UTILITIES);
+  assert.deepEqual(codes(step), { [PAINTER]: "no-damage" });
+});
+
+test("no-turrets: a tracking computer on a ship without turrets, the sensor booster unaffected", () => {
+  const step = decideCompanionUtilities(
+    inputs({ facts: only(utility(TRACKING, "tracking"), utility(SENSOR, "sensor")), hasTurrets: false }), FRESH_COMPANION_UTILITIES);
+  assert.equal(step.call?.kind, "activate");
+  assert.deepEqual(codes(step), { [TRACKING]: "no-turrets" });
+});
+
+test("a module after the one that takes the tick still reports its own gate", () => {
+  const step = decideCompanionUtilities(
+    inputs({ facts: only(utility(WEB, "web"), utility(PAINTER, "painter")), hasDamage: false }), FRESH_COMPANION_UTILITIES);
+  assert.deepEqual(step.call, { kind: "activate", moduleID: WEB, targetID: RAT });
+  assert.deepEqual(codes(step), { [PAINTER]: "no-damage" });
+});
+
+test("stop-retry-wait: a deactivate in flight is waited on, and named", () => {
+  const sensor = only(utility(SENSOR, "sensor"));
+  const quiet = (nowMs: number) => inputs({ facts: sensor, fightOn: false, engagedTargetID: null, activeModuleIDs: [SENSOR], nowMs });
+  const first = decideCompanionUtilities(quiet(T0), owning("sensor", SENSOR, 0));
+  assert.equal(first.call?.kind, "deactivate");
+  assert.deepEqual(first.trace, NOTHING);
+  const waiting = decideCompanionUtilities(quiet(T0 + 2_000), first.memory);
+  assert.equal(waiting.call, null);
+  assert.deepEqual(waiting.trace, { skipped: [{ moduleID: SENSOR, family: "sensor", code: "stop-retry-wait" }], gaveUp: [] });
+});
+
+test("grace-dropped: an activation that never showed as running; a module that ran and ended is silent", () => {
+  const sensor = only(utility(SENSOR, "sensor"));
+  const on = decideCompanionUtilities(inputs({ facts: sensor }), FRESH_COMPANION_UTILITIES);
+  const soon = decideCompanionUtilities(inputs({ facts: sensor, nowMs: T0 + 2_000 }), on.memory);
+  assert.deepEqual(soon.trace, NOTHING, "still in its grace");
+  // Past the grace and not running, and the start held back: the drop is named.
+  const late = T0 + UTILITY_ACTIVATION_GRACE_MS + 1;
+  const held = decideCompanionUtilities(inputs({ facts: sensor, nowMs: late, capacitorRatio: 0.1 }), soon.memory);
+  assert.deepEqual(held.trace.skipped, [{ moduleID: SENSOR, family: "sensor", code: "grace-dropped" }]);
+  // Dropped and asked for again in the same tick: acted on, not skipped.
+  const again = decideCompanionUtilities(inputs({ facts: sensor, nowMs: late }), soon.memory);
+  assert.equal(again.call?.kind, "activate");
+  assert.deepEqual(again.trace, NOTHING);
+  // Seen running, then gone: it ran its cycle out. No code.
+  const running = decideCompanionUtilities(inputs({ facts: sensor, nowMs: T0 + 2_000, activeModuleIDs: [SENSOR] }), on.memory);
+  assert.equal(running.memory.owned[0]?.seen, true);
+  const ended = decideCompanionUtilities(
+    inputs({ facts: sensor, fightOn: false, engagedTargetID: null, targetLocked: false, nowMs: T0 + 30_000 }), running.memory);
+  assert.deepEqual(ended.trace, NOTHING);
+  assert.deepEqual(ended.memory.owned, []);
+});
+
+test("attempts-spent and the start give-up: the budget runs out on one tick, then reads attempts-spent", () => {
+  const sensor = only(utility(SENSOR, "sensor"));
+  let memory = FRESH_COMPANION_UTILITIES;
+  let now = T0;
+  const seen: { readonly call: string | null; readonly skipped: string[]; readonly gaveUp: string[] }[] = [];
+  for (let i = 0; i < MAX_UTILITY_START_ATTEMPTS + 3; i++) {
+    const step = decideCompanionUtilities(inputs({ facts: sensor, nowMs: now }), memory);
+    seen.push({
+      call: step.call?.kind ?? null,
+      skipped: step.trace.skipped.map((entry) => entry.code),
+      gaveUp: step.trace.gaveUp.map((entry) => `${entry.moduleID}:${entry.what}`),
+    });
+    memory = step.memory;
+    now += UTILITY_ACTIVATION_GRACE_MS + 1;
+  }
+  const spent = MAX_UTILITY_START_ATTEMPTS; // the tick on which the last allowed activation is found dropped
+  for (let i = 0; i < spent; i++) {
+    assert.equal(seen[i]!.call, "activate", `tick ${i}`);
+    assert.deepEqual(seen[i]!.gaveUp, [], `tick ${i}`);
+  }
+  assert.deepEqual(seen[spent], { call: null, skipped: ["grace-dropped"], gaveUp: [`${SENSOR}:start`] }, "the moment of giving up");
+  assert.deepEqual(seen[spent + 1], { call: null, skipped: ["attempts-spent"], gaveUp: [] }, "and never again");
+  assert.deepEqual(seen[spent + 2], { call: null, skipped: ["attempts-spent"], gaveUp: [] });
+});
+
+test("the stop give-up: reported on the tick ownership drops, with a readout, and not before or after", () => {
+  const sensor = only(utility(SENSOR, "sensor"));
+  const quiet = (nowMs: number) => inputs({ facts: sensor, fightOn: false, engagedTargetID: null, activeModuleIDs: [SENSOR], nowMs });
+  let memory = owning("sensor", SENSOR, 0);
+  let now = T0;
+  const gaveUpAt: number[] = [];
+  let notice = "";
+  for (let i = 0; i < 12; i++) {
+    const step = decideCompanionUtilities(quiet(now), memory);
+    if (step.trace.gaveUp.length > 0) {
+      gaveUpAt.push(i);
+      assert.deepEqual(step.trace.gaveUp, [{ moduleID: SENSOR, family: "sensor", what: "stop" }]);
+      assert.equal(step.call, null);
+      notice = step.why;
+    } else if (step.call === null) {
+      assert.equal(step.why, "", `tick ${i}: the notice is not repeated`);
+    }
+    memory = step.memory;
+    now += i === 0 ? 2_000 : UTILITY_STOP_RETRY_MS;
+  }
+  assert.deepEqual(gaveUpAt, [MAX_UTILITY_STOP_ATTEMPTS + 1], "once, after the last try had its full wait");
+  assert.equal(notice, "Could not switch the sensor booster off after 3 tries; leaving it.");
+  const web = decideCompanionUtilities(
+    inputs({ facts: only(utility(WEB, "web")), engagedTargetID: null, targetLocked: false, activeModuleIDs: [WEB] }),
+    owning("web", WEB, RAT, { stopping: [{ itemID: WEB, sinceMs: T0 - 60_000, attempts: MAX_UTILITY_STOP_ATTEMPTS }] }));
+  assert.equal(web.why, "Could not switch the webifier off after 3 tries; leaving it.");
+});
+
+test("a give-up notice rides along with a call made the same tick, and the trace still names it", () => {
+  const memory = owning("web", WEB, RAT, { stopping: [{ itemID: WEB, sinceMs: T0 - 60_000, attempts: MAX_UTILITY_STOP_ATTEMPTS }] });
+  const step = decideCompanionUtilities(
+    inputs({ facts: only(utility(WEB, "web"), utility(SENSOR, "sensor")), engagedTargetID: null, targetLocked: false,
+      activeModuleIDs: [WEB] }), memory);
+  assert.deepEqual(step.call, { kind: "activate", moduleID: SENSOR, targetID: 0 });
+  assert.equal(step.why, "In a fight: switching the sensor booster on. Could not switch the webifier off after 3 tries; leaving it.");
+  assert.deepEqual(step.trace.gaveUp, [{ moduleID: WEB, family: "web", what: "stop" }]);
+});
+
+test("the target going away reads four ways: nothing engaged, off the grid, not hostile, not locked", () => {
+  const web = only(utility(WEB, "web"));
+  const owned = owning("web", WEB, RAT);
+  const why = (over: Partial<CompanionUtilityInputs>) =>
+    decideCompanionUtilities(inputs({ facts: web, activeModuleIDs: [WEB], ...over }), owned).why;
+  const sentences = [
+    why({ engagedTargetID: null, targetLocked: false, targetOnGrid: false, targetHostile: false }),
+    why({ targetLocked: false, targetOnGrid: false, targetHostile: false }),
+    why({ targetLocked: false, targetOnGrid: true, targetHostile: false }),
+    why({ targetLocked: false, targetOnGrid: true, targetHostile: true }),
+  ];
+  assert.deepEqual(sentences, [
+    "No target engaged: switching the stasis webifier off.",
+    "The target left the grid: switching the stasis webifier off.",
+    "The target is no longer hostile: switching the stasis webifier off.",
+    "The target is not locked: switching the stasis webifier off.",
+  ]);
+  for (const sentence of sentences) assert.match(sentence, /^[\x20-\x7e]+$/, "plain ASCII");
+  // A caller that cannot say why gets the plain "not locked".
+  assert.equal(why({ targetLocked: false }), "The target is not locked: switching the stasis webifier off.");
+});
+
+test("the rung's early returns trace nothing", () => {
+  const rung = (memory: object, obs: object) =>
+    decideUtilityRung({} as never, obs as never, null, memory as never, T0);
+  assert.deepEqual(rung({ flee: {}, abandonment: null }, { inSpace: true }).trace, NOTHING);
+  assert.deepEqual(rung({ flee: null, abandonment: null }, { inSpace: false }).trace, NOTHING);
+  assert.deepEqual(rung({ flee: null, abandonment: null }, { inSpace: true, docked: true }).trace, NOTHING);
+  assert.deepEqual(rung({ flee: null, abandonment: null }, { inSpace: true, inWarp: true }).trace, NOTHING);
 });

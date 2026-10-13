@@ -77,6 +77,7 @@ import {
   type SwapMemory,
 } from "./ammoRanking.ts";
 import { candidateReachM, type ChargeFacts, type LoadedGunReach } from "./ammoReach.ts";
+import type { AmmoCode, AmmoSkip, AmmoTrace, AmmoUnitTrace } from "./companionTrace.ts";
 
 /** See the header: the share of full hit points below which the next target is loaded for. */
 export const AMMO_NEXT_TARGET_HP_FRACTION = 0.25;
@@ -263,11 +264,27 @@ function entityOnGrid(obs: FleetCompanionObservation, itemID: number | null): Sp
 
 // ─── Empty guns ──────────────────────────────────────────────────────────────
 
+/**
+ * Which rule chose the stack for an empty gun: "ranked" (`rankCharges` against
+ * the target rung 7 was last on) or "largest" (the reload rung's own
+ * largest-stack rule, because there was no known target or nothing to rank).
+ */
+export type EmptyGunRule = "ranked" | "largest";
+
 export interface EmptyGunAmmo {
   /** The memory with every loaded gun's measured reach recorded. */
   readonly memory: CompanionLadderMemory;
   /** The ranked stack for this empty gun, or null: use the reload rung's own rule. */
   readonly pick: (moduleID: number, charges: readonly CompanionCargoCharge[]) => CompanionCargoCharge | null;
+  /**
+   * `pick`, with the rule that applies: `rule` is "ranked" exactly when `charge`
+   * is non-null, and "largest" when it is null (the caller then falls back to
+   * its largest-stack rule). The same stack `pick` returns, never another.
+   */
+  readonly pickWithRule: (
+    moduleID: number,
+    charges: readonly CompanionCargoCharge[],
+  ) => { readonly charge: CompanionCargoCharge | null; readonly rule: EmptyGunRule };
 }
 
 /**
@@ -299,13 +316,11 @@ export function emptyGunAmmo(obs: FleetCompanionObservation, memory: CompanionLa
   const target = entityOnGrid(obs, ammo.targetID);
   const snapshot = obs.snapshot ?? null;
   if (target === null || snapshot === null) {
-    return { memory: next, pick: () => null };
+    return { memory: next, pick: () => null, pickWithRule: () => ({ charge: null, rule: "largest" }) };
   }
   const distanceM = measureSpace(snapshot)?.distances.get(target.itemID) ?? null;
   const resonances = resonancesUnderFire(target, obs);
-  return {
-    memory: next,
-    pick: (moduleID, charges) => {
+  const pick = (moduleID: number, charges: readonly CompanionCargoCharge[]): CompanionCargoCharge | null => {
       const weapon = weapons?.find((row) => row.itemID === moduleID) ?? null;
       const compatible = strictlyCompatible(moduleID, weapon, charges, obs);
       if (compatible.length === 0) {
@@ -318,6 +333,13 @@ export function emptyGunAmmo(obs: FleetCompanionObservation, memory: CompanionLa
       const options = compatible.map((charge) => optionFor(charge, gun, last?.chargeTypeID ?? null, obs));
       const best = rankCharges(options, distanceM, resonances, null)[0];
       return best === undefined ? null : (compatible.find((charge) => charge.itemID === best.itemID) ?? null);
+  };
+  return {
+    memory: next,
+    pick,
+    pickWithRule: (moduleID, charges) => {
+      const charge = pick(moduleID, charges);
+      return { charge, rule: charge === null ? "largest" : "ranked" };
     },
   };
 }
@@ -340,6 +362,17 @@ export interface AmmoSwapStep {
     readonly why: string;
   } | null;
   readonly memory: CompanionLadderMemory;
+  /** Every tick, on every path: why the step did or did not act (companionTrace.ts). */
+  readonly trace: AmmoTrace;
+}
+
+/**
+ * A trace for a tick on which the step looked at no gun. `decideAmmoSwap` uses
+ * it for its own early returns; the caller uses it for "not-engaged", the one
+ * skip that happens before `decideAmmoSwap` is reached.
+ */
+export function ammoSkipTrace(skipped: AmmoSkip, targetID: number | null = null, canClose = false): AmmoTrace {
+  return { skipped, targetID, distanceM: null, nextTargetMoment: false, canClose, units: [] };
 }
 
 /** The firing units: each bank (master first) and each unbanked gun, in the request's order. */
@@ -419,9 +452,20 @@ export function decideAmmoSwap(
   const target = entityOnGrid(obs, engagedID);
   const units = firingUnits(request.weaponModuleIDs, snapshot?.ship?.weaponBanks ?? null);
   const leads = units.map((unit) => unit[0]!);
-  if (obs.inSpace !== true || obs.inWarp === true || snapshot === null || weapons === null || cargo === null ||
-    target === null) {
-    return { swap: null, memory: settle(swapMemory, leads) };
+  const canClose = canCloseOn(memory, engagedID);
+  // One skip per early return, in the order the conditions are tested.
+  const skipped: AmmoSkip | null =
+    obs.inSpace !== true || obs.inWarp === true || snapshot === null ? "no-snapshot"
+      : weapons === null || units.length === 0 ? "no-weapons"
+        : cargo === null ? "no-cargo"
+          : target === null ? "no-target"
+            : null;
+  if (skipped !== null || snapshot === null || weapons === null || cargo === null || target === null) {
+    return {
+      swap: null,
+      memory: settle(swapMemory, leads),
+      trace: ammoSkipTrace(skipped ?? "no-snapshot", engagedID, canClose),
+    };
   }
 
   const measurement = measureSpace(snapshot);
@@ -436,8 +480,21 @@ export function decideAmmoSwap(
   const rankedFor = next ?? target;
   const distanceM = distanceOf(rankedFor);
   const resonances = next === null ? currentResonances : resonancesUnderFire(next, obs);
-  const canClose = canCloseOn(memory, engagedID);
   const empty = new Set(obs.emptyWeaponModuleIDs ?? []);
+
+  // One entry per unit considered, in the units' order. `pending` is the swap
+  // memory as the gate left it: a swap or load issued this tick reads pending.
+  const unitTraces: AmmoUnitTrace[] = [];
+  const traceOf = (
+    leadID: number, code: AmmoCode, loadedTypeID: number | null, wantedTypeID: number | null, wantedTicks: number,
+    pending: boolean,
+  ): void => {
+    unitTraces.push({ leadID, code, loadedTypeID, wantedTypeID, wantedTicks, pending });
+  };
+  const inFlight = (entry: SwapMemory | undefined): boolean => (entry?.pendingTypeID ?? null) !== null;
+  // How many ticks the verdict for `typeID` has held, counting this one.
+  const heldTicks = (entry: SwapMemory | undefined, typeID: number): number =>
+    entry !== undefined && entry.wantedTypeID === typeID ? entry.wantedTicks + 1 : 1;
 
   let chosen: { itemID: number; typeID: number; why: string; moduleIDs: number[] } | null = null;
   for (const unit of units) {
@@ -446,6 +503,12 @@ export function decideAmmoSwap(
     // Empty guns are the reload rung's; an unread gun is nobody's.
     if (weapon === null || weapon.chargeTypeID === null || !((weapon.chargeQuantity ?? 0) > 0) ||
       unit.some((id) => empty.has(id))) {
+      const stored = swapMemory[lead];
+      const isEmpty = unit.some((id) => empty.has(id)) || (weapon !== null && weapon.chargeQuantity === 0);
+      traceOf(
+        lead, isEmpty ? "gun-empty" : "gun-unread", weapon?.chargeTypeID ?? null,
+        stored?.wantedTypeID ?? null, stored?.wantedTicks ?? 0, inFlight(stored),
+      );
       continue;
     }
     const loadedFacts = chargeFactsOf(obs, weapon.chargeTypeID);
@@ -467,6 +530,7 @@ export function decideAmmoSwap(
     const damageLostToReload = perShot === null || cycle === null || cycle.speedMs === null || cycle.reloadTimeMs === null
       ? null
       : perShot * cycle.damageMultiplier * (cycle.reloadTimeMs / cycle.speedMs) * unit.length;
+    const stored = swapMemory[lead];
     const decision = decideSwap({
       ranked,
       loaded,
@@ -481,26 +545,44 @@ export function decideAmmoSwap(
       memory: swapMemory[lead] ?? FRESH_SWAP_MEMORY,
     });
     if (decision.kind !== "swap") {
+      // The keep reasons land in the trace; the behaviour is unchanged.
       swapMemory[lead] = decision.memory;
+      const wanted = decision.kind === "load" ? decision.charge.typeID : decision.memory.wantedTypeID;
+      traceOf(lead, decision.code, weapon.chargeTypeID, wanted, decision.memory.wantedTicks, inFlight(decision.memory));
       continue;
     }
+    const held = heldTicks(stored, decision.charge.typeID);
     if (chosen === null) {
       chosen = { itemID: decision.charge.itemID, typeID: decision.charge.typeID, why: decision.why, moduleIDs: [...unit] };
       swapMemory[lead] = decision.memory;
+      traceOf(lead, decision.code, weapon.chargeTypeID, decision.charge.typeID, held, true);
     } else if (decision.charge.itemID === chosen.itemID) {
       chosen.moduleIDs.push(...unit);
       swapMemory[lead] = decision.memory;
+      traceOf(lead, decision.code, weapon.chargeTypeID, decision.charge.typeID, held, true);
+    } else {
+      // A swap to another stack waits for its own tick, with last tick's memory.
+      traceOf(lead, "other-stack-chosen", weapon.chargeTypeID, decision.charge.typeID, held, inFlight(stored));
     }
-    // A swap to another stack waits for its own tick, with last tick's memory.
   }
+
+  const trace: AmmoTrace = {
+    skipped: null,
+    targetID: rankedFor.itemID,
+    distanceM,
+    nextTargetMoment,
+    canClose,
+    units: unitTraces,
+  };
 
   const settled = settle(swapMemory, leads);
   if (chosen === null) {
-    return { swap: null, memory: settled };
+    return { swap: null, memory: settled, trace };
   }
   const name = chargeFactsOf(obs, chosen.typeID)?.name ?? null;
   return {
     swap: { moduleIDs: chosen.moduleIDs, chargeItemID: chosen.itemID, why: swapWords(chosen.why, name, chosen.moduleIDs.length) },
     memory: settled,
+    trace,
   };
 }

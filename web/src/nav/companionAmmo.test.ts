@@ -17,7 +17,9 @@ import {
 } from "./fleetCompanionLoop.ts";
 import {
   FRESH_COMPANION_AMMO,
+  ammoSkipTrace,
   decideAmmoSwap,
+  emptyGunAmmo,
   firingUnits,
   ratResonancesFromAttributes,
   weaponCycleFromAttributes,
@@ -305,4 +307,204 @@ test("rat resonances: absent attributes are no resist; an unknown type is unknow
   assert.deepEqual(full.shield, { em: 0.1, thermal: 0.2, kinetic: 0.3, explosive: 0.4 });
   assert.deepEqual(full.armor, { em: 0.5, thermal: 0.6, kinetic: 0.7, explosive: 0.8 });
   assert.deepEqual(full.hull, { em: 0.9, thermal: 0.11, kinetic: 0.12, explosive: 0.13 });
+});
+
+// ─── The decision trace ──────────────────────────────────────────────────────
+
+const NO_LADDER: AmmoLadder = { nextTarget: () => null, remainingHitPoints: () => null };
+
+/** `ticks` calls of the swap step 2 s apart, memory carried; the steps in order. */
+function steps(
+  obs: FleetCompanionObservation,
+  ticks: number,
+  request: FleetCompanionRequest = ONE_GUN,
+  ladder: AmmoLadder = NO_LADDER,
+  engaged: number = RAT,
+): readonly ReturnType<typeof decideAmmoSwap>[] {
+  const out: ReturnType<typeof decideAmmoSwap>[] = [];
+  let memory = firing();
+  for (let tick = 0; tick < ticks; tick++) {
+    const step = decideAmmoSwap(request, obs, memory, engaged, T0 + tick * 2_000, ladder);
+    out.push(step);
+    memory = step.memory;
+  }
+  return out;
+}
+
+test("trace: each early return says why the step looked at no gun", () => {
+  const obs = ammoObs(grid(10_000));
+  const skipOf = (request: FleetCompanionRequest, o: FleetCompanionObservation, engaged: number = RAT) =>
+    decideAmmoSwap(request, o, firing(), engaged, T0, NO_LADDER);
+
+  const noSnapshot = skipOf(ONE_GUN, { ...obs, snapshot: null });
+  assert.equal(noSnapshot.trace.skipped, "no-snapshot");
+  assert.equal(skipOf(ONE_GUN, { ...obs, inSpace: false }).trace.skipped, "no-snapshot", "docked");
+  assert.equal(skipOf(ONE_GUN, { ...obs, inWarp: true }).trace.skipped, "no-snapshot", "in warp");
+  assert.equal(skipOf(ONE_GUN, { ...obs, combatWeapons: null }).trace.skipped, "no-weapons", "rack unread");
+  assert.equal(skipOf({ ...ONE_GUN, weaponModuleIDs: [] }, obs).trace.skipped, "no-weapons", "no guns requested");
+  assert.equal(skipOf(ONE_GUN, { ...obs, cargoCharges: null }).trace.skipped, "no-cargo");
+  const offGrid = skipOf(ONE_GUN, obs, RAT_2);
+  assert.equal(offGrid.trace.skipped, "no-target", "the engaged ship is not on the grid");
+  assert.equal(offGrid.trace.targetID, RAT_2);
+
+  for (const step of [noSnapshot, offGrid]) {
+    assert.equal(step.swap, null);
+    assert.deepEqual(step.trace.units, []);
+    assert.equal(step.trace.distanceM, null);
+    assert.equal(step.trace.nextTargetMoment, false);
+  }
+
+  // The one skip that happens before the step is reached is built by the caller.
+  assert.deepEqual(ammoSkipTrace("not-engaged"), {
+    skipped: "not-engaged", targetID: null, distanceM: null, nextTargetMoment: false, canClose: false, units: [],
+  });
+  // A tick that does look at the guns says so.
+  assert.equal(skipOf(ONE_GUN, obs).trace.skipped, null);
+});
+
+test("trace: the keep reasons land in the trace, with the numbers the gate used", () => {
+  const sequence = steps(ammoObs(grid(25_000)), 6);
+  assert.deepEqual(sequence.map((step) => step.trace.units[0]!.code),
+    ["persisting", "persisting", "persisting", "persisting", "swap", "reload-pending"]);
+  const first = sequence[0]!.trace;
+  assert.equal(first.skipped, null);
+  assert.equal(first.targetID, RAT);
+  assert.equal(first.distanceM, 25_000);
+  assert.equal(first.nextTargetMoment, false);
+  assert.equal(first.canClose, false);
+  assert.deepEqual(first.units[0], {
+    leadID: FIGHT_GUN_1, code: "persisting", loadedTypeID: A, wantedTypeID: B, wantedTicks: 1, pending: false,
+  });
+  assert.equal(sequence[3]!.trace.units[0]!.wantedTicks, 4);
+  assert.deepEqual(sequence[4]!.trace.units[0], {
+    leadID: FIGHT_GUN_1, code: "swap", loadedTypeID: A, wantedTypeID: B, wantedTicks: 5, pending: true,
+  });
+  assert.equal(sequence[4]!.swap?.chargeItemID, STACK_B);
+  assert.equal(sequence[5]!.swap, null);
+  assert.equal(sequence[5]!.trace.units[0]!.pending, true, "the reload in flight");
+
+  // At close range the loaded charge is already the best.
+  const near = steps(ammoObs(grid(10_000)), 1)[0]!;
+  assert.equal(near.trace.units[0]!.code, "already-best");
+  assert.equal(near.trace.units[0]!.wantedTypeID, null);
+  assert.equal(near.swap, null);
+});
+
+test("trace: closing in is a code, and canClose is carried", () => {
+  const closing: CompanionLadderMemory = {
+    ...firing(),
+    flightMode: "auto",
+    combatPosition: {
+      hold: null, reform: false,
+      target: { targetID: RAT, farTicks: 3, spentAtM: null, closing: true, leashed: false },
+    },
+  };
+  const step = decideAmmoSwap(ONE_GUN, ammoObs(grid(25_000)), closing, RAT, T0, NO_LADDER);
+  assert.equal(step.swap, null);
+  assert.equal(step.trace.canClose, true);
+  assert.equal(step.trace.units[0]!.code, "closing-instead");
+});
+
+test("trace: the wobble across a reach edge swaps nothing and every tick carries a keep code", () => {
+  let memory = firing();
+  for (let tick = 0; tick < 20; tick++) {
+    const obs = ammoObs(grid(tick % 2 === 0 ? 20_500 : 20_501));
+    const step = decideAmmoSwap(ONE_GUN, obs, memory, RAT, T0 + tick * 2_000, NO_LADDER);
+    assert.equal(step.swap, null, `tick ${tick}`);
+    assert.equal(step.trace.units.length, 1);
+    assert.notEqual(step.trace.units[0]!.code, "swap");
+    memory = step.memory;
+  }
+});
+
+test("trace: the next-target moment ranks against the next ship and says so", () => {
+  const snapshot = grid(10_000, {
+    rats: [{ itemID: RAT, typeID: TYPE_LONG_RAT, x: 10_000 }, { itemID: RAT_2, typeID: TYPE_SHORT_RAT, x: 12_000 }],
+    ratios: { [RAT]: { shieldRatio: 0, armorRatio: 0, hullRatio: 0.5 } },
+  });
+  const obs = ammoObs(snapshot, {
+    lockedTargetIDs: [RAT, RAT_2],
+    hitPointsByTypeID: { [TYPE_LONG_RAT]: { shield: 1_000, armor: 1_000, hull: 1_000 } },
+    ratResonancesByTypeID: { [TYPE_SHORT_RAT]: KINETIC_TANK },
+  });
+  const ladder: AmmoLadder = {
+    nextTarget: (o) => o.snapshot?.entities.find((entity) => entity.itemID === RAT_2) ?? null,
+    remainingHitPoints: () => 100,
+  };
+  const step = steps(obs, 1, ONE_GUN, ladder)[0]!;
+  assert.equal(step.trace.nextTargetMoment, true);
+  assert.equal(step.trace.targetID, RAT_2, "the ranking target, not the engaged one");
+  assert.equal(step.trace.distanceM, 12_000);
+  assert.equal(step.trace.units[0]!.code, "swap");
+  assert.equal(step.swap?.chargeItemID, STACK_C);
+});
+
+test("trace: a gun with no row is gun-unread, an empty gun is gun-empty, both beside a considered one", () => {
+  const unread = steps(ammoObs(grid(25_000, { active: [FIGHT_GUN_1, FIGHT_GUN_2] }), {}, [loadedGun(FIGHT_GUN_1)]), 1, TWO_GUNS)[0]!;
+  assert.deepEqual(unread.trace.units.map((unit) => [unit.leadID, unit.code]),
+    [[FIGHT_GUN_1, "persisting"], [FIGHT_GUN_2, "gun-unread"]]);
+  assert.equal(unread.trace.units[1]!.loadedTypeID, null);
+
+  const weapons = [loadedGun(FIGHT_GUN_1), loadedGun(FIGHT_GUN_2, null)];
+  const empty = steps(
+    ammoObs(grid(25_000, { active: [FIGHT_GUN_1] }), { emptyWeaponModuleIDs: [FIGHT_GUN_2] }, weapons), 1, TWO_GUNS)[0]!;
+  assert.deepEqual(empty.trace.units.map((unit) => [unit.leadID, unit.code]),
+    [[FIGHT_GUN_1, "persisting"], [FIGHT_GUN_2, "gun-empty"]]);
+  assert.equal(empty.swap, null);
+
+  // A bank with one empty member is the reload rung's, as one unit led by its master.
+  const banked = steps(
+    ammoObs(grid(25_000, { banks: { [FIGHT_GUN_1]: [FIGHT_GUN_2] } }), { emptyWeaponModuleIDs: [FIGHT_GUN_2] },
+      [loadedGun(FIGHT_GUN_1), loadedGun(FIGHT_GUN_2)]), 1, TWO_GUNS)[0]!;
+  assert.deepEqual(banked.trace.units.map((unit) => [unit.leadID, unit.code]), [[FIGHT_GUN_1, "gun-empty"]]);
+});
+
+test("trace: a unit that would swap to another stack than the one already chosen is other-stack-chosen", () => {
+  // Gun 2 takes group 86 only, and its only way to B is a stack in that group.
+  const OTHER_GROUP = 86;
+  const STACK_B_OTHER = 7004;
+  const cargo = [...ALL_THREE, { itemID: STACK_B_OTHER, typeID: B, groupID: OTHER_GROUP, quantity: 500 }];
+  const weapons = [loadedGun(FIGHT_GUN_1), { ...loadedGun(FIGHT_GUN_2), acceptedGroups: [OTHER_GROUP] }];
+  const obs = ammoObs(grid(25_000, { active: [FIGHT_GUN_1, FIGHT_GUN_2] }), {
+    cargoCharges: cargo,
+    weaponChargeGroups: { [FIGHT_GUN_1]: [HYBRID], [FIGHT_GUN_2]: [OTHER_GROUP] },
+  }, weapons);
+  const sequence = steps(obs, 5, TWO_GUNS);
+  for (const step of sequence.slice(0, 4)) {
+    assert.deepEqual(step.trace.units.map((unit) => unit.code), ["persisting", "persisting"]);
+  }
+  const fifth = sequence[4]!;
+  assert.deepEqual(fifth.trace.units.map((unit) => unit.code), ["swap", "other-stack-chosen"]);
+  assert.deepEqual(fifth.swap?.moduleIDs, [FIGHT_GUN_1], "only the first stack is called");
+  assert.equal(fifth.swap?.chargeItemID, STACK_B);
+  const second = fifth.trace.units[1]!;
+  assert.equal(second.wantedTypeID, B);
+  assert.equal(second.wantedTicks, 5);
+  assert.equal(second.pending, false, "it keeps last tick's memory and gets its turn next tick");
+  assert.equal(fifth.memory.ammo.swap[FIGHT_GUN_2]!.wantedTicks, 4, "unchanged by the other call");
+});
+
+// ─── Empty guns: which rule chose ────────────────────────────────────────────
+
+test("emptyGunAmmo: the rule says ranked when the target is known and a stack ranks, largest otherwise", () => {
+  const empty = [loadedGun(FIGHT_GUN_1, null)];
+  const known = {
+    ...FRESH_COMPANION_AMMO,
+    targetID: RAT,
+    lastLoaded: { [FIGHT_GUN_1]: { chargeTypeID: A, reachM: 20_000, optimalM: 15_000, turret: true } },
+  };
+  const obs = ammoObs(grid(25_000, { active: [] }), { emptyWeaponModuleIDs: [FIGHT_GUN_1] }, empty);
+
+  const ranked = emptyGunAmmo(obs, { ...freshLadderMemory(), ammo: known });
+  assert.deepEqual(ranked.pickWithRule(FIGHT_GUN_1, ALL_THREE), { charge: ALL_THREE[1], rule: "ranked" });
+  assert.equal(ranked.pick(FIGHT_GUN_1, ALL_THREE), ALL_THREE[1], "pick returns the same stack as before");
+
+  const noTarget = emptyGunAmmo(obs, freshLadderMemory());
+  assert.deepEqual(noTarget.pickWithRule(FIGHT_GUN_1, ALL_THREE), { charge: null, rule: "largest" });
+  assert.equal(noTarget.pick(FIGHT_GUN_1, ALL_THREE), null);
+
+  // A known target but nothing the gun certainly takes: the reload rung's rule stands.
+  const wrongGroup = ALL_THREE.map((charge) => ({ ...charge, groupID: 86 }));
+  assert.deepEqual(ranked.pickWithRule(FIGHT_GUN_1, wrongGroup), { charge: null, rule: "largest" });
+  assert.equal(ranked.pick(FIGHT_GUN_1, wrongGroup), null);
 });
