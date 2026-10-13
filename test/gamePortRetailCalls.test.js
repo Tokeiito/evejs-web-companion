@@ -1750,6 +1750,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "operationsManager.can_character_play_the_tutorial",
     // The insurgency campaigns a client may see, asked as the info panels are looked over. The gateway's list has nothing of the insurgencies'.
     "insurgencySolarsystem.GetAllVisibleCampaigns",
+    // What the account may redeem, fetched as the neocom is set up. The gateway's list has nothing of the user service's.
+    "userSvc.GetRedeemTokens",
     "skillHandler.GetSkillQueueAndFreePoints",
     "home_station.get_home_station",
     "skillHandler.SaveNewQueue",

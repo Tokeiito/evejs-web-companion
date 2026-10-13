@@ -70,15 +70,17 @@ const CHOSEN_ASKS = [
   "charMgr.GetContactList", "onlineStatus.GetInitialState",
   // The stand-in's pilot is chosen in a station: its lobby's four.
   "officeManager.GetMyCorporationsOffices", "stationSvc.GetStationItemBits", "station.GetGuests", "map.GetStationInfo",
+  // redeem.InitializeNeocomExtension (redeemsvc.py 37 to 46, 63 to 65), as the neocom is set up; just ahead of the pilot's applications in the client's own login.
+  "userSvc.GetRedeemTokens",
   "notificationMgr.GetAllNotifications", "agentMgr.GetAgents",
 ];
 /** The lobby's four reads of a pilot chosen in a station, as a choosing sends them. */
 const CHOSEN_LOBBY = ["GetMyCorporationsOffices", "GetStationItemBits", "GetGuests", "GetStationInfo"];
 /**
  * What a choosing in a station sends last, by name, at the proxy node or on an object, after the corporation's
- * reads and the address book's: the lobby's four, and the rest.
+ * reads and the address book's: the lobby's four, the redeeming's tokens, and the rest.
  */
-const CHOSEN_LAST = [...CHOSEN_LOBBY, "GetMyApplications", "GetLoginInfo", "GetAllNotifications", "GetEventList", "GetEventList", "GetAgents"];
+const CHOSEN_LAST = [...CHOSEN_LOBBY, "GetRedeemTokens", "GetMyApplications", "GetLoginInfo", "GetAllNotifications", "GetEventList", "GetEventList", "GetAgents"];
 /** The last `count` things a choosing sent before those, and those. */
 const sentLast = (session, count) => session.sent.slice(-(count + CHOSEN_LAST.length));
 
@@ -438,6 +440,9 @@ test("select logs in as the account and makes the retail client's three calls, i
     "stationSvc.GetStationItemBits",
     "station.GetGuests",
     "map.GetStationInfo",
+    // And what the account may redeem, which the client's redeem service fetches as the neocom is set up
+    // (redeemsvc.py 37 to 46, 63 to 65).
+    "userSvc.GetRedeemTokens",
     // And all its notifications, as the client's notification window asks for them.
     "notificationMgr.GetAllNotifications",
     // And the table of agents, as the client's agents service asks for it. The choosing does not wait on that one.
@@ -1784,6 +1789,8 @@ test("the transport keeps a tally of what it called and how each compared with t
     "stationSvc.GetStationItemBits": { same: 1 },
     "station.GetGuests": { same: 2 },
     "map.GetStationInfo": { same: 1 },
+    // What the account may redeem, fetched as the neocom is set up at the choosing (redeemsvc.py 64).
+    "userSvc.GetRedeemTokens": { same: 1 },
     "someService.SomeMethod": { unchecked: 1 },
   });
   assert.equal(pilots.callLedger()[0].pair, "invbroker.GetCapacity", "most called first");
