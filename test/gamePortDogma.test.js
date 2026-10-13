@@ -61,11 +61,12 @@ test("GetAllInfo from a real server: the ship and its module are held, and the s
   assert.deepEqual(held, [SHIP, flight.moduleID, PILOT]);
   assert.deepEqual([dogma.has(SHIP), dogma.has(flight.moduleID), dogma.has(PILOT), dogma.has(1)], [true, true, true, false]);
   // Of the character: its manufacturing time (219), which no skill of this pilot's shortens, and its repair cost
-  // (187), off its own row of 66 attributes, the whole character as Tranquility's item lists it; and one of the 4
-  // more that this server's second dict has (shipModifiedCharAttribs: 979, 1921, 2610, 2662), laid over the row,
-  // which has it not.
-  assert.deepEqual([dogma.attribute(PILOT, 219), dogma.attribute(PILOT, 187), dogma.attribute(PILOT, 979), dogma.attributesOf(PILOT).length], [1, 0.1, 0, 70]);
-  // In space the server says nothing of what the ship changes, and the character's are its row's.
+  // (187), off its own row of 66 attributes, the whole character as Tranquility's item lists it. The server says
+  // nothing of what the ship changes (shipModifiedCharAttribs is None, as Tranquility's is for a ship that
+  // changes nothing of its pilot), so the character's are its row's: an attribute its type has not and nothing
+  // gives it (979) is not held.
+  assert.deepEqual([dogma.attribute(PILOT, 219), dogma.attribute(PILOT, 187), dogma.attribute(PILOT, 979), dogma.attributesOf(PILOT).length], [1, 0.1, null, 66]);
+  // In space the same.
   const flying = createPilotDogma({ characterID: PILOT });
   flying.loadAllInfo(allInfo("GetAllInfo in space"));
   assert.deepEqual([flying.attribute(PILOT, 219), flying.attribute(PILOT, 187), flying.attribute(PILOT, 979), flying.attributesOf(PILOT).length], [1, 0.1, null, 66]);
@@ -1087,4 +1088,32 @@ test("what is in the character is the character's: an implant godma holds outliv
   dogma.purge();
   assert.deepEqual([dogma.has(PILOT), dogma.has(8001), dogma.has(5001), dogma.has(5003)], [true, true, false, false]);
   assert.deepEqual([dogma.item(8001).typeID, dogma.item(8001).locationID, dogma.attribute(8001, 4), dogma.item(5003)], [9899, PILOT, 1, null]);
+});
+
+// What the ship changes of its pilot (godma.ProcessAllInfo, 2446). Tranquility says it at every priming of a ship
+// that changes something, and None of every other: in its recordings one ship has it, a Caracal with three
+// ballistic controls, {212: 1.1804337950307635}, in space and docked, at primings of the ship alone.
+//
+// The bytes are a real server's (test/fixtures/godmaShipModified.json, cut from a recording made by
+// scripts/record-godma-priming.js with a Ballistic Control System I fitted to the pilot's ship): the later form,
+// asked in space. The answer has nothing of the character but the one attribute the ship changes.
+const shipModified = require("./fixtures/godmaShipModified.json");
+
+test("what the ship changes of its pilot is laid over the character at a priming of the ship alone", () => {
+  const answer = answers(shipModified).find((each) => each.during === "later, in space" && each.value && each.value.type === "object").value;
+  assert.equal(shipModified.characterID, P_PILOT, "the pilot is the priming recording's");
+  const MISSILE_DAMAGE = 212;
+  // The character as the session's first priming brought it, with no ballistic control: its type's missile damage.
+  const dogma = createPilotDogma({ characterID: P_PILOT, now: () => T0 });
+  dogma.loadAllInfo(primed("first, docked"));
+  const before = dogma.attributesOf(P_PILOT).length;
+  assert.equal(dogma.attribute(P_PILOT, MISSILE_DAMAGE), 1);
+  // The ship primed anew, with the ballistic control: the one attribute is changed, and the others are kept.
+  dogma.purge();
+  dogma.loadAllInfo(answer);
+  assert.deepEqual([dogma.attribute(P_PILOT, MISSILE_DAMAGE), dogma.attributesOf(P_PILOT).length, dogma.holdsCharacter()], [1.07, before, true]);
+  // The answer by itself has that of the character and no more, and primes no character.
+  const late = createPilotDogma({ characterID: P_PILOT });
+  late.loadAllInfo(answer);
+  assert.deepEqual([late.attribute(P_PILOT, MISSILE_DAMAGE), late.attributesOf(P_PILOT).length, late.holdsCharacter()], [1.07, 1, false]);
 });
