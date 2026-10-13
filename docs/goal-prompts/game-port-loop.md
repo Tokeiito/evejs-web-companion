@@ -2441,6 +2441,29 @@ Take these defaults, and list each under "For the operator" in the log so they c
   to stop everything, the loop killed EveJS with `taskkill /T /F`; the store had been put back
   five minutes before, and the next start is to put it back again (`store.sh restore fg-before`),
   which is all that makes that harmless. `store.sh`'s own stop waits for the server to go.
+- **A recorded line may be cut short, and what is cut is not left out.** The
+  client's "MethodCalls" lines stop at about 2,600 characters. Of 82 logged
+  answers to `GetAllInfo`, 80 stop inside `shipInfo`, before three keys that
+  the two whole answers have. A note in the server and two of its tests held
+  those keys' values None for three months on the cut lines. Before saying a
+  recorded answer has not something: measure the line (`awk '{print
+  length}'`), read its end, and look for an answer short enough to be whole
+  (a capsule's).
+- **A note that says DO NOT is read for its ground.** The server's note
+  forbade leaving three keys out, and was right (the client raises); its
+  ground, that the captures leave them out, was the cut lines. The warning is
+  kept and still tested; the mending went by the evidence.
+- **The loop's shell scripts are run without `MSYS_NO_PATHCONV=1`.** Under it
+  `taskkill //PID` and `tasklist //FI` are handed as they stand and fail
+  without a word: `store.sh` took a running server for stopped, copied the
+  store from under it and started a second. It refuses now while anything
+  listens on 26000. A node script given a `C:/` path is the thing that
+  wants the setting.
+- **A red in `eve.js` is compared on the unchanged sources before it is
+  anyone's.** Copy the edits aside, write the committed files back
+  (`git show HEAD:<file> > <file>`), run, and put the edits back (`cmp`).
+  Three reds of this unit's runs were there without it: a test that fails
+  one run in five, and two files red before.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
