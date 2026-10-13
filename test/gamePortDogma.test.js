@@ -972,7 +972,8 @@ test("what the server answers of an item that is held is held: its attributes an
 //
 // The bytes are a real server's (test/fixtures/godmaPriming.json, made by scripts/record-godma-priming.js): its
 // answer to the first form docked, and to the later form docked, in space and docked again. In space the later
-// answer has no charInfo and no shipState at all.
+// answer has an empty charInfo and the ship's state, as Tranquility's has (this server sent None for both until
+// 2026-10-12, when eve.js was mended and this was recorded again).
 const priming = require("./fixtures/godmaPriming.json");
 const primed = (during) => answers(priming).find((answer) => answer.during === during && answer.value && answer.value.type === "object").value;
 const [P_SHIP, P_PILOT] = [priming.shipID, priming.characterID];
@@ -1045,11 +1046,21 @@ test("a ship's weapon banks are the dogma location's and outlive godma's purge; 
   dogma.loadAllInfo(primed("first, docked"));
   dogma.setWeaponBanks(P_SHIP, { type: "dict", entries: [[7001, { type: "list", items: [7002, 7003] }]] });
   assert.deepEqual(dogma.weaponBanks(P_SHIP), { 7001: [7002, 7003] });
-  // In space the server's later answer has no state of the ship at all: what was held of its banks stands.
+  // godma's purge leaves them.
   dogma.purge();
-  dogma.loadAllInfo(primed("later, in space"));
   assert.deepEqual(dogma.weaponBanks(P_SHIP), { 7001: [7002, 7003] });
-  // Docked it has one, with no banks in it, and that is what the ship has.
+  // An answer with no state of the ship leaves them too: the real answer in space, its state taken out.
+  const later = primed("later, in space");
+  const stateless = { ...later, args: { ...later.args, entries: later.args.entries.map(([name, value]) => [name, Buffer.from(name.data ?? name).toString() === "shipState" ? null : value]) } };
+  assert.equal(stateless.args.entries.filter(([, value]) => value === null).length, later.args.entries.filter(([, value]) => value === null).length + 1);
+  dogma.loadAllInfo(stateless);
+  assert.deepEqual(dogma.weaponBanks(P_SHIP), { 7001: [7002, 7003] });
+  // The real answer in space has the ship's state, with no banks in it, and that is what the ship has.
+  dogma.purge();
+  dogma.loadAllInfo(later);
+  assert.deepEqual(dogma.weaponBanks(P_SHIP), {});
+  // Docked again it has one too.
+  dogma.setWeaponBanks(P_SHIP, { type: "dict", entries: [[7001, { type: "list", items: [7002] }]] });
   dogma.purge();
   dogma.loadAllInfo(primed("later, docked again"));
   assert.deepEqual(dogma.weaponBanks(P_SHIP), {});

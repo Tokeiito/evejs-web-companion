@@ -322,8 +322,8 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       loadRow(itemID, row);
       held.push(key(itemID));
     }
-    // 2443: `if allInfo.charInfo`, and the character's inventory is primed. An answer with none of it (the
-    // server's to a later priming in space, and Tranquility's empty one) primes nothing of the character.
+    // 2443: `if allInfo.charInfo`, and the character's inventory is primed. An answer with none of it (an empty
+    // one, as Tranquility's and this server's are to a later priming in space) primes nothing of the character.
     if (items(all.get("charInfo")).length > 0) characterPrimed = true;
     // 2446: the character's attributes the ship changes, laid over what is held of the character.
     if (characterID !== null) refreshAttributes(characterID, all.get("shipModifiedCharAttribs"));
@@ -831,8 +831,8 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
      * attribute last changed is forgotten (1169).
      *
      * Not the ship's weapon banks: they are the dogma location's (slaveModulesByMasterModule), which no purge of
-     * godma's touches, and the server's answer to a later priming in space has no ship's state to give them
-     * again. An answer that has one replaces them (setWeaponBanks). Nor the racks' heat, as in clear().
+     * godma's touches. The answer to the priming that follows has the ship's state, in space as docked, and that
+     * replaces them (setWeaponBanks); an answer with no state leaves them. Nor the racks' heat, as in clear().
      */
     purge() {
       for (const [id, racks] of heat) for (const heatID of racks.keys()) updateHeat(id, heatID, now());
