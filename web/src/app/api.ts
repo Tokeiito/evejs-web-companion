@@ -2716,6 +2716,13 @@ export interface MiningHoldsResult {
 
 /** What the scanner saw: `[[entityID, yieldTypeID, remainingQuantity]]`. */
 export interface SurveyScanResult {
+  /**
+   * False where the BFF asked the server nothing, because the retail client would not have asked from this ship:
+   * it has no mining scanner upgrade (asteroid_scanning_service.py 103). `results` is then null, and is no scan.
+   */
+  readonly asked: boolean;
+  /** The ship's mining scanner upgrade as godma has it, where the BFF could read it; null where it is not known. */
+  readonly scannerUpgrade: number | null;
   readonly results: JsonValue;
   readonly notifications: readonly JsonValue[];
 }
@@ -2814,6 +2821,8 @@ export async function unloadMiningHolds(
 export async function runSurveyScan(options: ApiOptions = {}): Promise<SurveyScanResult> {
   const data = await getJson("/api/bridge/mining/scan", options);
   return {
+    asked: data.asked !== false,
+    scannerUpgrade: typeof data.scannerUpgrade === "number" && Number.isFinite(data.scannerUpgrade) ? data.scannerUpgrade : null,
     results: data.results ?? null,
     notifications: Array.isArray(data.notifications) ? data.notifications : [],
   };

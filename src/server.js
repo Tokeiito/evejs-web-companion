@@ -21110,10 +21110,33 @@ app.get("/api/bridge/ship/:shipID/bays", requireAuth, async (req, res, next) => 
   }
 });
 
+/** dogma/const.py attributeMiningScannerUpgrade. */
+const ATTRIBUTE_MINING_SCANNER_UPGRADE = 5979;
+
+/**
+ * The mining scanner upgrade of the ship being flown, as the retail client reads it before it scans
+ * (mining/client/mining_util.py 26): int() of godma's value for the ship's attribute, and null where godma
+ * holds none of it (the client's None). Undefined where it cannot be known at all: off the game port, or on a
+ * game port that keeps no godma.
+ */
+async function miningScannerUpgrade(held) {
+  if (!gamePortPilots || !isGamePortHandle(held.bridgeSessionID) || typeof gamePortPilots.shipAttribute !== "function") return undefined;
+  const value = await gamePortPilots.shipAttribute(ATTRIBUTE_MINING_SCANNER_UPGRADE, { userid: held.accountID }, held.bridgeSessionID);
+  return typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : null;
+}
+
 // The survey scanner: miningScanMgr.perform_scan() -> [[entityID, yieldTypeID,
 // remainingQuantity], …]. Read-only, session-scoped, no arguments. This is how
 // the player learns how much ore a rock has left; the browser MERGES it into
 // the overview rather than computing anything of its own.
+//
+// WHEN THE CLIENT ASKS AT ALL (mining/client/asteroid_scanning_service.py 103):
+// it reads the ship's mining scanner upgrade from godma; with none (`if not
+// tier: return`) it asks nothing and does nothing, and only above nought does it
+// ask the server. A fitted Mining Survey Chipset, online, is what gives a ship
+// one. On the game port the BFF has godma's value and holds to the same: it
+// answers `asked: false` with what godma had, and the server hears nothing. Off
+// the game port there is no godma to read, and the scan is asked as it was.
 app.get("/api/bridge/mining/scan", requireAuth, async (req, res, next) => {
   const held = requireHeldBridgeSession(req, res);
   if (!held) {
@@ -21124,6 +21147,11 @@ app.get("/api/bridge/mining/scan", requireAuth, async (req, res, next) => {
     if (!requireInSpace(res, before.flight)) {
       return;
     }
+    const upgrade = await miningScannerUpgrade(held);
+    if (upgrade !== undefined && !(upgrade > 0)) {
+      res.json({ ok: true, asked: false, scannerUpgrade: upgrade, results: null, notifications: [] });
+      return;
+    }
     const outcome = await heldTopLevelCall(
       held,
       req.webSessionID,
@@ -21132,7 +21160,7 @@ app.get("/api/bridge/mining/scan", requireAuth, async (req, res, next) => {
       [],
       null,
     );
-    res.json({ ok: true, results: outcome.result, notifications: outcome.notifications });
+    res.json({ ok: true, asked: true, scannerUpgrade: upgrade ?? null, results: outcome.result, notifications: outcome.notifications });
   } catch (error) {
     next(error);
   }

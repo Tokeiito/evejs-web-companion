@@ -3107,6 +3107,8 @@ test("the survey scan is the client's with nothing sent", () => {
   assert.match(made.source, /mining\/client\/asteroid_scanning_service\.py:134$/);
   // The entry says when the client asks at all, which the form of the call cannot show.
   assert.match(RETAIL_CALLS["miningScanMgr.perform_scan"].note, /miningScannerUpgrade/);
+  // And that the BFF holds its own route to it where it has godma to read (test/pagesSurveyScan.test.js).
+  assert.match(RETAIL_CALLS["miningScanMgr.perform_scan"].note, /The BFF's route holds to this on the game port/);
   for (const [args, kwargs, why] of [[[250000], null, "a range"], [[null], null, "nothing, said"], [[], { tier: 2 }, "a keyword"]]) {
     const odd = scan(args, kwargs);
     assert.deepEqual([odd.status, odd.args, odd.kwargs], ["differs", args, kwargs], why);

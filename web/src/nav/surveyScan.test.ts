@@ -15,6 +15,7 @@ import {
   SCAN_RANGE_M,
   decideSurveyScan,
   forgetSurvey,
+  rememberNoScannerUpgrade,
   rememberSurveyFailure,
   rememberSurveyScan,
   surveyForShip,
@@ -305,4 +306,55 @@ test("a rock the scanner reported as EMPTY keeps its real zero", () => {
 test("with nothing surveyed the snapshot comes back untouched, object and all", () => {
   const grid = snapshot([rock(ROCK_A, 8_000)]);
   assert.equal(surveyedSnapshot(grid, EMPTY_SURVEY_MEMORY), grid);
+});
+
+// --- a ship with no mining scanner upgrade -----------------------------------
+//
+// mining/client/asteroid_scanning_service.py 103: the client reads the ship's miningScannerUpgrade from godma, and
+// with nought (or nothing held of it) returns: nothing is asked of the server, no wave plays, no rock is marked.
+// The BFF has godma's value on the game port and says when it asked nothing for that reason.
+
+test("a ship the BFF says has no mining scanner upgrade is not scanned from again, and that is all that is remembered", () => {
+  const scene = snapshot([rock(ROCK_A, 5_000), rock(ROCK_B, 9_000)]);
+  assert.equal(EMPTY_SURVEY_MEMORY.noUpgrade, false);
+  assert.equal(decideSurveyScan(scene, EMPTY_SURVEY_MEMORY, 1_000).scan, true);
+  const told = rememberNoScannerUpgrade(EMPTY_SURVEY_MEMORY);
+  assert.deepEqual(decideSurveyScan(scene, told, 1_000), { scan: false, why: "this ship has no mining scanner upgrade" });
+  // And for as long as it is this ship in space: not after the wave's eight seconds, not after the minute's budget.
+  assert.equal(decideSurveyScan(scene, told, 1_000 + SCAN_EFFECT_MS + 1).scan, false);
+  assert.equal(decideSurveyScan(scene, told, 10 * 60_000).scan, false);
+  // Nothing was asked, so nothing else is as if a scan had been made: no wave to wait for, no slot of the ten a
+  // minute spent, no blank answer counted, and no rock taken for covered.
+  assert.deepEqual({ ...told, quantities: [...told.quantities] }, { ...EMPTY_SURVEY_MEMORY, quantities: [], noUpgrade: true });
+  assert.equal(surveyedSnapshot(scene, told), scene);
+  // Told twice, it is the same memory.
+  assert.equal(rememberNoScannerUpgrade(told), told);
+});
+
+test("the upgrade is asked after again in another hull, and after the ship has been where its fit can change", () => {
+  const scene = snapshot([rock(ROCK_A, 5_000)]);
+  const told = rememberNoScannerUpgrade(surveyForShip(EMPTY_SURVEY_MEMORY, SHIP));
+  assert.equal(decideSurveyScan(scene, told, 1_000).scan, false);
+  // The same hull, still in space: nothing changes.
+  assert.equal(surveyForShip(told, SHIP), told);
+  // Another hull is another scanner.
+  const boarded = surveyForShip(told, SHIP + 1);
+  assert.equal(boarded.noUpgrade, false);
+  assert.equal(decideSurveyScan(scene, boarded, 1_000).scan, true);
+  // Docked or through a gate (the client's session change): a chipset may have been fitted, and the BFF answers
+  // from godma, so asking again costs the server nothing.
+  const docked = forgetSurvey(told);
+  assert.equal(docked.noUpgrade, false);
+  assert.equal(decideSurveyScan(scene, docked, 1_000).scan, true);
+});
+
+test("a scan that was asked says nothing of a missing upgrade, and a failed one leaves what was known of it", () => {
+  const scene = snapshot([rock(ROCK_A, 5_000)]);
+  assert.equal(rememberSurveyScan(EMPTY_SURVEY_MEMORY, scene, [{ itemID: ROCK_A, yieldTypeID: 1230, remainingQuantity: 4200 }], 1_000).noUpgrade, false);
+  assert.equal(rememberSurveyFailure(EMPTY_SURVEY_MEMORY, 1_000).noUpgrade, false);
+  // A scan answered from a ship that was said to have none (its chipset put online in space) lifts it.
+  const lifted = rememberSurveyScan(rememberNoScannerUpgrade(EMPTY_SURVEY_MEMORY), scene, [{ itemID: ROCK_A, yieldTypeID: 1230, remainingQuantity: 4200 }], 1_000);
+  assert.equal(lifted.noUpgrade, false);
+  // In warp the client refuses before it looks at the ship at all.
+  assert.equal(decideSurveyScan(snapshot([rock(ROCK_A, 5_000)], "WARP"), rememberNoScannerUpgrade(EMPTY_SURVEY_MEMORY), 1_000).why, "in warp");
 });

@@ -24,6 +24,12 @@
 //   • A HARD RATE LIMIT. `AsteroidScanningService._perform_tier2_scan` — the
 //     one that actually calls the server — is decorated `@ThrottlePerMinute(10)`.
 //   • A WARP REFUSAL. `perform_scan` refuses outright while the ship is in warp.
+//   • A SHIP THAT CANNOT SCAN ASKS NOTHING. `AsteroidScanningService.perform_scan`
+//     reads the ship's `miningScannerUpgrade` from godma first, and with none
+//     (`if not tier: return`) it does nothing at all: no call, no wave, no rock
+//     marked. Only above nought does it ask the server. A fitted Mining Survey
+//     Chipset, online, gives a ship one. The page has no godma; the BFF has it on
+//     the game port, and answers `asked: false` in the client's place.
 //   • EVENT-DRIVEN FORGETTING, not time-driven. `clear_scan_data()` runs on warp
 //     start, on session change (dock / jump) and on ballpark reset; a single
 //     rock is dropped (`_remove_scan`) when its ball leaves the grid. Between
@@ -89,6 +95,12 @@ export interface SurveyMemory {
   readonly scanTimesMs: readonly number[];
   /** Consecutive scans that answered nothing at all. */
   readonly blankStreak: number;
+  /**
+   * The BFF said this ship has no mining scanner upgrade, and asked the server
+   * nothing: the client would not scan from it, and neither does a bot until
+   * the ship is another one, or has been where its fit can change.
+   */
+  readonly noUpgrade: boolean;
 }
 
 export const EMPTY_SURVEY_MEMORY: SurveyMemory = Object.freeze({
@@ -97,6 +109,7 @@ export const EMPTY_SURVEY_MEMORY: SurveyMemory = Object.freeze({
   lastScanAtMs: null,
   scanTimesMs: Object.freeze([]) as readonly number[],
   blankStreak: 0,
+  noUpgrade: false,
 });
 
 /** Why a scan was, or was not, due — for the bot log and for tests. */
@@ -157,6 +170,11 @@ export function decideSurveyScan(
     // THE "STILL ACTIVE" RULE. The wave is still travelling; the client's button
     // does nothing here, and neither does this.
     return { scan: false, why: "a scan is still running" };
+  }
+  if (memory.noUpgrade) {
+    // The client's `if not tier: return`, in the place the client has it:
+    // after the warp and the wave, before the throttle.
+    return { scan: false, why: "this ship has no mining scanner upgrade" };
   }
   const recent = memory.scanTimesMs.filter((at) => nowMs - at < SCAN_BUDGET_WINDOW_MS);
   if (recent.length >= SCAN_BUDGET_PER_MINUTE) {
@@ -219,7 +237,21 @@ export function rememberSurveyScan(
     lastScanAtMs: nowMs,
     scanTimesMs,
     blankStreak: answered > 0 ? 0 : memory.blankStreak + 1,
+    // The server was asked, so the ship has its upgrade.
+    noUpgrade: false,
   };
+}
+
+/**
+ * The BFF asked nothing, because the ship has no mining scanner upgrade.
+ *
+ * That is the whole of what is remembered. Nothing was asked of the server, so
+ * no slot of the ten a minute is spent; no wave played, so there is no busy
+ * window; no answer came, so none is counted as blank; and no rock was covered,
+ * so each keeps its "never asked". The client leaves everything as it was, too.
+ */
+export function rememberNoScannerUpgrade(memory: SurveyMemory): SurveyMemory {
+  return memory.noUpgrade ? memory : { ...memory, noUpgrade: true };
 }
 
 /**
@@ -237,6 +269,7 @@ export function rememberSurveyFailure(memory: SurveyMemory, nowMs: number): Surv
     lastScanAtMs: nowMs,
     scanTimesMs: [...memory.scanTimesMs, nowMs].filter((at) => nowMs - at < SCAN_BUDGET_WINDOW_MS),
     blankStreak: memory.blankStreak + 1,
+    noUpgrade: memory.noUpgrade,
   };
 }
 
@@ -262,6 +295,7 @@ export function surveyForShip(memory: SurveyMemory, shipID: number | null): Surv
     lastScanAtMs: memory.lastScanAtMs,
     scanTimesMs: memory.scanTimesMs,
     blankStreak: 0,
+    noUpgrade: false,
   };
 }
 
@@ -271,6 +305,10 @@ export function surveyForShip(memory: SurveyMemory, shipID: number | null): Surv
  * blank-scan streak are not, because they describe the scanner and the ship
  * rather than the grid, and a bot that re-armed them at every warp would go
  * straight back to scanning ten times a minute on a hull that cannot survey.
+ *
+ * What the BFF said of a missing upgrade IS forgotten: the flow calls this where
+ * the ship is docked or between systems, which is where a chipset gets fitted,
+ * and asking again costs the server nothing (the BFF answers from godma).
  */
 export function forgetSurvey(memory: SurveyMemory): SurveyMemory {
   return {
@@ -279,6 +317,7 @@ export function forgetSurvey(memory: SurveyMemory): SurveyMemory {
     lastScanAtMs: memory.lastScanAtMs,
     scanTimesMs: memory.scanTimesMs,
     blankStreak: memory.blankStreak,
+    noUpgrade: false,
   };
 }
 

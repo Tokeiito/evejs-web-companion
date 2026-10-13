@@ -6,7 +6,7 @@
 // scanner when the grid has rocks nobody has measured, and a block that does not
 // work a rock never pays for the call.
 
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 
 import { createAppFlow } from "./flow.ts";
@@ -196,6 +196,42 @@ test("a block that works no rock never pays for a scan", async () => {
     0,
     "the same grid, the same rocks — but nothing in this block reads them",
   );
+  const rock = store.get().space.snapshot?.entities.find((row) => row.itemID === ROCK_ID);
+  assert.equal(rock?.remainingQuantity, null, "an unmeasured rock stays unmeasured, never 0");
+});
+
+// The BFF on the game port reads the ship's miningScannerUpgrade from godma, as the client does, and asks the
+// server only at one or more (asteroid_scanning_service.py 103). With none it answers that it asked nothing.
+test("a hull the BFF asked nothing for is as the client leaves it: asked of once, no survey lands, and its rocks stay unmeasured", { timeout: 20_000 }, async (context: TestContext) => {
+  const store = onlineStore();
+  const { fetch, requests } = makeFakeFetch((path, _method, body) => (path === "/api/bridge/mining/scan"
+    ? { status: 200, body: { ok: true, asked: false, scannerUpgrade: 0, results: null, notifications: [] } }
+    : responder(path, body)));
+
+  const flow = createAppFlow(store, { fetch });
+  const turns = async (): Promise<void> => { for (let turn = 0; turn < 20; turn += 1) await new Promise<void>((resolve) => setImmediate(resolve)); };
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    await flow.startCustomBot(
+      script({ id: "mine", kind: "macro", macro: "mine-at-belt", args: {}, until: { kind: "ore-hold-at-least", fraction: 0.9 } }),
+    );
+    await turns();
+    // The bot's clock turned through six of its looks.
+    for (let look = 0; look < 6; look += 1) {
+      context.mock.timers.tick(2000);
+      await turns();
+    }
+  } finally {
+    flow.stopCustomBot();
+  }
+
+  const looks = requests.filter((request) => request.path === "/api/bridge/script/observation").length;
+  assert.ok(looks >= 3, `the bot looked at the grid ${looks} times`);
+  // Every look had the same unmeasured rock in it, and the BFF was asked for a scan at the first alone.
+  assert.equal(requests.filter((request) => request.path === "/api/bridge/mining/scan").length, 1, "the BFF was asked once");
+  // The client does nothing at all with no upgrade: no scan's results are landed, not even an empty one.
+  assert.deepEqual(store.get().mining.survey, []);
+  assert.equal(store.get().mining.surveyAtMs, null, "no scan was made, so none is timestamped");
   const rock = store.get().space.snapshot?.entities.find((row) => row.itemID === ROCK_ID);
   assert.equal(rock?.remainingQuantity, null, "an unmeasured rock stays unmeasured, never 0");
 });

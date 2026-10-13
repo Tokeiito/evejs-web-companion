@@ -124,6 +124,20 @@ test("runSurveyScan lands what the scanner saw, with its zeroes intact", async (
   assert.ok((store.mining.get().surveyAtMs ?? 0) > 0, "the scan is timestamped");
 });
 
+test("runSurveyScan from a ship the BFF asked nothing for lands no scan, and says why", async () => {
+  const store = createClientStore();
+  const { fetch } = makeFakeFetch(() => ({
+    status: 200,
+    body: { ok: true, asked: false, scannerUpgrade: 0, results: null, notifications: [] },
+  }));
+  const flow = createAppFlow(store, { fetch });
+
+  await flow.runSurveyScan();
+  assert.deepEqual(store.mining.get().survey, []);
+  assert.equal(store.mining.get().surveyAtMs, null, "no scan was made");
+  assert.equal(store.mining.get().surveyError, "No scan was made: this ship has no mining scanner upgrade.");
+});
+
 test("loadReprocessingQuote lands the quote AND the station's tax", async () => {
   const store = createClientStore();
   const { fetch, requests } = makeFakeFetch(() => ({

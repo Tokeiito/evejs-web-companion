@@ -307,6 +307,7 @@ import {
   EMPTY_SURVEY_MEMORY,
   decideSurveyScan,
   forgetSurvey,
+  rememberNoScannerUpgrade,
   rememberSurveyFailure,
   rememberSurveyScan,
   surveyForShip,
@@ -6133,6 +6134,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       });
       return;
     }
+    if (result.asked === false) {
+      // The client makes no scan from a ship with no mining scanner upgrade, and the BFF asked for none.
+      store.apply({ type: "mining/survey-error", message: "No scan was made: this ship has no mining scanner upgrade." });
+      return;
+    }
     store.apply({
       type: "mining/survey",
       survey: decodeSurveyResults(result.results),
@@ -6167,9 +6173,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const now = Date.now();
     if (decideSurveyScan(snapshot, surveyMemory, now).scan) {
       try {
-        const survey = decodeSurveyResults((await api.runSurveyScan(callOptions)).results);
-        surveyMemory = rememberSurveyScan(surveyMemory, snapshot, survey, now);
-        store.apply({ type: "mining/survey", survey, atMs: now });
+        const answer = await api.runSurveyScan(callOptions);
+        if (answer.asked === false) {
+          // The ship has no mining scanner upgrade and the BFF asked nothing, as the client asks nothing
+          // (asteroid_scanning_service.py 103). No scan was made, so none is landed.
+          surveyMemory = rememberNoScannerUpgrade(surveyMemory);
+        } else {
+          const survey = decodeSurveyResults(answer.results);
+          surveyMemory = rememberSurveyScan(surveyMemory, snapshot, survey, now);
+          store.apply({ type: "mining/survey", survey, atMs: now });
+        }
       } catch {
         // A refused or unreadable scan is not an answer about any rock, and it
         // is not a reason to stop a bot either. It costs a throttle slot, and
