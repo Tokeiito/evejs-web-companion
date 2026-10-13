@@ -1257,6 +1257,11 @@ server sent each one its own place again every five seconds until `eve.js` `37e3
 `OnDamageStateChange` is applied in its turn without the park being moved to its stamp (`michelle.py` 1165), but it
 is held until its stamp and is a stamp in the queue, so it counts for the park's extra step (912 to 915). On
 Tranquility a damage state carries the stamp of the missile's removal for 485 of 507.
+A whole state sets the park's time to its stamp and each ball to the place written in it (`michelle.py` `SetState`,
+968 to 975; CCP's `destiny/src/Thunkers.cpp` `Ballpark::ReadFullStateFromStream`, 2463 to 2469), and entries
+stamped before it are thrown away (`FlushState`, 1103 to 1111). This server reads its clock as it builds a state
+and again as it sends it; since `eve.js` `869ee9c0f` the first whole state's balls are those of the stamp it is
+sent with.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened

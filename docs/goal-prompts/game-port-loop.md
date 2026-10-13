@@ -3077,6 +3077,27 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A copied log holds the flights before it too.** A rat of the unit
   before's has another number; "no ship in the park at that time" for
   every row is the wrong ball or the wrong minutes, not a finding.
+- **The server reads its clock more than once for one sending.** What
+  builds an entry reads it (`getCurrentSimTimeMs` follows the wall clock
+  between a scene's ticks) and `sendDestinyUpdates` reads it again for
+  each group; the delivery raises what the second reading finds behind.
+  A group whose places depend on its stamp carries
+  `rebuildKinematicsAtDeliveryStamp` in its send options and is built
+  again for the stamp it leaves with (same count, same names).
+- **The groups about each whole state, from the authority's trace**: the
+  scratch `emit-around.js <missile debug log> <ms before> <ms after> [1]`
+  (when, the scene's stamp as sent, authored, left, the steps that
+  changed it; "1" for the raised ones only); `emit-row.js <log>
+  <name,...> [n]` prints a trace row whole. Not every group is traced
+  (the prime after a whole state is not): the recording has every stamp.
+- **To catch a whole state raised**: `state-live.js` with undocks asked
+  0.79 to 0.91 s into a second and no logins (`""`): 2 of 12.
+- **Never list the server's log folder or a scratchpad whole** (done
+  twice): the two logs are `space-missile-debug.log` and
+  `space-movement-debug.log`, and a rotated hour's is named with the
+  date and the UTC hour.
+- **`pilot-ships.js` is in this loop's first scratchpad**, given the
+  other (with `bff-session.js`) as its first argument.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
