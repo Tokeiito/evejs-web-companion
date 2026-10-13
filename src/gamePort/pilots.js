@@ -270,6 +270,11 @@ const pseudoSecurity = (security) => (security > 0 && security < 0.05 ? 0.05 : s
 const CHARACTER_SETTINGS = "GetCharacterSettings";
 /** Whether a call is the character settings service's read, asked as the client asks it: with nothing. */
 const keptCharacterSettings = (service, method, form) => service === "charMgr" && method === CHARACTER_SETTINGS && form.args.length === 0 && form.kwargs === null;
+/** The achievement service's read of what the character has done, asked once for a session (achievements/client/achievementSvc.py 128 to 134). */
+const ACHIEVEMENT_MGR = "achievementTrackerMgr";
+const ACHIEVEMENT_STATUS = "GetCompletedAchievementsAndClientEventCount";
+/** Whether a call is the achievement service's read, asked as the client asks it: with nothing. */
+const keptAchievementStatus = (service, method, form) => service === ACHIEVEMENT_MGR && method === ACHIEVEMENT_STATUS && form.args.length === 0 && form.kwargs === null;
 const OFFICE_MANAGER = "officeManager";
 /**
  * What the client hands back to the server as it was answered, and so with the Python type it came with:
@@ -1511,6 +1516,9 @@ function createGamePortPilots({
       /** characterSettingsSvc._settings: the character's settings as the server answered them, undefined while they were not asked; and their askings, one after another. */
       characterSettings: undefined,
       characterSettingsWork: Promise.resolve(),
+      /** achievementSvc's completedDict and event counts as the server answered them, undefined while they were not asked; and their askings, one after another. */
+      achievementStatus: undefined,
+      achievementStatusWork: Promise.resolve(),
       /** The account's clone grade as the server last said it (clonegrade/const.py: 0 alpha, 1 omega): undefined while none is had. */
       cloneGrade: undefined,
       /** Whether the office's item was primed on the Moniker for where the pilot is docked (PRIME_OFFICE): its answer, kept while docked there. */
@@ -1788,6 +1796,10 @@ function createGamePortPilots({
       // missionObjectivesTracker.OnSessionChanged: a character chosen has each mission it has accepted asked after,
       // of the journal just read. A manager that refuses fails no choosing.
       await missionInfoAsked(entry).catch(() => {});
+      // achievementSvc.OnSessionChanged (182 to 188): a character on the session and nothing had yet of what it has
+      // done, and that is asked for. In the retail client's own login, between the journal and the fighters. A
+      // manager that refuses fails no choosing.
+      await achievementStatusRead(entry).catch(() => {});
       // shipFighterState.OnSessionChanged: the ship on the session, its fighters are asked for. After the journal and
       // before the bookmarks, as the client's own login has it. A manager that refuses fails no choosing.
       await fightersAsked(entry).catch(() => {});
@@ -1993,6 +2005,12 @@ function createGamePortPilots({
     // asks them: with nothing.
     if (keptCharacterSettings(service, method, form)) {
       const kept = await run(entry, service, method, () => characterSettingsRead(entry));
+      return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
+    }
+    // What the character has done of the client's achievements is the achievement service's to answer, where it is
+    // asked as the client asks it: with nothing.
+    if (keptAchievementStatus(service, method, form)) {
+      const kept = await run(entry, service, method, () => achievementStatusRead(entry));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
     // The corporations with offices where a pilot is docked are the client's office manager's to answer, where
@@ -2504,6 +2522,33 @@ function createGamePortPilots({
       return entry.characterSettings;
     });
     entry.characterSettingsWork = reading.catch(() => {});
+    return reading;
+  }
+
+  /**
+   * achievementSvc.FetchMyAchievementStatus (achievements/client/achievementSvc.py 128 to 134):
+   * sm.RemoteSvc('achievementTrackerMgr').GetCompletedAchievementsAndClientEventCount(), by the service's name with
+   * nothing: the achievements the character has completed, each with when ('completedDict'), and how often each
+   * of the client's own events has come ('eventDict'). The service asks once, as a character comes onto its session
+   * and it has nothing yet (OnSessionChanged, 182 to 188), and keeps both until the session is reset (190 to 192).
+   * The retail client of this build asks it at every login. (Tranquility's recordings, of a later build, have the
+   * same call under another service's name, monolithTaskTrackerMgr, answered a dict of those two.) One asking at
+   * a time.
+   *
+   * What the service sends back is not made here: it counts the client's own doings (an orbit, a look at the map,
+   * a zoom of the camera) and tells the server of them, at most every three minutes and as the client shuts down
+   * (UpdateClientAchievmentsAndCounters, 202 to 230). No page counts such things.
+   */
+  function achievementStatusRead(entry) {
+    const reading = entry.achievementStatusWork.then(async () => {
+      if (entry.achievementStatus === undefined) {
+        const form = shape(ACHIEVEMENT_MGR, ACHIEVEMENT_STATUS, [], null, contextFor(entry));
+        ledger.note(ACHIEVEMENT_MGR, ACHIEVEMENT_STATUS, form);
+        entry.achievementStatus = await byName(entry.session, ACHIEVEMENT_MGR, ACHIEVEMENT_STATUS, form);
+      }
+      return entry.achievementStatus;
+    });
+    entry.achievementStatusWork = reading.catch(() => {});
     return reading;
   }
 
