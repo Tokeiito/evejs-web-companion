@@ -1644,6 +1644,12 @@ export interface CompanionLadderMemory {
    */
   readonly tackleCalledOut: readonly number[];
   /**
+   * When each ship in `tackleCalledOut` was last called, for the re-send rate
+   * limit in `decideTackleBroadcast`. Kept to the ids that list still holds.
+   * Optional: a memory written before it existed reads as "never timed".
+   */
+  readonly tackleCalledAtMs?: Readonly<Record<number, number>>;
+  /**
    * The target this pilot's last lock refusals were against, and how many it has
    * had in a row.
    *
@@ -2204,6 +2210,7 @@ export function freshLadderMemory(): CompanionLadderMemory {
     lastTagAttempts: 0,
     taggingGaveUpOn: [],
     tackleCalledOut: [],
+    tackleCalledAtMs: {},
     lockRefusedFor: null,
     lockRefusals: 0,
     lockGaveUpOn: [],
@@ -2810,6 +2817,7 @@ function decideCompanionStep(
     lastTagAttempts: memory.lastTagAttempts,
     taggingGaveUpOn: memory.taggingGaveUpOn,
     tackleCalledOut: memory.tackleCalledOut,
+    tackleCalledAtMs: memory.tackleCalledAtMs ?? {},
     lockRefusedFor: memory.lockRefusedFor,
     lockRefusals: memory.lockRefusals,
     lockGaveUpOn: memory.lockGaveUpOn,
@@ -2922,7 +2930,7 @@ function decideCompanionStep(
   // the way rung 3 is, and for the same reason: the tick that GIVES UP on a
   // ship issues no action, so a call site that only took the decision would
   // throw the give-up away and re-pick the same ship for ever.
-  const tagging = decideTackleTag(request, obs, burning.memory);
+  const tagging = decideTackleTag(request, obs, burning.memory, nowMs);
   if (tagging.decision !== null) {
     return tagging.decision;
   }
@@ -4551,7 +4559,7 @@ function decideOpenFire(
  */
 function lockThenEngage(
   targetID: number,
-  source: "tag" | "broadcast" | "chat" | "free-fire",
+  source: "tag" | "broadcast" | "chat" | "free-fire" | "tackled",
   heard: string,
   why: string,
   request: FleetCompanionRequest,
@@ -4561,11 +4569,14 @@ function lockThenEngage(
   measurement: SpaceMeasurement | null,
 ): CompanionDecision {
   // Free fire obeys nobody, so it says so: its own phase, and no
-  // `followingOrderFrom`, which the controller reads as "own-ladder".
+  // `followingOrderFrom`, which the controller reads as "own-ladder". Shooting
+  // its own tackler is this pilot's own call too, above the fleet's.
   const authority =
     source === "free-fire"
       ? { phase: "Free fire" }
-      : { phase: "Obeying fleet", followingOrderFrom: source };
+      : source === "tackled"
+        ? { phase: "Tackled" }
+        : { phase: "Obeying fleet", followingOrderFrom: source };
   if (!isAlreadyLocked(targetID, obs.lockedTargetIDs, memory)) {
     // ⚠ A LOCK ALREADY ASKED FOR IS WAITED ON, NOT ASKED FOR AGAIN. See
     // `lockPending`. The wait is STANDING, so the rungs beneath -- the
@@ -5629,6 +5640,7 @@ function decideTackleTag(
   request: FleetCompanionRequest,
   obs: FleetCompanionObservation,
   memory: CompanionLadderMemory,
+  nowMs: number,
 ): { readonly decision: CompanionDecision | null; readonly memory: CompanionLadderMemory } {
   const nothing = { decision: null, memory } as const;
   // ⚠ NO OPERATOR GATE. Every companion calls out what has it tackled, and the
@@ -5641,13 +5653,13 @@ function decideTackleTag(
   //      it broadcasts instead, which is the call plain members do have.
   //   2. A SHIP ALREADY CALLED IS SKIPPED, in BOTH arms: lettered ships are
   //      filtered out below (so a second tagger leaves an existing letter
-  //      alone) and `tackleCalledOut` bounds the broadcast arm to one call per
-  //      ship per pilot (so two pilots cannot re-call each other's tackler
-  //      back and forth).
-  //   3. THE TRIGGER IS NARROW: only ships tackling THIS pilot are candidates,
-  //      and the broadcast arm stays quiet while a `Target` call already stands
-  //      on this grid (two pilots held by two different ships otherwise pull
-  //      the fleet back and forth between them; see `decideTackleBroadcast`).
+  //      alone) and `tackleCalledOut`/`tackleCalledAtMs` bound the broadcast
+  //      arm: a ship is called once, and again only after the fleet's call has
+  //      moved off it, at most every `TACKLE_RECALL_MS` (so two pilots cannot
+  //      re-call their tacklers back and forth every tick).
+  //   3. THE TRIGGER IS NARROW: only ships tackling THIS pilot are candidates.
+  //      A standing commander's call does NOT silence it: tacklers die first
+  //      (operator, 2026-10-13), see `decideTackleBroadcast`.
   //
   // The `attemptsTagging` checkbox that used to stand here gated behaviour that
   // was already exactly what was asked for -- call out what is holding you
@@ -5681,7 +5693,7 @@ function decideTackleTag(
   const tags = obs.fleetTargetTags ?? null;
 
   if (canTag === false) {
-    return decideTackleBroadcast(obs, memory, snapshot, tacklers, tags);
+    return decideTackleBroadcast(obs, memory, snapshot, tacklers, tags, nowMs);
   }
   if (tags === null) {
     return nothing;
@@ -5770,12 +5782,24 @@ function decideTackleTag(
  * act, and an outward act on an unread gate is exactly the guess this loop's
  * three-state discipline exists to forbid.
  *
- * ⚠ ONE CALL PER SHIP, AND NO RETRY BUDGET AT ALL — the opposite of the tag
- * arm's three-attempts-then-give-up, for a reason that is about the two calls
- * and not about caution. A tag can be re-read, so re-sending one is a way of
- * finding out whether the first landed. A broadcast leaves nothing to re-read,
- * so a second send could learn nothing the first did not; it would only be the
- * same shout again. `tackleCalledOut` is what makes it once.
+ * ⚠ LOUD, AND ABOVE ANY COMMANDER'S CALL (operator, 2026-10-13: "tackle
+ * callouts should be loud and clear, as tacklers should be killed first, no
+ * matter FC instructions"). The callout goes out whether or not a `Target` call
+ * already stands, and it becomes the newest call every companion obeys.
+ *
+ * ⚠ ONCE, THEN AGAIN ONLY WHEN THE FLEET HAS BEEN CALLED OFF IT, and rate
+ * limited. A broadcast leaves nothing to re-read, so re-sending it while the
+ * fleet's call still names this pilot's tackler (its own echo included: the
+ * server delivers a broadcast to its sender) would only be the same shout again.
+ * Once the standing call (the slot, or the call held past it,
+ * `standingTargetCallID`) names none of this pilot's tacklers -- the FC called
+ * something else, or the call lapsed -- the tackler is called again, at most
+ * once per `TACKLE_RECALL_MS` per ship and never within
+ * `TACKLE_RECALL_GAP_MS` of this pilot's last callout. That bound is what keeps
+ * two pilots held by two different ships from flipping the fleet every tick:
+ * each re-sends at most every ten seconds, and each shoots its own tackler
+ * meanwhile regardless (`ownTackler`). `tackleCalledOut` says which ships were
+ * called, `tackleCalledAtMs` when.
  *
  * ⚠ AND THE SERVER WOULD DROP MOST OF THE RE-SENDS ANYWAY.
  * `isBroadcastRateLimited` (fleetRuntime.js:2473) refuses a repeat of the same
@@ -5793,26 +5817,14 @@ function decideTackleBroadcast(
   snapshot: SpaceSnapshot,
   tacklers: readonly number[],
   tags: ReadonlyMap<number, string> | null,
+  nowMs: number,
 ): { readonly decision: CompanionDecision | null; readonly memory: CompanionLadderMemory } {
   const nothing = { decision: null, memory } as const;
   if (obs.canBroadcast !== true) {
     return nothing;
   }
-  // ⚠ A STANDING `Target` CALL IS NOT SHOVED ASIDE, the broadcast twin of the
-  // lettered-ship filter below. A broadcast is the NEWEST call every companion
-  // obeys, so two pilots held by two DIFFERENT ships (the header's "two
-  // companions collide only if one ship has tackled both" missed this) each
-  // called their own and pulled the whole fleet from one to the other and
-  // back, every gun re-aimed at each turn: one of the two code paths to the
-  // A, B, A seen live 2026-10-13 (the other: `withHeardTargetCall`).
-  // While a call stands on this grid the fleet is already shooting something;
-  // this pilot's tackler is called the tick that call lapses or dies, and
-  // `tackleCalledOut` is untouched here so that later call is still made.
-  if (standingTargetCallID(obs, memory, snapshot.entities) !== null) {
-    return nothing;
-  }
 
-  const candidates = tacklers
+  const onGrid = tacklers
     .map((itemID) => entityOnGrid(itemID, snapshot.entities))
     .filter((entity): entity is SpaceEntity => entity !== null)
     // ⚠ ALREADY LETTERED IS ALREADY CALLED. A commander has marked this ship;
@@ -5822,10 +5834,23 @@ function decideTackleBroadcast(
     // whatever primary the commander had standing. Nothing to gain, a real
     // fleet-wide cost. When `tags` is null this filter cannot run and does not:
     // an unreadable dict is not a reason to stay quiet about being tackled.
-    .filter((entity) => tags === null || !tags.has(entity.itemID))
-    .filter((entity) => !memory.tackleCalledOut.includes(entity.itemID));
+    .filter((entity) => tags === null || !tags.has(entity.itemID));
+  const calledAt = memory.tackleCalledAtMs ?? {};
+  let candidates = onGrid.filter((entity) => !memory.tackleCalledOut.includes(entity.itemID));
+  let recall = false;
   if (candidates.length === 0) {
-    return nothing;
+    // Every tackler has been called once. Again only when the fleet's call names
+    // none of them, and only inside the rate limit -- see the header.
+    const standing = standingTargetCallID(obs, memory, snapshot.entities);
+    const lastAny = Math.max(-Infinity, ...Object.values(calledAt));
+    if (onGrid.some((entity) => entity.itemID === standing) || nowMs - lastAny < TACKLE_RECALL_GAP_MS) {
+      return nothing;
+    }
+    candidates = onGrid.filter((entity) => nowMs - (calledAt[entity.itemID] ?? -Infinity) >= TACKLE_RECALL_MS);
+    recall = true;
+    if (candidates.length === 0) {
+      return nothing;
+    }
   }
 
   // Same ranking as the tag arm, and for the same reason: one ordering for
@@ -5847,17 +5872,38 @@ function decideTackleBroadcast(
       // ⚠ SAYS WHICH CALL IT MADE, not just that it called. The readout is the
       // only place a player can learn that this pilot broadcasts rather than
       // letters, and "marking it for the fleet" would hide exactly that.
-      why: "Something has this ship scrambled. Broadcasting it to the fleet as the target.",
-      memory: {
-        ...memory,
-        // Capped the same way, and by the same helper, as the tag arm's
-        // give-up list: both exist to stop one rung re-picking one ship for
-        // ever, and a fight long enough to overflow one has overflowed both.
-        tackleCalledOut: rememberGiveUp(memory.tackleCalledOut, target.itemID),
-      },
+      why: recall
+        ? "Something still has this ship scrambled and the fleet has been called off it. Broadcasting it again as the target."
+        : "Something has this ship scrambled. Broadcasting it to the fleet as the target.",
+      memory: withTackleCalled(memory, target.itemID, nowMs),
     },
     memory,
   };
+}
+
+/** How long before this pilot calls the same tackler again. See `decideTackleBroadcast`. */
+export const TACKLE_RECALL_MS = 10_000;
+/**
+ * The least time between two of this pilot's callouts when one is a re-send:
+ * two ticks, so never on consecutive ticks, and clear of the server's own
+ * two-second same-name limit (`isBroadcastRateLimited`).
+ */
+export const TACKLE_RECALL_GAP_MS = 2 * FLEET_COMPANION_CADENCE_MS;
+
+/** Record a callout of `itemID` at `nowMs`, keeping the time map to the capped list. */
+function withTackleCalled(memory: CompanionLadderMemory, itemID: number, nowMs: number): CompanionLadderMemory {
+  // Capped the same way, and by the same helper, as the tag arm's give-up
+  // list: both exist to stop one rung re-picking one ship for ever, and a
+  // fight long enough to overflow one has overflowed both.
+  const calledOut = rememberGiveUp(memory.tackleCalledOut, itemID);
+  const calledAt: Record<number, number> = {};
+  for (const id of calledOut) {
+    const at = id === itemID ? nowMs : memory.tackleCalledAtMs?.[id];
+    if (at !== undefined) {
+      calledAt[id] = at;
+    }
+  }
+  return { ...memory, tackleCalledOut: calledOut, tackleCalledAtMs: calledAt };
 }
 
 // ─── Rung 5: flee ────────────────────────────────────────────────────────────
@@ -8182,8 +8228,11 @@ type CompanionDroneRole = "combat" | "logistic" | "salvage";
  */
 interface CalledTarget {
   readonly itemID: number;
-  /** "free-fire" = nobody called it; this pilot picked it by the kill order. */
-  readonly source: "tag" | "broadcast" | "chat" | "free-fire";
+  /**
+   * "free-fire" = nobody called it; this pilot picked it by the kill order.
+   * "tackled" = it is holding this pilot down, which outranks every call.
+   */
+  readonly source: "tag" | "broadcast" | "chat" | "free-fire" | "tackled";
   readonly heard: string;
   readonly why: string;
 }
@@ -8196,6 +8245,10 @@ interface CalledTarget {
  * order: a pilot told to align, travel, jump or warp is doing that, and a rat
  * it could shoot on the way is not a reason to stop.
  *
+ * ⚠ ONE THING OUTRANKS A CALL: a ship tackling THIS pilot (`ownTackler`). It is
+ * shot first whatever the commander called, and its callout pulls the rest of
+ * the fleet onto it (`decideTackleBroadcast`).
+ *
  * Because rung 6 reads this same function, the drones follow the guns onto the
  * free-fire pick too, and every companion ranks the same grid the same way, so
  * a fleet in free fire focuses one ship rather than spreading over five.
@@ -8207,6 +8260,14 @@ function calledTarget(
   order: NamedOrder | null,
   memory: CompanionLadderMemory,
 ): CalledTarget | null {
+  // ⚠ A SHIP HOLDING THIS PILOT DOWN COMES FIRST, ABOVE EVERY CALL. Operator,
+  // 2026-10-13: "tacklers should be killed first, no matter FC instructions".
+  // A tackled pilot cannot leave, so the ship tackling it is the one threat it
+  // must end itself; its callout (rung 4) asks the fleet to help.
+  const tackler = ownTackler(obs, entities, measurement, memory);
+  if (tackler !== null) {
+    return tackler;
+  }
   const tags = obs.fleetTargetTags ?? null;
   if (tags !== null) {
     const tagged = bestTaggedEntity(tags, entities, measurement);
@@ -8244,6 +8305,44 @@ function calledTarget(
   return null;
 }
 
+/**
+ * The ship tackling this pilot that its guns and drones take first, or null.
+ *
+ * The candidates are `obs.tackledBy` (the jam pushes), on this grid, inside
+ * this hull's lock range and not given up on -- a tackler this pilot cannot
+ * lock falls through to the fleet's call rather than stalling the rung. Several
+ * are ranked by the kill order (`rankByKillOrder`, `pickPrimary`'s threat
+ * ladder): the scrambler before the webber, nearest breaking ties.
+ */
+function ownTackler(
+  obs: FleetCompanionObservation,
+  entities: readonly SpaceEntity[],
+  measurement: SpaceMeasurement | null,
+  memory: CompanionLadderMemory,
+): CalledTarget | null {
+  const reach = obs.maxTargetRangeM ?? null;
+  const candidates = (obs.tackledBy ?? [])
+    .map((itemID) => entityOnGrid(itemID, entities))
+    .filter((entity): entity is SpaceEntity => entity !== null)
+    .filter((entity) => {
+      if (gaveUpOnLocking(memory, entity.itemID)) {
+        return false;
+      }
+      const distance = measurement?.distances.get(entity.itemID) ?? null;
+      return reach === null || distance === null || distance <= reach;
+    });
+  if (candidates.length === 0) {
+    return null;
+  }
+  const target = rankByKillOrder(obs, candidates, measurement) ?? candidates[0]!;
+  return {
+    itemID: target.itemID,
+    source: "tackled",
+    heard: "being tackled",
+    why: "Tackled: shooting the ship holding me first.",
+  };
+}
+
 /** A `Target` broadcast as this pilot heard it: see `CompanionLadderMemory.targetCall`. */
 export interface HeardTargetCall {
   readonly itemID: number;
@@ -8262,7 +8361,8 @@ export interface HeardTargetCall {
  * own kill-order pick while the fleet's call was still standing. That is one of
  * the two code paths to the A, B, A seen live 2026-10-13 (free fire on A, a
  * broadcast on B, then A again inside five seconds, every gun re-sent at each
- * turn); the other is rung 4's broadcast arm, see `decideTackleBroadcast`.
+ * turn); the other is a companion's tackle callout, which is a real `Target`
+ * call and is meant to win (`decideTackleBroadcast`).
  *
  * ⚠ ONLY ANOTHER NAMED ORDER OR THE TTL ENDS IT, which is exactly what ends a
  * call that stays in the slot: a newer `Target` replaces it, an `AlignTo` or a
@@ -9681,7 +9781,7 @@ function decideFleetOrders(
   // one kind of stuck pilot for another.
   // A free-fire pick never lands here: `freeFireTarget` skips every ship this
   // pilot gave up locking, so it moves on instead of announcing "I cannot".
-  if (unreachable && called !== null && called.source !== "free-fire") {
+  if (unreachable && called !== null && called.source !== "free-fire" && called.source !== "tackled") {
     return {
       action: WAIT,
       standing: true,
@@ -10190,6 +10290,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
           lastTagAttempts: 0,
           taggingGaveUpOn: [],
           tackleCalledOut: [],
+          tackleCalledAtMs: {},
           lockRefusedFor: null,
           lockRefusals: 0,
           lockGaveUpOn: [],
