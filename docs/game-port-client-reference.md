@@ -1635,6 +1635,18 @@ session.shipid)`, asked of the service by its name once the ship is close (64 to
 from too far with `DockingApproach`. The page docks at a station since `6de7ef5c` (`web/src/bridge/placeChanges.ts`),
 under the BFF's keeping of the change; a structure by its route still.
 
+**A jettison, 2026-10-14** (`eve/client/script/ui/services/menuSvcExtras/invItemFunctions.py`,
+`menucheckers/itemCheckers.py`). An item's menu offers Jettison where the pilot is in a ship in space and the item
+may go (`OfferJettison` 401, `IsJettisonable` 1230: no ship, no player's container, nothing with a cargo bay of its
+own, in a hold a jettison takes, `inventorycommon/const.py` 257). The pilot is asked (`ConfirmJettison`), then
+`GetShipAccess().Jettison(itemIDs)` (`Jettison`, 56 to 73) on the ship's Moniker for the solar system
+(`eveMoniker.GetShipAccess` 42), the items' IDs as one list. The answer is `(jettisonedToCanIDs,
+jettisonItemList)`; an item asked for and in neither raises `NotAllItemsWereJettisoned` with the types that stayed.
+EveJS answers the two lists, the first empty where it refused, and refuses one inside its cooldown with
+`ShpJettisonPending`; on the game port the can comes with the park's next update, some 1.4 s after the answer. The
+page makes it since `ec6dacc0` (`web/src/bridge/shipWrites.ts`) outside a Mining Operation; an operation's hosted
+bot asks the route, which finds its can and gives it to the operation.
+
 **A module switched on and off, 2026-10-14** (`eve/client/script/ui/inflight/shipModuleButton/shipmodulebutton.py`,
 `eve/client/script/environment/godma.py`). The button's click (`Click`, from 933) finds the module's default effect
 (`GetDefaultEffect`, 908: the type's default effect that is not `online`, of the activation or the target

@@ -3798,6 +3798,12 @@ Take these defaults, and list each under "For the operator" in the log so they c
   space snapshot (`jump-own.js`); the menu's warp at nought lands in range, and
   the jump goes at the first ask. In the tab: the Overview's gate row,
   "Jump to Maurasi"; in Maurasi a station to dock at is on the bar.
+- **A jettison to try in the tab**: the Settings window's GM console gives the cargo
+  something (`/giveitem 34 100`, "Run command"); in space the Mining window is in the
+  Neocom's Ship group; a stack's "Pick" box, "Dump 1 into space…", then "Yes — dump 1 into
+  space". The server takes one jettison in three minutes: a second straight after is
+  `ShpJettisonPending`; after a putting back of the store (EveJS restarted with it) the
+  next was taken at once, on 2026-10-14.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
