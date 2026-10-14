@@ -150,8 +150,11 @@ test("what of ours can make a call: the registry's calls and the transport's own
   assert.deepEqual([read.has("config.GetMultiOwnersEx"), routed.has("config.GetMultiOwnersEx")], [true, false]);
   // The BFF's list has what a route can ask, read or not.
   for (const pair of ["charMgr.GetContactList", "fleetObjectHandler.GetInitState", "invbroker.MachoBindObject"]) assert.equal(routed.has(pair), true, pair);
-  // A service nothing of ours binds is not read as bound, and a call nothing of ours makes is on neither.
-  for (const pair of ["populationCap.MachoBindObject", "populationCap.MachoResolveObject", "config.GetBlackListedPlanets"]) assert.deepEqual([read.has(pair), routed.has(pair)], [false, false], pair);
+  // A call nothing of ours makes is on neither: the paper dolls a character selection screen draws its portraits
+  // from, and a portrait's upload (evephotosvc/scenePortraitQueue.py 110; the retail login's own user changed one).
+  // (The cfg's planets and the population cap's Moniker were the examples here until the transport made them:
+  // eveCfg.py 476, characterSelection.py 749 to 750.)
+  for (const pair of ["paperDollServer.GetPaperDollDataBatch", "photoUploadSvc.Upload"]) assert.deepEqual([read.has(pair), routed.has(pair)], [false, false], pair);
   // A resolve is not on the BFF's list of itself: it is the transport's own, with the bind.
   assert.equal(routed.has("invbroker.MachoResolveObject"), false);
 });

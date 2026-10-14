@@ -120,6 +120,14 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
     bountyAsks: [],
     /** Each asking of the insurgency campaigns a client may see, likewise. */
     campaignAsks: [],
+    /**
+     * What a client asks before a character is chosen, of itself and not of the selection screen: the cfg's two as it
+     * loads (eve/common/script/sys/eveCfg.py 475 to 477, 749 to 753) and whether the AIR tutorial is enabled as the
+     * global config comes (storylines/client/airnpe.py 72 to 76). Each asking, with its pair, likewise.
+     */
+    beforeChoosingAsks: [],
+    /** The population cap's Monikers, each made as a character is entered as and asked where it may be loaded (characterSelection.py 749 to 750): what each was made with and what it carried. */
+    loadSlots: [],
     async login(userName, password) {
       session.logins.push([userName, password]);
       if (loginError) throw loginError;
@@ -139,6 +147,15 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
         session.gradeAsks.push({ args, kwargs, before: session.calls.length });
         const grade = key in answers ? answers[key] : null;
         return typeof grade === "function" ? grade(args, kwargs) : grade;
+      }
+      // The cfg's two askings as it loads and the AIR controller's at the global config's coming are made at every
+      // login, before the character selection's calls (eveCfg.py 367, 701; airnpe.py 72 to 76). They are listed
+      // apart too (session.beforeChoosingAsks): the cfg's answered with no planets and no stations, the AIR
+      // controller's with yes.
+      if (key === "config.GetBlackListedPlanets" || key === "config.GetOldStationData" || key === "air_npe.is_air_npe_enabled") {
+        session.beforeChoosingAsks.push({ pair: key, args, kwargs, before: session.calls.length });
+        const asked = key in answers ? answers[key] : key === "air_npe.is_air_npe_enabled" ? true : { type: "list", items: [] };
+        return typeof asked === "function" ? asked(args, kwargs) : asked;
       }
       // The price table is asked by a thread of the client's cfg, two seconds after it loads: its place among a
       // login's calls is the clock's. It is listed apart too (session.priceAsks).
@@ -208,6 +225,15 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
      */
     async bind(service, params, call = null) {
       if (session.closed) throw sessionError("CONNECTION_CLOSED");
+      // The population cap's Moniker is made at every choosing, for the one call it carries: where the character
+      // may be loaded (characterSelection.py 749 to 750). It is listed apart (session.loadSlots, "N=5:<n>"), so that
+      // the binds and the objects of the rest are what a test caused. Answered one place, as Tranquility's
+      // recordings have it answered, unless a test says otherwise.
+      if (service === "populationCap") {
+        session.loadSlots.push({ params, carried: call === null ? null : call[0], args: call === null ? null : call[1] });
+        const places = "populationCap.GetCharacterLoadSlot" in answers ? answers["populationCap.GetCharacterLoadSlot"] : { type: "dict", entries: [[30000142, "slot"]] };
+        return { objectID: `N=5:${session.loadSlots.length}`, nodeID: 5, result: typeof places === "function" ? places(params, call) : places };
+      }
       // Crimewatch's Monikers are made for one call each, and every choosing makes some. They are listed and
       // counted apart (session.crimewatch, "N=3:<n>"), so that the binds and the objects of the rest are what a
       // test caused. The call each carried is among `sent` with every other.
