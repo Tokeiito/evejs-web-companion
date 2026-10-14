@@ -3735,6 +3735,12 @@ Take these defaults, and list each under "For the operator" in the log so they c
   trash's answers were right while it bound the station's manager
   afresh beside the one held since login: count the binds of a service
   in the recording against the client's keeping of it.
+- **A route that takes the thing from its caller is the vehicle for
+  asking the server.** Before a call is a page write, the route that
+  already makes it with the caller's number asks the server just as
+  well (`fitfit-whose.js`).
+- **No saved fitting, no refit run.** Test Pilot's library is empty
+  (`fittings-read.js`), and the page saves none.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

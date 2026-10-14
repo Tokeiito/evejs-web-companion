@@ -1649,6 +1649,13 @@ corporation's item, else the item's own place (`GetStationIDOfItem`, 660 to 691)
 session's own character's items (or a director's in the office here), never the ship flown, and answers None or
 `["CannotTrashItem"]`. The page makes the call since `bd2562f0` (`web/src/bridge/inventoryWrites.ts`).
 
+**A saved fitting applied, 2026-10-14** (`eve/client/script/environment/fittingSvc.py`). `LoadFitting` (554 to 618):
+`shipInv = invCache.GetInventoryFromId(activeShip)`, the ship's type checked against the fitting's, the rigs fitted
+or put in the cargo by the pilot's word, the hangar's items to fit from by type, then
+`shipInv.FitFitting(activeShip, shipTypeID, itemsToFit, session.stationid or session.structureid, fittingObjKeyVal,
+cargoItemsByType, fitRigs)`, which answers what failed to load. EveJS refuses a ship that is not the pilot's
+(`FakeItemNotFound`). The page makes the call since `52c3e41c` (`web/src/bridge/fitModule.ts`, `applyFitting`).
+
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
 (`ACTIONS`, by `eventTypeID`) and a level it reckons from `absolutePoints` and the skill's rank
