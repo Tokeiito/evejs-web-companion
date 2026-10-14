@@ -60,6 +60,9 @@ import {
   mailboxAllRead,
   mailboxAllRestored,
   mailboxAllTrashed,
+  mailboxLabelAssigned,
+  mailboxLabelDropped,
+  mailboxLabelRemoved,
   mailboxTrashEmptied,
   mailboxDeleted,
   mailboxMarkedUnread,
@@ -1037,6 +1040,16 @@ export interface AppFlow {
   restoreAllMail(): Promise<void>;
   /** Delete every trashed mail, as the trash's Empty Trash does. */
   emptyMailTrash(): Promise<void>;
+  /** Make a mail label of the pilot's own, as the labels window's Create does: its bit, or null where it was not made. */
+  createMailLabel(name: string): Promise<number | null>;
+  /** Rename a label of the pilot's own, as the labels window's Rename does. */
+  renameMailLabel(labelID: number, name: string): Promise<void>;
+  /** Delete a label of the pilot's own, as the labels window's Delete does once it is asked to be sure of. */
+  deleteMailLabel(labelID: number): Promise<void>;
+  /** Give messages a label, as a message's Assign Label does: how many were given it (0, nothing asked, where all had it). */
+  assignMailLabel(messageIDs: readonly number[], labelID: number): Promise<number>;
+  /** Take a label off messages, as a message's Remove Label does: how many it was taken off. */
+  removeMailLabel(messageIDs: readonly number[], labelID: number): Promise<number>;
   /** Close the open message without touching the server. */
   closeMail(): void;
   /**
@@ -5161,6 +5174,63 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         mailBodies.delete(`${characterID}:${messageID}`);
       }
     }
+  }
+
+  // The mail labels' writes (mailSvc.py 711 to 807): the mail manager asked by the generic call, and the labels and
+  // the mailbox kept changed as the client's service changes them.
+  async function createMailLabel(name: string): Promise<number | null> {
+    let answer: JsonValue;
+    try {
+      answer = await bridgeDo("mailMgr", "CreateLabel", [name, null]);
+    } catch (error) {
+      throwIfRequestRetired(error);
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({ type: "mail/action-error", message: mailRefusalMessage(error) });
+      return null;
+    }
+    // AddLabel (727 to 730): the label kept, by the bit the server answered.
+    const labelID = Number(answer);
+    if (!Number.isSafeInteger(labelID) || labelID <= 0) {
+      return null;
+    }
+    const kept = store.mail.get().labels ?? [];
+    store.apply({ type: "mail/labels", labels: [...kept.filter((label) => label.labelID !== labelID), { labelID, name, color: 0 }] });
+    return labelID;
+  }
+
+  async function renameMailLabel(labelID: number, name: string): Promise<void> {
+    if (await mailCall("EditLabel", [labelID, name, null], (mailbox) => mailbox, [])) {
+      const kept = store.mail.get().labels ?? [];
+      store.apply({ type: "mail/labels", labels: kept.map((label) => (label.labelID === labelID ? { ...label, name } : label)) });
+    }
+  }
+
+  async function deleteMailLabel(labelID: number): Promise<void> {
+    if (await mailCall("DeleteLabel", [labelID], (mailbox) => mailboxLabelDropped(mailbox, labelID), [])) {
+      store.apply({ type: "mail/labels", labels: (store.mail.get().labels ?? []).filter((label) => label.labelID !== labelID) });
+    }
+  }
+
+  async function assignMailLabel(messageIDs: readonly number[], labelID: number): Promise<number> {
+    const { changed } = mailboxLabelAssigned(store.mail.get(), messageIDs, labelID);
+    if (changed.length === 0) {
+      return 0;
+    }
+    const done = await mailCall("AssignLabels", [[...changed], labelID], (mailbox) => mailboxLabelAssigned(mailbox, changed, labelID).mailbox, []);
+    return done ? changed.length : 0;
+  }
+
+  async function removeMailLabel(messageIDs: readonly number[], labelID: number): Promise<number> {
+    const { changed } = mailboxLabelRemoved(store.mail.get(), messageIDs, labelID);
+    if (changed.length === 0) {
+      return 0;
+    }
+    const done = await mailCall("RemoveLabels", [[...changed], labelID], (mailbox) => mailboxLabelRemoved(mailbox, changed, labelID).mailbox, []);
+    return done ? changed.length : 0;
   }
 
   async function markMail(messageIDs: readonly number[], read: boolean): Promise<void> {
@@ -15626,6 +15696,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     trashAllMail,
     restoreAllMail,
     emptyMailTrash,
+    createMailLabel,
+    renameMailLabel,
+    deleteMailLabel,
+    assignMailLabel,
+    removeMailLabel,
     closeMail,
     findCharacters: (q: string) => api.findCharacters(q, callOptions),
     sendMail,

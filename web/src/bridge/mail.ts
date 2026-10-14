@@ -563,6 +563,31 @@ export function mailboxTrashEmptied(mailbox: DecodedMailbox): { readonly mailbox
   return { mailbox: mailboxDeleted(mailbox, gone), gone };
 }
 
+/** The most a label's name may be (appConst.py 1787, mailMaxLabelSize). */
+export const MAIL_LABEL_MAX = 40;
+
+/**
+ * AssignLabels (mailSvc.py 756 to 772): the label added to those of the messages that lack it; which they were,
+ * none where every one has it already (and the client then asks nothing).
+ */
+export function mailboxLabelAssigned(mailbox: DecodedMailbox, messageIDs: readonly number[], labelID: number): { readonly mailbox: DecodedMailbox; readonly changed: readonly number[] } {
+  const named = new Set(messageIDs);
+  const changed = messagesWhere(mailbox, (status) => named.has(status.messageID) && (status.labelMask & labelID) !== labelID);
+  return { mailbox: withStatuses(mailbox, changed, (status) => ({ ...status, labelMask: status.labelMask | labelID })), changed };
+}
+
+/** RemoveLabels (mailSvc.py 774 to 790): the label taken off those of the messages that have it; which they were. */
+export function mailboxLabelRemoved(mailbox: DecodedMailbox, messageIDs: readonly number[], labelID: number): { readonly mailbox: DecodedMailbox; readonly changed: readonly number[] } {
+  const named = new Set(messageIDs);
+  const changed = messagesWhere(mailbox, (status) => named.has(status.messageID) && (status.labelMask & labelID) > 0);
+  return { mailbox: withStatuses(mailbox, changed, (status) => ({ ...status, labelMask: status.labelMask & ~labelID })), changed };
+}
+
+/** DeleteLabel (mailSvc.py 739 to 755): the label taken off every message that has it. */
+export function mailboxLabelDropped(mailbox: DecodedMailbox, labelID: number): DecodedMailbox {
+  return withStatuses(mailbox, messagesWhere(mailbox, (status) => (status.labelMask & labelID) > 0), (status) => ({ ...status, labelMask: status.labelMask & ~labelID }));
+}
+
 /** A list off the wire, its items; anything else, none. */
 function itemsOf(value: JsonValue | undefined): readonly JsonValue[] {
   return Array.isArray(value) ? value : listItems(value);

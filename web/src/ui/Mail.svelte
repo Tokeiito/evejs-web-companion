@@ -28,6 +28,7 @@
     MAIL_FOLDER_SENT,
     MAIL_FOLDER_TRASH,
     mailsInFolder,
+    MAIL_LABEL_MAX,
     unreadByLabel,
   } from "../bridge/mail.ts";
   import { MAIL_QUOTE_LABELS, mailBodyLines, mailQuoteMarkup } from "../bridge/mailMarkup.ts";
@@ -138,6 +139,108 @@
       return "";
     }
     return filledWord(`dialog:${waiting.dialog}/${part}`, part === "title" ? "Are you sure?" : "", waiting.args);
+  }
+
+  /** The words of the labels' writes, by their labels (ManageLabelsBase; GetMsgMenu; mailSvc.py 1290 to 1317). */
+  const LABEL_WORDS = {
+    manage: "UI/Mail/ManageLabels",
+    name: "UI/Mail/LabelName",
+    create: "UI/Mail/Create",
+    rename: "UI/Mail/LabelRename",
+    typeNew: "UI/Mail/LabelTypeNew",
+    tooLong: "UI/Mail/LabelTooLong",
+    assign: "UI/Mail/AssignLabel",
+    remove: "UI/Mail/LabelRemove",
+    assigned: "UI/Mail/LabelAssigned",
+    removed: "UI/Mail/LabelRemoved",
+    corp: "UI/Mail/LabelCorp",
+    alliance: "UI/Mail/LabelAlliance",
+    delete: "UI/Mail/Delete",
+    ok: "UI/Common/Buttons/OK",
+    cancel: "UI/Common/Buttons/Cancel",
+  } as const;
+  /** The client's dialogs of the labels' writes, by their names. */
+  const LABEL_DIALOGS = ["DeleteMailLabel", "MailLabelNameExists", "LookupStringMinimum"] as const;
+
+  let managingLabels = $state(false);
+  let newLabelName = $state("");
+  let renaming = $state<{ readonly labelID: number; name: string } | null>(null);
+  /** What the last label's write said (the client's note after an assignment or a removal), or a refusal. */
+  let labelNote = $state("");
+
+  /**
+   * GetAllLabels(assignable=1) (mailSvc.py 681 to 710): the system's that may be given (the inbox, the
+   * corporation's and the alliance's, by the client's own names) and the pilot's own, each by its bit and name.
+   */
+  const assignableLabels = $derived([
+    { labelID: MAIL_FOLDER_INBOX, name: word(FOLDER_WORDS.inbox, "Inbox") },
+    { labelID: MAIL_FOLDER_CORPORATION, name: word(LABEL_WORDS.corp, "Corp") },
+    { labelID: MAIL_FOLDER_ALLIANCE, name: word(LABEL_WORDS.alliance, "Alliance") },
+    ...ownLabels.map((label) => ({ labelID: label.labelID, name: label.name })),
+  ]);
+
+  /**
+   * GetAssignLabelMenu and GetRemoveLabelMenu: the labels a message lacks, or has, sorted as the client sorts them,
+   * the system's by "  " and their bit (so first, by bit) and the pilot's own by name.
+   */
+  function labelsFor(messageID: number, has: boolean): readonly { labelID: number; name: string }[] {
+    const mask = $mail.statuses.find((row) => row.messageID === messageID)?.labelMask ?? 0;
+    const system = new Set([MAIL_FOLDER_INBOX, MAIL_FOLDER_CORPORATION, MAIL_FOLDER_ALLIANCE]);
+    const key = (label: { labelID: number; name: string }) => (system.has(label.labelID) ? `  ${label.labelID}` : label.name.toLowerCase());
+    return assignableLabels
+      .filter((label) => ((mask & label.labelID) === label.labelID) === has)
+      .sort((left, right) => (key(left) < key(right) ? -1 : key(left) > key(right) ? 1 : 0));
+  }
+
+  /** A message given a label, or one taken off it, and the client's note of it. */
+  function labelMessage(messageID: number, labelID: number, give: boolean): void {
+    const label = assignableLabels.find((each) => each.labelID === labelID);
+    if (label === undefined) {
+      return;
+    }
+    void run(async () => {
+      const count = give ? await flow.assignMailLabel([messageID], labelID) : await flow.removeMailLabel([messageID], labelID);
+      if (count > 0) {
+        labelNote = filledWord(give ? LABEL_WORDS.assigned : LABEL_WORDS.removed, give ? "The label \"{labelName}\" has been assigned to {numMails} mails" : "The label \"{labelName}\" has been removed from {numMails} mails", { labelName: label.name, numMails: String(count) });
+      }
+    });
+  }
+
+  /**
+   * The labels window's Create (CreateLabel, 1563 to 1580): the name trimmed, refused where a label has it (by the
+   * client's own words), where it is empty, or where it is over forty; then made.
+   */
+  function createLabel(): void {
+    const name = newLabelName.trim();
+    labelNote = "";
+    if (assignableLabels.some((label) => label.name.toLowerCase() === name.toLowerCase()) || name.toLowerCase() === word(FOLDER_WORDS.sent, "Sent").toLowerCase()) {
+      labelNote = filledWord("dialog:MailLabelNameExists/body", "This label name already exists", {});
+      return;
+    }
+    if (name.length < 1) {
+      labelNote = filledWord("dialog:LookupStringMinimum/body", "Please type in at least {minimum} character", { minimum: "1" });
+      return;
+    }
+    if (name.length > MAIL_LABEL_MAX) {
+      labelNote = word(LABEL_WORDS.tooLong, "Label name is too long.");
+      return;
+    }
+    void run(async () => {
+      if ((await flow.createMailLabel(name)) !== null) {
+        newLabelName = "";
+      }
+    });
+  }
+
+  /** RenameLabelFromUI (1290 to 1299): a new name, trimmed; nothing done where it is empty. */
+  function renameLabel(): void {
+    const waiting = renaming;
+    renaming = null;
+    const name = waiting === null ? "" : waiting.name.trim();
+    if (waiting === null || name === "") {
+      return;
+    }
+    void run(() => flow.renameMailLabel(waiting.labelID, name));
   }
 
   /** The pilot's yes: the write done. */
@@ -370,6 +473,8 @@
     flow.requestWords([
       ...Object.values(MAIL_QUOTE_LABELS), DATE_LABEL, ...Object.values(FOLDER_WORDS), ...Object.values(WRITE_WORDS), ...Object.values(FOLDER_WRITE_WORDS),
       ...FOLDER_DIALOGS.flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`]),
+      ...Object.values(LABEL_WORDS),
+      ...LABEL_DIALOGS.flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`]),
     ]);
     void run(async () => {
       await flow.loadMail();
@@ -432,6 +537,55 @@
   </nav>
 
   {#if tab === "inbox"}
+    <!-- The labels window (evemail.py ManageLabelsBase): a new label by name, and each of the pilot's own renamed or deleted. -->
+    <p class="controls">
+      <button type="button" class="minor" onclick={() => (managingLabels = !managingLabels)}>{word(LABEL_WORDS.manage, "Manage Labels")}</button>
+    </p>
+    {#if labelNote !== ""}
+      <p class="note">{labelNote}</p>
+    {/if}
+    {#if managingLabels}
+      <section class="bulk mail-labels">
+        <h3>{word(LABEL_WORDS.manage, "Manage Labels")}</h3>
+        <p class="controls">
+          <label>
+            {word(LABEL_WORDS.name, "Label Name")}
+            <input type="text" maxlength={MAIL_LABEL_MAX} bind:value={newLabelName} />
+          </label>
+          <button type="button" disabled={busy} onclick={createLabel}>{word(LABEL_WORDS.create, "Create")}</button>
+        </p>
+        <ul class="mail-label-list">
+          {#each ownLabels as label (label.labelID)}
+            <li>
+              {label.name}
+              <button type="button" class="minor" disabled={busy} onclick={() => (renaming = { labelID: label.labelID, name: label.name })}>{word(LABEL_WORDS.rename, "Rename")}</button>
+              <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "DeleteMailLabel", args: { labelName: label.name }, act: () => flow.deleteMailLabel(label.labelID) })}>{word(LABEL_WORDS.delete, "Delete")}</button>
+            </li>
+          {/each}
+        </ul>
+        {#if renaming !== null}
+          <p class="controls">
+            <label>
+              {word(LABEL_WORDS.typeNew, "Type a new label name.")}
+              <input type="text" maxlength={MAIL_LABEL_MAX} bind:value={renaming.name} />
+            </label>
+            <button type="button" disabled={busy} onclick={renameLabel}>{word(LABEL_WORDS.ok, "OK")}</button>
+            <button type="button" class="minor" onclick={() => (renaming = null)}>{word(LABEL_WORDS.cancel, "Cancel")}</button>
+          </p>
+        {/if}
+      </section>
+    {/if}
+    {#if confirming !== null}
+      <!-- The client's dialog to be sure of it: its title, its question, yes and no. -->
+      <div class="mail-confirm" role="alertdialog" aria-label={dialogText("title")}>
+        <strong>{dialogText("title")}</strong>
+        <p>{dialogText("body")}</p>
+        <p class="controls">
+          <button type="button" disabled={busy} onclick={confirmed}>{word(FOLDER_WRITE_WORDS.yes, "Yes")}</button>
+          <button type="button" class="minor" onclick={() => (confirming = null)}>{word(FOLDER_WRITE_WORDS.no, "No")}</button>
+        </p>
+      </div>
+    {/if}
     {#if !$mail.loaded}
       <p class="note">Fetching your mail…</p>
     {:else if $mail.messages.length === 0}
@@ -479,17 +633,6 @@
           </button>
         {/if}
       </p>
-      {#if confirming !== null}
-        <!-- The client's dialog to be sure of it: its title, its question, yes and no. -->
-        <div class="mail-confirm" role="alertdialog" aria-label={dialogText("title")}>
-          <strong>{dialogText("title")}</strong>
-          <p>{dialogText("body")}</p>
-          <p class="controls">
-            <button type="button" disabled={busy} onclick={confirmed}>{word(FOLDER_WRITE_WORDS.yes, "Yes")}</button>
-            <button type="button" class="minor" onclick={() => (confirming = null)}>{word(FOLDER_WRITE_WORDS.no, "No")}</button>
-          </p>
-        </div>
-      {/if}
       {#if shownMessages.length === 0}
         <p class="empty">Nothing in this folder.</p>
       {:else}
@@ -546,6 +689,25 @@
                         {word(WRITE_WORDS.delete, "Delete")}
                       </button>
                     {:else}
+                      <!-- GetAssignLabelMenu and GetRemoveLabelMenu: the labels it lacks, and those it has. -->
+                      {@const lacking = labelsFor(header.messageID, false)}
+                      {@const having = labelsFor(header.messageID, true)}
+                      {#if lacking.length > 0}
+                        <select aria-label={word(LABEL_WORDS.assign, "Assign Label")} disabled={busy} onchange={(event) => { const select = event.currentTarget; labelMessage(header.messageID, Number(select.value), true); select.value = ""; }}>
+                          <option value="">{word(LABEL_WORDS.assign, "Assign Label")}</option>
+                          {#each lacking as label (label.labelID)}
+                            <option value={label.labelID}>{label.name}</option>
+                          {/each}
+                        </select>
+                      {/if}
+                      {#if having.length > 0}
+                        <select aria-label={word(LABEL_WORDS.remove, "Remove Label")} disabled={busy} onchange={(event) => { const select = event.currentTarget; labelMessage(header.messageID, Number(select.value), false); select.value = ""; }}>
+                          <option value="">{word(LABEL_WORDS.remove, "Remove Label")}</option>
+                          {#each having as label (label.labelID)}
+                            <option value={label.labelID}>{label.name}</option>
+                          {/each}
+                        </select>
+                      {/if}
                       <button type="button" class="minor" disabled={busy} onclick={() => void run(() => flow.trashMail([header.messageID]))}>
                         {word(WRITE_WORDS.trash, "Trash")}
                       </button>
