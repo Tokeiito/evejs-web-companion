@@ -568,90 +568,10 @@ test("a job that is not among those read is not asked for: its solar system is n
   assert.deepEqual(requests.filter((entry) => entry.path === "/api/bridge/call" || entry.path.startsWith("/api/bridge/industry/")), []);
 });
 
-test("the preview returns what the player HAS and the time the job will take, and starts nothing", async () => {
-  const store = createClientStore();
-  let timeSeconds: number | null | string = 1163;
-  let fee: Record<string, number> | string | null | undefined = { cost: 5284, tax: 1321, sccSurcharge: 5284, securityTax: 0, total: 11889 };
-  let materials: Record<string, number | string> | string | null | undefined = { "38": 230 };
-  const { fetch, requests } = makeFakeFetch(
-    respondOk((path) =>
-      path === "/api/bridge/industry/preview"
-        ? { status: 200, body: { ok: true, available: { "38": 500 }, timeSeconds, fee, materials } }
-        : null,
-    ),
-  );
-  const flow = createAppFlow(store, { fetch });
-  const request = {
-    blueprintItemID: BLUEPRINT_ITEM_ID,
-    blueprintTypeID: BLUEPRINT_TYPE_ID,
-    activity: "manufacturing" as const,
-    facilityID: STATION_ID,
-    runs: 3,
-    timeEfficiency: 5,
-    materialEfficiency: 10,
-  };
+// The flow's preview and the window's events are the page's own calls since 2026-10-14 (previewIndustryJob,
+// industryWindowClosed; bridge/industryMonitor.ts): their two tests, of the preview route's answer and of the window's
+// events route, went then.
 
-  const previewed = await flow.previewIndustryJob(request);
-  assert.deepEqual(previewed, { available: { "38": 500 }, timeSeconds: 1163, fee: { cost: 5284, tax: 1321, sccSurcharge: 5284, securityTax: 0, total: 11889 }, materials: { "38": 230 }, monitorID: null });
-  // Materials that were not reckoned, or that are none, are none.
-  const noMaterials: (Record<string, number | string> | string | null | undefined)[] = [null, undefined, "230", { "38": "230" }, { "38": 0 }];
-  for (const none of noMaterials) {
-    materials = none;
-    assert.equal((await flow.previewIndustryJob(request)).materials, null, JSON.stringify(none));
-  }
-  materials = { "38": 230 };
-  // A fee that was not reckoned, or that is no fee, is none.
-  const noFees: (Record<string, number> | string | null | undefined)[] = [null, undefined, "11889", { cost: 5284 }, { cost: 5284, tax: 1321, sccSurcharge: 5284, securityTax: 0, total: 1 }];
-  for (const none of noFees) {
-    fee = none;
-    assert.equal((await flow.previewIndustryJob(request)).fee, null, JSON.stringify(none));
-  }
-  fee = null;
-  // The blueprint's time research goes with the request: the job's time is reckoned from it. And its material
-  // research, from which its materials are.
-  const sent = requests.find((entry) => entry.path === "/api/bridge/industry/preview");
-  assert.equal((sent?.body as { timeEfficiency?: number }).timeEfficiency, 5);
-  assert.equal((sent?.body as { materialEfficiency?: number }).materialEfficiency, 10);
-  // A time that could not be reckoned, or that is no time, is none.
-  for (const none of [null, "soon", 0, -4, 1.5]) {
-    timeSeconds = none as number | null | string;
-    assert.equal((await flow.previewIndustryJob(request)).timeSeconds, null, String(none));
-  }
-  const { available } = previewed;
-  assert.deepEqual(available, { "38": 500 });
-  assert.equal(
-    requests.some((entry) => entry.path === "/api/bridge/industry/install"),
-    false,
-    "a preview must never install anything",
-  );
-});
-
-test("the window's own events are told to the pilot's transport, and nothing is said where they could not be", async () => {
-  const store = createClientStore();
-  let status = 200;
-  const { fetch, requests } = makeFakeFetch(
-    respondOk((path) =>
-      path === "/api/bridge/industry/window"
-        ? (status === 200 ? { status: 200, body: { ok: true, kept: true } } : { status, body: { ok: false, error: "NO_LIVE_SESSION", message: "no pilot" } })
-        : null,
-    ),
-  );
-  const flow = createAppFlow(store, { fetch });
-  const told = () => requests.filter((entry) => entry.path === "/api/bridge/industry/window").map((entry) => [entry.method, entry.body]);
-
-  // The window closed, and its job let go while it stays: each is one event, and nothing else is asked.
-  await flow.industryWindowClosed();
-  await flow.industryJobLetGo();
-  assert.deepEqual(told(), [["POST", { event: "closed" }], ["POST", { event: "job-let-go" }]]);
-  assert.equal(requests.length, 2);
-  // Where it could not be told (no pilot is held, the BFF is gone) the window is closed all the same: nothing
-  // fails, and the panel says nothing of it.
-  status = 409;
-  await flow.industryWindowClosed();
-  await flow.industryJobLetGo();
-  assert.equal(told().length, 4);
-  assert.equal(store.get().industry.actionError, null);
-});
 
 test("a lost session during a mutation unwinds to character select", async () => {
   const store = createClientStore();
