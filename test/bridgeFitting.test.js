@@ -370,67 +370,11 @@ test("a fitting read with no active ship answers cleanly rather than failing", a
 
 // --- the destructive rig path ----------------------------------------------
 
-test("destroying a rig REFUSES without an explicit confirmation", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
+// (Three tests held the rig's route (POST /api/bridge/fitting/destroy-rig) to its confirmation, to DestroyFitting on
+// the ship's binding with its verdict from the slots, and to its refusal of what is no rig: the route went on
+// 2026-10-14, the page making the call on the ship's own inventory with its own read of the slots around it.)
 
-  for (const body of [{ itemID: RIG_ITEM_ID }, { itemID: RIG_ITEM_ID, confirm: false }, { itemID: RIG_ITEM_ID, confirm: "yes" }]) {
-    const { response, payload } = await apiRequest(baseUrl, "/api/bridge/fitting/destroy-rig", {
-      method: "POST",
-      body,
-    });
-    assert.equal(response.status, 400, JSON.stringify(body));
-    assert.equal(payload.error, "CONFIRMATION_REQUIRED");
-  }
-  assert.equal(
-    gateway.calls.boundCall.some((c) => c.method === "DestroyFitting"),
-    false,
-    "nothing was destroyed",
-  );
-  assert.equal(gateway.fitted.has(RIG_ITEM_ID), true, "the rig is still fitted");
-});
 
-test("a confirmed rig destruction goes through DestroyFitting and is verified", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/fitting/destroy-rig", {
-    method: "POST",
-    body: { itemID: RIG_ITEM_ID, confirm: true },
-  });
-  assert.equal(response.status, 200);
-  assert.equal(payload.applied, true);
-
-  const destroy = gateway.calls.boundCall.find((c) => c.method === "DestroyFitting");
-  assert.deepEqual(destroy.args, [RIG_ITEM_ID]);
-  assert.match(destroy.boundHandle, /GetInventoryFromId/, "on the ship binding");
-  assert.equal(gateway.fitted.has(RIG_ITEM_ID), false);
-});
-
-test("the destroy route refuses anything that is not a rig on the active ship", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  // A fitted module that is NOT in a rig slot: unfit it instead.
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/fitting/destroy-rig", {
-    method: "POST",
-    body: { itemID: TURRET_ITEM_ID, confirm: true },
-  });
-  assert.equal(response.status, 400);
-  assert.equal(payload.error, "NOT_A_RIG");
-  assert.equal(gateway.fitted.has(TURRET_ITEM_ID), true, "the turret survived");
-
-  // And something that is not fitted at all.
-  const stranger = await apiRequest(baseUrl, "/api/bridge/fitting/destroy-rig", {
-    method: "POST",
-    body: { itemID: 999999, confirm: true },
-  });
-  assert.equal(stranger.response.status, 400);
-  assert.equal(stranger.payload.error, "NOT_A_RIG");
-});
 
 // --- session guards ---------------------------------------------------------
 
@@ -439,7 +383,6 @@ test("every fitting route needs a live session, and authentication", async () =>
 
   const routes = [
     ["GET", "/api/bridge/fitting", undefined],
-    ["POST", "/api/bridge/fitting/destroy-rig", { itemID: 1, confirm: true }],
   ];
 
   // No character online yet: every route says so rather than half-working.

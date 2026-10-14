@@ -362,17 +362,19 @@ test("an applied change leaves no stale action error behind", async () => {
 
 // --- the destructive rig path ----------------------------------------------
 
-test("destroyRig always sends an explicit confirmation", async () => {
-  const store = createClientStore();
-  const { fetch, requests } = makeFakeFetch(respondOk());
-  const flow = createAppFlow(store, { fetch });
+test("destroyRig is the page's own call on the ship's own inventory, and only for a rig", async () => {
+  // fittingSlotController.Unfit (262): parentInv.DestroyFitting(moduleID) on the ship's own inventory, the page's
+  // own call since 2026-10-14, made once the slots say the module is in a rig slot.
+  const { flow, requests } = await dockedFlow(respondOk());
 
   await flow.destroyRig(5004);
+  assert.deepEqual(inventoryCalls(requests), [
+    { service: "invbroker", method: "DestroyFitting", args: [5004], kwargs: null, pilot: true, confirm: true, of: 9001 },
+  ]);
 
-  const destroy = requests.find((r) => r.path === "/api/bridge/fitting/destroy-rig");
-  assert.ok(destroy, "the destroy route was called");
-  assert.equal(destroy.body.confirm, true, "never without an explicit confirmation");
-  assert.equal(destroy.body.itemID, 5004);
+  requests.length = 0;
+  await flow.destroyRig(5001);
+  assert.deepEqual(inventoryCalls(requests), [], "a module in no rig slot is asked nothing");
 });
 
 test("no fitting action ever runs against a route that was not asked for", async () => {
