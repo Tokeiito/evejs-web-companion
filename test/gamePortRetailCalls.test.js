@@ -1783,6 +1783,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "mailingListsMgr.SetDefaultAccess", "mailingListsMgr.SetEntitiesAccess", "mailingListsMgr.ClearEntityAccess",
     // A mailing list's welcome mail read, saved, sent and cleared. The gateway's list has none of them.
     "mailingListsMgr.GetWelcomeMail", "mailingListsMgr.SaveWelcomeMail", "mailingListsMgr.SendWelcomeMail", "mailingListsMgr.ClearWelcomeMail",
+    // The search service's quick query. The gateway's list has nothing of the search service's.
+    "search.QuickQuery",
   ]);
   // structureGuests.py 25: sm.RemoteSvc('structureGuests').GetGuests(session.structureid), by the service's name,
   // with the structure the session is docked in and nothing else.
