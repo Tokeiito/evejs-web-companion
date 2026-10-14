@@ -1616,6 +1616,16 @@ rate named and checks none where None is named; it answers a buy with None, a sa
 an order up, a reprice with None. The page makes the three since `b80c3f59` (`web/src/bridge/marketOrderWrites.ts`),
 and the game port sends a whole price, rate or delta as a float since `b1fbb8e7`.
 
+**A change of place, 2026-10-14** (`eve/client/script/ui/station/base.py`, `ui/shared/dockedUI/undockingSvc.py`).
+Every change of place the client makes goes through its session manager, `sessionMgr.PerformSessionChange(kind,
+call, ...)`: not while another change is under way, nor before the last one's timer has run, and the session is
+another one after it. The undock (`_DoUndockAttempt`, 488 to 521): `PerformSessionChange('undock',
+shipsvc.Undock, shipID, ignoreContraband, onlineModules=GetOnlineModules(shipID))`, on the ship's object for the
+station, the ship the session's own; refused with `ShipContrabandWarningUndock`, the pilot is asked, and on OK the
+undock is made again with the flag set (506 to 511). For a pilot of the page's the session manager's keeping is the
+BFF's: the generic call makes a page's change of place under it since `ea7df3b0` (`dispatchPlaceChangeWrite`), and
+the page makes the undock (`web/src/bridge/placeChanges.ts`).
+
 **A module fitted and unfitted, 2026-10-13** (`eve/client/script/dogma/clientDogmaLocation.py`,
 `ui/shared/fitting/fittingSlotController.py`, `ui/shared/fittingScreen/tryFit.py`,
 `ui/shared/fitting/fittingUtil.py`). Into a slot: `TryFit` (669 to 673),

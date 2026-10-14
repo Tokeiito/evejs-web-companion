@@ -3778,6 +3778,17 @@ Take these defaults, and list each under "For the operator" in the log so they c
   "Offer to sell…", "Check this order…", "Yes, place this buy order";
   "Your orders": "Change the price…", "Take it down…". Every order
   placed is taken down again: the market's daemon is not the store's.
+- **A change of place is the BFF's to keep**: a page's write that changes
+  its pilot's place goes in `PAGE_PLACE_CHANGE_CALLS` (bridgeCallPolicy.js)
+  with its kind, and `dispatchPlaceChangeWrite` (server.js) gives it the
+  route's keeping: the client's session manager's work, which is the
+  BFF's for a pilot of the page's.
+- **Offline from space in the tab**: there is no "Go offline" in space;
+  the flight bar's "Dock" at the station on grid, then the Station
+  window's "Go offline".
+- **A test that looks for a removed route's path passes whatever the page
+  does**: look for the page's own call by its pair (`call:ship.Undock`)
+  instead.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
