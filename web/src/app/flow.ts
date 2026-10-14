@@ -14876,8 +14876,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     // A job's time, materials and what it costs to start, of every kind of work, are the page's own reckoning
     // (reckonedHere), as the client's window shows its job's own; the route's preview is asked for what the job's
-    // place has of each material, and its figures are shown only where the page could not reckon one (a facility with
-    // rig modifiers, which the client asks afresh). The route reckons by the same module.
+    // place has of each material, and its figures are shown only where the page could not reckon one (an input it
+    // could not have). The route reckons by the same module.
     async previewIndustryJob(request) {
       const own = await reckonedHere(request);
       const previewed = await api.previewIndustryJob(request, callOptions);

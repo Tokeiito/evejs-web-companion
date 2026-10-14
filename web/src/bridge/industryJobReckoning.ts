@@ -35,8 +35,10 @@
 // nought (or empty) and are not its own to the unit. Each figure is null where an input was not had, and nought goes
 // for it then, which the server works out by itself.
 //
-// NOT DONE: a facility with rig modifiers, which the client's job asks afresh (facilitySvc.GetFreshFacility); the
-// most runs a job can have, which the routes hold a copy job's, a research's and an invention's to (job.py 395).
+// A facility with rig modifiers is asked for afresh, as the client's job asks it (facilitySvc.GetFreshFacility).
+//
+// NOT DONE: the most runs a job can have, which the routes hold a copy job's, a research's and an invention's to
+// (job.py 395).
 
 import type { Ask } from "./ask.ts";
 import { effectiveSkillLevel } from "./skillSheet.ts";
@@ -219,7 +221,7 @@ async function orNone<T>(read: () => Promise<T>): Promise<T | null> {
 
 /**
  * Whether a facility's row lists rig modifiers (facilitySvc.GetFreshFacility, 109: `rigModifiers`), which the
- * client's job then asks for afresh, and the page does not yet: such a facility has nothing reckoned by the page.
+ * client's job then asks for afresh.
  */
 function hasRigModifiers(row: unknown): boolean {
   const args = row !== null && typeof row === "object" ? (row as { args?: { entries?: unknown } }).args : undefined;
@@ -264,14 +266,20 @@ export function createJobReckoner(reads: JobReckoningReads) {
 
   const kept = {
     /**
-     * A facility's row among the region's, as they are kept; asked for again once where the facility is not among
-     * them, as after a move to another region, where the client's service has another region's.
+     * A job's facility, as the client's job is given one (industrySvc.CreateJob, 109: facilitySvc.GetFreshFacility):
+     * its row among the region's, as they are kept, asked for again once where the facility is not among them (as
+     * after a move to another region, where the client's service has another region's); and one whose row lists rig
+     * modifiers asked for afresh by itself (facilityManager.GetFacility), as the client asks it. Null where none is had.
      */
     async facility(facilityID: number): Promise<unknown> {
-      const had = facilities === null ? null : findFacilityRow(facilities, facilityID);
-      if (had) return had;
-      facilities = await orNone(() => reads.ask("facilityManager", "GetFacilities", []));
-      return facilities === null ? null : findFacilityRow(facilities, facilityID);
+      let row = facilities === null ? null : findFacilityRow(facilities, facilityID);
+      if (!row) {
+        facilities = await orNone(() => reads.ask("facilityManager", "GetFacilities", []));
+        row = facilities === null ? null : findFacilityRow(facilities, facilityID);
+      }
+      if (!row || !hasRigModifiers(row)) return row;
+      const fresh = await orNone(() => reads.ask("facilityManager", "GetFacility", [facilityID]));
+      return fresh !== null && typeof fresh === "object" && !Array.isArray(fresh) ? fresh : null;
     },
     async prices(): Promise<ReadonlyMap<number, number | null> | null> {
       prices ??= adjustedPrices(await orNone(() => reads.ask("config", "GetAverageMarketPrices", [])));
@@ -339,7 +347,6 @@ export function createJobReckoner(reads: JobReckoningReads) {
       madeBy === null ? null : orNone(() => reads.typeFacts(madeBy)),
       kept.facility(job.facilityID),
     ]);
-    if (facilityRow && hasRigModifiers(facilityRow)) return NONE;
     const row = facilityRow || null;
     const decryptor = job.activity === "invention" && (job.decryptorTypeID ?? 0) > 0;
     if (!row && !decryptor) return NONE;
