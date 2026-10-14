@@ -165,8 +165,9 @@ function itemsChangedFrame(sequence: number, method = "OnItemsChanged", args: un
  */
 function makeWorld() {
   const state = { droneReads: 0, bayLoaded: false };
-  const fetchImpl = (async (input: unknown) => {
+  const fetchImpl = (async (input: unknown, init?: { body?: unknown }) => {
     const path = String(input);
+    const asked = init && typeof init.body === "string" ? JSON.parse(init.body) : {};
     let body: unknown = { ok: true };
     if (path === "/api/bridge/select") {
       body = {
@@ -197,14 +198,19 @@ function makeWorld() {
         ok: true,
         stationID: 60003760,
         activeShipID: DRONE_BOAT,
-        hangar: { list: [], capacity: null, error: null },
+        // The drones lie in the hangar until the move.
+        hangar: {
+          list: state.bayLoaded ? [] : [{ type: "packedrow", fields: { itemID: 101, typeID: HOBGOBLIN_TYPE, groupID: 100, categoryID: 18, flagID: 4, quantity: 5, singleton: 0 } }],
+          capacity: null,
+          error: null,
+        },
         cargo: { list: [], capacity: null, error: null },
         volumes: {},
       };
-    } else if (path === "/api/bridge/inventory/transfer") {
-      // The move itself is what put the drones in the bay.
+    } else if (path === "/api/bridge/call" && asked.service === "invbroker") {
+      // The move itself, the page's own call since 2026-10-14, is what put the drones in the bay.
       state.bayLoaded = true;
-      body = { ok: true, applied: true, moved: [101], declined: [], notifications: [] };
+      body = { ok: true, service: asked.service, method: asked.method, result: null, notifications: [] };
     }
     return { ok: true, status: 200, async json() { return body; } };
   }) as unknown as typeof fetch;
@@ -234,6 +240,7 @@ test("drones moved INTO the bay show up in the window that launches them", async
   // this bug starts from.
   await flow.loadDrones();
   assert.deepEqual(store.get().drones.bay, [], "precondition: the window read an empty bay");
+  await flow.loadInventory();
 
   await flow.transferItems([101], { kind: "hangar" }, { kind: "shipBay", bay: "drone" });
 
@@ -246,6 +253,7 @@ test("a session that never opened the Drones window pays for no drone read", asy
   // OnItemsChanged fires on every ore grant of every mining cycle.
   const { flow, state } = await onlineFlow();
   assert.equal(state.droneReads, 0, "precondition: nothing has asked for drones");
+  await flow.loadInventory();
 
   await flow.transferItems([101], { kind: "hangar" }, { kind: "cargo" });
 
