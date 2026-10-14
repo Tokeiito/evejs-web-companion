@@ -64,7 +64,7 @@ import { preferredResources } from "./resourcePriority.ts";
 import { holdFreeM3 } from "../bridge/holdFit.ts";
 import { isNpcCorporation } from "../bridge/standingsReads.ts";
 import { planSalvageTick } from "./salvageSitePlan.ts";
-import { isLootableContainer } from "./lootableContainers.ts";
+import { isLootableContainer, lootRightsGrant } from "./lootableContainers.ts";
 import { MAX_ACTIVE_PERSONAL_FOLDERS, MAX_ACTIVE_SHARED_FOLDERS, MAX_KNOWN_FOLDERS } from "../bridge/bookmarkFolders.ts";
 import { isUnreachable, NO_STEP_ID, refusalFor, refusalTargets, shipHasNoRoom, shouldSetAside } from "./refusalLedger.ts";
 import { movableRows, pickedRows, type KeepRule } from "../bridge/keepAboard.ts";
@@ -3111,6 +3111,10 @@ function isOwnWreck(wreck: SpaceEntity, obs: ScriptObservation): boolean {
   // Not a player's at all (the system's, an NPC's, below idCheckers' minPlayerOwner): free to anyone, as the
   // server's loot right has it (spaceLootEntitlement, !isPlayerCharacterOwner).
   if (wreck.ownerID > 0 && wreck.ownerID < 90_000_000) {
+    return true;
+  }
+  // The slim item's loot rights, as the client's HaveLootRight reads them: the corp-mate's wreck is ours here.
+  if (lootRightsGrant(wreck, { characterID: me, corporationID: corp })) {
     return true;
   }
   return corp !== null && !isNpcCorporation(corp) && wreck.corporationID === corp;
