@@ -4413,7 +4413,7 @@ function decideTankUp(
           phase: "Tanking up",
           why: clear
             ? `The grid is clear: repairing the ${layerWords(layerAction.layerName)}.`
-            : `The ${layerAction.layerName} is hurt, so a fitted repairer is switching on.`,
+            : `The ${layerWords(layerAction.layerName)} is hurt, so a fitted repairer is switching on.`,
           memory: lit,
         },
         memory: lit,
@@ -4439,7 +4439,7 @@ function decideTankUp(
               : "The capacitor is too low to keep repairing, so a running repairer is switching off."
             : clear
               ? `The grid is clear and the ${layerWords(layerAction.layerName)} is whole again, so its repairer is switching off.`
-              : `The ${layerAction.layerName} is whole again, so its repairer is switching off.`,
+              : `The ${layerWords(layerAction.layerName)} is whole again, so its repairer is switching off.`,
         memory: dropped,
       },
       memory: dropped,
