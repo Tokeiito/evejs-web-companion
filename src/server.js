@@ -6889,70 +6889,10 @@ app.post("/api/bridge/market/sell", requireAuth, async (req, res, next) => {
   }
 });
 
-/**
- * CANCEL an order. `CancelCharOrder([orderID, regionID])`.
- *
- * ⚠ The server IGNORES `regionID` and reads only `args[0]`, re-deriving the
- * region from the order it loads. The trailing argument is sent anyway because
- * that is the retail shape.
- *
- * Cancelling a BUY order returns the ISK held in escrow but NOT the broker's
- * fee already paid; cancelling a SELL order returns the goods. Confirmed because
- * the fee is genuinely lost either way.
- */
-app.post("/api/bridge/market/cancel", requireAuth, async (req, res, next) => {
-  const held = requireHeldBridgeSession(req, res);
-  if (!held) {
-    return;
-  }
-  const orderID = String((req.body || {}).orderID || "").trim();
-  if (!/^\d+$/.test(orderID)) {
-    res.status(400).json({ ok: false, error: "INVALID_ORDER", message: "An order is required." });
-    return;
-  }
-  if (
-    !requireMarketConfirmation(
-      req,
-      res,
-      "Taking an order down returns what it was holding, but the broker's fee you already paid is not returned. This action must be confirmed explicitly.",
-    )
-  ) {
-    return;
-  }
-  try {
-    await readHeldFlight(held, req.webSessionID);
-    const before = await readOwnOrdersQuietly(held, req.webSessionID);
-    const balanceBefore = await readMarketBalance(held, req.webSessionID);
-    const outcome = await heldTopLevelCall(
-      held,
-      req.webSessionID,
-      "marketProxy",
-      "CancelCharOrder",
-      // The regionID the server ignores. Sent because the shape is retail's.
-      [orderID, 0],
-      null,
-    );
-    const balanceAfter = await readMarketBalance(held, req.webSessionID);
-    const ownOrders = await readOwnOrdersQuietly(held, req.webSessionID);
-    // ⚠ `applied` is the RE-READ, not the 200: the order is gone from the open
-    // list, or it is not. CancelCharOrder answers None either way, including
-    // when the order was already closed.
-    const applied = marketOrderCount(before) > marketOrderCount(ownOrders);
-    res.json({
-      ok: true,
-      applied,
-      declinedSilently: !applied,
-      // A cancel usually RETURNS ISK, so this is normally negative.
-      charged: marketIskDelta(balanceBefore, balanceAfter),
-      balanceBefore,
-      balanceAfter,
-      ownOrders,
-      notifications: outcome.notifications,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
+// (A market order is taken down by the page's own call since 2026-10-13: marketProxy.CancelCharOrder through the
+// generic call, with the page's own reads of the pilot's orders and wallet before and after for its verdict
+// (bridgeCallPolicy.js, PAGE_WRITE_PAIR_KEYS; web/src/bridge/marketOrderWrites.ts). Its route,
+// POST /api/bridge/market/cancel, is gone.)
 
 /**
  * MODIFY an order's price.

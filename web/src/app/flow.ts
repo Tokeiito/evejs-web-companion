@@ -334,6 +334,7 @@ import {
   type DroneRangeSkillReading,
 } from "../nav/droneControlRange.ts";
 import { readScanFullState } from "../bridge/scanFullState.ts";
+import { cancelOrder as cancelOrderCall } from "../bridge/marketOrderWrites.ts";
 import { doAgentAction, removeOfferFromJournal } from "../bridge/agentWrites.ts";
 import { createScannerWrites, type ScannerShip } from "../bridge/scannerWrites.ts";
 import { surfaceDistanceMeters } from "../space/overview.ts";
@@ -14671,7 +14672,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         ));
     },
     async cancelMarketOrder(orderID) {
-      await runMarketAction("cancel", () => api.cancelMarketOrder(orderID, callOptions));
+      // The page's own call (bridge/marketOrderWrites.ts), as the client's menu makes it, with the pilot's orders
+      // and wallet read before and after for the verdict. The market is read again after any change, as before.
+      await runMarketAction("cancel", async () => ({ ...await cancelOrderCall(bridgeDo, bridgeAsk, orderID), ownOrders: null }));
     },
     async modifyMarketOrder(orderID, price) {
       await runMarketAction("modify", () => api.modifyMarketOrder(orderID, price, callOptions));

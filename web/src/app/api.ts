@@ -1379,17 +1379,10 @@ export async function placeMarketSellOrder(
   return asMarketChange(data);
 }
 
-/**
- * CANCEL an order. Returns what it was holding; the broker's fee already paid
- * is NOT returned, which is why the UI says so before asking.
- */
-export async function cancelMarketOrder(
-  orderID: string,
-  options: ApiOptions = {},
-): Promise<MarketChangeResult> {
-  const data = await postJson("/api/bridge/market/cancel", { orderID, confirm: true }, options);
-  return asMarketChange(data);
-}
+// An order is taken down by the page's own call (bridge/marketOrderWrites.ts, cancelOrder), with the page's own
+// reads of the pilot's orders and wallet for its verdict: its route (POST /api/bridge/market/cancel) went on
+// 2026-10-13. It returns what the order was holding; the broker's fee already paid is NOT returned, which is why
+// the UI says so before asking.
 
 /** CHANGE an order's price. Charges a fee, and moves a buy order's escrow. */
 export async function modifyMarketOrder(

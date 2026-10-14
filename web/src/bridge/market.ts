@@ -283,6 +283,7 @@ export function decodeOwnOrders(result: JsonValue): readonly MarketOwnOrderRow[]
       typeID: toNumber(record.typeID),
       stationID: toNumber(record.stationID),
       solarSystemID: toNumber(record.solarSystemID),
+      regionID: toNumber(record.regionID),
       price: toAmountString(record.price) ?? "0",
       volumeRemaining: toNumber(record.volRemaining),
       volumeEntered: toNumber(record.volEntered),

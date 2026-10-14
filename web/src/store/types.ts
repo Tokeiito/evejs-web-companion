@@ -656,6 +656,11 @@ export interface MarketOwnOrderRow {
   readonly typeID: number;
   readonly stationID: number;
   readonly solarSystemID: number;
+  /**
+   * The region the order is in, off the order's own row: what a taking down names beside the order's number
+   * (the client's quote.py 302). Absent where a row was made without it; nought where the server's row has none.
+   */
+  readonly regionID?: number;
   readonly price: string;
   readonly volumeRemaining: number;
   readonly volumeEntered: number;
