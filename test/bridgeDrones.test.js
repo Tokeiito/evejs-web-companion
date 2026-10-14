@@ -3,7 +3,7 @@
 // Goal R25 slice A: the BFF's drone routes.
 //
 //   GET  /api/bridge/drones          bay (ListByFlags 87) + ShipGetInfo + snapshot
-//   POST /api/bridge/drones/launch   ship.LaunchDrones
+//   (the launch, ship.LaunchDrones, is the page's own call since 2026-10-14: web/src/bridge/boundEntityWrites.ts)
 //   (the in-space orders, entity.CmdEngage, CmdMineRepeatedly and CmdReturnBay, are the page's own calls since
 //   2026-10-14: web/src/bridge/boundEntityWrites.ts)
 //
@@ -503,73 +503,12 @@ test("a drone belonging to someone else is not reported as mine", async () => {
 
 // --- Launch -----------------------------------------------------------------
 
-test("launch is ship.LaunchDrones, and the SNAPSHOT decides whether it worked", async () => {
-  const { gateway, baseUrl } = await inSpace();
+// The launch section's four tests went on 2026-10-14 with the launch's route (POST /api/bridge/drones/launch): the
+// page makes the call itself (web/src/bridge/boundEntityWrites.ts: ship.LaunchDrones, the stacks as pairs) and reads
+// the drones before and after (web/src/app/flow.ts, launchedThenRead), its verdict the drones new in space.
 
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/drones/launch", {
-    method: "POST",
-    body: { drones: [{ itemID: BAY_DRONE_ID }] },
-  });
-  assert.equal(response.status, 200);
-  assert.equal(payload.ok, true);
 
-  // ⚠ THE SERVICE SPLIT: launching is `ship`, not `entity`.
-  const launches = callsOf(gateway, "ship", "LaunchDrones");
-  assert.equal(launches.length, 1);
-  assert.deepEqual(launches[0].args[0], [[BAY_DRONE_ID, 1]], "[[itemID, qty], …]");
-  assert.equal(launches[0].args[1], CHARACTER_ID, "whoseBehalfID");
-  assert.equal(launches[0].args[2], false, "ignoreWarning");
-  assert.equal(callsOf(gateway, "entity", "LaunchDrones").length, 0);
 
-  // The claim is made from the re-read, not from the 200.
-  assert.deepEqual(payload.launched.map((d) => d.itemID), [BAY_DRONE_ID]);
-  assert.deepEqual(payload.inSpace.map((d) => d.itemID), [BAY_DRONE_ID]);
-  // Two snapshot reads: one before (to know what was already out) and one after.
-  assert.ok(gateway.calls.snapshot.length >= 2, "the launch re-reads space");
-});
-
-test("⚠ a launch the server SILENTLY REFUSED reports nothing launched", async () => {
-  const { gateway, baseUrl } = await inSpace();
-  // The real refusal shape: 200, an empty dict, and nothing in space. This is
-  // what bandwidth and the active-drone cap actually look like on the wire.
-  gateway.state.inertLaunch = true;
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/drones/launch", {
-    method: "POST",
-    body: { drones: [{ itemID: BAY_DRONE_ID }] },
-  });
-  assert.equal(response.status, 200);
-  assert.deepEqual(payload.launched, [], "nothing appeared in space, so nothing launched");
-  assert.deepEqual(payload.inSpace, []);
-});
-
-test("a launch whose re-read failed says UNKNOWN, not success", async () => {
-  const { gateway, baseUrl } = await inSpace();
-  // The snapshot is down. The launch is still ATTEMPTED — refusing to try
-  // because we cannot verify would be worse for a miner about to be shot — but
-  // nothing is claimed about the outcome.
-  gateway.state.snapshotFails = true;
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/drones/launch", {
-    method: "POST",
-    body: { drones: [{ itemID: BAY_DRONE_ID }] },
-  });
-  assert.equal(response.status, 200);
-  assert.equal(callsOf(gateway, "ship", "LaunchDrones").length, 1, "the launch was still issued");
-  assert.equal(payload.inSpace, null, "null = we could not check");
-  assert.equal(payload.launched, null, "and no launch is claimed either way");
-});
-
-test("launch refuses an empty request and never reaches the server", async () => {
-  const { gateway, baseUrl } = await inSpace();
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/drones/launch", {
-    method: "POST",
-    body: { drones: [] },
-  });
-  assert.equal(response.status, 400);
-  assert.equal(payload.error, "NOTHING_SELECTED");
-  assert.equal(callsOf(gateway, "ship", "LaunchDrones").length, 0);
-});
 
 // --- The three in-space orders ----------------------------------------------
 
@@ -584,22 +523,7 @@ test("launch refuses an empty request and never reaches the server", async () =>
 
 // --- Docked -----------------------------------------------------------------
 
-test("nothing drone-related is issued while docked", async () => {
-  const { gateway, baseUrl } = await inSpace();
-  gateway.state.inSpace = false;
-
-  for (const [route, body] of [
-    ["launch", { drones: [{ itemID: BAY_DRONE_ID }] }],
-  ]) {
-    const { response } = await apiRequest(baseUrl, `/api/bridge/drones/${route}`, {
-      method: "POST",
-      body,
-    });
-    assert.equal(response.status, 409, route);
-  }
-  assert.equal(callsOf(gateway, "ship", "LaunchDrones").length, 0);
-  assert.equal(gateway.calls.call.filter((c) => c.service === "entity").length, 0);
-});
+// (A test held every drone route to a refusal while docked: the launch, the last of them, went on 2026-10-14.)
 
 // The four tests of the orders' forwarding of the server's per-drone reasons went with the routes on 2026-10-14:
 // the page's own calls answer what the server said of each drone as it came (web/src/bridge/boundEntityWrites.ts),
@@ -706,17 +630,8 @@ test("a pilot or scene transition cannot reuse an in-flight script observation",
   assert.equal(gateway.calls.snapshot.length, 1);
 });
 
-test("drone mutation and later confirmation never reuse the script observation", async () => {
-  const { gateway, baseUrl } = await inSpace();
-  await apiRequest(baseUrl, "/api/bridge/script/observation");
-  assert.equal(gateway.calls.snapshot.length, 1);
-  await apiRequest(baseUrl, "/api/bridge/drones/launch", {
-    method: "POST", body: { drones: [{ itemID: BAY_DRONE_ID }] },
-  });
-  assert.equal(gateway.calls.snapshot.length, 3, "launch retains before/after authority reads");
-  await apiRequest(baseUrl, "/api/bridge/drones");
-  assert.equal(gateway.calls.snapshot.length, 4, "later confirmation reads afresh");
-});
+// (A test held the launch's route to its own reads before and after, apart from the script's observation: the route
+// went on 2026-10-14, and the page's own reads are the drones' read, made afresh each time.)
 
 test("drone and script observations retain an invitation drained by any constituent read", async () => {
   const invitation = { method: "OnFleetInvite", args: [654500150000, 140000044, "FleetInvitation", {}] };
@@ -762,84 +677,9 @@ test("partial drone reads preserve other successful notification drains", async 
 
 // ── a launch on the game port ────────────────────────────────────────────────
 //
-// The gateway's snapshot is the server's own scene, where a launched drone already is when LaunchDrones answers.
-// A pilot on the game port sees its own park, and the drone is a ball the next ballpark update brings (seen live
-// 2026-10-10: the launch's answer listed nothing launched, and four seconds on both transports listed the two).
-// The page reads "nothing launched" as a launch that failed.
-
-/** A pilot in space on a game port whose park shows a launched drone only at the read numbered `arrivesAt` after the launch (1 is the first). */
-async function inSpaceOnTheGamePort({ arrivesAt = 1, inertLaunch = false } = {}) {
-  const gamePort = fakeGateway();
-  gamePort.state.inertLaunch = inertLaunch;
-  const [select, call, snapshot] = [gamePort.selectCharacter, gamePort.callMethod, gamePort.readSpaceSnapshot];
-  let readsSinceLaunch = null;
-  gamePort.selectCharacter = async (...args) => ({ ...(await select(...args)), bridgeSessionID: "gp:a-game-port-session" });
-  gamePort.callMethod = async (service, method, ...rest) => {
-    const answer = await call(service, method, ...rest);
-    if (service === "ship" && method === "LaunchDrones") readsSinceLaunch = 0;
-    return answer;
-  };
-  gamePort.readSpaceSnapshot = async (...args) => {
-    const read = await snapshot(...args);
-    if (readsSinceLaunch === null) return read;
-    readsSinceLaunch += 1;
-    return readsSinceLaunch >= arrivesAt ? read : { ...read, space: { ...read.space, entities: read.space.entities.filter((row) => row.kind !== "drone") } };
-  };
-  const slept = [];
-  const gateway = fakeGateway();
-  const app = createApp({
-    eveStore: fakeStore(), eveGatewayClient: gateway, gamePortPilots: gamePort, pilotTransportFor: () => "gameport",
-    webAuth: fakeAuth(), staticData: fakeStaticData(), transitionSleep: async (ms) => { slept.push(ms); }, errorLogger() {},
-  });
-  const server = app.listen(0, "127.0.0.1");
-  activeServers.add(server);
-  await once(server, "listening");
-  const baseUrl = `http://127.0.0.1:${server.address().port}`;
-  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: CHARACTER_ID } });
-  return { gamePort, gateway, baseUrl, slept };
-}
-const launchOf = (baseUrl) => apiRequest(baseUrl, "/api/bridge/drones/launch", { method: "POST", body: { drones: [{ itemID: BAY_DRONE_ID }] } });
-
-test("on the game port a launched drone comes with the next ballpark update: the launch waits for it, and says it launched", async () => {
-  // The drone is in the park at the third look after the launch.
-  const { gamePort, gateway, baseUrl, slept } = await inSpaceOnTheGamePort({ arrivesAt: 3 });
-  const { response, payload } = await launchOf(baseUrl);
-  assert.equal(response.status, 200, JSON.stringify(payload));
-  assert.deepEqual([payload.launched.map((drone) => drone.itemID), payload.inSpace.map((drone) => drone.itemID)], [[BAY_DRONE_ID], [BAY_DRONE_ID]]);
-  // Two waits of a quarter of a second, and no more once it had come.
-  assert.deepEqual(slept, [250, 250]);
-  // The launch was the game port's, once; the gateway heard nothing of it.
-  assert.deepEqual([callsOf(gamePort, "ship", "LaunchDrones").length, callsOf(gateway, "ship", "LaunchDrones").length, gateway.calls.snapshot.length], [1, 0, 0]);
-  // A drone that is there at the first look is waited for not at all.
-  const prompt = await inSpaceOnTheGamePort({ arrivesAt: 1 });
-  assert.deepEqual([(await launchOf(prompt.baseUrl)).payload.launched.map((drone) => drone.itemID), prompt.slept], [[BAY_DRONE_ID], []]);
-});
-
-test("on the game port a launch the server did nothing with is said to have launched nothing, once the wait is over", async () => {
-  const { baseUrl, slept } = await inSpaceOnTheGamePort({ inertLaunch: true });
-  const { response, payload } = await launchOf(baseUrl);
-  assert.equal(response.status, 200, JSON.stringify(payload));
-  assert.deepEqual([payload.launched, payload.inSpace], [[], []]);
-  // Three seconds in all, a quarter at a time.
-  assert.deepEqual([slept.length, slept.reduce((sum, ms) => sum + ms, 0), new Set(slept).size], [12, 3000, 1]);
-  // A drone that comes later than the wait is not said to have launched: the page reads the drones again.
-  const late = await inSpaceOnTheGamePort({ arrivesAt: 20 });
-  assert.deepEqual([(await launchOf(late.baseUrl)).payload.launched, late.slept.length], [[], 12]);
-});
-
-test("a gateway pilot's launch is answered from the first look, with no waiting", async () => {
-  const slept = [];
-  const gateway = fakeGateway();
-  gateway.state.inertLaunch = true;
-  const app = createApp({ eveStore: fakeStore(), eveGatewayClient: gateway, webAuth: fakeAuth(), staticData: fakeStaticData(), transitionSleep: async (ms) => { slept.push(ms); }, errorLogger() {} });
-  const server = app.listen(0, "127.0.0.1");
-  activeServers.add(server);
-  await once(server, "listening");
-  const baseUrl = `http://127.0.0.1:${server.address().port}`;
-  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: CHARACTER_ID } });
-  const { payload } = await launchOf(baseUrl);
-  assert.deepEqual([payload.launched, slept], [[], []]);
-});
+// (Three tests held the launch's route to its wait for a launched drone in a game-port pilot's park, and to none
+// through the gateway: the route went on 2026-10-14. The page waits itself, for the drones the answer names
+// (web/src/app/flow.ts, launchedThenRead).)
 
 // ── a drone just landed ──────────────────────────────────────────────────────
 //
