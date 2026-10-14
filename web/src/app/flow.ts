@@ -336,7 +336,7 @@ import {
 import { readScanFullState } from "../bridge/scanFullState.ts";
 import { applyFitting, fitModule as fitModuleCall, unfitModule as unfitModuleCall } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
-import { mergeStacks as mergeStacksCall, trashItems as trashItemsCall } from "../bridge/inventoryWrites.ts";
+import { hasSomethingToStack, mergeStacks as mergeStacksCall, stackAll as stackAllCall, trashItems as trashItemsCall } from "../bridge/inventoryWrites.ts";
 import { cancelOrder as cancelOrderCall } from "../bridge/marketOrderWrites.ts";
 import { doAgentAction, removeOfferFromJournal } from "../bridge/agentWrites.ts";
 import { createScannerWrites, type ScannerShip } from "../bridge/scannerWrites.ts";
@@ -2908,6 +2908,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return { inventory: shipID, liesIn: shipID };
     }
     throw new Error("That place's inventory is not the page's to name.");
+  }
+
+  /**
+   * Stack All of the hangar or the ship's hold, by the client's own call on its inventory (bridge/inventoryWrites.ts),
+   * and only where the panel's rows of it have two stacks of a type, as the client asks nothing otherwise.
+   */
+  async function stackPlaceNow(target: "hangar" | "cargo"): Promise<void> {
+    const inventory = store.get().inventory;
+    if (!hasSomethingToStack(target === "hangar" ? inventory.hangar.rows : inventory.cargo.rows)) return;
+    await stackAllCall(bridgeDo, inventoryAt({ kind: target }).inventory, target);
   }
 
   async function refreshOpenPlaces(): Promise<void> {
@@ -13608,7 +13618,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             }
             return;
           case "stackHangar":
-            await api.stackItems("hangar", callOptions);
+            // The hangar read first, as the client's inventory lists before it asks.
+            await loadInventory();
+            await stackPlaceNow("hangar");
             return;
           case "compressOre":
             // Confirm-gated on the BFF. The answer is deliberately not trusted:
@@ -14448,7 +14460,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadInventory,
 
     async stackContainer(target) {
-      await runMutation(() => api.stackItems(target, callOptions));
+      await runMutation(() => stackPlaceNow(target));
     },
 
     async boardShip(shipID) {

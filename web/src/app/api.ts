@@ -529,13 +529,8 @@ export async function loadInventory(
 // (A thing moved between the hangar and the ship's hold had a route of its own, POST /api/bridge/inventory/move,
 // which nothing of the page asked: the page moves things by the transfer. It went on 2026-10-13.)
 
-/** Stack all loose stacks in the hangar or the active-ship cargo. */
-export async function stackItems(
-  target: "hangar" | "cargo",
-  options: ApiOptions = {},
-): Promise<void> {
-  await postJson("/api/bridge/inventory/stack", { target }, options);
-}
+// (Stack All of the hangar or the ship's hold is the page's own call since 2026-10-14, the client's StackAll on the
+// place's own inventory: bridge/inventoryWrites.ts. Its route, POST /api/bridge/inventory/stack, is gone.)
 
 /** Board a ship sitting in the station hangar (it becomes the active ship). */
 export async function boardShip(

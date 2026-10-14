@@ -3281,31 +3281,9 @@ app.get("/api/bridge/bound-fleet", requireAuth, async (req, res, next) => {
 // (A thing moved between the hangar and the ship's hold had a route of its own, POST /api/bridge/inventory/move,
 // which nothing of the page asked: the page moves things by the transfer. It went on 2026-10-13.)
 
-// Stack all loose stacks in the hangar or the active-ship cargo.
-app.post("/api/bridge/inventory/stack", requireAuth, async (req, res, next) => {
-  const held = requireHeldBridgeSession(req, res);
-  if (!held) {
-    return;
-  }
-  const target = String((req.body && req.body.target) || "");
-  if (target !== "hangar" && target !== "cargo") {
-    res.status(400).json({ ok: false, error: "INVALID_TARGET", message: "target must be 'hangar' or 'cargo'." });
-    return;
-  }
-  const shipID = held.activeShipID;
-  if (target === "cargo" && !shipID) {
-    res.status(409).json({ ok: false, error: "NO_ACTIVE_SHIP", message: "No active ship cargo to stack." });
-    return;
-  }
-  const spec = target === "cargo" ? cargoBindSpec(held, shipID) : hangarBindSpec(held);
-  const flag = target === "cargo" ? ITEM_FLAG_CARGO_HOLD : ITEM_FLAG_HANGAR;
-  try {
-    const outcome = await boundCall(held, req.webSessionID, spec, "StackAll", [flag], null);
-    res.json({ ok: true, notifications: outcome.notifications });
-  } catch (error) {
-    next(error);
-  }
-});
+// (Stack All of the hangar or the ship's hold is the page's own call since 2026-10-14, as the client's window asks
+// it: StackAll(the place's flag) on the place's own inventory (bridgeCallPolicy.js, PAGE_OBJECT_CALLS: "inventory";
+// web/src/bridge/inventoryWrites.ts). The route, POST /api/bridge/inventory/stack, is gone.)
 
 // --- R14 Inventory depth + corporation hangars -----------------------------
 // All of this is the SAME R3 bound-object bridge above, with arguments R3
