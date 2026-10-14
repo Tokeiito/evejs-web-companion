@@ -3809,6 +3809,11 @@ Take these defaults, and list each under "For the operator" in the log so they c
   process may have it. `store.sh` judges the gateway through the gateway's BFF (26511), so
   with the BFFs down it says "the gateway did not come up" while EveJS listens: start the two
   BFFs after it, and look at 26000 and 26002 (2026-10-14).
+- **What the page asks in the tab is on its socket, not in the network list**: a pilot's
+  requests go as frames on the tab's socket (`pageFetch.ts`), so neither the network tool
+  nor the page's resource timing shows them. Reload the tab, wrap
+  `WebSocket.prototype.send` to keep each frame, then do the thing; each frame is JSON with
+  its method, path and body (2026-10-14).
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
