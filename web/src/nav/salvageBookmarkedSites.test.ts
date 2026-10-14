@@ -76,10 +76,27 @@ test("salvager: takes its folders up first, by the folder block's own rule", () 
   assert.deepEqual([on.nextMem["fromID"], on.nextMem["doneID"]], [FROM, DONE]);
 });
 
-test("salvager: picks this system's site first and warps to it by its number", () => {
-  const t = salvager(step, obs(), ready, NB);
+test("salvager: takes the OLDEST bookmark first, wherever it is, and warps to it by its number", () => {
+  // The far one is older: it goes first, though the near one is in this system.
+  const older = [{ ...sites[0]!, ageMs: 900_000 }, { ...sites[1]!, ageMs: 300_000 }, sites[2]!];
+  assert.deepEqual(salvager(step, obs({ bookmarks: older }), ready, NB).action, { kind: "startSystemRoute", systemID: ELSEWHERE });
+  // The near one older: warped to.
+  const nearOlder = [{ ...sites[0]!, ageMs: 300_000 }, { ...sites[1]!, ageMs: 900_000 }, sites[2]!];
+  const t = salvager(step, obs({ bookmarks: nearOlder }), ready, NB);
   assert.deepEqual(t.action, { kind: "warpBookmark", bookmarkID: NEAR_SITE });
   assert.equal(t.nextMem["site"], NEAR_SITE);
+  // No ages said: by the bookmark's number, made in order.
+  assert.equal(salvager(step, obs(), ready, NB).nextMem["site"], FAR_SITE);
+});
+
+test("salvager: a bookmark made while it works a site never takes it off that site", () => {
+  const working = { ...ready, site: NEAR_SITE, stage: "site", work: { looted: [] } };
+  const newer = [{ ...sites[1]!, ageMs: 600_000 }, { bookmarkID: 9000500, name: "New", folderID: FROM, solarSystemID: HERE, ageMs: 10_000 },
+    { bookmarkID: 9000001, name: "Even older", folderID: FROM, solarSystemID: ELSEWHERE, ageMs: 5_000_000 }];
+  const wreck = { itemID: 4201, kind: "wreck", ownerID: 90000001, corporationID: null, position: { x: 1_000, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 } };
+  const t = salvager(step, obs({ bookmarks: newer, myCharacterID: 90000001, snapshot: { ship: SHIP, entities: [wreck] } as never }), working, NB);
+  assert.equal(t.nextMem["site"], NEAR_SITE);
+  assert.deepEqual(t.action, { kind: "lootWreck", wreckID: 4201 });
 });
 
 test("salvager: a site in another system is travelled to first", () => {
@@ -168,18 +185,19 @@ test("loot: a wreck left by a member of the pilot's PLAYER corporation is the pi
   assert.equal(seen(PLAYER_CORP, 98999902), "done");
 });
 
-test("salvager: a site bookmarked under two and a half minutes ago is left until the server lets it be warped to", () => {
+test("salvager: a bookmark made just now is set out for at once; only the warp to it waits for it to open", () => {
   const young = [{ bookmarkID: NEAR_SITE, name: "Site", folderID: FROM, solarSystemID: HERE, ageMs: 30_000 }];
-  // In space with only a young site: wait where it is, neither warping nor flying home.
+  // Docked: leaves at once.
+  assert.deepEqual(salvager(step, obs({ bookmarks: young, flightStatus: dockedHome }), ready, NB).action, { kind: "undock" });
+  // In another system: travels at once.
+  assert.deepEqual(salvager(step, obs({ bookmarks: [{ ...young[0]!, solarSystemID: ELSEWHERE }] }), ready, NB).action, { kind: "startSystemRoute", systemID: ELSEWHERE });
+  // In its system: waits for it to open, neither warping nor going home.
   const waits = salvager(step, obs({ bookmarks: young }), ready, NB);
   assert.equal(waits.action.kind, "wait");
-  assert.match(waits.why, /just now/);
-  // Old enough: warped to.
-  const opened = salvager(step, obs({ bookmarks: [{ ...young[0]!, ageMs: 200_000 }] }), ready, NB);
+  assert.match(waits.why, /opens to this pilot/);
+  // Open: warped to.
+  const opened = salvager(step, obs({ bookmarks: [{ ...young[0]!, ageMs: 200_000 }] }), waits.nextMem, NB);
   assert.deepEqual(opened.action, { kind: "warpBookmark", bookmarkID: NEAR_SITE });
-  // An older site is taken before a young one.
-  const both = salvager(step, obs({ bookmarks: [young[0]!, { ...sites[0]!, ageMs: 600_000 }] }), ready, NB);
-  assert.deepEqual(both.action, { kind: "startSystemRoute", systemID: ELSEWHERE });
 });
 
 test("on site: a far wreck of ours gets a tractor beam (no lock); one in loot range is looted first; a looted one is locked, then salvaged", () => {
