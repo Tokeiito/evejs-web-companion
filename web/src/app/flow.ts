@@ -336,7 +336,7 @@ import {
   type DroneRangeSkillReading,
 } from "../nav/droneControlRange.ts";
 import { readScanFullState } from "../bridge/scanFullState.ts";
-import { applyFitting, fitModule as fitModuleCall, unfitModule as unfitModuleCall } from "../bridge/fitModule.ts";
+import { applyFitting, destroyRig as destroyRigCall, fitModule as fitModuleCall, unfitModule as unfitModuleCall } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
 import { BAY_FLAGS, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, stackAll as stackAllCall, trashItems as trashItemsCall, type MovePlace } from "../bridge/inventoryWrites.ts";
 import {
@@ -14963,7 +14963,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async destroyRig(itemID) {
-      await runFittingAction(() => api.destroyRig(itemID, callOptions));
+      // The page's own call on the ship's own inventory (bridge/fitModule.ts: fittingSlotController.Unfit of a rig),
+      // judged by the page's own read of the slots. Until 2026-10-14 the BFF's route made it.
+      await runFittingAction(() => destroyRigCall(bridgeDo, fittedNow, ammoSession(), itemID));
     },
 
     loadIndustry,

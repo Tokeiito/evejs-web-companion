@@ -878,16 +878,6 @@ export async function combatUtilityTypes(typeIDs: readonly number[], options: Ap
   return types;
 }
 
-/**
- * A fitting change's outcome. `applied` is the BFF's RE-READ of the slots
- * after the call, not an echo of the request: the server can decline a fit
- * silently (a module you have no skill for simply does not move), so a
- * successful response is not on its own proof anything happened.
- */
-export interface FittingChangeResult {
-  readonly applied: boolean;
-}
-
 // A module is fitted and unfitted by the page's own call on an inventory's own object (bridge/fitModule.ts), by
 // the page's own read of the slots before and after: the two routes (POST /api/bridge/fitting/fit and .../unfit)
 // went on 2026-10-13.
@@ -895,22 +885,8 @@ export interface FittingChangeResult {
 // A fitted module is put online and taken offline by the page's own call (bridge/dogmaWrites.ts,
 // setModuleOnline): its route (POST /api/bridge/fitting/state) went on 2026-10-13.
 
-/**
- * DESTROY a fitted rig. Rigs cannot be unfitted — removing one destroys it —
- * so the BFF refuses this call outright unless `confirm` is true. The UI asks
- * first; this flag is the second gate behind that.
- */
-export async function destroyRig(
-  itemID: number,
-  options: ApiOptions = {},
-): Promise<FittingChangeResult> {
-  const data = await postJson(
-    "/api/bridge/fitting/destroy-rig",
-    { itemID, confirm: true },
-    options,
-  );
-  return { applied: data.applied === true };
-}
+// A fitted rig is destroyed by the page's own call on the ship's own inventory (bridge/fitModule.ts, destroyRig),
+// judged by the page's own read of the slots: its route (POST /api/bridge/fitting/destroy-rig) went on 2026-10-14.
 
 /**
  * R21 slice B — the bound-dogma snapshot: the active ship and every fitted

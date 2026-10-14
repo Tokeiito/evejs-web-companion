@@ -116,6 +116,38 @@ export async function unfitModule(
 }
 
 /**
+ * A RIG DESTROYED (the plan's Phase 6b): until 2026-10-14 a route of the BFF's (POST /api/bridge/fitting/destroy-rig),
+ * which read the slots for the rig, made the call on the ship's inventory and read the slots again. The client's
+ * Unfit of a rig (fittingSlotController.Unfit, 245 to 266), where the ship cannot take one off whole
+ * (CanUnfitRigsWithoutDestroying, 268 to 272), tells the pilot and asks (the RigUnFittingInfo dialog, OK / Cancel),
+ * and on OK makes
+ *
+ *   parentInv = invCache.GetInventoryFromId(parentID, locationID=session.stationid)
+ *   parentInv.DestroyFitting(self.GetModuleID())
+ *
+ * on the ship's own inventory. The server (fittingOperations.Handle_DestroyFitting) answers None whatever it did,
+ * refuses what is not in a rig slot, holds the ship to the session's access to it, and refuses a cargo rig whose
+ * going would leave the hold over full. A ship that can take its rigs off whole (ShipCanUnfitRigs) has them unfitted
+ * instead, which the page does not ask yet: it destroys.
+ *
+ * Held to a rig before the call, as the route held it: the slots are read, and a module in no rig slot is refused.
+ * Answers whether the slots say it is gone. Fails as the call fails.
+ */
+export async function destroyRig(
+  act: Ask,
+  fitted: FittedNow,
+  place: FittingPlace,
+  itemID: number,
+): Promise<{ readonly applied: boolean }> {
+  const slot = (await fitted()).get(itemNumber(itemID));
+  if (slot === undefined || !slot.startsWith("rig:")) {
+    throw new Error("That module is not a rig on the active ship; unfit it instead.");
+  }
+  await act("invbroker", "DestroyFitting", [itemID], null, place.shipID);
+  return { applied: !(await fitted()).has(itemID) };
+}
+
+/**
  * A saved fitting applied to the ship the pilot is in (the plan's Phase 6b): until 2026-10-14 a route of the BFF's
  * (POST /api/bridge/inventory/fit-fitting), which sent the call on the inventory manager's handle. The client
  * (fittingSvc.LoadFitting, 554 to 618) asks it of the ship's own inventory:

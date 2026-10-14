@@ -4594,51 +4594,6 @@ app.get("/api/bridge/fitting", requireAuth, async (req, res, next) => {
 // (The pinned type facts for the shared combat utility classifier are static data, and are read where the
 // static reads are since 2026-10-11: GET /api/types/combat-utility.)
 
-// Read just the slot rows — used to VERIFY a mutation actually landed. The
-// server can decline a fit SILENTLY (invbroker's SKILL_REQUIRED branch returns
-// null without raising a UserError), so a 200 from Add is not proof anything
-// moved. Every mutating route below re-reads and reports what really happened
-// rather than echoing an optimistic success.
-async function readFittedItemIDs(held, webSessionID, shipID) {
-  const outcome = await boundCall(
-    held,
-    webSessionID,
-    cargoBindSpec(held, shipID),
-    "ListByFlags",
-    [ALL_SLOT_FLAGS],
-    null,
-  );
-  return decodeFittedSlotMap(outcome.result);
-}
-
-// Decode an invbroker ListByFlags result to itemID -> flagID. Rows arrive as
-// packedrows (or, when empty, a python set wrapping an empty list).
-function decodeFittedSlotMap(result) {
-  let listValue = result;
-  if (listValue && listValue.type === "objectex1" && Array.isArray(listValue.header)) {
-    const token = listValue.header[0];
-    if (token && token.value === "__builtin__.set" && Array.isArray(listValue.header[1])) {
-      listValue = listValue.header[1][0] ?? null;
-    }
-  } else if (listValue && listValue.type === "object" && Array.isArray(listValue.args)) {
-    listValue = listValue.args[0] ?? null;
-  }
-  const items =
-    listValue && listValue.type === "list" && Array.isArray(listValue.items) ? listValue.items : [];
-  const byItemID = new Map();
-  for (const item of items) {
-    const fields = item && item.type === "packedrow" && item.fields ? item.fields : item;
-    if (!fields || typeof fields !== "object") {
-      continue;
-    }
-    const itemID = Number(fields.itemID) || 0;
-    if (itemID > 0) {
-      byItemID.set(itemID, Number(fields.flagID) || 0);
-    }
-  }
-  return byItemID;
-}
-
 // (A module is fitted and unfitted by the page's own call since 2026-10-13: invbroker.Add on the ship's own
 // inventory, or on the hangar's, and invbroker.MultiAdd on the ship's for one fitted to no slot of it, through the
 // generic call, with the slot's flag the page names and the page's own read of the slots before and after
@@ -4652,66 +4607,9 @@ function decodeFittedSlotMap(result) {
 // (bridgeCallPolicy.js, PAGE_WRITE_PAIR_KEYS; web/src/bridge/dogmaWrites.ts). The route that sent the module with
 // the ship the BFF held, POST /api/bridge/fitting/state, is gone.)
 
-// DESTROY a fitted rig. Rigs cannot be unfitted — removing one destroys it —
-// so this route is the only destructive fitting action, and it refuses unless
-// the caller explicitly confirms. That is a second gate behind the web UI's own
-// two-step confirmation: neither a stray click nor a stray POST can lose a rig.
-app.post("/api/bridge/fitting/destroy-rig", requireAuth, async (req, res, next) => {
-  const held = requireHeldBridgeSession(req, res);
-  if (!held) {
-    return;
-  }
-  const body = req.body || {};
-  const itemID = Number(body.itemID) || 0;
-  if (itemID <= 0) {
-    res.status(400).json({ ok: false, error: "INVALID_MODULE", message: "A rig is required." });
-    return;
-  }
-  if (body.confirm !== true) {
-    res.status(400).json({
-      ok: false,
-      error: "CONFIRMATION_REQUIRED",
-      message: "Removing a rig destroys it. This action must be confirmed explicitly.",
-    });
-    return;
-  }
-  const shipID = held.activeShipID;
-  if (!shipID) {
-    res.status(409).json({ ok: false, error: "NO_ACTIVE_SHIP", message: "No active ship." });
-    return;
-  }
-  try {
-    // Only a RIG may go through this route: the server refuses a non-rig
-    // anyway, but checking here means a mis-aimed call is a clear 400 rather
-    // than a silent no-op the player has to infer from the panel.
-    const before = await readFittedItemIDs(held, req.webSessionID, shipID);
-    const flagID = before.get(itemID);
-    if (flagID === undefined || !SLOT_FAMILY_FLAGS.rig.includes(flagID)) {
-      res.status(400).json({
-        ok: false,
-        error: "NOT_A_RIG",
-        message: "That module is not a rig on the active ship; unfit it instead.",
-      });
-      return;
-    }
-    const outcome = await boundCall(
-      held,
-      req.webSessionID,
-      cargoBindSpec(held, shipID),
-      "DestroyFitting",
-      [itemID],
-      null,
-    );
-    const after = await readFittedItemIDs(held, req.webSessionID, shipID);
-    res.json({
-      ok: true,
-      applied: !after.has(itemID),
-      notifications: outcome.notifications,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
+// A fitted rig is destroyed by the page's own call on the ship's own inventory since 2026-10-14
+// (web/src/bridge/fitModule.ts: invbroker.DestroyFitting, fittingSlotController.py 262), held to a rig and judged by
+// the page's own read of the slots. Its route (POST /api/bridge/fitting/destroy-rig) is gone.
 
 // --- R15 Industry (blueprints / jobs / facilities) -------------------------
 // Unlike every panel before it, industry needs NO bound-object machinery: the
