@@ -54,6 +54,24 @@
 // not see its own drones for eleven minutes and sent a launch it could not make
 // on every tick. After the first DRONE_STATE_ASKS the asking goes on every
 // DRONE_STATE_SLOW_RETRY_MS for as long as the drone is in space with no state.
+//
+// ⚠ NOT THE CLIENT'S EITHER: a bound park without a valid state asks for the
+// whole state again, and goes on asking until it has one. The client asks once
+// when its park loses its place (Park.RequestReset) and never again; if that
+// answer is lost, the park drops every update for good. Seen 2026-10-14 12:00:
+// a reset in a fight, an answer that joined a tick already queued and was never
+// read (destiny/park.js flushState), and a pilot shown an empty grid for ten
+// minutes. INVALID_STATE_GRACE_MS after the park goes without a state it asks,
+// then every INVALID_STATE_RETRY_MS for INVALID_STATE_ASKS asks, then every
+// INVALID_STATE_SLOW_RETRY_MS for as long as it lasts. Each reset and each ask
+// is on record (onError, "state").
+
+/** How long a bound park may go without a valid state before the whole state is asked for again. */
+const INVALID_STATE_GRACE_MS = 5000;
+/** How long after asking it is asked again, while the park still has none; how many times at that pace; and the pace after. */
+const INVALID_STATE_RETRY_MS = 15000;
+const INVALID_STATE_ASKS = 3;
+const INVALID_STATE_SLOW_RETRY_MS = 30000;
 
 /** How long a drone of the pilot's may be in the park with no state before the whole state is asked for. */
 const DRONE_STATE_GRACE_MS = 5000;
@@ -127,13 +145,37 @@ function createPilotSpace({
   });
   // An entry the park could not apply is not thrown: the park goes on to the next, as the client does. It is still worth knowing.
   park.onFail = (name, error) => onError(error ?? new Error("the entry could not be applied"), `entry ${name}`);
+  // The client logs a reset ("Failed to synchronize to ... Requesting new state"); so is it here.
+  park.onReset = (reason) => onError(new Error(`the park lost its place (${reason ?? "no reason given"}); ${remotePark === null ? "not bound, nobody to ask" : "the whole state was asked for"}`), "state");
   const ownClock = simTime === null ? new SimClock(Date.now()) : null;
   const readClock = simTime ?? (() => ownClock.frame(Date.now()));
   /** One frame: the park is shown the clock, and steps if a second of it has gone by. */
   const frame = () => {
     guard("tick", () => park.onTick(readClock()));
     guard("drone state", lostDrones);
+    guard("state", noState);
   };
+
+  /** Since when the bound park has had no valid state, and how often and when last the whole state was asked for. */
+  let stateless = null;
+  /** See "NOT THE CLIENT'S EITHER" above: a bound park without a valid state asks for one until it has one. */
+  function noState() {
+    if (park.validState || remotePark === null) {
+      stateless = null;
+      return;
+    }
+    const at = now();
+    stateless ??= { since: at, asks: 0, askedAt: null };
+    const wait = stateless.asks === 0 ? INVALID_STATE_GRACE_MS
+      : stateless.asks < INVALID_STATE_ASKS ? INVALID_STATE_RETRY_MS : INVALID_STATE_SLOW_RETRY_MS;
+    if (at - (stateless.askedAt ?? stateless.since) < wait) return;
+    stateless.asks += 1;
+    stateless.askedAt = at;
+    park.requestState();
+    const pace = stateless.asks <= INVALID_STATE_ASKS ? `ask ${stateless.asks} of ${INVALID_STATE_ASKS}`
+      : `ask ${stateless.asks}, every ${INVALID_STATE_SLOW_RETRY_MS / 1000} s while it lasts`;
+    onError(new Error(`the park has had no valid state for ${Math.round((at - stateless.since) / 1000)} s; the whole state was asked for again (${pace})`), "state");
+  }
 
   // The pilot's drones the park has no state for, each with since when, and how often and when last the whole state was asked for.
   const strays = new Map();
@@ -250,6 +292,7 @@ function createPilotSpace({
     if (timer !== null) stopTicking(timer);
     timer = null;
     remotePark = null;
+    stateless = null;
   }
 
   return {
@@ -274,4 +317,4 @@ function createPilotSpace({
   };
 }
 
-module.exports = { BIND_TRIES, FRAME_MS, createPilotSpace, rebaseDelta };
+module.exports = { BIND_TRIES, FRAME_MS, INVALID_STATE_GRACE_MS, INVALID_STATE_RETRY_MS, INVALID_STATE_ASKS, INVALID_STATE_SLOW_RETRY_MS, createPilotSpace, rebaseDelta };
