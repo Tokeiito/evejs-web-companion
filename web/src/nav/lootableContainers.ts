@@ -74,6 +74,25 @@ function isNonPlayerOwner(ownerID: number): boolean {
   return ownerID < MIN_PLAYER_OWNER;
 }
 
+/**
+ * The client's own loot right over a wreck or a can, from its slim item's
+ * `lootRights` (Michelle.HaveLootRight, michelle.py 1450): abandoned; the pilot
+ * named its owner; the pilot's PLAYER corporation named as its owner or its
+ * corporation; or the pilot's fleet named. A corp-mate's wreck is ours this way
+ * with no fleet at all. Null tuple: no verdict from it (false).
+ */
+export function lootRightsGrant(entity: SpaceEntity, who: LootWho & { readonly fleetID?: number | null }): boolean {
+  const rights = entity.lootRights ?? null;
+  if (rights === null) return false;
+  const me = positive(who.characterID);
+  const corp = positive(who.corporationID);
+  if (rights.abandoned) return true;
+  if (me !== null && rights.ownerID === me) return true;
+  if (corp !== null && isPlayerCorporation(corp) && (rights.ownerID === corp || rights.corpID === corp)) return true;
+  const fleet = positive(who.fleetID ?? null);
+  return fleet !== null && rights.fleetID === fleet;
+}
+
 export function isLootableContainer(entity: SpaceEntity, who: LootWho): boolean {
   if (entity.kind !== "container") {
     return false;
@@ -112,6 +131,10 @@ export function isLootableContainer(entity: SpaceEntity, who: LootWho): boolean 
   // persisted lootRightCorpID, then the owner's corporation at creation.
   const grantCorp = positive(rights.lootRightCorpID) ?? positive(entity.corporationID);
   if (corp !== null && grantCorp !== null && grantCorp === corp && isPlayerCorporation(corp)) {
+    return true;
+  }
+  // 5b. The slim item's own loot rights, as the client judges them.
+  if (lootRightsGrant(entity, who)) {
     return true;
   }
   // 6. Fleet right.

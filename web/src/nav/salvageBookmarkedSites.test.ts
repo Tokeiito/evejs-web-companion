@@ -235,3 +235,15 @@ test("on site: a tractor beam whose wreck has arrived is switched off, so it can
   // Looted already and inside salvage reach: the beam has nothing left to do with it.
   assert.deepEqual(t.action, { kind: "deactivate", moduleID: TRACTOR });
 });
+
+test("on site: a corp-mate's wreck, ours by its loot rights with no fleet, is looted before it is salvaged", () => {
+  const onSite = { ...ready, site: NEAR_SITE, stage: "site", work: { looted: [] } };
+  const mates = { itemID: 4301, kind: "wreck", ownerID: 90000002, corporationID: 98999901, lootRights: { ownerID: 90000002, corpID: 98999901, fleetID: null, abandoned: false },
+    position: { x: 1_000, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 } };
+  const t = salvager(step, obs({ myCharacterID: 90000001, myCorporationID: 98999901, snapshot: { ship: SHIP, entities: [mates] } as never }), onSite, NB);
+  assert.deepEqual(t.action, { kind: "lootWreck", wreckID: 4301 });
+  // A stranger's (another player corporation's) is salvaged, never opened.
+  const strangers = { ...mates, itemID: 4302, ownerID: 90000777, corporationID: 98999977, lootRights: { ownerID: 90000777, corpID: 98999977, fleetID: null, abandoned: false } };
+  const s = salvager(step, obs({ myCharacterID: 90000001, myCorporationID: 98999901, lockedTargetIDs: [], snapshot: { ship: SHIP, entities: [strangers] } as never }), onSite, NB);
+  assert.notEqual(s.action.kind, "lootWreck");
+});

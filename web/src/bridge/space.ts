@@ -157,6 +157,8 @@ function decodeEntity(value: JsonValue): SpaceEntity | null {
     characterID: idOrNull(raw.characterID),
     corporationID: idOrNull(raw.corporationID),
     allianceID: idOrNull(raw.allianceID),
+    // A wreck's or a can's loot rights, as its slim item carries them.
+    lootRights: decodeLootRights(raw.lootRights),
     // Security status is signed (-10..10), so it is NOT an id decode.
     securityStatus: floatOrNull(raw.securityStatus),
     maxVelocity: floatOrNull(raw.maxVelocity),
@@ -375,6 +377,15 @@ function decodeModuleDamage(
     }
   }
   return damage;
+}
+
+/** A wreck's or a can's loot rights, { ownerID, corpID, fleetID, abandoned } — or null when absent. */
+function decodeLootRights(value: JsonValue | undefined): SpaceEntity["lootRights"] {
+  if (value === null || value === undefined || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const raw = value as Record<string, JsonValue>;
+  return { ownerID: idOrNull(raw.ownerID), corpID: idOrNull(raw.corpID), fleetID: idOrNull(raw.fleetID), abandoned: raw.abandoned === true };
 }
 
 /** [moduleID, metres] pairs — or null when the field is absent. */
