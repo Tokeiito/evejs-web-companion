@@ -59,6 +59,12 @@ import {
   mailingListOf,
   mailingListsAfterNotice,
   mailingListsOf,
+  MAILING_LIST_MEMBER_WRITES,
+  type MailingListMember,
+  type MailingListMemberAction,
+  mailingListMembersOf,
+  type MailingListSettings,
+  mailingListSettingsOf,
   mailboxAfterNotice,
   mailboxAfterSending,
   mailboxAllRead,
@@ -1040,6 +1046,12 @@ export interface AppFlow {
   leaveMailingList(listID: number): Promise<void>;
   /** Delete a mailing list of the pilot's own, as its menu's Delete does. */
   deleteMailingList(listID: number): Promise<void>;
+  /** A mailing list's settings, asked as its management window asks them: null where it answered none. */
+  readMailingListSettings(listID: number): Promise<MailingListSettings | null>;
+  /** A mailing list's members and their places, asked as its management window's Members tab asks them. */
+  readMailingListMembers(listID: number): Promise<readonly MailingListMember[]>;
+  /** Members of a mailing list made members, muted or operators, or kicked, as the Members tab's Apply does: true where it was taken. */
+  setMailingListMembers(listID: number, memberIDs: readonly number[], action: MailingListMemberAction): Promise<boolean>;
   /** Mark messages read, or not read, as the mail window's Mark as Read and Mark as Unread do. */
   markMail(messageIDs: readonly number[], read: boolean): Promise<void>;
   /** Move messages to the trash, as the mail window's Trash does. */
@@ -5179,6 +5191,37 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if ((await mailingListWrite("Delete", [listID])) !== undefined) {
       store.apply({ type: "mail/lists", lists: (store.mail.get().lists ?? []).filter((each) => each.listID !== listID) });
     }
+  }
+
+  // The list's management window (evemailingListConfig.py MaillistSetupWindow), an operator's or owner's: its reads
+  // asked by the generic call each time the window asks them, as the service asks them (GetSettings 141 to 142,
+  // GetMembers 105 to 108, which primes the members' names, as the page asks for them here).
+  async function mailingListRead(method: string, listID: number): Promise<JsonValue> {
+    try {
+      return await bridgeAsk("mailingListsMgr", method, [listID]);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+      }
+      throw error;
+    }
+  }
+
+  async function readMailingListSettings(listID: number): Promise<MailingListSettings | null> {
+    return mailingListSettingsOf(await mailingListRead("GetSettings", listID));
+  }
+
+  async function readMailingListMembers(listID: number): Promise<readonly MailingListMember[]> {
+    const members = mailingListMembersOf(await mailingListRead("GetMembers", listID));
+    requestNames(members.map((member) => ({ kind: "character", id: member.characterID })));
+    return members;
+  }
+
+  // The Members tab's Apply (ApplyActionToMembers, 266 to 293): the members chosen, a list, and the list's number
+  // (mailingListsSvc.py 100 to 135).
+  async function setMailingListMembers(listID: number, memberIDs: readonly number[], action: MailingListMemberAction): Promise<boolean> {
+    return (await mailingListWrite(MAILING_LIST_MEMBER_WRITES[action], [listID, [...memberIDs]])) !== undefined;
   }
 
   // mailSvc.GetLabels (676 to 679): the pilot's labels, asked once as the mail window first draws its folders
@@ -15811,6 +15854,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     createMailingList,
     leaveMailingList,
     deleteMailingList,
+    readMailingListSettings,
+    readMailingListMembers,
+    setMailingListMembers,
     markMail,
     trashMail,
     restoreMail,

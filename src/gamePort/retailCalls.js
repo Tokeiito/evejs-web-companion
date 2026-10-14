@@ -675,6 +675,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // A mailing list's mails marked read and trashed, and its owner's delete of it (evemail.py MaillistMenu). The
   // gateway's list has none of them.
   "mailMgr.MarkAsReadByList", "mailMgr.MoveToTrashByList", "mailingListsMgr.Delete",
+  // A mailing list's members made members, muted or operators, and kicked, from its management window's Members tab
+  // (evemailingListConfig.py ApplyActionToMembers). The gateway's list has none of them.
+  "mailingListsMgr.SetMembersClear", "mailingListsMgr.SetMembersMuted", "mailingListsMgr.SetMembersOperator", "mailingListsMgr.KickMembers",
 ]);
 
 /**
@@ -901,6 +904,8 @@ const aJobAndItsSystem = (args, kwargs) => (args.length === 2 && Number.isSafeIn
 const dronesListed = ([drones, ...rest], kwargs) => ({ args: [list(drones), ...rest], kwargs });
 /** mailSvc.SendMail (965): the recipients a list, as the compose window's self.toChars.values() is (evemail.py 2281). */
 const recipientsListed = ([recipients, ...rest], kwargs) => ({ args: [list(recipients), ...rest], kwargs });
+/** A mailing list's number, then its members chosen, a list (evemailingListConfig.py _GetSelectedMembers, 295 to 300). */
+const membersListed = ([listID, members, ...rest], kwargs) => ({ args: [listID, list(members), ...rest], kwargs });
 
 const aFiniteNumber = (value) => typeof value === "number" && Number.isFinite(value);
 const asReal = (value) => ({ type: "real", value });
@@ -1759,6 +1764,12 @@ const RETAIL_CALLS = Object.freeze({
   "mailingListsMgr.Join": same("eve/client/script/ui/services/mail/mailingListsSvc.py:75", "self.mailingListsMgr.Join(name): by the list's name; answered the list's KeyVal. In no recording."),
   "mailingListsMgr.Leave": same("eve/client/script/ui/services/mail/mailingListsSvc.py:81", "self.mailingListsMgr.Leave(listID). In no recording."),
   "mailingListsMgr.Delete": same("eve/client/script/ui/services/mail/mailingListsSvc.py:91", "self.mailingListsMgr.Delete(listID): the owner's, from the list's menu after the DeleteMailingList dialog (evemail.py 505 to 508). In no recording."),
+  "mailingListsMgr.GetSettings": same("eve/client/script/ui/services/mail/mailingListsSvc.py:142", "self.mailingListsMgr.GetSettings(listID): asked three times as the management window opens, its Access panel being built first (evemailingListConfig.py 378, 389, 437), and again after a kick; answered a KeyVal of defaultAccess, defaultMemberAccess, cost and access. In no recording."),
+  "mailingListsMgr.GetMembers": same("eve/client/script/ui/services/mail/mailingListsSvc.py:106", "self.mailingListsMgr.GetMembers(listID): each time the management window's Members tab shows its members (UpdateMembersScroll, evemailingListConfig.py 167); answered a dict of each member's number and place. In no recording."),
+  "mailingListsMgr.SetMembersClear": reshaped("eve/client/script/ui/services/mail/mailingListsSvc.py:133", membersListed, "self.mailingListsMgr.SetMembersClear(listID, memberIDs): the Members tab's Set role: Member, the members chosen a list. In no recording."),
+  "mailingListsMgr.SetMembersMuted": reshaped("eve/client/script/ui/services/mail/mailingListsSvc.py:123", membersListed, "self.mailingListsMgr.SetMembersMuted(listID, memberIDs): the Members tab's Set role: Muted member, the members chosen a list. In no recording."),
+  "mailingListsMgr.SetMembersOperator": reshaped("eve/client/script/ui/services/mail/mailingListsSvc.py:128", membersListed, "self.mailingListsMgr.SetMembersOperator(listID, memberIDs): the Members tab's Set role: Operator, the members chosen a list. In no recording."),
+  "mailingListsMgr.KickMembers": reshaped("eve/client/script/ui/services/mail/mailingListsSvc.py:101", membersListed, "self.mailingListsMgr.KickMembers(listID, memberIDs): the Members tab's Kick, the members chosen a list. In no recording."),
   "mailingListsMgr.GetJoinedLists": same("eve/client/script/ui/services/mail/mailingListsSvc.py:43", "self.mailingListsMgr.GetJoinedLists(), no arguments, as the mailing lists service starts, which it does as the mail window first draws its lists group; kept. Tranquility's recording of the mail window opened has it after GetLabels, answered {}."),
   "mailMgr.GetLabels": same(`${MAIL_SERVICES}/mailSvc.py:678`, "self.mailMgr.GetLabels(), no arguments; asked once as the mail window first draws its folders, and kept. Tranquility's recording of the mail window opened has it after SyncMail(None, 0), answered {}."),
   "mailMgr.GetMailHeaders": reshaped(`${MAIL_SERVICES}/mailSvc.py:193`, recipientsListed, "self.mailMgr.GetMailHeaders(toFetch.keys()): one list of the messages the sync gave a status of whose header the client does not hold. In no recording. The messages a list, as the client's are; the page's array goes as one."),

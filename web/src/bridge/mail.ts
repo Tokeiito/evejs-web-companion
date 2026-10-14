@@ -708,6 +708,101 @@ export function mailsOfList(mailbox: DecodedMailbox, listID: number): readonly M
   });
 }
 
+/** A member's place in a mailing list (appConst.py 1759 to 1762). */
+export const MAILING_LIST_MEMBER_MUTED = 0;
+export const MAILING_LIST_MEMBER_DEFAULT = 1;
+export const MAILING_LIST_MEMBER_OPERATOR = 2;
+export const MAILING_LIST_MEMBER_OWNER = 3;
+
+/** A member of a mailing list and its place in it (mailingListsMgr.GetMembers). */
+export interface MailingListMember {
+  readonly characterID: number;
+  readonly access: number;
+}
+
+/** GetMembers' answer, a dict of each member's number and place; one with no number left out. */
+export function mailingListMembersOf(answer: JsonValue): readonly MailingListMember[] {
+  const members: MailingListMember[] = [];
+  for (const [key, value] of readDictPairs(answer)) {
+    const characterID = toNumber(key);
+    if (characterID > 0) members.push({ characterID, access: toNumber(value) });
+  }
+  return members;
+}
+
+/** A mailing list's settings (mailingListsMgr.GetSettings): who may join and as what, its cost, and whom it lets in or keeps out. */
+export interface MailingListSettings {
+  readonly defaultAccess: number;
+  readonly defaultMemberAccess: number;
+  readonly cost: number;
+  readonly access: ReadonlyMap<number, number>;
+}
+
+/** GetSettings' answer, a KeyVal; null where it answered none. */
+export function mailingListSettingsOf(answer: JsonValue): MailingListSettings | null {
+  if (answer === null || typeof answer !== "object") {
+    return null;
+  }
+  const access = new Map<number, number>();
+  for (const [key, value] of readDictPairs(readKeyVal(answer, "access"))) {
+    const entityID = toNumber(key);
+    if (entityID > 0) access.set(entityID, toNumber(value));
+  }
+  return {
+    defaultAccess: toNumber(readKeyVal(answer, "defaultAccess")),
+    defaultMemberAccess: toNumber(readKeyVal(answer, "defaultMemberAccess")),
+    cost: toNumber(readKeyVal(answer, "cost")),
+    access,
+  };
+}
+
+/** The Members tab's choices of whom to show (evemailingListConfig.py 37 to 41). */
+export type MailingListMemberFilter = "all" | "members" | "muted" | "operators" | "byName";
+
+/** The Members tab's Apply to selected (42 to 45), and the manager's call for each (mailingListsSvc.py 100 to 135). */
+export type MailingListMemberAction = "member" | "muted" | "operator" | "kick";
+export const MAILING_LIST_MEMBER_WRITES: Readonly<Record<MailingListMemberAction, string>> = {
+  member: "SetMembersClear",
+  muted: "SetMembersMuted",
+  operator: "SetMembersOperator",
+  kick: "KickMembers",
+};
+
+/** How many members a page of the Members tab shows (NUMPERPAGE, 46). */
+export const MAILING_LIST_MEMBERS_PER_PAGE = 50;
+
+/**
+ * FilterMembers and SortMembers (176 to 221): the members of the choice (the operators with the owner), or those
+ * whose name begins with what was searched for, both trimmed and case folded; by name, case folded.
+ */
+export function mailingListMembersShown(
+  members: readonly MailingListMember[],
+  filter: MailingListMemberFilter,
+  search: string,
+  nameOf: (characterID: number) => string,
+): readonly MailingListMember[] {
+  const wanted = search.trim().toLowerCase();
+  const shown = members.filter((member) => {
+    switch (filter) {
+      case "all":
+        return true;
+      case "members":
+        return member.access === MAILING_LIST_MEMBER_DEFAULT;
+      case "muted":
+        return member.access === MAILING_LIST_MEMBER_MUTED;
+      case "operators":
+        return member.access === MAILING_LIST_MEMBER_OPERATOR || member.access === MAILING_LIST_MEMBER_OWNER;
+      case "byName":
+        return nameOf(member.characterID).trim().toLowerCase().startsWith(wanted);
+    }
+  });
+  return shown.sort((left, right) => {
+    const x = nameOf(left.characterID).toLowerCase();
+    const y = nameOf(right.characterID).toLowerCase();
+    return x < y ? -1 : x === y ? 0 : 1;
+  });
+}
+
 /** A list off the wire, its items; anything else, none. */
 function itemsOf(value: JsonValue | undefined): readonly JsonValue[] {
   return Array.isArray(value) ? value : listItems(value);

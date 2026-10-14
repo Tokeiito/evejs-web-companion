@@ -33,6 +33,16 @@
     MAIL_LABEL_MAX,
     MAILING_LIST_NAME_MAX,
     unreadByLabel,
+    MAILING_LIST_MEMBER_DEFAULT,
+    MAILING_LIST_MEMBER_MUTED,
+    MAILING_LIST_MEMBER_OPERATOR,
+    MAILING_LIST_MEMBER_OWNER,
+    MAILING_LIST_MEMBERS_PER_PAGE,
+    mailingListMembersShown,
+    type MailingListMember,
+    type MailingListMemberAction,
+    type MailingListMemberFilter,
+    type MailingListSettings,
   } from "../bridge/mail.ts";
   import { MAIL_QUOTE_LABELS, mailBodyLines, mailQuoteMarkup } from "../bridge/mailMarkup.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
@@ -554,12 +564,182 @@
     return count === 0 ? `the mailing list ${list}` : `the mailing list ${list} and ${people}`;
   }
 
+  /** The management window's words, by their labels (evemailingListConfig.py 54 to 130, 238 to 260). */
+  const MANAGE_WORDS = {
+    open: "UI/Mail/OpenMailingListMgmt",
+    caption: "UI/EVEMail/MailingLists/Caption",
+    membersTab: "UI/EVEMail/MailingLists/MembersTab",
+    show: "UI/EVEMail/MailingLists/ShowLabel",
+    all: "UI/Common/All",
+    normal: "UI/EVEMail/MailingLists/NormalMembers",
+    muted: "UI/EVEMail/MailingLists/MutedMembers",
+    operators: "UI/Chat/Operators",
+    byName: "UI/EVEMail/MailingLists/SearchByName",
+    searchString: "UI/PeopleAndPlaces/SearchString",
+    search: "UI/Common/Buttons/Search",
+    previous: "UI/Common/Previous",
+    next: "UI/Common/Next",
+    setMember: "UI/EVEMail/MailingLists/SetRoleMember",
+    setMuted: "UI/EVEMail/MailingLists/SetRoleMuted",
+    setOperator: "UI/EVEMail/MailingLists/SetRoleOperator",
+    kick: "UI/EVEMail/MailingLists/Kick",
+    applyTo: "UI/EVEMail/MailingLists/ApplyToSelected",
+    apply: "UI/Generic/Apply",
+    member: "UI/EVEMail/MailingLists/Member",
+    mutedMember: "UI/EVEMail/MailingLists/MutedMember",
+    operator: "UI/EVEMail/MailingLists/Operator",
+    owner: "UI/EVEMail/MailingLists/Owner",
+    name: "UI/Generic/NamePerson",
+    role: "UI/EVEMail/MailingLists/Role",
+    none: "UI/EVEMail/MailingLists/NoMembersFound",
+  } as const;
+  /** The client's dialogs to be sure of the pilot's own place changed. */
+  const MANAGE_DIALOGS = ["MailingListMemberSelfConfirm", "MailingListMuteSelfConfirm"] as const;
+  /** Show's choices, in the window's order (StartupMembersPanel, 81 to 91). */
+  const MEMBER_FILTERS: readonly (readonly [MailingListMemberFilter, string, string])[] = [
+    ["all", MANAGE_WORDS.all, "All"],
+    ["members", MANAGE_WORDS.normal, "Normal members"],
+    ["muted", MANAGE_WORDS.muted, "Muted members"],
+    ["operators", MANAGE_WORDS.operators, "Operators"],
+    ["byName", MANAGE_WORDS.byName, "Search by name"],
+  ];
+  /** Apply to selected's choices, in the window's order (110 to 119). */
+  const MEMBER_ACTIONS: readonly (readonly [MailingListMemberAction, string, string])[] = [
+    ["member", MANAGE_WORDS.setMember, "Set role: Member"],
+    ["muted", MANAGE_WORDS.setMuted, "Set role: Muted member"],
+    ["operator", MANAGE_WORDS.setOperator, "Set role: Operator"],
+    ["kick", MANAGE_WORDS.kick, "Kick"],
+  ];
+  /** Each place's word (self.roles, 121 to 124). */
+  const ROLE_WORDS: Readonly<Record<number, readonly [string, string]>> = {
+    [MAILING_LIST_MEMBER_DEFAULT]: [MANAGE_WORDS.member, "Member"],
+    [MAILING_LIST_MEMBER_MUTED]: [MANAGE_WORDS.mutedMember, "Muted member"],
+    [MAILING_LIST_MEMBER_OPERATOR]: [MANAGE_WORDS.operator, "Operator"],
+    [MAILING_LIST_MEMBER_OWNER]: [MANAGE_WORDS.owner, "Owner"],
+  };
+
+  /** The list whose management window is open, or null. */
+  let managingList = $state<number | null>(null);
+  /** The list's settings as the window last asked them (its Access tab's, to come). */
+  let listSettings = $state<MailingListSettings | null>(null);
+  /** The members as the window last asked them, and the choice and search they were shown by then. */
+  let listMembers = $state<readonly MailingListMember[]>([]);
+  let shownFilter = $state<MailingListMemberFilter>("all");
+  let shownSearch = $state("");
+  /** Show's choice and the search as they stand, the page shown, Apply's choice, and the members chosen. */
+  let memberFilter = $state<MailingListMemberFilter>("all");
+  let memberSearch = $state("");
+  let memberPage = $state(0);
+  let memberAction = $state<MailingListMemberAction>("member");
+  let chosenMembers = $state<ReadonlySet<number>>(new Set());
+  const managedList = $derived(managingList === null ? undefined : ($mail.lists ?? []).find((list) => list.listID === managingList));
+  const shownMembers = $derived(mailingListMembersShown(listMembers, shownFilter, shownSearch, personName));
+  /** PageMembers (223 to 236): pages of fifty, none where no member is shown, as the window counts them. */
+  const memberPages = $derived(Math.ceil(shownMembers.length / MAILING_LIST_MEMBERS_PER_PAGE));
+  const pageOfMembers = $derived(shownMembers.slice(memberPage * MAILING_LIST_MEMBERS_PER_PAGE, (memberPage + 1) * MAILING_LIST_MEMBERS_PER_PAGE));
+
+  /**
+   * Open Mailing List Management (MaillistSetupWindow.ApplyAttributes, 54 to 77): the Access panel, built first,
+   * asks the settings three times (its two choices, 378 and 389, and its lists, 437); then the Members tab, the one
+   * selected, asks the members (Load, 522 to 524).
+   */
+  function openListManagement(listID: number): void {
+    managingList = listID;
+    listSettings = null;
+    listMembers = [];
+    memberFilter = "all";
+    memberSearch = "";
+    memberAction = "member";
+    void run(async () => {
+      for (let asked = 0; asked < 3; asked += 1) {
+        listSettings = await flow.readMailingListSettings(listID);
+      }
+      await updateMembers();
+    });
+  }
+
+  /** UpdateMembersScroll (166 to 174): the members asked again and shown by the choice and search as they stand, from the first page. */
+  async function updateMembers(): Promise<void> {
+    const listID = managingList;
+    if (listID === null) {
+      return;
+    }
+    const members = await flow.readMailingListMembers(listID);
+    if (managingList !== listID) {
+      return;
+    }
+    listMembers = members;
+    shownFilter = memberFilter;
+    shownSearch = memberSearch;
+    memberPage = 0;
+    chosenMembers = new Set();
+  }
+
+  /** OnShowMembersComboChanged (138 to 146): a choice other than by name asks the members again; by name waits for its search. */
+  function chooseMemberFilter(filter: MailingListMemberFilter): void {
+    memberFilter = filter;
+    if (filter !== "byName") {
+      void run(updateMembers);
+    }
+  }
+
+  /** ChangeMembersPage (148 to 164): another page, nothing chosen on it. */
+  function turnMemberPage(change: number): void {
+    memberPage += change;
+    chosenMembers = new Set();
+  }
+
+  function chooseMember(characterID: number, chosen: boolean): void {
+    const next = new Set(chosenMembers);
+    if (chosen) {
+      next.add(characterID);
+    } else {
+      next.delete(characterID);
+    }
+    chosenMembers = next;
+  }
+
+  /**
+   * ApplyActionToMembers (266 to 293): the members chosen, in the order shown. The pilot made a member or muted is
+   * asked to be sure of first, and the window put away after; a kick asks the settings again
+   * (UpdateAccessScrollData, 435 to 451) before the members; anything else asks the members again.
+   */
+  function applyToMembers(): void {
+    const listID = managingList;
+    if (listID === null) {
+      return;
+    }
+    const chosen = pageOfMembers.filter((member) => chosenMembers.has(member.characterID)).map((member) => member.characterID);
+    const action = memberAction;
+    const me = $station.online?.characterID ?? 0;
+    const write = async (closing: boolean): Promise<void> => {
+      if (!(await flow.setMailingListMembers(listID, chosen, action))) {
+        return;
+      }
+      if (action === "kick") {
+        listSettings = await flow.readMailingListSettings(listID);
+      }
+      if (closing) {
+        managingList = null;
+        return;
+      }
+      await updateMembers();
+    };
+    if ((action === "member" || action === "muted") && chosen.includes(me)) {
+      confirming = { dialog: action === "member" ? "MailingListMemberSelfConfirm" : "MailingListMuteSelfConfirm", args: {}, act: () => write(true) };
+      return;
+    }
+    void run(() => write(false));
+  }
+
   onMount(() => {
     flow.requestWords([
       ...Object.values(MAIL_QUOTE_LABELS), DATE_LABEL, ...Object.values(FOLDER_WORDS), ...Object.values(WRITE_WORDS), ...Object.values(FOLDER_WRITE_WORDS),
       ...FOLDER_DIALOGS.flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`]),
       ...Object.values(LABEL_WORDS),
       ...LABEL_DIALOGS.flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`]),
+      ...Object.values(MANAGE_WORDS),
+      ...MANAGE_DIALOGS.flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`]),
     ]);
     void run(async () => {
       await flow.loadMail();
@@ -673,6 +853,73 @@
         {/if}
       </section>
     {/if}
+    {#if managingList !== null}
+      <!-- The list's management window (evemailingListConfig.py MaillistSetupWindow): its Members tab. Its Access and
+           Welcome Mail tabs are to come. -->
+      <section class="bulk mail-list-management">
+        <h3>{filledWord(MANAGE_WORDS.caption, "Mailing list management: {mailinglistName}", { mailinglistName: managedList?.displayName ?? "" })}</h3>
+        <p class="controls">
+          <strong>{word(MANAGE_WORDS.membersTab, "Members")}</strong>
+          <button type="button" class="minor" onclick={() => (managingList = null)}>✕</button>
+        </p>
+        <p class="controls">
+          <label>
+            {word(MANAGE_WORDS.show, "Show")}
+            <select value={memberFilter} disabled={busy} onchange={(event) => chooseMemberFilter(event.currentTarget.value as MailingListMemberFilter)}>
+              {#each MEMBER_FILTERS as [filter, label, own] (filter)}
+                <option value={filter}>{word(label, own)}</option>
+              {/each}
+            </select>
+          </label>
+          {#if memberFilter === "byName"}
+            <label>
+              {word(MANAGE_WORDS.searchString, "Search String")}
+              <input type="search" bind:value={memberSearch} onkeydown={(event) => { if (event.key === "Enter") { event.preventDefault(); void run(updateMembers); } }} />
+            </label>
+            <button type="button" disabled={busy} onclick={() => void run(updateMembers)}>{word(MANAGE_WORDS.search, "Search")}</button>
+          {/if}
+          <button type="button" class="minor" disabled={busy || memberPages <= 1 || memberPage === 0} onclick={() => turnMemberPage(-1)}>{word(MANAGE_WORDS.previous, "Previous")}</button>
+          <span>{memberPage + 1} / {memberPages}</span>
+          <button type="button" class="minor" disabled={busy || memberPages <= 1 || memberPage >= memberPages - 1} onclick={() => turnMemberPage(1)}>{word(MANAGE_WORDS.next, "Next")}</button>
+        </p>
+        {#if pageOfMembers.length === 0}
+          <p class="empty">{word(MANAGE_WORDS.none, "No members found matching criteria")}</p>
+        {:else}
+          <div class="table-wrap overflow-x-auto">
+            <table class="guests reflow">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>{word(MANAGE_WORDS.name, "Name")}</th>
+                  <th>{word(MANAGE_WORDS.role, "Role")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each pageOfMembers as member (member.characterID)}
+                  {@const role = ROLE_WORDS[member.access]}
+                  <tr>
+                    <td data-label=""><input type="checkbox" aria-label={personName(member.characterID)} checked={chosenMembers.has(member.characterID)} disabled={busy} onchange={(event) => chooseMember(member.characterID, event.currentTarget.checked)} /></td>
+                    <td data-label={word(MANAGE_WORDS.name, "Name")}>{personName(member.characterID)}</td>
+                    <td data-label={word(MANAGE_WORDS.role, "Role")}>{role === undefined ? "" : word(role[0], role[1])}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
+        <p class="controls">
+          <label>
+            {word(MANAGE_WORDS.applyTo, "Apply to selected")}
+            <select bind:value={memberAction} disabled={busy}>
+              {#each MEMBER_ACTIONS as [action, label, own] (action)}
+                <option value={action}>{word(label, own)}</option>
+              {/each}
+            </select>
+          </label>
+          <button type="button" disabled={busy || chosenMembers.size === 0} onclick={applyToMembers}>{word(MANAGE_WORDS.apply, "Apply")}</button>
+        </p>
+      </section>
+    {/if}
     {#if confirming !== null}
       <!-- The client's dialog to be sure of it: its title, its question, yes and no. -->
       <div class="mail-confirm" role="alertdialog" aria-label={dialogText("title")}>
@@ -717,7 +964,7 @@
         {#if viewingList !== null}
           <!-- A list's own menu (evemail.py MaillistMenu 536 to 555), in its order: writing to it where the pilot is
                not muted; its mails read and trashed, each asked to be sure of; and Leave, or for its owner Delete,
-               asked to be sure of. Its management, for an operator or owner, is to come. -->
+               asked to be sure of. For an operator or owner, its management window (OpenMaillistSetup, 511). -->
           {@const shownList = ($mail.lists ?? []).find((each) => each.listID === viewingList)}
           {#if shownList !== undefined}
             {@const listID = shownList.listID}
@@ -725,6 +972,11 @@
             {#if !shownList.isMuted}
               <button type="button" class="minor" disabled={busy} onclick={() => sendToList(listID)}>
                 {word(FOLDER_WORDS.sendToList, "Send Mail to Mailing List")}
+              </button>
+            {/if}
+            {#if shownList.isOperator || shownList.isOwner}
+              <button type="button" class="minor" disabled={busy} onclick={() => openListManagement(listID)}>
+                {word(MANAGE_WORDS.open, "Open Mailing List Management")}
               </button>
             {/if}
             <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "EvemailMailReadMailinglistGroup", args: { listName }, act: () => flow.readListMail(listID) })}>
