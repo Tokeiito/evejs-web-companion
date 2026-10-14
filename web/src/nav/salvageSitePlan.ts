@@ -237,17 +237,19 @@ export function planSalvageTick(input: SalvagePlanInput): SalvagePlan {
     return { done: true, why: "No wreck is left to work and no lootable can is left to empty." };
   }
 
-  // 1. loot what is in range
+  // 1. What to loot, if a tick is left for it. ⚠ LOOTING COMES AFTER STARTING MODULES. It is one call and done,
+  // while a tractor or a salvager left idle loses whole cycles: with the loot first, a fast tractor's wreck was in
+  // range again every tick, so the same one beam pulled, the wreck was looted, the beam was let go and taken again,
+  // and the other beams and every salvager waited for a tick that never came (seen live 2026-10-14). Modules are
+  // started first; the loot goes in the ticks between.
   let lootNow: Item | null = null;
   for (const it of outstanding) {
     if (it.needsLoot && it.d <= input.lootRangeM && (lootNow === null || it.d < lootNow.d)) lootNow = it;
   }
-  if (lootNow !== null) {
-    return {
-      action: { kind: "lootWreck", wreckID: lootNow.id, isContainer: lootNow.isCan },
-      why: `Looting ${lootNow.isCan ? "a can" : "a wreck"} ${Math.round(lootNow.d)} m away, inside the ${input.lootRangeM} m loot range.`,
-    };
-  }
+  const lootIt = (it: Item): SalvagePlan => ({
+    action: { kind: "lootWreck", wreckID: it.id, isContainer: it.isCan },
+    why: `Looting ${it.isCan ? "a can" : "a wreck"} ${Math.round(it.d)} m away, inside the ${input.lootRangeM} m loot range.`,
+  });
 
   // 2. a tractor whose target has settled is freed (it would otherwise cycle on it forever)
   const settled = (it: Item): boolean => (it.needsLoot ? it.d <= input.lootRangeM : it.d <= Math.max(input.lootRangeM, input.salvageRangeM - margin));
@@ -343,8 +345,11 @@ export function planSalvageTick(input: SalvagePlanInput): SalvagePlan {
     if (spare !== undefined) {
       return { action: { kind: "unlock", targetID: spare }, why: "At the lock cap with a lock no salvager is using or about to use; freeing it for a wanted wreck." };
     }
+    if (lootNow !== null) return lootIt(lootNow);
     return { wait: true, why: `Every one of the ${input.maxLockedTargets} locks is in use or wanted; waiting for a salvager to finish.` };
   }
+
+  if (lootNow !== null) return lootIt(lootNow);
 
   // 6. in reach or in progress means wait, never move
   const reachOf = (it: Item): number => (haveTractors && it.tractorable ? input.tractorRangeM : it.needsLoot ? input.lootRangeM : salvReach);
