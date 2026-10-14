@@ -170,23 +170,47 @@ test("a reload drops ticks whose item is no longer anywhere on the panel", async
   );
 });
 
-test("transferItems posts every ticked item in ONE request", async () => {
+// The pilot's own moves between the hangar, the ship's hold and a container are the client's calls since 2026-10-14
+// (bridge/inventoryWrites.ts, moveItems), held to its lines: invControllers.AddItems (489 to 562) for many things,
+// one MultiAdd(itemIDs, where they lie, flag=the window's), and _AddItem (229 to 262) for one, Add(itemID, where it
+// lies, qty=its stack or the number asked, flag=the window's). The verdict is the page's own, by the source's rows
+// refreshed.
+
+/** The hangar's read until a move is made, and then as `afterMove` leaves its rows. */
+function hangarMoving(afterMove: (rows: { fields: { itemID: number; quantity: number } }[]) => unknown[]) {
+  let moved = false;
+  return makeFakeFetch((path, _method, body) => {
+    if (path === "/api/bridge/call") {
+      moved = true;
+      return { status: 200, body: { ok: true, service: body.service, method: body.method, result: null, notifications: [] } };
+    }
+    if (path === "/api/bridge/inventory") {
+      const panel = inventoryPanel();
+      if (!moved) return { status: 200, body: panel };
+      const items = afterMove(panel.hangar.list.items as { fields: { itemID: number; quantity: number } }[]);
+      return { status: 200, body: { ...panel, hangar: { ...panel.hangar, list: { type: "list", items } } } };
+    }
+    return { status: 200, body: { ok: true } };
+  });
+}
+
+const without = (...gone: number[]) => (rows: { fields: { itemID: number } }[]) => rows.filter((row) => !gone.includes(row.fields.itemID));
+
+test("many things moved from the hangar to the hold are the client's one MultiAdd on the ship's own inventory, from the station", async () => {
   const store = createClientStore();
-  const { fetch, requests } = standardFetch(() => ({
-    status: 200,
-    body: { ok: true, applied: true, moved: [100, 101], declined: [], declinedSilently: false, notFound: [] },
-  }));
+  dockedAtJita(store);
+  const { fetch, requests } = hangarMoving(without(100, 101));
   const flow = createAppFlow(store, { fetch });
+  await flow.loadInventory();
 
   await flow.transferItems([100, 101], { kind: "hangar" }, { kind: "cargo" });
 
-  const transfers = requests.filter((r) => r.path === "/api/bridge/inventory/transfer");
-  assert.equal(transfers.length, 1, "one request carries the whole selection");
-  assert.deepEqual(transfers[0]!.body, {
-    itemIDs: [100, 101],
-    from: { kind: "hangar" },
-    to: { kind: "cargo" },
-  });
+  // AddItems (557 to 558): invCacheCont.MultiAdd(itemIDs, sourceLocation, flag=self.locationFlag), the hold's
+  // flagCargo, sorted smallest first (neither row says its volume here, so they stay as they are).
+  assert.deepEqual(requests.filter((r) => r.path === "/api/bridge/call").map((r) => r.body), [
+    { service: "invbroker", method: "MultiAdd", args: [[100, 101], 60003760], kwargs: { flag: 5 }, pilot: true, confirm: true, of: 9001 },
+  ]);
+  assert.equal(requests.some((r) => r.path === "/api/bridge/inventory/transfer"), false);
   assert.equal(store.inventory.get().lastOutcome?.applied, true);
   // A successful action clears the ticks, so the next click cannot re-apply it.
   assert.deepEqual(store.inventory.get().selection, []);
@@ -194,20 +218,20 @@ test("transferItems posts every ticked item in ONE request", async () => {
 
 // --- split ------------------------------------------------------------------
 
-test("a split sends the quantity and is reported as a split, not a move", async () => {
+test("a split is the client's Add with the number asked, and is reported as a split, not a move", async () => {
   const store = createClientStore();
-  const { fetch, requests } = standardFetch(() => ({
-    // A split mints a NEW stack at the destination, so the requested itemID
-    // never appears in `moved` — the BFF judges it by the source shrinking.
-    status: 200,
-    body: { ok: true, applied: true, moved: [], declined: [], declinedSilently: false, notFound: [] },
-  }));
+  dockedAtJita(store);
+  // The source keeps its number and shrinks: that is what says a split landed.
+  const { fetch, requests } = hangarMoving((rows) => rows.map((row) => (row.fields.itemID === 100 ? packedRow({ ...row.fields, quantity: 450 }) : row)));
   const flow = createAppFlow(store, { fetch });
+  await flow.loadInventory();
 
   await flow.transferItems([100], { kind: "hangar" }, { kind: "cargo" }, 300);
 
-  const transfer = requests.find((r) => r.path === "/api/bridge/inventory/transfer");
-  assert.equal(transfer!.body.qty, 300);
+  // __AddItem (213): Add(itemID, sourceLocationID, qty=quantity, flag=self.locationFlag).
+  assert.deepEqual(requests.filter((r) => r.path === "/api/bridge/call").map((r) => r.body), [
+    { service: "invbroker", method: "Add", args: [100, 60003760], kwargs: { qty: 300, flag: 5 }, pilot: true, confirm: true, of: 9001 },
+  ]);
   assert.equal(store.inventory.get().lastOutcome?.applied, true);
   assert.match(String(store.inventory.get().lastOutcome?.message), /Split 300/);
 });
@@ -216,18 +240,10 @@ test("a split sends the quantity and is reported as a split, not a move", async 
 
 test("a silently declined move is reported AS a decline with no reason given", async () => {
   const store = createClientStore();
-  const { fetch } = standardFetch(() => ({
-    status: 200,
-    body: {
-      ok: true,
-      applied: false,
-      moved: [],
-      declined: [100],
-      declinedSilently: true,
-      notFound: [],
-    },
-  }));
+  dockedAtJita(store);
+  const { fetch } = hangarMoving((rows) => rows);
   const flow = createAppFlow(store, { fetch });
+  await flow.loadInventory();
 
   await flow.transferItems([100], { kind: "hangar" }, { kind: "cargo" });
 
@@ -242,18 +258,10 @@ test("a silently declined move is reported AS a decline with no reason given", a
 
 test("a partial move reports how many of the selection actually landed", async () => {
   const store = createClientStore();
-  const { fetch } = standardFetch(() => ({
-    status: 200,
-    body: {
-      ok: true,
-      applied: true,
-      moved: [100],
-      declined: [101],
-      declinedSilently: false,
-      notFound: [],
-    },
-  }));
+  dockedAtJita(store);
+  const { fetch } = hangarMoving(without(100));
   const flow = createAppFlow(store, { fetch });
+  await flow.loadInventory();
 
   await flow.transferItems([100, 101], { kind: "hangar" }, { kind: "cargo" });
 
