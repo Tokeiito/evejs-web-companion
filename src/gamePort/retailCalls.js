@@ -1544,6 +1544,13 @@ const RETAIL_CALLS = Object.freeze({
     (args, kwargs) => ({ args: [list(args[0]), ...args.slice(1)], kwargs }),
     "MultiAdd([itemIDs], sourceID, flag=)",
   ),
+  "invbroker.MultiMerge": reshaped(
+    `${INV_CACHE}:1124`,
+    // self.moniker.MultiMerge(ops, sourceContainerID): the ops a list of (source, destination, qty) tuples
+    // (invControllers.py 335). Recorded on Tranquility so, once: a list of one tuple, and the station.
+    (args, kwargs) => ({ args: [list(args[0]), ...args.slice(1)], kwargs }),
+    "MultiMerge([(source, destination, qty)], sourceContainerID)",
+  ),
   "invbroker.StackAll": same(`${INV_CONTROLLERS}:387`, "StackAll(locationFlag), or StackAll()"),
 
   // ── an agent (a bound agentMgr object) ────────────────────────────────────

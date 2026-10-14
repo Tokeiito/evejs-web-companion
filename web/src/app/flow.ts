@@ -336,6 +336,7 @@ import {
 import { readScanFullState } from "../bridge/scanFullState.ts";
 import { fitModule as fitModuleCall, unfitModule as unfitModuleCall } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
+import { mergeStacks as mergeStacksCall } from "../bridge/inventoryWrites.ts";
 import { cancelOrder as cancelOrderCall } from "../bridge/marketOrderWrites.ts";
 import { doAgentAction, removeOfferFromJournal } from "../bridge/agentWrites.ts";
 import { createScannerWrites, type ScannerShip } from "../bridge/scannerWrites.ts";
@@ -2858,6 +2859,47 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // hangar, the open container and a corp division at once (a move out of a
   // container into a division touches all three), so after any action every
   // open view is re-read rather than guessing which one changed.
+  /**
+   * The rows the panel holds of a place, as its last read had them: the hangar, the ship's hold, a bay of the ship
+   * the pilot is in where that ship is the one open, and the container open. Null where the panel holds none.
+   */
+  function rowsAt(place: InventoryPlace): readonly InventoryItemRow[] | null {
+    const inventory = store.get().inventory;
+    switch (place.kind) {
+      case "hangar":
+        return inventory.hangar.rows;
+      case "cargo":
+        return inventory.cargo.rows;
+      case "container":
+        return inventory.container && inventory.container.itemID === place.itemID ? inventory.container.rows : null;
+      case "shipBay": {
+        const ship = inventory.openShip;
+        if (!ship || ship.itemID !== inventory.activeShipID) return null;
+        return ship.bays.find((bay) => bay.key === place.bay)?.items ?? null;
+      }
+      default:
+        return null;
+    }
+  }
+  /**
+   * The inventory a place is (`of` for the page's own call on it) and where what it holds lies: the hangar of where
+   * the pilot is docked, the ship the pilot is in for its hold and its bays, a container's own.
+   */
+  function inventoryAt(place: InventoryPlace): { readonly inventory: number | "hangar"; readonly liesIn: number } {
+    if (place.kind === "hangar") {
+      const dockedAt = dockedNow();
+      if (dockedAt === null) throw new Error("The hangar is at hand only while docked.");
+      return { inventory: "hangar", liesIn: dockedAt };
+    }
+    if (place.kind === "container") return { inventory: place.itemID, liesIn: place.itemID };
+    if (place.kind === "cargo" || place.kind === "shipBay") {
+      const shipID = store.get().inventory.activeShipID;
+      if (shipID === null) throw new Error("Which ship this is is not known yet.");
+      return { inventory: shipID, liesIn: shipID };
+    }
+    throw new Error("That place's inventory is not the page's to name.");
+  }
+
   async function refreshOpenPlaces(): Promise<void> {
     const current = store.get().inventory;
     await loadInventory();
@@ -14506,6 +14548,26 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     async mergeStacks(sourceItemID, destinationItemID, place) {
       await runInventoryAction(async () => {
+        // The page's own call (bridge/inventoryWrites.ts) where it holds the place's rows and knows its inventory; the
+        // corporation's hangar, whose rows do not say where they lie, is still the route's.
+        if (place.kind !== "corp") {
+          const rows = rowsAt(place);
+          const source = rows?.find((row) => row.itemID === sourceItemID);
+          const destination = rows?.find((row) => row.itemID === destinationItemID);
+          if (!source || !destination) {
+            throw new Error("Those stacks are no longer where the panel last saw them; refresh and try again.");
+          }
+          const where = inventoryAt(place);
+          await mergeStacksCall(bridgeDo, where.inventory, where.liesIn, sourceItemID, destinationItemID, source.quantity);
+          await refreshOpenPlaces();
+          const after = rowsAt(place)?.find((row) => row.itemID === destinationItemID);
+          const merged = after ? after.quantity - destination.quantity : 0;
+          return {
+            applied: merged > 0,
+            declinedSilently: merged <= 0,
+            message: merged > 0 ? `Merged ${merged} into the stack.` : "The server did not merge those stacks, and gave no reason.",
+          };
+        }
         const result = await api.mergeStacks(
           sourceItemID,
           destinationItemID,
