@@ -1,6 +1,6 @@
 // The R17 Mail controller against a faked BFF: loadMail syncs the mailbox by
 // the generic call (mailSvc.SyncMail) and asks for the NAME of everyone it will render;
-// openMail carries plain text (the BFF already inflated it); sendMail reports
+// openMail asks GetBody and inflates the body itself; sendMail reports
 // what the server actually did.
 //
 // The properties that matter here are the ones that keep the panel honest:
@@ -12,6 +12,8 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+
+import { deflateSync } from "node:zlib";
 
 import { createAppFlow } from "./flow.ts";
 import { createClientStore } from "../store/clientStore.ts";
@@ -59,6 +61,16 @@ function status(overrides: Record<string, unknown> = {}): unknown {
 /** Whether a request is the mail manager's SyncMail, by the generic call. */
 function isSync(path: string, body: Record<string, unknown>): boolean {
   return path === "/api/bridge/call" && body.service === "mailMgr" && body.method === "SyncMail";
+}
+
+/** Whether a request is the mail manager's GetBody, by the generic call. */
+function isBodyRead(path: string, body: Record<string, unknown>): boolean {
+  return path === "/api/bridge/call" && body.service === "mailMgr" && body.method === "GetBody";
+}
+
+/** GetBody's answer by the generic call: the text deflated, as a Node Buffer crosses the bridge. */
+function bodyAnswer(text: string): { status: number; body: unknown } {
+  return { status: 200, body: { ok: true, service: "mailMgr", method: "GetBody", result: { type: "Buffer", data: [...deflateSync(Buffer.from(text, "utf8"))] }, notifications: [] } };
 }
 
 /** SyncMail's answer by the generic call, of the parts given. */
@@ -123,19 +135,8 @@ function respondOk(
     if (custom !== null && custom !== undefined) {
       return custom as { status: number; body: unknown };
     }
-    if (path.startsWith("/api/bridge/mail/body")) {
-      return {
-        status: 200,
-        body: {
-          ok: true,
-          messageID: MESSAGE_ID,
-          // ⚠ Plain TEXT. The BFF inflated the zlib buffer GetBody answers.
-          body: "The convoy leaves at 19:00.",
-          unreadable: false,
-          markedRead: false,
-          unreadCount: 1,
-        },
-      };
+    if (isBodyRead(path, body)) {
+      return bodyAnswer("The convoy leaves at 19:00.");
     }
     // The send is the page's own call since 2026-10-14 (mailMgr.SendMail through the generic call), answered the
     // message's number.
@@ -251,96 +252,35 @@ test("an empty mailbox loads as an empty inbox, not an error", async () => {
 
 // --- opening a message ------------------------------------------------------
 
-test("openMail stores the already-inflated TEXT", async () => {
+test("openMail inflates the body GetBody answers", async () => {
   const { store, flow, requests } = makeFlow(respondOk());
   await flow.loadMail();
   await flow.openMail(MESSAGE_ID, false);
 
-  const bodyRequest = requests.find((entry) => entry.path.startsWith("/api/bridge/mail/body"));
+  // mailSvc.GetBody (512): the message, and whether to mark it read.
+  const bodyRequest = requests.find((entry) => isBodyRead(entry.path, entry.body));
   assert.ok(bodyRequest, "the body is its own read");
-  assert.ok(
-    bodyRequest.path.includes(`messageID=${MESSAGE_ID}`),
-    "the message is named in the query",
-  );
-  assert.equal(
-    bodyRequest.path.includes("markRead"),
-    false,
-    "opening without marking read must not send the flag",
-  );
+  assert.deepEqual(bodyRequest.body.args, [MESSAGE_ID, false], "opening without marking read must not send the flag");
   assert.equal(store.get().mail.open?.body, "The convoy leaves at 19:00.");
   assert.equal(store.get().mail.open?.unreadable, false);
 });
 
 test("marking read sends the flag with the body's read", async () => {
-  const { store, flow, requests } = makeFlow(
-    respondOk((path) =>
-      path.startsWith("/api/bridge/mail/body")
-        ? {
-            status: 200,
-            body: {
-              ok: true,
-              messageID: MESSAGE_ID,
-              body: "text",
-              unreadable: false,
-              // The BFF's RE-READ says the flag really moved.
-              markedRead: true,
-              unreadCount: 0,
-            },
-          }
-        : null,
-    ),
-  );
+  const { store, flow, requests } = makeFlow(respondOk());
   await flow.loadMail();
   await flow.openMail(MESSAGE_ID, true);
 
-  const bodyRequest = requests.find((entry) => entry.path.includes("markRead=1"));
-  assert.ok(bodyRequest, "markRead=1 must reach the BFF");
+  const bodyRequest = requests.find((entry) => isBodyRead(entry.path, entry.body));
+  assert.deepEqual(bodyRequest?.body.args, [MESSAGE_ID, true], "the flag must reach the server");
   assert.equal(store.get().mail.open?.markedRead, true);
-});
-
-test("⚠ a body whose read-flag re-read failed makes NO claim about it", async () => {
-  const { store, flow } = makeFlow(
-    respondOk((path) =>
-      path.startsWith("/api/bridge/mail/body")
-        ? {
-            status: 200,
-            body: {
-              ok: true,
-              messageID: MESSAGE_ID,
-              body: "text",
-              unreadable: false,
-              // The BFF could not confirm, so it says nothing.
-              markedRead: null,
-              unreadCount: null,
-            },
-          }
-        : null,
-    ),
-  );
-  await flow.loadMail();
-  await flow.openMail(MESSAGE_ID, true);
-  assert.equal(
-    store.get().mail.open?.markedRead,
-    null,
-    "no re-read means no claim — not an assumed true",
-  );
 });
 
 test("a damaged body is reported unreadable rather than shown as garbage", async () => {
   const { store, flow } = makeFlow(
-    respondOk((path) =>
-      path.startsWith("/api/bridge/mail/body")
-        ? {
-            status: 200,
-            body: {
-              ok: true,
-              messageID: MESSAGE_ID,
-              body: null,
-              unreadable: true,
-              markedRead: false,
-              unreadCount: 1,
-            },
-          }
+    respondOk((path, _method, body) =>
+      isBodyRead(path, body)
+        ? // Bytes that are not a zlib stream at all.
+          { status: 200, body: { ok: true, service: "mailMgr", method: "GetBody", result: { type: "Buffer", data: [1, 2, 3, 4] }, notifications: [] } }
         : null,
     ),
   );
@@ -362,8 +302,8 @@ test("closeMail drops the open message without touching the server", async () =>
 
 test("a body read that fails records a refusal instead of throwing", async () => {
   const { store, flow } = makeFlow(
-    respondOk((path) =>
-      path.startsWith("/api/bridge/mail/body")
+    respondOk((path, _method, body) =>
+      isBodyRead(path, body)
         ? { status: 404, body: { ok: false, error: "MAIL_NOT_FOUND" } }
         : null,
     ),

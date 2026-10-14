@@ -413,141 +413,10 @@ test("a cold sync that needs no backfill issues exactly ONE call", async () => {
 
 // --- the zlib body ----------------------------------------------------------
 
-test("⚠ GET /api/bridge/mail/body INFLATES the zlib buffer and answers plain TEXT", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { response, payload } = await apiRequest(
-    baseUrl,
-    `/api/bridge/mail/body?messageID=${MESSAGE_ID}`,
-  );
-
-  assert.equal(response.status, 200);
-  // ⚠ THE RULE. The browser gets the message, not a wall of byte values.
-  assert.equal(payload.body, BODY_TEXT);
-  assert.equal(payload.unreadable, false);
-
-  // And NOT ONE compressed byte survives into the response: no {type:"Buffer"}
-  // anywhere in the payload.
-  assert.equal(
-    JSON.stringify(payload).includes('"Buffer"'),
-    false,
-    "no serialized Buffer may reach the browser — inflation happens here",
-  );
-});
-
-test("a body that will not inflate is reported unreadable, not rendered as bytes", async () => {
-  // Bytes that are not a zlib stream at all.
-  const gateway = fakeGateway({ bodyResult: { type: "Buffer", data: [1, 2, 3, 4] } });
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { response, payload } = await apiRequest(
-    baseUrl,
-    `/api/bridge/mail/body?messageID=${MESSAGE_ID}`,
-  );
-
-  assert.equal(response.status, 200);
-  assert.equal(payload.body, null);
-  assert.equal(payload.unreadable, true, "a corrupt body says so rather than showing garbage");
-});
-
-test("GetBody's null (a message not in this mailbox) is a 404, not an empty message", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  // The fake answers null for any id but MESSAGE_ID — GetBody's own answer for
-  // a message the character cannot see.
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/mail/body?messageID=999");
-
-  assert.equal(response.status, 404);
-  assert.equal(payload.error, "MAIL_NOT_FOUND");
-});
-
-test("a body request naming no message is refused before it reaches the bridge", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  gateway.calls.topLevel.length = 0;
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/mail/body?messageID=0");
-
-  assert.equal(response.status, 400);
-  assert.equal(payload.error, "MAIL_INVALID");
-  assert.deepEqual(gateway.calls.topLevel, [], "a refused request never reaches the gateway");
-});
-
-// --- marking read: a 200 is not proof ---------------------------------------
-
-test("markRead=1 passes shouldMarkAsRead and RE-READS to confirm the flag moved", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { payload } = await apiRequest(
-    baseUrl,
-    `/api/bridge/mail/body?messageID=${MESSAGE_ID}&markRead=1`,
-  );
-
-  const body = gateway.calls.topLevel.find(
-    (call) => call.service === "mailMgr" && call.method === "GetBody",
-  );
-  assert.deepEqual(body.args, [MESSAGE_ID, 1], "shouldMarkAsRead rides args[1] as 1");
-
-  // ⚠ A 200 IS NOT PROOF. `markedRead` comes from a fresh SyncMail, not from
-  // the call having succeeded.
-  const syncs = gateway.calls.topLevel.filter(
-    (call) => call.service === "mailMgr" && call.method === "SyncMail",
-  );
-  assert.ok(syncs.length >= 1, "the read flag is confirmed by re-reading the mailbox");
-  assert.equal(payload.markedRead, true);
-  assert.equal(payload.unreadCount, 0, "and the unread count is re-derived from that read");
-});
-
-test("markRead absent leaves the message unread — opening a preview is not reading it", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { payload } = await apiRequest(
-    baseUrl,
-    `/api/bridge/mail/body?messageID=${MESSAGE_ID}`,
-  );
-
-  const body = gateway.calls.topLevel.find(
-    (call) => call.service === "mailMgr" && call.method === "GetBody",
-  );
-  assert.deepEqual(body.args, [MESSAGE_ID, 0]);
-  assert.equal(payload.markedRead, false, "confirmed by the re-read, not assumed");
-  assert.equal(payload.unreadCount, 1);
-});
-
-test("a failed re-read still returns the body, and makes NO claim about the flag", async () => {
-  // The body read succeeds; the confirming sync does not.
-  let bodyDone = false;
-  const gateway = fakeGateway();
-  const inner = gateway.callMethod.bind(gateway);
-  gateway.callMethod = async (service, method, ...rest) => {
-    if (service === "mailMgr" && method === "SyncMail" && bodyDone) {
-      throw Object.assign(new Error("sync failed"), { code: "CALL_FAILED" });
-    }
-    const result = await inner(service, method, ...rest);
-    if (service === "mailMgr" && method === "GetBody") {
-      bodyDone = true;
-    }
-    return result;
-  };
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { response, payload } = await apiRequest(
-    baseUrl,
-    `/api/bridge/mail/body?messageID=${MESSAGE_ID}&markRead=1`,
-  );
-
-  assert.equal(response.status, 200);
-  assert.equal(payload.body, BODY_TEXT, "the message is in hand and worth showing");
-  assert.equal(
-    payload.markedRead,
-    null,
-    "with no successful re-read, the route makes no claim about the flag",
-  );
-});
+// (Seven tests held the body's route (GET /api/bridge/mail/body) to inflating the zlib buffer into text, to an
+// unreadable body, to GetBody's None as a 404, to a message named as none, and to its mark-read and the cold sync of
+// the mailbox after: the route went on 2026-10-14, the page making the call and inflating the body itself
+// (web/src/app/flow.ts, openMail).)
 
 // --- sending ----------------------------------------------------------------
 
@@ -569,7 +438,6 @@ test("every mail route needs a held session", async () => {
   // No selectOnServer: nothing is held.
   for (const [path, options] of [
     ["/api/bridge/mail", {}],
-    [`/api/bridge/mail/body?messageID=${MESSAGE_ID}`, {}],
   ]) {
     const { response } = await apiRequest(baseUrl, path, options);
     assert.notEqual(response.status, 200, `${path} must refuse without a held session`);
