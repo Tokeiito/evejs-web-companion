@@ -64,6 +64,8 @@ export interface CompanionFitFacts {
   readonly shieldBoosterModuleIDs: readonly number[];
   readonly armorRepairerModuleIDs: readonly number[];
   readonly hullRepairerModuleIDs: readonly number[];
+  /** The ancillary ones among the three above. See the request's field. */
+  readonly ancillaryRepairerModuleIDs?: readonly number[];
   readonly remoteShieldModuleIDs: readonly number[];
   readonly remoteArmorModuleIDs: readonly number[];
   readonly remoteCapacitorModuleIDs: readonly number[];
@@ -143,6 +145,9 @@ export function requestForFit(
     shieldBoosterModuleIDs: [...facts.shieldBoosterModuleIDs],
     armorRepairerModuleIDs: [...facts.armorRepairerModuleIDs],
     hullRepairerModuleIDs: [...facts.hullRepairerModuleIDs],
+    ...(facts.ancillaryRepairerModuleIDs === undefined
+      ? {}
+      : { ancillaryRepairerModuleIDs: [...facts.ancillaryRepairerModuleIDs] }),
     remoteShieldModuleIDs: [...facts.remoteShieldModuleIDs],
     remoteArmorModuleIDs: [...facts.remoteArmorModuleIDs],
     remoteCapacitorModuleIDs: [...facts.remoteCapacitorModuleIDs],

@@ -22724,6 +22724,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         shieldBoosterModuleIDs: defense.shield,
         armorRepairerModuleIDs: defense.armor,
         hullRepairerModuleIDs: defense.hull,
+        ancillaryRepairerModuleIDs: defense.ancillary,
         remoteShieldModuleIDs: remote.shield,
         remoteArmorModuleIDs: remote.armor,
         remoteCapacitorModuleIDs: remote.cap,
@@ -23031,6 +23032,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     readonly shield: readonly number[];
     readonly armor: readonly number[];
     readonly hull: readonly number[];
+    /** The ancillary ones among shield/armor/hull: they eat a charge a cycle. */
+    readonly ancillary: readonly number[];
     readonly hardeners: readonly number[];
     readonly weapons: readonly number[];
     readonly propulsion: readonly CompanionPropulsionModule[];
@@ -23039,6 +23042,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const shield: number[] = [];
     const armor: number[] = [];
     const hull: number[] = [];
+    const ancillary: number[] = [];
     const hardeners: number[] = [];
     const weapons: number[] = [];
     const propulsion: CompanionPropulsionModule[] = [];
@@ -23103,8 +23107,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // Anchoring on "booster" keeps "Shield Booster" and "Ancillary Shield
           // Booster" and drops the amplifier, with no extra branch needed.
           shield.push(slot.module.itemID);
+          if (/ancillary/i.test(group)) ancillary.push(slot.module.itemID);
         } else if (/armor repair/i.test(group)) {
           armor.push(slot.module.itemID);
+          if (/ancillary/i.test(group)) ancillary.push(slot.module.itemID);
         } else if (/hull repair/i.test(group)) {
           hull.push(slot.module.itemID);
         } else if (/hardener|damage control|resistance/i.test(group)) {
@@ -23171,7 +23177,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         }
       }
     }
-    return { shield, armor, hull, hardeners, weapons, propulsion };
+    return { shield, armor, hull, ancillary, hardeners, weapons, propulsion };
   }
 
   /**
