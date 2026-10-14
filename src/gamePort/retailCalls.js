@@ -1551,6 +1551,12 @@ const RETAIL_CALLS = Object.freeze({
     (args, kwargs) => ({ args: [list(args[0]), ...args.slice(1)], kwargs }),
     "MultiMerge([(source, destination, qty)], sourceContainerID)",
   ),
+  "invbroker.TrashItems": reshaped(
+    "eve/client/script/ui/services/menuSvcExtras/invItemFunctions.py:618",
+    // invCache.GetInventoryMgr().TrashItems(itemsToTrash, locationID): the items a list (TrashInvItems, 607 to 612).
+    (args, kwargs) => ({ args: [list(args[0]), ...args.slice(1)], kwargs }),
+    "TrashItems([itemIDs], locationID)",
+  ),
   "invbroker.StackAll": same(`${INV_CONTROLLERS}:387`, "StackAll(locationFlag), or StackAll()"),
 
   // ── an agent (a bound agentMgr object) ────────────────────────────────────

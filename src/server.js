@@ -1102,6 +1102,12 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
       : objectKind === "inventory"
       ? { service: body.service, method: body.method, ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => inventoryCall(
         heldBridgeSession, req.webSessionID, body.of, body.method, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null)) }
+      // (And a call on the inventory manager of where the pilot is, by the bind the trash route went by: the game
+      // port makes it the client's own, Moniker('invbroker', the session's place) as eveMoniker.GetInventoryMgr has
+      // it. boundCall reads the pilot's place again before TrashItems, as before every inventory write.)
+      : objectKind === "inventoryManager"
+      ? { service: body.service, method: body.method, ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => boundCall(
+        heldBridgeSession, req.webSessionID, inventoryManagerBindSpec(heldBridgeSession), body.method, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null)) }
       // (And a call on the system's scan manager, by the object its route went by.)
       : objectKind === "scanManager"
       ? { service: body.service, method: body.method, ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => systemScanCall(
@@ -3272,84 +3278,8 @@ app.get("/api/bridge/bound-fleet", requireAuth, async (req, res, next) => {
   }
 });
 
-// Move one item hangar <-> active-ship cargo. The bound object is the
-// DESTINATION; retail's Add(itemID, sourceLocationID, qty, flag) carries the
-// source location and the destination flag.
-app.post("/api/bridge/inventory/move", requireAuth, async (req, res, next) => {
-  const held = requireHeldBridgeSession(req, res);
-  if (!held) {
-    return;
-  }
-  const body = req.body || {};
-  const itemID = Number(body.itemID) || 0;
-  const direction = String(body.direction || "");
-  const qty = Number(body.qty);
-  if (itemID <= 0 || (direction !== "toCargo" && direction !== "toHangar")) {
-    res.status(400).json({ ok: false, error: "INVALID_MOVE", message: "itemID and a valid direction are required." });
-    return;
-  }
-  const shipID = held.activeShipID;
-  if (!shipID) {
-    res.status(409).json({ ok: false, error: "NO_ACTIVE_SHIP", message: "No active ship to move cargo to or from." });
-    return;
-  }
-  const kwargs = { flag: direction === "toCargo" ? ITEM_FLAG_CARGO_HOLD : ITEM_FLAG_HANGAR };
-  if (Number.isSafeInteger(qty) && qty > 0) {
-    kwargs.qty = qty;
-  }
-  try {
-    const locationID = await assertDockedInventoryAccess(held, req.webSessionID);
-    const destSpec = direction === "toCargo" ? cargoBindSpec(held, shipID) : hangarBindSpec(held);
-    const sourceSpec = direction === "toCargo" ? hangarBindSpec(held) : cargoBindSpec(held, shipID);
-    const sourceFlag = direction === "toCargo" ? ITEM_FLAG_HANGAR : ITEM_FLAG_CARGO_HOLD;
-    const destinationFlag = direction === "toCargo" ? ITEM_FLAG_CARGO_HOLD : ITEM_FLAG_HANGAR;
-    let beforeSource, beforeDestination, expected, movedTypeID;
-    if (held.structureID) {
-      const [source, destination] = await Promise.all([
-        boundCall(held, req.webSessionID, sourceSpec, "List", [sourceFlag], null),
-        boundCall(held, req.webSessionID, destSpec, "List", [destinationFlag], null),
-      ]);
-      beforeSource = decodeInventoryRows(source.result);
-      beforeDestination = decodeInventoryRows(destination.result);
-      const row = beforeSource.find((item) => item.itemID === itemID);
-      expected = Number.isSafeInteger(qty) && qty > 0 ? qty : row?.quantity;
-      movedTypeID = row?.typeID;
-      if (!row || !Number.isSafeInteger(expected) || expected <= 0 || expected > row.quantity) {
-        res.status(409).json({ ok: false, error: "PERSONAL_SOURCE_CHANGED" }); return;
-      }
-    }
-    const sourceLocationID = direction === "toCargo" ? locationID : shipID;
-    const outcome = await boundCall(
-      held,
-      req.webSessionID,
-      held.structureID ? { ...destSpec, expectedDockedLocationID: locationID } : destSpec,
-      "Add",
-      [itemID, sourceLocationID],
-      kwargs,
-    );
-    if (held.structureID) {
-      const [source, destination] = await Promise.all([
-        boundCall(held, req.webSessionID, sourceSpec, "List", [sourceFlag], null),
-        boundCall(held, req.webSessionID, destSpec, "List", [destinationFlag], null),
-      ]);
-      const afterSource = decodeInventoryRows(source.result);
-      const afterDestination = decodeInventoryRows(destination.result);
-      const count = (rows) => rows.filter((row) => row.typeID === movedTypeID).reduce((sum, row) => sum + row.quantity, 0);
-      const sourceRowBefore = beforeSource.find((row) => row.itemID === itemID);
-      const sourceRowAfter = afterSource.find((row) => row.itemID === itemID);
-      if (sourceRowBefore.quantity - (sourceRowAfter?.quantity ?? 0) !== expected ||
-          count(beforeSource) - count(afterSource) !== expected ||
-          count(afterDestination) - count(beforeDestination) !== expected) {
-        res.status(409).json({ ok: false, error: "PERSONAL_TRANSFER_UNCONFIRMED",
-          message: "The exact movement between ship and structure hangar could not be confirmed. Refresh both inventories before retrying." });
-        return;
-      }
-    }
-    res.json({ ok: true, notifications: outcome.notifications });
-  } catch (error) {
-    next(error);
-  }
-});
+// (A thing moved between the hangar and the ship's hold had a route of its own, POST /api/bridge/inventory/move,
+// which nothing of the page asked: the page moves things by the transfer. It went on 2026-10-13.)
 
 // Stack all loose stacks in the hangar or the active-ship cargo.
 app.post("/api/bridge/inventory/stack", requireAuth, async (req, res, next) => {
@@ -4186,81 +4116,11 @@ app.post("/api/bridge/inventory/merge", requireAuth, async (req, res, next) => {
   }
 });
 
-/**
- * DESTROY items. This is irreversible, so — exactly as R12 fenced the rig
- * destroy — the route refuses outright unless `confirm` is true, and the web UI
- * puts a two-step confirm in front of that. TrashItems dispatches on the
- * inventory MANAGER moniker, not on a per-container binding.
- */
-app.post("/api/bridge/inventory/trash", requireAuth, async (req, res, next) => {
-  const held = requireHeldBridgeSession(req, res);
-  if (!held) {
-    return;
-  }
-  const body = req.body || {};
-  const itemIDs = (Array.isArray(body.itemIDs) ? body.itemIDs : [body.itemID])
-    .map((value) => Number(value) || 0)
-    .filter((value) => value > 0);
-  if (itemIDs.length === 0) {
-    res.status(400).json({ ok: false, error: "INVALID_TRASH", message: "At least one item is required." });
-    return;
-  }
-  if (body.confirm !== true) {
-    res.status(400).json({
-      ok: false,
-      error: "CONFIRMATION_REQUIRED",
-      message: "Trashing destroys these items permanently. This action must be confirmed explicitly.",
-    });
-    return;
-  }
-  try {
-    await readHeldFlight(held, req.webSessionID);
-    const place = await resolvePlace(held, req.webSessionID, body.place);
-    const rowsBefore = await listPlace(held, req.webSessionID, place);
-    const beforeIDs = new Set(rowsBefore.map((row) => row.itemID));
-    const present = itemIDs.filter((itemID) => beforeIDs.has(itemID));
-    if (present.length === 0) {
-      res.status(409).json({
-        ok: false,
-        error: "ITEMS_NOT_AT_SOURCE",
-        message: "Those items are no longer where the panel last saw them; refresh and try again.",
-      });
-      return;
-    }
-    const locationID =
-      place.locationID !== null && place.locationID !== undefined
-        ? place.locationID
-        : rowsBefore.find((row) => row.itemID === present[0]).locationID;
-    const outcome = await boundCall(
-      held,
-      req.webSessionID,
-      inventoryManagerBindSpec(held),
-      "TrashItems",
-      [present, locationID],
-      null,
-    );
-    // Re-read: the handler declines an untrashable item (an active ship, a
-    // locked corp asset) by returning without raising, so only the listing
-    // proves anything was destroyed.
-    const rowsAfter = await listPlace(held, req.webSessionID, place);
-    const afterIDs = new Set(rowsAfter.map((row) => row.itemID));
-    const destroyed = present.filter((itemID) => !afterIDs.has(itemID));
-    const survived = present.filter((itemID) => afterIDs.has(itemID));
-    res.json({
-      ok: true,
-      applied: destroyed.length > 0,
-      destroyed,
-      survived,
-      declinedSilently: survived.length > 0,
-      notifications: outcome.notifications,
-    });
-  } catch (error) {
-    if (sendPlaceError(res, error)) {
-      return;
-    }
-    next(error);
-  }
-});
+// (Items are destroyed by the page's own call since 2026-10-13, as the client destroys them: TrashItems on the
+// inventory manager of where the pilot is, through the generic call (bridgeCallPolicy.js, PAGE_OBJECT_CALLS:
+// "inventoryManager"; web/src/bridge/inventoryWrites.ts). The route that listed the place, made the call and
+// listed it again, POST /api/bridge/inventory/trash, is gone. Its own fence of a confirmation is the page's write
+// fence now, and the page asks the pilot first as it did.)
 
 /**
  * The corporation hangar: which office, what the seven divisions are CALLED,

@@ -526,19 +526,8 @@ export async function loadInventory(
   };
 }
 
-/** Move one item hangar <-> active-ship cargo. */
-export async function moveItem(
-  itemID: number,
-  direction: "toCargo" | "toHangar",
-  qty: number | null,
-  options: ApiOptions = {},
-): Promise<void> {
-  const body: Record<string, JsonValue> = { itemID, direction };
-  if (qty !== null) {
-    body.qty = qty;
-  }
-  await postJson("/api/bridge/inventory/move", body, options);
-}
+// (A thing moved between the hangar and the ship's hold had a route of its own, POST /api/bridge/inventory/move,
+// which nothing of the page asked: the page moves things by the transfer. It went on 2026-10-13.)
 
 /** Stack all loose stacks in the hangar or the active-ship cargo. */
 export async function stackItems(
@@ -653,35 +642,8 @@ export async function mergeStacks(
   };
 }
 
-export interface TrashResult {
-  readonly applied: boolean;
-  readonly destroyed: readonly number[];
-  readonly survived: readonly number[];
-  readonly declinedSilently: boolean;
-}
-
-/**
- * DESTROY items. Irreversible, so the BFF refuses outright without `confirm`,
- * and the UI asks first — this flag is the second gate behind that, exactly as
- * the rig destroy is fenced.
- */
-export async function trashItems(
-  itemIDs: readonly number[],
-  place: InventoryPlace,
-  options: ApiOptions = {},
-): Promise<TrashResult> {
-  const data = await postJson(
-    "/api/bridge/inventory/trash",
-    { itemIDs: [...itemIDs], place: place as unknown as JsonValue, confirm: true },
-    options,
-  );
-  return {
-    applied: data.applied === true,
-    destroyed: asNumberList(data.destroyed),
-    survived: asNumberList(data.survived),
-    declinedSilently: data.declinedSilently === true,
-  };
-}
+// Items are destroyed by the page itself, with the client's own call on the inventory manager of where the pilot
+// is (bridge/inventoryWrites.ts, trashItems): it left its route (POST /api/bridge/inventory/trash) on 2026-10-13.
 
 export interface RawContainerReads {
   readonly containerID: number;

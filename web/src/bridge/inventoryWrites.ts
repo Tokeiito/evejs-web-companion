@@ -22,7 +22,26 @@
 // container's inventory is held to whose it is. It answers nothing whether it merged or not: the page reads the
 // place again for its verdict.
 
+//
+// ITEMS TRASHED. Until 2026-10-13 a route (POST /api/bridge/inventory/trash), which listed the place, sent TrashItems
+// on the inventory manager and listed the place again. The client (invItemFunctions.TrashInvItems, 602 to 626): the
+// items must lie in one place, the pilot is asked, each must be of a type that may be trashed, and then
+//
+//   errors = invCache.GetInventoryMgr().TrashItems(itemsToTrash, locationID)
+//
+// on the inventory manager of where the session is (eveMoniker.GetInventoryMgr, 122 to 131: the solar system's
+// where the session has one, else the station's), not on any inventory's own object. `locationID` is the station or
+// structure the first item lies in directly, the office's station for a corporation's item, and otherwise the
+// place the item lies in, a ship or a container (invCache.GetStationIDOfItem, 660 to 691). Each error answered is
+// shown, and nothing else is done.
+//
+// WHAT THE SERVER TAKES FROM THE CALLER (invBroker/trash.js, Handle_TrashItems and _isInventoryItemTrashable, read
+// 2026-10-13): the session's own character's items, or a director's corporation items in the office here; never
+// the ship the pilot is in, a fitted module or anything in space; all of one owner. It answers None, or a list of
+// refusals (CannotTrashItem) where it destroys nothing.
+
 import type { Ask } from "./ask.ts";
+import type { JsonValue } from "./wire.ts";
 
 /** `of`, for the hangar of where the pilot is docked: invCache.GetInventory(const.containerHangar). */
 const THE_HANGAR = "hangar";
@@ -47,4 +66,25 @@ export async function mergeStacks(
   if (!whole(quantity)) throw new Error("A stack's whole quantity is required to merge it.");
   if (!whole(sourceLocationID)) throw new Error("Where that stack lies is not known.");
   await act("invbroker", "MultiMerge", [[[sourceItemID, destinationItemID, quantity]], sourceLocationID], null, inventory);
+}
+
+/** The refusals TrashItems answered, as the wire spelled the list; none for an answer of None. */
+function refusalsOf(answer: JsonValue): readonly string[] {
+  const items = Array.isArray(answer)
+    ? answer
+    : answer !== null && typeof answer === "object" && Array.isArray((answer as { items?: unknown }).items)
+      ? ((answer as { items: JsonValue[] }).items)
+      : [];
+  return items.map((each) => (typeof each === "string" ? each : JSON.stringify(each)));
+}
+
+/**
+ * Destroys items that lie in one place, on the inventory manager of where the pilot is, naming the place as the
+ * client names it (`locationID`). Fails where the server answers refusals, with the server's own words.
+ */
+export async function trashItems(act: Ask, itemIDs: readonly number[], locationID: number): Promise<void> {
+  if (itemIDs.length === 0 || !itemIDs.every(whole)) throw new Error("At least one item is required.");
+  if (!whole(locationID)) throw new Error("Where those items lie is not known.");
+  const refusals = refusalsOf(await act("invbroker", "TrashItems", [[...itemIDs], locationID]));
+  if (refusals.length > 0) throw new Error(`The server would not destroy those items (${refusals.join(", ")}).`);
 }

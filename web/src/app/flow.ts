@@ -336,7 +336,7 @@ import {
 import { readScanFullState } from "../bridge/scanFullState.ts";
 import { fitModule as fitModuleCall, unfitModule as unfitModuleCall } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
-import { mergeStacks as mergeStacksCall } from "../bridge/inventoryWrites.ts";
+import { mergeStacks as mergeStacksCall, trashItems as trashItemsCall } from "../bridge/inventoryWrites.ts";
 import { cancelOrder as cancelOrderCall } from "../bridge/marketOrderWrites.ts";
 import { doAgentAction, removeOfferFromJournal } from "../bridge/agentWrites.ts";
 import { createScannerWrites, type ScannerShip } from "../bridge/scannerWrites.ts";
@@ -659,8 +659,6 @@ export interface AppFlow {
   refreshStationPanel(): Promise<void>;
   /** Load the Inventory & Ship panel (station hangar + active-ship cargo). */
   loadInventory(): Promise<void>;
-  /** Move a selected item hangar <-> active-ship cargo, then refresh. */
-  moveItem(itemID: number, direction: "toCargo" | "toHangar", qty?: number | null): Promise<void>;
   /** Stack all loose stacks in the hangar or active-ship cargo, then refresh. */
   stackContainer(target: "hangar" | "cargo"): Promise<void>;
   /** Board a hangar ship (it becomes active), then refresh. */
@@ -2877,9 +2875,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         if (!ship || ship.itemID !== inventory.activeShipID) return null;
         return ship.bays.find((bay) => bay.key === place.bay)?.items ?? null;
       }
+      case "corp":
+        return inventory.corp.loaded ? inventory.corp.divisions.find((each) => each.division === place.division)?.rows ?? null : null;
       default:
         return null;
     }
+  }
+  /**
+   * The place a trash names, as the client names it (invCache.GetStationIDOfItem): the station or structure for what
+   * lies in its hangar, the office's station for a corporation's, and otherwise the ship or the container it lies in.
+   */
+  function trashedFrom(place: InventoryPlace): number {
+    if (place.kind !== "corp") return inventoryAt(place).liesIn;
+    const dockedAt = dockedNow();
+    if (dockedAt === null) throw new Error("The corporation's hangar is at hand only while docked.");
+    return dockedAt;
   }
   /**
    * The inventory a place is (`of` for the page's own call on it) and where what it holds lies: the hangar of where
@@ -14435,10 +14445,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     loadInventory,
 
-    async moveItem(itemID, direction, qty = null) {
-      await runMutation(() => api.moveItem(itemID, direction, qty ?? null, callOptions));
-    },
-
     async stackContainer(target) {
       await runMutation(() => api.stackItems(target, callOptions));
     },
@@ -14587,9 +14593,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     async trashItems(itemIDs, place) {
       await runInventoryAction(async () => {
-        const result = await api.trashItems(itemIDs, place, callOptions);
-        const destroyed = result.destroyed.length;
-        const survived = result.survived.length;
+        // The page's own call on the inventory manager of where the pilot is (bridge/inventoryWrites.ts), naming the
+        // place as the client names it, and the verdict by the place's rows refreshed.
+        const before = rowsAt(place);
+        const present = itemIDs.filter((itemID) => before?.some((row) => row.itemID === itemID));
+        if (present.length === 0) {
+          throw new Error("Those items are no longer where the panel last saw them; refresh and try again.");
+        }
+        await trashItemsCall(bridgeDo, present, trashedFrom(place));
+        await refreshOpenPlaces();
+        const left = new Set((rowsAt(place) ?? []).map((row) => row.itemID));
+        const destroyed = present.filter((itemID) => !left.has(itemID)).length;
+        const survived = present.length - destroyed;
         let message: string;
         if (destroyed > 0 && survived === 0) {
           message = `Destroyed ${destroyed} ${destroyed === 1 ? "item" : "items"}.`;
@@ -14598,7 +14613,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         } else {
           message = "The server destroyed nothing, and gave no reason.";
         }
-        return { applied: result.applied, declinedSilently: result.declinedSilently, message };
+        return { applied: destroyed > 0, declinedSilently: survived > 0, message };
       });
     },
 
