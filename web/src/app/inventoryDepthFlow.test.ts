@@ -270,12 +270,19 @@ test("a partial move reports how many of the selection actually landed", async (
 });
 
 test("a typed refusal surfaces the SERVER's own message, not a guess", async () => {
+  // A move out of the corporation's hangar is the page's own call since 2026-10-14: the office's number read of the
+  // office manager as the client's GetCorpOfficeAtLocation reads it (GetMyCorporationsOffices, the office at the
+  // station docked in), and the move refused.
   const store = createClientStore();
-  const { fetch } = standardFetch(() => ({
-    status: 409,
-    body: { ok: false, error: "CALL_REFUSED", message: "You do not have the required roles." },
-  }));
+  dockedAtJita(store);
+  const { fetch } = standardFetch((path, body) => {
+    if (path === "/api/bridge/call" && body.method === "GetMyCorporationsOffices") {
+      return { status: 200, body: { ok: true, service: body.service, method: body.method, result: { type: "objectex2", list: [packedRow({ officeID: 272, stationID: 60003760 })] }, notifications: [] } };
+    }
+    return { status: 409, body: { ok: false, error: "CALL_REFUSED", message: "You do not have the required roles." } };
+  });
   const flow = createAppFlow(store, { fetch });
+  await flow.loadCorpHangar();
 
   await flow.transferItems([400], { kind: "corp", division: 1 }, { kind: "hangar" });
 
@@ -372,7 +379,7 @@ test("a move out of a container names the container as the source place", async 
 // --- merge ------------------------------------------------------------------
 
 // A stack is merged into another by the page's own call since 2026-10-13 where it holds the place's rows
-// (bridge/inventoryWrites.ts); the route (POST /api/bridge/inventory/merge) keeps the corporation's hangar. The call
+// (bridge/inventoryWrites.ts), the corporation's hangar's too since 2026-10-14, and the route is gone. The call
 // is held to the client's: item.py's drop (958 on, the source `node.rec.locationID` at 1004), invControllers.py
 // 327 to 335 and invCache.py 1124, MultiMerge([(source, destination, qty)], the source's place) on the inventory the
 // target is in.

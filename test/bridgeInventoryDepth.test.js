@@ -817,42 +817,10 @@ test("transfer refuses when the items are no longer at the source", async () => 
 });
 
 // --- merge ------------------------------------------------------------------
-
-test("merge folds one stack into another and reports the quantity that really moved", async () => {
-  const gateway = fakeGateway({ items: fixtureItems() });
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/inventory/merge", {
-    method: "POST",
-    body: { sourceItemID: 102, destinationItemID: 100, place: { kind: "hangar" } },
-  });
-  assert.equal(response.status, 200);
-  assert.equal(payload.applied, true);
-  assert.equal(payload.merged, 250);
-
-  const merge = gateway.calls.boundCall.find((call) => call.method === "MultiMerge");
-  assert.ok(merge, "re-merge is MultiMerge");
-  assert.deepEqual(merge.args, [[[102, 100, 250]], STATION_ID]);
-  assert.equal(gateway.world.get(100).quantity, 1250);
-  assert.equal(gateway.world.has(102), false, "the source stack was consumed");
-});
-
-test("merge of two different types is declined silently and says so", async () => {
-  const gateway = fakeGateway({ items: fixtureItems() });
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  // 101 is a different type from 100; the server declines without raising.
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/inventory/merge", {
-    method: "POST",
-    body: { sourceItemID: 101, destinationItemID: 100, place: { kind: "hangar" } },
-  });
-  assert.equal(response.status, 200);
-  assert.equal(payload.applied, false);
-  assert.equal(payload.merged, 0);
-  assert.equal(payload.declinedSilently, true);
-});
+//
+// A stack is merged into another by the page's own call since 2026-10-14 (web/src/bridge/inventoryWrites.ts). The
+// route (POST /api/bridge/inventory/merge) is gone, and its two tests with it: the merge by MultiMerge on the
+// place's binding, and a merge of two types declined.
 
 // --- trash ------------------------------------------------------------------
 //
