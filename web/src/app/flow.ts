@@ -335,6 +335,7 @@ import {
 } from "../nav/droneControlRange.ts";
 import { readScanFullState } from "../bridge/scanFullState.ts";
 import { fitModule as fitModuleCall, unfitModule as unfitModuleCall } from "../bridge/fitModule.ts";
+import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
 import { cancelOrder as cancelOrderCall } from "../bridge/marketOrderWrites.ts";
 import { doAgentAction, removeOfferFromJournal } from "../bridge/agentWrites.ts";
 import { createScannerWrites, type ScannerShip } from "../bridge/scannerWrites.ts";
@@ -1845,7 +1846,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const shipID = store.fitting.get().activeShipID ?? store.space.get().snapshot?.shipID ?? null;
     const online = store.station.get().online;
     if (shipID === null || !online) throw new Error("Which ship this is is not known yet.");
-    return { shipID, characterID: online.characterID, dockedAt: online.structureID ?? online.stationID ?? null };
+    return { shipID, characterID: online.characterID, dockedAt: dockedNow() };
+  }
+  /**
+   * Where the pilot is docked (session.structureid or session.stationid), and nowhere in space, as the flight
+   * read has it. The online pilot's own station is where it was chosen or last docked, and is not cleared by an
+   * undocking: it is gone by only where no flight has been read.
+   */
+  function dockedNow(): number | null {
+    const flight = store.flight.get().status;
+    if (flight) return flight.docked ? (flight.structureID ?? flight.stationID ?? null) : null;
+    const online = store.station.get().online;
+    return online ? (online.structureID ?? online.stationID ?? null) : null;
   }
   /** The modules fitted to the ship now, each by its own number with a name for its slot: the page's own read of the fitting. */
   async function fittedNow(): Promise<ReadonlyMap<number, string>> {
@@ -13442,9 +13454,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             await removeLaunch(bridgeDo, action.launchID);
             return;
           }
-          case "exportCustoms":
-            await api.exportToCustomsOffice(action.officeID, action.pinID, action.commodities, callOptions);
+          case "exportCustoms": {
+            // The office's tax rate asked and the transfer made on the office's own inventory, by the page's own
+            // calls as the client's customs window makes them (bridge/customsWrites.ts), in space.
+            await exportToCustomsOffice(bridgeAsk, bridgeDo, { dockedAt: dockedNow() }, action.officeID, action.pinID, action.commodities);
             return;
+          }
           case "collectCustoms": {
             // No claim and no record to delete. An office's storage is
             // partitioned by depositor server-side, so these rows are this

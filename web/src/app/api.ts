@@ -4563,24 +4563,9 @@ export async function compressOreInSpace(
 // call of the ballpark (bridge/bookmarkWrites.ts): it left its route
 // (POST /api/bridge/flight/bookmark-location) on 2026-10-11.
 
-/**
- * Send one launchpad's goods up into its planet's customs office, on the
- * pilot's own session and at the office, as the retail client's customs window
- * does (the office's tax rate asked, then ImportExportWithPlanet naming it).
- * The BFF refuses a docked pilot; the server charges the office's export tax.
- */
-export async function exportToCustomsOffice(
-  officeID: number,
-  pinID: number,
-  commodities: Readonly<Record<number, number>>,
-  options: ApiOptions = {},
-): Promise<void> {
-  await postJson(
-    "/api/bridge/planet/customs/export",
-    { officeID, pinID, commodities: { ...commodities }, confirm: true },
-    options,
-  );
-}
+// A launchpad's goods are sent up into its planet's customs office by the page
+// itself, with the client's own two calls (bridge/customsWrites.ts): it left its
+// route (POST /api/bridge/planet/customs/export) on 2026-10-13.
 
 
 // (A scan result is warped to by the page itself, with the client's own call: bridge/movementWrites.ts,
