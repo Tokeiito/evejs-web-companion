@@ -707,7 +707,6 @@ test("EVERY market write is refused without an explicit confirm, before the gate
       "/api/bridge/market/sell",
       { itemID: 500, typeID: TYPE_ID, price: 10, quantity: 5, durationDays: 30 },
     ],
-    ["/api/bridge/market/cancel", { orderID: "8000000101" }],
     ["/api/bridge/market/modify", { orderID: "8000000101", price: 12 }],
   ];
   for (const [path, body] of cases) {
@@ -874,24 +873,10 @@ test("a sell without a stack to hand over is rejected — selling is not type-ba
   assert.equal(payload.error, "INVALID_ITEM");
 });
 
-test("CancelCharOrder is sent as [orderID, regionID] — the regionID the server ignores", async () => {
-  const gateway = fakeWriteGateway({ orders: [ownOrder()] });
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  await postMarket(baseUrl, "/api/bridge/market/cancel", {
-    orderID: "8000000101",
-    confirm: true,
-  });
-
-  const call = gateway.calls.topLevel.find(
-    (entry) => entry.service === "marketProxy" && entry.method === "CancelCharOrder",
-  );
-  // The trailing argument is sent because the shape is retail's; the server
-  // reads only args[0] and re-derives the region from the order it loads.
-  assert.deepEqual(call.args, ["8000000101", 0]);
-  assert.equal(call.kwargs, null);
-});
+// (An order is taken down by the page's own call since 2026-10-13: marketProxy.CancelCharOrder through the generic
+// call, with the region off the order's own row, and the page's own reads of the pilot's orders and wallet for its
+// verdict (web/src/bridge/marketOrderWrites.ts). Its route, POST /api/bridge/market/cancel, is gone, and the three
+// tests of it with it: this one of what it sent, and two below of its verdict.)
 
 test("ModifyCharOrder is sent with all NINE arguments, though only two are read", async () => {
   const gateway = fakeWriteGateway({ orders: [ownOrder()] });
@@ -977,20 +962,6 @@ test("the charge stays exact when eve.js sends the wallet as a marshalled real",
   assert.equal(payload.balanceAfter, "998862.50");
 });
 
-test("a CANCEL reports the refund as a NEGATIVE charge — ISK came back", async () => {
-  const gateway = fakeWriteGateway({ orders: [ownOrder()] });
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  const { payload } = await postMarket(baseUrl, "/api/bridge/market/cancel", {
-    orderID: "8000000101",
-    confirm: true,
-  });
-  assert.equal(payload.applied, true);
-  // before - after is negative when the wallet GREW.
-  assert.equal(payload.charged, "-2450.00");
-});
-
 test("a MODIFY is judged by the RE-READ: the order now carries the new price", async () => {
   const gateway = fakeWriteGateway({ orders: [ownOrder()] });
   const { baseUrl } = await startTestServer({ gateway });
@@ -1026,19 +997,6 @@ test("a buy that changed NOTHING is reported as a silent decline, with no invent
   assert.equal(payload.applied, false);
   assert.equal(payload.declinedSilently, true);
   assert.equal(payload.charged, "0.00");
-});
-
-test("a CANCEL that removed nothing is a silent decline, judged by the order count", async () => {
-  const gateway = fakeWriteGateway({ orders: [ownOrder()], silentDecline: true });
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  const { payload } = await postMarket(baseUrl, "/api/bridge/market/cancel", {
-    orderID: "8000000101",
-    confirm: true,
-  });
-  assert.equal(payload.applied, false);
-  assert.equal(payload.declinedSilently, true);
 });
 
 test("a MODIFY that left the price alone is a silent decline", async () => {

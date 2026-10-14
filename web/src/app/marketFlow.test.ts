@@ -602,34 +602,48 @@ test("selling names the STACK — a sell carries an itemID, a buy does not", asy
   assert.equal(sell.body.confirm, true);
 });
 
+/**
+ * The page's own calls about an order's taking down (bridge/marketOrderWrites.ts), answered in the generic call's
+ * envelope: the wallet's balance, one answer of `balances` at each asking and the last from then on; the pilot's
+ * orders, answered with nothing the decoder reads as a row; and the taking down, which answers nothing.
+ */
+function cancelCalls(balances: readonly number[]) {
+  let asked = 0;
+  return (path: string, _method: string, body: Record<string, unknown>) => {
+    if (path !== "/api/bridge/call") return null;
+    const result = body.method === "GetCashBalance" ? balances[Math.min(asked++, balances.length - 1)] ?? null : null;
+    return { status: 200, body: { ok: true, service: body.service, method: body.method, result, notifications: [] } };
+  };
+}
+
 test("cancelling and repricing both go behind confirm", async () => {
+  const calls = cancelCalls([1000000, 1002450]);
   const { flow, requests } = makeFlow(
-    respondOk((path) =>
-      path === "/api/bridge/market/cancel" || path === "/api/bridge/market/modify"
+    respondOk((path, method, body) =>
+      path === "/api/bridge/market/modify"
         ? { status: 200, body: changeResult({ charged: "-2450.00" }) }
-        : null,
+        : calls(path, method, body),
     ),
   );
   await flow.loadMarket(TYPE_ID);
   await flow.cancelMarketOrder("8000000101");
   await flow.modifyMarketOrder("8000000101", 12);
 
-  const cancel = requests.find((entry) => entry.path === "/api/bridge/market/cancel");
+  // The taking down is the page's own call since 2026-10-13 (marketsvc.py 282: CancelCharOrder(orderID,
+  // regionID)), as a pilot's write the page means: the order's number first.
+  const cancel = requests.find((entry) => entry.path === "/api/bridge/call" && entry.body.method === "CancelCharOrder");
   const modify = requests.find((entry) => entry.path === "/api/bridge/market/modify");
   assert.equal(cancel?.body.confirm, true);
-  assert.equal(cancel?.body.orderID, "8000000101");
+  assert.equal(cancel?.body.pilot, true);
+  assert.equal((cancel?.body.args as unknown[])[0], "8000000101");
   assert.equal(modify?.body.confirm, true);
   assert.equal(modify?.body.price, 12);
 });
 
 test("a refund is recorded as a NEGATIVE charge, so the panel can say ISK came back", async () => {
-  const { store, flow } = makeFlow(
-    respondOk((path) =>
-      path === "/api/bridge/market/cancel"
-        ? { status: 200, body: changeResult({ charged: "-2450.00" }) }
-        : null,
-    ),
-  );
+  // The page reads the wallet itself before the taking down and after, and the difference is its own: 2,450
+  // ISK more after than before is a charge of that much less than nothing.
+  const { store, flow } = makeFlow(respondOk(cancelCalls([1000000, 1002450])));
   await flow.loadMarket(TYPE_ID);
   await flow.cancelMarketOrder("8000000101");
   assert.equal(store.get().market.lastOutcome?.charged, "-2450.00");
