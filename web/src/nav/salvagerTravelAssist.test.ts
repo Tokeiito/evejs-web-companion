@@ -109,7 +109,8 @@ test("salvager: lock, activate, loot and unlock ticks keep a lit approach owned 
 test("salvager: arrival during an activate tick turns it off", async () => {
   const h = harness();
   await h.assist.beforeAction(world({ workWhileMoving: true }));
-  assert.equal(await h.assist.beforeAction(work({ kind: "activate", moduleID: 30, targetID: 11 }, 3_000)), true);
+  // Off, and the activate still goes: a salvager's tick is never taken by its prop.
+  assert.equal(await h.assist.beforeAction(work({ kind: "activate", moduleID: 30, targetID: 11 }, 3_000)), false);
   assert.deepEqual(h.changes.map(c => c.on), [true, false]);
 });
 test("salvager: a work tick never lights the prop; activating the propulsion module itself is not work", async () => {
@@ -141,4 +142,22 @@ test("salvager: the leg target vanishing from the scene ends it during work tick
   const gone = work({ kind: "lootWreck" }, 50_000);
   await h.assist.beforeAction({ ...gone, snapshot: { ...gone.snapshot!, entities: [] } });
   assert.deepEqual(h.changes.map(c => c.on), [true, false]);
+});
+
+test("salvager: lighting or ending the prop never swallows the tick's own order to fly on", async () => {
+  // Seen live 2026-10-14: the order to fly to the next spot was dropped each time the prop came on or off.
+  const h = harness();
+  assert.equal(await h.assist.beforeAction(world({ action: point(60_000), workWhileMoving: true })), false, "lit, and the gotoPoint still goes");
+  assert.deepEqual(h.changes.map((c) => c.on), [true]);
+  assert.equal(await h.assist.beforeAction(world({ action: point(90_000), workWhileMoving: true }, 50_000, [2])), false, "ended for a new spot, and that gotoPoint still goes");
+  assert.deepEqual(h.changes.map((c) => c.on), [true, false]);
+});
+
+test("salvager: the next spot worked out again a few metres on is the same leg, so the prop stays lit", async () => {
+  const h = harness();
+  await h.assist.beforeAction(world({ action: point(60_000), workWhileMoving: true }));
+  for (const x of [60_003, 59_996, 60_450, 60_900]) {
+    await h.assist.beforeAction(world({ action: point(x), workWhileMoving: true }, 50_000, [2]));
+  }
+  assert.deepEqual(h.changes.map((c) => c.on), [true]);
 });
