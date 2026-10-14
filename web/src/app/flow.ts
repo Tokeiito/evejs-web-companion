@@ -336,7 +336,7 @@ import {
 import { readScanFullState } from "../bridge/scanFullState.ts";
 import { applyFitting, fitModule as fitModuleCall, unfitModule as unfitModuleCall } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
-import { hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, stackAll as stackAllCall, trashItems as trashItemsCall } from "../bridge/inventoryWrites.ts";
+import { BAY_FLAGS, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, stackAll as stackAllCall, trashItems as trashItemsCall, type MovePlace } from "../bridge/inventoryWrites.ts";
 import { cancelOrder as cancelOrderCall } from "../bridge/marketOrderWrites.ts";
 import { doAgentAction, removeOfferFromJournal } from "../bridge/agentWrites.ts";
 import { createScannerWrites, type ScannerShip } from "../bridge/scannerWrites.ts";
@@ -14557,16 +14557,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     async transferItems(itemIDs, from, to, qty = null) {
       await runInventoryAction(async () => {
-        // Between the hangar, the ship's hold and a container, the client's own call (bridge/inventoryWrites.ts),
-        // judged by the places' rows refreshed, the source's above all: a thing moved can arrive under a new number.
-        const pilotsOwn = (place: InventoryPlace) => place.kind === "hangar" || place.kind === "cargo" || place.kind === "container";
+        // Between the hangar, the ship's hold, its bays and a container, the client's own call
+        // (bridge/inventoryWrites.ts), judged by the places' rows refreshed, the source's above all: a thing moved can
+        // arrive under a new number. A bay is one the page knows the flag of (BAY_FLAGS).
+        const pilotsOwn = (place: InventoryPlace): boolean => place.kind === "hangar" || place.kind === "cargo" ||
+          place.kind === "container" || (place.kind === "shipBay" && Object.hasOwn(BAY_FLAGS, place.bay));
         if (pilotsOwn(from) && pilotsOwn(to)) {
           const present = (rowsAt(from) ?? []).filter((row) => itemIDs.includes(row.itemID));
           if (present.length === 0) {
             throw new Error("Those items are no longer where the panel last saw them; refresh and try again.");
           }
-          const kind = to.kind as "hangar" | "cargo" | "container";
-          await moveItemsCall(bridgeDo, inventoryAt(to).inventory, kind, inventoryAt(from).liesIn, present, qty ?? null);
+          await moveItemsCall(bridgeDo, inventoryAt(to).inventory, to as MovePlace, inventoryAt(from).liesIn, present, qty ?? null);
           await refreshOpenPlaces();
           const sourceAfter = new Map((rowsAt(from) ?? []).map((row) => [row.itemID, row]));
           const left = (row: InventoryItemRow) => {

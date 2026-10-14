@@ -70,8 +70,8 @@ export async function mergeStacks(
 
 // THINGS MOVED BY THE PILOT. The route (POST /api/bridge/inventory/transfer) keeps the bots' moves, which carry the
 // BFF's own word (a container's claim between bots, a haul's contract, the place a run expects): the pilot's own
-// moves in the Inventory & Ship window, between the hangar, the ship's hold and a container, are the client's calls
-// since 2026-10-14, on the inventory the things go to, the window's own container (invControllers.py):
+// moves in the Inventory & Ship window, between the hangar, the ship's hold, its bays and a container, are the
+// client's calls since 2026-10-14, on the inventory the things go to, the window's own container (invControllers.py):
 //
 //   one thing     _AddItem (229 to 262) and its __AddItem (195 to 226): the whole stack, or a number asked with
 //                 shift held, from where it lies, Add(itemID, sourceLocationID, qty=quantity, flag=self.locationFlag)
@@ -79,12 +79,42 @@ export async function mergeStacks(
 //                 MultiAdd(itemIDs, sourceLocation, flag=self.locationFlag), or flag=const.flagNone where the
 //                 container has no flag of its own
 //
-// The window's flags: the hangar's flagHangar (StationItems, 1138), the ship's hold flagCargo (ShipCargo, 605), and a
-// container none (BaseInvContainer, 60): one thing into a container goes with flag=None, many with flagNone.
+// The window's flags: the hangar's flagHangar (StationItems, 1138), the ship's hold flagCargo (ShipCargo, 605), a bay
+// its own (BAY_FLAGS, below), and a container none (BaseInvContainer, 60): one thing into a container goes with
+// flag=None, many with flagNone. A bay is a flag on the ship's own inventory, and what lies in it lies in the ship.
 
-/** The places the pilot's own move is made between, and the flag each one's window adds with. */
-const MOVE_FLAGS = { hangar: 4, cargo: 5, container: null } as const;
-export type MovePlace = keyof typeof MOVE_FLAGS;
+/**
+ * A ship's bays by the page's key, each with the flag its window adds with (invControllers.py, ShipDroneBay to
+ * ShipExpeditionHold, 669 to 776, and the ship maintenance bay's and the fleet hangar's), the values the client's own,
+ * read from its compiled inventorycommon/const.py on 2026-10-14: flagDroneBay 87, flagShipHangar 90, the specialized
+ * holds 133 to 149, flagQuafeBay 154, flagFleetHangar 155, flagFighterBay 158, flagCorpseBay 174, flagBoosterBay 176,
+ * flagSubsystemBay 177, flagSpecializedIceHold 181, flagSpecialAsteroidHold 182, flagMobileDepotHold 183,
+ * flagColonyResourcesHold 185, flagExpeditionHold 188. (Until 2026-10-14 only the BFF held them, and the page named
+ * a bay by its key alone.)
+ */
+export const BAY_FLAGS: Readonly<Record<string, number>> = Object.freeze({
+  cargo: 5, drone: 87, shipMaintenance: 90, fuel: 133, ore: 134, gas: 135, mineral: 136, salvage: 137, ship: 138,
+  smallShip: 139, mediumShip: 140, largeShip: 141, industrialShip: 142, ammo: 143, commandCenter: 148,
+  planetary: 149, quafe: 154, fleet: 155, fighter: 158, corpse: 174, booster: 176, subsystem: 177, ice: 181,
+  asteroid: 182, mobileDepot: 183, colony: 185, expedition: 188,
+});
+
+/** The places the pilot's own move is made between. */
+export type MovePlace =
+  | { readonly kind: "hangar" }
+  | { readonly kind: "cargo" }
+  | { readonly kind: "container" }
+  | { readonly kind: "shipBay"; readonly bay: string };
+
+/** The flag a place's window adds with: flagHangar, flagCargo, a bay's own, and none for a container. */
+export function moveFlagOf(place: MovePlace): number | null {
+  if (place.kind === "hangar") return 4;
+  if (place.kind === "cargo") return 5;
+  if (place.kind === "container") return null;
+  const flag = BAY_FLAGS[place.bay];
+  if (flag === undefined) throw new Error("That bay is not one the page knows.");
+  return flag;
+}
 
 /** A thing moved, as the panel's row has it. */
 export interface MovedRow {
@@ -112,13 +142,13 @@ export async function moveItems(
     const [row] = rows as [MovedRow];
     const quantity = qty ?? (row.singleton ? 1 : row.quantity);
     if (!whole(quantity)) throw new Error("A whole quantity is required.");
-    await act("invbroker", "Add", [row.itemID, sourceLocationID], { qty: quantity, flag: MOVE_FLAGS[place] }, inventory);
+    await act("invbroker", "Add", [row.itemID, sourceLocationID], { qty: quantity, flag: moveFlagOf(place) }, inventory);
     return;
   }
   if (qty !== null) throw new Error("A quantity can only be given when moving a single stack.");
   const size = (row: MovedRow) => (row.volume ?? 0) * (row.singleton ? 1 : row.quantity);
   const ordered = [...rows].sort((a, b) => size(a) - size(b)).map((row) => row.itemID);
-  await act("invbroker", "MultiAdd", [ordered, sourceLocationID], { flag: MOVE_FLAGS[place] ?? 0 }, inventory);
+  await act("invbroker", "MultiAdd", [ordered, sourceLocationID], { flag: moveFlagOf(place) ?? 0 }, inventory);
 }
 
 // STACK ALL. Until 2026-10-14 a route (POST /api/bridge/inventory/stack) sent StackAll(flag) on the hangar's or the

@@ -20302,8 +20302,10 @@ app.post("/api/bridge/ship/ore-hold/unload", requireAuth, async (req, res, next)
 // phantom 1,000,000 m³ bay on every hull in the game. Asking only about mapped
 // flags means a capacity of 0 always means "this hull has no such bay".
 //
-// THESE NUMBERS NEVER LEAVE THIS FILE (R7d/R9a): the browser is handed a key
-// and a LABEL per bay and never learns that 134 exists.
+// The browser is handed a key and a LABEL per bay by the routes, never a flag
+// (R7d/R9a). Since 2026-10-14 the page holds the same values itself, the
+// client's own read from its compiled constants, for its own calls that move a
+// thing into a bay (web/src/bridge/inventoryWrites.ts, BAY_FLAGS).
 const SHIP_BAYS = Object.freeze([
   Object.freeze({ key: "cargo", flag: ITEM_FLAG_CARGO_HOLD, label: "Cargo hold" }),
   // The same flag ITEM_FLAG_DRONE_BAY names for /api/bridge/drones; spelled out
