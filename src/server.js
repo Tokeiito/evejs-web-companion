@@ -962,8 +962,9 @@ async function activatePreparedOperation(definition,operationRunID) {
 // gateway's POST /_evejs-web/v1/call; the gateway enforces the deny-by-default
 // (service, method) allowlist and materializes the browser-backed session. This
 // generic seam makes a read, or one of the writes the page makes itself for its
-// pilot (below; the plan's Phase 6b): every other mutator must use its purpose-built,
-// confirmation-gated BFF route. The BFF also projects browser session fields
+// pilot (below; the plan's Phase 6b): every other write it refuses. (A few writes have
+// a route of their own still; most have none since 2026-10-14, the loop's item 62.)
+// The BFF also projects browser session fields
 // onto an explicit presentation-only allowlist; `userid` always comes from the
 // signed login session. Wire contract: docs/bridge-wire-contract.md.
 app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
@@ -976,13 +977,15 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
   }
   // A write is made here only as the page makes one for its pilot (the plan's Phase 6b): said to be a pilot's,
   // said to be meant (`confirm`, which is what its route's confirmation was), and one of the writes the page
-  // makes itself (bridgeCallPolicy.js). Any other write has its own route, as before.
+  // makes itself (bridgeCallPolicy.js). Any other write is refused, and the words say which of the two it was.
   const write = isBridgeWritePair(body.service, body.method);
   if (write && !(body.pilot === true && body.confirm === true && isPageWritePair(body.service, body.method))) {
     res.status(403).json({
       ok: false,
-      error: "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE",
-      message: `${body.service}.${body.method} is a write and must use its dedicated confirmation route.`,
+      error: "BRIDGE_WRITE_REFUSED",
+      message: isPageWritePair(body.service, body.method)
+        ? `${body.service}.${body.method} is a write the page makes for its pilot: it is made only with pilot and confirm said.`
+        : `${body.service}.${body.method} is a write, and none of those the page makes: this call does not make it.`,
     });
     return;
   }

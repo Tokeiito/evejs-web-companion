@@ -5,9 +5,12 @@
 // PLUMBING_SWEEP_WRITE_METHODS is the 301-pair Phase 3/4 write inventory in
 // docs/plumbing-worklist.md (152 top-level + 149 bound). The earlier map covers
 // the mutators wired before that sweep, and FEATURE_WRITE_METHODS covers writes
-// added afterward. Dedicated BFF routes confirmation-gate these calls; the
-// generic /api/bridge/call route must never be a second, ungated way to invoke
-// them.
+// added afterward. The generic /api/bridge/call makes one of these only where it
+// is one of the page's own writes (PAGE_WRITE_PAIR_KEYS, below), said to be a
+// pilot's and meant; any other it refuses (403 BRIDGE_WRITE_REFUSED). A few have
+// a route of their own still, confirmation-gated; most have none since
+// 2026-10-14 (the loop's item 62): a screen that comes to want one makes the
+// client's own call, added to the page's writes.
 
 function freezeMethodMap(methodsByService) {
   const frozen = {};

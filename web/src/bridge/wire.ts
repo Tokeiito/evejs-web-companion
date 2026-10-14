@@ -89,7 +89,7 @@ export interface BridgeErrorBody {
 export type BridgeErrorCode =
   | "CALL_INVALID"
   | "CALL_NOT_ALLOWED"
-  | "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"
+  | "BRIDGE_WRITE_REFUSED"
   | "CALL_SERVICE_UNAVAILABLE"
   | "CALL_FAILED"
   | "UNAUTHORIZED"
