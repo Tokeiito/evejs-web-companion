@@ -3543,6 +3543,21 @@ Take these defaults, and list each under "For the operator" in the log so they c
   client's code; a search of the recordings that finds nothing is
   checked against where they begin before it is said that the client
   does not make the call.
+- **A write that leaves its route for the page takes its read with
+  it.** The scoop's route read the drones after the call; when the
+  page took the call (2026-10-11) it took that read too, and with it
+  the launch's fault by one round trip's grace. A page's own call
+  that puts a ball into space or takes one out is judged by a read
+  that waits for the ball, as the launch's route waits
+  (`scoopLeaveWaitMs`, `flow.ts`).
+- **The browser pane will not be turned to `about:blank`.** A page
+  left open on a BFF after its pilot's look is turned to a route that
+  runs no page (`/api/health`), before the store is put back: a page
+  left running asks for its pilot again.
+- **A pilot staged in space by a script and taken over in the tab**
+  is brought in from the pilots' list: the row clicked, "BRING ONLINE";
+  the pane is told it is visible first (the memory's note), and a
+  click and its reading are two calls.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
