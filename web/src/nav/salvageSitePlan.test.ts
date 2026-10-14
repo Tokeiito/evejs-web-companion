@@ -147,8 +147,11 @@ test("no oscillation between two equal clusters: it commits, then finishes one b
 
 test("never moves while a module is active or work is in reach", () => {
   const far = [wreck(100, 200_000)];
+  // A spare salvager doubles up on the wreck in reach; the ship does not fly off.
   const busy = planSalvageTick(input({ wrecks: [...far, wreck(101, 3000)], tractors: [], salvagers: [mod(11, true, 101), mod(12)], lockedTargetIDs: [101] }));
-  assert.ok("wait" in busy);
+  assert.deepEqual(act(busy), { kind: "activate", moduleID: 12, targetID: 101 });
+  const both = planSalvageTick(input({ wrecks: [...far, wreck(101, 3000)], tractors: [], salvagers: [mod(11, true, 101), mod(12, true, 101)], lockedTargetIDs: [101] }));
+  assert.ok("wait" in both);
   const idleWithWork = planSalvageTick(input({ wrecks: [...far, wreck(101, 3000)], tractors: [], salvagers: [mod(11, true, 101)], lockedTargetIDs: [101] }));
   assert.ok("wait" in idleWithWork);
 });
@@ -156,4 +159,24 @@ test("never moves while a module is active or work is in reach", () => {
 test("a salvage-only hull (no tractors) closes on a far wreck", () => {
   const plan = planSalvageTick(input({ wrecks: [wreck(100, 50_000)], tractors: [] }));
   assert.equal(act(plan).kind, "gotoPoint");
+});
+
+test("spare salvagers double up: five salvagers on three wrecks run 2/2/1, the least-worked wreck first", () => {
+  const w = [wreck(100, 3000), wreck(101, 3500), wreck(102, 4000)];
+  const locks = [100, 101, 102];
+  // Three busy on the three wrecks, two idle: the fourth goes on the nearest wreck with one.
+  let salvagers = [mod(11, true, 100), mod(12, true, 101), mod(13, true, 102), mod(14), mod(15)];
+  let plan = planSalvageTick(input({ wrecks: w, tractors: [], salvagers, lockedTargetIDs: locks }));
+  assert.deepEqual(act(plan), { kind: "activate", moduleID: 14, targetID: 100 });
+  // The fifth goes on the next wreck with only one, not on the one that already has two.
+  salvagers = [mod(11, true, 100), mod(12, true, 101), mod(13, true, 102), mod(14, true, 100), mod(15)];
+  plan = planSalvageTick(input({ wrecks: w, tractors: [], salvagers, lockedTargetIDs: locks }));
+  assert.deepEqual(act(plan), { kind: "activate", moduleID: 15, targetID: 101 });
+  // A wreck in reach with nobody on it still comes first: no doubling while one is free.
+  const free = [...w, wreck(103, 2000)];
+  plan = planSalvageTick(input({ wrecks: free, tractors: [], salvagers: [mod(11, true, 100), mod(12, true, 101), mod(13, true, 102), mod(14)], lockedTargetIDs: [...locks, 103] }));
+  assert.deepEqual(act(plan), { kind: "activate", moduleID: 14, targetID: 103 });
+  // A wreck not yet locked is locked for its own salvager rather than doubling elsewhere.
+  plan = planSalvageTick(input({ wrecks: free, tractors: [], salvagers: [mod(11, true, 100), mod(12, true, 101), mod(13, true, 102), mod(14)], lockedTargetIDs: locks }));
+  assert.deepEqual(act(plan), { kind: "lock", targetID: 103 });
 });
