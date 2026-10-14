@@ -26,7 +26,7 @@
 
 import type { MailHeaderRow, MailStatusRow } from "../store/types.ts";
 import type { JsonValue } from "./wire.ts";
-import { isListValue, readKeyVal, readPlainJsonField, unwrapLong } from "./wire.ts";
+import { isListValue, readDictPairs, readKeyVal, readPlainJsonField, unwrapLong } from "./wire.ts";
 
 /** The read bit inside a status row's statusMask. */
 export const MAIL_STATUS_READ = 1;
@@ -610,3 +610,76 @@ export function mailboxAfterNotice(mailbox: DecodedMailbox, method: string, args
   }
 }
 
+
+// --- The labels and the folders, as the client's mail window has them ---------
+//
+// The mail window draws its folders as it opens (evemail.py LoadLeftSide; GetStaticLabelsGroups): All Mails, the
+// inbox, sent, the corporation's and the alliance's, and the trash; then the pilot's own labels (the mail service's
+// GetLabels, 676 to 679, asked once and kept), by name. Each but sent and the trash words its unread count beside
+// it (UpdateCounters; UI/Mail/FolderLabelWithCount). The window opens on the inbox (270). A folder lists the mails
+// not trashed whose labels hold its own (GetMailsByLabelOrListID, 525 to 553; All Mails every one), and the trash
+// those trashed (GetTrashedMails, 555 to 568).
+
+/** A label of the pilot's own (mailSvc.GetLabels): its bit, its name, and its colour's number. */
+export interface MailLabel {
+  readonly labelID: number;
+  readonly name: string;
+  readonly color: number;
+}
+
+/** The system's own folders' bits (appConst.py 1777 to 1780), and the trash's place among them (evemail.py 61). */
+export const MAIL_FOLDER_INBOX = 1;
+export const MAIL_FOLDER_SENT = 2;
+export const MAIL_FOLDER_CORPORATION = 4;
+export const MAIL_FOLDER_ALLIANCE = 8;
+export const MAIL_FOLDER_TRASH = -1;
+const SYSTEM_LABELS = new Set([MAIL_FOLDER_INBOX, MAIL_FOLDER_SENT, MAIL_FOLDER_CORPORATION, MAIL_FOLDER_ALLIANCE]);
+
+/** One label of GetLabels' answer, or OnLabelsCreatedByExternal's: a KeyVal of labelID, name and color. */
+export function mailLabelOf(row: JsonValue | undefined): MailLabel | null {
+  const labelID = toNumber(readKeyVal(row, "labelID"));
+  if (labelID <= 0) {
+    return null;
+  }
+  return { labelID, name: toText(readKeyVal(row, "name")), color: toNumber(readKeyVal(row, "color")) };
+}
+
+/**
+ * GetLabels' answer, a dict of the pilot's labels by their bits: the pilot's own, the system's four (which
+ * GetAllLabels names in its own words, 681 to 710) left out.
+ */
+export function mailLabelsOf(answer: JsonValue): readonly MailLabel[] {
+  const labels: MailLabel[] = [];
+  for (const [, row] of readDictPairs(answer)) {
+    const label = mailLabelOf(row as JsonValue);
+    if (label !== null && !SYSTEM_LABELS.has(label.labelID)) labels.push(label);
+  }
+  return labels;
+}
+
+/** GetUnreadCounts (mailSvc.py 249 to 276), by label: each label's mails neither read nor trashed; all under null. */
+export function unreadByLabel(mailbox: DecodedMailbox): ReadonlyMap<number | null, number> {
+  const counts = new Map<number | null, number>();
+  let total = 0;
+  for (const status of mailbox.statuses) {
+    if (status.read || isTrashed(status)) continue;
+    total += 1;
+    for (let bit = 1, mask = status.labelMask; mask > 0; bit *= 2, mask = Math.floor(mask / 2)) {
+      if (mask % 2 === 1) counts.set(bit, (counts.get(bit) ?? 0) + 1);
+    }
+  }
+  counts.set(null, total);
+  return counts;
+}
+
+/** The mails a folder lists, the newest first: by its label, or all (null), not trashed; or the trash's, trashed. */
+export function mailsInFolder(mailbox: DecodedMailbox, folder: number | null): readonly MailHeaderRow[] {
+  const statusOf = new Map(mailbox.statuses.map((status) => [status.messageID, status] as const));
+  return mailbox.messages.filter((header) => {
+    const status = statusOf.get(header.messageID);
+    const trashed = status !== undefined && isTrashed(status);
+    if (folder === MAIL_FOLDER_TRASH) return trashed;
+    if (trashed) return false;
+    return folder === null || ((status?.labelMask ?? 0) & folder) === folder;
+  });
+}

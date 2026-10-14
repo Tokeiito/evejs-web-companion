@@ -53,6 +53,8 @@ import {
   inflateMailBody,
   MAIL_BODIES_KEPT,
   type MailBody,
+  mailLabelOf,
+  mailLabelsOf,
   mailboxAfterNotice,
   mailboxAfterSending,
   mailboxAfterSync,
@@ -1009,6 +1011,8 @@ export interface AppFlow {
    * mail's action error).
    */
   quotedMailBody(messageID: number): Promise<string | null>;
+  /** The pilot's own mail labels, asked once as the mail window first draws its folders (mailSvc.GetLabels), and kept. */
+  loadMailLabels(): Promise<void>;
   /** Close the open message without touching the server. */
   closeMail(): void;
   /**
@@ -2440,6 +2444,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const missionChange = decodeMissionChange(method, args);
     if (missionChange !== null) {
       onMissionChange(missionChange);
+      return;
+    }
+    // mailSvc.OnLabelsCreatedByExternal (1208 to 1211): a label made elsewhere is added to those kept.
+    if (method === "OnLabelsCreatedByExternal") {
+      const kept = store.mail.get().labels;
+      const label = mailLabelOf((args as readonly JsonValue[])[0]);
+      if (kept !== null && label !== null && !kept.some((each) => each.labelID === label.labelID)) {
+        store.apply({ type: "mail/labels", labels: [...kept, label] });
+      }
       return;
     }
     // mailSvc's notices (1119 to 1195): what the mailbox holds is kept right from them, asking nothing; after a mail
@@ -5024,6 +5037,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       mailboxLoaded(mailboxMarkedRead(store.mail.get(), [messageID]));
     }
     return body;
+  }
+
+  // mailSvc.GetLabels (676 to 679): the pilot's labels, asked once as the mail window first draws its folders
+  // (evemail.py LoadLeftSide, by GetAllLabels), by the generic call, and kept for the character.
+  async function loadMailLabels(): Promise<void> {
+    if (store.mail.get().labels !== null) {
+      return;
+    }
+    try {
+      const answer = await bridgeAsk("mailMgr", "GetLabels", []);
+      store.apply({ type: "mail/labels", labels: mailLabelsOf(answer) });
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+      }
+      throw error;
+    }
   }
 
   // mailSvc.GetReplyMessage asks the service's GetBody, which marks a message not read read.
@@ -15482,6 +15513,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     refreshMail,
     openMail,
     quotedMailBody,
+    loadMailLabels,
     closeMail,
     findCharacters: (q: string) => api.findCharacters(q, callOptions),
     sendMail,

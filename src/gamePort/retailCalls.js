@@ -1749,6 +1749,7 @@ const RETAIL_CALLS = Object.freeze({
   "facilityManager.GetMaxActivityModifiers": same(`${INDUSTRY}/facilitySvc.py:87`, "RemoteSvc('facilityManager').GetMaxActivityModifiers(), no arguments"),
 
   // ── mail and notifications ────────────────────────────────────────────────
+  "mailMgr.GetLabels": same(`${MAIL_SERVICES}/mailSvc.py:678`, "self.mailMgr.GetLabels(), no arguments; asked once as the mail window first draws its folders, and kept. Tranquility's recording of the mail window opened has it after SyncMail(None, 0), answered {}."),
   "mailMgr.GetMailHeaders": same(`${MAIL_SERVICES}/mailSvc.py:193`, "self.mailMgr.GetMailHeaders(toFetch.keys()): one list of the messages the sync gave a status of whose header the client does not hold. In no recording."),
   "mailMgr.GetBody": same(`${MAIL_SERVICES}/mailSvc.py:512`, "self.mailMgr.GetBody(messageID, shouldMarkAsRead): whether to mark it read a bool, true for a message not read; answered the body deflated, or None. In no recording."),
   "mailMgr.MarkAsRead": same(`${MAIL_SERVICES}/mailSvc.py:339`, "self.mailMgr.MarkAsRead(messageIDs): a list; asked by GetBody for a body kept of a message not read (497 to 498). In no recording."),

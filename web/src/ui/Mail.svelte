@@ -21,6 +21,13 @@
     audienceOf,
     checkDraft,
     readFlags,
+    MAIL_FOLDER_ALLIANCE,
+    MAIL_FOLDER_CORPORATION,
+    MAIL_FOLDER_INBOX,
+    MAIL_FOLDER_SENT,
+    MAIL_FOLDER_TRASH,
+    mailsInFolder,
+    unreadByLabel,
   } from "../bridge/mail.ts";
   import { MAIL_QUOTE_LABELS, mailBodyLines, mailQuoteMarkup } from "../bridge/mailMarkup.ts";
   import { formatTemplate } from "../bridge/clientWords.ts";
@@ -65,6 +72,46 @@
   let draftBody = $state("");
   /** The message a reply answers (mailSvc.GetReplyWnd: isReplyTo=msg.messageID), 0 for a new message. */
   let replyTo = $state(0);
+  /** The folder shown: a label's bit, all mails (null), or the trash; the inbox first, as the window opens (270). */
+  let folder = $state<number | null>(MAIL_FOLDER_INBOX);
+
+  /** The folder words, by their labels (evemail.py GetStaticLabelsGroups; LoadLeftSide; GetPanelLabel). */
+  const FOLDER_WORDS = {
+    all: "UI/Mail/LabelAllMails",
+    inbox: "UI/Mail/LabelInbox",
+    sent: "UI/Mail/LabelSent",
+    corporation: "UI/Common/Corp",
+    alliance: "UI/Common/Groups/Alliance",
+    trash: "UI/Mail/LabelTrash",
+    labels: "UI/Mail/Labels",
+    withCount: "UI/Mail/FolderLabelWithCount",
+  } as const;
+  /** The window's own folders, in its order: each its place, its word, and the page's own word. */
+  const SYSTEM_FOLDERS: readonly (readonly [number | null, string, string])[] = [
+    [null, FOLDER_WORDS.all, "All Mails"],
+    [MAIL_FOLDER_INBOX, FOLDER_WORDS.inbox, "Inbox"],
+    [MAIL_FOLDER_SENT, FOLDER_WORDS.sent, "Sent"],
+    [MAIL_FOLDER_CORPORATION, FOLDER_WORDS.corporation, "Corp"],
+    [MAIL_FOLDER_ALLIANCE, FOLDER_WORDS.alliance, "Alliance"],
+    [MAIL_FOLDER_TRASH, FOLDER_WORDS.trash, "Trash"],
+  ];
+  const unreadCounts = $derived(unreadByLabel($mail));
+  const ownLabels = $derived([...($mail.labels ?? [])].sort((left, right) => left.name.toLowerCase().localeCompare(right.name.toLowerCase())));
+  const shownMessages = $derived(mailsInFolder($mail, folder));
+
+  /** A folder's unread count as the window keeps it: none beside sent or the trash (UpdateCounters). */
+  function folderUnread(id: number | null): number {
+    return id === MAIL_FOLDER_SENT || id === MAIL_FOLDER_TRASH ? 0 : (unreadCounts.get(id) ?? 0);
+  }
+
+  /** GetPanelLabel: the folder's name, and its unread count beside it where it has any. */
+  function folderText(name: string, id: number | null): string {
+    const count = folderUnread(id);
+    return count > 0
+      ? formatTemplate(word(FOLDER_WORDS.withCount, "{folderName} ({unreadCount})"), { folderName: name, unreadCount: count }, { nameOf: () => "" })
+      : name;
+  }
+
   /** The message a forward forwards (GetForwardWnd: isForwardedFrom=msg.messageID), 0 for none. */
   let forwardFrom = $state(0);
   /** The message quoted, in the mail's markup (GetReplyMessage), sent after what is typed; "" for none. */
@@ -255,8 +302,11 @@
   }
 
   onMount(() => {
-    flow.requestWords([...Object.values(MAIL_QUOTE_LABELS), DATE_LABEL]);
-    void run(() => flow.loadMail());
+    flow.requestWords([...Object.values(MAIL_QUOTE_LABELS), DATE_LABEL, ...Object.values(FOLDER_WORDS)]);
+    void run(async () => {
+      await flow.loadMail();
+      await flow.loadMailLabels();
+    });
   });
 </script>
 
@@ -319,6 +369,25 @@
     {:else if $mail.messages.length === 0}
       <p class="empty">You have no mail.</p>
     {:else}
+      <!-- The window's folders, then the pilot's labels by name (evemail.py LoadLeftSide). -->
+      <nav class="mail-folders">
+        {#each SYSTEM_FOLDERS as [id, label, own] (label)}
+          <button type="button" class:active={folder === id} class:mail-bold={folderUnread(id) > 0} onclick={() => (folder = id)}>
+            {folderText(word(label, own), id)}
+          </button>
+        {/each}
+        {#if ownLabels.length > 0}
+          <span class="mail-folders-group">{word(FOLDER_WORDS.labels, "Labels")}</span>
+          {#each ownLabels as label (label.labelID)}
+            <button type="button" class:active={folder === label.labelID} class:mail-bold={folderUnread(label.labelID) > 0} onclick={() => (folder = label.labelID)}>
+              {folderText(label.name, label.labelID)}
+            </button>
+          {/each}
+        {/if}
+      </nav>
+      {#if shownMessages.length === 0}
+        <p class="empty">Nothing in this folder.</p>
+      {:else}
       <div class="table-wrap overflow-x-auto">
         <table class="guests reflow">
           <thead>
@@ -332,7 +401,7 @@
             </tr>
           </thead>
           <tbody>
-            {#each $mail.messages as header (header.messageID)}
+            {#each shownMessages as header (header.messageID)}
               <tr class:unread={isUnread(header.messageID)}>
                 <td data-label="From">{personName(header.senderID)}</td>
                 <td data-label="Subject">{header.title || "(no subject)"}</td>
@@ -361,6 +430,7 @@
           </tbody>
         </table>
       </div>
+      {/if}
     {/if}
 
     {#if $mail.open !== null}
@@ -546,6 +616,20 @@
     min-height: 1lh;
   }
   .mail-quote {
+    opacity: 0.8;
+  }
+  .mail-folders {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    align-items: center;
+    margin-bottom: 0.5rem;
+  }
+  .mail-folders button.active {
+    text-decoration: underline;
+  }
+  .mail-folders-group {
+    margin-left: 0.5rem;
     opacity: 0.8;
   }
   .mail-bold {

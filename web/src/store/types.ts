@@ -6,6 +6,7 @@ import type { BoundDogmaAllInfo } from "../bridge/boundDogma.ts";
 import type { SkillHistoryLine } from "../bridge/skillHistoryPanel.ts";
 import type { EmploymentHistory } from "../bridge/employmentHistory.ts";
 import type { SkillNotification } from "../bridge/skillNotifications.ts";
+import type { MailLabel } from "../bridge/mail.ts";
 import type { MissionTimes } from "../bridge/missionTime.ts";
 import type { MissionObjectives } from "../bridge/missionObjectives.ts";
 import type { MiningBurstServices, CompressionServiceObservation } from "../bridge/miningSupportServices.ts";
@@ -832,6 +833,8 @@ export interface MailOpenMessage {
  */
 export interface MailState {
   readonly messages: readonly MailHeaderRow[];
+  /** The pilot's own labels, asked once when the mail window first draws its folders; null until then. */
+  readonly labels: readonly MailLabel[] | null;
   readonly statuses: readonly MailStatusRow[];
   /** How many are unread — what the tab badge shows. */
   readonly unreadCount: number;
