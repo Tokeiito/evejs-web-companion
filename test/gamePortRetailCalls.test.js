@@ -1775,6 +1775,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "corporationSvc.GetEmployementRecordAndCharacterTransfers",
     // A folder of the mail window marked read, trashed, and the trash restored. The gateway's list has the mail manager's others, not these.
     "mailMgr.MarkAsReadByLabel", "mailMgr.MoveToTrashByLabel", "mailMgr.MoveAllFromTrash",
+    // A mailing list's mails marked read and trashed, and its owner's delete of it. The gateway's list has none of them.
+    "mailMgr.MarkAsReadByList", "mailMgr.MoveToTrashByList", "mailingListsMgr.Delete",
   ]);
   // structureGuests.py 25: sm.RemoteSvc('structureGuests').GetGuests(session.structureid), by the service's name,
   // with the structure the session is docked in and nothing else.
