@@ -1499,8 +1499,14 @@ channel joined (542 to 559), and a presence in a channel has the window of the c
 set to that channel (632 to 687, 853 to 881; `xmppchatwindow.py` 611 to 633), the client's own presence passed
 over in the wormhole, nullsec and Triglavian kinds (652 to 654). EveJS takes the chat connection out of the old
 rooms and puts it into the new at a session's change, and sends their presences
-(`services/chat/sessionChatSync.js`, `xmppStubServer.js` 2490 to 2550); it sends no invite. A pilot on the game
-port follows so since `82986a37`.
+(`services/chat/sessionChatSync.js`, `xmppStubServer.js` 2490 to 2550); it sends no invite. And it sends a
+pilot's own presence to each of its rooms every thirty seconds (measured in the stub's logs, 2026-10-06 and
+2026-10-13), which a chat window counts as activity, so the window's check of a quiet channel
+(`xmppchatclient/xmppchatwindow.py` 1344 to 1364: every `maxChatChannelIdleTimeSeconds`, 180 by default, and up
+to three seconds more, a channel quiet for longer is joined again with the history of the quiet time less two
+seconds) finds nothing quiet here. A lost connection is made again five seconds on, to the same hostname and
+address, with the secret asked again (`xmpp/xmppConnection.py` 399 to 465). A pilot on the game port reconnects
+and checks so since `3611198a`, and follows its session since `82986a37`.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened

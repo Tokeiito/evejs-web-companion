@@ -3501,6 +3501,22 @@ Take these defaults, and list each under "For the operator" in the log so they c
   stub's presences of the new room came 67 ms ahead of the session's
   change reaching the chat's connection. What is kept of a room is
   made right for both orders, and a look says which came first.
+- **The chat stub's log turns over at the hour as the server's
+  does**: `xmpp-stub.log` has the running hour's stanzas and an hour
+  gone by is in `xmpp-stub.<date>_<hour>.log`. A look read from "the
+  line it had before" across the hour's turn reads nothing: the log
+  is read from its start then.
+- **What a client does only when nothing happens is measured before
+  it is built for.** The chat window's check of a quiet channel
+  (`xmppchatwindow.py` 1344 to 1364) reads as a join every three
+  minutes; the stub's log of a retail client's sixteen minutes has
+  none, the server sending a presence every thirty seconds. Both are
+  written: what the code does, and what the log shows of it here.
+- **A thing no live look can make happen is seen by a scratch probe
+  that calls the code** against a stand-in, and is said to be seen so
+  and not live: a dropped socket of the chat's was (`chat-reconnect-
+  probe.js`). The probe is a scratch script, not a test, and is not
+  put in the repository.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
