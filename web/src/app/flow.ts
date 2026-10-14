@@ -1120,6 +1120,8 @@ export interface AppFlow {
    * carries is never shown to the player (R7d).
    */
   findCharacters(q: string): Promise<readonly api.CharacterMatch[]>;
+  /** Pilots found as the client's searchOld.Search finds them (the search service's QuickQuery), each named. */
+  searchCharacters(text: string, matchBy: number): Promise<readonly api.CharacterMatch[]>;
   /**
    * SEND a message. Not a costly or destructive write, so no confirm gate —
    * but an empty recipient list is refused, because the SERVER will not refuse
@@ -5377,6 +5379,30 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     } catch {
       // Storage full or refused: the sort lasts as long as the page.
     }
+  }
+
+  // searchOld.Search for a pilot (searchOld.py 80 to 190; searchUtil.GetResultsList, 297 to 301): the search
+  // service's QuickQuery with the text, characters only (ResultType.character, no agents with hideNPC), the keywords
+  // as the client writes them; the pilots found named as the client primes them (cfg.eveowners).
+  async function searchCharacters(text: string, matchBy: number): Promise<readonly api.CharacterMatch[]> {
+    let answer: JsonValue;
+    try {
+      answer = await bridgeAsk("search", "QuickQuery", [text, [2]], { hideNPC: 1, onlyAltName: 0, exact: matchBy });
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+      }
+      throw error;
+    }
+    const items = isListValue(answer) ? answer.items : Array.isArray(answer) ? answer : [];
+    const ids = [...new Set(items.map((item) => Number(item)).filter((id) => Number.isSafeInteger(id) && id > 0))];
+    await resolveNamesNow(ids.map((id) => ({ kind: "character" as const, id })));
+    const resolved = store.names.get().resolved;
+    return ids.flatMap((id) => {
+      const name = resolved[nameKey("character", id)];
+      return typeof name === "string" && name !== "" ? [{ characterID: id, name }] : [];
+    });
   }
 
   // SearchOwners with hideNPC (searchOld.py 258 to 259): lookupSvc.LookupPCOwners(searchStr, exact), exact False as
@@ -16065,6 +16091,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     removeMailLabel,
     closeMail,
     findCharacters: (q: string) => api.findCharacters(q, callOptions),
+    searchCharacters,
     sendMail,
     loadContracts,
     openContract,

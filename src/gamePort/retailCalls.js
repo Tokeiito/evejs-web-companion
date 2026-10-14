@@ -684,6 +684,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // A mailing list's welcome mail read, saved, saved and sent to every member, and cleared, from its management
   // window's Welcome Mail tab (evemailingListConfig.py 482 to 507). The gateway's list has none of them.
   "mailingListsMgr.GetWelcomeMail", "mailingListsMgr.SaveWelcomeMail", "mailingListsMgr.SendWelcomeMail", "mailingListsMgr.ClearWelcomeMail",
+  // The search service's quick query, as the compose window and its "Search for Recipients" find a pilot
+  // (searchOld.Search; searchUtil.GetResultsList). The gateway's list has nothing of the search service's.
+  "search.QuickQuery",
 ]);
 
 /**
@@ -912,6 +915,8 @@ const dronesListed = ([drones, ...rest], kwargs) => ({ args: [list(drones), ...r
 const recipientsListed = ([recipients, ...rest], kwargs) => ({ args: [list(recipients), ...rest], kwargs });
 /** A mailing list's number, then its members chosen, a list (evemailingListConfig.py _GetSelectedMembers, 295 to 300). */
 const membersListed = ([listID, members, ...rest], kwargs) => ({ args: [listID, list(members), ...rest], kwargs });
+/** The search service's QuickQuery (searchUtil.GetResultsList, 297 to 301): the text as the client's edit gives it, a unicode string, and the result types a list. */
+const searchTextUnicode = ([text, types, ...rest], kwargs) => ({ args: [typeof text === "string" ? { type: "wstring", value: text } : text, list(types), ...rest], kwargs });
 /**
  * A mailing list's number, then whom it lets in or keeps out, a dict of whole numbers to 0 (kept out) or 1 (let in)
  * (mailingListsSvc.py SetEntityAccess, 110 to 111: {entityID: access}). A route gives a plain object.
@@ -1796,6 +1801,7 @@ const RETAIL_CALLS = Object.freeze({
   "mailingListsMgr.SendWelcomeMail": same("eve/client/script/ui/services/mail/mailingListsSvc.py:189", "self.mailingListsMgr.SendWelcomeMail(listID, title, body): the Welcome Mail tab's Save with its box ticked (SaveAndSendWelcomeMail); the body the editor's markup. In no recording."),
   "mailingListsMgr.ClearWelcomeMail": same("eve/client/script/ui/services/mail/mailingListsSvc.py:192", "self.mailingListsMgr.ClearWelcomeMail(listID): the Welcome Mail tab's Save with no subject and no mail. In no recording."),
   "mailingListsMgr.GetInfo": same("eve/client/script/ui/services/mail/mailingListsSvc.py:61", "self.mailingListsMgr.GetInfo(listID): GetDisplayName's ask for a list neither joined nor asked before, kept after (55 to 66): a list's own mail at a sync or as it comes, a mail to a list as it is opened or quoted; answered the list's KeyVal, or None. In no recording."),
+  "search.QuickQuery": reshaped("eve/client/script/ui/util/searchUtil.py:301", searchTextUnicode, "sm.ProxySvc('search').QuickQuery(searchStr, groupIDList, hideNPC=hideNPC, onlyAltName=onlyAltName, exact=searchBy): the text a unicode string, the result types a list; a mail's recipient a character ([2]) with hideNPC 1, by the exact phrase (2) from the compose window's field, or by Search By from its search window. Tranquility's recording of a contracts search has QuickQuery(u'harper frost', [2, 3]) with hideNPC, exact, onlyAltName, machoVersion, answered a list of numbers."),
   "mailingListsMgr.GetJoinedLists": same("eve/client/script/ui/services/mail/mailingListsSvc.py:43", "self.mailingListsMgr.GetJoinedLists(), no arguments, as the mailing lists service starts, which it does as the mail window first draws its lists group; kept. Tranquility's recording of the mail window opened has it after GetLabels, answered {}."),
   "mailMgr.GetLabels": same(`${MAIL_SERVICES}/mailSvc.py:678`, "self.mailMgr.GetLabels(), no arguments; asked once as the mail window first draws its folders, and kept. Tranquility's recording of the mail window opened has it after SyncMail(None, 0), answered {}."),
   "mailMgr.GetMailHeaders": reshaped(`${MAIL_SERVICES}/mailSvc.py:193`, recipientsListed, "self.mailMgr.GetMailHeaders(toFetch.keys()): one list of the messages the sync gave a status of whose header the client does not hold. In no recording. The messages a list, as the client's are; the page's array goes as one."),

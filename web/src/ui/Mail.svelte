@@ -19,7 +19,7 @@
     MAIL_MAX_BODY,
     MAIL_MAX_TITLE,
     audienceOf,
-    checkDraft,
+    MAIL_MAX_RECIPIENTS,
     readFlags,
     isTrashed,
     MAIL_FOLDER_ALLIANCE,
@@ -89,12 +89,10 @@
   let error = $state("");
   let tab = $state<"inbox" | "compose">("inbox");
 
-  // Compose state. `recipients` holds the chosen people; the id rides along
-  // invisibly so SendMail's args[0] can be built, and only the name is shown.
+  // Compose state. `recipients` are the pilots the window holds by name (its toChars); `receiverText` is its one
+  // field of names (evemail.py NewNewMessage), each followed by ", ", as ValidateReceivers writes it.
   let recipients = $state<CharacterMatch[]>([]);
-  let personQuery = $state("");
-  let personMatches = $state<readonly CharacterMatch[]>([]);
-  let searched = $state(false);
+  let receiverText = $state("");
   let draftTitle = $state("");
   let draftBody = $state("");
   /** The message a reply answers (mailSvc.GetReplyWnd: isReplyTo=msg.messageID), 0 for a new message. */
@@ -436,14 +434,6 @@
       : ($mail.messages.find((row) => row.messageID === $mail.open?.messageID) ?? null),
   );
 
-  const draftCheck = $derived(
-    checkDraft({
-      recipientIDs: recipients.map((person) => person.characterID),
-      listed: composeList !== undefined,
-      title: draftTitle,
-      body: draftBody,
-    }),
-  );
 
   async function run(action: () => Promise<void>): Promise<void> {
     busy = true;
@@ -461,24 +451,323 @@
     }
   }
 
-  function searchPeople(): void {
-    void run(async () => {
-      personMatches = await flow.findCharacters(personQuery);
-      searched = true;
+  /** The compose window's words, by their labels (ConstructTopContainer; ClickSend; GetSearchWnd; ownerSearch.py). */
+  const COMPOSE_WORDS = {
+    to: "UI/Mail/To",
+    subject: "UI/Mail/Subject",
+    send: "UI/Mail/SendMail",
+    searchFor: "UI/Mail/SearchForRecipients",
+    searchBy: "UI/Common/SearchBy",
+    search: "UI/Mail/Search",
+    add: "UI/Mail/Add",
+    added: "UI/Mail/CharacterAdded",
+    partial: "UI/Search/UniversalSearch/PartialTerms",
+    exactTerms: "UI/Search/UniversalSearch/ExactTerms",
+    exactPhrase: "UI/Search/UniversalSearch/ExactPhrase",
+    onlyExact: "UI/Search/UniversalSearch/OnlyExactPhrase",
+    typeIn: "UI/Common/TypeInSearch",
+    nothingFound: "UI/Market/NothingFoundWithSearch",
+    manyFound: "UI/Mail/25OrMoreFound",
+    listQ: "UI/Mail/SendToMailingListQ",
+    listQ2: "UI/Mail/SendToMailingListQ2",
+    noRecipient: "UI/Mail/NoRecipientForMessage",
+    tooMany: "UI/Mail/TooManyRecipients",
+    unknown: "UI/Common/Unknown",
+  } as const;
+  /** The client's dialogs the compose window says things with. */
+  const COMPOSE_DIALOGS = ["EvemailCantFindRecipient", "EvemailMaxRecipients", "EvemailMaxListOrCorp", "PartialSearchLessThanMinLength"] as const;
+  /** The search's Search By (searchUtil.SEARCHBY_OPTIONS; search/const.py MatchBy): its four, in their order. */
+  const SEARCH_BY: readonly (readonly [number, string, string])[] = [
+    [0, COMPOSE_WORDS.partial, "Partial Terms"],
+    [1, COMPOSE_WORDS.exactTerms, "Exact Terms"],
+    [2, COMPOSE_WORDS.exactPhrase, "Exact Phrase"],
+    [3, COMPOSE_WORDS.onlyExact, "Only Exact Phrase"],
+  ];
+  /** MatchBy.exact_phrase, as GetReceiver searches (evemail.py 2033); and the least a partial term may be (min_wildcard_length). */
+  const MATCH_EXACT_PHRASE = 2;
+  const MIN_WILDCARD_LENGTH = 3;
+  /** The most groups (lists, corporations, alliances) a mail may go to (appConst.py 1783, mailMaxGroups). */
+  const MAIL_MAX_GROUPS = 1;
+
+  /** What the compose window last said (its dialogs), each a line. */
+  let composeNotes = $state<readonly string[]>([]);
+  /** A question of the window's waiting on the pilot (CustomQuestion), and its answer. */
+  let composeQuestion = $state<{ readonly title: string; readonly body: string; readonly answer: (yes: boolean) => void } | null>(null);
+  /** A pick of one among those found (ListWindow), the one picked, and what it said. */
+  let composePick = $state<{ readonly caption: string; readonly hint: string; readonly options: readonly CharacterMatch[]; readonly answer: (characterID: number | null) => void } | null>(null);
+  let composePicked = $state<number | null>(null);
+  let composePickNote = $state("");
+  /** The window "Search for Recipients" (MailSearchWindow): open or not, what is typed, Search By, and what it found. */
+  let recipientSearchOpen = $state(false);
+  let recipientSearchText = $state("");
+  let recipientMatchBy = $state(0);
+  let recipientResults = $state<readonly CharacterMatch[]>([]);
+  let recipientSearchNote = $state("");
+
+  /** A list as the compose window writes it among its recipients (AddList, 1951 to 1959: UI/Mail/MailEntry). */
+  function mailEntryOf(name: string): string {
+    return filledWord(FOLDER_WORDS.mailEntry, "{entryName} {entryType}", { entryName: name, entryType: word(FOLDER_WORDS.ml, "[ML]") });
+  }
+
+  /** The field written from the receivers held: the pilots, then the list, each followed by ", " (AddReceiver, ValidateReceivers). */
+  function writeReceivers(): void {
+    const parts = recipients.map((person) => person.name);
+    if (composeList !== undefined) {
+      parts.push(mailEntryOf(composeList.displayName));
+    }
+    receiverText = parts.map((part) => `${part}, `).join("");
+  }
+
+  /** CustomQuestion, answered yes or no. */
+  function askYesNo(title: string, body: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      composeQuestion = { title, body, answer: (yes) => { composeQuestion = null; resolve(yes); } };
     });
   }
 
-  function addRecipient(person: CharacterMatch): void {
-    if (!recipients.some((chosen) => chosen.characterID === person.characterID)) {
-      recipients = [...recipients, person];
-    }
-    personQuery = "";
-    personMatches = [];
-    searched = false;
+  /** ListWindow.ShowList, modal, one to be picked: the one picked, or none where it was put away. */
+  function pickOne(caption: string, hint: string, options: readonly CharacterMatch[]): Promise<number | null> {
+    composePicked = null;
+    composePickNote = "";
+    return new Promise((resolve) => {
+      composePick = { caption, hint, options, answer: (characterID) => { composePick = null; resolve(characterID); } };
+    });
   }
 
-  function removeRecipient(characterID: number): void {
-    recipients = recipients.filter((person) => person.characterID !== characterID);
+  /** GetCleanNameAndGroup (2205 to 2214): a name ending with the list's mark is a list's, the mark taken off. */
+  function cleanNameAndGroup(raw: string): { readonly name: string; readonly listed: boolean } {
+    const name = raw.trim();
+    const mark = word(FOLDER_WORDS.ml, "[ML]");
+    if (name.endsWith(mark)) {
+      const taken = name.replace(mark, "");
+      return { name: taken.endsWith(" ") ? taken.slice(0, -1) : taken, listed: true };
+    }
+    return { name, listed: false };
+  }
+
+  /** What one check of the field holds as it goes (ValidateReceivers' toChars, toListID, and the names used). */
+  interface ReceiverCheck {
+    readonly toChars: Map<string, number>;
+    listID: number | null;
+    readonly charNamesUsed: Map<string, number>;
+    readonly listNamesUsed: Set<string>;
+    readonly notes: string[];
+  }
+
+  /** GetMaxGroupText (2102 to 2116): the client's EvemailMaxListOrCorp, the group already held named. */
+  function maxGroupText(name: string, check: ReceiverCheck): string {
+    const held = check.listID === null ? undefined : ($mail.lists ?? []).find((list) => list.listID === check.listID);
+    return filledWord("dialog:EvemailMaxListOrCorp/body", "You cannot add '{name}' to the list of recipients because you have already one mailing list, corporation, or alliance ({groupName}) on the list", { name, groupName: held?.displayName ?? word(COMPOSE_WORDS.unknown, "Unknown") });
+  }
+
+  /**
+   * AddUnknownToValidate (2216 to 2243) by NewParseReceiver (1975 to 2018): a list joined by its very name, after the
+   * client's question; else a pilot by GetReceiver (2029 to 2046): one held by the name, or searchOld.Search for the
+   * exact phrase, one found taken, more picked from, none: "Search for Recipients" opened with the name. Null where
+   * nothing is added.
+   */
+  async function addUnknown(name: string, check: ReceiverCheck): Promise<{ readonly listed: boolean; readonly name: string } | null> {
+    const trimmed = name.trim();
+    for (const list of $mail.lists ?? []) {
+      if (list.displayName !== trimmed) {
+        continue;
+      }
+      if (!(await askYesNo(word(COMPOSE_WORDS.listQ, "Send to a mailing list?"), filledWord(COMPOSE_WORDS.listQ2, "You are a member of a mailing list with the name {listName}. Do you wish to send a mail to the mailing list?", { listName: trimmed })))) {
+        continue;
+      }
+      if ((check.listID !== null ? 1 : 0) >= MAIL_MAX_GROUPS) {
+        check.notes.push(maxGroupText(name, check));
+        return null;
+      }
+      check.listID = list.listID;
+      if (check.listNamesUsed.size >= MAIL_MAX_GROUPS) {
+        check.notes.push(maxGroupText(name, check));
+        return null;
+      }
+      if (check.listNamesUsed.has(name)) {
+        return null;
+      }
+      check.listNamesUsed.add(name);
+      return { listed: true, name };
+    }
+    let found: CharacterMatch | null = null;
+    const held = check.toChars.get(trimmed);
+    if (held !== undefined) {
+      found = { characterID: held, name: trimmed };
+    } else {
+      const text = trimmed.replace(/%/g, "").replace(/\?/g, "").replace(/\*/g, "").trim();
+      const matches = text.length < 1 || text.length >= 100 ? [] : await flow.searchCharacters(text, MATCH_EXACT_PHRASE);
+      if (matches.length === 1) {
+        found = matches[0] ?? null;
+      } else if (matches.length > 1) {
+        const sorted = [...matches].sort((left, right) => (left.name.toLowerCase() < right.name.toLowerCase() ? -1 : 1));
+        const picked = await pickOne(
+          filledWord(ACCESS_WORDS.select, "Select {groupName}", { groupName: word(ACCESS_WORDS.character, "Character") }),
+          filledWord(ACCESS_WORDS.found, "{itemCount} {groupNames} were found with \"{searchTerm}\" in their name.", { itemCount: String(sorted.length), groupNames: word(ACCESS_WORDS.characters, "Characters"), searchTerm: text }),
+          sorted,
+        );
+        found = sorted.find((each) => each.characterID === picked) ?? null;
+      } else {
+        // MAIL_GET_SEARCH_WND, the client's default: the search window opened with the name.
+        openRecipientSearch(trimmed);
+      }
+    }
+    if (found === null) {
+      return null;
+    }
+    if (check.toChars.size >= MAIL_MAX_RECIPIENTS) {
+      check.notes.push(filledWord("dialog:EvemailMaxRecipients/body", "You cannot add '{name}' to the list of recipients because you have reached the limit of {max} recipients", { name: found.name, max: String(MAIL_MAX_RECIPIENTS) }));
+      return null;
+    }
+    check.toChars.set(found.name, found.characterID);
+    if (check.charNamesUsed.size >= MAIL_MAX_RECIPIENTS) {
+      check.notes.push(filledWord("dialog:EvemailMaxRecipients/body", "You cannot add '{name}' to the list of recipients because you have reached the limit of {max} recipients", { name: found.name, max: String(MAIL_MAX_RECIPIENTS) }));
+      return null;
+    }
+    if (check.charNamesUsed.has(found.name)) {
+      return null;
+    }
+    check.charNamesUsed.set(found.name, found.characterID);
+    return { listed: false, name: found.name };
+  }
+
+  /**
+   * ValidateReceivers (evemail.py 2128 to 2201): each name in the field, a known one kept, any other added as the
+   * client adds it or said not to be found; the field written again from what is kept, the pilots not named let go,
+   * and the list let go where it is not named or no longer joined. One check at a time (parsingReceivers).
+   */
+  let receiverCheck: Promise<void> | null = null;
+  function validateReceivers(): Promise<void> {
+    receiverCheck ??= checkReceivers().finally(() => {
+      receiverCheck = null;
+    });
+    return receiverCheck;
+  }
+
+  async function checkReceivers(): Promise<void> {
+    const joined = $mail.lists ?? [];
+    const joinedNames = joined.map((list) => list.displayName.toLowerCase());
+    const check: ReceiverCheck = {
+      toChars: new Map(recipients.map((person) => [person.name, person.characterID] as const)),
+      listID: composeList?.listID ?? null,
+      charNamesUsed: new Map(),
+      listNamesUsed: new Set(),
+      notes: [],
+    };
+    const parts: string[] = [];
+    for (const raw of receiverText.split(",")) {
+      if (raw.trim() === "") {
+        continue;
+      }
+      const clean = cleanNameAndGroup(raw);
+      let cleanName = clean.name;
+      let listed = clean.listed;
+      const listName = check.listID === null ? null : (joined.find((list) => list.listID === check.listID)?.displayName ?? null);
+      const known = [...check.toChars.keys(), ...(listName !== null ? [listName] : [])];
+      if (!known.includes(cleanName)) {
+        const added = await addUnknown(cleanName, check);
+        if (added === null) {
+          check.notes.push(filledWord("dialog:EvemailCantFindRecipient/body", "\"{name}\" is not a valid recipient", { name: cleanName }));
+          continue;
+        }
+        listed = added.listed;
+        cleanName = added.name;
+      } else if (listed) {
+        if (joinedNames.includes(cleanName.toLowerCase())) {
+          if (check.listNamesUsed.has(cleanName)) {
+            continue;
+          }
+          check.listNamesUsed.add(cleanName);
+        }
+      } else if (check.toChars.has(cleanName) && !check.charNamesUsed.has(cleanName)) {
+        check.charNamesUsed.set(cleanName, check.toChars.get(cleanName) ?? 0);
+      } else {
+        const added = await addUnknown(cleanName, check);
+        if (added === null) {
+          continue;
+        }
+        listed = added.listed;
+        cleanName = added.name;
+      }
+      parts.push(listed ? mailEntryOf(cleanName) : cleanName);
+    }
+    receiverText = parts.map((part) => `${part}, `).join("");
+    recipients = [...check.charNamesUsed].map(([name, characterID]) => ({ characterID, name }));
+    toList = check.listID !== null && check.listNamesUsed.size > 0 && joined.some((list) => list.listID === check.listID) ? check.listID : null;
+    composeNotes = [...composeNotes, ...check.notes];
+  }
+
+  /**
+   * The field left, or a comma typed in it (OnFocusLost, OnInsert: ValidateReceiver, 2118 to 2126): the names checked.
+   * (Not as busy: the field is left as Send is pressed, and Send waits for the same check.)
+   */
+  function receiversChanged(): void {
+    composeNotes = [];
+    validateReceivers().catch((cause: unknown) => {
+      error = cause instanceof Error ? cause.message : String(cause);
+    });
+  }
+
+  /** The To button (OpenReceiverSearch) or a name not found (GetSearchWnd, 2336 to 2353): "Search for Recipients", with what is given. */
+  function openRecipientSearch(input = ""): void {
+    recipientSearchOpen = true;
+    recipientSearchText = input;
+    recipientResults = [];
+    recipientSearchNote = word(COMPOSE_WORDS.typeIn, "Type in search string and press \"Search\"");
+  }
+
+  /**
+   * OwnerSearchWindow.Search (ownerSearch.py 137 to 163) by searchOld.Search, with hideNPC and Search By: nothing
+   * typed asks nothing; % and ? and * taken out; partial terms need a term of three or more
+   * (PartialSearchLessThanMinLength); the pilots found by name, or the client's words for none.
+   */
+  function searchRecipients(): void {
+    const typed = recipientSearchText;
+    if (typed.trim() === "") {
+      recipientResults = [];
+      recipientSearchNote = word(COMPOSE_WORDS.typeIn, "Type in search string and press \"Search\"");
+      return;
+    }
+    const text = typed.replace(/%/g, "").replace(/\?/g, "").replace(/\*/g, "").trim();
+    if (recipientMatchBy === 0 && !text.split(/\s+/).some((term) => term.length >= MIN_WILDCARD_LENGTH)) {
+      recipientSearchNote = filledWord("dialog:PartialSearchLessThanMinLength/body", "To search partial terms, at least one search term must be greater than {minChars} characters.", { minChars: String(MIN_WILDCARD_LENGTH) });
+      return;
+    }
+    void run(async () => {
+      const found = text.length < 1 || text.length >= 100 ? [] : await flow.searchCharacters(text, recipientMatchBy);
+      recipientResults = [...found].sort((left, right) => (left.name.toLowerCase() < right.name.toLowerCase() ? -1 : 1));
+      recipientSearchNote = found.length === 0
+        ? filledWord(COMPOSE_WORDS.nothingFound, "Nothing found with \"{search}\" in its name.", { search: typed })
+        : found.length >= 500 ? filledWord(COMPOSE_WORDS.manyFound, "25 or more characters were found with \"{name}\".", { name: typed }) : "";
+    });
+  }
+
+  /** AddReceiverFromSearch by AddCharacterReceiver (1905 to 1917, 2318 to 2334): the pilot's name added to the field, then the names checked. */
+  function addFromSearch(person: CharacterMatch): void {
+    composeNotes = [];
+    if (recipients.length >= MAIL_MAX_RECIPIENTS) {
+      composeNotes = [filledWord("dialog:EvemailMaxRecipients/body", "You cannot add '{name}' to the list of recipients because you have reached the limit of {max} recipients", { name: person.name, max: String(MAIL_MAX_RECIPIENTS) })];
+      return;
+    }
+    if (!recipients.some((each) => each.name === person.name)) {
+      recipients = [...recipients, person];
+    }
+    receiverText = receiverText.trim() === "" ? person.name : `${receiverText}, ${person.name}`;
+    void run(validateReceivers);
+  }
+
+  /** The compose window put away: what it held let go. */
+  function clearCompose(): void {
+    recipients = [];
+    receiverText = "";
+    draftTitle = "";
+    draftBody = "";
+    replyTo = 0;
+    forwardFrom = 0;
+    quote = "";
+    toList = null;
+    composeNotes = [];
+    recipientSearchOpen = false;
   }
 
   /** Opening a message marks it read — the player's own deliberate act. */
@@ -486,12 +775,35 @@
     void run(() => flow.openMail(messageID, isUnread(messageID)));
   }
 
+  /**
+   * ClickSend (evemail.py 2245 to 2297): the names checked first; then no recipient, more than the most, no subject
+   * and a subject too long refused in the client's words; then sent, the subject as typed.
+   */
   function send(): void {
     void run(async () => {
+      composeNotes = [];
+      await validateReceivers();
+      const count = recipients.length + (composeList !== undefined ? 1 : 0);
+      if (count < 1) {
+        composeNotes = [...composeNotes, word(COMPOSE_WORDS.noRecipient, "There is no recipient for this message.")];
+        return;
+      }
+      if (count > MAIL_MAX_RECIPIENTS + 1) {
+        composeNotes = [...composeNotes, filledWord(COMPOSE_WORDS.tooMany, "At most {max} recipients per message, please.", { max: String(MAIL_MAX_RECIPIENTS) })];
+        return;
+      }
+      if (draftTitle.trim() === "") {
+        composeNotes = [...composeNotes, filledWord("dialog:NoSubject/body", "You cannot send a mail without a subject.", {})];
+        return;
+      }
+      if (draftTitle.length > MAIL_MAX_TITLE) {
+        composeNotes = [...composeNotes, word(FOLDER_WORDS.nameTooLong, "The name is too long.")];
+        return;
+      }
       await flow.sendMail({
         toCharacterIDs: recipients.map((person) => person.characterID),
         toListID: composeList?.listID ?? null,
-        title: draftTitle.trim(),
+        title: draftTitle,
         body: draftBody,
         quote,
         isReplyTo: replyTo,
@@ -499,13 +811,7 @@
       });
       const outcome = store.get().mail.lastOutcome;
       if (outcome && outcome.applied) {
-        recipients = [];
-        draftTitle = "";
-        draftBody = "";
-        replyTo = 0;
-        forwardFrom = 0;
-        quote = "";
-        toList = null;
+        clearCompose();
         tab = "inbox";
       }
     });
@@ -554,6 +860,9 @@
       draftTitle = header.title.startsWith(re) ? header.title : `${re} ${header.title}`;
       draftBody = "";
       toList = all ? header.toListID : null;
+      // SendMsgDlg (994 to 997): the window's field written from what it is opened with (ApplyAttributes, 1803 to 1822).
+      writeReceivers();
+      composeNotes = [];
       replyTo = header.messageID;
       forwardFrom = 0;
       quote = await quoteOf(header);
@@ -566,6 +875,8 @@
     void run(async () => {
       recipients = [];
       toList = null;
+      receiverText = "";
+      composeNotes = [];
       draftTitle = `FW: ${header.title}`;
       draftBody = "";
       replyTo = 0;
@@ -579,6 +890,8 @@
   function sendToList(listID: number): void {
     recipients = [];
     toList = listID;
+    writeReceivers();
+    composeNotes = [];
     draftTitle = "";
     draftBody = "";
     replyTo = 0;
@@ -1206,6 +1519,8 @@
       "dialog:PICKERRORNOTIFY/body",
       ...Object.values(WELCOME_WORDS),
       ...Object.values(LIST_WORDS),
+      ...Object.values(COMPOSE_WORDS),
+      ...COMPOSE_DIALOGS.flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`]),
       "dialog:NoSubject/title",
       "dialog:NoSubject/body",
       "dialog:MailingListNoSuchList/title",
@@ -1755,80 +2070,97 @@
     <section class="bulk">
       <h2>Write a message</h2>
 
+      <!-- The window's To button and its one field of names (ConstructTopContainer; ReceiverEdit), checked as a comma
+           is typed and as the field is left (ValidateReceivers). -->
       <p class="controls">
-        <label>
-          Who to write to
-          <input
-            type="search"
-            bind:value={personQuery}
-            placeholder="Search by name"
-            onkeydown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                searchPeople();
-              }
-            }}
-          />
-        </label>
-        <button type="button" disabled={busy || personQuery.trim().length < 2} onclick={searchPeople}>
-          Find them
-        </button>
+        <button type="button" class="minor" onclick={() => openRecipientSearch()}>{word(COMPOSE_WORDS.to, "To")}</button>
+        <input
+          type="text"
+          class="grow"
+          aria-label={word(COMPOSE_WORDS.to, "To")}
+          bind:value={receiverText}
+          onblur={receiversChanged}
+          oninput={(event) => {
+            if ((event as InputEvent).data === ",") receiversChanged();
+          }}
+        />
       </p>
-
-      {#if personMatches.length > 0}
-        <div class="table-wrap overflow-x-auto">
-          <table class="guests reflow">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each personMatches as person (person.characterID)}
-                <tr>
-                  <td data-label="Name">{person.name}</td>
-                  <td data-label="">
-                    <div class="row-actions">
-                      <button type="button" disabled={busy} onclick={() => addRecipient(person)}>
-                        Add
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
+      {#if composeQuestion !== null}
+        <!-- CustomQuestion: its header, its question, yes and no. -->
+        <div class="mail-confirm" role="alertdialog" aria-label={composeQuestion.title}>
+          <strong>{composeQuestion.title}</strong>
+          <p>{composeQuestion.body}</p>
+          <p class="controls">
+            <button type="button" onclick={() => composeQuestion?.answer(true)}>{word(FOLDER_WRITE_WORDS.yes, "Yes")}</button>
+            <button type="button" class="minor" onclick={() => composeQuestion?.answer(false)}>{word(FOLDER_WRITE_WORDS.no, "No")}</button>
+          </p>
         </div>
-      {:else if searched && personQuery.trim().length >= 2}
-        <p class="empty">Nobody by that name.</p>
       {/if}
-
-      {#if recipients.length > 0 || composeList !== undefined}
-        <p class="note">
-          Sending to:
-          {#if composeList !== undefined}
-            <!-- The list as the compose window writes it among its recipients (AddList, 1951 to 1959). -->
-            <button type="button" class="minor" disabled={busy} onclick={() => (toList = null)}>
-              {filledWord(FOLDER_WORDS.mailEntry, "{entryName} {entryType}", { entryName: composeList.displayName, entryType: word(FOLDER_WORDS.ml, "[ML]") })} ✕
-            </button>
+      {#if composePick !== null}
+        <!-- ListWindow.ShowList, modal: its caption, its hint, those found, OK and Cancel. -->
+        <div class="mail-confirm" role="dialog" aria-label={composePick.caption}>
+          <strong>{composePick.caption}</strong>
+          <p>{composePick.hint}</p>
+          <ul class="mail-label-list">
+            {#each composePick.options as person (person.characterID)}
+              <li>
+                <label>
+                  <input type="radio" name="mail-receiver-pick" checked={composePicked === person.characterID} onchange={() => (composePicked = person.characterID)} />
+                  {person.name}
+                </label>
+              </li>
+            {/each}
+          </ul>
+          {#if composePickNote !== ""}
+            <p class="error">{composePickNote}</p>
           {/if}
-          {#each recipients as person (person.characterID)}
-            <button
-              type="button"
-              class="minor"
-              disabled={busy}
-              onclick={() => removeRecipient(person.characterID)}
-            >
-              {person.name} ✕
-            </button>
-          {/each}
-        </p>
+          <p class="controls">
+            <button type="button" onclick={() => { if (composePicked === null) { composePickNote = filledWord(ACCESS_WORDS.mustSelect, "Must select {num}.", { num: "1" }); } else { composePick?.answer(composePicked); } }}>{word(ACCESS_WORDS.ok, "OK")}</button>
+            <button type="button" class="minor" onclick={() => composePick?.answer(null)}>{word(ACCESS_WORDS.cancel, "Cancel")}</button>
+          </p>
+        </div>
+      {/if}
+      {#if recipientSearchOpen}
+        <!-- "Search for Recipients" (MailSearchWindow; ownerSearch.py OwnerSearchWindow): Search By, the name, Search,
+             and the pilots found, each with Add, or marked where added. -->
+        <section class="bulk mail-recipient-search">
+          <h3>{word(COMPOSE_WORDS.searchFor, "Search for Recipients")}</h3>
+          <p class="controls">
+            <label>
+              {word(COMPOSE_WORDS.searchBy, "Search By")}
+              <select bind:value={recipientMatchBy} disabled={busy}>
+                {#each SEARCH_BY as [matchBy, label, own] (matchBy)}
+                  <option value={matchBy}>{word(label, own)}</option>
+                {/each}
+              </select>
+            </label>
+            <input type="text" maxlength="50" bind:value={recipientSearchText} onkeydown={(event) => { if (event.key === "Enter") { event.preventDefault(); searchRecipients(); } }} />
+            <button type="button" disabled={busy} onclick={searchRecipients}>{word(COMPOSE_WORDS.search, "Search")}</button>
+            <button type="button" class="minor" onclick={() => (recipientSearchOpen = false)}>✕</button>
+          </p>
+          {#if recipientSearchNote !== ""}
+            <p class="note">{recipientSearchNote}</p>
+          {/if}
+          {#if recipientResults.length > 0}
+            <ul class="mail-label-list">
+              {#each recipientResults as person (person.characterID)}
+                <li>
+                  {person.name}
+                  {#if recipients.some((each) => each.characterID === person.characterID)}
+                    <span class="note">{word(COMPOSE_WORDS.added, "Character Added")}</span>
+                  {:else}
+                    <button type="button" class="minor" disabled={busy} onclick={() => addFromSearch(person)}>{word(COMPOSE_WORDS.add, "Add")}</button>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </section>
       {/if}
 
       <p class="controls">
         <label>
-          Subject
+          {word(COMPOSE_WORDS.subject, "Subject")}
           <input type="text" maxlength={MAIL_MAX_TITLE} bind:value={draftTitle} />
         </label>
       </p>
@@ -1851,26 +2183,20 @@
         </div>
       {/if}
 
-      {#if !draftCheck.ok && (recipients.length > 0 || composeList !== undefined || draftTitle !== "" || draftBody !== "")}
-        <p class="error">{draftCheck.message}</p>
-      {/if}
+      {#each composeNotes as said, place (place)}
+        <p class="error">{said}</p>
+      {/each}
 
       <p class="controls">
-        <button type="button" disabled={busy || !draftCheck.ok} onclick={send}>
-          Send it
+        <button type="button" disabled={busy} onclick={send}>
+          {word(COMPOSE_WORDS.send, "Send Mail")}
         </button>
         <button
           type="button"
           class="minor"
           disabled={busy}
           onclick={() => {
-            recipients = [];
-            draftTitle = "";
-            draftBody = "";
-            replyTo = 0;
-            forwardFrom = 0;
-            quote = "";
-            toList = null;
+            clearCompose();
             tab = "inbox";
           }}
         >
