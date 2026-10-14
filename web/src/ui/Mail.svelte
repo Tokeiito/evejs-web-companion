@@ -54,6 +54,8 @@
     mailsSorted,
     MAIL_SORT_KEYS,
     type MailSortKey,
+    isCorporationOwner,
+    isNpcOwner,
   } from "../bridge/mail.ts";
   import { MAIL_QUOTE_LABELS, mailBodyLines, mailMarkupOfTyped, mailQuoteMarkup } from "../bridge/mailMarkup.ts";
   import { pyIntDictOrder } from "../bridge/pyDict.ts";
@@ -99,6 +101,8 @@
   let replyTo = $state(0);
   /** The mailing list written to (the compose window's toListID), or null. */
   let toList = $state<number | null>(null);
+  /** The corporation written to, by its name (the compose window's toCorpAlliance); none for none. */
+  let toCorpAlliance = $state<readonly { readonly name: string; readonly ownerID: number }[]>([]);
   /** The list written to while the pilot has it joined, as ValidateReceivers keeps it (evemail.py 2198 to 2201). */
   const composeList = $derived(toList === null ? undefined : ($mail.lists ?? []).find((list) => list.listID === toList));
   /** The folder shown: a label's bit, all mails (null), or the trash; the inbox first, as the window opens (270). */
@@ -473,9 +477,15 @@
     noRecipient: "UI/Mail/NoRecipientForMessage",
     tooMany: "UI/Mail/TooManyRecipients",
     unknown: "UI/Common/Unknown",
+    labelCorp: "UI/Mail/LabelCorp",
   } as const;
   /** The client's dialogs the compose window says things with. */
-  const COMPOSE_DIALOGS = ["EvemailCantFindRecipient", "EvemailMaxRecipients", "EvemailMaxListOrCorp", "PartialSearchLessThanMinLength"] as const;
+  const COMPOSE_DIALOGS = [
+    "EvemailCantFindRecipient", "EvemailMaxRecipients", "EvemailMaxListOrCorp", "PartialSearchLessThanMinLength",
+    "EvemailCantSendToOtherCorp", "EvemailCantSendToNPCCorp", "EvemailSendingFailed", "DiscardMailMessage",
+  ] as const;
+  /** What may be typed for the pilot's own corporation besides its name (evemail.py 62, CORPTEXT). */
+  const CORP_TEXT = "corp";
   /** The search's Search By (searchUtil.SEARCHBY_OPTIONS; search/const.py MatchBy): its four, in their order. */
   const SEARCH_BY: readonly (readonly [number, string, string])[] = [
     [0, COMPOSE_WORDS.partial, "Partial Terms"],
@@ -509,9 +519,12 @@
     return filledWord(FOLDER_WORDS.mailEntry, "{entryName} {entryType}", { entryName: name, entryType: word(FOLDER_WORDS.ml, "[ML]") });
   }
 
-  /** The field written from the receivers held: the pilots, then the list, each followed by ", " (AddReceiver, ValidateReceivers). */
+  /**
+   * The field written from the receivers held: the pilots, the corporation, then the list, each followed by ", ", as the
+   * window adds them as it opens (ApplyAttributes, 1803 to 1822; AddReceiver; ValidateReceivers).
+   */
   function writeReceivers(): void {
-    const parts = recipients.map((person) => person.name);
+    const parts = [...recipients.map((person) => person.name), ...toCorpAlliance.map((group) => group.name)];
     if (composeList !== undefined) {
       parts.push(mailEntryOf(composeList.displayName));
     }
@@ -545,29 +558,59 @@
     return { name, listed: false };
   }
 
-  /** What one check of the field holds as it goes (ValidateReceivers' toChars, toListID, and the names used). */
+  /** What one check of the field holds as it goes (ValidateReceivers' toChars, toCorpAlliance, toListID, and the names used). */
   interface ReceiverCheck {
     readonly toChars: Map<string, number>;
+    readonly toCorpAlliance: Map<string, number>;
     listID: number | null;
     readonly charNamesUsed: Map<string, number>;
+    readonly corpNamesUsed: Set<string>;
     readonly listNamesUsed: Set<string>;
     readonly notes: string[];
   }
 
-  /** GetMaxGroupText (2102 to 2116): the client's EvemailMaxListOrCorp, the group already held named. */
-  function maxGroupText(name: string, check: ReceiverCheck): string {
-    const held = check.listID === null ? undefined : ($mail.lists ?? []).find((list) => list.listID === check.listID);
-    return filledWord("dialog:EvemailMaxListOrCorp/body", "You cannot add '{name}' to the list of recipients because you have already one mailing list, corporation, or alliance ({groupName}) on the list", { name, groupName: held?.displayName ?? word(COMPOSE_WORDS.unknown, "Unknown") });
+  /**
+   * GetMaxGroupText (2102 to 2116): the client's EvemailMaxListOrCorp, the group already held named: the corporation
+   * held, else the list; "Unknown" where none is.
+   */
+  function maxGroupText(name: string, corpNames: Iterable<string>, listID: number | null): string {
+    const held = listID === null ? undefined : ($mail.lists ?? []).find((list) => list.listID === listID);
+    const groups = [...corpNames, ...(held !== undefined ? [held.displayName] : [])];
+    const groupName = groups.length >= MAIL_MAX_GROUPS ? (groups[0] ?? "") : word(COMPOSE_WORDS.unknown, "Unknown");
+    return filledWord("dialog:EvemailMaxListOrCorp/body", "You cannot add '{name}' to the list of recipients because you have already one mailing list, corporation, or alliance ({groupName}) on the list", { name, groupName });
+  }
+
+  /**
+   * ValidateCorpOrAlliance (1919 to 1937) for a corporation: the pilot's own, and not an NPC's, each refused in the
+   * client's words. An alliance is not taken, nor anything else: the page is not given the session's alliance or
+   * its corporation roles.
+   */
+  function validateCorpOrAlliance(ownerID: number, notes: string[]): boolean {
+    if (!isCorporationOwner(ownerID)) {
+      return false;
+    }
+    if (ownerID !== ($station.online?.corporationID ?? null)) {
+      notes.push(filledWord("dialog:EvemailCantSendToOtherCorp/body", "Mail can go to no corporation but your own.", {}));
+      return false;
+    }
+    if (isNpcOwner(ownerID)) {
+      notes.push(filledWord("dialog:EvemailCantSendToNPCCorp/body", "Mail can go to a corporation of players only.", {}));
+      return false;
+    }
+    return true;
   }
 
   /**
    * AddUnknownToValidate (2216 to 2243) by NewParseReceiver (1975 to 2018): a list joined by its very name, after the
-   * client's question; else a pilot by GetReceiver (2029 to 2046): one held by the name, or searchOld.Search for the
-   * exact phrase, one found taken, more picked from, none: "Search for Recipients" opened with the name. Null where
-   * nothing is added.
+   * client's question; else the pilot's own corporation by its name or "corp", where ValidateCorpOrAlliance takes it;
+   * else a pilot by GetReceiver (2029 to 2046): one held by the name, or searchOld.Search for the exact phrase, one
+   * found taken, more picked from, none: "Search for Recipients" opened with the name. Each group counted against
+   * the most groups (TotalNumberOfGroups, 2099 to 2100). Null where nothing is added.
    */
   async function addUnknown(name: string, check: ReceiverCheck): Promise<{ readonly listed: boolean; readonly name: string } | null> {
     const trimmed = name.trim();
+    const groupsHeld = () => check.toCorpAlliance.size + (check.listID !== null ? 1 : 0);
+    const groupsUsed = () => check.corpNamesUsed.size + check.listNamesUsed.size;
     for (const list of $mail.lists ?? []) {
       if (list.displayName !== trimmed) {
         continue;
@@ -575,13 +618,13 @@
       if (!(await askYesNo(word(COMPOSE_WORDS.listQ, "Send to a mailing list?"), filledWord(COMPOSE_WORDS.listQ2, "You are a member of a mailing list with the name {listName}. Do you wish to send a mail to the mailing list?", { listName: trimmed })))) {
         continue;
       }
-      if ((check.listID !== null ? 1 : 0) >= MAIL_MAX_GROUPS) {
-        check.notes.push(maxGroupText(name, check));
+      if (groupsHeld() >= MAIL_MAX_GROUPS) {
+        check.notes.push(maxGroupText(name, check.toCorpAlliance.keys(), check.listID));
         return null;
       }
       check.listID = list.listID;
-      if (check.listNamesUsed.size >= MAIL_MAX_GROUPS) {
-        check.notes.push(maxGroupText(name, check));
+      if (groupsUsed() >= MAIL_MAX_GROUPS) {
+        check.notes.push(maxGroupText(name, check.corpNamesUsed, check.listID));
         return null;
       }
       if (check.listNamesUsed.has(name)) {
@@ -589,6 +632,26 @@
       }
       check.listNamesUsed.add(name);
       return { listed: true, name };
+    }
+    const own = await flow.ownCorporation();
+    if (own !== null && [own.name.toLowerCase(), CORP_TEXT].includes(trimmed.toLowerCase())) {
+      if (!validateCorpOrAlliance(own.corporationID, check.notes)) {
+        return null;
+      }
+      if (groupsHeld() >= MAIL_MAX_GROUPS) {
+        check.notes.push(maxGroupText(own.name, check.toCorpAlliance.keys(), check.listID));
+        return null;
+      }
+      check.toCorpAlliance.set(own.name, own.corporationID);
+      if (groupsUsed() >= MAIL_MAX_GROUPS) {
+        check.notes.push(maxGroupText(own.name, check.corpNamesUsed, check.listID));
+        return null;
+      }
+      if (check.corpNamesUsed.has(own.name)) {
+        return null;
+      }
+      check.corpNamesUsed.add(own.name);
+      return { listed: false, name: own.name };
     }
     let found: CharacterMatch | null = null;
     const held = check.toChars.get(trimmed);
@@ -649,8 +712,10 @@
     const joinedNames = joined.map((list) => list.displayName.toLowerCase());
     const check: ReceiverCheck = {
       toChars: new Map(recipients.map((person) => [person.name, person.characterID] as const)),
+      toCorpAlliance: new Map(toCorpAlliance.map((group) => [group.name, group.ownerID] as const)),
       listID: composeList?.listID ?? null,
       charNamesUsed: new Map(),
+      corpNamesUsed: new Set(),
       listNamesUsed: new Set(),
       notes: [],
     };
@@ -663,7 +728,7 @@
       let cleanName = clean.name;
       let listed = clean.listed;
       const listName = check.listID === null ? null : (joined.find((list) => list.listID === check.listID)?.displayName ?? null);
-      const known = [...check.toChars.keys(), ...(listName !== null ? [listName] : [])];
+      const known = [...check.toChars.keys(), ...check.toCorpAlliance.keys(), ...(listName !== null ? [listName] : [])];
       if (!known.includes(cleanName)) {
         const added = await addUnknown(cleanName, check);
         if (added === null) {
@@ -681,6 +746,8 @@
         }
       } else if (check.toChars.has(cleanName) && !check.charNamesUsed.has(cleanName)) {
         check.charNamesUsed.set(cleanName, check.toChars.get(cleanName) ?? 0);
+      } else if (check.toCorpAlliance.has(cleanName) && !check.corpNamesUsed.has(cleanName)) {
+        check.corpNamesUsed.add(cleanName);
       } else {
         const added = await addUnknown(cleanName, check);
         if (added === null) {
@@ -693,6 +760,7 @@
     }
     receiverText = parts.map((part) => `${part}, `).join("");
     recipients = [...check.charNamesUsed].map(([name, characterID]) => ({ characterID, name }));
+    toCorpAlliance = [...check.toCorpAlliance].filter(([name]) => check.corpNamesUsed.has(name)).map(([name, ownerID]) => ({ name, ownerID }));
     toList = check.listID !== null && check.listNamesUsed.size > 0 && joined.some((list) => list.listID === check.listID) ? check.listID : null;
     composeNotes = [...composeNotes, ...check.notes];
   }
@@ -706,6 +774,104 @@
     validateReceivers().catch((cause: unknown) => {
       error = cause instanceof Error ? cause.message : String(cause);
     });
+  }
+
+  /** One of the field's offers (ReceiverEdit.GetValid): what it shows, the name it writes, and whose it is. */
+  interface ReceiverOffer {
+    readonly group: "list" | "corp";
+    readonly displayName: string;
+    readonly name: string;
+    readonly id: number;
+  }
+  /** The field's offers shown (CheckHistory: the first five), the one gone to by the arrow keys, and what is before the last comma. */
+  let receiverOffers = $state<readonly ReceiverOffer[]>([]);
+  let activeOffer = $state(-1);
+  let offerRest = "";
+
+  /**
+   * ReceiverEdit.GetValid (2384 to 2426), as each letter is typed or taken out (CheckHistory): what follows the last
+   * comma matched as the start of the name of each list joined, offered as "name [ML]" in the order the client's
+   * dict holds them, and of the pilot's own corporation where it is not an NPC's, as "name [Corp]"; a name that is
+   * all the field holds not offered (the client's own comparison, of what is typed as it is); sorted by the length of
+   * the name, the first five shown. The pilot's contacts are not offered: the page holds no address book.
+   */
+  async function checkOffers(): Promise<void> {
+    const value = receiverText;
+    const lastComma = value.lastIndexOf(",");
+    const rest = lastComma > -1 ? value.slice(0, lastComma + 1) : "";
+    const current = lastComma > -1 ? value.slice(lastComma + 1) : value;
+    const typed = current.trim().toLowerCase();
+    const valid: ReceiverOffer[] = [];
+    const lists = $mail.lists ?? [];
+    for (const listID of pyIntDictOrder(lists.map((list) => list.listID))) {
+      const list = lists.find((each) => each.listID === listID);
+      if (list !== undefined && list.displayName.toLowerCase().startsWith(typed) && list.displayName !== current) {
+        valid.push({ group: "list", displayName: mailEntryOf(list.displayName), name: list.displayName, id: list.listID });
+      }
+    }
+    const own = await flow.ownCorporation();
+    if (own !== null && !isNpcOwner(own.corporationID) && own.name.toLowerCase().startsWith(typed) && own.name !== current) {
+      const displayName = filledWord(FOLDER_WORDS.mailEntry, "{entryName} {entryType}", { entryName: own.name, entryType: word(COMPOSE_WORDS.labelCorp, "[Corp]") });
+      valid.push({ group: "corp", displayName, name: own.name, id: own.corporationID });
+    }
+    if (receiverText !== value) {
+      return;
+    }
+    offerRest = rest;
+    receiverOffers = [...valid].sort((left, right) => left.name.length - right.name.length).slice(0, 5);
+    activeOffer = -1;
+  }
+
+  /**
+   * An offer taken (OnReceiverHistoryClick, 2060 to 2079): a list by AddList, a corporation by AddCorpAllianceReciver
+   * (ValidateCorpOrAlliance, then the most groups), each in part: the field then what was before the last comma and
+   * the name, a list's with its mark; where it is not taken, what was before the comma alone.
+   */
+  function takeOffer(offer: ReceiverOffer): void {
+    receiverOffers = [];
+    activeOffer = -1;
+    const notes: string[] = [];
+    const groupsHeld = toCorpAlliance.length + (toList !== null ? 1 : 0);
+    const corpNames = toCorpAlliance.map((group) => group.name);
+    let taken: string | null = null;
+    if (offer.group === "list") {
+      if (groupsHeld >= MAIL_MAX_GROUPS) {
+        notes.push(maxGroupText(offer.name, corpNames, toList));
+      } else {
+        toList = offer.id;
+        taken = mailEntryOf(offer.name);
+      }
+    } else if (validateCorpOrAlliance(offer.id, notes)) {
+      if (groupsHeld >= MAIL_MAX_GROUPS) {
+        notes.push(maxGroupText(offer.name, corpNames, toList));
+      } else {
+        toCorpAlliance = [...toCorpAlliance.filter((group) => group.name !== offer.name), { name: offer.name, ownerID: offer.id }];
+        taken = offer.name;
+      }
+    }
+    receiverText = taken === null ? offerRest : `${offerRest}${offerRest !== "" ? " " : ""}${taken}`;
+    composeNotes = notes;
+  }
+
+  /** The arrow keys go through the offers, and Enter takes the one gone to (BrowseHistory; ReceiverEdit.Confirm). */
+  function offerKeys(event: KeyboardEvent): void {
+    if (receiverOffers.length === 0) {
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      activeOffer = Math.min(receiverOffers.length - 1, Math.max(0, activeOffer + step));
+    } else if (event.key === "Enter" && activeOffer >= 0) {
+      event.preventDefault();
+      const offer = receiverOffers[activeOffer];
+      if (offer !== undefined) {
+        takeOffer(offer);
+      }
+    } else if (event.key === "Escape") {
+      receiverOffers = [];
+      activeOffer = -1;
+    }
   }
 
   /** The To button (OpenReceiverSearch) or a name not found (GetSearchWnd, 2336 to 2353): "Search for Recipients", with what is given. */
@@ -759,6 +925,8 @@
   /** The compose window put away: what it held let go. */
   function clearCompose(): void {
     recipients = [];
+    toCorpAlliance = [];
+    receiverOffers = [];
     receiverText = "";
     draftTitle = "";
     draftBody = "";
@@ -770,6 +938,24 @@
     recipientSearchOpen = false;
   }
 
+  /**
+   * The compose window closed by the pilot (CloseByUser, 2360 to 2365): where the body holds anything (the quote is
+   * in the client's editor, so a reply's or a forward's always does), the client's DiscardMailMessage first, and on no
+   * the window kept.
+   */
+  function neverMind(): void {
+    void run(async () => {
+      if ((draftBody + quote).trim() !== "" && !(await askYesNo(
+        filledWord("dialog:DiscardMailMessage/title", "Discard?", {}),
+        filledWord("dialog:DiscardMailMessage/body", "Throw this message away?", {}),
+      ))) {
+        return;
+      }
+      clearCompose();
+      tab = "inbox";
+    });
+  }
+
   /** Opening a message marks it read — the player's own deliberate act. */
   function open(messageID: number): void {
     void run(() => flow.openMail(messageID, isUnread(messageID)));
@@ -777,13 +963,14 @@
 
   /**
    * ClickSend (evemail.py 2245 to 2297): the names checked first; then no recipient, more than the most, no subject
-   * and a subject too long refused in the client's words; then sent, the subject as typed.
+   * and a subject too long refused in the client's words; the corporation checked again (ValidateCorpOrAlliance,
+   * else EvemailSendingFailed); then sent, the subject as typed.
    */
   function send(): void {
     void run(async () => {
       composeNotes = [];
       await validateReceivers();
-      const count = recipients.length + (composeList !== undefined ? 1 : 0);
+      const count = recipients.length + toCorpAlliance.length + (composeList !== undefined ? 1 : 0);
       if (count < 1) {
         composeNotes = [...composeNotes, word(COMPOSE_WORDS.noRecipient, "There is no recipient for this message.")];
         return;
@@ -800,9 +987,18 @@
         composeNotes = [...composeNotes, word(FOLDER_WORDS.nameTooLong, "The name is too long.")];
         return;
       }
+      const corpAlliance = toCorpAlliance[0]?.ownerID ?? null;
+      if (corpAlliance !== null) {
+        const notes: string[] = [];
+        if (!validateCorpOrAlliance(corpAlliance, notes)) {
+          composeNotes = [...composeNotes, ...notes, filledWord("dialog:EvemailSendingFailed/body", "The mail could not go to that corporation.", {})];
+          return;
+        }
+      }
       await flow.sendMail({
         toCharacterIDs: recipients.map((person) => person.characterID),
         toListID: composeList?.listID ?? null,
+        toCorpOrAllianceID: corpAlliance,
         title: draftTitle,
         body: draftBody,
         quote,
@@ -860,9 +1056,21 @@
       draftTitle = header.title.startsWith(re) ? header.title : `${re} ${header.title}`;
       draftBody = "";
       toList = all ? header.toListID : null;
+      // To all, the corporation it went to as well (GetReplyWnd, 1014 to 1016), taken as AddCorpAllianceReciver takes
+      // it; and the list then refused where it was taken, the most groups being one (AddList, 1951 to 1954).
+      const notes: string[] = [];
+      toCorpAlliance = [];
+      const corpAlliance = all ? header.toCorpOrAllianceID : null;
+      if (corpAlliance !== null && validateCorpOrAlliance(corpAlliance, notes)) {
+        toCorpAlliance = [{ name: ownerName(corpAlliance), ownerID: corpAlliance }];
+        if (composeList !== undefined) {
+          notes.push(maxGroupText(composeList.displayName, toCorpAlliance.map((group) => group.name), null));
+          toList = null;
+        }
+      }
       // SendMsgDlg (994 to 997): the window's field written from what it is opened with (ApplyAttributes, 1803 to 1822).
       writeReceivers();
-      composeNotes = [];
+      composeNotes = notes;
       replyTo = header.messageID;
       forwardFrom = 0;
       quote = await quoteOf(header);
@@ -874,6 +1082,7 @@
   function forward(header: MailHeaderRow): void {
     void run(async () => {
       recipients = [];
+      toCorpAlliance = [];
       toList = null;
       receiverText = "";
       composeNotes = [];
@@ -889,6 +1098,7 @@
   /** A list's Send Mail to Mailing List (evemail.py SendMailToList; mailSvc.SendMsgDlg): a new message to the list alone. */
   function sendToList(listID: number): void {
     recipients = [];
+    toCorpAlliance = [];
     toList = listID;
     writeReceivers();
     composeNotes = [];
@@ -901,10 +1111,11 @@
   }
 
   /** Whom a sent message went to, in the page's words. */
-  function sentTo(count: number, list: string | null): string {
+  function sentTo(count: number, list: string | null, corporation: string | null): string {
     const people = count === 1 ? "one person" : `${count} people`;
-    if (list === null) return people;
-    return count === 0 ? `the mailing list ${list}` : `the mailing list ${list} and ${people}`;
+    const group = list !== null ? `the mailing list ${list}` : corporation !== null ? `your corporation ${corporation}` : null;
+    if (group === null) return people;
+    return count === 0 ? group : `${group} and ${people}`;
   }
 
   /** The management window's words, by their labels (evemailingListConfig.py 54 to 130, 238 to 260). */
@@ -1564,7 +1775,7 @@
   {#if $mail.lastOutcome}
     {#if $mail.lastOutcome.applied}
       <p class="note">
-        Your message was sent to {sentTo($mail.lastOutcome.recipientCount, $mail.lastOutcome.toList ?? null)}.
+        Your message was sent to {sentTo($mail.lastOutcome.recipientCount, $mail.lastOutcome.toList ?? null, $mail.lastOutcome.toCorpOrAlliance ?? null)}.
       </p>
     {:else if $mail.lastOutcome.declinedSilently}
       <!-- ⚠ SendMail answers a bare null with no reason. Say exactly that. -->
@@ -2079,12 +2290,37 @@
           class="grow"
           aria-label={word(COMPOSE_WORDS.to, "To")}
           bind:value={receiverText}
-          onblur={receiversChanged}
+          onblur={() => {
+            receiverOffers = [];
+            receiversChanged();
+          }}
+          onkeydown={offerKeys}
           oninput={(event) => {
+            void checkOffers();
             if ((event as InputEvent).data === ",") receiversChanged();
           }}
         />
       </p>
+      {#if receiverOffers.length > 0}
+        <!-- The field's offers (ReceiverEdit.GetValid; SingleLineEditHistory), taken by the mouse as it is pressed (HEMouseDown),
+             or by the arrow keys and Enter. -->
+        <ul class="mail-offers" role="listbox" aria-label={word(COMPOSE_WORDS.to, "To")}>
+          {#each receiverOffers as offer, place (`${offer.group}:${offer.id}`)}
+            <li role="option" aria-selected={place === activeOffer}>
+              <button
+                type="button"
+                class="minor"
+                class:active={place === activeOffer}
+                tabindex="-1"
+                onmousedown={(event) => {
+                  event.preventDefault();
+                  takeOffer(offer);
+                }}>{offer.displayName}</button
+              >
+            </li>
+          {/each}
+        </ul>
+      {/if}
       {#if composeQuestion !== null}
         <!-- CustomQuestion: its header, its question, yes and no. -->
         <div class="mail-confirm" role="alertdialog" aria-label={composeQuestion.title}>
@@ -2195,10 +2431,7 @@
           type="button"
           class="minor"
           disabled={busy}
-          onclick={() => {
-            clearCompose();
-            tab = "inbox";
-          }}
+          onclick={neverMind}
         >
           Never mind
         </button>
@@ -2242,6 +2475,22 @@
   .mail-folders-group {
     margin-left: 0.5rem;
     opacity: 0.8;
+  }
+  /* The field's offers, under it, one to a line; the one gone to by the arrow keys marked without colour alone. */
+  .mail-offers {
+    list-style: none;
+    margin: 0 0 0.5rem;
+    padding: 0;
+    border: 1px solid var(--color-line-strong);
+  }
+  .mail-offers button {
+    display: block;
+    width: 100%;
+    text-align: left;
+  }
+  .mail-offers button.active {
+    text-decoration: underline;
+    font-weight: 600;
   }
   .mail-confirm {
     border: 1px solid currentColor;

@@ -1008,6 +1008,8 @@ export interface MailActionOutcome {
   readonly recipientCount: number;
   /** The mailing list it went to, by name; none where it went to pilots only. */
   readonly toList?: string | null;
+  /** The corporation it went to, by name; none where it went to none. */
+  readonly toCorpOrAlliance?: string | null;
   /**
    * What the server said, when it declined without giving a reason. Never a
    * cause this client invented.

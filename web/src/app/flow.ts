@@ -1123,6 +1123,12 @@ export interface AppFlow {
   /** Pilots found as the client's searchOld.Search finds them (the search service's QuickQuery), each named. */
   searchCharacters(text: string, matchBy: number): Promise<readonly api.CharacterMatch[]>;
   /**
+   * The pilot's own corporation and its name, as the compose window reads them (session.corpid;
+   * cfg.eveowners.Get(session.corpid).ownerName); null where the page holds no corporation for the pilot, or its
+   * name is not known.
+   */
+  ownCorporation(): Promise<{ readonly corporationID: number; readonly name: string } | null>;
+  /**
    * SEND a message. Not a costly or destructive write, so no confirm gate —
    * but an empty recipient list is refused, because the SERVER will not refuse
    * it and mail addressed to nobody would look sent.
@@ -5405,6 +5411,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     });
   }
 
+  async function ownCorporation(): Promise<{ readonly corporationID: number; readonly name: string } | null> {
+    const corporationID = store.station.get().online?.corporationID ?? null;
+    if (corporationID === null || !(corporationID > 0)) {
+      return null;
+    }
+    await resolveNamesNow([{ kind: "corporation", id: corporationID }]);
+    const name = store.names.get().resolved[nameKey("corporation", corporationID)];
+    return typeof name === "string" && name !== "" ? { corporationID, name } : null;
+  }
+
   // SearchOwners with hideNPC (searchOld.py 258 to 259): lookupSvc.LookupPCOwners(searchStr, exact), exact False as
   // the mailing list window asks it.
   async function lookupPlayerOwners(text: string): Promise<readonly OwnerMatch[]> {
@@ -5985,6 +6001,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         declinedSilently: messageID === null,
         recipientCount: new Set(request.toCharacterIDs).size,
         toList: request.toListID == null ? null : ((store.mail.get().lists ?? []).find((list) => list.listID === request.toListID)?.displayName ?? null),
+        toCorpOrAlliance: request.toCorpOrAllianceID == null ? null : (store.names.get().resolved[nameKey("corporation", request.toCorpOrAllianceID)] ?? null),
         message: messageID === null ? "The server did not send that message, and did not say why." : null,
       },
     });
@@ -16092,6 +16109,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     closeMail,
     findCharacters: (q: string) => api.findCharacters(q, callOptions),
     searchCharacters,
+    ownCorporation,
     sendMail,
     loadContracts,
     openContract,

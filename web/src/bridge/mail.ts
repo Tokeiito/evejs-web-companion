@@ -1108,3 +1108,17 @@ export function mailsInFolder(mailbox: DecodedMailbox, folder: number | null): r
     return folder === null || ((status?.labelMask ?? 0) & folder) === folder;
   });
 }
+
+/** idCheckers.IsNPC: an owner above the system's own items (maxSystemItem, 9999) and below the players' (minPlayerOwner). */
+export function isNpcOwner(ownerID: number): boolean {
+  return ownerID > 9_999 && ownerID < 90_000_000;
+}
+
+/**
+ * idCheckers.IsCorporation by its ranges (inventorycommon/const.py): an NPC corporation's (1000000 to 1999999) or a
+ * player corporation's (98000000 to 98999999). The client also asks its owner cache of an id from before the
+ * 64-bit items (100000000 and over); the page has no such cache, and takes none of those for a corporation.
+ */
+export function isCorporationOwner(ownerID: number): boolean {
+  return (ownerID >= 1_000_000 && ownerID <= 1_999_999) || (ownerID >= 98_000_000 && ownerID <= 98_999_999);
+}
