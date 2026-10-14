@@ -236,15 +236,20 @@ test("GET /api/bridge/flight/status returns the docked snapshot", async () => {
   assert.equal(gateway.calls.flightStatus[0].bridgeSessionID, BRIDGE_SESSION_ID);
 });
 
-test("POST /api/bridge/flight/undock calls ship.Undock and returns the in-space snapshot", async () => {
+// The pilot's undock as the page makes it since 2026-10-14 (web/src/bridge/placeChanges.ts): ship.Undock(the
+// pilot's ship, ignoreContraband, onlineModules=...) through the generic call, a pilot's write the page means, under
+// the BFF's keeping of the session change (ui/station/base.py 488 to 521). Its route is gone.
+const undockBody = (ignoreContraband) => ({ service: "ship", method: "Undock", args: [SHIP_ID, ignoreContraband], kwargs: { onlineModules: [] }, pilot: true, confirm: true });
+
+test("the page's undock calls ship.Undock and is answered once the ship is in space", async () => {
   const gateway = fakeGateway();
   const { baseUrl } = await startTestServer({ gateway });
   await selectOnServer(baseUrl);
 
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/undock", { method: "POST", body: {} });
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: undockBody(false) });
   assert.equal(response.status, 200);
   assert.equal(payload.ok, true);
-  assert.equal(payload.flight.inSpace, true);
+  assert.equal((await apiRequest(baseUrl, "/api/bridge/flight/status")).payload.flight.inSpace, true);
   const undock = gateway.calls.call.find((c) => c.service === "ship" && c.method === "Undock");
   assert.ok(undock, "ship.Undock dispatched");
   assert.equal(undock.args[0], SHIP_ID);
@@ -258,7 +263,7 @@ test("undock is refused when already in space", async () => {
   const { baseUrl } = await startTestServer({ gateway });
   await selectOnServer(baseUrl);
 
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/undock", { method: "POST", body: {} });
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: undockBody(false) });
   assert.equal(response.status, 409);
   assert.equal(payload.error, "ALREADY_IN_SPACE");
 });
@@ -1131,7 +1136,7 @@ test("with a retail client to read, the warning is that client's own dialog, its
   const clientWords = clientWithWarning("A made-up warning about <b>{item}</b>.<br><color=0xffff0000>Leave with {item}?</color>");
   const { baseUrl } = await startTestServer({ gateway: gatewayWithContraband(namedRefusal), clientWords });
   await selectOnServer(baseUrl);
-  const warned = await apiRequest(baseUrl, "/api/bridge/flight/undock", { method: "POST", body: {} });
+  const warned = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: undockBody(false) });
   assert.equal(warned.response.status, 409);
   assert.equal(warned.payload.error, "CONTRABAND_WARNING");
   assert.equal(warned.payload.message, "A made-up warning about Type 34.\nLeave with Type 34?");
@@ -1144,19 +1149,19 @@ test("a client's dialog that cannot be filled whole is not used: this client's o
   for (const body of ["About {item}, says {empire}.", "About {[item]item.name}.", null, 7]) {
     const { baseUrl } = await startTestServer({ gateway: gatewayWithContraband(namedRefusal), clientWords: clientWithWarning(body) });
     await selectOnServer(baseUrl);
-    const warned = await apiRequest(baseUrl, "/api/bridge/flight/undock", { method: "POST", body: {} });
+    const warned = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: undockBody(false) });
     assert.equal(warned.payload.message, OWN, String(body));
   }
   // The item is not known (the gateway's wording carries no values): the client's sentence has nothing to name.
   const unnamed = gatewayWithContraband(() => refusal({ message: "ship.Undock was refused: ShipContrabandWarningUndock" }));
   const { baseUrl } = await startTestServer({ gateway: unnamed, clientWords: clientWithWarning("About {item}.") });
   await selectOnServer(baseUrl);
-  const warned = await apiRequest(baseUrl, "/api/bridge/flight/undock", { method: "POST", body: {} });
+  const warned = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: undockBody(false) });
   assert.equal(warned.payload.message, "Your ship is carrying contraband. Undock anyway?");
   // A body with nothing to fill is the client's all the same.
   const plain = await startTestServer({ gateway: gatewayWithContraband(namedRefusal), clientWords: clientWithWarning("A made-up warning.") });
   await selectOnServer(plain.baseUrl);
-  assert.equal((await apiRequest(plain.baseUrl, "/api/bridge/flight/undock", { method: "POST", body: {} })).payload.message, "A made-up warning.");
+  assert.equal((await apiRequest(plain.baseUrl, "/api/bridge/call", { method: "POST", body: undockBody(false) })).payload.message, "A made-up warning.");
 });
 //
 // The retail client's undock catches a refusal named ShipContrabandWarningUndock, asks OK / Cancel, and undocks
@@ -1164,16 +1169,9 @@ test("a client's dialog that cannot be filled whole is not used: this client's o
 
 const undockCalls = (gateway) => gateway.calls.call.filter((call) => call.service === "ship" && call.method === "Undock");
 
-test("undock passes ignoreContraband on only when the body says true", async () => {
-  for (const [body, expected] of [[{}, false], [{ ignoreContraband: true }, true], [{ ignoreContraband: false }, false], [{ ignoreContraband: "true" }, false], [{ ignoreContraband: 1 }, false]]) {
-    const gateway = fakeGateway();
-    const { baseUrl } = await startTestServer({ gateway });
-    await selectOnServer(baseUrl);
-    const { response } = await apiRequest(baseUrl, "/api/bridge/flight/undock", { method: "POST", body });
-    assert.equal(response.status, 200);
-    assert.deepEqual(undockCalls(gateway)[0].args, [SHIP_ID, expected], JSON.stringify(body));
-  }
-});
+// (The route read the flag off its body, true only where the body said true. The page names the client's flag
+// itself, false and then true once the pilot has said to go on (ui/station/base.py 506 to 511), and the test of
+// the route's reading of its body is gone with the route.)
 
 /** A gateway whose first ship.Undock without ignoreContraband is refused as `refuse` builds it. */
 function gatewayWithContraband(refuse) {
@@ -1200,7 +1198,7 @@ test("an undock refused for contraband is a warning, with the item named, and th
   const { baseUrl } = await startTestServer({ gateway });
   await selectOnServer(baseUrl);
 
-  const warned = await apiRequest(baseUrl, "/api/bridge/flight/undock", { method: "POST", body: {} });
+  const warned = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: undockBody(false) });
   assert.equal(warned.response.status, 409);
   assert.equal(warned.payload.ok, false);
   assert.equal(warned.payload.error, "CONTRABAND_WARNING");
@@ -1211,9 +1209,9 @@ test("an undock refused for contraband is a warning, with the item named, and th
   // Still docked, and not left half-way through an undock: the same pilot goes out when it says so.
   const status = await apiRequest(baseUrl, "/api/bridge/flight/status");
   assert.equal(status.payload.flight.docked, true);
-  const again = await apiRequest(baseUrl, "/api/bridge/flight/undock", { method: "POST", body: { ignoreContraband: true } });
+  const again = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: undockBody(true) });
   assert.equal(again.response.status, 200, JSON.stringify(again.payload));
-  assert.equal(again.payload.flight.inSpace, true);
+  assert.equal((await apiRequest(baseUrl, "/api/bridge/flight/status")).payload.flight.inSpace, true);
   assert.deepEqual(undockCalls(gateway).map((call) => call.args[1]), [false, true]);
 });
 
@@ -1222,7 +1220,7 @@ test("the warning is known by its name alone, and then names no item; any other 
   const worded = gatewayWithContraband(() => refusal({ message: "ship.Undock was refused: ShipContrabandWarningUndock" }));
   const first = await startTestServer({ gateway: worded });
   await selectOnServer(first.baseUrl);
-  const warned = await apiRequest(first.baseUrl, "/api/bridge/flight/undock", { method: "POST", body: {} });
+  const warned = await apiRequest(first.baseUrl, "/api/bridge/call", { method: "POST", body: undockBody(false) });
   assert.equal(warned.response.status, 409);
   assert.equal(warned.payload.error, "CONTRABAND_WARNING");
   const UNNAMED = "Your ship is carrying contraband. Undock anyway?";
@@ -1236,7 +1234,7 @@ test("the warning is known by its name alone, and then names no item; any other 
     }));
     const second = await startTestServer({ gateway: odd });
     await selectOnServer(second.baseUrl);
-    const plain = await apiRequest(second.baseUrl, "/api/bridge/flight/undock", { method: "POST", body: {} });
+    const plain = await apiRequest(second.baseUrl, "/api/bridge/call", { method: "POST", body: undockBody(false) });
     assert.equal(plain.payload.message, UNNAMED, JSON.stringify(item));
   }
 
@@ -1244,7 +1242,7 @@ test("the warning is known by its name alone, and then names no item; any other 
   const other = gatewayWithContraband(() => refusal({ message: "ShipNotInHangar", refusal: { key: "ShipNotInHangar", values: null } }));
   const third = await startTestServer({ gateway: other });
   await selectOnServer(third.baseUrl);
-  const refused = await apiRequest(third.baseUrl, "/api/bridge/flight/undock", { method: "POST", body: {} });
+  const refused = await apiRequest(third.baseUrl, "/api/bridge/call", { method: "POST", body: undockBody(false) });
   assert.equal(refused.response.status, 409);
   assert.equal(refused.payload.error, "CALL_REFUSED");
   assert.match(refused.payload.message, /ShipNotInHangar/);
@@ -1252,7 +1250,7 @@ test("the warning is known by its name alone, and then names no item; any other 
   const failed = gatewayWithContraband(() => Object.assign(new Error("ShipContrabandWarningUndock"), { code: "CALL_FAILED", statusCode: 502 }));
   const fourth = await startTestServer({ gateway: failed });
   await selectOnServer(fourth.baseUrl);
-  assert.equal((await apiRequest(fourth.baseUrl, "/api/bridge/flight/undock", { method: "POST", body: {} })).payload.error, "CALL_FAILED");
+  assert.equal((await apiRequest(fourth.baseUrl, "/api/bridge/call", { method: "POST", body: undockBody(false) })).payload.error, "CALL_FAILED");
 });
 
 // journal.py 453: the client warps to a launch with michelle.CmdWarpToStuff('launch', launchID), naming the launch

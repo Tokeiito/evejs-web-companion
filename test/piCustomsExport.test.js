@@ -514,6 +514,10 @@ test("a retail-controlled pilot is not taken over by an unheld export", async ()
   assert.deepEqual(client.calls, []);
 });
 
+// The pilot's undock as the page makes it since 2026-10-14 (web/src/bridge/placeChanges.ts): ship.Undock through
+// the generic call, a pilot's write the page means, the ship the one the flight reads below name. Its route is gone.
+const undockBody = { service: "ship", method: "Undock", args: [1000000100, false], kwargs: { onlineModules: [] }, pilot: true, confirm: true };
+
 test("the caller is held against undock while its export readiness read is pending", async () => {
   const bridgeSessionStore = new Map([["sid", heldPilot()]]);
   const gateway = fakeGateway();
@@ -531,7 +535,7 @@ test("the caller is held against undock while its export readiness read is pendi
   });
   await entered;
   try {
-    const undocking = await post(baseUrl, "/api/bridge/flight/undock", {});
+    const undocking = await post(baseUrl, "/api/bridge/call", undockBody);
     assert.equal(undocking.response.status, 409);
     assert.equal(undocking.payload.error, "CHARACTER_IN_USE");
     assert.equal(reads, 1, "the blocked undock never enters its readiness read");
@@ -574,7 +578,7 @@ test("an undock already reading readiness cannot dispatch after the export hold"
   gateway.callMethod = async (...args) => { writes.push(args); return { notifications: [] }; };
   const client = fakeClient({ failLogin: true });
   const baseUrl = await startTestServer({ gateway, client, bridgeSessionStore });
-  const undocking = post(baseUrl, "/api/bridge/flight/undock", {});
+  const undocking = post(baseUrl, "/api/bridge/call", undockBody);
   await undockEntered;
   const exporting = post(baseUrl, "/api/pi/customs-export", {
     confirm: true, characterID: FARMER_ID, planetIDs: [PLANET_A],
@@ -688,9 +692,9 @@ test("a recovered docked caller can undock after customs handback", async () => 
   });
   assert.equal(exported.response.status, 200);
   assert.equal(exported.payload.handedBack, true);
-  const undocking = await post(baseUrl, "/api/bridge/flight/undock", {});
+  const undocking = await post(baseUrl, "/api/bridge/call", undockBody);
   assert.equal(undocking.response.status, 200, "the recovered pilot keeps its proven readiness after the temporary hop");
-  assert.equal(undocking.payload.flight.inSpace, true);
+  // (Answered once the BFF's keeping of the change saw the ship in space; the undock made is the write below.)
   assert.deepEqual(writes, ["ship.Undock"]);
 });
 
@@ -717,7 +721,7 @@ test("handback keeps recovery gated when the restored docked identity cannot be 
     });
     assert.equal(exported.response.status, 500);
     assert.equal(bridgeSessionStore.get("sid")?.droneRecoveryReady, false);
-    const undocking = await post(baseUrl, "/api/bridge/flight/undock", {});
+    const undocking = await post(baseUrl, "/api/bridge/call", undockBody);
     assert.equal(undocking.response.status, 409);
     assert.equal(undocking.payload.error, "DRONE_RECOVERY_PENDING");
   }

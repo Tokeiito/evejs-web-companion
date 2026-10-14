@@ -25,6 +25,8 @@ function fixture(module: "none" | "gas" | "ice" = "none", miningOperationID?: st
   const flow = createAppFlow(store, { livePush: false, miningOperationID, fetch: async (input, init) => {
     const path = String(input); paths.push(path);
     const body: Record<string, unknown> = init?.body ? JSON.parse(String(init.body)) : {};
+    // A call of the page's own is noted by its pair too: the undock is one (bridge/placeChanges.ts).
+    if (path === "/api/bridge/call") paths.push(`call:${String(body.service)}.${String(body.method)}`);
     let result: unknown = { ok: true };
     if (path === "/api/bridge/select") result = { ok: true, character: { characterID: 42, characterName: "Test", stationID: HOME.id },
       station: null, droneRecoveryCheckID: "current-check" };
@@ -56,7 +58,7 @@ test("mixed plain ore/ice Start validates the later Ice Harvester before undocki
     try {
       await assert.rejects(f.flow.startCustomBot(script([undock, mine("ore", "site"), mine("ice", "ice-site")])),
         /ICE_MINING_CAPABILITY_REQUIRED/);
-      assert.equal(f.paths.includes("/api/bridge/flight/undock"), false);
+      assert.equal(f.paths.includes("call:ship.Undock"), false);
       assert.equal(f.store.customBot.get().status, "idle");
     } finally { f.flow.stopCustomBot(); }
   }
@@ -84,7 +86,7 @@ test("an operation still refuses missing ore capability before its program undoc
   try {
     await assert.rejects(f.flow.startCustomBot(script([undock, mine("ore", "site"), mine("ice", "ice-site")])),
       /ORE_MINING_CAPABILITY_REQUIRED/);
-    assert.equal(f.paths.includes("/api/bridge/flight/undock"), false);
+    assert.equal(f.paths.includes("call:ship.Undock"), false);
     assert.equal(f.store.customBot.get().status, "idle");
   } finally { f.flow.stopCustomBot(); }
 });

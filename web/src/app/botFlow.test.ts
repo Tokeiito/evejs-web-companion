@@ -380,7 +380,8 @@ test("a docked bot unloads first and only then undocks — and the readout says 
 
   const order = requests.map((r) => r.path);
   const unloadAt = order.indexOf("/api/bridge/ship/ore-hold/unload");
-  const undockAt = order.indexOf("/api/bridge/flight/undock");
+  // The undock is the page's own call (bridge/placeChanges.ts): ship.Undock through the generic call.
+  const undockAt = requests.findIndex((r) => r.path === "/api/bridge/call" && r.body.service === "ship" && r.body.method === "Undock");
   assert.ok(unloadAt >= 0, "it unloaded");
   assert.ok(
     undockAt === -1 || undockAt > unloadAt,
