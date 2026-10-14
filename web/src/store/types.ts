@@ -837,6 +837,8 @@ export interface MailState {
   readonly labels: readonly MailLabel[] | null;
   /** The mailing lists joined, asked once as the mail window first draws its lists group; null until then. */
   readonly lists: readonly MailingList[] | null;
+  /** Lists not joined that were named (the lists service's externalLists): each asked of the server once, and kept. */
+  readonly externalLists: readonly MailingList[];
   readonly statuses: readonly MailStatusRow[];
   /** How many are unread — what the tab badge shows. */
   readonly unreadCount: number;

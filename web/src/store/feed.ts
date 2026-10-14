@@ -424,6 +424,7 @@ export type FeedEvent =
   | { readonly type: "mail/labels"; readonly labels: readonly MailLabel[] }
   // The mailing lists joined, as the mailing lists service keeps them (GetJoinedLists; its notices).
   | { readonly type: "mail/lists"; readonly lists: readonly MailingList[] }
+  | { readonly type: "mail/external-list"; readonly list: MailingList }
   // Goal R17 (Slice B) — the Contracts page. READS ONLY: every contract mutator
   // is refused at the gateway, so there is no action event here. Each read
   // keeps its own error, so a public browse that failed never hides the

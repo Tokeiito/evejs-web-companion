@@ -336,6 +336,7 @@ const INITIAL_MAIL: MailState = Object.freeze({
   messages: Object.freeze([]) as readonly MailHeaderRow[],
   labels: null,
   lists: null,
+  externalLists: Object.freeze([]),
   statuses: Object.freeze([]) as readonly MailStatusRow[],
   unreadCount: 0,
   open: null as MailOpenMessage | null,
@@ -1653,6 +1654,9 @@ export function createClientStore(): ClientStore {
         break;
       case "mail/lists":
         mail.set({ ...mail.get(), lists: [...event.lists] });
+        break;
+      case "mail/external-list":
+        mail.set({ ...mail.get(), externalLists: [...mail.get().externalLists.filter((each) => each.listID !== event.list.listID), event.list] });
         break;
       case "mail/action-error":
         mail.set({ ...mail.get(), actionError: event.message });

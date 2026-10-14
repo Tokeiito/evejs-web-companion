@@ -167,11 +167,16 @@
     });
   }
 
+  /** A list by its name, as the lists service keeps it: joined, or named before (GetDisplayName); null for one not yet named. */
+  function listName(listID: number): string | null {
+    return (($mail.lists ?? []).find((list) => list.listID === listID) ?? $mail.externalLists.find((list) => list.listID === listID))?.displayName ?? null;
+  }
+
   /** Who sent a mail: a list's own mail named by the list (mailSvc.py 1145 to 1146), anyone else by name. */
   function senderName(header: MailHeaderRow): string {
     if (header.toListID !== null && header.senderID === header.toListID) {
-      const list = ($mail.lists ?? []).find((each) => each.listID === header.toListID);
-      if (list !== undefined) return list.displayName;
+      const name = listName(header.toListID);
+      if (name !== null) return name;
     }
     return personName(header.senderID);
   }
@@ -390,7 +395,7 @@
       return extra > 0 ? `${shown.join(", ")} and ${extra} more` : shown.join(", ");
     }
     if (audience.kind === "list") {
-      return ($mail.lists ?? []).find((list) => list.listID === header.toListID)?.displayName ?? "a mailing list";
+      return listName(header.toListID ?? 0) ?? "a mailing list";
     }
     if (audience.kind === "corporation") {
       return `everyone at ${ownerName(audience.ownerID)}`;
@@ -498,7 +503,7 @@
       {
         subject: header.title,
         senderID: header.senderID,
-        senderName: personName(header.senderID),
+        senderName: senderName(header),
         automated: status !== undefined && (status.statusMask & 32) === 32,
         sentText: header.sentDate === null ? "" : formatTemplate(word(DATE_LABEL, "{[datetime]datetime}"), { datetime: String(header.sentDate) }, { nameOf }),
         corporationName: header.toCorpOrAllianceID === null ? null : ownerName(header.toCorpOrAllianceID),
@@ -1041,6 +1046,8 @@
       ...Object.values(WELCOME_WORDS),
       "dialog:NoSubject/title",
       "dialog:NoSubject/body",
+      "dialog:MailingListNoSuchList/title",
+      "dialog:MailingListNoSuchList/body",
     ]);
     void run(async () => {
       await flow.loadMail();
@@ -1376,6 +1383,8 @@
                asked to be sure of. For an operator or owner, its management window (OpenMaillistSetup, 511). -->
           {@const shownList = ($mail.lists ?? []).find((each) => each.listID === viewingList)}
           {#if shownList !== undefined}
+            <!-- (A {@const} is read again each time it is used: the list's number is taken at the click, before the
+                 list shown is let go, or a write is sent without it, as Leave(None) was, seen 2026-10-14.) -->
             {@const listID = shownList.listID}
             {@const listName = shownList.displayName}
             {#if !shownList.isMuted}
@@ -1388,18 +1397,18 @@
                 {word(MANAGE_WORDS.open, "Open Mailing List Management")}
               </button>
             {/if}
-            <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "EvemailMailReadMailinglistGroup", args: { listName }, act: () => flow.readListMail(listID) })}>
+            <button type="button" class="minor" disabled={busy} onclick={() => { const id = listID; confirming = { dialog: "EvemailMailReadMailinglistGroup", args: { listName }, act: () => flow.readListMail(id) }; }}>
               {filledWord(FOLDER_WRITE_WORDS.markAll, "Mark All as Read ({folderName})", { folderName: listName })}
             </button>
-            <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "EvemailMailTrashMailinglistGroup", args: { listName }, act: () => flow.trashListMail(listID) })}>
+            <button type="button" class="minor" disabled={busy} onclick={() => { const id = listID; confirming = { dialog: "EvemailMailTrashMailinglistGroup", args: { listName }, act: () => flow.trashListMail(id) }; }}>
               {filledWord(FOLDER_WRITE_WORDS.trashAll, "Trash All ({folderName})", { folderName: listName })}
             </button>
             {#if shownList.isOwner}
-              <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "DeleteMailingList", args: { mailinglistName: listName }, act: async () => { await flow.deleteMailingList(listID); if (!(store.get().mail.lists ?? []).some((each) => each.listID === listID)) viewingList = null; } })}>
+              <button type="button" class="minor" disabled={busy} onclick={() => { const id = listID; confirming = { dialog: "DeleteMailingList", args: { mailinglistName: listName }, act: async () => { await flow.deleteMailingList(id); if (!(store.get().mail.lists ?? []).some((each) => each.listID === id)) viewingList = null; } }; }}>
                 {word(FOLDER_WORDS.deleteList, "Delete Mailing List")}
               </button>
             {:else}
-              <button type="button" class="minor" disabled={busy} onclick={() => { viewingList = null; void run(() => flow.leaveMailingList(listID)); }}>
+              <button type="button" class="minor" disabled={busy} onclick={() => { const id = listID; viewingList = null; void run(() => flow.leaveMailingList(id)); }}>
                 {word(FOLDER_WORDS.leaveList, "Leave Mailing List")}
               </button>
             {/if}
@@ -1524,7 +1533,7 @@
         <h2>{openHeader ? openHeader.title || "(no subject)" : "Message"}</h2>
         {#if openHeader}
           <p class="note">
-            From {personName(openHeader.senderID)}, to {audienceText(openHeader)},
+            From {senderName(openHeader)}, to {audienceText(openHeader)},
             {whenText(openHeader.sentDate)}.
           </p>
         {/if}

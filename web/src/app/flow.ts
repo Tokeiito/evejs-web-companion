@@ -2567,6 +2567,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       if (after !== null) {
         mailboxLoaded(after);
+        if (method === "OnMailSent") {
+          void nameListSenders().catch(() => {});
+        }
         return;
       }
     }
@@ -5059,6 +5062,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       throw error;
     }
     mailboxLoaded(mailbox);
+    await nameListSenders();
   }
 
   /** The mailbox as it is now, in the store, its unread counted as the client counts it, and its people named. */
@@ -5236,6 +5240,40 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
+  // mailingListsSvc.GetDisplayName (55 to 66): a list joined, or one asked before, by its kept name; any other asked
+  // of the server (GetInfo) and kept; none, the client's MailingListNoSuchList, said.
+  async function mailingListName(listID: number): Promise<string | null> {
+    const { lists, externalLists } = store.mail.get();
+    const known = (lists ?? []).find((list) => list.listID === listID) ?? externalLists.find((list) => list.listID === listID);
+    if (known !== undefined) {
+      return known.displayName;
+    }
+    const answer = await mailingListRead("GetInfo", listID);
+    const info = answer === null ? null : mailingListOf(answer);
+    if (info === null) {
+      const said = store.words.get().templates["dialog:MailingListNoSuchList/body"];
+      store.apply({ type: "mail/action-error", message: typeof said === "string" ? said : "That mailing list cannot be found." });
+      return null;
+    }
+    store.apply({ type: "mail/external-list", list: info });
+    return info.displayName;
+  }
+
+  // A list's own mail is named by the list (mailSvc.py 213 to 217, 1139 to 1140): the lists service started for it
+  // (its lists joined asked, mailingListsSvc.py 40 to 45), and a list not joined named by GetDisplayName.
+  async function nameListSenders(): Promise<void> {
+    const { messages, statuses } = store.mail.get();
+    const automated = new Set(statuses.filter((status) => (status.statusMask & MAIL_STATUS_AUTOMATED) !== 0).map((status) => status.messageID));
+    const listIDs = [...new Set(messages.filter((header) => automated.has(header.messageID) && header.toListID !== null && header.senderID === header.toListID).map((header) => header.senderID))];
+    if (listIDs.length === 0) {
+      return;
+    }
+    await loadMailingLists();
+    for (const listID of listIDs) {
+      await mailingListName(listID);
+    }
+  }
+
   async function readMailingListSettings(listID: number): Promise<MailingListSettings | null> {
     const settings = mailingListSettingsOf(await mailingListRead("GetSettings", listID));
     // UpdateAccessScrollData primes the owners let in or kept out (evemailingListConfig.py 438), and names each and
@@ -5344,6 +5382,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // mailSvc.GetReplyMessage asks the service's GetBody, which marks a message not read read.
   async function quotedMailBody(messageID: number): Promise<string | null> {
+    // GetReplyMessage (1077 to 1083): the receivers first, a list among them named (GetReceiverText), then the body.
+    const toListID = store.mail.get().messages.find((header) => header.messageID === messageID)?.toListID ?? null;
+    if (toListID !== null) {
+      await mailingListName(toListID);
+    }
     const unread = store.mail.get().statuses.some((status) => status.messageID === messageID && !status.read);
     const body = await mailBodyRead(messageID, unread);
     return body === null ? null : body.unreadable ? "" : (body.text ?? "");
@@ -5364,6 +5407,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         markedRead: store.mail.get().statuses.find((status) => status.messageID === messageID)?.read ?? null,
       },
     });
+    // GetMailText (1062 to 1076): the receivers written after the body is had, a list among them named.
+    const toListID = store.mail.get().messages.find((header) => header.messageID === messageID)?.toListID ?? null;
+    if (toListID !== null) {
+      await mailingListName(toListID);
+    }
   }
 
   // The mail window's writes of a message (evemail.py GetMsgMenu, 925 to 970; mailSvc.py 292 to 348, 478 to 491):
