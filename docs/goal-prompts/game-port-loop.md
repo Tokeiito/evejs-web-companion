@@ -3644,6 +3644,24 @@ Take these defaults, and list each under "For the operator" in the log so they c
   with the drone home it clears. It is the page's own machinery, and
   a look that wants the Drones window's own buttons gets past it
   first.
+- **A call that answers nothing takes its verdict's reads with it.**
+  The order's route read the pilot's orders and wallet before and
+  after, and the page's call makes the same four reads. The verdict
+  is by the thing itself where the reads name it (this order was
+  there, and is not), and not by a count.
+- **An offer to buy for a market look.** `POST /api/bridge/market/buy`
+  with `{ typeID: 34, price: 0.01, quantity: 1, durationDays: 1,
+  confirm: true }` places one as Test Pilot at Jita for 100.01 ISK;
+  its number and region are in `marketProxy.GetCharOrders`, read by
+  the generic call (`mktcancel-live.js`). Each is taken down before
+  the look ends: the market's daemon keeps them, and the store's copy
+  puts back the wallet alone.
+- **A wallet's balance came as a number through the generic call on
+  the game port** (the page's verdict had its 0.01 ISK from the
+  page's own amount reader, which reads no real in its wrapper). The
+  route's helper took a real in its wrapper too, and the cancel's own
+  reader takes both; through the gateway the page's reading of it was
+  not looked at.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

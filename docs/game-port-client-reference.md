@@ -1593,6 +1593,15 @@ so and nothing is asked. No Tranquility recording has it. EveJS answers an empty
 and passes over a drone that is another's or is held. The page makes the call since `db24bfc6`
 (`web/src/bridge/boundEntityWrites.ts`), for the drones its window or its lost-drone check names.
 
+**A market order taken down, 2026-10-13** (`eve/client/script/ui/shared/market/quote.py`). `CancelOffer(order)`
+(299 to 303), from an order's own menu: the pilot is asked (`CancelMarketOrder`, 300 to 301), and then
+`marketQuote.CancelOrder(order.orderID, order.regionID)`, which is
+`GetMarketProxy().CancelCharOrder(orderID, regionID)` (`ui/services/marketsvc.py` 281 to 283), both off the
+order's own row. Nothing after: the server tells `OnOwnOrdersChanged`. No Tranquility recording has one. EveJS
+reads the order's number alone, refuses an order that is not the pilot's in a sentence, and answers nothing
+whether it took the order down or found it closed. The page makes the call since `95bb72b5`
+(`web/src/bridge/marketOrderWrites.ts`), and judges by its own reads of the pilot's orders and wallet.
+
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
 (`ACTIONS`, by `eventTypeID`) and a level it reckons from `absolutePoints` and the skill's rank
