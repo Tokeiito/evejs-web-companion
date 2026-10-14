@@ -77,6 +77,10 @@
   let draftBody = $state("");
   /** The message a reply answers (mailSvc.GetReplyWnd: isReplyTo=msg.messageID), 0 for a new message. */
   let replyTo = $state(0);
+  /** The mailing list written to (the compose window's toListID), or null. */
+  let toList = $state<number | null>(null);
+  /** The list written to while the pilot has it joined, as ValidateReceivers keeps it (evemail.py 2198 to 2201). */
+  const composeList = $derived(toList === null ? undefined : ($mail.lists ?? []).find((list) => list.listID === toList));
   /** The folder shown: a label's bit, all mails (null), or the trash; the inbox first, as the window opens (270). */
   let folder = $state<number | null>(MAIL_FOLDER_INBOX);
   /** The mailing list shown in place of a folder (evemail.py LoadMailinglistMails), or null. */
@@ -99,6 +103,10 @@
     create: "UI/Mail/Create",
     nameTooLong: "UI/Mail/NameIsTooLong",
     leaveList: "UI/Mail/LeaveMailingList",
+    sendToList: "UI/Mail/SendMailToList",
+    deleteList: "UI/Mail/DeleteMailingList",
+    mailEntry: "UI/Mail/MailEntry",
+    ml: "UI/Mail/ML",
     withCount: "UI/Mail/FolderLabelWithCount",
   } as const;
   /** The window's own folders, in its order: each its place, its word, and the page's own word. */
@@ -164,7 +172,7 @@
     no: "UI/Common/Buttons/No",
   } as const;
   /** The client's dialogs to be sure of a folder's write, by their names. */
-  const FOLDER_DIALOGS = ["EvemailMailMarkAllRead", "EvemailMailTrashAll", "EvemailMailRestoreAll", "EvemailMaillDeleteAll", "EvemailMailReadLabelGroup", "EvemailMailTrashLabelGroup"] as const;
+  const FOLDER_DIALOGS = ["EvemailMailMarkAllRead", "EvemailMailTrashAll", "EvemailMailRestoreAll", "EvemailMaillDeleteAll", "EvemailMailReadLabelGroup", "EvemailMailTrashLabelGroup", "EvemailMailReadMailinglistGroup", "EvemailMailTrashMailinglistGroup", "DeleteMailingList"] as const;
 
   /** A folder's write waiting on the pilot's yes: the client's dialog, what fills it, and what it does. */
   let confirming = $state<{ readonly dialog: string; readonly args: Record<string, string>; readonly act: () => Promise<void> } | null>(null);
@@ -391,6 +399,7 @@
   const draftCheck = $derived(
     checkDraft({
       recipientIDs: recipients.map((person) => person.characterID),
+      listed: composeList !== undefined,
       title: draftTitle,
       body: draftBody,
     }),
@@ -441,6 +450,7 @@
     void run(async () => {
       await flow.sendMail({
         toCharacterIDs: recipients.map((person) => person.characterID),
+        toListID: composeList?.listID ?? null,
         title: draftTitle.trim(),
         body: draftBody,
         quote,
@@ -455,6 +465,7 @@
         replyTo = 0;
         forwardFrom = 0;
         quote = "";
+        toList = null;
         tab = "inbox";
       }
     });
@@ -490,7 +501,8 @@
   }
 
   /**
-   * Reply (mailSvc.GetReplyWnd): to whoever wrote, or to all (the recipients less the pilot, and the sender); with
+   * Reply (mailSvc.GetReplyWnd): to whoever wrote, or to all (the recipients less the pilot, the sender, and the
+   * mailing list it went to, where the pilot has it joined: the compose window keeps no other, evemail.py 1816 to 1821); with
    * the client's "Re:" before the subject unless it begins so; answering that message; the message quoted.
    */
   function reply(header: MailHeaderRow, all = false): void {
@@ -501,6 +513,7 @@
       const re = word(MAIL_QUOTE_LABELS.re, "Re:");
       draftTitle = header.title.startsWith(re) ? header.title : `${re} ${header.title}`;
       draftBody = "";
+      toList = all ? header.toListID : null;
       replyTo = header.messageID;
       forwardFrom = 0;
       quote = await quoteOf(header);
@@ -512,6 +525,7 @@
   function forward(header: MailHeaderRow): void {
     void run(async () => {
       recipients = [];
+      toList = null;
       draftTitle = `FW: ${header.title}`;
       draftBody = "";
       replyTo = 0;
@@ -519,6 +533,25 @@
       quote = await quoteOf(header);
       tab = "compose";
     });
+  }
+
+  /** A list's Send Mail to Mailing List (evemail.py SendMailToList; mailSvc.SendMsgDlg): a new message to the list alone. */
+  function sendToList(listID: number): void {
+    recipients = [];
+    toList = listID;
+    draftTitle = "";
+    draftBody = "";
+    replyTo = 0;
+    forwardFrom = 0;
+    quote = "";
+    tab = "compose";
+  }
+
+  /** Whom a sent message went to, in the page's words. */
+  function sentTo(count: number, list: string | null): string {
+    const people = count === 1 ? "one person" : `${count} people`;
+    if (list === null) return people;
+    return count === 0 ? `the mailing list ${list}` : `the mailing list ${list} and ${people}`;
   }
 
   onMount(() => {
@@ -566,10 +599,7 @@
   {#if $mail.lastOutcome}
     {#if $mail.lastOutcome.applied}
       <p class="note">
-        Your message was sent to
-        {$mail.lastOutcome.recipientCount === 1
-          ? "one person"
-          : `${$mail.lastOutcome.recipientCount} people`}.
+        Your message was sent to {sentTo($mail.lastOutcome.recipientCount, $mail.lastOutcome.toList ?? null)}.
       </p>
     {:else if $mail.lastOutcome.declinedSilently}
       <!-- ⚠ SendMail answers a bare null with no reason. Say exactly that. -->
@@ -685,12 +715,33 @@
       <!-- The folder's own writes (evemail.py StaticMenu), each asked to be sure of in the client's words. -->
       <p class="controls mail-folder-actions">
         {#if viewingList !== null}
-          <!-- A list's own menu (evemail.py MaillistMenu): its owner's delete, and its by-list writes, are to come. -->
+          <!-- A list's own menu (evemail.py MaillistMenu 536 to 555), in its order: writing to it where the pilot is
+               not muted; its mails read and trashed, each asked to be sure of; and Leave, or for its owner Delete,
+               asked to be sure of. Its management, for an operator or owner, is to come. -->
           {@const shownList = ($mail.lists ?? []).find((each) => each.listID === viewingList)}
-          {#if shownList !== undefined && !shownList.isOwner}
-            <button type="button" class="minor" disabled={busy} onclick={() => { const id = shownList.listID; viewingList = null; void run(() => flow.leaveMailingList(id)); }}>
-              {word(FOLDER_WORDS.leaveList, "Leave Mailing List")}
+          {#if shownList !== undefined}
+            {@const listID = shownList.listID}
+            {@const listName = shownList.displayName}
+            {#if !shownList.isMuted}
+              <button type="button" class="minor" disabled={busy} onclick={() => sendToList(listID)}>
+                {word(FOLDER_WORDS.sendToList, "Send Mail to Mailing List")}
+              </button>
+            {/if}
+            <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "EvemailMailReadMailinglistGroup", args: { listName }, act: () => flow.readListMail(listID) })}>
+              {filledWord(FOLDER_WRITE_WORDS.markAll, "Mark All as Read ({folderName})", { folderName: listName })}
             </button>
+            <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "EvemailMailTrashMailinglistGroup", args: { listName }, act: () => flow.trashListMail(listID) })}>
+              {filledWord(FOLDER_WRITE_WORDS.trashAll, "Trash All ({folderName})", { folderName: listName })}
+            </button>
+            {#if shownList.isOwner}
+              <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "DeleteMailingList", args: { mailinglistName: listName }, act: async () => { await flow.deleteMailingList(listID); if (!(store.get().mail.lists ?? []).some((each) => each.listID === listID)) viewingList = null; } })}>
+                {word(FOLDER_WORDS.deleteList, "Delete Mailing List")}
+              </button>
+            {:else}
+              <button type="button" class="minor" disabled={busy} onclick={() => { viewingList = null; void run(() => flow.leaveMailingList(listID)); }}>
+                {word(FOLDER_WORDS.leaveList, "Leave Mailing List")}
+              </button>
+            {/if}
           {/if}
         {:else if folder === MAIL_FOLDER_TRASH}
           <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "EvemailMailRestoreAll", args: {}, act: () => flow.restoreAllMail() })}>
@@ -908,9 +959,15 @@
         <p class="empty">Nobody by that name.</p>
       {/if}
 
-      {#if recipients.length > 0}
+      {#if recipients.length > 0 || composeList !== undefined}
         <p class="note">
           Sending to:
+          {#if composeList !== undefined}
+            <!-- The list as the compose window writes it among its recipients (AddList, 1951 to 1959). -->
+            <button type="button" class="minor" disabled={busy} onclick={() => (toList = null)}>
+              {filledWord(FOLDER_WORDS.mailEntry, "{entryName} {entryType}", { entryName: composeList.displayName, entryType: word(FOLDER_WORDS.ml, "[ML]") })} ✕
+            </button>
+          {/if}
           {#each recipients as person (person.characterID)}
             <button
               type="button"
@@ -949,7 +1006,7 @@
         </div>
       {/if}
 
-      {#if !draftCheck.ok && (recipients.length > 0 || draftTitle !== "" || draftBody !== "")}
+      {#if !draftCheck.ok && (recipients.length > 0 || composeList !== undefined || draftTitle !== "" || draftBody !== "")}
         <p class="error">{draftCheck.message}</p>
       {/if}
 
@@ -968,6 +1025,7 @@
             replyTo = 0;
             forwardFrom = 0;
             quote = "";
+            toList = null;
             tab = "inbox";
           }}
         >

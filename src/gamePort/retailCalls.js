@@ -672,6 +672,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // A folder of the mail window marked read, trashed, and the trash restored (evemail.py StaticMenu). The gateway's
   // list has the mail manager's others, not these.
   "mailMgr.MarkAsReadByLabel", "mailMgr.MoveToTrashByLabel", "mailMgr.MoveAllFromTrash",
+  // A mailing list's mails marked read and trashed, and its owner's delete of it (evemail.py MaillistMenu). The
+  // gateway's list has none of them.
+  "mailMgr.MarkAsReadByList", "mailMgr.MoveToTrashByList", "mailingListsMgr.Delete",
 ]);
 
 /**
@@ -1755,6 +1758,7 @@ const RETAIL_CALLS = Object.freeze({
   "mailingListsMgr.Create": same("eve/client/script/ui/services/mail/mailingListsSvc.py:68", "sm.RemoteSvc('mailingListsMgr').Create(name, defaultAccess, defaultMemberAccess, cost): from the mail window's Create, the defaults 1, 1 and 0; answered the list's number. In no recording."),
   "mailingListsMgr.Join": same("eve/client/script/ui/services/mail/mailingListsSvc.py:75", "self.mailingListsMgr.Join(name): by the list's name; answered the list's KeyVal. In no recording."),
   "mailingListsMgr.Leave": same("eve/client/script/ui/services/mail/mailingListsSvc.py:81", "self.mailingListsMgr.Leave(listID). In no recording."),
+  "mailingListsMgr.Delete": same("eve/client/script/ui/services/mail/mailingListsSvc.py:91", "self.mailingListsMgr.Delete(listID): the owner's, from the list's menu after the DeleteMailingList dialog (evemail.py 505 to 508). In no recording."),
   "mailingListsMgr.GetJoinedLists": same("eve/client/script/ui/services/mail/mailingListsSvc.py:43", "self.mailingListsMgr.GetJoinedLists(), no arguments, as the mailing lists service starts, which it does as the mail window first draws its lists group; kept. Tranquility's recording of the mail window opened has it after GetLabels, answered {}."),
   "mailMgr.GetLabels": same(`${MAIL_SERVICES}/mailSvc.py:678`, "self.mailMgr.GetLabels(), no arguments; asked once as the mail window first draws its folders, and kept. Tranquility's recording of the mail window opened has it after SyncMail(None, 0), answered {}."),
   "mailMgr.GetMailHeaders": reshaped(`${MAIL_SERVICES}/mailSvc.py:193`, recipientsListed, "self.mailMgr.GetMailHeaders(toFetch.keys()): one list of the messages the sync gave a status of whose header the client does not hold. In no recording. The messages a list, as the client's are; the page's array goes as one."),
@@ -1765,8 +1769,10 @@ const RETAIL_CALLS = Object.freeze({
   "mailMgr.DeleteMail": reshaped(`${MAIL_SERVICES}/mailSvc.py:480`, recipientsListed, "self.mailMgr.DeleteMail(messageIDs): a list; the mail window's Delete of a trashed message. In no recording. The messages a list, as the client's are; the page's array goes as one."),
   "mailMgr.MarkAllAsRead": same(`${MAIL_SERVICES}/mailSvc.py:417`, "self.mailMgr.MarkAllAsRead(), no arguments; the mail window's Mark All as Read of All Mails, asked to be sure of. In no recording."),
   "mailMgr.MarkAsReadByLabel": same(`${MAIL_SERVICES}/mailSvc.py:428`, "self.mailMgr.MarkAsReadByLabel(labelID); the mail window's Mark All as Read of a folder, asked to be sure of. In no recording."),
+  "mailMgr.MarkAsReadByList": same(`${MAIL_SERVICES}/mailSvc.py:439`, "self.mailMgr.MarkAsReadByList(listID); a mailing list's Mark All as Read, asked to be sure of. In no recording."),
   "mailMgr.MoveAllToTrash": same(`${MAIL_SERVICES}/mailSvc.py:352`, "self.mailMgr.MoveAllToTrash(), no arguments; the mail window's Trash All of All Mails, asked to be sure of. In no recording."),
   "mailMgr.MoveToTrashByLabel": same(`${MAIL_SERVICES}/mailSvc.py:362`, "self.mailMgr.MoveToTrashByLabel(labelID); the mail window's Trash All of a folder, asked to be sure of. In no recording."),
+  "mailMgr.MoveToTrashByList": same(`${MAIL_SERVICES}/mailSvc.py:373`, "self.mailMgr.MoveToTrashByList(listID); a mailing list's Trash All, asked to be sure of. In no recording."),
   "mailMgr.MoveAllFromTrash": same(`${MAIL_SERVICES}/mailSvc.py:450`, "self.mailMgr.MoveAllFromTrash(), no arguments; the trash's Restore All, asked to be sure of. In no recording."),
   "mailMgr.CreateLabel": same(`${MAIL_SERVICES}/mailSvc.py:734`, "self.mailMgr.CreateLabel(name, color): from the labels window, the colour None; answered the label's bit. In no recording."),
   "mailMgr.EditLabel": same(`${MAIL_SERVICES}/mailSvc.py:715`, "self.mailMgr.EditLabel(labelID, name, color): a rename, the colour None (RenameLabelFromUI, 1290 to 1299). In no recording."),

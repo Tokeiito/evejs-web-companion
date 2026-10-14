@@ -1004,6 +1004,8 @@ export interface MailActionOutcome {
   readonly declinedSilently: boolean;
   /** How many people it went to. */
   readonly recipientCount: number;
+  /** The mailing list it went to, by name; none where it went to pilots only. */
+  readonly toList?: string | null;
   /**
    * What the server said, when it declined without giving a reason. Never a
    * cause this client invented.

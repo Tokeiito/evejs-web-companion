@@ -11,8 +11,10 @@
 //   the call      mailSvc.SendMail (959 to 993):
 //                   eveMisc.CSPAChargedAction('CSPAMailCheck', self.mailMgr, 'SendMail', toCharacterIDs, toListID,
 //                                             toCorpOrAllianceID, title, body, isReplyTo, isForwardedFrom)
-//                 the recipients a list, no list and no corporation from the window's plain message, and the message
-//                 it answers or forwards, 0 for none (the defaults, 959). Answered the message's number, or None,
+//                 the recipients a list; the mailing list where the window has one, which must be one the pilot has
+//                 joined (961 to 964, EveMailCanOnlySendToOwnMailinglists; the window keeps no other, 2198 to
+//                 2201); no corporation from the window's plain message; and the message it answers or forwards, 0
+//                 for none (the defaults, 959). Answered the message's number, or None,
 //                 where the client does nothing more; with a number it keeps the body and the header itself
 //                 (OnMailSent) and reads nothing again.
 //
@@ -28,9 +30,11 @@ import { MAIL_MAX_BODY, MAIL_MAX_RECIPIENTS, MAIL_MAX_TITLE } from "./mail.ts";
 import { mailMarkupOfTyped } from "./mailMarkup.ts";
 import { unwrapLong, type JsonValue } from "./wire.ts";
 
-/** A plain message from the compose window: to pilots, with a subject and a body. */
+/** A plain message from the compose window: to pilots, a mailing list, or both, with a subject and a body. */
 export interface MailToSend {
   readonly toCharacterIDs: readonly number[];
+  /** The mailing list it goes to, one the pilot has joined (the compose window's toListID); none for pilots only. */
+  readonly toListID?: number | null;
   readonly title: string;
   readonly body: string;
   /** The message quoted, in the mail's markup, sent after what is typed (mailSvc.GetReplyMessage); none for a new one. */
@@ -47,7 +51,8 @@ export interface MailToSend {
  */
 export async function sendMail(act: Ask, mail: MailToSend): Promise<number | null> {
   const recipients = [...new Set(mail.toCharacterIDs.filter((id) => Number.isSafeInteger(id) && id > 0))];
-  if (recipients.length === 0) throw Object.assign(new Error("Choose someone to send this to first."), { code: "MAIL_NO_RECIPIENT" });
+  const toListID = typeof mail.toListID === "number" && Number.isSafeInteger(mail.toListID) && mail.toListID > 0 ? mail.toListID : null;
+  if (recipients.length === 0 && toListID === null) throw Object.assign(new Error("Choose someone to send this to first."), { code: "MAIL_NO_RECIPIENT" });
   if (recipients.length > MAIL_MAX_RECIPIENTS) {
     throw Object.assign(new Error(`You can send to at most ${MAIL_MAX_RECIPIENTS} people at once.`), { code: "MAIL_TOO_MANY_RECIPIENTS" });
   }
@@ -57,7 +62,7 @@ export async function sendMail(act: Ask, mail: MailToSend): Promise<number | nul
   }
   const answer: JsonValue = await act("mailMgr", "SendMail", [
     // The body as the client's editor sends what is typed in it (bridge/mailMarkup.ts), the quote below it.
-    recipients, null, null, mail.title, mailMarkupOfTyped(mail.body) + (mail.quote ?? ""), mail.isReplyTo ?? 0, mail.isForwardedFrom ?? 0,
+    recipients, toListID, null, mail.title, mailMarkupOfTyped(mail.body) + (mail.quote ?? ""), mail.isReplyTo ?? 0, mail.isForwardedFrom ?? 0,
   ]);
   const messageID = Number(unwrapLong(answer) ?? Number.NaN);
   return Number.isSafeInteger(messageID) && messageID > 0 ? messageID : null;

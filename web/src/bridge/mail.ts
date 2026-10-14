@@ -238,10 +238,12 @@ export interface DraftCheck {
  */
 export function checkDraft(draft: {
   readonly recipientIDs: readonly number[];
+  /** Whether a mailing list the pilot has joined is among the recipients (the compose window's toListID, ClickSend 2250 to 2253). */
+  readonly listed?: boolean;
   readonly title: string;
   readonly body: string;
 }): DraftCheck {
-  if (draft.recipientIDs.length === 0) {
+  if (draft.recipientIDs.length === 0 && draft.listed !== true) {
     return { ok: false, message: "Choose someone to send this to first." };
   }
   if (draft.recipientIDs.length > MAIL_MAX_RECIPIENTS) {
@@ -550,6 +552,23 @@ export function mailboxAllRead(mailbox: DecodedMailbox, labelID: number | null):
 /** MoveAllToTrash and MoveToTrashByLabel (mailSvc.py 350 to 368): every message, or every one with the label, trashed. */
 export function mailboxAllTrashed(mailbox: DecodedMailbox, labelID: number | null): DecodedMailbox {
   return mailboxTrashed(mailbox, messagesWhere(mailbox, (status) => labelID === null || (status.labelMask & labelID) === labelID));
+}
+
+/** The mails whose headers say they went to the list. */
+function mailsToList(mailbox: DecodedMailbox, listID: number): ReadonlySet<number> {
+  return new Set(mailbox.messages.filter((header) => header.toListID === listID).map((header) => header.messageID));
+}
+
+/** MarkAsReadByList (mailSvc.py 437 to 445): every mail to the list, not trashed, read, and the read bit in its mask. */
+export function mailboxListRead(mailbox: DecodedMailbox, listID: number): DecodedMailbox {
+  const toList = mailsToList(mailbox, listID);
+  return mailboxMarkedRead(mailbox, messagesWhere(mailbox, (status) => !isTrashed(status) && toList.has(status.messageID)));
+}
+
+/** MoveToTrashByList (mailSvc.py 371 to 380): every mail to the list trashed. */
+export function mailboxListTrashed(mailbox: DecodedMailbox, listID: number): DecodedMailbox {
+  const toList = mailsToList(mailbox, listID);
+  return mailboxTrashed(mailbox, messagesWhere(mailbox, (status) => toList.has(status.messageID)));
 }
 
 /** MoveAllFromTrash (mailSvc.py 448 to 456): every message not trashed, the trashed bit taken off its mask. */

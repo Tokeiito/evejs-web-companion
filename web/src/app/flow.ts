@@ -64,6 +64,8 @@ import {
   mailboxAllRead,
   mailboxAllRestored,
   mailboxAllTrashed,
+  mailboxListRead,
+  mailboxListTrashed,
   mailboxLabelAssigned,
   mailboxLabelDropped,
   mailboxLabelRemoved,
@@ -1036,6 +1038,8 @@ export interface AppFlow {
   createMailingList(name: string): Promise<number | null>;
   /** Leave a mailing list, as its menu's Leave does. */
   leaveMailingList(listID: number): Promise<void>;
+  /** Delete a mailing list of the pilot's own, as its menu's Delete does. */
+  deleteMailingList(listID: number): Promise<void>;
   /** Mark messages read, or not read, as the mail window's Mark as Read and Mark as Unread do. */
   markMail(messageIDs: readonly number[], read: boolean): Promise<void>;
   /** Move messages to the trash, as the mail window's Trash does. */
@@ -1048,6 +1052,10 @@ export interface AppFlow {
   readAllMail(labelID: number | null): Promise<void>;
   /** Trash all mails, or a folder's (its label), as the mail window's Trash All does. */
   trashAllMail(labelID: number | null): Promise<void>;
+  /** Mark the mails to a mailing list read, as the list's Mark All as Read does. */
+  readListMail(listID: number): Promise<void>;
+  /** Trash the mails to a mailing list, as the list's Trash All does. */
+  trashListMail(listID: number): Promise<void>;
   /** Bring every trashed mail back, as the trash's Restore All does. */
   restoreAllMail(): Promise<void>;
   /** Delete every trashed mail, as the trash's Empty Trash does. */
@@ -5165,6 +5173,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
+  // DeleteMaillist (90 to 98), the owner's, after the window's DeleteMailingList dialog: the list let go. Its mails
+  // stay, as the client's do.
+  async function deleteMailingList(listID: number): Promise<void> {
+    if ((await mailingListWrite("Delete", [listID])) !== undefined) {
+      store.apply({ type: "mail/lists", lists: (store.mail.get().lists ?? []).filter((each) => each.listID !== listID) });
+    }
+  }
+
   // mailSvc.GetLabels (676 to 679): the pilot's labels, asked once as the mail window first draws its folders
   // (evemail.py LoadLeftSide, by GetAllLabels), by the generic call, and kept for the character.
   async function loadMailLabels(): Promise<void> {
@@ -5247,6 +5263,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function trashAllMail(labelID: number | null): Promise<void> {
     const leaving = store.mail.get().statuses.filter((status) => labelID === null || (status.labelMask & labelID) === labelID).map((status) => status.messageID);
     await mailCall(labelID === null ? "MoveAllToTrash" : "MoveToTrashByLabel", labelID === null ? [] : [labelID], (mailbox) => mailboxAllTrashed(mailbox, labelID), leaving);
+  }
+
+  // A mailing list's own (evemail.py MaillistMenu 545 to 549; 1145 to 1161), each asked to be sure of by the
+  // window: the mail manager asked with the list, and the mails to it, not trashed, read (mailSvc.py 437 to 445), or
+  // every mail to it trashed (371 to 380).
+  async function readListMail(listID: number): Promise<void> {
+    await mailCall("MarkAsReadByList", [listID], (mailbox) => mailboxListRead(mailbox, listID), []);
+  }
+
+  async function trashListMail(listID: number): Promise<void> {
+    const leaving = store.mail.get().messages.filter((header) => header.toListID === listID).map((header) => header.messageID);
+    await mailCall("MoveToTrashByList", [listID], (mailbox) => mailboxListTrashed(mailbox, listID), leaving);
   }
 
   async function restoreAllMail(): Promise<void> {
@@ -5708,6 +5736,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         applied: messageID !== null,
         declinedSilently: messageID === null,
         recipientCount: new Set(request.toCharacterIDs).size,
+        toList: request.toListID == null ? null : ((store.mail.get().lists ?? []).find((list) => list.listID === request.toListID)?.displayName ?? null),
         message: messageID === null ? "The server did not send that message, and did not say why." : null,
       },
     });
@@ -15781,12 +15810,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     joinMailingList,
     createMailingList,
     leaveMailingList,
+    deleteMailingList,
     markMail,
     trashMail,
     restoreMail,
     deleteMail,
     readAllMail,
     trashAllMail,
+    readListMail,
+    trashListMail,
     restoreAllMail,
     emptyMailTrash,
     createMailLabel,
