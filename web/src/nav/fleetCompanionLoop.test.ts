@@ -10,6 +10,7 @@ import {
   FLEET_COMPANION_READ_GRACE_MS,
   COMPANION_RESEND_WAIT_TICKS,
   COMPANION_RETRY_BACKOFF_TICKS,
+  COMPANION_ESCAPE_RETRY_BACKOFF_TICKS,
   TANK_LAYER_HURT_THRESHOLD,
   createFleetCompanion,
   decideCompanionAction,
@@ -89,6 +90,20 @@ const REQUEST = DEFAULT_FLEET_COMPANION_REQUEST;
 const SUN = 40000001;
 
 /** A grid with no station, but with the star every real system has. */
+/** The ship sitting where the server lands a warp to the sun: radius + 5,000 km. */
+function gridAtTheSun(): SpaceSnapshot {
+  const grid = gridWithStation(null) as unknown as { entities: unknown[] };
+  grid.entities.push({
+    itemID: SUN,
+    kind: "sun",
+    isSelf: false,
+    position: { x: 63_350_000 + 5_000_000, y: 0, z: 0 },
+    radius: 63_350_000,
+    mode: null,
+  });
+  return grid as unknown as SpaceSnapshot;
+}
+
 function gridWithSunOnly(): SpaceSnapshot {
   const grid = gridWithStation(null) as unknown as { entities: unknown[] };
   grid.entities.push({
@@ -573,7 +588,7 @@ test("an explicitly refused escape warp retries after tackle clears", async () =
   assert.equal(controller.snapshot().status, "running");
 });
 
-test("repeated definite escape refusals pause after a bounded number of attempts", async () => {
+test("repeated definite escape refusals back off briefly and then try again", async () => {
   let attempts = 0;
   const controller = createFleetCompanion({
     observe: async () => alone({ snapshot: gridWithSunOnly() }),
@@ -581,10 +596,15 @@ test("repeated definite escape refusals pause after a bounded number of attempts
     sleep: async () => {},
   });
   controller.start(REQUEST);
-  for (let tick = 0; tick < 8; tick += 1) await controller.tick();
+  for (let tick = 0; tick < 4; tick += 1) await controller.tick();
   assert.equal(attempts, 3);
-  assert.equal(controller.snapshot().status, "paused");
-  assert.match(controller.snapshot().why ?? "", /operator.*take over/i);
+  assert.equal(controller.snapshot().status, "running");
+  assert.match(controller.snapshot().why ?? "", /Trying again in a moment/);
+  for (let tick = 0; tick < COMPANION_ESCAPE_RETRY_BACKOFF_TICKS - 1; tick += 1) await controller.tick();
+  assert.equal(attempts, 3, "nothing sent inside the back-off");
+  await controller.tick();
+  assert.equal(attempts, 4, "the attempts start over once the back-off is spent");
+  assert.equal(controller.snapshot().status, "running");
 });
 
 test("an escape warp with a lost response is reconciled without retrying or leaving fleet early", async () => {
@@ -607,7 +627,11 @@ test("an escape warp with a lost response is reconciled without retrying or leav
   assert.deepEqual(attempted, [{ kind: "warp", targetID: SUN }, { kind: "leaveFleet" }]);
 });
 
-test("an escape warp that never becomes observable pauses instead of polling forever", async () => {
+test("an escape warp that never becomes observable is sent again after the wait, never paused on", async () => {
+  // ⚠ THE ESCAPE USED TO PAUSE HERE "for the operator", which left a hurt ship
+  // sitting in the danger it was escaping until a human noticed. Elapsed time
+  // is still never evidence of safety -- but it is not a reason to stop
+  // trying to GET safe either.
   let attempts = 0;
   const controller = createFleetCompanion({
     observe: async () => obs({ snapshot: gridWithSunOnly(), shieldRatio: 0.1,
@@ -616,10 +640,33 @@ test("an escape warp that never becomes observable pauses instead of polling for
     sleep: async () => {},
   });
   controller.start({ ...REQUEST, tankLayer: "shield" });
-  for (let tick = 0; tick < 70; tick += 1) await controller.tick();
-  assert.equal(attempts, 1);
-  assert.equal(controller.snapshot().status, "paused");
-  assert.match(controller.snapshot().why ?? "", /outcome could not be confirmed/i);
+  for (let tick = 0; tick < 60; tick += 1) await controller.tick();
+  assert.equal(attempts, 1, "no resend inside the wait");
+  for (let tick = 0; tick < 10; tick += 1) await controller.tick();
+  assert.equal(attempts, 2);
+  assert.equal(controller.snapshot().status, "running");
+});
+
+test("an escape warp a stall hid from every tick still counts once the ship is AT the sun", async () => {
+  // The latch that confirms the warp is set only by a tick that lands mid-warp.
+  // A stall can swallow all of them; where the ship now is is the reading that
+  // is left, and it must not leave the pilot waiting at the sun for a warp it
+  // already finished.
+  let arrived = false;
+  const attempted: FleetCompanionAction[] = [];
+  const controller = createFleetCompanion({
+    observe: async () => alone({ snapshot: arrived ? gridAtTheSun() : gridWithSunOnly() }),
+    issue: async (action) => { attempted.push(action); },
+    sleep: async () => {},
+  });
+  controller.start(REQUEST);
+  await controller.tick();
+  assert.deepEqual(attempted, [{ kind: "warp", targetID: SUN }]);
+  arrived = true;
+  await controller.tick();
+  assert.notDeepEqual(attempted.at(-1), { kind: "warp", targetID: SUN }, "not warped again");
+  assert.equal(attempted.filter((action) => action.kind === "warp").length, 1);
+  assert.equal(controller.snapshot().status, "running");
 });
 
 test("a refusal is SAID, in plain words, and never in the server's own vocabulary", async () => {
