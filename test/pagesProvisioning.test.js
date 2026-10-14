@@ -224,7 +224,8 @@ test("supplies whose move was not proven: a look is let through where every othe
   assert.equal(blocked.state, "BLOCKED");
   // The custody holds the pilot's writes back, the same replenishing among them; a review is a read, and says why.
   await assert.rejects(api.replenishProvisioning(blocked.operationID, "any", page.options), refused(409, "REPLENISHMENT_CUSTODY"));
-  await assert.rejects(api.stackItems("hangar", page.options), refused(409, "REPLENISHMENT_CUSTODY"));
+  // (The page's own stacking since 2026-10-14, the client's StackAll on the hangar's own inventory.)
+  await assert.rejects(api.bridgeDo(page.options)("invbroker", "StackAll", [4], null, "hangar"), refused(409, "REPLENISHMENT_CUSTODY"));
   const review = await api.reviewProvisioning(SUPPLIES, page.options);
   assert.deepEqual([review.canApply, review.pending], [false, [{ operationID: blocked.operationID, state: "BLOCKED" }]]);
   assert.equal(world.sent.length, 1);

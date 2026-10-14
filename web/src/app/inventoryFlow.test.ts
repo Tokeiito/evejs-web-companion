@@ -108,12 +108,50 @@ test("a failed container read is surfaced without blanking the other container",
 // (The flow's moveItem went on 2026-10-13 with the route it asked, which nothing of the page used: the page
 // moves things by the transfer.)
 
-test("stackContainer and boardShip post their BFF mutations then reload", async () => {
+/** A pilot docked at Jita (60003760), as the store has it once a character is chosen. */
+function dockedAtJita(store: ReturnType<typeof createClientStore>): void {
+  store.apply({
+    type: "character/online",
+    character: { characterID: 90000001, characterName: "Synthetic Pilot", stationID: 60003760, structureID: null, solarSystemID: 30000142, corporationID: 98000001 },
+    station: null,
+  });
+}
+
+/** The hangar with a second stack of Tritanium beside the first. */
+function twoStacks() {
+  const panel = inventoryPanel();
+  const items = [...panel.hangar.list.items, packedRow({ itemID: 101, typeID: 34, categoryID: 4, flagID: 4, quantity: 250, singleton: 0 })];
+  return { ...panel, hangar: { ...panel.hangar, list: { type: "list", items } } };
+}
+
+/** The generic call's answer to a call that answers nothing. */
+const ANSWERED = (body: Record<string, unknown>) => ({ status: 200, body: { ok: true, service: body.service, method: body.method, result: null, notifications: [] } });
+
+test("Stack All is the client's StackAll on the hangar's own inventory with the hangar's flag, asked only where two stacks of a type lie there", async () => {
+  const store = createClientStore();
+  dockedAtJita(store);
+  let panel: unknown = inventoryPanel();
+  const { fetch, requests } = makeFakeFetch((path, _method, body) => (path === "/api/bridge/call" ? ANSWERED(body) : { status: 200, body: panel }));
+  const flow = createAppFlow(store, { fetch });
+  await flow.loadInventory();
+
+  // One stack of each type: invCache's container lists and asks nothing (invCache.py 1065 to 1093).
+  await flow.stackContainer("hangar");
+  assert.equal(requests.some((r) => r.path === "/api/bridge/call"), false);
+
+  panel = twoStacks();
+  await flow.loadInventory();
+  await flow.stackContainer("hangar");
+  // invControllers.StackAll (382 to 388): the container's own StackAll(self.locationFlag), flagHangar for the hangar.
+  assert.deepEqual(requests.filter((r) => r.path === "/api/bridge/call").map((r) => r.body), [
+    { service: "invbroker", method: "StackAll", args: [4], kwargs: null, pilot: true, confirm: true, of: "hangar" },
+  ]);
+  assert.equal(requests.some((r) => r.path === "/api/bridge/inventory/stack"), false);
+});
+
+test("boardShip posts its BFF mutation then reloads", async () => {
   const store = createClientStore();
   const { fetch, requests } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/inventory/stack") {
-      return { status: 200, body: { ok: true } };
-    }
     if (path === "/api/bridge/ship/board") {
       return { status: 200, body: { ok: true, activeShipID: 200 } };
     }
@@ -121,14 +159,11 @@ test("stackContainer and boardShip post their BFF mutations then reload", async 
   });
   const flow = createAppFlow(store, { fetch });
 
-  await flow.stackContainer("hangar");
   await flow.boardShip(200);
 
-  const stack = requests.find((r) => r.path === "/api/bridge/inventory/stack");
-  assert.deepEqual(stack!.body, { target: "hangar" });
   const board = requests.find((r) => r.path === "/api/bridge/ship/board");
   assert.deepEqual(board!.body, { shipID: 200 });
-  assert.equal(requests.filter((r) => r.path === "/api/bridge/inventory").length, 2);
+  assert.equal(requests.filter((r) => r.path === "/api/bridge/inventory").length, 1);
 });
 
 /** The generic call's answer to a ship left. */
@@ -334,13 +369,16 @@ test("a leaving the server refuses is said in the panel, in its words", async ()
 
 test("a refused mutation is surfaced through the store, not thrown", async () => {
   const store = createClientStore();
+  dockedAtJita(store);
   const { fetch, requests } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/inventory/stack") {
+    if (path === "/api/bridge/call") {
       return { status: 403, body: { ok: false, error: "CALL_NOT_ALLOWED", message: "nope" } };
     }
-    return { status: 200, body: inventoryPanel() };
+    return { status: 200, body: twoStacks() };
   });
   const flow = createAppFlow(store, { fetch });
+  await flow.loadInventory();
+  const readsBefore = requests.filter((r) => r.path === "/api/bridge/inventory").length;
 
   await flow.stackContainer("hangar");
 
@@ -351,7 +389,7 @@ test("a refused mutation is surfaced through the store, not thrown", async () =>
     "This client is not allowed to ask the game server for that.",
   );
   // No reload after a failed mutation (only the failed stacking was requested).
-  assert.equal(requests.filter((r) => r.path === "/api/bridge/inventory").length, 0);
+  assert.equal(requests.filter((r) => r.path === "/api/bridge/inventory").length, readsBefore);
 });
 
 test("a lost session during a mutation flips the character offline and rethrows", async () => {

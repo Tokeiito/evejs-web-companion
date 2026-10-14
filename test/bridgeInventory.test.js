@@ -340,17 +340,8 @@ test("a bind handle is reused across reads (cached per semantic key)", async () 
 // (Two tests held the move route to Add on the hold's or the hangar's binding: the route went on 2026-10-13,
 // nothing of the page asking it. The page moves things by the transfer.)
 
-test("stack runs StackAll on the requested container", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  await apiRequest(baseUrl, "/api/bridge/inventory/stack", { method: "POST", body: { target: "cargo" } });
-  const stack = gateway.calls.boundCall.find((c) => c.method === "StackAll");
-  assert.ok(stack);
-  assert.deepEqual(stack.args, [5]);
-  assert.match(stack.boundHandle, /GetInventoryFromId/);
-});
+// (A test held the stack route to StackAll on the place's binding: the route went on 2026-10-14, the page's own
+// call taking its place.)
 
 test("board binds ship, boards, and makes the boarded ship the new active ship for cargo", async () => {
   const gateway = fakeGateway();
@@ -549,10 +540,10 @@ test("inventory routes require a live session and pass gateway refusals through"
   });
   const refused = await startTestServer({ gateway: refusingGateway });
   await selectOnServer(refused.baseUrl);
-  // (By the stack route, which the page asks: the move route this went by is gone.)
-  const stacked = await apiRequest(refused.baseUrl, "/api/bridge/inventory/stack", {
+  // (By the generic call on the hangar's own inventory, as the page stacks it: the routes this went by are gone.)
+  const stacked = await apiRequest(refused.baseUrl, "/api/bridge/call", {
     method: "POST",
-    body: { target: "hangar" },
+    body: { service: "invbroker", method: "StackAll", args: [4], kwargs: null, pilot: true, confirm: true, of: "hangar" },
   });
   assert.equal(stacked.response.status, 403);
   assert.equal(stacked.payload.error, "CALL_NOT_ALLOWED");
@@ -567,10 +558,10 @@ test("a lost persistent session during an inventory read drops the held handle",
   const { baseUrl } = await startTestServer({ gateway });
   await selectOnServer(baseUrl);
 
-  // (By the stack route, which the page asks: the move route this went by is gone.)
-  const stacked = await apiRequest(baseUrl, "/api/bridge/inventory/stack", {
+  // (By the generic call on the hangar's own inventory, as the page stacks it: the routes this went by are gone.)
+  const stacked = await apiRequest(baseUrl, "/api/bridge/call", {
     method: "POST",
-    body: { target: "hangar" },
+    body: { service: "invbroker", method: "StackAll", args: [4], kwargs: null, pilot: true, confirm: true, of: "hangar" },
   });
   assert.equal(stacked.response.status, 404);
   assert.equal(stacked.payload.error, "SESSION_NOT_FOUND");
