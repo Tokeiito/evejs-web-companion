@@ -1752,6 +1752,10 @@ const RETAIL_CALLS = Object.freeze({
   "facilityManager.GetMaxActivityModifiers": same(`${INDUSTRY}/facilitySvc.py:87`, "RemoteSvc('facilityManager').GetMaxActivityModifiers(), no arguments"),
 
   // ── mail and notifications ────────────────────────────────────────────────
+  "mailingListsMgr.Create": same("eve/client/script/ui/services/mail/mailingListsSvc.py:68", "sm.RemoteSvc('mailingListsMgr').Create(name, defaultAccess, defaultMemberAccess, cost): from the mail window's Create, the defaults 1, 1 and 0; answered the list's number. In no recording."),
+  "mailingListsMgr.Join": same("eve/client/script/ui/services/mail/mailingListsSvc.py:75", "self.mailingListsMgr.Join(name): by the list's name; answered the list's KeyVal. In no recording."),
+  "mailingListsMgr.Leave": same("eve/client/script/ui/services/mail/mailingListsSvc.py:81", "self.mailingListsMgr.Leave(listID). In no recording."),
+  "mailingListsMgr.GetJoinedLists": same("eve/client/script/ui/services/mail/mailingListsSvc.py:43", "self.mailingListsMgr.GetJoinedLists(), no arguments, as the mailing lists service starts, which it does as the mail window first draws its lists group; kept. Tranquility's recording of the mail window opened has it after GetLabels, answered {}."),
   "mailMgr.GetLabels": same(`${MAIL_SERVICES}/mailSvc.py:678`, "self.mailMgr.GetLabels(), no arguments; asked once as the mail window first draws its folders, and kept. Tranquility's recording of the mail window opened has it after SyncMail(None, 0), answered {}."),
   "mailMgr.GetMailHeaders": reshaped(`${MAIL_SERVICES}/mailSvc.py:193`, recipientsListed, "self.mailMgr.GetMailHeaders(toFetch.keys()): one list of the messages the sync gave a status of whose header the client does not hold. In no recording. The messages a list, as the client's are; the page's array goes as one."),
   "mailMgr.GetBody": same(`${MAIL_SERVICES}/mailSvc.py:512`, "self.mailMgr.GetBody(messageID, shouldMarkAsRead): whether to mark it read a bool, true for a message not read; answered the body deflated, or None. In no recording."),

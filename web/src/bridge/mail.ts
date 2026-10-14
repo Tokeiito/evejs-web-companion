@@ -588,6 +588,107 @@ export function mailboxLabelDropped(mailbox: DecodedMailbox, labelID: number): D
   return withStatuses(mailbox, messagesWhere(mailbox, (status) => (status.labelMask & labelID) > 0), (status) => ({ ...status, labelMask: status.labelMask & ~labelID }));
 }
 
+/** A mailing list the pilot has joined (mailingListsMgr.GetJoinedLists): its number, names, and the pilot's place in it. */
+export interface MailingList {
+  readonly listID: number;
+  readonly name: string;
+  readonly displayName: string;
+  readonly isMuted: boolean;
+  readonly isOperator: boolean;
+  readonly isOwner: boolean;
+}
+
+/** One list's KeyVal (GetJoinedLists' values, Join's answer). */
+export function mailingListOf(row: JsonValue | undefined, listID?: number): MailingList | null {
+  const id = listID ?? toNumber(readKeyVal(row, "id"));
+  if (!(id > 0)) {
+    return null;
+  }
+  return {
+    listID: id,
+    name: toText(readKeyVal(row, "name")),
+    displayName: toText(readKeyVal(row, "displayName")),
+    isMuted: readKeyVal(row, "isMuted") === true,
+    isOperator: readKeyVal(row, "isOperator") === true,
+    isOwner: readKeyVal(row, "isOwner") === true,
+  };
+}
+
+/** GetJoinedLists' answer, a dict of the lists joined by their numbers. */
+export function mailingListsOf(answer: JsonValue): readonly MailingList[] {
+  const lists: MailingList[] = [];
+  for (const [key, row] of readDictPairs(answer)) {
+    const list = mailingListOf(row as JsonValue, toNumber(key as JsonValue));
+    if (list !== null) lists.push(list);
+  }
+  return lists;
+}
+
+/** The most a mailing list's name may be (appConst.py 1794, mailingListMaxNameSize). */
+export const MAILING_LIST_NAME_MAX = 60;
+
+/**
+ * GetKeyAndNormalize (carbon/common/script/util/format.py 381 to 395): a list's name as its key, every space taken
+ * out, after its last backslash, case folded; and as shown, each run of a space made one.
+ */
+export function mailingListKeyAndName(name: string): readonly [string, string] {
+  let key = name;
+  let shown = name;
+  for (const character of name) {
+    if (/\s/.test(character)) {
+      key = key.split(character).join("");
+      while (shown.includes(character + character)) {
+        shown = shown.split(character + character).join(character);
+      }
+    }
+  }
+  return [(key.split("\\").at(-1) ?? key).toLowerCase(), shown];
+}
+
+/**
+ * The mailing lists service's notices (mailingListsSvc.py 144 to 180), worked into the lists kept for the pilot
+ * `characterID`: an operator, muted or cleared; one left by the pilot, or deleted, gone. Null for any other notice.
+ */
+export function mailingListsAfterNotice(lists: readonly MailingList[], method: string, args: readonly JsonValue[], characterID: number): readonly MailingList[] | null {
+  const listID = toNumber(args[0]);
+  const changed = (change: (list: MailingList) => MailingList) => lists.map((list) => (list.listID === listID ? change(list) : list));
+  switch (method) {
+    case "OnMailingListSetOperator":
+      return changed((list) => ({ ...list, isOperator: true, isMuted: false }));
+    case "OnMailingListSetMuted":
+      return changed((list) => ({ ...list, isMuted: true, isOperator: false }));
+    case "OnMailingListSetClear":
+      return changed((list) => ({ ...list, isMuted: false, isOperator: false }));
+    case "OnMailingListLeave":
+      return toNumber(args[1]) === characterID ? lists.filter((list) => list.listID !== listID) : lists;
+    case "OnMailingListDeleted":
+      return lists.filter((list) => list.listID !== listID);
+    default:
+      return null;
+  }
+}
+
+/** GetUnreadCounts' lists (mailSvc.py 249 to 276): the mails sent to each list, neither read nor trashed. */
+export function unreadByList(mailbox: DecodedMailbox): ReadonlyMap<number, number> {
+  const statusOf = new Map(mailbox.statuses.map((status) => [status.messageID, status] as const));
+  const counts = new Map<number, number>();
+  for (const header of mailbox.messages) {
+    const status = statusOf.get(header.messageID);
+    if (header.toListID === null || status === undefined || status.read || isTrashed(status)) continue;
+    counts.set(header.toListID, (counts.get(header.toListID) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/** GetMailsByLabelOrListID with a list (mailSvc.py 539 to 542): the mails sent to it, not trashed. */
+export function mailsOfList(mailbox: DecodedMailbox, listID: number): readonly MailHeaderRow[] {
+  const statusOf = new Map(mailbox.statuses.map((status) => [status.messageID, status] as const));
+  return mailbox.messages.filter((header) => {
+    const status = statusOf.get(header.messageID);
+    return header.toListID === listID && !(status !== undefined && isTrashed(status));
+  });
+}
+
 /** A list off the wire, its items; anything else, none. */
 function itemsOf(value: JsonValue | undefined): readonly JsonValue[] {
   return Array.isArray(value) ? value : listItems(value);

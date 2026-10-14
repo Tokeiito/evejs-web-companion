@@ -55,6 +55,10 @@ import {
   type MailBody,
   mailLabelOf,
   mailLabelsOf,
+  mailingListKeyAndName,
+  mailingListOf,
+  mailingListsAfterNotice,
+  mailingListsOf,
   mailboxAfterNotice,
   mailboxAfterSending,
   mailboxAllRead,
@@ -1024,6 +1028,14 @@ export interface AppFlow {
   quotedMailBody(messageID: number): Promise<string | null>;
   /** The pilot's own mail labels, asked once as the mail window first draws its folders (mailSvc.GetLabels), and kept. */
   loadMailLabels(): Promise<void>;
+  /** The mailing lists joined, asked once as the mail window first draws its lists group (GetJoinedLists), and kept. */
+  loadMailingLists(): Promise<void>;
+  /** Join a mailing list by its name, as the mail window's Join does: its number, or null where it was not joined. */
+  joinMailingList(name: string): Promise<number | null>;
+  /** Make a mailing list by a name, as the mail window's Create does: its number, or null where it was not made. */
+  createMailingList(name: string): Promise<number | null>;
+  /** Leave a mailing list, as its menu's Leave does. */
+  leaveMailingList(listID: number): Promise<void>;
   /** Mark messages read, or not read, as the mail window's Mark as Read and Mark as Unread do. */
   markMail(messageIDs: readonly number[], read: boolean): Promise<void>;
   /** Move messages to the trash, as the mail window's Trash does. */
@@ -2482,6 +2494,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (missionChange !== null) {
       onMissionChange(missionChange);
       return;
+    }
+    // The mailing lists service's notices (mailingListsSvc.py 144 to 180): the lists kept changed as it changes them.
+    const listsNow = store.mail.get().lists;
+    if (method !== null && listsNow !== null) {
+      const listsAfter = mailingListsAfterNotice(listsNow, method, args as readonly JsonValue[], store.station.get().online?.characterID ?? 0);
+      if (listsAfter !== null) {
+        store.apply({ type: "mail/lists", lists: listsAfter });
+        return;
+      }
     }
     // mailSvc.OnLabelsCreatedByExternal (1208 to 1211): a label made elsewhere is added to those kept.
     if (method === "OnLabelsCreatedByExternal") {
@@ -5074,6 +5095,74 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       mailboxLoaded(mailboxMarkedRead(store.mail.get(), [messageID]));
     }
     return body;
+  }
+
+  // mailingListsSvc.Initialize (40 to 45): the lists joined, asked once as the service starts, which it does as the
+  // mail window first draws its lists group (Tranquility's recording of the mail window opened asks it after
+  // GetLabels), by the generic call, and kept for the character.
+  async function loadMailingLists(): Promise<void> {
+    if (store.mail.get().lists !== null) {
+      return;
+    }
+    try {
+      const answer = await bridgeAsk("mailingListsMgr", "GetJoinedLists", []);
+      store.apply({ type: "mail/lists", lists: mailingListsOf(answer) });
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+      }
+      throw error;
+    }
+  }
+
+  // The mailing lists' writes (mailingListsSvc.py 67 to 88): the manager asked by the generic call, and the lists
+  // kept changed as the service changes them. Null, and the refusal said, where it refused.
+  async function mailingListWrite(method: string, args: readonly JsonValue[]): Promise<JsonValue | undefined> {
+    try {
+      return await bridgeDo("mailingListsMgr", method, [...args]);
+    } catch (error) {
+      throwIfRequestRetired(error);
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({ type: "mail/action-error", message: mailRefusalMessage(error) });
+      return undefined;
+    }
+  }
+
+  // JoinMailingList (74 to 78): the list its answer gives kept.
+  async function joinMailingList(name: string): Promise<number | null> {
+    const answer = await mailingListWrite("Join", [name]);
+    const list = answer === undefined ? null : mailingListOf(answer);
+    if (list === null) {
+      return null;
+    }
+    store.apply({ type: "mail/lists", lists: [...(store.mail.get().lists ?? []).filter((each) => each.listID !== list.listID), list] });
+    return list.listID;
+  }
+
+  // CreateMailingList (67 to 72): Create(name, mailingListAllowed, mailingListMemberDefault, 0), and the list kept
+  // by its name's key and normalized name, the pilot its owner.
+  async function createMailingList(name: string): Promise<number | null> {
+    const answer = await mailingListWrite("Create", [name, 1, 1, 0]);
+    const listID = Number(answer);
+    if (answer === undefined || !Number.isSafeInteger(listID) || listID <= 0) {
+      return null;
+    }
+    const [key, displayName] = mailingListKeyAndName(name);
+    const list = { listID, name: key, displayName, isMuted: false, isOperator: false, isOwner: true };
+    store.apply({ type: "mail/lists", lists: [...(store.mail.get().lists ?? []).filter((each) => each.listID !== listID), list] });
+    return listID;
+  }
+
+  // LeaveMaillist (80 to 88): the list let go.
+  async function leaveMailingList(listID: number): Promise<void> {
+    if ((await mailingListWrite("Leave", [listID])) !== undefined) {
+      store.apply({ type: "mail/lists", lists: (store.mail.get().lists ?? []).filter((each) => each.listID !== listID) });
+    }
   }
 
   // mailSvc.GetLabels (676 to 679): the pilot's labels, asked once as the mail window first draws its folders
@@ -15688,6 +15777,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     openMail,
     quotedMailBody,
     loadMailLabels,
+    loadMailingLists,
+    joinMailingList,
+    createMailingList,
+    leaveMailingList,
     markMail,
     trashMail,
     restoreMail,

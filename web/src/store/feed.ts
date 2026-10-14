@@ -96,7 +96,7 @@ import type { BoundDogmaAllInfo } from "../bridge/boundDogma.ts";
 import type { SkillHistoryLine } from "../bridge/skillHistoryPanel.ts";
 import type { EmploymentHistory } from "../bridge/employmentHistory.ts";
 import type { SkillNotification } from "../bridge/skillNotifications.ts";
-import type { MailLabel } from "../bridge/mail.ts";
+import type { MailLabel, MailingList } from "../bridge/mail.ts";
 import type { BoundFleet } from "../bridge/boundFleet.ts";
 import type { FleetBroadcast } from "../bridge/fleetBroadcasts.ts";
 import type { JamEvent } from "../bridge/jamNotifications.ts";
@@ -422,6 +422,8 @@ export type FeedEvent =
   | { readonly type: "mail/cleared" }
   // The pilot's own labels, as the mail service keeps them (mailSvc.GetLabels; a label made elsewhere added).
   | { readonly type: "mail/labels"; readonly labels: readonly MailLabel[] }
+  // The mailing lists joined, as the mailing lists service keeps them (GetJoinedLists; its notices).
+  | { readonly type: "mail/lists"; readonly lists: readonly MailingList[] }
   // Goal R17 (Slice B) — the Contracts page. READS ONLY: every contract mutator
   // is refused at the gateway, so there is no action event here. Each read
   // keeps its own error, so a public browse that failed never hides the

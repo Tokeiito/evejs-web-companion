@@ -28,7 +28,10 @@
     MAIL_FOLDER_SENT,
     MAIL_FOLDER_TRASH,
     mailsInFolder,
+    mailsOfList,
+    unreadByList,
     MAIL_LABEL_MAX,
+    MAILING_LIST_NAME_MAX,
     unreadByLabel,
   } from "../bridge/mail.ts";
   import { MAIL_QUOTE_LABELS, mailBodyLines, mailQuoteMarkup } from "../bridge/mailMarkup.ts";
@@ -76,6 +79,8 @@
   let replyTo = $state(0);
   /** The folder shown: a label's bit, all mails (null), or the trash; the inbox first, as the window opens (270). */
   let folder = $state<number | null>(MAIL_FOLDER_INBOX);
+  /** The mailing list shown in place of a folder (evemail.py LoadMailinglistMails), or null. */
+  let viewingList = $state<number | null>(null);
 
   /** The folder words, by their labels (evemail.py GetStaticLabelsGroups; LoadLeftSide; GetPanelLabel). */
   const FOLDER_WORDS = {
@@ -86,6 +91,14 @@
     alliance: "UI/Common/Groups/Alliance",
     trash: "UI/Mail/LabelTrash",
     labels: "UI/Mail/Labels",
+    lists: "UI/Mail/MailingLists",
+    addList: "UI/Mail/AddMailingList",
+    createOrJoin: "UI/Mail/CreateOrJoinML",
+    listName: "UI/Mail/MailingListName",
+    join: "UI/Mail/Join",
+    create: "UI/Mail/Create",
+    nameTooLong: "UI/Mail/NameIsTooLong",
+    leaveList: "UI/Mail/LeaveMailingList",
     withCount: "UI/Mail/FolderLabelWithCount",
   } as const;
   /** The window's own folders, in its order: each its place, its word, and the page's own word. */
@@ -99,7 +112,46 @@
   ];
   const unreadCounts = $derived(unreadByLabel($mail));
   const ownLabels = $derived([...($mail.labels ?? [])].sort((left, right) => left.name.toLowerCase().localeCompare(right.name.toLowerCase())));
-  const shownMessages = $derived(mailsInFolder($mail, folder));
+  const shownMessages = $derived(viewingList !== null ? mailsOfList($mail, viewingList) : mailsInFolder($mail, folder));
+  const listUnread = $derived(unreadByList($mail));
+  /** The lists joined, by name (GetMaillistSubContent). */
+  const joinedLists = $derived([...($mail.lists ?? [])].sort((left, right) => left.displayName.toLowerCase().localeCompare(right.displayName.toLowerCase())));
+
+  let addingList = $state(false);
+  let listNameInput = $state("");
+
+  /**
+   * MailinglistWnd's Join and Create (evemail.py 2897 to 2919): an empty name refused (LookupStringMinimum), a
+   * made one over sixty refused (UI/Mail/NameIsTooLong); then asked, and the window put away where it was done.
+   */
+  function addList(create: boolean): void {
+    const name = listNameInput;
+    labelNote = "";
+    if (name.trim() === "") {
+      labelNote = filledWord("dialog:LookupStringMinimum/body", "Please type in at least {minimum} character", { minimum: "1" });
+      return;
+    }
+    if (create && name.length > MAILING_LIST_NAME_MAX) {
+      labelNote = word(FOLDER_WORDS.nameTooLong, "The name is too long.");
+      return;
+    }
+    void run(async () => {
+      const listID = create ? await flow.createMailingList(name) : await flow.joinMailingList(name);
+      if (listID !== null) {
+        listNameInput = "";
+        addingList = false;
+      }
+    });
+  }
+
+  /** Who sent a mail: a list's own mail named by the list (mailSvc.py 1145 to 1146), anyone else by name. */
+  function senderName(header: MailHeaderRow): string {
+    if (header.toListID !== null && header.senderID === header.toListID) {
+      const list = ($mail.lists ?? []).find((each) => each.listID === header.toListID);
+      if (list !== undefined) return list.displayName;
+    }
+    return personName(header.senderID);
+  }
 
   /** The words of a folder's writes, by their labels (evemail.py StaticMenu), and the dialogs' answers. */
   const FOLDER_WRITE_WORDS = {
@@ -315,7 +367,7 @@
       return extra > 0 ? `${shown.join(", ")} and ${extra} more` : shown.join(", ");
     }
     if (audience.kind === "list") {
-      return "a mailing list";
+      return ($mail.lists ?? []).find((list) => list.listID === header.toListID)?.displayName ?? "a mailing list";
     }
     if (audience.kind === "corporation") {
       return `everyone at ${ownerName(audience.ownerID)}`;
@@ -479,6 +531,7 @@
     void run(async () => {
       await flow.loadMail();
       await flow.loadMailLabels();
+      await flow.loadMailingLists();
     });
   });
 </script>
@@ -540,7 +593,22 @@
     <!-- The labels window (evemail.py ManageLabelsBase): a new label by name, and each of the pilot's own renamed or deleted. -->
     <p class="controls">
       <button type="button" class="minor" onclick={() => (managingLabels = !managingLabels)}>{word(LABEL_WORDS.manage, "Manage Labels")}</button>
+      <!-- The mail window's Add Mailing List (evemail.py 237): MailinglistWnd, a name, Join or Create. -->
+      <button type="button" class="minor" onclick={() => (addingList = !addingList)}>{word(FOLDER_WORDS.addList, "Add Mailing List")}</button>
     </p>
+    {#if addingList}
+      <section class="bulk mail-add-list">
+        <h3>{word(FOLDER_WORDS.createOrJoin, "Create or Join Mailing List")}</h3>
+        <p class="controls">
+          <label>
+            {word(FOLDER_WORDS.listName, "Mailing List Name")}
+            <input type="text" maxlength={MAILING_LIST_NAME_MAX} bind:value={listNameInput} />
+          </label>
+          <button type="button" disabled={busy} onclick={() => addList(false)}>{word(FOLDER_WORDS.join, "Join")}</button>
+          <button type="button" class="minor" disabled={busy} onclick={() => addList(true)}>{word(FOLDER_WORDS.create, "Create")}</button>
+        </p>
+      </section>
+    {/if}
     {#if labelNote !== ""}
       <p class="note">{labelNote}</p>
     {/if}
@@ -588,28 +656,43 @@
     {/if}
     {#if !$mail.loaded}
       <p class="note">Fetching your mail…</p>
-    {:else if $mail.messages.length === 0}
-      <p class="empty">You have no mail.</p>
     {:else}
-      <!-- The window's folders, then the pilot's labels by name (evemail.py LoadLeftSide). -->
+      <!-- The window's folders, then the pilot's labels by name (evemail.py LoadLeftSide), whatever the mailbox holds. -->
       <nav class="mail-folders">
         {#each SYSTEM_FOLDERS as [id, label, own] (label)}
-          <button type="button" class:active={folder === id} class:mail-bold={folderUnread(id) > 0} onclick={() => (folder = id)}>
+          <button type="button" class:active={viewingList === null && folder === id} class:mail-bold={folderUnread(id) > 0} onclick={() => { folder = id; viewingList = null; }}>
             {folderText(word(label, own), id)}
           </button>
         {/each}
         {#if ownLabels.length > 0}
           <span class="mail-folders-group">{word(FOLDER_WORDS.labels, "Labels")}</span>
           {#each ownLabels as label (label.labelID)}
-            <button type="button" class:active={folder === label.labelID} class:mail-bold={folderUnread(label.labelID) > 0} onclick={() => (folder = label.labelID)}>
+            <button type="button" class:active={viewingList === null && folder === label.labelID} class:mail-bold={folderUnread(label.labelID) > 0} onclick={() => { folder = label.labelID; viewingList = null; }}>
               {folderText(label.name, label.labelID)}
+            </button>
+          {/each}
+        {/if}
+        {#if joinedLists.length > 0}
+          <span class="mail-folders-group">{word(FOLDER_WORDS.lists, "Mailing Lists")}</span>
+          {#each joinedLists as list (list.listID)}
+            {@const unread = listUnread.get(list.listID) ?? 0}
+            <button type="button" class:active={viewingList === list.listID} class:mail-bold={unread > 0} onclick={() => (viewingList = list.listID)}>
+              {unread > 0 ? filledWord(FOLDER_WORDS.withCount, "{folderName} ({unreadCount})", { folderName: list.displayName, unreadCount: String(unread) }) : list.displayName}
             </button>
           {/each}
         {/if}
       </nav>
       <!-- The folder's own writes (evemail.py StaticMenu), each asked to be sure of in the client's words. -->
       <p class="controls mail-folder-actions">
-        {#if folder === MAIL_FOLDER_TRASH}
+        {#if viewingList !== null}
+          <!-- A list's own menu (evemail.py MaillistMenu): its owner's delete, and its by-list writes, are to come. -->
+          {@const shownList = ($mail.lists ?? []).find((each) => each.listID === viewingList)}
+          {#if shownList !== undefined && !shownList.isOwner}
+            <button type="button" class="minor" disabled={busy} onclick={() => { const id = shownList.listID; viewingList = null; void run(() => flow.leaveMailingList(id)); }}>
+              {word(FOLDER_WORDS.leaveList, "Leave Mailing List")}
+            </button>
+          {/if}
+        {:else if folder === MAIL_FOLDER_TRASH}
           <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "EvemailMailRestoreAll", args: {}, act: () => flow.restoreAllMail() })}>
             {word(FOLDER_WRITE_WORDS.restoreAll, "Restore All")}
           </button>
@@ -633,7 +716,9 @@
           </button>
         {/if}
       </p>
-      {#if shownMessages.length === 0}
+      {#if $mail.messages.length === 0}
+        <p class="empty">You have no mail.</p>
+      {:else if shownMessages.length === 0}
         <p class="empty">Nothing in this folder.</p>
       {:else}
       <div class="table-wrap overflow-x-auto">
@@ -651,7 +736,7 @@
           <tbody>
             {#each shownMessages as header (header.messageID)}
               <tr class:unread={isUnread(header.messageID)}>
-                <td data-label="From">{personName(header.senderID)}</td>
+                <td data-label="From">{senderName(header)}</td>
                 <td data-label="Subject">{header.title || "(no subject)"}</td>
                 <td data-label="To">{audienceText(header)}</td>
                 <td data-label="Arrived">{whenText(header.sentDate)}</td>

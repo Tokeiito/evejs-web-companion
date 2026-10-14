@@ -335,6 +335,7 @@ const INITIAL_MARKET: MarketState = Object.freeze({
 const INITIAL_MAIL: MailState = Object.freeze({
   messages: Object.freeze([]) as readonly MailHeaderRow[],
   labels: null,
+  lists: null,
   statuses: Object.freeze([]) as readonly MailStatusRow[],
   unreadCount: 0,
   open: null as MailOpenMessage | null,
@@ -1649,6 +1650,9 @@ export function createClientStore(): ClientStore {
         break;
       case "mail/labels":
         mail.set({ ...mail.get(), labels: [...event.labels] });
+        break;
+      case "mail/lists":
+        mail.set({ ...mail.get(), lists: [...event.lists] });
         break;
       case "mail/action-error":
         mail.set({ ...mail.get(), actionError: event.message });
