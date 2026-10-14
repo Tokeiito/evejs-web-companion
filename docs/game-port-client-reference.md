@@ -1602,6 +1602,20 @@ reads the order's number alone, refuses an order that is not the pilot's in a se
 whether it took the order down or found it closed. The page makes the call since `95bb72b5`
 (`web/src/bridge/marketOrderWrites.ts`), and judges by its own reads of the pilot's orders and wallet.
 
+**A module fitted and unfitted, 2026-10-13** (`eve/client/script/dogma/clientDogmaLocation.py`,
+`ui/shared/fitting/fittingSlotController.py`, `ui/shared/fittingScreen/tryFit.py`,
+`ui/shared/fitting/fittingUtil.py`). Into a slot: `TryFit` (669 to 673),
+`invCache.GetInventoryFromId(shipID, locationID=session.stationid).Add(item.itemID, item.locationID, qty=1,
+flag=flagID)`; `invCache`'s own `Add` asks `CheckCanFit` first for a fitting flag or `flagAutoFit` (1005). To
+no slot: `shipInv.moniker.MultiAdd(itemIDs, sourceID, flag=const.flagAutoFit)` (`tryFit.py` 135,
+`fittingUtil.py` 157), past `invCache`'s own. Unfitted (`UnfitModule`, 217 to 243): a module in a weapon bank is
+asked about and ungrouped, its charge taken out, and then
+`invCache.GetInventory(const.containerHangar).Add(moduleID, shipID, flag=const.flagHangar)` docked, or the ship's
+own `Add(moduleID, shipID, qty=None, flag=const.flagCargo)` in space. EveJS moves nothing of another pilot's
+(`FakeItemNotFound`, asked live for `Add`), answers `Add` with the item's number and `MultiAdd` with `True`,
+and an `Add` of a thing not there with None. The page makes the calls since `71601be5`
+(`web/src/bridge/fitModule.ts`), and judges by its own reads of the slots.
+
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
 (`ACTIONS`, by `eventTypeID`) and a level it reckons from `absolutePoints` and the skill's rank

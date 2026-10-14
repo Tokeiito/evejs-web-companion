@@ -3678,6 +3678,23 @@ Take these defaults, and list each under "For the operator" in the log so they c
   unit that finds it so lays it out in the Next list, measures its
   unknown of the server's, and builds nothing: the making is the next
   unit's.
+- **A recording is read for each call's form before a verdict is
+  believed.** The script's verdicts were right and the wire was not:
+  the game port gave the unfittings a quantity the client never names.
+  Describe the recording and set each call beside the client's line.
+- **The client's gesture names the method, not the route's.** The
+  route's fit to no slot was one `Add` with flag 0; the client's is
+  `MultiAdd` on the ship's inventory. Search the client for the flag
+  or the constant (`flagAutoFit`) before keeping the route's method.
+- **A refit of the prepared ship wants a skill**: `/giveskill me 3394
+  5` (Hull Upgrades), for its Damage Control II. The Fitting window's
+  fit is "Pick up" on the module, then "Fit here" on a slot or "Fit …
+  in the first free slot" (`fitmod-live.js`).
+- **The gateway's fitting read has packed rows by field**
+  (`{ type: "packedrow", fields }`), the game port's by list; a
+  script reads both.
+- **The working tree ends lines CRLF.** A patch script's own check of
+  a find reads the file with its endings made LF, as `patch.js` does.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
