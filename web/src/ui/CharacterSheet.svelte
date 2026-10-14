@@ -23,7 +23,8 @@
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { isSessionLost } from "../app/flow.ts";
   import { formatSecurityStatus } from "../bridge/characterSheet.ts";
-  import { formatTemplate } from "../bridge/clientWords.ts";
+  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import { EMPLOYMENT_WORD_LABELS, type EmploymentLine } from "../bridge/employmentHistory.ts";
   import {
     SKILL_HISTORY_DATE_LABEL,
     SKILL_HISTORY_HEADER_LABELS,
@@ -65,12 +66,12 @@
 
   function refresh(): void {
     void run(async () => {
-      await Promise.all([flow.loadCharacterSheet(), flow.loadSkillHistory()]);
+      await Promise.all([flow.loadCharacterSheet(), flow.loadSkillHistory(), flow.loadEmploymentHistory()]);
     });
   }
 
   onMount(() => {
-    flow.requestWords(SKILL_HISTORY_WORD_LABELS);
+    flow.requestWords([...SKILL_HISTORY_WORD_LABELS, ...Object.values(EMPLOYMENT_WORD_LABELS)]);
     refresh();
   });
 
@@ -98,6 +99,31 @@
     return formatTemplate(word(SKILL_HISTORY_DATE_LABEL, "{[datetime]datetime}"), { datetime: logDate }, {
       nameOf: (kind, id) => resolvedName($names.resolved, kind, id, ""),
     });
+  }
+
+  /** A client's template filled, in the page's own words where the install has none. */
+  function filled(label: string, own: string, args: Record<string, string | number>): string {
+    return formatTemplate(word(label, own), args, { nameOf: (kind, id) => resolvedName($names.resolved, kind, id, "") });
+  }
+
+  /**
+   * A line of the employment tab as the client makes it (infosvc.py 2849 to 2864): the corporation, "(Closed)"
+   * beside a closed one, from its date to the next's or to this day, and the days between.
+   */
+  function employmentText(line: EmploymentLine): string {
+    const name = resolvedName($names.resolved, "corporation", line.corporationID, "Unknown corporation");
+    const corpName = line.deleted ? filled(EMPLOYMENT_WORD_LABELS.closed, "{corpName} (Closed)", { corpName: name }) : name;
+    const fromDate = historyDate(line.fromDate);
+    const text = line.toDate === null
+      ? filled(EMPLOYMENT_WORD_LABELS.toThisDay, "{corpName} {fromDate} to this day", { corpName, fromDate })
+      : filled(EMPLOYMENT_WORD_LABELS.fromTo, "{corpName} {fromDate} to {toDate}", { corpName, fromDate, toDate: historyDate(line.toDate) });
+    const days = filled(EMPLOYMENT_WORD_LABELS.days, "{numDays} days", { numDays: line.days }).trim();
+    return plainText(`${text} (${days})`);
+  }
+
+  /** A transfer as the client lists it (infosvc.py 2887): the label given the date itself, which it formats. */
+  function transferText(date: string): string {
+    return plainText(filled(EMPLOYMENT_WORD_LABELS.transferredOn, "Transferred {[datetime]transferDate}", { transferDate: date }));
   }
 
   // The security-status colour band, matching the retail scale: positive is
@@ -208,6 +234,28 @@
         <li>{resolvedName($names.resolved, "type", implant.typeID, "Unknown implant")}</li>
       {/each}
     </ul>
+  {/if}
+
+  <!-- The employment history, as the client's History panel's employment tab lists it (its first tab). -->
+  <h3>Employment history</h3>
+  {#if $sheet.employmentHistoryError}
+    <p class="error">{$sheet.employmentHistoryError}</p>
+  {:else if $sheet.employmentHistory === null}
+    <p class="empty">Reading your employment history…</p>
+  {:else}
+    <ul class="employment-history">
+      {#each $sheet.employmentHistory.lines as line, place (place)}
+        <li>{employmentText(line)}</li>
+      {/each}
+    </ul>
+    {#if $sheet.employmentHistory.transfers.length > 0}
+      <h4>{plainText(word(EMPLOYMENT_WORD_LABELS.transfers, "Character Transfers"))}</h4>
+      <ul class="employment-history">
+        {#each $sheet.employmentHistory.transfers as date, place (place)}
+          <li>{transferText(date)}</li>
+        {/each}
+      </ul>
+    {/if}
   {/if}
 
   <!-- The skill history, as the client's History panel's skills tab lists it. No rows is a real answer. -->

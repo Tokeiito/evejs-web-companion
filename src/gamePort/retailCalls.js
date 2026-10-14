@@ -666,6 +666,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // gateway the BFF asks the park's CmdDock of the structure and the ship's Undock in their place (server.js,
   // dispatchPlaceChangeWrite).
   "structureDocking.Dock", "structureDocking.Undock",
+  // A pilot's employment record and character transfers, which the client's History panel's employment tab asks
+  // (infosvc.py 2842). The gateway's list has nothing of the corporation service's.
+  "corporationSvc.GetEmployementRecordAndCharacterTransfers",
 ]);
 
 /**
@@ -1611,6 +1614,7 @@ const RETAIL_CALLS = Object.freeze({
     },
   }),
   "structureDocking.Dock": same("eve/client/script/ui/services/structure/structureDocking.py:69", "RemoteSvc('structureDocking').Dock(structureID, session.shipid), by the service's name, once the autopilot has the ship within 2,500 m of the structure (80). Recorded on Tranquility with the two IDs, the structure's and the ship's."),
+  "corporationSvc.GetEmployementRecordAndCharacterTransfers": same("eve/client/script/ui/shared/info/infosvc.py:2842", "RemoteSvc('corporationSvc').GetEmployementRecordAndCharacterTransfers(itemID), CCP's spelling, with the character the History panel's employment tab is of (session.charid). In no recording."),
   "structureDocking.Undock": same("eve/client/script/ui/services/structure/structureDocking.py:36", "RemoteSvc('structureDocking').Undock(session.structureid, shipID, ignoreContraband=...), by the service's name, through sessionMgr.PerformSessionChange('undock', ...), the ship None where it is the structure; no online modules named. Recorded on Tranquility with the two IDs and ignoreContraband False."),
   "beyonce.CmdDock": same("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:517", "bp.CmdDock(itemID, session.shipid), on the ballpark's object, through sessionMgr.PerformSessionChange('dock', ...). Recorded on Tranquility with the two IDs."),
   "beyonce.CmdFollowBall": reshaped("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:302", following, "bp.CmdFollowBall(targetID, range), on the ballpark's object: the menu's approach with const.approachRange, keep at range with the pilot's distance (229), the autopilot's with 0.0 (autopilot.py 437). Not sent for the pilot's own ship. Recorded on Tranquility as (itemID, 50), and at 5000 and 7500, each a whole number; the autopilot's twice, its range a float of nought, which is how a range of nought goes."),

@@ -4,6 +4,7 @@
 
 import type { BoundDogmaAllInfo } from "../bridge/boundDogma.ts";
 import type { SkillHistoryLine } from "../bridge/skillHistoryPanel.ts";
+import type { EmploymentHistory } from "../bridge/employmentHistory.ts";
 import type { MissionTimes } from "../bridge/missionTime.ts";
 import type { MissionObjectives } from "../bridge/missionObjectives.ts";
 import type { MiningBurstServices, CompressionServiceObservation } from "../bridge/miningSupportServices.ts";
@@ -1540,6 +1541,12 @@ export interface CharacterSheetState {
    */
   readonly skillHistory: readonly SkillHistoryLine[] | null;
   readonly skillHistoryError: string | null;
+  /**
+   * The employment history, as the client's panel makes it (bridge/employmentHistory.ts): null while unread and
+   * where it was not read (why is in `employmentHistoryError`).
+   */
+  readonly employmentHistory: EmploymentHistory | null;
+  readonly employmentHistoryError: string | null;
   readonly loaded: boolean;
 }
 

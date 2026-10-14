@@ -525,6 +525,8 @@ const INITIAL_CHARACTER_SHEET: CharacterSheetState = Object.freeze({
   cloneError: null,
   skillHistory: null,
   skillHistoryError: null,
+  employmentHistory: null,
+  employmentHistoryError: null,
   loaded: false,
 });
 
@@ -1921,14 +1923,19 @@ export function createClientStore(): ClientStore {
           homeStationError: event.homeStationError,
           clone: event.clone,
           cloneError: event.cloneError,
-          // The skill history is its own read, and stays as that read left it.
+          // The skill history and the employment history are their own reads, and stay as those reads left them.
           skillHistory: characterSheet.get().skillHistory,
           skillHistoryError: characterSheet.get().skillHistoryError,
+          employmentHistory: characterSheet.get().employmentHistory,
+          employmentHistoryError: characterSheet.get().employmentHistoryError,
           loaded: true,
         });
         break;
       case "character-sheet/skill-history":
         characterSheet.set({ ...characterSheet.get(), skillHistory: event.lines, skillHistoryError: event.error });
+        break;
+      case "character-sheet/employment-history":
+        characterSheet.set({ ...characterSheet.get(), employmentHistory: event.history, employmentHistoryError: event.error });
         break;
       case "character-sheet/cleared":
         characterSheet.set(INITIAL_CHARACTER_SHEET);

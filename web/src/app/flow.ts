@@ -68,6 +68,8 @@ import { decodeAssetItems } from "../bridge/personalAssets.ts";
 import { failsTheReading, failureCode } from "../bridge/ask.ts";
 import { decodeSkillHistory, decodeSkills } from "../bridge/boundSkills.ts";
 import { skillHistoryLines } from "../bridge/skillHistoryPanel.ts";
+import { employmentHistoryOf } from "../bridge/employmentHistory.ts";
+import { filetimeOf } from "../bridge/journalWords.ts";
 import { readAssetStationItems, readAssetStations, type AssetStationItemsRead, type AssetStationsRead } from "../bridge/assetReads.ts";
 import {
   AGENT_BUTTON,
@@ -1122,6 +1124,11 @@ export interface AppFlow {
    * the skill handler's history and the pilot's skills, made into the panel's lines.
    */
   loadSkillHistory(): Promise<void>;
+  /**
+   * The Character Sheet's employment history, as the client's History panel's employment tab asks for it
+   * (bridge/employmentHistory.ts): the corporation service's record of the pilot's corporations and transfers.
+   */
+  loadEmploymentHistory(): Promise<void>;
   /** Refresh the flight status (location + ship movement state). */
   loadFlightStatus(): Promise<void>;
   /** Undock from the station (the session enters space). */
@@ -5769,6 +5776,39 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         throw error;
       }
       store.apply({ type: "character-sheet/skill-history", lines: null, error: `your skill history: ${failureCode(error)}` });
+    }
+  }
+
+  // The Character Sheet's employment history, as the client's employment tab asks for it (infosvc.py 2842):
+  // corporationSvc.GetEmployementRecordAndCharacterTransfers(the pilot), CCP's spelling, its days reckoned to now.
+  // Through the web gateway, whose list has nothing of the corporation service's, it is not to be had, and the
+  // sheet says so; on the game port it is asked as the client asks it.
+  async function loadEmploymentHistory(): Promise<void> {
+    const characterID = store.station.get().online?.characterID ?? 0;
+    if (!(characterID > 0)) {
+      store.apply({ type: "character-sheet/employment-history", history: null, error: "your employment history: no pilot is online" });
+      return;
+    }
+    try {
+      const answer = await bridgeAsk("corporationSvc", "GetEmployementRecordAndCharacterTransfers", [characterID]);
+      const history = employmentHistoryOf(answer, filetimeOf(Date.now()));
+      if (history === null) {
+        store.apply({ type: "character-sheet/employment-history", history: null, error: "your employment history: the answer could not be read" });
+        return;
+      }
+      store.apply({ type: "character-sheet/employment-history", history, error: null });
+      requestNames(history.lines.map((line) => ({ kind: "corporation", id: line.corporationID })));
+    } catch (error) {
+      if (failsTheReading(error)) {
+        throw error;
+      }
+      store.apply({
+        type: "character-sheet/employment-history",
+        history: null,
+        error: failureCode(error) === "CALL_NOT_ALLOWED"
+          ? "Your employment history is not to be had through this connection."
+          : `your employment history: ${failureCode(error)}`,
+      });
     }
   }
 
@@ -15384,6 +15424,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     loadCharacterSheet,
     loadSkillHistory,
+    loadEmploymentHistory,
 
     async loadPackageIntoShip(cargoTypeID, cargoQuantity) {
       await runAgentAction(async () => {

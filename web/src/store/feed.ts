@@ -94,6 +94,7 @@ import type {
 } from "./types.ts";
 import type { BoundDogmaAllInfo } from "../bridge/boundDogma.ts";
 import type { SkillHistoryLine } from "../bridge/skillHistoryPanel.ts";
+import type { EmploymentHistory } from "../bridge/employmentHistory.ts";
 import type { BoundFleet } from "../bridge/boundFleet.ts";
 import type { FleetBroadcast } from "../bridge/fleetBroadcasts.ts";
 import type { JamEvent } from "../bridge/jamNotifications.ts";
@@ -599,6 +600,12 @@ export type FeedEvent =
   | {
       readonly type: "character-sheet/skill-history";
       readonly lines: readonly SkillHistoryLine[] | null;
+      readonly error: string | null;
+    }
+  // The character sheet's employment history was read: its lines and transfers, or why it was not read.
+  | {
+      readonly type: "character-sheet/employment-history";
+      readonly history: EmploymentHistory | null;
       readonly error: string | null;
     }
   // Drop the character sheet (character offline / logged out).
