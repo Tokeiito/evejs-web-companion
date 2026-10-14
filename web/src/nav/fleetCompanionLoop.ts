@@ -93,6 +93,12 @@ export interface CompanionHitPoints {
 // this ladder keeps only the call sites, the memory and the wrapper.
 import type { RatCombatFacts } from "./combatPosition.ts";
 import {
+  MISSILE_ORBIT_WHY,
+  MWD_STAYS_OFF_WHY,
+  orbitingAgainstMissiles,
+  propsOnThisGrid,
+} from "./companionPropulsion.ts";
+import {
   closingOnTheHold,
   decideCombatPosition,
   FRESH_COMBAT_POSITION,
@@ -6542,6 +6548,31 @@ function holdsFormation(memory: CompanionLadderMemory): boolean {
  * standing instruction in either direction. Reading null as off would ship every
  * companion with a permanent order never to use its prop mod.
  *
+ * WHY THE KIND MATTERS WITH HOSTILES ON GRID (`nav/companionPropulsion.ts`). On
+ * this server a microwarpdrive blooms the ship's signature radius and an
+ * afterburner does not. NPC turrets have a 50 per cent hit-chance floor, so a
+ * bloom costs little against them; NPC missile damage falls with the target's
+ * speed and small signature with NO floor. So, with `hostileOnGrid` true:
+ *
+ *   rats shoot with | afterburner                       | microwarpdrive
+ *   turrets only    | lit while closing                 | never
+ *   any missile rat | lit while closing AND while       | never
+ *                   | holding the auto orbit            |
+ *   unreadable      | lit while closing                 | never
+ *   no hostiles     | the travel rule, as ever          | the travel rule, as ever
+ *
+ * "Closing" is `closingOnTheHold` or `isUnderWay`, as before; the orbit burn is
+ * `flight auto` with the positioning rung's order standing and a KNOWN missile
+ * rat on grid. A microwarpdrive already running when hostiles appear is stood
+ * down, and a module whose `kind` is null (the SDE read did not arrive) is
+ * treated as one. Unreadable rat facts never earn the orbit burn.
+ *
+ * ⚠ `props on` BEATS THE MWD BAN. `propsHeld` non-null is a commander's
+ * standing word: `props on` means they chose to burn, so the whole rack is
+ * handed to the shared policy and a microwarpdrive-only fit lights as it always
+ * did; `props off` already stops whatever is lit. The ban applies to the
+ * automatic rule only.
+ *
  * ⚠ THE REST OF THE POLICY IS `nav/propulsion.ts` AND ITS HEADER IS THE
  * AUTHORITY. The scram that stands down a microwarpdrive and ONLY a
  * microwarpdrive, the unknown `kind` treated as the scram-vulnerable half, the
@@ -6578,9 +6609,28 @@ function decidePropulsion(
   // The standing chat order beats the travel test and `null` is not "off"; see
   // this rung's header. Everything downstream of the question -- the scram, the
   // unknown kind, the floor, which module -- is `decidePropulsionModule`.
+  const activeSet = new Set(active);
+  // ⚠ A RUNNING MWD (OR UNKNOWN KIND) WITH HOSTILES ON GRID IS STOOD DOWN HERE:
+  // the narrowed list below hides it from the shared policy, which cannot stop
+  // what it was not shown. The latch is the same one, so it is sent once.
+  const gridProps = propsOnThisGrid(fitted, activeSet, obs, memory);
+  if (gridProps.standDown !== null) {
+    if (memory.propsStoppingID === gridProps.standDown.itemID) {
+      return { decision: null, memory };
+    }
+    return {
+      decision: {
+        action: { kind: "deactivate", moduleID: gridProps.standDown.itemID, typeID: gridProps.standDown.typeID },
+        phase: "Propulsion",
+        why: MWD_STAYS_OFF_WHY,
+        memory: { ...memory, propsStoppingID: gridProps.standDown.itemID },
+      },
+      memory,
+    };
+  }
   const inputs: PropulsionInputs = {
-    modules: fitted,
-    activeModuleIDs: new Set(active),
+    modules: gridProps.modules,
+    activeModuleIDs: activeSet,
     capacitorRatio: obs.capacitorRatio ?? null,
     scrammed: obs.scrammed ?? null,
     // ⚠ WHILE RUNG 8'S OWN ORDER STANDS, THE BURNER IS RUNG 8'S: lit only while
@@ -6588,7 +6638,7 @@ function decidePropulsion(
     // and is not formation, so `isUnderWay` alone would read it as travelling
     // and burn the whole fight -- the bug the formation rule exists to remove.
     wantBurn: memory.propsHeld ?? (memory.flightMode === "auto" && memory.combatPosition.hold !== null
-      ? closingOnTheHold(memory)
+      ? closingOnTheHold(memory) || orbitingAgainstMissiles(obs, memory)
       : closingOnTheHold(memory) || isUnderWay(obs, memory)),
     capFloor: request.capacitorFloor,
   };
@@ -6636,6 +6686,7 @@ function decidePropulsion(
           memory.propsHeld === true
             ? "A commander said props on in chat. Lighting the prop mod."
             : closingOnTheHold(memory) ? "Closing in on the target. Lighting the prop mod."
+            : orbitingAgainstMissiles(obs, memory) ? MISSILE_ORBIT_WHY
             : "Travelling. Lighting the prop mod.",
         memory: { ...memory, propsStoppingID: null },
         ...(memory.propsHeld === true
