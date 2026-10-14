@@ -91,7 +91,8 @@
         all.push({
           key: `n${notification.notificationID}`,
           title: notification.title,
-          senderID: notification.senderID,
+          // A sender of nought is none (the client's None: its new-mail notification of a list's own mail has none).
+          senderID: notification.senderID > 0 ? notification.senderID : null,
           processed: notification.processed,
           created: notification.created,
         });
