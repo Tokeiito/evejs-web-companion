@@ -12789,6 +12789,9 @@ const STRUCTURE_NAME_KINDS = new Set(["station", "structure"]);
 // every row it is answered (pilots.js ownersNamed). A row's type says what the
 // owner is: a corporation, an alliance, a faction, or a character's own type.
 const MIN_PLAYER_OWNER_ID = 90000000;
+/** const.ownerSystem, and the client's own word for it (eveCfg.py 24, 583, 1186). */
+const OWNER_SYSTEM_ID = 1;
+const OWNER_SYSTEM_NAME_LABEL = "UI/Chat/ChatEngine/EveSystem";
 const OWNER_TYPE = Object.freeze({ corporation: 2, alliance: 16159, faction: 30 });
 const OWNER_NAME_KINDS = Object.freeze({
   corporation: (typeID) => typeID === OWNER_TYPE.corporation,
@@ -12847,6 +12850,17 @@ app.post("/api/names", requireAuth, async (req, res, next) => {
     const items = Array.isArray(req.body && req.body.items) ? req.body.items : [];
     const result = staticData.resolveNames({ items });
     const names = { ...result.names };
+
+    // Owner 1, the EVE System: the client names it itself in its table of owners, by its own word, whoever asks for
+    // it, and asks no one (eveCfg.py LoadEveOwners, 583: OWNER_NAME_OVERRIDES, UI/Chat/ChatEngine/EveSystem). So
+    // here, from the install, where the static tables have it not and there is an install to read.
+    for (const [key, value] of Object.entries(names)) {
+      const separator = key.indexOf(":");
+      if (value === null && Number(key.slice(separator + 1)) === OWNER_SYSTEM_ID && Object.hasOwn(OWNER_NAME_KINDS, key.slice(0, separator))) {
+        const word = clientWords.templates([OWNER_SYSTEM_NAME_LABEL])[OWNER_SYSTEM_NAME_LABEL];
+        if (typeof word === "string" && word !== "") names[key] = word;
+      }
+    }
 
     // Only the static misses that could be a player structure are candidates —
     // a name the SDE already answered is never re-asked, and an ID below the
