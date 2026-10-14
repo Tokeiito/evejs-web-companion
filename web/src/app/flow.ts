@@ -371,7 +371,7 @@ import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/
 import { runSlashCommand } from "../bridge/gmWrites.ts";
 import { launchCommodities as launchCommoditiesCall, rerouteExtractorRoutes, type NewRoute } from "../bridge/planetWrites.ts";
 import { restartExtractor as restartExtractorAsTheClient } from "../bridge/extractorRestart.ts";
-import { createModuleRepairs, createOverloadEffects, createWeaponGrouping, loadAmmo as loadAmmoCall, repairWaitMs, setOverload as setOverloadCall, unloadAmmo as unloadAmmoCall } from "../bridge/dogmaWrites.ts";
+import { createModuleRepairs, createOverloadEffects, createWeaponGrouping, loadAmmo as loadAmmoCall, repairWaitMs, setModuleOnline as setModuleOnlineCall, setOverload as setOverloadCall, unloadAmmo as unloadAmmoCall } from "../bridge/dogmaWrites.ts";
 import { keptByType, keptTypeAttributes, keptWhereKnown } from "../bridge/keptTypeFacts.ts";
 import type { AmmoPlace, AmmoSession } from "../bridge/dogmaWrites.ts";
 import type { DogmaItemInfo } from "../bridge/boundDogma.ts";
@@ -14537,7 +14537,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // reported success. The online state IS in the re-read, so use it.
       const wasOnline = moduleOnlineState(itemID);
       try {
-        await api.setModuleOnline(itemID, online, callOptions);
+        // The page's own call (bridge/dogmaWrites.ts), as a fitting slot of the client's makes it: the ship the
+        // module is in, which is the ship this fitting is of, and the module.
+        const shipID = store.fitting.get().activeShipID;
+        if (shipID === null) throw new Error("The ship that module is fitted to is not known yet. Reload the fitting and try again.");
+        await setModuleOnlineCall(bridgeDo, shipID, itemID, online);
       } catch (error) {
         if (isSessionLost(error)) {
           stopLiveStream();

@@ -4676,7 +4676,7 @@ app.post("/api/bridge/ship/board", requireAuth, async (req, res, next) => {
 //   read  online     dogmaIM.ShipOnlineModules()  [top level, no bind]
 //   fit              ship binding . Add(moduleID, sourceID, {flag:<slot>})
 //   unfit            hangar/ship binding . Add(moduleID, shipID, {flag:4|5})
-//   online/offline   dogmaIM.SetModuleOnline / TakeModuleOffline
+//   online/offline   dogmaIM.SetModuleOnline / TakeModuleOffline  [the page's own call; no route]
 //   remove a rig     ship binding . DestroyFitting(rigID)  -- DESTRUCTIVE
 //
 // The browser NEVER sends a slot flagID. It addresses a slot by FAMILY and
@@ -4986,43 +4986,10 @@ app.post("/api/bridge/fitting/unfit", requireAuth, async (req, res, next) => {
   }
 });
 
-// Bring a fitted module online or take it offline. Top-level dogmaIM calls: the
-// handler resolves the ship from the session. The handler ALSO owns the CPU /
-// powergrid / capacitor gating, and answers a refusal with its own reason
-// ("You do not have enough CPU to online that module.") — which arrives here as
-// a typed CALL_REFUSED and is passed through untouched. The BFF never
-// pre-judges whether a module can be onlined.
-app.post("/api/bridge/fitting/state", requireAuth, async (req, res, next) => {
-  const held = requireHeldBridgeSession(req, res);
-  if (!held) {
-    return;
-  }
-  const body = req.body || {};
-  const itemID = Number(body.itemID) || 0;
-  const online = body.online === true;
-  if (itemID <= 0) {
-    res.status(400).json({ ok: false, error: "INVALID_MODULE", message: "A module is required." });
-    return;
-  }
-  const shipID = held.activeShipID;
-  if (!shipID) {
-    res.status(409).json({ ok: false, error: "NO_ACTIVE_SHIP", message: "No active ship." });
-    return;
-  }
-  try {
-    const outcome = await heldTopLevelCall(
-      held,
-      req.webSessionID,
-      "dogmaIM",
-      online ? "SetModuleOnline" : "TakeModuleOffline",
-      [shipID, itemID],
-      null,
-    );
-    res.json({ ok: true, online, notifications: outcome.notifications });
-  } catch (error) {
-    next(error);
-  }
-});
+// (A module is put online and taken offline by the page's own call since 2026-10-13: dogmaIM.SetModuleOnline and
+// TakeModuleOffline through the generic call, with the ship the page's own fitting is of
+// (bridgeCallPolicy.js, PAGE_WRITE_PAIR_KEYS; web/src/bridge/dogmaWrites.ts). The route that sent the module with
+// the ship the BFF held, POST /api/bridge/fitting/state, is gone.)
 
 // DESTROY a fitted rig. Rigs cannot be unfitted — removing one destroys it —
 // so this route is the only destructive fitting action, and it refuses unless

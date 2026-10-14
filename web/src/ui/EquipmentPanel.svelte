@@ -46,6 +46,16 @@
 
   const snapshot = $derived($space.snapshot);
   const activeModuleIDs = $derived(snapshot?.ship?.activeModuleIDs ?? null);
+  /** The ship's weapon groups as its status has them, {master: [the rest]}; null where they are not known. */
+  const weaponBanks = $derived(snapshot?.ship?.weaponBanks ?? null);
+
+  /** Whether a module is one of a weapon group: its master, or one of the rest (the client's IsInWeaponBank). */
+  function inWeaponGroup(itemID: number): boolean {
+    if (weaponBanks === null) return false;
+    return Object.entries(weaponBanks).some(
+      ([masterID, others]) => others.length > 0 && (Number(masterID) === itemID || others.includes(itemID)),
+    );
+  }
 
   const rows = $derived(
     equipmentRows(
@@ -159,6 +169,8 @@
   let error = $state("");
   /** A power change the server accepted and then did not make. See below. */
   let moduleNotice = $state("");
+  /** The grouped module whose powering down the pilot has been asked about and not yet answered, or null. */
+  let groupedPowerDown = $state<number | null>(null);
 
   function concernBusy(concern: Concern): boolean {
     return busy.includes(concern);
@@ -192,9 +204,23 @@
    * as exactly that, rather than as a success the player would believe.
    */
   async function setModulePower(module: EquipmentRow, online: boolean): Promise<void> {
+    // The client asks its pilot before a module in a weapon bank is put offline, since that breaks the bank up
+    // (fittingSlotController.ToggleOnlineModule, 357 to 366). Here the question is the notice, and pressing
+    // again is the yes.
+    if (!online && inWeaponGroup(module.itemID) && groupedPowerDown !== module.itemID) {
+      groupedPowerDown = module.itemID;
+      moduleNotice = `${module.label} is in a weapon group, and powering it down breaks the group up. Press Power down again to go ahead.`;
+      return;
+    }
+    groupedPowerDown = null;
     moduleNotice = "";
     await runFor("power", async () => {
       await flow.setModuleOnline(module.itemID, online);
+      // Where the server refused, the flow has its reason and the window shows it below: this notice is for a
+      // change nothing was said of. (It used to say "gave no reason" beside the reason.)
+      if ($fitting.actionError) {
+        return;
+      }
       const after = $fitting.slots.find((slot) => slot.module?.itemID === module.itemID);
       const now = after?.module?.online ?? null;
       if (now !== null && now !== online) {

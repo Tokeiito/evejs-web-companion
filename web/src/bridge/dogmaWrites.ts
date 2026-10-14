@@ -25,7 +25,7 @@
 // port makes each on the dogma location it keeps as godma keeps it. THE ROUTES STILL STAND
 // (src/server.js); nothing of the page's asks them now.
 
-import type { Ask } from "./ask.ts";
+import { failureCode, type Ask } from "./ask.ts";
 
 /** A module overloaded (`on`) or cooled, with the ID of its own overload effect. Fails as the call fails. */
 export async function setOverload(act: Ask, moduleID: number, effectID: number, on: boolean): Promise<void> {
@@ -254,4 +254,71 @@ export async function unloadAmmo(act: Ask, session: AmmoSession, moduleIDs: read
   if (moduleIDs.length === 0) throw new Error("No module was named to unload.");
   const destination = [placeID(session, to), session.characterID, to === "cargo" ? FLAG_CARGO : FLAG_HANGAR];
   await act("dogmaIM", "UnloadAmmo", [session.shipID, [...moduleIDs], destination]);
+}
+
+// --- A module put online, and taken offline (the plan's Phase 6b) ---------------------------------------------
+//
+// Until 2026-10-13 it was one route of the BFF (POST /api/bridge/fitting/state), which sent the module with the
+// ship the BFF held the pilot to be flying.
+//
+// THE CALLS, as the client makes them from a fitting slot (fittingSlotController.ToggleOnlineModule, 357 to 366;
+// the slot's menu and its button offer it for a module whose type has the online effect, in a slot that is no
+// rig's: baseSlot.GetMenu, 101 to 122, and IsOnlineable, 312 to 318), on the dogma location
+// (clientDogmaLocation.py):
+//
+//   SetModuleOnline(dogmaItem.locationID, moduleID)     OnlineModule, 698 to 711
+//   TakeModuleOffline(dogmaItem.locationID, moduleID)   OfflineModule, 713 to 723
+//
+// the ship the module is in, and the module. The client starts the online effect in its own dogma before it asks,
+// and stops it again where the server refuses; a server that says the effect is running already
+// (EffectAlreadyActive2) has refused nothing. It asks nothing at all for a module of a ship that is being boarded
+// or left. Tranquility has one recorded: SetModuleOnline(shipID, moduleID), two whole numbers, on the dogma
+// location's object, made by the client itself as a module moved from the hold to a slot
+// (_OnlineModuleIfApplicable, 624 to 632), which the game port makes too (src/gamePort/pilots.js,
+// onlineIfApplicable). No recording has a button's, nor any TakeModuleOffline.
+//
+// WHAT THE CLIENT ASKS ITS PILOT FIRST: before a module in a weapon bank is put offline from a fitting slot
+// (QueryGroupOffline, 359 to 362), since that breaks the bank up. The page asks where it knows the banks, which is
+// in space (ui/EquipmentPanel.svelte). Docked, it is not told of them, and asks nothing.
+//
+// WHAT THE PAGE DOES NOT DO AS THE CLIENT DOES: the module's button on the rack puts a module online or offline
+// by the online effect itself (shipmodulebutton._ChangeOnline, 823 to 847: godma's Activate(itemID, 'online',
+// None, 0) and Deactivate(itemID, 'online'), 2049 to 2071 and 2091 to 2101), and asks its pilot before any
+// offline there (PutOffline). The page's rack has no such menu: both of its windows make the fitting slot's calls.
+//
+// THE SERVER (dogmaService/moduleOperation.js, _setModuleOnlineState) takes the ship and the module: the module
+// must be the session's own character's and lie in that ship. It refuses with DeniedShipChanged,
+// NotEnoughCapacitorForOnline (in space, under 95 in 100 of the capacitor), CannotOnlineReachedMaxGroupOnline and
+// CrpAccessDenied, each of which bridge/refusals.ts words, and otherwise in sentences of its own (too little
+// CPU or powergrid, a hold too full to lose a module's room). Taking a banked module offline breaks its bank up.
+// Asked for what is so already (online while online, offline while offline) it answers nothing and refuses
+// nothing (seen live 2026-10-13).
+// Either transport carries the calls, asked of the dogma service by its name.
+//
+// ⚠ THE ANSWER IS NOTHING. The caller reads the fitting after, and goes by the module's state there.
+
+/** Whether a call failed with this refusal of the server's: its envelope, and the key for its message. */
+function refusedWith(reason: unknown, key: string): boolean {
+  if (failureCode(reason) !== "CALL_REFUSED" || !(reason instanceof Error)) return false;
+  const said = reason.message.trim();
+  return said === key || said.endsWith(`: ${key}`);
+}
+
+/**
+ * Puts a fitted module online (`online`) or takes it offline. `shipID` is the ship the module is in. A module the
+ * server says is online already has not failed. Fails as the call fails.
+ */
+export async function setModuleOnline(act: Ask, shipID: number, moduleID: number, online: boolean): Promise<void> {
+  for (const [what, id] of [["ship", shipID], ["module", moduleID]] as const) {
+    if (!Number.isSafeInteger(id) || id <= 0) throw new Error(`That ${what} could not be identified.`);
+  }
+  if (!online) {
+    await act("dogmaIM", "TakeModuleOffline", [shipID, moduleID]);
+    return;
+  }
+  try {
+    await act("dogmaIM", "SetModuleOnline", [shipID, moduleID]);
+  } catch (reason) {
+    if (!refusedWith(reason, "EffectAlreadyActive2")) throw reason;
+  }
 }

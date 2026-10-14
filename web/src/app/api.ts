@@ -992,18 +992,8 @@ export async function unfitModule(
   return { applied: data.applied === true };
 }
 
-/**
- * Bring a fitted module online or take it offline. A refusal (not enough CPU
- * or powergrid, capacitor, max online of that group) arrives as the handler's
- * OWN message on a typed BridgeCallError — it is never guessed here.
- */
-export async function setModuleOnline(
-  itemID: number,
-  online: boolean,
-  options: ApiOptions = {},
-): Promise<void> {
-  await postJson("/api/bridge/fitting/state", { itemID, online }, options);
-}
+// A fitted module is put online and taken offline by the page's own call (bridge/dogmaWrites.ts,
+// setModuleOnline): its route (POST /api/bridge/fitting/state) went on 2026-10-13.
 
 /**
  * DESTROY a fitted rig. Rigs cannot be unfitted — removing one destroys it —
