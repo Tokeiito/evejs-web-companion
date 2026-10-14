@@ -1003,6 +1003,12 @@ export interface AppFlow {
    * mark it read, as the client asks for a message not yet read.
    */
   openMail(messageID: number, markRead: boolean): Promise<void>;
+  /**
+   * A message's body for a reply's or a forward's quote, as the client's GetReplyMessage reads it (the mail
+   * service's GetBody, which marks a message not read read): its markup, or null where it was not read (why is the
+   * mail's action error).
+   */
+  quotedMailBody(messageID: number): Promise<string | null>;
   /** Close the open message without touching the server. */
   closeMail(): void;
   /**
@@ -4984,7 +4990,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // is kept, the server having marked it. The bodies are kept by the pilot's and the message's numbers, thirty at
   // most, the first kept going first; a page newly loaded keeps none, as a client with no file of bodies.
   const mailBodies = new Map<string, MailBody>();
-  async function openMail(messageID: number, markRead: boolean): Promise<void> {
+  /** The body, kept or asked, the message marked read where `markRead`; null where it failed (the action error). */
+  async function mailBodyRead(messageID: number, markRead: boolean): Promise<MailBody | null> {
     const bodyKey = `${store.station.get().online?.characterID ?? 0}:${messageID}`;
     let body: MailBody;
     try {
@@ -5009,12 +5016,27 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         throw error;
       }
       store.apply({ type: "mail/action-error", message: mailRefusalMessage(error) });
-      return;
+      return null;
     }
     if (markRead) {
-      // MarkMessagesAsRead (509 to 519): marked read in what is kept, and nothing more is asked. BEFORE recording
-      // the open: mail/loaded clears the action error.
+      // MarkMessagesAsRead (509 to 519): marked read in what is kept, and nothing more is asked. mail/loaded
+      // clears the action error.
       mailboxLoaded(mailboxMarkedRead(store.mail.get(), [messageID]));
+    }
+    return body;
+  }
+
+  // mailSvc.GetReplyMessage asks the service's GetBody, which marks a message not read read.
+  async function quotedMailBody(messageID: number): Promise<string | null> {
+    const unread = store.mail.get().statuses.some((status) => status.messageID === messageID && !status.read);
+    const body = await mailBodyRead(messageID, unread);
+    return body === null ? null : body.unreadable ? "" : (body.text ?? "");
+  }
+
+  async function openMail(messageID: number, markRead: boolean): Promise<void> {
+    const body = await mailBodyRead(messageID, markRead);
+    if (body === null) {
+      return;
     }
     store.apply({
       type: "mail/opened",
@@ -15459,6 +15481,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadMail,
     refreshMail,
     openMail,
+    quotedMailBody,
     closeMail,
     findCharacters: (q: string) => api.findCharacters(q, callOptions),
     sendMail,

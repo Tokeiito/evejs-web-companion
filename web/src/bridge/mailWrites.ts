@@ -33,6 +33,8 @@ export interface MailToSend {
   readonly toCharacterIDs: readonly number[];
   readonly title: string;
   readonly body: string;
+  /** The message quoted, in the mail's markup, sent after what is typed (mailSvc.GetReplyMessage); none for a new one. */
+  readonly quote?: string;
   /** The message answered, or forwarded; none (0) for a new one. */
   readonly isReplyTo?: number;
   readonly isForwardedFrom?: number;
@@ -54,8 +56,8 @@ export async function sendMail(act: Ask, mail: MailToSend): Promise<number | nul
     throw Object.assign(new Error("That message is longer than the mail system accepts."), { code: "MAIL_TOO_LONG" });
   }
   const answer: JsonValue = await act("mailMgr", "SendMail", [
-    // The body as the client's editor sends what is typed in it (bridge/mailMarkup.ts).
-    recipients, null, null, mail.title, mailMarkupOfTyped(mail.body), mail.isReplyTo ?? 0, mail.isForwardedFrom ?? 0,
+    // The body as the client's editor sends what is typed in it (bridge/mailMarkup.ts), the quote below it.
+    recipients, null, null, mail.title, mailMarkupOfTyped(mail.body) + (mail.quote ?? ""), mail.isReplyTo ?? 0, mail.isForwardedFrom ?? 0,
   ]);
   const messageID = Number(unwrapLong(answer) ?? Number.NaN);
   return Number.isSafeInteger(messageID) && messageID > 0 ? messageID : null;

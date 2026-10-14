@@ -115,3 +115,70 @@ export function mailBodyLines(markup: string | null): readonly (readonly MailRun
     return runs;
   });
 }
+
+// --- The message quoted in a reply or a forward -------------------------------
+//
+// mailSvc.GetReplyMessage (the client's, for both its reply and its forward): after two empty lines, a line of
+// dashes, the message's subject, who it was from (a link to the sender's information; an automated mail's sender in
+// bold), when it was sent (FmtDate 'ls'), who it went to (GetReceiverText, format 0: the corporation or alliance it
+// went to, and each pilot a link, by name, each followed by a comma and two spaces), an empty line, and its body; the
+// whole cut at a line break before nine tenths of a body's room, with "..." after.
+
+/** The words of the quote, by their labels (mailSvc.GetReplyMessage; GetReplyWnd's "Re:"). */
+export const MAIL_QUOTE_LABELS = {
+  from: "UI/Mail/From",
+  sent: "UI/Mail/Sent",
+  to: "UI/Mail/To",
+  re: "UI/Mail/GenericInboxRe",
+  boldName: "UI/Map/StarMap/lblBoldName",
+} as const;
+
+/** What a quote is made of: the message, its people by name, its date in words, and its body's markup. */
+export interface MailQuoteSource {
+  readonly subject: string;
+  readonly senderID: number;
+  readonly senderName: string;
+  /** An automated mail (statusMask's automated bit): its sender is named in bold, with no link. */
+  readonly automated: boolean;
+  readonly sentText: string;
+  /** The corporation or alliance it went to, by name, or null. */
+  readonly corporationName: string | null;
+  readonly recipients: readonly { readonly id: number; readonly name: string }[];
+  readonly body: string;
+}
+
+/** The words filled: "From", "Sent", "To", and a name in bold. */
+export interface MailQuoteWords {
+  readonly from: string;
+  readonly sent: string;
+  readonly to: string;
+  readonly bold: (name: string) => string;
+}
+
+/** A pilot's information, as the client links it (showinfo:1377//id). */
+function infoLink(id: number, name: string): string {
+  return `<a href="showinfo:1377//${id}">${name}</a>`;
+}
+
+/** mailSvc.GetReplyMessage: the message quoted, in the mail's markup, cut to its room. */
+export function mailQuoteMarkup(source: MailQuoteSource, words: MailQuoteWords, maxBody: number): string {
+  let receivers = source.corporationName ? `${source.corporationName}, ` : "";
+  for (const person of [...source.recipients].sort((left, right) => (left.name.toLowerCase() < right.name.toLowerCase() ? -1 : left.name.toLowerCase() > right.name.toLowerCase() ? 1 : 0))) {
+    receivers += `${infoLink(person.id, person.name)},  `;
+  }
+  const sender = source.automated ? words.bold(source.senderName) : infoLink(source.senderID, source.senderName);
+  let text = `<br><br>--------------------------------<br>${source.subject}<br>${words.from}: ${sender}<br>${words.sent}: ${source.sentText}<br>${words.to}: ${receivers}<br><br>${source.body}`;
+  const room = maxBody * 0.9;
+  if (text.length > room) {
+    while (text.length > room) {
+      const at = text.lastIndexOf("<br>");
+      if (at >= Math.floor(room * 0.7)) {
+        text = text.slice(0, at);
+      } else {
+        text = text.slice(0, Math.floor(text.length * 0.9));
+      }
+    }
+    text += "<br>...";
+  }
+  return text;
+}

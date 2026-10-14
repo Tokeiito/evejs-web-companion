@@ -22,7 +22,8 @@
     checkDraft,
     readFlags,
   } from "../bridge/mail.ts";
-  import { mailBodyLines } from "../bridge/mailMarkup.ts";
+  import { MAIL_QUOTE_LABELS, mailBodyLines, mailQuoteMarkup } from "../bridge/mailMarkup.ts";
+  import { formatTemplate } from "../bridge/clientWords.ts";
   import { isSessionLost } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -36,6 +37,19 @@
   const mail = store.mail;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+  // svelte-ignore state_referenced_locally
+  const station = store.station;
+
+  /** FmtDate's 'ls' (format.py 93 to 94): this label with the date in it. */
+  const DATE_LABEL = "/Carbon/UI/Common/DateTime/DateLongShort";
+
+  /** The client's word for a label, from the player's install; the page's own where there is none to read. */
+  function word(label: string, own: string): string {
+    const template = $words.templates[label];
+    return typeof template === "string" ? template : own;
+  }
 
   let busy = $state(false);
   let error = $state("");
@@ -51,6 +65,10 @@
   let draftBody = $state("");
   /** The message a reply answers (mailSvc.GetReplyWnd: isReplyTo=msg.messageID), 0 for a new message. */
   let replyTo = $state(0);
+  /** The message a forward forwards (GetForwardWnd: isForwardedFrom=msg.messageID), 0 for none. */
+  let forwardFrom = $state(0);
+  /** The message quoted, in the mail's markup (GetReplyMessage), sent after what is typed; "" for none. */
+  let quote = $state("");
 
   /** Always a NAME, never an id — and never an id-shaped fallback either. */
   function personName(characterID: number): string {
@@ -158,7 +176,9 @@
         toCharacterIDs: recipients.map((person) => person.characterID),
         title: draftTitle.trim(),
         body: draftBody,
+        quote,
         isReplyTo: replyTo,
+        isForwardedFrom: forwardFrom,
       });
       const outcome = store.get().mail.lastOutcome;
       if (outcome && outcome.applied) {
@@ -166,21 +186,76 @@
         draftTitle = "";
         draftBody = "";
         replyTo = 0;
+        forwardFrom = 0;
+        quote = "";
         tab = "inbox";
       }
     });
   }
 
-  /** Reply: pre-address a new message to whoever wrote, with a Re: subject, answering that message. */
-  function reply(header: MailHeaderRow): void {
-    recipients = [{ characterID: header.senderID, name: personName(header.senderID) }];
-    replyTo = header.messageID;
-    draftTitle = header.title.startsWith("Re: ") ? header.title : `Re: ${header.title}`;
-    draftBody = "";
-    tab = "compose";
+  /** The message quoted (GetReplyMessage), its body read as the client reads it; "" where it was not read. */
+  async function quoteOf(header: MailHeaderRow): Promise<string> {
+    const body = await flow.quotedMailBody(header.messageID);
+    if (body === null) {
+      return "";
+    }
+    const status = $mail.statuses.find((row) => row.messageID === header.messageID);
+    const nameOf = (kind: Parameters<typeof resolvedName>[1], id: number) => resolvedName($names.resolved, kind, id, "");
+    return mailQuoteMarkup(
+      {
+        subject: header.title,
+        senderID: header.senderID,
+        senderName: personName(header.senderID),
+        automated: status !== undefined && (status.statusMask & 32) === 32,
+        sentText: header.sentDate === null ? "" : formatTemplate(word(DATE_LABEL, "{[datetime]datetime}"), { datetime: String(header.sentDate) }, { nameOf }),
+        corporationName: header.toCorpOrAllianceID === null ? null : ownerName(header.toCorpOrAllianceID),
+        recipients: header.toCharacterIDs.map((id) => ({ id, name: personName(id) })),
+        body,
+      },
+      {
+        from: word(MAIL_QUOTE_LABELS.from, "From"),
+        sent: word(MAIL_QUOTE_LABELS.sent, "Sent"),
+        to: word(MAIL_QUOTE_LABELS.to, "To"),
+        bold: (name) => formatTemplate(word(MAIL_QUOTE_LABELS.boldName, "<b>{name}</b>"), { name }, { nameOf }),
+      },
+      MAIL_MAX_BODY,
+    );
+  }
+
+  /**
+   * Reply (mailSvc.GetReplyWnd): to whoever wrote, or to all (the recipients less the pilot, and the sender); with
+   * the client's "Re:" before the subject unless it begins so; answering that message; the message quoted.
+   */
+  function reply(header: MailHeaderRow, all = false): void {
+    void run(async () => {
+      const me = $station.online?.characterID ?? 0;
+      const people = all ? [...header.toCharacterIDs.filter((id) => id !== me), header.senderID] : [header.senderID];
+      recipients = [...new Set(people)].map((id) => ({ characterID: id, name: personName(id) }));
+      const re = word(MAIL_QUOTE_LABELS.re, "Re:");
+      draftTitle = header.title.startsWith(re) ? header.title : `${re} ${header.title}`;
+      draftBody = "";
+      replyTo = header.messageID;
+      forwardFrom = 0;
+      quote = await quoteOf(header);
+      tab = "compose";
+    });
+  }
+
+  /** Forward (mailSvc.GetForwardWnd): to no one yet, "FW:" before the subject, forwarding it, the message quoted. */
+  function forward(header: MailHeaderRow): void {
+    void run(async () => {
+      recipients = [];
+      draftTitle = `FW: ${header.title}`;
+      draftBody = "";
+      replyTo = 0;
+      forwardFrom = header.messageID;
+      quote = await quoteOf(header);
+      tab = "compose";
+    });
   }
 
   onMount(() => {
+    flow.requestWords([...Object.values(MAIL_QUOTE_LABELS), DATE_LABEL]);
     void run(() => flow.loadMail());
   });
 </script>
@@ -323,6 +398,12 @@
             <button type="button" disabled={busy} onclick={() => reply(openHeader)}>
               Reply
             </button>
+            <button type="button" class="minor" disabled={busy} onclick={() => reply(openHeader, true)}>
+              Reply to all
+            </button>
+            <button type="button" class="minor" disabled={busy} onclick={() => forward(openHeader)}>
+              Forward
+            </button>
           {/if}
           <button type="button" class="minor" disabled={busy} onclick={() => flow.closeMail()}>
             Close
@@ -411,6 +492,18 @@
           <textarea rows="8" maxlength={MAIL_MAX_BODY} bind:value={draftBody}></textarea>
         </label>
       </p>
+      {#if quote !== ""}
+        <!-- The message quoted, sent below what is typed, as the client's editor holds it. -->
+        <div class="mail-body mail-quote">
+          {#each mailBodyLines(quote) as line, place (place)}
+            <p class="mail-line">{#each line as run, at (at)}<span
+                  class:mail-bold={run.bold}
+                  class:mail-italic={run.italic}
+                  class:mail-underline={run.underline || run.link !== null}
+                  title={run.link ?? undefined}>{run.text}</span>{/each}</p>
+          {/each}
+        </div>
+      {/if}
 
       {#if !draftCheck.ok && (recipients.length > 0 || draftTitle !== "" || draftBody !== "")}
         <p class="error">{draftCheck.message}</p>
@@ -429,6 +522,8 @@
             draftTitle = "";
             draftBody = "";
             replyTo = 0;
+            forwardFrom = 0;
+            quote = "";
             tab = "inbox";
           }}
         >
@@ -449,6 +544,9 @@
   .mail-line {
     margin: 0;
     min-height: 1lh;
+  }
+  .mail-quote {
+    opacity: 0.8;
   }
   .mail-bold {
     font-weight: 700;
