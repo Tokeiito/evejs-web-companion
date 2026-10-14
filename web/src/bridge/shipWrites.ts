@@ -40,6 +40,8 @@
 // the call. The route did not, and nor does this; no pilot docked in a structure has been tried.
 
 import type { Ask } from "./ask.ts";
+import type { FlightNow } from "./movementWrites.ts";
+import { isListValue, unwrapLong, type JsonValue } from "./wire.ts";
 
 /** A corvette's group (idCheckers.IsNewbieShip: groupCorvette). */
 export const GROUP_CORVETTE = 237;
@@ -88,4 +90,61 @@ export async function leaveShip(act: Ask, shipID: number): Promise<void> {
     throw new Error("Which ship this is is not known yet.");
   }
   await act("ship", "LeaveShip", [shipID]);
+}
+
+// A JETTISON, as the client makes one (invItemFunctions.Jettison, 56 to 73), from an item's menu where the item is
+// offered (itemCheckers.OfferJettison 401, IsJettisonable 1230: the pilot in a ship in space; the item no ship, no
+// player's container and nothing with a cargo bay of its own; in a hold a jettison takes, the cargo, the mining
+// holds and the other specialised ones, inventorycommon/const.py 257):
+//
+//   the pilot asked (ConfirmJettison), and anything but yes ends it
+//   sm.StartService('gameui').GetShipAccess().Jettison(itemIDs)   on the ship's Moniker for the solar system
+//                                                                 (eveMoniker.GetShipAccess 42), the items' IDs as
+//                                                                 one list, each once (itemsByID.keys())
+//   answered (jettisonedToCanIDs, jettisonItemList): what went into a can, and what was launched as itself
+//   an item asked for and in neither: UserError NotAllItemsWereJettisoned, naming the types that stayed
+//
+// The server (shipService.Handle_Jettison) answers the two lists, the first empty where it refused, and refuses one
+// inside its cooldown with ShpJettisonPending. Tranquility's recording: ([itemID],) answered ([itemID], []).
+//
+// Until 2026-10-14 the call was a route's (POST /api/bridge/ship/jettison), which the page asked and read nothing of
+// the answer; the route keeps a hosted bot's of a Mining Operation (its can found and given to the operation) and a
+// hosted miner's custody, which are the bot host's to keep.
+
+/** What a jettison answered, as the client reads it. */
+export interface JettisonOutcome {
+  /** jettisonedToCanIDs: into a can. */
+  readonly toCan: readonly number[];
+  /** jettisonItemList: launched as itself. */
+  readonly launched: readonly number[];
+  /** Asked for and in neither list: what the client names in NotAllItemsWereJettisoned. */
+  readonly stayed: readonly number[];
+}
+
+function idsOf(value: JsonValue | undefined): number[] {
+  const items: readonly JsonValue[] = isListValue(value) ? value.items : Array.isArray(value) ? value : [];
+  return items.map((each) => Number(unwrapLong(each) ?? Number.NaN)).filter((id) => known(id));
+}
+
+/**
+ * Jettisons the items, as the client's menu does once the pilot has said yes. Refused before the call where nothing
+ * is named, and for a pilot not in space, where the client offers no jettison.
+ */
+export async function jettison(
+  act: Ask,
+  flightNow: () => Promise<FlightNow>,
+  itemIDs: readonly number[],
+): Promise<JettisonOutcome> {
+  const ids = [...new Set(itemIDs)].filter((id) => known(id));
+  if (ids.length === 0) {
+    throw new Error("Nothing is chosen to jettison.");
+  }
+  const now = await flightNow();
+  if (!now.inSpace) {
+    throw new Error("A jettison is made in space; undock first.");
+  }
+  const answer = await act("ship", "Jettison", [ids]);
+  const [toCan, launched] = Array.isArray(answer) ? [idsOf(answer[0]), idsOf(answer[1])] : [[], []];
+  const handled = new Set([...toCan, ...launched]);
+  return { toCan, launched, stayed: ids.filter((id) => !handled.has(id)) };
 }

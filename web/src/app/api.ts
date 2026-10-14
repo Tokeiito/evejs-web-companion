@@ -4252,7 +4252,10 @@ export async function loadScannerOperations(
 
 /**
  * ⚠ JETTISON — dumps these cargo items into space as a container ANYONE can take.
- * The BFF route is confirm-gated (ship/Jettison); this is the only path.
+ * A hosted bot's of a Mining Operation: the route finds the can it made and gives it
+ * to the operation, and keeps a hosted miner's custody. Any other jettison is the
+ * page's own call since 2026-10-14 (bridge/shipWrites.ts, jettison), and the route
+ * refuses it.
  */
 export async function jettisonItems(
   itemIDs: readonly number[],

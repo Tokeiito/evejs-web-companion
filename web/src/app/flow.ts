@@ -377,7 +377,7 @@ import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "
 import { reconnectToDrones as reconnectToDronesCall, salvageWithDrones, scoopDrones as scoopDronesCall } from "../bridge/boundEntityWrites.ts";
 import { alignTo as alignToCall, approach as approachCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
 import { dock as dockCall, isStation, jump as jumpCall, undock as undockCall } from "../bridge/placeChanges.ts";
-import { boardCorvette as boardCorvetteCall, leaveShip as leaveShipCall } from "../bridge/shipWrites.ts";
+import { boardCorvette as boardCorvetteCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
 import { runSlashCommand } from "../bridge/gmWrites.ts";
 import { launchCommodities as launchCommoditiesCall, rerouteExtractorRoutes, type NewRoute } from "../bridge/planetWrites.ts";
@@ -4644,6 +4644,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return deactivateModuleCall(bridgeDo, moduleDeps(options), itemID, opts);
   }
 
+  /**
+   * Jettisons by the page's own call (bridge/shipWrites.ts, the client's GetShipAccess().Jettison), the flight read
+   * first. A hosted bot of a Mining Operation asks the route instead (api.jettisonItems), which finds the can it made
+   * and gives it to the operation, and keeps a hosted miner's custody: those are the bot host's to keep.
+   */
+  async function jettisonNow(itemIDs: readonly number[]): Promise<JettisonOutcome> {
+    return jettisonCall(bridgeDo, async () => decodeFlightStatus((await api.getFlightStatus(callOptions)).flight), itemIDs);
+  }
+
   /** Jumps through a stargate by the page's own call (bridge/placeChanges.ts, the client's JumpThroughGate), between two reads of the flight. */
   function jumpStep(fromGateID: number, toGateID = 0): Promise<FlightStepResult> {
     return orderedStep((flightNow) => jumpCall(bridgeDo, flightNow, fromGateID, toGateID));
@@ -6506,19 +6515,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   /**
    * ⚠ JETTISON. The stacks leave the ship into a container in space that anyone
-   * can take. Confirm-gated at the BFF; the panel confirms first as well.
+   * can take. The panel confirms first, as the client asks (ConfirmJettison).
    *
-   * ⚠ JUDGED BY THE HOLD. The route does not report which stacks left, so the
-   * only honest test is whether they are still in the hold afterwards. A stack
-   * that is still there did not go, and that is a silent decline — the failure
-   * mode this whole client exists to stop looking like a success.
+   * ⚠ JUDGED BY THE ANSWER, AS THE CLIENT JUDGES IT. The page's own call
+   * (jettisonNow) answers what went into a can and what was launched as itself;
+   * a stack in neither did not go (invItemFunctions.Jettison 63 to 72, where the
+   * client raises NotAllItemsWereJettisoned), and that is a silent decline — the
+   * failure mode this whole client exists to stop looking like a success. The
+   * hold is read again after, for the window.
    */
   async function jettisonItems(itemIDs: readonly number[]): Promise<void> {
     if (itemIDs.length === 0) {
       return;
     }
+    let outcome: JettisonOutcome;
     try {
-      await api.jettisonItems(itemIDs, callOptions);
+      outcome = await jettisonNow(itemIDs);
     } catch (error) {
       if (isSessionLost(error)) {
         stopLiveStream();
@@ -6533,23 +6545,19 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     store.apply({ type: "mining/action", action: "Jettison" });
     await loadMiningHolds().catch(() => {});
-    const stillHeld = new Set(
-      store
-        .get()
-        .mining.holds.flatMap((hold) => (hold.items ?? []).map((item) => item.itemID)),
-    );
-    const left = itemIDs.filter((itemID) => !stillHeld.has(itemID));
-    if (left.length === 0) {
+    const asked = new Set(itemIDs).size;
+    const left = asked - outcome.stayed.length;
+    if (left === 0) {
       store.apply({
         type: "mining/silent-decline",
         message: "Nothing was jettisoned, and the server gave no reason.",
       });
       return;
     }
-    if (left.length < itemIDs.length) {
+    if (outcome.stayed.length > 0) {
       store.apply({
         type: "mining/silent-decline",
-        message: `Only ${left.length} of ${itemIDs.length} stacks were jettisoned. The server did not say why the rest stayed.`,
+        message: `Only ${left} of ${asked} stacks were jettisoned. The server did not say why the rest stayed.`,
       });
     }
   }
@@ -13669,10 +13677,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             deliverAlert(action.message);
             return;
           case "jettison":
-            // ⚠ The items leave the ship into a container in space. The BFF route
-            // is confirm-gated; the block confirms by re-reading the hold, so a
-            // refused jettison retries within its bound instead of being believed.
-            if (action.itemIDs.length > 0) {
+            // ⚠ The items leave the ship into a container in space. The block
+            // confirms by re-reading the hold, so a refused jettison retries
+            // within its bound instead of being believed. Outside a Mining
+            // Operation it is the page's own call (jettisonNow); an operation's
+            // hosted bot asks the route, which keeps its can and its custody.
+            if (action.itemIDs.length > 0 && !options.miningOperationID && !options.hostedOreJettisonRecovery) {
+              await jettisonNow(action.itemIDs);
+            } else if (action.itemIDs.length > 0) {
               const owned = options.hostedOreJettisonRecovery;
               if (owned) hostedJettisonPending = true;
               try {

@@ -8664,7 +8664,10 @@ app.post("/api/bridge/ship/jettison/reconcile", requireAuth, async (req, res) =>
   await hostedJettison(req, res, owner, true);
 });
 
-// ⚠ EXTRA-CARE (dumps cargo to space — items can be lost). Jettison(itemIDs).
+// ⚠ EXTRA-CARE (dumps cargo to space — items can be lost). Jettison(itemIDs), for a hosted bot of a Mining Operation:
+// its can found and given to the operation, or a hosted miner's custody kept. Any other jettison is the page's own
+// call since 2026-10-14 (web/src/bridge/shipWrites.ts, jettison: GetShipAccess().Jettison(itemIDs),
+// invItemFunctions.py 63, by the generic call), and is refused here.
 app.post("/api/bridge/ship/jettison", requireAuth, async (req, res, next) => {
   if (!requireWriteConfirmation(req, res, "This JETTISONS the selected items into space, where anyone can take them. This must be confirmed explicitly.")) {
     return;
@@ -8675,7 +8678,8 @@ app.post("/api/bridge/ship/jettison", requireAuth, async (req, res, next) => {
   if (owner) { await hostedJettison(req, res, owner); return; }
   const association = botHost.operationForClaim?.(held.characterID, req.get(botHostModule.BOT_HEADER));
   if (!association) {
-    await dispatchBridgeWrite(req, res, next, "ship", "Jettison", [bridgeIDList((req.body || {}).itemIDs)]);
+    res.status(409).json({ ok: false, error: "OPERATION_REQUIRED",
+      message: "A jettison outside a Mining Operation is the page's own call." });
     return;
   }
   let issued = false;
