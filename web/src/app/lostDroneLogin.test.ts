@@ -9,9 +9,10 @@ function browserPilot(config: { docked?: boolean; drones?: unknown; reconnectFai
   let drones = config.drones ?? [];
   const fetcher = (async (input: unknown, init?: { body?: string }) => {
     const body = init?.body ? JSON.parse(init.body) as Record<string, unknown> : {};
-    // The reconnection is the page's own call since 2026-10-13 (entity.CmdReconnectToDrones through the generic
-    // call), where it was a route: it is named here by the call, and every other request by its path.
-    const path = String(input) === "/api/bridge/call" && body.service === "entity" && body.method === "CmdReconnectToDrones" ? "entity.CmdReconnectToDrones" : String(input);
+    // The reconnection is the page's own call since 2026-10-13, and the sending home since 2026-10-14 (each of entity
+    // through the generic call), where each was a route: each is named here by the call, and every other request by
+    // its path.
+    const path = String(input) === "/api/bridge/call" && body.service === "entity" ? `entity.${String(body.method)}` : String(input);
     paths.push(path);
     const answer = (value: unknown, status = 200) => ({ ok: status < 400, status, json: async () => value });
     if (path === "/api/bridge/select" && body.characterID !== 42)
@@ -32,9 +33,9 @@ function browserPilot(config: { docked?: boolean; drones?: unknown; reconnectFai
         ids.includes(row.itemID as number) ? { ...row, controlled: true, reconnectCandidate: false } : row);
       return answer({ ok: true, service: "entity", method: "CmdReconnectToDrones", result: null, notifications: [] });
     }
-    if (path === "/api/bridge/drones/recall") {
+    if (path === "entity.CmdReturnBay") {
       drones = [];
-      return answer({ ok: true, inSpace: drones });
+      return answer({ ok: true, service: "entity", method: "CmdReturnBay", result: null, notifications: [] });
     }
     if (path === "/api/bridge/drone-recovery/ready") {
       assert.equal(body.checkID, "check-42");
@@ -60,8 +61,8 @@ test("browser pilot selection starts recovery before bot, script and travel work
   assert.equal(flow.droneRecovery.get().phase, "ready");
   assert.doesNotThrow(() => flow.requireAutomationReady());
   assert.ok(paths.includes("entity.CmdReconnectToDrones"), "the reconnection was asked");
-  assert.ok(paths.indexOf("entity.CmdReconnectToDrones") < paths.indexOf("/api/bridge/drones/recall"));
-  assert.ok(paths.indexOf("/api/bridge/drones/recall") < paths.indexOf("/api/bridge/drone-recovery/ready"));
+  assert.ok(paths.indexOf("entity.CmdReconnectToDrones") < paths.indexOf("entity.CmdReturnBay"));
+  assert.ok(paths.indexOf("entity.CmdReturnBay") < paths.indexOf("/api/bridge/drone-recovery/ready"));
   const flightReads = paths.filter(path => path === "/api/bridge/flight/status").length;
   await flow.retryDroneRecovery();
   assert.equal(paths.filter(path => path === "/api/bridge/flight/status").length, flightReads);

@@ -12,6 +12,8 @@ const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 function harness(role: "combat" | "repair", unreadable = false) {
   const targets = new Map<number, number>();
+  // Whether the drones' next read is the one an engagement makes after its call (app/flow.ts, orderedThenRead).
+  let readAfterOrder = false;
   const orders: number[][] = [];
   const store = createClientStore();
   store.apply({ type: "character/online", character: {
@@ -48,7 +50,10 @@ function harness(role: "combat" | "repair", unreadable = false) {
       GetWings: { result: dict() }, GetMotd: { result: "Ready." }, GetJoinRequests: { result: dict() },
       GetFleetComposition: { result: { type: "list", items: [] } },
     } };
-    if (path === "/api/bridge/drones") answer = { ok: true, activeShipID: SHIP_ID, bay: [], inSpace: inSpace(), notifications: [] };
+    if (path === "/api/bridge/drones") {
+      answer = { ok: true, activeShipID: SHIP_ID, bay: [], inSpace: readAfterOrder && unreadable ? null : inSpace(), notifications: [] };
+      readAfterOrder = false;
+    }
     if (path === "/api/bridge/space/snapshot") answer = { ok: true, notifications: [], space: {
       inSpace: true, shipID: SHIP_ID, solarSystemID: SOLAR_SYSTEM_ID, sampledAtMs: Date.now(),
       ship: { itemID: SHIP_ID, typeID: 17480, characterID: OWN, corporationID: 98000001, position: { x: 0, y: 0, z: 0 },
@@ -62,15 +67,17 @@ function harness(role: "combat" | "repair", unreadable = false) {
           position: { x: 1000, y: 0, z: 0 }, radius: 5, shieldRatio: 1, armorRatio: 1, hullRatio: 1 })),
       ],
     } };
-    if (path === "/api/bridge/drones/engage") {
-      assert.equal(body.targetID, TARGET);
-      const ids = body.droneIDs as number[];
+    // The engagement is the page's own call since 2026-10-14 (entity.CmdEngage through the generic call), answered
+    // with what the server says of each drone that could not; the drones are read after it, as the route read them.
+    if (path === "/api/bridge/call" && body.service === "entity" && body.method === "CmdEngage") {
+      const [ids, targetID] = body.args as [number[], number];
+      assert.equal(targetID, TARGET);
       orders.push(ids);
       const refused = role === "combat" && orders.length === 1 ? [602] : [];
       for (const id of ids) if (!refused.includes(id)) targets.set(id, TARGET);
-      answer = { ok: true, result: dict(refused.map((id) => [id, ["CustomNotify",
-        dict([["notify", "That target is out of drone control range."]])]])),
-        inSpace: unreadable ? null : inSpace(), notifications: [] };
+      answer = { ok: true, service: "entity", method: "CmdEngage", result: dict(refused.map((id) => [id, ["CustomNotify",
+        dict([["notify", "That target is out of drone control range."]])]])), notifications: [] };
+      readAfterOrder = true;
     }
     return { ok: true, status: 200, json: async () => answer };
   }) as unknown as typeof fetch;

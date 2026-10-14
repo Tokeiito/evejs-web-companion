@@ -275,9 +275,10 @@ test("the app itself lists the routes its source's text has not, and the page's 
   const root = path.join(__dirname, "..");
   const table = appRoutes();
   const has = (method, at) => table.some((route) => route.method === method && route.path === at);
-  // A list of paths in one registration, a helper that registers, and a file of routes of its own.
+  // A list of paths in one registration, and a file of routes of its own. (A helper that registered routes went on
+  // 2026-10-14 with the drones' three orders, the last it registered.)
   for (const [method, at] of [["POST", "/api/login"], ["GET", "/api/bridge/drones"], ["GET", "/api/bridge/script/observation"],
-    ["POST", "/api/bridge/drones/recall"], ["POST", "/api/bridge/provisioning/reconcile"]]) {
+    ["POST", "/api/bridge/provisioning/reconcile"]]) {
     assert.equal(has(method, at), true, `${method} ${at}`);
   }
   // And every route the text has, each once.
