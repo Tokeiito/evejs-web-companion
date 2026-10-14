@@ -675,7 +675,9 @@ const ON_AN_ANSWERED_OBJECT = Object.freeze(new Set(["scanMgr.GetFullState"]));
  * What the client asks of its ballpark's own object (michelle.GetRemotePark()) and the page asks of beyonce by its
  * name: made on the park's object, where the pilot has a park.
  */
-const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdAlignTo", "CmdFollowBall", "CmdSetSpeedFraction", "CmdOrbit", "CmdStop", "BookmarkLocation", "CmdWarpToStuff", "CmdWarpToStuffAutopilot"]));
+// (CmdDock since 2026-10-14, when the page made the dock at a station itself: movementFunctions.RealDock's bp.CmdDock,
+// made on the ballpark's bound object as Tranquility's recordings have it. Its route bound the park for itself.)
+const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdAlignTo", "CmdFollowBall", "CmdSetSpeedFraction", "CmdOrbit", "CmdStop", "BookmarkLocation", "CmdWarpToStuff", "CmdWarpToStuffAutopilot", "CmdDock"]));
 const madeOnMoniker = (service, method) => Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method) && method !== "MachoBindObject";
 /**
  * Whether the game port makes a call on an object though it is asked of a service by its name: on the service's
