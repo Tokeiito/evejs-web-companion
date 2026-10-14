@@ -3662,6 +3662,22 @@ Take these defaults, and list each under "For the operator" in the log so they c
   route's helper took a real in its wrapper too, and the cancel's own
   reader takes both; through the gateway the page's reading of it was
   not looked at.
+- **Test Three is Test Two's account's second pilot.** Account
+  `test2` has Test Two (140000002, Muvolailen) and Test Three
+  (140000003, docked at Jita IV-4 in a capsule, where Test Pilot is
+  docked too): two pilots of two accounts in one station, for a look
+  at what one may do with the other's things. A pilot's account is
+  read from the store's file opened to read alone (`whose-pilot2.js`:
+  the `characters` table is a key and a JSON, with `accountId`).
+- **What the server takes of a caller is asked before a kind of call
+  is opened to the page.** A stack given to one pilot (`/giveitem 34
+  100`, into its hangar) and asked for by another in the same station
+  (`invowner-live.js`) was refused, `FakeItemNotFound`. The handler's
+  own lines named no owner, and the refusal was found by asking.
+- **A unit may end sized.** Where the next thing is a making, the
+  unit that finds it so lays it out in the Next list, measures its
+  unknown of the server's, and builds nothing: the making is the next
+  unit's.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
