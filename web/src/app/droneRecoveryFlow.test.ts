@@ -130,7 +130,10 @@ test("scoop judges by the drone LEAVING space", async () => {
 test("a scoop that moved only some of them counts the ones left behind", async () => {
   const store = createClientStore();
   const bff = makeFakeBff({ inSpaceAfter: [droneRow(OTHER_DRONE_ID, true)] });
-  const flow = createAppFlow(store, { fetch: bff.fetch });
+  // A drone the server refused nothing of and that is still read as out is waited for, the drones read again
+  // until it has gone (flow.ts: a scooped drone goes with the ballpark's update behind the call's answer, as a
+  // launched one comes). This stand-in's drone never goes, and the wait is nothing here.
+  const flow = createAppFlow(store, { fetch: bff.fetch, scoopLeaveWaitMs: 0 });
 
   await flow.scoopDrones([DRONE_ID, OTHER_DRONE_ID]);
 
