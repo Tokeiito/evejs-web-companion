@@ -202,24 +202,54 @@ function matchesText(
 
 /**
  * Whether any overview can list a thing. The client's overview is made of a
- * table of groups (parklife/tacticalConst.py, construct_groups, 112), and that
- * table leaves out every group of the Charge category but seven (bombGroups,
- * 86): the three bombs', the scanner's, the interdiction's and the burst's
- * probes, and a structure's guided bomb. So a missile in flight is on nobody's
- * overview, whatever its settings; the client shows one in space and nowhere
- * else.
+ * table of groups (parklife/tacticalConst.py, construct_groups, 112 to 127),
+ * and every preset's groups are cut down to that table before anything is
+ * listed (overview/presetservice.py, GetValidGroups, 315 to 321). A group is in
+ * the table where:
+ *
+ *   • its category is one of thirteen (validCategories, 72 to 85): stations,
+ *     ships, entities, celestials, asteroids, drones, deployables, starbases,
+ *     structures, charges, sovereignty structures, orbitals and fighters;
+ *   • it is not one of sixty-four set aside (filterGroups, 7 to 71): what is
+ *     no thing in space to a pilot (a solar system, a region, a ring, a cloud,
+ *     a comet, a signature, a planet's pins), and what is in space and is not
+ *     for clicking (a force field, a locator, a moon's chunk, the
+ *     non-interactable kinds, the old drone and starbase groups);
+ *   • and, of the Charge category, it is one of seven (bombGroups, 86 to 93):
+ *     the three bombs', the scanner's, the interdiction's and the burst's
+ *     probes, and a structure's guided bomb. So a missile in flight is on
+ *     nobody's overview, whatever its settings; the client shows one in space
+ *     and nowhere else.
+ *
+ * The numbers are the client's own: the module's compiled collections, each
+ * name given inventorycommon/const's compiled number, read through the client's
+ * python27.dll (scripts/py27-oracle.py). One of the sixty-four is a bare 11 in
+ * the module itself.
  *
  * It is the category and the group that say so, never the row's word for its
- * kind: a charge whose group is not known is not listed.
+ * kind. A charge whose group is not known is not listed. A row whose category
+ * is not known at all is listed: the rule cannot be read of it, and a thing in
+ * space is not hidden for that.
  */
 const CATEGORY_CHARGE = 8;
 const CHARGE_GROUPS_AN_OVERVIEW_LISTS: ReadonlySet<number> = new Set([90, 863, 864, 479, 548, 4088, 1548]);
+const CATEGORIES_AN_OVERVIEW_LISTS: ReadonlySet<number> = new Set([3, 6, 11, 2, 25, 18, 22, 23, 65, 8, 40, 46, 87]);
+const GROUPS_NO_OVERVIEW_LISTS: ReadonlySet<number> = new Set([
+  16, 995, 335, 5, 13, 4, 3, 227, 305, 885, 502, 368, 312, 1027, 1026, 1036,
+  1028, 1030, 1029, 1071, 1165, 1198, 1149, 1274, 1297, 1312, 549, 1023, 1073, 1409, 1410, 1405,
+  1407, 11, 1063, 1004, 903, 519, 382, 97, 299, 470, 545, 934, 445, 710, 414, 418,
+  364, 480, 840, 877, 1940, 1983, 1882, 1973, 1975, 4579, 1980, 1971, 1005, 4055, 4430, 4714,
+]);
 
 export function overviewCanList(entity: Pick<SpaceEntity, "categoryID" | "groupID">): boolean {
-  if (entity.categoryID !== CATEGORY_CHARGE) {
-    return true;
+  const { categoryID, groupID } = entity;
+  if (categoryID === CATEGORY_CHARGE) {
+    return groupID !== null && CHARGE_GROUPS_AN_OVERVIEW_LISTS.has(groupID);
   }
-  return entity.groupID !== null && CHARGE_GROUPS_AN_OVERVIEW_LISTS.has(entity.groupID);
+  if (categoryID !== null && !CATEGORIES_AN_OVERVIEW_LISTS.has(categoryID)) {
+    return false;
+  }
+  return groupID === null || !GROUPS_NO_OVERVIEW_LISTS.has(groupID);
 }
 
 /**
