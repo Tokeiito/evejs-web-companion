@@ -6531,6 +6531,140 @@ test("a cleared grid brings the drones home", () => {
   assert.equal(decision.phase, "Drones");
 });
 
+// ⚠ ONCE, NOT EVERY TICK (observed live 2026-10-12: 20-30 identical recalls per
+// pilot, ~390 ms apart, while the drones flew home). The drones stay on grid for
+// the whole flight, so the condition that sent the recall stays true; only the
+// memory of having sent it stops the next burst tick sending it again.
+test("a job-over recall is sent once and then waited on while the drones fly home", () => {
+  const T0 = 1_000_000;
+  const homeward = mixedBayObs({
+    hostileOnGrid: false,
+    myDroneIDs: [DRONE_A, DRONE_B],
+    combatDroneIDs: [DRONE_A, DRONE_B],
+  });
+  const first = decideCompanionAction(WITH_DRONES, homeward, undefined, T0);
+  assert.equal(first.action.kind, "recallDrones");
+  assert.deepEqual(first.memory.jobOverRecall, { droneIDs: [DRONE_A, DRONE_B], sinceMs: T0 });
+
+  // A burst tick later, and many after it, the drones are still out.
+  let memory = first.memory;
+  for (const nowMs of [T0 + 350, T0 + 700, T0 + 10_000, T0 + 29_999]) {
+    const next = decideCompanionAction(WITH_DRONES, homeward, memory, nowMs);
+    assert.notEqual(next.action.kind, "recallDrones", String(nowMs));
+    memory = next.memory;
+  }
+  // One home, one still flying: still the same recall.
+  const half = decideCompanionAction(
+    WITH_DRONES,
+    mixedBayObs({ hostileOnGrid: false, myDroneIDs: [DRONE_B], combatDroneIDs: [DRONE_B] }),
+    memory,
+    T0 + 5_000,
+  );
+  assert.notEqual(half.action.kind, "recallDrones");
+});
+
+test("a job-over recall that has not landed is sent again after the bounded wait", () => {
+  // The recall may have been a failed call -- one was, live -- and nothing else
+  // brings drones home off a quiet grid.
+  const T0 = 1_000_000;
+  const homeward = mixedBayObs({
+    hostileOnGrid: false,
+    myDroneIDs: [DRONE_A],
+    combatDroneIDs: [DRONE_A],
+  });
+  const first = decideCompanionAction(WITH_DRONES, homeward, undefined, T0);
+  const again = decideCompanionAction(WITH_DRONES, homeward, first.memory, T0 + 30_000);
+  assert.deepEqual(again.action, { kind: "recallDrones", droneIDs: [DRONE_A] });
+  assert.equal(again.memory.jobOverRecall?.sinceMs, T0 + 30_000);
+});
+
+test("a drone the job-over recall did not name is recalled at once", () => {
+  const T0 = 1_000_000;
+  const first = decideCompanionAction(
+    WITH_DRONES,
+    mixedBayObs({ hostileOnGrid: false, myDroneIDs: [DRONE_A], combatDroneIDs: [DRONE_A] }),
+    undefined,
+    T0,
+  );
+  const more = decideCompanionAction(
+    WITH_DRONES,
+    mixedBayObs({
+      hostileOnGrid: false,
+      myDroneIDs: [DRONE_A, DRONE_B],
+      combatDroneIDs: [DRONE_A, DRONE_B],
+    }),
+    first.memory,
+    T0 + 350,
+  );
+  assert.deepEqual(more.action, { kind: "recallDrones", droneIDs: [DRONE_A, DRONE_B] });
+});
+
+test("the job-over recall is forgotten once the drones are home or the fight is back", () => {
+  const T0 = 1_000_000;
+  const first = decideCompanionAction(
+    WITH_DRONES,
+    mixedBayObs({ hostileOnGrid: false, myDroneIDs: [DRONE_A], combatDroneIDs: [DRONE_A] }),
+    undefined,
+    T0,
+  );
+  const home = decideCompanionAction(
+    WITH_DRONES,
+    mixedBayObs({ hostileOnGrid: false, myDroneIDs: [], combatDroneIDs: [] }),
+    first.memory,
+    T0 + 5_000,
+  );
+  assert.equal(home.memory.jobOverRecall, null);
+
+  // Hostiles back mid-recall: the record goes, so the NEXT end of the fight
+  // recalls straight away rather than waiting out this one's half-minute.
+  const fight = decideCompanionAction(
+    WITH_DRONES,
+    mixedBayObs({ myDroneIDs: [DRONE_A], combatDroneIDs: [DRONE_A] }),
+    first.memory,
+    T0 + 2_000,
+  );
+  assert.equal(fight.memory.jobOverRecall, null);
+  const over = decideCompanionAction(
+    WITH_DRONES,
+    mixedBayObs({ hostileOnGrid: false, myDroneIDs: [DRONE_A], combatDroneIDs: [DRONE_A] }),
+    fight.memory,
+    T0 + 4_000,
+  );
+  assert.deepEqual(over.action, { kind: "recallDrones", droneIDs: [DRONE_A] });
+});
+
+// ⚠ A FAILED RECALL IS NOT ONE TO WAIT ON (observed live 2026-10-12: a pilot's
+// first job-over recall came back CHARACTER_IN_USE). The ladder records the
+// recall when it chooses it, so without the loop dropping that record on a
+// failure the drones would sit out the whole half-minute bound.
+test("a job-over recall the server refused is sent again on the next tick, then once only", async () => {
+  const attempted: FleetCompanionAction[] = [];
+  const controller = createFleetCompanion({
+    observe: async () =>
+      mixedBayObs({ hostileOnGrid: false, myDroneIDs: [DRONE_A], combatDroneIDs: [DRONE_A] }),
+    issue: async (action) => {
+      attempted.push(action);
+      if (attempted.length === 1) {
+        throw Object.assign(new Error("CHARACTER_IN_USE"), { code: "CALL_REFUSED" });
+      }
+    },
+    sleep: async () => {},
+    now: () => 1_000_000,
+  });
+  controller.start(WITH_DRONES);
+  for (let tick = 0; tick < 4; tick += 1) {
+    await controller.tick();
+  }
+  assert.deepEqual(
+    attempted.filter((action) => action.kind === "recallDrones"),
+    [
+      { kind: "recallDrones", droneIDs: [DRONE_A] },
+      { kind: "recallDrones", droneIDs: [DRONE_A] },
+    ],
+  );
+  assert.equal(controller.snapshot().status, "running");
+});
+
 test("a grid we cannot READ does not pull the drones in", () => {
   // ⚠ `hostileOnGrid` is three-state and `null` is "the read failed". Recalling
   // on that would yank drones out of a live fight every time a snapshot
