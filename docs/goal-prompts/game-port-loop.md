@@ -3517,6 +3517,23 @@ Take these defaults, and list each under "For the operator" in the log so they c
   and not live: a dropped socket of the chat's was (`chat-reconnect-
   probe.js`). The probe is a scratch script, not a test, and is not
   put in the repository.
+- **A decompiled constant that could not run is read from the
+  compiled module.** `chatutil/spam.py` decompiled to a mangled
+  string and to `ord` called on numbers; the truth was the module's
+  `co_consts`, had by `marshal.loads` of the `.pyc` (eight bytes
+  in) inside the client's own `python27.dll`
+  (`scripts/py27-oracle.py`; `open` and `marshal` are there, the
+  standard library is not, so the module is read and not run). A
+  function's flow is checked the same way, its bytecode against the
+  decompile, opcode by opcode. This is the operator's "deep-decompiled
+  client (not just the python)".
+- **A state file of `eve.js` is not used twice.** On 2026-10-13 an
+  entry was appended with the state file of the entry before, which
+  named two commits not on the origin; the origin had been moved to
+  the head since, by another's push, and the entry said what was no
+  longer so. It was put right before it was committed. The records
+  script is given the origin's hash as well as the head's, both read
+  as it is run, and holds the state file to naming both.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

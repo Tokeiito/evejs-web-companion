@@ -1505,7 +1505,19 @@ pilot's own presence to each of its rooms every thirty seconds (measured in the 
 (`xmppchatclient/xmppchatwindow.py` 1344 to 1364: every `maxChatChannelIdleTimeSeconds`, 180 by default, and up
 to three seconds more, a channel quiet for longer is joined again with the history of the quiet time less two
 seconds) finds nothing quiet here. A lost connection is made again five seconds on, to the same hostname and
-address, with the secret asked again (`xmpp/xmppConnection.py` 399 to 465). A pilot on the game port reconnects
+address, with the secret asked again (`xmpp/xmppConnection.py` 399 to 465). A window drops a line that is spam
+as it puts it out and sends none (`xmppchatclient/xmppchatwindow.py` 353 to 359, 952 to 956). `IsSpam`
+(`chatutil/spam.py` 27 to 47) normalizes the line (17 to 18: lower case; `1370` written `leto`, each of
+`,-_*+=^~@`, U+263B and U+3002 a dot, U+03BC `m`, U+03BF `o`, U+043C `m`, U+043E `o`, U+0441 `c`; a space,
+`\`, `|`, `/`, `!`, the three kinds of bracket, `<`, `>`, both quotes, the backtick and U+00B4 taken out;
+`dot` made a dot; two dots or more made one: the table is the module's compiled constants', the decompiled Python
+having it wrong) and looks for each taboo in it, the first found settling it: spam unless the line as written has
+the taboo too, not at its start, and every such occurrence follows a letter or a number. The taboos are what the
+sites service has as banned in chat, each normalized, kept thirty hours (21 to 24): of the flagged sites, those
+flagged 1, each one's domain (`carbonui/control/browser/sites.py` 348 to 354, 416 to 432), the flagged sites
+being the list on disk unless its MD5 is not `browserLockdownSvc.GetFlaggedSitesHash()`, when
+`GetFlaggedSitesList()` is asked (380 to 406). Tranquility and EveJS both answer the MD5 of `[]`. A pilot on the
+game port checks so since `5f0b9627`. A pilot on the game port reconnects
 and checks so since `3611198a`, and follows its session since `82986a37`.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill

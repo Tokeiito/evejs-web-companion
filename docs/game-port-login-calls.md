@@ -10,10 +10,10 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 
 | The game port | Kinds | Calls | Meaning |
 |---|---|---|---|
-| at login | 66 | 75 | The game port asks this at login too. |
+| at login | 67 | 76 | The game port asks this at login too. |
 | by a feature | 6 | 10 | A feature of the web client asks this when it is wanted, in a form read against the client's. |
 | by a route | 7 | 8 | The BFF has a route that can ask this. It has not been read against the client's. |
-| never | 21 | 24 | Nothing of ours asks this. |
+| never | 20 | 23 | Nothing of ours asks this. |
 
 ## Before a character is chosen
 
@@ -103,7 +103,7 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `dynamicBountyMgr.GetOutputForClientSolarSystem` | 1 | at login |
 | `skillHandler.GetSkillQueueAndFreePoints` (inferred) | 1 | at login |
 | `XmppChatMgr.ResyncSystemChannelAccess` | 1 | at login |
-| `browserLockdownSvc.GetFlaggedSitesHash` | 1 | never |
+| `browserLockdownSvc.GetFlaggedSitesHash` | 1 | at login |
 | `map.GetStationInfo` | 1 | at login |
 | `objectCaching.GetCachableObject` | 1 | at login |
 | `ship.MachoResolveObject` | 1 | by a feature |
