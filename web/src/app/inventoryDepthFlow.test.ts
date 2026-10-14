@@ -363,36 +363,64 @@ test("a move out of a container names the container as the source place", async 
 
 // --- merge ------------------------------------------------------------------
 
-test("mergeStacks posts the two stacks and reports the quantity that moved", async () => {
-  const store = createClientStore();
-  const { fetch, requests } = standardFetch((path) => {
-    if (path === "/api/bridge/inventory/merge") {
-      return { status: 200, body: { ok: true, applied: true, merged: 250, declinedSilently: false } };
+// A stack is merged into another by the page's own call since 2026-10-13 where it holds the place's rows
+// (bridge/inventoryWrites.ts); the route (POST /api/bridge/inventory/merge) keeps the corporation's hangar. The call
+// is held to the client's: item.py's drop (958 on, the source `node.rec.locationID` at 1004), invControllers.py
+// 327 to 335 and invCache.py 1124, MultiMerge([(source, destination, qty)], the source's place) on the inventory the
+// target is in.
+
+/** A pilot docked at Jita (60003760), as the store has it once a character is chosen. */
+function dockedAtJita(store: ReturnType<typeof createClientStore>): void {
+  store.apply({
+    type: "character/online",
+    character: { characterID: 90000001, characterName: "Synthetic Pilot", stationID: 60003760, structureID: null, solarSystemID: 30000142, corporationID: 98000001 },
+    station: null,
+  });
+}
+
+/** The hangar's read until a merge is made, and then the two stacks as one where `merges`. */
+function hangarMerging(merges: boolean) {
+  let merged = false;
+  return makeFakeFetch((path, _method, body) => {
+    if (path === "/api/bridge/call") {
+      merged = merges;
+      return { status: 200, body: { ok: true, service: body.service, method: body.method, result: null, notifications: [] } };
+    }
+    if (path === "/api/bridge/inventory") {
+      const panel = inventoryPanel();
+      if (!merged) return { status: 200, body: panel };
+      const items = (panel.hangar.list.items as { fields: { itemID: number; quantity: number } }[])
+        .filter((row) => row.fields.itemID !== 101)
+        .map((row) => (row.fields.itemID === 100 ? packedRow({ ...row.fields, quantity: 1250 }) : row));
+      return { status: 200, body: { ...panel, hangar: { ...panel.hangar, list: { type: "list", items } } } };
     }
     return { status: 200, body: { ok: true } };
   });
+}
+
+test("a stack dropped on a stack in the hangar is the client's MultiMerge on the hangar's own inventory: the whole stack, and the station it lies in", async () => {
+  const store = createClientStore();
+  dockedAtJita(store);
+  const { fetch, requests } = hangarMerging(true);
   const flow = createAppFlow(store, { fetch });
+  await flow.loadInventory();
 
   await flow.mergeStacks(101, 100, { kind: "hangar" });
 
-  const merge = requests.find((r) => r.path === "/api/bridge/inventory/merge");
-  assert.deepEqual(merge!.body, {
-    sourceItemID: 101,
-    destinationItemID: 100,
-    place: { kind: "hangar" },
-  });
-  assert.match(String(store.inventory.get().lastOutcome?.message), /Merged 250/);
+  const calls = requests.filter((r) => r.path === "/api/bridge/call").map((r) => r.body);
+  assert.deepEqual(calls, [
+    { service: "invbroker", method: "MultiMerge", args: [[[101, 100, 500]], 60003760], kwargs: null, pilot: true, confirm: true, of: "hangar" },
+  ]);
+  assert.equal(requests.some((r) => r.path === "/api/bridge/inventory/merge"), false);
+  assert.match(String(store.inventory.get().lastOutcome?.message), /Merged 500/);
 });
 
 test("a merge the server declines says so without inventing a cause", async () => {
   const store = createClientStore();
-  const { fetch } = standardFetch((path) => {
-    if (path === "/api/bridge/inventory/merge") {
-      return { status: 200, body: { ok: true, applied: false, merged: 0, declinedSilently: true } };
-    }
-    return { status: 200, body: { ok: true } };
-  });
+  dockedAtJita(store);
+  const { fetch } = hangarMerging(false);
   const flow = createAppFlow(store, { fetch });
+  await flow.loadInventory();
 
   await flow.mergeStacks(101, 100, { kind: "hangar" });
 
