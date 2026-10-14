@@ -239,7 +239,8 @@ export type ChatCommandKind =
   | "destination"
   | "warp"
   | "props"
-  | "targets";
+  | "targets"
+  | "flight";
 
 /**
  * One parsed chat command. The four link verbs carry exactly the resolved
@@ -298,7 +299,13 @@ export type ChatCommand =
    * toggle like `props`, not an order, and `stop` does not reset it. See the
    * header's "a mode, not an order".
    */
-  | { readonly kind: "targets"; readonly mode: "called" | "all" };
+  | { readonly kind: "targets"; readonly mode: "called" | "all" }
+  /**
+   * `flight follow` / `flight auto` -- the companion's flight mode. A standing
+   * toggle like `targets`, not an order, and `stop` does not reset it. See the
+   * table entry's section comment.
+   */
+  | { readonly kind: "flight"; readonly mode: "follow" | "auto" };
 
 /**
  * Verb -> command kind, each with its own anchored, case-insensitive
@@ -566,6 +573,39 @@ const VALUE_COMMAND_VERBS: ReadonlyArray<{
         : { kind: "targets", mode: word.toLowerCase() === "all" ? "all" : "called" };
     },
   },
+  // ─── `flight follow|auto`: A MODE, NOT AN ORDER ───────────────────────────
+  //
+  // ⚠ `flight` IS THE THIRD TOGGLE IN THE VOCABULARY, after `props on|off` and
+  // `targets called|all`, and it is parsed the same way: a value verb whose word
+  // is MANDATORY. It sets the companion's FLIGHT MODE:
+  //
+  //   • `follow` (the default) -- the fleet commander leads the flight and the
+  //     companion holds station on them.
+  //   • `auto` -- the companion flies itself into weapon range of its target
+  //     while it fights.
+  //
+  // It is a standing mode like `targets`, not a one-off order, for the same
+  // reason: it is a preference about how the companion flies, in force until
+  // somebody flips it back. Both halves are required, and a bare `flight`, or
+  // one followed by any other word, is NOT a command.
+  //
+  // ⚠ `flight` IS NOT `follow`. The two cannot collide: `^follow\b` does not
+  // match a line that starts with "flight", and `^flight\b` does not match a
+  // line that starts with "follow". A line starting with `follow` still parses
+  // as the escort order, and `flight follow` is this mode, not that order.
+  {
+    verb: "flight",
+    pattern: /^flight\b/i,
+    // ⚠ BOTH WORDS ARE MANDATORY AND NOTHING MAY FOLLOW THEM, exactly as for
+    // `targets`: no default half of a mode, and trailing chatter is a sentence.
+    read: (remainder) => {
+      const said = /^\s*(follow|auto)\s*$/i.exec(remainder);
+      const word = said?.[1];
+      return word === undefined
+        ? null
+        : { kind: "flight", mode: word.toLowerCase() === "auto" ? "auto" : "follow" };
+    },
+  },
 ];
 
 /**
@@ -595,6 +635,7 @@ export const CHAT_COMMAND_HELP: readonly { readonly usage: string; readonly does
     // Toggles.
     { usage: "props on|off", does: "Run the afterburner or MWD, or stand it down" },
     { usage: "targets called|all", does: "Shoot only called targets, or free fire" },
+    { usage: "flight follow|auto", does: "Hold station on the FC, or fly into range by itself" },
     // Cancel.
     { usage: "stop", does: "Cancel orders and halt the ship" },
   ]);

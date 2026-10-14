@@ -485,6 +485,7 @@ test("CHAT_COMMAND_VERBS lists exactly the recognised verbs, target/primary incl
     [
       "align",
       "destination",
+      "flight",
       "follow",
       "jump",
       "loot",
@@ -548,6 +549,73 @@ test("`targets` is anchored and word-bounded, and never reads as the `target` li
   );
 });
 
+// --- `flight follow` / `flight auto` -----------------------------------------
+//
+// The third toggle: a flight MODE, not an order. Parsed exactly like `targets` --
+// both words required, nothing allowed after them.
+
+test("flight follow and flight auto both parse, and carry which mode was said", () => {
+  assert.deepEqual(parseChatCommand(chatMessage("flight follow")), {
+    kind: "flight",
+    mode: "follow",
+  });
+  assert.deepEqual(parseChatCommand(chatMessage("flight auto")), { kind: "flight", mode: "auto" });
+});
+
+test("flight is case-insensitive and tolerates the surrounding and inner whitespace", () => {
+  assert.deepEqual(parseChatCommand(chatMessage("  FLIGHT   AUTO  ")), {
+    kind: "flight",
+    mode: "auto",
+  });
+  assert.deepEqual(parseChatCommand(chatMessage("Flight Follow")), {
+    kind: "flight",
+    mode: "follow",
+  });
+});
+
+test("a bare `flight`, an unknown mode word, or trailing chatter is not an order", () => {
+  assert.equal(parseChatCommand(chatMessage("flight")), null);
+  assert.equal(parseChatCommand(chatMessage("flight fast")), null);
+  assert.equal(parseChatCommand(chatMessage("flight please")), null);
+  assert.equal(parseChatCommand(chatMessage("flight autoo")), null);
+  assert.equal(parseChatCommand(chatMessage("flight auto please")), null);
+  assert.equal(parseChatCommand(chatMessage("flight follow auto")), null);
+  // A link is not a mode either: `flight` takes a word, never an object.
+  assert.equal(
+    parseChatCommand(chatMessage("flight <url=showinfo:670//1099511628000>Some Rifter</url>")),
+    null,
+  );
+});
+
+test("`flight` is anchored and word-bounded, and is not `follow` or `flights`", () => {
+  assert.equal(parseChatCommand(chatMessage("flights auto")), null);
+  assert.equal(parseChatCommand(chatMessage("flying auto")), null);
+  assert.equal(parseChatCommand(chatMessage("the flight follow was fine")), null);
+  assert.equal(parseChatCommand(chatMessage("did you flight auto earlier?")), null);
+});
+
+test("`flight follow` is the flight verb, and `follow N km` is still the follow verb", () => {
+  // The two verbs share the word "follow", so each must be checked both ways.
+  assert.deepEqual(parseChatCommand(chatMessage("flight follow")), {
+    kind: "flight",
+    mode: "follow",
+  });
+  assert.deepEqual(parseChatCommand(chatMessage("follow 10 km")), {
+    kind: "follow",
+    rangeM: 10_000,
+  });
+  assert.deepEqual(parseChatCommand(chatMessage("follow")), {
+    kind: "follow",
+    rangeM: COMPANION_FOLLOW_RANGE_M,
+  });
+  // A line starting with `follow` is never read as the flight verb.
+  assert.notEqual(parseChatCommand(chatMessage("follow auto"))?.kind, "flight");
+  assert.deepEqual(parseChatCommand(chatMessage("follow auto")), {
+    kind: "follow",
+    rangeM: COMPANION_FOLLOW_RANGE_M,
+  });
+});
+
 // --- CHAT_COMMAND_HELP ---------------------------------------------------------
 
 // Exhaustive on purpose: the compiler refuses a new `ChatCommandKind` that is
@@ -565,6 +633,7 @@ const ALL_KINDS: Record<ChatCommandKind, true> = {
   warp: true,
   props: true,
   targets: true,
+  flight: true,
 };
 
 test("every ChatCommandKind has a help row whose usage starts with its verb", () => {
