@@ -3804,6 +3804,11 @@ Take these defaults, and list each under "For the operator" in the log so they c
   space". The server takes one jettison in three minutes: a second straight after is
   `ShpJettisonPending`; after a putting back of the store (EveJS restarted with it) the
   next was taken at once, on 2026-10-14.
+- **After the machine has been down**, look at what holds the pid files' numbers before
+  `store.sh` stops one (`tasklist //FI "PID eq <pid>"`): after a start of Windows another
+  process may have it. `store.sh` judges the gateway through the gateway's BFF (26511), so
+  with the BFFs down it says "the gateway did not come up" while EveJS listens: start the two
+  BFFs after it, and look at 26000 and 26002 (2026-10-14).
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
