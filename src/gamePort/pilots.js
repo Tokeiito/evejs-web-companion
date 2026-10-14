@@ -185,6 +185,7 @@ const AGGRESSION_SETTINGS = "GetAggressionSettings";
 const BOUND_BEFORE_USE = new Set(["corpRegistry", "allianceRegistry", "warRegistry"]);
 const NOTIFICATION_MGR = "notificationMgr";
 const CALENDAR_PROXY = "calendarProxy";
+const CALENDAR_MGR = "calendarMgr";
 /**
  * What a read of the notification manager's is kept as, for the three the client's notification service keeps:
  * all of them from the first (allNotifications: GetAllNotifications(fromID=0), as its notification window asks
@@ -402,6 +403,8 @@ const servicesKeptAs = (method, form, attributes) => (method === STRUCTURE_SERVI
 const ofTheStructureDockedIn = (args, attributes) => theStructureDockedIn(Array.isArray(args) ? args[0] : null, attributes);
 /** What a read of the calendar's is kept as: a month's events, by the month (calendar.events[(month, year)]: GetEventList(month, year)). */
 const calendarKeptAs = (method, form) => (method === "GetEventList" ? `${form.args[1]}-${form.args[0]}` : null);
+/** calendar.GetEventResponses (eveCalendarsvc.py 250 to 257): the pilot's answers to events, asked with nothing. */
+const responsesKeptAs = (method, form) => (method === "GetResponsesForCharacter" && form.args.length === 0 && form.kwargs === null ? "responses" : null);
 const BOOKMARK_MGR = "accessGroupBookmarkMgr";
 /**
  * The bookmark manager's one read the client's bookmark service keeps (bookmarkSvc.ACLPrimeBookmarks, 157 to 177):
@@ -452,6 +455,15 @@ const KEPT_UNTIL_CHANGED = Object.freeze({
     keptAs: calendarKeptAs,
     notices: new Set(["OnNewCalendarEvent", "OnEditCalendarEvent", "OnRemoveCalendarEvent"]),
     writes: Object.freeze({ calendarMgr: new Set(["CreatePersonalEvent", "CreateCorporationEvent", "CreateAllianceEvent", "EditPersonalEvent", "EditCorporationEvent", "EditAllianceEvent", "DeleteEvent"]) }),
+  }),
+  // calendar's responses (eveCalendarsvc.py 250 to 257): asked once and kept for the session, a change of
+  // corporation or alliance not among what lets them go (400 to 407). The client changes the one answered at its
+  // own SendEventResponse (295 to 312) and at the server's OnEventResponseByExternal (409 to 412); here what is
+  // kept is let go at either, and asked for when it is next wanted.
+  [CALENDAR_MGR]: Object.freeze({
+    keptAs: responsesKeptAs,
+    notices: new Set(["OnEventResponseByExternal"]),
+    writes: Object.freeze({ calendarMgr: new Set(["SendEventResponse"]) }),
   }),
   // planetSvc and planetUISvc: the launches changed (OnPILaunchesChange, at which the client forgets them), a
   // planet's state changed (OnMajorPlanetStateUpdate, at which the client changes its own list of colonies), the

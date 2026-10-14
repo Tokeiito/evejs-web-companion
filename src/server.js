@@ -7409,6 +7409,9 @@ app.get("/api/bridge/notifications", requireAuth, async (req, res, next) => {
 //     arm answers null with no error: not asked is not a failure.
 // ⚠ ownerID/eventID/characterID/creatorID stay as data for later resolution
 // (R7d). Decoded browser-side (web/src/bridge/calendar.ts).
+// The page no longer asks it: its Activity Center asks calendarProxy.GetEventList for this month and the next, and
+// calendarMgr.GetResponsesForCharacter(), itself, by the generic call, as the client's calendar service does
+// (web/src/app/flow.ts, loadActivity). Kept for scripts/bff-parity.js.
 app.get("/api/bridge/calendar", requireAuth, async (req, res, next) => {
   const held = requireHeldBridgeSession(req, res);
   if (!held) {

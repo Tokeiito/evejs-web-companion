@@ -1164,22 +1164,6 @@ export async function loadBoundFleet(options: ApiOptions = {}): Promise<Record<s
 // (bridge/fleetWrites.ts): the eighth of its writes to leave its route
 // (POST /api/bridge/fleet/broadcast/bubble), on 2026-10-10.
 
-// --- Activity Center reads -------------------------------------------------
-// The calendar's is a thin wrapper over an aggregate BFF route; the
-// notifications the flow asks itself, by the generic call. Activity is
-// deliberately read-only: notification/calendar mutators live elsewhere and
-// are never exposed by its flow or panel.
-
-/** Raw current-month calendar reads; bridge/activity.ts preserves each arm. */
-export async function loadActivityCalendar(
-  month: number,
-  year: number,
-  options: ApiOptions = {},
-): Promise<Record<string, JsonValue>> {
-  const query = `?month=${encodeURIComponent(String(month))}&year=${encodeURIComponent(String(year))}`;
-  return getJson(`/api/bridge/calendar${query}`, options);
-}
-
 // --- R17 Mail ---------------------------------------------------------------
 // The BFF cold-starts the delta sync and hands back the RAW retail-shaped
 // arms, decoded in the flow with bridge/mail.ts — except the message BODY,

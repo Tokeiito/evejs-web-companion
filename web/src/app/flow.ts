@@ -54,6 +54,7 @@ import { sendMail as sendMailCall, type MailToSend } from "../bridge/mailWrites.
 import { reprocess as reprocessCall } from "../bridge/reprocessWrites.ts";
 import {
   activityReadError,
+  calendarEventsOfMonths,
   decodeActivityCalendar,
   decodeActivityNotifications,
 } from "../bridge/activity.ts";
@@ -160,8 +161,6 @@ import { itemChangeTouchesDroneBay } from "../bridge/droneBayNotices.ts";
 import * as api from "./api.ts";
 import type { ClientStore } from "../store/clientStore.ts";
 import type {
-  ActivityCalendarEventRow,
-  ActivityCalendarResponseRow,
   ActivityRead,
   AgentAction,
   AgentConversation,
@@ -4003,14 +4002,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     store.apply({ type: "activity/loading" });
 
     const now = new Date();
-    const [notificationResult, unprocessedResult, calendarResult, mailResult, skillResult] = await Promise.allSettled([
+    // The calendar service's agenda (eveCalendarsvc.py 541 to 566): this month's events and the next's, by the
+    // server's clock, which the client asks at the login and keeps by month; and the pilot's own answers to them
+    // (250 to 257), which it asks once and keeps. On the game port all three are answered from what the transport
+    // keeps, as the service keeps them.
+    const thisMonth = [now.getUTCMonth() + 1, now.getUTCFullYear()] as const;
+    const nextMonth = thisMonth[0] === 12 ? [1, thisMonth[1] + 1] as const : [thisMonth[0] + 1, thisMonth[1]] as const;
+    const [notificationResult, unprocessedResult, thisMonthResult, nextMonthResult, responsesResult, mailResult, skillResult] = await Promise.allSettled([
       // The client's notification service's two reads (notificationSvc.py 93 and 107): all the pilot's
       // notifications, from the first, by its keyword; and the ones not yet read, for the unread count. On the game
       // port both are answered from what the transport keeps, as the service keeps them. GetByGroupID the client
       // asks only of a group opened, which the panel has not.
       bridgeAsk("notificationMgr", "GetAllNotifications", [], { fromID: 0 }),
       bridgeAsk("notificationMgr", "GetUnprocessed", []),
-      api.loadActivityCalendar(now.getUTCMonth() + 1, now.getUTCFullYear(), callOptions),
+      bridgeAsk("calendarProxy", "GetEventList", [...thisMonth]),
+      bridgeAsk("calendarProxy", "GetEventList", [...nextMonth]),
+      bridgeAsk("calendarMgr", "GetResponsesForCharacter", []),
       // Reuse the existing mail flow so its own authoritative slice and name
       // resolution stay the one source of truth for unread mail.
       loadMail(),
@@ -4020,7 +4027,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     // A lost live session invalidates every result, even if another arm won
     // the race and answered first. Unwind exactly like all other panel reads.
-    for (const result of [notificationResult, unprocessedResult, calendarResult, mailResult, skillResult]) {
+    for (const result of [notificationResult, unprocessedResult, thisMonthResult, nextMonthResult, responsesResult, mailResult, skillResult]) {
       if (result.status === "rejected" && isSessionLost(result.reason)) {
         stopLiveStream();
         store.apply({ type: "character/offline" });
@@ -4028,7 +4035,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
     }
     // What fails a whole reading, in the page's own calls, fails this one.
-    for (const result of [notificationResult, unprocessedResult, skillResult]) {
+    for (const result of [notificationResult, unprocessedResult, thisMonthResult, nextMonthResult, responsesResult, skillResult]) {
       if (result.status === "rejected" && failsTheReading(result.reason)) {
         throw result.reason;
       }
@@ -4051,17 +4058,19 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       },
     });
 
-    const calendarReads: ReturnType<typeof decodeActivityCalendar> =
-      calendarResult.status === "fulfilled"
-        ? decodeActivityCalendar(calendarResult.value, now.getTime())
-        : {
-            calendarEvents: activityReadError<readonly ActivityCalendarEventRow[]>(
-              `Calendar events could not be refreshed. ${errorWords(calendarResult.reason)}`,
-            ),
-            calendarResponses: activityReadError<readonly ActivityCalendarResponseRow[]>(
-              `Calendar responses could not be refreshed. ${errorWords(calendarResult.reason)}`,
-            ),
-          };
+    const monthFailed = [thisMonthResult, nextMonthResult].find((result) => result.status === "rejected");
+    const calendarReads: ReturnType<typeof decodeActivityCalendar> = decodeActivityCalendar({
+      eventList: thisMonthResult.status === "fulfilled" && nextMonthResult.status === "fulfilled"
+        ? calendarEventsOfMonths([thisMonthResult.value, nextMonthResult.value])
+        : null,
+      responsesForCharacter: responsesResult.status === "fulfilled"
+        ? (Array.isArray(responsesResult.value) ? { type: "list", items: responsesResult.value } : responsesResult.value)
+        : null,
+      errors: {
+        eventList: monthFailed?.status === "rejected" ? failureCode(monthFailed.reason) : null,
+        responsesForCharacter: responsesResult.status === "rejected" ? failureCode(responsesResult.reason) : null,
+      },
+    }, now.getTime());
 
     store.apply({
       type: "activity/loaded",

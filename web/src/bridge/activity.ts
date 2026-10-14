@@ -11,7 +11,7 @@ import {
   decodeResponsesForCharacter,
 } from "./calendar.ts";
 import { decodeNotifications } from "./notifications.ts";
-import { isListValue, type JsonValue } from "./wire.ts";
+import { isKeyValValue, isListValue, readKeyVal, type JsonValue } from "./wire.ts";
 import type {
   ActivityCalendarEventRow,
   ActivityCalendarResponseRow,
@@ -170,7 +170,32 @@ export interface ActivityCalendarReads {
   readonly calendarResponses: ActivityRead<readonly ActivityCalendarResponseRow[]>;
 }
 
-/** Decode the two calendar arms used by Activity; the detail/write arms stay untouched. */
+/**
+ * The events of the months asked, as the client's calendar service gathers them (eveCalendarsvc.py 235 to 243,
+ * 548 to 566): of each month's answer, a tuple of rowsets, the rows of every one that is not None; of all the
+ * months, one by its event, the later month's where two have it (FetchNextEvents' update). Made into the one list
+ * the event list's decoder reads.
+ */
+export function calendarEventsOfMonths(answers: readonly JsonValue[]): JsonValue {
+  const byEvent = new Map<string, JsonValue>();
+  for (const answer of answers) {
+    const rowsets = Array.isArray(answer) ? answer : isListValue(answer) ? answer.items : [];
+    for (const rowset of rowsets) {
+      const rows = Array.isArray(rowset) ? rowset : isListValue(rowset) ? rowset.items : [];
+      for (const row of rows) {
+        if (!isKeyValValue(row)) continue;
+        byEvent.set(JSON.stringify(readKeyVal(row, "eventID") ?? null), row);
+      }
+    }
+  }
+  return [{ type: "list", items: [...byEvent.values()] }];
+}
+
+/**
+ * The calendar's two reads the Activity Center makes, each answered or failed: `eventList` the months' events
+ * (calendarEventsOfMonths), `responsesForCharacter` GetResponsesForCharacter()'s list, and in `errors` the
+ * code of either that failed.
+ */
 export function decodeActivityCalendar(
   envelope: unknown,
   nowMs = Date.now(),

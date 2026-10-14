@@ -263,7 +263,7 @@
       {:else if $activity.calendarEvents.status === "unavailable"}
         <p class="note">Upcoming events are unavailable in this response.</p>
       {:else if $activity.calendarEvents.value.length === 0}
-        <p class="empty">No upcoming events this month.</p>
+        <p class="empty">No upcoming events this month or next.</p>
       {:else}
         <ol class="activity-list">
           {#each $activity.calendarEvents.value as event (event.eventID)}
