@@ -334,6 +334,7 @@ import {
   type DroneRangeSkillReading,
 } from "../nav/droneControlRange.ts";
 import { readScanFullState } from "../bridge/scanFullState.ts";
+import { doAgentAction, removeOfferFromJournal } from "../bridge/agentWrites.ts";
 import { createScannerWrites, type ScannerShip } from "../bridge/scannerWrites.ts";
 import { surfaceDistanceMeters } from "../space/overview.ts";
 import { scannerStateFromRead } from "../scanner/scannerCenter.ts";
@@ -4985,7 +4986,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * a mission is answered with the conversation and, on the way, with a change that closes the window).
    */
   async function agentSays(agentID: number, actionID: number | null): Promise<AgentConversation | null> {
-    const conversation = decodeConversation(await api.agentAction(agentID, actionID, callOptions));
+    // The page's own call on the agent's object (bridge/agentWrites.ts), as the dialogue window makes it.
+    const conversation = decodeConversation(await doAgentAction(bridgeDo, agentID, actionID));
     return agentWindowsClosedWhileTalking.has(agentID) ? null : conversation;
   }
 
@@ -9022,7 +9024,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // Opening the conversation is how the tokens are re-minted. It is called
       // fresh on every tick that could press something — never cached.
       openConversation: async (agentID) => {
-        const result = await api.agentAction(agentID, null, callOptions);
+        const result = await doAgentAction(bridgeDo, agentID, null);
         const conversation = decodeConversation(result);
         store.apply({ type: "agents/conversation", agentID, conversation });
         return conversation;
@@ -9032,7 +9034,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // caller must be able to read `lastActionInfo.missionCompleted` itself —
       // and the loop tests it with `=== true`, because a refusal carries null.
       doAgentAction: async (agentID, actionID) => {
-        const result = await botPresses.during(agentID, () => api.agentAction(agentID, actionID, callOptions));
+        const result = await botPresses.during(agentID, () => doAgentAction(bridgeDo, agentID, actionID));
         const conversation = decodeConversation(result);
         store.apply({ type: "agents/conversation", agentID, conversation });
         return conversation;
@@ -12543,7 +12545,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             try {
               // Opening the conversation re-mints the button tokens — read fresh
               // every tick that could press one, never cached (the R35 rule).
-              const result = await api.agentAction(boardAgentID, null, callOptions);
+              const result = await doAgentAction(bridgeDo, boardAgentID, null);
               conversation = decodeConversation(result);
               store.apply({ type: "agents/conversation", agentID: boardAgentID, conversation });
             } catch {
@@ -12712,7 +12714,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
                     async (agentID) => {
                       try {
                         return classifyDistributionAgentConversation(
-                          decodeConversation(await api.agentAction(agentID, null, callOptions)));
+                          decodeConversation(await doAgentAction(bridgeDo, agentID, null)));
                       } catch { return "unavailable"; }
                     },
                   );
@@ -13153,7 +13155,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             // The same call the mission bot presses buttons with; the fresh
             // conversation it answers with lands in the store for the panel.
             const result = await botPresses.during(action.agentID, () =>
-              api.agentAction(action.agentID, action.actionID, callOptions));
+              doAgentAction(bridgeDo, action.agentID, action.actionID));
             store.apply({
               type: "agents/conversation",
               agentID: action.agentID,
@@ -14761,7 +14763,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // (OnAgentMissionChange "offer_removed"), and that is what reads the journal again and closes the
     // agent's window if it is open; an offer that was not removed changes nothing.
     async removeOffer(agentID) {
-      await runAgentAction(() => api.removeAgentOffer(agentID, callOptions));
+      await runAgentAction(() => removeOfferFromJournal(bridgeDo, agentID));
     },
 
     openMissionDetails,

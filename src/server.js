@@ -10074,30 +10074,9 @@ app.post("/api/bridge/pvp/end-gate/activate", requireAuth, async (req, res, next
 
 // --- agentMgr nav/journal WRITES (4) — docked => not-in-space -----------------
 
-// The journal's "Remove Offer" (missionentry.py 75): the client asks the AGENT'S bound object,
-// GetAgentMoniker(agentID).RemoveOfferFromJournal(), with no arguments (agents.py 782). The server knows
-// which offer from which agent's object is asked. This route used to ask the service by name with no
-// agent, which removes nothing.
-app.post("/api/bridge/agents/:agentID/remove-offer", requireAuth, async (req, res, next) => {
-  const held = requireHeldBridgeSession(req, res);
-  if (!held) {
-    return;
-  }
-  const agentID = Number(req.params.agentID) || 0;
-  if (!Number.isSafeInteger(agentID) || agentID <= 0) {
-    res.status(400).json({ ok: false, error: "INVALID_AGENT", message: "A positive agentID is required." });
-    return;
-  }
-  if (!requireWriteConfirmation(req, res, "This removes that agent's offer from your journal. Confirm to continue.")) {
-    return;
-  }
-  try {
-    const outcome = await boundCall(held, req.webSessionID, agentBindSpec(agentID), "RemoveOfferFromJournal", [], null);
-    res.json({ ok: true, result: outcome.result, notifications: outcome.notifications });
-  } catch (error) {
-    next(error);
-  }
-});
+// (The journal's "Remove Offer" is the page's own call since 2026-10-13: agentMgr.RemoveOfferFromJournal on the
+// agent's object, through the generic call (bridgeCallPolicy.js, PAGE_OBJECT_CALLS; web/src/bridge/agentWrites.ts).
+// Its route, POST /api/bridge/agents/:agentID/remove-offer, is gone.)
 
 // GotoLocation(locationType, [deviationOverride], [referringAgentID]).
 app.post("/api/bridge/agent/goto-location", requireAuth, async (req, res, next) => {
@@ -14094,43 +14073,11 @@ app.get("/api/bridge/agents/:agentID/solar-system", requireAuth, async (req, res
   }
 });
 
-// Drive the agent conversation: DoAction(actionID). actionID null opens the
-// conversation; a server-assigned action token (from availableActions) requests
-// / accepts / declines. The in-person accept is synchronous; a decline is a
-// deferred outcome the gateway drives to completion (or refuses with a typed
-// CALL_DEFERRED_UNSUPPORTED). The raw retail-shaped result is decoded browser
-// side (web/src/bridge/agents.ts).
-app.post("/api/bridge/agents/:agentID/action", requireAuth, async (req, res, next) => {
-  const held = requireHeldBridgeSession(req, res);
-  if (!held) {
-    return;
-  }
-  const agentID = Number(req.params.agentID) || 0;
-  if (agentID <= 0) {
-    res.status(400).json({ ok: false, error: "INVALID_AGENT", message: "A positive agentID is required." });
-    return;
-  }
-  const rawActionID = req.body ? req.body.actionID : undefined;
-  const actionID =
-    rawActionID === undefined || rawActionID === null ? null : Number(rawActionID);
-  if (actionID !== null && !Number.isSafeInteger(actionID)) {
-    res.status(400).json({ ok: false, error: "INVALID_ACTION", message: "actionID must be an integer or null." });
-    return;
-  }
-  try {
-    const outcome = await boundCall(
-      held,
-      req.webSessionID,
-      agentBindSpec(agentID),
-      "DoAction",
-      [actionID],
-      null,
-    );
-    res.json({ ok: true, result: outcome.result, notifications: outcome.notifications });
-  } catch (error) {
-    next(error);
-  }
-});
+// (What is said to an agent is the page's own call since 2026-10-13: agentMgr.DoAction on the agent's object,
+// through the generic call, the agent said with `of` (bridgeCallPolicy.js, PAGE_OBJECT_CALLS;
+// web/src/bridge/agentWrites.ts). Its route, POST /api/bridge/agents/:agentID/action, is gone. A decline's
+// deferred outcome is the web gateway's own to drive, as it was; the game port's pilot is asked the server's
+// question on its stream, and answers on the route below.)
 
 // The user's answer to a question the SERVER asked. The server calls the
 // client's own services and waits (agents.YesNo before a mission is quit or

@@ -1952,24 +1952,9 @@ export async function readBotLog(
 // (A station's agents are the page's own read since 2026-10-11: the whole table by bridge/agentReads.ts, kept by
 // the flow, and those at the pilot's station picked from it.)
 
-/**
- * Drive the agent conversation: DoAction(actionID). `actionID` null opens the
- * conversation; a token from availableActions requests / accepts / declines.
- * Returns the raw retail-shaped DoAction result (decoded in the flow).
- */
-export async function agentAction(
-  agentID: number,
-  actionID: number | null,
-  options: ApiOptions = {},
-): Promise<JsonValue> {
-  const data = await postJson(`/api/bridge/agents/${agentID}/action`, { actionID }, options);
-  return data.result ?? null;
-}
-
-/** The journal's "Remove Offer": the agent's own offer, asked of the agent's bound object. */
-export async function removeAgentOffer(agentID: number, options: ApiOptions = {}): Promise<void> {
-  await postJson(`/api/bridge/agents/${agentID}/remove-offer`, { confirm: true }, options);
-}
+// What is said to an agent (DoAction) and the journal's "Remove Offer" are the page's own calls on the agent's
+// object (bridge/agentWrites.ts): their routes (POST /api/bridge/agents/:agentID/action and .../remove-offer)
+// went on 2026-10-13.
 
 /** The security of these solar systems, by ID: a number, or null for an ID that is not a system's. */
 export async function loadSystemSecurity(ids: readonly number[], options: ApiOptions = {}): Promise<Record<number, number | null>> {
