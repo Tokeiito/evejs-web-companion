@@ -487,6 +487,21 @@ function withStatuses(mailbox: DecodedMailbox, messageIDs: readonly number[], ch
   return { messages: mailbox.messages, statuses: mailbox.statuses.map((status) => (named.has(status.messageID) ? change(status) : status)) };
 }
 
+/** The replied and forwarded bits of a status mask (appConst.py 1772 to 1773). */
+const MAIL_STATUS_REPLIED = 2;
+const MAIL_STATUS_FORWARDED = 4;
+
+/**
+ * mailSvc.SendMail (979 to 990): once the mail is sent, the message it answered is marked replied, and the one it
+ * forwarded marked forwarded, in what is kept (0 for none).
+ */
+export function mailboxAfterSending(mailbox: DecodedMailbox, isReplyTo: number, isForwardedFrom: number): DecodedMailbox {
+  let after = mailbox;
+  if (isReplyTo > 0) after = withStatuses(after, [isReplyTo], (status) => ({ ...status, statusMask: status.statusMask | MAIL_STATUS_REPLIED }));
+  if (isForwardedFrom > 0) after = withStatuses(after, [isForwardedFrom], (status) => ({ ...status, statusMask: status.statusMask | MAIL_STATUS_FORWARDED }));
+  return after;
+}
+
 /** MarkMessagesAsRead (mailSvc.py 336 to 348): read, and the read bit in its mask. */
 export function mailboxMarkedRead(mailbox: DecodedMailbox, messageIDs: readonly number[]): DecodedMailbox {
   return withStatuses(mailbox, messageIDs, (status) => ({ ...status, read: true, statusMask: status.statusMask | MAIL_STATUS_READ }));

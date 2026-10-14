@@ -54,6 +54,7 @@ import {
   MAIL_BODIES_KEPT,
   type MailBody,
   mailboxAfterNotice,
+  mailboxAfterSending,
   mailboxAfterSync,
   mailboxMarkedRead,
   mailboxWithHeaders,
@@ -5378,7 +5379,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return;
     }
     // mailSvc.SendMail (959 to 990) takes no header of the mail in: the server's OnMailSent brings it, as it brings
-    // the client's (1119 to 1153). A stale refusal is cleared, as a load cleared it.
+    // the client's (1119 to 1153). The message answered or forwarded is marked so in what is kept (979 to 990). A
+    // stale refusal is cleared, as a load cleared it.
+    if (messageID !== null && ((request.isReplyTo ?? 0) > 0 || (request.isForwardedFrom ?? 0) > 0)) {
+      mailboxLoaded(mailboxAfterSending(store.mail.get(), request.isReplyTo ?? 0, request.isForwardedFrom ?? 0));
+    }
     store.apply({ type: "mail/action-error", message: null });
     store.apply({
       type: "mail/outcome",

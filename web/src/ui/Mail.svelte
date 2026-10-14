@@ -9,11 +9,11 @@
   // is identified by who sent it, what it is about and when it arrived.
   //
   // ⚠ THE BODY IS ALREADY PLAIN TEXT. mailMgr.GetBody answers a zlib-DEFLATED
-  // buffer; the BFF inflates it (src/server.js, mailBodyText) so this file
-  // never handles a compressed byte and no inflate code ships to the browser.
+  // buffer; the flow inflates it (bridge/mail.ts, inflateMailBody) so this file
+  // never handles a compressed byte.
   //
-  // ⚠ THE INBOX IS THE WHOLE MAILBOX. It arrives as a delta sync the BFF
-  // cold-starts, so there is no paging to build and no "load more".
+  // ⚠ THE INBOX IS THE WHOLE MAILBOX. The flow keeps it as the client's mail
+  // service does, so there is no paging to build and no "load more".
   import { onMount } from "svelte";
   import {
     MAIL_MAX_BODY,
@@ -48,6 +48,8 @@
   let searched = $state(false);
   let draftTitle = $state("");
   let draftBody = $state("");
+  /** The message a reply answers (mailSvc.GetReplyWnd: isReplyTo=msg.messageID), 0 for a new message. */
+  let replyTo = $state(0);
 
   /** Always a NAME, never an id — and never an id-shaped fallback either. */
   function personName(characterID: number): string {
@@ -155,20 +157,23 @@
         toCharacterIDs: recipients.map((person) => person.characterID),
         title: draftTitle.trim(),
         body: draftBody,
+        isReplyTo: replyTo,
       });
       const outcome = store.get().mail.lastOutcome;
       if (outcome && outcome.applied) {
         recipients = [];
         draftTitle = "";
         draftBody = "";
+        replyTo = 0;
         tab = "inbox";
       }
     });
   }
 
-  /** Reply: pre-address a new message to whoever wrote, with a Re: subject. */
+  /** Reply: pre-address a new message to whoever wrote, with a Re: subject, answering that message. */
   function reply(header: MailHeaderRow): void {
     recipients = [{ characterID: header.senderID, name: personName(header.senderID) }];
+    replyTo = header.messageID;
     draftTitle = header.title.startsWith("Re: ") ? header.title : `Re: ${header.title}`;
     draftBody = "";
     tab = "compose";
@@ -414,6 +419,7 @@
             recipients = [];
             draftTitle = "";
             draftBody = "";
+            replyTo = 0;
             tab = "inbox";
           }}
         >
