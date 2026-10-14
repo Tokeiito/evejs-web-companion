@@ -376,7 +376,7 @@ import { BOOKMARK_EXPIRY, bookmarkLocation as bookmarkLocationCall } from "../br
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
 import { reconnectToDrones as reconnectToDronesCall, salvageWithDrones, scoopDrones as scoopDronesCall } from "../bridge/boundEntityWrites.ts";
 import { alignTo as alignToCall, approach as approachCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
-import { dock as dockCall, isStation, undock as undockCall } from "../bridge/placeChanges.ts";
+import { dock as dockCall, isStation, jump as jumpCall, undock as undockCall } from "../bridge/placeChanges.ts";
 import { boardCorvette as boardCorvetteCall, leaveShip as leaveShipCall } from "../bridge/shipWrites.ts";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
 import { runSlashCommand } from "../bridge/gmWrites.ts";
@@ -4617,6 +4617,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return isStation(stationID) ? orderedStep((flightNow) => dockCall(bridgeDo, flightNow, stationID)) : api.dock(stationID, callOptions);
   }
 
+  /** Jumps through a stargate by the page's own call (bridge/placeChanges.ts, the client's JumpThroughGate), between two reads of the flight. */
+  function jumpStep(fromGateID: number, toGateID = 0): Promise<FlightStepResult> {
+    return orderedStep((flightNow) => jumpCall(bridgeDo, flightNow, fromGateID, toGateID));
+  }
+
   async function orderedStep(order: (flightNow: () => Promise<FlightNow>) => Promise<void>): Promise<FlightStepResult> {
     const before = await api.getFlightStatus(callOptions);
     await order(async () => decodeFlightStatus(before.flight));
@@ -7530,7 +7535,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         await approachShip(destinationID, byMenu ? null : 0);
       },
       jump: async (fromGateID, toGateID) => {
-        await api.jump(fromGateID, toGateID, callOptions);
+        await jumpStep(fromGateID, toGateID);
       },
       dock: async (stationID) => {
         await dockStep(stationID);
@@ -8823,7 +8828,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // destination from the gate we are sitting on (`sourceGate.destinationID`);
           // passing 0 is what asks it to. See the action's own comment.
           case "jumpGate":
-            await api.jump(action.gateID, 0, callOptions);
+            await jumpStep(action.gateID, 0);
             return;
           // The standing follow rung: hold station off the fleet commander at
           // the range a `follow` chat order named — `CmdFollowBall` with a
@@ -13099,7 +13104,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             await dockStep(action.stationID);
             return;
           case "jump":
-            await api.jump(action.fromGateID, action.toGateID, callOptions);
+            await jumpStep(action.fromGateID, action.toGateID);
             return;
           case "lock":
             await lockTargetCall(bridgeDo, action.targetID, null);
@@ -15129,7 +15134,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     stopSpacePolling,
 
     async jump(fromGateID, toGateID) {
-      await runFlightStep("Jump", () => api.jump(fromGateID, toGateID, callOptions));
+      await runFlightStep("Jump", () => jumpStep(fromGateID, toGateID));
     },
     jumpThrough,
 

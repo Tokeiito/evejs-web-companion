@@ -10,10 +10,10 @@
 //   undock                                   POST /api/bridge/call ship.Undock, as the page undocks
 //   warp to the gate, to 0                   POST /api/bridge/flight/warp {destinationID, minRange: 0}
 //   wait to be out of warp                   GET  /api/bridge/flight/status, once a second
-//   jump                                     POST /api/bridge/flight/jump {fromGateID}
+//   jump                                     POST /api/bridge/call CmdStargateJump(gate, 0, ship), as the page jumps
 //   look around in the next system           GET  /api/bridge/space/snapshot
 //   fly up to the gate arrived at            POST /api/bridge/flight/approach {destinationID}
-//   jump back through it                     POST /api/bridge/flight/jump {fromGateID}, asked until in range
+//   jump back through it                     POST /api/bridge/call CmdStargateJump, asked until in range
 //   warp to the station, to 0, and dock      POST /api/bridge/flight/warp, /dock
 //
 // On the gateway every answer is the server's own scene. On the game port the
@@ -84,8 +84,11 @@ async function jump(pilot, fromGateID) {
   // A ship that has just come through a gate is put some kilometres from it, and a gate is used from within 2,500 m.
   // The autopilot flies up to it and asks again; so does this.
   await insist(pilot, "POST", "/api/bridge/flight/approach", { destinationID: fromGateID }, { tries: 5 });
-  const { payload, refusals, last } = await insist(pilot, "POST", "/api/bridge/flight/jump", { fromGateID }, { tries: 120 });
-  let flight = payload.flight;
+  // The page's own jump (web/src/bridge/placeChanges.ts): CmdStargateJump(the gate, nought for its far gate, the ship),
+  // answered once the ship is in the next system; the flight read after it.
+  const jumpCall = { service: "beyonce", method: "CmdStargateJump", args: [fromGateID, 0, before.shipID], kwargs: null, pilot: true, confirm: true };
+  const { refusals, last } = await insist(pilot, "POST", "/api/bridge/call", jumpCall, { tries: 120 });
+  let flight = (await pilot.ask("GET", "/api/bridge/flight/status")).flight;
   for (let waited = 0; flight.solarSystemID === before.solarSystemID && waited < 60000; waited += 1000) {
     await sleep(1000);
     flight = (await pilot.ask("GET", "/api/bridge/flight/status")).flight;

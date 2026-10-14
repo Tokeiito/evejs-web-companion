@@ -2306,25 +2306,11 @@ export function isContrabandWarning(error: unknown): error is BridgeCallError {
 // calls: bridge/movementWrites.ts, warpToItem, autopilotWarp and warpToFleetMember. Their routes are flight/warp
 // and flight/warp-member.)
 
-/** Jump through an NPC stargate (beyonce.CmdStargateJump). */
-/**
- * Jump through a stargate.
- *
- * ⚠ `toGateID` IS OPTIONAL — PASS 0 AND THE SERVER RESOLVES IT. A stargate
- * record carries its own `destinationID`, and `jumpSessionViaStargate` uses it
- * whenever the far id is absent; it rejects only a far id that CONTRADICTS the
- * source gate. A caller that knows which gate it is at -- the autopilot has a
- * solved route, the fleet companion has only a broadcast -- does not need one.
- */
-export async function jump(
-  fromGateID: number,
-  toGateID = 0,
-  options: ApiOptions = {},
-): Promise<FlightStepResult> {
-  return readFlightStep(
-    await postJson("/api/bridge/flight/jump", { fromGateID, toGateID }, options),
-  );
-}
+// The pilot jumps through a stargate by the page's own call since 2026-10-14 (bridge/placeChanges.ts, jump):
+// beyonce.CmdStargateJump(the gate, its far gate or nought, the pilot's ship) through the generic call, under the BFF's
+// keeping of the session change; its route (POST /api/bridge/flight/jump) is gone. A far gate of nought is resolved:
+// the game port names the gate's own off its slim item, as the client does, and the server works it out from the gate
+// (jumpSessionViaStargate rejects only a far gate that contradicts it).
 
 /**
  * Dock at a structure, by its route (beyonce.CmdDock on the park). A station is docked at by the page's own call

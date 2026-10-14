@@ -7087,6 +7087,12 @@ async function dispatchShipSwapWrite(req, res, next, service, method, args, targ
  *            server takes and does not carry out answers nothing all the same, so the keeping waits only the
  *            route's short while (DOCK_SILENT_DECLINE_PROBE_MS), never latches, and answers either way: the change
  *            released where the ship is still in space, which the page reads after.
+ *   stargate through a stargate into the next system. Refused for a pilot not in space, for what is no gate's
+ *            number and for a ship that is not the pilot's (gateJumpSvc.JumpThroughGate: CmdStargateJump(stargateID,
+ *            beaconID, session.shipid)); the far gate the call names, or none, which the server and the game port
+ *            work out from the gate itself. Waited for in full and latched on a timeout, and the park bound again in
+ *            the new system before the answer, as its route did (reparkAfterArrival: the barrier answers while the
+ *            hull is still inert).
  */
 async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, args, kwargs) {
   const held = requireHeldBridgeSession(req, res);
@@ -7128,6 +7134,21 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
           Math.min(DOCK_SILENT_DECLINE_PROBE_MS, Number(options.transitionReadyTimeoutMs) || DOCK_SILENT_DECLINE_PROBE_MS),
         latchOnTimeout: false,
       };
+    } else if (kind === "stargate") {
+      if (before.flight.inSpace !== true) {
+        res.status(409).json({ ok: false, error: "NOT_IN_SPACE", message: "The ship is not in space; undock first." });
+        return;
+      }
+      const fromGateID = Number(args[0]);
+      if (!Number.isSafeInteger(fromGateID) || fromGateID <= 0) {
+        res.status(400).json({ ok: false, error: "INVALID_GATE", message: "A positive fromGateID is required." });
+        return;
+      }
+      if (shipID <= 0 || Number(args[2]) !== shipID) {
+        res.status(400).json({ ok: false, error: "INVALID_SHIP", message: "A pilot jumps in the ship it is in." });
+        return;
+      }
+      expected = { fromSolarSystemID: Number(before.flight.solarSystemID) || null, shipID };
     } else {
       throw new Error(`No keeping of a ${kind} is known.`);
     }
@@ -7158,6 +7179,11 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
     if (!after.ok) {
       sendTransitionTimeout(res, after, outcome.notifications);
       return;
+    }
+    // Arrived through a gate: the park bound again in the new system before the answer, so that the ship can move
+    // the moment the page acts on it (reparkAfterArrival).
+    if (kind === "stargate") {
+      await reparkAfterArrival(held, after.flight && after.flight.solarSystemID);
     }
     res.json({
       ok: true,
@@ -18262,81 +18288,11 @@ app.post("/api/bridge/flight/warp-launch", requireAuth, async (req, res, next) =
   }
 });
 
-// Jump through an NPC stargate: beyonce.CmdStargateJump(fromGateID, toGateID,
-// shipID). The system transition completes after a short handoff delay; the
-// page polls flight status to see the new system.
-app.post("/api/bridge/flight/jump", requireAuth, async (req, res, next) => {
-  const held = requireHeldBridgeSession(req, res);
-  if (!held) {
-    return;
-  }
-  const fromGateID = Number(req.body && req.body.fromGateID) || 0;
-  const toGateID = Number(req.body && req.body.toGateID) || 0;
-  // ⚠ `toGateID` IS OPTIONAL, AND THIS CHECK USED TO PRETEND OTHERWISE. It
-  // demanded a positive far-side gate, which made a jump impossible for any
-  // caller that knows which gate it is sitting on but has not solved a route --
-  // the fleet companion answering a `JumpTo` broadcast is exactly that caller,
-  // and it stopped at the gate for a whole phase because of this line.
-  //
-  // The GAME never required it: `jumpSessionViaStargate` resolves the
-  // destination from `sourceGate.destinationID` when the far id is absent and
-  // rejects only a MISMATCHED one (STARGATE_DESTINATION_MISMATCH), so passing 0
-  // through is both safe and exactly what the server expects. A stargate knows
-  // where it goes.
-  if (fromGateID <= 0) {
-    res.status(400).json({ ok: false, error: "INVALID_GATE", message: "A positive fromGateID is required." });
-    return;
-  }
-  try {
-    const before = await readHeldFlight(held, req.webSessionID);
-    if (!requireInSpace(res, before.flight)) {
-      return;
-    }
-    const shipID = Number(before.flight.shipID) || 0;
-    const expected = {
-      fromSolarSystemID: Number(before.flight.solarSystemID) || null,
-      shipID,
-    };
-    if (!await acquireRouteTransition(res, held, "stargate", expected)) {
-      return;
-    }
-    const outcome = await boundCall(
-      held,
-      req.webSessionID,
-      parkBindSpec(before.flight.solarSystemID),
-      "CmdStargateJump",
-      [fromGateID, toGateID, shipID],
-      null,
-    );
-    markTransitionAccepted(held);
-    const after = await awaitRouteTransition(held, req.webSessionID, "stargate", expected);
-    if (!after.ok) {
-      sendTransitionTimeout(res, after, outcome.notifications);
-      return;
-    }
-    // Arrived. Re-park beyonce for the system we landed in BEFORE answering, so
-    // the ship can move the instant the caller acts on this response. See
-    // `reparkAfterArrival` — the barrier reports ready while the hull is still
-    // inert, and that gap is what killed three ships.
-    await reparkAfterArrival(held, after.flight && after.flight.solarSystemID);
-    res.json({
-      ok: true,
-      result: outcome.result,
-      flight: { ...after.flight, transition: after.transition },
-      transition: after.transition,
-      notifications: [...outcome.notifications, ...after.notifications],
-    });
-  } catch (error) {
-    if (held.transition && held.transition.kind === "stargate") {
-      if (held.transition.phase === "requested") {
-        cancelHeldTransition(held);
-      } else if (held.transition.phase !== "failed") {
-        markTransitionFailed(held, error && error.message);
-      }
-    }
-    next(error);
-  }
-});
+// (The pilot jumps through a stargate by the page's own call since 2026-10-14: beyonce.CmdStargateJump(the gate,
+// its far gate or none, the pilot's ship) through the generic call, under the BFF's keeping of the session change,
+// the park bound again in the new system before the answer (dispatchPlaceChangeWrite, "stargate";
+// bridgeCallPolicy.js, PAGE_PLACE_CHANGE_CALLS; web/src/bridge/placeChanges.ts). The route,
+// POST /api/bridge/flight/jump, is gone.)
 
 // Jump through an Ansiblex / Upwell structure gate. The browser names only the
 // nearby source structure; the BFF resolves its destination through the held

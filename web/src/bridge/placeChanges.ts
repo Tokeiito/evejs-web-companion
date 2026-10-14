@@ -36,6 +36,18 @@
 // by its name once the ship is close (structureDocking.py 64 to 80). The page does not make that call yet, and
 // docks at a structure by its route (src/server.js, POST /api/bridge/flight/dock), as before.
 
+//
+// THROUGH A STARGATE. The menu's jump (menusvc.StargateJump, 3025 on, flying the ship close first) comes to the gate
+// jump service (stargate/client/gateJumpSvc.py, JumpThroughGate, 98 to 127):
+//
+//   self.sessionMgr.PerformSessionChange(..., remoteBallpark.CmdStargateJump, stargateID, beaconID, session.shipid)
+//
+// beaconID the gate's own far gate, off its slim item (jumps[0].toCelestialID: movementFunctions.DockOrJumpOrActivateGate,
+// 360 to 366); the autopilot's the same (autopilot.py 358). The page names the far gate where its caller knows it, and
+// none (nought) where it does not, a fleet's broadcast naming only the gate: the game port names the slim item's then,
+// as the client does, and the server works it out from the gate itself (src/gamePort/retailCalls.js). The same
+// keeping as the undock's, the BFF's, which binds the park again in the new system before it answers.
+
 /** idCheckers.IsStation (eve/common/script/sys/idCheckers.py 29 to 30): minStation to maxStation, inventorycommon/const.py 59 and 62. */
 export function isStation(itemID: number): boolean {
   return Number.isSafeInteger(itemID) && itemID >= 60_000_000 && itemID <= 63_999_999;
@@ -71,4 +83,19 @@ export async function dock(act: Ask, flightNow: () => Promise<FlightNow>, statio
   if (!now.inSpace) throw new Error("The ship is not in space; undock first.");
   if (now.shipID === null) throw new Error("There is no ship to dock.");
   await act("beyonce", "CmdDock", [stationID, now.shipID]);
+}
+
+/**
+ * Jumps the pilot's ship through a stargate, its far gate named where it is known (nought where not). Fails as the
+ * call fails, and before it for what is no gate's number, and for a ship not in space or none known.
+ *
+ * ⚠ THE CALL COMING BACK IS THE SESSION IN THE NEXT SYSTEM: the BFF answers once the ship is usable there.
+ */
+export async function jump(act: Ask, flightNow: () => Promise<FlightNow>, fromGateID: number, toGateID = 0): Promise<void> {
+  if (!Number.isSafeInteger(fromGateID) || fromGateID <= 0) throw new Error("That gate could not be identified.");
+  const now = await flightNow();
+  if (!now.inSpace) throw new Error("The ship is not in space; undock first.");
+  if (now.shipID === null) throw new Error("There is no ship to jump.");
+  const farGate = Number.isSafeInteger(toGateID) && toGateID > 0 ? toGateID : 0;
+  await act("beyonce", "CmdStargateJump", [fromGateID, farGate, now.shipID]);
 }
