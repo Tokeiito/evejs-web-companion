@@ -4177,18 +4177,6 @@ export async function reconcileHostedJettison(options: ApiOptions = {}): Promise
   return hostedJettisonReceipt(await postJson("/api/bridge/ship/jettison/reconcile", {}, options), true);
 }
 
-/** What one in-space compression attempt answered. */
-export interface CompressionAttempt {
-  /**
-   * True when the server really swapped the stack. False means it refused — and
-   * it refuses a missing facility, an out-of-range one, a foreign item and an
-   * ore that has no compressed form all with the same silence, so the caller
-   * re-reads its hold rather than guessing which.
-   */
-  readonly compressed: boolean;
-  /** The raw tuple on success: [srcItem, srcType, srcQty, outItem, outType, outQty]. */
-  readonly result: JsonValue | null;
-}
 
 export interface CompressionCompatibility {
   readonly typeID: number; readonly compressedTypeID: number | null;
@@ -4206,27 +4194,9 @@ export async function getMiningCompressionCompatibility(typeIDs: readonly number
       Array.isArray(row.matchingTypeListIDs) && row.matchingTypeListIDs.every(id => typeListIDs.includes(id)))) ? rows : null;
 }
 
-/**
- * Compress ONE ore stack in the ship's hold, using a mining support ship on grid
- * as the facility (its own hull, or a fleet-mate's, running an Industrial Core
- * plus a compression module). Confirm-gated at the BFF.
- */
-export async function compressOreInSpace(
-  itemID: number,
-  facilityID: number,
-  options: ApiOptions = {},
-  expectedScope?: { readonly shipID: number; readonly solarSystemID: number },
-): Promise<CompressionAttempt> {
-  const data = await postJson(
-    "/api/bridge/mining/compress",
-    { itemID, facilityID, confirm: true, ...(expectedScope ? { expectedScope: expectedScope as unknown as JsonValue } : {}) },
-    options,
-  );
-  return {
-    compressed: data.compressed === true,
-    result: data.result ?? null,
-  };
-}
+// A stack is compressed in space by the page itself, with the client's own call
+// (bridge/compressionWrites.ts): it left its route (POST /api/bridge/mining/compress)
+// on 2026-10-14.
 
 // (A bookmark and a launch are warped to by the page itself, with the client's own call: bridge/movementWrites.ts,
 // warpToBookmark and warpToLaunch. Their routes are flight/warp-bookmark and flight/warp-launch.)

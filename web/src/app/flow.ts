@@ -18,6 +18,7 @@ import { decodeShipBays, decodeShipBaysChecked } from "../bridge/shipBays.ts";
 import { FREIGHT_BAYS, planLootTransfers } from "../bridge/bayRouting.ts";
 import { holdFreeM3 } from "../bridge/holdFit.ts";
 import { dispatchSupportCollectionAction } from "./supportCollectionFlow.ts";
+import { compressItemInSpace } from "../bridge/compressionWrites.ts";
 import { NO_ROOM_CODE } from "../nav/refusalLedger.ts";
 import { confirmControlledDronesHome, controlledFlightSettled } from "../nav/controlledDroneStop.ts";
 import { runFleetParking, parkingScript, type FleetParkingPolicy } from "../nav/fleetParking.ts";
@@ -6692,7 +6693,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function compressOre(itemID: number, facilityID: number): Promise<void> {
     let attempt;
     try {
-      attempt = await api.compressOreInSpace(itemID, facilityID, callOptions);
+      // The page's own call (bridge/compressionWrites.ts: itemCompression.CompressItemInSpace), whose answer is None
+      // where nothing was compressed. Until 2026-10-14 the BFF's route made it.
+      const result = await compressItemInSpace(bridgeDo, itemID, facilityID);
+      attempt = { compressed: result !== null && result !== undefined };
     } catch (error) {
       if (isSessionLost(error)) {
         stopLiveStream();
@@ -11559,7 +11563,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         let receipt: import("../nav/miningSupportCollection.ts").SupportCollectionReceipt;
         try {
           guardDispatch(observed.receivedAtMs);
-          receipt = await dispatchSupportCollectionAction(action, owner.runID, { shipID: shipID!, solarSystemID: solarSystemID! }, callOptions);
+          receipt = await dispatchSupportCollectionAction(action, owner.runID, { shipID: shipID!, solarSystemID: solarSystemID! }, callOptions, bridgeDo);
         } catch (error) { receipt = { acknowledged: false, reason: errorWords(error) }; }
         memory = recordSupportCollectionReceipt(memory, receipt);
         try { observed = await read(); }
@@ -13849,7 +13853,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             // Confirm-gated on the BFF. The answer is deliberately not trusted:
             // the block's next hold read is what tells it whether the stack
             // really changed type, so a refusal costs one attempt on one stack.
-            await api.compressOreInSpace(action.itemID, action.facilityID, callOptions);
+            await compressItemInSpace(bridgeDo, action.itemID, action.facilityID);
             return;
           // The scanner's three, as the Scanner window makes them: the page's own calls, by the scanner as it is
           // read now (bridge/scannerWrites.ts). What the client refuses, these refuse.

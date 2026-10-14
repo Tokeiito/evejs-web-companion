@@ -18718,53 +18718,9 @@ app.get("/api/mining/compression-compatibility", requireAuth, (req, res, next) =
   } catch (error) { next(error); }
 });
 
-app.post("/api/bridge/mining/compress", requireAuth, async (req, res, next) => {
-  const held = requireHeldBridgeSession(req, res);
-  if (!held) {
-    return;
-  }
-  if (!requireWriteConfirmation(req, res, "This compresses that ore stack using the support ship on grid. Confirm to continue.")) {
-    return;
-  }
-  const body = req.body || {};
-  const itemID = Number(body.itemID) || 0;
-  const facilityID = Number(body.facilityID) || 0;
-  if (itemID <= 0 || facilityID <= 0) {
-    res.status(400).json({
-      ok: false,
-      error: "INVALID_TARGET",
-      message: "An itemID and the facility ship's ID are both required.",
-    });
-    return;
-  }
-  try {
-    const before = await readHeldFlight(held, req.webSessionID);
-    if (!requireInSpace(res, before.flight)) {
-      return;
-    }
-    if (!requireExpectedInventoryFlight(res, body.expectedScope, before.flight)) return;
-    const outcome = await heldTopLevelCall(
-      held,
-      req.webSessionID,
-      "inSpaceCompressionMgr",
-      "CompressItemInSpace",
-      [itemID, facilityID],
-      null,
-    );
-    // The handler returns [sourceItemID, sourceTypeID, sourceQuantity,
-    // outputItemID, outputTypeID, outputQuantity] on success and NULL on any
-    // refusal. `compressed` says which happened without pretending to know why —
-    // the caller re-reads the hold for the truth.
-    res.json({
-      ok: true,
-      compressed: outcome.result !== null && outcome.result !== undefined,
-      result: outcome.result ?? null,
-      notifications: outcome.notifications,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
+// A stack is compressed in space by the page's own call since 2026-10-14 (web/src/bridge/compressionWrites.ts:
+// inSpaceCompressionMgr.CompressItemInSpace, itemCompression.py 9); its support collection reads the flight first,
+// as the route did. The route (POST /api/bridge/mining/compress) is gone.
 
 // R3's bound-object machinery, reused: Moniker('reprocessingSvc', stationID).
 // Keyed by station so docking somewhere else binds that station's refinery
