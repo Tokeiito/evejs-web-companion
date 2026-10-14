@@ -131,6 +131,7 @@ import {
 } from "../bridge/mining.ts";
 import {
   decodeDroneBay,
+  decodeDroneEngageOutcome,
   decodeDroneLimits,
   decodeDroneOrderRefusals,
   decodeDronesInSpace,
@@ -374,7 +375,14 @@ import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { BOOKMARK_EXPIRY, bookmarkLocation as bookmarkLocationCall } from "../bridge/bookmarkWrites.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
-import { reconnectToDrones as reconnectToDronesCall, salvageWithDrones, scoopDrones as scoopDronesCall } from "../bridge/boundEntityWrites.ts";
+import {
+  engageWithDrones,
+  mineWithDrones as mineWithDronesCall,
+  reconnectToDrones as reconnectToDronesCall,
+  returnDronesToBay,
+  salvageWithDrones,
+  scoopDrones as scoopDronesCall,
+} from "../bridge/boundEntityWrites.ts";
 import { alignTo as alignToCall, approach as approachCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
 import { dock as dockCall, isStation, jump as jumpCall, undock as undockCall } from "../bridge/placeChanges.ts";
 import { boardCorvette as boardCorvetteCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
@@ -2047,7 +2055,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           },
           read: async () => { current(); const raw = await api.getDrones(callOptions); current(); return readRecoveryDrones(raw.inSpace); },
           reconnect: async ids => { current(); await reconnectToDronesCall(bridgeDo, ids); current(); },
-          recall: async ids => { current(); await api.recallDrones(ids, callOptions); current(); },
+          recall: async ids => { current(); await returnDronesToBay(bridgeDo, ids); current(); },
           sleep: async ms => { await new Promise(resolve => setTimeout(resolve, ms)); current(); },
           pendingIDs: recoveryIDs,
           confirmedIDs: confirmedRecoveryIDs,
@@ -6895,10 +6903,36 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     };
   }
 
+  /**
+   * An order to drones by the page's own call (bridge/boundEntityWrites.ts: the client's droneFunctions), and then
+   * the drones as they are read again. What the server says of each drone that could not is the order's own answer.
+   * Until 2026-10-14 the engagement, the mining and the sending home were routes of the BFF that did both.
+   */
+  async function orderedThenRead(order: () => Promise<JsonValue>): Promise<{
+    readonly inSpace: JsonValue;
+    readonly launched: JsonValue;
+    readonly result: JsonValue;
+  }> {
+    const result = await order();
+    const read = await api.getDrones(callOptions);
+    return { inSpace: read.inSpace, launched: null, result };
+  }
+
+  /**
+   * An engagement a bot must see settled before it goes on: each drone ordered is read in space after, set on the
+   * target, or the server said why not (bridge/drones.ts, decodeDroneEngageOutcome); otherwise it fails with what
+   * was and was not taken (api.DroneEngageOutcomeError).
+   */
+  async function engageDronesConfirmed(droneIDs: readonly number[], targetID: number): Promise<void> {
+    const { inSpace, result } = await orderedThenRead(() => engageWithDrones(bridgeDo, droneIDs, targetID));
+    const outcome = decodeDroneEngageOutcome(result, inSpace, droneIDs, targetID);
+    if (outcome.status !== "accepted") throw new api.DroneEngageOutcomeError(outcome);
+  }
+
   async function engageDrones(droneIDs: readonly number[], targetID: number): Promise<void> {
     await runDroneAction(
       "Engage",
-      () => api.engageDrones(droneIDs, targetID, callOptions),
+      () => orderedThenRead(() => engageWithDrones(bridgeDo, droneIDs, targetID)),
       orderVerifier(droneIDs, "The order was accepted, but space could not be re-read."),
     );
   }
@@ -6906,7 +6940,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function mineWithDrones(droneIDs: readonly number[], targetID: number): Promise<void> {
     await runDroneAction(
       "Mine",
-      () => api.mineWithDrones(droneIDs, targetID, callOptions),
+      () => orderedThenRead(() => mineWithDronesCall(bridgeDo, droneIDs, targetID)),
       orderVerifier(droneIDs, "The order was accepted, but space could not be re-read."),
     );
   }
@@ -6930,7 +6964,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function recallDrones(droneIDs: readonly number[]): Promise<void> {
     await runDroneAction(
       "Recall",
-      () => api.recallDrones(droneIDs, callOptions),
+      () => orderedThenRead(() => returnDronesToBay(bridgeDo, droneIDs)),
       (inSpace) =>
         inSpace === null
           ? "The recall was accepted, but space could not be re-read."
@@ -8926,14 +8960,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // and scoops them itself inside 2500 m; a scoop call would only ever
           // duplicate what it is already doing.
           case "recallDrones":
-            await api.recallDrones(action.droneIDs, callOptions);
+            await returnDronesToBay(bridgeDo, action.droneIDs);
             return;
           // ⚠ ONE CALL, TWO MEANINGS, AND THE SERVER PICKS. `CmdEngage` aimed at
           // a hostile is an attack; aimed at a friendly ship it is dispatched to
           // the drone REPAIR path instead. Both flights receive an explicit
           // order; server auto-defense alone does not follow the fleet primary.
           case "engageDrones":
-            await api.engageDronesConfirmed(action.droneIDs, action.targetID, callOptions);
+            await engageDronesConfirmed(action.droneIDs, action.targetID);
             return;
           // ⚠ `targetID: 0` IS THE SERVER'S AUTO-PICK, not a missing value.
           case "salvageDrones":
@@ -9241,9 +9275,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       launchDrones: async (itemIDs) => {
         await api.launchDrones(wholeStackLaunch(itemIDs, droneStackSizesSeen), callOptions);
       },
-      recallDrones: async (ids) => { await api.recallDrones(ids, callOptions); },
-      engageDrones: async (ids, targetID) => { await api.engageDronesConfirmed(ids, targetID, callOptions); },
-      mineDrones: async (ids, targetID) => { await api.mineWithDrones(ids, targetID, callOptions); },
+      recallDrones: async (ids) => { await returnDronesToBay(bridgeDo, ids); },
+      engageDrones: async (ids, targetID) => { await engageDronesConfirmed(ids, targetID); },
+      mineDrones: async (ids, targetID) => { await mineWithDronesCall(bridgeDo, ids, targetID); },
       unloadHolds: async (itemIDs) => {
         await api.unloadMiningHolds(itemIDs, callOptions);
       },
@@ -9560,7 +9594,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
                 typeof value.controlled !== "boolean")) return null;
           return combatDrones === null ? rows : rows.filter(row => combatDrones.includes(row.itemID));
         },
-        recall: async (ids) => { await api.recallDrones(ids, callOptions); },
+        recall: async (ids) => { await returnDronesToBay(bridgeDo, ids); },
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
         now: () => Date.now(),
         deadlineMs,
@@ -11590,9 +11624,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             case "activate": await switchModuleOn(self.action.moduleID, { targetID: self.action.targetID, repeat: -1 }, callOptions); break;
             case "deactivate": await switchModuleOff(self.action.moduleID, { typeID: self.action.typeID }, callOptions); break;
             case "launchDrones": await api.launchDrones(wholeStackLaunch(self.action.droneItemIDs, droneStackSizes(droneState?.bay ?? [])), callOptions); break;
-            case "recallDrones": await api.recallDrones(self.action.droneIDs, callOptions); break;
-            case "mineDrones": await api.mineWithDrones(self.action.droneIDs, self.action.targetID, callOptions); break;
-            case "engageDrones": await api.engageDronesConfirmed(self.action.droneIDs, self.action.targetID, callOptions); break;
+            case "recallDrones": await returnDronesToBay(bridgeDo, self.action.droneIDs); break;
+            case "mineDrones": await mineWithDronesCall(bridgeDo, self.action.droneIDs, self.action.targetID); break;
+            case "engageDrones": await engageDronesConfirmed(self.action.droneIDs, self.action.targetID); break;
           }
         } catch (error) { outcome = "failed"; reason = errorWords(error); }
         return { decision, feedback: null, selfMining: selfResult({ scope, actionID: self.actionID!, outcome, ...(reason ? { reason } : {}) }) };
@@ -13339,17 +13373,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             return;
           case "engageDrones":
             if (action.droneIDs.length > 0) {
-              await api.engageDronesConfirmed(action.droneIDs, action.targetID, callOptions);
+              await engageDronesConfirmed(action.droneIDs, action.targetID);
             }
             return;
           case "mineDrones":
             if (action.droneIDs.length > 0) {
-              await api.mineWithDrones(action.droneIDs, action.targetID, callOptions);
+              await mineWithDronesCall(bridgeDo, action.droneIDs, action.targetID);
             }
             return;
           case "recallDrones":
             if (action.droneIDs.length > 0) {
-              await api.recallDrones(action.droneIDs, callOptions);
+              await returnDronesToBay(bridgeDo, action.droneIDs);
             }
             return;
           case "unloadOre":

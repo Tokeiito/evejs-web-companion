@@ -75,6 +75,55 @@ export async function salvageWithDrones(act: Ask, droneIDs: readonly number[], t
   return act("entity", "CmdSalvage", [[...droneIDs], targetID === 0 ? null : targetID]);
 }
 
+// ── Drones set on a target, set to mine, and sent home ───────────────────────
+//
+// Until 2026-10-14 these were three routes of the BFF (POST /api/bridge/drones/engage, .../mine and .../recall),
+// which made the call on an entity handle of their own after reading that the pilot was in space, and read the
+// drones in space after. A retail client makes them as it makes the salvage, each on a Moniker made for the order:
+//
+//   eveMoniker.GetEntityAccess().CmdEngage(droneIDs, targetID)           droneFunctions.EngageTarget, 59 to 99 (93)
+//   eveMoniker.GetEntityAccess().CmdMineRepeatedly(droneIDs, targetID)   droneFunctions.MineRepeatedly, 145 to 153 (151)
+//   eveMoniker.GetEntityAccess().CmdReturnBay(droneIDs)                  droneFunctions.ReturnToDroneBay, 184 to 189 (187)
+//
+// the drones a list, the target the pilot's active one. Each answers the drones that could not, each with why, and
+// the client raises the first of those (HandleMultipleCallError). CmdEngage is recorded on Tranquility fifty times
+// and CmdReturnBay eleven, each riding its own bind; no recording has CmdMineRepeatedly (src/gamePort/retailCalls.js).
+//
+// What the client asks before it engages, and the page does not (the routes did not either): the drones it knows
+// in its park (the rest are dropped, 60 to 68), the active target (DroneCommandRequiresActiveTarget where there is
+// none, 70 to 72), a target a character owns in a starter system (refused there, 73 to 78), and the pilot's safety
+// level against the engagement, with the question before attacking an NPC where its settings ask it (79 to 89).
+// Mining asks the active target (146 to 148); sending home asks nothing.
+//
+// ⚠ THE ANSWER IS NOT WHAT THE PAGE GOES BY. The caller reads the drones in space after, as for every order.
+
+/**
+ * Sets these drones on `targetID`. With no drones nothing is asked. Answers what the server says of the drones that
+ * could not, as it came. Fails as the call fails.
+ */
+export async function engageWithDrones(act: Ask, droneIDs: readonly number[], targetID: number): Promise<JsonValue> {
+  if (droneIDs.length === 0) return null;
+  return act("entity", "CmdEngage", [[...droneIDs], targetID]);
+}
+
+/**
+ * Sets these mining drones on `targetID`, to mine it until told otherwise. With no drones nothing is asked. Answers
+ * what the server says of the drones that could not, as it came. Fails as the call fails.
+ */
+export async function mineWithDrones(act: Ask, droneIDs: readonly number[], targetID: number): Promise<JsonValue> {
+  if (droneIDs.length === 0) return null;
+  return act("entity", "CmdMineRepeatedly", [[...droneIDs], targetID]);
+}
+
+/**
+ * Sends these drones home to the drone bay; the server scoops each that reaches the ship. With no drones nothing is
+ * asked. Answers what the server says of the drones that could not, as it came. Fails as the call fails.
+ */
+export async function returnDronesToBay(act: Ask, droneIDs: readonly number[]): Promise<JsonValue> {
+  if (droneIDs.length === 0) return null;
+  return act("entity", "CmdReturnBay", [[...droneIDs]]);
+}
+
 // --- A drone scooped (the plan's Phase 6b) ------------------------------------
 //
 // Until 2026-10-11 it was one route of the BFF (POST /api/bridge/drones/scoop).

@@ -11,7 +11,7 @@ import type { Ask } from "../bridge/ask.ts";
 import { decodeBoundDogma, type BoundDogma } from "../bridge/boundDogma.ts";
 import { decodeNameValidation, decodeValidRandomName } from "../bridge/charAccount.ts";
 import { decodeBeyonceWriteAck, type BeyonceWriteAck } from "../bridge/boundBeyonceWrites.ts";
-import { decodeDroneEngageOutcome, type DroneEngageOutcome, type DroneEngageRefusal } from "../bridge/drones.ts";
+import { type DroneEngageOutcome, type DroneEngageRefusal } from "../bridge/drones.ts";
 import {
   decodeCharCreationTables,
   type CharCreationTables,
@@ -3890,16 +3890,9 @@ export async function launchDrones(
   return readDroneAction(await postJson("/api/bridge/drones/launch", { drones: body }, options));
 }
 
-/** Set drones on a target (entity.CmdEngage). */
-export async function engageDrones(
-  droneIDs: readonly number[],
-  targetID: number,
-  options: ApiOptions = {},
-): Promise<DroneActionResult> {
-  return readDroneAction(
-    await postJson("/api/bridge/drones/engage", { droneIDs: [...droneIDs], targetID }, options),
-  );
-}
+// Drones are set on a target, set to mine and sent home by the page itself, with the client's own calls of the
+// entity service (bridge/boundEntityWrites.ts), and the drones are read after by the read above: the three left
+// their routes (POST /api/bridge/drones/engage, .../mine and .../recall) on 2026-10-14.
 
 /** A per-drone answer, retained even when only part of an order was accepted. */
 export class DroneEngageOutcomeError extends BridgeCallError {
@@ -3919,41 +3912,7 @@ export class DroneEngageOutcomeError extends BridgeCallError {
   }
 }
 
-/** Automation must settle the individual orders before recording completion. */
-export async function engageDronesConfirmed(
-  droneIDs: readonly number[],
-  targetID: number,
-  options: ApiOptions = {},
-): Promise<void> {
-  const result = await engageDrones(droneIDs, targetID, options);
-  const outcome = decodeDroneEngageOutcome(result.result, result.inSpace, droneIDs, targetID);
-  if (outcome.status !== "accepted") throw new DroneEngageOutcomeError(outcome);
-}
-
-/** Put mining drones on a rock (entity.CmdMineRepeatedly). */
-export async function mineWithDrones(
-  droneIDs: readonly number[],
-  targetID: number,
-  options: ApiOptions = {},
-): Promise<DroneActionResult> {
-  return readDroneAction(
-    await postJson("/api/bridge/drones/mine", { droneIDs: [...droneIDs], targetID }, options),
-  );
-}
-
-/**
- * Bring drones home (entity.CmdReturnBay). The runtime flies them back and
- * scoops them itself inside 2500 m, so they stay visibly "coming home" for the
- * length of the trip — which is exactly what the re-read reports.
- */
-export async function recallDrones(
-  droneIDs: readonly number[],
-  options: ApiOptions = {},
-): Promise<DroneActionResult> {
-  return readDroneAction(
-    await postJson("/api/bridge/drones/recall", { droneIDs: [...droneIDs] }, options),
-  );
-}
+// (An engagement a bot must see settled is the flow's since 2026-10-14: app/flow.ts, engageDronesConfirmed.)
 
 /**
  * Take control of drones this ship is not flying (entity.CmdReconnectToDrones).
