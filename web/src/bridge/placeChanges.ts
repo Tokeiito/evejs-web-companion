@@ -17,6 +17,16 @@
 // bridgeCallPolicy.js, PAGE_PLACE_CHANGE_CALLS). A refusal for contraband comes back as CONTRABAND_WARNING, in the
 // words of the client's own dialog where the BFF has them.
 //
+// UNDOCKED FROM A PLAYER STRUCTURE (since 2026-10-14; until then the station's ship.Undock, which this server takes
+// from a structure too). The client's structure docking service (structureDocking.py, Undock 26 to 51) asks
+//
+//   sm.GetService('sessionMgr').PerformSessionChange('undock', TryUndockOnServer, doIgnoreContraband=...)
+//   ... sm.RemoteSvc('structureDocking').Undock(session.structureid, shipID, ignoreContraband=doIgnoreContraband)
+//
+// the structure's own service, by its name, with the structure the session is docked in and the ship (None where the
+// ship is the structure, a pilot controlling it); ignoreContraband a keyword, false first and true once the pilot
+// has said to go on, as at a station (37 to 45). No online modules are named. The same keeping as the station's.
+//
 // THE ONLINE MODULES ARE NOT THE PAGE'S TO NAME: godma's list is the client's, and the game port names it
 // (src/gamePort/retailCalls.js, undocking). The page sends none, as its route sent none; the server leaves the
 // modules as they are where none are named (shipService._syncRequestedOnlineModulesForUndock).
@@ -56,9 +66,9 @@ import type { Ask } from "./ask.ts";
 import type { FlightNow } from "./movementWrites.ts";
 
 /**
- * Undocks the pilot's ship from where it is docked. `ignoreContraband` is the client's second argument: false
- * first, true once the pilot has said to go on. Fails as the call fails, and before it for a ship already in space
- * or none known.
+ * Undocks the pilot's ship from where it is docked: from a station by the ship's Undock, from a player structure by
+ * the structure's own (the flight read naming the structure). `ignoreContraband` is the client's: false first, true
+ * once the pilot has said to go on. Fails as the call fails, and before it for a ship already in space or none known.
  *
  * ⚠ THE CALL COMING BACK IS THE SESSION IN SPACE: the BFF answers once the change is ready.
  */
@@ -66,6 +76,11 @@ export async function undock(act: Ask, flightNow: () => Promise<FlightNow>, igno
   const now = await flightNow();
   if (now.inSpace) throw new Error("The ship is already in space.");
   if (now.shipID === null) throw new Error("There is no ship to undock in.");
+  const structureID = now.structureID ?? null;
+  if (structureID !== null) {
+    await act("structureDocking", "Undock", [structureID, now.shipID === structureID ? null : now.shipID], { ignoreContraband });
+    return;
+  }
   await act("ship", "Undock", [now.shipID, ignoreContraband], { onlineModules: [] });
 }
 

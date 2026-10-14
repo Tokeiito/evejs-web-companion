@@ -105,10 +105,11 @@ const FEATURE_WRITE_METHODS = freezeMethodMap({
   // The customs office's transfer (taxed, and it moves a colony's goods). The
   // game port carries it; the web gateway's list has not got it.
   invbroker: ["ImportExportWithPlanet"],
-  // A pilot's dock at a player structure, by the client's structure docking
-  // service (structureDocking.py 69). The game port carries it; through the web
-  // gateway, whose list has not got it, the park's CmdDock is asked in its place.
-  structureDocking: ["Dock"],
+  // A pilot's dock at a player structure and its undock from one, by the
+  // client's structure docking service (structureDocking.py 69 and 36). The game
+  // port carries both; through the web gateway, whose list has neither, the
+  // park's CmdDock and the ship's Undock are asked in their place.
+  structureDocking: ["Dock", "Undock"],
 });
 
 function flattenMethodMap(methodsByService) {
@@ -583,7 +584,7 @@ function isBridgeWritePair(service, method) {
  *   inSpaceCompressionMgr.CompressItemInSpace   itemCompression.CompressItemInSpace (9): CompressItemInSpace(
  *                                    itemID, compressionFacilityBallID), answered None or the six of what was made.
  */
-const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.Invite", "fleetObjectHandler.RejectInvite", "beyonce.BookmarkLocation", "dogmaIM.AddTarget", "dogmaIM.RemoveTarget", "dogmaIM.CancelAddTarget", "ship.ScoopDrone", "industryManager.CompleteJob", "industryManager.CancelJob", "industryMonitor.ConnectJob", "industryMonitor.DisconnectJob", "industryManager.InstallJob", "beyonce.CmdWarpToStuff", "beyonce.CmdWarpToStuffAutopilot", "agentMgr.WarpToLocation", "dogmaIM.LaunchProbes", "scanMgr.RequestScans", "scanMgr.RecoverProbes", "scanMgr.ReconnectToLostProbes", "dogmaIM.SetModuleOnline", "dogmaIM.TakeModuleOffline", "dogmaIM.Activate", "dogmaIM.Deactivate", "agentMgr.DoAction", "agentMgr.RemoveOfferFromJournal", "entity.CmdReconnectToDrones", "entity.CmdEngage", "entity.CmdMineRepeatedly", "entity.CmdReturnBay", "inSpaceCompressionMgr.CompressItemInSpace", "ship.Board", "invbroker.DestroyFitting", "mailMgr.SendMail", "ship.LaunchDrones", "reprocessingSvc.Reprocess", "structureDocking.Dock", "marketProxy.CancelCharOrder", "marketProxy.PlaceBuyOrder", "marketProxy.PlaceMultiSellOrder", "marketProxy.ModifyCharOrder", "ship.Jettison", "ship.Undock", "beyonce.CmdDock", "beyonce.CmdStargateJump", "invbroker.Add", "invbroker.MultiAdd", "invbroker.ImportExportWithPlanet", "invbroker.MultiMerge", "invbroker.TrashItems", "invbroker.FitFitting", "invbroker.StackAll"]);
+const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.Invite", "fleetObjectHandler.RejectInvite", "beyonce.BookmarkLocation", "dogmaIM.AddTarget", "dogmaIM.RemoveTarget", "dogmaIM.CancelAddTarget", "ship.ScoopDrone", "industryManager.CompleteJob", "industryManager.CancelJob", "industryMonitor.ConnectJob", "industryMonitor.DisconnectJob", "industryManager.InstallJob", "beyonce.CmdWarpToStuff", "beyonce.CmdWarpToStuffAutopilot", "agentMgr.WarpToLocation", "dogmaIM.LaunchProbes", "scanMgr.RequestScans", "scanMgr.RecoverProbes", "scanMgr.ReconnectToLostProbes", "dogmaIM.SetModuleOnline", "dogmaIM.TakeModuleOffline", "dogmaIM.Activate", "dogmaIM.Deactivate", "agentMgr.DoAction", "agentMgr.RemoveOfferFromJournal", "entity.CmdReconnectToDrones", "entity.CmdEngage", "entity.CmdMineRepeatedly", "entity.CmdReturnBay", "inSpaceCompressionMgr.CompressItemInSpace", "ship.Board", "invbroker.DestroyFitting", "mailMgr.SendMail", "ship.LaunchDrones", "reprocessingSvc.Reprocess", "structureDocking.Dock", "structureDocking.Undock", "marketProxy.CancelCharOrder", "marketProxy.PlaceBuyOrder", "marketProxy.PlaceMultiSellOrder", "marketProxy.ModifyCharOrder", "ship.Jettison", "ship.Undock", "beyonce.CmdDock", "beyonce.CmdStargateJump", "invbroker.Add", "invbroker.MultiAdd", "invbroker.ImportExportWithPlanet", "invbroker.MultiMerge", "invbroker.TrashItems", "invbroker.FitFitting", "invbroker.StackAll"]);
 const pageWritePairKeySet = new Set(PAGE_WRITE_PAIR_KEYS);
 for (const pair of PAGE_WRITE_PAIR_KEYS) {
   if (!bridgeWritePairKeySet.has(pair)) throw new Error(`${pair} is among the page's writes and is no write.`);
@@ -638,6 +639,10 @@ function swapTargetOf(service, method, args) {
  *   ship.Undock      ui/station/base.py _DoUndockAttempt (488 to 521): the session from a station into space.
  *                    (A ship boarded is the session's change too, 'board'; it is kept as a swap of the pilot's
  *                    ship, PAGE_SHIP_SWAP_CALLS, as its route kept it.)
+ *   structureDocking.Undock   structureDocking.Undock (26 to 51): the session from a player structure into space,
+ *                    the structure's own service, with the structure the pilot is docked in. Kept as a station's
+ *                    undock is. Through the web gateway, whose list has no structureDocking, the ship's Undock is
+ *                    asked in its place, which this server takes from a structure too.
  *   beyonce.CmdDock  movementFunctions.RealDock (503 to 518): the session from space into a station. A dock the
  *                    server takes and does not carry out answers nothing, so its keeping waits only a short while
  *                    and never latches, as its route's did. A structure is docked at by its own service, which the
@@ -650,7 +655,7 @@ function swapTargetOf(service, method, args) {
  *                    system into the next through a stargate. Its keeping binds the park again in the new system
  *                    before it answers, as its route's did (reparkAfterArrival).
  */
-const PAGE_PLACE_CHANGE_CALLS = Object.freeze(new Map([["ship.Undock", "undock"], ["beyonce.CmdDock", "dock"], ["structureDocking.Dock", "dock"], ["beyonce.CmdStargateJump", "stargate"]]));
+const PAGE_PLACE_CHANGE_CALLS = Object.freeze(new Map([["ship.Undock", "undock"], ["structureDocking.Undock", "undock"], ["beyonce.CmdDock", "dock"], ["structureDocking.Dock", "dock"], ["beyonce.CmdStargateJump", "stargate"]]));
 for (const pair of PAGE_PLACE_CHANGE_CALLS.keys()) {
   if (!pageWritePairKeySet.has(pair)) throw new Error(`${pair} is among the page's changes of place and is none of its writes.`);
 }

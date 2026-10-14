@@ -5611,7 +5611,15 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
         res.status(409).json({ ok: false, error: "ALREADY_IN_SPACE", message: "The ship is already in space." });
         return;
       }
-      if (shipID <= 0 || Number(args[0]) !== shipID) {
+      // (From a player structure the structure's own service's Undock(structureID, shipID), the ship None where it is
+      // the structure, structureDocking.py 26 to 36; from a station the ship's Undock(shipID, ignoreContraband).)
+      const fromAStructure = service === "structureDocking";
+      if (fromAStructure && (!isPlayerStructureID(Number(args[0])) || Number(args[0]) !== Number(before.flight.structureID))) {
+        res.status(400).json({ ok: false, error: "INVALID_STRUCTURE", message: "A pilot undocks from the structure it is docked in." });
+        return;
+      }
+      const undockingShipID = fromAStructure ? Number(args[1] ?? args[0]) : Number(args[0]);
+      if (shipID <= 0 || undockingShipID !== shipID) {
         res.status(400).json({ ok: false, error: "INVALID_SHIP", message: "A pilot undocks in the ship it is in." });
         return;
       }
@@ -5662,12 +5670,14 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
       return;
     }
     // (By the name the transport knows it by, as the generic call asks any write: bridgeCallPolicy.js, gatewaysNameFor.
-    // A structure's Dock the web gateway's list has not: there the park's CmdDock of the structure is asked, as the
-    // dock route asked it until 2026-10-14.)
+    // A structure's Dock and Undock the web gateway's list has not: there the park's CmdDock of the structure is asked,
+    // as the dock route asked it until 2026-10-14, and the ship's Undock, which this server takes from a structure.)
     const onTheGamePort = Boolean(gamePortPilots && isGamePortHandle(held.bridgeSessionID));
-    const outcome = !onTheGamePort && service === "structureDocking"
-      ? await heldTopLevelCall(held, req.webSessionID, "beyonce", "CmdDock", args, kwargs)
-      : await heldTopLevelCall(held, req.webSessionID, service, onTheGamePort ? method : gatewaysNameFor(service, method), args, kwargs);
+    const outcome = onTheGamePort || service !== "structureDocking"
+      ? await heldTopLevelCall(held, req.webSessionID, service, onTheGamePort ? method : gatewaysNameFor(service, method), args, kwargs)
+      : method === "Dock"
+        ? await heldTopLevelCall(held, req.webSessionID, "beyonce", "CmdDock", args, kwargs)
+        : await heldTopLevelCall(held, req.webSessionID, "ship", "Undock", [shipID, Boolean(kwargs && kwargs.ignoreContraband)], null);
     markTransitionAccepted(held);
     const after = await awaitRouteTransition(held, req.webSessionID, kind, expected, waiting);
     if (!after.ok && kind === "dock") {
