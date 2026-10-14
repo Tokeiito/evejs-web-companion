@@ -3726,6 +3726,15 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **The Inventory & Ship window's rows** are `li.stn-row`, each with
   its own checkbox ("Select <name>"); two of a type ticked offer
   "Merge the two stacks".
+- **Measure the route before believing a reading of the transport.**
+  A bind of `MachoBindObject` read as the ballpark's; the trash route
+  destroyed a stack on both BFFs all the same, and the bind was a
+  Moniker for the session's place. Measure, then read the path the
+  measurement says was taken.
+- **A second bind of a kept moniker shows only on the wire.** The
+  trash's answers were right while it bound the station's manager
+  afresh beside the one held since login: count the binds of a service
+  in the recording against the client's keeping of it.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

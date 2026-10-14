@@ -1638,6 +1638,17 @@ container: `MultiMerge([(source, target, 3822)], 60001717)`. EveJS answers None 
 merges nothing of a stack in a hangar that is not the session's own character's. The page makes the call since
 `8ab05f70` (`web/src/bridge/inventoryWrites.ts`) where it holds the place's rows.
 
+**Items trashed, 2026-10-14** (`eve/client/script/ui/services/menuSvcExtras/invItemFunctions.py`,
+`environment/invCache.py`, `eve/common/script/net/eveMoniker.py`). `TrashInvItems` (602 to 626): the items in one
+place, the pilot asked, each of a type that may be trashed, then
+`errors = invCache.GetInventoryMgr().TrashItems(itemsToTrash, locationID)` and each error shown. The manager is the
+one `invCache` keeps for where the session is (193 to 201), `Moniker('invbroker', (solarsystemid,
+groupSolarSystem))` where the session has a solar system, else the station's (`GetInventoryMgr`, 122 to 131).
+`locationID` is the station or structure the first item lies in directly, the office's station for a
+corporation's item, else the item's own place (`GetStationIDOfItem`, 660 to 691). EveJS destroys only the
+session's own character's items (or a director's in the office here), never the ship flown, and answers None or
+`["CannotTrashItem"]`. The page makes the call since `bd2562f0` (`web/src/bridge/inventoryWrites.ts`).
+
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
 (`ACTIONS`, by `eventTypeID`) and a level it reckons from `absolutePoints` and the skill's rank
