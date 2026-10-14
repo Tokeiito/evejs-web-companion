@@ -470362,4 +470362,15 @@ The list below goes on between those steps.
     `web/src/bots/defenderRoutine.ts` (a "Modern Core" copy of the defender routine; its design note leaves the
     caller unwritten) and `web/src/ui/PilotTraining.svelte` (a link to /pilot-training, never mounted; nothing of
     the page links there). Each given a screen or taken out at the operator's word.
+## 2026-10-14 — A correction to the entry above (item 74's last part): eve.js's origin
+
+That entry says `eve.js` has two commits not on its origin, the origin at `481018868`. That was read before
+the entry was written, and was not so when it was: the check at its writing showed the origin at `233cfc568`,
+the same as `main`. The origin's own record (its reflog) has it moved by a push at 2026-10-14 16:47:33 -0400,
+during that unit's look. The push was not this loop's: none of its commands pushes to `eve.js`, and its only
+git writes there were its commits. The origin now carries this loop's two server commits, `fc56d25d3` (the
+marshaller's sharing of a rowset's descriptor) and `233cfc568` (the sender told of its own mail).
+
+- **`eve.js` has no commit that is not on its origin, read as this was written** (`main` at `233cfc568`, and its
+  origin there too). Six files of others are changed there, as before, and were not touched.
 
