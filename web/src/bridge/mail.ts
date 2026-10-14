@@ -508,8 +508,30 @@ export function mailboxMarkedRead(mailbox: DecodedMailbox, messageIDs: readonly 
 }
 
 /** MarkMessagesAsUnread (mailSvc.py 323 to 334): not read, the read bit taken off its mask. */
-function mailboxMarkedUnread(mailbox: DecodedMailbox, messageIDs: readonly number[]): DecodedMailbox {
+export function mailboxMarkedUnread(mailbox: DecodedMailbox, messageIDs: readonly number[]): DecodedMailbox {
   return withStatuses(mailbox, messageIDs, (status) => ({ ...status, read: false, statusMask: status.statusMask & (ALL_LABELS - MAIL_STATUS_READ) }));
+}
+
+/** MoveMessagesToTrash, and the server's OnMailTrashed (mailSvc.py 292 to 301, 1189 to 1191): trashed, its bit in its mask. */
+export function mailboxTrashed(mailbox: DecodedMailbox, messageIDs: readonly number[]): DecodedMailbox {
+  return withStatuses(mailbox, messageIDs, (status) => ({ ...status, trashed: true, statusMask: status.statusMask | MAIL_STATUS_TRASHED }));
+}
+
+/**
+ * MoveMessagesFromTrash, and the server's OnMailRestored (mailSvc.py 303 to 321, 1193 to 1195): not trashed; its
+ * mask cut down as the client cuts it, by the read bit (the trashed bit stays in it), its read flag left as it was.
+ */
+export function mailboxRestored(mailbox: DecodedMailbox, messageIDs: readonly number[]): DecodedMailbox {
+  return withStatuses(mailbox, messageIDs, (status) => ({ ...status, trashed: false, statusMask: status.statusMask & (ALL_LABELS - MAIL_STATUS_READ) }));
+}
+
+/** DeleteMails, and the server's OnMailDeleted (mailSvc.py 478 to 491, 1155 to 1172): the messages gone. */
+export function mailboxDeleted(mailbox: DecodedMailbox, messageIDs: readonly number[]): DecodedMailbox {
+  const gone = new Set(messageIDs);
+  return {
+    messages: mailbox.messages.filter((header) => !gone.has(header.messageID)),
+    statuses: mailbox.statuses.filter((status) => !gone.has(status.messageID)),
+  };
 }
 
 /** A list off the wire, its items; anything else, none. */
@@ -571,14 +593,9 @@ export function mailboxAfterNotice(mailbox: DecodedMailbox, method: string, args
         statuses: [...mailbox.statuses, { messageID, statusMask, labelMask, read, trashed: false }],
       };
     }
-    case "OnMailDeleted": {
+    case "OnMailDeleted":
       // OnMailDeleted (1155 to 1172): the messages named are gone.
-      const gone = new Set(idsOf(args[0]));
-      return {
-        messages: mailbox.messages.filter((header) => !gone.has(header.messageID)),
-        statuses: mailbox.statuses.filter((status) => !gone.has(status.messageID)),
-      };
-    }
+      return mailboxDeleted(mailbox, idsOf(args[0]));
     case "OnMailUpdatedByExternal": {
       // OnMailUpdatedByExternal (1174 to 1182): read or unread where it says, and the labels replaced where it
       // gives a label (ReplaceLabels, 792 to 807).
@@ -593,15 +610,9 @@ export function mailboxAfterNotice(mailbox: DecodedMailbox, method: string, args
       return after;
     }
     case "OnMailTrashed":
-      // OnMailTrashed (1189 to 1191; 298 to 301): trashed, and the trashed bit in its mask.
-      return withStatuses(mailbox, idsOf(args[0]), (status) => ({ ...status, trashed: true, statusMask: status.statusMask | MAIL_STATUS_TRASHED }));
+      return mailboxTrashed(mailbox, idsOf(args[0]));
     case "OnMailRestored":
-      // OnMailRestored (1193 to 1195; 309 to 312): not trashed; its mask cut down as the client cuts it, by the
-      // read bit (the trashed bit stays in it).
-      return withStatuses(mailbox, idsOf(args[0]), (status) => {
-        const statusMask = status.statusMask & (ALL_LABELS - MAIL_STATUS_READ);
-        return { ...status, trashed: false, statusMask, read: (statusMask & MAIL_STATUS_READ) !== 0 };
-      });
+      return mailboxRestored(mailbox, idsOf(args[0]));
     case "OnMailUndeleted":
       // OnMailUndeleted (1184 to 1187): the client syncs again.
       return "sync";

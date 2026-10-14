@@ -57,6 +57,10 @@ import {
   mailLabelsOf,
   mailboxAfterNotice,
   mailboxAfterSending,
+  mailboxDeleted,
+  mailboxMarkedUnread,
+  mailboxRestored,
+  mailboxTrashed,
   mailboxAfterSync,
   mailboxMarkedRead,
   mailboxWithHeaders,
@@ -1013,6 +1017,14 @@ export interface AppFlow {
   quotedMailBody(messageID: number): Promise<string | null>;
   /** The pilot's own mail labels, asked once as the mail window first draws its folders (mailSvc.GetLabels), and kept. */
   loadMailLabels(): Promise<void>;
+  /** Mark messages read, or not read, as the mail window's Mark as Read and Mark as Unread do. */
+  markMail(messageIDs: readonly number[], read: boolean): Promise<void>;
+  /** Move messages to the trash, as the mail window's Trash does. */
+  trashMail(messageIDs: readonly number[]): Promise<void>;
+  /** Bring trashed messages back, as the mail window's Restore does. */
+  restoreMail(messageIDs: readonly number[]): Promise<void>;
+  /** Delete trashed messages, as the mail window's Delete does. */
+  deleteMail(messageIDs: readonly number[]): Promise<void>;
   /** Close the open message without touching the server. */
   closeMail(): void;
   /**
@@ -5079,6 +5091,52 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         markedRead: store.mail.get().statuses.find((status) => status.messageID === messageID)?.read ?? null,
       },
     });
+  }
+
+  // The mail window's writes of a message (evemail.py GetMsgMenu, 925 to 970; mailSvc.py 292 to 348, 478 to 491):
+  // the mail manager asked with the messages, a list, by the generic call; what is kept changed as the client
+  // changes it, nothing read again; a message open that leaves the folder it is in closed. True where it was done.
+  async function mailWrite(method: string, messageIDs: readonly number[], after: (mailbox: DecodedMailbox) => DecodedMailbox, closes: boolean): Promise<boolean> {
+    try {
+      await bridgeDo("mailMgr", method, [[...messageIDs]]);
+    } catch (error) {
+      throwIfRequestRetired(error);
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({ type: "mail/action-error", message: mailRefusalMessage(error) });
+      return false;
+    }
+    mailboxLoaded(after(store.mail.get()));
+    const open = store.mail.get().open;
+    if (closes && open !== null && messageIDs.includes(open.messageID)) {
+      closeMail();
+    }
+    return true;
+  }
+
+  async function markMail(messageIDs: readonly number[], read: boolean): Promise<void> {
+    await mailWrite(read ? "MarkAsRead" : "MarkAsUnread", messageIDs, (mailbox) => (read ? mailboxMarkedRead(mailbox, messageIDs) : mailboxMarkedUnread(mailbox, messageIDs)), false);
+  }
+
+  async function trashMail(messageIDs: readonly number[]): Promise<void> {
+    await mailWrite("MoveToTrash", messageIDs, (mailbox) => mailboxTrashed(mailbox, messageIDs), true);
+  }
+
+  async function restoreMail(messageIDs: readonly number[]): Promise<void> {
+    await mailWrite("MoveFromTrash", messageIDs, (mailbox) => mailboxRestored(mailbox, messageIDs), true);
+  }
+
+  // DeleteMails (478 to 491): the bodies kept of the messages let go with them.
+  async function deleteMail(messageIDs: readonly number[]): Promise<void> {
+    if (await mailWrite("DeleteMail", messageIDs, (mailbox) => mailboxDeleted(mailbox, messageIDs), true)) {
+      const characterID = store.station.get().online?.characterID ?? 0;
+      for (const messageID of messageIDs) {
+        mailBodies.delete(`${characterID}:${messageID}`);
+      }
+    }
   }
 
   function closeMail(): void {
@@ -15514,6 +15572,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     openMail,
     quotedMailBody,
     loadMailLabels,
+    markMail,
+    trashMail,
+    restoreMail,
+    deleteMail,
     closeMail,
     findCharacters: (q: string) => api.findCharacters(q, callOptions),
     sendMail,

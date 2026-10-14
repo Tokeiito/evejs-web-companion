@@ -21,6 +21,7 @@
     audienceOf,
     checkDraft,
     readFlags,
+    isTrashed,
     MAIL_FOLDER_ALLIANCE,
     MAIL_FOLDER_CORPORATION,
     MAIL_FOLDER_INBOX,
@@ -110,6 +111,21 @@
     return count > 0
       ? formatTemplate(word(FOLDER_WORDS.withCount, "{folderName} ({unreadCount})"), { folderName: name, unreadCount: count }, { nameOf: () => "" })
       : name;
+  }
+
+  /** The words of a message's writes, by their labels (evemail.py GetMsgMenu). */
+  const WRITE_WORDS = {
+    read: "UI/Mail/MarkAsRead",
+    unread: "UI/Mail/MarkAsUnread",
+    trash: "UI/Mail/Trash",
+    restore: "UI/Mail/Restore",
+    delete: "UI/Mail/Delete",
+  } as const;
+
+  /** Whether a message is in the trash, as its status says. */
+  function inTrash(messageID: number): boolean {
+    const status = $mail.statuses.find((row) => row.messageID === messageID);
+    return status !== undefined && isTrashed(status);
   }
 
   /** The message a forward forwards (GetForwardWnd: isForwardedFrom=msg.messageID), 0 for none. */
@@ -302,7 +318,7 @@
   }
 
   onMount(() => {
-    flow.requestWords([...Object.values(MAIL_QUOTE_LABELS), DATE_LABEL, ...Object.values(FOLDER_WORDS)]);
+    flow.requestWords([...Object.values(MAIL_QUOTE_LABELS), DATE_LABEL, ...Object.values(FOLDER_WORDS), ...Object.values(WRITE_WORDS)]);
     void run(async () => {
       await flow.loadMail();
       await flow.loadMailLabels();
@@ -423,6 +439,28 @@
                     >
                       Reply
                     </button>
+                    <!-- The mail window's menu of a message (GetMsgMenu): read or not, and trash; restore and delete in the trash. -->
+                    {#if isUnread(header.messageID)}
+                      <button type="button" class="minor" disabled={busy} onclick={() => void run(() => flow.markMail([header.messageID], true))}>
+                        {word(WRITE_WORDS.read, "Mark as Read")}
+                      </button>
+                    {:else}
+                      <button type="button" class="minor" disabled={busy} onclick={() => void run(() => flow.markMail([header.messageID], false))}>
+                        {word(WRITE_WORDS.unread, "Mark as Unread")}
+                      </button>
+                    {/if}
+                    {#if inTrash(header.messageID)}
+                      <button type="button" class="minor" disabled={busy} onclick={() => void run(() => flow.restoreMail([header.messageID]))}>
+                        {word(WRITE_WORDS.restore, "Restore")}
+                      </button>
+                      <button type="button" class="minor" disabled={busy} onclick={() => void run(() => flow.deleteMail([header.messageID]))}>
+                        {word(WRITE_WORDS.delete, "Delete")}
+                      </button>
+                    {:else}
+                      <button type="button" class="minor" disabled={busy} onclick={() => void run(() => flow.trashMail([header.messageID]))}>
+                        {word(WRITE_WORDS.trash, "Trash")}
+                      </button>
+                    {/if}
                   </div>
                 </td>
               </tr>
