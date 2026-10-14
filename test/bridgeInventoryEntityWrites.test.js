@@ -190,14 +190,14 @@ test.afterEach(async () => {
   await Promise.all(closing);
 });
 
-// --- the 10 R102 inventory + drone-command write routes ----------------------
-// (Eleven until 2026-10-13, when the reconnection to lost drones became the page's own call.)
+// --- the 9 R102 inventory + drone-command write routes -----------------------
+// (Eleven until 2026-10-13, when the reconnection to lost drones became the page's own call; ten until
+// 2026-10-14, when a saved fitting's application did.)
 
 const R102_WRITE_ROUTES = [
-  // WB-INV (7)
+  // WB-INV (6: a saved fitting's application is the page's own call since 2026-10-14, and has no route)
   ["/api/bridge/inventory/set-label", { itemID: 7400000020, label: "My Rifter" }],
   ["/api/bridge/inventory/strip-fitting", {}],
-  ["/api/bridge/inventory/fit-fitting", { shipID: SHIP_ID, sourceLocationID: STATION_ID }],
   ["/api/bridge/inventory/assemble-container", { itemID: 7400000030 }],
   ["/api/bridge/inventory/break-plastic-wrap", { itemID: 7400000031 }],
   ["/api/bridge/inventory/deliver-to-corp-hangar", { itemIDs: [7400000020, 7400000021], officeID: 9500001, flag: 116 }],
@@ -212,7 +212,7 @@ test("⚠ every R102 inventory/entity write REFUSES without confirm — no bind,
   const gateway = fakeGateway();
   const { baseUrl } = await startTestServer({ gateway });
   await selectOnServer(baseUrl);
-  assert.equal(R102_WRITE_ROUTES.length, 10, "all 10 R102 write routes are covered");
+  assert.equal(R102_WRITE_ROUTES.length, 9, "all 9 R102 write routes are covered");
   for (const [path, body] of R102_WRITE_ROUTES) {
     const { response, payload } = await apiRequest(baseUrl, path, { method: "POST", body });
     assert.equal(response.status, 400, `${path} must refuse without confirm`);

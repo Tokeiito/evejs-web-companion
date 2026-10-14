@@ -311,10 +311,7 @@ test("structure personal hangar stays unknown and load/unload refuse unavailable
   assert.equal(panel.response.status, 409);
   assert.equal(panel.payload.error, "STRUCTURE_SERVICE_AUTHORITY_UNAVAILABLE");
   assert.equal(gateway.calls.bind.some((bind) => bind.method === "GetInventory" && bind.args[0] === structureID), false);
-  const scriptedFit = await apiRequest(baseUrl, "/api/bridge/inventory/fit-fitting", { method: "POST",
-    body: { shipID: ACTIVE_SHIP_ID, sourceLocationID: structureID, modulesByFlag: {}, confirm: true } });
-  assert.equal(scriptedFit.response.status, 409, "scripted fitting remains station-only");
-  assert.equal(gateway.calls.boundCall.some((call) => call.method === "FitFitting"), false);
+  // (The fitting route this asked too went on 2026-10-14: a fitting is the page's own call.)
   // (The move route, which this asked too, went on 2026-10-13: nothing of the page asked it.)
   assert.equal(placement.get(100).flag, FLAG_HANGAR);
   assert.equal(placement.get(101).flag, FLAG_CARGO);
