@@ -1773,6 +1773,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "structureDocking.Dock", "structureDocking.Undock",
     // A pilot's employment record and transfers, by the client's History panel. The gateway's list has nothing of the corporation service's.
     "corporationSvc.GetEmployementRecordAndCharacterTransfers",
+    // A folder of the mail window marked read, trashed, and the trash restored. The gateway's list has the mail manager's others, not these.
+    "mailMgr.MarkAsReadByLabel", "mailMgr.MoveToTrashByLabel", "mailMgr.MoveAllFromTrash",
   ]);
   // structureGuests.py 25: sm.RemoteSvc('structureGuests').GetGuests(session.structureid), by the service's name,
   // with the structure the session is docked in and nothing else.
