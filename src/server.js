@@ -5622,8 +5622,12 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
         return;
       }
       const stationID = Number(args[0]);
-      if (!isClientStationID(stationID)) {
-        res.status(400).json({ ok: false, error: "INVALID_STATION", message: "A station is docked at by its number." });
+      // (A player structure is docked at by its own service's Dock, structureDocking.py 64 to 80; a station by the park's.)
+      const atAStructure = service === "structureDocking";
+      if (atAStructure ? !isPlayerStructureID(stationID) : !isClientStationID(stationID)) {
+        res.status(400).json(atAStructure
+          ? { ok: false, error: "INVALID_STRUCTURE", message: "A player structure is docked at by its number." }
+          : { ok: false, error: "INVALID_STATION", message: "A station is docked at by its number." });
         return;
       }
       if (shipID <= 0 || Number(args[1]) !== shipID) {
@@ -5657,9 +5661,13 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
     if (!await acquireRouteTransition(res, held, kind, expected)) {
       return;
     }
-    // (By the name the transport knows it by, as the generic call asks any write: bridgeCallPolicy.js, gatewaysNameFor.)
-    const named = gamePortPilots && isGamePortHandle(held.bridgeSessionID) ? method : gatewaysNameFor(service, method);
-    const outcome = await heldTopLevelCall(held, req.webSessionID, service, named, args, kwargs);
+    // (By the name the transport knows it by, as the generic call asks any write: bridgeCallPolicy.js, gatewaysNameFor.
+    // A structure's Dock the web gateway's list has not: there the park's CmdDock of the structure is asked, as the
+    // dock route asked it until 2026-10-14.)
+    const onTheGamePort = Boolean(gamePortPilots && isGamePortHandle(held.bridgeSessionID));
+    const outcome = !onTheGamePort && service === "structureDocking"
+      ? await heldTopLevelCall(held, req.webSessionID, "beyonce", "CmdDock", args, kwargs)
+      : await heldTopLevelCall(held, req.webSessionID, service, onTheGamePort ? method : gatewaysNameFor(service, method), args, kwargs);
     markTransitionAccepted(held);
     const after = await awaitRouteTransition(held, req.webSessionID, kind, expected, waiting);
     if (!after.ok && kind === "dock") {
@@ -14784,15 +14792,6 @@ async function accessibleStructureMatches(req, query, characterID = 0) {
   return matches.sort((a, b) => a.name.localeCompare(b.name)).slice(0, 25);
 }
 
-async function assertStructureDockAccess(held, webSessionID, structureID) {
-  const result = await heldTopLevelCall(held, webSessionID, "structureDirectory",
-    "CheckMyDockingAccessToStructures", [[structureID]], null);
-  if (!structureIDsFromList(result.result).includes(structureID)) {
-    throw Object.assign(new Error("Docking access to this structure is unavailable."),
-      { code: "STRUCTURE_DOCK_ACCESS_DENIED", statusCode: 409 });
-  }
-}
-
 /**
  * structures/services.py ONLINE_SERVICES_UNRESTRICTED_ACCESS: what a structure does for anyone docked in it,
  * whatever its services say: its docking, which is its hangars, and its fitting.
@@ -16898,91 +16897,12 @@ app.post("/api/bridge/flight/jump-through-structure", requireAuth, async (req, r
   }
 });
 
-// Dock at the destination station: beyonce.CmdDock(stationID, shipID). If the
-// ship is out of docking range the handler refuses with a DockingApproach user
-// error (surfaced as the reason); on the live server the sim completes the
-// pending dock, so the page polls flight status to see the docked state.
-//
-// (Since 2026-10-14 the page docks at a station by its own call, under the same keeping
-// (dispatchPlaceChangeWrite, "dock"; web/src/bridge/placeChanges.ts), and asks this route for a
-// structure alone: the client's own call there is structureDocking.Dock(structureID, shipid)
-// (structureDocking.py 64 to 80), which the page does not make yet.)
-app.post("/api/bridge/flight/dock", requireAuth, async (req, res, next) => {
-  const held = requireHeldBridgeSession(req, res);
-  if (!held) {
-    return;
-  }
-  const stationID = Number(req.body && req.body.stationID) || 0;
-  if (stationID <= 0) {
-    res.status(400).json({ ok: false, error: "INVALID_STATION", message: "A positive stationID is required." });
-    return;
-  }
-  try {
-    const before = await readHeldFlight(held, req.webSessionID);
-    if (!requireInSpace(res, before.flight)) {
-      return;
-    }
-    if (isPlayerStructureID(stationID)) await assertStructureDockAccess(held, req.webSessionID, stationID);
-    const shipID = Number(before.flight.shipID) || 0;
-    const expected = { stationID, shipID };
-    if (!await acquireRouteTransition(res, held, "dock", expected)) {
-      return;
-    }
-    const outcome = await boundCall(
-      held,
-      req.webSessionID,
-      parkBindSpec(before.flight.solarSystemID),
-      "CmdDock",
-      [stationID, shipID],
-      null,
-    );
-    markTransitionAccepted(held);
-    // R24 measured Handle_CmdDock answering 200/null while DECLINING silently
-    // (warp landing pending, ship immobile, docking approach required…), and
-    // the autopilot's silent-dock ladder exists to re-issue a dock that did
-    // not take. That ladder only works if this route ANSWERS — so dock waits
-    // on a SHORT non-latching probe rather than the full readiness barrier. A
-    // dock the sim accepted seats within a couple of seconds; a probe that
-    // ends with the ship still fully in space is the silent decline it almost
-    // certainly is. The transition is cancelled (CmdDock is safe to re-issue —
-    // retail's own client re-docks through DockingApproach) and the in-space
-    // flight goes back so the ladder can decide. Dock therefore never burns
-    // the 45 s barrier and never latches the session.
-    const probeMs = Number(options.dockProbeTimeoutMs) ||
-      Math.min(DOCK_SILENT_DECLINE_PROBE_MS, Number(options.transitionReadyTimeoutMs) || DOCK_SILENT_DECLINE_PROBE_MS);
-    const after = await awaitRouteTransition(held, req.webSessionID, "dock", expected, {
-      timeoutMs: probeMs,
-      latchOnTimeout: false,
-    });
-    if (!after.ok) {
-      if (after.code !== "TRANSITION_SUPERSEDED") {
-        cancelHeldTransition(held);
-      }
-      res.json({
-        ok: true,
-        result: outcome.result,
-        flight: { ...(after.flight || before.flight), transition: publicTransition(held) },
-        transition: publicTransition(held),
-        notifications: [...outcome.notifications, ...(after.notifications || [])],
-      });
-      return;
-    }
-    res.json({
-      ok: true,
-      result: outcome.result,
-      flight: { ...after.flight, transition: after.transition },
-      transition: after.transition,
-      notifications: [...outcome.notifications, ...after.notifications],
-    });
-  } catch (error) {
-    if (held.transition && held.transition.kind === "dock") {
-      // Dock never latches: CmdDock is safe to re-issue, so an error mid-wait
-      // releases the barrier instead of locking the session behind it.
-      cancelHeldTransition(held);
-    }
-    next(error);
-  }
-});
+// A station and a player structure are docked at by the page's own calls since 2026-10-14, under the keeping of a
+// dock (dispatchPlaceChangeWrite, "dock"; web/src/bridge/placeChanges.ts): the park's CmdDock(stationID, shipID) for a
+// station, the structure's own structureDocking.Dock(structureID, shipID) for a structure (structureDocking.py 64 to
+// 80), which through the gateway is asked as the park's CmdDock. The dock route (POST /api/bridge/flight/dock) is gone,
+// and with it its check of a structure's docking access before the call: the server's handler checks it itself
+// (structureDockingService.Handle_Dock), as the client goes by.
 
 // Approach a gate/target:
 // beyonce.CmdSetSpeedFraction(1.0) + CmdFollowBall(destinationID, range).

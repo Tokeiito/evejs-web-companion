@@ -33,8 +33,7 @@
 // the autopilot docks again where the ship is still in space.
 //
 // ⚠ A STRUCTURE IS DOCKED AT ANOTHER WAY: structureDocking.Dock(structureID, session.shipid), asked of the service
-// by its name once the ship is close (structureDocking.py 64 to 80). The page does not make that call yet, and
-// docks at a structure by its route (src/server.js, POST /api/bridge/flight/dock), as before.
+// by its name once the ship is close (structureDocking.py 64 to 80): dockAtStructure, below.
 
 //
 // THROUGH A STARGATE. The menu's jump (menusvc.StargateJump, 3025 on, flying the ship close first) comes to the gate
@@ -83,6 +82,30 @@ export async function dock(act: Ask, flightNow: () => Promise<FlightNow>, statio
   if (!now.inSpace) throw new Error("The ship is not in space; undock first.");
   if (now.shipID === null) throw new Error("There is no ship to dock.");
   await act("beyonce", "CmdDock", [stationID, now.shipID]);
+}
+
+// DOCKED AT A PLAYER STRUCTURE (since 2026-10-14; until then by the dock route, POST /api/bridge/flight/dock, as the
+// park's CmdDock). The client's structure docking service (structureDocking.py, Dock 64 to 80) flies the ship to
+// within 2,500 m first (autoPilot.NavigateSystemTo(structureID, 2500, RequestDocking)) and then asks
+//
+//   sm.RemoteSvc('structureDocking').Dock(structureID, session.shipid)
+//
+// the structure's own service, by its name, not the park. The page asks it where the ship is: this server answers a
+// ship still too far with DockingApproach, having set it approaching (structureDockingService.Handle_Dock), and the
+// autopilot approaches and asks again on that refusal (nav/autopilotLoop.ts, isDockingApproach), as it does for a
+// station. The same keeping as a station's dock, the BFF's.
+
+/**
+ * Docks the pilot's ship at a player structure. Fails as the call fails, and before it for a station (docked at by
+ * the park's dock) or what is no structure's number, and for a ship not in space or none known.
+ */
+export async function dockAtStructure(act: Ask, flightNow: () => Promise<FlightNow>, structureID: number): Promise<void> {
+  if (isStation(structureID)) throw new Error("A station is docked at by the ballpark's dock.");
+  if (!Number.isSafeInteger(structureID) || structureID <= 0) throw new Error("That structure could not be identified.");
+  const now = await flightNow();
+  if (!now.inSpace) throw new Error("The ship is not in space; undock first.");
+  if (now.shipID === null) throw new Error("There is no ship to dock.");
+  await act("structureDocking", "Dock", [structureID, now.shipID]);
 }
 
 /**

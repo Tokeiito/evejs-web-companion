@@ -661,6 +661,10 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // A structure's guests, which the client's lobby asks for as the pilot docks in one (structureGuests.py 25). The
   // gateway's list has a station's guests and nothing of a structure's.
   "structureGuests.GetGuests",
+  // A pilot's dock at a player structure, as the client's structure docking service asks it, by the service's name
+  // (structureDocking.py 69). The gateway's list has nothing of it: through the gateway the BFF asks the park's
+  // CmdDock of the structure in its place (server.js, dispatchPlaceChangeWrite).
+  "structureDocking.Dock",
 ]);
 
 /**
@@ -1605,6 +1609,7 @@ const RETAIL_CALLS = Object.freeze({
       return { args: [gate, known, ship], kwargs, status: "reshaped" };
     },
   }),
+  "structureDocking.Dock": same("eve/client/script/ui/services/structure/structureDocking.py:69", "RemoteSvc('structureDocking').Dock(structureID, session.shipid), by the service's name, once the autopilot has the ship within 2,500 m of the structure (80). Recorded on Tranquility with the two IDs, the structure's and the ship's."),
   "beyonce.CmdDock": same("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:517", "bp.CmdDock(itemID, session.shipid), on the ballpark's object, through sessionMgr.PerformSessionChange('dock', ...). Recorded on Tranquility with the two IDs."),
   "beyonce.CmdFollowBall": reshaped("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:302", following, "bp.CmdFollowBall(targetID, range), on the ballpark's object: the menu's approach with const.approachRange, keep at range with the pilot's distance (229), the autopilot's with 0.0 (autopilot.py 437). Not sent for the pilot's own ship. Recorded on Tranquility as (itemID, 50), and at 5000 and 7500, each a whole number; the autopilot's twice, its range a float of nought, which is how a range of nought goes."),
   "beyonce.CmdOrbit": reshaped("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:260", orbiting, "bp.CmdOrbit(targetID, range), on the ballpark's object: the range a float under 10 m and a whole number from there (243). Not sent for the pilot's own ship. Recorded on Tranquility as (itemID, 1000) and (itemID, 5000), 7500 and 10000, each a whole number, with nothing before it; none is recorded under ten metres, where the client's float is how it goes."),

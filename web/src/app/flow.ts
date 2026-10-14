@@ -389,7 +389,7 @@ import {
   scoopDrones as scoopDronesCall,
 } from "../bridge/boundEntityWrites.ts";
 import { alignTo as alignToCall, approach as approachCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
-import { dock as dockCall, isStation, jump as jumpCall, undock as undockCall } from "../bridge/placeChanges.ts";
+import { dock as dockCall, dockAtStructure as dockAtStructureCall, isStation, jump as jumpCall, undock as undockCall } from "../bridge/placeChanges.ts";
 import { boardCorvette as boardCorvetteCall, boardShip as boardShipCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
 import { activityIDOf, createJobReckoner, type JobReckoner, type JobReckoning } from "../bridge/industryJobReckoning.ts";
 import { connectJob, decodeFacilityPlaces, disconnectJob, installJob, jobDump, jobPlaces, monitoredAs, type Monitored } from "../bridge/industryMonitor.ts";
@@ -4743,12 +4743,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * is a session lost.
    */
   /**
-   * Docks: at a station by the page's own call (bridge/placeChanges.ts, the client's RealDock), between two reads of
-   * the flight; at a structure by its route still, the client's own call there being the structure's docking
-   * service's, which the page does not make yet.
+   * Docks by the page's own call (bridge/placeChanges.ts), between two reads of the flight: at a station the client's
+   * RealDock, the park's CmdDock; at a player structure the structure's own docking service's Dock (since 2026-10-14;
+   * until then by the dock route).
    */
   function dockStep(stationID: number): Promise<FlightStepResult> {
-    return isStation(stationID) ? orderedStep((flightNow) => dockCall(bridgeDo, flightNow, stationID)) : api.dock(stationID, callOptions);
+    return orderedStep((flightNow) => (isStation(stationID)
+      ? dockCall(bridgeDo, flightNow, stationID)
+      : dockAtStructureCall(bridgeDo, flightNow, stationID)));
   }
 
   /**

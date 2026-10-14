@@ -2165,17 +2165,8 @@ export function isContrabandWarning(error: unknown): error is BridgeCallError {
 // the game port names the gate's own off its slim item, as the client does, and the server works it out from the gate
 // (jumpSessionViaStargate rejects only a far gate that contradicts it).
 
-/**
- * Dock at a structure, by its route (beyonce.CmdDock on the park). A station is docked at by the page's own call
- * since 2026-10-14 (bridge/placeChanges.ts, dock); the client docks at a structure by the structure's docking service
- * (structureDocking.Dock), which the page does not make yet, and the flow asks this for a structure alone.
- */
-export async function dock(
-  stationID: number,
-  options: ApiOptions = {},
-): Promise<FlightStepResult> {
-  return readFlightStep(await postJson("/api/bridge/flight/dock", { stationID }, options));
-}
+// A station and a player structure are docked at by the page's own calls since 2026-10-14 (bridge/placeChanges.ts,
+// dock and dockAtStructure): the dock route (POST /api/bridge/flight/dock) is gone.
 
 // A fleet's target tag is set and cleared by the page itself, with the client's
 // own call on its ballpark (bridge/fleetWrites.ts; the plan's Phase 6b): the
