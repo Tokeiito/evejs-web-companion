@@ -1045,11 +1045,11 @@ test("a write is made by the generic call only as the page makes one: a pilot's,
 
   // Not said to be a pilot's, or not said to be meant: refused, as every write here was. Only `true` says either.
   for (const more of [{}, { confirm: true }, { pilot: true }, { pilot: true, confirm: false }, { pilot: true, confirm: "yes" }, { pilot: 1, confirm: true }, { pilot: "true", confirm: true }]) {
-    assert.deepEqual(refusedAsARoutes(await call("skillHandler", "AbortTraining", more)), [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+    assert.deepEqual(refusedAsARoutes(await call("skillHandler", "AbortTraining", more)), [403, "BRIDGE_WRITE_REFUSED"], JSON.stringify(more));
   }
   // A write that is not one of the page's own: refused, whatever is said.
   for (const [service, method] of [["skillHandler", "ExtractSkills"], ["skillMgr", "SaveNewQueue"], ["marketProxy", "PlaceBuyOrder"], ["mailMgr", "DeleteMail"], ["ship", "Eject"]]) {
-    assert.deepEqual(refusedAsARoutes(await call(service, method, { pilot: true, confirm: true })), [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], `${service}.${method}`);
+    assert.deepEqual(refusedAsARoutes(await call(service, method, { pilot: true, confirm: true })), [403, "BRIDGE_WRITE_REFUSED"], `${service}.${method}`);
   }
   assert.deepEqual([gateway.calls.call.length, accountCalls], [before, []]);
 
@@ -1078,7 +1078,7 @@ test("the queue's saving is a write of the page's own: its queue and its keyword
   // A write, as the pause is: refused unless it is said to be a pilot's and to be meant.
   for (const more of [{}, { pilot: true }, { confirm: true }]) {
     const refused = await save(more);
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], JSON.stringify(more));
   }
   assert.equal(gateway.calls.call.length, before);
   const made = await save({ pilot: true, confirm: true });
@@ -1106,7 +1106,7 @@ test("free points put into a skill are a write of the page's own: the skill and 
   // A write, as the pause is: refused unless it is said to be a pilot's and to be meant.
   for (const more of [{}, { pilot: true }, { confirm: true }]) {
     const refused = await apply(more);
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], JSON.stringify(more));
   }
   assert.equal(gateway.calls.call.length, before);
   const made = await apply({ pilot: true, confirm: true });
@@ -1125,7 +1125,7 @@ test("the safety level set is a write of the page's own: the level goes as it wa
   // A write, as the pause is: refused unless it is said to be a pilot's and to be meant.
   for (const more of [{}, { pilot: true }, { confirm: true }]) {
     const refused = await set(1, more);
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], JSON.stringify(more));
   }
   assert.equal(gateway.calls.call.length, before);
   const made = await set(1, { pilot: true, confirm: true });
@@ -1147,12 +1147,12 @@ test("a contract taken on is a write of the page's own: its ID and for whom go a
   // A write, as the pause is: refused unless it is said to be a pilot's and to be meant.
   for (const more of [{}, { pilot: true }, { confirm: true }]) {
     const refused = await accept([8100, false], more);
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], JSON.stringify(more));
   }
   // The proxy's other writes are their routes' alone, whatever is said.
   for (const method of ["CreateContract", "CompleteContract", "DeleteContract", "PlaceBid"]) {
     const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "contractProxy", method, args: [8100], kwargs: null, pilot: true, confirm: true } });
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], method);
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], method);
   }
   assert.equal(gateway.calls.call.length, before);
   const made = await accept([8100, false], { pilot: true, confirm: true });
@@ -1173,12 +1173,12 @@ test("a launch's record removed is a write of the page's own: its ID goes as it 
   // A write, as the pause is: refused unless it is said to be a pilot's and to be meant.
   for (const more of [{}, { pilot: true }, { confirm: true }]) {
     const refused = await remove(more);
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], JSON.stringify(more));
   }
   // The planet manager's other writes are their routes' alone, whatever is said.
   for (const method of ["UserAbandonPlanet", "UserTransferCommodities"]) {
     const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "planetMgr", method, args: [], kwargs: null, pilot: true, confirm: true } });
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], method);
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], method);
   }
   // And a colony's network changed and its commodities launched, each made on a planet's own object, are no calls
   // asked by the service's name.
@@ -1207,12 +1207,12 @@ test("a fleet applied to and a broadcast to the bubble are writes of the page's 
     // A write, as the pause is: refused unless it is said to be a pilot's and to be meant.
     for (const more of [{}, { pilot: true }, { confirm: true }]) {
       const refused = await call(more);
-      assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], `${method} ${JSON.stringify(more)}`);
+      assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], `${method} ${JSON.stringify(more)}`);
     }
     // The service's other writes are their routes' alone, whatever is said.
     for (const other of others) {
       const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service, method: other, args: [], kwargs: null, pilot: true, confirm: true } });
-      assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], other);
+      assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], other);
     }
     assert.equal(gateway.calls.call.length, before, method);
     const made = await call({ pilot: true, confirm: true });
@@ -1236,7 +1236,7 @@ test("a module overloaded and cooled, its repair begun and ended, and the weapon
     // A write, as the pause is: refused unless it is said to be a pilot's and to be meant.
     for (const more of [{}, { pilot: true }, { confirm: true }]) {
       const refused = await call(more);
-      assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], `${method} ${JSON.stringify(more)}`);
+      assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], `${method} ${JSON.stringify(more)}`);
     }
     assert.equal(gateway.calls.call.length, before, method);
     const made = await call({ pilot: true, confirm: true });
@@ -1248,7 +1248,7 @@ test("a module overloaded and cooled, its repair begun and ended, and the weapon
   const before = gateway.calls.call.length;
   for (const method of ["OverloadRack", "StopOverloadRack", "InitiateModuleRepairMany", "LinkWeapons", "MergeModuleGroups", "PeelAndLink", "UnlinkModule", "DestroyWeaponBank", "SetModuleOnline", "TakeModuleOffline", "Activate"]) {
     const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "dogmaIM", method, args: [], kwargs: null, pilot: true, confirm: true } });
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], method);
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], method);
   }
   assert.equal(gateway.calls.call.length, before);
 });
@@ -1270,7 +1270,7 @@ test("ammunition loaded and unloaded are writes of the page's own, asked of the 
     // A write: refused unless it is said to be a pilot's and to be meant.
     for (const more of [{}, { pilot: true }, { confirm: true }]) {
       const refused = await call(more);
-      assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], `${method} ${JSON.stringify(more)}`);
+      assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], `${method} ${JSON.stringify(more)}`);
     }
     assert.equal(gateway.calls.call.length, before, method);
     const made = await call({ pilot: true, confirm: true });
@@ -1291,7 +1291,7 @@ test("a fleet's target tag set and cleared is a write of the page's own, asked o
     const before = gateway.calls.call.length;
     for (const more of [{}, { pilot: true }, { confirm: true }]) {
       const refused = await call(more);
-      assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+      assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], JSON.stringify(more));
     }
     assert.equal(gateway.calls.call.length, before);
     const made = await call({ pilot: true, confirm: true });
@@ -1303,7 +1303,7 @@ test("a fleet's target tag set and cleared is a write of the page's own, asked o
   // (The two warps were among these until 2026-10-11: they are the page's own now, and have their tests below.)
   for (const method of ["CmdAbandonLoot", "CmdJumpThroughFleet", "CmdStargateJump", "CmdDock"]) {
     const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "beyonce", method, args: [], kwargs: null, pilot: true, confirm: true } });
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], method);
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], method);
   }
   assert.equal(gateway.calls.call.length, before);
 });
@@ -1342,7 +1342,7 @@ test("a colony's network changed is a write of the page's own, made on the plane
   // As any write of the page's: said to be a pilot's and meant, or not made.
   for (const more of [{}, { pilot: true }, { confirm: true }]) {
     const refused = await call(more);
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], JSON.stringify(more));
   }
   // With no planet said it is no call, and with what is no planet it is refused as its route refused it.
   for (const of of [undefined, null]) {
@@ -1383,7 +1383,7 @@ test("only a call the client makes on an object of its own says which: with a pl
   }
   for (const method of ["UserTransferCommodities", "UserAbandonPlanet"]) {
     const refused = await ask("planetMgr", method, []);
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], method);
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], method);
   }
   assert.deepEqual([binds, bound, gateway.calls.call.length], [[], [], before]);
 });
@@ -1430,7 +1430,7 @@ test("a colony's commodities launched is a write of the page's own, made on the 
   const meant = { pilot: true, confirm: true };
   for (const more of [{}, { pilot: true }, { confirm: true }]) {
     const refused = await call(more);
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], JSON.stringify(more));
   }
   const byName = await call({ ...meant, of: undefined });
   assert.deepEqual([byName.response.status, byName.payload.error], [400, "INVALID_REQUEST"]);
@@ -1457,7 +1457,7 @@ test("a mission's location warped to is a write of the page's own, made on the a
   const meant = { pilot: true, confirm: true };
   for (const more of [{}, { pilot: true }, { confirm: true }]) {
     const refused = await call(more);
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], JSON.stringify(more));
   }
   // It is no call asked by the service's name: the agent is said.
   const byName = await call({ ...meant, of: undefined });
@@ -1476,7 +1476,7 @@ test("a mission's location warped to is a write of the page's own, made on the a
   // The agent's other writes are their routes' alone, whatever is said.
   for (const method of ["GotoLocation", "WarpToAgentInSpace", "RemoveOfferFromJournal", "DoAction"]) {
     const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "agentMgr", method, args: [], kwargs: null, of: AGENT, ...meant } });
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], method);
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], method);
   }
 });
 
@@ -1490,7 +1490,7 @@ test("a ship sent to a point is a write of the page's own, asked of beyonce by i
   const before = gateway.calls.call.length;
   for (const more of [{}, { pilot: true }, { confirm: true }]) {
     const refused = await call(more);
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], JSON.stringify(more));
   }
   assert.equal(gateway.calls.call.length, before);
   const made = await call({ pilot: true, confirm: true });
@@ -1509,7 +1509,7 @@ test("drones sent to salvage is a write of the page's own, asked of entity by it
     const before = gateway.calls.call.length;
     for (const more of [{}, { pilot: true }, { confirm: true }]) {
       const refused = await call(more);
-      assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+      assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], JSON.stringify(more));
     }
     assert.equal(gateway.calls.call.length, before);
     const made = await call({ pilot: true, confirm: true });
@@ -1520,7 +1520,7 @@ test("drones sent to salvage is a write of the page's own, asked of entity by it
   const before = gateway.calls.call.length;
   for (const method of ["CmdEngage", "CmdReturnBay", "CmdMineRepeatedly", "CmdReturnHome", "CmdAbandonDrone", "CmdReconnectToDrones"]) {
     const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "entity", method, args: [[9988400023500]], kwargs: null, pilot: true, confirm: true } });
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], method);
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], method);
   }
   assert.equal(gateway.calls.call.length, before);
 });
@@ -2514,7 +2514,7 @@ test("the page's own leaving is a write the page means, made as its route made i
   const held = { own: { fleetID: 654500010000, holdsObject: true } };
   for (const words of [{}, { pilot: true }, { confirm: true }]) {
     const refused = await leaveFleetByCall(held, words);
-    assert.deepEqual([refused.answer.response.status, refused.answer.payload.error, refused.asked], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE", []], JSON.stringify(words));
+    assert.deepEqual([refused.answer.response.status, refused.answer.payload.error, refused.asked], [403, "BRIDGE_WRITE_REFUSED", []], JSON.stringify(words));
   }
   // Held, in the fleet: on the object the panel's read was made on. The generic call's own answer.
   const member = await leaveFleetByCall(held);
@@ -2936,7 +2936,7 @@ test("the repair shop's repairs are writes of the page's own, asked by the clien
   for (const [method, args] of [["RepairItemsInStation", [[9001, 9002], 1500.5]], ["RepairItemsInStructure", [[9001, 9002]]]]) {
     for (const more of [{}, { pilot: true }, { confirm: true }]) {
       const refused = await repairShopCall({ method, args, ...more });
-      assert.deepEqual([refused.answer.response.status, refused.answer.payload.error, refused.asked], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE", []], `${method} ${JSON.stringify(more)}`);
+      assert.deepEqual([refused.answer.response.status, refused.answer.payload.error, refused.asked], [403, "BRIDGE_WRITE_REFUSED", []], `${method} ${JSON.stringify(more)}`);
     }
     const onGamePort = await repairShopCall({ method, args, ...MEANT });
     // The transport is asked by the client's name, with what the page sent: it makes the shop's Moniker for the call.
@@ -3528,7 +3528,7 @@ test("an office's rent and its giving up are writes of the page's own, made on t
   for (const [method, args] of [["RentOffice", [10000]], ["UnrentOffice", []]]) {
     for (const more of [{}, { pilot: true }, { confirm: true }]) {
       const refused = await call(method, args, more);
-      assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], `${method} ${JSON.stringify(more)}`);
+      assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], `${method} ${JSON.stringify(more)}`);
     }
   }
   assert.deepEqual(methodsAsked(gamePort), []);
@@ -3650,7 +3650,7 @@ test("a ship aligned is a write of the page's own, asked of beyonce by its name 
   const before = gateway.calls.call.length;
   for (const more of [{}, { pilot: true }, { confirm: true }]) {
     const refused = await call(more);
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], JSON.stringify(more));
   }
   // The ballpark is the session's own, of which it has one: the call names none.
   const named = await call({ pilot: true, confirm: true, of: 30000142 });
@@ -3679,7 +3679,7 @@ test("a warp is a write of the page's own, asked of beyonce by its name with the
   const before = gateway.calls.call.length;
   for (const more of [{}, { pilot: true }, { confirm: true }]) {
     const refused = await call(more);
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], JSON.stringify(more));
   }
   // The ballpark is the session's own, of which it has one: the call names none.
   const named = await call({ pilot: true, confirm: true, of: 30000142 });
@@ -3705,7 +3705,7 @@ test("the autopilot's warp is a write of the page's own, asked of beyonce by its
   const before = gateway.calls.call.length;
   for (const more of [{}, { pilot: true }, { confirm: true }]) {
     const refused = await call(more);
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], JSON.stringify(more));
   }
   const named = await call({ pilot: true, confirm: true, of: 30000142 });
   assert.deepEqual([named.response.status, named.payload.error], [400, "INVALID_REQUEST"]);
@@ -3808,7 +3808,7 @@ test("a follow and the throttle are writes of the page's own: said to be a pilot
   for (const [method, args] of [["CmdFollowBall", [FOLLOWED, 50]], ["CmdSetSpeedFraction", [1]]]) {
     for (const more of [{}, { pilot: true }, { confirm: true }]) {
       const refused = await byThePage(method, args, { more });
-      assert.deepEqual([refused.status, refused.payload.error, refused.sent], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE", []], `${method} ${JSON.stringify(more)}`);
+      assert.deepEqual([refused.status, refused.payload.error, refused.sent], [403, "BRIDGE_WRITE_REFUSED", []], `${method} ${JSON.stringify(more)}`);
     }
     const named = await byThePage(method, args, { more: { pilot: true, confirm: true, of: PILOTS_SYSTEM } });
     assert.deepEqual([named.status, named.payload.error, named.sent], [400, "INVALID_REQUEST", []], method);
@@ -3882,7 +3882,7 @@ test("through the gateway a follow asked by the page is sent whether the ship fl
 test("an orbit is a write of the page's own: said to be a pilot's and meant, and on no object the page names", async () => {
   for (const more of [{}, { pilot: true }, { confirm: true }]) {
     const refused = await byThePage("CmdOrbit", [FOLLOWED, 2500], { more });
-    assert.deepEqual([refused.status, refused.payload.error, refused.sent], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE", []], JSON.stringify(more));
+    assert.deepEqual([refused.status, refused.payload.error, refused.sent], [403, "BRIDGE_WRITE_REFUSED", []], JSON.stringify(more));
   }
   const named = await byThePage("CmdOrbit", [FOLLOWED, 2500], { more: { pilot: true, confirm: true, of: PILOTS_SYSTEM } });
   assert.deepEqual([named.status, named.payload.error, named.sent], [400, "INVALID_REQUEST", []]);
@@ -3920,7 +3920,7 @@ test("on the game port an orbit the ship already flies is held back, one of noug
 test("a stop is a write of the page's own, and goes alone on either transport: never held back, and with no throttle before it", async () => {
   for (const more of [{}, { pilot: true }, { confirm: true }]) {
     const refused = await byThePage("CmdStop", [], { more });
-    assert.deepEqual([refused.status, refused.payload.error, refused.sent], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE", []], JSON.stringify(more));
+    assert.deepEqual([refused.status, refused.payload.error, refused.sent], [403, "BRIDGE_WRITE_REFUSED", []], JSON.stringify(more));
   }
   const named = await byThePage("CmdStop", [], { more: { pilot: true, confirm: true, of: PILOTS_SYSTEM } });
   assert.deepEqual([named.status, named.payload.error, named.sent], [400, "INVALID_REQUEST", []]);
@@ -3970,7 +3970,7 @@ test("a fleet formed is a write the page means, made as its route made it: bound
     const { form, asked, byName } = await formFleetByCall({ transport });
     for (const words of [{}, { pilot: true }, { confirm: true }]) {
       const refused = await form(words);
-      assert.deepEqual([refused.response.status, refused.payload.error, asked], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE", []], `${transport} ${JSON.stringify(words)}`);
+      assert.deepEqual([refused.response.status, refused.payload.error, asked], [403, "BRIDGE_WRITE_REFUSED", []], `${transport} ${JSON.stringify(words)}`);
     }
     // The fleet is the session's own to form: there is nothing to say which, and a call that says is none.
     const named = await form({ pilot: true, confirm: true, of: 654500010000 });
@@ -4032,7 +4032,7 @@ test("an invitation accepted is a write the page means, made on the fleet the pa
     const accept = (more) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { ...THE_ACCEPTING, ...more } });
     for (const words of [{ of: INVITING }, { of: INVITING, pilot: true }, { of: INVITING, confirm: true }]) {
       const refused = await accept(words);
-      assert.deepEqual([refused.response.status, refused.payload.error, asked], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE", []], `${transport} ${JSON.stringify(words)}`);
+      assert.deepEqual([refused.response.status, refused.payload.error, asked], [403, "BRIDGE_WRITE_REFUSED", []], `${transport} ${JSON.stringify(words)}`);
     }
     // An invitation is some fleet's: a call that does not say whose is none.
     for (const words of [{ pilot: true, confirm: true }, { pilot: true, confirm: true, of: null }]) {
@@ -4099,7 +4099,7 @@ test("an invitation is a write the page means, made on the pilot's own fleet or 
     const invite = (more) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { ...THE_INVITING, ...more } });
     for (const words of [{}, { pilot: true }, { confirm: true }]) {
       const refused = await invite(words);
-      assert.deepEqual([refused.response.status, refused.payload.error, asked], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE", []], `${transport} ${JSON.stringify(words)}`);
+      assert.deepEqual([refused.response.status, refused.payload.error, asked], [403, "BRIDGE_WRITE_REFUSED", []], `${transport} ${JSON.stringify(words)}`);
     }
     // No pilot named is no invitation.
     for (const args of [[], [0, null, null, null], [-43], [1.5], ["a pilot"], [null], "43", undefined, [[43]]]) {
@@ -4164,7 +4164,7 @@ test("an invitation turned down is a write the page means, made on the fleet the
     const decline = (more) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { ...THE_DECLINING, ...more } });
     for (const words of [{ of: INVITING }, { of: INVITING, pilot: true }, { of: INVITING, confirm: true }]) {
       const refused = await decline(words);
-      assert.deepEqual([refused.response.status, refused.payload.error, asked], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE", []], `${transport} ${JSON.stringify(words)}`);
+      assert.deepEqual([refused.response.status, refused.payload.error, asked], [403, "BRIDGE_WRITE_REFUSED", []], `${transport} ${JSON.stringify(words)}`);
     }
     // An invitation is some fleet's: a call that does not say whose is none.
     for (const words of [{ pilot: true, confirm: true }, { pilot: true, confirm: true, of: null }]) {
@@ -4225,7 +4225,7 @@ const BOOKMARKED = [FOLLOWED, 7000001, "A spot", "a note", 2];
 test("a place bookmarked is a write of the page's own: said to be a pilot's and meant, on no object the page names, and handed on as it came", async () => {
   for (const more of [{}, { pilot: true }, { confirm: true }]) {
     const refused = await byThePage("BookmarkLocation", BOOKMARKED, { more: { kwargs: { subfolderID: null }, ...more } });
-    assert.deepEqual([refused.status, refused.payload.error, refused.sent], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE", []], JSON.stringify(more));
+    assert.deepEqual([refused.status, refused.payload.error, refused.sent], [403, "BRIDGE_WRITE_REFUSED", []], JSON.stringify(more));
   }
   const named = await byThePage("BookmarkLocation", BOOKMARKED, { more: { pilot: true, confirm: true, of: PILOTS_SYSTEM } });
   assert.deepEqual([named.status, named.payload.error, named.sent], [400, "INVALID_REQUEST", []]);
@@ -4237,7 +4237,7 @@ test("a place bookmarked is a write of the page's own: said to be a pilot's and 
   }
   // The other bookmark of the park's is its route's still.
   const scanned = await byThePage("BookmarkScanResult", [PILOTS_SYSTEM, "A site", "", "ABC-123", 7000001, 0]);
-  assert.deepEqual([scanned.status, scanned.payload.error, scanned.sent], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE", []]);
+  assert.deepEqual([scanned.status, scanned.payload.error, scanned.sent], [403, "BRIDGE_WRITE_REFUSED", []]);
 });
 
 // ── a target locked and let go by the page itself ────────────────────────────
@@ -4256,7 +4256,7 @@ test("a target locked, let go and a lock called off are writes of the page's own
     const before = gateway.calls.call.length;
     for (const more of [{}, { pilot: true }, { confirm: true }]) {
       const refused = await call(more);
-      assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], `${method} ${JSON.stringify(more)}`);
+      assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], `${method} ${JSON.stringify(more)}`);
     }
     // The dogma location is the session's own: there is nothing to say which, and a call that says is none.
     const named = await call({ pilot: true, confirm: true, of: 30000142 });
@@ -4271,7 +4271,7 @@ test("a target locked, let go and a lock called off are writes of the page's own
   const before = gateway.calls.call.length;
   for (const method of ["RemoveTargets", "ClearTargets"]) {
     const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "dogmaIM", method, args: [], kwargs: null, pilot: true, confirm: true } });
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], method);
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], method);
   }
   assert.equal(gateway.calls.call.length, before);
 });
@@ -4290,7 +4290,7 @@ test("a drone scooped is a write of the page's own, asked of the ship's service 
   const before = gateway.calls.call.length;
   for (const more of [{}, { pilot: true }, { confirm: true }]) {
     const refused = await call(more);
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], JSON.stringify(more));
   }
   const named = await call({ pilot: true, confirm: true, of: 30000142 });
   assert.deepEqual([named.response.status, named.payload.error], [400, "INVALID_REQUEST"]);
@@ -4303,7 +4303,7 @@ test("a drone scooped is a write of the page's own, asked of the ship's service 
   const after = gateway.calls.call.length;
   for (const method of ["Jettison", "LaunchDrones", "Eject", "Scoop", "LaunchFromShip", "Board", "Undock"]) {
     const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "ship", method, args: [], kwargs: null, pilot: true, confirm: true } });
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], method);
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], method);
   }
   assert.equal(gateway.calls.call.length, after);
 });
@@ -4324,7 +4324,7 @@ test("a job delivered and a job stopped are writes of the page's own, asked of t
     const before = gateway.calls.call.length;
     for (const more of [{}, { pilot: true }, { confirm: true }]) {
       const refused = await call(more);
-      assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], `${method} ${JSON.stringify(more)}`);
+      assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], `${method} ${JSON.stringify(more)}`);
     }
     const named = await call({ pilot: true, confirm: true, of: 30000144 });
     assert.deepEqual([named.response.status, named.payload.error], [400, "INVALID_REQUEST"], method);
@@ -4339,7 +4339,7 @@ test("a job delivered and a job stopped are writes of the page's own, asked of t
   const after = gateway.calls.call.length;
   for (const method of ["InstallJob", "CompleteManyJobs"]) {
     const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "industryManager", method, args: [], kwargs: null, pilot: true, confirm: true } });
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], method);
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], method);
   }
   assert.equal(gateway.calls.call.length, after);
 });
@@ -4366,7 +4366,7 @@ test("the fleet finder's two reads go by the generic call as a pilot's reads: ea
   const after = gateway.calls.call.length;
   for (const method of ["AddFleetFinderAdvert", "RemoveFleetFinderAdvert", "UpdateAdvertInfo"]) {
     const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "fleetProxy", method, args: [], kwargs: null, pilot: true, confirm: true } });
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], method);
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], method);
   }
   assert.equal(gateway.calls.call.length, after);
 });
@@ -4393,7 +4393,7 @@ test("a pilot's fittings and its corporation's go by the generic call as a pilot
     // A fitting saved, renamed or deleted is its route's alone, whatever is said.
     for (const method of writes) {
       const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service, method, args: [owner, 1], kwargs: null, pilot: true, confirm: true } });
-      assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], `${service}.${method}`);
+      assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], `${service}.${method}`);
     }
     assert.equal(gateway.calls.call.length, before + 1, service);
   }
@@ -4418,7 +4418,7 @@ test("a pilot's bookmarks go by the generic call as a pilot's read, as it was se
   assert.equal(gateway.calls.call.length, before + 1);
   for (const method of ["AddFolder", "UpdateFolder", "DeleteFolder", "BookmarkStaticLocation", "UpdateBookmark", "DeleteBookmarks", "MoveBookmarksToFolderAndSubfolder"]) {
     const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "accessGroupBookmarkMgr", method, args: [1], kwargs: null, pilot: true, confirm: true } });
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], method);
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], method);
   }
   assert.equal(gateway.calls.call.length, before + 1);
 });
@@ -4487,7 +4487,7 @@ test("a corporation's members go by the generic call as a pilot's read, as it wa
   assert.equal(gateway.calls.call.length, before + 1);
   for (const method of ["UpdateMember", "UpdateMembers", "KickOutMember", "KickOutMembers", "ExecuteActions", "ResignFromCEO"]) {
     const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "corpRegistry", method, args: [7], kwargs: null, pilot: true, confirm: true } });
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], method);
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], method);
   }
   assert.equal(gateway.calls.call.length, before + 1);
 });

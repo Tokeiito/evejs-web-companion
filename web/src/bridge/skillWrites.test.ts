@@ -48,7 +48,7 @@ test("a queue is saved whole by the handler's own call: each skill by its place 
 test("a save the pilot's transport does not carry was not made, and says so; any other failure is the call's own", async () => {
   const notCarried = Object.assign(new Error("skillHandler.SaveNewQueue is not on the web-call allowlist."), { code: "CALL_NOT_ALLOWED", status: 403 });
   assert.equal(await saveQueue(async () => { throw notCarried; }, [{ typeID: 3300, toLevel: 5 }], true), false);
-  for (const code of ["CALL_REFUSED", "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE", "NO_LIVE_SESSION", "SESSION_NOT_FOUND", "BRIDGE_NETWORK_ERROR"]) {
+  for (const code of ["CALL_REFUSED", "BRIDGE_WRITE_REFUSED", "NO_LIVE_SESSION", "SESSION_NOT_FOUND", "BRIDGE_NETWORK_ERROR"]) {
     const failure = Object.assign(new Error("QueueTooManySkills"), { code });
     await assert.rejects(saveQueue(async () => { throw failure; }, [], true), (error) => error === failure, code);
   }

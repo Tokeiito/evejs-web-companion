@@ -360,7 +360,7 @@ test("leaving the ship is a write of the page's own, made under the BFF's own wa
   const left = () => gateway.calls.call.filter((each) => each.method === "LeaveShip");
   for (const more of [{}, { pilot: true }, { confirm: true }]) {
     const refused = await call(more);
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], JSON.stringify(more));
   }
   assert.equal(left().length, 0);
 
@@ -389,7 +389,7 @@ test("a corvette boarded is a write of the page's own, made under the BFF's own 
   const boarded = () => gateway.calls.call.filter((each) => each.method === "CreateNewbieShip");
   for (const more of [{}, { pilot: true }, { confirm: true }]) {
     const refused = await call(more);
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], JSON.stringify(more));
   }
   assert.equal(boarded().length, 0);
 
@@ -421,7 +421,7 @@ test("the ship's other swaps are their routes' alone, whatever the generic call 
   const before = gateway.calls.call.length;
   for (const [service, method, args] of [["ship", "Eject", []], ["ship", "BoardStoredShip", [1_000_000_001, 2200]], ["ship", "StoreVessel", [1, 2]]]) {
     const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service, method, args, kwargs: null, pilot: true, confirm: true } });
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], `${service}.${method}`);
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], `${service}.${method}`);
   }
   assert.equal(gateway.calls.call.length, before);
 });

@@ -511,7 +511,7 @@ test("the generic bridge route refuses write pairs even when the browser supplie
       body: { service, method, args: [], kwargs: null, confirm: true },
     });
     assert.equal(response.status, 403, `${service}.${method}`);
-    assert.equal(payload.error, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE");
+    assert.equal(payload.error, "BRIDGE_WRITE_REFUSED");
   }
 });
 

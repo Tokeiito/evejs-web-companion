@@ -309,7 +309,7 @@ test("a GM command by the page's own call is a write the page means: refused wit
 
   for (const more of [{}, { pilot: true }, { confirm: true }]) {
     const refused = await call(more);
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], JSON.stringify(more));
+    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], JSON.stringify(more));
   }
   assert.equal(slashCalls(gateway).length, 0, "nothing reaches the world unmeant");
 
