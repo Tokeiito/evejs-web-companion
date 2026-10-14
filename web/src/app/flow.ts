@@ -155,14 +155,13 @@ import { BridgeCallError } from "../bridge/callMethod.ts";
 import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey } from "../bridge/questions.ts";
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
-import { readDictEntry, type JsonValue } from "../bridge/wire.ts";
+import { isListValue, readDictEntry, type JsonValue } from "../bridge/wire.ts";
 import { itemChangeTouchesDroneBay } from "../bridge/droneBayNotices.ts";
 import * as api from "./api.ts";
 import type { ClientStore } from "../store/clientStore.ts";
 import type {
   ActivityCalendarEventRow,
   ActivityCalendarResponseRow,
-  ActivityNotificationRow,
   ActivityRead,
   AgentAction,
   AgentConversation,
@@ -4004,8 +4003,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     store.apply({ type: "activity/loading" });
 
     const now = new Date();
-    const [notificationResult, calendarResult, mailResult, skillResult] = await Promise.allSettled([
-      api.loadActivityNotifications(callOptions),
+    const [notificationResult, unprocessedResult, calendarResult, mailResult, skillResult] = await Promise.allSettled([
+      // The client's notification service's two reads (notificationSvc.py 93 and 107): all the pilot's
+      // notifications, from the first, by its keyword; and the ones not yet read, for the unread count. On the game
+      // port both are answered from what the transport keeps, as the service keeps them. GetByGroupID the client
+      // asks only of a group opened, which the panel has not.
+      bridgeAsk("notificationMgr", "GetAllNotifications", [], { fromID: 0 }),
+      bridgeAsk("notificationMgr", "GetUnprocessed", []),
       api.loadActivityCalendar(now.getUTCMonth() + 1, now.getUTCFullYear(), callOptions),
       // Reuse the existing mail flow so its own authoritative slice and name
       // resolution stay the one source of truth for unread mail.
@@ -4016,7 +4020,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     // A lost live session invalidates every result, even if another arm won
     // the race and answered first. Unwind exactly like all other panel reads.
-    for (const result of [notificationResult, calendarResult, mailResult, skillResult]) {
+    for (const result of [notificationResult, unprocessedResult, calendarResult, mailResult, skillResult]) {
       if (result.status === "rejected" && isSessionLost(result.reason)) {
         stopLiveStream();
         store.apply({ type: "character/offline" });
@@ -4024,8 +4028,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
     }
     // What fails a whole reading, in the page's own calls, fails this one.
-    if (skillResult.status === "rejected" && failsTheReading(skillResult.reason)) {
-      throw skillResult.reason;
+    for (const result of [notificationResult, unprocessedResult, skillResult]) {
+      if (result.status === "rejected" && failsTheReading(result.reason)) {
+        throw result.reason;
+      }
     }
     const skillNotifications: ActivityRead<readonly SkillNotification[]> =
       skillResult.status === "fulfilled"
@@ -4034,17 +4040,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             `Skill notifications could not be refreshed. ${errorWords(skillResult.reason)}`,
           );
 
-    const notificationReads: ReturnType<typeof decodeActivityNotifications> =
-      notificationResult.status === "fulfilled"
-        ? decodeActivityNotifications(notificationResult.value)
-        : {
-            notifications: activityReadError<readonly ActivityNotificationRow[]>(
-              `Recent notifications could not be refreshed. ${errorWords(notificationResult.reason)}`,
-            ),
-            unprocessedCount: activityReadError<number>(
-              `Unread notifications could not be refreshed. ${errorWords(notificationResult.reason)}`,
-            ),
-          };
+    // Each read answered, or why it was not, as the decoder takes them: a list, its items.
+    const listOf = (value: JsonValue): JsonValue => (isListValue(value) ? value.items : value);
+    const notificationReads: ReturnType<typeof decodeActivityNotifications> = decodeActivityNotifications({
+      all: notificationResult.status === "fulfilled" ? listOf(notificationResult.value) : null,
+      unprocessed: unprocessedResult.status === "fulfilled" ? listOf(unprocessedResult.value) : null,
+      errors: {
+        all: notificationResult.status === "rejected" ? failureCode(notificationResult.reason) : null,
+        unprocessed: unprocessedResult.status === "rejected" ? failureCode(unprocessedResult.reason) : null,
+      },
+    });
 
     const calendarReads: ReturnType<typeof decodeActivityCalendar> =
       calendarResult.status === "fulfilled"

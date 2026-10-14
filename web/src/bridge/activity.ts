@@ -113,7 +113,11 @@ export interface ActivityNotificationReads {
   readonly unprocessedCount: ActivityRead<number>;
 }
 
-/** Decode GET /api/bridge/notifications without confusing empty and failed. */
+/**
+ * The client's notification service's two reads (notificationSvc.py 93 and 107), each answered or failed, without
+ * confusing empty and failed: `all` GetAllNotifications(fromID=0)'s list, `unprocessed` GetUnprocessed()'s, and
+ * in `errors` the code of either that failed.
+ */
 export function decodeActivityNotifications(envelope: unknown): ActivityNotificationReads {
   const outer = record(envelope);
   if (outer === null) {

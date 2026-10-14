@@ -7346,6 +7346,9 @@ app.get("/api/bridge/contact-list", requireAuth, async (req, res, next) => {
 // empty state for Farmer. ⚠ senderID is an entity id kept as data (R7d); the
 // per-type `data` payload ships through untouched. The Mark*/Delete* notification
 // writers stay refused. Decoded browser-side (web/src/bridge/notifications.ts).
+// The page no longer asks it: its Activity Center asks GetAllNotifications(fromID=0) and GetUnprocessed() itself, by
+// the generic call, as the client's notification service does (web/src/app/flow.ts, loadActivity). Kept for
+// scripts/bff-parity.js.
 app.get("/api/bridge/notifications", requireAuth, async (req, res, next) => {
   const held = requireHeldBridgeSession(req, res);
   if (!held) {
