@@ -8,6 +8,7 @@ import {
   FLEET_COMPANION_BURST_MS,
   FLEET_COMPANION_CADENCE_MS,
   FLEET_COMPANION_READ_GRACE_MS,
+  GATE_CALL_HOLD_MS,
   COMPANION_RESEND_WAIT_TICKS,
   COMPANION_RETRY_BACKOFF_TICKS,
   COMPANION_ESCAPE_RETRY_BACKOFF_TICKS,
@@ -2727,9 +2728,14 @@ test("a follow order ends the gate approach, so a later JumpTo just outside jump
   // formation put them on the commander. At the next JumpTo the ones just
   // outside jump range read FOLLOW plus the old `closingOn` as "closing" and
   // waited at the gate until jumped by hand.
+  // The call now stands until the pilot jumps, so it ends here by its hold
+  // running out rather than by the broadcast lapsing.
+  const T = 10_000_000;
   const approaching = decideCompanionAction(
     REQUEST,
-    obs({ snapshot: gridWithAnchor(gridWithGate(50_000)), fleetBroadcast: fleetBroadcast("JumpTo", GATE) }),
+    obs({ snapshot: gridWithAnchor(gridWithGate(50_000)), fleetBroadcast: { ...fleetBroadcast("JumpTo", GATE), receivedAtMs: T } }),
+    undefined,
+    T,
   );
   assert.deepEqual(approaching.action, { kind: "approach", targetID: GATE });
   assert.equal(approaching.memory.closingOn, GATE);
@@ -2738,16 +2744,170 @@ test("a follow order ends the gate approach, so a later JumpTo just outside jump
     REQUEST,
     obs({ snapshot: gridWithAnchor(gridWithGateFollowing(50_000)) }),
     approaching.memory,
+    T + GATE_CALL_HOLD_MS,
   );
   assert.deepEqual(following.action, { kind: "keepAtRange", targetID: FC_SHIP, range: DEFAULT_FOLLOW_M });
   assert.equal(following.memory.closingOn, null);
 
+  const later = T + GATE_CALL_HOLD_MS + 2_000;
   const called = decideCompanionAction(
     REQUEST,
-    obs({ snapshot: gridWithAnchor(gridWithGateFollowing(3_000)), fleetBroadcast: fleetBroadcast("JumpTo", GATE) }),
+    obs({ snapshot: gridWithAnchor(gridWithGateFollowing(3_000)), fleetBroadcast: { ...fleetBroadcast("JumpTo", GATE), receivedAtMs: later } }),
     following.memory,
+    later,
   );
   assert.deepEqual(called.action, { kind: "approach", targetID: GATE });
+});
+
+// --- rung 7: a called gate stands until this pilot has jumped -----------------
+//
+// Seen live 2026-10-13 21:09: three companions heard a JumpTo, warped to the
+// gate, landed inside the warp floor and started closing; three seconds later
+// every one read "Holding station on the fleet commander" and the commander
+// jumped without them. The broadcast had lapsed: its thirty seconds ran out
+// during the warp, and the slot can equally be overwritten by any later
+// broadcast. Both are covered here.
+
+const GATE_SYSTEM = 30000142;
+const NEXT_SYSTEM = 30000144;
+/** A ship on the grid a tackle callout can name. */
+const CALLED_OUT = 200020;
+
+/** A gate at `distanceM`, the commander and a hostile on the grid. */
+function calledGateGrid(distanceM: number | null, following = false): SpaceSnapshot {
+  const grid = distanceM === null ? gridWithGate(null) : following ? gridWithGateFollowing(distanceM) : gridWithGate(distanceM);
+  return gridWithAnchor({
+    ...grid,
+    entities: [
+      ...grid.entities,
+      { itemID: CALLED_OUT, kind: "ship", isSelf: false, position: { x: 0, y: 20_000, z: 0 }, radius: 0, mode: null },
+    ],
+  } as unknown as SpaceSnapshot);
+}
+
+function gateObs(snapshot: SpaceSnapshot, overrides: Partial<FleetCompanionObservation> = {}): FleetCompanionObservation {
+  return obs({ snapshot, flightStatus: inSystem(GATE_SYSTEM), ...overrides });
+}
+
+function broadcastAt(name: FleetBroadcast["name"], itemID: number | null, atMs: number): FleetBroadcast {
+  return { ...fleetBroadcast(name, itemID), receivedAtMs: atMs };
+}
+
+const GATE_T = 10_000_000;
+
+/** The sighting up to the moment the call left the slot: called, warped, landed, closing. */
+function closingOnCalledGate(): CompanionDecision {
+  const call = broadcastAt("JumpTo", GATE, GATE_T);
+  const warping = decideCompanionAction(REQUEST, gateObs(calledGateGrid(200_000), { fleetBroadcast: call }), undefined, GATE_T);
+  assert.deepEqual(warping.action, { kind: "warp", targetID: GATE });
+  const inWarp = decideCompanionAction(
+    REQUEST,
+    gateObs(calledGateGrid(200_000), { fleetBroadcast: call, inWarp: true }),
+    warping.memory,
+    GATE_T + 2_000,
+  );
+  const landed = decideCompanionAction(REQUEST, gateObs(calledGateGrid(12_000), { fleetBroadcast: call }), inWarp.memory, GATE_T + 25_000);
+  assert.deepEqual(landed.action, { kind: "approach", targetID: GATE });
+  const closing = decideCompanionAction(REQUEST, gateObs(calledGateGrid(8_000, true), { fleetBroadcast: call }), landed.memory, GATE_T + 27_500);
+  assert.equal(closing.why, "The fleet called a gate on this grid. Closing on it.");
+  return closing;
+}
+
+for (const [label, slot] of [
+  ["the broadcast lapsed", null],
+  ["an EnemySpotted took the slot", broadcastAt("EnemySpotted", null, GATE_T + 29_000)],
+  ["a tackle callout took the slot", broadcastAt("Target", CALLED_OUT, GATE_T + 29_000)],
+] as const) {
+  test(`a called gate is still closed on and jumped after ${label}`, () => {
+    const closing = closingOnCalledGate();
+    const stillClosing = decideCompanionAction(
+      REQUEST,
+      gateObs(calledGateGrid(5_000, true), { fleetBroadcast: slot }),
+      closing.memory,
+      GATE_T + 30_500,
+    );
+    assert.equal(stillClosing.phase, "Obeying fleet", "the live failure read Following here");
+    assert.equal(stillClosing.why, "The fleet called a gate on this grid. Closing on it.");
+    assert.equal(stillClosing.followingOrderFrom, "broadcast");
+    const jumping = decideCompanionAction(
+      REQUEST,
+      gateObs(calledGateGrid(2_000, true), { fleetBroadcast: slot }),
+      stillClosing.memory,
+      GATE_T + 33_000,
+    );
+    assert.deepEqual(jumping.action, { kind: "jumpGate", gateID: GATE });
+  });
+}
+
+test("a called gate is answered once this pilot is in another system", () => {
+  const closing = closingOnCalledGate();
+  const jumping = decideCompanionAction(REQUEST, gateObs(calledGateGrid(2_000, true)), closing.memory, GATE_T + 31_000);
+  assert.deepEqual(jumping.action, { kind: "jumpGate", gateID: GATE });
+  const through = decideCompanionAction(
+    REQUEST,
+    obs({ snapshot: calledGateGrid(null), flightStatus: inSystem(NEXT_SYSTEM) }),
+    jumping.memory,
+    GATE_T + 40_000,
+  );
+  assert.notEqual(through.phase, "Obeying fleet");
+  assert.equal(through.memory.gateCall?.over, true);
+});
+
+test("a newer WarpTo replaces a called gate, and the gate does not come back", () => {
+  const closing = closingOnCalledGate();
+  const warp = decideCompanionAction(
+    REQUEST,
+    gateObs(calledGateGrid(5_000, true), { fleetBroadcast: broadcastAt("WarpTo", HUMAN, GATE_T + 29_000) }),
+    closing.memory,
+    GATE_T + 29_500,
+  );
+  assert.deepEqual(warp.action, { kind: "warpToFleetMember", characterID: HUMAN });
+  assert.equal(warp.memory.gateCall?.over, true);
+  const after = decideCompanionAction(
+    REQUEST,
+    gateObs(calledGateGrid(5_000, true), { fleetBroadcast: broadcastAt("EnemySpotted", null, GATE_T + 31_000) }),
+    warp.memory,
+    GATE_T + 31_500,
+  );
+  assert.notEqual(after.why, "The fleet called a gate on this grid. Closing on it.");
+  assert.notDeepEqual(after.action, { kind: "jumpGate", gateID: GATE });
+});
+
+test("a chat stop cancels a called gate, even while the broadcast is still in the slot", () => {
+  const closing = closingOnCalledGate();
+  const call = broadcastAt("JumpTo", GATE, GATE_T);
+  const stop = [chatLine("stop", HUMAN, GATE_T + 28_000)];
+  let memory = closing.memory;
+  const seen: CompanionDecision[] = [];
+  for (const [index, slot] of [call, call, null].entries()) {
+    const decision = decideCompanionAction(
+      REQUEST,
+      gateObs(calledGateGrid(2_000, true), { fleetBroadcast: slot, chatMessages: stop }),
+      memory,
+      GATE_T + 28_500 + index * 2_000,
+    );
+    seen.push(decision);
+    memory = decision.memory;
+  }
+  for (const decision of seen) {
+    assert.notDeepEqual(decision.action, { kind: "jumpGate", gateID: GATE });
+    assert.notEqual(decision.why, "The fleet called a gate on this grid. Closing on it.");
+  }
+  assert.equal(memory.gateCall?.over, true);
+});
+
+test("a called gate the pilot never reaches lapses after GATE_CALL_HOLD_MS", () => {
+  const closing = closingOnCalledGate();
+  const holding = decideCompanionAction(
+    REQUEST,
+    gateObs(calledGateGrid(8_000, true)),
+    closing.memory,
+    GATE_T + GATE_CALL_HOLD_MS - 1_000,
+  );
+  assert.equal(holding.why, "The fleet called a gate on this grid. Closing on it.");
+  const lapsed = decideCompanionAction(REQUEST, gateObs(calledGateGrid(8_000, true)), holding.memory, GATE_T + GATE_CALL_HOLD_MS);
+  assert.notEqual(lapsed.phase, "Obeying fleet");
+  assert.equal(lapsed.memory.gateCall?.over, true);
 });
 
 test("a chat 'target <link>' from an ALLOWED sender locks the named ship, then fires once the lock is observed", () => {

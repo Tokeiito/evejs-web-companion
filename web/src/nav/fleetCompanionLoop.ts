@@ -1601,6 +1601,11 @@ export interface CompanionLadderMemory {
    * of another kind. See `heldTargetCallID`.
    */
   readonly targetCall?: HeardTargetCall | null;
+  /**
+   * The newest `JumpTo` this pilot heard, held past the broadcast's freshness
+   * window and past a later broadcast of another kind. See `withHeardGateCall`.
+   */
+  readonly gateCall?: HeardGateCall | null;
   readonly lastRoutedSystemID: number | null;
   /**
    * The ship rung 4 (tackle → tag) last issued a `setFleetTargetTag` for, and
@@ -2205,6 +2210,7 @@ export function freshLadderMemory(): CompanionLadderMemory {
     gunAimedAt: {},
     gunStops: [],
     targetCall: null,
+    gateCall: null,
     lastRoutedSystemID: null,
     lastTagIssuedFor: null,
     lastTagAttempts: 0,
@@ -2713,7 +2719,7 @@ function decideCompanionStep(
   // consumes this tick. An unreadable list says nothing about a recall.
   memory = withObservedDroneFlights(obs, memory);
   // Every tick, warp included: a call heard mid-warp is still the call on landing.
-  memory = withHeardTargetCall(obs, memory, nowMs);
+  memory = withHeardGateCall(obs, withHeardTargetCall(obs, memory, nowMs), nowMs);
   // ⚠ ABOVE THE WARP YIELD, because the capsule's run records its own warp as
   // the yield does for the flee, and above supervision, because a pod docks
   // whoever is in the fleet. `true` only: an older BFF omits the field.
@@ -2810,6 +2816,7 @@ function decideCompanionStep(
     gunAimedAt: memory.gunAimedAt ?? {},
     gunStops: memory.gunStops ?? [],
     targetCall: memory.targetCall ?? null,
+    gateCall: memory.gateCall ?? null,
     lastHealTargetID: memory.lastHealTargetID,
     lastHealModuleIDs: memory.lastHealModuleIDs,
     lastRoutedSystemID: memory.lastRoutedSystemID,
@@ -5424,7 +5431,8 @@ function isOrderActionable(
  * same reason. That is what makes a lapsed order fall back to this pilot's own
  * ladder rather than standing forever, and it is deliberately ONE policy rather
  * than two: a chat order that has gone quiet is exactly as stale as a broadcast
- * that has.
+ * that has. The one exception is a called gate, held past both until this pilot
+ * has jumped: see `withHeardGateCall` and `namedOrderFor`.
  */
 function resolveNamedOrder(
   request: FleetCompanionRequest,
@@ -5447,7 +5455,7 @@ function resolveNamedOrder(
       name,
       itemID,
       source: "broadcast",
-      key: JSON.stringify(["broadcast", name, itemID, obs.fleetBroadcast?.senderCharID, obs.fleetBroadcast?.receivedAtMs]),
+      key: broadcastOrderKey(name, itemID, obs.fleetBroadcast),
       heard: ORDER_HEARD[name].broadcast,
       why: ORDER_WHY[name].broadcast,
     };
@@ -5475,6 +5483,10 @@ function resolveNamedOrder(
     };
   }
   return null;
+}
+
+function broadcastOrderKey(name: NamedOrderName, itemID: number, broadcast: FleetCompanionObservation["fleetBroadcast"]): string {
+  return JSON.stringify(["broadcast", name, itemID, broadcast?.senderCharID, broadcast?.receivedAtMs]);
 }
 
 /**
@@ -8343,6 +8355,30 @@ function ownTackler(
   };
 }
 
+/**
+ * How long a heard `JumpTo` stands when nothing answers or replaces it, from
+ * the tick this pilot first heard it. Generous on purpose: it has to outlast a
+ * warp to the gate plus the crawl in from where the warp lands. It exists only
+ * so a gate this pilot can never reach cannot hold it for ever.
+ */
+export const GATE_CALL_HOLD_MS = 120_000;
+
+/** A `JumpTo` as this pilot heard it: see `withHeardGateCall`. */
+export interface HeardGateCall {
+  readonly gateID: number;
+  /** The order's own `NamedOrder.key`, so the call still in the slot is not heard twice. */
+  readonly key: string;
+  readonly source: "broadcast" | "chat";
+  /** When it was said: the broadcast's `receivedAtMs`, the chat line's `createdAtMs`. */
+  readonly saidAtMs: number;
+  /** The tick this pilot first heard it; `GATE_CALL_HOLD_MS` runs from here. */
+  readonly heardAtMs: number;
+  /** The system it was heard in. Being anywhere else is the jump that answers it. */
+  readonly systemID: number | null;
+  /** Answered, replaced, stopped or expired. Kept, so the slot still holding it cannot re-arm it. */
+  readonly over: boolean;
+}
+
 /** A `Target` broadcast as this pilot heard it: see `CompanionLadderMemory.targetCall`. */
 export interface HeardTargetCall {
   readonly itemID: number;
@@ -8428,6 +8464,138 @@ function standingTargetCallID(
     return heard.itemID !== null && entityOnGrid(heard.itemID, entities) !== null ? heard.itemID : null;
   }
   return heldTargetCallID(obs, memory, entities);
+}
+
+/** A named order as the slot or a chat line carries it, before the grid is asked. */
+interface HeardNamedOrder {
+  readonly name: NamedOrderName;
+  readonly itemID: number;
+  readonly source: "broadcast" | "chat";
+  readonly key: string;
+  readonly saidAtMs: number;
+}
+
+/** What the slot and chat are saying this tick, oldest first. */
+function heardNamedOrders(obs: FleetCompanionObservation): readonly HeardNamedOrder[] {
+  const heard: HeardNamedOrder[] = [];
+  const slot = obs.fleetBroadcast ?? null;
+  const name = asNamedOrderName(slot?.name);
+  if (slot !== null && name !== null && slot.itemID !== null) {
+    heard.push({
+      name, itemID: slot.itemID, source: "broadcast", key: broadcastOrderKey(name, slot.itemID, slot), saidAtMs: slot.receivedAtMs,
+    });
+  }
+  const chat = newestNamedChatOrder(obs.chatMessages ?? [], commandersFor(obs));
+  if (chat !== null) {
+    heard.push({
+      name: CHAT_ORDER_NAMES[chat.command.kind], itemID: chat.command.itemID, source: "chat", key: "chat:" + chat.key, saidAtMs: chat.at,
+    });
+  }
+  return heard.sort((a, b) => a.saidAtMs - b.saidAtMs);
+}
+
+/**
+ * Whether a held gate call has been answered: this pilot is in another system
+ * than the one it heard the call in, or a commander typed `stop` after it.
+ */
+function gateCallAnswered(call: HeardGateCall, obs: FleetCompanionObservation, memory: CompanionLadderMemory): boolean {
+  const here = obs.flightStatus?.solarSystemID ?? null;
+  return call.over ||
+    (call.systemID !== null && here !== null && here !== call.systemID) ||
+    (memory.stopHeardAtMs !== null && memory.stopHeardAtMs >= call.saidAtMs);
+}
+
+/**
+ * Record the newest `JumpTo`, and retire it once it is answered, replaced or
+ * expired. Runs at the top of every tick, mid-warp included, beside
+ * `withHeardTargetCall`.
+ *
+ * ⚠ A CALLED GATE STANDS UNTIL THIS PILOT HAS TAKEN IT. Seen live 2026-10-13
+ * 21:09, three companions identical: "The fleet called a gate on this grid.
+ * Closing on it.", then three seconds later "Holding station on the fleet
+ * commander.", and the commander jumped without them. The call had been read
+ * straight off the broadcast slot, which the observation builder empties after
+ * `FLEET_BROADCAST_TTL_MS` -- and the thirty seconds had been spent on the warp
+ * to the gate, so it lapsed with the ship 8 km short. The slot also holds ONE
+ * broadcast of any kind, so an `EnemySpotted`, a Heal call or a companion's
+ * own tackle callout a moment later erases the call exactly as the lapse does.
+ * A jump call has a natural end the TTL knows nothing about: this pilot
+ * reaching the other side.
+ *
+ * So it ends only when this pilot is in another system, a NEWER `WarpTo`,
+ * `AlignTo`, `TravelTo` or `JumpTo` replaces it, a commander types `stop`, or
+ * `GATE_CALL_HOLD_MS` passes. A `Target` call does not end it: a pilot left on
+ * the old side of the gate is no use to the fight on the new one.
+ */
+function withHeardGateCall(
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+  nowMs: number,
+): CompanionLadderMemory {
+  const prior = memory.gateCall ?? null;
+  if (obs.inFleet === false) {
+    return prior === null ? memory : { ...memory, gateCall: null };
+  }
+  const here = obs.flightStatus?.solarSystemID ?? null;
+  let next = prior;
+  for (const order of heardNamedOrders(obs)) {
+    if (next !== null && order.saidAtMs <= next.saidAtMs) {
+      continue;
+    }
+    if (order.name === "JumpTo") {
+      next = {
+        gateID: order.itemID, key: order.key, source: order.source, saidAtMs: order.saidAtMs,
+        heardAtMs: nowMs, systemID: here, over: false,
+      };
+    } else if (order.name !== "Target" && next !== null && !next.over) {
+      next = { ...next, over: true };
+    }
+  }
+  if (next !== null && !next.over) {
+    if (gateCallAnswered(next, obs, memory) || nowMs - next.heardAtMs >= GATE_CALL_HOLD_MS) {
+      next = { ...next, over: true };
+    } else if (next.systemID === null && here !== null) {
+      next = { ...next, systemID: here };
+    }
+  }
+  return next === prior ? memory : { ...memory, gateCall: next };
+}
+
+/**
+ * The named order this pilot obeys this tick: `resolveNamedOrder`, with a held
+ * gate call standing in where the slot and chat no longer carry it.
+ *
+ * ⚠ AN ANSWERED CALL IS NOT AN ORDER, even while the slot still carries it: a
+ * `stop` typed ten seconds after the broadcast must not leave twenty seconds of
+ * it standing. The slot is then read as empty, so a chat order beneath it is
+ * still heard.
+ */
+function namedOrderFor(
+  request: FleetCompanionRequest,
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+  entities: readonly SpaceEntity[],
+): NamedOrder | null {
+  const call = memory.gateCall ?? null;
+  let order = resolveNamedOrder(request, obs, entities);
+  if (call !== null && order?.name === "JumpTo" && (order.key !== call.key || gateCallAnswered(call, obs, memory))) {
+    order = order.source === "broadcast" ? resolveNamedOrder(request, { ...obs, fleetBroadcast: null }, entities) : null;
+    order = order?.name === "JumpTo" ? null : order;
+  }
+  if (order !== null && order.name !== "Target" && order.name !== "JumpTo") {
+    return order;
+  }
+  if (call === null || gateCallAnswered(call, obs, memory) || entityOnGrid(call.gateID, entities) === null) {
+    return order;
+  }
+  return {
+    name: "JumpTo",
+    itemID: call.gateID,
+    source: call.source,
+    key: call.key,
+    heard: ORDER_HEARD.JumpTo[call.source],
+    why: ORDER_WHY.JumpTo[call.source],
+  };
 }
 
 /**
@@ -8536,7 +8704,7 @@ function calledCombatTargetID(
     obs,
     entities,
     measureSpace(snapshot),
-    resolveNamedOrder(request, obs, entities),
+    namedOrderFor(request, obs, memory, entities),
     memory,
   );
   return called === null ? null : called.itemID;
@@ -9474,7 +9642,8 @@ function decideFleetOrders(
   //       copy of Target/AlignTo/TravelTo/JumpTo that drifts out of step with
   //       the first -- the JumpTo branch alone is thirty lines of honest
   //       partial nobody should be maintaining twice.
-  const order = resolveNamedOrder(request, obs, entities);
+  // A called gate outlives the slot: see `withHeardGateCall`.
+  const order = namedOrderFor(request, obs, memory, entities);
 
   // b + c. The target the fleet is calling: a commander's TAG first, then a
   //        `Target` broadcast or the chat line standing in for one. Both come
@@ -10283,6 +10452,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
           gunAimedAt: {},
           gunStops: [],
           targetCall: null,
+          gateCall: null,
           lastHealTargetID: null,
           lastHealModuleIDs: [],
           lastRoutedSystemID: null,
