@@ -9,7 +9,8 @@
 //   • dogmaIM.LoadAmmo          — 200/applied with an incompatible charge
 //   • dogmaIM.Deactivate        — stopped:false is normal cycle-end, not failure
 //   • skillMgr.ApplyFreeSkillPoints — spends nothing when the skill is training
-//   • fitting/state (online)    — the api verb returns VOID, so runFittingAction's
+//   • a module online/offline   — the call answers NOTHING (once a route's verb in api.ts, the
+//                                 page's own call since 2026-10-13), so runFittingAction's
 //                                 `applied` check was dead code
 //
 // The rule that came out of it: a write is only proven by a RE-READ of the thing
@@ -25,7 +26,7 @@ import path from "node:path";
 
 const APP_DIR = path.dirname(fileURLToPath(import.meta.url));
 const FLOW = readFileSync(path.join(APP_DIR, "flow.ts"), "utf8");
-const API = readFileSync(path.join(APP_DIR, "api.ts"), "utf8");
+const DOGMA_WRITES = readFileSync(path.join(APP_DIR, "../bridge/dogmaWrites.ts"), "utf8");
 
 /**
  * The body of one flow verb, up to the next one.
@@ -47,10 +48,10 @@ function flowFunction(name: string): string {
 }
 
 test("⚠ setModuleOnline verifies against the RE-READ, not a dead applied flag", () => {
-  // api.setModuleOnline returns void, so any helper that decides "declined"
-  // from an `applied` field is checking nothing at all for this verb.
+  // The page's own call (bridge/dogmaWrites.ts) answers nothing, as the server's two calls do, so any helper
+  // that decides "declined" from an `applied` field is checking nothing at all for this verb.
   assert.match(
-    API,
+    DOGMA_WRITES,
     /export async function setModuleOnline\([\s\S]*?\): Promise<void>/,
     "if this ever returns a result, revisit the flow's verification",
   );

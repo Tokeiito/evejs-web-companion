@@ -232,53 +232,10 @@ test("unfitModule sends the module back to the chosen container", async () => {
 });
 
 // --- online / offline -------------------------------------------------------
-
-test("online and offline are the same route with the state the player asked for", async () => {
-  const store = createClientStore();
-  const { fetch, requests } = makeFakeFetch(respondOk());
-  const flow = createAppFlow(store, { fetch });
-
-  await flow.setModuleOnline(5001, true);
-  await flow.setModuleOnline(5001, false);
-
-  const states = requests
-    .filter((r) => r.path === "/api/bridge/fitting/state")
-    .map((r) => r.body);
-  assert.deepEqual(states, [
-    { itemID: 5001, online: true },
-    { itemID: 5001, online: false },
-  ]);
-});
-
-test("a refusal shows the SERVER'S OWN reason, not a guessed one", async () => {
-  const store = createClientStore();
-  const { fetch } = makeFakeFetch(
-    respondOk((path) =>
-      path === "/api/bridge/fitting/state"
-        ? {
-            status: 409,
-            body: {
-              ok: false,
-              error: "CALL_REFUSED",
-              message: "You do not have enough CPU to online that module.",
-            },
-          }
-        : null,
-    ),
-  );
-  const flow = createAppFlow(store, { fetch });
-
-  await flow.setModuleOnline(5001, true);
-
-  // ⚠ THIS TEST ONLY NOW DOES WHAT ITS NAME SAYS. It asserted `CALL_REFUSED`
-  // — the envelope — while the handler's actual reason rode along inside the
-  // same error and was dropped on the floor. R31 made the seam keep the
-  // message, so the player reads dogma's own sentence about CPU.
-  assert.equal(
-    store.get().fitting.actionError,
-    "You do not have enough CPU to online that module.",
-  );
-});
+//
+// The flow makes the client's own call for a module put online or taken offline since 2026-10-13
+// (bridge/dogmaWrites.ts, setModuleOnline). Two tests here held it to the route that did it before
+// (POST /api/bridge/fitting/state), and went with the route.
 
 // --- the silent decline -----------------------------------------------------
 

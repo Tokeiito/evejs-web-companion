@@ -512,58 +512,10 @@ test("unfitting to the ship's cargo binds the ship and uses the cargo flag", asy
 });
 
 // --- online / offline -------------------------------------------------------
-
-test("online / offline are TOP-LEVEL dogmaIM calls carrying the ship and the module", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  await apiRequest(baseUrl, "/api/bridge/fitting/state", {
-    method: "POST",
-    body: { itemID: TURRET_ITEM_ID, online: true },
-  });
-  await apiRequest(baseUrl, "/api/bridge/fitting/state", {
-    method: "POST",
-    body: { itemID: TURRET_ITEM_ID, online: false },
-  });
-
-  const dogma = gateway.calls.topLevel.filter(
-    (c) => c.service === "dogmaIM" && /ModuleO/.test(c.method),
-  );
-  assert.deepEqual(
-    dogma.map((c) => c.method),
-    ["SetModuleOnline", "TakeModuleOffline"],
-  );
-  assert.deepEqual(dogma[0].args, [ACTIVE_SHIP_ID, TURRET_ITEM_ID]);
-});
-
-test("a refusal keeps the HANDLER'S OWN reason all the way to the browser", async () => {
-  const gateway = fakeGateway({
-    async callMethod(service, method) {
-      if (method === "SetModuleOnline") {
-        throw Object.assign(new Error("You do not have enough CPU to online that module."), {
-          code: "CALL_REFUSED",
-          statusCode: 409,
-        });
-      }
-      return { service, method, result: null, notifications: [] };
-    },
-  });
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/fitting/state", {
-    method: "POST",
-    body: { itemID: TURRET_ITEM_ID, online: true },
-  });
-  assert.equal(response.status, 409);
-  assert.equal(payload.error, "CALL_REFUSED");
-  assert.equal(
-    payload.message,
-    "You do not have enough CPU to online that module.",
-    "verbatim — the BFF never rewrites or guesses the reason",
-  );
-});
+//
+// A module is put online and taken offline by the page's own call since 2026-10-13 (dogmaIM.SetModuleOnline and
+// TakeModuleOffline through the generic call: web/src/bridge/dogmaWrites.ts). The route (POST
+// /api/bridge/fitting/state) is gone, and the two tests of it with it.
 
 // --- the destructive rig path ----------------------------------------------
 
@@ -638,7 +590,6 @@ test("every fitting route needs a live session, and authentication", async () =>
     ["GET", "/api/bridge/fitting", undefined],
     ["POST", "/api/bridge/fitting/fit", { itemID: 1, source: "hangar", family: "high", index: 0 }],
     ["POST", "/api/bridge/fitting/unfit", { itemID: 1, destination: "hangar" }],
-    ["POST", "/api/bridge/fitting/state", { itemID: 1, online: true }],
     ["POST", "/api/bridge/fitting/destroy-rig", { itemID: 1, confirm: true }],
   ];
 
