@@ -431,41 +431,51 @@ test("a merge the server declines says so without inventing a cause", async () =
 
 // --- trash ------------------------------------------------------------------
 
-test("trashItems always sends confirm and reports what was destroyed", async () => {
-  const store = createClientStore();
-  const { fetch, requests } = standardFetch((path) => {
-    if (path === "/api/bridge/inventory/trash") {
-      return {
-        status: 200,
-        body: { ok: true, applied: true, destroyed: [100, 101], survived: [], declinedSilently: false },
-      };
+// Items are trashed by the page's own call since 2026-10-13 (bridge/inventoryWrites.ts), held to the client's:
+// invItemFunctions.TrashInvItems (602 to 626), GetInventoryMgr().TrashItems(itemsToTrash, locationID), on the
+// inventory manager of where the pilot is, the place the station the items lie in (invCache.py 660 to 691).
+
+/** The hangar's read until a trash is made, and then without `gone`. */
+function hangarTrashing(gone: readonly number[]) {
+  let trashed = false;
+  return makeFakeFetch((path, _method, body) => {
+    if (path === "/api/bridge/call") {
+      trashed = true;
+      return { status: 200, body: { ok: true, service: body.service, method: body.method, result: null, notifications: [] } };
+    }
+    if (path === "/api/bridge/inventory") {
+      const panel = inventoryPanel();
+      if (!trashed) return { status: 200, body: panel };
+      const items = (panel.hangar.list.items as { fields: { itemID: number } }[]).filter((row) => !gone.includes(row.fields.itemID));
+      return { status: 200, body: { ...panel, hangar: { ...panel.hangar, list: { type: "list", items } } } };
     }
     return { status: 200, body: { ok: true } };
   });
+}
+
+test("items are trashed as the client trashes them: TrashItems on the inventory manager, naming the station, and the verdict by the hangar read again", async () => {
+  const store = createClientStore();
+  dockedAtJita(store);
+  const { fetch, requests } = hangarTrashing([100, 101]);
   const flow = createAppFlow(store, { fetch });
+  await flow.loadInventory();
 
   await flow.trashItems([100, 101], { kind: "hangar" });
 
-  const trash = requests.find((r) => r.path === "/api/bridge/inventory/trash");
-  assert.equal(trash!.body.confirm, true, "the BFF's confirm gate is always satisfied explicitly");
-  assert.deepEqual(trash!.body.itemIDs, [100, 101]);
+  const calls = requests.filter((r) => r.path === "/api/bridge/call").map((r) => r.body);
+  assert.deepEqual(calls, [{ service: "invbroker", method: "TrashItems", args: [[100, 101], 60003760], kwargs: null, pilot: true, confirm: true }]);
+  assert.equal(requests.some((r) => r.path === "/api/bridge/inventory/trash"), false);
   assert.match(String(store.inventory.get().lastOutcome?.message), /Destroyed 2 items/);
 });
 
-test("trash reports items the server refused to destroy alongside those it did", async () => {
+test("trash reports items the server left alongside those it destroyed", async () => {
   const store = createClientStore();
-  const { fetch } = standardFetch((path) => {
-    if (path === "/api/bridge/inventory/trash") {
-      return {
-        status: 200,
-        body: { ok: true, applied: true, destroyed: [100], survived: [9001], declinedSilently: true },
-      };
-    }
-    return { status: 200, body: { ok: true } };
-  });
+  dockedAtJita(store);
+  const { fetch } = hangarTrashing([100]);
   const flow = createAppFlow(store, { fetch });
+  await flow.loadInventory();
 
-  await flow.trashItems([100, 9001], { kind: "hangar" });
+  await flow.trashItems([100, 101], { kind: "hangar" });
 
   const message = String(store.inventory.get().lastOutcome?.message);
   assert.match(message, /Destroyed 1/);

@@ -315,35 +315,14 @@ test("structure personal hangar stays unknown and load/unload refuse unavailable
     body: { shipID: ACTIVE_SHIP_ID, sourceLocationID: structureID, modulesByFlag: {}, confirm: true } });
   assert.equal(scriptedFit.response.status, 409, "scripted fitting remains station-only");
   assert.equal(gateway.calls.boundCall.some((call) => call.method === "FitFitting"), false);
-  const offline = await apiRequest(baseUrl, "/api/bridge/inventory/move", { method: "POST", body: { itemID: 100, direction: "toCargo" } });
-  assert.equal(offline.response.status, 409);
-  assert.equal(offline.payload.error, "STRUCTURE_SERVICE_AUTHORITY_UNAVAILABLE");
-  for (const [itemID, direction] of [[100, "toCargo"], [101, "toHangar"]]) {
-    const moved = await apiRequest(baseUrl, "/api/bridge/inventory/move", { method: "POST", body: { itemID, direction } });
-    assert.equal(moved.response.status, 409, JSON.stringify(moved.payload));
-    assert.equal(moved.payload.error, "STRUCTURE_SERVICE_AUTHORITY_UNAVAILABLE");
-  }
+  // (The move route, which this asked too, went on 2026-10-13: nothing of the page asked it.)
   assert.equal(placement.get(100).flag, FLAG_HANGAR);
   assert.equal(placement.get(101).flag, FLAG_CARGO);
   assert.equal(gateway.calls.boundCall.some(call => call.method === "Add"), false);
 });
 
-test("ambiguous docked flight cannot reuse the previously held hangar location", async () => {
-  const gateway = fakeGateway({
-    async readFlightStatus() {
-      return { flight: { docked: true, inSpace: false, stationID: null, structureID: null,
-        solarSystemID: 30000142, shipID: ACTIVE_SHIP_ID }, notifications: [] };
-    },
-  });
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl); // a valid station was present at select time
-  const move = await apiRequest(baseUrl, "/api/bridge/inventory/move", {
-    method: "POST", body: { itemID: 100, direction: "toCargo" },
-  });
-  assert.equal(move.response.status, 409);
-  assert.equal(move.payload.error, "NOT_DOCKED");
-  assert.equal(gateway.calls.boundCall.some((call) => call.method === "Add"), false);
-});
+// (A test held the move route to an ambiguous docked flight: the route went on 2026-10-13, nothing of the page
+// asking it.)
 
 test("a bind handle is reused across reads (cached per semantic key)", async () => {
   const gateway = fakeGateway();
@@ -361,41 +340,8 @@ test("a bind handle is reused across reads (cached per semantic key)", async () 
   assert.equal(cargoBinds, 1);
 });
 
-test("move toCargo runs Add on the cargo binding with the source station and cargo flag", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/inventory/move", {
-    method: "POST",
-    body: { itemID: 100, direction: "toCargo", qty: 250 },
-  });
-  assert.equal(response.status, 200);
-  assert.equal(payload.ok, true);
-
-  const add = gateway.calls.boundCall.find((c) => c.method === "Add");
-  assert.ok(add, "Add dispatched");
-  assert.equal(add.service, "invbroker");
-  assert.deepEqual(add.args, [100, STATION_ID]);
-  assert.deepEqual(add.kwargs, { flag: 5, qty: 250 });
-  // Dispatched on the cargo binding (GetInventoryFromId handle).
-  assert.match(add.boundHandle, /GetInventoryFromId/);
-});
-
-test("move toHangar runs Add on the hangar binding with the source ship and hangar flag", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  await apiRequest(baseUrl, "/api/bridge/inventory/move", {
-    method: "POST",
-    body: { itemID: 100, direction: "toHangar" },
-  });
-  const add = gateway.calls.boundCall.find((c) => c.method === "Add");
-  assert.deepEqual(add.args, [100, ACTIVE_SHIP_ID]);
-  assert.deepEqual(add.kwargs, { flag: 4 });
-  assert.match(add.boundHandle, /GetInventory:/);
-});
+// (Two tests held the move route to Add on the hold's or the hangar's binding: the route went on 2026-10-13,
+// nothing of the page asking it. The page moves things by the transfer.)
 
 test("stack runs StackAll on the requested container", async () => {
   const gateway = fakeGateway();
@@ -606,12 +552,13 @@ test("inventory routes require a live session and pass gateway refusals through"
   });
   const refused = await startTestServer({ gateway: refusingGateway });
   await selectOnServer(refused.baseUrl);
-  const move = await apiRequest(refused.baseUrl, "/api/bridge/inventory/move", {
+  // (By the stack route, which the page asks: the move route this went by is gone.)
+  const stacked = await apiRequest(refused.baseUrl, "/api/bridge/inventory/stack", {
     method: "POST",
-    body: { itemID: 100, direction: "toCargo" },
+    body: { target: "hangar" },
   });
-  assert.equal(move.response.status, 403);
-  assert.equal(move.payload.error, "CALL_NOT_ALLOWED");
+  assert.equal(stacked.response.status, 403);
+  assert.equal(stacked.payload.error, "CALL_NOT_ALLOWED");
 });
 
 test("a lost persistent session during an inventory read drops the held handle", async () => {
@@ -623,12 +570,13 @@ test("a lost persistent session during an inventory read drops the held handle",
   const { baseUrl } = await startTestServer({ gateway });
   await selectOnServer(baseUrl);
 
-  const move = await apiRequest(baseUrl, "/api/bridge/inventory/move", {
+  // (By the stack route, which the page asks: the move route this went by is gone.)
+  const stacked = await apiRequest(baseUrl, "/api/bridge/inventory/stack", {
     method: "POST",
-    body: { itemID: 100, direction: "toCargo" },
+    body: { target: "hangar" },
   });
-  assert.equal(move.response.status, 404);
-  assert.equal(move.payload.error, "SESSION_NOT_FOUND");
+  assert.equal(stacked.response.status, 404);
+  assert.equal(stacked.payload.error, "SESSION_NOT_FOUND");
 
   // The stale handle was dropped: releasing now reports nothing held.
   const { payload } = await apiRequest(baseUrl, "/api/bridge/release", { method: "POST", body: {} });

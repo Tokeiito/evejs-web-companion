@@ -163,7 +163,7 @@ test.afterEach(async () => {
   await Promise.all(closing);
 });
 
-test("on the game port a pilot docked in a structure has its hangar and its cargo, and moves between them, with nothing asked of the structure's services", async () => {
+test("on the game port a pilot docked in a structure has its hangar and its cargo, with nothing asked of the structure's services", async () => {
   // Its docking is a service a structure has for anyone docked in it: the client asks nothing before it lists a
   // hangar or moves a thing, and nor is anything asked here.
   const { ask, own, other } = await startTestServer({ onGamePort: true, answers: { "structureSettings.CharacterGetServices": () => assert.fail("nothing is asked for a hangar") } });
@@ -175,13 +175,7 @@ test("on the game port a pilot docked in a structure has its hangar and its carg
   assert.deepEqual(panel.payload.cargo.list.items.map((row) => [row.fields.itemID, row.fields.flagID]), [[101, FLAG_CARGO]]);
   // The hangar is asked for as where the pilot is docked: the transport binds it as the client's inventory has it.
   assert.deepEqual(own.calls.bind.filter((bind) => bind.method === "GetInventory").map((bind) => bind.args), [[STRUCTURE_ID]]);
-  // A move each way goes, and is on the hangar's handle or the ship's.
-  for (const [itemID, direction, flag] of [[100, "toCargo", FLAG_CARGO], [101, "toHangar", FLAG_HANGAR]]) {
-    const moved = await ask("/api/bridge/inventory/move", { method: "POST", body: { itemID, direction } });
-    assert.equal(moved.status, 200, JSON.stringify(moved.payload));
-    assert.equal(own.placement.get(itemID).flag, flag);
-  }
-  assert.equal(own.calls.boundCall.filter((call) => call.method === "Add").length, 2);
+  // (A move each way went by the move route, which went on 2026-10-13: nothing of the page asked it.)
   assert.deepEqual(askedOf(own, "structureSettings"), []);
   // The pilot's other transport was asked nothing at all.
   assert.deepEqual([other.calls.call, other.calls.bind, other.calls.boundCall], [[], [], []]);
@@ -266,7 +260,6 @@ test("through the web gateway a structure's services have no answer, and each of
   for (const [path, options] of [
     [`/api/dockable-structures/${STRUCTURE_ID}/services`, {}],
     ["/api/bridge/inventory", {}],
-    ["/api/bridge/inventory/move", { method: "POST", body: { itemID: 100, direction: "toCargo" } }],
     ["/api/bridge/station/repair-quotes?itemIDs=5", {}],
   ]) {
     const refused = await ask(path, options);

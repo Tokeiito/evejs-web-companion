@@ -105,26 +105,8 @@ test("a failed container read is surfaced without blanking the other container",
   assert.equal(inv.cargo.error, "NO_ACTIVE_SHIP");
 });
 
-test("moveItem posts the move then reloads the panel", async () => {
-  const store = createClientStore();
-  const { fetch, requests } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/inventory/move") {
-      return { status: 200, body: { ok: true } };
-    }
-    return { status: 200, body: inventoryPanel() };
-  });
-  const flow = createAppFlow(store, { fetch });
-
-  await flow.moveItem(100, "toCargo", 250);
-
-  const move = requests.find((r) => r.path === "/api/bridge/inventory/move");
-  assert.ok(move, "move was posted");
-  assert.deepEqual(move!.body, { itemID: 100, direction: "toCargo", qty: 250 });
-  // A reload followed the mutation.
-  assert.ok(requests.some((r) => r.path === "/api/bridge/inventory" && r.method === "GET"));
-  assert.equal(store.inventory.get().loaded, true);
-  assert.equal(store.inventory.get().actionError, null);
-});
+// (The flow's moveItem went on 2026-10-13 with the route it asked, which nothing of the page used: the page
+// moves things by the transfer.)
 
 test("stackContainer and boardShip post their BFF mutations then reload", async () => {
   const store = createClientStore();
@@ -353,14 +335,14 @@ test("a leaving the server refuses is said in the panel, in its words", async ()
 test("a refused mutation is surfaced through the store, not thrown", async () => {
   const store = createClientStore();
   const { fetch, requests } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/inventory/move") {
+    if (path === "/api/bridge/inventory/stack") {
       return { status: 403, body: { ok: false, error: "CALL_NOT_ALLOWED", message: "nope" } };
     }
     return { status: 200, body: inventoryPanel() };
   });
   const flow = createAppFlow(store, { fetch });
 
-  await flow.moveItem(100, "toCargo");
+  await flow.stackContainer("hangar");
 
   // R31 — surfaced, in words. The point of the test is that it is surfaced
   // at all rather than thrown, and that is unchanged.
@@ -368,7 +350,7 @@ test("a refused mutation is surfaced through the store, not thrown", async () =>
     store.inventory.get().actionError,
     "This client is not allowed to ask the game server for that.",
   );
-  // No reload after a failed mutation (only the failed move was requested).
+  // No reload after a failed mutation (only the failed stacking was requested).
   assert.equal(requests.filter((r) => r.path === "/api/bridge/inventory").length, 0);
 });
 

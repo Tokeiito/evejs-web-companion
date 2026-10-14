@@ -855,70 +855,11 @@ test("merge of two different types is declined silently and says so", async () =
 });
 
 // --- trash ------------------------------------------------------------------
-
-test("trash REFUSES without an explicit confirm", async () => {
-  const gateway = fakeGateway({ items: fixtureItems() });
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/inventory/trash", {
-    method: "POST",
-    body: { itemIDs: [100], place: { kind: "hangar" } },
-  });
-  assert.equal(response.status, 400);
-  assert.equal(payload.error, "CONFIRMATION_REQUIRED");
-  // Nothing was dispatched at all.
-  assert.equal(
-    gateway.calls.boundCall.filter((call) => call.method === "TrashItems").length,
-    0,
-  );
-  assert.ok(gateway.world.has(100), "and nothing was destroyed");
-});
-
-test("trash with confirm destroys the items on the inventory-MANAGER moniker", async () => {
-  const gateway = fakeGateway({ items: fixtureItems() });
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/inventory/trash", {
-    method: "POST",
-    body: { itemIDs: [100], place: { kind: "hangar" }, confirm: true },
-  });
-  assert.equal(response.status, 200);
-  assert.equal(payload.applied, true);
-  assert.deepEqual(payload.destroyed, [100]);
-  assert.deepEqual(payload.survived, []);
-  assert.equal(gateway.world.has(100), false);
-
-  // TrashItems dispatches on Moniker('invbroker',(stationID,groupStation)) —
-  // the manager bind, not a per-container binding.
-  assert.ok(
-    gateway.calls.bind.some(
-      (bind) => bind.service === "invbroker" && bind.method === "MachoBindObject",
-    ),
-    "the inventory manager moniker was bound",
-  );
-  const trash = gateway.calls.boundCall.find((call) => call.method === "TrashItems");
-  assert.deepEqual(trash.args, [[100], STATION_ID]);
-  assert.match(trash.boundHandle, /manager/);
-});
-
-test("trash reports an item that SURVIVED a declined destroy", async () => {
-  const gateway = fakeGateway({ items: fixtureItems() });
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  // The active ship cannot be trashed; the handler declines without raising.
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/inventory/trash", {
-    method: "POST",
-    body: { itemIDs: [ACTIVE_SHIP_ID], place: { kind: "hangar" }, confirm: true },
-  });
-  assert.equal(response.status, 200);
-  assert.equal(payload.applied, false);
-  assert.deepEqual(payload.survived, [ACTIVE_SHIP_ID]);
-  assert.equal(payload.declinedSilently, true);
-  assert.ok(gateway.world.has(ACTIVE_SHIP_ID));
-});
+//
+// Items are destroyed by the page's own call since 2026-10-13, as the client destroys them: TrashItems on the
+// inventory manager of where the pilot is (web/src/bridge/inventoryWrites.ts). The route (POST
+// /api/bridge/inventory/trash) is gone, and its three tests with it: its fence of a confirmation, the call on the
+// manager's bind, and its verdict by the place listed again.
 
 // --- corporation hangars ----------------------------------------------------
 
