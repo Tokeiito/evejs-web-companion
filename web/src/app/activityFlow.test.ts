@@ -37,21 +37,16 @@ function mailEmpty(unreadCount = 0) {
   };
 }
 
-test("loadActivity uses the notification, calendar and mail reads, and the skill history's notifications' two calls", async () => {
+test("loadActivity uses the calendar and mail reads, and by the generic call the notification service's two and the skill history's notifications' two", async () => {
   const calls: string[] = [];
-  const fetch: typeof globalThis.fetch = async (input) => {
+  const fetch: typeof globalThis.fetch = async (input, init) => {
     const url = String(input);
     calls.push(url);
-    // The skill handler's history and skills, by the generic call (skillHistoryProvider.py 32 to 34): nothing.
-    if (url === "/api/bridge/call") return json({ ok: true, result: null });
-    if (url.includes("/api/bridge/notifications")) {
-      return json({
-        ok: true,
-        all: [],
-        unprocessed: [],
-        byGroup: [],
-        errors: { all: null, unprocessed: null, byGroup: null },
-      });
+    // By the generic call (notificationSvc.py 93 and 107; skillHistoryProvider.py 32 to 34): no notifications,
+    // and nothing of the skill handler's.
+    if (url === "/api/bridge/call") {
+      const sent = JSON.parse(String(init?.body ?? "{}")) as { service?: string };
+      return json({ ok: true, result: sent.service === "notificationMgr" ? [] : null });
     }
     if (url.includes("/api/bridge/calendar")) return json(calendarEmpty());
     if (url.includes("/api/bridge/mail")) return json(mailEmpty(2));
@@ -67,8 +62,9 @@ test("loadActivity uses the notification, calendar and mail reads, and the skill
     "/api/bridge/calendar?month=" + (current.getUTCMonth() + 1) + "&year=" + current.getUTCFullYear(),
     "/api/bridge/call",
     "/api/bridge/call",
+    "/api/bridge/call",
+    "/api/bridge/call",
     "/api/bridge/mail",
-    "/api/bridge/notifications",
   ].sort());
   assert.equal(store.get().activity.notifications.status, "ready");
   assert.deepEqual(store.get().activity.notifications.value, []);
@@ -77,12 +73,14 @@ test("loadActivity uses the notification, calendar and mail reads, and the skill
   assert.equal(store.get().activity.mailError, null);
 });
 
-test("loadActivity lands partial success when one aggregate read rejects", async () => {
-  const fetch: typeof globalThis.fetch = async (input) => {
+test("loadActivity lands partial success when the notification service's reads fail", async () => {
+  const fetch: typeof globalThis.fetch = async (input, init) => {
     const url = String(input);
-    if (url === "/api/bridge/call") return json({ ok: true, result: null });
-    if (url.includes("/api/bridge/notifications")) {
-      return json({ ok: false, error: "CALL_FAILED", message: "notificationMgr unavailable" }, 503);
+    if (url === "/api/bridge/call") {
+      const sent = JSON.parse(String(init?.body ?? "{}")) as { service?: string };
+      return sent.service === "notificationMgr"
+        ? json({ ok: false, error: "CALL_FAILED", message: "notificationMgr unavailable" }, 503)
+        : json({ ok: true, result: null });
     }
     if (url.includes("/api/bridge/calendar")) return json(calendarEmpty());
     if (url.includes("/api/bridge/mail")) return json(mailEmpty(0));
