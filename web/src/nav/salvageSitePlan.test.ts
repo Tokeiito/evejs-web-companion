@@ -50,11 +50,29 @@ test("done when nothing is left, set-aside wrecks and looted cans excluded", () 
   assert.ok("done" in p);
 });
 
-test("a lootable wreck or can in loot range is looted before anything else", () => {
+test("modules are started first; a lootable wreck or can in range is looted in the ticks between", () => {
+  // A salvager can start on a locked wreck: that first, then the loot.
   const p = planSalvageTick(input({ wrecks: [wreck(100, 3000), wreck(101, 2000, { lootable: true })], lockedTargetIDs: [100] }));
-  assert.deepEqual(act(p), { kind: "lootWreck", wreckID: 101, isContainer: false });
-  const c = planSalvageTick(input({ containers: [can(200, 1500)], wrecks: [wreck(100, 3000)] }));
+  assert.deepEqual(act(p), { kind: "activate", moduleID: 11, targetID: 100 });
+  const after = planSalvageTick(input({ wrecks: [wreck(100, 3000), wreck(101, 2000, { lootable: true })], salvagers: [mod(11, true, 100), mod(12, true, 100)], lockedTargetIDs: [100] }));
+  assert.deepEqual(act(after), { kind: "lootWreck", wreckID: 101, isContainer: false });
+  // Nothing to start: the can is looted.
+  const c = planSalvageTick(input({ containers: [can(200, 1500)], wrecks: [] }));
   assert.deepEqual(act(c), { kind: "lootWreck", wreckID: 200, isContainer: true });
+});
+
+test("every idle tractor is put to work before the loot: a fast pull never starves the other beams or the salvagers", () => {
+  // Seen live: one beam pulled, the wreck was looted, the beam freed and taken again; three beams and four salvagers idle.
+  const far = [wreck(300, 8_000, { lootable: true }), wreck(301, 9_000, { lootable: true }), wreck(302, 10_000, { lootable: true })];
+  const near = wreck(303, 1_000, { lootable: true });
+  const tractors = [mod(1, true, 300), mod(2), mod(3)];
+  const p = planSalvageTick(input({ wrecks: [...far, near], tractors, salvagers: [] }));
+  assert.deepEqual(act(p), { kind: "activate", moduleID: 2, targetID: 301 });
+  const q = planSalvageTick(input({ wrecks: [...far, near], tractors: [mod(1, true, 300), mod(2, true, 301), mod(3)], salvagers: [] }));
+  assert.deepEqual(act(q), { kind: "activate", moduleID: 3, targetID: 302 });
+  // All three pulling: now the loot.
+  const r = planSalvageTick(input({ wrecks: [...far, near], tractors: [mod(1, true, 300), mod(2, true, 301), mod(3, true, 302)], salvagers: [] }));
+  assert.deepEqual(act(r), { kind: "lootWreck", wreckID: 303, isContainer: false });
 });
 
 test("a lootable unlooted wreck is never given to a salvager", () => {
