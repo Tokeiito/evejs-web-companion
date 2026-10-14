@@ -226,6 +226,13 @@ function fakeGateway(overrides = {}) {
             result: { type: "list", items: [...state.locked] },
             notifications: [],
           };
+        case "GetTargeters":
+          return {
+            service,
+            method,
+            result: { type: "list", items: [...(state.targeters ?? [])] },
+            notifications: [],
+          };
         case "Activate":
           if (!inert) {
             // WEAPON BANKING, as dogmaService.js Handle_Activate really does
@@ -322,6 +329,33 @@ test("the targets read is dogmaIM.GetTargets and answers plain itemIDs", async (
   const reads = dogmaCallsOf(gateway, "GetTargets");
   assert.equal(reads.length, 1, "one GetTargets");
   assert.deepEqual(reads[0].args, [], "GetTargets takes no arguments");
+});
+
+test("what has the ship locked is read only when asked for, as dogmaIM.GetTargeters", async () => {
+  const { gateway, baseUrl } = await inSpace();
+  gateway.state.targeters = [ROCK_ID];
+
+  const plain = await apiRequest(baseUrl, "/api/bridge/targets");
+  assert.equal(plain.payload.targeterIDs, null, "not asked, not read");
+  assert.equal(dogmaCallsOf(gateway, "GetTargeters").length, 0, "and no second call through the gateway");
+
+  const asked = await apiRequest(baseUrl, "/api/bridge/targets?targeters=1");
+  assert.equal(asked.response.status, 200);
+  assert.deepEqual(asked.payload.targeterIDs, [ROCK_ID]);
+  assert.deepEqual(dogmaCallsOf(gateway, "GetTargeters")[0].args, [], "GetTargeters takes no arguments");
+});
+
+test("a targeters read that fails is null and leaves the lock list standing", async () => {
+  const { baseUrl } = await inSpace({ async callMethod(service, method) {
+    if (method === "GetTargeters") {
+      throw new Error("refused");
+    }
+    return { service, method, result: { type: "list", items: [ROCK_ID] }, notifications: [] };
+  } });
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/targets?targeters=1");
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload.targetIDs, [ROCK_ID]);
+  assert.equal(payload.targeterIDs, null);
 });
 
 // --- Locking ----------------------------------------------------------------
