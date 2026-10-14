@@ -326,6 +326,8 @@ const ROLE_QA = 4503599627370496n;
 /** The services the chat service asks as it logs in to the chat server (xmppchatclient/xmppchatsvc.py 284, 312, 318, 350). */
 const XMPP_CHAT_MGR = "XmppChatMgr";
 const CHAT_AUTHENTICATION = "chatAuthenticationService";
+/** appConst.groupCharacter: what the population cap's moniker is made with beside the character (characterSelection.py 749). */
+const GROUP_CHARACTER = 1;
 /** The global config's name for the chat server's address (globalConfig/const.py 57). */
 const EJABBERD_CLIENT_ADDRESS_CONFIG = "ejabberd_client_address";
 /** hashlib.md5(str([])).hexdigest(): the hash of a list of flagged sites with none in it (carbonui/control/browser/sites.py 394 to 396). */
@@ -1123,6 +1125,15 @@ function createGamePortPilots({
   /** sites.__PopulateSystemLists: sm.RemoteSvc('browserLockdownSvc').GetFlaggedSitesHash(), with nothing, and GetFlaggedSitesList() where the hash is not the kept list's. */
   const FLAGGED_HASH_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbonui/control/browser/sites.py:396", note: null });
   const FLAGGED_LIST_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbonui/control/browser/sites.py:398", note: null });
+  /** eveCfg.LoadPlanetBlacklist: self.GetConfigSvc().GetBlackListedPlanets(), with nothing; and _LoadOldStationsInfo: GetOldStationData(), with nothing. */
+  const PLANET_BLACKLIST_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/common/script/sys/eveCfg.py:476", note: null });
+  const OLD_STATIONS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/common/script/sys/eveCfg.py:750", note: null });
+  /** AirNpeController.OnGlobalConfigChanged: self.remote_air_npe_controller.is_air_npe_enabled(), with nothing. */
+  const AIR_ENABLED_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "storylines/client/airnpe.py:73", note: null });
+  /** raffleSvc._available_check: self.proxy.AmIBanned(), at the proxy with nothing. */
+  const RAFFLE_BAN_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "raffles/client/raffle_service.py:52", note: null });
+  /** TryEnterGame: Moniker('populationCap', (charID, groupCharacter)).GetCharacterLoadSlot(charID). */
+  const LOAD_SLOT_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/client/script/ui/login/charSelection/characterSelection.py:750", note: null });
   /** cfg.eveowners' priming: config.GetMultiOwnersEx(list(keysToGet)), which no route of the BFF's may ask by name. */
   const OWNERS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbon/common/script/sys/cfg.py:579", note: null });
   /**
@@ -1599,6 +1610,13 @@ function createGamePortPilots({
       /** redeem.tokens: what the account may redeem, as the server last answered; undefined while it was not fetched. And the fetches, one after another. */
       redeemTokens: undefined,
       redeemTokensWork: Promise.resolve(),
+      /** cfg.planetBlacklist and cfg.oldStations: as the server answered the cfg's two askings at its loading; undefined while one was not answered. */
+      planetBlacklist: undefined,
+      oldStations: undefined,
+      /** AirNpeController._is_air_npe_enabled: whether the AIR tutorial is enabled, as the server said at the login; undefined while it was not asked. */
+      airNpeEnabled: undefined,
+      /** raffleSvc._is_banned: whether the user is banned from the raffles, as the server said; undefined while it was not asked (a session with no country, or a server that refused). */
+      raffleBanned: undefined,
       /** sites.systemLists.bannedInChat: the domains the server has flagged as blacklisted, each alone; undefined while the lists were not populated or since the server said they changed. */
       bannedInChat: undefined,
       /** chatutil.spam.GetTaboos' memoized answer, as { banned, until }; undefined while it was not asked. And its askings, one after another. */
@@ -1858,8 +1876,19 @@ function createGamePortPilots({
       if (positive(session.attributes.userid) !== accountID) {
         throw fail("SESSION_SELECT_FAILED", "The game server logged that name in as a different account.");
       }
+      // eveCfg's loading, as a client comes onto the server: the planets no colony may be put on are asked for as
+      // its data are loaded, and the old stations' rows by a thread nobody waits on (367, 475 to 477; 701, 741 to
+      // 753). In the retail client's own login, the first two calls after the service info.
+      await cfgLoaded(entry);
       // eveCfg.LoadCfgData (400 to 402): the cfg starts the thread that asks for its prices in two seconds.
       averagePricesThread(entry);
+      // AirNpeController.OnGlobalConfigChanged (storylines/client/airnpe.py 72 to 76): the global config come, and
+      // whether the AIR tutorial is enabled is asked. With no character on the session nothing follows from the
+      // answer (is_air_npe_active, 85 to 88 and 95 to 96). A server that refuses fails no login.
+      await airNpeEnabledAsked(entry).catch(() => {});
+      // raffleSvc.is_available (39 to 53), which the commands' list asks as it is made (eveCommands.py 744): on a
+      // session with a country, whether the user is banned from the raffles. A server that refuses fails no login.
+      await raffleBanAsked(entry).catch(() => {});
       // gameui.OnSessionChanged (449): an account come onto the session has its clone's grade asked. A grade that
       // could not be read is asked for when it is next wanted, as the client's service asks where it has none.
       await cloneGradeRead(entry).catch(() => {});
@@ -1872,6 +1901,9 @@ function createGamePortPilots({
       if (!row) throw fail("CALL_REFUSED", "That character is not on this account.");
       entry.selection = selection;
       entry.characterName = String(keyValField(row, "characterName") || "");
+      // characterSelection.TryEnterGame (742 to 767): before the character is entered as, the population cap is
+      // asked where it may be loaded. More than one place is the player's to choose among, and no page asks.
+      await loadSlotAsked(entry);
       const lockType = await session.call("charUnboundMgr", "GetCharacterLockType", [characterID]);
       if (lockType !== null && lockType !== undefined) {
         throw fail("CALL_REFUSED", LOCK_REFUSALS.get(Number(lockType)) ?? "CharacterLocked");
@@ -3203,6 +3235,65 @@ function createGamePortPilots({
       creatorID: entry.characterID,
     });
     entry.kept[BOOKMARK_MGR].amend("active", (lists) => (isTheThreeLists(lists) ? withBookmark(lists, made, bookmarkID) : undefined));
+  }
+
+  // ── what a client asks before a character is chosen ──────────────────────
+
+  /**
+   * eveCfg's two askings as it loads (eve/common/script/sys/eveCfg.py). LoadPlanetBlacklist (475 to 477), called
+   * among the loading of its data (367): self.GetConfigSvc().GetBlackListedPlanets(), by the service's name with
+   * nothing, and what answers is cfg.planetBlacklist. LoadOldStationsInfo (741 to 747, called at 701) starts a
+   * thread in a client, which asks GetOldStationData() with nothing (749 to 753) and, where something answers,
+   * makes cfg.oldStations of it. Both are kept here as answered. The first is waited for, as the cfg waits for
+   * it; the second is nobody's to wait for. A server that refuses either fails no login: the cfg is then without.
+   * Tranquility's recordings begin after these (their first call is the fortieth of a login), and have neither.
+   */
+  async function cfgLoaded(entry) {
+    ledger.note("config", "GetBlackListedPlanets", PLANET_BLACKLIST_AS_THE_CLIENT_ASKS);
+    await entry.session.call("config", "GetBlackListedPlanets", [], null).then((answered) => { entry.planetBlacklist = answered; }, () => {});
+    ledger.note("config", "GetOldStationData", OLD_STATIONS_AS_THE_CLIENT_ASKS);
+    Promise.resolve().then(() => entry.session.call("config", "GetOldStationData", [], null)).then((answered) => { entry.oldStations = answered; }, () => {});
+  }
+
+  /**
+   * AirNpeController.OnGlobalConfigChanged (storylines/client/airnpe.py 72 to 76): at each coming of the global
+   * config, which a login is, self.remote_air_npe_controller.is_air_npe_enabled(), which is sm.RemoteSvc('air_npe')
+   * (53), by the service's name with nothing: a bool, kept. Where it is not enabled the controller skips the
+   * tutorial, which with no character on the session asks and does nothing (101 to 110, 85 to 88).
+   */
+  async function airNpeEnabledAsked(entry) {
+    ledger.note("air_npe", "is_air_npe_enabled", AIR_ENABLED_AS_THE_CLIENT_ASKS);
+    entry.airNpeEnabled = await entry.session.call("air_npe", "is_air_npe_enabled", [], null);
+  }
+
+  /**
+   * raffleSvc._available_check (raffles/client/raffle_service.py 48 to 57), which is_available comes to once (39 to
+   * 46) and only on a session that has a country: self.proxy.AmIBanned(), which is sm.ProxySvc('raffleProxy') (30),
+   * with nothing: a bool, kept. Its asker at a login is the commands' list, which has the raffle window's command
+   * where the raffles are available (eve/client/script/ui/eveCommands.py 744).
+   */
+  async function raffleBanAsked(entry) {
+    if (!packets.text(entry.session.attributes.countryCode)) return;
+    ledger.note("raffleProxy", "AmIBanned", RAFFLE_BAN_AS_THE_CLIENT_ASKS);
+    entry.raffleBanned = await entry.session.proxyCall("raffleProxy", "AmIBanned", [], null);
+  }
+
+  /**
+   * characterSelection.TryEnterGame (eve/client/script/ui/login/charSelection/characterSelection.py 742 to 767):
+   * before it enters as a character the client makes Moniker('populationCap', (charID, appConst.groupCharacter))
+   * and asks it GetCharacterLoadSlot(charID): the places the character may be loaded at, a dict of solar system to
+   * a slot's key. With one place it goes on. With more it asks its player to choose among them and, for the one
+   * chosen, MoveCharacterToNewSystem(charID, solarSystemID, slotKey) (751 to 758): a choosing no page asks, so
+   * here the choosing of the character is refused and nothing is chosen in the player's place. Tranquility's
+   * recordings have the moniker resolved and bound with the call in the bind, answered one place.
+   */
+  async function loadSlotAsked(entry) {
+    ledger.note("populationCap", "GetCharacterLoadSlot", LOAD_SLOT_AS_THE_CLIENT_ASKS);
+    const bound = await entry.session.bind("populationCap", [entry.characterID, GROUP_CHARACTER], ["GetCharacterLoadSlot", [entry.characterID], null]);
+    const places = bound.result && bound.result.type === "dict" && Array.isArray(bound.result.entries) ? bound.result.entries.length : 0;
+    if (places > 1) {
+      throw fail("CALL_REFUSED", "The server offers more than one solar system to come in at, which the client asks its player to choose among; no page asks it yet.");
+    }
   }
 
   // ── the chat's login, as the client's chat service makes it ──────────────

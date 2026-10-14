@@ -541,6 +541,12 @@ const TRANSPORT_OWN_CALLS = Object.freeze([
   "config.GetMultiOwnersEx", "facilityManager.GetFacility", "config.GetAverageMarketPrices",
   "XmppChatMgr.Hostname", "XmppChatMgr.GetDeprecatedPrefsFallback", "chatAuthenticationService.GetAuthenticationToken", "XmppChatMgr.ResyncSystemChannelAccess",
   "browserLockdownSvc.GetFlaggedSitesHash", "browserLockdownSvc.GetFlaggedSitesList",
+  // What a client asks before a character is chosen: the cfg's two as it loads (eveCfg.py 476, 750), whether the
+  // AIR tutorial is enabled as the global config comes (airnpe.py 73), whether the user is banned from the raffles
+  // (raffle_service.py 52), and where the character may be loaded, of the population cap's moniker, as it is
+  // entered as (characterSelection.py 750).
+  "config.GetBlackListedPlanets", "config.GetOldStationData", "air_npe.is_air_npe_enabled", "raffleProxy.AmIBanned",
+  "populationCap.GetCharacterLoadSlot",
 ]);
 
 /**
