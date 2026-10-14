@@ -1635,6 +1635,16 @@ session.shipid)`, asked of the service by its name once the ship is close (64 to
 from too far with `DockingApproach`. The page docks at a station since `6de7ef5c` (`web/src/bridge/placeChanges.ts`),
 under the BFF's keeping of the change; a structure by its route still.
 
+**A stargate jump, 2026-10-14** (`stargate/client/gateJumpSvc.py`, `eve/client/script/parklife/autopilot.py`). The
+menu's `StargateJump` (`menusvc.py` 3025 on, flying the ship close first) and the autopilot (358) come to
+`PerformSessionChange(..., remoteBallpark.CmdStargateJump, stargateID, beaconID, session.shipid)` (`JumpThroughGate`,
+98 to 127), on the ballpark's bound object, beaconID the gate's own far gate off its slim item
+(`jumps[0].toCelestialID`); with none the client does not jump. EveJS sends a stargate's `jumps` as a rowset of
+`toCelestialID` and `locationID`, and works the far gate out from the gate where a caller names none. The page
+makes the jump since `f01eb1e3` (`web/src/bridge/placeChanges.ts`), under the BFF's keeping of the change, which
+binds the park again in the new system before it answers; the game port names the far gate off the slim item since
+`1fc36df7`.
+
 **A module fitted and unfitted, 2026-10-13** (`eve/client/script/dogma/clientDogmaLocation.py`,
 `ui/shared/fitting/fittingSlotController.py`, `ui/shared/fittingScreen/tryFit.py`,
 `ui/shared/fitting/fittingUtil.py`). Into a slot: `TryFit` (669 to 673),

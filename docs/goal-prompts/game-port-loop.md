@@ -3794,6 +3794,10 @@ Take these defaults, and list each under "For the operator" in the log so they c
   where `ON_THE_PARK` (retailCalls.js) names it; a call a route made by
   its own bind goes by name once the page makes it. Look for
   `any(beyonce)` in the recording.
+- **A jump to try live**: from Jita's undock, the Maurasi gate is on the
+  space snapshot (`jump-own.js`); the menu's warp at nought lands in range, and
+  the jump goes at the first ask. In the tab: the Overview's gate row,
+  "Jump to Maurasi"; in Maurasi a station to dock at is on the bar.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
