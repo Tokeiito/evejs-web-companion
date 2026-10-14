@@ -678,6 +678,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // A mailing list's members made members, muted or operators, and kicked, from its management window's Members tab
   // (evemailingListConfig.py ApplyActionToMembers). The gateway's list has none of them.
   "mailingListsMgr.SetMembersClear", "mailingListsMgr.SetMembersMuted", "mailingListsMgr.SetMembersOperator", "mailingListsMgr.KickMembers",
+  // A mailing list's subscription access and default role set, and whom it lets in or keeps out, from its management
+  // window's Access tab (evemailingListConfig.py 302 to 326, 453 to 457). The gateway's list has none of them.
+  "mailingListsMgr.SetDefaultAccess", "mailingListsMgr.SetEntitiesAccess", "mailingListsMgr.ClearEntityAccess",
 ]);
 
 /**
@@ -906,6 +909,17 @@ const dronesListed = ([drones, ...rest], kwargs) => ({ args: [list(drones), ...r
 const recipientsListed = ([recipients, ...rest], kwargs) => ({ args: [list(recipients), ...rest], kwargs });
 /** A mailing list's number, then its members chosen, a list (evemailingListConfig.py _GetSelectedMembers, 295 to 300). */
 const membersListed = ([listID, members, ...rest], kwargs) => ({ args: [listID, list(members), ...rest], kwargs });
+/**
+ * A mailing list's number, then whom it lets in or keeps out, a dict of whole numbers to 0 (kept out) or 1 (let in)
+ * (mailingListsSvc.py SetEntityAccess, 110 to 111: {entityID: access}). A route gives a plain object.
+ */
+const accessListed = ([listID, given, ...rest], kwargs) => {
+  const pairs = plainPairs(given);
+  const access = pairs === null
+    ? given
+    : { type: "dict", entries: orderEntries(pairs.map(([key, value]) => [wholeKey(key), value === 0 || value === 1 ? value : null]).filter(([key, value]) => key !== null && value !== null)) };
+  return { args: [listID, access, ...rest], kwargs };
+};
 
 const aFiniteNumber = (value) => typeof value === "number" && Number.isFinite(value);
 const asReal = (value) => ({ type: "real", value });
@@ -1770,6 +1784,10 @@ const RETAIL_CALLS = Object.freeze({
   "mailingListsMgr.SetMembersMuted": reshaped("eve/client/script/ui/services/mail/mailingListsSvc.py:123", membersListed, "self.mailingListsMgr.SetMembersMuted(listID, memberIDs): the Members tab's Set role: Muted member, the members chosen a list. In no recording."),
   "mailingListsMgr.SetMembersOperator": reshaped("eve/client/script/ui/services/mail/mailingListsSvc.py:128", membersListed, "self.mailingListsMgr.SetMembersOperator(listID, memberIDs): the Members tab's Set role: Operator, the members chosen a list. In no recording."),
   "mailingListsMgr.KickMembers": reshaped("eve/client/script/ui/services/mail/mailingListsSvc.py:101", membersListed, "self.mailingListsMgr.KickMembers(listID, memberIDs): the Members tab's Kick, the members chosen a list. In no recording."),
+  "mailingListsMgr.SetDefaultAccess": same("eve/client/script/ui/services/mail/mailingListsSvc.py:138", "self.mailingListsMgr.SetDefaultAccess(listID, defaultAccess, defaultMemberAccess, mailCost): the Access tab's Apply with its two choices, the cost 0 (evemailingListConfig.py ApplySettings, 453 to 457). In no recording."),
+  "mailingListsMgr.SetEntitiesAccess": reshaped("eve/client/script/ui/services/mail/mailingListsSvc.py:115", accessListed, "self.mailingListsMgr.SetEntitiesAccess(listID, accessByEntityID): the Access tab's Allow or Block, the one owner picked as {entityID: access} (SetEntityAccess, 110 to 111). In no recording."),
+  "mailingListsMgr.ClearEntityAccess": same("eve/client/script/ui/services/mail/mailingListsSvc.py:119", "self.mailingListsMgr.ClearEntityAccess(listID, entityID): the Access tab's Remove Selected, one call for each chosen (evemailingListConfig.py 302 to 309). In no recording."),
+  "lookupSvc.LookupPCOwners": same("eve/client/script/ui/util/searchOld.py:259", "sm.RemoteSvc('lookupSvc').LookupPCOwners(searchStr, exact): SearchOwners with hideNPC, from the mailing list window's Allow and Block, exact False; answered a list of owner rows. In no recording."),
   "mailingListsMgr.GetJoinedLists": same("eve/client/script/ui/services/mail/mailingListsSvc.py:43", "self.mailingListsMgr.GetJoinedLists(), no arguments, as the mailing lists service starts, which it does as the mail window first draws its lists group; kept. Tranquility's recording of the mail window opened has it after GetLabels, answered {}."),
   "mailMgr.GetLabels": same(`${MAIL_SERVICES}/mailSvc.py:678`, "self.mailMgr.GetLabels(), no arguments; asked once as the mail window first draws its folders, and kept. Tranquility's recording of the mail window opened has it after SyncMail(None, 0), answered {}."),
   "mailMgr.GetMailHeaders": reshaped(`${MAIL_SERVICES}/mailSvc.py:193`, recipientsListed, "self.mailMgr.GetMailHeaders(toFetch.keys()): one list of the messages the sync gave a status of whose header the client does not hold. In no recording. The messages a list, as the client's are; the page's array goes as one."),

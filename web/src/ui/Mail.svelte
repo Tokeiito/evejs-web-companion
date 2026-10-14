@@ -43,8 +43,12 @@
     type MailingListMemberAction,
     type MailingListMemberFilter,
     type MailingListSettings,
+    MAILING_LIST_ALLOWED,
+    MAILING_LIST_BLOCKED,
+    type OwnerMatch,
   } from "../bridge/mail.ts";
   import { MAIL_QUOTE_LABELS, mailBodyLines, mailQuoteMarkup } from "../bridge/mailMarkup.ts";
+  import { pyIntDictOrder } from "../bridge/pyDict.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { isSessionLost } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -620,7 +624,7 @@
 
   /** The list whose management window is open, or null. */
   let managingList = $state<number | null>(null);
-  /** The list's settings as the window last asked them (its Access tab's, to come). */
+  /** The list's settings as the window last asked them: the Access tab's lists. */
   let listSettings = $state<MailingListSettings | null>(null);
   /** The members as the window last asked them, and the choice and search they were shown by then. */
   let listMembers = $state<readonly MailingListMember[]>([]);
@@ -650,10 +654,18 @@
     memberFilter = "all";
     memberSearch = "";
     memberAction = "member";
+    manageTab = "members";
+    entityText = "";
+    entityPick = null;
+    accessNote = "";
+    chosenAccess = new Set();
     void run(async () => {
-      for (let asked = 0; asked < 3; asked += 1) {
-        listSettings = await flow.readMailingListSettings(listID);
-      }
+      // The Access tab's two choices are built from the first two asks (378, 389) and are not built again.
+      const first = await flow.readMailingListSettings(listID);
+      accessChoice = first?.defaultAccess ?? MAILING_LIST_BLOCKED;
+      const second = await flow.readMailingListSettings(listID);
+      roleChoice = second?.defaultMemberAccess ?? MAILING_LIST_MEMBER_DEFAULT;
+      listSettings = await flow.readMailingListSettings(listID);
       await updateMembers();
     });
   }
@@ -717,7 +729,7 @@
         return;
       }
       if (action === "kick") {
-        listSettings = await flow.readMailingListSettings(listID);
+        await rereadAccess(listID);
       }
       if (closing) {
         managingList = null;
@@ -732,6 +744,208 @@
     void run(() => write(false));
   }
 
+  /** The Access tab's words, by their labels (StartupAccessPanel, 370 to 425; searchOld.py SearchOwners; listwindow.py). */
+  const ACCESS_WORDS = {
+    tab: "UI/EVEMail/MailingLists/AccessTab",
+    defaultAccess: "UI/EVEMail/MailingLists/DefaultAccessLabel",
+    private: "UI/EVEMail/MailingLists/PrivateAccess",
+    public: "UI/EVEMail/MailingLists/PublicAccess",
+    apply: "UI/Common/Buttons/Apply",
+    defaultRole: "UI/EVEMail/MailingLists/DefaultMemberRole",
+    normal: "UI/EVEMail/MailingLists/Normal",
+    mutedRole: "UI/EVEMail/MailingLists/MutedRole",
+    entity: "UI/EVEMail/MailingLists/EntitySearchLabel",
+    allow: "UI/EVEMail/MailingLists/Allow",
+    block: "UI/PeopleAndPlaces/BlockContact",
+    blocked: "UI/EVEMail/MailingLists/BlockedLabel",
+    allowed: "UI/EVEMail/MailingLists/AllowedLabel",
+    remove: "UI/EVEMail/MailingLists/RemoveSelected",
+    type: "UI/Common/Type",
+    character: "UI/Common/Character",
+    characters: "UI/Common/Characters",
+    corporation: "UI/Common/Corporation",
+    corporations: "UI/Common/Corporations",
+    alliance: "UI/Common/Alliance",
+    alliances: "UI/Common/Alliances",
+    tooLong: "UI/Common/SearchStringTooLong",
+    noneFound: "UI/Search/NoGroupFoundWith",
+    select: "UI/Search/GenericSelection",
+    found: "UI/Search/ManyGroupsFoundWith",
+    ok: "UI/Common/Buttons/OK",
+    cancel: "UI/Common/Buttons/Cancel",
+    mustSelect: "UI/Control/ListWindow/MustSelectError",
+  } as const;
+  /**
+   * SearchOwners' groups for the window (ALLOWED_GROUP_IDS: character 1, corporation 2, alliance 32), each with its
+   * word and its plural, in the order the client's dict of them gives them (asked of its own Python: 32, 1, 2).
+   */
+  const OWNER_GROUPS: readonly (readonly [number, string, string, string, string])[] = [
+    [32, ACCESS_WORDS.alliance, "Alliance", ACCESS_WORDS.alliances, "Alliances"],
+    [1, ACCESS_WORDS.character, "Character", ACCESS_WORDS.characters, "Characters"],
+    [2, ACCESS_WORDS.corporation, "Corporation", ACCESS_WORDS.corporations, "Corporations"],
+  ];
+
+  /** An entry of the Access tab's lists: an owner, and whether it is let in or kept out. */
+  interface AccessRow {
+    readonly ownerID: number;
+    readonly access: number;
+  }
+
+  /** The window's tab shown (the client remembers its last; the page opens on Members). */
+  let manageTab = $state<"members" | "access">("members");
+  /** The Access tab's two choices, as the window built them and as changed since. */
+  let accessChoice = $state<number>(MAILING_LIST_BLOCKED);
+  let roleChoice = $state<number>(MAILING_LIST_MEMBER_DEFAULT);
+  /** What is typed to search for, a search's owners offered to pick from and the one picked, the rows chosen, and what was said. */
+  let entityText = $state("");
+  let entityPick = $state<{ readonly access: number; readonly searchTerm: string; readonly owners: readonly OwnerMatch[] } | null>(null);
+  let pickedOwner = $state<number | null>(null);
+  let pickNote = $state("");
+  let chosenAccess = $state<ReadonlySet<number>>(new Set());
+  let accessNote = $state("");
+  /** UpdateAccessScrollData (435 to 451): the settings' access in the order the client's dict gives it, blocked and allowed apart. */
+  const accessRows = $derived(
+    listSettings === null ? [] : pyIntDictOrder([...listSettings.access.keys()]).map((ownerID) => ({ ownerID, access: listSettings?.access.get(ownerID) ?? MAILING_LIST_BLOCKED })),
+  );
+  const blockedRows = $derived(accessRows.filter((row) => row.access === MAILING_LIST_BLOCKED));
+  const allowedRows = $derived(accessRows.filter((row) => row.access === MAILING_LIST_ALLOWED));
+
+  /** A tab chosen (Load, 522 to 530): Members asks the members again; Access asks nothing. */
+  function chooseManageTab(tab: "members" | "access"): void {
+    manageTab = tab;
+    if (tab === "members") {
+      void run(updateMembers);
+    }
+  }
+
+  /** The settings asked again (UpdateAccessScrollData), its lists drawn afresh with nothing chosen. */
+  async function rereadAccess(listID: number): Promise<void> {
+    listSettings = await flow.readMailingListSettings(listID);
+    chosenAccess = new Set();
+  }
+
+  /** An owner by name, as the access lists name it. */
+  function ownerLabel(ownerID: number): string {
+    return resolvedName($names.resolved, "owner", ownerID, "someone");
+  }
+
+  /** The search's groups, by their words or their plurals, joined as SearchOwners joins them. */
+  function ownerGroupNames(plural: boolean): string {
+    return OWNER_GROUPS.map(([, label, own, labels, owns]) => (plural ? word(labels, owns) : word(label, own))).join("/");
+  }
+
+  /** ApplySettings (453 to 457): SetDefaultAccess with the two choices and no cost; nothing asked again. */
+  function applyAccessDefaults(): void {
+    const listID = managingList;
+    if (listID === null) {
+      return;
+    }
+    void run(async () => {
+      await flow.setMailingListDefaults(listID, accessChoice, roleChoice);
+    });
+  }
+
+  /**
+   * AddToAllowed and AddToBlocked (313 to 326) by SearchOwners (searchOld.py 216 to 279), with hideNPC and
+   * notifyOneMatch: what is typed, its % and ? taken out; nothing refused (LookupStringMinimum), a hundred or more
+   * refused (SearchStringTooLong); else LookupPCOwners, the characters, corporations and alliances kept, none said so
+   * (NoGroupFoundWith), and those found offered to pick from even when one is (ListWindow, ordered: by what each is
+   * shown as).
+   */
+  function searchEntity(access: number): void {
+    const listID = managingList;
+    if (listID === null) {
+      return;
+    }
+    accessNote = "";
+    const text = entityText.replace(/%/g, "").replace(/\?/g, "");
+    if (text.length < 1) {
+      accessNote = filledWord("dialog:LookupStringMinimum/body", "Please type in at least {minimum} character", { minimum: "1" });
+      return;
+    }
+    if (text.length >= 100) {
+      accessNote = word(ACCESS_WORDS.tooLong, "Search String Too Long");
+      return;
+    }
+    void run(async () => {
+      const kept = new Set(OWNER_GROUPS.map(([groupID]) => groupID));
+      const owners = (await flow.lookupPlayerOwners(text)).filter((owner) => kept.has(owner.groupID));
+      if (owners.length === 0) {
+        accessNote = filledWord(ACCESS_WORDS.noneFound, "No {groupName} can be found with \"{searchTerm}\" in the beginning of its name.", { groupName: ownerGroupNames(false), searchTerm: text });
+        return;
+      }
+      const sorted = [...owners].sort((left, right) => {
+        const x = pickLabel(left).toLowerCase();
+        const y = pickLabel(right).toLowerCase();
+        return x < y ? -1 : x === y ? 0 : 1;
+      });
+      entityPick = { access, searchTerm: text, owners: sorted };
+      pickedOwner = null;
+      pickNote = "";
+    });
+  }
+
+  /** How the pick list shows an owner: its name and its group's word (searchOld.py 264). */
+  function pickLabel(owner: OwnerMatch): string {
+    const group = OWNER_GROUPS.find(([groupID]) => groupID === owner.groupID);
+    return group === undefined ? owner.ownerName : `${owner.ownerName} ${word(group[1], group[2])}`;
+  }
+
+  /** The pick list's OK (listwindow.py Confirm): one must be picked (MustSelectError); then its access set, and the settings asked again. */
+  function pickConfirmed(): void {
+    const listID = managingList;
+    const pick = entityPick;
+    if (listID === null || pick === null) {
+      return;
+    }
+    const ownerID = pickedOwner;
+    if (ownerID === null) {
+      pickNote = filledWord(ACCESS_WORDS.mustSelect, "Must select {num}.", { num: "1" });
+      return;
+    }
+    entityPick = null;
+    void run(async () => {
+      if (await flow.setMailingListAccess(listID, ownerID, pick.access)) {
+        await rereadAccess(listID);
+      }
+    });
+  }
+
+  function chooseAccess(ownerID: number, chosen: boolean): void {
+    const next = new Set(chosenAccess);
+    if (chosen) {
+      next.add(ownerID);
+    } else {
+      next.delete(ownerID);
+    }
+    chosenAccess = next;
+  }
+
+  /**
+   * ClearAccessForSelected (302 to 311): the blocked chosen and then the allowed, each cleared in turn, then the
+   * settings asked again; none chosen refused (PICKERRORNOTIFY).
+   */
+  function removeChosenAccess(): void {
+    const listID = managingList;
+    if (listID === null) {
+      return;
+    }
+    accessNote = "";
+    const chosen = [...blockedRows, ...allowedRows].filter((row) => chosenAccess.has(row.ownerID)).map((row) => row.ownerID);
+    if (chosen.length === 0) {
+      accessNote = filledWord("dialog:PICKERRORNOTIFY/body", "Must select at least {num} ", { num: "1" }).trim();
+      return;
+    }
+    void run(async () => {
+      for (const ownerID of chosen) {
+        if (!(await flow.clearMailingListAccess(listID, ownerID))) {
+          return;
+        }
+      }
+      await rereadAccess(listID);
+    });
+  }
+
   onMount(() => {
     flow.requestWords([
       ...Object.values(MAIL_QUOTE_LABELS), DATE_LABEL, ...Object.values(FOLDER_WORDS), ...Object.values(WRITE_WORDS), ...Object.values(FOLDER_WRITE_WORDS),
@@ -740,6 +954,9 @@
       ...LABEL_DIALOGS.flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`]),
       ...Object.values(MANAGE_WORDS),
       ...MANAGE_DIALOGS.flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`]),
+      ...Object.values(ACCESS_WORDS),
+      "dialog:PICKERRORNOTIFY/title",
+      "dialog:PICKERRORNOTIFY/body",
     ]);
     void run(async () => {
       await flow.loadMail();
@@ -854,14 +1071,16 @@
       </section>
     {/if}
     {#if managingList !== null}
-      <!-- The list's management window (evemailingListConfig.py MaillistSetupWindow): its Members tab. Its Access and
-           Welcome Mail tabs are to come. -->
+      <!-- The list's management window (evemailingListConfig.py MaillistSetupWindow): its Members and Access tabs.
+           Its Welcome Mail tab is to come. -->
       <section class="bulk mail-list-management">
         <h3>{filledWord(MANAGE_WORDS.caption, "Mailing list management: {mailinglistName}", { mailinglistName: managedList?.displayName ?? "" })}</h3>
         <p class="controls">
-          <strong>{word(MANAGE_WORDS.membersTab, "Members")}</strong>
+          <button type="button" class:active={manageTab === "members"} disabled={busy} onclick={() => chooseManageTab("members")}>{word(MANAGE_WORDS.membersTab, "Members")}</button>
+          <button type="button" class:active={manageTab === "access"} disabled={busy} onclick={() => chooseManageTab("access")}>{word(ACCESS_WORDS.tab, "Access")}</button>
           <button type="button" class="minor" onclick={() => (managingList = null)}>✕</button>
         </p>
+        {#if manageTab === "members"}
         <p class="controls">
           <label>
             {word(MANAGE_WORDS.show, "Show")}
@@ -918,6 +1137,90 @@
           </label>
           <button type="button" disabled={busy || chosenMembers.size === 0} onclick={applyToMembers}>{word(MANAGE_WORDS.apply, "Apply")}</button>
         </p>
+        {:else}
+          <!-- The Access tab (StartupAccessPanel, 370 to 425): who may join and as what, with Apply; a character,
+               corporation or alliance blocked or allowed by a search; the blocked and the allowed; Remove Selected. -->
+          <p class="controls">
+            <label>
+              {word(ACCESS_WORDS.defaultAccess, "Mailing List Subscription Access")}
+              <select bind:value={accessChoice} disabled={busy}>
+                <option value={MAILING_LIST_BLOCKED}>{word(ACCESS_WORDS.private, "Only open to allowed (Private)")}</option>
+                <option value={MAILING_LIST_ALLOWED}>{word(ACCESS_WORDS.public, "Open to everyone (Public)")}</option>
+              </select>
+            </label>
+            <label>
+              {word(ACCESS_WORDS.defaultRole, "Default member role")}
+              <select bind:value={roleChoice} disabled={busy}>
+                <option value={MAILING_LIST_MEMBER_DEFAULT}>{word(ACCESS_WORDS.normal, "Normal")}</option>
+                <option value={MAILING_LIST_MEMBER_MUTED}>{word(ACCESS_WORDS.mutedRole, "Muted")}</option>
+              </select>
+            </label>
+            <button type="button" disabled={busy} onclick={applyAccessDefaults}>{word(ACCESS_WORDS.apply, "Apply")}</button>
+          </p>
+          <p class="controls">
+            <label>
+              {word(ACCESS_WORDS.entity, "Character/Corp/Alliance")}
+              <input type="text" bind:value={entityText} />
+            </label>
+            <button type="button" disabled={busy} onclick={() => searchEntity(MAILING_LIST_BLOCKED)}>{word(ACCESS_WORDS.block, "Block")}</button>
+            <button type="button" disabled={busy} onclick={() => searchEntity(MAILING_LIST_ALLOWED)}>{word(ACCESS_WORDS.allow, "Allow")}</button>
+          </p>
+          {#if accessNote !== ""}
+            <p class="note">{accessNote}</p>
+          {/if}
+          {#if entityPick !== null}
+            <!-- The client's pick list (ListWindow.ShowList): its caption, its hint, the owners found, OK and Cancel. -->
+            <div class="mail-confirm" role="dialog" aria-label={filledWord(ACCESS_WORDS.select, "Select {groupName}", { groupName: ownerGroupNames(false) })}>
+              <strong>{filledWord(ACCESS_WORDS.select, "Select {groupName}", { groupName: ownerGroupNames(false) })}</strong>
+              <p>{filledWord(ACCESS_WORDS.found, "{itemCount} {groupNames} were found with \"{searchTerm}\" in their name.", { itemCount: String(entityPick.owners.length), groupNames: ownerGroupNames(true), searchTerm: entityPick.searchTerm })}</p>
+              <ul class="mail-label-list">
+                {#each entityPick.owners as owner (owner.ownerID)}
+                  <li>
+                    <label>
+                      <input type="radio" name="mail-owner-pick" checked={pickedOwner === owner.ownerID} onchange={() => (pickedOwner = owner.ownerID)} />
+                      {pickLabel(owner)}
+                    </label>
+                  </li>
+                {/each}
+              </ul>
+              {#if pickNote !== ""}
+                <p class="error">{pickNote}</p>
+              {/if}
+              <p class="controls">
+                <button type="button" disabled={busy} onclick={pickConfirmed}>{word(ACCESS_WORDS.ok, "OK")}</button>
+                <button type="button" class="minor" onclick={() => (entityPick = null)}>{word(ACCESS_WORDS.cancel, "Cancel")}</button>
+              </p>
+            </div>
+          {/if}
+          {#snippet accessList(title: string, rows: readonly AccessRow[])}
+            <h4>{title}</h4>
+            <div class="table-wrap overflow-x-auto">
+              <table class="guests reflow">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>{word(MANAGE_WORDS.name, "Name")}</th>
+                    <th>{word(ACCESS_WORDS.type, "Type")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each rows as row (row.ownerID)}
+                    <tr>
+                      <td data-label=""><input type="checkbox" aria-label={ownerLabel(row.ownerID)} checked={chosenAccess.has(row.ownerID)} disabled={busy} onchange={(event) => chooseAccess(row.ownerID, event.currentTarget.checked)} /></td>
+                      <td data-label={word(MANAGE_WORDS.name, "Name")}>{ownerLabel(row.ownerID)}</td>
+                      <td data-label={word(ACCESS_WORDS.type, "Type")}>{resolvedName($names.resolved, "ownerGroup", row.ownerID, "")}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          {/snippet}
+          {@render accessList(word(ACCESS_WORDS.blocked, "Blocked"), blockedRows)}
+          {@render accessList(word(ACCESS_WORDS.allowed, "Allowed"), allowedRows)}
+          <p class="controls">
+            <button type="button" disabled={busy} onclick={removeChosenAccess}>{word(ACCESS_WORDS.remove, "Remove Selected")}</button>
+          </p>
+        {/if}
       </section>
     {/if}
     {#if confirming !== null}

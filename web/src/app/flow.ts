@@ -65,6 +65,8 @@ import {
   mailingListMembersOf,
   type MailingListSettings,
   mailingListSettingsOf,
+  ownerMatchesOf,
+  type OwnerMatch,
   mailboxAfterNotice,
   mailboxAfterSending,
   mailboxAllRead,
@@ -1052,6 +1054,14 @@ export interface AppFlow {
   readMailingListMembers(listID: number): Promise<readonly MailingListMember[]>;
   /** Members of a mailing list made members, muted or operators, or kicked, as the Members tab's Apply does: true where it was taken. */
   setMailingListMembers(listID: number, memberIDs: readonly number[], action: MailingListMemberAction): Promise<boolean>;
+  /** A mailing list's subscription access and default member role set, as the Access tab's Apply does: true where it was taken. */
+  setMailingListDefaults(listID: number, defaultAccess: number, defaultMemberAccess: number): Promise<boolean>;
+  /** A character, corporation or alliance let into or kept out of a mailing list, as the Access tab's Allow and Block do: true where it was taken. */
+  setMailingListAccess(listID: number, ownerID: number, access: number): Promise<boolean>;
+  /** One let in or kept out taken off a mailing list's access, as the Access tab's Remove Selected does: true where it was taken. */
+  clearMailingListAccess(listID: number, ownerID: number): Promise<boolean>;
+  /** The owners that are no NPC's whose names begin with the text, as the client's owner search asks for them. */
+  lookupPlayerOwners(text: string): Promise<readonly OwnerMatch[]>;
   /** Mark messages read, or not read, as the mail window's Mark as Read and Mark as Unread do. */
   markMail(messageIDs: readonly number[], read: boolean): Promise<void>;
   /** Move messages to the trash, as the mail window's Trash does. */
@@ -5209,7 +5219,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   async function readMailingListSettings(listID: number): Promise<MailingListSettings | null> {
-    return mailingListSettingsOf(await mailingListRead("GetSettings", listID));
+    const settings = mailingListSettingsOf(await mailingListRead("GetSettings", listID));
+    // UpdateAccessScrollData primes the owners let in or kept out (evemailingListConfig.py 438), and names each and
+    // its kind from its row.
+    if (settings !== null) {
+      requestNames([...settings.access.keys()].flatMap((id) => [{ kind: "owner" as const, id }, { kind: "ownerGroup" as const, id }]));
+    }
+    return settings;
   }
 
   async function readMailingListMembers(listID: number): Promise<readonly MailingListMember[]> {
@@ -5222,6 +5238,35 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // (mailingListsSvc.py 100 to 135).
   async function setMailingListMembers(listID: number, memberIDs: readonly number[], action: MailingListMemberAction): Promise<boolean> {
     return (await mailingListWrite(MAILING_LIST_MEMBER_WRITES[action], [listID, [...memberIDs]])) !== undefined;
+  }
+
+  // The Access tab's writes (evemailingListConfig.py 302 to 326, 453 to 457; mailingListsSvc.py 110 to 139): Apply's
+  // SetDefaultAccess with no cost; Allow's and Block's SetEntitiesAccess with the one entity's access; Remove
+  // Selected's ClearEntityAccess, one entity a call.
+  async function setMailingListDefaults(listID: number, defaultAccess: number, defaultMemberAccess: number): Promise<boolean> {
+    return (await mailingListWrite("SetDefaultAccess", [listID, defaultAccess, defaultMemberAccess, 0])) !== undefined;
+  }
+
+  async function setMailingListAccess(listID: number, ownerID: number, access: number): Promise<boolean> {
+    return (await mailingListWrite("SetEntitiesAccess", [listID, { [String(ownerID)]: access }])) !== undefined;
+  }
+
+  async function clearMailingListAccess(listID: number, ownerID: number): Promise<boolean> {
+    return (await mailingListWrite("ClearEntityAccess", [listID, ownerID])) !== undefined;
+  }
+
+  // SearchOwners with hideNPC (searchOld.py 258 to 259): lookupSvc.LookupPCOwners(searchStr, exact), exact False as
+  // the mailing list window asks it.
+  async function lookupPlayerOwners(text: string): Promise<readonly OwnerMatch[]> {
+    try {
+      return ownerMatchesOf(await bridgeAsk("lookupSvc", "LookupPCOwners", [text, false]));
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+      }
+      throw error;
+    }
   }
 
   // mailSvc.GetLabels (676 to 679): the pilot's labels, asked once as the mail window first draws its folders
@@ -15857,6 +15902,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     readMailingListSettings,
     readMailingListMembers,
     setMailingListMembers,
+    setMailingListDefaults,
+    setMailingListAccess,
+    clearMailingListAccess,
+    lookupPlayerOwners,
     markMail,
     trashMail,
     restoreMail,

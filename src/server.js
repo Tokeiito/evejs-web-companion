@@ -12798,6 +12798,8 @@ const OWNER_NAME_KINDS = Object.freeze({
   alliance: (typeID) => typeID === OWNER_TYPE.alliance,
   character: (typeID) => typeID > 0 && !Object.values(OWNER_TYPE).includes(typeID),
   owner: (typeID) => typeID > 0,
+  // An owner's group, by name (a mailing list's access lists): any owner's row, its type's group named.
+  ownerGroup: (typeID) => typeID > 0,
 });
 
 // The retail client's text for localisation labels, for messages by their
@@ -12856,7 +12858,7 @@ app.post("/api/names", requireAuth, async (req, res, next) => {
     // here, from the install, where the static tables have it not and there is an install to read.
     for (const [key, value] of Object.entries(names)) {
       const separator = key.indexOf(":");
-      if (value === null && Number(key.slice(separator + 1)) === OWNER_SYSTEM_ID && Object.hasOwn(OWNER_NAME_KINDS, key.slice(0, separator))) {
+      if (value === null && Number(key.slice(separator + 1)) === OWNER_SYSTEM_ID && Object.hasOwn(OWNER_NAME_KINDS, key.slice(0, separator)) && key.slice(0, separator) !== "ownerGroup") {
         const word = clientWords.templates([OWNER_SYSTEM_NAME_LABEL])[OWNER_SYSTEM_NAME_LABEL];
         if (typeof word === "string" && word !== "") names[key] = word;
       }
@@ -12926,7 +12928,7 @@ app.post("/api/names", requireAuth, async (req, res, next) => {
           for (const owner of owners) {
             const row = named.get(owner.id);
             if (row && row.name && OWNER_NAME_KINDS[owner.kind](row.typeID)) {
-              names[owner.key] = row.name;
+              names[owner.key] = owner.kind === "ownerGroup" ? staticData.getKnownTypeGroupName(row.typeID) : row.name;
             }
           }
         } catch (_error) {

@@ -51,7 +51,9 @@ export type NameKind =
   | "structure"
   | "system"
   | "region"
-  | "owner";
+  | "owner"
+  /** An owner's kind: the group its type is in, by name (Character, Corporation, Alliance, Faction). */
+  | "ownerGroup";
 
 /** One name request: resolve `id` as `kind`. */
 export interface NameRef {

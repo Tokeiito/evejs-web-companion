@@ -803,6 +803,30 @@ export function mailingListMembersShown(
   });
 }
 
+/** Whom a mailing list keeps out or lets in, and its subscription access (appConst.py 1757 to 1758). */
+export const MAILING_LIST_BLOCKED = 0;
+export const MAILING_LIST_ALLOWED = 1;
+
+/** An owner a search found (lookupSvc's owner searches): its number, name, type and group. */
+export interface OwnerMatch {
+  readonly ownerID: number;
+  readonly ownerName: string;
+  readonly typeID: number;
+  readonly groupID: number;
+}
+
+/** LookupPCOwners' answer, a list of KeyVals; a row with no number left out. */
+export function ownerMatchesOf(answer: JsonValue): readonly OwnerMatch[] {
+  return itemsOf(answer)
+    .map((row) => ({
+      ownerID: toNumber(readKeyVal(row, "ownerID")),
+      ownerName: toText(readKeyVal(row, "ownerName")),
+      typeID: toNumber(readKeyVal(row, "typeID")),
+      groupID: toNumber(readKeyVal(row, "groupID")),
+    }))
+    .filter((owner) => owner.ownerID > 0);
+}
+
 /** A list off the wire, its items; anything else, none. */
 function itemsOf(value: JsonValue | undefined): readonly JsonValue[] {
   return Array.isArray(value) ? value : listItems(value);

@@ -1740,6 +1740,36 @@ function resolveOwnerName(id) {
   return null;
 }
 
+/** The types of an owner that is no character (the client's owner rows): a corporation's, an alliance's, a faction's. */
+const OWNER_TYPE_IDS = Object.freeze({ corporation: 2, alliance: 16159, faction: 30 });
+
+/** A type's group, by name, where the type is known; else null. */
+function getKnownTypeGroupName(typeID) {
+  return getType(typeID) ? getTypeGroupName(typeID) : null;
+}
+
+/**
+ * The group an owner's type is in, by name, as the client names an owner's kind from its row
+ * (evetypes.GetGroupNameByGroup(cfg.eveowners.Get(id).groupID), the mailing list window's access lists,
+ * evemailingListConfig.py 441): null for an owner the tables do not know, or a character with no type here.
+ */
+function resolveOwnerGroupName(id) {
+  if (getCorporation(id)) {
+    return getKnownTypeGroupName(OWNER_TYPE_IDS.corporation);
+  }
+  if (getFaction(id)) {
+    return getKnownTypeGroupName(OWNER_TYPE_IDS.faction);
+  }
+  const character = getCharacter(id);
+  if (character) {
+    return getKnownTypeGroupName(Number(character.typeID) || 0);
+  }
+  if (getAlliance(id)) {
+    return getKnownTypeGroupName(OWNER_TYPE_IDS.alliance);
+  }
+  return null;
+}
+
 /**
  * Resolve one `{kind, id}` to a display name string, or null when the entity is
  * genuinely not in the static tables (a definitive "unknown" the caller caches
@@ -1792,6 +1822,8 @@ function resolveOneName(kind, id) {
       return getRegion(numericID) ? getRegionName(numericID) : null;
     case "owner":
       return resolveOwnerName(numericID);
+    case "ownerGroup":
+      return resolveOwnerGroupName(numericID);
     default:
       return null;
   }
@@ -1955,6 +1987,7 @@ module.exports = {
   getCorporationName,
   getFaction,
   getFactionName,
+  getKnownTypeGroupName,
   getIndustryBlueprint,
   getAllIndustryBlueprints,
   getTypesInGroup,
