@@ -3667,43 +3667,6 @@ export interface DronesResult {
   readonly errors: Readonly<Record<string, string | null>>;
 }
 
-/**
- * What a launch or an order ACTUALLY changed, as the snapshot reports it.
- *
- * `launched` is present only for a launch, and is the honest claim: the drones
- * in space now that were not in space before. A drone the server declined
- * simply does not appear, so the panel says "nothing launched" instead of
- * echoing a phantom success.
- */
-export interface DroneActionResult {
-  readonly inSpace: JsonValue;
-  readonly launched: JsonValue;
-  /**
-   * R34 — the raw call RESULT dict, which is where the server writes its OWN
-   * plain-language reason for every drone it refused, keyed by droneID.
-   *
-   * ⚠ IT WAS BEING DROPPED IN THE BFF, and that was the whole of the defect
-   * R33 worked around by predicting: `droneOrderRoute` forwarded only
-   * `outcome.notifications`, so thirteen sentences the server had already
-   * written for the player never left the building. Undecoded here on purpose —
-   * `bridge/drones.ts` reads it, `bridge/refusals.ts` turns it into words.
-   *
-   * Present only for the three in-space orders. A launch answers with a
-   * different per-item shape and is still judged by `launched` alone.
-   */
-  readonly result: JsonValue;
-  readonly notifications: readonly JsonValue[];
-}
-
-function readDroneAction(data: Record<string, JsonValue>): DroneActionResult {
-  return {
-    inSpace: data.inSpace ?? null,
-    launched: data.launched ?? null,
-    result: data.result ?? null,
-    notifications: Array.isArray(data.notifications) ? data.notifications : [],
-  };
-}
-
 export async function getDrones(options: ApiOptions = {}): Promise<DronesResult> {
   const data = await getJson("/api/bridge/drones", options);
   return readDronesResult(data);
@@ -3801,24 +3764,10 @@ function readDronesResult(data: Record<string, JsonValue>): DronesResult {
   };
 }
 
-/**
- * Launch from the bay (ship.LaunchDrones).
- *
- * ⚠ THIS IS THE DEFENCE. An idle combat drone auto-engages whatever shoots the
- * ship it came from — the server's own behaviour, on by default — so a miner
- * who launches is defended without another click. `engageDrones` below is for
- * choosing a victim, not for being protected.
- */
-export async function launchDrones(
-  drones: readonly { readonly itemID: number; readonly quantity?: number }[],
-  options: ApiOptions = {},
-): Promise<DroneActionResult> {
-  const body: JsonValue = drones.map((entry) => ({
-    itemID: entry.itemID,
-    quantity: entry.quantity ?? 1,
-  }));
-  return readDroneAction(await postJson("/api/bridge/drones/launch", { drones: body }, options));
-}
+// Drones are launched by the page itself, with the client's own call of the ship (bridge/boundEntityWrites.ts,
+// launchDrones), and read before and after by the read above (app/flow.ts, launchedThenRead): it left its route
+// (POST /api/bridge/drones/launch) on 2026-10-14. (An idle combat drone engages what shoots the ship it came from:
+// the server's own behaviour, so a miner who launches is defended without another click.)
 
 // Drones are set on a target, set to mine and sent home by the page itself, with the client's own calls of the
 // entity service (bridge/boundEntityWrites.ts), and the drones are read after by the read above: the three left

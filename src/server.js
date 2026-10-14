@@ -19203,93 +19203,9 @@ app.post("/api/bridge/drones/scoop", requireAuth, async (req, res, next) => {
 const DRONE_ARRIVAL_WAIT_MS = 3000;
 const DRONE_ARRIVAL_STEP_MS = 250;
 
-app.post("/api/bridge/drones/launch", requireAuth, async (req, res, next) => {
-  const held = requireHeldBridgeSession(req, res);
-  if (!held) {
-    return;
-  }
-  const body = req.body || {};
-  const requested = Array.isArray(body.drones)
-    ? body.drones
-        .map((entry) => ({
-          itemID: Number(entry && entry.itemID) || 0,
-          quantity: Math.max(1, Number(entry && entry.quantity) || 1),
-        }))
-        .filter((entry) => entry.itemID > 0)
-    : [];
-  if (requested.length === 0) {
-    res.status(400).json({
-      ok: false,
-      error: "NOTHING_SELECTED",
-      message: "Choose which drones to launch first.",
-    });
-    return;
-  }
-  try {
-    const before = await readHeldFlight(held, req.webSessionID);
-    if (!requireInSpace(res, before.flight)) {
-      return;
-    }
-    // What was ALREADY out, so "launched" can mean "new since the request"
-    // rather than "everything in space". A read that fails here does not block
-    // the launch — it just makes the outcome unverifiable, which is reported as
-    // such below rather than guessed at.
-    let beforeSpace = { drones: null, notifications: [] };
-    try {
-      beforeSpace = await readDronesInSpace(held);
-    } catch {
-      beforeSpace = { drones: null, notifications: [] };
-    }
-    const already = new Set((beforeSpace.drones || []).map((drone) => drone.itemID));
-    const outcome = await heldTopLevelCall(
-      held,
-      req.webSessionID,
-      "ship",
-      "LaunchDrones",
-      [requested.map((entry) => [entry.itemID, entry.quantity]), held.characterID || 0, false],
-      null,
-    );
-    let after = { drones: null, notifications: [] };
-    try {
-      after = await readDronesInSpace(held);
-      // On the game port a launched drone is a ball of the pilot's own park, and it comes with the ballpark
-      // update that follows the call's answer: the client's drone window fills as the balls arrive. (The gateway
-      // reads the server's scene, where the drone already is.) So the park is given a moment before it is said
-      // that none came. A launch the server did nothing with waits the whole of it.
-      if (Boolean(gamePortPilots) && isGamePortHandle(held.bridgeSessionID)) {
-        const sleep = typeof options.transitionSleep === "function"
-          ? options.transitionSleep
-          : (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-        for (let waited = 0; waited < DRONE_ARRIVAL_WAIT_MS && after.drones !== null && !after.drones.some((drone) => !already.has(drone.itemID)); waited += DRONE_ARRIVAL_STEP_MS) {
-          await sleep(DRONE_ARRIVAL_STEP_MS);
-          const again = await readDronesInSpace(held);
-          after = { drones: again.drones, notifications: [...after.notifications, ...again.notifications] };
-        }
-      }
-    } catch {
-      after = { drones: null, notifications: [] };
-    }
-    res.json({
-      ok: true,
-      requested: requested.map((entry) => entry.itemID),
-      inSpace: after.drones,
-      // The only honest claim: which drones are in space NOW that were not
-      // before. A launch the server declined simply does not appear here, and
-      // the panel reports "nothing launched" instead of a phantom success.
-      //
-      // null when EITHER read failed — without the "before" list, a drone in
-      // space now could equally have been there all along, so there is nothing
-      // to claim in either direction.
-      launched:
-        after.drones === null || beforeSpace.drones === null
-          ? null
-          : after.drones.filter((drone) => !already.has(drone.itemID)),
-      notifications: [...beforeSpace.notifications, ...outcome.notifications, ...after.notifications],
-    });
-  } catch (error) {
-    next(error);
-  }
-});
+// Drones are launched by the page's own call since 2026-10-14 (web/src/bridge/boundEntityWrites.ts:
+// ship.LaunchDrones, eveMisc.py 29), the drones read before and after by the page, waited for as the route waited for
+// them (web/src/app/flow.ts, launchedThenRead). Its route (POST /api/bridge/drones/launch) is gone.
 
 // Drones are set on a target, set to mine and sent home by the page's own calls since 2026-10-14
 // (web/src/bridge/boundEntityWrites.ts: entity.CmdEngage, CmdMineRepeatedly and CmdReturnBay, droneFunctions.py 93,

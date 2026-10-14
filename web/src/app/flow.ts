@@ -378,7 +378,9 @@ import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyTo
 import { BOOKMARK_EXPIRY, bookmarkLocation as bookmarkLocationCall } from "../bridge/bookmarkWrites.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
 import {
+  decodeLaunched,
   engageWithDrones,
+  launchDrones as launchDronesCall,
   mineWithDrones as mineWithDronesCall,
   reconnectToDrones as reconnectToDronesCall,
   returnDronesToBay,
@@ -1757,6 +1759,9 @@ const ATTRIBUTE_MODULE_REPAIR_RATE = 1267;
 /** How long a scoop waits for its drones to go out of space, and how often it looks: the launch's own two (src/server.js). */
 const SCOOP_LEAVE_WAIT_MS = 3000;
 const SCOOP_LEAVE_STEP_MS = 250;
+/** How long a launch's new drones are waited for in the drones' read, and how often it is made again. */
+const LAUNCH_ARRIVAL_WAIT_MS = 3000;
+const LAUNCH_ARRIVAL_STEP_MS = 250;
 /** One of an item's attributes as godma was primed with it, where it is a number. */
 function dogmaNumber(item: DogmaItemInfo | null, attributeID: number): number | null {
   const value = item?.attributes.find((attribute) => attribute.attributeID === attributeID)?.value;
@@ -6877,7 +6882,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const requestedCount = request.reduce((sum, entry) => sum + entry.quantity, 0);
     await runDroneAction(
       "Launch",
-      () => api.launchDrones(request, callOptions),
+      () => launchedThenRead(request),
       (inSpace, launched) => {
         if (inSpace === null || launched === null) {
           return "The launch was accepted, but space could not be re-read, so what launched is unknown.";
@@ -6893,6 +6898,51 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         return null;
       },
     );
+  }
+
+  /**
+   * Drones launched by the page's own call (bridge/boundEntityWrites.ts: eveMisc.LaunchFromShip), with the drones
+   * read before and after, as the launch's route read them until 2026-10-14. The drones the answer names come into
+   * the pilot's park with its next update, which the first read may be ahead of: the drones are read again, a quarter
+   * of a second apart, three seconds at most, while one the answer named is not out (where the answer names none,
+   * nothing is waited for). Answers the drones in space and those new among them, null where a read failed.
+   */
+  async function launchedThenRead(stacks: readonly { readonly itemID: number; readonly quantity: number }[]): Promise<{
+    readonly inSpace: JsonValue;
+    readonly launched: JsonValue;
+    readonly result: JsonValue;
+  }> {
+    let before: JsonValue = null;
+    try {
+      before = (await api.getDrones(callOptions)).inSpace;
+    } catch {
+      before = null;
+    }
+    const already = new Set((decodeDronesInSpace(before) ?? []).map((drone) => drone.itemID));
+    const answer = await launchDronesCall(bridgeDo, stacks);
+    const named = decodeLaunched(answer)?.droneIDs ?? [];
+    let inSpace: JsonValue = null;
+    try {
+      inSpace = (await api.getDrones(callOptions)).inSpace;
+      const missing = (read: JsonValue): boolean => {
+        const out = new Set((decodeDronesInSpace(read) ?? []).map((drone) => drone.itemID));
+        return named.some((droneID) => !out.has(droneID));
+      };
+      for (let waited = 0; waited < LAUNCH_ARRIVAL_WAIT_MS && missing(inSpace); waited += LAUNCH_ARRIVAL_STEP_MS) {
+        await new Promise((resolve) => setTimeout(resolve, LAUNCH_ARRIVAL_STEP_MS));
+        inSpace = (await api.getDrones(callOptions)).inSpace;
+      }
+    } catch {
+      inSpace = null;
+    }
+    const rows = Array.isArray(inSpace) ? inSpace : null;
+    const launched: JsonValue = before === null || rows === null
+      ? null
+      : rows.filter((row) => {
+        const itemID = row !== null && typeof row === "object" && !Array.isArray(row) ? Number((row as Record<string, JsonValue>).itemID) : Number.NaN;
+        return !already.has(itemID);
+      });
+    return { inSpace, launched, result: null };
   }
 
   /** The three in-space orders share one verification: did we still see them? */
@@ -8964,10 +9014,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // refusal dict and the authoritative post-call target read.
           case "launchDrones":
             // ⚠ THE WHOLE STACK, NOT ONE FROM IT. See wholeStackLaunch.
-            await api.launchDrones(
-              wholeStackLaunch(action.droneItemIDs, companionDroneStackSizes),
-              callOptions,
-            );
+            await launchedThenRead(wholeStackLaunch(action.droneItemIDs, companionDroneStackSizes));
             return;
           // ⚠ NO SCOOP FOLLOWS THIS. The server flies them home at full speed
           // and scoops them itself inside 2500 m; a scoop call would only ever
@@ -9286,7 +9333,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         await switchModuleOn(moduleID, { targetID, repeat: -1 }, callOptions);
       },
       launchDrones: async (itemIDs) => {
-        await api.launchDrones(wholeStackLaunch(itemIDs, droneStackSizesSeen), callOptions);
+        await launchedThenRead(wholeStackLaunch(itemIDs, droneStackSizesSeen));
       },
       recallDrones: async (ids) => { await returnDronesToBay(bridgeDo, ids); },
       engageDrones: async (ids, targetID) => { await engageDronesConfirmed(ids, targetID); },
@@ -11636,7 +11683,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             case "lock": await lockTargetCall(bridgeDo, self.action.targetID, null); break;
             case "activate": await switchModuleOn(self.action.moduleID, { targetID: self.action.targetID, repeat: -1 }, callOptions); break;
             case "deactivate": await switchModuleOff(self.action.moduleID, { typeID: self.action.typeID }, callOptions); break;
-            case "launchDrones": await api.launchDrones(wholeStackLaunch(self.action.droneItemIDs, droneStackSizes(droneState?.bay ?? [])), callOptions); break;
+            case "launchDrones": await launchedThenRead(wholeStackLaunch(self.action.droneItemIDs, droneStackSizes(droneState?.bay ?? []))); break;
             case "recallDrones": await returnDronesToBay(bridgeDo, self.action.droneIDs); break;
             case "mineDrones": await mineWithDronesCall(bridgeDo, self.action.droneIDs, self.action.targetID); break;
             case "engageDrones": await engageDronesConfirmed(self.action.droneIDs, self.action.targetID); break;
@@ -13375,10 +13422,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           }
           case "launchDrones":
             if (action.droneItemIDs.length > 0) {
-              const result = await api.launchDrones(
-                wholeStackLaunch(action.droneItemIDs, droneStackSizesSeen),
-                callOptions,
-              );
+              const result = await launchedThenRead(wholeStackLaunch(action.droneItemIDs, droneStackSizesSeen));
               const rows = decodeDronesInSpace(result.launched);
               if (rows === null) throw Object.assign(new Error("Drone launch cohort is unconfirmed."), { code: "MODULE_ACTION_UNCERTAIN" });
               return { launchedDroneIDs: rows.filter(row => row.controlled).map(row => row.itemID) };

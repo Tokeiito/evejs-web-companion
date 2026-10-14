@@ -20,7 +20,7 @@
 // ⚠ These are WRITES: never call a decoder to DRIVE a mutation — the confirm-gated
 // BFF route is the only path, and it refuses without `confirm: true`.
 
-import { readPlainJsonField, type JsonValue } from "./wire.ts";
+import { isListValue, readPlainJsonField, unwrapLong, type JsonValue } from "./wire.ts";
 import type { Ask } from "./ask.ts";
 
 function truthy(value: JsonValue | undefined): boolean {
@@ -158,6 +158,77 @@ export async function scoopDrones(act: Ask, droneIDs: readonly number[]): Promis
     throw new Error("That drone could not be identified.");
   }
   return act("ship", "ScoopDrone", [[...droneIDs]]);
+}
+
+// --- Drones launched (the plan's Phase 6b) ------------------------------------
+//
+// Until 2026-10-14 it was one route of the BFF (POST /api/bridge/drones/launch), which read that the pilot was in
+// space and the drones out, made the call with the pilot's own character for whose behalf, and read the drones
+// again until a new one showed, three seconds at most.
+//
+// THE CALL, as the client makes it (droneFunctions.LaunchDrones, 210 to 214, from the drones window and the
+// menu, and eveMisc.LaunchFromShip, 13 to 61):
+//
+//   sm.GetService('godma').GetStateManager().SendDroneSettings()
+//   ret = sm.StartService('gameui').GetShipAccess().LaunchDrones(oldItems, whoseBehalfID, ignoreWarning)
+//
+// oldItems a list of (itemID, quantity) for the stacks, whoseBehalfID None, ignoreWarning False. The answer is a
+// dict of each stack to what came of it: the new drones' numbers, or for a drone that did not launch a tuple the
+// client raises as a UserError of its own (41 to 59). Before the call the client sends the pilot's drone settings
+// (godma's SendDroneSettings: ChangeDroneSettings with whether drones are aggressive and focus fire, 2337 to
+// 2341), which the page has none of and does not send (its route did not either). The game port makes the stacks a
+// list (src/gamePort/retailCalls.js, launching). No Tranquility recording has a launch.
+//
+// ⚠ THE DRONES SHOW IN THE PILOT'S PARK WITH ITS NEXT UPDATE, which may come after the answer: the caller reads
+// the drones again until those the answer named are out (src/app/flow.ts, launchedThenRead).
+
+/** A stack of drones in the bay to launch, and how many of it. */
+export interface DronesToLaunch {
+  readonly itemID: number;
+  readonly quantity: number;
+}
+
+/** What a launch answered: the drones that came out, and what the server said of each that did not. */
+export interface Launched {
+  readonly droneIDs: readonly number[];
+  readonly refusals: readonly JsonValue[];
+}
+
+/**
+ * Launches these stacks, as the client's launch does. With none nothing is asked. Answers what the server said, as
+ * it came. Fails as the call fails.
+ */
+export async function launchDrones(act: Ask, stacks: readonly DronesToLaunch[]): Promise<JsonValue> {
+  const asked = stacks.filter((stack) => Number.isSafeInteger(stack.itemID) && stack.itemID > 0 && stack.quantity > 0);
+  if (asked.length === 0) return null;
+  return act("ship", "LaunchDrones", [asked.map((stack) => [stack.itemID, stack.quantity]), null, false]);
+}
+
+/**
+ * The launch's answer as the client reads it (eveMisc.LaunchFromShip, 41 to 49): each stack's new drones, and a
+ * tuple for each that did not launch. Null where the answer is no dict.
+ */
+export function decodeLaunched(answer: JsonValue): Launched | null {
+  const dict = answer !== null && typeof answer === "object" && !Array.isArray(answer) && (answer as { type?: unknown }).type === "dict"
+    ? (answer as { entries?: unknown }).entries : null;
+  if (!Array.isArray(dict)) return null;
+  const entries = dict as readonly JsonValue[];
+  const droneIDs: number[] = [];
+  const refusals: JsonValue[] = [];
+  for (const entry of entries) {
+    if (!Array.isArray(entry)) continue;
+    const seq = entry[1];
+    const items: readonly JsonValue[] = isListValue(seq) ? seq.items : Array.isArray(seq) ? seq : [];
+    for (const each of items) {
+      if (Array.isArray(each)) {
+        refusals.push(each);
+        continue;
+      }
+      const id = Number(unwrapLong(each) ?? Number.NaN);
+      if (Number.isSafeInteger(id) && id > 0) droneIDs.push(id);
+    }
+  }
+  return { droneIDs, refusals };
 }
 
 // --- Lost drones reconnected to (the plan's Phase 6b) -------------------------
