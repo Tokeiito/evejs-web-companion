@@ -1656,6 +1656,12 @@ or put in the cargo by the pilot's word, the hangar's items to fit from by type,
 cargoItemsByType, fitRigs)`, which answers what failed to load. EveJS refuses a ship that is not the pilot's
 (`FakeItemNotFound`). The page makes the call since `52c3e41c` (`web/src/bridge/fitModule.ts`, `applyFitting`).
 
+**Stack All, 2026-10-14** (`eve/client/script/environment/invControllers.py`, `environment/invCache.py`). The window's
+container asks its own inventory `StackAll(self.locationFlag)` (382 to 388): `flagHangar` for the hangar,
+`flagCargo` for the ship's hold. `invCache`'s container lists first and asks nothing where it has no two stacks
+of a type, passing over a singleton (1065 to 1093). EveJS merges per type, owner and flag and answers `True`. The
+page makes the call since `3199e04d` (`web/src/bridge/inventoryWrites.ts`).
+
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
 (`ACTIONS`, by `eventTypeID`) and a level it reckons from `absolutePoints` and the skill's rank

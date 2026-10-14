@@ -3741,6 +3741,11 @@ Take these defaults, and list each under "For the operator" in the log so they c
   well (`fitfit-whose.js`).
 - **No saved fitting, no refit run.** Test Pilot's library is empty
   (`fittings-read.js`), and the page saves none.
+- **The aid's length of a route runs to the next route.** A route
+  followed by a long comment or a section reads long: read its own
+  lines before sizing it (`inventory/stack` read 390 and was 24).
+- **A replenishment's custody is at the gateway's bound calls**, so it
+  holds back the page's own calls as it held the routes'.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
