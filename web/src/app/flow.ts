@@ -18,7 +18,7 @@ import { CARGO_HOLD, SHIP_HOLDS, SHIP_HOLD_ATTRIBUTES, trackedShipHolds } from "
 import { decodeShipFighters, squadronsByTube } from "../bridge/shipFighters.ts";
 import { evaluateFit, PYTHON_EFFECT_ATTRIBUTES, usedWithTypeIDs, WARNING_TYPE_LISTS } from "../bridge/dogma/fittingWarnings.ts";
 import { fittingSkillWarning, type FittingSkillWarning } from "../bridge/fittingSkills.ts";
-import { FREIGHT_BAYS, planLootTransfers } from "../bridge/bayRouting.ts";
+import { FREIGHT_BAYS, planLootTransfers, splitNeverFits } from "../bridge/bayRouting.ts";
 import { holdFreeM3 } from "../bridge/holdFit.ts";
 import { dispatchSupportCollectionAction } from "./supportCollectionFlow.ts";
 import { compressItemInSpace } from "../bridge/compressionWrites.ts";
@@ -686,6 +686,7 @@ import { aggressionSettingsOf, corporationPublicInfoOf, enlistmentFactionsOf, is
 import { BULK_FIT_SHIPS_CONFIG, fitShips, isShipAssembled, listPlace, maxAvailableAndMissing, maxShipsToFit, personalContainers, qtyInPlaceByTypeIDs } from "../bridge/multiFit.ts";
 import { readAccessGroup, readFolderInfo, readFoldersWithAdminAccess, readMyAccessGroups, readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
 import type { AccessGroup, ActiveBookmarks, BookmarkFolder } from "../bridge/bookmarks.ts";
+import { classifySalvageModules } from "../nav/salvageModules.ts";
 import { agentsAtStation, readAgentsTable } from "../bridge/agentReads.ts";
 import {
   authoritativeFleetMemberCharacterIDs,
@@ -23361,6 +23362,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return resolveDroneControlRangeM(null, droneControlRangeFromSkills(readings)).rangeM;
   }
 
+  /** The fitted, online tractor beams, judged as the salvagers are: high slot, online, group name (nav/salvageModules.ts). */
+  function resolveTractorModuleIDs(): readonly number[] {
+    const fit = store.fitting.get();
+    const resolved = store.names.get().resolved;
+    return classifySalvageModules(fit.slotsError === null ? fit.slots : null, (typeID) => resolved[nameKey("typeGroup", typeID)] ?? null)
+      .tractors.map((module) => module.moduleID);
+  }
+
   function resolveSalvageModuleIDs(): readonly number[] {
     const fit = store.fitting.get();
     if (fit.slotsError !== null) {
@@ -24352,8 +24361,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // "hand it over and let the server judge" — never as "no room".
     const freeFor = (bay: string | null): number | null =>
       holdFreeM3(room.find((entry) => entry.key === (bay ?? "cargo"))?.capacity ?? null);
+    // ⚠ A THING NO HOLD OF THIS HULL COULD TAKE EVEN EMPTY IS NOT A FULL SHIP.
+    // A 4,000 m3 drop in a wreck used to plan nothing, which reads as "no room"
+    // and sent a salvager home to unload and back again for ever. Such rows are
+    // left where they are (bayRouting.splitNeverFits); a can holding nothing
+    // else is as good as emptied, for this pilot and every one like it.
+    const capacityFor = (bay: string | null): number | null =>
+      room.find((entry) => entry.key === (bay ?? "cargo"))?.capacity?.capacity ?? null;
+    const { rest } = splitNeverFits(rows, bays, capacityFor);
+    if (rest.length === 0) {
+      reportContainerEmptied(containerID);
+      return { stacks: rows.length, planned: 0, moved: 0 };
+    }
     const outcome = await transferLootedRows(
-      rows,
+      rest,
       { kind: "container", itemID: containerID },
       bays,
       freeFor,
@@ -24364,13 +24385,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // the container is actually empty. A planned transfer can fit only part
       // of a stack, or leave another stack behind for this or another hull.
       const remaining = await api.openContainer(containerID, callOptions);
-      if (decodeInventoryRows(remaining.list, remaining.volumes).length > 0) {
+      if (splitNeverFits(decodeInventoryRows(remaining.list, remaining.volumes), bays, capacityFor).rest.length > 0) {
         throw new Error("Container still holds cargo after the transfer; retaining its claim for the next observation.");
       }
       reportContainerEmptied(containerID);
       return { stacks: rows.length, planned: outcome.planned, moved: outcome.moved };
     }
-    if (outcome.moved >= rows.length) {
+    if (outcome.moved >= rest.length) {
       // Every stack it had, this ship took: it is empty NOW, which is the same
       // fact as "it was empty" to every pilot still to come. A PARTIAL move is
       // deliberately silent — what did not fit is a fact about this hull's
@@ -25447,6 +25468,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           oreMiningModuleIDs: capabilities.oreMining,
           travelPropulsionModules: capabilities.travelPropulsion,
           salvageModuleIDs: capabilities.salvage,
+          tractorModuleIDs: macro === "salvage-bookmarked-sites" ? resolveTractorModuleIDs() : [],
           shieldRepairerIDs: capabilities.defense.shield,
           armorRepairerIDs: capabilities.defense.armor,
           hullRepairerIDs: capabilities.defense.hull,
@@ -26020,8 +26042,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             return;
           }
           case "lootContainer": {
-            // Same shape as lootWreck — the server applies no ownership check to
-            // a container, so nothing here needs to either.
+            // Same shape as lootWreck. The server DOES judge a container's
+            // loot rights (spaceLootEntitlement: a take without them is theft,
+            // a suspect flag in empire space); the deciders choose only cans the
+            // pilot may take (nav/lootableContainers.ts), and the claim here is
+            // the haulers' lease on a can, not a right to it.
             if (!claimRunID) throw new Error("Container ownership was not confirmed.");
             await lootFrom(action.containerID, claimRunID);
             return;

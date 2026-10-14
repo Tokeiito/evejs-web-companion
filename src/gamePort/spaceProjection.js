@@ -394,6 +394,10 @@ function projectSpace(park, { solarSystemID, shipID, readings = null, warpDestin
       hullCapacity: readings ? readings.hullCapacity : null,
       // Which modules are running or overloaded: godma's effects.
       activeModuleIDs: readings && Array.isArray(readings.activeModuleIDs) ? readings.activeModuleIDs : [],
+      // What each running module is cycling on, [moduleID, targetID] pairs. Null where dogma could not be asked.
+      activeModuleTargets: readings && Array.isArray(readings.activeModuleTargets) ? readings.activeModuleTargets : null,
+      // How far each fitted module reaches, [moduleID, metres] pairs, bonuses applied. Null where dogma was not asked.
+      moduleRanges: readings && Array.isArray(readings.moduleRanges) ? readings.moduleRanges : null,
       overloadedModuleIDs: readings && Array.isArray(readings.overloadedModuleIDs) ? readings.overloadedModuleIDs : [],
       // How damaged each module is, {itemID: 0..1}, and which weapons are grouped, {masterID: [slaveID, ...]}:
       // dogma's as well. Null, not empty, when dogma could not be asked: empty means "none".

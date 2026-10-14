@@ -276,6 +276,11 @@ function decodeShip(value: JsonValue | undefined): SpaceShipStatus | null {
     // to null ("unknown"), not [] — a gateway that could not answer must never
     // be reported to the player as "nothing is running".
     activeModuleIDs: decodeIDList(raw.activeModuleIDs),
+    // What each running module is cycling on (a tractor beam's wreck, a
+    // salvager's). ABSENT is null ("unknown"), as for the line above.
+    activeModuleTargets: decodeModuleTargets(raw.activeModuleTargets),
+    // How far each fitted module reaches, bonuses applied (dogma's maxRange).
+    moduleRanges: decodeModuleRanges(raw.moduleRanges),
     // Which modules the SERVER says are OVERLOADED. Same contract as the line
     // above: an ABSENT field is null ("unknown"), never [] — and here that
     // distinction earns its keep, because "no heat" and "we could not tell" are
@@ -370,6 +375,36 @@ function decodeModuleDamage(
     }
   }
   return damage;
+}
+
+/** [moduleID, metres] pairs — or null when the field is absent. */
+function decodeModuleRanges(value: JsonValue | undefined): readonly { readonly moduleID: number; readonly rangeM: number }[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const pairs: { moduleID: number; rangeM: number }[] = [];
+  for (const entry of value as JsonValue[]) {
+    if (!Array.isArray(entry) || entry.length < 2) continue;
+    const moduleID = idOrNull(entry[0] as JsonValue);
+    const rangeM = typeof entry[1] === "number" && Number.isFinite(entry[1]) && entry[1] > 0 ? entry[1] : null;
+    if (moduleID !== null && rangeM !== null) pairs.push({ moduleID, rangeM });
+  }
+  return pairs;
+}
+
+/** [moduleID, targetID] pairs (long-aware) — or null when the field is absent. */
+function decodeModuleTargets(value: JsonValue | undefined): readonly { readonly moduleID: number; readonly targetID: number }[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const pairs: { moduleID: number; targetID: number }[] = [];
+  for (const entry of value as JsonValue[]) {
+    if (!Array.isArray(entry) || entry.length < 2) continue;
+    const moduleID = idOrNull(entry[0] as JsonValue);
+    const targetID = idOrNull(entry[1] as JsonValue);
+    if (moduleID !== null && targetID !== null) pairs.push({ moduleID, targetID });
+  }
+  return pairs;
 }
 
 /** A list of game IDs (long-aware) — or null when the field is absent. */
