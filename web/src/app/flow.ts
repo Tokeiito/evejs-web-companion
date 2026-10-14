@@ -9,7 +9,6 @@ import { setSessionToken } from "./sessionToken.ts";
 import { pageFetch } from "./pageFetch.ts";
 import {
   getStationGuests,
-  getStationInfoCached,
   getStationItemBits,
   getStructureGuests,
 } from "../bridge/stationPanel.ts";
@@ -2861,18 +2860,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return;
     }
     // Retail issues these when the docked UI loads; the page issues them after
-    // select succeeds (push forwarding is a later goal, G6). The three reads
-    // are INDEPENDENT: a slow or failed map.GetStationInfo (the heavy
-    // full-table marshal) must never blank the services row or the guest list.
+    // select succeeds (push forwarding is a later goal, G6). The two reads
+    // are INDEPENDENT: a slow or failed one must never blank the other.
     // And because selectCharacter calls this after the view has already
     // switched to the panel, a failure is reported through the store (visible
     // in the panel) rather than thrown into an unmounted caller — except a
     // lost session, which must unwind the flow back to the character list.
-    const labels = ["GetStationItemBits", "GetGuests", "GetStationInfo"] as const;
-    const [bits, guests, cached] = await Promise.allSettled([
+    //
+    // (The map's stations, map.GetStationInfo, are not asked here since 2026-10-14. The client asks them once in a
+    // session, as its station service sets up in a station (station/base.py 185, ui.GetStation; uisvc.py 244 to 248
+    // keeps the table), and the game port's transport asks them so as a character is chosen in a station
+    // (src/gamePort/pilots.js, lobbyRead). The page read only whether the answer was the cached envelope, and nothing
+    // showed it.)
+    const labels = ["GetStationItemBits", "GetGuests"] as const;
+    const [bits, guests] = await Promise.allSettled([
       getStationItemBits(callOptions),
       getStationGuests(callOptions),
-      getStationInfoCached(callOptions),
     ]);
     assertCurrent?.();
 
@@ -2882,11 +2885,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (guests.status === "fulfilled") {
       store.apply({ type: "station/guests", guests: guests.value });
     }
-    if (cached.status === "fulfilled") {
-      store.apply({ type: "station/info-cached", cached: cached.value });
-    }
-
-    const failures = [bits, guests, cached]
+    const failures = [bits, guests]
       .map((result, index) => ({ result, label: labels[index] }))
       .filter((entry) => entry.result.status === "rejected") as ReadonlyArray<{
       result: PromiseRejectedResult;

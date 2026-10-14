@@ -159,10 +159,7 @@ export type FeedEvent =
   | { readonly type: "station/guests"; readonly guests: readonly StationGuest[] }
   // The lobby's offices, once the player has asked for them listed.
   | { readonly type: "station/offices"; readonly offices: StationOffices }
-  // map.GetStationInfo answered with its retail CachedMethodCallResult
-  // envelope (the rowset itself rides the retail object cache).
-  | { readonly type: "station/info-cached"; readonly cached: boolean }
-  // One or more docked reads failed non-fatally (e.g. a slow GetStationInfo):
+  // One or more docked reads failed non-fatally:
   // surfaced so the panel shows the reason instead of a perpetual "Loading…".
   // A null message clears the error after a clean refresh.
   | { readonly type: "station/read-error"; readonly message: string | null }

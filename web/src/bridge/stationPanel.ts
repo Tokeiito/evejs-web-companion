@@ -8,13 +8,11 @@
 //  - station.GetGuests() -> [[charID, corp, alliance, warFaction], ...] (a list
 //    of lists on Tranquility; a tuple in the list is read the same)
 //    for the guest panel (station/base.py:103).
-//  - map.GetStationInfo() -> the all-station table. EveJS answers with the
-//    retail CachedMethodCallResult envelope whose rowset rides the retail
-//    object cache (a cached-object reference), so the browser cannot decode
-//    the rows themselves; the page issues the call faithfully and records
-//    that the cached envelope answered. Station identity/naming comes from
-//    client-local static data (exactly as retail resolves names from its
-//    static DB) via the BFF select response.
+//
+// (The map's stations, map.GetStationInfo, are not asked by the page since 2026-10-14: the client asks them once in a
+// session as its station service sets up (station/base.py 185, uisvc.py 244 to 248), and the game port's transport
+// asks them so. Station identity/naming comes from client-local static data (exactly as retail resolves names from
+// its static DB) via the BFF select response.)
 
 // IN A STRUCTURE the lobby asks for none of the three. Its guests panel asks the client's structure guests
 // service (dockedUI/guests.py 98 to 101), which asks once and keeps:
@@ -104,25 +102,6 @@ export function decodeStructureGuests(result: JsonValue): StationGuest[] {
   return guests;
 }
 
-/** Recognize the retail CachedMethodCallResult envelope GetStationInfo returns. */
-export function isCachedMethodCallResult(result: JsonValue): boolean {
-  if (typeof result !== "object" || result === null || Array.isArray(result)) {
-    return false;
-  }
-  const candidate = result as { type?: unknown; name?: unknown };
-  if (candidate.type !== "object") {
-    return false;
-  }
-  const name = candidate.name as { value?: unknown } | string | null | undefined;
-  const nameText =
-    typeof name === "string"
-      ? name
-      : typeof name === "object" && name !== null && typeof name.value === "string"
-        ? name.value
-        : "";
-  return nameText.endsWith("objectCaching.CachedMethodCallResult");
-}
-
 export async function getStationItemBits(
   options: CallMethodOptions = {},
 ): Promise<StationServiceBits> {
@@ -156,9 +135,3 @@ export async function getStructureGuests(
   }
 }
 
-export async function getStationInfoCached(
-  options: CallMethodOptions = {},
-): Promise<boolean> {
-  const outcome = await callMethod("map", "GetStationInfo", [], null, options);
-  return isCachedMethodCallResult(outcome.result);
-}

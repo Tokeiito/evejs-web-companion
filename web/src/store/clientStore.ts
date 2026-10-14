@@ -139,8 +139,6 @@ export interface StationSlice {
   readonly offices: StationOffices | null;
   /** The account's clone grade (0 an alpha clone's, 1 an omega's); null until read, and where it cannot be. */
   readonly cloneGrade: CloneGrade | null;
-  /** null until map.GetStationInfo answered; then whether it was the cached envelope. */
-  readonly stationInfoCached: boolean | null;
   /** Non-null when the last docked-read refresh had a (non-fatal) failure. */
   readonly readError: string | null;
 }
@@ -218,7 +216,6 @@ const INITIAL_STATION: StationSlice = Object.freeze({
   guests: Object.freeze([]) as readonly StationGuest[],
   offices: null,
   cloneGrade: null,
-  stationInfoCached: null,
   readError: null,
 });
 
@@ -1136,7 +1133,6 @@ export function createClientStore(): ClientStore {
           structureServiceIDs: null,
           guests: [],
           offices: null,
-          stationInfoCached: null,
           readError: null,
         });
         break;
@@ -1155,9 +1151,6 @@ export function createClientStore(): ClientStore {
         break;
       case "character/clone-grade":
         station.set({ ...station.get(), cloneGrade: event.cloneGrade });
-        break;
-      case "station/info-cached":
-        station.set({ ...station.get(), stationInfoCached: event.cached });
         break;
       case "station/read-error":
         station.set({ ...station.get(), readError: event.message });
