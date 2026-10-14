@@ -379,6 +379,7 @@ import { alignTo as alignToCall, approach as approachCall, autopilotWarp as auto
 import { dock as dockCall, isStation, jump as jumpCall, undock as undockCall } from "../bridge/placeChanges.ts";
 import { boardCorvette as boardCorvetteCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
 import { createJobReckoner, type JobReckoner, type JobReckoning } from "../bridge/industryJobReckoning.ts";
+import { NO_OPTIONAL_MATERIAL } from "../bridge/industryReckonings.mjs";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
 import { runSlashCommand } from "../bridge/gmWrites.ts";
 import { launchCommodities as launchCommoditiesCall, rerouteExtractorRoutes, type NewRoute } from "../bridge/planetWrites.ts";
@@ -1927,20 +1928,28 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return jobReckoning.reckoner;
   }
   /**
-   * A manufacturing job as the page reckons it itself, for the pilot online; null where there is no pilot, or the
-   * reckoning failed (a lost session is no reckoning, and is passed on).
+   * A job as the page reckons it itself, for the pilot online; null where there is no pilot, or the reckoning failed
+   * (a lost session is no reckoning, and is passed on). Its materials as the window lists them: an invention's empty
+   * optional place is nothing taken, and is not listed (the route's preview leaves it out too).
    */
   async function reckonedHere(request: api.IndustryJobRequest): Promise<JobReckoning | null> {
     const characterID = store.station.get().online?.characterID ?? null;
-    if (characterID === null || request.activity !== "manufacturing") return null;
+    if (characterID === null) return null;
     try {
-      return await jobReckonerFor(characterID).manufacturing({
+      const reckoned = await jobReckonerFor(characterID).reckon({
+        activity: request.activity,
         blueprintTypeID: request.blueprintTypeID,
         facilityID: request.facilityID,
         runs: request.runs,
+        ...(request.licensedRuns === undefined ? {} : { licensedRuns: request.licensedRuns }),
+        ...(request.productTypeID === undefined ? {} : { productTypeID: request.productTypeID }),
+        ...(request.decryptorTypeID === undefined ? {} : { decryptorTypeID: request.decryptorTypeID }),
         timeEfficiency: request.timeEfficiency ?? null,
         materialEfficiency: request.materialEfficiency ?? null,
       });
+      const listed = reckoned.materials === null ? null
+        : Object.fromEntries(Object.entries(reckoned.materials).filter(([name]) => name !== NO_OPTIONAL_MATERIAL));
+      return { ...reckoned, materials: listed };
     } catch (error) {
       if (isSessionLost(error)) throw error;
       return null;
@@ -14865,7 +14874,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     loadIndustry,
 
-    // A manufacturing job's time, materials and what it costs to start are the page's own reckoning
+    // A job's time, materials and what it costs to start, of every kind of work, are the page's own reckoning
     // (reckonedHere), as the client's window shows its job's own; the route's preview is asked for what the job's
     // place has of each material, and its figures are shown only where the page could not reckon one (a facility with
     // rig modifiers, which the client asks afresh). The route reckons by the same module.

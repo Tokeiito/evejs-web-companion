@@ -1,17 +1,18 @@
-// A manufacturing job reckoned by the page itself, as the client's own job reckons it before it sends the job to be
+// An industry job reckoned by the page itself, as the client's own job reckons it before it sends the job to be
 // previewed or installed (industry/job.py: the time 460 to 468, the materials 470 to 485, the cost 310 to 320, the
 // tax 450 to 458, and what it costs to start 127 to 174), by the arithmetic the BFF's routes use too
-// (industryReckonings.mjs, which says the order of each and why it matters). What each is reckoned from, and where
-// the page has it:
+// (industryReckonings.mjs, which says the order of each and why it matters): a manufacturing job, a copy job, a
+// research of a blueprint's time or of its materials, an invention and a reaction. What each is reckoned from, and
+// where the page has it:
 //
 //   the blueprint's recipe, the product's group and category,        the game's data, by the BFF's static reads
 //   each required skill's time per level (1982), the blueprint
 //   type's cost multiplier (1954), the facility's system's security
 //   the blueprint's time and material research                       the blueprint, as the page read it
 //   the pilot's level in effect of each required skill                skillHandler.GetSkills, as the client's skill
-//                                                                     service has it (industrySvc._UpdateSkills 224)
-//   the pilot's own manufacturing time (219)                          its own dogma location (QueryAttributeValue),
-//                                                                     which on the game port godma answers with
+//   (a manufacturing job's alone)                                     service has it (industrySvc._UpdateSkills 224)
+//   the pilot's own time for the work (219, 387, 385, 398, 1959,      its own dogma location (QueryAttributeValue),
+//   2662: industryCommon.CHARACTER_MODIFIERS, 19 to 43)               which on the game port godma answers with
 //                                                                     nothing asked of the server
 //   the facility's row                                                facilityManager.GetFacilities: the region's,
 //                                                                     as the client's facility service keeps them
@@ -23,18 +24,32 @@
 //   the clone grade                                                   subscriptionMgr.GetCloneGrade, as the clone
 //                                                                     grade service asks it (game port only)
 //
+// What differs by the work (as the routes have it, src/server.js JOB_RECKONINGS): a copy job is by the runs each copy
+// is licensed for; a research job by the level the blueprint is at in that research, and nothing where the page
+// read no research of that kind; an invention's base is the price of the blueprint it is to make, and its materials
+// have the place of its decryptor, chosen or not; a reaction's cost, tax and fee are a manufacturing job's, its
+// formula priced by its reaction's materials. Only a manufacturing job is of the blueprint's time and material
+// research and of its required skills' times.
+//
 // ⚠ ALL OR NOTHING, as the routes' reckonings are: the server refuses a job whose time, cost or materials are not
 // nought (or empty) and are not its own to the unit. Each figure is null where an input was not had, and nought goes
 // for it then, which the server works out by itself.
 //
-// NOT DONE: a facility with rig modifiers, which the client's job asks afresh (facilitySvc.GetFreshFacility); any
-// other kind of work than manufacturing.
+// NOT DONE: a facility with rig modifiers, which the client's job asks afresh (facilitySvc.GetFreshFacility); the
+// most runs a job can have, which the routes hold a copy job's, a research's and an invention's to (job.py 395).
 
 import type { Ask } from "./ask.ts";
 import { effectiveSkillLevel } from "./skillSheet.ts";
 import type { JsonValue } from "./wire.ts";
 import {
+  SERVICE_LABORATORY_COPYING,
+  SERVICE_LABORATORY_INVENTION,
   blueprintPrice,
+  copyingJobCost,
+  copyingJobFee,
+  copyingJobMaterials,
+  copyingJobSeconds,
+  copyingJobTax,
   facilityCharges,
   facilityCostModifiers,
   facilityGlobalModifiers,
@@ -42,30 +57,102 @@ import {
   facilityTaxRate,
   facilityTimeModifiers,
   findFacilityRow,
+  inventionJobCost,
+  inventionJobFee,
+  inventionJobMaterials,
+  inventionJobSeconds,
+  inventionJobTax,
+  inventionProductTypeID,
   manufacturingJobCost,
   manufacturingJobFee,
   manufacturingJobMaterials,
   manufacturingJobSeconds,
   manufacturingJobTax,
   manufacturingServiceID,
+  reactionJobMaterials,
+  reactionJobSeconds,
+  reactionServiceID,
+  researchJobCost,
+  researchJobFee,
+  researchJobMaterials,
+  researchJobSeconds,
+  researchJobTax,
+  researchServiceID,
+  researchStanding,
+  type FacilityModifier,
   type JobFee,
   type MaterialsTaken,
   type ProductType,
   type RecipeMaterial,
+  type ResearchStanding,
 } from "./industryReckonings.mjs";
 
-/** industry.ACTIVITY_MANUFACTURING: the facility's lists of modifiers are by the activity's number. */
-const ACTIVITY_MANUFACTURING = 1;
-/** const.attributeManufactureTimeMultiplier: the pilot's own manufacturing time. */
-const ATTRIBUTE_MANUFACTURE_TIME_MULTIPLIER = 219;
 /** const.attributeManufactureTimePerLevel: what a skill a blueprint requires takes off a manufacturing job's time, a level. */
 const ATTRIBUTE_MANUFACTURE_TIME_PER_LEVEL = 1982;
 /** const.attributeJobCostMultiplier: a blueprint type's own multiplier of what a job with it costs. */
 const ATTRIBUTE_JOB_COST_MULTIPLIER = 1954;
 
+/** The kinds of work, by the name the page and the game's data give each. */
+export type JobActivity = "manufacturing" | "copying" | "research_time" | "research_material" | "invention" | "reaction";
+
+/** A job's base, beside the blueprint's price: its runs, a copy's licensed runs, and a research's time and level. */
+interface Basis {
+  readonly runs: number;
+  readonly licensedRuns: number;
+  readonly activityTime?: number;
+  readonly level?: number;
+}
+
+/** What each kind of work is reckoned by: its number, and the pilot's own time for it (an attribute of the character's). */
+const KINDS: Readonly<Record<JobActivity, { readonly activityID: number; readonly timeAttribute: number }>> = Object.freeze({
+  manufacturing: { activityID: 1, timeAttribute: 219 },
+  research_time: { activityID: 3, timeAttribute: 385 },
+  research_material: { activityID: 4, timeAttribute: 398 },
+  copying: { activityID: 5, timeAttribute: 387 },
+  invention: { activityID: 8, timeAttribute: 1959 },
+  reaction: { activityID: 9, timeAttribute: 2662 },
+});
+type Kind = (typeof KINDS)[JobActivity];
+
+/** A job's cost through its modifiers, by its kind (a reaction's is a manufacturing job's: activities/reaction.py 16). */
+function costOf(activity: JobActivity, job: Basis & { readonly blueprintPrice: number }, modifiers: {
+  readonly blueprintAmount: number | null; readonly alpha: boolean; readonly faction: number | null; readonly system: number | null;
+  readonly facilityModifiers: readonly FacilityModifier[]; readonly productType: ProductType | null;
+}): number | null {
+  switch (activity) {
+    case "copying": return copyingJobCost({ ...job, ...modifiers });
+    case "research_time": case "research_material": return researchJobCost({ ...job, activityTime: job.activityTime, level: job.level, ...modifiers });
+    case "invention": return inventionJobCost({ ...job, ...modifiers });
+    default: return manufacturingJobCost({ ...job, ...modifiers });
+  }
+}
+
+/** A job's tax of its base, by its kind. */
+function taxOf(activity: JobActivity, job: Basis & { readonly blueprintPrice: number }, facilityTax: number | null): number | null {
+  switch (activity) {
+    case "copying": return copyingJobTax({ ...job, facilityTax });
+    case "research_time": case "research_material": return researchJobTax({ ...job, activityTime: job.activityTime, level: job.level, facilityTax });
+    case "invention": return inventionJobTax({ ...job, facilityTax });
+    default: return manufacturingJobTax({ ...job, facilityTax });
+  }
+}
+
+/** What a job costs to start, by its kind (a research job's SCC surcharge halved). */
+function feeOf(activity: JobActivity, job: Basis & { readonly blueprintPrice: number }, charges: {
+  readonly cost: number | null; readonly tax: number | null; readonly sccTaxModifier: number | null; readonly security: number | null;
+}): JobFee | null {
+  switch (activity) {
+    case "copying": return copyingJobFee({ ...job, ...charges });
+    case "research_time": case "research_material": return researchJobFee({ ...job, activityTime: job.activityTime, level: job.level, ...charges });
+    case "invention": return inventionJobFee({ ...job, ...charges });
+    default: return manufacturingJobFee({ ...job, ...charges });
+  }
+}
+
 /** A blueprint's industry, as the game's data has it (the BFF's static read of blueprints). */
 interface Definition {
   readonly productTypeID?: unknown;
+  readonly maxProductionLimit?: unknown;
   readonly activities?: Readonly<Record<string, Activity | undefined>>;
 }
 interface Activity {
@@ -91,10 +178,17 @@ export interface JobReckoningReads {
 }
 
 /** The job as the window has it. */
-export interface ManufacturingJob {
+export interface IndustryJob {
+  readonly activity: JobActivity;
   readonly blueprintTypeID: number;
   readonly facilityID: number;
   readonly runs: number;
+  /** A copy job's runs each copy is licensed for, where the pilot said them; the blueprint's most otherwise. */
+  readonly licensedRuns?: number;
+  /** An invention's blueprint to make, where its recipe has more than one. */
+  readonly productTypeID?: number;
+  /** An invention's decryptor, nought or none for none. */
+  readonly decryptorTypeID?: number;
   /** The blueprint's own time research; null where it was not read. */
   readonly timeEfficiency: number | null;
   /** And its material research. */
@@ -121,6 +215,18 @@ async function orNone<T>(read: () => Promise<T>): Promise<T | null> {
     if (code === "SESSION_NOT_FOUND") throw reason;
     return null;
   }
+}
+
+/**
+ * Whether a facility's row lists rig modifiers (facilitySvc.GetFreshFacility, 109: `rigModifiers`), which the
+ * client's job then asks for afresh, and the page does not yet: such a facility has nothing reckoned by the page.
+ */
+function hasRigModifiers(row: unknown): boolean {
+  const args = row !== null && typeof row === "object" ? (row as { args?: { entries?: unknown } }).args : undefined;
+  const entries = args && Array.isArray(args.entries) ? (args.entries as unknown[]) : [];
+  const field = entries.find((each) => Array.isArray(each) && each[0] === "rigModifiers") as unknown[] | undefined;
+  const rigs = field ? (field[1] as { items?: unknown; entries?: unknown } | null) : null;
+  return Boolean(rigs) && ((Array.isArray(rigs?.items) && rigs.items.length > 0) || (Array.isArray(rigs?.entries) && rigs.entries.length > 0));
 }
 
 const positive = (value: unknown): number | null => {
@@ -157,9 +263,15 @@ export function createJobReckoner(reads: JobReckoningReads) {
   const definitionsKept = new Map<number, Definition | null>();
 
   const kept = {
-    async facilities(): Promise<JsonValue | null> {
-      facilities ??= await orNone(() => reads.ask("facilityManager", "GetFacilities", []));
-      return facilities;
+    /**
+     * A facility's row among the region's, as they are kept; asked for again once where the facility is not among
+     * them, as after a move to another region, where the client's service has another region's.
+     */
+    async facility(facilityID: number): Promise<unknown> {
+      const had = facilities === null ? null : findFacilityRow(facilities, facilityID);
+      if (had) return had;
+      facilities = await orNone(() => reads.ask("facilityManager", "GetFacilities", []));
+      return facilities === null ? null : findFacilityRow(facilities, facilityID);
     },
     async prices(): Promise<ReadonlyMap<number, number | null> | null> {
       prices ??= adjustedPrices(await orNone(() => reads.ask("config", "GetAverageMarketPrices", [])));
@@ -174,8 +286,11 @@ export function createJobReckoner(reads: JobReckoningReads) {
     },
   };
 
-  /** Blueprints' industry, asked of the game's data where it is not kept, until every blueprint among materials is had. */
-  async function definitionsOf(typeIDs: readonly number[]): Promise<void> {
+  /**
+   * Blueprints' industry, asked of the game's data where it is not kept, and that of every blueprint among the
+   * materials of `work` in turn: a blueprint is priced by those (industryCommon.GetBlueprintPrice, 520 to 543).
+   */
+  async function definitionsOf(typeIDs: readonly number[], work: string): Promise<void> {
     let asking = typeIDs.filter((typeID) => !definitionsKept.has(typeID));
     while (asking.length > 0) {
       const answered = await reads.definitions(asking);
@@ -184,7 +299,7 @@ export function createJobReckoner(reads: JobReckoningReads) {
         const definition = answered[String(typeID)];
         const had = definition !== null && typeof definition === "object" && !Array.isArray(definition) ? (definition as Definition) : null;
         definitionsKept.set(typeID, had);
-        for (const material of had?.activities?.manufacturing?.materials ?? []) {
+        for (const material of had?.activities?.[work]?.materials ?? []) {
           const materialType = positive(material.typeID);
           if (materialType !== null && !definitionsKept.has(materialType) && !next.includes(materialType)) next.push(materialType);
         }
@@ -193,95 +308,180 @@ export function createJobReckoner(reads: JobReckoningReads) {
     }
   }
 
-  /** A manufacturing job, reckoned. */
-  async function manufacturing(job: ManufacturingJob): Promise<JobReckoning> {
-    await definitionsOf([job.blueprintTypeID]);
+  /** A job, reckoned. */
+  async function reckon(job: IndustryJob): Promise<JobReckoning> {
+    const kind = KINDS[job.activity];
+    if (!kind) return NONE;
+    const manufacturing = job.activity === "manufacturing";
+    const research = job.activity === "research_time" || job.activity === "research_material";
+    await definitionsOf([job.blueprintTypeID], "manufacturing");
     const definition = definitionsKept.get(job.blueprintTypeID) ?? null;
-    const activity = definition?.activities?.manufacturing ?? null;
+    const activity = definition?.activities?.[job.activity] ?? null;
     if (!definition || !activity) return NONE;
-    const productTypeID = positive(definition.productTypeID) ?? positive(activity.products?.[0]?.typeID);
-    const firstMade = positive(activity.products?.[0]?.typeID);
-    const [productType, madeType, facilityList] = await Promise.all([
-      productTypeID === null ? null : orNone(() => reads.typeFacts(productTypeID)),
-      firstMade === null ? null : orNone(() => reads.typeFacts(firstMade)),
-      kept.facilities(),
-    ]);
-    const row = facilityList === null ? null : findFacilityRow(facilityList, job.facilityID);
-    if (!row) return NONE;
+    // Where the blueprint stands in the research the job is for, by the research of that kind the page read of it;
+    // null for a research of which it read nothing, which has no job reckoned.
+    const standing: ResearchStanding | null | undefined = research
+      ? researchStanding(kind.activityID, job.activity === "research_time" ? job.timeEfficiency : job.materialEfficiency)
+      : undefined;
+    if (standing && standing.finished) return NONE;
+    // The runs each copy is licensed for: a copy job's as the pilot said them, and the blueprint's most else.
+    const most = positive(definition.maxProductionLimit) ?? 1;
+    const licensedRuns = job.activity === "copying" && job.licensedRuns !== undefined ? job.licensedRuns : most;
 
-    const timeSeconds = await reckonedTime(job, activity, row, productType);
-    const materials = job.materialEfficiency === null ? null : manufacturingJobMaterials({
-      materials: Array.isArray(activity.materials) ? activity.materials : [],
-      runs: job.runs,
-      materialEfficiency: job.materialEfficiency,
-      facilityModifiers: facilityMaterialModifiers(row, ACTIVITY_MANUFACTURING),
-      productType,
-    });
+    // The type a facility's modifiers are held to: the blueprint's product, or a formula's (industry/blueprint.py 62 to 72).
+    const making = definition.activities?.manufacturing ?? definition.activities?.reaction ?? null;
+    const productTypeID = positive(definition.productTypeID) ?? positive(making?.products?.[0]?.typeID);
+    // The service a structure does the work by (activity.py 54 to 57): a manufacturing job's or a reaction's by the
+    // group of the first thing made, and every other's its own.
+    const madeBy = job.activity === "manufacturing" || job.activity === "reaction" ? positive(definition.activities?.[job.activity]?.products?.[0]?.typeID) : null;
+    const [productType, madeType, facilityRow] = await Promise.all([
+      productTypeID === null ? null : orNone(() => reads.typeFacts(productTypeID)),
+      madeBy === null ? null : orNone(() => reads.typeFacts(madeBy)),
+      kept.facility(job.facilityID),
+    ]);
+    if (facilityRow && hasRigModifiers(facilityRow)) return NONE;
+    const row = facilityRow || null;
+    const decryptor = job.activity === "invention" && (job.decryptorTypeID ?? 0) > 0;
+    if (!row && !decryptor) return NONE;
+
+    const timeSeconds = row ? await reckonedTime(job, kind, activity, row, productType, standing, licensedRuns) : null;
+    const materials = manufacturing && job.materialEfficiency === null ? null : reckonedMaterials(job, kind, activity, row, productType, licensedRuns);
+    if (!row || standing === null) return { timeSeconds, materials, cost: null, tax: null, fee: null };
 
     // The cost, the tax and what it costs to start, off the price table: none of them without one.
     const table = await kept.prices();
     if (table === null) return { timeSeconds, materials, cost: null, tax: null, fee: null };
-    const price = blueprintPrice(job.blueprintTypeID, {
-      activity: "manufacturing",
+    // The type the base is of (the invented blueprint for an invention), priced by the materials of the work it is
+    // priced by (a reaction's own for a reaction, manufacturing's for any other).
+    const pricedType = job.activity === "invention" ? inventionProductTypeID(activity, job.productTypeID ?? 0) : job.blueprintTypeID;
+    const pricedWork = job.activity === "reaction" ? "reaction" : "manufacturing";
+    if (!(pricedType > 0)) return { timeSeconds, materials, cost: null, tax: null, fee: null };
+    await definitionsOf([pricedType], pricedWork);
+    const price = blueprintPrice(pricedType, {
+      activity: pricedWork,
       activitiesOf: (typeID) => definitionsKept.get(typeID)?.activities ?? null,
       adjustedPriceOf: (typeID) => (table.has(typeID) ? table.get(typeID) ?? null : null),
     });
     if (price === null) return { timeSeconds, materials, cost: null, tax: null, fee: null };
+    const basis: Basis = {
+      runs: job.runs,
+      licensedRuns,
+      ...(standing ? { activityTime: Number(activity.time), level: standing.level } : {}),
+    };
     const [cloneGrade, multipliers] = await Promise.all([
       kept.grade(),
       orNone(() => reads.typeAttributes([job.blueprintTypeID], [ATTRIBUTE_JOB_COST_MULTIPLIER])),
     ]);
-    const { faction, system } = facilityGlobalModifiers(row, ACTIVITY_MANUFACTURING);
+    const { faction, system } = facilityGlobalModifiers(row, kind.activityID);
     const multiplier = multipliers === null ? undefined : multipliers[job.blueprintTypeID]?.[ATTRIBUTE_JOB_COST_MULTIPLIER];
-    const cost = cloneGrade === null || multipliers === null ? null : manufacturingJobCost({
-      blueprintPrice: price,
-      runs: job.runs,
+    const based = { blueprintPrice: price, ...basis };
+    const cost = cloneGrade === null || multipliers === null ? null : costOf(job.activity, based, {
       blueprintAmount: multiplier === undefined ? null : multiplier,
       alpha: cloneGrade === 0,
       faction,
       system,
-      facilityModifiers: facilityCostModifiers(row, ACTIVITY_MANUFACTURING),
+      facilityModifiers: facilityCostModifiers(row, kind.activityID),
       productType,
     });
-    // The service a structure would manufacture this by, by the group of the first thing made (activity.py 54 to 57).
-    const serviceID = manufacturingServiceID(madeType ? positive(madeType.groupID) : null);
-    const tax = manufacturingJobTax({ blueprintPrice: price, runs: job.runs, facilityTax: facilityTaxRate(row, serviceID) });
+    const tax = taxOf(job.activity, based, facilityTaxRate(row, serviceOf(job.activity, kind.activityID, madeType)));
     const charges = facilityCharges(row);
-    const securities = charges.solarSystemID === null ? null : await orNone(() => reads.security([charges.solarSystemID as number]));
-    const security = securities === null || charges.solarSystemID === null ? null : securities[charges.solarSystemID] ?? null;
-    const fee = manufacturingJobFee({ blueprintPrice: price, runs: job.runs, cost, tax, sccTaxModifier: charges.sccTaxModifier, security });
+    const systemID = charges.solarSystemID;
+    const securities = systemID === null ? null : await orNone(() => reads.security([systemID]));
+    const security = securities === null || systemID === null ? null : securities[systemID] ?? null;
+    const fee = feeOf(job.activity, based, { cost, tax, sccTaxModifier: charges.sccTaxModifier, security });
     return { timeSeconds, materials, cost, tax, fee };
   }
 
-  /** The job's time: of its required skills that have a time per level, the pilot's own time, and the facility's. */
-  async function reckonedTime(job: ManufacturingJob, activity: Activity, row: unknown, productType: ProductType | null): Promise<number | null> {
+  /** The service a structure would do the work by, as the client's activity asks for it (activity.py 54 to 57). */
+  function serviceOf(activity: JobActivity, activityID: number, madeType: ProductType | null): number | null {
+    if (activity === "copying") return SERVICE_LABORATORY_COPYING;
+    if (activity === "invention") return SERVICE_LABORATORY_INVENTION;
+    const researched = researchServiceID(activityID);
+    if (researched !== null) return researched;
+    const groupID = madeType ? positive(madeType.groupID) : null;
+    return activity === "reaction" ? reactionServiceID(groupID) : manufacturingServiceID(groupID);
+  }
+
+  /** The job's time: of the pilot's own time for the work and the facility's, and a manufacturing job's skills and research. */
+  async function reckonedTime(
+    job: IndustryJob,
+    kind: Kind,
+    activity: Activity,
+    row: unknown,
+    productType: ProductType | null,
+    standing: ResearchStanding | null | undefined,
+    licensedRuns: number,
+  ): Promise<number | null> {
+    const manufacturing = job.activity === "manufacturing";
     const activityTime = Number(activity.time);
-    if (job.timeEfficiency === null || !(activityTime > 0)) return null;
-    const required = (activity.skills ?? []).map((skill) => positive(skill.typeID)).filter((typeID): typeID is number => typeID !== null);
+    // (What each kind of work wants said of the blueprint: a manufacturing job its time research, a research where
+    // the blueprint stands in it.)
+    if ((manufacturing ? job.timeEfficiency === null : standing === null) || !(activityTime > 0)) return null;
+    // (No other job has a skill's time per level: the client lists those for manufacturing alone.)
+    const required = manufacturing
+      ? (activity.skills ?? []).map((skill) => positive(skill.typeID)).filter((typeID): typeID is number => typeID !== null)
+      : [];
     const none: Readonly<Record<number, Readonly<Record<number, number>>>> = {};
     const [perLevels, skills, character] = await Promise.all([
       required.length === 0 ? none : orNone(() => reads.typeAttributes(required, [ATTRIBUTE_MANUFACTURE_TIME_PER_LEVEL])),
       required.length === 0 ? null : orNone(() => reads.ask("skillHandler", "GetSkills", [])),
-      orNone(() => reads.ask("dogmaIM", "QueryAttributeValue", [reads.characterID, ATTRIBUTE_MANUFACTURE_TIME_MULTIPLIER])),
+      orNone(() => reads.ask("dogmaIM", "QueryAttributeValue", [reads.characterID, kind.timeAttribute])),
     ]);
     if (perLevels === null || (required.length > 0 && skills === null) || typeof character !== "number") return null;
-    // (Only a skill that has a time per level is among the job's modifiers: industryCommon.GetJobModifiers, 485.)
-    const timed = required.flatMap((typeID) => {
-      const perLevel = perLevels[typeID]?.[ATTRIBUTE_MANUFACTURE_TIME_PER_LEVEL];
-      return perLevel === undefined ? [] : [{ perLevel, level: effectiveSkillLevel(skills, typeID) }];
-    });
-    return manufacturingJobSeconds({
+    const timedBy = {
       activityTime,
-      runs: job.runs,
-      skills: timed,
       characterAmount: character,
-      timeEfficiency: job.timeEfficiency,
-      facilityModifiers: facilityTimeModifiers(row, ACTIVITY_MANUFACTURING),
+      facilityModifiers: facilityTimeModifiers(row, kind.activityID),
       productType,
-    });
+    };
+    switch (job.activity) {
+      case "copying":
+        return copyingJobSeconds({ ...timedBy, runs: job.runs, licensedRuns });
+      case "research_time":
+      case "research_material":
+        return standing ? researchJobSeconds({ ...timedBy, level: standing.level, runs: job.runs }) : null;
+      case "invention":
+        return inventionJobSeconds({ ...timedBy, runs: job.runs });
+      case "reaction":
+        return reactionJobSeconds({ ...timedBy, runs: job.runs });
+      default: {
+        // (Only a skill that has a time per level is among the job's modifiers: industryCommon.GetJobModifiers, 485.)
+        const timed = required.flatMap((typeID) => {
+          const perLevel = perLevels[typeID]?.[ATTRIBUTE_MANUFACTURE_TIME_PER_LEVEL];
+          return perLevel === undefined ? [] : [{ perLevel, level: effectiveSkillLevel(skills, typeID) }];
+        });
+        return manufacturingJobSeconds({ ...timedBy, runs: job.runs, skills: timed, timeEfficiency: job.timeEfficiency });
+      }
+    }
   }
 
-  return { manufacturing };
+  /** The job's materials, through the facility's material modifiers (none of a facility that is not had). */
+  function reckonedMaterials(
+    job: IndustryJob,
+    kind: Kind,
+    activity: Activity,
+    row: unknown,
+    productType: ProductType | null,
+    licensedRuns: number,
+  ): MaterialsTaken | null {
+    const facilityModifiers: FacilityModifier[] = facilityMaterialModifiers(row, kind.activityID);
+    const listed = { materials: Array.isArray(activity.materials) ? activity.materials : [], runs: job.runs, facilityModifiers, productType };
+    switch (job.activity) {
+      case "manufacturing":
+        return manufacturingJobMaterials({ ...listed, materialEfficiency: job.materialEfficiency });
+      case "copying":
+        return copyingJobMaterials({ ...listed, licensedRuns });
+      case "research_time":
+      case "research_material":
+        return researchJobMaterials(listed);
+      case "invention":
+        return inventionJobMaterials({ ...listed, decryptorTypeID: job.decryptorTypeID ?? 0 });
+      case "reaction":
+        return reactionJobMaterials(listed);
+    }
+  }
+
+  return { reckon };
 }
 
 export type JobReckoner = ReturnType<typeof createJobReckoner>;
