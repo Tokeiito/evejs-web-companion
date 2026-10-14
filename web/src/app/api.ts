@@ -4271,18 +4271,9 @@ export async function recallDrones(
  * and reboard. Until this existed a web-client player had no way to get such a
  * drone back at all: Recall and Engage both need control the ship does not have.
  */
-export async function reconnectDrones(
-  droneIDs: readonly number[],
-  options: ApiOptions = {},
-): Promise<DroneActionResult> {
-  return readDroneAction(
-    await postJson(
-      "/api/bridge/entity/drones/reconnect",
-      { droneIDs: [...droneIDs], confirm: true },
-      options,
-    ),
-  );
-}
+// (It is the page's own call of the entity service since 2026-10-13 (bridge/boundEntityWrites.ts,
+// reconnectToDrones), with the drones read after by the read above: its route,
+// POST /api/bridge/entity/drones/reconnect, is gone.)
 
 // Drones are scooped into the bay by the page itself, with the client's own
 // call of the ship (bridge/boundEntityWrites.ts), and the drones are read after

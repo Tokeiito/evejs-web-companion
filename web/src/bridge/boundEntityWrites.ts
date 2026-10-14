@@ -110,3 +110,51 @@ export async function scoopDrones(act: Ask, droneIDs: readonly number[]): Promis
   }
   return act("ship", "ScoopDrone", [[...droneIDs]]);
 }
+
+// --- Lost drones reconnected to (the plan's Phase 6b) -------------------------
+//
+// Until 2026-10-13 it was one route of the BFF (POST /api/bridge/entity/drones/reconnect), which made the call and
+// read the drones in space after.
+//
+// THE CALL, as the client makes it (droneFunctions.ReconnectToDrones, 217 to 241, and _ReconnectToDroneCandidates,
+// 244 to 259), from the ship's own menu ("Reconnect to Lost Drones", menusvc.py 1647 to 1648, offered for the
+// pilot's own ship where it can carry drones, is in no structure and is not warping:
+// celestialCheckers.OfferReconnectToLostDrones, 1187 to 1198) and from its shortcut (eveCommands.py 1315 to 1316):
+//
+//   entity = eveMoniker.GetEntityAccess()
+//   ret = entity.CmdReconnectToDrones(droneCandidates)
+//
+// the candidates as one list: every ball in the pilot's park that is of the Drone category, is the pilot's own
+// character's, and is not among the drones the client holds to be its own (michelle.GetDrones), twenty-five at
+// most (MAX_DRONE_RECONNECTS, appConst.py 2069; the compiled module has 25). With no candidate nothing is asked,
+// and the pilot is told none was found. What the server answers of the drones it would not take is told to the
+// pilot, one refusal at a time. No Tranquility recording has it.
+//
+// THE PAGE'S WINDOW has a button for each loose drone where the client has one command for all of them: the
+// drones are the caller's to name, and this sends what it is given, the first twenty-five.
+//
+// THE PAGE ASKS IT OF THE ENTITY SERVICE BY ITS NAME; the game port makes it on a Moniker of its own for the
+// system the pilot is in.
+//
+// WHAT THE SERVER TAKES FROM THE CALLER: the drones. Each must be a drone in the session's own scene, the
+// session's own character's, and under nobody's control (droneRuntime.commandReconnectToDrones); one of another's
+// is passed over. It refuses, for all that are left, where the ship has as many drones out as it may or too
+// little bandwidth for the next.
+//
+// ⚠ THE ANSWER IS NOT WHAT THE PAGE GOES BY. The caller reads the drones in space after: a drone reconnected to
+// is one the ship controls.
+
+/** appConst.py 2069: the most drones one reconnection asks for. */
+export const MAX_DRONE_RECONNECTS = 25;
+
+/**
+ * Asks the ship to take control of these drones again. With no drones nothing is asked. Answers what the server
+ * says of the drones it would not take, as it came. Fails as the call fails.
+ */
+export async function reconnectToDrones(act: Ask, droneIDs: readonly number[]): Promise<JsonValue> {
+  if (droneIDs.length === 0) return null;
+  if (!droneIDs.every((droneID) => Number.isSafeInteger(droneID) && droneID > 0)) {
+    throw new Error("That drone could not be identified.");
+  }
+  return act("entity", "CmdReconnectToDrones", [droneIDs.slice(0, MAX_DRONE_RECONNECTS)]);
+}

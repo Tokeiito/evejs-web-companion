@@ -12480,25 +12480,9 @@ app.post("/api/bridge/entity/drones/abandon", requireAuth, async (req, res, next
   await dispatchBoundEntityWrite(req, res, next, "CmdAbandonDrone", [bridgeIDList((req.body || {}).droneIDs)]);
 });
 
-// CmdReconnectToDrones([droneIDs]) — re-establish control over abandoned/orphaned
-// drones the session ship can still reach.
-//
-// ⚠ THE ONE OF THE FOUR THE DRONES PANEL ACTUALLY CALLS, which is why it alone
-// answers with the space re-read: success here is the drone becoming CONTROLLED,
-// and only the snapshot says whether it did.
-app.post("/api/bridge/entity/drones/reconnect", requireAuth, async (req, res, next) => {
-  if (!requireWriteConfirmation(req, res, "This reconnects to those drones. Confirm to continue.")) {
-    return;
-  }
-  await dispatchBoundEntityWrite(
-    req,
-    res,
-    next,
-    "CmdReconnectToDrones",
-    [bridgeIDList((req.body || {}).droneIDs)],
-    { withDronesInSpace: true },
-  );
-});
+// (Lost drones are reconnected to by the page's own call since 2026-10-13: entity.CmdReconnectToDrones through
+// the generic call, and then the page's own read of its drones (bridgeCallPolicy.js, PAGE_WRITE_PAIR_KEYS;
+// web/src/bridge/boundEntityWrites.ts). Its route, POST /api/bridge/entity/drones/reconnect, is gone.)
 
 // --- R102 WB-INV: the 7 Phase-4 BOUND inventory WRITES -----------------------
 //

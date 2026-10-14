@@ -365,7 +365,7 @@ import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { BOOKMARK_EXPIRY, bookmarkLocation as bookmarkLocationCall } from "../bridge/bookmarkWrites.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
-import { salvageWithDrones, scoopDrones as scoopDronesCall } from "../bridge/boundEntityWrites.ts";
+import { reconnectToDrones as reconnectToDronesCall, salvageWithDrones, scoopDrones as scoopDronesCall } from "../bridge/boundEntityWrites.ts";
 import { alignTo as alignToCall, approach as approachCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
 import { boardCorvette as boardCorvetteCall, leaveShip as leaveShipCall } from "../bridge/shipWrites.ts";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
@@ -1897,7 +1897,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             return row.inSpace === true ? true : row.docked === true ? false : null;
           },
           read: async () => { current(); const raw = await api.getDrones(callOptions); current(); return readRecoveryDrones(raw.inSpace); },
-          reconnect: async ids => { current(); await api.reconnectDrones(ids, callOptions); current(); },
+          reconnect: async ids => { current(); await reconnectToDronesCall(bridgeDo, ids); current(); },
           recall: async ids => { current(); await api.recallDrones(ids, callOptions); current(); },
           sleep: async ms => { await new Promise(resolve => setTimeout(resolve, ms)); current(); },
           pendingIDs: recoveryIDs,
@@ -6678,7 +6678,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function reconnectDrones(droneIDs: readonly number[]): Promise<void> {
     await runDroneAction(
       "Reconnect",
-      () => api.reconnectDrones(droneIDs, callOptions),
+      // The page's own call (bridge/boundEntityWrites.ts), and then the drones as they are read again. What the
+      // server says of each drone it would not take is the call's own answer.
+      async () => {
+        const result = await reconnectToDronesCall(bridgeDo, droneIDs);
+        const read = await api.getDrones(callOptions);
+        return { inSpace: read.inSpace, launched: null, result };
+      },
       (inSpace, _launched, reports) => {
         if (inSpace === null) {
           return "The reconnect was accepted, but space could not be re-read.";
