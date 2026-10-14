@@ -918,6 +918,36 @@ const membersListed = ([listID, members, ...rest], kwargs) => ({ args: [listID, 
 /** The search service's QuickQuery (searchUtil.GetResultsList, 297 to 301): the text as the client's edit gives it, a unicode string, and the result types a list. */
 const searchTextUnicode = ([text, types, ...rest], kwargs) => ({ args: [typeof text === "string" ? { type: "wstring", value: text } : text, list(types), ...rest], kwargs });
 /**
+ * Text the pilot typed into one of the client's edits, as the edit gives it: a unicode string. Each character typed
+ * goes in as a unichr (baseSingleLineEdit.py Insert, 641 to 658), and an editor's markup is made of its Decode's
+ * (editPlainText.py 320 to 321, GetValueForParagraphs), so what holds any text is unicode; an edit with nothing in
+ * it gives the empty byte string it was made with, and goes so. Tranquility's recordings have
+ * QuickQuery(u'harper frost', ...) and invbroker's SetLabel(itemID, u'LittleLittle').
+ */
+const typedText = (value) => (typeof value === "string" && value !== "" ? { type: "wstring", value } : value);
+/**
+ * An entry whose arguments at `places` are text typed into the client's edits (typedText), after its own shape,
+ * where it has one, has judged the call as it was given. A call that was the client's in all else is reshaped where
+ * any of them is made unicode; one that differs still does.
+ */
+const typing = (entry, places) => Object.freeze({
+  ...entry,
+  shape: (args, kwargs, context) => {
+    const shaped = typeof entry.shape === "function" ? entry.shape(args, kwargs, context) : { args, kwargs };
+    const sent = [...shaped.args];
+    let made = false;
+    for (const place of places) {
+      const value = typedText(sent[place]);
+      if (value !== sent[place]) {
+        sent[place] = value;
+        made = true;
+      }
+    }
+    const status = shaped.status ?? entry.status;
+    return { ...shaped, args: sent, ...(made && status === "same" ? { status: "reshaped" } : {}) };
+  },
+});
+/**
  * A mailing list's number, then whom it lets in or keeps out, a dict of whole numbers to 0 (kept out) or 1 (let in)
  * (mailingListsSvc.py SetEntityAccess, 110 to 111: {entityID: access}). A route gives a plain object.
  */
@@ -1477,15 +1507,15 @@ const RETAIL_CALLS = Object.freeze({
     `${CC_STEPS}/sections/chooseNameSection.py:96`,
     "RandomizeName: name = sm.RemoteSvc('charUnboundMgr').GetValidRandomName(self.GetInfo().raceID), by name, with the race's number, from the name screen's Randomize button (the newer screen's is the same: charcreation_new, 83). No recording has one.",
   ),
-  "charUnboundMgr.ValidateNameEx": reshaped(
+  "charUnboundMgr.ValidateNameEx": typing(reshaped(
     `${CC_STEPS}/sections/chooseNameSection.py:201`,
     ([name, checked, ...rest], kwargs) => ({ args: [name, checked ?? 0, ...rest], kwargs }),
-    "ValidateNameEx(charName, how many names the screen has checked before this one). The BFF keeps no such screen and checks the one name it is about to create, so it sends 0, as the client does with its first.",
-  ),
-  "charUnboundMgr.CreateCharacterWithDoll": differs(
+    "ValidateNameEx(charName, how many names the screen has checked before this one), the name the name field's, stripped (192), so unicode. The BFF keeps no such screen and checks the one name it is about to create, so it sends 0, as the client does with its first.",
+  ), [0]),
+  "charUnboundMgr.CreateCharacterWithDoll": typing(differs(
     `${CC_SVC}:97`,
-    "The client sends ten: (name, raceID, bloodlineID, genderID, ancestryID, charInfo, portraitInfo, schoolID, None, qaStarterSystemID), with the doll and the portrait it drew. The web client draws neither, and the BFF sends the server's older seven: (name, bloodlineID, genderID, ancestryID, None, None, 0).",
-  ),
+    "The client sends ten: (name, raceID, bloodlineID, genderID, ancestryID, charInfo, portraitInfo, schoolID, None, qaStarterSystemID), with the doll and the portrait it drew, the name the name field's, so unicode. The web client draws neither, and the BFF sends the server's older seven: (name, bloodlineID, genderID, ancestryID, None, None, 0), the name unicode as the client's.",
+  ), [0]),
 
   // ── saved fittings ─────────────────────────────────────────────────────────
   "charFittingMgr.GetFittings": reshaped(`${FITTING_SVC}:430`, fittingsOf("characterID", "character"), "GetFittingMgr(session.charid).GetFittings(session.charid)"),
@@ -1782,8 +1812,8 @@ const RETAIL_CALLS = Object.freeze({
   "facilityManager.GetMaxActivityModifiers": same(`${INDUSTRY}/facilitySvc.py:87`, "RemoteSvc('facilityManager').GetMaxActivityModifiers(), no arguments"),
 
   // ── mail and notifications ────────────────────────────────────────────────
-  "mailingListsMgr.Create": same("eve/client/script/ui/services/mail/mailingListsSvc.py:68", "sm.RemoteSvc('mailingListsMgr').Create(name, defaultAccess, defaultMemberAccess, cost): from the mail window's Create, the defaults 1, 1 and 0; answered the list's number. In no recording."),
-  "mailingListsMgr.Join": same("eve/client/script/ui/services/mail/mailingListsSvc.py:75", "self.mailingListsMgr.Join(name): by the list's name; answered the list's KeyVal. In no recording."),
+  "mailingListsMgr.Create": typing(same("eve/client/script/ui/services/mail/mailingListsSvc.py:68", "sm.RemoteSvc('mailingListsMgr').Create(name, defaultAccess, defaultMemberAccess, cost): from the mail window's Create, the defaults 1, 1 and 0; answered the list's number. In no recording. The name as typed, unicode."), [0]),
+  "mailingListsMgr.Join": typing(same("eve/client/script/ui/services/mail/mailingListsSvc.py:75", "self.mailingListsMgr.Join(name): by the list's name; answered the list's KeyVal. In no recording. The name as typed, unicode."), [0]),
   "mailingListsMgr.Leave": same("eve/client/script/ui/services/mail/mailingListsSvc.py:81", "self.mailingListsMgr.Leave(listID). In no recording."),
   "mailingListsMgr.Delete": same("eve/client/script/ui/services/mail/mailingListsSvc.py:91", "self.mailingListsMgr.Delete(listID): the owner's, from the list's menu after the DeleteMailingList dialog (evemail.py 505 to 508). In no recording."),
   "mailingListsMgr.GetSettings": same("eve/client/script/ui/services/mail/mailingListsSvc.py:142", "self.mailingListsMgr.GetSettings(listID): asked three times as the management window opens, its Access panel being built first (evemailingListConfig.py 378, 389, 437), and again after a kick; answered a KeyVal of defaultAccess, defaultMemberAccess, cost and access. In no recording."),
@@ -1795,10 +1825,10 @@ const RETAIL_CALLS = Object.freeze({
   "mailingListsMgr.SetDefaultAccess": same("eve/client/script/ui/services/mail/mailingListsSvc.py:138", "self.mailingListsMgr.SetDefaultAccess(listID, defaultAccess, defaultMemberAccess, mailCost): the Access tab's Apply with its two choices, the cost 0 (evemailingListConfig.py ApplySettings, 453 to 457). In no recording."),
   "mailingListsMgr.SetEntitiesAccess": reshaped("eve/client/script/ui/services/mail/mailingListsSvc.py:115", accessListed, "self.mailingListsMgr.SetEntitiesAccess(listID, accessByEntityID): the Access tab's Allow or Block, the one owner picked as {entityID: access} (SetEntityAccess, 110 to 111). In no recording."),
   "mailingListsMgr.ClearEntityAccess": same("eve/client/script/ui/services/mail/mailingListsSvc.py:119", "self.mailingListsMgr.ClearEntityAccess(listID, entityID): the Access tab's Remove Selected, one call for each chosen (evemailingListConfig.py 302 to 309). In no recording."),
-  "lookupSvc.LookupPCOwners": same("eve/client/script/ui/util/searchOld.py:259", "sm.RemoteSvc('lookupSvc').LookupPCOwners(searchStr, exact): SearchOwners with hideNPC, from the mailing list window's Allow and Block, exact False; answered a list of owner rows. In no recording."),
+  "lookupSvc.LookupPCOwners": typing(same("eve/client/script/ui/util/searchOld.py:259", "sm.RemoteSvc('lookupSvc').LookupPCOwners(searchStr, exact): SearchOwners with hideNPC, from the mailing list window's Allow and Block, exact False; answered a list of owner rows. In no recording. The text as typed, unicode."), [0]),
   "mailingListsMgr.GetWelcomeMail": same("eve/client/script/ui/services/mail/mailingListsSvc.py:183", "self.mailingListsMgr.GetWelcomeMail(listID): as the management window's Welcome Mail tab is shown, until one is had (evemailingListConfig.py Load 528 to 530, UpdateWelcome 482 to 492); answered a list of it, a KeyVal of title and body, or of nothing. In no recording."),
-  "mailingListsMgr.SaveWelcomeMail": same("eve/client/script/ui/services/mail/mailingListsSvc.py:186", "self.mailingListsMgr.SaveWelcomeMail(listID, title, body): the Welcome Mail tab's Save, the box not ticked; the body the editor's markup. In no recording."),
-  "mailingListsMgr.SendWelcomeMail": same("eve/client/script/ui/services/mail/mailingListsSvc.py:189", "self.mailingListsMgr.SendWelcomeMail(listID, title, body): the Welcome Mail tab's Save with its box ticked (SaveAndSendWelcomeMail); the body the editor's markup. In no recording."),
+  "mailingListsMgr.SaveWelcomeMail": typing(same("eve/client/script/ui/services/mail/mailingListsSvc.py:186", "self.mailingListsMgr.SaveWelcomeMail(listID, title, body): the Welcome Mail tab's Save, the box not ticked; the body the editor's markup. In no recording. The subject and the body as typed, unicode (the subject a byte string where the pilot leaves the server's as it was loaded and the server gave one, which the page does not tell apart)."), [1, 2]),
+  "mailingListsMgr.SendWelcomeMail": typing(same("eve/client/script/ui/services/mail/mailingListsSvc.py:189", "self.mailingListsMgr.SendWelcomeMail(listID, title, body): the Welcome Mail tab's Save with its box ticked (SaveAndSendWelcomeMail); the body the editor's markup. In no recording. The subject and the body as typed, unicode (the subject a byte string where the pilot leaves the server's as it was loaded and the server gave one, which the page does not tell apart)."), [1, 2]),
   "mailingListsMgr.ClearWelcomeMail": same("eve/client/script/ui/services/mail/mailingListsSvc.py:192", "self.mailingListsMgr.ClearWelcomeMail(listID): the Welcome Mail tab's Save with no subject and no mail. In no recording."),
   "mailingListsMgr.GetInfo": same("eve/client/script/ui/services/mail/mailingListsSvc.py:61", "self.mailingListsMgr.GetInfo(listID): GetDisplayName's ask for a list neither joined nor asked before, kept after (55 to 66): a list's own mail at a sync or as it comes, a mail to a list as it is opened or quoted; answered the list's KeyVal, or None. In no recording."),
   "search.QuickQuery": reshaped("eve/client/script/ui/util/searchUtil.py:301", searchTextUnicode, "sm.ProxySvc('search').QuickQuery(searchStr, groupIDList, hideNPC=hideNPC, onlyAltName=onlyAltName, exact=searchBy): the text a unicode string, the result types a list; a mail's recipient a character ([2]) with hideNPC 1, by the exact phrase (2) from the compose window's field, or by Search By from its search window. Tranquility's recording of a contracts search has QuickQuery(u'harper frost', [2, 3]) with hideNPC, exact, onlyAltName, machoVersion, answered a list of numbers."),
@@ -1817,16 +1847,16 @@ const RETAIL_CALLS = Object.freeze({
   "mailMgr.MoveToTrashByLabel": same(`${MAIL_SERVICES}/mailSvc.py:362`, "self.mailMgr.MoveToTrashByLabel(labelID); the mail window's Trash All of a folder, asked to be sure of. In no recording."),
   "mailMgr.MoveToTrashByList": same(`${MAIL_SERVICES}/mailSvc.py:373`, "self.mailMgr.MoveToTrashByList(listID); a mailing list's Trash All, asked to be sure of. In no recording."),
   "mailMgr.MoveAllFromTrash": same(`${MAIL_SERVICES}/mailSvc.py:450`, "self.mailMgr.MoveAllFromTrash(), no arguments; the trash's Restore All, asked to be sure of. In no recording."),
-  "mailMgr.CreateLabel": same(`${MAIL_SERVICES}/mailSvc.py:734`, "self.mailMgr.CreateLabel(name, color): from the labels window, the colour None; answered the label's bit. In no recording."),
-  "mailMgr.EditLabel": same(`${MAIL_SERVICES}/mailSvc.py:715`, "self.mailMgr.EditLabel(labelID, name, color): a rename, the colour None (RenameLabelFromUI, 1290 to 1299). In no recording."),
+  "mailMgr.CreateLabel": typing(same(`${MAIL_SERVICES}/mailSvc.py:734`, "self.mailMgr.CreateLabel(name, color): from the labels window, the colour None; answered the label's bit. In no recording. The name the labels window's field's, stripped, unicode (evemail.py 1563 to 1578)."), [0]),
+  "mailMgr.EditLabel": typing(same(`${MAIL_SERVICES}/mailSvc.py:715`, "self.mailMgr.EditLabel(labelID, name, color): a rename, the colour None (RenameLabelFromUI, 1290 to 1299). In no recording. The name the popup's, stripped, unicode."), [1]),
   "mailMgr.DeleteLabel": same(`${MAIL_SERVICES}/mailSvc.py:741`, "self.mailMgr.DeleteLabel(labelID), after the DeleteMailLabel dialog (1314 to 1317). In no recording."),
   "mailMgr.AssignLabels": reshaped(`${MAIL_SERVICES}/mailSvc.py:765`, recipientsListed, "self.mailMgr.AssignLabels(mailsToGetLabel.keys(), labelID): the messages that lack the label, a list, and the label. In no recording."),
   "mailMgr.RemoveLabels": reshaped(`${MAIL_SERVICES}/mailSvc.py:783`, recipientsListed, "self.mailMgr.RemoveLabels(mailsToRemoveLabelFrom.keys(), labelID): the messages that have the label, a list, and the label. In no recording."),
   "mailMgr.EmptyTrash": same(`${MAIL_SERVICES}/mailSvc.py:460`, "self.mailMgr.EmptyTrash(), no arguments; the trash's Empty Trash, asked to be sure of. In no recording."),
   "mailMgr.MarkAsRead": reshaped(`${MAIL_SERVICES}/mailSvc.py:339`, recipientsListed, "self.mailMgr.MarkAsRead(messageIDs): a list; asked by GetBody for a body kept of a message not read (497 to 498). In no recording. The messages a list, as the client's are; the page's array goes as one."),
   "mailMgr.SyncMail": same(`${MAIL_SERVICES}/mailSvc.py:157`, "RemoteSvc('mailMgr').SyncMail(firstID, lastID): the lowest and highest message IDs the client holds, (None, 0) when it holds none"),
-  "mailMgr.SendMail": reshaped(`${MAIL_SERVICES}/mailSvc.py:965`, recipientsListed,
-    "self.mailMgr.SendMail(toCharacterIDs, toListID, toCorpOrAllianceID, title, body, isReplyTo, isForwardedFrom), through eveMisc.CSPAChargedAction: the recipients a list (the compose window's self.toChars.values(), evemail.py 2281), the message answered and the one forwarded 0 for none. In no recording."),
+  "mailMgr.SendMail": typing(reshaped(`${MAIL_SERVICES}/mailSvc.py:965`, recipientsListed,
+    "self.mailMgr.SendMail(toCharacterIDs, toListID, toCorpOrAllianceID, title, body, isReplyTo, isForwardedFrom), through eveMisc.CSPAChargedAction: the recipients a list (the compose window's self.toChars.values(), evemail.py 2281), the message answered and the one forwarded 0 for none. In no recording. The subject and the body unicode, the body the empty byte string where the editor holds nothing."), [3, 4]),
   "notificationMgr.GetByGroupID": same(`${MAIL_SERVICES}/notificationSvc.py:64`, "RemoteSvc('notificationMgr').GetByGroupID(groupID)"),
   "notificationMgr.GetUnprocessed": same(`${MAIL_SERVICES}/notificationSvc.py:107`, "RemoteSvc('notificationMgr').GetUnprocessed(), no arguments"),
   "notificationMgr.GetAllNotifications": Object.freeze({
@@ -1880,8 +1910,8 @@ const RETAIL_CALLS = Object.freeze({
     "eveMoniker.GetEntityAccess().CmdSalvage(droneIDs, targetID): the drones a list, and the active target or None, from a salvage drone's menu and the drones' primary action. It answers the drones that could not, each with why. No recording has one."),
   "accessGroupBookmarkMgr.GetMyActiveBookmarks": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:163", sentWithNothing,
     "folders, bookmarks, subfolders = self.accessGroupBookmarkMgr.GetMyActiveBookmarks(), by name and with nothing: recorded on Tranquility so, in three recordings. The client asks once in a session and keeps the three, changing them as it makes, changes and deletes a bookmark and as the server says a shared folder changed. The transport asks as a character is chosen and keeps the three (pilots.js, bookmarksRead): a place bookmarked on the ballpark's object is worked into them as the client works it (afterBookmarkCall), and they are let go at any other write of the pilot's own of a bookmark, a folder or a subfolder and at the server's word of a shared folder, and asked for when they are next wanted. The page asks each time it wants them, and is answered from what is kept."),
-  "beyonce.BookmarkLocation": reshaped("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:617", bookmarking,
-    "bp.BookmarkLocation(itemID, folderID, name, comment, expiry, subfolderID=subfolderID), on the ballpark's object: the subfolder by keyword every time, None where there is none. No recording has one."),
+  "beyonce.BookmarkLocation": typing(reshaped("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:617", bookmarking,
+    "bp.BookmarkLocation(itemID, folderID, name, comment, expiry, subfolderID=subfolderID), on the ballpark's object: the subfolder by keyword every time, None where there is none. No recording has one. The name the label field's, unicode (bookmarkLocationWindow.py Confirm, 212 to 219), and the note the editor's, the empty byte string where it holds nothing."), [2, 3]),
   "beyonce.CmdGotoPoint": reshaped("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:324", goingToPoint,
     "bp.CmdGotoPoint(*position), on the ballpark's object: the point's three, each a float, from the positional control's drag, once the autopilot's navigation in the system is cancelled. A pilot controlling a structure sends none. It answers nothing. In no recording."),
   "beyonce.CmdAlignTo": judged("eve/client/script/ui/services/menusvc.py:2790", aligning,
@@ -2161,7 +2191,7 @@ const RETAIL_CALLS = Object.freeze({
   "repairSvc.RepairItemsInStation": reshaped("eve/client/script/ui/station/repairshop/base_repairshop.py:67", repairingInAStation, "GetRemoteRepairMgr().RepairItemsInStation(itemIDs, payment), docked in a station: the items as a list and the payment a float, the amount the shop's window worked out (300 to 327). In no recording."),
   "repairSvc.RepairItemsInStructure": reshaped("eve/client/script/ui/station/repairshop/base_repairshop.py:69", repairingInAStructure, "GetRemoteRepairMgr().RepairItemsInStructure(itemIDs), docked in a structure, with nothing paid. In no recording."),
   "repairSvc.RepairItems": differs("eve/client/script/ui/station/repairshop/base_repairshop.py:65", "The client's repair service asks RepairItemsInStation or RepairItemsInStructure of the shop's Moniker. This name is the server's own for both, and what the web gateway's list has."),
-  "slash.SlashCmd": judged("eve/client/script/ui/services/menusvc.py:834", aSlashCommand, "RemoteSvc('slash').SlashCmd(line), by name, with the one line of text: what the client's GM menus send, and what its own slash service sends for a line typed in chat once its aliases are worked out (svc_slash.py 520 to 523). No recording has one."),
+  "slash.SlashCmd": typing(judged("eve/client/script/ui/services/menusvc.py:834", aSlashCommand, "RemoteSvc('slash').SlashCmd(line), by name, with the one line of text: what the client's GM menus send, and what its own slash service sends for a line typed in chat once its aliases are worked out (svc_slash.py 520 to 523). No recording has one. A line typed in chat goes unicode, as the page's GM console's does; the GM menus' own lines are byte strings, and the page sends none of those."), [0]),
   "ship.GetShipConfiguration": reshaped(`${SHIP_CONFIG}:51`, configuration, "GetShipAccess().GetShipConfiguration(shipID)"),
 });
 

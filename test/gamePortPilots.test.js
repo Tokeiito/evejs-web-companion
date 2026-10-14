@@ -9354,20 +9354,22 @@ test("a place bookmarked by beyonce's name is bookmarked on the ballpark's own o
   const { session } = built;
   const row = () => built.pilots.callLedger().find((each) => each.pair === "beyonce.BookmarkLocation");
   const plain = [1000000012345, 7000001, "A spot", "a note", 2];
-  // As the client asks it: as it came.
+  // The name and the note as the client's edits give them, unicode (bookmarkLocationWindow.py Confirm, 212 to 219:
+  // the label field's text and the notes editor's); in all else as it came.
+  const typed = [1000000012345, 7000001, { type: "wstring", value: "A spot" }, { type: "wstring", value: "a note" }, 2];
   const sent = await built.pilots.callMethod("beyonce", "BookmarkLocation", plain, { subfolderID: null }, WHOSE, handle);
   assert.deepEqual([sent.service, sent.method, sent.result], ["beyonce", "BookmarkLocation", [900001, null, 5, 1.5, 2.5, 3.5, 30000142, null]]);
-  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:1", method: "BookmarkLocation", args: plain, kwargs: { subfolderID: null } });
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:1", method: "BookmarkLocation", args: typed, kwargs: { subfolderID: null } });
   assert.equal(session.calls.some((call) => call.service === "beyonce" && call.method === "BookmarkLocation"), false, "nothing was asked of the service by name");
-  assert.deepEqual(row().statuses, { same: 1 });
+  assert.deepEqual(row().statuses, { reshaped: 1 });
   // With no subfolder said, None is said for it by keyword, as the client says it.
   await built.pilots.callMethod("beyonce", "BookmarkLocation", plain, null, WHOSE, handle);
-  assert.deepEqual([session.boundCalls.at(-1).args, session.boundCalls.at(-1).kwargs], [plain, { subfolderID: null }]);
-  assert.deepEqual(row().statuses, { same: 1, reshaped: 1 });
-  // What is not the client's form goes as it came, and is counted as not the client's.
+  assert.deepEqual([session.boundCalls.at(-1).args, session.boundCalls.at(-1).kwargs], [typed, { subfolderID: null }]);
+  assert.deepEqual(row().statuses, { reshaped: 2 });
+  // What is not the client's form is counted as not the client's; its note is still the editor's.
   await built.pilots.callMethod("beyonce", "BookmarkLocation", [1000000012345, 7000001, "", "a note", 2], null, WHOSE, handle);
-  assert.deepEqual([session.boundCalls.at(-1).args, session.boundCalls.at(-1).kwargs], [[1000000012345, 7000001, "", "a note", 2], null]);
-  assert.deepEqual(row().statuses, { same: 1, reshaped: 1, differs: 1 });
+  assert.deepEqual([session.boundCalls.at(-1).args, session.boundCalls.at(-1).kwargs], [[1000000012345, 7000001, "", { type: "wstring", value: "a note" }, 2], null]);
+  assert.deepEqual(row().statuses, { reshaped: 2, differs: 1 });
   assert.deepEqual(hand.errors, []);
 
   // Docked: the client says it must be in flight, and asks nothing. Asked all the same, the call is refused here and not sent.
@@ -9715,12 +9717,13 @@ test("a place bookmarked on the ballpark's object is kept beside the rest as the
   await bookmark(A_PLACE);
   const after = await read();
   assert.deepEqual([bookmarkIDs(after), bookmarkIDs(await read()), asked.times], [[900001, 7000042], [900001, 7000042], 1], "kept beside the rest, and nothing asked");
-  // The client's own fifteen, in its order: what the park answered, what was sent, the pilot, and the clock.
+  // The client's own fifteen, in its order: what the park answered, what was sent (the name and the note unicode, as
+  // the client's edits give them), the pilot, and the clock.
   assert.deepEqual([after[1].items[1].type, after[1].items[1].name], ["object", "util.KeyVal"]);
   assert.deepEqual(namesAndValues(after[1].items[1]), [
-    ["bookmarkID", 7000042], ["folderID", 7000001], ["itemID", null], ["typeID", 5], ["flag", null], ["memo", "A spot"],
+    ["bookmarkID", 7000042], ["folderID", 7000001], ["itemID", null], ["typeID", 5], ["flag", null], ["memo", { type: "wstring", value: "A spot" }],
     ["created", { type: "long", value: String(filetimeOf(NOW)) }], ["expiry", { type: "long", value: String(runsOut) }],
-    ["x", 1.5], ["y", 2.5], ["z", 3.5], ["locationID", 30000142], ["note", "a note"], ["subfolderID", null], ["creatorID", PILOT],
+    ["x", 1.5], ["y", 2.5], ["z", 3.5], ["locationID", 30000142], ["note", { type: "wstring", value: "a note" }], ["subfolderID", null], ["creatorID", PILOT],
   ]);
   // The folders and the subfolders are as they were answered.
   assert.deepEqual([after.length, after[0].items.length, after[2].items.length], [3, 1, 0]);
@@ -9731,7 +9734,7 @@ test("a place bookmarked on the ballpark's object is kept beside the rest as the
   const withThird = await read();
   assert.deepEqual([bookmarkIDs(withThird), asked.times], [[900001, 7000042, 7000043], 1]);
   const third = Object.fromEntries(namesAndValues(withThird[1].items[2]));
-  assert.deepEqual([third.memo, third.note, third.subfolderID, third.expiry, third.x], ["Another", "", 7000009, null, 4.5]);
+  assert.deepEqual([third.memo, third.note, third.subfolderID, third.expiry, third.x], [{ type: "wstring", value: "Another" }, "", 7000009, null, 4.5]);
   // The one that runs out is gone by the clock, as any is; the rest stay, and nothing is asked.
   session.serverNowMs = NOW + 172_800_001;
   assert.deepEqual([bookmarkIDs(await read()).includes(7000042), asked.times], [false, 1]);
