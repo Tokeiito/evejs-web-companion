@@ -137,6 +137,8 @@ import {
   decideAmmoSwap,
   decideClearGridTopUp,
   emptyGunAmmo,
+  reloadingGuns,
+  RELOAD_STALE_READ_MS,
   withClearGridToppedUp,
   FRESH_COMPANION_AMMO,
   type AmmoLadder,
@@ -2193,6 +2195,24 @@ export interface CompanionLadderMemory {
    */
   readonly reloadAttempts: Readonly<Record<number, number>>;
   /**
+   * When the reload rung last SENT `loadAmmo` for each gun (ms), keyed by the
+   * module's item id: a gun in here is RELOADING, not empty.
+   *
+   * ⚠ SEEN LIVE 2026-10-14 09:31-09:32 UTC (hybrid turrets, ~10 s reload): the
+   * gun reads empty for the whole of the server's reload, so the rung re-sent
+   * `loadAmmo` on three consecutive ticks and burnt `reloadAttempts` in about a
+   * second, and the fire step tried to `activate` the same gun twice and was
+   * refused NoCharges. A load that was SENT is waited on for the gun's own
+   * reload time (`reloadingGuns`, companionAmmo.ts) before it may be judged to
+   * have failed; the fire step and the ammo swap skip a gun in the window.
+   *
+   * ⚠ ONLY A GUN STILL READING EMPTY KEEPS ITS ENTRY: the reload rung prunes the
+   * rest each tick (that is the load being confirmed), and a definitely REFUSED
+   * `loadAmmo` clears its guns at once. Optional so a memory built before this
+   * field existed reads as "nothing in flight".
+   */
+  readonly reloadInFlight?: Readonly<Record<number, number>>;
+  /**
    * Rung 8a's record: the utility modules it switched on (and only those may it
    * switch off), its deactivates in flight, its activation budget and its sticky
    * reach verdicts. See `CompanionUtilityMemory` (companionUtilities.ts). A dock,
@@ -2336,6 +2356,7 @@ export function freshLadderMemory(): CompanionLadderMemory {
     combatPosition: FRESH_COMBAT_POSITION,
     weaponReach: null,
     reloadAttempts: {},
+    reloadInFlight: {},
     utilities: FRESH_COMPANION_UTILITIES,
     ammo: FRESH_COMPANION_AMMO,
   };
@@ -2953,6 +2974,7 @@ function decideCompanionStep(
     // back in says nothing about which of this ship's guns are empty or how
     // many loads have already been spent on them.
     reloadAttempts: memory.reloadAttempts,
+    reloadInFlight: memory.reloadInFlight,
     // Carried: a human arriving switches nothing off.
     utilities: memory.utilities,
     ammo: memory.ammo,
@@ -3083,7 +3105,7 @@ function decideCompanionStep(
   // header for the server fact that makes this rung necessary at all. Threaded
   // like rung 3 because CONFIRMING a load -- a gun leaving the empty list --
   // issues nothing.
-  const reloading = decideReload(obs, travelling.memory);
+  const reloading = decideReload(obs, travelling.memory, nowMs);
   if (reloading.decision !== null && reloading.decision.standing !== true) {
     return reloading.decision;
   }
@@ -4691,6 +4713,14 @@ function lockThenEngage(
   if (memory.lockPending?.targetID === targetID) {
     memory = { ...memory, lockPending: null };
   }
+  // ⚠ A GUN WITH A LOAD IN FLIGHT IS NOT FIRED (seen live 2026-10-14 09:32): it
+  // reads empty until its reload finishes, and an `activate` on it was refused
+  // NoCharges, twice. The other guns carry on; the stepped-over ones are named in
+  // the readout and start on the first tick after the reload.
+  const reloadingNow = reloadingGuns(obs, memory, nowMs);
+  const picked = request.weaponModuleIDs;
+  const reloadingCount = picked.filter((id) => reloadingNow.has(id)).length;
+  request = { ...request, weaponModuleIDs: picked.filter((id) => !reloadingNow.has(id)) };
   // The range gate (companionCombatPosition.ts): only the guns that reach it start.
   const gated = gunsInReach(targetID, request, obs, memory, measurement);
   noteTrace("guns", gated.trace);
@@ -4738,9 +4768,12 @@ function lockThenEngage(
     // the feature is broken.
     why:
       why +
-      (request.weaponModuleIDs.length === 0
+      (picked.length === 0
         ? " Locked. No weapon is picked for this pilot, so it holds the lock without firing."
-        : gunsInReachWords(gated.inReach.length - gated.assumed.length, request.weaponModuleIDs.length, gated.assumed.length) + finishing),
+        : request.weaponModuleIDs.length === 0
+          ? " Locked. Every gun is reloading, so it fires when the reload finishes."
+          : gunsInReachWords(gated.inReach.length - gated.assumed.length, request.weaponModuleIDs.length, gated.assumed.length) +
+            (reloadingCount === 0 ? "" : ` ${reloadingCount} gun${reloadingCount === 1 ? " is" : "s are"} reloading.`) + finishing),
     memory,
     lastOrderHeard: heard,
     engagedTargetID: targetID,
@@ -7641,7 +7674,39 @@ function withReloadAttemptsPruned(
       dropped = true;
     }
   }
-  return dropped ? { ...memory, reloadAttempts: kept } : memory;
+  // A gun that left the list took its rounds: its load is no longer in flight.
+  const keptInFlight: Record<number, number> = {};
+  let droppedInFlight = false;
+  for (const [key, atMs] of Object.entries(memory.reloadInFlight ?? {})) {
+    if (still.has(Number(key))) {
+      keptInFlight[Number(key)] = atMs;
+    } else {
+      droppedInFlight = true;
+    }
+  }
+  return dropped || droppedInFlight
+    ? { ...memory, reloadAttempts: kept, reloadInFlight: keptInFlight }
+    : memory;
+}
+
+/**
+ * Forget the in-flight load of every gun in `moduleIDs`: the server REFUSED the
+ * `loadAmmo`, so nothing is reloading and the rung may judge those guns again.
+ * The attempt it cost stays spent, so a gun that is refused every time still
+ * gives up after `MAX_COMPANION_RELOAD_ATTEMPTS`.
+ */
+function noteRefusedReload(memory: CompanionLadderMemory, moduleIDs: readonly number[]): CompanionLadderMemory {
+  const sent = memory.reloadInFlight ?? {};
+  if (!moduleIDs.some((id) => sent[id] !== undefined)) {
+    return memory;
+  }
+  const kept: Record<number, number> = {};
+  for (const [key, atMs] of Object.entries(sent)) {
+    if (!moduleIDs.includes(Number(key))) {
+      kept[Number(key)] = atMs;
+    }
+  }
+  return { ...memory, reloadInFlight: kept };
 }
 
 /**
@@ -7673,10 +7738,21 @@ function withReloadAttemptsPruned(
  * and `decideTackleTag` both have: the prune above happens on ticks that issue
  * no action at all, and a call site that took only the decision would throw away
  * the fact that a gun got loaded.
+ *
+ * ⚠ A LOAD THAT WAS SENT IS WAITED ON, NOT RE-SENT (seen live 2026-10-14
+ * 09:31-09:32 UTC). The server's reload takes the gun's reload time (about 10 s
+ * on a turret) and the gun reads EMPTY the whole while, so "still empty" on the
+ * next tick is not evidence the load failed: three `loadAmmo` went out in about
+ * a second and the attempt budget was gone before the reload finished. Sending
+ * stamps `reloadInFlight`; a stamped gun is stepped over until its reload time
+ * plus one stale-read window has passed (`reloadingGuns`), and only THEN is a
+ * gun still reading empty a load that failed, retried under the same budget. A
+ * refused call clears the stamp (`noteRefusedReload`).
  */
 function decideReload(
   obs: FleetCompanionObservation,
   memory: CompanionLadderMemory,
+  nowMs: number,
 ): { readonly decision: CompanionDecision | null; readonly memory: CompanionLadderMemory } {
   // A fight starting again re-arms the clear-grid top-up (companionAmmo.ts).
   // Here, above rung 7, because a fight's ticks seldom reach the top-up's rung.
@@ -7701,6 +7777,27 @@ function decideReload(
   if (empty.length === 0) {
     return { decision: null, memory: mem };
   }
+  // Guns whose load was sent and whose reload is still running are stepped over
+  // everywhere below; `dry` is the rest.
+  const waiting = reloadingGuns(obs, mem, nowMs, RELOAD_STALE_READ_MS);
+  const dry = empty.filter((moduleID) => !waiting.has(moduleID));
+  if (dry.length === 0) {
+    // A READOUT, NOT SILENCE, AND NOT A REAL DECISION: `standing`, like the
+    // "Out of ammunition" ones below, so the ladder beneath still gets the tick
+    // and the guns that are loaded go on firing. It must come BEFORE the cargo
+    // checks: a load that took the last stack aboard leaves an empty bay, and
+    // "out of ammunition" would be false for a gun that is loading.
+    return {
+      decision: {
+        action: WAIT,
+        phase: "Reloading",
+        why: "Waiting for the reload to finish.",
+        memory: mem,
+        standing: true,
+      },
+      memory: mem,
+    };
+  }
   const charges = obs.cargoCharges ?? null;
   if (charges === null) {
     // Again "could not read", and again silence: a cargo bay this tick could not
@@ -7721,9 +7818,9 @@ function decideReload(
         action: WAIT,
         phase: "Out of ammunition",
         why:
-          empty.length === 1
+          dry.length === 1
             ? "A gun is empty and there is nothing in the cargo bay to load it with."
-            : `${empty.length} guns are empty and there is nothing in the cargo bay to load them with.`,
+            : `${dry.length} guns are empty and there is nothing in the cargo bay to load them with.`,
         memory: mem,
         standing: true,
       },
@@ -7764,7 +7861,7 @@ function decideReload(
   let chosen: CompanionCargoCharge | null = null;
   let rule: ReloadRule = "largest";
   let nothingFits = false;
-  for (const moduleID of empty) {
+  for (const moduleID of dry) {
     if (spent(moduleID)) {
       continue;
     }
@@ -7796,9 +7893,10 @@ function decideReload(
         memory: mem,
       };
     }
-    // Every empty gun has spent its budget. Nothing is issued and nothing is
+    // Every dry gun has spent its budget. Nothing is issued and nothing is
     // said: there IS ammunition aboard, so "out of ammunition" would be false,
-    // and this pilot has done what it can.
+    // and this pilot has done what it can. (A gun still reloading was answered
+    // above: this point is only reached with a dry gun that has run out.)
     return { decision: null, memory: mem };
   }
 
@@ -7807,13 +7905,15 @@ function decideReload(
   // this loop issues one call per tick: eight guns loaded one per tick would be
   // sixteen seconds of a ship shooting nothing. Guns that picked a different
   // stack wait for their own tick rather than being loaded with the wrong round.
-  const bank = empty.filter(
+  const bank = dry.filter(
     (moduleID) =>
       !spent(moduleID) && pick(moduleID)?.itemID === chosen.itemID,
   );
   const attempts: Record<number, number> = { ...mem.reloadAttempts };
+  const inFlight: Record<number, number> = { ...(mem.reloadInFlight ?? {}) };
   for (const moduleID of bank) {
     attempts[moduleID] = (attempts[moduleID] ?? 0) + 1;
+    inFlight[moduleID] = nowMs;
   }
   const retrying = (mem.reloadAttempts[first] ?? 0) > 0;
   // A gun loaded on a clear grid comes up full, so the top-up need not ask it.
@@ -7827,7 +7927,7 @@ function decideReload(
         // swaps; never one invented here.
         why: clearGridEmptyGunWords(
           rule, obs.chargeFactsByTypeID?.[chosen.typeID]?.name ?? null, bank.length, retrying),
-        memory: { ...loadedMem, reloadAttempts: attempts },
+        memory: { ...loadedMem, reloadAttempts: attempts, reloadInFlight: inFlight },
       },
       memory: mem,
     };
@@ -7848,7 +7948,7 @@ function decideReload(
         : bank.length === 1
           ? "A gun is empty. Loading it from the cargo bay."
           : `${bank.length} guns are empty. Loading them from the cargo bay.`) + ruleWords,
-      memory: { ...loadedMem, reloadAttempts: attempts },
+      memory: { ...loadedMem, reloadAttempts: attempts, reloadInFlight: inFlight },
     },
     memory: mem,
   };
@@ -10583,6 +10683,10 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
         }
         // A module the server says cannot be activated at all is passive for the
         // rest of the run: never chosen again (see `withoutModules`).
+        // A load the server refused is not reloading anything: see `noteRefusedReload`.
+        if (decision.action.kind === "loadAmmo" && isDefiniteCompanionRefusal(error)) {
+          mem.ladder = noteRefusedReload(mem.ladder, decision.action.moduleIDs);
+        }
         if (decision.action.kind === "activate" && isNotActivatableRefusal(error)) {
           passiveModuleIDs = new Set([...passiveModuleIDs, decision.action.moduleID]);
         }

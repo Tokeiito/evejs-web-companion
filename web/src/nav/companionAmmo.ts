@@ -158,6 +158,54 @@ export function weaponCycleFromAttributes(
   };
 }
 
+// ─── A load in flight ────────────────────────────────────────────────────────
+
+/** A gun's reload time when its type's dogma was not read (a turret's is 10 s). */
+export const RELOAD_DEFAULT_MS = 12_000;
+/** Added to the reload time: the server finishes the reload a little after its nominal time. */
+export const RELOAD_MARGIN_MS = 1_500;
+/**
+ * Extra wait before a load that was SENT is judged to have failed. The reload
+ * rung's facts are served from a cache of up to ten seconds (flow.ts), so a
+ * reading taken before the reload finished can still be on the table just after
+ * the window closes; retrying on it would reload, and silence, a loaded gun.
+ */
+export const RELOAD_STALE_READ_MS = 10_000;
+/** No gun is waited on longer than this, whatever its dogma says. */
+const RELOAD_WAIT_CAP_MS = 60_000;
+
+/**
+ * The guns whose `loadAmmo` was SENT and whose reload has not had time to
+ * finish: `memory.reloadInFlight`, read against each gun's own reload time
+ * (dogma attribute 1795, from `weaponCycleByTypeID`; `RELOAD_DEFAULT_MS` when
+ * unread). `extraMs` widens the window (`RELOAD_STALE_READ_MS` for the reload
+ * rung's own retry decision).
+ *
+ * ⚠ SEEN LIVE 2026-10-14 09:31-09:32 UTC: a gun reads empty for the whole of
+ * the server's reload, so every consumer of "is this gun empty" must ask this
+ * first. See `CompanionLadderMemory.reloadInFlight`.
+ */
+export function reloadingGuns(
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+  nowMs: number,
+  extraMs: number = 0,
+): ReadonlySet<number> {
+  const sent = memory.reloadInFlight ?? {};
+  const reloading = new Set<number>();
+  for (const [key, atMs] of Object.entries(sent)) {
+    const moduleID = Number(key);
+    const typeID = obs.combatWeapons?.weapons.find((weapon) => weapon.itemID === moduleID)?.typeID ?? null;
+    const reloadMs = (typeID === null ? null : obs.weaponCycleByTypeID?.[typeID]?.reloadTimeMs) ?? RELOAD_DEFAULT_MS;
+    const waitMs = Math.min(reloadMs + RELOAD_MARGIN_MS, RELOAD_WAIT_CAP_MS) + extraMs;
+    const elapsedMs = nowMs - atMs;
+    if (elapsedMs >= 0 && elapsedMs < waitMs) {
+      reloading.add(moduleID);
+    }
+  }
+  return reloading;
+}
+
 // ─── Memory ──────────────────────────────────────────────────────────────────
 
 /** What a gun last measured with a charge in it, so it can still rank by reach once empty. */
@@ -794,7 +842,9 @@ export function decideAmmoSwap(
   const rankedFor = next ?? target;
   const distanceM = distanceOf(rankedFor);
   const resonances = next === null ? currentResonances : resonancesUnderFire(next, obs);
-  const empty = new Set(obs.emptyWeaponModuleIDs ?? []);
+  // A gun with a load in flight is mid-reload: no more the swap's than an empty
+  // one (its reading may be stale-loaded until the reload rung prunes it).
+  const empty = new Set([...(obs.emptyWeaponModuleIDs ?? []), ...reloadingGuns(obs, memory, nowMs)]);
 
   // One entry per unit considered, in the units' order. `pending` is the swap
   // memory as the gate left it: a swap or load issued this tick reads pending.
