@@ -3607,6 +3607,24 @@ Take these defaults, and list each under "For the operator" in the log so they c
   flow had from the server. Where a flow already says why an order
   failed, a window's own check after it is for the case the flow says
   nothing of.
+- **Test Two has an agent at its station; Test Pilot has none.**
+  Jita IV-4 has no agents. Muvolailen X-3 (60000004) has two, and one
+  of level 1 (3008416), with an offer open for Test Two in the store
+  as it stands: a look at a conversation, a decline's question or
+  "Remove Offer" needs no staging. In the tab the second pilot is
+  brought online from the pilots' list ("Pilots", the row, "BRING
+  ONLINE") and made the one shown by the chip under "▾".
+- **A script reads what an agent offers before it presses.** The
+  first thing an agent with an offer open has is Accept (3), not a
+  mission to request (2) or view (1): a script that pressed "the
+  first button" accepted a mission, and the store was put back to
+  have the offer again.
+- **Old tests written to a route's path are kept by their stand-in's
+  naming.** Where some twenty places of a test file name a route's
+  path and body, the stand-in hands the page's own call to them
+  under that name and says so (`asAgentRoute` beside `asRead`,
+  `web/src/app/agentsFlow.test.ts`); a test of the route itself goes
+  with the route.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

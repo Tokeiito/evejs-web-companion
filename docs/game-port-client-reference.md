@@ -1573,6 +1573,15 @@ on the rack goes by the online effect instead (`shipmodulebutton._ChangeOnline`,
 95 in 100 of the capacitor for an online in space and leaves 5; asked for what is so already it answers nothing.
 The page makes the slot's two since `130ae40f` (`web/src/bridge/dogmaWrites.ts`).
 
+**An agent's two writes, 2026-10-13** (`eve/client/script/ui/station/agents`). What is said to an agent is
+`GetAgentMoniker(agentID).DoAction(actionID)` (`agentDialogueWindow.ExecuteAgentAction`, 427 to 428), None to open
+a conversation; Tranquility has it in 23 recordings, on the agent's object, and once inside that object's binding:
+`MachoBindObject(agentID, ('DoAction', (None,), {}))`. An offer is taken out of the journal by
+`GetAgentMoniker(agentID).RemoveOfferFromJournal()`, with nothing (`agents.py` 782 to 784), from the journal's
+menu for a mission that is offered (`missionentry.py` 66 to 67); no recording has one. EveJS answers nothing to a
+removal, with an offer or without. The page makes both on the agent's object since `e1b4d4a9`
+(`web/src/bridge/agentWrites.ts`), and the game port sends the opening inside the binding.
+
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
 (`ACTIONS`, by `eventTypeID`) and a level it reckons from `absolutePoints` and the skill's rank
