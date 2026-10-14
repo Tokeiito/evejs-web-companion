@@ -51,6 +51,7 @@ import {
 // "where does this tag rank", shared with the combat priority list.
 import { fleetTagRank, pickPrimary } from "./targetPriority.ts";
 import { isTransitionTimeout, isTransportTransient, panelErrorWords } from "../bridge/refusals.ts";
+import { isNotActivatableRefusal } from "./moduleActivation.ts";
 import { FLEET_BROADCAST_TTL_MS } from "../bridge/fleetBroadcasts.ts";
 // Rung 6's hurt-drone rotation: the drone-boat block's own machine, one drone at
 // a time on its own shield, so the companion and the block judge a hurt drone the
@@ -577,6 +578,48 @@ export const DEFAULT_FLEET_COMPANION_REQUEST: FleetCompanionRequest = Object.fre
   // Nothing fitted is nothing to vote with, which is exactly what `null` says.
   tankLayer: null,
 } satisfies FleetCompanionRequest);
+
+/**
+ * The request and the observation with the given modules gone from every list
+ * of modules the ladder switches on: what the run knows to be passive.
+ *
+ * ⚠ SEEN LIVE 2026-10-14: a Drone Navigation Computer I, picked by its group
+ * name, was refused "... cannot be activated." once a fight. The lists are
+ * gated at start by the server's own test (nav/moduleActivation.ts), but a type
+ * whose answer was not read in time still lands in one; once the server has
+ * said so, the run never asks again. Taking it out of the LIST, not refusing
+ * the call, is what lets the rung move on to the next module rather than
+ * choose the same dead one every tick.
+ */
+export function withoutModules(
+  request: FleetCompanionRequest,
+  obs: FleetCompanionObservation,
+  passive: ReadonlySet<number>,
+): { readonly request: FleetCompanionRequest; readonly obs: FleetCompanionObservation } {
+  if (passive.size === 0) {
+    return { request, obs };
+  }
+  const keep = (ids: readonly number[]): readonly number[] => ids.filter((id) => !passive.has(id));
+  const utilities = obs.combatUtilities ?? null;
+  return {
+    request: {
+      ...request,
+      defenseModuleIDs: keep(request.defenseModuleIDs),
+      shieldBoosterModuleIDs: keep(request.shieldBoosterModuleIDs),
+      armorRepairerModuleIDs: keep(request.armorRepairerModuleIDs),
+      hullRepairerModuleIDs: keep(request.hullRepairerModuleIDs),
+      remoteShieldModuleIDs: keep(request.remoteShieldModuleIDs),
+      remoteArmorModuleIDs: keep(request.remoteArmorModuleIDs),
+      remoteCapacitorModuleIDs: keep(request.remoteCapacitorModuleIDs),
+      weaponModuleIDs: keep(request.weaponModuleIDs),
+      salvagerModuleIDs: keep(request.salvagerModuleIDs),
+      droneAssistModuleIDs: keep(request.droneAssistModuleIDs),
+      propulsionModules: request.propulsionModules.filter((module) => !passive.has(module.itemID)),
+    },
+    obs: utilities === null ? obs
+      : { ...obs, combatUtilities: { ...utilities, modules: utilities.modules.filter((module) => !passive.has(module.itemID)) } },
+  };
+}
 
 /**
  * A flee in progress — rung 5's latch, null whenever the pilot is not running
@@ -10141,6 +10184,11 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
    * can put a call back beside the decision that sent it. Reset by `start()`.
    */
   let seq = 0;
+  /**
+   * Modules the server refused as "... cannot be activated." this run, kept out
+   * of every list from then on (`withoutModules`). Reset by `start()`.
+   */
+  let passiveModuleIDs: ReadonlySet<number> = new Set();
 
   function report(tickSeq?: number): void {
     const progress = snapshot();
@@ -10319,8 +10367,9 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
     // The request is set by start() before the status can become "running", so
     // this fallback is unreachable in practice — it exists so the ladder's
     // signature needs no optional request and no cast.
-    const request = mem.request ?? DEFAULT_FLEET_COMPANION_REQUEST;
-    const decision = decideCompanionAction(request, obs, mem.ladder, deps.now?.() ?? Date.now());
+    const known = withoutModules(mem.request ?? DEFAULT_FLEET_COMPANION_REQUEST, obs, passiveModuleIDs);
+    const request = known.request;
+    const decision = decideCompanionAction(request, known.obs, mem.ladder, deps.now?.() ?? Date.now());
     // ⚠ STORE THE MEMORY BEFORE ANYTHING ELSE CAN RETURN. The ladder is pure,
     // so a decision whose memory is dropped silently un-does whatever that tick
     // learned — the safe-spot warp it just issued, or the humans it just saw.
@@ -10421,6 +10470,11 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
         if (decision.action.kind === "lock" && decision.preLock !== true) {
           mem.ladder = noteRefusedLock(mem.ladder, decision.action.targetID);
         }
+        // A module the server says cannot be activated at all is passive for the
+        // rest of the run: never chosen again (see `withoutModules`).
+        if (decision.action.kind === "activate" && isNotActivatableRefusal(error)) {
+          passiveModuleIDs = new Set([...passiveModuleIDs, decision.action.moduleID]);
+        }
         if (decision.action.kind === "warp" &&
           (decision.phase === "Getting safe" || decision.phase === "Getting clear") &&
           isDefiniteCompanionRefusal(error)) {
@@ -10454,6 +10508,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
     start(next: FleetCompanionRequest, resuming: CompanionAbandonmentRecord | null = null): void {
       recorder.start();
       seq = 0;
+      passiveModuleIDs = new Set();
       mem = freshMemory();
       mem.status = "running";
       mem.request = next;

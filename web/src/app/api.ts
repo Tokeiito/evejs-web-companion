@@ -3596,6 +3596,38 @@ export async function loadOverloadEffects(
   return effects;
 }
 
+// --- Whether a module type can be switched on (static reference data) --------
+// GET /api/types/activation?typeIDs=... answers { activatable }: for each type
+// the eve.js server's own test of whether it has an effect a pilot switches on
+// (nav/moduleActivation.ts), or null where the tables have no dogma for it. Like
+// the overload effects above it is static data and no bridge call.
+
+/**
+ * typeID -> true (can be switched on), false (passive: the server refuses it)
+ * or null (not known). A type the answer does not speak of, or speaks of with
+ * anything else, is left out: it was not answered.
+ */
+export async function loadTypeActivation(
+  typeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<Readonly<Record<number, boolean | null>>> {
+  const data = await getJson(
+    `/api/types/activation?typeIDs=${encodeURIComponent(typeIDs.join(","))}`,
+    options,
+  );
+  const raw =
+    typeof data.activatable === "object" && data.activatable !== null && !Array.isArray(data.activatable)
+      ? (data.activatable as Record<string, JsonValue>)
+      : {};
+  const activatable: Record<number, boolean | null> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (value === null || typeof value === "boolean") {
+      activatable[Number(key)] = value;
+    }
+  }
+  return activatable;
+}
+
 // --- The client type lists that hold a type (static reference data) --------------
 // GET /api/types/type-lists?typeIDs=...&listIDs=... answers { lists }: for each type, the lists among those asked that
 // hold it (the client's evetypes.GetTypeIDsByListID), or null where the tables lack the type or a list.

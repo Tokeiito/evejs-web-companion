@@ -1262,6 +1262,11 @@ function gridHarness(options: {
    * which rung fires is not a neutral fixture.
    */
   readonly hardener?: boolean;
+  /**
+   * What GET /api/types/activation answers for each type: whether the server
+   * can switch it on at all. Left out, the read answers nothing (not known).
+   */
+  readonly activation?: Readonly<Record<number, boolean | null>>;
 }) {
   const calls: RecordedCall[] = [];
 
@@ -1312,6 +1317,9 @@ function gridHarness(options: {
           return fittingBody(options.hardener === true ? { extraModules: [HARDENER_ROW] } : {});
         }
         if (path === "/api/bridge/targets") return { ok: true, targetIDs: [], notifications: [] };
+        if (path.startsWith("/api/types/activation?") && options.activation !== undefined) {
+          return { ok: true, source: "static-data", activatable: options.activation, capped: false, limit: 500 };
+        }
         if (path === "/api/bridge/bound-fleet") {
           return readyFleet({
             members: [
@@ -1407,6 +1415,43 @@ test("the same grid with NOBODY locking leaves the hardener alone", async () => 
     calls.filter((call) => call.path === "/api/bridge/call" && call.body.method === "Activate").length,
     0,
     "nobody is shooting at this pilot, so nothing should be burning capacitor",
+  );
+  flow.stopFleetCompanion();
+});
+
+test("a module whose TYPE the server cannot switch on is never lit, whatever its group says", async () => {
+  // ⚠ SEEN LIVE 2026-10-14: a Drone Navigation Computer I, picked by its group
+  // name, was refused "... cannot be activated." once a fight. The same fight
+  // as the player-lock test above, the same "Shield Hardener" group, but the
+  // static data's answer for the type is that nothing on it can be switched on:
+  // the tank rung must have nothing to light.
+  const { store, flow, calls } = gridHarness({
+    hardener: true,
+    activation: { [HARDENER_TYPE_ID]: false },
+    entities: [
+      rivalShip({
+        itemID: RIVAL_SHIP_ITEM_ID,
+        typeID: RIVAL_HULL_TYPE_ID,
+        characterID: RIVAL_CHARACTER_ID,
+        distance: 9000,
+        locking: true,
+      }),
+    ],
+  });
+
+  await flow.startFleetCompanion(DEFAULT_COMPANION_SETUP);
+  await waitForCompanionTick(() => store.get().companion.why);
+
+  assert.equal(
+    calls.filter((call) => call.path === "/api/bridge/call" && call.body.method === "Activate").length,
+    0,
+    "a passive module is never asked for",
+  );
+  assert.notEqual(store.get().companion.phase, "Tanking up");
+  assert.ok(
+    calls.some((call) => call.path.startsWith("/api/types/activation?") &&
+      call.path.split("typeIDs=")[1]?.split(/%2C|,/).includes(String(HARDENER_TYPE_ID))),
+    "the type's answer was asked for before the lists were built",
   );
   flow.stopFleetCompanion();
 });
