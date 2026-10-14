@@ -115,6 +115,11 @@ function fittingKeyVal(given) {
 /** The eight keywords a sale's item is made with, in the order the client's window writes them (sellMulti.py 501). */
 const SALE_ITEM = Object.freeze(["stationID", "typeID", "itemID", "price", "quantity", "officeID", "delta", "rawBrokerFeePercentage"]);
 const wholeAndPositive = (value) => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+/**
+ * A price, a rate or a delta as the client's Python holds it, a float (round(float(price), 2), marketsvc.py 266; a
+ * quotient, GetDelta): a whole number given for one would go out an int (clientMarshal.js), and goes as a real.
+ */
+const asFloat = (value) => (typeof value === "number" && Number.isInteger(value) ? { type: "real", value } : value);
 
 /**
  * sellMulti.py 483, GetValidatedItem: one item of a sale, as the window makes it,
@@ -143,7 +148,13 @@ function saleItem(given, rateAt = () => null, averageOf = () => null) {
   if (typeof given.price !== "number" || !Number.isFinite(given.price) || given.price <= 0) return null;
   const rate = given.rawBrokerFeePercentage ?? rateAt(given.stationID) ?? undefined;
   const delta = given.delta !== undefined ? given.delta : deltaFrom(given.price, averageOf(given.typeID));
-  const fields = { ...given, price: Math.round(given.price * 100) / 100, officeID: given.officeID ?? null, delta, rawBrokerFeePercentage: rate };
+  const fields = {
+    ...given,
+    price: asFloat(Math.round(given.price * 100) / 100),
+    officeID: given.officeID ?? null,
+    delta: delta === undefined ? undefined : asFloat(delta),
+    rawBrokerFeePercentage: rate === undefined ? undefined : asFloat(rate),
+  };
   const written = SALE_ITEM.filter((name) => fields[name] !== undefined);
   return { item: keyVal(constructorKeywordOrder(written).map((name) => [name, fields[name]])), has: written, rate: rate ?? null };
 }
@@ -1849,11 +1860,13 @@ const RETAIL_CALLS = Object.freeze({
     note: "GetMarketProxy().PlaceBuyOrder(stationID, typeID, price, quantity, orderRange, minVolume, duration, useCorp, expectedBrokersFee): nine, the last the broker's fee the client's window showed (buyThisTypeWindow.py 701).",
     shape: (args, kwargs, context) => {
       if (args.length !== 9) return { args, kwargs, status: "differs", note: "The client sends nine, the last of them the broker's fee its window showed." };
-      if (typeof args[8] === "number") return { args, kwargs };
-      const rate = brokersFeeOf(context, args[0]);
-      return rate === null
-        ? { args, kwargs, status: "differs", note: "The client names the broker's fee rate its window showed, and the server holds the order to it. This call names none, and it could not be worked out for this station." }
-        : { args: [...args.slice(0, 8), rate], kwargs, status: "reshaped" };
+      const priced = [...args.slice(0, 2), asFloat(args[2]), ...args.slice(3, 8)];
+      const rate = typeof args[8] === "number" ? args[8] : brokersFeeOf(context, args[0]);
+      if (rate === null) {
+        return { args: [...priced, args[8]], kwargs, status: "differs", note: "The client names the broker's fee rate its window showed, and the server holds the order to it. This call names none, and it could not be worked out for this station." };
+      }
+      const clients = [...priced, asFloat(rate)];
+      return sameValues(clients, args) ? { args, kwargs } : { args: clients, kwargs, status: "reshaped" };
     },
   }), "fee"),
   "marketProxy.PlaceMultiSellOrder": needing(Object.freeze({
@@ -1868,7 +1881,7 @@ const RETAIL_CALLS = Object.freeze({
         return { args, kwargs, status: "differs", note: "The client sends four: a list of the items, each a util.KeyVal, whether it is for the corporation, for how long, and the broker's fee rate. This is not that." };
       }
       // sellMulti.py 444: for an order that stands, the rate the call names is the first item's.
-      const fee = duration !== 0 && typeof named !== "number" && typeof items[0].rate === "number" ? items[0].rate : named;
+      const fee = asFloat(duration !== 0 && typeof named !== "number" && typeof items[0].rate === "number" ? items[0].rate : named);
       const asGiven = !Array.isArray(given) && fee === named && items.every(({ item }, at) => item === listed[at]);
       const shaped = asGiven ? args : [{ type: "list", items: items.map(({ item }) => item) }, useCorp, duration, fee];
       const lacking = SALE_ITEM.filter((name) => items.some(({ has }) => !has.includes(name)));
@@ -1876,7 +1889,7 @@ const RETAIL_CALLS = Object.freeze({
         const what = { delta: "how far the price is from the type's average (delta)", rawBrokerFeePercentage: "the broker's fee rate (rawBrokerFeePercentage)" };
         return { args: shaped, kwargs, status: "differs", note: `The client's item has eight fields. These lack what its window works out: ${lacking.map((name) => what[name] ?? name).join(", and ")}.` };
       }
-      if (duration !== 0 && typeof fee !== "number") return { args: shaped, kwargs, status: "differs", note: "For an order that stands, the client names the broker's fee rate its window showed. This call names none." };
+      if (duration !== 0 && typeof fee !== "number" && !(fee && fee.type === "real")) return { args: shaped, kwargs, status: "differs", note: "For an order that stands, the client names the broker's fee rate its window showed. This call names none." };
       return asGiven ? { args, kwargs } : { args: shaped, kwargs, status: "reshaped" };
     },
   }), "sale"),
@@ -1907,16 +1920,17 @@ const RETAIL_CALLS = Object.freeze({
       const row = ownOrderRow(context, orderID);
       const sevenOfTheRow = row ? ["bid", "stationID", "solarSystemID", "price", "range", "volRemaining", "issueDate"].map((name) => row[name]) : [];
       if (rest.length >= 1 && sevenOfTheRow.length === 7 && sevenOfTheRow.every((value) => value !== undefined)) {
-        const clients = [row.orderID, rest[0], ...sevenOfTheRow];
+        // The prices as floats: the row's as the server wrote it, which the game port keeps as a number.
+        const clients = [row.orderID, asFloat(rest[0]), ...sevenOfTheRow.slice(0, 3), asFloat(sevenOfTheRow[3]), ...sevenOfTheRow.slice(4)];
         return sameValues(clients, [given, ...rest]) ? { args: clients, kwargs } : { args: clients, kwargs, status: "reshaped" };
       }
-      const args = [orderID, ...rest];
+      const args = [orderID, asFloat(rest[0]), ...rest.slice(1)];
       if (rest.length !== 8) return { args, kwargs, status: "differs", note: "The client sends nine: the order's number, the new price, and seven more off the order's row." };
       const issued = rest[7];
       if (!((typeof issued === "bigint" && issued > 0n) || (typeof issued === "number" && issued > 0) || (issued && typeof issued === "object"))) {
         return { args, kwargs, status: "differs", note: "The client sends the order's own date of issue. This call has none." };
       }
-      return orderID === given ? { args, kwargs } : { args, kwargs, status: "reshaped" };
+      return orderID === given && args[1] === rest[0] ? { args, kwargs } : { args, kwargs, status: "reshaped" };
     },
   }), "orders"),
   "marketProxy.CharGetTransactions": Object.freeze({
