@@ -378,6 +378,7 @@ import { reconnectToDrones as reconnectToDronesCall, salvageWithDrones, scoopDro
 import { alignTo as alignToCall, approach as approachCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
 import { dock as dockCall, isStation, jump as jumpCall, undock as undockCall } from "../bridge/placeChanges.ts";
 import { boardCorvette as boardCorvetteCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
+import { createJobReckoner, type JobReckoner, type JobReckoning } from "../bridge/industryJobReckoning.ts";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
 import { runSlashCommand } from "../bridge/gmWrites.ts";
 import { launchCommodities as launchCommoditiesCall, rerouteExtractorRoutes, type NewRoute } from "../bridge/planetWrites.ts";
@@ -1894,6 +1895,57 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     names: async (items) => (await api.resolveNames(items, callOptions)).names,
     typeAttributes: (typeIDs, attributeIDs) => api.fetchTypeDogma(typeIDs, attributeIDs, callOptions),
   });
+  // The page's own reckoner of industry jobs (bridge/industryJobReckoning.ts), one for each pilot: what the client's
+  // services keep for a session (the region's facilities, the price table, the clone grade) is that pilot's.
+  let jobReckoning: { readonly characterID: number; readonly reckoner: JobReckoner } | null = null;
+  // A type's group and category are the game's data, the same for every pilot: kept once read.
+  const industryTypeFactsKept = new Map<number, { typeID: number; groupID: JsonValue | undefined; categoryID: JsonValue | undefined } | null>();
+  function jobReckonerFor(characterID: number): JobReckoner {
+    if (jobReckoning?.characterID !== characterID) {
+      jobReckoning = {
+        characterID,
+        reckoner: createJobReckoner({
+          ask: bridgeAsk,
+          characterID,
+          definitions: (typeIDs) => api.loadIndustryDefinitions(typeIDs, callOptions),
+          typeFacts: async (typeID) => {
+            if (industryTypeFactsKept.has(typeID)) return industryTypeFactsKept.get(typeID) ?? null;
+            const closure = await api.getIndustryRecipeClosure([typeID], callOptions);
+            const types = closure !== null && typeof closure === "object" && !Array.isArray(closure) ? (closure as Record<string, JsonValue>).types : null;
+            const type = types !== null && typeof types === "object" && !Array.isArray(types) ? (types as Record<string, JsonValue>)[String(typeID)] : null;
+            const facts = type === null || type === undefined || typeof type !== "object" || Array.isArray(type)
+              ? null
+              : { typeID, groupID: (type as Record<string, JsonValue>).groupID, categoryID: (type as Record<string, JsonValue>).categoryID };
+            industryTypeFactsKept.set(typeID, facts);
+            return facts;
+          },
+          typeAttributes: (typeIDs, attributeIDs) => api.fetchTypeDogma(typeIDs, attributeIDs, callOptions),
+          security: (ids) => api.loadSystemSecurity(ids, callOptions),
+        }),
+      };
+    }
+    return jobReckoning.reckoner;
+  }
+  /**
+   * A manufacturing job as the page reckons it itself, for the pilot online; null where there is no pilot, or the
+   * reckoning failed (a lost session is no reckoning, and is passed on).
+   */
+  async function reckonedHere(request: api.IndustryJobRequest): Promise<JobReckoning | null> {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null || request.activity !== "manufacturing") return null;
+    try {
+      return await jobReckonerFor(characterID).manufacturing({
+        blueprintTypeID: request.blueprintTypeID,
+        facilityID: request.facilityID,
+        runs: request.runs,
+        timeEfficiency: request.timeEfficiency ?? null,
+        materialEfficiency: request.materialEfficiency ?? null,
+      });
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      return null;
+    }
+  }
   // The Character Sheet's reads, asked call by call as the client's windows ask them (bridge/characterSheetReads.ts).
   const characterSheetReads = createCharacterSheetReads(bridgeAsk, (typeIDs, attributeIDs) => api.fetchTypeDogma(typeIDs, attributeIDs, callOptions));
   // The wallet's reads, asked call by call as the client's wallet and account services ask them
@@ -14813,8 +14865,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     loadIndustry,
 
+    // A manufacturing job's time, materials and what it costs to start are the page's own reckoning
+    // (reckonedHere), as the client's window shows its job's own; the route's preview is asked for what the job's
+    // place has of each material, and its figures are shown only where the page could not reckon one (a facility with
+    // rig modifiers, which the client asks afresh). The route reckons by the same module.
     async previewIndustryJob(request) {
-      return api.previewIndustryJob(request, callOptions);
+      const own = await reckonedHere(request);
+      const previewed = await api.previewIndustryJob(request, callOptions);
+      if (own === null) return previewed;
+      return {
+        ...previewed,
+        timeSeconds: own.timeSeconds ?? previewed.timeSeconds,
+        materials: own.materials ?? previewed.materials,
+        fee: own.fee ?? previewed.fee,
+      };
     },
 
     async loadDecryptors() {
