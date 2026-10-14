@@ -332,6 +332,30 @@ function steps(
   return out;
 }
 
+test("a gun with a load in flight is not swapped until its reload window has passed", () => {
+  // The reload rung sent a load at T0 (`reloadInFlight`); the gun may still read
+  // loaded for a tick or two, and a swap on top of a reload in progress would
+  // queue a second one. Skipped as an empty gun is, then judged normally.
+  const firstSwapTick = (memory: CompanionLadderMemory): number => {
+    let mem = memory;
+    for (let tick = 0; tick < 16; tick++) {
+      const step = decideAmmoSwap(ONE_GUN, ammoObs(grid(25_000)), mem, RAT, T0 + tick * 2_000, NO_LADDER);
+      if (step.swap !== null) {
+        return tick;
+      }
+      mem = step.memory;
+    }
+    return -1;
+  };
+  assert.equal(firstSwapTick(firing()), 4, "control: five persisting ticks and it swaps");
+  const sent = firstSwapTick({ ...firing(), reloadInFlight: { [FIGHT_GUN_1]: T0 } });
+  // The default reload (12 s) + the 1.5 s margin: ticks 0-6 are inside it.
+  assert.ok(sent >= 7, `no swap while the reload is running, swapped on tick ${sent}`);
+  const first = decideAmmoSwap(
+    ONE_GUN, ammoObs(grid(25_000)), { ...firing(), reloadInFlight: { [FIGHT_GUN_1]: T0 } }, RAT, T0, NO_LADDER);
+  assert.equal(first.trace.units[0]!.code, "gun-empty");
+});
+
 test("trace: each early return says why the step looked at no gun", () => {
   const obs = ammoObs(grid(10_000));
   const skipOf = (request: FleetCompanionRequest, o: FleetCompanionObservation, engaged: number = RAT) =>

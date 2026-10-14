@@ -8930,6 +8930,138 @@ test("a gun that LEFT the empty list is not reloaded again, and gets its budget 
   );
 });
 
+// --- a load that was sent is waited on ---------------------------------------
+//
+// ⚠ SEEN LIVE 2026-10-14 09:31-09:32 UTC (hybrid turrets, ~10 s reload): a gun
+// reads EMPTY for the whole of the server's reload, so the rung sent `loadAmmo`
+// three times in about a second and burnt its attempt budget, and the fire step
+// `activate`d the gun twice and was refused NoCharges.
+
+const RELOAD_T0 = 5_000_000;
+const RELOADING = {
+  snapshot: gridWithStation(null),
+  emptyWeaponModuleIDs: [AUTOCANNON],
+  weaponChargeGroups: { [AUTOCANNON]: [PROJECTILE_GROUP] },
+  cargoCharges: [charge(SLUGS, 500, PROJECTILE_GROUP)],
+};
+
+test("a load that was sent is not sent again while the gun still reads empty", () => {
+  const sent = decideCompanionAction(ARMED, obs(RELOADING), freshLadderMemory(), RELOAD_T0);
+  assert.deepEqual(sent.action, { kind: "loadAmmo", moduleIDs: [AUTOCANNON], chargeItemID: SLUGS });
+  // Three ticks over the next three seconds, the same "still empty" reading each time.
+  let memory = sent.memory;
+  for (const afterMs of [1_000, 2_000, 3_000]) {
+    const waiting = decideCompanionAction(ARMED, obs(RELOADING), memory, RELOAD_T0 + afterMs);
+    assert.notEqual(waiting.action.kind, "loadAmmo", `${afterMs} ms in, the reload is still running`);
+    assert.equal(waiting.phase, "Reloading");
+    assert.equal(waiting.why, "Waiting for the reload to finish.");
+    assert.equal(waiting.memory.reloadAttempts[AUTOCANNON], 1, "no attempt was spent waiting");
+    memory = waiting.memory;
+  }
+});
+
+test("a load still reading empty after the reload window is retried, and counted", () => {
+  const sent = decideCompanionAction(ARMED, obs(RELOADING), freshLadderMemory(), RELOAD_T0);
+  // The default reload (12 s) + margin + one stale-read window (10 s) is 23.5 s.
+  const stillWaiting = decideCompanionAction(ARMED, obs(RELOADING), sent.memory, RELOAD_T0 + 23_000);
+  assert.notEqual(stillWaiting.action.kind, "loadAmmo");
+  const retried = decideCompanionAction(ARMED, obs(RELOADING), stillWaiting.memory, RELOAD_T0 + 24_000);
+  assert.deepEqual(retried.action, { kind: "loadAmmo", moduleIDs: [AUTOCANNON], chargeItemID: SLUGS });
+  assert.equal(retried.memory.reloadAttempts[AUTOCANNON], 2);
+  assert.match(retried.why, /still empty\. Loading it again/);
+});
+
+test("the reload window is the gun's own reload time when its dogma was read", () => {
+  const TURRET_TYPE = 90000501;
+  const facts = {
+    ...RELOADING,
+    combatWeapons: {
+      shipID: 1,
+      cargo: null,
+      weapons: [{
+        itemID: AUTOCANNON, typeID: TURRET_TYPE, chargeTypeID: null, chargeQuantity: null,
+        acceptedGroups: null, chargeSize: null, reachM: null, tracking: null,
+      }],
+    },
+    weaponCycleByTypeID: { [TURRET_TYPE]: { speedMs: 3_000, damageMultiplier: 1, reloadTimeMs: 30_000 } },
+  };
+  const sent = decideCompanionAction(ARMED, obs(facts), freshLadderMemory(), RELOAD_T0);
+  assert.equal(sent.action.kind, "loadAmmo");
+  // 30 s + 1.5 s + 10 s: still waiting well past the 12 s default.
+  const waiting = decideCompanionAction(ARMED, obs(facts), sent.memory, RELOAD_T0 + 40_000);
+  assert.notEqual(waiting.action.kind, "loadAmmo");
+  const retried = decideCompanionAction(ARMED, obs(facts), waiting.memory, RELOAD_T0 + 42_000);
+  assert.equal(retried.action.kind, "loadAmmo");
+});
+
+test("a gun that left the empty list is no longer in flight, and may run dry and reload again", () => {
+  const sent = decideCompanionAction(ARMED, obs(RELOADING), freshLadderMemory(), RELOAD_T0);
+  assert.equal(sent.memory.reloadInFlight?.[AUTOCANNON], RELOAD_T0);
+  const loaded = decideCompanionAction(
+    ARMED, obs({ ...RELOADING, emptyWeaponModuleIDs: [] }), sent.memory, RELOAD_T0 + 11_000);
+  assert.equal(loaded.memory.reloadInFlight?.[AUTOCANNON], undefined);
+  // Dry again two seconds later: reloaded at once, nothing is still waited on.
+  const dryAgain = decideCompanionAction(ARMED, obs(RELOADING), loaded.memory, RELOAD_T0 + 13_000);
+  assert.equal(dryAgain.action.kind, "loadAmmo");
+});
+
+test("a REFUSED loadAmmo clears the in-flight mark at once", async () => {
+  let clock = RELOAD_T0;
+  const loads: FleetCompanionAction[] = [];
+  const controller = createFleetCompanion({
+    observe: async () => obs(RELOADING),
+    issue: async (action) => {
+      loads.push(action);
+      // The first load is refused outright; the second is accepted.
+      if (loads.length === 1) throw Object.assign(new Error("ModuleCannotLoad"), { code: "CALL_REFUSED" });
+    },
+    sleep: async () => {},
+    now: () => clock,
+  });
+  controller.start(ARMED);
+  for (let tick = 0; tick < 4; tick += 1) {
+    await controller.tick();
+    clock += 1_000;
+  }
+  // Refused (tick 1) -> tried again at once (tick 2, accepted) -> waited on (ticks 3-4).
+  assert.deepEqual(loads.map((action) => action.kind), ["loadAmmo", "loadAmmo"]);
+});
+
+test("a gun with a load in flight is not fired, and the other guns are", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, weaponModuleIDs: [AUTOCANNON, AUTOCANNON_2] };
+  const called = {
+    fleetTargetTags: new Map([[TACKLE, "A"]]),
+    lockedTargetIDs: [TACKLE],
+    emptyWeaponModuleIDs: [AUTOCANNON],
+    weaponChargeGroups: { [AUTOCANNON]: [PROJECTILE_GROUP] },
+    cargoCharges: [charge(SLUGS, 500, PROJECTILE_GROUP)],
+  };
+  const sent = decideCompanionAction(
+    request, obs({ ...called, snapshot: gridWithEntitiesAndRack([TACKLE]) }), freshLadderMemory(), RELOAD_T0);
+  assert.equal(sent.action.kind, "loadAmmo");
+  // The fleet's call stands and the first gun still reads empty: the OTHER gun opens fire.
+  const firing = decideCompanionAction(
+    request, obs({ ...called, snapshot: gridWithEntitiesAndRack([TACKLE]) }), sent.memory, RELOAD_T0 + 2_000);
+  assert.deepEqual(firing.action, { kind: "activate", moduleID: AUTOCANNON_2, targetID: TACKLE });
+  // Once it cycles there is nothing to start: the reloading gun is NOT activated.
+  const settled = decideCompanionAction(
+    request,
+    obs({ ...called, snapshot: gridWithEntitiesAndRack([TACKLE], [AUTOCANNON_2]) }),
+    firing.memory,
+    RELOAD_T0 + 4_000,
+  );
+  assert.notEqual(settled.action.kind, "activate");
+  assert.match(settled.why, /1 gun is reloading\./);
+  // And when the reload has run its course the gun is fired like any other.
+  const after = decideCompanionAction(
+    request,
+    obs({ ...called, emptyWeaponModuleIDs: [], snapshot: gridWithEntitiesAndRack([TACKLE], [AUTOCANNON_2]) }),
+    settled.memory,
+    RELOAD_T0 + 12_000,
+  );
+  assert.deepEqual(after.action, { kind: "activate", moduleID: AUTOCANNON, targetID: TACKLE });
+});
+
 test("a gun nothing aboard will fit is given up on, and the next gun still gets loaded", () => {
   // Three calls and then this gun is left alone -- `MAX_COMPANION_RELOAD_ATTEMPTS`,
   // the same bound and the same reasoning as the tag rung's.
@@ -8942,9 +9074,14 @@ test("a gun nothing aboard will fit is given up on, and the next gun still gets 
     },
     cargoCharges: [charge(SLUGS, 500, PROJECTILE_GROUP), charge(ROCKETS, 120, MISSILE_GROUP)],
   };
+  // Each attempt a minute after the last: a load SENT is waited on for the
+  // gun's reload (see "a load that was sent is waited on" below), so these are
+  // three loads that each genuinely failed to take.
+  let clock = 1_000_000;
+  const later = (): number => (clock += 60_000);
   let memory: CompanionLadderMemory = freshLadderMemory();
   for (let attempt = 1; attempt <= 3; attempt += 1) {
-    const decision = decideCompanionAction(ARMED, obs(ammo), memory);
+    const decision = decideCompanionAction(ARMED, obs(ammo), memory, later());
     assert.deepEqual(
       decision.action,
       { kind: "loadAmmo", moduleIDs: [AUTOCANNON], chargeItemID: SLUGS },
@@ -8954,7 +9091,7 @@ test("a gun nothing aboard will fit is given up on, and the next gun still gets 
   }
   // ⚠ IT MOVES ON RATHER THAN ENDING THE TICK. One gun that cannot be loaded
   // must not hold the rest of the rack empty.
-  const nextGun = decideCompanionAction(ARMED, obs(ammo), memory);
+  const nextGun = decideCompanionAction(ARMED, obs(ammo), memory, later());
   assert.deepEqual(nextGun.action, {
     kind: "loadAmmo",
     moduleIDs: [LAUNCHER],
@@ -8965,9 +9102,9 @@ test("a gun nothing aboard will fit is given up on, and the next gun still gets 
   // rather than pinning the ladder for the rest of the run.
   let spent = nextGun.memory;
   for (let attempt = 2; attempt <= 3; attempt += 1) {
-    spent = decideCompanionAction(ARMED, obs(ammo), spent).memory;
+    spent = decideCompanionAction(ARMED, obs(ammo), spent, later()).memory;
   }
-  const done = decideCompanionAction(ARMED, obs(ammo), spent);
+  const done = decideCompanionAction(ARMED, obs(ammo), spent, later());
   assert.notEqual(done.action.kind, "loadAmmo");
   assert.equal(done.phase, "Standing by");
 });
