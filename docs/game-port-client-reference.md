@@ -1662,6 +1662,15 @@ container asks its own inventory `StackAll(self.locationFlag)` (382 to 388): `fl
 of a type, passing over a singleton (1065 to 1093). EveJS merges per type, owner and flag and answers `True`. The
 page makes the call since `3199e04d` (`web/src/bridge/inventoryWrites.ts`).
 
+**Things moved by the pilot, 2026-10-14** (`eve/client/script/environment/invControllers.py`). One thing:
+`_AddItem` (229 to 262), the whole stack or a number asked with shift held, and `__AddItem` (195 to 226),
+`Add(itemID, sourceLocationID, qty=quantity, flag=self.locationFlag)` on the window's container's own inventory. Many:
+`AddItems` (489 to 562), sorted by volume times stack, smallest first, `MultiAdd(itemIDs, sourceLocation,
+flag=self.locationFlag)`, or `flagNone` where the container has no flag. The flags: `flagHangar` (`StationItems`,
+1138), `flagCargo` (`ShipCargo`, 605), a ship's bays their own (669 to 776), a container none (60). The page makes
+the pilot's own moves between the hangar, the hold and a container since `0fe34b9e`
+(`web/src/bridge/inventoryWrites.ts`, `moveItems`).
+
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
 (`ACTIONS`, by `eventTypeID`) and a level it reckons from `absolutePoints` and the skill's rank
