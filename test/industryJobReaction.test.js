@@ -23,7 +23,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { blueprintPrice, reactionJobMaterials, reactionJobSeconds, reactionServiceID } = require("../src/industryInstall");
+const { blueprintPrice, reactionJobMaterials, reactionJobSeconds, reactionServiceID } = require("../web/src/bridge/industryReckonings.mjs");
 
 /** What a formula makes: a composite, by its type, group and category. */
 const A_COMPOSITE = { typeID: 16654, groupID: 429, categoryID: 4 };

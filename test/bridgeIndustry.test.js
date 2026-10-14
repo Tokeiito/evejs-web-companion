@@ -924,7 +924,7 @@ test("the job's solar system is its facility's, as the place its materials are i
 //
 // industry/job.py 460 to 468: the activity's time for the runs, through each time modifier the job has (each
 // required skill's time per level, the pilot's own manufacturing time attribute, the blueprint's time research,
-// the facility's time modifiers for the product), rounded to the whole second (src/industryInstall.js). The
+// the facility's time modifiers for the product), rounded to the whole second (web/src/bridge/industryReckonings.mjs). The
 // server holds a time that is not nought against its own, to the second.
 
 const sentJobs = (gateway, method) => gateway.calls.topLevel.filter((call) => call.method === method).map((call) => call.args[0]);
@@ -954,7 +954,7 @@ test("a manufacturing job's time is the client's own reckoning, in the preview's
 });
 
 test("a manufacturing job's materials are the client's own reckoning, in the preview's request and the install's, and the preview says them", async () => {
-  // industry/job.py 470 to 485 and 637 (src/industryInstall.js, manufacturingJobMaterials). The blueprint's
+  // industry/job.py 470 to 485 and 637 (web/src/bridge/industryReckonings.mjs, manufacturingJobMaterials). The blueprint's
   // manufacturing takes 86 of one material a run; three runs; a blueprint with ten of material research, in a
   // facility whose hull takes 1% off any job's materials: 86 x 0.9 x 0.99 x 3 = 229.878.
   const facility = facilityRow();
@@ -1198,7 +1198,7 @@ test("on the game port a job's facility is asked of the transport, which keeps t
 });
 
 test("on the game port a manufacturing job's cost is the client's own reckoning, from the pilot's table of prices", async () => {
-  // industry/job.py 310 to 320 (src/industryInstall.js, manufacturingJobCost). 86 of the one material a run, at an
+  // industry/job.py 310 to 320 (web/src/bridge/industryReckonings.mjs, manufacturingJobCost). 86 of the one material a run, at an
   // adjusted price of 512, three runs: a base of 132096. The facility's one cost modifier, 0.04: 5283.84.
   const facility = facilityRow();
   facility.args.entries.push(["globalModifiers", dict([["faction", 1], ["system", dict([[ACTIVITY_MANUFACTURING, 1]])]])]);
@@ -1285,7 +1285,7 @@ test("on the game port a manufacturing job's cost is the client's own reckoning,
 });
 
 test("on the game port the preview says what the job costs to start, as the client adds it up, and the job's tax goes with the job", async () => {
-  // industry/job.py 127 to 174 and 450 to 458 (src/industryInstall.js, manufacturingJobFee). A base of 132096 (86 of
+  // industry/job.py 127 to 174 and 450 to 458 (web/src/bridge/industryReckonings.mjs, manufacturingJobFee). A base of 132096 (86 of
   // the material a run at 512, three runs); the facility's cost modifier 0.04, its tax 0.01 and the SCC's modifier 1.
   // The facility is in another system than the pilot.
   const A_SYSTEM_AWAY = 30000144;
@@ -1839,7 +1839,7 @@ test("deliver and cancel reject a missing job before calling anything", async ()
 // --- invention with a decryptor ---------------------------------------------
 //
 // The server takes a decryptor from the request's materials only, and then
-// compares that map EXACTLY with its own (src/industryInstall.js). Every other
+// compares that map EXACTLY with its own (web/src/bridge/industryReckonings.mjs). Every other
 // install keeps sending an empty map, which the server recomputes.
 
 test("an invention with a decryptor sends the exact materials map and names the decryptor", async () => {
@@ -1903,7 +1903,7 @@ test("a decryptor is refused on anything but invention, and anything but a decry
 
 // --- a copy job, by the client's own reckoning ---------------------------------
 //
-// industry/activities/copying.py, 12 to 19, and what a job has of every kind of work (src/industryInstall.js: the
+// industry/activities/copying.py, 12 to 19, and what a job has of every kind of work (web/src/bridge/industryReckonings.mjs: the
 // copy job's time, its most runs, its materials, its cost, its tax and its fee; test/industryJobCopy.test.js has
 // each against the client's own Python's answers).
 
@@ -2169,7 +2169,7 @@ test("on the game port a copy job's cost, its tax and what it costs to start are
 // --- a research job, by the client's own reckoning ----------------------------
 //
 // industry/activities/research_time.py and research_material.py, which are one but for what they read of the
-// blueprint, and what a job has of every kind of work (src/industryInstall.js: where a blueprint stands in a
+// blueprint, and what a job has of every kind of work (web/src/bridge/industryReckonings.mjs: where a blueprint stands in a
 // research, and the research job's time, its most runs, its materials, its cost, its tax and its fee;
 // test/industryJobResearch.test.js has each against the client's own Python's answers).
 
@@ -2462,7 +2462,7 @@ test("on the game port a research job's cost, its tax and what it costs to start
 
 // --- an invention, by the client's own reckoning ------------------------------
 //
-// industry/activities/invention.py, and what a job has of every kind of work (src/industryInstall.js: the
+// industry/activities/invention.py, and what a job has of every kind of work (web/src/bridge/industryReckonings.mjs: the
 // invention's time, its most runs, its materials with the place of its decryptor, its cost, its tax and its fee;
 // test/industryJobInvention.test.js has each against the client's own Python's answers).
 
@@ -2731,7 +2731,7 @@ test("on the game port an invention's cost, its tax and what it costs to start a
 // ── a reaction's job ──────────────────────────────────────────────────────────
 //
 // activities/reaction.py, whole; industryCommon.GetJobModifiers (485 to 513) and GetBlueprintPrice (521 to 543);
-// industry/blueprint.py 62 to 72; structures/services.py 149 to 167 (src/industryInstall.js, reactionJobSeconds,
+// industry/blueprint.py 62 to 72; structures/services.py 149 to 167 (web/src/bridge/industryReckonings.mjs, reactionJobSeconds,
 // reactionJobMaterials, reactionServiceID, and blueprintPrice for a reaction). No Tranquility recording has an
 // install: the numbers are made up and worked by hand.
 

@@ -17,7 +17,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { facilityMaterialModifiers, facilityTimeModifiers, manufacturingJobSeconds } = require("../src/industryInstall");
+const { facilityMaterialModifiers, facilityTimeModifiers, manufacturingJobSeconds } = require("../web/src/bridge/industryReckonings.mjs");
 
 const dict = (entries) => ({ type: "dict", entries });
 const keyVal = (entries) => ({ type: "object", name: "util.KeyVal", args: dict(entries) });

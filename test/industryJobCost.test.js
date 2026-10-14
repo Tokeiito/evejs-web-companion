@@ -20,7 +20,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { blueprintPrice, facilityCharges, facilityCostModifiers, facilityGlobalModifiers, facilityTaxRate, facilityTimeModifiers, manufacturingJobCost, manufacturingJobFee, manufacturingJobTax, manufacturingServiceID } = require("../src/industryInstall");
+const { blueprintPrice, facilityCharges, facilityCostModifiers, facilityGlobalModifiers, facilityTaxRate, facilityTimeModifiers, manufacturingJobCost, manufacturingJobFee, manufacturingJobTax, manufacturingServiceID } = require("../web/src/bridge/industryReckonings.mjs");
 
 const dict = (entries) => ({ type: "dict", entries });
 const keyVal = (entries) => ({ type: "object", name: "util.KeyVal", args: dict(entries) });

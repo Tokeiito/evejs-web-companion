@@ -23,7 +23,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { manufacturingJobMaterials, roundToTwoPlaces } = require("../src/industryInstall");
+const { manufacturingJobMaterials, roundToTwoPlaces } = require("../web/src/bridge/industryReckonings.mjs");
 
 /** A facility's material modifier for anything: [amount, categoryID, groupID, typeID, reference]. */
 const forAll = (amount) => [amount, null, null, null, 12];

@@ -1,7 +1,7 @@
 "use strict";
 
 // An invention's materials, its decryptor among them: the exact map the server compares against
-// (src/industryInstall.js, inventionJobMaterials; test/industryJobInvention.test.js has it against the client's own
+// (web/src/bridge/industryReckonings.mjs, inventionJobMaterials; test/industryJobInvention.test.js has it against the client's own
 // Python's answers), and how a facility's modifiers are read off its row.
 
 const test = require("node:test");
@@ -13,7 +13,7 @@ const {
   inventionJobMaterials,
   inventionProductTypeID,
   modifierMatchesProduct,
-} = require("../src/industryInstall");
+} = require("../web/src/bridge/industryReckonings.mjs");
 
 const DATACORE_A = 20418;
 const DATACORE_B = 20419;

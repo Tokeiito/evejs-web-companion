@@ -36,7 +36,7 @@ const {
   inventionJobMostRuns,
   inventionJobSeconds,
   inventionJobTax,
-} = require("../src/industryInstall");
+} = require("../web/src/bridge/industryReckonings.mjs");
 
 /** A facility's modifier for anything: [amount, categoryID, groupID, typeID, reference]. */
 const forAll = (amount) => [amount, null, null, null, 12];

@@ -37,7 +37,7 @@ const {
   researchJobTax,
   researchServiceID,
   researchStanding,
-} = require("../src/industryInstall");
+} = require("../web/src/bridge/industryReckonings.mjs");
 
 const OF_TIME = 3;
 const OF_MATERIALS = 4;
