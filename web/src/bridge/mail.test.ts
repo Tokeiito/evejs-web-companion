@@ -247,7 +247,8 @@ test("a draft with no subject is refused", () => {
 });
 
 test("a draft over the recipient ceiling is refused", () => {
-  const many = Array.from({ length: 21 }, (_, index) => 1000 + index);
+  // appConst.py 1782: mailMaxRecipients 50 (the BFF route's 20 until 2026-10-14).
+  const many = Array.from({ length: 51 }, (_, index) => 1000 + index);
   assert.equal(checkDraft({ recipientIDs: many, title: "Hi", body: "x" }).ok, false);
 });
 

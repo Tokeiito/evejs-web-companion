@@ -551,132 +551,15 @@ test("a failed re-read still returns the body, and makes NO claim about the flag
 
 // --- sending ----------------------------------------------------------------
 
-test("⚠ POST /api/bridge/mail/send uses the EXACT seven-argument positional shape", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/mail/send", {
-    method: "POST",
-    body: {
-      toCharacterIDs: [OTHER_CHARACTER_ID],
-      title: "Docking rights",
-      body: "Bring the ore to the Jita office.",
-    },
-  });
+// (Six tests held the send's route (POST /api/bridge/mail/send) to SendMail's seven arguments, to its read of the
+// sender's mailbox after, to its refusal of no recipient and of no subject, to a bare None as a decline, and to a
+// recipient named twice sent to once: the route went on 2026-10-14, the page making the call itself, held to the
+// compose window's own checks (web/src/bridge/mailWrites.ts).)
 
-  assert.equal(response.status, 200);
-  const send = gateway.calls.topLevel.find(
-    (call) => call.service === "mailMgr" && call.method === "SendMail",
-  );
-  // ⚠ POSITIONAL, read by index in Handle_SendMail. args[0] is a LIST; the
-  // header reads it back as a comma-joined STRING. toListID (1) and
-  // toCorpOrAllianceID (2) are always null — both are out of slice.
-  assert.deepEqual(send.args, [
-    [OTHER_CHARACTER_ID], // 0 toCharacterIDs — a LIST
-    null,                 // 1 toListID
-    null,                 // 2 toCorpOrAllianceID
-    "Docking rights",     // 3 title
-    "Bring the ore to the Jita office.", // 4 body
-    null,                 // 5 isReplyTo
-    null,                 // 6 isForwardedFrom
-  ]);
-  assert.equal(payload.messageID, MESSAGE_ID);
-});
 
-test("a send is confirmed by RE-READING the sender's own mailbox", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { payload } = await apiRequest(baseUrl, "/api/bridge/mail/send", {
-    method: "POST",
-    body: { toCharacterIDs: [OTHER_CHARACTER_ID], title: "Hi", body: "there" },
-  });
 
-  // ⚠ A 200 IS NOT PROOF. The handler keeps a sender copy, so the message must
-  // be visible in the sender's own mailbox if it really landed.
-  assert.ok(
-    gateway.calls.topLevel.some(
-      (call) => call.service === "mailMgr" && call.method === "SyncMail",
-    ),
-    "the send verdict comes from a re-read",
-  );
-  assert.equal(payload.applied, true);
-  assert.equal(payload.declinedSilently, false);
-});
 
-test("⚠ an EMPTY recipient list is refused HERE — the server cannot refuse it", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  gateway.calls.topLevel.length = 0;
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/mail/send", {
-    method: "POST",
-    body: { toCharacterIDs: [], title: "Nobody", body: "text" },
-  });
 
-  // mailState's NO_RECIPIENTS guard reads `length === 0 && !saveSenderCopy`,
-  // and the handler hardcodes saveSenderCopy: true — so through the gateway the
-  // guard can NEVER fire, and mail to nobody is written into the sender's own
-  // mailbox and looks sent. This route is the only thing standing in the way.
-  assert.equal(response.status, 400);
-  assert.equal(payload.error, "MAIL_NO_RECIPIENT");
-  assert.deepEqual(
-    gateway.calls.topLevel,
-    [],
-    "the refusal must happen before the bridge, or a message gets written",
-  );
-});
-
-test("a send with no subject is refused before the bridge", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  gateway.calls.topLevel.length = 0;
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/mail/send", {
-    method: "POST",
-    body: { toCharacterIDs: [OTHER_CHARACTER_ID], title: "   ", body: "text" },
-  });
-
-  assert.equal(response.status, 400);
-  assert.equal(payload.error, "MAIL_NO_SUBJECT");
-  assert.deepEqual(gateway.calls.topLevel, []);
-});
-
-test("⚠ SendMail's bare null is reported as a decline WITHOUT an invented reason", async () => {
-  const gateway = fakeGateway({ sendResult: null });
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/mail/send", {
-    method: "POST",
-    body: { toCharacterIDs: [OTHER_CHARACTER_ID], title: "Hi", body: "there" },
-  });
-
-  assert.equal(response.status, 200);
-  assert.equal(payload.applied, false);
-  assert.equal(payload.declinedSilently, true);
-  // The server attached no reason, so neither does this. Saying anything more
-  // specific would be invention.
-  assert.match(payload.message, /did not say why/);
-});
-
-test("duplicate recipients are collapsed rather than mailed twice", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  await apiRequest(baseUrl, "/api/bridge/mail/send", {
-    method: "POST",
-    body: {
-      toCharacterIDs: [OTHER_CHARACTER_ID, OTHER_CHARACTER_ID, 0, -5],
-      title: "Hi",
-      body: "there",
-    },
-  });
-
-  const send = gateway.calls.topLevel.find(
-    (call) => call.service === "mailMgr" && call.method === "SendMail",
-  );
-  assert.deepEqual(send.args[0], [OTHER_CHARACTER_ID], "deduplicated, and non-ids dropped");
-});
 
 // --- session loss -----------------------------------------------------------
 
@@ -687,10 +570,6 @@ test("every mail route needs a held session", async () => {
   for (const [path, options] of [
     ["/api/bridge/mail", {}],
     [`/api/bridge/mail/body?messageID=${MESSAGE_ID}`, {}],
-    [
-      "/api/bridge/mail/send",
-      { method: "POST", body: { toCharacterIDs: [OTHER_CHARACTER_ID], title: "a", body: "b" } },
-    ],
   ]) {
     const { response } = await apiRequest(baseUrl, path, options);
     assert.notEqual(response.status, 200, `${path} must refuse without a held session`);

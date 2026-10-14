@@ -132,16 +132,17 @@ function respondOk(
         },
       };
     }
-    if (path.startsWith("/api/bridge/mail/send")) {
+    // The send is the page's own call since 2026-10-14 (mailMgr.SendMail through the generic call), answered the
+    // message's number.
+    if (path === "/api/bridge/call" && body.service === "mailMgr" && body.method === "SendMail") {
       return {
         status: 200,
         body: {
           ok: true,
-          applied: true,
-          declinedSilently: false,
-          messageID: 5000,
-          unreadCount: 1,
-          recipientCount: 1,
+          service: "mailMgr",
+          method: "SendMail",
+          result: 5000,
+          notifications: [],
         },
       };
     }
@@ -417,18 +418,17 @@ test("a body read that fails records a refusal instead of throwing", async () =>
 
 // --- sending ----------------------------------------------------------------
 
-test("sendMail posts the recipients as a LIST and reloads afterwards", async () => {
+test("sendMail is the page's own SendMail, the recipients a LIST, and reloads afterwards", async () => {
   const { store, flow, requests } = makeFlow(respondOk());
   await flow.loadMail();
   const before = requests.filter((entry) => entry.path === "/api/bridge/mail").length;
   await flow.sendMail({ toCharacterIDs: [SENDER_ID], title: "Hi", body: "there" });
 
-  const send = requests.find((entry) => entry.path === "/api/bridge/mail/send");
+  // mailSvc.SendMail (959): the seven arguments, the recipients a list, no list and no corporation, and 0 for the
+  // message answered and the one forwarded.
+  const send = requests.find((entry) => entry.path === "/api/bridge/call" && entry.body.method === "SendMail");
   assert.ok(send);
-  assert.equal(send.method, "POST");
-  // ⚠ A LIST on the way in, even though headers read it back as a string.
-  assert.deepEqual(send.body.toCharacterIDs, [SENDER_ID]);
-  assert.equal(send.body.title, "Hi");
+  assert.deepEqual(send.body.args, [[SENDER_ID], null, null, "Hi", "there", 0, 0]);
   assert.ok(
     requests.filter((entry) => entry.path === "/api/bridge/mail").length > before,
     "the panel shows the server's own picture before it says anything happened",
@@ -440,20 +440,10 @@ test("sendMail posts the recipients as a LIST and reloads afterwards", async () 
 
 test("⚠ a SILENT decline reaches the store as one, with no invented cause", async () => {
   const { store, flow } = makeFlow(
-    respondOk((path) =>
-      path === "/api/bridge/mail/send"
-        ? {
-            status: 200,
-            body: {
-              ok: true,
-              applied: false,
-              declinedSilently: true,
-              messageID: null,
-              recipientCount: 0,
-              // SendMail answered a bare null; the server gave no reason.
-              message: "The server did not send that message, and did not say why.",
-            },
-          }
+    respondOk((path, _method, body) =>
+      path === "/api/bridge/call" && body.method === "SendMail"
+        ? // SendMail answered a bare None; the server gave no reason.
+          { status: 200, body: { ok: true, service: "mailMgr", method: "SendMail", result: null, notifications: [] } }
         : null,
     ),
   );
@@ -467,16 +457,12 @@ test("⚠ a SILENT decline reaches the store as one, with no invented cause", as
 });
 
 test("a refused send records the reason and does not throw", async () => {
-  const { store, flow } = makeFlow(
-    respondOk((path) =>
-      path === "/api/bridge/mail/send"
-        ? { status: 400, body: { ok: false, error: "MAIL_NO_RECIPIENT" } }
-        : null,
-    ),
-  );
+  // No recipient: refused before the call, as the compose window refuses it (evemail.py ClickSend), and nothing asked.
+  const { store, flow, requests } = makeFlow(respondOk());
   await flow.loadMail();
   await flow.sendMail({ toCharacterIDs: [], title: "Hi", body: "there" });
   assert.match(store.get().mail.actionError ?? "", /Choose someone/);
+  assert.equal(requests.some((entry) => entry.path === "/api/bridge/call" && entry.body.method === "SendMail"), false);
 });
 
 test("findCharacters searches by NAME and carries the id invisibly", async () => {
