@@ -13,6 +13,8 @@ import {
   COMPANION_RETRY_BACKOFF_TICKS,
   COMPANION_ESCAPE_RETRY_BACKOFF_TICKS,
   TANK_LAYER_HURT_THRESHOLD,
+  CLEAR_GRID_REPAIR_START_BELOW,
+  CLEAR_GRID_REPAIR_WHOLE_AT,
   abandonDronesFloor,
   createFleetCompanion,
   decideCompanionAction,
@@ -3850,6 +3852,174 @@ test("switching a repairer off -- for either reason -- drops it from the stand-d
   );
   assert.equal(capFloored.action.kind, "deactivate");
   assert.deepEqual(capFloored.memory.lastTankUpModuleIDs, []);
+});
+
+// --- a clear grid reps the tank up (operator, 2026-10-14) -------------------
+//
+// "when the site is cleared, pilots do not rep up ... by using armor, hull reps
+// or shield boosters (without caps.)" Seen live the same day: a pilot sat 52
+// minutes "not well enough yet to go back to the fight" with an armour repairer
+// fitted and off -- its armour was above the fight line (0.75) and below its
+// return mark, and armour never comes back by itself.
+
+const ANCILLARY_BOOSTER = 11400006;
+const ANCILLARY_ARMOR = 11400007;
+
+test("THE STRAND: idle, grid clear, commander elsewhere, armour under the return mark -- the armour repairer switches on", () => {
+  // A flee floor of 0.6 puts the return mark at 0.8; armour at 0.78 is above
+  // the fight line and below the mark, the gap nothing used to repair.
+  const request: FleetCompanionRequest = { ...REQUEST, fleeHealthFloor: 0.6, armorRepairerModuleIDs: [ARMOR_REPAIRER] };
+  const stranded = (armorRatio: number, active: readonly number[]): FleetCompanionObservation =>
+    obs({
+      shieldRatio: 1,
+      armorRatio,
+      hullRatio: 1,
+      capacitorRatio: 1,
+      health: armorRatio,
+      hostileOnGrid: false,
+      targetedByPlayer: false,
+      snapshot: gridWithShipsAndActive([], active),
+      flightStatus: inSystem(HOME_SYSTEM),
+    });
+  assert.ok(0.78 > TANK_LAYER_HURT_THRESHOLD);
+
+  const lit = decideCompanionAction(request, stranded(0.78, []));
+  assert.deepEqual(lit.action, { kind: "activate", moduleID: ARMOR_REPAIRER, targetID: 0 });
+  assert.equal(lit.why, "The grid is clear: repairing the armour.");
+
+  // It runs, the armour climbs toward the mark, and nothing switches it off.
+  let memory = lit.memory;
+  let active: number[] = [ARMOR_REPAIRER];
+  for (const armor of [0.785, 0.79, 0.795]) {
+    const next = decideCompanionAction(request, stranded(armor, active), memory);
+    assert.notEqual(next.action.kind, "deactivate", `armour ${armor}: still repairing`);
+    assert.notEqual(next.action.kind, "warpToFleetMember", `armour ${armor}: still under the mark`);
+    active = applyModuleAction(active, next.action);
+    memory = next.memory;
+  }
+  // At the mark the pilot goes back to the fight, the repairer still cycling:
+  // it is not switched off to warp, and it runs on until the armour is whole.
+  const back = decideCompanionAction(request, stranded(0.8, active), memory);
+  assert.deepEqual(back.action, { kind: "warpToFleetMember", characterID: HUMAN }, back.why);
+  const whole = decideCompanionAction(request, stranded(1, active), back.memory);
+  assert.deepEqual(whole.action, { kind: "deactivate", moduleID: ARMOR_REPAIRER });
+  assert.match(whole.why, /whole/);
+});
+
+test("clear grid: a layer above the fight line but short of whole is repaired, for every family", () => {
+  const request: FleetCompanionRequest = {
+    ...REQUEST,
+    shieldBoosterModuleIDs: [SHIELD_BOOSTER],
+    armorRepairerModuleIDs: [ARMOR_REPAIRER],
+    hullRepairerModuleIDs: [HULL_REPAIRER],
+  };
+  for (const [layer, moduleID, words] of [
+    ["shieldRatio", SHIELD_BOOSTER, "shield"],
+    ["armorRatio", ARMOR_REPAIRER, "armour"],
+    ["hullRatio", HULL_REPAIRER, "hull"],
+  ] as const) {
+    const decision = decideCompanionAction(request, tankObs({ hostileOnGrid: false, [layer]: 0.9 }));
+    assert.deepEqual(decision.action, { kind: "activate", moduleID, targetID: 0 }, layer);
+    assert.equal(decision.why, `The grid is clear: repairing the ${words}.`);
+  }
+});
+
+test("clear grid: no flicker at the top -- idle in the gap stays idle, running in the gap keeps running", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, armorRepairerModuleIDs: [ARMOR_REPAIRER] };
+  const between = (CLEAR_GRID_REPAIR_START_BELOW + CLEAR_GRID_REPAIR_WHOLE_AT) / 2;
+  const idle = decideCompanionAction(request, tankObs({ hostileOnGrid: false, armorRatio: between }));
+  assert.notEqual(idle.phase, "Tanking up");
+  const running = decideCompanionAction(request,
+    tankObs({ hostileOnGrid: false, armorRatio: between, snapshot: gridWithShipsAndActive([], [ARMOR_REPAIRER]) }));
+  assert.notEqual(running.phase, "Tanking up");
+  const whole = decideCompanionAction(request,
+    tankObs({ hostileOnGrid: false, armorRatio: CLEAR_GRID_REPAIR_WHOLE_AT, snapshot: gridWithShipsAndActive([], [ARMOR_REPAIRER]) }));
+  assert.deepEqual(whole.action, { kind: "deactivate", moduleID: ARMOR_REPAIRER });
+});
+
+test("clear grid: the capacitor is never run dry -- a pause under a quarter, a restart only from half", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, armorRepairerModuleIDs: [ARMOR_REPAIRER], capacitorFloor: 0.2 };
+  const at = (capacitorRatio: number, active: readonly number[]): CompanionDecision =>
+    decideCompanionAction(request, tankObs({
+      hostileOnGrid: false, armorRatio: 0.5, capacitorRatio, snapshot: gridWithShipsAndActive([], active),
+    }));
+
+  // Running and under the clear-grid floor (above the fight floor): off.
+  const off = at(0.22, [ARMOR_REPAIRER]);
+  assert.deepEqual(off.action, { kind: "deactivate", moduleID: ARMOR_REPAIRER });
+  assert.equal(off.why, "Capacitor low: the armour repairer is switching off until it recovers.");
+
+  // Idle, under the floor and on the way back up: not started, and said so.
+  for (const cap of [0.1, 0.3, 0.45]) {
+    const waiting = at(cap, []);
+    assert.notEqual(waiting.action.kind, "activate", `cap ${cap}`);
+    assert.match(waiting.why, /Capacitor low: waiting before repairing the armour\./, `cap ${cap}`);
+  }
+  // Back to half: started again.
+  assert.deepEqual(at(0.5, []).action, { kind: "activate", moduleID: ARMOR_REPAIRER, targetID: 0 });
+  // Running between the floor and the restart line: left running.
+  assert.notEqual(at(0.3, [ARMOR_REPAIRER]).phase, "Tanking up");
+});
+
+test("clear grid, without caps: an ancillary shield booster is never started, and one still running is switched off", () => {
+  const request: FleetCompanionRequest = {
+    ...REQUEST,
+    shieldBoosterModuleIDs: [ANCILLARY_BOOSTER],
+    ancillaryRepairerModuleIDs: [ANCILLARY_BOOSTER],
+  };
+  const idle = decideCompanionAction(request, tankObs({ hostileOnGrid: false, shieldRatio: 0.3 }));
+  assert.notEqual(idle.action.kind, "activate");
+
+  const running = decideCompanionAction(request,
+    tankObs({ hostileOnGrid: false, shieldRatio: 0.3, snapshot: gridWithShipsAndActive([], [ANCILLARY_BOOSTER]) }),
+    { ...freshLadderMemory(), lastTankUpModuleIDs: [ANCILLARY_BOOSTER] });
+  assert.deepEqual(running.action, { kind: "deactivate", moduleID: ANCILLARY_BOOSTER });
+  assert.match(running.why, /cap charges/);
+  assert.deepEqual(running.memory.lastTankUpModuleIDs, []);
+
+  // In a fight it is fair game again.
+  const fight = decideCompanionAction(request, tankObs({ hostileOnGrid: true, shieldRatio: 0.3 }));
+  assert.deepEqual(fight.action, { kind: "activate", moduleID: ANCILLARY_BOOSTER, targetID: 0 });
+});
+
+test("clear grid: a plain armour repairer is preferred over an ancillary one, which runs only when it is all there is", () => {
+  const both: FleetCompanionRequest = {
+    ...REQUEST,
+    armorRepairerModuleIDs: [ANCILLARY_ARMOR, ARMOR_REPAIRER],
+    ancillaryRepairerModuleIDs: [ANCILLARY_ARMOR],
+  };
+  const first = decideCompanionAction(both, tankObs({ hostileOnGrid: false, armorRatio: 0.6 }));
+  assert.deepEqual(first.action, { kind: "activate", moduleID: ARMOR_REPAIRER, targetID: 0 });
+  const second = decideCompanionAction(both,
+    tankObs({ hostileOnGrid: false, armorRatio: 0.6, snapshot: gridWithShipsAndActive([], [ARMOR_REPAIRER]) }), first.memory);
+  assert.notEqual(second.action.kind, "activate");
+
+  const only: FleetCompanionRequest = { ...both, armorRepairerModuleIDs: [ANCILLARY_ARMOR] };
+  const alone = decideCompanionAction(only, tankObs({ hostileOnGrid: false, armorRatio: 0.6 }));
+  assert.deepEqual(alone.action, { kind: "activate", moduleID: ANCILLARY_ARMOR, targetID: 0 });
+});
+
+test("hostiles back, a lock on this ship or a blind read: the fight numbers own the repairers again", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, armorRepairerModuleIDs: [ARMOR_REPAIRER] };
+  for (const fight of [
+    { hostileOnGrid: true },
+    { hostileOnGrid: false, targetedByPlayer: true },
+    { hostileOnGrid: null },
+  ] as const) {
+    const idle = decideCompanionAction(request, tankObs({ ...fight, armorRatio: 0.9 }));
+    assert.notEqual(idle.action.kind === "activate" && idle.action.moduleID === ARMOR_REPAIRER, true,
+      `${JSON.stringify(fight)}: above the fight line, not started`);
+    const running = decideCompanionAction(request,
+      tankObs({ ...fight, armorRatio: 0.9, snapshot: gridWithShipsAndActive([], [ARMOR_REPAIRER]) }));
+    assert.deepEqual(running.action, { kind: "deactivate", moduleID: ARMOR_REPAIRER }, JSON.stringify(fight));
+    assert.match(running.why, /^The armor is whole again/);
+  }
+});
+
+test("clear grid, in warp: nothing is switched on until the ship lands", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, armorRepairerModuleIDs: [ARMOR_REPAIRER] };
+  const decision = decideCompanionAction(request, tankObs({ hostileOnGrid: false, armorRatio: 0.5, inWarp: true }));
+  assert.equal(decision.phase, "In warp");
 });
 
 // --- the player-facing surface ----------------------------------------------
