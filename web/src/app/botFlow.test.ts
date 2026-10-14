@@ -256,8 +256,8 @@ test("the bot switches its equipment on by the page's own call, at the rock, unt
   // space/runtime/scene/modules.js 1213 to 1222, where the client's button names the default effect itself,
   // shipmodulebutton.py 1348.)
   const args = Array.isArray(activate.body.args) ? activate.body.args : [];
-  // Until stopped goes as the client's 1000 (shipmodulebutton.py 112 to 122, GetRepeatCount).
-  assert.deepEqual([activate.body.service, args[0], args[2], args[3]], ["dogmaIM", LASER, ROCK, 1000]);
+  // Until stopped goes as -1, which the game port makes the client's 1000 or 0 by the effect (retailCalls.js, activation).
+  assert.deepEqual([activate.body.service, args[0], args[2], args[3]], ["dogmaIM", LASER, ROCK, -1]);
 });
 
 test("the bot's warps carry retail's minRange 0, not the autopilot call's built-in 10 km (R24 slice A)", async () => {

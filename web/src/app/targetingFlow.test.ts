@@ -359,8 +359,8 @@ test("activateModule names the module type's default effect, from the game's dat
 
   await flow.activateModule(MODULE_ID, { typeID: 483, targetID: ROCK_ID });
   // shipmodulebutton.py 1348: the default effect's Activate(targetID, repeats), godma.py 985 then 2062.
-  // Until stopped goes as the client's 1000 (shipmodulebutton.py 112 to 122, GetRepeatCount).
-  assert.deepEqual(calls(requests), [moduleCall("Activate", [MODULE_ID, "miningLaser", ROCK_ID, 1000])]);
+  // Until stopped goes as -1, which the game port makes the client's 1000 or 0 by the effect (retailCalls.js, activation).
+  assert.deepEqual(calls(requests), [moduleCall("Activate", [MODULE_ID, "miningLaser", ROCK_ID, -1])]);
   assert.ok(requests.some((each) => each.path === "/api/types/default-effects?typeIDs=483"));
   assert.equal(store.targeting.get().lastAction, "Switch on");
   assert.equal(store.targeting.get().silentDecline, null);
@@ -375,8 +375,8 @@ test("the SAME method drives a mining module and a combat module — no new surf
   await flow.activateModule(MODULE_ID, { effect: "useMissiles", targetID: ROCK_ID });
 
   assert.deepEqual(calls(requests), [
-    moduleCall("Activate", [MODULE_ID, "miningLaser", ROCK_ID, 1000]),
-    moduleCall("Activate", [MODULE_ID, "useMissiles", ROCK_ID, 1000]),
+    moduleCall("Activate", [MODULE_ID, "miningLaser", ROCK_ID, -1]),
+    moduleCall("Activate", [MODULE_ID, "useMissiles", ROCK_ID, -1]),
   ]);
   // An effect the caller names is the one named: the game's data is not asked.
   assert.equal(requests.some((each) => each.path.startsWith("/api/types/default-effects")), false);
