@@ -1602,6 +1602,20 @@ reads the order's number alone, refuses an order that is not the pilot's in a se
 whether it took the order down or found it closed. The page makes the call since `95bb72b5`
 (`web/src/bridge/marketOrderWrites.ts`), and judges by its own reads of the pilot's orders and wallet.
 
+**Orders placed and repriced, 2026-10-14** (`eve/client/script/ui/services/marketsvc.py`,
+`ui/shared/market/buyThisTypeWindow.py`, `sellMulti.py`). A buy: `BuyStuff` (256 to 268),
+`PlaceBuyOrder(stationID, typeID, round(float(price), 2), quantity, orderRange, minVolume, duration, useCorp,
+expectedBrokersFee)`, the window's own range or the station's (667 to 672), a least fill of 1 (677 to 679), and the
+broker's fee rate the window showed (701). A sale: `SellMulti` (275 to 276), `PlaceMultiSellOrder(itemList,
+useCorp, duration, expectedBrokersFee)`, each item a `KeyVal` of eight (`sellMulti.py` 483 to 501), the rate the
+first item's for an order that stands and None for a sale at once (443 to 446). A reprice: `ModifyOrder` (285 to
+289), `ModifyCharOrder(order.orderID, newPrice, order.bid, order.stationID, order.solarSystemID, order.price,
+order.range, order.volRemaining, order.issueDate)`, from the modify window (`buyThisTypeWindow.py` 603 to 622).
+Every price, rate and delta is a float. No Tranquility recording has any of the three. EveJS holds an order to a
+rate named and checks none where None is named; it answers a buy with None, a sale with whether it traded or set
+an order up, a reprice with None. The page makes the three since `b80c3f59` (`web/src/bridge/marketOrderWrites.ts`),
+and the game port sends a whole price, rate or delta as a float since `b1fbb8e7`.
+
 **A module fitted and unfitted, 2026-10-13** (`eve/client/script/dogma/clientDogmaLocation.py`,
 `ui/shared/fitting/fittingSlotController.py`, `ui/shared/fittingScreen/tryFit.py`,
 `ui/shared/fitting/fittingUtil.py`). Into a slot: `TryFit` (669 to 673),

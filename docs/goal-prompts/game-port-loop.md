@@ -3764,6 +3764,20 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **One thing, one bind**: a page's own call on something a BFF read binds
   too is bound by the read's own key; count `GetInventoryFromId(<it>` in
   the recording, once a session.
+- **The describer cannot tell a whole float from an int**:
+  `record-game-port.js describe` prints any whole number as `int(...)`,
+  its decoder reading both as a number. Count the bytes (`num-bytes.js`
+  in session 2aba99c0's scratchpad: each number's int forms and its float
+  form in the frame) before saying what kind a value went as.
+- **A live script can run the page's own module**: Node loads
+  `web/src/bridge/*.ts` as it stands, so a script makes the page's calls
+  through the code that was built (`mkt-own.js`, `import()` of
+  `marketOrderWrites.ts` with asks through the generic call).
+- **The Market window in the tab**: "Market", the box "Search for an
+  item to trade", the item's `button.pick-row`, "Offer to buy…" or
+  "Offer to sell…", "Check this order…", "Yes, place this buy order";
+  "Your orders": "Change the price…", "Take it down…". Every order
+  placed is taken down again: the market's daemon is not the store's.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
