@@ -177,7 +177,7 @@ import {
   decodeHomeStationID,
 } from "../bridge/characterSheet.ts";
 import { decodeFlightStatus } from "../bridge/flight.ts";
-import { decodeSpaceSnapshot, decodeTargetIDs } from "../bridge/space.ts";
+import { decodeSpaceSnapshot, decodeTargetIDs, isSceneBlind } from "../bridge/space.ts";
 import {
   decodeMiningHolds,
   decodeReprocessingQuotes,
@@ -10256,6 +10256,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
         const ship = snapshot?.ship ?? null;
         const origin = ship?.position ?? { x: 0, y: 0, z: 0 };
+        // ⚠ A BLIND SCENE IS UNKNOWN, NOT EMPTY (seen live 2026-10-14 12:00:11 UTC: a
+        // dead ballpark answered `{inSpace:true, entities:[], ship:null}` with a 200
+        // for ten minutes). `decodeSpaceSnapshot` never returns null, so the
+        // `snapshot === null ? null : ...` guards below were dead and every fact read
+        // off the empty list came out a confident "none": no hostile, no drones out,
+        // grid clear. Those facts are null here instead, and `sceneBlind` lets the
+        // ladder say so and wait.
+        const sceneBlind = isSceneBlind(status.inSpace, snapshot);
 
         // What the OTHER pilots have already emptied. Gated on there being
         // something lootable on this grid and rationed to a slow beat, so a
@@ -10277,7 +10285,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // test unless this field is set — which is how this shipped: the field
         // was declared, never filled, and a companion in a player gatecamp had
         // no reason to switch a hardener on.
-        const targetedByPlayer = isTargetedByPlayer(snapshot, ship?.itemID ?? null);
+        const targetedByPlayer = sceneBlind ? null : isTargetedByPlayer(snapshot, ship?.itemID ?? null);
         // ⚠ THIS ONE IS GATED, because unlike the line above it can cost a
         // round trip. `classifyTargetGroups` resolves a GROUP NAME per ship
         // type on grid: nothing on an empty grid, nothing on a repeat tick
@@ -10380,7 +10388,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // means one answer to "what is this drone for", not two.
         const companionDroneRoles = await classifyDroneRoles(
           companionBay,
-          snapshot,
+          sceneBlind ? null : snapshot,
           ship?.itemID ?? null,
         );
         // ── Drone sizing's inputs. The combat stacks WITH their types (the
@@ -10464,7 +10472,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // nobody read, and it is what every threshold treats as cannot-tell.
           oreHoldFraction: null,
           holdEmpty: null,
-          hostileOnGrid: snapshot === null ? null : hostileRows(snapshot, origin).length > 0,
+          hostileOnGrid: snapshot === null || sceneBlind ? null : hostileRows(snapshot, origin).length > 0,
+          sceneBlind,
           targetedByPlayer,
           targetGroupNames,
           threatByTypeID,
@@ -10477,7 +10486,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           droneFactsByTypeID: companionDroneFacts,
           droneLimits: companionDroneLimits,
           dronesOut:
-            snapshot === null
+            snapshot === null || sceneBlind
               ? null
               : snapshot.entities.some((entity) =>
                   canMyShipOrderDrone(entity, ship?.itemID ?? null),
@@ -10553,9 +10562,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
               }
             : null,
           lowestDroneHealth,
-          myDroneIDs,
+          // Absent, not empty, on a blind scene: "did not look" (see `sceneBlind`).
+          myDroneIDs: sceneBlind ? undefined : myDroneIDs,
           // Absent, not empty, when there was no snapshot: "did not look".
-          myDrones: snapshot == null ? undefined : myDrones,
+          myDrones: snapshot == null || sceneBlind ? undefined : myDrones,
           droneBayItemIDs,
           // ⚠ WHAT THE LOOT CALLS ACTUALLY ACHIEVED, which the ladder cannot see
           // for itself: it issues one atomic call and never learns what came
@@ -12644,7 +12654,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   async function classifyDroneRoles(
     bay: ReturnType<typeof decodeDroneBay>,
-    snapshot: ReturnType<typeof decodeSpaceSnapshot>,
+    snapshot: ReturnType<typeof decodeSpaceSnapshot> | null,
     shipID: number | null,
   ): Promise<{ readonly bay: DroneRoleIDs | null; readonly out: DroneRoleIDs | null }> {
     const drones = snapshot === null ? null : snapshot.entities.filter((e) => canMyShipOrderDrone(e, shipID) === true);
@@ -14488,9 +14498,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           typeof used === "number" && typeof total === "number" && total > 0 ? used / total : null;
         const holdEmpty = holdsEmpty(holds);
         const origin = ship?.position ?? { x: 0, y: 0, z: 0 };
-        const hostileOnGrid = snapshot === null ? null : hostileRows(snapshot, origin).length > 0;
+        // ⚠ A BLIND SCENE (inSpace, no ship) IS UNKNOWN, NOT EMPTY -- see the companion
+        // observation's `sceneBlind`. `decodeSpaceSnapshot` never returns null, so a dead
+        // ballpark's empty list used to read as "no hostile" and "no drones out".
+        const sceneBlind = isSceneBlind(status.inSpace, snapshot);
+        const hostileOnGrid = snapshot === null || sceneBlind ? null : hostileRows(snapshot, origin).length > 0;
         const dronesOut =
-          snapshot === null
+          snapshot === null || sceneBlind
             ? null
             : snapshot.entities.some((entity) => canMyShipOrderDrone(entity, ship?.itemID ?? null));
 
@@ -14800,7 +14814,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // second copy that could drift.
         // `lowestDroneHealth` is null with no drones out (nothing to judge).
         const myShipID = snapshot?.ship?.itemID ?? null;
-        const targetedByPlayer = isTargetedByPlayer(snapshot, myShipID);
+        const targetedByPlayer = sceneBlind ? null : isTargetedByPlayer(snapshot, myShipID);
         // ⚠ ONE WALK, TWO ANSWERS, AND THE OLD ONE IS UNCHANGED. `myDrones` is
         // the per-drone list the drone-boat block needs (it decides which drone
         // to pull, not merely whether the rack is hurt); `lowestDroneHealth` is
@@ -15254,7 +15268,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // The walk above cannot tell the two apart on its own -- it produces
           // an empty array either way -- so the distinction is made here, at the
           // one place that knows whether there was a snapshot at all.
-          myDrones: snapshot === null ? undefined : myDrones,
+          myDrones: snapshot === null || sceneBlind ? undefined : myDrones,
           cargoFraction,
           savedFittings,
           activeFitting,

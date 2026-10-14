@@ -955,6 +955,18 @@ export interface FleetCompanionObservation extends ScriptObservation {
    */
   readonly myDroneIDs?: readonly number[];
   /**
+   * The ship is in space and the scene read came back with no ship in it (or the
+   * BFF said `stateValid: false`): a dead ballpark, not a quiet grid.
+   *
+   * ⚠ WHEN TRUE, EVERY FACT READ OFF THE SCENE IS UNKNOWN (`hostileOnGrid`,
+   * `dronesOut`, `myDroneIDs` are null/absent) and the ladder decides nothing but
+   * to wait -- see the blind rung in `decideCompanionStep`. Seen live 2026-10-14
+   * 12:00:11 UTC: a fleet pilot's scene answered `{inSpace:true, entities:[],
+   * ship:null}` with a 200 for ten minutes; "no hostile" fired the clear-grid
+   * reload mid-fight and the rejoin stood by for ever.
+   */
+  readonly sceneBlind?: boolean | null;
+  /**
    * What has this ship locked, by item id: the server's own `GetTargeters`,
    * kept from its OnTarget('otheradd' / 'otherlost') notices the way the retail
    * client keeps its "targeted by" list. `null` or absent when it could not be
@@ -2880,6 +2892,21 @@ function decideCompanionStep(
       "In warp",
       "The fleet is warping this ship. Nothing is decided until it lands.",
       next,
+    );
+  }
+
+  // ⚠ A BLIND SCENE DECIDES NOTHING (seen live 2026-10-14 12:00:11 UTC). With no
+  // ship in the scene every fact below it -- hostiles, drones out, the rack, the
+  // commander -- is unreadable, and a ladder that ran on it reloaded the guns
+  // mid-fight, found no drones to recall, and stood by on "health could not be
+  // read" for ten minutes. Below the warp yield (a warp is waiting anyway) and
+  // above supervision and every rung that reads the scene. The loop owns the
+  // clock: after `FLEET_COMPANION_READ_GRACE_MS` of this it stops the run.
+  if (obs.sceneBlind === true) {
+    return waiting(
+      "Reading space",
+      "Cannot see space right now: reading again.",
+      memory,
     );
   }
 
@@ -10683,6 +10710,12 @@ interface CompanionMemory {
    * `FLEET_COMPANION_READ_GRACE_MS`.
    */
   readFailing: { readonly sinceMs: number; readonly token: number } | null;
+  /**
+   * When the current streak of BLIND scene reads began (a 200 with no ship in it),
+   * and which run it belongs to. Null while the scene is readable. Same grace as
+   * `readFailing`; see `FLEET_COMPANION_READ_GRACE_MS`.
+   */
+  sceneBlind: { readonly sinceMs: number; readonly token: number } | null;
   /** True when the run paused ITSELF (the ladder or an unconfirmed command), never for an operator pause. */
   selfPaused: boolean;
   /** The live request. Null until `start()`; the ladder needs it every tick. */
@@ -10705,6 +10738,7 @@ function freshMemory(): CompanionMemory {
     canTag: null,
     failureReason: null,
     readFailing: null,
+    sceneBlind: null,
     selfPaused: false,
     request: null,
     ladder: freshLadderMemory(),
@@ -10956,6 +10990,34 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
       return { kind: "wait" };
     }
     mem.readFailing = null;
+    // ⚠ A SCENE THAT ANSWERS BUT CANNOT BE SEEN IS NOT A SCENE THAT FAILED, AND
+    // ROW 13'S GRACE DID NOT COVER IT: `observe()` returned, so nothing threw. The
+    // ladder waits on it (the blind rung); this is the clock that ends the wait.
+    // A warp is not counted -- the ladder yields to it and the scene returns on
+    // landing.
+    if (obs.sceneBlind === true && obs.inWarp !== true) {
+      const nowMs = deps.now?.() ?? Date.now();
+      if (mem.sceneBlind === null || mem.sceneBlind.token !== token) {
+        mem.sceneBlind = { sinceMs: nowMs, token };
+      }
+      const blindMs = nowMs - mem.sceneBlind.sinceMs;
+      if (blindMs >= FLEET_COMPANION_READ_GRACE_MS) {
+        // ⚠ AN ERROR, NOT A STOP, so the roster's auto-restart (row 14) is allowed
+        // to try. It only starts a new loop on the SAME bridge session -- it does
+        // not re-log the pilot -- so what recovers a dead park is the sentence's
+        // own advice, until the BFF re-binds the session itself.
+        mem.status = "error";
+        mem.failureReason = `Lost sight of space for ${Math.round(blindMs / 1000)} s: reload the page or dock and undock to recover.`;
+        mem.why = "Could not see space.";
+        mem.action = null;
+        mem.trace = null;
+        mem.sceneBlind = null;
+        report(tickSeq);
+        return { kind: "wait" };
+      }
+    } else {
+      mem.sceneBlind = null;
+    }
     // The readout fields the observation already answers. Cheap, and it keeps
     // the badge honest without a second read.
     mem.inFleet = obs.inFleet ?? null;
