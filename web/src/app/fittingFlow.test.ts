@@ -1,8 +1,10 @@
 // The R12 Fitting controller against a faked BFF: loadFitting decodes the slot
-// and resource reads into the store; fit / unfit / online / offline / destroy
-// call their route and then RELOAD so the panel shows server truth; a thrown
-// refusal surfaces the server's own reason; a SILENT decline is reported as a
-// decline rather than a guessed cause; a lost session unwinds to offline.
+// and resource reads into the store; a module is fitted and unfitted by the
+// page's own call as the client makes it (bridge/fitModule.ts), and a rig is
+// destroyed by its route, each then RELOADING so the panel shows server truth;
+// a thrown refusal surfaces the server's own reason; a SILENT decline is
+// reported as a decline rather than a guessed cause; a lost session unwinds to
+// offline.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -108,19 +110,57 @@ function makeFakeFetch(
   return { fetch: fakeFetch, requests };
 }
 
-/** Answers the fitting read, and whatever else the flow reloads, with 200s. */
+/**
+ * Answers what `extra` answers first; then the fitting read, the generic call as the live server answers a thing
+ * moved into an inventory (the thing's own number), and whatever else the flow reloads, with 200s.
+ */
 function respondOk(extra: (path: string, method: string, body: Record<string, unknown>) => unknown = () => null) {
   return (path: string, method: string, body: Record<string, unknown>) => {
-    if (path === "/api/bridge/fitting") {
-      return { status: 200, body: fittingPanel() };
-    }
     const custom = extra(path, method, body);
     if (custom !== null && custom !== undefined) {
       return custom as { status: number; body: unknown };
     }
+    if (path === "/api/bridge/fitting") {
+      return { status: 200, body: fittingPanel() };
+    }
+    if (path === "/api/bridge/call") {
+      const args = Array.isArray(body.args) ? body.args : [];
+      return { status: 200, body: { ok: true, service: body.service, method: body.method, result: args[0] ?? null, notifications: [] } };
+    }
     return { status: 200, body: { ok: true, applied: true } };
   };
 }
+
+/** A pilot in ship 9001, docked at Jita (60003760) or in space (null), as the store has it once a character is chosen. */
+function pilotOnline(store: ReturnType<typeof createClientStore>, stationID: number | null): void {
+  store.apply({
+    type: "character/online",
+    character: {
+      characterID: 90000001,
+      characterName: "Synthetic Pilot",
+      stationID,
+      structureID: null,
+      solarSystemID: 30000142,
+      corporationID: 98000001,
+    },
+    station: null,
+  });
+}
+
+/** A flow for the pilot, docked at Jita unless said, its fitting read once, so that the ship and where it lies are known. */
+async function dockedFlow(responder: Parameters<typeof makeFakeFetch>[0], stationID: number | null = 60003760) {
+  const store = createClientStore();
+  pilotOnline(store, stationID);
+  const { fetch, requests } = makeFakeFetch(responder);
+  const flow = createAppFlow(store, { fetch });
+  await flow.loadFitting();
+  requests.length = 0;
+  return { store, flow, requests };
+}
+
+/** The page's own calls on an inventory, as the requests carried them. */
+const inventoryCalls = (requests: readonly Recorded[]) =>
+  requests.filter((r) => r.path === "/api/bridge/call" && r.body.service === "invbroker").map((r) => r.body);
 
 // --- the read ---------------------------------------------------------------
 
@@ -188,46 +228,73 @@ test("a lost session during a fitting read unwinds to character select", async (
 });
 
 // --- fitting and unfitting --------------------------------------------------
+//
+// A module is fitted and unfitted by the page's own call since 2026-10-13, on an inventory's own object
+// (bridge/fitModule.ts). The routes the tests here held the flow to (POST /api/bridge/fitting/fit and .../unfit)
+// are gone, and so is their rule that no slot's flag crosses from the page: the client names the flag itself. The
+// calls are held to the client's own, by its lines.
 
-test("fitModule addresses the slot by family and index, never by a flag ID", async () => {
-  const store = createClientStore();
-  const { fetch, requests } = makeFakeFetch(respondOk());
-  const flow = createAppFlow(store, { fetch });
+test("a module is fitted into a slot as the client fits it: the ship's own inventory's Add, the item, where it lies, one of it, the slot's flag", async () => {
+  const { flow, requests } = await dockedFlow(respondOk());
 
   await flow.fitModule(7100, "hangar", { family: "high", index: 2 });
 
-  const fit = requests.find((r) => r.path === "/api/bridge/fitting/fit");
-  assert.ok(fit, "the fit route was called");
-  assert.deepEqual(fit.body, { itemID: 7100, source: "hangar", family: "high", index: 2 });
-  assert.equal(
-    JSON.stringify(fit.body).includes("flag"),
-    false,
-    "no slot flag ID crosses the wire from the browser",
-  );
+  // clientDogmaLocation.TryFit (669 to 673): invCache.GetInventoryFromId(shipID).Add(item.itemID,
+  // item.locationID, qty=1, flag=flagID), the third high slot being flagHiSlot2, 29.
+  assert.deepEqual(inventoryCalls(requests), [
+    { service: "invbroker", method: "Add", args: [7100, 60003760], kwargs: { qty: 1, flag: 29 }, pilot: true, confirm: true, of: 9001 },
+  ]);
   // The panel is re-read after the change, so it shows server truth.
-  assert.ok(requests.some((r) => r.path === "/api/bridge/fitting" && r.method === "GET"));
+  const call = requests.findIndex((r) => r.path === "/api/bridge/call");
+  assert.ok(requests.slice(call + 1).some((r) => r.path === "/api/bridge/fitting" && r.method === "GET"));
 });
 
-test("fitting 'anywhere' asks the SERVER to pick the slot", async () => {
-  const store = createClientStore();
-  const { fetch, requests } = makeFakeFetch(respondOk());
-  const flow = createAppFlow(store, { fetch });
+test("a module fitted to no slot of the ship's is the client's MultiAdd, with the server to pick", async () => {
+  const { flow, requests } = await dockedFlow(respondOk());
 
   await flow.fitModule(7100, "cargo", "auto");
 
-  const fit = requests.find((r) => r.path === "/api/bridge/fitting/fit");
-  assert.deepEqual(fit!.body, { itemID: 7100, source: "cargo", family: "auto" });
+  // fittingUtil.TryFit (157) and the fitting screen's FitModule (tryFit.py 135):
+  // shipInv.moniker.MultiAdd(itemIDs, sourceID, flag=const.flagAutoFit), from the ship's own hold here.
+  assert.deepEqual(inventoryCalls(requests), [
+    { service: "invbroker", method: "MultiAdd", args: [[7100], 9001], kwargs: { flag: 0 }, pilot: true, confirm: true, of: 9001 },
+  ]);
 });
 
-test("unfitModule sends the module back to the chosen container", async () => {
-  const store = createClientStore();
-  const { fetch, requests } = makeFakeFetch(respondOk());
-  const flow = createAppFlow(store, { fetch });
+/** The fitting read once a call has been made: the turret in high slot 0 (5001) gone, the rig still there. */
+function unfittedOnceCalled() {
+  let called = false;
+  return (path: string) => {
+    if (path === "/api/bridge/call") called = true;
+    return path === "/api/bridge/fitting" && called
+      ? { status: 200, body: fittingPanel({ slots: { type: "list", items: [packedRow({ itemID: 5004, typeID: 31358, groupID: 781, flagID: 92 })] } }) }
+      : null;
+  };
+}
 
-  await flow.unfitModule(5001, "hangar");
+test("a module unfitted docked goes to the hangar's own inventory, with no quantity named", async () => {
+  const { store, flow, requests } = await dockedFlow(respondOk(unfittedOnceCalled()));
 
-  const unfit = requests.find((r) => r.path === "/api/bridge/fitting/unfit");
-  assert.deepEqual(unfit!.body, { itemID: 5001, destination: "hangar" });
+  await flow.unfitModule(5001);
+
+  // fittingSlotController.UnfitModule (237, 238): docked,
+  // invCache.GetInventory(const.containerHangar).Add(moduleID, shipID, flag=const.flagHangar).
+  assert.deepEqual(inventoryCalls(requests), [
+    { service: "invbroker", method: "Add", args: [5001, 9001], kwargs: { flag: 4 }, pilot: true, confirm: true, of: "hangar" },
+  ]);
+  assert.equal(store.get().fitting.actionError, null);
+});
+
+test("a module unfitted in space goes to the ship's own hold, with a quantity of None", async () => {
+  const { store, flow, requests } = await dockedFlow(respondOk(unfittedOnceCalled()), null);
+
+  await flow.unfitModule(5001);
+
+  // fittingSlotController.UnfitModule (239 to 241): in space,
+  // invCache.GetInventoryFromId(parentID).Add(moduleID, parentID, qty=None, flag=const.flagCargo).
+  assert.deepEqual(inventoryCalls(requests), [
+    { service: "invbroker", method: "Add", args: [5001, 9001], kwargs: { qty: null, flag: 5 }, pilot: true, confirm: true, of: 9001 },
+  ]);
   assert.equal(store.get().fitting.actionError, null);
 });
 
@@ -240,19 +307,17 @@ test("unfitModule sends the module back to the chosen container", async () => {
 // --- the silent decline -----------------------------------------------------
 
 test("a fit the server declines SILENTLY is reported as a decline, with no invented cause", async () => {
-  // invbroker answers a skill-gated fit by returning null — no error, nothing
-  // moved. The BFF re-reads the slots and says applied:false; the flow must
-  // report that honestly rather than claim success or name a reason it does
-  // not know.
-  const store = createClientStore();
-  const { fetch } = makeFakeFetch(
-    respondOk((path) =>
-      path === "/api/bridge/fitting/fit"
-        ? { status: 200, body: { ok: true, applied: false } }
+  // The server answers some fits with nothing and moves nothing (seen live on
+  // 2026-10-13: a thing that is not there, fitted, answered None). The flow
+  // reads the slots before and after; it must report that honestly rather than
+  // claim success or name a reason it does not know.
+  const { store, flow } = await dockedFlow(
+    respondOk((path, _method, body) =>
+      path === "/api/bridge/call"
+        ? { status: 200, body: { ok: true, service: body.service, method: body.method, result: null, notifications: [] } }
         : null,
     ),
   );
-  const flow = createAppFlow(store, { fetch });
 
   await flow.fitModule(7100, "hangar", { family: "low", index: 0 });
 
@@ -265,19 +330,32 @@ test("a fit the server declines SILENTLY is reported as a decline, with no inven
 });
 
 test("an applied change leaves no stale action error behind", async () => {
-  const store = createClientStore();
-  let applied = false;
-  const { fetch } = makeFakeFetch(
+  // The slots say whether a fit landed: until `landed`, the module is in none of them.
+  let landed = false;
+  const { store, flow } = await dockedFlow(
     respondOk((path) =>
-      path === "/api/bridge/fitting/fit" ? { status: 200, body: { ok: true, applied } } : null,
+      path === "/api/bridge/fitting" && landed
+        ? {
+            status: 200,
+            body: fittingPanel({
+              slots: {
+                type: "list",
+                items: [
+                  packedRow({ itemID: 5001, typeID: 3634, groupID: 53, flagID: 27 }),
+                  packedRow({ itemID: 5004, typeID: 31358, groupID: 781, flagID: 92 }),
+                  packedRow({ itemID: 7100, typeID: 2048, groupID: 60, flagID: 12 }),
+                ],
+              },
+            }),
+          }
+        : null,
     ),
   );
-  const flow = createAppFlow(store, { fetch });
 
   await flow.fitModule(7100, "hangar", { family: "low", index: 0 });
   assert.ok(store.get().fitting.actionError, "the declined attempt is recorded");
 
-  applied = true;
+  landed = true;
   await flow.fitModule(7100, "hangar", { family: "low", index: 1 });
   assert.equal(store.get().fitting.actionError, null, "the successful one clears it");
 });
@@ -298,14 +376,12 @@ test("destroyRig always sends an explicit confirmation", async () => {
 });
 
 test("no fitting action ever runs against a route that was not asked for", async () => {
-  // A guard against a mis-wired button: each action hits exactly one mutating
-  // route (plus the read that follows it).
-  const store = createClientStore();
-  const { fetch, requests } = makeFakeFetch(respondOk());
-  const flow = createAppFlow(store, { fetch });
+  // A guard against a mis-wired button: an unfitting makes exactly one write,
+  // the page's own call (plus the reads of the slots around it).
+  const { flow, requests } = await dockedFlow(respondOk());
 
-  await flow.unfitModule(5001, "cargo");
+  await flow.unfitModule(5001);
 
   const mutations = requests.filter((r) => r.method === "POST").map((r) => r.path);
-  assert.deepEqual(mutations, ["/api/bridge/fitting/unfit"]);
+  assert.deepEqual(mutations, ["/api/bridge/call"]);
 });

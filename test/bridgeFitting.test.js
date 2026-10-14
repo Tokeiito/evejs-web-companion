@@ -32,7 +32,6 @@ const ACTIVE_SHIP_ID = 9001;
 // Seeded fit: a turret in high slot 1 (flag 27) and a rig in rig slot 1 (92).
 const TURRET_ITEM_ID = 5001;
 const RIG_ITEM_ID = 5004;
-const HANGAR_MODULE_ITEM_ID = 7100;
 
 const SELECT_SESSION_ECHO = {
   userid: 4,
@@ -354,162 +353,14 @@ test("a fitting read with no active ship answers cleanly rather than failing", a
 });
 
 // --- fit / unfit ------------------------------------------------------------
-
-test("manual fit and unfit at a structure refuse missing stock service authority without mutation", async () => {
-  const structureID = 1_030_000_000_031;
-  const gateway = fakeGateway();
-  const oldSelect = gateway.selectCharacter.bind(gateway);
-  gateway.selectCharacter = async (...args) => {
-    const result = await oldSelect(...args);
-    return { ...result, session: { ...result.session, stationID: null, structureID } };
-  };
-  gateway.readFlightStatus = async () => ({ flight: { docked: true, inSpace: false, stationID: null,
-    structureID, solarSystemID: 30000142, shipID: ACTIVE_SHIP_ID }, notifications: [] });
-  const oldCall = gateway.callMethod.bind(gateway);
-  gateway.callMethod = async (service, method, ...rest) => {
-    if (method === "CheckMyDockingAccessToStructures") return { result: { type: "list", items: [structureID] }, notifications: [] };
-    if (method === "GetMyAccessibleStructureServices") assert.fail("Private service authority must not be called");
-    return oldCall(service, method, ...rest);
-  };
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const fit = await apiRequest(baseUrl, "/api/bridge/fitting/fit", { method: "POST",
-    body: { itemID: HANGAR_MODULE_ITEM_ID, source: "hangar", family: "high", index: 1 } });
-  assert.equal(fit.response.status, 409, JSON.stringify(fit.payload));
-  assert.equal(fit.payload.error, "STRUCTURE_SERVICE_AUTHORITY_UNAVAILABLE");
-  const blocked = await apiRequest(baseUrl, "/api/bridge/fitting/unfit", { method: "POST",
-    body: { itemID: HANGAR_MODULE_ITEM_ID, destination: "hangar" } });
-  assert.equal(blocked.response.status, 409);
-  assert.equal(blocked.payload.error, "STRUCTURE_SERVICE_AUTHORITY_UNAVAILABLE");
-  assert.equal(gateway.calls.boundCall.filter((call) => call.method === "Add").length, 0);
-});
-
-test("fit resolves the browser's (family, index) to a slot flag on the SERVER side", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/fitting/fit", {
-    method: "POST",
-    body: { itemID: HANGAR_MODULE_ITEM_ID, source: "hangar", family: "high", index: 1 },
-  });
-  assert.equal(response.status, 200);
-  assert.equal(payload.applied, true);
-
-  const add = gateway.calls.boundCall.find((c) => c.method === "Add");
-  assert.ok(add, "the fit is invbroker.Add — the same call an inventory move makes");
-  // high index 1 -> flag 28. The browser never sent 28.
-  assert.equal(add.kwargs.flag, 28);
-  assert.deepEqual(add.args, [HANGAR_MODULE_ITEM_ID, STATION_ID], "source is the station hangar");
-  // The destination is the SHIP binding, addressed by handle, not repeated in args.
-  assert.match(add.boundHandle, /GetInventoryFromId/);
-});
-
-test("fitting from the ship's own cargo makes the SHIP the source location", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  await apiRequest(baseUrl, "/api/bridge/fitting/fit", {
-    method: "POST",
-    body: { itemID: HANGAR_MODULE_ITEM_ID, source: "cargo", family: "low", index: 0 },
-  });
-
-  const add = gateway.calls.boundCall.find((c) => c.method === "Add");
-  assert.deepEqual(add.args, [HANGAR_MODULE_ITEM_ID, ACTIVE_SHIP_ID]);
-  assert.equal(add.kwargs.flag, 11, "low index 0 -> flag 11");
-});
-
-test("family 'auto' lets the SERVER choose the slot (the auto-fit flag)", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  await apiRequest(baseUrl, "/api/bridge/fitting/fit", {
-    method: "POST",
-    body: { itemID: HANGAR_MODULE_ITEM_ID, source: "hangar", family: "auto" },
-  });
-
-  const add = gateway.calls.boundCall.find((c) => c.method === "Add");
-  assert.equal(add.kwargs.flag, 0, "flag 0 is flagAutoFit");
-});
-
-test("a slot the ship cannot have is refused before any call is made", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  for (const body of [
-    { itemID: HANGAR_MODULE_ITEM_ID, source: "hangar", family: "high", index: 99 },
-    { itemID: HANGAR_MODULE_ITEM_ID, source: "hangar", family: "nonsense", index: 0 },
-    { itemID: HANGAR_MODULE_ITEM_ID, source: "elsewhere", family: "high", index: 0 },
-    { itemID: 0, source: "hangar", family: "high", index: 0 },
-  ]) {
-    const { response, payload } = await apiRequest(baseUrl, "/api/bridge/fitting/fit", {
-      method: "POST",
-      body,
-    });
-    assert.equal(response.status, 400, JSON.stringify(body));
-    assert.equal(payload.error, "INVALID_FIT");
-  }
-  assert.equal(
-    gateway.calls.boundCall.some((c) => c.method === "Add"),
-    false,
-    "nothing was dispatched",
-  );
-});
-
-test("a SILENT decline is reported as applied:false, not as success", async () => {
-  // invbroker's skill-gated fit branch returns null without raising, so the
-  // call seam looks like success. The route re-reads the slots and reports
-  // what actually happened.
-  const gateway = fakeGateway();
-  gateway.addApplies = false;
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/fitting/fit", {
-    method: "POST",
-    body: { itemID: HANGAR_MODULE_ITEM_ID, source: "hangar", family: "low", index: 0 },
-  });
-  assert.equal(response.status, 200);
-  assert.equal(payload.applied, false, "the BFF re-read and found nothing fitted");
-  // And it re-read: a ListByFlags followed the Add.
-  const methods = gateway.calls.boundCall.map((c) => c.method);
-  assert.ok(methods.indexOf("Add") < methods.lastIndexOf("ListByFlags"));
-});
-
-test("unfit is the same Add reversed: the destination container is the bound object", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  const { payload } = await apiRequest(baseUrl, "/api/bridge/fitting/unfit", {
-    method: "POST",
-    body: { itemID: TURRET_ITEM_ID, destination: "hangar" },
-  });
-  assert.equal(payload.applied, true);
-
-  const add = gateway.calls.boundCall.find((c) => c.method === "Add");
-  assert.deepEqual(add.args, [TURRET_ITEM_ID, ACTIVE_SHIP_ID], "the SHIP is the source now");
-  assert.equal(add.kwargs.flag, 4, "into the station hangar");
-  assert.match(add.boundHandle, /GetInventory:/, "bound to the station hangar");
-});
-
-test("unfitting to the ship's cargo binds the ship and uses the cargo flag", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  await apiRequest(baseUrl, "/api/bridge/fitting/unfit", {
-    method: "POST",
-    body: { itemID: TURRET_ITEM_ID, destination: "cargo" },
-  });
-
-  const add = gateway.calls.boundCall.find((c) => c.method === "Add");
-  assert.equal(add.kwargs.flag, 5);
-  assert.match(add.boundHandle, /GetInventoryFromId/);
-});
+//
+// A module is fitted and unfitted by the page's own call since 2026-10-13, on an inventory's own object
+// (invbroker.Add on the ship's or the hangar's inventory, invbroker.MultiAdd on the ship's for a module fitted
+// to no slot of it, through the generic call: web/src/bridge/fitModule.ts). The routes (POST
+// /api/bridge/fitting/fit and .../unfit) are gone, and the eight tests of them with them: the slot's flag named
+// by the BFF from a family and a place, the place the item lies in, the server to pick, a slot the ship has not,
+// the verdict by the slots read again, the unfitting to the hangar and to the hold, and their check of a
+// structure's fitting service, which the client makes before neither call.
 
 // --- online / offline -------------------------------------------------------
 //
@@ -588,8 +439,6 @@ test("every fitting route needs a live session, and authentication", async () =>
 
   const routes = [
     ["GET", "/api/bridge/fitting", undefined],
-    ["POST", "/api/bridge/fitting/fit", { itemID: 1, source: "hangar", family: "high", index: 0 }],
-    ["POST", "/api/bridge/fitting/unfit", { itemID: 1, destination: "hangar" }],
     ["POST", "/api/bridge/fitting/destroy-rig", { itemID: 1, confirm: true }],
   ];
 
