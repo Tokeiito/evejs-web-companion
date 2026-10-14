@@ -1533,6 +1533,17 @@ game time's warning (`GetCharOmegaDowngradeStatus`, 299 to 306), the paper dolls
 redeeming's tokens. The game port makes the first five since `8a6c3738` and none of the screen's own. A pilot on the game port reconnects
 and checks so since `3611198a`, and follows its session since `82986a37`.
 
+**What an overview lists, 2026-10-13** (`eve/client/script/parklife/tacticalConst.py`). The overview is made of a
+table of groups
+(`construct_groups`, 112 to 127): every group but those of the Charge category that are not one of seven
+(`bombGroups`, 86 to 93: 90, 863, 864, 479, 548, 4088, 1548), those whose category is not one of thirteen
+(`validCategories`, 72 to 85: 3, 6, 11, 2, 25, 18, 22, 23, 65, 8, 40, 46, 87) and sixty-four set aside
+(`filterGroups`, 7 to 71, one of them a bare 11). Every preset's groups, the overview's and the brackets', are cut
+down to the table (`overview/presetservice.py`, `GetValidGroups`, 315 to 321), a group not in it is not shown
+whatever a preset has (`IsGroupIDShown`, 286 to 289), and what in space may be clicked goes by it too
+(`is_interactable_entity`, 132 to 133; `ui/inflight/navigation.py` 509). The page's `overviewCanList`
+(`web/src/space/overview.ts`) has the whole table since `44c2c9fc`.
+
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
 (`ACTIONS`, by `eventTypeID`) and a level it reckons from `absolutePoints` and the skill's rank

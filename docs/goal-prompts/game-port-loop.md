@@ -3558,6 +3558,16 @@ Take these defaults, and list each under "For the operator" in the log so they c
   is brought in from the pilots' list: the row clicked, "BRING ONLINE";
   the pane is told it is visible first (the memory's note), and a
   click and its reading are two calls.
+- **A module's collections of named constants are read from two
+  compiled modules.** `tacticalConst.pyc` builds its sets from
+  `invconst.<name>` (a LOAD_ATTR each), and the numbers are in
+  `inventorycommon/const.pyc` (a LOAD_CONST and a STORE_NAME each):
+  a snippet of the oracle's walks both bytecodes and prints each name
+  with its number (`tactical-snippet.py` in session 2aba99c0's
+  scratchpad), and a patch script puts the oracle's answer into the
+  source and reads back what it wrote. A bare number among the names
+  is told from a constant's place so: here the 11 was the module's
+  own.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
