@@ -308,6 +308,26 @@ export function planSalvageTick(input: SalvagePlanInput): SalvagePlan {
     return { action: { kind: "activate", moduleID: idleTractors[k]!.moduleID, targetID: it.id }, why: `Tractor beam on ${it.isCan ? "a can" : "a wreck"} ${Math.round(it.d)} m away, to bring it in.` };
   }
 
+  // 4b. Spare salvagers double up. Once every salvageable wreck in reach has a
+  // salvager (or one reserved for it above), a salvager left idle goes on the
+  // locked wreck in reach with the FEWEST salvagers on it, nearest first: five
+  // salvagers on three wrecks run 2/2/1. Each salvager rolls its own chance a
+  // cycle, so a wreck worked twice goes about twice as fast; when one succeeds
+  // the wreck is gone and the others on it stop by themselves (salvagerRuntime).
+  const spareSalvagers = idleSalvagers.slice(salvWants.length);
+  if (spareSalvagers.length > 0) {
+    const onWreck = new Map<number, number>();
+    for (const m of input.salvagers) if (m.active && m.targetID !== null) onWreck.set(m.targetID, (onWreck.get(m.targetID) ?? 0) + 1);
+    const doubled = outstanding
+      .filter((i) => i.salvageNow && !i.isCan && i.d <= salvReach && locked.has(i.id))
+      .sort((a, b) => (onWreck.get(a.id) ?? 0) - (onWreck.get(b.id) ?? 0) || a.d - b.d || a.id - b.id)[0];
+    if (doubled !== undefined) {
+      const already = onWreck.get(doubled.id) ?? 0;
+      return { action: { kind: "activate", moduleID: spareSalvagers[0]!.moduleID, targetID: doubled.id },
+        why: `A spare salvager onto a wreck ${Math.round(doubled.d)} m away (${already + 1} on it now).` };
+    }
+  }
+
   // 5. locks (salvagers only)
   const needLock = salvWants.filter((i) => !locked.has(i.id) && !pending.has(i.id));
   if (needLock.length > 0) {
