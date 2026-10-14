@@ -5565,7 +5565,9 @@ function workSalvageSite(step: MacroStep, obs: ScriptObservation, mem: MacroMemo
       const shipID = ship.itemID ?? obs.flightStatus?.shipID ?? null;
       if (systemID === null || shipID === null) return { tick: tick(WAIT, "Waiting to know which system this is.", SITE_PHASE, ACTING, true, next) };
       // The same spot again: only after a while with no arrival, and not for ever.
-      const same = anchor !== null && Math.hypot(anchor.x - action.position.x, anchor.y - action.position.y, anchor.z - action.position.z) < 1;
+      // A spot within a kilometre of the one it is flying to is the same spot, worked out again from where the ship
+      // now is: never a fresh order.
+      const same = anchor !== null && Math.hypot(anchor.x - action.position.x, anchor.y - action.position.y, anchor.z - action.position.z) <= 1_000;
       const issues = same ? num(next, "anchorIssues") ?? 1 : 0;
       if (same && (num(next, "anchorTicks") ?? 0) < ANCHOR_REISSUE_TICKS) {
         return { tick: tick(WAIT, "Flying to the next spot.", SITE_PHASE, ACTING, true, { ...next, anchorTicks: (num(next, "anchorTicks") ?? 0) + 1 }) };
