@@ -2380,6 +2380,18 @@ function createGamePortPilots({
    * OnOwnOrdersChanged names. One order of that list by its ID, as its row has it by the columns' names (each value
    * as it came off the wire): null where the session keeps no list, or the order is not in it.
    */
+  function gateDestinationOf(entry, gateID) {
+    const park = entry.space ? entry.space.park : null;
+    const id = positive(gateID);
+    const slim = park && park.slimItems && id !== null ? park.slimItems.get(id) : null;
+    const jumps = slim && typeof slim.get === "function" ? slim.get("jumps") : null;
+    const entries = jumps && jumps.type === "object" && jumps.args && Array.isArray(jumps.args.entries) ? jumps.args.entries : [];
+    const part = (name) => (entries.find((each) => Array.isArray(each) && textOf(each[0]) === name) ?? [])[1];
+    const at = itemsOf(part("header")).map(textOf).indexOf("toCelestialID");
+    const first = itemsOf(part("lines")).map(itemsOf)[0];
+    return at === -1 || !first ? null : positive(first[at]);
+  }
+
   function ownOrderOf(entry, orderID) {
     const kept = typeof entry.session.cachedMethodCall === "function" ? entry.session.cachedMethodCall(MARKET_PROXY, OWN_ORDERS, []) : null;
     return kept ? rowsetLine(kept.result, "orderID", orderID) : null;
@@ -4673,6 +4685,9 @@ function createGamePortPilots({
       slotOf: (itemID) => slotOfItem(entry, itemID),
       // marketQuote.GetMyOrders: one of the pilot's own orders, as its row has it.
       ownOrder: (orderID) => ownOrderOf(entry, orderID),
+      // A stargate's own far gate, as the client's ballpark has it in the gate's slim item (jumps[0].toCelestialID,
+      // gateJumpSvc.JumpThroughGate): null where the park has not the gate, or the gate no jump.
+      gateDestination: (gateID) => gateDestinationOf(entry, gateID),
       // marketQuote.GetBrokersFeeCommissionFromStationID: the rate the client names with an order there.
       brokersFee: (stationID) => brokersFeeAt(entry, stationID),
       // marketQuote.GetAveragePrice, as the entries of the sale being made have it (saleAveragesRead).

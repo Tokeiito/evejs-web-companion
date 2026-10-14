@@ -676,8 +676,9 @@ const ON_AN_ANSWERED_OBJECT = Object.freeze(new Set(["scanMgr.GetFullState"]));
  * name: made on the park's object, where the pilot has a park.
  */
 // (CmdDock since 2026-10-14, when the page made the dock at a station itself: movementFunctions.RealDock's bp.CmdDock,
-// made on the ballpark's bound object as Tranquility's recordings have it. Its route bound the park for itself.)
-const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdAlignTo", "CmdFollowBall", "CmdSetSpeedFraction", "CmdOrbit", "CmdStop", "BookmarkLocation", "CmdWarpToStuff", "CmdWarpToStuffAutopilot", "CmdDock"]));
+// made on the ballpark's bound object as Tranquility's recordings have it. Its route bound the park for itself. And
+// CmdStargateJump the same day, the page's own jump: gateJumpSvc.JumpThroughGate's remoteBallpark.CmdStargateJump.)
+const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdAlignTo", "CmdFollowBall", "CmdSetSpeedFraction", "CmdOrbit", "CmdStop", "BookmarkLocation", "CmdWarpToStuff", "CmdWarpToStuffAutopilot", "CmdDock", "CmdStargateJump"]));
 const madeOnMoniker = (service, method) => Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method) && method !== "MachoBindObject";
 /**
  * Whether the game port makes a call on an object though it is asked of a service by its name: on the service's
@@ -1587,6 +1588,21 @@ const RETAIL_CALLS = Object.freeze({
   "beyonce.CmdWarpToStuffAutopilot": judged("eve/client/script/parklife/autopilot.py:465", autopilotWarping, "GetRemotePark().CmdWarpToStuffAutopilot(destinationID): the autopilot's warp, on the ballpark's object. Recorded on Tranquility with the one ID."),
   "beyonce.CmdWarpToStuff": judged("eve/client/script/remote/michelle.py:737", warping,
     "bp.CmdWarpToStuff(subject, subjectID, **kwargs), on the ballpark's object, with the keywords its caller sends: 'item' and the thing's ID with minRange (movementFunctions.py 452), 'char' for a fleet member with minRange a float (menusvc.py 2748), 'bookmark' with minRange a float and fleet (movementFunctions.py 419), 'scan' with minRange and fleet (menusvc.py 1428), 'launch' and a launch's ID with nothing (journal.py 453). Recorded on Tranquility as ('item', itemID, minRange=0), and as ('char', charID, minRange=0.0)."),
+  "beyonce.CmdStargateJump": Object.freeze({
+    status: "same",
+    source: "stargate/client/gateJumpSvc.py:124",
+    note: "remoteBallpark.CmdStargateJump(stargateID, beaconID, session.shipid), on the ballpark's object, through sessionMgr.PerformSessionChange: the gate, its own far gate off its slim item (jumps[0].toCelestialID: movementFunctions.DockOrJumpOrActivateGate, autopilot.py 358) and the ship. Recorded on Tranquility in an autopilot's trip so.",
+    shape: (args, kwargs, context) => {
+      if (args.length !== 3) return { args, kwargs, status: "differs", note: "The client sends three: the gate, its far gate and the ship." };
+      const [gate, far, ship] = args;
+      const known = context && typeof context.gateDestination === "function" ? context.gateDestination(gate) : null;
+      if (wholeAndPositive(far)) {
+        return known === null || known === far ? { args, kwargs } : { args, kwargs, status: "differs", note: "The client names the far gate the gate's slim item has. This call names another." };
+      }
+      if (known === null) return { args, kwargs, status: "differs", note: "The client names the gate's far gate, off its slim item. This call names none, and the ballpark has not the gate." };
+      return { args: [gate, known, ship], kwargs, status: "reshaped" };
+    },
+  }),
   "beyonce.CmdDock": same("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:517", "bp.CmdDock(itemID, session.shipid), on the ballpark's object, through sessionMgr.PerformSessionChange('dock', ...). Recorded on Tranquility with the two IDs."),
   "beyonce.CmdFollowBall": reshaped("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:302", following, "bp.CmdFollowBall(targetID, range), on the ballpark's object: the menu's approach with const.approachRange, keep at range with the pilot's distance (229), the autopilot's with 0.0 (autopilot.py 437). Not sent for the pilot's own ship. Recorded on Tranquility as (itemID, 50), and at 5000 and 7500, each a whole number; the autopilot's twice, its range a float of nought, which is how a range of nought goes."),
   "beyonce.CmdOrbit": reshaped("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:260", orbiting, "bp.CmdOrbit(targetID, range), on the ballpark's object: the range a float under 10 m and a whole number from there (243). Not sent for the pilot's own ship. Recorded on Tranquility as (itemID, 1000) and (itemID, 5000), 7500 and 10000, each a whole number, with nothing before it; none is recorded under ten metres, where the client's float is how it goes."),
