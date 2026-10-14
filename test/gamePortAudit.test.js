@@ -293,7 +293,7 @@ test("the app itself lists the routes its source's text has not, and the page's 
   // Named by the page's api.ts, though the text of the BFF's source has no such route; named by another source of
   // the page's than its api.ts (the generic call, the event stream); and named by nothing of the page's.
   assert.deepEqual([named("GET", "/api/bridge/drones"), named("POST", "/api/bridge/provisioning/reconcile"), named("POST", "/api/bridge/call"), named("GET", "/api/bridge/events"),
-    named("POST", "/api/bridge/mail/mark-read"), named("POST", "/api/bridge/mail/trash")], [true, true, true, true, false, false]);
+    named("POST", "/api/bridge/flight/warp"), named("POST", "/api/bridge/gm/slash")], [true, true, true, true, false, false]);
 });
 
 test("findings are gathered by kind, route and call, each route by the BFF's own pattern for it", () => {

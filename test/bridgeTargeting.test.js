@@ -343,117 +343,7 @@ test("target reads preserve malformed authority as unknown and accept an actual 
   assert.deepEqual((await apiRequest(baseUrl, "/api/bridge/targets")).payload.targetIDs, [ROCK_ID, OTHER_ROCK_ID]);
 });
 
-test("lock sends AddTarget(targetID) and RE-READS rather than trusting the 200", async () => {
-  const { gateway, baseUrl } = await inSpace();
-  // The server accepts the attempt and finishes acquiring it before the re-read.
-  gateway.state.locked.add(ROCK_ID);
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/targets/lock", {
-    method: "POST",
-    body: { targetID: ROCK_ID },
-  });
-  assert.equal(response.status, 200);
-  assert.equal(payload.locked, true, "the re-read says it is locked");
-  assert.equal(payload.acquiring, false);
-  assert.deepEqual(payload.targetIDs, [ROCK_ID]);
-
-  const adds = dogmaCallsOf(gateway, "AddTarget");
-  assert.equal(adds.length, 1);
-  assert.deepEqual(adds[0].args, [ROCK_ID], "AddTarget takes the target positionally");
-  assert.equal(
-    dogmaCallsOf(gateway, "GetTargets").length,
-    1,
-    "a lock must verify itself with a GetTargets re-read",
-  );
-});
-
-test("a lock the server is still ACQUIRING is reported as acquiring, not as locked", async () => {
-  const { baseUrl } = await inSpace();
-  // The fake never moves the target into `locked`, so the re-read finds nothing —
-  // exactly the real acquisition window.
-  const { payload } = await apiRequest(baseUrl, "/api/bridge/targets/lock", {
-    method: "POST",
-    body: { targetID: ROCK_ID },
-  });
-  assert.equal(payload.locked, false, "it has NOT landed yet");
-  assert.equal(payload.acquiring, true, "but the server accepted the attempt");
-  assert.deepEqual(payload.targetIDs, []);
-});
-
-test("a lock the server neither accepts nor lands is reported as neither", async () => {
-  const { gateway, baseUrl } = await inSpace();
-  gateway.state.inert.add("AddTarget");
-
-  const { payload } = await apiRequest(baseUrl, "/api/bridge/targets/lock", {
-    method: "POST",
-    body: { targetID: ROCK_ID },
-  });
-  assert.equal(payload.ok, true, "the call itself succeeded");
-  assert.equal(payload.locked, false);
-  assert.equal(payload.acquiring, false, "a silent decline is not dressed up as progress");
-});
-
-test("a lock refusal carries the SERVER's own reason, untouched", async () => {
-  const { gateway, baseUrl } = await inSpace();
-  gateway.state.refuse.set("AddTarget", "TargetTooFar");
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/targets/lock", {
-    method: "POST",
-    body: { targetID: ROCK_ID },
-  });
-  assert.equal(response.status, 409);
-  assert.equal(payload.ok, false);
-  assert.equal(payload.message, "TargetTooFar", "the handler's reason is passed through verbatim");
-});
-
 // --- Unlocking --------------------------------------------------------------
-
-test("unlock cancels a pending acquisition AND removes a landed lock, then re-reads", async () => {
-  const { gateway, baseUrl } = await inSpace();
-  gateway.state.locked.add(ROCK_ID);
-  gateway.state.locked.add(OTHER_ROCK_ID);
-
-  const { payload } = await apiRequest(baseUrl, "/api/bridge/targets/unlock", {
-    method: "POST",
-    body: { targetID: ROCK_ID },
-  });
-  assert.equal(payload.released, true);
-  assert.deepEqual(payload.targetIDs, [OTHER_ROCK_ID], "only the one lock went");
-
-  // One button, both states: CancelAddTarget abandons a lock still being
-  // acquired, RemoveTarget drops one that landed.
-  assert.deepEqual(dogmaCallsOf(gateway, "CancelAddTarget")[0].args, [ROCK_ID]);
-  assert.deepEqual(dogmaCallsOf(gateway, "RemoveTarget")[0].args, [ROCK_ID]);
-  assert.equal(dogmaCallsOf(gateway, "GetTargets").length, 1, "unlock verifies itself too");
-});
-
-test("unlock NEVER uses the bulk verbs — one lock at a time", async () => {
-  const { gateway, baseUrl } = await inSpace();
-  gateway.state.locked.add(ROCK_ID);
-  gateway.state.locked.add(OTHER_ROCK_ID);
-
-  await apiRequest(baseUrl, "/api/bridge/targets/unlock", {
-    method: "POST",
-    body: { targetID: ROCK_ID },
-  });
-  // RemoveTargets / ClearTargets are not on the gateway allowlist at all, and
-  // the BFF must not reach for them either: a stray click can only cost one lock.
-  assert.equal(dogmaCallsOf(gateway, "RemoveTargets").length, 0);
-  assert.equal(dogmaCallsOf(gateway, "ClearTargets").length, 0);
-});
-
-test("an unlock the server ignores reports that it is still locked", async () => {
-  const { gateway, baseUrl } = await inSpace();
-  gateway.state.locked.add(ROCK_ID);
-  gateway.state.inert.add("RemoveTarget");
-
-  const { payload } = await apiRequest(baseUrl, "/api/bridge/targets/unlock", {
-    method: "POST",
-    body: { targetID: ROCK_ID },
-  });
-  assert.equal(payload.ok, true);
-  assert.equal(payload.released, false, "the re-read still shows the lock, so say so");
-});
 
 // --- Module activation ------------------------------------------------------
 //
@@ -467,37 +357,11 @@ test("an unlock the server ignores reports that it is still locked", async () =>
 
 // --- Guards -----------------------------------------------------------------
 
-test("every action refuses while docked, and refuses a missing target or module", async () => {
-  const { gateway, baseUrl } = await inSpace();
-  gateway.state.inSpace = false;
-
-  for (const [path, body] of [
-    ["/api/bridge/targets/lock", { targetID: ROCK_ID }],
-    ["/api/bridge/targets/unlock", { targetID: ROCK_ID }],
-    // (The module routes went on 2026-10-14; the page's own module calls refuse a pilot docked before asking.)
-  ]) {
-    const { response, payload } = await apiRequest(baseUrl, path, { method: "POST", body });
-    assert.equal(response.status, 409, path);
-    assert.equal(payload.error, "NOT_IN_SPACE", path);
-  }
-
-  gateway.state.inSpace = true;
-  for (const [path, error] of [
-    ["/api/bridge/targets/lock", "INVALID_TARGET"],
-    ["/api/bridge/targets/unlock", "INVALID_TARGET"],
-  ]) {
-    const { response, payload } = await apiRequest(baseUrl, path, { method: "POST", body: {} });
-    assert.equal(response.status, 400, path);
-    assert.equal(payload.error, error, path);
-  }
-});
-
 test("every action requires the web login session", async () => {
   const { baseUrl } = await inSpace();
   for (const path of [
     "/api/bridge/targets",
-    "/api/bridge/targets/lock",
-    "/api/bridge/targets/unlock",
+    // (The lock and unlock routes went on 2026-10-14 with the plumbing's other unasked writes (the loop's item 62).)
   ]) {
     const { response } = await apiRequest(baseUrl, path, {
       method: path === "/api/bridge/targets" ? "GET" : "POST",

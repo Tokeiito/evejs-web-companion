@@ -1,5 +1,8 @@
 "use strict";
 
+// (The R104 scan write routes went on 2026-10-14 with the plumbing's other unasked writes (the loop's item 62); their tests here with them. The scanner state's test is what is
+// left.)
+
 // Goal R104 (Phase-4 BOUND WRITES): the BFF probe / scan-control write routes —
 // WB-SCAN (9 scanMgr writes: SignalTrackerRegister / SetProbeDestination /
 // SetProbeRangeStep / ConeScan / RequestScans / ReconnectToLostProbes / DestroyProbe
@@ -202,145 +205,7 @@ test.afterEach(async () => {
 
 // --- the 9 R104 scan write routes --------------------------------------------
 
-const R104_WRITE_ROUTES = [
-  ["/api/bridge/scan/signal-tracker/register", {}],
-  ["/api/bridge/scan/probe/set-destination", { probeID: PROBE_ID, destination: [1, 2, 3] }],
-  ["/api/bridge/scan/probe/set-range-step", { probeID: PROBE_ID, rangeStep: 3 }],
-  ["/api/bridge/scan/cone-scan", { angle: 1.5, range: 1000000, dx: 1, dy: 0, dz: 0 }],
-  ["/api/bridge/scan/request-scans", { probeMap: {} }],
-  ["/api/bridge/scan/probe/reconnect", {}],
-  ["/api/bridge/scan/probe/destroy", { probeID: PROBE_ID }],
-  ["/api/bridge/scan/probe/recover", { probeIDs: [PROBE_ID] }],
-  ["/api/bridge/scan/probe/set-activity", { probeIDs: [PROBE_ID], active: true }],
-];
-
-test("⚠ every R104 scan write REFUSES without confirm — no bind, no dispatch (nothing fired)", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  assert.equal(R104_WRITE_ROUTES.length, 9, "all 9 R104 scan write routes are covered");
-  for (const [path, body] of R104_WRITE_ROUTES) {
-    const { response, payload } = await apiRequest(baseUrl, path, { method: "POST", body });
-    assert.equal(response.status, 400, `${path} must refuse without confirm`);
-    assert.equal(payload.error, "CONFIRMATION_REQUIRED", `${path} must answer CONFIRMATION_REQUIRED`);
-  }
-  assert.equal(gateway.calls.boundCall.length, 0, "a refused write must not dispatch a bound call");
-  assert.equal(gateway.calls.bind.length, 0, "a refused write must not even bind the scan manager");
-});
-
 // --- WB-SCAN: bound off the session-scoped scanMgr.GetSystemScanMgr bind -------
-
-test("R104 SetProbeDestination binds GetSystemScanMgr (no args) and forwards [probeID, destination] once confirmed", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/scan/probe/set-destination", {
-    method: "POST",
-    body: { probeID: PROBE_ID, destination: [10, -20, 30], confirm: true },
-  });
-  assert.equal(response.status, 200);
-  assert.equal(payload.ok, true);
-  assert.equal(payload.applied, true);
-  // Bound, not top-level: the scan manager is bound via GetSystemScanMgr with NO
-  // caller args (session's own system) and the call rides callBoundMethod.
-  const bind = gateway.calls.bind.find((c) => c.service === "scanMgr");
-  assert.ok(bind, "the scan manager is bound");
-  assert.equal(bind.method, "GetSystemScanMgr");
-  assert.deepEqual(bind.args, [], "the bind takes NO caller args — session's own system");
-  const call = gateway.calls.boundCall.find((c) => c.method === "SetProbeDestination");
-  assert.ok(call, "SetProbeDestination must reach the gateway as a bound call once confirmed");
-  assert.equal(call.service, "scanMgr");
-  assert.deepEqual(call.args, [PROBE_ID, [10, -20, 30]]);
-});
-
-test("R104 RequestScans forwards [probeMap] as a bound scanMgr call once confirmed", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { response } = await apiRequest(baseUrl, "/api/bridge/scan/request-scans", {
-    method: "POST",
-    body: { probeMap: { [PROBE_ID]: { rangeStep: 2 } }, confirm: true },
-  });
-  assert.equal(response.status, 200);
-  const call = gateway.calls.boundCall.find((c) => c.method === "RequestScans");
-  assert.ok(call, "RequestScans must reach the gateway once confirmed");
-  assert.equal(call.service, "scanMgr");
-  assert.deepEqual(call.args, [{ [PROBE_ID]: { rangeStep: 2 } }]);
-});
-
-test("R104 RecoverProbes forwards [[probeIDs]] as a bound scanMgr call once confirmed", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { response } = await apiRequest(baseUrl, "/api/bridge/scan/probe/recover", {
-    method: "POST",
-    body: { probeIDs: [PROBE_ID, 70000002], confirm: true },
-  });
-  assert.equal(response.status, 200);
-  const call = gateway.calls.boundCall.find((c) => c.method === "RecoverProbes");
-  assert.ok(call, "RecoverProbes must reach the gateway once confirmed");
-  assert.equal(call.service, "scanMgr");
-  assert.deepEqual(call.args, [[PROBE_ID, 70000002]]);
-});
-
-test("⚠ R104 DestroyProbe binds the session scan manager and forwards [probeID] once confirmed (DESTRUCTIVE)", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/scan/probe/destroy", {
-    method: "POST",
-    body: { probeID: PROBE_ID, confirm: true },
-  });
-  assert.equal(response.status, 200);
-  assert.equal(payload.applied, true);
-  const bind = gateway.calls.bind.find((c) => c.service === "scanMgr");
-  assert.ok(bind && bind.method === "GetSystemScanMgr" && bind.args.length === 0, "destroy binds the session's own scan manager, no caller args");
-  const call = gateway.calls.boundCall.find((c) => c.method === "DestroyProbe");
-  assert.ok(call, "DestroyProbe must reach the gateway once confirmed");
-  assert.equal(call.service, "scanMgr");
-  assert.deepEqual(call.args, [PROBE_ID]);
-});
-
-test("R104 SetActivityState forwards [[probeIDs], active] as a bound scanMgr call once confirmed", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { response } = await apiRequest(baseUrl, "/api/bridge/scan/probe/set-activity", {
-    method: "POST",
-    body: { probeIDs: [PROBE_ID], active: true, confirm: true },
-  });
-  assert.equal(response.status, 200);
-  const call = gateway.calls.boundCall.find((c) => c.method === "SetActivityState");
-  assert.ok(call, "SetActivityState must reach the gateway once confirmed");
-  assert.equal(call.service, "scanMgr");
-  assert.deepEqual(call.args, [[PROBE_ID], true]);
-});
-
-test("R104 SignalTrackerRegister dispatches with no args once confirmed", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { response } = await apiRequest(baseUrl, "/api/bridge/scan/signal-tracker/register", {
-    method: "POST",
-    body: { confirm: true },
-  });
-  assert.equal(response.status, 200);
-  const call = gateway.calls.boundCall.find((c) => c.method === "SignalTrackerRegister");
-  assert.ok(call, "SignalTrackerRegister must reach the gateway once confirmed");
-  assert.equal(call.service, "scanMgr");
-  assert.deepEqual(call.args, []);
-});
-
-test("R104 scan write routes refuse without a held bridge session", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  // No selectOnServer — no held session.
-  for (const [path, body] of R104_WRITE_ROUTES) {
-    const { response } = await apiRequest(baseUrl, path, { method: "POST", body: { ...body, confirm: true } });
-    assert.notEqual(response.status, 200, `${path} must refuse without a held session`);
-  }
-  assert.equal(gateway.calls.boundCall.length, 0, "no dispatch without a held session");
-});
 
 // --- Product scanner state --------------------------------------------------
 //

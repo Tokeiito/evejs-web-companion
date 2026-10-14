@@ -1,5 +1,8 @@
 "use strict";
 
+// (The R103 planet and beyonce write routes but the jump through a fleet member went on 2026-10-14 with the plumbing's other unasked writes (the loop's item 62); their tests here
+// with them. The fleet-bridge jump's test is what is left.)
+
 // Goal R103 (Phase-4 BOUND WRITES): the BFF planet colony-op + beyonce nav/bookmark
 // write routes — WB-PI (4 planetMgr writes: UserUpdateNetwork / UserLaunchCommodities
 // / UserTransferCommodities / UserAbandonPlanet) and WB-BEYONCE (7 beyonce nav/bookmark
@@ -192,163 +195,9 @@ test.afterEach(async () => {
 
 // --- the 11 R103 planet + beyonce write routes -------------------------------
 
-const R103_WRITE_ROUTES = [
-  // WB-PI (4)
-  ["/api/bridge/planet/network/update", { planetID: PLANET_ID, changes: [] }],
-  ["/api/bridge/planet/commodities/launch", { planetID: PLANET_ID, commandPinID: 1017962292558, commodities: {} }],
-  ["/api/bridge/planet/commodities/transfer", { planetID: PLANET_ID, path: [1017962292558], commodities: {} }],
-  ["/api/bridge/planet/abandon", { planetID: PLANET_ID }],
-  // WB-BEYONCE (7)
-  ["/api/bridge/flight/goto-point", { x: 1, y: 2, z: 3 }],
-  ["/api/bridge/flight/goto-bookmark", { bookmarkID: 1000000012345 }],
-  ["/api/bridge/flight/abandon-loot", { itemIDs: [5000000009] }],
-  ["/api/bridge/flight/fleet-tag-target", { itemID: 5000000009, tag: "A" }],
-  ["/api/bridge/flight/jump-through-fleet", { otherCharID: 140000002, otherShipID: 9002, beaconID: 6001, solarSystemID: 30000144 }],
-  ["/api/bridge/flight/bookmark-location", { itemID: 5000000009, folderID: 0, name: "Spot", comment: "", expiryMode: 0 }],
-  ["/api/bridge/flight/bookmark-scan-result", { locationID: 30000142, name: "Sig", comment: "", resultID: 42, folderID: 0, expiryMode: 0 }],
-];
-
-test("⚠ every R103 planet/beyonce write REFUSES without confirm — no bind, no dispatch (nothing fired)", async () => {
-  const gateway = fakeGateway({ inSpace: true });
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  assert.equal(R103_WRITE_ROUTES.length, 11, "all 11 R103 write routes are covered");
-  for (const [path, body] of R103_WRITE_ROUTES) {
-    const { response, payload } = await apiRequest(baseUrl, path, { method: "POST", body });
-    assert.equal(response.status, 400, `${path} must refuse without confirm`);
-    assert.equal(payload.error, "CONFIRMATION_REQUIRED", `${path} must answer CONFIRMATION_REQUIRED`);
-  }
-  assert.equal(gateway.calls.boundCall.length, 0, "a refused write must not dispatch a bound call");
-  assert.equal(gateway.calls.bind.length, 0, "a refused write must not even bind the object");
-});
-
 // --- WB-PI: bound off the planetMgr planetID bind ----------------------------
 
-test("R103 UserUpdateNetwork binds the planetID and forwards [changes] as a BOUND planetMgr call once confirmed", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/planet/network/update", {
-    method: "POST",
-    body: { planetID: PLANET_ID, changes: [{ pinID: 1, typeID: 2 }], confirm: true },
-  });
-  assert.equal(response.status, 200);
-  assert.equal(payload.ok, true);
-  assert.equal(payload.applied, true);
-  // Bound, not top-level: the planetMgr planet handle is bound (MachoBindObject with
-  // the caller-sent planetID) and the call rides callBoundMethod.
-  const bind = gateway.calls.bind.find((c) => c.service === "planetMgr");
-  assert.ok(bind, "the planetMgr planet is bound");
-  assert.equal(bind.method, "MachoBindObject");
-  assert.deepEqual(bind.args, [PLANET_ID], "bound on the caller-sent planetID");
-  const call = gateway.calls.boundCall.find((c) => c.method === "UserUpdateNetwork");
-  assert.ok(call, "UserUpdateNetwork must reach the gateway as a bound call once confirmed");
-  assert.equal(call.service, "planetMgr");
-  assert.deepEqual(call.args, [[{ pinID: 1, typeID: 2 }]]);
-});
-
-test("R103 UserTransferCommodities forwards [path, commodities] as a bound planetMgr call once confirmed", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { response } = await apiRequest(baseUrl, "/api/bridge/planet/commodities/transfer", {
-    method: "POST",
-    body: { planetID: PLANET_ID, path: [11, 22], commodities: { "2393": 100 }, confirm: true },
-  });
-  assert.equal(response.status, 200);
-  const call = gateway.calls.boundCall.find((c) => c.method === "UserTransferCommodities");
-  assert.ok(call, "UserTransferCommodities must reach the gateway once confirmed");
-  assert.equal(call.service, "planetMgr");
-  assert.deepEqual(call.args, [[11, 22], { "2393": 100 }]);
-});
-
-test("⚠ R103 UserAbandonPlanet binds the planetID and dispatches with no args once confirmed (DESTRUCTIVE)", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/planet/abandon", {
-    method: "POST",
-    body: { planetID: PLANET_ID, confirm: true },
-  });
-  assert.equal(response.status, 200);
-  assert.equal(payload.applied, true);
-  const bind = gateway.calls.bind.find((c) => c.service === "planetMgr");
-  assert.ok(bind && bind.args[0] === PLANET_ID, "abandon binds the caller-sent planetID");
-  const call = gateway.calls.boundCall.find((c) => c.method === "UserAbandonPlanet");
-  assert.ok(call, "UserAbandonPlanet must reach the gateway once confirmed");
-  assert.equal(call.service, "planetMgr");
-  assert.deepEqual(call.args, []);
-});
-
-test("R103 a planet write refuses a non-positive planetID before dispatch", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/planet/abandon", {
-    method: "POST",
-    body: { planetID: 0, confirm: true },
-  });
-  assert.equal(response.status, 400);
-  assert.equal(payload.error, "INVALID_PLANET");
-  assert.equal(gateway.calls.boundCall.length, 0, "an invalid planetID must not dispatch");
-});
-
 // --- WB-BEYONCE: bound off the beyonce solar-system park bind -----------------
-
-test("R103 CmdGotoPoint binds the park (solarSystemID) and forwards [x,y,z] as a BOUND beyonce call once confirmed", async () => {
-  const gateway = fakeGateway({ inSpace: true });
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/goto-point", {
-    method: "POST",
-    body: { x: 10, y: -20, z: 30, confirm: true },
-  });
-  assert.equal(response.status, 200, JSON.stringify(payload));
-  assert.equal(payload.applied, true);
-  // Bound on the beyonce remote park: MachoBindObject with the [[solarSystemID, 5]] moniker.
-  const bind = gateway.calls.bind.find((c) => c.service === "beyonce");
-  assert.ok(bind, "the beyonce remote park is bound");
-  assert.equal(bind.method, "MachoBindObject");
-  assert.equal(Array.isArray(bind.args) && Array.isArray(bind.args[0]), true, "bound on the [[solarSystemID, group]] moniker");
-  assert.equal(bind.args[0][0], SOLAR_SYSTEM_ID);
-  const call = gateway.calls.boundCall.find((c) => c.method === "CmdGotoPoint");
-  assert.ok(call, "CmdGotoPoint must reach the gateway once confirmed");
-  assert.equal(call.service, "beyonce");
-  assert.deepEqual(call.args, [10, -20, 30]);
-});
-
-test("support positioning refuses missing/coerced coordinates and a changed observed ship before movement", async () => {
-  const gateway = fakeGateway({ inSpace: true });
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  for (const body of [{ x: 1, y: 2 }, { x: "10", y: 2, z: 3 }, { x: null, y: 2, z: 3 },
-    { x: 1, y: 2, z: 3, expectedShipID: -1 }]) {
-    const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/goto-point", { method: "POST", body: { ...body, confirm: true } });
-    assert.equal(response.status, 400); assert.equal(payload.error, "INVALID_MOVEMENT_POINT");
-  }
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/goto-point", {
-    method: "POST", body: { x: 1, y: 2, z: 3, expectedShipID: SHIP_ID + 1, confirm: true } });
-  assert.equal(response.status, 409); assert.equal(payload.error, "SHIP_CHANGED");
-  const changedSystem = await apiRequest(baseUrl, "/api/bridge/flight/goto-point", {
-    method: "POST", body: { x: 1, y: 2, z: 3, expectedShipID: SHIP_ID, expectedSolarSystemID: SOLAR_SYSTEM_ID + 1, confirm: true } });
-  assert.equal(changedSystem.response.status, 409); assert.equal(changedSystem.payload.error, "SYSTEM_CHANGED");
-  assert.equal(gateway.calls.boundCall.filter(c => c.method === "CmdGotoPoint").length, 0);
-});
-
-test("R103 CmdAbandonLoot forwards [[itemIDs]] as a bound beyonce call once confirmed", async () => {
-  const gateway = fakeGateway({ inSpace: true });
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { response } = await apiRequest(baseUrl, "/api/bridge/flight/abandon-loot", {
-    method: "POST",
-    body: { itemIDs: [5000000009, 5000000010], confirm: true },
-  });
-  assert.equal(response.status, 200);
-  const call = gateway.calls.boundCall.find((c) => c.method === "CmdAbandonLoot");
-  assert.ok(call, "CmdAbandonLoot must reach the gateway once confirmed");
-  assert.equal(call.service, "beyonce");
-  assert.deepEqual(call.args, [[5000000009, 5000000010]]);
-});
 
 test("R103 fleet-bridge jump waits for the destination scene and dispatches once", async () => {
   const gateway = fakeGateway({ inSpace: true });
@@ -374,46 +223,6 @@ test("R103 fleet-bridge jump waits for the destination scene and dispatches once
     1,
     "the bridge jump must never be replayed while the session handoff settles",
   );
-});
-
-test("R103 BookmarkLocation forwards positional args + optional subfolder kwarg once confirmed", async () => {
-  const gateway = fakeGateway({ inSpace: true });
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { response } = await apiRequest(baseUrl, "/api/bridge/flight/bookmark-location", {
-    method: "POST",
-    body: { itemID: 5000000009, folderID: 0, name: "Spot", comment: "note", expiryMode: 0, subfolderID: 77, confirm: true },
-  });
-  assert.equal(response.status, 200);
-  const call = gateway.calls.boundCall.find((c) => c.method === "BookmarkLocation");
-  assert.ok(call, "BookmarkLocation must reach the gateway once confirmed");
-  assert.equal(call.service, "beyonce");
-  assert.deepEqual(call.args, [5000000009, 0, "Spot", "note", 0]);
-  assert.deepEqual(call.kwargs, { subfolderID: 77 });
-});
-
-test("⚠ R103 a beyonce nav write refuses when the ship is NOT in space (409, no dispatch)", async () => {
-  const gateway = fakeGateway({ inSpace: false });
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/goto-point", {
-    method: "POST",
-    body: { x: 1, y: 2, z: 3, confirm: true },
-  });
-  assert.equal(response.status, 409);
-  assert.equal(payload.error, "NOT_IN_SPACE");
-  assert.equal(gateway.calls.boundCall.length, 0, "a docked ship must not dispatch a beyonce nav write");
-});
-
-test("R103 write routes refuse without a held bridge session", async () => {
-  const gateway = fakeGateway({ inSpace: true });
-  const { baseUrl } = await startTestServer({ gateway });
-  // No selectOnServer — no held session.
-  for (const [path, body] of R103_WRITE_ROUTES) {
-    const { response } = await apiRequest(baseUrl, path, { method: "POST", body: { ...body, confirm: true } });
-    assert.notEqual(response.status, 200, `${path} must refuse without a held session`);
-  }
-  assert.equal(gateway.calls.boundCall.length, 0, "no dispatch without a held session");
 });
 
 // --- the customs office's transfer --------------------------------------------

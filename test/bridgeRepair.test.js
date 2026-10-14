@@ -1,5 +1,8 @@
 "use strict";
 
+// (The repair route, POST /api/bridge/station/repair, went on 2026-10-14 with the plumbing's other unasked writes (the loop's item 62); its test here with it. The page repairs
+// by its own call on the shop.)
+
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { once } = require("node:events");
@@ -157,34 +160,3 @@ test("repair quotes forward as a held repairSvc.GetRepairQuotes read", async () 
   }]);
 });
 
-test("repair commit refuses without confirmation and forwards RepairItems once confirmed", async () => {
-  const gateway = fakeGateway();
-  const baseUrl = await startTestServer(gateway);
-  await apiRequest(baseUrl, "/api/bridge/select", {
-    method: "POST",
-    body: { characterID: CHARACTER_ID },
-  });
-
-  const refused = await apiRequest(baseUrl, "/api/bridge/station/repair", {
-    method: "POST",
-    body: { itemIDs: [SHIP_ID] },
-  });
-  assert.equal(refused.response.status, 400);
-  assert.equal(refused.payload.error, "CONFIRMATION_REQUIRED");
-  assert.equal(gateway.calls.length, 0, "an unconfirmed repair must not dispatch");
-
-  const committed = await apiRequest(baseUrl, "/api/bridge/station/repair", {
-    method: "POST",
-    body: { itemIDs: [SHIP_ID, "9002", -1, "bad"], confirm: true },
-  });
-  assert.equal(committed.response.status, 200);
-  assert.deepEqual(committed.payload.result, { repaired: [SHIP_ID, 9002] });
-  assert.deepEqual(gateway.calls, [{
-    service: "repairSvc",
-    method: "RepairItems",
-    args: [[SHIP_ID, 9002], null],
-    kwargs: null,
-    sessionFields: { userid: ACCOUNT.accountID },
-    bridgeSessionID: BRIDGE_SESSION_ID,
-  }]);
-});

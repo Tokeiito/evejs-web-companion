@@ -255,109 +255,11 @@ test("approach honours an explicit range — 0 is the autopilot's own close-the-
 
 // --- Keep at range: the SAME method with a non-zero range -------------------
 
-test("keep at range dispatches CmdFollowBall — the same method approach uses", async () => {
-  const { gateway, baseUrl } = await inSpace();
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/keep-at-range", {
-    method: "POST",
-    body: { targetID: TARGET_ID, range: 5000 },
-  });
-  assert.equal(response.status, 200);
-  assert.equal(payload.ok, true);
-  assert.deepEqual(boundCallsOf(gateway, "CmdFollowBall")[0].args, [TARGET_ID, 5000]);
-  assert.equal(payload.flight.shipMode, "FOLLOW");
-});
-
-test("keep at range defaults to 1000 m and floors at 50 m", async () => {
-  const withDefault = await inSpace();
-  await apiRequest(withDefault.baseUrl, "/api/bridge/flight/keep-at-range", {
-    method: "POST",
-    body: { targetID: TARGET_ID },
-  });
-  assert.deepEqual(boundCallsOf(withDefault.gateway, "CmdFollowBall")[0].args, [TARGET_ID, 1000]);
-
-  const tooClose = await inSpace();
-  await apiRequest(tooClose.baseUrl, "/api/bridge/flight/keep-at-range", {
-    method: "POST",
-    body: { targetID: TARGET_ID, range: 5 },
-  });
-  assert.deepEqual(
-    boundCallsOf(tooClose.gateway, "CmdFollowBall")[0].args,
-    [TARGET_ID, 50],
-    "a range under the floor is raised to 50 m",
-  );
-});
-
 // --- Orbit ------------------------------------------------------------------
-
-test("orbit dispatches CmdOrbit(targetID, range), defaulting to 1000 m", async () => {
-  const { gateway, baseUrl } = await inSpace();
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/orbit", {
-    method: "POST",
-    body: { targetID: TARGET_ID },
-  });
-  assert.equal(response.status, 200);
-  assert.equal(payload.ok, true);
-  assert.deepEqual(boundCallsOf(gateway, "CmdOrbit")[0].args, [TARGET_ID, 1000]);
-  assert.equal(payload.flight.shipMode, "ORBIT");
-});
-
-test("orbit coerces its range the way the retail client does (float under 10, int at or above)", async () => {
-  const small = await inSpace();
-  await apiRequest(small.baseUrl, "/api/bridge/flight/orbit", {
-    method: "POST",
-    body: { targetID: TARGET_ID, range: 7.5 },
-  });
-  assert.deepEqual(boundCallsOf(small.gateway, "CmdOrbit")[0].args, [TARGET_ID, 7.5]);
-
-  const large = await inSpace();
-  await apiRequest(large.baseUrl, "/api/bridge/flight/orbit", {
-    method: "POST",
-    body: { targetID: TARGET_ID, range: 10000.4 },
-  });
-  assert.deepEqual(boundCallsOf(large.gateway, "CmdOrbit")[0].args, [TARGET_ID, 10000]);
-});
 
 // --- Align: KWARGS ONLY -----------------------------------------------------
 
-test("align sends CmdAlignTo as KWARGS (dstID / bookmarkID) with NO positional args", async () => {
-  const { gateway, baseUrl } = await inSpace();
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/align", {
-    method: "POST",
-    body: { targetID: TARGET_ID },
-  });
-  assert.equal(response.status, 200);
-  assert.equal(payload.ok, true);
-
-  const align = boundCallsOf(gateway, "CmdAlignTo")[0];
-  assert.ok(align, "CmdAlignTo dispatched");
-  assert.deepEqual(align.args, [], "the target must NEVER travel as a positional arg");
-  assert.deepEqual(align.kwargs, { dstID: TARGET_ID, bookmarkID: null });
-  // Exactly one of the two is non-null, as the handler requires.
-  assert.equal(align.kwargs.bookmarkID, null);
-});
-
 // --- Stop -------------------------------------------------------------------
-
-test("stop sends CmdStop with no arguments at all", async () => {
-  const { gateway, baseUrl } = await inSpace();
-  gateway.state.shipMode = "ORBIT";
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/stop", {
-    method: "POST",
-    body: {},
-  });
-  assert.equal(response.status, 200);
-  assert.equal(payload.ok, true);
-
-  const stop = boundCallsOf(gateway, "CmdStop")[0];
-  assert.ok(stop, "CmdStop dispatched");
-  assert.deepEqual(stop.args, []);
-  assert.equal(stop.kwargs, null);
-  assert.equal(payload.flight.shipMode, "STOP");
-});
 
 // --- Warp at range ----------------------------------------------------------
 
@@ -409,34 +311,10 @@ test("a warp range outside the offered ladder is refused", async () => {
 
 // --- Guard rails shared with the R5a routes ---------------------------------
 
-test("every verb binds the beyonce park for the CURRENT system and hides the handle", async () => {
-  const routes = [
-    ["/api/bridge/flight/keep-at-range", { targetID: TARGET_ID }],
-    ["/api/bridge/flight/orbit", { targetID: TARGET_ID }],
-    ["/api/bridge/flight/align", { targetID: TARGET_ID }],
-    ["/api/bridge/flight/stop", {}],
-  ];
-  for (const [path, body] of routes) {
-    const { gateway, baseUrl } = await inSpace();
-    const { response, payload } = await apiRequest(baseUrl, path, { method: "POST", body });
-    assert.equal(response.status, 200, path);
-    const bind = gateway.calls.bind.find((b) => b.service === "beyonce" && b.method === "MachoBindObject");
-    assert.ok(bind, `${path} bound the park`);
-    assert.deepEqual(bind.args, [[ORIGIN_SYSTEM_ID, 5]], path);
-    assert.equal(JSON.stringify(payload).includes("handle:"), false, `${path} leaked a bound handle`);
-    for (const call of gateway.calls.boundCall) {
-      assert.equal(call.bridgeSessionID, BRIDGE_SESSION_ID, path);
-    }
-  }
-});
-
 test("every verb is refused when docked (NOT_IN_SPACE) and dispatches nothing", async () => {
   const routes = [
     ["/api/bridge/flight/approach", { destinationID: TARGET_ID }],
-    ["/api/bridge/flight/keep-at-range", { targetID: TARGET_ID }],
-    ["/api/bridge/flight/orbit", { targetID: TARGET_ID }],
-    ["/api/bridge/flight/align", { targetID: TARGET_ID }],
-    ["/api/bridge/flight/stop", {}],
+    // (Keep at range, orbit, align and stop: their routes went on 2026-10-14 with the plumbing's other unasked writes (the loop's item 62).)
   ];
   for (const [path, body] of routes) {
     const { gateway, baseUrl } = await inSpace();
@@ -448,49 +326,3 @@ test("every verb is refused when docked (NOT_IN_SPACE) and dispatches nothing", 
   }
 });
 
-test("a target-less verb is a 400 before anything is dispatched", async () => {
-  const routes = [
-    ["/api/bridge/flight/keep-at-range", {}],
-    ["/api/bridge/flight/orbit", {}],
-    ["/api/bridge/flight/align", {}],
-  ];
-  for (const [path, body] of routes) {
-    const { gateway, baseUrl } = await inSpace();
-    const { response, payload } = await apiRequest(baseUrl, path, { method: "POST", body });
-    assert.equal(response.status, 400, path);
-    assert.equal(payload.error, "INVALID_TARGET", path);
-    assert.equal(gateway.calls.boundCall.length, 0, path);
-  }
-});
-
-test("a verb refusal passes through as the handler's own CALL_REFUSED message", async () => {
-  const { baseUrl } = await inSpace({
-    async callBoundMethod(service, method) {
-      if (method === "CmdOrbit") {
-        const error = new Error("You are warp scrambled.");
-        error.code = "CALL_REFUSED";
-        error.statusCode = 409;
-        throw error;
-      }
-      return { service, method, result: null, notifications: [] };
-    },
-  });
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/orbit", {
-    method: "POST",
-    body: { targetID: TARGET_ID },
-  });
-  assert.equal(response.status, 409);
-  assert.equal(payload.error, "CALL_REFUSED");
-  assert.match(payload.message, /warp scrambled/i);
-});
-
-test("the verbs require a live session (409 NO_LIVE_SESSION with no character online)", async () => {
-  const { baseUrl } = await startTestServer();
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/stop", {
-    method: "POST",
-    body: {},
-  });
-  assert.equal(response.status, 409);
-  assert.equal(payload.error, "NO_LIVE_SESSION");
-});

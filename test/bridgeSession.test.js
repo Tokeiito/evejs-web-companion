@@ -647,7 +647,6 @@ test("a game-port transport that is present but not chosen is never touched", as
   assert.deepEqual(gamePort.calls, { select: [], release: [], call: [] });
 });
 
-
 // ── The server's questions (POST /api/bridge/questions/:id/answer) ───────────
 
 function gamePortWithQuestions(answer) {
@@ -733,7 +732,8 @@ test("a question is answered while the write that caused it is still waiting on 
   assert.equal(typeof finishPress, "function", "the press reached the pilot and is waiting");
 
   // Another write for the same pilot is turned away while the press is in flight...
-  const other = await apiRequest(baseUrl, "/api/bridge/flight/stop", { method: "POST", body: {} });
+  // (Another write, by a route still there since the stop's went on 2026-10-14.)
+  const other = await apiRequest(baseUrl, "/api/bridge/flight/warp", { method: "POST", body: { destinationID: 50001248 } });
   assert.equal(other.response.status, 409);
   assert.equal(other.payload.error, "CHARACTER_IN_USE");
   // ...and the answer is not.
@@ -1198,11 +1198,9 @@ test("a fleet applied to and a broadcast to the bubble are writes of the page's 
   const gateway = fakeGateway();
   const { baseUrl } = await startTestServer({ gateway });
   await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
-  for (const [service, method, args, route, routeBody, others] of [
-    ["fleetProxy", "ApplyToJoinFleet", [654500010000, true], "/api/bridge/fleet/apply", { fleetID: 654500010000, autoAccept: true },
-      ["AddFleetFinderAdvert", "RemoveFleetFinderAdvert", "UpdateAdvertInfo"]],
-    ["fleetMgr", "BroadcastToBubble", ["Target", 3, 200001, null], "/api/bridge/fleet/broadcast/bubble", { name: "Target", scope: 3, itemID: 200001 },
-      ["BroadcastToSystem", "ForceLeaveFleet", "AddToWatchlist", "RemoveFromWatchlist", "RegisterForDamageUpdates"]],
+  for (const [service, method, args, others] of [
+    ["fleetProxy", "ApplyToJoinFleet", [654500010000, true], ["AddFleetFinderAdvert", "RemoveFleetFinderAdvert", "UpdateAdvertInfo"]],
+    ["fleetMgr", "BroadcastToBubble", ["Target", 3, 200001, null], ["BroadcastToSystem", "ForceLeaveFleet", "AddToWatchlist", "RemoveFromWatchlist", "RegisterForDamageUpdates"]],
   ]) {
     const call = (more) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service, method, args, kwargs: null, ...more } });
     const before = gateway.calls.call.length;
@@ -1221,11 +1219,7 @@ test("a fleet applied to and a broadcast to the bubble are writes of the page's 
     assert.deepEqual([made.response.status, made.payload.service, made.payload.method], [200, service, method]);
     const sent = gateway.calls.call.at(-1);
     assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], [service, method, args, null, BRIDGE_SESSION_ID, { userid: 4 }]);
-    // The route stands, and makes the same call.
-    const byRoute = await apiRequest(baseUrl, route, { method: "POST", body: { ...routeBody, confirm: true } });
-    const routed = gateway.calls.call.at(-1);
-    assert.deepEqual([byRoute.response.status, gateway.calls.call.length], [200, before + 2], method);
-    assert.deepEqual([routed.service, routed.method, routed.args, routed.kwargs, routed.bridgeSessionID], [sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID]);
+    // (Their routes went on 2026-10-14 with the plumbing's other unasked writes (the loop's item 62).)
   }
 });
 
@@ -2496,54 +2490,10 @@ test("on the game port a fleet the session has left is a fleet the BFF has forgo
 
 // ── Leaving a fleet ──────────────────────────────────────────────────────────
 //
-// fleetSvc.LeaveFleet (365): self.fleet.LeaveFleet(), on the fleet's own object, where the client holds one; and
-// sm.RemoteSvc('fleetMgr').ForceLeaveFleet() only where it holds none for a fleet the session is in. The route
-// asked fleetMgr every time.
-
-const LEAVE = { method: "POST", body: { confirm: true } };
+// (The leaving's route, POST /api/bridge/fleet/leave, went on 2026-10-14 with the plumbing's other unasked writes (the loop's item 62), and its three tests here with it.
+// The page leaves by its own call: the fleet's handles' tests below.)
 
 /** The page's "Leave fleet", after a read of the Fleet panel. `log` is everything asked from then on, in order. */
-async function leaveFleet(options) {
-  const { baseUrl, asked: log } = await fleetRoute(options);
-  log.length = 0;
-  const unconfirmed = await apiRequest(baseUrl, "/api/bridge/fleet/leave", { method: "POST", body: {} });
-  assert.deepEqual([unconfirmed.response.status, log], [400, []]);
-  const answer = await apiRequest(baseUrl, "/api/bridge/fleet/leave", LEAVE);
-  return { answer, asked: [...log], log, baseUrl };
-}
-
-test("on the game port leaving is asked of the fleet's object where one is held, and of fleetMgr only where none is", async () => {
-  // Held, in the fleet: on the object the panel's read was made on.
-  const member = await leaveFleet({ own: { fleetID: 654500010000, holdsObject: true } });
-  assert.deepEqual([member.answer.response.status, member.answer.payload.ok, member.answer.payload.applied, member.asked], [200, true, true, ["fleetObjectHandler.LeaveFleet"]]);
-  // Held, with the session not in the fleet (CreateFleet answered, and no more): on the object all the same.
-  const early = await leaveFleet({ own: { fleetID: null, holdsObject: true } });
-  assert.deepEqual([early.answer.response.status, early.answer.payload.applied, early.asked], [200, true, ["bind fleetObjectHandler", "fleetObjectHandler.LeaveFleet"]]);
-  // None held: the client's ForceLeaveFleet, of the service by name, and nothing bound for it.
-  for (const options of [
-    { own: { fleetID: 654500010000, holdsObject: false } },
-    { own: { fleetID: null, holdsObject: false } },
-    { own: { fleetID: 654500010000 } },
-    { own: { fleetID: 654500010000, holdsObject: true }, knows: false },
-    { own: { fleetID: 654500010000, holdsObject: true }, transport: "gateway" },
-  ]) {
-    const { answer, asked } = await leaveFleet(options);
-    assert.deepEqual([answer.response.status, answer.payload.applied, asked], [200, true, ["fleetMgr.ForceLeaveFleet"]], JSON.stringify(options));
-  }
-});
-
-test("the fleet's handle is not kept across a leaving, refused or not", async () => {
-  const own = { fleetID: 654500010000, holdsObject: true, refuses: "LeaveFleet" };
-  const { answer, asked, log, baseUrl } = await leaveFleet({ own });
-  assert.deepEqual([answer.response.status >= 400, answer.payload.ok, asked], [true, false, ["fleetObjectHandler.LeaveFleet"]], JSON.stringify(answer.payload));
-  // A refusal is not proof that nothing changed: the next asking is of an object asked for afresh. And the one after.
-  delete own.refuses;
-  for (const time of ["after a refusal", "after a leaving"]) {
-    log.length = 0;
-    const next = await apiRequest(baseUrl, "/api/bridge/fleet/leave", LEAVE);
-    assert.deepEqual([next.response.status, next.payload.applied, log], [200, true, ["bind fleetObjectHandler", "fleetObjectHandler.LeaveFleet"]], time);
-  }
-});
 
 // The same leaving by the page's own call: fleetObjectHandler.LeaveFleet, the client's call on its fleet's object.
 // The session has one fleet, so the call names none. Which object, or whether there is one, is the BFF's to know:
@@ -3165,26 +3115,20 @@ async function flown(path, body, { transport = "gameport", alreadySo = null } = 
   return { payload: answer.payload, wondered, status: answer.response.status, sent: sent.map((each) => each.sent), on: [...new Set(sent.map((each) => each.on.join(" ")))], bound: asked.filter((each) => each.bound).map((each) => each.bound) };
 }
 
-test("on the game port the throttle is opened only before the autopilot's approach: the menu's approach, keep at range and orbit go alone", async () => {
+test("on the game port the throttle is opened only before the autopilot's approach: the menu's approach goes alone", async () => {
   // The menu's approach, at the route's own 50 m or at a range the page names.
   const menus = await flown("/api/bridge/flight/approach", { destinationID: FOLLOWED });
   assert.deepEqual([menus.status, menus.sent, menus.on, menus.bound], [200, [["CmdFollowBall", [FOLLOWED, 50]]], ["beyonce the-park"], ["beyonce.MachoBindObject"]]);
   assert.deepEqual((await flown("/api/bridge/flight/approach", { destinationID: FOLLOWED, range: 3000 })).sent, [["CmdFollowBall", [FOLLOWED, 3000]]]);
   // The autopilot's: no range, and the throttle opened first.
   assert.deepEqual((await flown("/api/bridge/flight/approach", { destinationID: FOLLOWED, range: 0 })).sent, [THROTTLE_OPENED, ["CmdFollowBall", [FOLLOWED, 0]]]);
-  // Keep at range and orbit are the menu's, whatever the range.
-  assert.deepEqual((await flown("/api/bridge/flight/keep-at-range", { targetID: FOLLOWED, range: 5000 })).sent, [["CmdFollowBall", [FOLLOWED, 5000]]]);
-  assert.deepEqual((await flown("/api/bridge/flight/keep-at-range", { targetID: FOLLOWED })).sent, [["CmdFollowBall", [FOLLOWED, 1000]]]);
-  assert.deepEqual((await flown("/api/bridge/flight/orbit", { targetID: FOLLOWED, range: 2500 })).sent, [["CmdOrbit", [FOLLOWED, 2500]]]);
-  assert.deepEqual((await flown("/api/bridge/flight/orbit", { targetID: FOLLOWED })).sent, [["CmdOrbit", [FOLLOWED, 1000]]]);
+  // (Keep at range and orbit: their routes went on 2026-10-14 with the plumbing's other unasked writes (the loop's item 62).)
 });
 
-test("through the gateway an approach, keep at range and orbit each open the throttle first, as before", async () => {
+test("through the gateway an approach opens the throttle first, as before", async () => {
   for (const [path, body, command] of [
     ["/api/bridge/flight/approach", { destinationID: FOLLOWED }, ["CmdFollowBall", [FOLLOWED, 50]]],
     ["/api/bridge/flight/approach", { destinationID: FOLLOWED, range: 0 }, ["CmdFollowBall", [FOLLOWED, 0]]],
-    ["/api/bridge/flight/keep-at-range", { targetID: FOLLOWED, range: 5000 }, ["CmdFollowBall", [FOLLOWED, 5000]]],
-    ["/api/bridge/flight/orbit", { targetID: FOLLOWED, range: 2500 }, ["CmdOrbit", [FOLLOWED, 2500]]],
   ]) {
     const { status, sent } = await flown(path, body, { transport: "gateway" });
     assert.deepEqual([status, sent], [200, [THROTTLE_OPENED, command]], `${path} ${JSON.stringify(body)}`);
@@ -3192,16 +3136,15 @@ test("through the gateway an approach, keep at range and orbit each open the thr
 });
 
 // The client's menu sends nothing for an approach, keep at range or orbit the ship is already flying
-// (movementFunctions._IsAlreadyFollowingBallAtRange). On the game port the routes ask the pilot's transport, which
-// has the ship's own ballpark, and hold the order back as the client does.
+// (movementFunctions._IsAlreadyFollowingBallAtRange). On the game port the approach's route asks the pilot's
+// transport, which has the ship's own ballpark, and holds the order back as the client does. (Keep at range's and
+// orbit's routes went on 2026-10-14 with the plumbing's other unasked writes.)
 
-test("on the game port an approach, keep at range or orbit the ship is already flying is not sent again, and the autopilot's always is", async () => {
+test("on the game port an approach the ship is already flying is not sent again, and the autopilot's always is", async () => {
   const WHOSE_PILOT = { userid: 4 };
   for (const [path, body, order] of [
     ["/api/bridge/flight/approach", { destinationID: FOLLOWED }, ["CmdFollowBall", FOLLOWED, 50]],
     ["/api/bridge/flight/approach", { destinationID: FOLLOWED, range: 3000 }, ["CmdFollowBall", FOLLOWED, 3000]],
-    ["/api/bridge/flight/keep-at-range", { targetID: FOLLOWED, range: 5000 }, ["CmdFollowBall", FOLLOWED, 5000]],
-    ["/api/bridge/flight/orbit", { targetID: FOLLOWED, range: 2500 }, ["CmdOrbit", FOLLOWED, 2500]],
   ]) {
     const held = await flown(path, body, { alreadySo: () => true });
     assert.deepEqual([held.status, held.sent, held.wondered, held.payload.ok, held.payload.alreadySo, held.payload.result], [200, [], [{ sessionFields: WHOSE_PILOT, order }], true, true, null], path);
@@ -3213,7 +3156,7 @@ test("on the game port an approach, keep at range or orbit the ship is already f
   const autopilots = await flown("/api/bridge/flight/approach", { destinationID: FOLLOWED, range: 0 }, { alreadySo: () => true });
   assert.deepEqual([autopilots.sent, autopilots.wondered, "alreadySo" in autopilots.payload], [[THROTTLE_OPENED, ["CmdFollowBall", [FOLLOWED, 0]]], [], false]);
   // A transport that cannot say is not asked, and the order is sent.
-  assert.deepEqual((await flown("/api/bridge/flight/orbit", { targetID: FOLLOWED, range: 2500 })).sent, [["CmdOrbit", [FOLLOWED, 2500]]]);
+  assert.deepEqual((await flown("/api/bridge/flight/approach", { destinationID: FOLLOWED, range: 3000 })).sent, [["CmdFollowBall", [FOLLOWED, 3000]]]);
 });
 
 test("through the gateway an order is sent whether the ship is flying it already or not, as before", async () => {
@@ -3540,8 +3483,6 @@ test("a station's offices that cannot be read are an error, not a station with n
 // director whose corporation has one.
 
 const quoteRoute = async (gamePort) => apiRequest(await atTheLobby(gamePort), "/api/bridge/station/office/quote");
-const rentRoute = async (gamePort, body) => apiRequest(await atTheLobby(gamePort), "/api/bridge/station/office/rent", { method: "POST", body });
-const giveUpRoute = async (gamePort, body) => apiRequest(await atTheLobby(gamePort), "/api/bridge/station/office/give-up", { method: "POST", body });
 const ownCorporation = SELECT_SESSION_ECHO.corporationID;
 
 test("the price of an office is asked for the pilot's own corporation, of a pilot who may rent one", async () => {
@@ -3564,68 +3505,20 @@ test("the price of an office is asked for the pilot's own corporation, of a pilo
   assert.deepEqual([refused.response.status, refused.payload.error, askedOfTheOffices(director)], [403, "OFFICE_ROLE_MISSING", []]);
 });
 
-test("an office is rented at the price the player was shown, once the player has said yes", async () => {
-  const gamePort = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CAN_RENT, ownOffices: [60000004] });
-  const baseUrl = await atTheLobby(gamePort);
-  const rent = (body) => apiRequest(baseUrl, "/api/bridge/station/office/rent", { method: "POST", body });
-  // Not said yes to: nothing is asked.
-  const unconfirmed = await rent({ cost: 10000 });
-  assert.deepEqual([unconfirmed.response.status, unconfirmed.payload.error, askedOfTheOffices(gamePort)], [400, "CONFIRMATION_REQUIRED", []]);
-  const { response, payload } = await rent({ cost: 10000, confirm: true });
-  assert.equal(response.status, 200, JSON.stringify(payload));
-  assert.deepEqual(payload, { ok: true, stationID: HERE });
-  // The corporation's offices looked at first, then the rent, with the price alone.
-  assert.deepEqual(askedOfTheOffices(gamePort), [["GetMyCorporationsOffices", [], null, GAME_PORT_SESSION_ID], ["RentOffice", [10000], null, GAME_PORT_SESSION_ID]]);
-  // A price that is no price is refused before anything is asked.
-  for (const cost of [undefined, null, "10000", -1, 10.5, Number.MAX_SAFE_INTEGER + 2]) {
-    gamePort.asked.length = 0;
-    const bad = await rent({ cost, confirm: true });
-    assert.deepEqual([bad.response.status, bad.payload.error, methodsAsked(gamePort)], [400, "INVALID_OFFICE_PRICE", []], String(cost));
-  }
-});
-
-test("an office is not rented by a pilot without the role, where the corporation has one already, or in a structure", async () => {
-  const noRole = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_DIRECTOR });
-  const refused = await rentRoute(noRole, { cost: 10000, confirm: true });
-  assert.deepEqual([refused.response.status, refused.payload.error, methodsAsked(noRole)], [403, "OFFICE_ROLE_MISSING", []]);
-  const already = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CEO, ownOffices: [HERE] });
-  const again = await rentRoute(already, { cost: 10000, confirm: true });
-  assert.deepEqual([again.response.status, again.payload.error, methodsAsked(already)], [409, "OFFICE_ALREADY_RENTED", ["GetMyCorporationsOffices"]]);
+test("an office's price is not asked in a structure, in space, or through the gateway", async () => {
+  // (The rent's and the giving up's routes went on 2026-10-14 with the plumbing's other unasked writes (the loop's item 62): the page makes the client's own calls.)
   const structure = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CEO, dockedAt: { stationID: null, structureID: STRUCTURE_DOCKED_AT } });
-  for (const call of [() => rentRoute(structure, { cost: 10000, confirm: true }), () => giveUpRoute(structure, { confirm: true }), () => quoteRoute(structure)]) {
-    const inStructure = await call();
-    assert.deepEqual([inStructure.response.status, inStructure.payload.error], [409, "OFFICE_IN_A_STRUCTURE"]);
-  }
+  const inStructure = await quoteRoute(structure);
+  assert.deepEqual([inStructure.response.status, inStructure.payload.error], [409, "OFFICE_IN_A_STRUCTURE"]);
   assert.deepEqual(methodsAsked(structure), []);
   // In space, and through the gateway, there is no station's office object to ask.
   const inSpace = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CEO, docked: false });
-  assert.deepEqual([(await rentRoute(inSpace, { cost: 10000, confirm: true })).payload.error, (await giveUpRoute(inSpace, { confirm: true })).payload.error, (await quoteRoute(inSpace)).payload.error], ["NOT_DOCKED", "NOT_DOCKED", "NOT_DOCKED"]);
+  assert.equal((await quoteRoute(inSpace)).payload.error, "NOT_DOCKED");
   const viaGateway = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CEO });
   const gatewayBase = await atTheLobby(viaGateway, fakeGateway(), "gateway");
-  for (const [path, options] of [["/api/bridge/station/office/quote", {}], ["/api/bridge/station/office/rent", { method: "POST", body: { cost: 1, confirm: true } }], ["/api/bridge/station/office/give-up", { method: "POST", body: { confirm: true } }]]) {
-    const answered = await apiRequest(gatewayBase, path, options);
-    assert.deepEqual([answered.response.status, answered.payload.error], [409, "OFFICES_NOT_ON_THIS_TRANSPORT"], path);
-  }
+  const answered = await apiRequest(gatewayBase, "/api/bridge/station/office/quote");
+  assert.deepEqual([answered.response.status, answered.payload.error], [409, "OFFICES_NOT_ON_THIS_TRANSPORT"]);
   assert.deepEqual(methodsAsked(viaGateway), []);
-});
-
-test("an office is given up by a director whose corporation has one here, once the player has said yes", async () => {
-  const gamePort = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_DIRECTOR, ownOffices: [HERE] });
-  const baseUrl = await atTheLobby(gamePort);
-  const giveUp = (body) => apiRequest(baseUrl, "/api/bridge/station/office/give-up", { method: "POST", body });
-  const unconfirmed = await giveUp({});
-  assert.deepEqual([unconfirmed.response.status, unconfirmed.payload.error, askedOfTheOffices(gamePort)], [400, "CONFIRMATION_REQUIRED", []]);
-  const { response, payload } = await giveUp({ confirm: true });
-  assert.equal(response.status, 200, JSON.stringify(payload));
-  assert.deepEqual(payload, { ok: true, stationID: HERE });
-  assert.deepEqual(askedOfTheOffices(gamePort), [["GetMyCorporationsOffices", [], null, GAME_PORT_SESSION_ID], ["UnrentOffice", [], null, GAME_PORT_SESSION_ID]]);
-  // Without the director's role, and where the corporation has no office here, there is no button in the client.
-  const renter = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CAN_RENT, ownOffices: [HERE] });
-  const noRole = await giveUpRoute(renter, { confirm: true });
-  assert.deepEqual([noRole.response.status, noRole.payload.error, methodsAsked(renter)], [403, "OFFICE_ROLE_MISSING", []]);
-  const none = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_DIRECTOR, ownOffices: [60000004] });
-  const nothing = await giveUpRoute(none, { confirm: true });
-  assert.deepEqual([nothing.response.status, nothing.payload.error, methodsAsked(none)], [409, "NO_OFFICE_HERE", ["GetMyCorporationsOffices"]]);
 });
 
 test("an office's rent and its giving up are writes of the page's own, made on the pilot's connection as they came; the price is a read", async () => {
@@ -3654,13 +3547,6 @@ test("an office's rent and its giving up are writes of the page's own, made on t
   const quoted = await call("GetPriceQuote", [ownCorporation], { pilot: true });
   assert.deepEqual([quoted.response.status, quoted.payload.result], [200, 10000]);
   assert.deepEqual(askedOfTheOffices(gamePort).at(-1), ["GetPriceQuote", [ownCorporation], null, GAME_PORT_SESSION_ID]);
-});
-
-test("a rent or a giving up the server refuses is an error, and is not said to be done", async () => {
-  const rent = await rentRoute(gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CEO, rent: refusedBy("NotEnoughMoney") }), { cost: 10000, confirm: true });
-  assert.deepEqual([rent.response.ok, rent.payload.ok], [false, false], JSON.stringify(rent.payload));
-  const giveUp = await giveUpRoute(gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CEO, ownOffices: [HERE], giveUp: refusedBy("CrpAccessDenied") }), { confirm: true });
-  assert.deepEqual([giveUp.response.ok, giveUp.payload.ok], [false, false], JSON.stringify(giveUp.payload));
 });
 
 // ── crimewatch's client states, for the page's safety level and timers ──────
@@ -4128,13 +4014,6 @@ test("none of the BFF's handles for a fleet is kept across the page's own formin
   }
 });
 
-test("the fleet's route forms a fleet as the page's own call does", async () => {
-  const { asked, baseUrl } = await formFleetByCall();
-  const routed = await apiRequest(baseUrl, "/api/bridge/fleet/create", { method: "POST", body: { confirm: true } });
-  assert.deepEqual([routed.response.status, routed.payload.ok, routed.payload.applied, routed.payload.result, routed.payload.notifications], [200, true, true, null, ["after Init"]]);
-  assert.deepEqual(asked, THROUGH_THE_FORMING("made 1"));
-});
-
 // ── an invitation accepted by the page itself ────────────────────────────────
 //
 // fleetSvc.OnFleetInvite (1168 to 1195): GetFleet(fleetID), a Moniker for the fleet the invitation names, and
@@ -4185,7 +4064,7 @@ test("an invitation accepted is a write the page means, made on the fleet the pa
   }
 });
 
-test("none of the BFF's handles for a fleet is kept across the page's own accepting, refused or not; and the route accepts as the call does", async () => {
+test("none of the BFF's handles for a fleet is kept across the page's own accepting, refused or not", async () => {
   const leave = (baseUrl) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "fleetObjectHandler", method: "LeaveFleet", args: [], kwargs: null, pilot: true, confirm: true } });
   for (const refuses of [null, "AcceptInvite"]) {
     const { asked, baseUrl } = await formFleetByCall({ refuses, holds: true });
@@ -4199,10 +4078,7 @@ test("none of the BFF's handles for a fleet is kept across the page's own accept
     await leave(baseUrl);
     assert.deepEqual(asked, [["bind", "fleetObjectHandler", "MachoBindObject", [], null], ["on made 3", "fleetObjectHandler", "LeaveFleet", [], null]], String(refuses));
   }
-  const { asked, baseUrl } = await formFleetByCall();
-  const routed = await apiRequest(baseUrl, "/api/bridge/fleet/invite/accept", { method: "POST", body: { fleetID: INVITING, confirm: true } });
-  assert.deepEqual([routed.response.status, routed.payload.ok, routed.payload.applied, routed.payload.result, routed.payload.notifications], [200, true, true, null, ["after AcceptInvite"]]);
-  assert.deepEqual(asked, THROUGH_THE_ACCEPTING("made 1"));
+  // (The accepting's route went on 2026-10-14 with the plumbing's other unasked writes (the loop's item 62).)
 });
 
 // ── a pilot invited by the page itself ───────────────────────────────────────
@@ -4254,7 +4130,7 @@ test("an invitation is a write the page means, made on the pilot's own fleet or 
   }
 });
 
-test("none of the BFF's handles for a fleet is kept across the page's own inviting, refused or not; and the route invites as the call does", async () => {
+test("none of the BFF's handles for a fleet is kept across the page's own inviting, refused or not", async () => {
   const leave = (baseUrl) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "fleetObjectHandler", method: "LeaveFleet", args: [], kwargs: null, pilot: true, confirm: true } });
   for (const refuses of [null, "Invite"]) {
     const { asked, baseUrl } = await formFleetByCall({ refuses, holds: true });
@@ -4269,12 +4145,7 @@ test("none of the BFF's handles for a fleet is kept across the page's own inviti
     await leave(baseUrl);
     assert.deepEqual(asked, [["bind", "fleetObjectHandler", "MachoBindObject", [], null], ["on made 2", "fleetObjectHandler", "LeaveFleet", [], null]], String(refuses));
   }
-  for (const [body, bound] of [[{ inviteeCharID: 43, confirm: true }, []], [{ inviteeCharID: 43, confirm: true, expectedFleetID: INVITING }, [[INVITING]]]]) {
-    const { asked, baseUrl } = await formFleetByCall();
-    const routed = await apiRequest(baseUrl, "/api/bridge/fleet/invite", { method: "POST", body });
-    assert.deepEqual([routed.response.status, routed.payload.ok, routed.payload.applied], [200, true, true], JSON.stringify(body));
-    assert.deepEqual(asked, THROUGH_THE_INVITING("made 1", bound), JSON.stringify(body));
-  }
+  // (The inviting's route went on 2026-10-14 with the plumbing's other unasked writes (the loop's item 62).)
 });
 
 // ── an invitation turned down by the page itself ─────────────────────────────
@@ -4326,7 +4197,7 @@ test("an invitation turned down is a write the page means, made on the fleet the
   }
 });
 
-test("none of the BFF's handles for a fleet is kept across the page's own turning down, refused or not; and the route turns down as the call does", async () => {
+test("none of the BFF's handles for a fleet is kept across the page's own turning down, refused or not", async () => {
   const leave = (baseUrl) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "fleetObjectHandler", method: "LeaveFleet", args: [], kwargs: null, pilot: true, confirm: true } });
   for (const refuses of [null, "RejectInvite"]) {
     const { asked, baseUrl } = await formFleetByCall({ refuses, holds: true });
@@ -4340,12 +4211,7 @@ test("none of the BFF's handles for a fleet is kept across the page's own turnin
     await leave(baseUrl);
     assert.deepEqual(asked, [["bind", "fleetObjectHandler", "MachoBindObject", [], null], ["on made 3", "fleetObjectHandler", "LeaveFleet", [], null]], String(refuses));
   }
-  for (const [body, said] of [[{ fleetID: INVITING, confirm: true }, []], [{ fleetID: INVITING, confirm: true, alreadyInFleet: true }, [true]], [{ fleetID: INVITING, confirm: true, alreadyInFleet: false }, [false]]]) {
-    const { asked, baseUrl } = await formFleetByCall();
-    const routed = await apiRequest(baseUrl, "/api/bridge/fleet/invite/reject", { method: "POST", body });
-    assert.deepEqual([routed.response.status, routed.payload.ok, routed.payload.applied], [200, true, true], JSON.stringify(body));
-    assert.deepEqual(asked, THROUGH_THE_DECLINING("made 1", said), JSON.stringify(body));
-  }
+  // (The turning down's route went on 2026-10-14 with the plumbing's other unasked writes (the loop's item 62).)
 });
 
 // ── a place in space bookmarked by the page itself ───────────────────────────
@@ -4505,35 +4371,7 @@ test("the fleet finder's two reads go by the generic call as a pilot's reads: ea
   assert.equal(gateway.calls.call.length, after);
 });
 
-// ── a fleet's advert, as its routes hand it on ───────────────────────────────
-//
-// The client's calls are fleetSvc.AddFleetFinderAdvert (2371: sm.ProxySvc('fleetProxy').AddFleetFinderAdvert(
-// adInfoObject.GetData())) and UpdateAdvertInfo (1746: the number of members and a KeyVal of what changed of who
-// is let in). The two routes pass on what the browser gave them, a plain object each: the web gateway takes
-// it, and the game port's marshal cannot write it (400 CALL_INVALID, seen live). Nothing of the page asks
-// either route; this is what they do now, and what puts them before the game-port audit
-// (scripts/game-port-audit-known.json).
-
-test("a fleet's advert is made and changed by routes that hand on an object of the browser's as it came", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
-  const advertData = { fleetName: "Mining Op", description: "", inviteScope: 16, joinNeedsApproval: false };
-  const allowedDiff = { membergroups_allowedEntities: [98000001] };
-  const before = gateway.calls.call.length;
-  for (const [path, body] of [["/api/bridge/fleet/advert/add", { advertData }], ["/api/bridge/fleet/advert/update", { numMembers: 3, allowedDiff }]]) {
-    const unconfirmed = await apiRequest(baseUrl, path, { method: "POST", body });
-    assert.deepEqual([unconfirmed.response.status, unconfirmed.payload.error], [400, "CONFIRMATION_REQUIRED"], path);
-  }
-  assert.equal(gateway.calls.call.length, before);
-  const added = await apiRequest(baseUrl, "/api/bridge/fleet/advert/add", { method: "POST", body: { advertData, confirm: true } });
-  assert.equal(added.response.status, 200);
-  assert.deepEqual([gateway.calls.call.at(-1).service, gateway.calls.call.at(-1).method, gateway.calls.call.at(-1).args], ["fleetProxy", "AddFleetFinderAdvert", [advertData]]);
-  const updated = await apiRequest(baseUrl, "/api/bridge/fleet/advert/update", { method: "POST", body: { numMembers: 3, allowedDiff, confirm: true } });
-  assert.equal(updated.response.status, 200);
-  assert.deepEqual([gateway.calls.call.at(-1).service, gateway.calls.call.at(-1).method, gateway.calls.call.at(-1).args], ["fleetProxy", "UpdateAdvertInfo", [3, allowedDiff]]);
-  assert.equal(gateway.calls.call.length, before + 2);
-});
+// (A fleet's advert's two routes went on 2026-10-14 with the plumbing's other unasked writes (the loop's item 62), and their test with them.)
 
 // ── the saved fittings, read by the page itself ──────────────────────────────
 //

@@ -347,37 +347,6 @@ test("a bind handle is reused across reads (cached per semantic key)", async () 
 // and to its failure after the server took it: the route went on 2026-10-14, the page boarding by its own call under
 // the generic call's keeping of a swap of the pilot's ship, held to the ship boarded.)
 
-
-test("alternate hull-swap writes wait for the authoritative active ship before answering", async () => {
-  const gateway = fakeGateway();
-  let clockMs = 0;
-  const { baseUrl } = await startTestServer({
-    gateway,
-    transitionNow: () => clockMs,
-    transitionSleep: async (ms) => { clockMs += ms; },
-  });
-  await selectOnServer(baseUrl);
-
-  const left = await apiRequest(baseUrl, "/api/bridge/ship/leave", {
-    method: "POST",
-    body: { shipID: ACTIVE_SHIP_ID, confirm: true },
-  });
-  assert.equal(left.response.status, 200);
-  assert.equal(left.payload.activeShipID, 9900);
-  assert.equal(left.payload.transition.phase, "ready");
-  assert.equal(gateway.calls.call.filter((call) => call.method === "LeaveShip").length, 1);
-
-  const stored = await apiRequest(baseUrl, "/api/bridge/ship/board-stored", {
-    method: "POST",
-    body: { structureID: 1_000_000_001, shipID: 2200, confirm: true },
-  });
-  assert.equal(stored.response.status, 200);
-  assert.equal(stored.payload.activeShipID, 2200);
-  assert.equal(stored.payload.transition.shipID, 2200);
-  assert.equal(gateway.calls.call.filter((call) => call.method === "BoardStoredShip").length, 1);
-  assert.equal(clockMs, 10_000, "the next hull swap waits out the retail session timer");
-});
-
 test("leaving the ship is a write of the page's own, made under the BFF's own watch of the swap: it answers once the pilot is in the capsule", async () => {
   const gateway = fakeGateway();
   let clockMs = 0;
@@ -404,9 +373,7 @@ test("leaving the ship is a write of the page's own, made under the BFF's own wa
   // The BFF's own word for the pilot's ship is the capsule from then on, as after the route's.
   const inventory = await apiRequest(baseUrl, "/api/bridge/inventory");
   assert.equal(inventory.payload.activeShipID, 9900);
-  // And the next swap waits out the session's timer, as it does after the route's.
-  const stored = await apiRequest(baseUrl, "/api/bridge/ship/board-stored", { method: "POST", body: { structureID: 1_000_000_001, shipID: 2200, confirm: true } });
-  assert.deepEqual([stored.response.status, stored.payload.activeShipID, clockMs], [200, 2200, 10_000]);
+  // (The next swap's wait was seen through the stored ship's route, which went on 2026-10-14 with the plumbing's other unasked writes (the loop's item 62).)
 });
 
 test("a corvette boarded is a write of the page's own, made under the BFF's own watch of the swap, with the client's two arguments", async () => {
@@ -436,9 +403,7 @@ test("a corvette boarded is a write of the page's own, made under the BFF's own 
   // The BFF's own word for the pilot's ship is the corvette from then on, as after the route's.
   const inventory = await apiRequest(baseUrl, "/api/bridge/inventory");
   assert.equal(inventory.payload.activeShipID, 9901);
-  // And the next swap waits out the session's timer, as it does after the route's.
-  const stored = await apiRequest(baseUrl, "/api/bridge/ship/board-stored", { method: "POST", body: { structureID: 1_000_000_001, shipID: 2200, confirm: true } });
-  assert.deepEqual([stored.response.status, stored.payload.activeShipID, clockMs], [200, 2200, 10_000]);
+  // (The next swap's wait was seen through the stored ship's route, which went on 2026-10-14 with the plumbing's other unasked writes (the loop's item 62).)
 });
 
 test("a corvette asked for with no pilot held is refused as its route refused it", async () => {
@@ -467,25 +432,6 @@ test("a ship left with no pilot held is refused as its route refused it", async 
   const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "ship", method: "LeaveShip", args: [ACTIVE_SHIP_ID], kwargs: null, pilot: true, confirm: true } });
   assert.deepEqual([refused.response.status, refused.payload.error], [409, "NO_LIVE_SESSION"]);
   assert.equal(gateway.calls.call.filter((each) => each.method === "LeaveShip").length, 0);
-});
-
-test("a successful safe logoff drops the BFF's held session immediately", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  const loggedOut = await apiRequest(baseUrl, "/api/bridge/ship/safe-logoff", {
-    method: "POST",
-    body: { confirm: true },
-  });
-  assert.equal(loggedOut.response.status, 200);
-  assert.equal(loggedOut.payload.applied, true);
-  assert.equal(loggedOut.payload.loggedOff, true);
-  assert.equal(gateway.calls.call.filter((call) => call.method === "SafeLogoff").length, 1);
-
-  const status = await apiRequest(baseUrl, "/api/bridge/flight/status");
-  assert.equal(status.response.status, 409);
-  assert.equal(status.payload.error, "NO_LIVE_SESSION");
 });
 
 test("inventory routes require a live session and pass gateway refusals through", async () => {
