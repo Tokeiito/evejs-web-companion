@@ -336,7 +336,7 @@ import {
 import { readScanFullState } from "../bridge/scanFullState.ts";
 import { applyFitting, fitModule as fitModuleCall, unfitModule as unfitModuleCall } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
-import { hasSomethingToStack, mergeStacks as mergeStacksCall, stackAll as stackAllCall, trashItems as trashItemsCall } from "../bridge/inventoryWrites.ts";
+import { hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, stackAll as stackAllCall, trashItems as trashItemsCall } from "../bridge/inventoryWrites.ts";
 import { cancelOrder as cancelOrderCall } from "../bridge/marketOrderWrites.ts";
 import { doAgentAction, removeOfferFromJournal } from "../bridge/agentWrites.ts";
 import { createScannerWrites, type ScannerShip } from "../bridge/scannerWrites.ts";
@@ -2853,10 +2853,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return "The server did not move anything, and gave no reason.";
   }
 
-  // Reload whatever places are currently on screen. A mutation can touch the
-  // hangar, the open container and a corp division at once (a move out of a
-  // container into a division touches all three), so after any action every
-  // open view is re-read rather than guessing which one changed.
   /**
    * The rows the panel holds of a place, as its last read had them: the hangar, the ship's hold, a bay of the ship
    * the pilot is in where that ship is the one open, and the container open. Null where the panel holds none.
@@ -2920,6 +2916,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     await stackAllCall(bridgeDo, inventoryAt({ kind: target }).inventory, target);
   }
 
+  // Reload whatever places are currently on screen. A mutation can touch the
+  // hangar, the open container and a corp division at once (a move out of a
+  // container into a division touches all three), so after any action every
+  // open view is re-read rather than guessing which one changed.
   async function refreshOpenPlaces(): Promise<void> {
     const current = store.get().inventory;
     await loadInventory();
@@ -14557,6 +14557,30 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     async transferItems(itemIDs, from, to, qty = null) {
       await runInventoryAction(async () => {
+        // Between the hangar, the ship's hold and a container, the client's own call (bridge/inventoryWrites.ts),
+        // judged by the places' rows refreshed, the source's above all: a thing moved can arrive under a new number.
+        const pilotsOwn = (place: InventoryPlace) => place.kind === "hangar" || place.kind === "cargo" || place.kind === "container";
+        if (pilotsOwn(from) && pilotsOwn(to)) {
+          const present = (rowsAt(from) ?? []).filter((row) => itemIDs.includes(row.itemID));
+          if (present.length === 0) {
+            throw new Error("Those items are no longer where the panel last saw them; refresh and try again.");
+          }
+          const kind = to.kind as "hangar" | "cargo" | "container";
+          await moveItemsCall(bridgeDo, inventoryAt(to).inventory, kind, inventoryAt(from).liesIn, present, qty ?? null);
+          await refreshOpenPlaces();
+          const sourceAfter = new Map((rowsAt(from) ?? []).map((row) => [row.itemID, row]));
+          const left = (row: InventoryItemRow) => {
+            const after = sourceAfter.get(row.itemID);
+            return !after || after.quantity < row.quantity;
+          };
+          const moved = present.filter(left).map((row) => row.itemID);
+          const declined = present.filter((row) => !left(row)).map((row) => row.itemID);
+          return {
+            applied: moved.length > 0,
+            declinedSilently: moved.length === 0 && declined.length > 0,
+            message: describeTransfer({ applied: moved.length > 0, moved, declined }, itemIDs.length, qty ?? null),
+          };
+        }
         const result = await api.transferItems(itemIDs, from, to, qty ?? null, callOptions);
         return {
           applied: result.applied,

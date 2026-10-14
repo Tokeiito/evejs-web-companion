@@ -68,6 +68,59 @@ export async function mergeStacks(
   await act("invbroker", "MultiMerge", [[[sourceItemID, destinationItemID, quantity]], sourceLocationID], null, inventory);
 }
 
+// THINGS MOVED BY THE PILOT. The route (POST /api/bridge/inventory/transfer) keeps the bots' moves, which carry the
+// BFF's own word (a container's claim between bots, a haul's contract, the place a run expects): the pilot's own
+// moves in the Inventory & Ship window, between the hangar, the ship's hold and a container, are the client's calls
+// since 2026-10-14, on the inventory the things go to, the window's own container (invControllers.py):
+//
+//   one thing     _AddItem (229 to 262) and its __AddItem (195 to 226): the whole stack, or a number asked with
+//                 shift held, from where it lies, Add(itemID, sourceLocationID, qty=quantity, flag=self.locationFlag)
+//   many things   AddItems (489 to 562): sorted by volume times stack, smallest first, from where the first lies,
+//                 MultiAdd(itemIDs, sourceLocation, flag=self.locationFlag), or flag=const.flagNone where the
+//                 container has no flag of its own
+//
+// The window's flags: the hangar's flagHangar (StationItems, 1138), the ship's hold flagCargo (ShipCargo, 605), and a
+// container none (BaseInvContainer, 60): one thing into a container goes with flag=None, many with flagNone.
+
+/** The places the pilot's own move is made between, and the flag each one's window adds with. */
+const MOVE_FLAGS = { hangar: 4, cargo: 5, container: null } as const;
+export type MovePlace = keyof typeof MOVE_FLAGS;
+
+/** A thing moved, as the panel's row has it. */
+export interface MovedRow {
+  readonly itemID: number;
+  readonly quantity: number;
+  readonly singleton: boolean;
+  readonly volume?: number | null;
+}
+
+/**
+ * Moves things into a place's own inventory (the hangar's, or a thing's own by its number), from where they lie: one
+ * thing with its whole stack or `qty` of it, many together in the client's order.
+ */
+export async function moveItems(
+  act: Ask,
+  inventory: number | typeof THE_HANGAR,
+  place: MovePlace,
+  sourceLocationID: number,
+  rows: readonly MovedRow[],
+  qty: number | null,
+): Promise<void> {
+  if (rows.length === 0 || !rows.every((row) => whole(row.itemID))) throw new Error("At least one item is required.");
+  if (!whole(sourceLocationID)) throw new Error("Where those items lie is not known.");
+  if (rows.length === 1) {
+    const [row] = rows as [MovedRow];
+    const quantity = qty ?? (row.singleton ? 1 : row.quantity);
+    if (!whole(quantity)) throw new Error("A whole quantity is required.");
+    await act("invbroker", "Add", [row.itemID, sourceLocationID], { qty: quantity, flag: MOVE_FLAGS[place] }, inventory);
+    return;
+  }
+  if (qty !== null) throw new Error("A quantity can only be given when moving a single stack.");
+  const size = (row: MovedRow) => (row.volume ?? 0) * (row.singleton ? 1 : row.quantity);
+  const ordered = [...rows].sort((a, b) => size(a) - size(b)).map((row) => row.itemID);
+  await act("invbroker", "MultiAdd", [ordered, sourceLocationID], { flag: MOVE_FLAGS[place] ?? 0 }, inventory);
+}
+
 // STACK ALL. Until 2026-10-14 a route (POST /api/bridge/inventory/stack) sent StackAll(flag) on the hangar's or the
 // ship's binding. The client's window's Stack All (invControllers.StackAll, 382 to 388) asks its container's own
 // inventory, StackAll(self.locationFlag): the hangar's with flagHangar, the ship's with flagCargo; and invCache's
