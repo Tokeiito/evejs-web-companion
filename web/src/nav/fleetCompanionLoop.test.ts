@@ -32,14 +32,17 @@ import type { BotLogDraft } from "./botLog.ts";
 import type { FleetBroadcast } from "../bridge/fleetBroadcasts.ts";
 import type { DroneFacts } from "./droneSizing.ts";
 import { MAX_DRONE_ROTATIONS } from "./droneRotation.ts";
+import { MISSILE_ORBIT_WHY, MWD_STAYS_OFF_WHY } from "./companionPropulsion.ts";
 import {
   FIGHT_FC_SHIP,
   FIGHT_FOLLOW_M,
   FIGHT_GUN_1,
   FIGHT_GUN_2,
   LONG_GUNS,
+  LONG_RAT,
   RAT,
   SHORT_GUNS,
+  SHORT_RAT,
   TWO_GUNS,
   TYPE_LONG_RAT,
   TYPE_SHORT_RAT,
@@ -8896,35 +8899,35 @@ test("FOLLOW with hostiles on grid, holding formation, does not light an unlit p
   assert.notEqual(decision.phase, "Propulsion");
 });
 
-test("FOLLOW with hostiles on grid and no formation anchor is an approach — it lights", () => {
+test("FOLLOW with hostiles on grid and no formation anchor is an approach — an afterburner lights", () => {
   const decision = decideCompanionAction(
-    withProps(),
+    withProps([AFTERBURNER]),
     obs({ snapshot: gridInMode("FOLLOW"), hostileOnGrid: true }),
     freshLadderMemory(),
   );
-  assert.deepEqual(decision.action, { kind: "activate", moduleID: MWD.itemID, targetID: 0 });
+  assert.deepEqual(decision.action, { kind: "activate", moduleID: AFTERBURNER.itemID, targetID: 0 });
 });
 
-test("FOLLOW with hostiles on grid and a closing latch set is an approach — it lights", () => {
+test("FOLLOW with hostiles on grid and a closing latch set is an approach — an afterburner lights", () => {
   // The ladder clears `followAnchorID` when it sends an approach, so a set
   // anchor with a live approach latch is the stale-record case the veto covers.
   for (const latch of [{ lootApproaching: 77 }, { salvageApproachIssued: true }]) {
     const decision = decideCompanionAction(
-      withProps(),
+      withProps([AFTERBURNER]),
       obs({ snapshot: gridInMode("FOLLOW"), hostileOnGrid: true }),
       { ...holdingFormation, ...latch },
     );
-    assert.deepEqual(decision.action, { kind: "activate", moduleID: MWD.itemID, targetID: 0 });
+    assert.deepEqual(decision.action, { kind: "activate", moduleID: AFTERBURNER.itemID, targetID: 0 });
   }
 });
 
 test("FOLLOW with hostiles on grid and its own route running lights it, formation or not", () => {
   const decision = decideCompanionAction(
-    withProps(),
+    withProps([AFTERBURNER]),
     obs({ snapshot: gridInMode("FOLLOW"), hostileOnGrid: true, travel: travelling() }),
     holdingFormation,
   );
-  assert.deepEqual(decision.action, { kind: "activate", moduleID: MWD.itemID, targetID: 0 });
+  assert.deepEqual(decision.action, { kind: "activate", moduleID: AFTERBURNER.itemID, targetID: 0 });
 });
 
 test("FOLLOW with no hostiles on grid lights it, as before", () => {
@@ -8947,11 +8950,11 @@ test("FOLLOW with hostileOnGrid unreadable (null) lights it, as before", () => {
 
 test("GOTO still lights it with hostiles on grid — a heading of its own is a trip", () => {
   const decision = decideCompanionAction(
-    withProps(),
+    withProps([AFTERBURNER]),
     obs({ snapshot: gridInMode("GOTO"), hostileOnGrid: true }),
     holdingFormation,
   );
-  assert.deepEqual(decision.action, { kind: "activate", moduleID: MWD.itemID, targetID: 0 });
+  assert.deepEqual(decision.action, { kind: "activate", moduleID: AFTERBURNER.itemID, targetID: 0 });
 });
 
 test("`props on` beats the hostile-FOLLOW stand-down", () => {
@@ -10328,4 +10331,278 @@ test("loot and salvage do not move the ship while the positioning rung holds nav
   const held = decideCompanionAction(TWO_GUNS, fightObs(SHORT_GUNS, grid, RAT, looting), orbiting.memory);
   assert.notEqual(held.action.kind, "approach");
   assert.equal(held.holdsNavigation, true);
+});
+
+// --- Rung 3b with hostiles on grid: the kind follows the weapon --------------
+//
+// A microwarpdrive blooms the signature and an afterburner does not. Turrets
+// have a 50 per cent hit-chance floor on this server; missiles have none and
+// lose damage to speed. So with hostiles on grid only an afterburner may light,
+// and against missile rats it also stays lit through the auto orbit.
+
+const TYPE_MISSILE_RAT = 604;
+const MISSILE_RAT = { ...LONG_RAT, missile: true };
+// ⚠ NOT THE AFTERBURNER / MWD ABOVE: their item ids are the fixture's two GUNS,
+// and a fight's guns are cycling.
+const FIGHT_AB: CompanionPropulsionModule = { itemID: 11400001, typeID: 90000910, kind: "afterburner" };
+const FIGHT_MWD: CompanionPropulsionModule = { itemID: 11400002, typeID: 90000911, kind: "microwarpdrive" };
+const NULL_KIND_PROP: CompanionPropulsionModule = { itemID: 11400003, typeID: 90000912, kind: null };
+const FIGHT_RAT_FACTS = {
+  [TYPE_LONG_RAT]: LONG_RAT, [TYPE_MISSILE_RAT]: MISSILE_RAT,
+};
+
+/** The fight grid with the own ship in a server movement mode and some modules cycling. */
+function propFightObs(options: {
+  readonly x?: number;
+  readonly typeID?: number;
+  readonly mode?: string | null;
+  readonly active?: readonly number[];
+  readonly overrides?: Partial<FleetCompanionObservation>;
+} = {}): FleetCompanionObservation {
+  const grid = ratAt(options.x ?? 8_000, options.typeID ?? TYPE_LONG_RAT, { activeModuleIDs: [FIGHT_GUN_1, FIGHT_GUN_2, ...(options.active ?? [])] });
+  const snapshot = {
+    ...grid, ship: { ...grid.ship, mode: options.mode ?? null },
+  } as unknown as SpaceSnapshot;
+  return fightObs(SHORT_GUNS, snapshot, RAT, { ratCombatByTypeID: FIGHT_RAT_FACTS, ...options.overrides });
+}
+
+/** The request: two guns, and these prop mods. */
+function propFightRequest(modules: readonly CompanionPropulsionModule[]): FleetCompanionRequest {
+  return { ...TWO_GUNS, propulsionModules: [...modules] };
+}
+
+/**
+ * Tick in `flight auto` until the positioning rung's order stands AND the ship
+ * is in position for it (the rung's `closing` flag is a tick late), with the rat
+ * `typeID` finally at `x`. The first tick has the rat far off so an orbit goes out.
+ */
+function orderStanding(modules: readonly CompanionPropulsionModule[], x: number, typeID: number): CompanionLadderMemory {
+  const first = decideCompanionAction(
+    propFightRequest(modules), propFightObs({ x: 30_000, typeID }), flyingAuto(),
+  );
+  assert.equal(first.action.kind, "orbit", JSON.stringify([first.action, first.why]));
+  let memory = first.memory;
+  for (let tick = 0; tick < 4; tick += 1) {
+    // The afterburner is already cycling, so the prop rung stays out of rung 8's way.
+    const active = modules.filter((module) => module.kind === "afterburner").map((module) => module.itemID);
+    memory = decideCompanionAction(propFightRequest(modules), propFightObs({ x, typeID, active }), memory).memory;
+  }
+  assert.notEqual(memory.combatPosition.hold, null);
+  assert.equal(memory.combatPosition.target?.closing, false);
+  // Any stand-down the settling ticks sent is history; the test under way starts clean.
+  return { ...memory, propsStoppingID: null };
+}
+
+const lights = (module: CompanionPropulsionModule) =>
+  ({ kind: "activate", moduleID: module.itemID, targetID: 0 });
+const stands = (module: CompanionPropulsionModule) =>
+  ({ kind: "deactivate", moduleID: module.itemID, typeID: module.typeID });
+
+test("hostiles on grid, turret rats, closing: an afterburner lights, a microwarpdrive never", () => {
+  const ab = decideCompanionAction(
+    propFightRequest([FIGHT_AB]), propFightObs({ mode: "GOTO" }), freshLadderMemory(),
+  );
+  assert.deepEqual(ab.action, lights(FIGHT_AB));
+  const mwd = decideCompanionAction(
+    propFightRequest([FIGHT_MWD]), propFightObs({ mode: "GOTO" }), freshLadderMemory(),
+  );
+  assert.notEqual(mwd.phase, "Propulsion");
+});
+
+test("hostiles on grid, missile rats, closing: an afterburner lights, a microwarpdrive never", () => {
+  const ab = decideCompanionAction(
+    propFightRequest([FIGHT_AB]), propFightObs({ mode: "GOTO", typeID: TYPE_MISSILE_RAT }), freshLadderMemory(),
+  );
+  assert.deepEqual(ab.action, lights(FIGHT_AB));
+  const mwd = decideCompanionAction(
+    propFightRequest([FIGHT_MWD]), propFightObs({ mode: "GOTO", typeID: TYPE_MISSILE_RAT }), freshLadderMemory(),
+  );
+  assert.notEqual(mwd.phase, "Propulsion");
+});
+
+test("a fit with both kinds lights the afterburner, whatever the fit order", () => {
+  const decision = decideCompanionAction(
+    propFightRequest([FIGHT_MWD, FIGHT_AB]), propFightObs({ mode: "GOTO" }), freshLadderMemory(),
+  );
+  assert.deepEqual(decision.action, lights(FIGHT_AB));
+});
+
+test("closing on the auto hold lights an afterburner against turrets, and an MWD stays dark", () => {
+  const far = decideCompanionAction(
+    propFightRequest([FIGHT_AB]), propFightObs({ x: 30_000 }), flyingAuto(),
+  );
+  assert.equal(far.action.kind, "orbit");
+  assert.equal(far.memory.combatPosition.target?.closing, true);
+  const ab = decideCompanionAction(propFightRequest([FIGHT_AB]), propFightObs({ x: 30_000 }), far.memory);
+  assert.deepEqual(ab.action, lights(FIGHT_AB));
+  const mwd = decideCompanionAction(propFightRequest([FIGHT_MWD]), propFightObs({ x: 30_000 }), far.memory);
+  assert.notEqual(mwd.phase, "Propulsion");
+});
+
+test("missile rats, auto orbit holding in position: the afterburner is lit and says why", () => {
+  const memory = orderStanding([FIGHT_AB], 8_000, TYPE_MISSILE_RAT);
+  assert.equal(memory.combatPosition.target?.closing, false);
+  const decision = decideCompanionAction(
+    propFightRequest([FIGHT_AB]), propFightObs({ x: 8_000, typeID: TYPE_MISSILE_RAT }), memory,
+  );
+  assert.deepEqual(decision.action, lights(FIGHT_AB));
+  assert.equal(decision.why, MISSILE_ORBIT_WHY);
+  assert.match(MISSILE_ORBIT_WHY, /^[\x20-\x7e]+$/);
+});
+
+test("missile rats, auto orbit holding in position: a lit afterburner is left alone", () => {
+  const memory = orderStanding([FIGHT_AB], 8_000, TYPE_MISSILE_RAT);
+  const decision = decideCompanionAction(
+    propFightRequest([FIGHT_AB]),
+    propFightObs({ x: 8_000, typeID: TYPE_MISSILE_RAT, active: [FIGHT_AB.itemID] }),
+    memory,
+  );
+  assert.notEqual(decision.phase, "Propulsion");
+});
+
+test("missile rats, auto orbit holding in position: a microwarpdrive still never lights", () => {
+  const memory = orderStanding([FIGHT_MWD], 8_000, TYPE_MISSILE_RAT);
+  const decision = decideCompanionAction(
+    propFightRequest([FIGHT_MWD]), propFightObs({ x: 8_000, typeID: TYPE_MISSILE_RAT }), memory,
+  );
+  assert.notEqual(decision.phase, "Propulsion");
+});
+
+test("turret rats, auto orbit holding in position: the afterburner goes out", () => {
+  const memory = orderStanding([FIGHT_AB], 8_000, TYPE_LONG_RAT);
+  const decision = decideCompanionAction(
+    propFightRequest([FIGHT_AB]),
+    propFightObs({ x: 8_000, active: [FIGHT_AB.itemID] }),
+    memory,
+  );
+  assert.deepEqual(decision.action, stands(FIGHT_AB));
+  const unlit = decideCompanionAction(propFightRequest([FIGHT_AB]), propFightObs({ x: 8_000 }), memory);
+  assert.notEqual(unlit.phase, "Propulsion");
+});
+
+test("one missile rat among turret rats is enough for the orbit burn", () => {
+  const memory = orderStanding([FIGHT_AB], 8_000, TYPE_LONG_RAT);
+  const grid = fightGrid({
+    rats: [{ itemID: RAT, typeID: TYPE_LONG_RAT, x: 8_000 }, { itemID: RAT + 50, typeID: TYPE_MISSILE_RAT, x: 20_000 }],
+  });
+  const decision = decideCompanionAction(
+    propFightRequest([FIGHT_AB]),
+    fightObs(SHORT_GUNS, grid, RAT, { ratCombatByTypeID: FIGHT_RAT_FACTS }),
+    memory,
+  );
+  assert.deepEqual(decision.action, lights(FIGHT_AB));
+});
+
+test("missile rats but not `flight auto`: no orbit burn", () => {
+  const decision = decideCompanionAction(
+    propFightRequest([FIGHT_AB]),
+    propFightObs({ x: 8_000, typeID: TYPE_MISSILE_RAT }),
+    freshLadderMemory(),
+  );
+  assert.notEqual(decision.phase, "Propulsion");
+});
+
+test("unreadable rat facts: an afterburner lights while closing, not for the orbit, an MWD never", () => {
+  const closing = decideCompanionAction(
+    propFightRequest([FIGHT_AB]),
+    propFightObs({ mode: "GOTO", overrides: { ratCombatByTypeID: null } }),
+    freshLadderMemory(),
+  );
+  assert.deepEqual(closing.action, lights(FIGHT_AB));
+  const mwd = decideCompanionAction(
+    propFightRequest([FIGHT_MWD]),
+    propFightObs({ mode: "GOTO", overrides: { ratCombatByTypeID: {} } }),
+    freshLadderMemory(),
+  );
+  assert.notEqual(mwd.phase, "Propulsion");
+  // In position with the order standing and the type unread: not a missile rat we know of.
+  const memory = orderStanding([FIGHT_AB], 8_000, TYPE_LONG_RAT);
+  const held = decideCompanionAction(
+    propFightRequest([FIGHT_AB]),
+    propFightObs({ x: 8_000, typeID: TYPE_MISSILE_RAT, overrides: { ratCombatByTypeID: {} } }),
+    memory,
+  );
+  assert.notEqual(held.phase, "Propulsion");
+});
+
+test("a running microwarpdrive is stood down when hostiles appear, naming its typeID, once", () => {
+  const request = propFightRequest([FIGHT_MWD]);
+  const lit = propFightObs({ mode: "GOTO", active: [FIGHT_MWD.itemID] });
+  const first = decideCompanionAction(request, lit, freshLadderMemory());
+  assert.deepEqual(first.action, stands(FIGHT_MWD));
+  assert.equal(first.why, MWD_STAYS_OFF_WHY);
+  assert.match(MWD_STAYS_OFF_WHY, /^[\x20-\x7e]+$/);
+  // The snapshot has not caught up: the latch holds, no second deactivate.
+  const second = decideCompanionAction(request, lit, first.memory);
+  assert.notEqual(second.phase, "Propulsion");
+});
+
+test("a running MWD is stood down even while an afterburner is wanted, and the afterburner lights next", () => {
+  const request = propFightRequest([FIGHT_MWD, FIGHT_AB]);
+  const first = decideCompanionAction(
+    request, propFightObs({ mode: "GOTO", active: [FIGHT_MWD.itemID] }), freshLadderMemory(),
+  );
+  assert.deepEqual(first.action, stands(FIGHT_MWD));
+  const next = decideCompanionAction(request, propFightObs({ mode: "GOTO" }), first.memory);
+  assert.deepEqual(next.action, lights(FIGHT_AB));
+});
+
+test("a null-kind prop mod is treated like a microwarpdrive: never lit, stood down when running", () => {
+  const dark = decideCompanionAction(
+    propFightRequest([NULL_KIND_PROP]), propFightObs({ mode: "GOTO" }), freshLadderMemory(),
+  );
+  assert.notEqual(dark.phase, "Propulsion");
+  const running = decideCompanionAction(
+    propFightRequest([NULL_KIND_PROP]),
+    propFightObs({ mode: "GOTO", active: [NULL_KIND_PROP.itemID] }),
+    freshLadderMemory(),
+  );
+  assert.deepEqual(running.action, stands(NULL_KIND_PROP));
+});
+
+test("`props on` with hostiles on grid lights a microwarpdrive-only fit", () => {
+  const decision = decideCompanionAction(
+    propFightRequest([FIGHT_MWD]),
+    propFightObs({ overrides: { chatMessages: [commanderSays("props on")] } }),
+    freshLadderMemory(),
+  );
+  assert.deepEqual(decision.action, lights(FIGHT_MWD));
+  assert.equal(decision.followingOrderFrom, "chat");
+  // The latch: silence after it still keeps the FIGHT_MWD, running, with hostiles on grid.
+  const held = decideCompanionAction(
+    propFightRequest([FIGHT_MWD]), propFightObs({ active: [FIGHT_MWD.itemID] }), decision.memory,
+  );
+  assert.notEqual(held.phase, "Propulsion");
+});
+
+test("`props off` wins over the missile orbit burn", () => {
+  const memory = { ...orderStanding([FIGHT_AB], 8_000, TYPE_MISSILE_RAT), propsHeld: false };
+  const decision = decideCompanionAction(
+    propFightRequest([FIGHT_AB]),
+    propFightObs({ x: 8_000, typeID: TYPE_MISSILE_RAT, active: [FIGHT_AB.itemID] }),
+    memory,
+  );
+  assert.deepEqual(decision.action, stands(FIGHT_AB));
+  const unlit = decideCompanionAction(
+    propFightRequest([FIGHT_AB]), propFightObs({ x: 8_000, typeID: TYPE_MISSILE_RAT }), memory,
+  );
+  assert.notEqual(unlit.phase, "Propulsion");
+});
+
+test("no hostiles on grid: today's rule, a microwarpdrive may light while travelling", () => {
+  for (const hostileOnGrid of [false, null]) {
+    const decision = decideCompanionAction(
+      propFightRequest([FIGHT_MWD]),
+      propFightObs({ mode: "GOTO", overrides: { hostileOnGrid } }),
+      freshLadderMemory(),
+    );
+    assert.deepEqual(decision.action, lights(FIGHT_MWD), `hostileOnGrid ${hostileOnGrid}`);
+  }
+  // And a running one is not stood down by the hostile rule.
+  const running = decideCompanionAction(
+    propFightRequest([FIGHT_MWD]),
+    propFightObs({ mode: "GOTO", active: [FIGHT_MWD.itemID], overrides: { hostileOnGrid: false } }),
+    freshLadderMemory(),
+  );
+  assert.notEqual(running.phase, "Propulsion");
 });
