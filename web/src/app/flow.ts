@@ -25946,6 +25946,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           case "moveBookmarks":
             await moveBookmarksCall(bridgeDo, action.fromFolderID, action.toFolderID, null, action.bookmarkIDs);
             return;
+          case "salvageBatch": {
+            // A salvager's module work for the tick, as a pilot clicks it: each step by itself, the same calls the
+            // single actions make. A refused step does not stop the rest; all refused is the batch refused.
+            const failed: string[] = [];
+            for (const step of action.steps) {
+              try {
+                if (step.kind === "lock") await lockTargetCall(bridgeDo, step.targetID, null);
+                else if (step.kind === "unlock") await releaseTarget(step.targetID);
+                else if (step.kind === "activate") requireModuleOutcome(await switchModuleOn(step.moduleID, { targetID: step.targetID, repeat: -1 }, callOptions), step.moduleID, "activate");
+                else requireModuleOutcome(await switchModuleOff(step.moduleID, {}, callOptions), step.moduleID, "deactivate");
+              } catch (error) {
+                if (isSessionLost(error)) throw error;
+                failed.push(`${step.kind}: ${String(error)}`);
+              }
+            }
+            if (failed.length === action.steps.length) throw new Error(failed[0]);
+            return failed.length > 0 ? `${failed.length} of ${action.steps.length} refused (${failed.join("; ")})` : undefined;
+          }
           case "warpLaunch":
             await warpToLaunchPickup(action.launchID);
             return;

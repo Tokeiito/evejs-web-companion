@@ -73,7 +73,7 @@ export function createTravelAssist(deps: TravelAssistDeps) {
       const active = input.snapshot?.ship?.activeModuleIDs;
       const kind = input.action.kind;
       const isWork = input.workWhileMoving === true && (
-        ["lock", "unlock", "lootWreck", "lootContainer", "salvageDrones", "launchDrones", "recallDrones"].includes(kind) ||
+        ["lock", "unlock", "lootWreck", "lootContainer", "salvageDrones", "launchDrones", "recallDrones", "salvageBatch"].includes(kind) ||
         (["activate", "deactivate"].includes(kind) && !input.modules.some(module => module.itemID === input.action.moduleID)));
       const usable = input.enabled && input.scope !== null && input.inWarp === false && input.docked === false && active != null;
       if (owned && active != null && !active.includes(owned.module.itemID)) {

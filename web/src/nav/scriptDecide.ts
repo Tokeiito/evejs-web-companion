@@ -228,6 +228,16 @@ export type ScriptAction =
   | { readonly kind: "addKnownFolder"; readonly folderID: number }
   /** Switch a known bookmark folder on or off. */
   | { readonly kind: "setFolderActive"; readonly folderID: number; readonly active: boolean }
+  /**
+   * A salvager's module work for one tick, done together as a pilot does it: tractor beams let go and put on
+   * wrecks, salvagers put on locked wrecks, locks asked for. Each step is made by itself; one refused does not
+   * stop the rest.
+   */
+  | { readonly kind: "salvageBatch"; readonly steps: readonly (
+      | { readonly kind: "lock"; readonly targetID: number }
+      | { readonly kind: "unlock"; readonly targetID: number }
+      | { readonly kind: "activate"; readonly moduleID: number; readonly targetID: number }
+      | { readonly kind: "deactivate"; readonly moduleID: number })[] }
   /** Move bookmarks from one folder into another (a salvaged site's bookmark filed away). */
   | { readonly kind: "moveBookmarks"; readonly fromFolderID: number; readonly toFolderID: number; readonly bookmarkIDs: readonly number[] }
   /** Warp to one of the pilot's planetary launches, by the launch's own ID. */

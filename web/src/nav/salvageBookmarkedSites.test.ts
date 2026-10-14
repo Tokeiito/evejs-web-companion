@@ -232,8 +232,8 @@ test("on site: a tractor beam whose wreck has arrived is switched off, so it can
     myCharacterID: 90000001, tractorModuleIDs: [TRACTOR], salvageModuleIDs: [602], maxLockedTargets: 3, maxTargetRangeM: 30_000, lockedTargetIDs: [],
     snapshot: { ship: { ...SHIP, activeModuleIDs: [TRACTOR], activeModuleTargets: [{ moduleID: TRACTOR, targetID: 4103 }], moduleRanges: [{ moduleID: TRACTOR, rangeM: 40_000 }] }, entities: [arrived] } as never,
   }), onSite, NB);
-  // Looted already and inside salvage reach: the beam has nothing left to do with it.
-  assert.deepEqual(t.action, { kind: "deactivate", moduleID: TRACTOR });
+  // Looted already and inside salvage reach: the beam is let go, and in the same tick the wreck is locked for the salvager.
+  assert.deepEqual(t.action, { kind: "salvageBatch", steps: [{ kind: "deactivate", moduleID: TRACTOR }, { kind: "lock", targetID: 4103 }] });
 });
 
 test("on site: a corp-mate's wreck, ours by its loot rights with no fleet, is looted before it is salvaged", () => {
@@ -246,4 +246,15 @@ test("on site: a corp-mate's wreck, ours by its loot rights with no fleet, is lo
   const strangers = { ...mates, itemID: 4302, ownerID: 90000777, corporationID: 98999977, lootRights: { ownerID: 90000777, corpID: 98999977, fleetID: null, abandoned: false } };
   const s = salvager(step, obs({ myCharacterID: 90000001, myCorporationID: 98999901, lockedTargetIDs: [], snapshot: { ship: SHIP, entities: [strangers] } as never }), onSite, NB);
   assert.notEqual(s.action.kind, "lootWreck");
+});
+
+test("on site: every idle tractor beam is put on its own far wreck in ONE tick, as a pilot clicks them", () => {
+  const onSite = { ...ready, site: NEAR_SITE, stage: "site", work: { looted: [] } };
+  const far = (itemID: number, x: number) => ({ itemID, kind: "wreck", ownerID: 90000001, corporationID: null, position: { x, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 } });
+  const t = salvager(step, obs({
+    myCharacterID: 90000001, tractorModuleIDs: [601, 602, 603], salvageModuleIDs: [], maxLockedTargets: 5, maxTargetRangeM: 30_000, lockedTargetIDs: [],
+    snapshot: { ship: { ...SHIP, moduleRanges: [601, 602, 603].map((moduleID) => ({ moduleID, rangeM: 40_000 })) }, entities: [far(4401, 8_000), far(4402, 9_000), far(4403, 10_000)] } as never,
+  }), onSite, NB);
+  assert.deepEqual(t.action, { kind: "salvageBatch", steps: [
+    { kind: "activate", moduleID: 601, targetID: 4401 }, { kind: "activate", moduleID: 602, targetID: 4402 }, { kind: "activate", moduleID: 603, targetID: 4403 }] });
 });
