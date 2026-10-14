@@ -827,6 +827,24 @@ export function ownerMatchesOf(answer: JsonValue): readonly OwnerMatch[] {
     .filter((owner) => owner.ownerID > 0);
 }
 
+/** The status bit of a mail the server made itself, as a list's welcome mail is (appConst.py 1776, mailStatusMaskAutomated). */
+export const MAIL_STATUS_AUTOMATED = 32;
+
+/** The most a welcome mail's body may be, as its editor holds it (appConst.py 1786, mailMaxTaggedBodySize). */
+export const MAIL_MAX_TAGGED_BODY = 10000;
+
+/** A mailing list's welcome mail (mailingListsMgr.GetWelcomeMail): its subject, and its body in the mail's markup. */
+export interface WelcomeMail {
+  readonly title: string;
+  readonly body: string;
+}
+
+/** GetWelcomeMail's answer, a list of it or of nothing (UpdateWelcome, evemailingListConfig.py 482 to 492): the first, or null. */
+export function welcomeMailOf(answer: JsonValue): WelcomeMail | null {
+  const first = itemsOf(answer)[0];
+  return first === undefined ? null : { title: toText(readKeyVal(first, "title")), body: toText(readKeyVal(first, "body")) };
+}
+
 /** A list off the wire, its items; anything else, none. */
 function itemsOf(value: JsonValue | undefined): readonly JsonValue[] {
   return Array.isArray(value) ? value : listItems(value);

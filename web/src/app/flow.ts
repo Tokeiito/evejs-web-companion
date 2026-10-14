@@ -65,6 +65,9 @@ import {
   mailingListMembersOf,
   type MailingListSettings,
   mailingListSettingsOf,
+  MAIL_STATUS_AUTOMATED,
+  type WelcomeMail,
+  welcomeMailOf,
   ownerMatchesOf,
   type OwnerMatch,
   mailboxAfterNotice,
@@ -1062,6 +1065,16 @@ export interface AppFlow {
   clearMailingListAccess(listID: number, ownerID: number): Promise<boolean>;
   /** The owners that are no NPC's whose names begin with the text, as the client's owner search asks for them. */
   lookupPlayerOwners(text: string): Promise<readonly OwnerMatch[]>;
+  /** A mailing list's welcome mail, asked as the Welcome Mail tab asks it: null where it has none. */
+  readMailingListWelcome(listID: number): Promise<WelcomeMail | null>;
+  /** A mailing list's welcome mail saved, and sent to every member where `toAll`, as the tab's Save does: true where it was taken. */
+  saveMailingListWelcome(listID: number, title: string, body: string, toAll: boolean): Promise<boolean>;
+  /** A mailing list's welcome mail cleared, as the tab's Save does with nothing written: true where it was taken. */
+  clearMailingListWelcome(listID: number): Promise<boolean>;
+  /** Whether the tab's "send to all" box is ticked for a list, as it was last left on this machine. */
+  welcomeToAll(listID: number): boolean;
+  /** The tab's "send to all" box kept for a list, on this machine. */
+  keepWelcomeToAll(listID: number, checked: boolean): void;
   /** Mark messages read, or not read, as the mail window's Mark as Read and Mark as Unread do. */
   markMail(messageIDs: readonly number[], read: boolean): Promise<void>;
   /** Move messages to the trash, as the mail window's Trash does. */
@@ -5064,8 +5077,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // named too, so a corp-wide message reads as "to <corp>" rather than a
     // number.
     const refs: NameRef[] = [];
+    // A list's own mail (its welcome mail) is named by the list, and its sender is asked for by no one (mailSvc.py
+    // 189 to 190, 206 to 207).
+    const automated = new Set(statuses.filter((status) => (status.statusMask & MAIL_STATUS_AUTOMATED) !== 0).map((status) => status.messageID));
     for (const header of messages) {
-      refs.push({ kind: "character", id: header.senderID });
+      if (!(automated.has(header.messageID) && header.senderID === header.toListID)) {
+        refs.push({ kind: "character", id: header.senderID });
+      }
       for (const recipientID of header.toCharacterIDs) {
         refs.push({ kind: "character", id: recipientID });
       }
@@ -5253,6 +5271,43 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   async function clearMailingListAccess(listID: number, ownerID: number): Promise<boolean> {
     return (await mailingListWrite("ClearEntityAccess", [listID, ownerID])) !== undefined;
+  }
+
+  // The Welcome Mail tab (evemailingListConfig.py 482 to 507; mailingListsSvc.py 182 to 193): GetWelcomeMail; Save's
+  // SendWelcomeMail (the box ticked) or SaveWelcomeMail, the subject and the mail; or ClearWelcomeMail.
+  async function readMailingListWelcome(listID: number): Promise<WelcomeMail | null> {
+    return welcomeMailOf(await mailingListRead("GetWelcomeMail", listID));
+  }
+
+  async function saveMailingListWelcome(listID: number, title: string, body: string, toAll: boolean): Promise<boolean> {
+    return (await mailingListWrite(toAll ? "SendWelcomeMail" : "SaveWelcomeMail", [listID, title, body])) !== undefined;
+  }
+
+  async function clearMailingListWelcome(listID: number): Promise<boolean> {
+    return (await mailingListWrite("ClearWelcomeMail", [listID])) !== undefined;
+  }
+
+  // The tab's "send to all" box, as the client keeps it: in the user's settings on its machine, by the list
+  // (evemailingListConfig.py 463, 476 to 480: settings.user.ui 'welcomeToAllCB_<listID>'). Kept in this browser, by
+  // the list.
+  function welcomeToAllKey(listID: number): string {
+    return `evejs.mail.welcomeToAllCB_${listID}`;
+  }
+
+  function welcomeToAll(listID: number): boolean {
+    try {
+      return settingsStorage?.getItem(welcomeToAllKey(listID)) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function keepWelcomeToAll(listID: number, checked: boolean): void {
+    try {
+      settingsStorage?.setItem(welcomeToAllKey(listID), checked ? "1" : "0");
+    } catch {
+      // Storage full or refused: the box lasts as long as the page.
+    }
   }
 
   // SearchOwners with hideNPC (searchOld.py 258 to 259): lookupSvc.LookupPCOwners(searchStr, exact), exact False as
@@ -15906,6 +15961,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     setMailingListAccess,
     clearMailingListAccess,
     lookupPlayerOwners,
+    readMailingListWelcome,
+    saveMailingListWelcome,
+    clearMailingListWelcome,
+    welcomeToAll,
+    keepWelcomeToAll,
     markMail,
     trashMail,
     restoreMail,

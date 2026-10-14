@@ -46,8 +46,9 @@
     MAILING_LIST_ALLOWED,
     MAILING_LIST_BLOCKED,
     type OwnerMatch,
+    MAIL_MAX_TAGGED_BODY,
   } from "../bridge/mail.ts";
-  import { MAIL_QUOTE_LABELS, mailBodyLines, mailQuoteMarkup } from "../bridge/mailMarkup.ts";
+  import { MAIL_QUOTE_LABELS, mailBodyLines, mailMarkupOfTyped, mailQuoteMarkup } from "../bridge/mailMarkup.ts";
   import { pyIntDictOrder } from "../bridge/pyDict.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { isSessionLost } from "../app/flow.ts";
@@ -659,6 +660,12 @@
     entityPick = null;
     accessNote = "";
     chosenAccess = new Set();
+    // The Welcome Mail panel, built as the window opens: its box as last left for the list (463), its fields empty.
+    welcomeLoaded = false;
+    welcomeSubject = "";
+    welcomeBody = "";
+    welcomeNote = "";
+    welcomeToAllChecked = flow.welcomeToAll(listID);
     void run(async () => {
       // The Access tab's two choices are built from the first two asks (378, 389) and are not built again.
       const first = await flow.readMailingListSettings(listID);
@@ -792,7 +799,7 @@
   }
 
   /** The window's tab shown (the client remembers its last; the page opens on Members). */
-  let manageTab = $state<"members" | "access">("members");
+  let manageTab = $state<"members" | "access" | "welcome">("members");
   /** The Access tab's two choices, as the window built them and as changed since. */
   let accessChoice = $state<number>(MAILING_LIST_BLOCKED);
   let roleChoice = $state<number>(MAILING_LIST_MEMBER_DEFAULT);
@@ -810,12 +817,86 @@
   const blockedRows = $derived(accessRows.filter((row) => row.access === MAILING_LIST_BLOCKED));
   const allowedRows = $derived(accessRows.filter((row) => row.access === MAILING_LIST_ALLOWED));
 
-  /** A tab chosen (Load, 522 to 530): Members asks the members again; Access asks nothing. */
-  function chooseManageTab(tab: "members" | "access"): void {
+  /**
+   * A tab chosen (Load, 522 to 530): Members asks the members again; Access asks nothing; Welcome Mail asks the
+   * welcome mail until one is had.
+   */
+  function chooseManageTab(tab: "members" | "access" | "welcome"): void {
     manageTab = tab;
+    const listID = managingList;
     if (tab === "members") {
       void run(updateMembers);
+    } else if (tab === "welcome" && !welcomeLoaded && listID !== null) {
+      void run(() => updateWelcome(listID));
     }
+  }
+
+  /** The Welcome Mail tab's words, by their labels (StartupWelcomePanel, 462 to 474). */
+  const WELCOME_WORDS = {
+    tab: "UI/EVEMail/MailingLists/WelcomeMailTab",
+    toAll: "UI/EVEMail/MailingLists/SendWelcomeMailToAllCheckbox",
+    subject: "UI/EVEMail/MailingLists/WelcomeMailSubject",
+    save: "UI/Common/Buttons/Save",
+  } as const;
+
+  /** Whether a welcome mail was had (the window's welcomeText), its subject and its mail as shown, the box, and what was said. */
+  let welcomeLoaded = $state(false);
+  let welcomeSubject = $state("");
+  let welcomeBody = $state("");
+  let welcomeToAllChecked = $state(false);
+  let welcomeNote = $state("");
+
+  /** UpdateWelcome (482 to 492): none, the fields emptied; one, its subject and its mail shown, and not asked again. */
+  async function updateWelcome(listID: number): Promise<void> {
+    const welcome = await flow.readMailingListWelcome(listID);
+    if (managingList !== listID) {
+      return;
+    }
+    if (welcome === null) {
+      welcomeSubject = "";
+      welcomeBody = "";
+      return;
+    }
+    welcomeLoaded = true;
+    welcomeSubject = welcome.title;
+    welcomeBody = mailBodyLines(welcome.body).map((line) => line.map((run) => run.text).join("")).join("\n");
+  }
+
+  /** OnCheckboxChange (476 to 480): the box kept for the list. */
+  function tickWelcomeToAll(checked: boolean): void {
+    welcomeToAllChecked = checked;
+    if (managingList !== null) {
+      flow.keepWelcomeToAll(managingList, checked);
+    }
+  }
+
+  /**
+   * SaveWelcomeMail (494 to 507): a subject and a mail both empty clear the welcome mail; a mail with no subject is
+   * refused (NoSubject); else it is saved, and sent to every member as it is when the box is ticked. Nothing is asked
+   * after.
+   */
+  function saveWelcome(): void {
+    const listID = managingList;
+    if (listID === null) {
+      return;
+    }
+    welcomeNote = "";
+    const subject = welcomeSubject;
+    const body = mailMarkupOfTyped(welcomeBody);
+    if (subject.length < 1 && body.length < 1) {
+      void run(async () => {
+        await flow.clearMailingListWelcome(listID);
+      });
+      return;
+    }
+    if (subject.length < 1) {
+      welcomeNote = filledWord("dialog:NoSubject/body", "You cannot send a mail without a subject.", {});
+      return;
+    }
+    const toAll = welcomeToAllChecked;
+    void run(async () => {
+      await flow.saveMailingListWelcome(listID, subject, body, toAll);
+    });
   }
 
   /** The settings asked again (UpdateAccessScrollData), its lists drawn afresh with nothing chosen. */
@@ -957,6 +1038,9 @@
       ...Object.values(ACCESS_WORDS),
       "dialog:PICKERRORNOTIFY/title",
       "dialog:PICKERRORNOTIFY/body",
+      ...Object.values(WELCOME_WORDS),
+      "dialog:NoSubject/title",
+      "dialog:NoSubject/body",
     ]);
     void run(async () => {
       await flow.loadMail();
@@ -1071,13 +1155,14 @@
       </section>
     {/if}
     {#if managingList !== null}
-      <!-- The list's management window (evemailingListConfig.py MaillistSetupWindow): its Members and Access tabs.
-           Its Welcome Mail tab is to come. -->
+      <!-- The list's management window (evemailingListConfig.py MaillistSetupWindow): its Members, Access and Welcome
+           Mail tabs. -->
       <section class="bulk mail-list-management">
         <h3>{filledWord(MANAGE_WORDS.caption, "Mailing list management: {mailinglistName}", { mailinglistName: managedList?.displayName ?? "" })}</h3>
         <p class="controls">
           <button type="button" class:active={manageTab === "members"} disabled={busy} onclick={() => chooseManageTab("members")}>{word(MANAGE_WORDS.membersTab, "Members")}</button>
           <button type="button" class:active={manageTab === "access"} disabled={busy} onclick={() => chooseManageTab("access")}>{word(ACCESS_WORDS.tab, "Access")}</button>
+          <button type="button" class:active={manageTab === "welcome"} disabled={busy} onclick={() => chooseManageTab("welcome")}>{word(WELCOME_WORDS.tab, "Welcome Mail")}</button>
           <button type="button" class="minor" onclick={() => (managingList = null)}>✕</button>
         </p>
         {#if manageTab === "members"}
@@ -1137,7 +1222,7 @@
           </label>
           <button type="button" disabled={busy || chosenMembers.size === 0} onclick={applyToMembers}>{word(MANAGE_WORDS.apply, "Apply")}</button>
         </p>
-        {:else}
+        {:else if manageTab === "access"}
           <!-- The Access tab (StartupAccessPanel, 370 to 425): who may join and as what, with Apply; a character,
                corporation or alliance blocked or allowed by a search; the blocked and the allowed; Remove Selected. -->
           <p class="controls">
@@ -1219,6 +1304,27 @@
           {@render accessList(word(ACCESS_WORDS.allowed, "Allowed"), allowedRows)}
           <p class="controls">
             <button type="button" disabled={busy} onclick={removeChosenAccess}>{word(ACCESS_WORDS.remove, "Remove Selected")}</button>
+          </p>
+        {:else}
+          <!-- The Welcome Mail tab (StartupWelcomePanel, 462 to 474): a subject, the mail, whether to send it to every
+               member when it is saved, and Save. -->
+          <p class="controls">
+            <input type="text" class="grow" aria-label={word(WELCOME_WORDS.subject, "Subject")} placeholder={word(WELCOME_WORDS.subject, "Subject")} maxlength={MAIL_MAX_TITLE} bind:value={welcomeSubject} />
+          </p>
+          <p class="controls">
+            <textarea class="grow" rows="8" maxlength={MAIL_MAX_TAGGED_BODY} bind:value={welcomeBody}></textarea>
+          </p>
+          <p class="controls">
+            <label>
+              <input type="checkbox" checked={welcomeToAllChecked} onchange={(event) => tickWelcomeToAll(event.currentTarget.checked)} />
+              {word(WELCOME_WORDS.toAll, "Send welcome mail to all members when it is saved.")}
+            </label>
+          </p>
+          {#if welcomeNote !== ""}
+            <p class="note">{welcomeNote}</p>
+          {/if}
+          <p class="controls">
+            <button type="button" disabled={busy} onclick={saveWelcome}>{word(WELCOME_WORDS.save, "Save")}</button>
           </p>
         {/if}
       </section>

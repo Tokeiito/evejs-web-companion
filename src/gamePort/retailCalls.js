@@ -681,6 +681,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // A mailing list's subscription access and default role set, and whom it lets in or keeps out, from its management
   // window's Access tab (evemailingListConfig.py 302 to 326, 453 to 457). The gateway's list has none of them.
   "mailingListsMgr.SetDefaultAccess", "mailingListsMgr.SetEntitiesAccess", "mailingListsMgr.ClearEntityAccess",
+  // A mailing list's welcome mail read, saved, saved and sent to every member, and cleared, from its management
+  // window's Welcome Mail tab (evemailingListConfig.py 482 to 507). The gateway's list has none of them.
+  "mailingListsMgr.GetWelcomeMail", "mailingListsMgr.SaveWelcomeMail", "mailingListsMgr.SendWelcomeMail", "mailingListsMgr.ClearWelcomeMail",
 ]);
 
 /**
@@ -1788,6 +1791,10 @@ const RETAIL_CALLS = Object.freeze({
   "mailingListsMgr.SetEntitiesAccess": reshaped("eve/client/script/ui/services/mail/mailingListsSvc.py:115", accessListed, "self.mailingListsMgr.SetEntitiesAccess(listID, accessByEntityID): the Access tab's Allow or Block, the one owner picked as {entityID: access} (SetEntityAccess, 110 to 111). In no recording."),
   "mailingListsMgr.ClearEntityAccess": same("eve/client/script/ui/services/mail/mailingListsSvc.py:119", "self.mailingListsMgr.ClearEntityAccess(listID, entityID): the Access tab's Remove Selected, one call for each chosen (evemailingListConfig.py 302 to 309). In no recording."),
   "lookupSvc.LookupPCOwners": same("eve/client/script/ui/util/searchOld.py:259", "sm.RemoteSvc('lookupSvc').LookupPCOwners(searchStr, exact): SearchOwners with hideNPC, from the mailing list window's Allow and Block, exact False; answered a list of owner rows. In no recording."),
+  "mailingListsMgr.GetWelcomeMail": same("eve/client/script/ui/services/mail/mailingListsSvc.py:183", "self.mailingListsMgr.GetWelcomeMail(listID): as the management window's Welcome Mail tab is shown, until one is had (evemailingListConfig.py Load 528 to 530, UpdateWelcome 482 to 492); answered a list of it, a KeyVal of title and body, or of nothing. In no recording."),
+  "mailingListsMgr.SaveWelcomeMail": same("eve/client/script/ui/services/mail/mailingListsSvc.py:186", "self.mailingListsMgr.SaveWelcomeMail(listID, title, body): the Welcome Mail tab's Save, the box not ticked; the body the editor's markup. In no recording."),
+  "mailingListsMgr.SendWelcomeMail": same("eve/client/script/ui/services/mail/mailingListsSvc.py:189", "self.mailingListsMgr.SendWelcomeMail(listID, title, body): the Welcome Mail tab's Save with its box ticked (SaveAndSendWelcomeMail); the body the editor's markup. In no recording."),
+  "mailingListsMgr.ClearWelcomeMail": same("eve/client/script/ui/services/mail/mailingListsSvc.py:192", "self.mailingListsMgr.ClearWelcomeMail(listID): the Welcome Mail tab's Save with no subject and no mail. In no recording."),
   "mailingListsMgr.GetJoinedLists": same("eve/client/script/ui/services/mail/mailingListsSvc.py:43", "self.mailingListsMgr.GetJoinedLists(), no arguments, as the mailing lists service starts, which it does as the mail window first draws its lists group; kept. Tranquility's recording of the mail window opened has it after GetLabels, answered {}."),
   "mailMgr.GetLabels": same(`${MAIL_SERVICES}/mailSvc.py:678`, "self.mailMgr.GetLabels(), no arguments; asked once as the mail window first draws its folders, and kept. Tranquility's recording of the mail window opened has it after SyncMail(None, 0), answered {}."),
   "mailMgr.GetMailHeaders": reshaped(`${MAIL_SERVICES}/mailSvc.py:193`, recipientsListed, "self.mailMgr.GetMailHeaders(toFetch.keys()): one list of the messages the sync gave a status of whose header the client does not hold. In no recording. The messages a list, as the client's are; the page's array goes as one."),
