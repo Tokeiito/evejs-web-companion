@@ -336,7 +336,7 @@ import {
 import { readScanFullState } from "../bridge/scanFullState.ts";
 import { applyFitting, fitModule as fitModuleCall, unfitModule as unfitModuleCall } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
-import { BAY_FLAGS, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, stackAll as stackAllCall, trashItems as trashItemsCall, type MovePlace } from "../bridge/inventoryWrites.ts";
+import { BAY_FLAGS, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, stackAll as stackAllCall, trashItems as trashItemsCall, type MovePlace } from "../bridge/inventoryWrites.ts";
 import { cancelOrder as cancelOrderCall } from "../bridge/marketOrderWrites.ts";
 import { doAgentAction, removeOfferFromJournal } from "../bridge/agentWrites.ts";
 import { createScannerWrites, type ScannerShip } from "../bridge/scannerWrites.ts";
@@ -2904,6 +2904,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return { inventory: shipID, liesIn: shipID };
     }
     throw new Error("That place's inventory is not the page's to name.");
+  }
+  /**
+   * inventoryAt, and the corporation's hangar besides: its inventory is the office's where the pilot is docked, and
+   * what lies in it lies in the office (bridge/inventoryWrites.ts, officeAt), asked of the office manager's read.
+   */
+  async function inventoryOfPlace(place: InventoryPlace): Promise<{ readonly inventory: number | "hangar"; readonly liesIn: number }> {
+    if (place.kind !== "corp") return inventoryAt(place);
+    const dockedAt = dockedNow();
+    if (dockedAt === null) throw new Error("The corporation's hangar is at hand only while docked.");
+    const officeID = await officeAt(bridgeAsk, dockedAt);
+    if (officeID === null) throw new Error("Your corporation has no office at this station.");
+    return { inventory: officeID, liesIn: officeID };
   }
 
   /**
@@ -14561,13 +14573,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // (bridge/inventoryWrites.ts), judged by the places' rows refreshed, the source's above all: a thing moved can
         // arrive under a new number. A bay is one the page knows the flag of (BAY_FLAGS).
         const pilotsOwn = (place: InventoryPlace): boolean => place.kind === "hangar" || place.kind === "cargo" ||
-          place.kind === "container" || (place.kind === "shipBay" && Object.hasOwn(BAY_FLAGS, place.bay));
+          place.kind === "container" || (place.kind === "shipBay" && Object.hasOwn(BAY_FLAGS, place.bay)) ||
+          place.kind === "corp";
         if (pilotsOwn(from) && pilotsOwn(to)) {
           const present = (rowsAt(from) ?? []).filter((row) => itemIDs.includes(row.itemID));
           if (present.length === 0) {
             throw new Error("Those items are no longer where the panel last saw them; refresh and try again.");
           }
-          await moveItemsCall(bridgeDo, inventoryAt(to).inventory, to as MovePlace, inventoryAt(from).liesIn, present, qty ?? null);
+          const [destination, source] = [await inventoryOfPlace(to), await inventoryOfPlace(from)];
+          await moveItemsCall(bridgeDo, destination.inventory, to as MovePlace, source.liesIn, present, qty ?? null);
           await refreshOpenPlaces();
           const sourceAfter = new Map((rowsAt(from) ?? []).map((row) => [row.itemID, row]));
           const left = (row: InventoryItemRow) => {
@@ -14593,39 +14607,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     async mergeStacks(sourceItemID, destinationItemID, place) {
       await runInventoryAction(async () => {
-        // The page's own call (bridge/inventoryWrites.ts) where it holds the place's rows and knows its inventory; the
-        // corporation's hangar, whose rows do not say where they lie, is still the route's.
-        if (place.kind !== "corp") {
-          const rows = rowsAt(place);
-          const source = rows?.find((row) => row.itemID === sourceItemID);
-          const destination = rows?.find((row) => row.itemID === destinationItemID);
-          if (!source || !destination) {
-            throw new Error("Those stacks are no longer where the panel last saw them; refresh and try again.");
-          }
-          const where = inventoryAt(place);
-          await mergeStacksCall(bridgeDo, where.inventory, where.liesIn, sourceItemID, destinationItemID, source.quantity);
-          await refreshOpenPlaces();
-          const after = rowsAt(place)?.find((row) => row.itemID === destinationItemID);
-          const merged = after ? after.quantity - destination.quantity : 0;
-          return {
-            applied: merged > 0,
-            declinedSilently: merged <= 0,
-            message: merged > 0 ? `Merged ${merged} into the stack.` : "The server did not merge those stacks, and gave no reason.",
-          };
+        // The page's own call (bridge/inventoryWrites.ts), of two stacks the panel shows in one place; in the
+        // corporation's hangar on the office's inventory, its things lying in the office. (A route did it until
+        // 2026-10-14, POST /api/bridge/inventory/merge.)
+        const rows = rowsAt(place);
+        const source = rows?.find((row) => row.itemID === sourceItemID);
+        const destination = rows?.find((row) => row.itemID === destinationItemID);
+        if (!source || !destination) {
+          throw new Error("Those stacks are no longer where the panel last saw them; refresh and try again.");
         }
-        const result = await api.mergeStacks(
-          sourceItemID,
-          destinationItemID,
-          place,
-          null,
-          callOptions,
-        );
+        const where = await inventoryOfPlace(place);
+        await mergeStacksCall(bridgeDo, where.inventory, where.liesIn, sourceItemID, destinationItemID, source.quantity);
+        await refreshOpenPlaces();
+        const after = rowsAt(place)?.find((row) => row.itemID === destinationItemID);
+        const merged = after ? after.quantity - destination.quantity : 0;
         return {
-          applied: result.applied,
-          declinedSilently: result.declinedSilently,
-          message: result.applied
-            ? `Merged ${result.merged} into the stack.`
-            : "The server did not merge those stacks, and gave no reason.",
+          applied: merged > 0,
+          declinedSilently: merged <= 0,
+          message: merged > 0 ? `Merged ${merged} into the stack.` : "The server did not merge those stacks, and gave no reason.",
         };
       });
     },

@@ -1885,8 +1885,16 @@ async function inventoryCall(held, webSessionID, of, method, args, kwargs) {
   if (of === "hangar") {
     await assertDockedInventoryAccess(held, webSessionID);
     spec = hangarBindSpec(held);
+  } else if (Number(of) === Number(held.activeShipID)) {
+    spec = cargoBindSpec(held, held.activeShipID);
   } else {
-    spec = Number(of) === Number(held.activeShipID) ? cargoBindSpec(held, held.activeShipID) : containerBindSpec(Number(of));
+    // The corporation's office where the pilot is docked is bound as the corporation hangar's read binds it, so that
+    // the two are one bind (the client's invCache keeps one inventory a thing) and a write to it is held to the office
+    // service a structure has (boundCall). Anything else is bound as a container is.
+    const here = inventoryLocationID(held);
+    const offices = here ? await readCorpOffices(held, webSessionID).catch(() => []) : [];
+    const office = offices.find((each) => each.officeID === Number(of) && each.stationID === here);
+    spec = office ? corpOfficeBindSpec(office.officeID) : containerBindSpec(Number(of));
   }
   if (held.structureID) spec = { ...spec, expectedDockedLocationID: inventoryLocationID(held) };
   return boundCall(held, webSessionID, spec, method, args, kwargs);
@@ -4026,73 +4034,10 @@ app.post("/api/bridge/inventory/transfer", requireAuth, async (req, res, next) =
   }
 });
 
-// Re-merge one stack into another of the same type (retail's drag-onto-stack).
-// MultiMerge takes (ops, sourceContainerID) with each op [source, dest, qty].
-app.post("/api/bridge/inventory/merge", requireAuth, async (req, res, next) => {
-  const held = requireHeldBridgeSession(req, res);
-  if (!held) {
-    return;
-  }
-  const body = req.body || {};
-  const sourceItemID = Number(body.sourceItemID) || 0;
-  const destinationItemID = Number(body.destinationItemID) || 0;
-  if (sourceItemID <= 0 || destinationItemID <= 0 || sourceItemID === destinationItemID) {
-    res.status(400).json({
-      ok: false,
-      error: "INVALID_MERGE",
-      message: "Two different stacks are required to merge.",
-    });
-    return;
-  }
-  try {
-    await readHeldFlight(held, req.webSessionID);
-    const place = await resolvePlace(held, req.webSessionID, body.place);
-    const rowsBefore = await listPlace(held, req.webSessionID, place);
-    const source = rowsBefore.find((row) => row.itemID === sourceItemID);
-    const destination = rowsBefore.find((row) => row.itemID === destinationItemID);
-    if (!source || !destination) {
-      res.status(409).json({
-        ok: false,
-        error: "ITEMS_NOT_AT_SOURCE",
-        message: "Those stacks are no longer where the panel last saw them; refresh and try again.",
-      });
-      return;
-    }
-    const requested = Number(body.qty);
-    const quantity =
-      Number.isSafeInteger(requested) && requested > 0 && requested <= source.quantity
-        ? requested
-        : source.quantity;
-    const containerID =
-      place.locationID !== null && place.locationID !== undefined
-        ? place.locationID
-        : source.locationID;
-    const outcome = await boundCall(
-      held,
-      req.webSessionID,
-      place.spec,
-      "MultiMerge",
-      [[[sourceItemID, destinationItemID, quantity]], containerID],
-      null,
-    );
-    // Re-read: the destination should have GROWN by the merged quantity.
-    const rowsAfter = await listPlace(held, req.webSessionID, place);
-    const destinationAfter = rowsAfter.find((row) => row.itemID === destinationItemID);
-    const applied = Boolean(destinationAfter) && destinationAfter.quantity > destination.quantity;
-    res.json({
-      ok: true,
-      applied,
-      merged: applied ? destinationAfter.quantity - destination.quantity : 0,
-      declinedSilently: !applied,
-      notifications: outcome.notifications,
-    });
-  } catch (error) {
-    if (sendPlaceError(res, error)) {
-      return;
-    }
-    next(error);
-  }
-});
+// (A stack is merged into another by the page's own call since 2026-10-14, as the client's drop on a stack makes
+// it: MultiMerge([(source, destination, qty)], where the source lies) on the inventory the target lies in, the
+// corporation's hangar's the office's (bridgeCallPolicy.js, PAGE_OBJECT_CALLS: "inventory";
+// web/src/bridge/inventoryWrites.ts). The route, POST /api/bridge/inventory/merge, is gone.)
 
 // (Items are destroyed by the page's own call since 2026-10-13, as the client destroys them: TrashItems on the
 // inventory manager of where the pilot is, through the generic call (bridgeCallPolicy.js, PAGE_OBJECT_CALLS:

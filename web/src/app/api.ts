@@ -607,35 +607,9 @@ export async function transferItems(
   };
 }
 
-export interface MergeResult {
-  readonly applied: boolean;
-  readonly merged: number;
-  readonly declinedSilently: boolean;
-}
-
-/** Re-merge one stack into another of the same type (drag-onto-stack). */
-export async function mergeStacks(
-  sourceItemID: number,
-  destinationItemID: number,
-  place: InventoryPlace,
-  qty: number | null = null,
-  options: ApiOptions = {},
-): Promise<MergeResult> {
-  const body: Record<string, JsonValue> = {
-    sourceItemID,
-    destinationItemID,
-    place: place as unknown as JsonValue,
-  };
-  if (qty !== null) {
-    body.qty = qty;
-  }
-  const data = await postJson("/api/bridge/inventory/merge", body, options);
-  return {
-    applied: data.applied === true,
-    merged: Number(data.merged) || 0,
-    declinedSilently: data.declinedSilently === true,
-  };
-}
+// A stack is merged into another by the page itself, with the client's own call on the inventory the target lies in
+// (bridge/inventoryWrites.ts, mergeStacks): it left its route (POST /api/bridge/inventory/merge) on 2026-10-14, the
+// corporation's hangar the last of its places.
 
 // Items are destroyed by the page itself, with the client's own call on the inventory manager of where the pilot
 // is (bridge/inventoryWrites.ts, trashItems): it left its route (POST /api/bridge/inventory/trash) on 2026-10-13.

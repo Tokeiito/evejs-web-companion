@@ -104,13 +104,46 @@ export type MovePlace =
   | { readonly kind: "hangar" }
   | { readonly kind: "cargo" }
   | { readonly kind: "container" }
-  | { readonly kind: "shipBay"; readonly bay: string };
+  | { readonly kind: "shipBay"; readonly bay: string }
+  | { readonly kind: "corp"; readonly division: number };
 
-/** The flag a place's window adds with: flagHangar, flagCargo, a bay's own, and none for a container. */
+/**
+ * A corporation hangar's division's flag: flagCorpSAG1 to flagCorpSAG7, 115 to 121 (inventorycommon/const.py 151 to
+ * 157; corpFlagByDivision, 238 to 246, where the client counts its divisions from nought and the page from one).
+ * The window adds with it (invControllers.BaseCorpContainer: self.locationFlag = corpFlagByDivision.get(divisionID)).
+ */
+export function corpDivisionFlag(division: number): number {
+  if (!Number.isSafeInteger(division) || division < 1 || division > 7) throw new Error("That is no division of a corporation's hangar.");
+  return 114 + division;
+}
+
+/**
+ * The corporation's office where the pilot is docked, as the client's office manager finds it
+ * (officeManager.GetCorpOfficeAtLocation, 99 to 111: the office of GetMyCorporationsOffices() whose stationID is
+ * where the session is docked). Its officeID is the inventory the corporation's hangar is
+ * (invControllers.StationCorpHangar, 945 to 951: invCache.GetInventoryFromId(officeID)), and the place its things lie
+ * in (BaseCorpContainer.IsItemHere: item.locationID == self.itemID). Null where the corporation has no office there.
+ */
+export async function officeAt(ask: Ask, dockedAt: number): Promise<number | null> {
+  const answer = await ask("officeManager", "GetMyCorporationsOffices", []);
+  const list = answer !== null && typeof answer === "object" && !Array.isArray(answer) && Array.isArray((answer as { list?: unknown }).list)
+    ? (answer as { list: JsonValue[] }).list
+    : [];
+  const number = (value: unknown): number => (typeof value === "number" ? value
+    : value !== null && typeof value === "object" && "value" in (value as object) ? Number((value as { value: unknown }).value) : NaN);
+  for (const row of list) {
+    const fields = row !== null && typeof row === "object" && !Array.isArray(row) ? (row as { fields?: Record<string, unknown> }).fields : undefined;
+    if (fields && number(fields.stationID) === dockedAt && whole(number(fields.officeID))) return number(fields.officeID);
+  }
+  return null;
+}
+
+/** The flag a place's window adds with: flagHangar, flagCargo, a bay's own, a division's own, and none for a container. */
 export function moveFlagOf(place: MovePlace): number | null {
   if (place.kind === "hangar") return 4;
   if (place.kind === "cargo") return 5;
   if (place.kind === "container") return null;
+  if (place.kind === "corp") return corpDivisionFlag(place.division);
   const flag = BAY_FLAGS[place.bay];
   if (flag === undefined) throw new Error("That bay is not one the page knows.");
   return flag;
