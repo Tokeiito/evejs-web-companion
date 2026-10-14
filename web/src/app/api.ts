@@ -2290,19 +2290,12 @@ export async function getHealth(options: ApiOptions = {}): Promise<HealthResult>
   }
 }
 
-/** Undock from the station (ship.Undock; the session enters space). */
-/**
- * Undock: ship.Undock(shipID, ignoreContraband).
- *
- * With `ignoreContraband` false, a ship carrying what the local law forbids is
- * refused with CONTRABAND_WARNING and stays docked. The retail client asks its
- * player then (OK / Cancel) and undocks again with the flag set
- * (eve/client/script/ui/station/base.py, _DoUndockAttempt). A caller with no
- * player to ask sends true, as the client does once that warning is suppressed.
- */
-export async function undock(options: ApiOptions = {}, ignoreContraband = false): Promise<FlightStepResult> {
-  return readFlightStep(await postJson("/api/bridge/flight/undock", { ignoreContraband }, options));
-}
+// The pilot undocks by the page's own call (bridge/placeChanges.ts): ship.Undock(shipID, ignoreContraband) through
+// the generic call, under the BFF's keeping of the session change, since 2026-10-14; its route
+// (POST /api/bridge/flight/undock) is gone. With `ignoreContraband` false, a ship carrying what the local law
+// forbids is refused with CONTRABAND_WARNING and stays docked. The retail client asks its player then (OK /
+// Cancel) and undocks again with the flag set (eve/client/script/ui/station/base.py, _DoUndockAttempt). A caller
+// with no player to ask sends true, as the client does once that warning is suppressed.
 
 /** Whether an undock was refused only to warn about contraband aboard. */
 export function isContrabandWarning(error: unknown): error is BridgeCallError {

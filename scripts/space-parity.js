@@ -1,5 +1,8 @@
 "use strict";
 
+/** The pilot's undock as the page makes it (web/src/bridge/placeChanges.ts): ship.Undock through the generic call. */
+const undockCall = (shipID) => ({ service: "ship", method: "Undock", args: [shipID, true], kwargs: { onlineModules: [] }, pilot: true, confirm: true });
+
 // The space snapshot of one grid, read on each pilot transport and set side by side.
 //
 //   node scripts/space-parity.js <gatewayBffUrl> <gamePortBffUrl> <account> <characterID> [reportPath.json]
@@ -71,7 +74,9 @@ async function fly(base, account, characterID, { waitMs = 5000, log = console.lo
     if (!before.docked || !before.stationID) throw new Error("The pilot is not docked in a station; dock it first.");
     result.stationID = before.stationID;
     log(`  ${base}: undocking from ${before.stationID}`);
-    result.undock = (await must("POST", "/api/bridge/flight/undock", {})).flight;
+    // The page's own undock (web/src/bridge/placeChanges.ts), answered once the ship is in space, and the flight after.
+    await must("POST", "/api/bridge/call", undockCall(before.shipID));
+    result.undock = (await must("GET", "/api/bridge/flight/status")).flight;
     await sleep(waitMs);
     result.space = (await must("GET", "/api/bridge/space/snapshot")).space;
     result.flight = (await must("GET", "/api/bridge/flight/status")).flight;
@@ -111,7 +116,11 @@ async function hold(base, account, characterID) {
     before,
     /** Any other route of the BFF, as this pilot: the payload of a 200, or it throws. */
     ask: must,
-    undock: () => must("POST", "/api/bridge/flight/undock", {}),
+    // The page's own undock (web/src/bridge/placeChanges.ts), answered once the ship is in space, and the flight after.
+    undock: async () => {
+      await must("POST", "/api/bridge/call", undockCall(before.shipID));
+      return must("GET", "/api/bridge/flight/status");
+    },
     snapshot: async () => (await must("GET", "/api/bridge/space/snapshot")).space,
     async dock(stationID) {
       for (let tries = 0; tries < 40; tries += 1) {

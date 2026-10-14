@@ -7,7 +7,7 @@
 // The pilot starts docked. On each BFF in turn it is taken through the same
 // trip, with the calls the browser's autopilot makes and nothing else:
 //
-//   undock                                   POST /api/bridge/flight/undock
+//   undock                                   POST /api/bridge/call ship.Undock, as the page undocks
 //   warp to the gate, to 0                   POST /api/bridge/flight/warp {destinationID, minRange: 0}
 //   wait to be out of warp                   GET  /api/bridge/flight/status, once a second
 //   jump                                     POST /api/bridge/flight/jump {fromGateID}

@@ -78,6 +78,7 @@ const {
   pageNamesTheObject,
   pickSafeBrowserSessionFields,
   swapsThePilotsShip,
+  placeChangeOf,
 } = require("./bridgeCallPolicy");
 const {
   adoptObservedShip,
@@ -987,8 +988,10 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
   }
   // An order to the ship was a flight route's, and those are held back while the pilot's lost drones are looked
   // for (heldBackForDroneRecovery, below): every write of the page's own on beyonce was one of them, and the stop,
-  // which that gate lets through, is CmdStop.
-  if (write && body.service === "beyonce" && body.method !== "CmdStop" && heldBackForDroneRecovery(req, res)) {
+  // which that gate lets through, is CmdStop. So was every change of place the page makes (the undock, a flight
+  // route until 2026-10-14).
+  const ordersTheShip = body.service === "beyonce" && body.method !== "CmdStop";
+  if (write && (ordersTheShip || placeChangeOf(body.service, body.method) !== null) && heldBackForDroneRecovery(req, res)) {
     return;
   }
   // A call the client makes on an object of the service's for a thing it names (its Moniker(service, what)) says
@@ -1076,6 +1079,15 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
       notifications: [...outcome.notifications, ...after.notifications],
       ...pilotClock(bridgeSessions.get(req.webSessionID) || null),
     }), body.kwargs ?? null);
+    return;
+  }
+  // A write that takes the pilot to another place is made under the BFF's keeping of the session change, as the
+  // client's session manager makes it and as its route made it (bridgeCallPolicy.js, PAGE_PLACE_CHANGE_CALLS): it
+  // is answered as any call here is, once the pilot is usable in its new place.
+  const placeChange = placeChangeOf(body.service, body.method);
+  if (placeChange !== null) {
+    await dispatchPlaceChangeWrite(req, res, next, placeChange, body.service, body.method,
+      Array.isArray(body.args) ? body.args : [], body.kwargs ?? null);
     return;
   }
   const clientSessionFields = pickSafeBrowserSessionFields(body.session);
@@ -7052,6 +7064,75 @@ async function dispatchShipSwapWrite(req, res, next, service, method, args, targ
       } else if (held.transition.phase !== "failed") {
         markTransitionFailed(held, error && error.message);
       }
+    }
+    next(error);
+  }
+}
+
+/**
+ * Dispatch a write of the page's that takes the pilot to another place (bridgeCallPolicy.js,
+ * PAGE_PLACE_CHANGE_CALLS), under the keeping its route kept it under, which is the client's session manager's
+ * (sessionMgr.PerformSessionChange): the pilot's flight read for where it is, the change claimed once retail's
+ * timer has run (acquireRouteTransition), the call made once, and the answer given once the pilot is usable in its
+ * new place (awaitRouteTransition). A timeout stays latched, so that nothing repeats the write. Answered as the
+ * generic call answers.
+ *
+ *   undock   from a station into space. Refused for a pilot already in space, and for a ship that is not the one
+ *            the pilot is in: the client undocks its session's own ship (undockingSvc.py 121 to 135). A refusal for
+ *            contraband is CONTRABAND_WARNING, in the words of the client's own dialog where the BFF has them, as
+ *            its route answered it.
+ */
+async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, args, kwargs) {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    const shipID = Number(before.flight.shipID) || Number(held.activeShipID) || 0;
+    let expected = null;
+    if (kind === "undock") {
+      if (before.flight.inSpace === true) {
+        res.status(409).json({ ok: false, error: "ALREADY_IN_SPACE", message: "The ship is already in space." });
+        return;
+      }
+      if (shipID <= 0 || Number(args[0]) !== shipID) {
+        res.status(400).json({ ok: false, error: "INVALID_SHIP", message: "A pilot undocks in the ship it is in." });
+        return;
+      }
+      expected = { shipID, toSolarSystemID: Number(before.flight.solarSystemID) || null };
+    } else {
+      throw new Error(`No keeping of a ${kind} is known.`);
+    }
+    if (!await acquireRouteTransition(res, held, kind, expected)) {
+      return;
+    }
+    const outcome = await heldTopLevelCall(held, req.webSessionID, service, method, args, kwargs);
+    markTransitionAccepted(held);
+    const after = await awaitRouteTransition(held, req.webSessionID, kind, expected);
+    if (!after.ok) {
+      sendTransitionTimeout(res, after, outcome.notifications);
+      return;
+    }
+    res.json({
+      ok: true,
+      service,
+      method,
+      result: outcome.result ?? null,
+      notifications: [...outcome.notifications, ...after.notifications],
+      ...pilotClock(held),
+    });
+  } catch (error) {
+    if (held.transition && held.transition.kind === kind) {
+      if (held.transition.phase === "requested") {
+        cancelHeldTransition(held);
+      } else if (held.transition.phase !== "failed") {
+        markTransitionFailed(held, error && error.message);
+      }
+    }
+    if (kind === "undock" && isContrabandWarning(error)) {
+      res.status(409).json({ ok: false, error: "CONTRABAND_WARNING", message: contrabandWarningWords(error) });
+      return;
     }
     next(error);
   }
@@ -17838,71 +17919,11 @@ function contrabandWarningWords(error) {
   return `Your ship is carrying contraband${name === null ? "" : ` (${name})`}. Undock anyway?`;
 }
 
-// Undock: ship.Undock(shipID, ignoreContraband, onlineModules=[]) — a top-level
-// call on the docked session (Handle_Undock resolves the ship + attaches the
-// session to space). onlineModules is a kwarg (never positional).
-//
-// `ignoreContraband` in the body is the retail call's second argument. Without
-// it a ship carrying contraband is refused with CONTRABAND_WARNING and stays
-// docked; the caller asks its user and sends it again with the flag set.
-app.post("/api/bridge/flight/undock", requireAuth, async (req, res, next) => {
-  const held = requireHeldBridgeSession(req, res);
-  if (!held) {
-    return;
-  }
-  try {
-    const before = await readHeldFlight(held, req.webSessionID);
-    if (before.flight.inSpace === true) {
-      res.status(409).json({
-        ok: false,
-        error: "ALREADY_IN_SPACE",
-        message: "The ship is already in space.",
-      });
-      return;
-    }
-    const shipID = Number(before.flight.shipID) || Number(held.activeShipID) || 0;
-    const expected = {
-      shipID,
-      toSolarSystemID: Number(before.flight.solarSystemID) || null,
-    };
-    if (!await acquireRouteTransition(res, held, "undock", expected)) {
-      return;
-    }
-    const outcome = await heldTopLevelCall(
-      held,
-      req.webSessionID,
-      "ship",
-      "Undock",
-      [shipID, req.body ? req.body.ignoreContraband === true : false],
-      { onlineModules: [] },
-    );
-    markTransitionAccepted(held);
-    const after = await awaitRouteTransition(held, req.webSessionID, "undock", expected);
-    if (!after.ok) {
-      sendTransitionTimeout(res, after, outcome.notifications);
-      return;
-    }
-    res.json({
-      ok: true,
-      flight: { ...after.flight, transition: after.transition },
-      transition: after.transition,
-      notifications: [...outcome.notifications, ...after.notifications],
-    });
-  } catch (error) {
-    if (held.transition && held.transition.kind === "undock") {
-      if (held.transition.phase === "requested") {
-        cancelHeldTransition(held);
-      } else if (held.transition.phase !== "failed") {
-        markTransitionFailed(held, error && error.message);
-      }
-    }
-    if (isContrabandWarning(error)) {
-      res.status(409).json({ ok: false, error: "CONTRABAND_WARNING", message: contrabandWarningWords(error) });
-      return;
-    }
-    next(error);
-  }
-});
+// (The pilot undocks by the page's own call since 2026-10-14: ship.Undock(shipID, ignoreContraband,
+// onlineModules=...) through the generic call, under the BFF's keeping of the session change, as the client's
+// session manager makes it (bridgeCallPolicy.js, PAGE_PLACE_CHANGE_CALLS; dispatchPlaceChangeWrite, above;
+// web/src/bridge/placeChanges.ts). A refusal for contraband is answered as the route answered it. The route,
+// POST /api/bridge/flight/undock, is gone.)
 
 // Warp to a chosen gate/celestial through the bound park.
 //

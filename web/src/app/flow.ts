@@ -376,6 +376,7 @@ import { BOOKMARK_EXPIRY, bookmarkLocation as bookmarkLocationCall } from "../br
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
 import { reconnectToDrones as reconnectToDronesCall, salvageWithDrones, scoopDrones as scoopDronesCall } from "../bridge/boundEntityWrites.ts";
 import { alignTo as alignToCall, approach as approachCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
+import { undock as undockCall } from "../bridge/placeChanges.ts";
 import { boardCorvette as boardCorvetteCall, leaveShip as leaveShipCall } from "../bridge/shipWrites.ts";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
 import { runSlashCommand } from "../bridge/gmWrites.ts";
@@ -7493,7 +7494,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         }
       },
       undock: async () => {
-        await api.undock(callOptions, true);
+        await orderedStep((flightNow) => undockCall(bridgeDo, flightNow, true));
       },
       warp: async (destinationID, byMenu) => {
         // A pilot's own Dock or Jump: the menu's warp at nought, as the client's
@@ -8807,7 +8808,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // only call this loop makes that deliberately re-enters danger, which
           // is why `recoverAndReturn` does all its checking above it.
           case "undock":
-            await api.undock(callOptions, true);
+            await orderedStep((flightNow) => undockCall(bridgeDo, flightNow, true));
             return;
           // ⚠ NO FAR-SIDE GATE, AND THAT IS THE POINT. The server resolves the
           // destination from the gate we are sitting on (`sourceGate.destinationID`);
@@ -9052,7 +9053,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         return state;
       },
       undock: async () => {
-        await api.undock(callOptions, true);
+        await orderedStep((flightNow) => undockCall(bridgeDo, flightNow, true));
       },
       // The mining bot's own warp is the menu's at nought (retail's
       // `WarpToItem(warpRange=0)`), not the autopilot's: it is a pilot's warp to
@@ -13048,7 +13049,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           case "wait":
             return;
           case "undock":
-            await api.undock(callOptions, true);
+            await orderedStep((flightNow) => undockCall(bridgeDo, flightNow, true));
             return;
           case "warp":
             await warpToThing(action.targetID, MENU_WARP_RANGE_M);
@@ -15032,8 +15033,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // with the contraband warning armed; if the server answers with the
       // warning, ask, and on OK undock again ignoring it. On Cancel the ship
       // stays docked and nothing is reported as having failed.
+      // The page's own call (bridge/placeChanges.ts), under the BFF's keeping of the session change.
       requireAutomationReady();
-      let first: Promise<FlightStepResult> | null = api.undock(callOptions, false);
+      let first: Promise<FlightStepResult> | null = orderedStep((flightNow) => undockCall(bridgeDo, flightNow, false));
       try {
         await first;
       } catch (error) {
@@ -15046,7 +15048,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         }
         // Any other refusal is reported by runFlightStep below, from the same promise.
       }
-      await runFlightStep("Undock", () => first ?? api.undock(callOptions, true));
+      await runFlightStep("Undock", () => first ?? orderedStep((flightNow) => undockCall(bridgeDo, flightNow, true)));
     },
 
     async warpTo(destinationID, minRange = null) {

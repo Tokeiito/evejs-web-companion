@@ -516,7 +516,7 @@ function isBridgeWritePair(service, method) {
  *                                    and seven more off the order's row). Its handler loads the order for the
  *                                    session's own character, and refuses another's, as the cancel's does.
  */
-const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.Invite", "fleetObjectHandler.RejectInvite", "beyonce.BookmarkLocation", "dogmaIM.AddTarget", "dogmaIM.RemoveTarget", "dogmaIM.CancelAddTarget", "ship.ScoopDrone", "industryManager.CompleteJob", "industryManager.CancelJob", "beyonce.CmdWarpToStuff", "beyonce.CmdWarpToStuffAutopilot", "agentMgr.WarpToLocation", "dogmaIM.LaunchProbes", "scanMgr.RequestScans", "scanMgr.RecoverProbes", "scanMgr.ReconnectToLostProbes", "dogmaIM.SetModuleOnline", "dogmaIM.TakeModuleOffline", "agentMgr.DoAction", "agentMgr.RemoveOfferFromJournal", "entity.CmdReconnectToDrones", "marketProxy.CancelCharOrder", "marketProxy.PlaceBuyOrder", "marketProxy.PlaceMultiSellOrder", "marketProxy.ModifyCharOrder", "invbroker.Add", "invbroker.MultiAdd", "invbroker.ImportExportWithPlanet", "invbroker.MultiMerge", "invbroker.TrashItems", "invbroker.FitFitting", "invbroker.StackAll"]);
+const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.Invite", "fleetObjectHandler.RejectInvite", "beyonce.BookmarkLocation", "dogmaIM.AddTarget", "dogmaIM.RemoveTarget", "dogmaIM.CancelAddTarget", "ship.ScoopDrone", "industryManager.CompleteJob", "industryManager.CancelJob", "beyonce.CmdWarpToStuff", "beyonce.CmdWarpToStuffAutopilot", "agentMgr.WarpToLocation", "dogmaIM.LaunchProbes", "scanMgr.RequestScans", "scanMgr.RecoverProbes", "scanMgr.ReconnectToLostProbes", "dogmaIM.SetModuleOnline", "dogmaIM.TakeModuleOffline", "agentMgr.DoAction", "agentMgr.RemoveOfferFromJournal", "entity.CmdReconnectToDrones", "marketProxy.CancelCharOrder", "marketProxy.PlaceBuyOrder", "marketProxy.PlaceMultiSellOrder", "marketProxy.ModifyCharOrder", "ship.Undock", "invbroker.Add", "invbroker.MultiAdd", "invbroker.ImportExportWithPlanet", "invbroker.MultiMerge", "invbroker.TrashItems", "invbroker.FitFitting", "invbroker.StackAll"]);
 const pageWritePairKeySet = new Set(PAGE_WRITE_PAIR_KEYS);
 for (const pair of PAGE_WRITE_PAIR_KEYS) {
   if (!bridgeWritePairKeySet.has(pair)) throw new Error(`${pair} is among the page's writes and is no write.`);
@@ -545,6 +545,27 @@ for (const pair of PAGE_SHIP_SWAP_CALLS) {
 /** Whether this write of the page's puts the pilot in another ship. */
 function swapsThePilotsShip(service, method) {
   return typeof service === "string" && typeof method === "string" && PAGE_SHIP_SWAP_CALLS.has(`${service}.${method}`);
+}
+
+/**
+ * The page's own writes that take the pilot to another place, each by the kind of session change it is. The client
+ * makes each through its session manager (sessionMgr.PerformSessionChange): not while another change is under way,
+ * nor before the last one's timer has run, and the session is another one after it. That keeping is the client's
+ * network layer's, which for a pilot of the page's is the BFF: so such a write is made under the BFF's keeping of
+ * the change, as its route made it (src/server.js, dispatchPlaceChangeWrite): the change claimed, the call made
+ * once, and answered once the pilot is usable in its new place; a timeout latched, so that nothing repeats it.
+ *
+ *   ship.Undock   ui/station/base.py _DoUndockAttempt (488 to 521): the session from a station into space.
+ */
+const PAGE_PLACE_CHANGE_CALLS = Object.freeze(new Map([["ship.Undock", "undock"]]));
+for (const pair of PAGE_PLACE_CHANGE_CALLS.keys()) {
+  if (!pageWritePairKeySet.has(pair)) throw new Error(`${pair} is among the page's changes of place and is none of its writes.`);
+}
+
+/** The kind of session change this write of the page's is ("undock"), or null for one that changes no place. */
+function placeChangeOf(service, method) {
+  if (typeof service !== "string" || typeof method !== "string") return null;
+  return PAGE_PLACE_CHANGE_CALLS.get(`${service}.${method}`) ?? null;
 }
 
 /**
@@ -791,6 +812,7 @@ module.exports = {
   FEATURE_WRITE_PAIR_KEYS,
   PAGE_FOLLOW_CALLS,
   PAGE_OBJECT_CALLS,
+  PAGE_PLACE_CHANGE_CALLS,
   PAGE_SHIP_SWAP_CALLS,
   PAGE_WRITE_PAIR_KEYS,
   PLUMBING_SWEEP_WRITE_METHODS,
@@ -804,5 +826,6 @@ module.exports = {
   pageMayNameTheObject,
   pageNamesTheObject,
   pickSafeBrowserSessionFields,
+  placeChangeOf,
   swapsThePilotsShip,
 };
