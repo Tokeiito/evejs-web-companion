@@ -192,6 +192,44 @@ export interface ClearedTrace {
   readonly hold: boolean;
 }
 
+/**
+ * A hold that turns on this ship's health, or a move made under the return mark:
+ * one code per branch of the rejoin's health gate and of the flee's safe-spot
+ * hold (fleetCompanionLoop.ts).
+ */
+export type HealthCode =
+  | "rejoin-unread" // rejoin held: no tank layer could be read
+  | "rejoin-below-floor" // rejoin held: the tank is below the flee floor
+  | "rejoin-under-mark" // rejoining while still under the return mark (an idle rejoin never waits for it)
+  | "flee-unread" // flee's safe-spot hold: no tank layer could be read
+  | "flee-recovering" // flee's safe-spot hold: under the mark, and the tank rose inside the stall window
+  | "flee-stalled-floor" // stalled, and still below the floor: staying out
+  | "flee-stalled-dock" // stalled: off to a station on grid to pay for repairs
+  | "flee-stalled-return"; // stalled: the hold is given up and the pilot goes back as it is
+
+/**
+ * The numbers a health hold decided on. Seen live 2026-10-14: a pilot read "not
+ * well enough yet" for 52 minutes and no log line said how well it was, or what
+ * "well enough" meant.
+ */
+export interface HealthTrace {
+  readonly code: HealthCode;
+  /** The tank reading the rung used (worst counted layer), 0-1; null when unread. */
+  readonly tank: number | null;
+  /** The layer that reading came from, the one that gates; null when unread. */
+  readonly layer: "shield" | "armor" | "hull" | null;
+  readonly floor: number;
+  /** The return mark (floor + margin, capped at 1). */
+  readonly mark: number;
+  /**
+   * A self-repairer for `layer`: none fitted, fitted and idle, cycling, or fitted
+   * with the active-module read missing.
+   */
+  readonly repairer: "none" | "fitted" | "running" | "unread";
+  /** Flee hold only: how long since the tank last rose, ms. */
+  readonly stalledMs?: number;
+}
+
 export interface CompanionTrace {
   readonly combat?: CombatTrace;
   readonly guns?: GunsTrace;
@@ -199,6 +237,7 @@ export interface CompanionTrace {
   readonly ammo?: AmmoTrace;
   readonly util?: UtilityTrace;
   readonly cleared?: ClearedTrace;
+  readonly health?: HealthTrace;
 }
 
 /**
@@ -235,6 +274,10 @@ export function coarseTraceKey(trace: CompanionTrace | null | undefined): string
   }
   if (trace.cleared !== undefined) {
     parts.push(`x:${trace.cleared.by}`);
+  }
+  // The code and the repairer's state only: the tank moves every tick.
+  if (trace.health !== undefined) {
+    parts.push(`h:${trace.health.code}/${trace.health.repairer}`);
   }
   return parts.join(";");
 }
