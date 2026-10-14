@@ -3757,6 +3757,13 @@ Take these defaults, and list each under "For the operator" in the log so they c
   `inventorycommon/const.pyc`), before the page holds it.
 - **A bay's own moves in the tab**: a hangar row's "▾" offers "Move to
   <bay>"; a bay's row moves to the hangar by its own button.
+- **The corporation's hangar in the tab**: "Pilots", Test Three's "Bring
+  online" (its corporation has an office at Jita), then the Inventory &
+  Ship window's "Corp hangar" and "Division N"; a hangar row's "▾" offers
+  "Move to Division N".
+- **One thing, one bind**: a page's own call on something a BFF read binds
+  too is bound by the read's own key; count `GetInventoryFromId(<it>` in
+  the recording, once a session.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

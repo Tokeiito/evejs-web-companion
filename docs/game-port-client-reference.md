@@ -1671,6 +1671,17 @@ flag=self.locationFlag)`, or `flagNone` where the container has no flag. The fla
 the pilot's own moves between the hangar, the hold and a container since `0fe34b9e`
 (`web/src/bridge/inventoryWrites.ts`, `moveItems`).
 
+**The corporation's hangar, 2026-10-14** (`environment/invControllers.py`, `ui/services/corporation/officeManager.py`).
+The office is `officeManager.GetCorpOfficeAtLocation()` (99 to 111), the office of `GetMyCorporationsOffices()`
+whose `stationID` is where the session is docked; `StationCorpHangar` takes its `officeID` (949 to 952), and its
+inventory is `invCache.GetInventoryFromId(officeID)` (`BaseCorpContainer._GetInvCacheContainer`, 856 to 860).
+What lies in it lies in that number with the division's flag (`IsItemHere`, 867 to 868); the flag is
+`corpFlagByDivision.get(divisionID)` (`SetDivisionID`, 848 to 850), `flagCorpSAG1` to `flagCorpSAG7`, 115 to 121
+in the compiled `inventorycommon/const.py`. A move into a division is the office's `Add` or `MultiAdd` with that
+flag, a move out the destination's own with the office as the source, a merge the office's `MultiMerge`. EveJS
+publishes the office's `itemID` as its `officeID` and lists as the office's what lies in any of its three numbers.
+The page makes the calls since `a2132b95` (`web/src/bridge/inventoryWrites.ts`, `officeAt`, `corpDivisionFlag`).
+
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
 (`ACTIONS`, by `eventTypeID`) and a level it reckons from `absolutePoints` and the skill's rank
