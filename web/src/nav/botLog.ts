@@ -197,6 +197,8 @@ export function describeAction(action: ScriptAction): string {
       return `add bookmark folder ${action.folderID}`;
     case "setFolderActive":
       return `switch bookmark folder ${action.folderID} ${action.active ? "on" : "off"}`;
+    case "salvageBatch":
+      return `salvage work: ${action.steps.map((s) => s.kind === "lock" || s.kind === "unlock" ? `${s.kind} ${s.targetID}` : s.kind === "activate" ? `module ${s.moduleID} on ${s.targetID}` : `module ${s.moduleID} off`).join(", ")}`;
     case "moveBookmarks":
       return `move bookmark ${action.bookmarkIDs.join(",")} from folder ${action.fromFolderID} to ${action.toFolderID}`;
     case "warpLaunch":
