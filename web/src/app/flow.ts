@@ -490,6 +490,11 @@ export interface AppFlowOptions {
    */
   readonly agentTalkAgainWaitMs?: number;
   /**
+   * How long a scoop waits for its drones to be read as out of space no more (SCOOP_LEAVE_WAIT_MS). Tests
+   * shorten it.
+   */
+  readonly scoopLeaveWaitMs?: number;
+  /**
    * How long after a read of a fleet whose composition lacks a member the fleet is read again
    * (FLEET_COMPOSITION_REREAD_MS). Tests shorten it.
    */
@@ -1725,6 +1730,9 @@ const GODMA_SESSION_NAMES: ReadonlySet<string> = new Set(["stationid", "solarsys
 /** dogma attributes: a module's hit points, and the hit points a character mends in a minute with nanite paste. */
 const ATTRIBUTE_HP = 9;
 const ATTRIBUTE_MODULE_REPAIR_RATE = 1267;
+/** How long a scoop waits for its drones to go out of space, and how often it looks: the launch's own two (src/server.js). */
+const SCOOP_LEAVE_WAIT_MS = 3000;
+const SCOOP_LEAVE_STEP_MS = 250;
 /** One of an item's attributes as godma was primed with it, where it is a number. */
 function dogmaNumber(item: DogmaItemInfo | null, attributeID: number): number | null {
   const value = item?.attributes.find((attribute) => attribute.attributeID === attributeID)?.value;
@@ -6680,7 +6688,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // server says of each drone it would not scoop is the call's own answer.
       async () => {
         const result = await scoopDronesCall(bridgeDo, droneIDs);
-        const read = await api.getDrones(callOptions);
+        let read = await api.getDrones(callOptions);
+        // A scooped drone goes out of space with the ballpark's update that follows the call's answer, as a
+        // launched one comes with it (the launch's route waits for that: DRONE_ARRIVAL_WAIT_MS, src/server.js).
+        // This read is one round trip behind the call, which was enough each time it was measured on the game
+        // port (2026-10-11) and which nothing promises. So while a drone the server refused nothing of is still
+        // read as out, the drones are read again, a quarter of a second apart, three seconds at most; a drone
+        // the server gave its reason for is not waited for.
+        const refused = new Set(decodeDroneOrderRefusals(result).map((refusal) => refusal.droneID));
+        const awaited = droneIDs.filter((droneID) => !refused.has(droneID));
+        const stillOut = (inSpace: JsonValue): boolean =>
+          (decodeDronesInSpace(inSpace) ?? []).some((drone) => awaited.includes(drone.itemID));
+        const waitMs = options.scoopLeaveWaitMs ?? SCOOP_LEAVE_WAIT_MS;
+        for (let waited = 0; waited < waitMs && stillOut(read.inSpace); waited += SCOOP_LEAVE_STEP_MS) {
+          await new Promise((resolve) => setTimeout(resolve, SCOOP_LEAVE_STEP_MS));
+          read = await api.getDrones(callOptions);
+        }
         return { inSpace: read.inSpace, launched: null, result };
       },
       (inSpace, _launched, reports) => {

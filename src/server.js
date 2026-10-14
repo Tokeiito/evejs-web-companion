@@ -21957,10 +21957,22 @@ app.post("/api/bridge/drone-recovery/ready", requireAuth, async (req, res, next)
  * carries per-drone error tuples otherwise. The snapshot is the authority, and
  * it is the same authority in all four cases.
  */
-async function answerWithDronesInSpace(res, held, extra, notifications) {
+async function answerWithDronesInSpace(res, held, extra, notifications, unsettled = null) {
   let after = { drones: null, notifications: [] };
   try {
     after = await readDronesInSpace(held);
+    // A mutation that takes a ball out of the pilot's park says so (`unsettled`: whether what was read still has
+    // what the call should have taken). The park is then read again, the launch's wait and step, until it has not.
+    if (unsettled) {
+      const sleep = typeof options.transitionSleep === "function"
+        ? options.transitionSleep
+        : (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      for (let waited = 0; waited < DRONE_ARRIVAL_WAIT_MS && unsettled(after.drones); waited += DRONE_ARRIVAL_STEP_MS) {
+        await sleep(DRONE_ARRIVAL_STEP_MS);
+        const again = await readDronesInSpace(held);
+        after = { drones: again.drones, notifications: [...after.notifications, ...again.notifications] };
+      }
+    }
   } catch {
     // The re-read failed; `inSpace: null` says so rather than claiming an
     // outcome the server never confirmed.
@@ -22010,11 +22022,23 @@ app.post("/api/bridge/drones/scoop", requireAuth, async (req, res, next) => {
     // scoop by whether the drone LEFT space. Answering without `inSpace` left
     // it judging `null`, which reads as "the scoop was accepted, but space
     // could not be re-read" for every scoop, successful ones included.
+    //
+    // On the game port a scooped drone goes out of the pilot's own park with the ballpark's update that follows
+    // the call's answer, as a launched one comes with it: read at once, this route's answer still listed the
+    // drone it had just scooped (seen live 2026-10-11; through the gateway it was gone). So the park is given a
+    // moment, as the launch gives it, while a drone the server refused nothing of is still out. A drone it gave
+    // its reason for is not waited for.
+    const refusedEntries = outcome.result && Array.isArray(outcome.result.entries) ? outcome.result.entries : [];
+    const refusedIDs = new Set(refusedEntries.map((entry) => (Array.isArray(entry) ? Number(entry[0]) : NaN)));
+    const awaited = droneIDs.filter((droneID) => !refusedIDs.has(droneID));
     await answerWithDronesInSpace(
       res,
       held,
       { applied: true, droneIDs, result: outcome.result ?? null },
       outcome.notifications,
+      Boolean(gamePortPilots) && isGamePortHandle(held.bridgeSessionID)
+        ? (drones) => drones !== null && drones.some((drone) => awaited.includes(Number(drone.itemID)))
+        : null,
     );
   } catch (error) {
     next(error);
