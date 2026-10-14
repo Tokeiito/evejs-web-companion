@@ -20,6 +20,26 @@
 // THE ONLINE MODULES ARE NOT THE PAGE'S TO NAME: godma's list is the client's, and the game port names it
 // (src/gamePort/retailCalls.js, undocking). The page sends none, as its route sent none; the server leaves the
 // modules as they are where none are named (shipService._syncRequestedOnlineModulesForUndock).
+//
+// DOCKED AT A STATION. The menu's dock (menusvc.DockStation, 2991 to 2997, through GetCloseAndTryCommand, which flies
+// the ship close first) and the flight's dock-or-jump (movementFunctions.DockOrJumpOrActivateGate, 346 on, for a
+// thing of the station group) both come to movementFunctions.RealDock (503 to 518):
+//
+//   sm.GetService('sessionMgr').PerformSessionChange('dock', bp.CmdDock, itemID, session.shipid)
+//
+// bp the ballpark's own object. The same keeping as the undock's, the BFF's; but a dock the server takes and does
+// not carry out (the ship not yet close enough, still landing from a warp) answers nothing all the same, so the BFF
+// waits only a short while for the ship to be docked, and answers either way: the page reads the flight after, and
+// the autopilot docks again where the ship is still in space.
+//
+// ⚠ A STRUCTURE IS DOCKED AT ANOTHER WAY: structureDocking.Dock(structureID, session.shipid), asked of the service
+// by its name once the ship is close (structureDocking.py 64 to 80). The page does not make that call yet, and
+// docks at a structure by its route (src/server.js, POST /api/bridge/flight/dock), as before.
+
+/** idCheckers.IsStation (eve/common/script/sys/idCheckers.py 29 to 30): minStation to maxStation, inventorycommon/const.py 59 and 62. */
+export function isStation(itemID: number): boolean {
+  return Number.isSafeInteger(itemID) && itemID >= 60_000_000 && itemID <= 63_999_999;
+}
 
 import type { Ask } from "./ask.ts";
 import type { FlightNow } from "./movementWrites.ts";
@@ -36,4 +56,19 @@ export async function undock(act: Ask, flightNow: () => Promise<FlightNow>, igno
   if (now.inSpace) throw new Error("The ship is already in space.");
   if (now.shipID === null) throw new Error("There is no ship to undock in.");
   await act("ship", "Undock", [now.shipID, ignoreContraband], { onlineModules: [] });
+}
+
+/**
+ * Docks the pilot's ship at a station. Fails as the call fails, and before it for what is no station, and for a
+ * ship not in space or none known.
+ *
+ * ⚠ THE CALL COMING BACK IS NOT ALWAYS A DOCK: the BFF answers a dock the server took and did not carry out once its
+ * short wait is over, and the flight read after says which it was.
+ */
+export async function dock(act: Ask, flightNow: () => Promise<FlightNow>, stationID: number): Promise<void> {
+  if (!isStation(stationID)) throw new Error("That is no station.");
+  const now = await flightNow();
+  if (!now.inSpace) throw new Error("The ship is not in space; undock first.");
+  if (now.shipID === null) throw new Error("There is no ship to dock.");
+  await act("beyonce", "CmdDock", [stationID, now.shipID]);
 }

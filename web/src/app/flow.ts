@@ -376,7 +376,7 @@ import { BOOKMARK_EXPIRY, bookmarkLocation as bookmarkLocationCall } from "../br
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
 import { reconnectToDrones as reconnectToDronesCall, salvageWithDrones, scoopDrones as scoopDronesCall } from "../bridge/boundEntityWrites.ts";
 import { alignTo as alignToCall, approach as approachCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
-import { undock as undockCall } from "../bridge/placeChanges.ts";
+import { dock as dockCall, isStation, undock as undockCall } from "../bridge/placeChanges.ts";
 import { boardCorvette as boardCorvetteCall, leaveShip as leaveShipCall } from "../bridge/shipWrites.ts";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
 import { runSlashCommand } from "../bridge/gmWrites.ts";
@@ -4608,6 +4608,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * reading after fails the one before stands, as it did in the route, since the order was taken; a session lost
    * is a session lost.
    */
+  /**
+   * Docks: at a station by the page's own call (bridge/placeChanges.ts, the client's RealDock), between two reads of
+   * the flight; at a structure by its route still, the client's own call there being the structure's docking
+   * service's, which the page does not make yet.
+   */
+  function dockStep(stationID: number): Promise<FlightStepResult> {
+    return isStation(stationID) ? orderedStep((flightNow) => dockCall(bridgeDo, flightNow, stationID)) : api.dock(stationID, callOptions);
+  }
+
   async function orderedStep(order: (flightNow: () => Promise<FlightNow>) => Promise<void>): Promise<FlightStepResult> {
     const before = await api.getFlightStatus(callOptions);
     await order(async () => decodeFlightStatus(before.flight));
@@ -7524,7 +7533,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         await api.jump(fromGateID, toGateID, callOptions);
       },
       dock: async (stationID) => {
-        await api.dock(stationID, callOptions);
+        await dockStep(stationID);
       },
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       now: () => Date.now(),
@@ -8652,7 +8661,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             await approachShip(action.targetID, action.range ?? null);
             return;
           case "dock":
-            await api.dock(action.stationID, callOptions);
+            await dockStep(action.stationID);
             return;
           case "leaveFleet":
             await leaveFleetCall(bridgeDo);
@@ -9069,7 +9078,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         await approachShip(destinationID, null);
       },
       dock: async (stationID) => {
-        await api.dock(stationID, callOptions);
+        await dockStep(stationID);
       },
       lockTarget: async (targetID) => {
         await lockTargetCall(bridgeDo, targetID, null);
@@ -13087,7 +13096,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             await tagFleetTarget(bridgeDo, action.targetID, action.tag);
             return;
           case "dock":
-            await api.dock(action.stationID, callOptions);
+            await dockStep(action.stationID);
             return;
           case "jump":
             await api.jump(action.fromGateID, action.toGateID, callOptions);
@@ -15134,7 +15143,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async dock(stationID) {
-      await runFlightStep("Dock", () => api.dock(stationID, callOptions));
+      await runFlightStep("Dock", () => dockStep(stationID));
       // Docking lands a beat later than the command returns; keep reading until
       // the store sees "docked" so the UI switches back to the station shell.
       await settleUntilDocked();

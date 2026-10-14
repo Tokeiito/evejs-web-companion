@@ -2326,7 +2326,11 @@ export async function jump(
   );
 }
 
-/** Dock at the destination station (beyonce.CmdDock). */
+/**
+ * Dock at a structure, by its route (beyonce.CmdDock on the park). A station is docked at by the page's own call
+ * since 2026-10-14 (bridge/placeChanges.ts, dock); the client docks at a structure by the structure's docking service
+ * (structureDocking.Dock), which the page does not make yet, and the flow asks this for a structure alone.
+ */
 export async function dock(
   stationID: number,
   options: ApiOptions = {},

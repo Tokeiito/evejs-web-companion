@@ -7081,6 +7081,12 @@ async function dispatchShipSwapWrite(req, res, next, service, method, args, targ
  *            the pilot is in: the client undocks its session's own ship (undockingSvc.py 121 to 135). A refusal for
  *            contraband is CONTRABAND_WARNING, in the words of the client's own dialog where the BFF has them, as
  *            its route answered it.
+ *   dock     from space into a station. Refused for a pilot not in space, for what is no station (a structure is
+ *            docked at by its own service, structureDocking.py 64 to 80, and by the dock route still), and for a
+ *            ship that is not the pilot's (movementFunctions.RealDock: CmdDock(itemID, session.shipid)). A dock the
+ *            server takes and does not carry out answers nothing all the same, so the keeping waits only the
+ *            route's short while (DOCK_SILENT_DECLINE_PROBE_MS), never latches, and answers either way: the change
+ *            released where the ship is still in space, which the page reads after.
  */
 async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, args, kwargs) {
   const held = requireHeldBridgeSession(req, res);
@@ -7091,6 +7097,7 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
     const before = await readHeldFlight(held, req.webSessionID);
     const shipID = Number(before.flight.shipID) || Number(held.activeShipID) || 0;
     let expected = null;
+    let waiting = {};
     if (kind === "undock") {
       if (before.flight.inSpace === true) {
         res.status(409).json({ ok: false, error: "ALREADY_IN_SPACE", message: "The ship is already in space." });
@@ -7101,15 +7108,53 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
         return;
       }
       expected = { shipID, toSolarSystemID: Number(before.flight.solarSystemID) || null };
+    } else if (kind === "dock") {
+      if (before.flight.inSpace !== true) {
+        res.status(409).json({ ok: false, error: "NOT_IN_SPACE", message: "The ship is not in space; undock first." });
+        return;
+      }
+      const stationID = Number(args[0]);
+      if (!isClientStationID(stationID)) {
+        res.status(400).json({ ok: false, error: "INVALID_STATION", message: "A station is docked at by its number." });
+        return;
+      }
+      if (shipID <= 0 || Number(args[1]) !== shipID) {
+        res.status(400).json({ ok: false, error: "INVALID_SHIP", message: "A pilot docks the ship it is in." });
+        return;
+      }
+      expected = { stationID, shipID };
+      waiting = {
+        timeoutMs: Number(options.dockProbeTimeoutMs) ||
+          Math.min(DOCK_SILENT_DECLINE_PROBE_MS, Number(options.transitionReadyTimeoutMs) || DOCK_SILENT_DECLINE_PROBE_MS),
+        latchOnTimeout: false,
+      };
     } else {
       throw new Error(`No keeping of a ${kind} is known.`);
     }
     if (!await acquireRouteTransition(res, held, kind, expected)) {
       return;
     }
-    const outcome = await heldTopLevelCall(held, req.webSessionID, service, method, args, kwargs);
+    // (By the name the transport knows it by, as the generic call asks any write: bridgeCallPolicy.js, gatewaysNameFor.)
+    const named = gamePortPilots && isGamePortHandle(held.bridgeSessionID) ? method : gatewaysNameFor(service, method);
+    const outcome = await heldTopLevelCall(held, req.webSessionID, service, named, args, kwargs);
     markTransitionAccepted(held);
-    const after = await awaitRouteTransition(held, req.webSessionID, kind, expected);
+    const after = await awaitRouteTransition(held, req.webSessionID, kind, expected, waiting);
+    if (!after.ok && kind === "dock") {
+      // The server's silent decline, as the route took it: released (unless another change took its place) and
+      // answered, the page reading the flight after.
+      if (after.code !== "TRANSITION_SUPERSEDED") {
+        cancelHeldTransition(held);
+      }
+      res.json({
+        ok: true,
+        service,
+        method,
+        result: outcome.result ?? null,
+        notifications: [...outcome.notifications, ...(after.notifications || [])],
+        ...pilotClock(held),
+      });
+      return;
+    }
     if (!after.ok) {
       sendTransitionTimeout(res, after, outcome.notifications);
       return;
@@ -7124,7 +7169,8 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
     });
   } catch (error) {
     if (held.transition && held.transition.kind === kind) {
-      if (held.transition.phase === "requested") {
+      // (A dock never latches: it is safe to ask again, and an error releases it, as its route had it.)
+      if (held.transition.phase === "requested" || kind === "dock") {
         cancelHeldTransition(held);
       } else if (held.transition.phase !== "failed") {
         markTransitionFailed(held, error && error.message);
@@ -18394,6 +18440,11 @@ app.post("/api/bridge/flight/jump-through-structure", requireAuth, async (req, r
 // ship is out of docking range the handler refuses with a DockingApproach user
 // error (surfaced as the reason); on the live server the sim completes the
 // pending dock, so the page polls flight status to see the docked state.
+//
+// (Since 2026-10-14 the page docks at a station by its own call, under the same keeping
+// (dispatchPlaceChangeWrite, "dock"; web/src/bridge/placeChanges.ts), and asks this route for a
+// structure alone: the client's own call there is structureDocking.Dock(structureID, shipid)
+// (structureDocking.py 64 to 80), which the page does not make yet.)
 app.post("/api/bridge/flight/dock", requireAuth, async (req, res, next) => {
   const held = requireHeldBridgeSession(req, res);
   if (!held) {
@@ -23097,6 +23148,11 @@ const structureNameCache = new Map();
 
 function isPlayerStructureID(id) {
   return Number.isSafeInteger(id) && id >= STRUCTURE_ID_FLOOR;
+}
+
+/** idCheckers.IsStation (eve/common/script/sys/idCheckers.py 29 to 30): minStation to maxStation, inventorycommon/const.py 59 and 62. */
+function isClientStationID(id) {
+  return Number.isSafeInteger(id) && id >= 60000000 && id <= 63999999;
 }
 
 function readCachedStructureName(structureID, now) {
