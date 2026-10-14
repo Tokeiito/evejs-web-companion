@@ -1635,6 +1635,21 @@ session.shipid)`, asked of the service by its name once the ship is close (64 to
 from too far with `DockingApproach`. The page docks at a station since `6de7ef5c` (`web/src/bridge/placeChanges.ts`),
 under the BFF's keeping of the change; a structure by its route still.
 
+**A module switched on and off, 2026-10-14** (`eve/client/script/ui/inflight/shipModuleButton/shipmodulebutton.py`,
+`eve/client/script/environment/godma.py`). The button's click (`Click`, from 933) finds the module's default effect
+(`GetDefaultEffect`, 908: the type's default effect that is not `online`, of the activation or the target
+category), gives it a target only where it is aimed at one (1318), and calls the effect's `Activate(targetID,
+repeats)` (1348); the count is the button's (`GetRepeatCount`, 112 to 122, set at the button's making, 178: 1000
+for a module that always repeats or has a repeatable effect, the pilot's own setting where one is kept, else 0; a
+ctrl-click 1000, 929; 0 for an effect that cannot repeat, 1338). The effect calls godma's `Activate(itemID,
+effectName, target, repeat)` (985, then 2062), and a stop `Deactivate(itemID, effectName)` (996, then 2101): the
+effect is always named. EveJS takes the module's first activatable effect where none is named, or one the type does
+not carry (`space/runtime/scene/modules.js` 1213 to 1222), keeps the count as given and tells the ship's watchers
+it, a negative count kept as none (`space/runtime/moduleCycleSchedule.js`, `normalizeEffectRepeatCount`). The page
+makes both since `e773e6dd` (`web/src/bridge/dogmaWrites.ts`), the effect the type's default from the game's data
+(`GET /api/types/default-effects`) where the caller gives the type, until stopped as 1000, and reads the module's
+own state after (`GET /api/bridge/modules/:itemID/state`).
+
 **A stargate jump, 2026-10-14** (`stargate/client/gateJumpSvc.py`, `eve/client/script/parklife/autopilot.py`). The
 menu's `StargateJump` (`menusvc.py` 3025 on, flying the ship close first) and the autopilot (358) come to
 `PerformSessionChange(..., remoteBallpark.CmdStargateJump, stargateID, beaconID, session.shipid)` (`JumpThroughGate`,

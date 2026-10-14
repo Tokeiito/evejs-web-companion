@@ -4468,6 +4468,11 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A module's button on the page's rack wants the pointer, not a click.** From a script:
   dispatch `pointerdown` then `pointerup` (PointerEvent, bubbling) on
   `button.module-slot.filled`; its `title` says whether the module is active.
+- **A number the page sends in the client's place is the client's number, read at its caller.**
+  The page sent -1 for a module to run until stopped, as its route had; the client's button
+  sends 1000 (`shipmodulebutton.py`, `GetRepeatCount`), and the server tells the ship's
+  watchers the count it was given. A count, a flag or a sentinel of our own is a guess until
+  the client's caller is read.
 - **A value copied from an old note of ours is a guess until it is measured again.** The
   compressor's range in a July note was 375,000 m; the server gave 66,000 m.
 - A test's "watched to fail" can be had after the fact, once the work is committed: put the source file back to the commit
