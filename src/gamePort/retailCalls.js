@@ -669,6 +669,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // A pilot's employment record and character transfers, which the client's History panel's employment tab asks
   // (infosvc.py 2842). The gateway's list has nothing of the corporation service's.
   "corporationSvc.GetEmployementRecordAndCharacterTransfers",
+  // A folder of the mail window marked read, trashed, and the trash restored (evemail.py StaticMenu). The gateway's
+  // list has the mail manager's others, not these.
+  "mailMgr.MarkAsReadByLabel", "mailMgr.MoveToTrashByLabel", "mailMgr.MoveAllFromTrash",
 ]);
 
 /**
@@ -1756,6 +1759,12 @@ const RETAIL_CALLS = Object.freeze({
   "mailMgr.MoveToTrash": reshaped(`${MAIL_SERVICES}/mailSvc.py:294`, recipientsListed, "self.mailMgr.MoveToTrash(messageIDs): a list; the mail window's Trash. In no recording. The messages a list, as the client's are; the page's array goes as one."),
   "mailMgr.MoveFromTrash": reshaped(`${MAIL_SERVICES}/mailSvc.py:305`, recipientsListed, "self.mailMgr.MoveFromTrash(messageIDs): a list; the mail window's Restore. In no recording. The messages a list, as the client's are; the page's array goes as one."),
   "mailMgr.DeleteMail": reshaped(`${MAIL_SERVICES}/mailSvc.py:480`, recipientsListed, "self.mailMgr.DeleteMail(messageIDs): a list; the mail window's Delete of a trashed message. In no recording. The messages a list, as the client's are; the page's array goes as one."),
+  "mailMgr.MarkAllAsRead": same(`${MAIL_SERVICES}/mailSvc.py:417`, "self.mailMgr.MarkAllAsRead(), no arguments; the mail window's Mark All as Read of All Mails, asked to be sure of. In no recording."),
+  "mailMgr.MarkAsReadByLabel": same(`${MAIL_SERVICES}/mailSvc.py:428`, "self.mailMgr.MarkAsReadByLabel(labelID); the mail window's Mark All as Read of a folder, asked to be sure of. In no recording."),
+  "mailMgr.MoveAllToTrash": same(`${MAIL_SERVICES}/mailSvc.py:352`, "self.mailMgr.MoveAllToTrash(), no arguments; the mail window's Trash All of All Mails, asked to be sure of. In no recording."),
+  "mailMgr.MoveToTrashByLabel": same(`${MAIL_SERVICES}/mailSvc.py:362`, "self.mailMgr.MoveToTrashByLabel(labelID); the mail window's Trash All of a folder, asked to be sure of. In no recording."),
+  "mailMgr.MoveAllFromTrash": same(`${MAIL_SERVICES}/mailSvc.py:450`, "self.mailMgr.MoveAllFromTrash(), no arguments; the trash's Restore All, asked to be sure of. In no recording."),
+  "mailMgr.EmptyTrash": same(`${MAIL_SERVICES}/mailSvc.py:460`, "self.mailMgr.EmptyTrash(), no arguments; the trash's Empty Trash, asked to be sure of. In no recording."),
   "mailMgr.MarkAsRead": reshaped(`${MAIL_SERVICES}/mailSvc.py:339`, recipientsListed, "self.mailMgr.MarkAsRead(messageIDs): a list; asked by GetBody for a body kept of a message not read (497 to 498). In no recording. The messages a list, as the client's are; the page's array goes as one."),
   "mailMgr.SyncMail": same(`${MAIL_SERVICES}/mailSvc.py:157`, "RemoteSvc('mailMgr').SyncMail(firstID, lastID): the lowest and highest message IDs the client holds, (None, 0) when it holds none"),
   "mailMgr.SendMail": reshaped(`${MAIL_SERVICES}/mailSvc.py:965`, recipientsListed,

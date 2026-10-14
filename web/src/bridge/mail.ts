@@ -534,6 +534,35 @@ export function mailboxDeleted(mailbox: DecodedMailbox, messageIDs: readonly num
   };
 }
 
+/** The messages whose statuses the test picks. */
+function messagesWhere(mailbox: DecodedMailbox, pick: (status: MailStatusRow) => boolean): number[] {
+  return mailbox.statuses.filter(pick).map((status) => status.messageID);
+}
+
+/**
+ * MarkAllAsRead and MarkAsReadByLabel (mailSvc.py 415 to 435): every message not trashed, or every one with the
+ * label (null for all), read, and the read bit in its mask.
+ */
+export function mailboxAllRead(mailbox: DecodedMailbox, labelID: number | null): DecodedMailbox {
+  return mailboxMarkedRead(mailbox, messagesWhere(mailbox, (status) => !isTrashed(status) && (labelID === null || (status.labelMask & labelID) === labelID)));
+}
+
+/** MoveAllToTrash and MoveToTrashByLabel (mailSvc.py 350 to 368): every message, or every one with the label, trashed. */
+export function mailboxAllTrashed(mailbox: DecodedMailbox, labelID: number | null): DecodedMailbox {
+  return mailboxTrashed(mailbox, messagesWhere(mailbox, (status) => labelID === null || (status.labelMask & labelID) === labelID));
+}
+
+/** MoveAllFromTrash (mailSvc.py 448 to 456): every message not trashed, the trashed bit taken off its mask. */
+export function mailboxAllRestored(mailbox: DecodedMailbox): DecodedMailbox {
+  return withStatuses(mailbox, messagesWhere(mailbox, () => true), (status) => ({ ...status, trashed: false, statusMask: status.statusMask & (ALL_LABELS - MAIL_STATUS_TRASHED) }));
+}
+
+/** EmptyTrash (mailSvc.py 458 to 476): the trashed messages gone, and which they were. */
+export function mailboxTrashEmptied(mailbox: DecodedMailbox): { readonly mailbox: DecodedMailbox; readonly gone: readonly number[] } {
+  const gone = messagesWhere(mailbox, isTrashed);
+  return { mailbox: mailboxDeleted(mailbox, gone), gone };
+}
+
 /** A list off the wire, its items; anything else, none. */
 function itemsOf(value: JsonValue | undefined): readonly JsonValue[] {
   return Array.isArray(value) ? value : listItems(value);

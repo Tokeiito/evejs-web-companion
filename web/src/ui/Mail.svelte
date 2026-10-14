@@ -31,7 +31,7 @@
     unreadByLabel,
   } from "../bridge/mail.ts";
   import { MAIL_QUOTE_LABELS, mailBodyLines, mailQuoteMarkup } from "../bridge/mailMarkup.ts";
-  import { formatTemplate } from "../bridge/clientWords.ts";
+  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { isSessionLost } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -99,6 +99,55 @@
   const unreadCounts = $derived(unreadByLabel($mail));
   const ownLabels = $derived([...($mail.labels ?? [])].sort((left, right) => left.name.toLowerCase().localeCompare(right.name.toLowerCase())));
   const shownMessages = $derived(mailsInFolder($mail, folder));
+
+  /** The words of a folder's writes, by their labels (evemail.py StaticMenu), and the dialogs' answers. */
+  const FOLDER_WRITE_WORDS = {
+    markAll: "UI/Mail/MarkAllAsReadWithFolderName",
+    trashAll: "UI/Mail/TrashAllWithFolderName",
+    all: "UI/Common/All",
+    restoreAll: "UI/Mail/RestoreAll",
+    emptyTrash: "UI/Mail/EmptyTrash",
+    yes: "UI/Common/Buttons/Yes",
+    no: "UI/Common/Buttons/No",
+  } as const;
+  /** The client's dialogs to be sure of a folder's write, by their names. */
+  const FOLDER_DIALOGS = ["EvemailMailMarkAllRead", "EvemailMailTrashAll", "EvemailMailRestoreAll", "EvemailMaillDeleteAll", "EvemailMailReadLabelGroup", "EvemailMailTrashLabelGroup"] as const;
+
+  /** A folder's write waiting on the pilot's yes: the client's dialog, what fills it, and what it does. */
+  let confirming = $state<{ readonly dialog: string; readonly args: Record<string, string>; readonly act: () => Promise<void> } | null>(null);
+
+  /** The folder shown, by name (its word, or its label's name). */
+  const folderName = $derived(
+    folder === null || SYSTEM_FOLDERS.some(([id]) => id === folder)
+      ? (() => {
+          const found = SYSTEM_FOLDERS.find(([id]) => id === folder);
+          return found ? word(found[1], found[2]) : "";
+        })()
+      : (ownLabels.find((label) => label.labelID === folder)?.name ?? ""),
+  );
+
+  /** A client's template filled, the page's own words where the install has none. */
+  function filledWord(label: string, own: string, args: Record<string, string>): string {
+    return plainText(formatTemplate(word(label, own), args, { nameOf: () => "" }));
+  }
+
+  /** One of the waiting dialog's two texts, filled. */
+  function dialogText(part: "title" | "body"): string {
+    const waiting = confirming;
+    if (waiting === null) {
+      return "";
+    }
+    return filledWord(`dialog:${waiting.dialog}/${part}`, part === "title" ? "Are you sure?" : "", waiting.args);
+  }
+
+  /** The pilot's yes: the write done. */
+  function confirmed(): void {
+    const waiting = confirming;
+    confirming = null;
+    if (waiting !== null) {
+      void run(waiting.act);
+    }
+  }
 
   /** A folder's unread count as the window keeps it: none beside sent or the trash (UpdateCounters). */
   function folderUnread(id: number | null): number {
@@ -318,7 +367,10 @@
   }
 
   onMount(() => {
-    flow.requestWords([...Object.values(MAIL_QUOTE_LABELS), DATE_LABEL, ...Object.values(FOLDER_WORDS), ...Object.values(WRITE_WORDS)]);
+    flow.requestWords([
+      ...Object.values(MAIL_QUOTE_LABELS), DATE_LABEL, ...Object.values(FOLDER_WORDS), ...Object.values(WRITE_WORDS), ...Object.values(FOLDER_WRITE_WORDS),
+      ...FOLDER_DIALOGS.flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`]),
+    ]);
     void run(async () => {
       await flow.loadMail();
       await flow.loadMailLabels();
@@ -401,6 +453,43 @@
           {/each}
         {/if}
       </nav>
+      <!-- The folder's own writes (evemail.py StaticMenu), each asked to be sure of in the client's words. -->
+      <p class="controls mail-folder-actions">
+        {#if folder === MAIL_FOLDER_TRASH}
+          <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "EvemailMailRestoreAll", args: {}, act: () => flow.restoreAllMail() })}>
+            {word(FOLDER_WRITE_WORDS.restoreAll, "Restore All")}
+          </button>
+          <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "EvemailMaillDeleteAll", args: {}, act: () => flow.emptyMailTrash() })}>
+            {word(FOLDER_WRITE_WORDS.emptyTrash, "Empty Trash")}
+          </button>
+        {:else if folder === null}
+          <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "EvemailMailMarkAllRead", args: {}, act: () => flow.readAllMail(null) })}>
+            {filledWord(FOLDER_WRITE_WORDS.markAll, "Mark All as Read ({folderName})", { folderName: word(FOLDER_WRITE_WORDS.all, "All") })}
+          </button>
+          <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "EvemailMailTrashAll", args: {}, act: () => flow.trashAllMail(null) })}>
+            {filledWord(FOLDER_WRITE_WORDS.trashAll, "Trash All ({folderName})", { folderName: word(FOLDER_WRITE_WORDS.all, "All") })}
+          </button>
+        {:else}
+          {@const labelID = folder}
+          <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "EvemailMailReadLabelGroup", args: { labelName: folderName }, act: () => flow.readAllMail(labelID) })}>
+            {filledWord(FOLDER_WRITE_WORDS.markAll, "Mark All as Read ({folderName})", { folderName })}
+          </button>
+          <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "EvemailMailTrashLabelGroup", args: { labelName: folderName }, act: () => flow.trashAllMail(labelID) })}>
+            {filledWord(FOLDER_WRITE_WORDS.trashAll, "Trash All ({folderName})", { folderName })}
+          </button>
+        {/if}
+      </p>
+      {#if confirming !== null}
+        <!-- The client's dialog to be sure of it: its title, its question, yes and no. -->
+        <div class="mail-confirm" role="alertdialog" aria-label={dialogText("title")}>
+          <strong>{dialogText("title")}</strong>
+          <p>{dialogText("body")}</p>
+          <p class="controls">
+            <button type="button" disabled={busy} onclick={confirmed}>{word(FOLDER_WRITE_WORDS.yes, "Yes")}</button>
+            <button type="button" class="minor" onclick={() => (confirming = null)}>{word(FOLDER_WRITE_WORDS.no, "No")}</button>
+          </p>
+        </div>
+      {/if}
       {#if shownMessages.length === 0}
         <p class="empty">Nothing in this folder.</p>
       {:else}
@@ -669,6 +758,11 @@
   .mail-folders-group {
     margin-left: 0.5rem;
     opacity: 0.8;
+  }
+  .mail-confirm {
+    border: 1px solid currentColor;
+    padding: 0.5rem;
+    margin-bottom: 0.5rem;
   }
   .mail-bold {
     font-weight: 700;

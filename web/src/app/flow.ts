@@ -57,6 +57,10 @@ import {
   mailLabelsOf,
   mailboxAfterNotice,
   mailboxAfterSending,
+  mailboxAllRead,
+  mailboxAllRestored,
+  mailboxAllTrashed,
+  mailboxTrashEmptied,
   mailboxDeleted,
   mailboxMarkedUnread,
   mailboxRestored,
@@ -1025,6 +1029,14 @@ export interface AppFlow {
   restoreMail(messageIDs: readonly number[]): Promise<void>;
   /** Delete trashed messages, as the mail window's Delete does. */
   deleteMail(messageIDs: readonly number[]): Promise<void>;
+  /** Mark all mails, or a folder's (its label), read, as the mail window's Mark All as Read does. */
+  readAllMail(labelID: number | null): Promise<void>;
+  /** Trash all mails, or a folder's (its label), as the mail window's Trash All does. */
+  trashAllMail(labelID: number | null): Promise<void>;
+  /** Bring every trashed mail back, as the trash's Restore All does. */
+  restoreAllMail(): Promise<void>;
+  /** Delete every trashed mail, as the trash's Empty Trash does. */
+  emptyMailTrash(): Promise<void>;
   /** Close the open message without touching the server. */
   closeMail(): void;
   /**
@@ -5097,8 +5109,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // the mail manager asked with the messages, a list, by the generic call; what is kept changed as the client
   // changes it, nothing read again; a message open that leaves the folder it is in closed. True where it was done.
   async function mailWrite(method: string, messageIDs: readonly number[], after: (mailbox: DecodedMailbox) => DecodedMailbox, closes: boolean): Promise<boolean> {
+    return mailCall(method, [[...messageIDs]], after, closes ? messageIDs : []);
+  }
+
+  // A write of the mail manager's with its own arguments: what is kept changed as the client changes it, and the
+  // message open closed where it is among those that leave their folder. True where it was done.
+  async function mailCall(method: string, args: readonly JsonValue[], after: (mailbox: DecodedMailbox) => DecodedMailbox, closing: readonly number[]): Promise<boolean> {
     try {
-      await bridgeDo("mailMgr", method, [[...messageIDs]]);
+      await bridgeDo("mailMgr", method, [...args]);
     } catch (error) {
       throwIfRequestRetired(error);
       if (isSessionLost(error)) {
@@ -5111,10 +5129,38 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     mailboxLoaded(after(store.mail.get()));
     const open = store.mail.get().open;
-    if (closes && open !== null && messageIDs.includes(open.messageID)) {
+    if (open !== null && closing.includes(open.messageID)) {
       closeMail();
     }
     return true;
+  }
+
+  // The mail window's writes of a folder (evemail.py StaticMenu, 1084 to 1160; mailSvc.py 350 to 476), each asked
+  // to be sure of by the window before it comes here: the mail manager asked with nothing, or with the folder's
+  // label, and what is kept changed as the client's service changes it.
+  async function readAllMail(labelID: number | null): Promise<void> {
+    await mailCall(labelID === null ? "MarkAllAsRead" : "MarkAsReadByLabel", labelID === null ? [] : [labelID], (mailbox) => mailboxAllRead(mailbox, labelID), []);
+  }
+
+  async function trashAllMail(labelID: number | null): Promise<void> {
+    const leaving = store.mail.get().statuses.filter((status) => labelID === null || (status.labelMask & labelID) === labelID).map((status) => status.messageID);
+    await mailCall(labelID === null ? "MoveAllToTrash" : "MoveToTrashByLabel", labelID === null ? [] : [labelID], (mailbox) => mailboxAllTrashed(mailbox, labelID), leaving);
+  }
+
+  async function restoreAllMail(): Promise<void> {
+    const leaving = store.mail.get().statuses.map((status) => status.messageID);
+    await mailCall("MoveAllFromTrash", [], mailboxAllRestored, leaving);
+  }
+
+  // EmptyTrash (458 to 476): the bodies kept of the messages deleted let go with them.
+  async function emptyMailTrash(): Promise<void> {
+    const { gone } = mailboxTrashEmptied(store.mail.get());
+    if (await mailCall("EmptyTrash", [], (mailbox) => mailboxTrashEmptied(mailbox).mailbox, gone)) {
+      const characterID = store.station.get().online?.characterID ?? 0;
+      for (const messageID of gone) {
+        mailBodies.delete(`${characterID}:${messageID}`);
+      }
+    }
   }
 
   async function markMail(messageIDs: readonly number[], read: boolean): Promise<void> {
@@ -15576,6 +15622,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     trashMail,
     restoreMail,
     deleteMail,
+    readAllMail,
+    trashAllMail,
+    restoreAllMail,
+    emptyMailTrash,
     closeMail,
     findCharacters: (q: string) => api.findCharacters(q, callOptions),
     sendMail,
