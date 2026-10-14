@@ -4913,6 +4913,12 @@ function createGamePortPilots({
    * Moniker for a call, one is made here for it and not kept.
    */
   function handleCall(entry, handle, object, method, args, kwargs) {
+    // invCache.inventorymgr, the manager of where the pilot is (eveMoniker.GetInventoryMgr), is one the client keeps
+    // and makes again only when the session's place changes (invCache.py 193 to 201), and the transport keeps it for
+    // the client already: a call on it goes on that one, and not on a Moniker made for the handle.
+    if (object.service === "invbroker") {
+      return keptCall(entry, entry.inventoryManagers, "location", "invbroker", () => locationBindParams(entry), method, args, kwargs);
+    }
     if (madeAfresh(object.service, method, { dockedInStation: attribute(entry, "stationid") !== null })) {
       return entry.session.bind(object.service, object.params, [method, args, kwargs]).then((bound) => bound.result);
     }
