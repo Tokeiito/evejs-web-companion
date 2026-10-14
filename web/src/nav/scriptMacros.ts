@@ -5626,8 +5626,8 @@ const salvageBookmarkedSites: MacroDecider = (step, obs, mem, board) => {
     return tick(WAIT, "Reading the bookmarks.", SALVAGER_PHASE, ACTING, false, mem);
   }
   const sites = all.filter((bm) => bm.folderID === fromID);
-  const open = sites.filter((bm) => bm.ageMs === undefined || bm.ageMs === null || bm.ageMs >= SITE_OPENS_AFTER_MS);
-  const opening = open.length === 0 && sites.length > 0;
+  // Only the WARP to a shared bookmark waits for it to open; undocking and the trip there do not.
+  const isOpen = (bm: { readonly ageMs?: number | null }) => bm.ageMs === undefined || bm.ageMs === null || bm.ageMs >= SITE_OPENS_AFTER_MS;
 
   // A finished site's bookmark being filed: done once it has left the from-folder.
   const filing = num(mem, "filing");
@@ -5663,7 +5663,7 @@ const salvageBookmarkedSites: MacroDecider = (step, obs, mem, board) => {
     mem = { ...mem, unloading: false, unloadChecked: true, returning: false, unload: null };
   }
   if (docked) {
-    if (open.length === 0 || (returning && !atHome)) {
+    if (sites.length === 0 || (returning && !atHome)) {
       if (!atHome) {
         // Docked somewhere else with nothing to do here: go home.
         const ride = rideAutopilotTo(obs, homeRef.id, SALVAGER_PHASE, homeRef.kind);
@@ -5673,7 +5673,7 @@ const salvageBookmarkedSites: MacroDecider = (step, obs, mem, board) => {
       if (idle >= IDLE_WAIT_TICKS) {
         return tick(WAIT, "Still no site to salvage; the next pass waits on.", SALVAGER_PHASE, { kind: "done" });
       }
-      return tick(WAIT, opening ? "A site was bookmarked just now; waiting for it to open." : "No site to salvage; waiting docked.", "Waiting for sites", ACTING, false, { ...mem, idle });
+      return tick(WAIT, "No site to salvage; waiting docked.", "Waiting for sites", ACTING, false, { ...mem, idle });
     }
     return tick({ kind: "undock" }, "Leaving the station for the next site.", SALVAGER_PHASE, ACTING, false, { ...mem, idle: 0, unloadChecked: false });
   }
@@ -5681,10 +5681,7 @@ const salvageBookmarkedSites: MacroDecider = (step, obs, mem, board) => {
   // 3. In space and going home: to unload, or because there is no site left.
   const freeM3 = holdsFreeM3(obs.holds ?? null);
   const site = num(mem, "site");
-  if (site === null && !returning && opening) {
-    return tick(WAIT, "A site was bookmarked just now; waiting for it to open.", "Waiting for sites", ACTING, false, mem);
-  }
-  if (returning || (site === null && open.length === 0)) {
+  if (returning || (site === null && sites.length === 0)) {
     const recall = recallBeforeLeaving(obs, mem, SALVAGER_PHASE, null);
     if (recall !== null) return recall;
     const ride = rideAutopilotTo(obs, homeRef.id, SALVAGER_PHASE, homeRef.kind);
@@ -5692,12 +5689,20 @@ const salvageBookmarkedSites: MacroDecider = (step, obs, mem, board) => {
     return tick(WAIT, "Docked at the station.", SALVAGER_PHASE, ACTING, false, mem);
   }
 
-  // 4. A site: the one in hand while it is still in the folder, else this system's oldest, else the oldest.
+  // 4. A site: the one in hand for as long as its bookmark is in the folder (a bookmark made meanwhile never takes
+  // the salvager off a site it is working), else the OLDEST bookmark in the folder. Oldest by the bookmark's own
+  // age where the server says it, by its number (made in order) where it does not.
   const here = obs.flightStatus?.solarSystemID ?? null;
   let target = site === null ? undefined : sites.find((bm) => bm.bookmarkID === site);
   if (target === undefined) {
-    const ordered = [...open].sort((a, b) => a.bookmarkID - b.bookmarkID);
-    target = ordered.find((bm) => bm.solarSystemID !== null && bm.solarSystemID === here) ?? ordered[0]!;
+    const age = (bm: { readonly ageMs?: number | null }) => bm.ageMs ?? null;
+    const ordered = [...sites].sort((a, b) => {
+      const ageA = age(a);
+      const ageB = age(b);
+      if (ageA !== null && ageB !== null && ageA !== ageB) return ageB - ageA;
+      return a.bookmarkID - b.bookmarkID;
+    });
+    target = ordered[0]!;
     mem = { ...mem, site: target.bookmarkID, stage: "travel", warp: null, work: null, salvage: null };
   }
   const stage = (mem["stage"] as string | undefined) ?? "travel";
@@ -5713,6 +5718,10 @@ const salvageBookmarkedSites: MacroDecider = (step, obs, mem, board) => {
     mem = { ...mem, stage: "warp", warp: null };
   }
   if (mem["stage"] === "warp") {
+    if (!flag(sub("warp"), "issued") && !isOpen(target)) {
+      return tick(WAIT, "At the site's system; the bookmark opens to this pilot in a moment (the server holds a new shared bookmark for two minutes).",
+        "Waiting for the bookmark", ACTING, false, mem);
+    }
     if (!flag(sub("warp"), "issued")) {
       const recall = recallBeforeLeaving(obs, mem, SALVAGER_PHASE, null);
       if (recall !== null) return recall;
