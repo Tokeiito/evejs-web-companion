@@ -334,8 +334,10 @@ function makeFakeFetch(modules: readonly TestModule[]): { fetch: typeof fetch; r
     if (path === "/api/bridge/ship/ore-hold") {
       return { status: 200, body: { ok: true, activeShipID: SHIP_ID, stationID: STATION_ID, holds: [] } };
     }
-    if (path === "/api/bridge/modules/activate") {
-      const itemID = typeof body.itemID === "number" ? body.itemID : null;
+    // The page's own call (bridge/dogmaWrites.ts): godma.py 2062, Activate(itemID, effectName, target, repeat).
+    if (path === "/api/bridge/call" && body.method === "Activate") {
+      const args = Array.isArray(body.args) ? body.args : [];
+      const itemID = typeof args[0] === "number" ? args[0] : null;
       // Only a module that really cycles comes on. A passive one told to
       // activate is exactly what this suite exists to stop, so the fake
       // refuses to pretend it worked.
@@ -343,7 +345,7 @@ function makeFakeFetch(modules: readonly TestModule[]): { fetch: typeof fetch; r
       if (module && module.durationMs !== null && !running.includes(module.itemID)) {
         running.push(module.itemID);
       }
-      return { status: 200, body: { ok: true } };
+      return { status: 200, body: { ok: true, service: "dogmaIM", method: "Activate", result: null, notifications: [] } };
     }
     return { status: 200, body: { ok: true } };
   }
@@ -383,7 +385,17 @@ async function runBot(
   // which would hide the very state these tests are about.
   const readout = store.customBot.get();
   flow.stopCustomBot();
-  return { activated: requests.filter((r) => r.path === "/api/bridge/modules/activate"), readout };
+  return { activated: requests.filter((r) => r.path === "/api/bridge/call" && r.body.method === "Activate"), readout };
+}
+
+/** The module an Activate names, and its target: godma.py 2062, Activate(itemID, effectName, target, repeat). */
+function moduleOf(call: Recorded | undefined): unknown {
+  const args = call?.body.args;
+  return Array.isArray(args) ? args[0] : undefined;
+}
+function targetOf(call: Recorded | undefined): unknown {
+  const args = call?.body.args;
+  return Array.isArray(args) ? args[2] : undefined;
 }
 
 async function activateCalls(modules: readonly TestModule[]): Promise<readonly Recorded[]> {
@@ -394,7 +406,7 @@ test("a passive Damage Control is never switched on by the Hardeners-on block �
   const activated = await activateCalls([DAMAGE_CONTROL, ARMOR_HARDENER]);
   assert.equal(activated.length, 1, "one module per tick, and only one of these two can be cycled");
   assert.equal(
-    activated[0]?.body.itemID,
+    moduleOf(activated[0]),
     ARMOR_HARDENER.itemID,
     "pre-fix this was the Damage Control: the bot classified its fit before the dogma snapshot arrived, so attribute 73 could not exclude it",
   );
@@ -430,7 +442,7 @@ test("an ASSAULT Damage Control — same group name, a real cycle — is still s
   const activated = await activateCalls([ASSAULT_DAMAGE_CONTROL]);
   assert.equal(activated.length, 1, "this one really does cycle, and the block is what runs it");
   assert.equal(
-    activated[0]?.body.itemID,
+    moduleOf(activated[0]),
     ASSAULT_DAMAGE_CONTROL.itemID,
     "the classifier judges the CYCLE, not the group name — both damage controls share the name",
   );
@@ -439,8 +451,8 @@ test("an ASSAULT Damage Control — same group name, a real cycle — is still s
 test("a genuine hardener is still switched on when the dogma snapshot says it cycles (no regression)", async () => {
   const activated = await activateCalls([ARMOR_HARDENER]);
   assert.equal(activated.length, 1);
-  assert.equal(activated[0]?.body.itemID, ARMOR_HARDENER.itemID);
-  // targetID: 0 is self/no-target — api.activateModule drops a falsy targetID
-  // from the wire body entirely rather than sending a literal 0.
-  assert.equal("targetID" in (activated[0]?.body ?? {}), false, "a hardener carries no targetID at all");
+  assert.equal(moduleOf(activated[0]), ARMOR_HARDENER.itemID);
+  // targetID: 0 is self/no-target — the page names None for the target then, as the client's button does for an
+  // effect that is not a target's (shipmodulebutton.py 1318).
+  assert.equal(targetOf(activated[0]), null, "a hardener names no target");
 });

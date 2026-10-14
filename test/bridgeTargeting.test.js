@@ -14,8 +14,8 @@
 //   GET  /api/bridge/targets            dogmaIM.GetTargets()
 //   POST /api/bridge/targets/lock       dogmaIM.AddTarget(targetID)
 //   POST /api/bridge/targets/unlock     dogmaIM.CancelAddTarget + RemoveTarget
-//   POST /api/bridge/modules/activate   dogmaIM.Activate(itemID, effect, target, repeat)
-//   POST /api/bridge/modules/deactivate dogmaIM.Deactivate(itemID, effect)
+//   (The module routes, POST /api/bridge/modules/activate and .../deactivate, went on 2026-10-14: a module is
+//   switched by the page's own calls, web/src/bridge/dogmaWrites.ts.)
 //
 // The other thing pinned here is the "a 200 is not proof" discipline. AddTarget
 // answers 200 while the lock is still being ACQUIRED, RemoveTarget returns null
@@ -456,318 +456,14 @@ test("an unlock the server ignores reports that it is still locked", async () =>
 });
 
 // --- Module activation ------------------------------------------------------
-
-test("activate is GENERIC: module, OPTIONAL effect name, optional target, repeat", async () => {
-  const { gateway, baseUrl } = await inSpace();
-
-  // The plain form: no effect name at all. An empty effect makes the SERVER
-  // resolve the module's own default activation effect from its typeID, so the
-  // browser never has to know — or guess — what kind of module this is. That is
-  // precisely what makes this route reusable for combat unchanged.
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/modules/activate", {
-    method: "POST",
-    body: { itemID: MODULE_ID },
-  });
-  assert.equal(response.status, 200);
-  assert.equal(payload.active, true);
-
-  const activations = dogmaCallsOf(gateway, "Activate");
-  assert.equal(activations.length, 1);
-  assert.deepEqual(
-    activations[0].args,
-    [MODULE_ID, "", null, -1],
-    "module, empty effect (server resolves it), no target, continuous cycle",
-  );
-});
-
-test("activate passes a named effect, a target and a single-cycle repeat through", async () => {
-  const { gateway, baseUrl } = await inSpace();
-
-  await apiRequest(baseUrl, "/api/bridge/modules/activate", {
-    method: "POST",
-    body: { itemID: MODULE_ID, effect: "miningLaser", targetID: ROCK_ID, repeat: 0 },
-  });
-  assert.deepEqual(
-    dogmaCallsOf(gateway, "Activate")[0].args,
-    [MODULE_ID, "miningLaser", ROCK_ID, 0],
-    "all four arguments survive the trip, positionally",
-  );
-
-  // The very same route, the very same shape, with a combat module and effect.
-  // No new BFF surface — this is the whole point of slice A.
-  await apiRequest(baseUrl, "/api/bridge/modules/activate", {
-    method: "POST",
-    body: { itemID: MODULE_ID, effect: "useMissiles", targetID: ROCK_ID },
-  });
-  assert.deepEqual(dogmaCallsOf(gateway, "Activate")[1].args, [
-    MODULE_ID,
-    "useMissiles",
-    ROCK_ID,
-    -1,
-  ]);
-});
-
-test("⚠ activating a LAUNCHER by typeID names useMissiles", async () => {
-  const { gateway, baseUrl } = await inSpace();
-
-  await apiRequest(baseUrl, "/api/bridge/modules/activate", {
-    method: "POST",
-    body: { itemID: MODULE_ID, typeID: CORE_PROBE_LAUNCHER_TYPE_ID },
-  });
-  assert.deepEqual(
-    dogmaCallsOf(gateway, "Activate")[0].args,
-    [MODULE_ID, "useMissiles", null, -1],
-    "without the name the server cycles a probe launcher and launches nothing",
-  );
-});
-
-test("activating a NON-launcher by typeID keeps the empty effect, and a named one wins", async () => {
-  const { gateway, baseUrl } = await inSpace();
-
-  await apiRequest(baseUrl, "/api/bridge/modules/activate", {
-    method: "POST",
-    body: { itemID: MODULE_ID, typeID: AFTERBURNER_TYPE_ID },
-  });
-  assert.deepEqual(dogmaCallsOf(gateway, "Activate")[0].args, [MODULE_ID, "", null, -1]);
-
-  gateway.state.active.delete(MODULE_ID);
-  await apiRequest(baseUrl, "/api/bridge/modules/activate", {
-    method: "POST",
-    body: { itemID: MODULE_ID, typeID: CORE_PROBE_LAUNCHER_TYPE_ID, effect: "online" },
-  });
-  assert.deepEqual(dogmaCallsOf(gateway, "Activate")[1].args, [MODULE_ID, "online", null, -1]);
-});
-
-test("activate verifies against the SERVER's cycling list, not its own 200", async () => {
-  const { gateway, baseUrl } = await inSpace();
-  gateway.state.inert.add("Activate");
-
-  const { payload } = await apiRequest(baseUrl, "/api/bridge/modules/activate", {
-    method: "POST",
-    body: { itemID: MODULE_ID },
-  });
-  assert.equal(payload.ok, true, "the call succeeded");
-  assert.equal(payload.active, false, "but nothing is running, and the re-read says so");
-  assert.ok(gateway.calls.snapshot.length >= 1, "the verification is a snapshot read");
-});
-
-test("when the server cannot say what is running, the answer is UNKNOWN — never 'off'", async () => {
-  const { gateway, baseUrl } = await inSpace();
-  gateway.state.hideActiveModules = true;
-
-  const { payload } = await apiRequest(baseUrl, "/api/bridge/modules/activate", {
-    method: "POST",
-    body: { itemID: MODULE_ID },
-  });
-  assert.equal(payload.active, null, "null is 'not known', which is not the same as false");
-  assert.equal(payload.activeModuleIDs, null);
-});
-
-test("a module refusal carries the SERVER's own reason, untouched", async () => {
-  const { gateway, baseUrl } = await inSpace();
-  gateway.state.refuse.set("Activate", "You must be targeting something to activate that module.");
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/modules/activate", {
-    method: "POST",
-    body: { itemID: MODULE_ID },
-  });
-  assert.equal(response.status, 409);
-  assert.equal(payload.message, "You must be targeting something to activate that module.");
-});
-
-test("long-cycle OFF returns effective remaining authority and observation never redispatches", async () => {
-  const queries = [];
-  const { gateway, baseUrl } = await inSpace({ callBoundMethod: async (service, method, args) => {
-    queries.push({ service, method, args });
-    return { result: method === "QueryAttributeValue" ? { type: "real", value: 85680 } : null, notifications: [] };
-  } });
-  gateway.state.active.add(MODULE_ID);
-  gateway.state.inert.add("Deactivate");
-  const { payload } = await apiRequest(baseUrl, "/api/bridge/modules/deactivate", { method: "POST", body: { itemID: MODULE_ID } });
-  assert.equal(payload.stopped, false);
-  assert.equal(payload.cycleMs, 85680);
-  assert.ok(payload.remainingMs > 15000 && payload.remainingMs <= 90680);
-  assert.ok(queries.some(q => q.method === "QueryAttributeValue" && q.args[0] === MODULE_ID && q.args[1] === 73));
-  gateway.state.active.delete(MODULE_ID);
-  const read = await apiRequest(baseUrl, `/api/bridge/modules/${MODULE_ID}/state?shipID=${SHIP_ID}`);
-  assert.equal(read.payload.stopped, true);
-  assert.equal(read.payload.itemID, MODULE_ID);
-  assert.equal(dogmaCallsOf(gateway, "Deactivate").length, 1);
-  const wrong = await apiRequest(baseUrl, `/api/bridge/modules/${MODULE_ID}/state?shipID=${SHIP_ID + 1}`);
-  assert.equal(wrong.response.status, 409);
-});
-
-test("deactivate is the same seam, and verifies the module actually stopped", async () => {
-  const { gateway, baseUrl } = await inSpace();
-  gateway.state.active.add(MODULE_ID);
-
-  const { payload } = await apiRequest(baseUrl, "/api/bridge/modules/deactivate", {
-    method: "POST",
-    body: { itemID: MODULE_ID },
-  });
-  assert.equal(payload.stopped, true);
-  assert.deepEqual(dogmaCallsOf(gateway, "Deactivate")[0].args, [MODULE_ID, ""]);
-
-  // And a deactivate the server ignores is reported honestly.
-  gateway.state.active.add(MODULE_ID);
-  gateway.state.inert.add("Deactivate");
-  const second = await apiRequest(baseUrl, "/api/bridge/modules/deactivate", {
-    method: "POST",
-    body: { itemID: MODULE_ID },
-  });
-  assert.equal(second.payload.stopped, false, "it is still running, so say so");
-});
-
-// The AB/MWD asymmetry: the eve.js handler only routes a prop mod to its
-// propulsion stop when the effect argument NAMES it — an empty effect takes the
-// generic path, which answers success while the burner keeps cycling (observed
-// live on a 1MN Civilian Afterburner). The browser sends the module's typeID
-// and the BFF resolves the effect name from the SDE.
-test("⚠ deactivating a PROP MOD by typeID names its propulsion effect", async () => {
-  const { gateway, baseUrl } = await inSpace();
-  gateway.state.active.add(MODULE_ID);
-
-  await apiRequest(baseUrl, "/api/bridge/modules/deactivate", {
-    method: "POST",
-    body: { itemID: MODULE_ID, typeID: AFTERBURNER_TYPE_ID },
-  });
-  assert.deepEqual(
-    dogmaCallsOf(gateway, "Deactivate")[0].args,
-    [MODULE_ID, "moduleBonusAfterburner"],
-    "the resolved propulsion effect must reach dogmaIM.Deactivate",
-  );
-});
-
-test("deactivating a NON-prop module by typeID keeps the empty effect", async () => {
-  const { gateway, baseUrl } = await inSpace();
-  gateway.state.active.add(MODULE_ID);
-
-  await apiRequest(baseUrl, "/api/bridge/modules/deactivate", {
-    method: "POST",
-    body: { itemID: MODULE_ID, typeID: 3634 },
-  });
-  assert.deepEqual(dogmaCallsOf(gateway, "Deactivate")[0].args, [MODULE_ID, ""]);
-});
-
-test("an explicit effect wins over the typeID resolution", async () => {
-  const { gateway, baseUrl } = await inSpace();
-  gateway.state.active.add(MODULE_ID);
-
-  await apiRequest(baseUrl, "/api/bridge/modules/deactivate", {
-    method: "POST",
-    body: { itemID: MODULE_ID, typeID: AFTERBURNER_TYPE_ID, effect: "online" },
-  });
-  assert.deepEqual(dogmaCallsOf(gateway, "Deactivate")[0].args, [MODULE_ID, "online"]);
-});
-
-// --- weapon banking (goal R29) ----------------------------------------------
 //
-// dogmaService.js Handle_Activate silently redirects a BANKED weapon to its
-// bank master, and the space snapshot reports the MASTER's itemID only. So a
-// weapon can start cycling without its own id ever appearing in the running
-// set, and `activeModuleIDs.includes(itemID)` — which is what these two routes
-// used to ask — would call a successful shot a failure and then report the gun
-// as stopped while it was still firing.
-//
-// R29 measured that banking is NOT reachable from this browser today: banks are
-// created only by dogmaIM.LinkWeapons, which is not allowlisted, and two
-// same-type turrets fired together each reported their OWN itemID. These tests
-// therefore pin a guard against a real server behaviour the client cannot yet
-// trigger, so that opening LinkWeapons later cannot silently break the rack.
-
-const SLAVE_MODULE_ID = 7700002;
-
-test("a BANKED weapon reports active even though the snapshot names its master", async () => {
-  const { gateway, baseUrl } = await inSpace();
-  gateway.state.locked.add(ROCK_ID);
-  // The second gun is a slave of the first: activating it cycles the master.
-  gateway.state.bankMaster.set(SLAVE_MODULE_ID, MODULE_ID);
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/modules/activate", {
-    method: "POST",
-    body: { itemID: SLAVE_MODULE_ID, targetID: ROCK_ID },
-  });
-
-  assert.equal(response.status, 200);
-  assert.equal(
-    payload.active,
-    true,
-    "the running set GREW, so the activation landed — even under another id",
-  );
-  assert.deepEqual(
-    payload.activeModuleIDs,
-    [MODULE_ID],
-    "and the ids are reported verbatim, never rewritten to flatter the caller",
-  );
-});
-
-test("a banked weapon that is genuinely declined is still reported as not running", async () => {
-  // The set-delta must not turn every activation into a success: when the
-  // server accepts the call and cycles NOTHING, the set does not grow.
-  const { gateway, baseUrl } = await inSpace();
-  gateway.state.locked.add(ROCK_ID);
-  gateway.state.bankMaster.set(SLAVE_MODULE_ID, MODULE_ID);
-  gateway.state.inert.add("Activate");
-
-  const { payload } = await apiRequest(baseUrl, "/api/bridge/modules/activate", {
-    method: "POST",
-    body: { itemID: SLAVE_MODULE_ID, targetID: ROCK_ID },
-  });
-
-  assert.equal(payload.active, false, "nothing started, so say so");
-  assert.deepEqual(payload.activeModuleIDs, []);
-});
-
-test("an unavailable bank map remains unknown over an already-running rack", async () => {
-  // The master is already cycling, so activating the slave changes the running
-  // set not at all. From outside, with no bank map, that is indistinguishable
-  // from the server ignoring the call outright — and this bridge does not get
-  // to guess between "your gun is firing" and "your gun is not". It says so.
-  const { gateway, baseUrl } = await inSpace();
-  gateway.state.locked.add(ROCK_ID);
-  gateway.state.bankMaster.set(SLAVE_MODULE_ID, MODULE_ID);
-  gateway.state.active.add(MODULE_ID);
-  gateway.state.hideWeaponBanks = true;
-
-  const { payload } = await apiRequest(baseUrl, "/api/bridge/modules/activate", {
-    method: "POST",
-    body: { itemID: SLAVE_MODULE_ID, targetID: ROCK_ID },
-  });
-
-  assert.equal(
-    payload.active,
-    null,
-    "unknowable from here: null, never a confident 'off' over a firing gun",
-  );
-  assert.deepEqual(payload.activeModuleIDs, [MODULE_ID], "the ids are still reported verbatim");
-});
-
-test("deactivating a banked weapon reports stopped when the master stops", async () => {
-  const { gateway, baseUrl } = await inSpace();
-  gateway.state.bankMaster.set(SLAVE_MODULE_ID, MODULE_ID);
-  gateway.state.active.add(MODULE_ID);
-
-  const { payload } = await apiRequest(baseUrl, "/api/bridge/modules/deactivate", {
-    method: "POST",
-    body: { itemID: SLAVE_MODULE_ID },
-  });
-
-  assert.equal(payload.stopped, true, "the master left the running set");
-  assert.deepEqual(payload.activeModuleIDs, []);
-});
-
-test("an unknown running set stays UNKNOWN rather than collapsing to off", async () => {
-  const { gateway, baseUrl } = await inSpace();
-  gateway.state.locked.add(ROCK_ID);
-  gateway.state.hideActiveModules = true;
-
-  const { payload } = await apiRequest(baseUrl, "/api/bridge/modules/activate", {
-    method: "POST",
-    body: { itemID: MODULE_ID, targetID: ROCK_ID },
-  });
-
-  assert.equal(payload.active, null, "the snapshot could not answer: null, never false");
-});
+// A module is switched on and off by the page's own calls since 2026-10-14 (web/src/bridge/dogmaWrites.ts:
+// godma.py 2062 and 2101, Activate(itemID, effectName, target, repeat) and Deactivate(itemID, effectName)), the
+// module's default effect named from the game's data (GET /api/types/default-effects) and the running modules
+// read after (GET /api/bridge/modules/:itemID/state). The routes (POST /api/bridge/modules/activate and
+// .../deactivate) are gone, and their seventeen tests with them: the effect each named for a launcher or a
+// propulsion module, the verdict by the running set and a weapon bank's master, a refusal passed on, and the
+// watching of a long cycle's stop.
 
 // --- Guards -----------------------------------------------------------------
 
@@ -778,8 +474,7 @@ test("every action refuses while docked, and refuses a missing target or module"
   for (const [path, body] of [
     ["/api/bridge/targets/lock", { targetID: ROCK_ID }],
     ["/api/bridge/targets/unlock", { targetID: ROCK_ID }],
-    ["/api/bridge/modules/activate", { itemID: MODULE_ID }],
-    ["/api/bridge/modules/deactivate", { itemID: MODULE_ID }],
+    // (The module routes went on 2026-10-14; the page's own module calls refuse a pilot docked before asking.)
   ]) {
     const { response, payload } = await apiRequest(baseUrl, path, { method: "POST", body });
     assert.equal(response.status, 409, path);
@@ -790,8 +485,6 @@ test("every action refuses while docked, and refuses a missing target or module"
   for (const [path, error] of [
     ["/api/bridge/targets/lock", "INVALID_TARGET"],
     ["/api/bridge/targets/unlock", "INVALID_TARGET"],
-    ["/api/bridge/modules/activate", "INVALID_MODULE"],
-    ["/api/bridge/modules/deactivate", "INVALID_MODULE"],
   ]) {
     const { response, payload } = await apiRequest(baseUrl, path, { method: "POST", body: {} });
     assert.equal(response.status, 400, path);
@@ -805,8 +498,6 @@ test("every action requires the web login session", async () => {
     "/api/bridge/targets",
     "/api/bridge/targets/lock",
     "/api/bridge/targets/unlock",
-    "/api/bridge/modules/activate",
-    "/api/bridge/modules/deactivate",
   ]) {
     const { response } = await apiRequest(baseUrl, path, {
       method: path === "/api/bridge/targets" ? "GET" : "POST",

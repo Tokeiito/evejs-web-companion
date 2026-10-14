@@ -1338,9 +1338,11 @@ test("a PLAYER lock alone lights a hardener, through the real observe()", async 
     "Tanking up",
     "a player holding a lock on this hull is a fight, and a fight means hardeners",
   );
-  const activated = calls.filter((call) => call.path === "/api/bridge/modules/activate");
+  // The page's own call (bridge/dogmaWrites.ts): godma.py 2062, Activate(itemID, effectName, target, repeat).
+  const activated = calls.filter((call) => call.path === "/api/bridge/call" && call.body.method === "Activate");
   assert.equal(activated.length, 1, "exactly the one idle hardener");
-  assert.equal(activated[0]?.body.itemID, HARDENER_ITEM_ID);
+  const args = activated[0]?.body.args;
+  assert.equal(Array.isArray(args) ? args[0] : undefined, HARDENER_ITEM_ID);
   flow.stopFleetCompanion();
 });
 
@@ -1366,7 +1368,7 @@ test("the same grid with NOBODY locking leaves the hardener alone", async () => 
 
   assert.equal(store.get().companion.phase, "Standing by");
   assert.equal(
-    calls.filter((call) => call.path === "/api/bridge/modules/activate").length,
+    calls.filter((call) => call.path === "/api/bridge/call" && call.body.method === "Activate").length,
     0,
     "nobody is shooting at this pilot, so nothing should be burning capacitor",
   );

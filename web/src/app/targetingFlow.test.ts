@@ -4,10 +4,12 @@
 // Two things are pinned here, and they are the whole point of the slice.
 //
 // GENERALITY. Nothing in the flow names mining or combat. activateModule takes
-// a module and an OPTIONAL effect name; omit it and the SERVER resolves the
-// module's own default activation effect. The same four methods drive a mining
-// laser and a turret, so a later combat goal reuses them unchanged. There is a
-// test below that switches on a combat module through the identical path.
+// a module and an OPTIONAL effect name; omit it and the page names the module
+// type's default effect from the game's data, as the client's button names its
+// default effect (since 2026-10-14 the page's own call, bridge/dogmaWrites.ts).
+// The same four methods drive a mining laser and a turret, so a later combat goal
+// reuses them unchanged. There is a test below that switches on a combat module
+// through the identical path.
 //
 // HONESTY. A 200 is not proof. Every mutation is verified against a server
 // re-read, and the flow distinguishes THREE outcomes that a naive client would
@@ -309,75 +311,93 @@ test("unlockTarget calls off a lock the page is still making; and lets go of it 
 });
 
 // --- Module activation ------------------------------------------------------
+//
+// The page's own module calls since 2026-10-14 (bridge/dogmaWrites.ts): the flight read first (a module is switched
+// in space only), the module type's default effect from the game's data where the type is given and no effect is,
+// the call itself (godma.py 2062, Activate(itemID, effectName, target, repeat); 2101, Deactivate(itemID, effectName);
+// the effect names its own name, godma.py 985 and 996), and then the module's own state read, its cycle with the
+// first read after a stop.
 
-test("activateModule sends the module ALONE by default — the server picks the effect", async () => {
-  const store = createClientStore();
-  const { fetch, requests } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/modules/activate") {
-      return {
-        status: 200,
-        body: { ok: true, active: true, activeModuleIDs: [MODULE_ID], notifications: [] },
-      };
+const SHIP_ID = 9001;
+const moduleCall = (method: string, args: readonly unknown[]) => ({ service: "dogmaIM", method, args, kwargs: null, pilot: true, confirm: true });
+const refused = (message: string) => ({ status: 409, body: { ok: false, error: "CALL_REFUSED", message } });
+
+function moduleBff(spec: {
+  readonly call?: (body: Record<string, unknown>) => { status: number; body: unknown };
+  readonly state: (cycle: boolean) => Record<string, unknown>;
+  readonly effects?: Readonly<Record<number, string | null>>;
+  readonly activeModuleIDs?: number[] | null;
+}) {
+  return makeFakeFetch((path, _method, body) => {
+    if (path === "/api/bridge/flight/status") {
+      return { status: 200, body: { ok: true, flight: { inSpace: true, shipID: SHIP_ID, solarSystemID: 30000142 }, notifications: [] } };
+    }
+    if (path.startsWith("/api/types/default-effects?typeIDs=")) {
+      return { status: 200, body: { ok: true, defaultEffect: spec.effects ?? {} } };
+    }
+    if (path === "/api/bridge/call") {
+      return spec.call ? spec.call(body) : { status: 200, body: { ok: true, service: body.service, method: body.method, result: null, notifications: [] } };
+    }
+    if (path.startsWith(`/api/bridge/modules/${MODULE_ID}/state?shipID=${SHIP_ID}`)) {
+      return { status: 200, body: { ok: true, itemID: MODULE_ID, shipID: SHIP_ID, ...spec.state(path.endsWith("&cycle=1")), notifications: [] } };
     }
     if (path === "/api/bridge/space/snapshot") {
-      return { status: 200, body: snapshotBody([MODULE_ID]) };
+      return { status: 200, body: snapshotBody(spec.activeModuleIDs === undefined ? [] : spec.activeModuleIDs) };
     }
     throw new Error(`unexpected ${path}`);
   });
+}
+
+test("activateModule names the module type's default effect, from the game's data, as the client's button does", async () => {
+  const store = createClientStore();
+  const { fetch, requests } = moduleBff({
+    effects: { 483: "miningLaser" },
+    state: () => ({ stopped: false, activeModuleIDs: [MODULE_ID] }),
+    activeModuleIDs: [MODULE_ID],
+  });
   const flow = createAppFlow(store, { fetch });
 
-  await flow.activateModule(MODULE_ID);
-  // No effect name, no target, no repeat: the browser does not know or guess
-  // what kind of module this is, and does not have to.
-  assert.deepEqual(requests[0]?.body, { itemID: MODULE_ID });
+  await flow.activateModule(MODULE_ID, { typeID: 483, targetID: ROCK_ID });
+  // shipmodulebutton.py 1348: the default effect's Activate(targetID, repeats), godma.py 985 then 2062.
+  // Until stopped goes as the client's 1000 (shipmodulebutton.py 112 to 122, GetRepeatCount).
+  assert.deepEqual(calls(requests), [moduleCall("Activate", [MODULE_ID, "miningLaser", ROCK_ID, 1000])]);
+  assert.ok(requests.some((each) => each.path === "/api/types/default-effects?typeIDs=483"));
   assert.equal(store.targeting.get().lastAction, "Switch on");
   assert.equal(store.targeting.get().silentDecline, null);
 });
 
 test("the SAME method drives a mining module and a combat module — no new surface", async () => {
   const store = createClientStore();
-  const { fetch, requests } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/modules/activate") {
-      return { status: 200, body: { ok: true, active: true, activeModuleIDs: [], notifications: [] } };
-    }
-    return { status: 200, body: snapshotBody([]) };
-  });
+  const { fetch, requests } = moduleBff({ state: () => ({ stopped: false, activeModuleIDs: [MODULE_ID] }) });
   const flow = createAppFlow(store, { fetch });
 
   await flow.activateModule(MODULE_ID, { effect: "miningLaser", targetID: ROCK_ID, repeat: -1 });
   await flow.activateModule(MODULE_ID, { effect: "useMissiles", targetID: ROCK_ID });
 
-  const posts = requests.filter((entry) => entry.path === "/api/bridge/modules/activate");
-  assert.deepEqual(posts[0]?.body, { itemID: MODULE_ID, effect: "miningLaser", targetID: ROCK_ID });
-  assert.deepEqual(posts[1]?.body, { itemID: MODULE_ID, effect: "useMissiles", targetID: ROCK_ID });
+  assert.deepEqual(calls(requests), [
+    moduleCall("Activate", [MODULE_ID, "miningLaser", ROCK_ID, 1000]),
+    moduleCall("Activate", [MODULE_ID, "useMissiles", ROCK_ID, 1000]),
+  ]);
+  // An effect the caller names is the one named: the game's data is not asked.
+  assert.equal(requests.some((each) => each.path.startsWith("/api/types/default-effects")), false);
 });
 
-test("repeat: 0 (a single cycle) is sent; the default -1 is left off the wire", async () => {
+test("repeat: 0 (a single cycle) is sent as 0, and a module with no target goes out with None", async () => {
   const store = createClientStore();
-  const { fetch, requests } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/modules/activate") {
-      return { status: 200, body: { ok: true, active: true, activeModuleIDs: [], notifications: [] } };
-    }
-    return { status: 200, body: snapshotBody([]) };
-  });
+  const { fetch, requests } = moduleBff({ state: () => ({ stopped: false, activeModuleIDs: [MODULE_ID] }) });
   const flow = createAppFlow(store, { fetch });
 
-  await flow.activateModule(MODULE_ID, { repeat: 0 });
-  const post = requests.find((entry) => entry.path === "/api/bridge/modules/activate");
-  assert.deepEqual(post?.body, { itemID: MODULE_ID, repeat: 0 });
+  await flow.activateModule(MODULE_ID, { effect: "moduleBonusAfterburner", repeat: 0 });
+  assert.deepEqual(calls(requests), [moduleCall("Activate", [MODULE_ID, "moduleBonusAfterburner", null, 0])]);
 });
 
 test("a module accepted and then NOT run is a silent decline", async () => {
   const store = createClientStore();
-  const { fetch } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/modules/activate") {
-      return { status: 200, body: { ok: true, active: false, activeModuleIDs: [], notifications: [] } };
-    }
-    return { status: 200, body: snapshotBody([]) };
-  });
+  // The module's own state read after the call: not among the ship's running modules.
+  const { fetch } = moduleBff({ state: () => ({ stopped: true, activeModuleIDs: [] }) });
   const flow = createAppFlow(store, { fetch });
 
-  await flow.activateModule(MODULE_ID);
+  await flow.activateModule(MODULE_ID, { effect: "miningLaser", targetID: ROCK_ID });
   const state = store.targeting.get();
   assert.equal(state.actionError, null);
   assert.match(state.silentDecline ?? "", /did not run it, and gave no reason/i);
@@ -385,16 +405,11 @@ test("a module accepted and then NOT run is a silent decline", async () => {
 
 test("UNKNOWN is not a decline: a verification read that cannot answer says nothing", async () => {
   const store = createClientStore();
-  const { fetch } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/modules/activate") {
-      // active: null — the snapshot had no activeModuleIDs to check against.
-      return { status: 200, body: { ok: true, active: null, activeModuleIDs: null, notifications: [] } };
-    }
-    return { status: 200, body: snapshotBody(null) };
-  });
+  // stopped: null — the state read had no running list to check against.
+  const { fetch } = moduleBff({ state: () => ({ stopped: null, activeModuleIDs: null }), activeModuleIDs: null });
   const flow = createAppFlow(store, { fetch });
 
-  await flow.activateModule(MODULE_ID);
+  await flow.activateModule(MODULE_ID, { effect: "miningLaser", targetID: ROCK_ID });
   const state = store.targeting.get();
   assert.equal(state.silentDecline, null, "we do not know, so we must not claim it declined");
   assert.equal(state.actionError, null);
@@ -404,100 +419,59 @@ test("UNKNOWN is not a decline: a verification read that cannot answer says noth
 
 test("a module refusal surfaces the server's own reason", async () => {
   const store = createClientStore();
-  const { fetch } = makeFakeFetch(() => ({
-    status: 409,
-    body: {
-      ok: false,
-      error: "CALL_REFUSED",
-      message: "You must be targeting something to activate that module.",
-    },
-  }));
+  const { fetch, requests } = moduleBff({
+    call: () => refused("You must be targeting something to activate that module."),
+    state: () => { throw new Error("no state read after a refusal"); },
+  });
   const flow = createAppFlow(store, { fetch });
 
-  await flow.activateModule(MODULE_ID);
+  await flow.activateModule(MODULE_ID, { effect: "miningLaser" });
   assert.match(store.targeting.get().actionError ?? "", /targeting something/i);
   assert.equal(store.targeting.get().silentDecline, null);
+  assert.equal(requests.some((each) => each.path.includes("/state?")), false);
 });
 
 test("deactivateModule reports a module that stopped outright", async () => {
   const store = createClientStore();
-  const { fetch, requests } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/modules/deactivate") {
-      return { status: 200, body: { ok: true, stopped: true, activeModuleIDs: [], notifications: [] } };
-    }
-    return { status: 200, body: snapshotBody([]) };
-  });
+  const { fetch, requests } = moduleBff({ effects: { 483: "miningLaser" }, state: () => ({ stopped: true, activeModuleIDs: [], cycleMs: 60000 }) });
   const flow = createAppFlow(store, { fetch });
 
-  await flow.deactivateModule(MODULE_ID);
-  assert.deepEqual(
-    requests.find((entry) => entry.path === "/api/bridge/modules/deactivate")?.body,
-    { itemID: MODULE_ID },
-  );
+  await flow.deactivateModule(MODULE_ID, { typeID: 483 });
+  // godma.py 996 then 2101: the effect stopping names itself.
+  assert.deepEqual(calls(requests), [moduleCall("Deactivate", [MODULE_ID, "miningLaser"])]);
+  // Stopped at the first read, its cycle with it: nothing more to watch.
+  assert.deepEqual(requests.filter((each) => each.path.includes("/state?")).map((each) => each.path), [`/api/bridge/modules/${MODULE_ID}/state?shipID=${SHIP_ID}&cycle=1`]);
   assert.equal(store.targeting.get().silentDecline, null);
   assert.equal(store.targeting.get().lastAction, "Switch off");
 });
 
-// ⚠ THE REGRESSION THIS PINS. A module told to stop that is STILL CYCLING is
-// retail behaviour — the stop lands at the end of the current cycle — not a
-// silent decline. Reporting "The server did not stop that module, and gave no
-// reason" was alarming and wrong; measured live on a 1MN Civilian Afterburner,
-// which reported stopped:false and then genuinely stopped ~12s later.
-test("⚠ a module finishing its cycle is NOT reported as a silent decline", async () => {
-  const store = createClientStore();
-  const { fetch } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/modules/deactivate") {
-      return {
-        status: 200,
-        // Accepted, and the module is still in the server's own running list.
-        body: { ok: true, stopped: false, activeModuleIDs: [MODULE_ID], notifications: [] },
-      };
-    }
-    return { status: 200, body: snapshotBody([MODULE_ID]) };
-  });
-  const flow = createAppFlow(store, { fetch });
-
-  await flow.deactivateModule(MODULE_ID);
-  const state = store.targeting.get();
-  assert.equal(state.silentDecline, null, "still cycling is not a decline");
-  assert.equal(state.actionError, null, "and it is certainly not a refusal");
-  // What IS said is true right now, and predicts nothing.
-  assert.match(state.lastAction ?? "", /finishing its cycle/i);
-});
+// (The test that a module told to stop and still cycling is said to be "finishing its cycle", never a silent decline,
+// went on 2026-10-14: the module is watched to its cycle's end by the page now (bridge/dogmaWrites.ts,
+// deactivateModule), and the fake has no clock to give it, so the test would wait out a real cycle. The watching's
+// own tests are bridge/moduleShutdown.test.ts's; the flow still says "Switch off — finishing its cycle" where the
+// watching ends with the module running.)
 
 test("a genuine refusal to deactivate still surfaces the server's reason", async () => {
   const store = createClientStore();
-  const { fetch } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/modules/deactivate") {
-      return {
-        status: 409,
-        body: { ok: false, error: "CALL_REFUSED", message: "That module is not active." },
-      };
-    }
-    return { status: 200, body: snapshotBody([]) };
+  const { fetch } = moduleBff({
+    call: () => refused("That module is not active."),
+    state: () => { throw new Error("no state read after a refusal"); },
   });
   const flow = createAppFlow(store, { fetch });
 
-  await flow.deactivateModule(MODULE_ID);
+  await flow.deactivateModule(MODULE_ID, { effect: "miningLaser" });
   assert.match(store.targeting.get().actionError ?? "", /not active/i);
   assert.equal(store.targeting.get().silentDecline, null);
 });
 
-test("deactivateModule forwards typeID so the BFF can name a prop mod's effect", async () => {
+test("deactivateModule names a prop mod's effect from its type, the game's data asked for it", async () => {
   const store = createClientStore();
-  const { fetch, requests } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/modules/deactivate") {
-      return { status: 200, body: { ok: true, stopped: true, activeModuleIDs: [], notifications: [] } };
-    }
-    return { status: 200, body: snapshotBody([]) };
-  });
+  const { fetch, requests } = moduleBff({ effects: { 21857: "moduleBonusAfterburner" }, state: () => ({ stopped: true, activeModuleIDs: [] }) });
   const flow = createAppFlow(store, { fetch });
 
   await flow.deactivateModule(MODULE_ID, { typeID: 21857 });
-  assert.deepEqual(
-    requests.find((entry) => entry.path === "/api/bridge/modules/deactivate")?.body,
-    { itemID: MODULE_ID, typeID: 21857 },
-  );
+  assert.ok(requests.some((each) => each.path === "/api/types/default-effects?typeIDs=21857"));
+  assert.deepEqual(calls(requests), [moduleCall("Deactivate", [MODULE_ID, "moduleBonusAfterburner"])]);
 });
 
 // --- A successful action clears the previous failure -------------------------

@@ -178,11 +178,16 @@ function harness(options: { locked?: number[]; activeModuleIDs?: number[] } = {}
         body: { ok: true, service: "dogmaIM", method: "AddTarget", result: [0, state.locked], notifications: [] },
       };
     }
-    if (path === "/api/bridge/modules/activate") {
+    // The equipment is switched on by the page's own call (bridge/dogmaWrites.ts): godma's Activate, then the
+    // module's own state read.
+    if (path === "/api/bridge/call" && body.method === "Activate") {
       state.active = [LASER];
+      return { status: 200, body: { ok: true, service: "dogmaIM", method: "Activate", result: null, notifications: [] } };
+    }
+    if (path.startsWith(`/api/bridge/modules/${LASER}/state?shipID=${SHIP}`)) {
       return {
         status: 200,
-        body: { ok: true, active: true, activeModuleIDs: state.active, notifications: [] },
+        body: { ok: true, itemID: LASER, shipID: SHIP, stopped: !state.active.includes(LASER), activeModuleIDs: state.active, notifications: [] },
       };
     }
     if (path === "/api/bridge/ship/ore-hold") {
@@ -238,21 +243,21 @@ test("startMiningBot lands the plan in the store and the loop drives the real BF
   assert.equal(paths.has("/api/bridge/targets/lock"), false);
 });
 
-test("the bot activates a module with NO effect name — the server resolves it, the browser never guesses", async () => {
+test("the bot switches its equipment on by the page's own call, at the rock, until stopped", async () => {
   const { flow, requests } = harness({ locked: [ROCK] });
   await flow.startMiningBot(REQUEST);
   await new Promise((resolve) => setTimeout(resolve, 60));
   flow.stopMiningBot();
 
-  const activate = requests.find((r) => r.path === "/api/bridge/modules/activate");
+  const activate = requests.find((r) => r.path === "/api/bridge/call" && r.body.method === "Activate");
   assert.ok(activate, "it switched the equipment on");
-  assert.equal(activate.body.itemID, LASER);
-  assert.equal(activate.body.targetID, ROCK);
-  assert.equal(
-    "effect" in activate.body,
-    false,
-    "no effect name: the SERVER resolves the module's own default activation effect",
-  );
+  // godma.py 2062: Activate(itemID, effectName, target, repeat). (The effect is not held here: the bot knows no type
+  // for its equipment and names none, the server's activation taking the module's default, eve.js
+  // space/runtime/scene/modules.js 1213 to 1222, where the client's button names the default effect itself,
+  // shipmodulebutton.py 1348.)
+  const args = Array.isArray(activate.body.args) ? activate.body.args : [];
+  // Until stopped goes as the client's 1000 (shipmodulebutton.py 112 to 122, GetRepeatCount).
+  assert.deepEqual([activate.body.service, args[0], args[2], args[3]], ["dogmaIM", LASER, ROCK, 1000]);
 });
 
 test("the bot's warps carry retail's minRange 0, not the autopilot call's built-in 10 km (R24 slice A)", async () => {

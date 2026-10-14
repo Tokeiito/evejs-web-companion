@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { observeDeferredShutdown } from "./moduleShutdown.ts";
 import { requireModuleOutcome } from "../nav/moduleOutcome.ts";
-import { deactivateModule } from "../app/api.ts";
+import { deactivateModule } from "./dogmaWrites.ts";
+import type { JsonValue } from "./wire.ts";
 
 const initial = { itemID: 7, shipID: 9, stopped: false, remainingMs: 75680 };
 const outcome = (r: Record<string, unknown>) => ({ itemID: Number(r.itemID), active: null,
@@ -44,13 +45,24 @@ test("retired authority interrupts pending OFF without another read or mutation"
     sleep: async () => { current = false; }, read: async () => { throw Error("retired generation must not read"); },
   }), { code: "SESSION_REQUEST_RETIRED" });
 });
-test("production API dispatches exactly one Deactivate then only exact-module reads", async () => {
-  const paths: string[] = [];
-  const result = await deactivateModule(7, {}, { token: "task-test-token", fetch: async (url, init) => {
-    paths.push(String(url));
-    const value = init?.method === "POST" ? { ok: true, ...initial, remainingMs: 3000 } : { ok: true, itemID: 7, shipID: 9, stopped: true };
-    return new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
-  } });
+// The page's own deactivate since 2026-10-14 (dogmaWrites.ts; its route went): godma.py 2101, Deactivate(itemID,
+// effectName), the effect it is stopping named; then the module's own state read, its cycle with the first reading.
+test("the page's deactivate makes exactly one Deactivate, its effect named, then only exact-module reads", async () => {
+  const acts: unknown[] = [];
+  const reads: string[] = [];
+  let now = 0;
+  const result = await deactivateModule(
+    async (service, method, args) => { acts.push([service, method, args]); return null; },
+    {
+      flightNow: async () => ({ inSpace: true, shipID: 9, solarSystemID: 30000142 }),
+      state: async (itemID, shipID, cycle): Promise<Record<string, JsonValue>> => {
+        reads.push(`${itemID}@${shipID}${cycle ? " cycle" : ""}`);
+        return reads.length === 1 ? { ok: true, itemID, shipID, stopped: false, cycleMs: 3000 } : { ok: true, itemID, shipID, stopped: true };
+      },
+      effects: { of: async () => "moduleBonusAfterburner" },
+    },
+    7, { typeID: 439 }, { now: () => now, sleep: async (ms) => { now += ms; } });
   requireModuleOutcome(result, 7, "deactivate");
-  assert.deepEqual(paths, ["/api/bridge/modules/deactivate", "/api/bridge/modules/7/state?shipID=9"]);
+  assert.deepEqual(acts, [["dogmaIM", "Deactivate", [7, "moduleBonusAfterburner"]]]);
+  assert.deepEqual(reads, ["7@9 cycle", "7@9"]);
 });

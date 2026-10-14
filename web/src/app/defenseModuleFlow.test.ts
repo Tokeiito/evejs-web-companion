@@ -234,8 +234,10 @@ function makeFakeFetch(
               /amplifier/i.test(module.groupName) ? [] : [[73, 5000]] }],
           ] } }]) }],
       ] } } } } } };
-    if (path === "/api/bridge/modules/activate") return { status: 200,
-      body: { ok: true, itemID: body.itemID, active: true, stopped: null } };
+    // The page's own call (bridge/dogmaWrites.ts), and the module's own state read after it: running.
+    if (path === "/api/bridge/call" && body.method === "Activate") return { status: 200, body: { ok: true, service: "dogmaIM", method: "Activate", result: null, notifications: [] } };
+    if (/^\/api\/bridge\/modules\/\d+\/state\?/.test(path)) return { status: 200,
+      body: { ok: true, itemID: Number(path.split("/")[4]), shipID: SHIP_ID, stopped: false, notifications: [] } };
     if (path === "/api/names") return { status: 200, body: namesBody(body, modules) };
     if (path === "/api/bridge/targets") return { status: 200, body: { ok: true, targetIDs: [], notifications: [] } };
     if (path === "/api/bridge/drones") return { status: 200, body: { ok: true, activeShipID: SHIP_ID, inSpace: [], bay: [], notifications: [] } };
@@ -260,6 +262,16 @@ function script(interrupt: InterruptRow): BotScript {
   };
 }
 
+/** The module an Activate names, and its target: godma.py 2062, Activate(itemID, effectName, target, repeat). */
+function moduleOf(call: Recorded | undefined): unknown {
+  const args = call?.body.args;
+  return Array.isArray(args) ? args[0] : undefined;
+}
+function targetOf(call: Recorded | undefined): unknown {
+  const args = call?.body.args;
+  return Array.isArray(args) ? args[2] : undefined;
+}
+
 /** Start the real custom-bot runner, let its first tick land, stop it, and
  * return every `activate` call it issued — the observable proof of which
  * item id `resolveDefenseModuleIDs` handed the `repair` interrupt. */
@@ -274,7 +286,7 @@ async function activateCalls(
   await flow.startCustomBot(script(interrupt));
   await new Promise((resolve) => setTimeout(resolve, 150));
   flow.stopCustomBot();
-  return requests.filter((r) => r.path === "/api/bridge/modules/activate");
+  return requests.filter((r) => r.path === "/api/bridge/call" && r.body.method === "Activate");
 }
 
 // ── armor ────────────────────────────────────────────────────────────────────
@@ -306,10 +318,10 @@ test("a Remote Armor Repairer never self-activates on the armor-below watch — 
 test("a genuine Armor Repair Unit still self-activates on the armor-below watch (no regression)", async () => {
   const activated = await activateCalls([ARMOR_REPAIR_UNIT], { armor: 0.3 }, ARMOR_WATCH);
   assert.equal(activated.length, 1, "the watch has exactly one idle repairer to switch on");
-  assert.equal(activated[0]?.body.itemID, ARMOR_REPAIR_UNIT.itemID);
-  // targetID: 0 is self/no-target — api.activateModule drops a falsy targetID
-  // from the wire body entirely rather than sending a literal 0.
-  assert.equal("targetID" in (activated[0]?.body ?? {}), false, "a self repairer carries no targetID at all");
+  assert.equal(moduleOf(activated[0]), ARMOR_REPAIR_UNIT.itemID);
+  // targetID: 0 is self/no-target — the page names None for the target then, as the client's button does for an
+  // effect that is not a target's (shipmodulebutton.py 1318).
+  assert.equal(targetOf(activated[0]), null, "a self repairer names no target");
 });
 
 test("a Remote Armor Repairer fitted alongside a genuine one is never the one chosen", async () => {
@@ -320,7 +332,7 @@ test("a Remote Armor Repairer fitted alongside a genuine one is never the one ch
   );
   assert.equal(activated.length, 1);
   assert.equal(
-    activated[0]?.body.itemID,
+    moduleOf(activated[0]),
     ARMOR_REPAIR_UNIT.itemID,
     "the genuine repairer runs — never the remote one competing for the same watch",
   );
@@ -349,8 +361,8 @@ test("a Shield Boost Amplifier — a passive module — never self-activates on 
 test("a genuine Shield Booster still self-activates on the shield-below watch (no regression)", async () => {
   const activated = await activateCalls([SHIELD_BOOSTER], { shield: 0.3 }, SHIELD_WATCH);
   assert.equal(activated.length, 1);
-  assert.equal(activated[0]?.body.itemID, SHIELD_BOOSTER.itemID);
-  assert.equal("targetID" in (activated[0]?.body ?? {}), false, "a self repairer carries no targetID at all");
+  assert.equal(moduleOf(activated[0]), SHIELD_BOOSTER.itemID);
+  assert.equal(targetOf(activated[0]), null, "a self repairer names no target");
 });
 
 // ── hull ─────────────────────────────────────────────────────────────────────
@@ -367,6 +379,6 @@ test("a Remote Hull Repairer never self-activates on the hull-below watch — th
 test("a genuine Hull Repair Unit still self-activates on the hull-below watch (no regression)", async () => {
   const activated = await activateCalls([HULL_REPAIR_UNIT], { hull: 0.3 }, HULL_WATCH);
   assert.equal(activated.length, 1);
-  assert.equal(activated[0]?.body.itemID, HULL_REPAIR_UNIT.itemID);
-  assert.equal("targetID" in (activated[0]?.body ?? {}), false, "a self repairer carries no targetID at all");
+  assert.equal(moduleOf(activated[0]), HULL_REPAIR_UNIT.itemID);
+  assert.equal(targetOf(activated[0]), null, "a self repairer names no target");
 });
