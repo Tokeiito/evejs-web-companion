@@ -337,7 +337,12 @@ import { readScanFullState } from "../bridge/scanFullState.ts";
 import { applyFitting, fitModule as fitModuleCall, unfitModule as unfitModuleCall } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
 import { BAY_FLAGS, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, stackAll as stackAllCall, trashItems as trashItemsCall, type MovePlace } from "../bridge/inventoryWrites.ts";
-import { cancelOrder as cancelOrderCall } from "../bridge/marketOrderWrites.ts";
+import {
+  cancelOrder as cancelOrderCall,
+  modifyOrder as modifyOrderCall,
+  placeBuyOrder as placeBuyOrderCall,
+  placeSellOrder as placeSellOrderCall,
+} from "../bridge/marketOrderWrites.ts";
 import { doAgentAction, removeOfferFromJournal } from "../bridge/agentWrites.ts";
 import { createScannerWrites, type ScannerShip } from "../bridge/scannerWrites.ts";
 import { surfaceDistanceMeters } from "../space/overview.ts";
@@ -1857,6 +1862,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (flight) return flight.docked ? (flight.structureID ?? flight.stationID ?? null) : null;
     const online = store.station.get().online;
     return online ? (online.structureID ?? online.stationID ?? null) : null;
+  }
+  /** Where an order is placed: the station or structure the pilot is docked in, as the routes placed it. */
+  function marketPlaceNow(): number {
+    const dockedAt = dockedNow();
+    if (dockedAt === null) throw new Error("Orders are placed at the station you are docked in.");
+    return dockedAt;
+  }
+  /** The broker's fee rate the Market window shows for a place: the market read's, where it was read there. */
+  function feeRateShownAt(placeID: number): number | null {
+    const market = store.get().market;
+    return (market.structureID ?? market.stationID) === placeID ? market.brokersFeeRate : null;
   }
   /** The modules fitted to the ship now, each by its own number with a name for its slot: the page's own read of the fitting. */
   async function fittedNow(): Promise<ReadonlyMap<number, string>> {
@@ -13548,21 +13564,19 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             return;
           }
           case "placeBuyOrder":
-            // A resting order rests the full 90 days; the API's own confirm gate
-            // is the second lock behind the server's. The block is one-shot, so a
-            // silent decline just means no order — never a double buy.
-            await api.placeMarketBuyOrder(
-              { typeID: action.typeID, price: action.price, quantity: action.quantity, durationDays: BOT_ORDER_DURATION_DAYS },
-              callOptions,
-            );
+            // A resting order rests the full 90 days, by the page's own call (bridge/marketOrderWrites.ts). The
+            // block is one-shot, so a silent decline just means no order — never a double buy.
+            // A bot shows no window and names no rate; the game port names the client's.
+            await placeBuyOrderCall(bridgeDo, bridgeAsk, {
+              stationID: marketPlaceNow(), typeID: action.typeID, price: action.price, quantity: action.quantity, durationDays: BOT_ORDER_DURATION_DAYS, brokersFeeRate: null,
+            });
             return;
           case "placeSellOrder":
             // The listed stack leaves the hangar, which is how the block confirms
             // next tick — a decline leaves it, and the block retries within bound.
-            await api.placeMarketSellOrder(
-              { itemID: action.itemID, typeID: action.typeID, price: action.price, quantity: action.quantity, durationDays: BOT_ORDER_DURATION_DAYS },
-              callOptions,
-            );
+            await placeSellOrderCall(bridgeDo, bridgeAsk, {
+              stationID: marketPlaceNow(), itemID: action.itemID, typeID: action.typeID, price: action.price, quantity: action.quantity, durationDays: BOT_ORDER_DURATION_DAYS, brokersFeeRate: null,
+            });
             return;
           case "createFleet":
             // Confirmed by the next bound-fleet read (inFleet flips true). Decided on the bot's own reading
@@ -14785,33 +14799,41 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       api.loadMarketGroupTypes(marketGroupID, callOptions),
     async placeMarketOrder(request) {
       // Buying names a TYPE; selling names a specific STACK. Two different
-      // retail calls, and the panel chooses between them here rather than the
-      // BFF guessing from the payload.
+      // retail calls, each the page's own (bridge/marketOrderWrites.ts), with the
+      // wallet read before and after for the verdict, at the station docked in.
       if (request.side === "sell") {
         const itemID = request.itemID ?? 0;
-        await runMarketAction("sell", () =>
-          api.placeMarketSellOrder(
-            {
+        await runMarketAction("sell", async () => {
+          const stationID = marketPlaceNow();
+          return {
+            ...await placeSellOrderCall(bridgeDo, bridgeAsk, {
+              stationID,
               itemID,
               typeID: request.typeID,
               price: request.price,
               quantity: request.quantity,
               durationDays: request.durationDays,
-            },
-            callOptions,
-          ));
+              brokersFeeRate: feeRateShownAt(stationID),
+            }),
+            ownOrders: null,
+          };
+        });
         return;
       }
-      await runMarketAction("buy", () =>
-        api.placeMarketBuyOrder(
-          {
+      await runMarketAction("buy", async () => {
+        const stationID = marketPlaceNow();
+        return {
+          ...await placeBuyOrderCall(bridgeDo, bridgeAsk, {
+            stationID,
             typeID: request.typeID,
             price: request.price,
             quantity: request.quantity,
             durationDays: request.durationDays,
-          },
-          callOptions,
-        ));
+            brokersFeeRate: feeRateShownAt(stationID),
+          }),
+          ownOrders: null,
+        };
+      });
     },
     async cancelMarketOrder(orderID) {
       // The page's own call (bridge/marketOrderWrites.ts), as the client's menu makes it, with the pilot's orders
@@ -14819,7 +14841,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await runMarketAction("cancel", async () => ({ ...await cancelOrderCall(bridgeDo, bridgeAsk, orderID), ownOrders: null }));
     },
     async modifyMarketOrder(orderID, price) {
-      await runMarketAction("modify", () => api.modifyMarketOrder(orderID, price, callOptions));
+      // The page's own call, all but the new price off the order's own row in the pilot's orders, as the client's
+      // modify window makes it (bridge/marketOrderWrites.ts).
+      await runMarketAction("modify", async () => ({ ...await modifyOrderCall(bridgeDo, bridgeAsk, orderID, price), ownOrders: null }));
     },
     loadActivity,
     loadScanner,

@@ -1212,11 +1212,12 @@ export async function loadMarket(
 /**
  * What a market write ACTUALLY did.
  *
- * ⚠ `applied` is the BFF's RE-READ (of the wallet, of the player's own orders),
- * never an echo of the request — the R12/R14/R15 lesson. ⚠ `charged` is the
- * wallet balance BEFORE minus the balance AFTER: the only authoritative
- * statement about what an order cost. The estimated broker fee the confirm step
- * showed never appears here, and is never compared against this.
+ * ⚠ `applied` is the page's own RE-READ (of the wallet, of the player's own
+ * orders: bridge/marketOrderWrites.ts), never an echo of the request — the
+ * R12/R14/R15 lesson. ⚠ `charged` is the wallet balance BEFORE minus the balance
+ * AFTER: the only authoritative statement about what an order cost. The
+ * estimated broker fee the confirm step showed never appears here, and is never
+ * compared against this.
  */
 export interface MarketChangeResult {
   readonly applied: boolean;
@@ -1224,85 +1225,15 @@ export interface MarketChangeResult {
   /** ISK taken (positive) or returned (negative), as a decimal string. */
   readonly charged: string | null;
   readonly balanceAfter: string | null;
-  /** The re-read own-orders rowset (raw; decoded by bridge/market.ts). */
+  /** The re-read own-orders rowset (raw; decoded by bridge/market.ts), where one was kept. */
   readonly ownOrders: JsonValue;
 }
 
-function asMarketChange(data: Record<string, JsonValue>): MarketChangeResult {
-  return {
-    applied: data.applied === true,
-    declinedSilently: data.declinedSilently === true,
-    charged: typeof data.charged === "string" ? data.charged : null,
-    balanceAfter: typeof data.balanceAfter === "string" ? data.balanceAfter : null,
-    ownOrders: data.ownOrders ?? null,
-  };
-}
-
-/** What the browser sends to place an order. Prices are already rounded. */
-export interface MarketBuyRequest {
-  readonly typeID: number;
-  readonly price: number;
-  readonly quantity: number;
-  readonly durationDays: number;
-}
-
-export interface MarketSellRequest {
-  /** The specific STACK being sold — selling is item-based, not type-based. */
-  readonly itemID: number;
-  readonly typeID: number;
-  readonly price: number;
-  readonly quantity: number;
-  readonly durationDays: number;
-}
-
-/**
- * PLACE A BUY ORDER. Sets ISK aside immediately and charges a broker's fee, so
- * the BFF refuses the route outright without `confirm`. The UI asks first; this
- * flag is the second gate behind that.
- */
-export async function placeMarketBuyOrder(
-  request: MarketBuyRequest,
-  options: ApiOptions = {},
-): Promise<MarketChangeResult> {
-  const data = await postJson(
-    "/api/bridge/market/buy",
-    { ...request, confirm: true } as unknown as Record<string, JsonValue>,
-    options,
-  );
-  return asMarketChange(data);
-}
-
-/** PLACE A SELL ORDER. Hands the goods over and charges a broker's fee. */
-export async function placeMarketSellOrder(
-  request: MarketSellRequest,
-  options: ApiOptions = {},
-): Promise<MarketChangeResult> {
-  const data = await postJson(
-    "/api/bridge/market/sell",
-    { ...request, confirm: true } as unknown as Record<string, JsonValue>,
-    options,
-  );
-  return asMarketChange(data);
-}
-
-// An order is taken down by the page's own call (bridge/marketOrderWrites.ts, cancelOrder), with the page's own
-// reads of the pilot's orders and wallet for its verdict: its route (POST /api/bridge/market/cancel) went on
-// 2026-10-13. It returns what the order was holding; the broker's fee already paid is NOT returned, which is why
-// the UI says so before asking.
-
-/** CHANGE an order's price. Charges a fee, and moves a buy order's escrow. */
-export async function modifyMarketOrder(
-  orderID: string,
-  price: number,
-  options: ApiOptions = {},
-): Promise<MarketChangeResult> {
-  const data = await postJson(
-    "/api/bridge/market/modify",
-    { orderID, price, confirm: true },
-    options,
-  );
-  return asMarketChange(data);
-}
+// Orders are placed, repriced and taken down by the page's own calls (bridge/marketOrderWrites.ts), with the page's
+// own reads of the pilot's orders and wallet for each verdict: the cancel's route (POST /api/bridge/market/cancel)
+// went on 2026-10-13, and the buy's, the sale's and the reprice's (.../buy, .../sell, .../modify) on 2026-10-14. A
+// cancel returns what the order was holding; the broker's fee already paid is NOT returned, which is why the UI
+// says so before asking.
 
 // --- Fleet management writes + the fleet-state read (fleet-mgmt bot blocks) ---
 // The writes are confirm-gated server-side; the reader passes `confirm:true` as the

@@ -26,7 +26,7 @@
 // A read that fails leaves its half of the verdict unknown, and is not made up.
 
 import { failsTheReading, type Ask } from "./ask.ts";
-import { decodeOwnOrders, iskDelta, toAmountString } from "./market.ts";
+import { decodeOwnOrders, iskDelta, RANGE_STATION, roundPrice, toAmountString } from "./market.ts";
 import type { JsonValue } from "./wire.ts";
 
 /** What an order's taking down came to, as the pilot's orders and wallet say. */
@@ -79,5 +79,111 @@ export async function cancelOrder(act: Ask, ask: Ask, orderID: string): Promise<
   const balanceAfter = await balance();
   const after = await orders();
   const applied = row !== undefined && after !== null && !after.some((order) => order.orderID === orderID);
+  return { applied, declinedSilently: !applied, charged: iskDelta(balanceBefore, balanceAfter), balanceAfter };
+}
+
+// ORDERS PLACED AND REPRICED, by the page itself since 2026-10-14. Until then three routes of the BFF
+// (POST /api/bridge/market/buy, /sell and /modify), which read the wallet, made the call, and read the wallet and the
+// orders again, as these do.
+//
+// THE CALLS, as the client's market service makes them (marketsvc.py):
+//
+//   BuyStuff (256 to 268)    PlaceBuyOrder(stationID, typeID, round(price, 2), quantity, orderRange, minVolume,
+//                            duration, useCorp, expectedBrokersFee), the price a float; from the buy window
+//                            (buyThisTypeWindow.py 647 to 701): the range the station's where the window has no range
+//                            of its own, the least a fill takes 1, the duration nought for a buy at once, not for the
+//                            corporation, and the broker's fee rate the window showed
+//   SellMulti (275 to 276)   PlaceMultiSellOrder(itemList, useCorp, duration, expectedBrokersFee), each item a
+//                            util.KeyVal of the stack, its station and type, the price and the number (sellMulti.py
+//                            462, 483 on)
+//   ModifyOrder (285 to 289) ModifyCharOrder(order.orderID, newPrice, order.bid, order.stationID,
+//                            order.solarSystemID, order.price, order.range, order.volRemaining, order.issueDate), all
+//                            but the new price off the order's own row (quote.py 285 to 290, buyThisTypeWindow.py
+//                            603 to 622)
+//
+// THE BROKER'S FEE RATE is the client's working-out from the pilot's skills and standings and the station's owner
+// (marketutil/brokerFee.py, skilllimits.py), and its window names the rate it showed. The page names the rate the
+// market read gave where it was made at the same place (the game port works it out: pilots.js brokersFeeAt), and
+// None where it has none (through the gateway, nothing works it out); the game port names its own rate where None
+// comes, and how far a sale's price is from the type's average, which the page has not (src/gamePort/retailCalls.js).
+// The server holds an order to a rate named and checks none where None is named (marketProxyService.js,
+// validateExpectedBrokerFeePercentage). A sale names the rate for an order that stands and None for a sale at once,
+// each item carrying its own (sellMulti.py 443 to 446).
+//
+// ⚠ THE ANSWERS SAY LITTLE, SO THE VERDICT IS READ, as the routes read it: a buy answers None whether it bought,
+// set an order up, or neither, and is judged by the wallet; a sale answers whether it traded or set an order up; a
+// reprice answers None, and is judged by the order's price in the pilot's orders after.
+
+/** What an order placed or repriced came to, as the pilot's wallet and orders say. */
+export type MarketWriteChange = MarketOrderChange;
+
+/** A buy at the station the pilot is docked in, as the client's buy window places it. */
+export interface BuyOrder {
+  readonly stationID: number;
+  readonly typeID: number;
+  readonly price: number;
+  readonly quantity: number;
+  readonly durationDays: number;
+  /** The broker's fee rate the page showed for that station, as a fraction; null where it has none. */
+  readonly brokersFeeRate: number | null;
+}
+
+/** One stack sold at the station it lies in. */
+export interface SaleOfAStack {
+  readonly stationID: number;
+  readonly itemID: number;
+  readonly typeID: number;
+  readonly price: number;
+  readonly quantity: number;
+  readonly durationDays: number;
+  /** The broker's fee rate the page showed for that station, as a fraction; null where it has none. */
+  readonly brokersFeeRate: number | null;
+}
+
+/** Places a buy order (or buys at once, for a duration of nought). Fails as the call fails. */
+export async function placeBuyOrder(act: Ask, ask: Ask, order: BuyOrder): Promise<MarketWriteChange> {
+  const balance = () => quietly(async () => walletAmount(await ask("account", "GetCashBalance", [0])));
+  const balanceBefore = await balance();
+  await act("marketProxy", "PlaceBuyOrder", [
+    order.stationID, order.typeID, roundPrice(order.price), order.quantity, RANGE_STATION, 1, order.durationDays, false, order.brokersFeeRate,
+  ]);
+  const balanceAfter = await balance();
+  const charged = iskDelta(balanceBefore, balanceAfter);
+  // A buy takes ISK whatever it did, the escrow or the goods' price and the fee; nought taken is nothing done.
+  const applied = charged !== null && charged !== "0.00";
+  return { applied, declinedSilently: !applied, charged, balanceAfter };
+}
+
+/** Sells one stack, at once or by an order that stands. Fails as the call fails. */
+export async function placeSellOrder(act: Ask, ask: Ask, sale: SaleOfAStack): Promise<MarketWriteChange> {
+  const balance = () => quietly(async () => walletAmount(await ask("account", "GetCashBalance", [0])));
+  const balanceBefore = await balance();
+  const item: Record<string, JsonValue> = { stationID: sale.stationID, typeID: sale.typeID, itemID: sale.itemID, price: roundPrice(sale.price), quantity: sale.quantity };
+  if (sale.brokersFeeRate !== null) item.rawBrokerFeePercentage = sale.brokersFeeRate;
+  const named = sale.durationDays !== 0 ? sale.brokersFeeRate : null;
+  const answered = await act("marketProxy", "PlaceMultiSellOrder", [[item], false, sale.durationDays, named]);
+  const balanceAfter = await balance();
+  const applied = answered === true;
+  return { applied, declinedSilently: !applied, charged: iskDelta(balanceBefore, balanceAfter), balanceAfter };
+}
+
+/** Gives one of the pilot's own orders a new price, the order named by its number as the pilot's orders have it. */
+export async function modifyOrder(act: Ask, ask: Ask, orderID: string, price: number): Promise<MarketWriteChange> {
+  if (!/^\d+$/.test(orderID)) throw new Error("That order could not be identified.");
+  const orders = () => quietly(async () => decodeOwnOrders(await ask("marketProxy", "GetCharOrders", [])));
+  const balance = () => quietly(async () => walletAmount(await ask("account", "GetCashBalance", [0])));
+  const before = await orders();
+  const row = before?.find((order) => order.orderID === orderID);
+  if (!row) throw new Error("That order is not among your orders any more.");
+  const balanceBefore = await balance();
+  const newPrice = roundPrice(price);
+  const issued: JsonValue = row.issuedAt === null ? null : { type: "long", value: row.issuedAt.toString() };
+  await act("marketProxy", "ModifyCharOrder", [
+    orderID, newPrice, row.side === "buy", row.stationID, row.solarSystemID, Number(row.price), row.range, row.volumeRemaining, issued,
+  ]);
+  const balanceAfter = await balance();
+  const after = await orders();
+  const now = after?.find((order) => order.orderID === orderID);
+  const applied = now !== undefined && roundPrice(Number(now.price)) === newPrice;
   return { applied, declinedSilently: !applied, charged: iskDelta(balanceBefore, balanceAfter), balanceAfter };
 }
