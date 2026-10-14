@@ -28,6 +28,7 @@
   import {
     SKILL_HISTORY_DATE_LABEL,
     SKILL_HISTORY_HEADER_LABELS,
+    SKILL_HISTORY_OWN_ACTION_WORDS,
     SKILL_HISTORY_WORD_LABELS,
     skillHistoryActionLabel,
   } from "../bridge/skillHistoryPanel.ts";
@@ -80,19 +81,6 @@
     const template = $words.templates[label];
     return typeof template === "string" ? template : own;
   }
-
-  // The page's own words for what happened, where the client's are not to be read.
-  const OWN_ACTION_WORDS: Readonly<Record<number, string>> = {
-    24: "Gift",
-    34: "Clone penalty",
-    36: "Training started",
-    37: "Training complete",
-    38: "Training stopped",
-    39: "Given by a GM",
-    53: "Training complete",
-    307: "Free skill points applied",
-    431: "Skill level extracted",
-  };
 
   /** FmtDate(logDate, 'ls'): the client's label with the date in it; the game's date and time plainly without it. */
   function historyDate(logDate: string): string {
@@ -282,7 +270,7 @@
             <tr>
               <td class="value">{historyDate(line.logDate)}</td>
               <td>{resolvedName($names.resolved, "type", line.skillTypeID, "Unknown skill")}</td>
-              <td>{word(skillHistoryActionLabel(line.eventTypeID), OWN_ACTION_WORDS[line.eventTypeID] ?? "Unknown")}</td>
+              <td>{word(skillHistoryActionLabel(line.eventTypeID), SKILL_HISTORY_OWN_ACTION_WORDS[line.eventTypeID] ?? "Unknown")}</td>
               <td class="value">{line.level}</td>
             </tr>
           {/each}

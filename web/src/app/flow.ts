@@ -68,6 +68,7 @@ import { decodeAssetItems } from "../bridge/personalAssets.ts";
 import { failsTheReading, failureCode } from "../bridge/ask.ts";
 import { decodeSkillHistory, decodeSkills } from "../bridge/boundSkills.ts";
 import { skillHistoryLines } from "../bridge/skillHistoryPanel.ts";
+import { SKILL_NOTIFICATION_ROWS, skillNotificationsOf, type SkillNotification } from "../bridge/skillNotifications.ts";
 import { employmentHistoryOf } from "../bridge/employmentHistory.ts";
 import { filetimeOf } from "../bridge/journalWords.ts";
 import { readAssetStationItems, readAssetStations, type AssetStationItemsRead, type AssetStationsRead } from "../bridge/assetReads.ts";
@@ -162,6 +163,7 @@ import type {
   ActivityCalendarEventRow,
   ActivityCalendarResponseRow,
   ActivityNotificationRow,
+  ActivityRead,
   AgentAction,
   AgentConversation,
   MissionPageState,
@@ -4002,24 +4004,35 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     store.apply({ type: "activity/loading" });
 
     const now = new Date();
-    const [notificationResult, calendarResult, mailResult] = await Promise.allSettled([
+    const [notificationResult, calendarResult, mailResult, skillResult] = await Promise.allSettled([
       api.loadActivityNotifications(callOptions),
       api.loadActivityCalendar(now.getUTCMonth() + 1, now.getUTCFullYear(), callOptions),
       // Reuse the existing mail flow so its own authoritative slice and name
       // resolution stay the one source of truth for unread mail.
       loadMail(),
+      readSkillNotifications(),
     ] as const);
     assertCurrent?.();
 
     // A lost live session invalidates every result, even if another arm won
     // the race and answered first. Unwind exactly like all other panel reads.
-    for (const result of [notificationResult, calendarResult, mailResult]) {
+    for (const result of [notificationResult, calendarResult, mailResult, skillResult]) {
       if (result.status === "rejected" && isSessionLost(result.reason)) {
         stopLiveStream();
         store.apply({ type: "character/offline" });
         throw result.reason;
       }
     }
+    // What fails a whole reading, in the page's own calls, fails this one.
+    if (skillResult.status === "rejected" && failsTheReading(skillResult.reason)) {
+      throw skillResult.reason;
+    }
+    const skillNotifications: ActivityRead<readonly SkillNotification[]> =
+      skillResult.status === "fulfilled"
+        ? { status: "ready", value: skillResult.value, error: null }
+        : activityReadError<readonly SkillNotification[]>(
+            `Skill notifications could not be refreshed. ${errorWords(skillResult.reason)}`,
+          );
 
     const notificationReads: ReturnType<typeof decodeActivityNotifications> =
       notificationResult.status === "fulfilled"
@@ -4049,6 +4062,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       type: "activity/loaded",
       ...notificationReads,
       ...calendarReads,
+      skillNotifications,
       mailError:
         mailResult.status === "rejected"
           ? `Mail could not be refreshed. ${errorWords(mailResult.reason)}`
@@ -4069,7 +4083,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         if (event.ownerID > 0) refs.push({ kind: "owner", id: event.ownerID });
       }
     }
+    if (skillNotifications.status === "ready") {
+      for (const notification of skillNotifications.value) {
+        refs.push({ kind: "type", id: notification.skillTypeID });
+      }
+    }
     requestNames(refs);
+  }
+
+  // The skill history's notifications, as the client's notification center takes them from its provider
+  // (bridge/skillNotifications.ts): the skill handler's history, ten rows (on the game port answered with what
+  // its transport keeps, as the skill service answers), and the pilot's own skills, whose ranks the levels are
+  // reckoned by. The provider's first call, CheckAndSendNotifications, the transport asks at the login.
+  async function readSkillNotifications(): Promise<readonly SkillNotification[]> {
+    const [history, skills] = await Promise.all([
+      bridgeAsk("skillHandler", "GetSkillHistory", [SKILL_NOTIFICATION_ROWS]),
+      bridgeAsk("skillHandler", "GetSkills", []),
+    ]);
+    return skillNotificationsOf(decodeSkillHistory(history), decodeSkills(skills));
   }
 
   // --- Scanner / Exploration Center ---------------------------------------

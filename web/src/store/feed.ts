@@ -95,6 +95,7 @@ import type {
 import type { BoundDogmaAllInfo } from "../bridge/boundDogma.ts";
 import type { SkillHistoryLine } from "../bridge/skillHistoryPanel.ts";
 import type { EmploymentHistory } from "../bridge/employmentHistory.ts";
+import type { SkillNotification } from "../bridge/skillNotifications.ts";
 import type { BoundFleet } from "../bridge/boundFleet.ts";
 import type { FleetBroadcast } from "../bridge/fleetBroadcasts.ts";
 import type { JamEvent } from "../bridge/jamNotifications.ts";
@@ -355,6 +356,8 @@ export type FeedEvent =
       readonly unprocessedCount: ActivityRead<number>;
       readonly calendarEvents: ActivityRead<readonly ActivityCalendarEventRow[]>;
       readonly calendarResponses: ActivityRead<readonly ActivityCalendarResponseRow[]>;
+      // The skill history's notifications; where a reading says nothing of them, they are not to be had in it.
+      readonly skillNotifications?: ActivityRead<readonly SkillNotification[]>;
       readonly mailError: string | null;
       readonly refreshedAtMs: number;
     }

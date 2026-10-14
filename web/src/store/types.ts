@@ -5,6 +5,7 @@
 import type { BoundDogmaAllInfo } from "../bridge/boundDogma.ts";
 import type { SkillHistoryLine } from "../bridge/skillHistoryPanel.ts";
 import type { EmploymentHistory } from "../bridge/employmentHistory.ts";
+import type { SkillNotification } from "../bridge/skillNotifications.ts";
 import type { MissionTimes } from "../bridge/missionTime.ts";
 import type { MissionObjectives } from "../bridge/missionObjectives.ts";
 import type { MiningBurstServices, CompressionServiceObservation } from "../bridge/miningSupportServices.ts";
@@ -894,6 +895,11 @@ export interface ActivityState {
   readonly unprocessedCount: ActivityRead<number>;
   readonly calendarEvents: ActivityRead<readonly ActivityCalendarEventRow[]>;
   readonly calendarResponses: ActivityRead<readonly ActivityCalendarResponseRow[]>;
+  /**
+   * The skill history's notifications, which the client's notification center lists with the server's
+   * (bridge/skillNotifications.ts): their own read, the panel joining them to the server's.
+   */
+  readonly skillNotifications: ActivityRead<readonly SkillNotification[]>;
   readonly mailError: string | null;
   readonly refreshedAtMs: number | null;
 }

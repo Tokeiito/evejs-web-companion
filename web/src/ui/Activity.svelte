@@ -9,6 +9,13 @@
     liveActivityTitle,
   } from "../bridge/activity.ts";
   import { isSessionLost } from "../app/flow.ts";
+  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import {
+    SKILL_HISTORY_OWN_ACTION_WORDS,
+    SKILL_HISTORY_WORD_LABELS,
+    skillHistoryActionLabel,
+  } from "../bridge/skillHistoryPanel.ts";
+  import { SKILL_NAME_AND_LEVEL_LABEL, type SkillNotification } from "../bridge/skillNotifications.ts";
   import { resolvedName } from "../store/names.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -31,6 +38,8 @@
   const live = store.live;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
 
   let refreshError = $state("");
 
@@ -46,6 +55,66 @@
   );
 
   const liveTail = $derived([...$live.notifications].slice(-8).reverse());
+
+  /** A line of the recent notifications: the server's, or the skill history's, which have no sender and no seen. */
+  interface ListedNotification {
+    readonly key: string;
+    readonly title: string;
+    readonly senderID: number | null;
+    readonly processed: boolean | null;
+    readonly created: bigint | null;
+  }
+
+  /** The client's word for a label, from the player's install; the page's own where there is none to read. */
+  function word(label: string, own: string): string {
+    const template = $words.templates[label];
+    return typeof template === "string" ? template : own;
+  }
+
+  /** The skill notification's header, '%s - %s' (skillHistoryProvider.py 40 to 42). */
+  function skillNotificationTitle(notification: SkillNotification): string {
+    const action = word(skillHistoryActionLabel(notification.eventTypeID), SKILL_HISTORY_OWN_ACTION_WORDS[notification.eventTypeID] ?? "Unknown");
+    const skill = formatTemplate(
+      word(SKILL_NAME_AND_LEVEL_LABEL, "{[item]skill.name} {amount}"),
+      { skill: notification.skillTypeID, amount: notification.level },
+      { nameOf: (kind, id) => resolvedName($names.resolved, kind, id, "Unknown skill") },
+    );
+    return plainText(`${action} - ${skill}`);
+  }
+
+  // The recent notifications as the client's center lists them: the skill history's and the server's together,
+  // the newest first (notificationUI.py 326 to 336), as many as the panel shows.
+  const listed = $derived.by((): readonly ListedNotification[] => {
+    const all: ListedNotification[] = [];
+    if ($activity.notifications.status === "ready") {
+      for (const notification of $activity.notifications.value) {
+        all.push({
+          key: `n${notification.notificationID}`,
+          title: notification.title,
+          senderID: notification.senderID,
+          processed: notification.processed,
+          created: notification.created,
+        });
+      }
+    }
+    if ($activity.skillNotifications.status === "ready") {
+      $activity.skillNotifications.value.forEach((notification, place) => {
+        all.push({ key: `s${place}`, title: skillNotificationTitle(notification), senderID: null, processed: null, created: BigInt(notification.logDate) });
+      });
+    }
+    return all
+      .map((line, place) => ({ line, place }))
+      .sort((left, right) => {
+        const a = left.line.created;
+        const b = right.line.created;
+        if (a === b) return left.place - right.place;
+        if (a === null) return 1;
+        if (b === null) return -1;
+        return a > b ? -1 : 1;
+      })
+      .slice(0, 20)
+      .map(({ line }) => line);
+  });
 
   function ownerName(ownerID: number, fallback: string): string {
     return resolvedName($names.resolved, "owner", ownerID, fallback);
@@ -83,6 +152,7 @@
   }
 
   onMount(() => {
+    flow.requestWords([...SKILL_HISTORY_WORD_LABELS, SKILL_NAME_AND_LEVEL_LABEL]);
     void refresh();
   });
 </script>
@@ -151,25 +221,33 @@
         <p class="error">{$activity.notifications.error}</p>
       {:else if $activity.notifications.status === "unavailable"}
         <p class="note">Recent notifications are unavailable in this response.</p>
-      {:else if $activity.notifications.value.length === 0}
-        <p class="empty">No recent notifications.</p>
-      {:else}
+      {/if}
+      {#if $activity.skillNotifications.status === "error"}
+        <p class="error">{$activity.skillNotifications.error}</p>
+      {/if}
+      {#if listed.length > 0}
         <ol class="activity-list">
-          {#each $activity.notifications.value as notification (notification.notificationID)}
-            <li class:unread={!notification.processed}>
+          {#each listed as notification (notification.key)}
+            <li class:unread={notification.processed === false}>
               <div class="row-main">
                 <strong>{notification.title}</strong>
                 <span class="meta">
-                  From {ownerName(notification.senderID, "Notification sender")}
-                  · {whenText(notification.created)}
+                  {#if notification.senderID !== null}
+                    From {ownerName(notification.senderID, "Notification sender")} ·
+                  {/if}
+                  {whenText(notification.created)}
                 </span>
               </div>
-              <span class="badge" class:accent={!notification.processed}>
-                {notification.processed ? "Seen" : "Unread"}
-              </span>
+              {#if notification.processed !== null}
+                <span class="badge" class:accent={!notification.processed}>
+                  {notification.processed ? "Seen" : "Unread"}
+                </span>
+              {/if}
             </li>
           {/each}
         </ol>
+      {:else if $activity.notifications.status === "ready"}
+        <p class="empty">No recent notifications.</p>
       {/if}
     </section>
 

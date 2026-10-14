@@ -50,6 +50,19 @@ const ACTION_LABELS: Readonly<Record<number, string>> = {
   431: `${SKILL_TABS}/SkillLevelExtracted`,
 };
 
+/** The page's own words for what happened, where the client's are not to be read. */
+export const SKILL_HISTORY_OWN_ACTION_WORDS: Readonly<Record<number, string>> = {
+  24: "Gift",
+  34: "Clone penalty",
+  36: "Training started",
+  37: "Training complete",
+  38: "Training stopped",
+  39: "Given by a GM",
+  53: "Training complete",
+  307: "Free skill points applied",
+  431: "Skill level extracted",
+};
+
 /** The label of what a row's event is called: ACTIONS.get(eventTypeID, the label for "unknown"). */
 export function skillHistoryActionLabel(eventTypeID: number): string {
   return ACTION_LABELS[eventTypeID] ?? SKILL_HISTORY_UNKNOWN_LABEL;

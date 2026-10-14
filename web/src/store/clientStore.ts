@@ -366,6 +366,11 @@ const INITIAL_ACTIVITY: ActivityState = Object.freeze({
     value: null,
     error: null,
   }) as ActivityState["calendarResponses"],
+  skillNotifications: Object.freeze({
+    status: "unavailable",
+    value: null,
+    error: null,
+  }) as ActivityState["skillNotifications"],
   mailError: null,
   refreshedAtMs: null,
 });
@@ -1493,6 +1498,12 @@ export function createClientStore(): ClientStore {
             event.calendarResponses.status === "ready"
               ? { ...event.calendarResponses, value: [...event.calendarResponses.value] }
               : event.calendarResponses,
+          skillNotifications:
+            event.skillNotifications === undefined
+              ? INITIAL_ACTIVITY.skillNotifications
+              : event.skillNotifications.status === "ready"
+                ? { ...event.skillNotifications, value: [...event.skillNotifications.value] }
+                : event.skillNotifications,
           mailError: event.mailError,
           refreshedAtMs: event.refreshedAtMs,
         });
