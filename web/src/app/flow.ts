@@ -14959,8 +14959,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         try {
           jobID = await installJob(bridgeDo, dump);
         } catch (error) {
-          // (142 to 144: a refused job's facility is asked for afresh, and the refusal stands.)
-          if (!isSessionLost(error)) jobReckonerFor(characterID).facilityReloaded();
+          // (142 to 144: a job the server refused, a UserError, has its facility asked for afresh, and the refusal
+          // stands. Nothing else lets it go: a call that failed on its way is no refusal.)
+          if (error instanceof BridgeCallError && error.code === "CALL_REFUSED") jobReckonerFor(characterID).facilityReloaded();
           throw error;
         }
         // A job the server took: the window has the server's job of it from now on, which is not the one monitored.
