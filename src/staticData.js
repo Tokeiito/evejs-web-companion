@@ -529,6 +529,26 @@ function getLauncherEffectName(typeID) {
     : null;
 }
 
+// dogma/const.py: the effect online, and the two categories of what a pilot switches a module on to do.
+const EFFECT_ONLINE_ID = 16;
+const EFFECT_CATEGORY_ACTIVATION = 1;
+const EFFECT_CATEGORY_TARGET = 2;
+
+/**
+ * A module type's default effect, by name: shipmodulebutton.GetDefaultEffect as far as this data can say it, the
+ * one effect of the type that a pilot switches on (an activation or a target effect, and not `online`). Null for a
+ * type with none, or with more than one: the client tells those apart by a flag this data lacks. The game port's
+ * godma goes by the same rule (src/gamePort/pilots.js, defaultEffectName), and the client names this effect in every
+ * Activate and Deactivate it makes (godma.py 2062 and 2101). The page asks for it by GET /api/types/default-effects.
+ */
+function getDefaultEffectName(typeID) {
+  const dogma = getTypeDogma(typeID);
+  const effects = (dogma && Array.isArray(dogma.effects) ? dogma.effects : []).map((effectID) => getEffect(effectID)).filter(Boolean);
+  const found = effects.filter((effect) => Number(effect.effectID) !== EFFECT_ONLINE_ID &&
+    (Number(effect.effectCategoryID) === EFFECT_CATEGORY_ACTIVATION || Number(effect.effectCategoryID) === EFFECT_CATEGORY_TARGET));
+  return found.length === 1 && typeof found[0].name === "string" ? found[0].name : null;
+}
+
 // dogma/const.py dgmEffOverload: the category of the effect that overloading a
 // module switches on.
 const EFFECT_CATEGORY_OVERLOAD = 5;
@@ -1932,6 +1952,7 @@ module.exports = {
   getMarketGroupName,
   getMarketGroupPath,
   getPropulsionEffectName,
+  getDefaultEffectName,
   getLauncherEffectName,
   getOverloadEffectID,
   getModuleChargeFitment,

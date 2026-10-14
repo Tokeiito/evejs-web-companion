@@ -382,7 +382,7 @@ import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/
 import { runSlashCommand } from "../bridge/gmWrites.ts";
 import { launchCommodities as launchCommoditiesCall, rerouteExtractorRoutes, type NewRoute } from "../bridge/planetWrites.ts";
 import { restartExtractor as restartExtractorAsTheClient } from "../bridge/extractorRestart.ts";
-import { createModuleRepairs, createOverloadEffects, createWeaponGrouping, loadAmmo as loadAmmoCall, repairWaitMs, setModuleOnline as setModuleOnlineCall, setOverload as setOverloadCall, unloadAmmo as unloadAmmoCall } from "../bridge/dogmaWrites.ts";
+import { activateModule as activateModuleCall, createDefaultEffects, createModuleRepairs, createOverloadEffects, createWeaponGrouping, deactivateModule as deactivateModuleCall, loadAmmo as loadAmmoCall, repairWaitMs, setModuleOnline as setModuleOnlineCall, setOverload as setOverloadCall, unloadAmmo as unloadAmmoCall, type ModuleActionResult, type ModuleDeps } from "../bridge/dogmaWrites.ts";
 import { keptByType, keptTypeAttributes, keptWhereKnown } from "../bridge/keptTypeFacts.ts";
 import type { AmmoPlace, AmmoSession } from "../bridge/dogmaWrites.ts";
 import type { DogmaItemInfo } from "../bridge/boundDogma.ts";
@@ -1828,6 +1828,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const fleetBroadcasts = createFleetBroadcasts(bridgeDo);
   // What a module type's overload effect is: the client's own static data, asked of the BFF's copy once for a type.
   const overloadEffects = createOverloadEffects((typeIDs) => api.loadOverloadEffects(typeIDs, callOptions));
+  const defaultEffects = createDefaultEffects((typeIDs) => api.loadDefaultEffects(typeIDs, callOptions));
   // What else the static data says of a type, asked of the BFF's copy once for a type and kept
   // (bridge/keptTypeFacts.ts): a module type's base cycle time, the combat classifier's facts of a type, and a
   // type's attributes by number. (The askers further down that keep what they are told themselves ask the reads.)
@@ -4617,6 +4618,32 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return isStation(stationID) ? orderedStep((flightNow) => dockCall(bridgeDo, flightNow, stationID)) : api.dock(stationID, callOptions);
   }
 
+  /**
+   * What the page's module calls go by (bridge/dogmaWrites.ts), with the flow's guard captured once before the call, as
+   * its route's asker captured it: a module watched to its cycle's end after a stop or a reconnect is the watching of
+   * the pilot it began for, and every read is held to it.
+   */
+  function moduleDeps(options: api.ApiOptions): ModuleDeps {
+    const current = options.captureRequestGuard?.() ?? (() => {});
+    const scoped: api.ApiOptions = { ...options, captureRequestGuard: () => current };
+    return {
+      flightNow: async () => decodeFlightStatus((await api.getFlightStatus(scoped)).flight),
+      state: (itemID, shipID, cycle) => api.getModuleState(itemID, shipID, cycle, scoped),
+      effects: defaultEffects,
+      current,
+    };
+  }
+
+  /** A module switched on by the page's own call: godma's Activate, its default effect named (bridge/dogmaWrites.ts). */
+  function switchModuleOn(itemID: number, opts: Parameters<typeof activateModuleCall>[3] = {}, options: api.ApiOptions = callOptions): Promise<ModuleActionResult> {
+    return activateModuleCall(bridgeDo, moduleDeps(options), itemID, opts);
+  }
+
+  /** A module switched off by the page's own call: godma's Deactivate, its effect named, and watched to its cycle's end. */
+  function switchModuleOff(itemID: number, opts: Parameters<typeof deactivateModuleCall>[3] = {}, options: api.ApiOptions = callOptions): Promise<ModuleActionResult> {
+    return deactivateModuleCall(bridgeDo, moduleDeps(options), itemID, opts);
+  }
+
   /** Jumps through a stargate by the page's own call (bridge/placeChanges.ts, the client's JumpThroughGate), between two reads of the flight. */
   function jumpStep(fromGateID: number, toGateID = 0): Promise<FlightStepResult> {
     return orderedStep((flightNow) => jumpCall(bridgeDo, flightNow, fromGateID, toGateID));
@@ -6263,7 +6290,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   ): Promise<void> {
     await runTargetingAction(
       "Switch on",
-      () => api.activateModule(itemID, opts, callOptions),
+      () => switchModuleOn(itemID, opts, callOptions),
       // Refresh the snapshot NOW rather than waiting for the next poll tick, so
       // the button state the player sees after the click is the server's answer
       // to THIS action. Best-effort: a failed refresh must not turn a
@@ -7080,7 +7107,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function deactivateModule(itemID: number, opts: { effect?: string; typeID?: number } = {}): Promise<void> {
     await runTargetingAction(
       "Switch off",
-      () => api.deactivateModule(itemID, opts, callOptions),
+      () => switchModuleOff(itemID, opts, callOptions),
       async (result) => {
         await loadSpaceSnapshot().catch(() => {});
         if (result.stopped === false) {
@@ -8697,7 +8724,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // `targetID: 0` is the DSL's sentinel for that, never a real item
           // id — it is not a ship this ladder measured on grid.
           case "activate":
-            await api.activateModule(
+            await switchModuleOn(
               action.moduleID,
               action.targetID > 0 ? { targetID: action.targetID, repeat: -1 } : { repeat: -1 },
               callOptions,
@@ -8709,14 +8736,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           //
           // ⚠ THE typeID IS NOT OPTIONAL DECORATION FOR A PROP MOD. Deactivate
           // stops an afterburner/MWD only when it names the module's propulsion
-          // effect, and the BFF resolves that name from the typeID alone —
-          // without it the call returns success and the burner keeps cycling
-          // (`api.deactivateModule`'s own header, and the route's in
-          // src/server.js). The rung that emits a propulsion `deactivate` fills
+          // effect, and the page asks the game's data for that name by the typeID
+          // alone — without it the call returns success and the burner keeps
+          // cycling (bridge/dogmaWrites.ts, deactivateModule: the page's own call
+          // since 2026-10-14). The rung that emits a propulsion `deactivate` fills
           // this in; the tank-up rung leaves it undefined and the body simply
           // omits the key, exactly as before.
           case "deactivate":
-            await api.deactivateModule(
+            await switchModuleOff(
               action.moduleID,
               action.typeID === undefined ? {} : { typeID: action.typeID },
               callOptions,
@@ -9092,7 +9119,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // activation effect from its type. The browser never guesses which effect
       // a module runs — that rule is R23's and it holds here.
       activateModule: async (moduleID, targetID) => {
-        await api.activateModule(moduleID, { targetID, repeat: -1 }, callOptions);
+        await switchModuleOn(moduleID, { targetID, repeat: -1 }, callOptions);
       },
       launchDrones: async (itemIDs) => {
         await api.launchDrones(wholeStackLaunch(itemIDs, droneStackSizesSeen), callOptions);
@@ -10344,8 +10371,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // only stops a prop mod when it NAMES the propulsion effect; the server
           // infers the default effect on activate but not on deactivate, so a
           // bare Deactivate answers success while the burner keeps cycling
-          // (src/server.js's `/api/bridge/modules/deactivate`). The BFF resolves
-          // that name from the typeID, so the id is what a caller must carry —
+          // (bridge/dogmaWrites.ts, deactivateModule). The page asks the game's
+          // data for that name by the typeID, so the id is what a caller must carry —
           // which is why this list holds objects and the others above hold ids.
           //
           // ⚠ AN UNRESOLVED EFFECT IS `null`, AND THAT IS NOT AN ERROR. It means
@@ -10475,7 +10502,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (!characterID) throw new Error("Parking pilot is unavailable.");
     await settleParkingMiningModules({ shipID: flight.shipID, characterID, miningModuleIDs: mining,
       readScene: async () => decodeSpaceSnapshot((await api.getScriptObservation(callOptions)).space),
-      deactivate: async id => { await api.deactivateModule(id, {}, callOptions); } });
+      deactivate: async id => { await switchModuleOff(id, {}, callOptions); } });
   }
 
   async function parkCustomBot(policy: FleetParkingPolicy, deadlineMs: number): Promise<void> {
@@ -11443,8 +11470,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         try {
           switch (self.action.kind) {
             case "lock": await lockTargetCall(bridgeDo, self.action.targetID, null); break;
-            case "activate": await api.activateModule(self.action.moduleID, { targetID: self.action.targetID, repeat: -1 }, callOptions); break;
-            case "deactivate": await api.deactivateModule(self.action.moduleID, { typeID: self.action.typeID }, callOptions); break;
+            case "activate": await switchModuleOn(self.action.moduleID, { targetID: self.action.targetID, repeat: -1 }, callOptions); break;
+            case "deactivate": await switchModuleOff(self.action.moduleID, { typeID: self.action.typeID }, callOptions); break;
             case "launchDrones": await api.launchDrones(wholeStackLaunch(self.action.droneItemIDs, droneStackSizes(droneState?.bay ?? [])), callOptions); break;
             case "recallDrones": await api.recallDrones(self.action.droneIDs, callOptions); break;
             case "mineDrones": await api.mineWithDrones(self.action.droneIDs, self.action.targetID, callOptions); break;
@@ -11481,8 +11508,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             case "claimContainer": claimedResult = await api.claimContainer(request.tractor.runID, solarSystemID, tractor.action.itemID, tractor.action.renewOnly, callOptions); break;
             case "releaseContainerClaim": await api.releaseContainerClaims(request.tractor.runID, callOptions); break;
             case "lock": await lockTargetCall(bridgeDo, tractor.action.targetID, null); break;
-            case "activate": await api.activateModule(tractor.action.moduleID, { targetID: tractor.action.targetID, repeat: -1 }, callOptions); break;
-            case "deactivate": await api.deactivateModule(tractor.action.moduleID, { typeID: tractor.action.typeID }, callOptions); break;
+            case "activate": await switchModuleOn(tractor.action.moduleID, { targetID: tractor.action.targetID, repeat: -1 }, callOptions); break;
+            case "deactivate": await switchModuleOff(tractor.action.moduleID, { typeID: tractor.action.typeID }, callOptions); break;
           }
         } catch (error) { outcome = "failed"; reason = errorWords(error); }
         return { decision, feedback: null, ...(selfMining ? { selfMining } : {}), tractor: { decision: tractor,
@@ -11492,8 +11519,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       guardDispatch();
       try {
         switch (action.kind) {
-          case "activate": await api.activateModule(action.moduleID, { targetID: action.targetID, repeat: -1 }, callOptions); break;
-          case "deactivate": await api.deactivateModule(action.moduleID, { typeID: action.typeID }, callOptions); break;
+          case "activate": await switchModuleOn(action.moduleID, { targetID: action.targetID, repeat: -1 }, callOptions); break;
+          case "deactivate": await switchModuleOff(action.moduleID, { typeID: action.typeID }, callOptions); break;
           case "gotoPoint": await flyToPoint(action.position, action.shipID, action.solarSystemID); break;
           case "stopShip": await cutEngines(); break;
         }
@@ -12115,8 +12142,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     };
     return {
       travelAssist: { change: async (module, on) => {
-        const result = on ? await api.activateModule(module.itemID, travelPropulsionActivation(module), callOptions)
-          : await api.deactivateModule(module.itemID, { typeID: module.typeID }, callOptions);
+        const result = on ? await switchModuleOn(module.itemID, travelPropulsionActivation(module), callOptions)
+          : await switchModuleOff(module.itemID, { typeID: module.typeID }, callOptions);
         return on ? result.active === true : result.stopped === true;
       } },
       observe: async (hint) => {
@@ -13129,14 +13156,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
                   const a = fresh.ship.position, b = target.position;
                   return Math.max(0, Math.hypot(a.x-b.x, a.y-b.y, a.z-b.z)-fresh.ship.radius-target.radius) <= module.rangeM;
                 },
-                activate: () => api.activateModule(action.moduleID, { typeID: action.typeID,
+                activate: () => switchModuleOn(action.moduleID, { typeID: action.typeID,
                   ...(action.targetID > 0 ? { targetID: action.targetID } : {}), repeat: action.repeat ?? -1 }, callOptions),
                 sleep: () => new Promise(resolve => setTimeout(resolve, 250)),
               });
             }
             // targetID 0 = a SELF-targeted module (repairer, hardener) — the
             // target key is omitted so the server activates it on the ship.
-            requireModuleOutcome(await api.activateModule(
+            requireModuleOutcome(await switchModuleOn(
               action.moduleID,
               action.targetID > 0 ? { typeID: action.typeID, targetID: action.targetID, repeat: -1 } : { typeID: action.typeID, repeat: -1 },
               callOptions,
@@ -13154,7 +13181,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // name and behaves identically with the key omitted, which is why the
           // field is optional and the body simply leaves it out.
           case "deactivate": {
-            const result = await api.deactivateModule(
+            const result = await switchModuleOff(
               action.moduleID,
               action.typeID === undefined ? {} : { typeID: action.typeID },
               callOptions,

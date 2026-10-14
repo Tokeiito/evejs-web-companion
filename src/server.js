@@ -19109,159 +19109,12 @@ app.post("/api/bridge/targets/unlock", requireAuth, async (req, res, next) => {
   }
 });
 
-// Switch a module ON: dogmaIM.Activate(moduleItemID, effectName, targetID, repeat).
-//
-// GENERIC BY CONSTRUCTION. The browser does not know, and must not guess, which
-// effect a given module runs: an EMPTY effect name makes the server resolve the
-// module's own default activation effect from its typeID. A caller that DOES
-// know (slice B sends "miningLaser") may name one, and combat will name its
-// own — but that is the caller's argument, not this route's business.
-//
-// `repeat` is the retail cycle flag: -1 keeps cycling until something stops it,
-// 0 runs a single cycle. Default -1, the retail default for a held module.
-//
-// ⚠ A LAUNCHER NEEDS ITS EFFECT NAMED. The server launches probes from a probe
-// launcher only when Activate says "useMissiles"; with an empty effect the
-// launcher cycles and launches nothing. So a caller may send the module's
-// typeID, and for a launcher type the BFF names "useMissiles" from the SDE's own
-// typeDogma, exactly as the retail client does (staticData.getLauncherEffectName).
-//
-// The handler owns every refusal — module not online, no target, target not
-// locked, out of range, not enough capacitor, wrong charge/crystal — and each
-// arrives with its own reason, which is passed through untouched. This BFF
-// never pre-judges whether a module can run.
-app.post("/api/bridge/modules/activate", requireAuth, async (req, res, next) => {
-  const held = requireHeldBridgeSession(req, res);
-  if (!held) {
-    return;
-  }
-  const body = req.body || {};
-  const itemID = Number(body.itemID) || 0;
-  if (itemID <= 0) {
-    res.status(400).json({ ok: false, error: "INVALID_MODULE", message: "A module is required." });
-    return;
-  }
-  const typeID = Number(body.typeID) || 0;
-  let effect = typeof body.effect === "string" ? body.effect : "";
-  if (!effect && typeID > 0) {
-    effect = staticData.getLauncherEffectName(typeID) || "";
-  }
-  const targetID = Number(body.targetID) || 0;
-  const repeat = body.repeat === 0 || body.repeat === "0" ? 0 : -1;
-  try {
-    const before = await readHeldFlight(held, req.webSessionID);
-    if (!requireInSpace(res, before.flight)) {
-      return;
-    }
-    // Read the running set BEFORE, so success can be judged as a set DELTA
-    // rather than by asking whether this exact itemID came back.
-    const activeBefore = await readActiveModuleIDs(held);
-    const outcome = await heldTopLevelCall(
-      held,
-      req.webSessionID,
-      "dogmaIM",
-      "Activate",
-      [itemID, effect, targetID > 0 ? targetID : null, repeat],
-      null,
-    );
-    // A 200 is not proof: ask the server which modules are actually cycling.
-    const active = await readActiveModuleIDs(held);
-    res.json({
-      ok: true,
-      itemID,
-      // null when the snapshot could not answer — "unknown", never "off".
-      active: activationLanded(activeBefore.ids, active.ids, itemID, active.banks),
-      activeModuleIDs: active.ids,
-      notifications: [...outcome.notifications, ...active.notifications],
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// Switch a module OFF: dogmaIM.Deactivate(moduleItemID, effectName). Same
-// generality, same re-read.
-//
-// ⚠ PROPULSION MODULES NEED THEIR EFFECT NAMED, and the browser cannot know it.
-// The eve.js handler routes an afterburner/MWD to deactivatePropulsionModule
-// ONLY when the effect argument says so; an empty effect takes the generic
-// path, which answers success while the prop mod keeps cycling (a marked
-// server-side asymmetry — ACTIVATE infers the module's default effect from its
-// type, DEACTIVATE does not; dogmaService.js Handle_Deactivate). So the caller
-// may send the module's typeID and the BFF resolves the prop effect from the
-// SDE's own typeDogma. Live case: Rada Hjoren's 1MN Civilian Afterburner —
-// Deactivate(itemID, "") returned 200, stopped:false, and the burner ran on;
-// with "moduleBonusAfterburner" it stops.
-app.post("/api/bridge/modules/deactivate", requireAuth, async (req, res, next) => {
-  const held = requireHeldBridgeSession(req, res);
-  if (!held) {
-    return;
-  }
-  const body = req.body || {};
-  const itemID = Number(body.itemID) || 0;
-  if (itemID <= 0) {
-    res.status(400).json({ ok: false, error: "INVALID_MODULE", message: "A module is required." });
-    return;
-  }
-  const typeID = Number(body.typeID) || 0;
-  let effect = typeof body.effect === "string" ? body.effect : "";
-  if (!effect && typeID > 0) {
-    effect = staticData.getPropulsionEffectName(typeID) || "";
-  }
-  try {
-    const before = await readHeldFlight(held, req.webSessionID);
-    if (!requireInSpace(res, before.flight)) {
-      return;
-    }
-    const activeBefore = await readActiveModuleIDs(held);
-    const outcome = await heldTopLevelCall(
-      held,
-      req.webSessionID,
-      "dogmaIM",
-      "Deactivate",
-      [itemID, effect],
-      null,
-    );
-    const shutdownStartedAt = Date.now();
-    let active = await readActiveModuleIDs(held);
-    let landed = activationLanded(activeBefore.ids, active.ids, itemID, active.banks);
-    // Accepted stop may finish at the cycle boundary. Observe, never resend it.
-    const initialBudget = options.moduleReconcileMs ?? 15_000;
-    const { effectiveCycleMs, shutdownBudgetMs } = require("./moduleShutdownBudget");
-    let cycleMs = null;
-    if (landed === true) {
-      try {
-        const cycle = await boundCall(held, req.webSessionID, dogmaBindSpec(), "QueryAttributeValue", [itemID, 73], null);
-        cycleMs = effectiveCycleMs(cycle.result);
-        outcome.notifications.push(...(cycle.notifications || []));
-      } catch (error) {
-        assertCurrentHeldSession(held, req.webSessionID);
-        // Unreadable duration is UNKNOWN, never a static type fallback.
-      }
-    }
-    const deadline = shutdownStartedAt + shutdownBudgetMs(cycleMs, initialBudget);
-    // Keep the mutation HTTP request below the client's transport deadline.
-    // A longer exact-module observation continues through read-only requests.
-    const firstDeadline = Math.min(deadline, shutdownStartedAt + initialBudget);
-    while (landed === true && Date.now() < firstDeadline) {
-      await new Promise(resolve => setTimeout(resolve, 200));
-      active = await readActiveModuleIDs(held);
-      landed = activationLanded(activeBefore.ids, active.ids, itemID, active.banks);
-    }
-    res.json({
-      ok: true,
-      itemID,
-      stopped: landed === null ? null : !landed,
-      activeModuleIDs: active.ids,
-      shipID: held.activeShipID,
-      cycleMs,
-      remainingMs: landed === true && cycleMs !== null ? Math.max(0, deadline - Date.now()) : 0,
-      notifications: [...outcome.notifications, ...active.notifications],
-    });
-  } catch (error) {
-    next(error);
-  }
-});
+// (A module is switched on and off by the page's own calls since 2026-10-14: dogmaIM.Activate(itemID, effectName,
+// target, repeat) and Deactivate(itemID, effectName) through the generic call, as godma makes them (godma.py 2062
+// and 2101), the module's default effect named from the game's data (GET /api/types/default-effects) and the
+// running modules read after (the state route below, its cycle with the first reading after a stop)
+// (bridgeCallPolicy.js, PAGE_WRITE_PAIR_KEYS; web/src/bridge/dogmaWrites.ts). The routes,
+// POST /api/bridge/modules/activate and .../deactivate, are gone.)
 
 // Post-dispatch observation only; this route never repeats Deactivate.
 app.get("/api/bridge/modules/:itemID/state", requireAuth, async (req, res, next) => {
@@ -19279,8 +19132,21 @@ app.get("/api/bridge/modules/:itemID/state", requireAuth, async (req, res, next)
     const active = await readActiveModuleIDs(held);
     assertCurrentHeldSession(held, req.webSessionID);
     const landed = activationLanded(null, active.ids, itemID, active.banks);
+    // The module's cycle, where it is still running and the caller asks (cycle=1): the length of the wait for a stop
+    // that comes at the cycle's end, as the deactivate route read it, from the held module's own dogma.
+    let cycleMs = null;
+    if (landed === true && req.query.cycle === "1") {
+      try {
+        const { effectiveCycleMs } = require("./moduleShutdownBudget");
+        const cycle = await boundCall(held, req.webSessionID, dogmaBindSpec(), "QueryAttributeValue", [itemID, 73], null);
+        cycleMs = effectiveCycleMs(cycle.result);
+      } catch {
+        assertCurrentHeldSession(held, req.webSessionID);
+        // An unreadable duration is unknown, never a static type's.
+      }
+    }
     res.json({ ok: true, itemID, shipID, stopped: landed === null ? null : !landed,
-      activeModuleIDs: active.ids, notifications: active.notifications });
+      activeModuleIDs: active.ids, cycleMs, notifications: active.notifications });
   } catch (error) { next(error); }
 });
 
@@ -23551,6 +23417,37 @@ app.get("/api/types/volumes", requireAuth, async (req, res, next) => {
  * No gateway call and no live session: this cannot vary by player.
  */
 const OVERLOAD_EFFECT_TYPE_LIMIT = 500;
+
+/**
+ * A module type's default effect, by name, from the game's data (staticData.getDefaultEffectName): what the client
+ * names in every Activate and Deactivate it makes, and what the page names in its own since 2026-10-14
+ * (web/src/bridge/dogmaWrites.ts). Null for a type with none or more than one. No call of the server's.
+ */
+app.get("/api/types/default-effects", requireAuth, async (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) {
+        asked.push(typeID);
+      }
+    }
+    const defaultEffect = {};
+    for (const typeID of asked.slice(0, OVERLOAD_EFFECT_TYPE_LIMIT)) {
+      defaultEffect[String(typeID)] = staticData.getDefaultEffectName(typeID);
+    }
+    res.json({
+      ok: true,
+      source: "static-data",
+      defaultEffect,
+      // Said, not hidden: a type past the limit is not in the answer at all.
+      capped: asked.length > OVERLOAD_EFFECT_TYPE_LIMIT,
+      limit: OVERLOAD_EFFECT_TYPE_LIMIT,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 
 app.get("/api/types/overload-effects", requireAuth, async (req, res, next) => {
   try {

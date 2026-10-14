@@ -104,9 +104,9 @@ export type ScriptAction =
    * ⚠ `typeID` IS NOT DECORATION, AND LEAVING IT OFF A PROPULSION MODULE IS A
    * CALL THAT RETURNS SUCCESS AND DOES NOTHING. The server stops an afterburner
    * or a microwarpdrive only when the Deactivate NAMES that module's propulsion
-   * effect, and the BFF resolves that effect name from the typeID alone (see
-   * `api.deactivateModule`'s own header, the route in src/server.js, and
-   * nav/propulsion.ts's warning). Without it the burner keeps cycling, the
+   * effect, and the page asks the game's data for that effect name by the typeID
+   * alone (see bridge/dogmaWrites.ts, deactivateModule, and nav/propulsion.ts's
+   * warning). Without it the burner keeps cycling, the
    * signature stays bloomed, the capacitor keeps draining, and the block that
    * issued the stop falls through happily believing the rack now agrees with it
    * — so it never tries again.

@@ -9,7 +9,6 @@
 import { BridgeCallError, callMethod } from "../bridge/callMethod.ts";
 import type { Ask } from "../bridge/ask.ts";
 import { decodeBoundDogma, type BoundDogma } from "../bridge/boundDogma.ts";
-import { observeDeferredShutdown } from "../bridge/moduleShutdown.ts";
 import { decodeNameValidation, decodeValidRandomName } from "../bridge/charAccount.ts";
 import { decodeBeyonceWriteAck, type BeyonceWriteAck } from "../bridge/boundBeyonceWrites.ts";
 import { decodeDroneEngageOutcome, type DroneEngageOutcome, type DroneEngageRefusal } from "../bridge/drones.ts";
@@ -2402,14 +2401,6 @@ export interface TargetsResult {
  * activeModuleIDs. `active` / `stopped` are NULL when the snapshot could not
  * answer — "unknown", never "off".
  */
-export interface ModuleActionResult {
-  readonly itemID: number;
-  readonly active: boolean | null;
-  readonly stopped: boolean | null;
-  readonly activeModuleIDs: JsonValue;
-  readonly notifications: readonly JsonValue[];
-}
-
 function readNotifications(data: Record<string, JsonValue>): readonly JsonValue[] {
   return Array.isArray(data.notifications) ? data.notifications : [];
 }
@@ -2420,78 +2411,42 @@ export async function getTargets(options: ApiOptions = {}): Promise<TargetsResul
   return { targetIDs: data.targetIDs ?? null, notifications: readNotifications(data) };
 }
 
-function readModuleAction(itemID: number, data: Record<string, JsonValue>): ModuleActionResult {
-  return {
-    itemID: typeof data.itemID === "number" && Number.isSafeInteger(data.itemID) ? data.itemID : Number.NaN,
-    active: typeof data.active === "boolean" ? data.active : null,
-    stopped: typeof data.stopped === "boolean" ? data.stopped : null,
-    activeModuleIDs: data.activeModuleIDs ?? null,
-    notifications: readNotifications(data),
-  };
+// A module is switched on and off by the page's own calls since 2026-10-14 (bridge/dogmaWrites.ts: dogmaIM.Activate and
+// Deactivate, as godma makes them); their routes (POST /api/bridge/modules/activate and .../deactivate) are gone. What
+// the page reads for them is below.
+
+/**
+ * A module's state as the server's ship has it (GET /api/bridge/modules/:itemID/state): whether it has stopped,
+ * the running modules, and with `cycle` its cycle's length where it is still running. The ship must be the one the
+ * pilot is flying, or the read is refused.
+ */
+export async function getModuleState(
+  itemID: number,
+  shipID: number,
+  cycle: boolean,
+  options: ApiOptions = {},
+): Promise<Record<string, JsonValue>> {
+  return getJson(`/api/bridge/modules/${itemID}/state?shipID=${shipID}${cycle ? "&cycle=1" : ""}`, options);
 }
 
 /**
- * Switch a module on (dogmaIM.Activate).
- *
- * `effect` is optional BY DESIGN: omit it and the server resolves the module's
- * own default activation effect. `repeat` is retail's cycle flag — -1 keeps
- * cycling (the default), 0 runs a single cycle. `targetID` is omitted for
- * modules that act on the ship itself.
- *
- * Pass `typeID` whenever the caller knows it: a probe launcher only launches
- * when Activate names "useMissiles", and the BFF resolves that name from the
- * typeID. Without it the launcher cycles and launches nothing.
+ * typeID -> the type's default effect by name, or null for a type with none or more than one
+ * (GET /api/types/default-effects: the game's data, no call of the server's). A type the answer does not speak of,
+ * or speaks of with anything but a name or null, is left out: it was not answered.
  */
-export async function activateModule(
-  itemID: number,
-  opts: { effect?: string; typeID?: number; targetID?: number | null; repeat?: -1 | 0 } = {},
+export async function loadDefaultEffects(
+  typeIDs: readonly number[],
   options: ApiOptions = {},
-): Promise<ModuleActionResult> {
-  const body: Record<string, JsonValue> = { itemID };
-  if (opts.effect) {
-    body.effect = opts.effect;
+): Promise<Readonly<Record<number, string | null>>> {
+  const data = await getJson(`/api/types/default-effects?typeIDs=${encodeURIComponent(typeIDs.join(","))}`, options);
+  const raw = typeof data.defaultEffect === "object" && data.defaultEffect !== null && !Array.isArray(data.defaultEffect)
+    ? (data.defaultEffect as Record<string, JsonValue>)
+    : {};
+  const effects: Record<number, string | null> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (value === null || (typeof value === "string" && value !== "")) effects[Number(key)] = value;
   }
-  if (opts.typeID) {
-    body.typeID = opts.typeID;
-  }
-  if (opts.targetID) {
-    body.targetID = opts.targetID;
-  }
-  if (opts.repeat === 0) {
-    body.repeat = 0;
-  }
-  return readModuleAction(itemID, await postJson("/api/bridge/modules/activate", body, options));
-}
-
-/**
- * Switch a module off (dogmaIM.Deactivate).
- *
- * Pass `typeID` whenever the caller knows it (every fitting slot carries it):
- * an afterburner/MWD only actually STOPS when Deactivate names its propulsion
- * effect, and the BFF resolves that name from the typeID — the server infers
- * the default effect on activate but not on deactivate, and the generic path
- * answers success while the prop mod keeps cycling.
- */
-export async function deactivateModule(
-  itemID: number,
-  opts: { effect?: string; typeID?: number } = {},
-  options: ApiOptions = {},
-): Promise<ModuleActionResult> {
-  const body: Record<string, JsonValue> = { itemID };
-  if (opts.effect) {
-    body.effect = opts.effect;
-  }
-  if (opts.typeID) {
-    body.typeID = opts.typeID;
-  }
-  // Capture once, before the mutation: later observation must not recapture a
-  // replacement pilot/controller generation after Stop or reconnect.
-  const current = options.captureRequestGuard?.() ?? (() => {});
-  const scoped = { ...options, captureRequestGuard: () => current };
-  const initial = await postJson("/api/bridge/modules/deactivate", body, scoped);
-  const result = await observeDeferredShutdown(initial, itemID, { current,
-    read: shipID => getJson(`/api/bridge/modules/${itemID}/state?shipID=${shipID}`, scoped) });
-  return readModuleAction(itemID, result);
+  return effects;
 }
 
 // --- R23 slice B: the mining loop -------------------------------------------

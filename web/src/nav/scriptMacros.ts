@@ -4251,8 +4251,8 @@ function propModeOf(step: MacroStep): "auto" | "off" {
  *
  * ⚠ WITHOUT THIS THE STOP RETURNS SUCCESS AND THE BURNER KEEPS CYCLING. The
  * server stops a prop mod only when the Deactivate NAMES its propulsion effect,
- * and the BFF resolves that name from the module's typeID (nav/propulsion.ts,
- * `api.deactivateModule`, and the route in src/server.js all say so). The ladder
+ * and the page asks the game's data for that name by the module's typeID
+ * (nav/propulsion.ts and bridge/dogmaWrites.ts, deactivateModule, say so). The ladder
  * cannot supply it: it is a FIT fact, and a pure decision core that reached into
  * the fit for it would be re-deriving what `obs.propulsionModules` already
  * carries. So the ladder names the module and this names the effect.

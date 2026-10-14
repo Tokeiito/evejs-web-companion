@@ -26,6 +26,9 @@
 // (src/server.js); nothing of the page's asks them now.
 
 import { failureCode, type Ask } from "./ask.ts";
+import { observeDeferredShutdown } from "./moduleShutdown.ts";
+import type { FlightNow } from "./movementWrites.ts";
+import type { JsonValue } from "./wire.ts";
 
 /** A module overloaded (`on`) or cooled, with the ID of its own overload effect. Fails as the call fails. */
 export async function setOverload(act: Ask, moduleID: number, effectID: number, on: boolean): Promise<void> {
@@ -321,4 +324,154 @@ export async function setModuleOnline(act: Ask, shipID: number, moduleID: number
   } catch (reason) {
     if (!refusedWith(reason, "EffectAlreadyActive2")) throw reason;
   }
+}
+
+// ── A module switched on, and off ────────────────────────────────────────────
+//
+// Until 2026-10-14 each was a route of the BFF (POST /api/bridge/modules/activate and .../deactivate), which named
+// a launcher's or a propulsion module's effect from the game's data, made the one call, and read the running modules
+// for its verdict; the deactivate's watched the module to its cycle's end. A retail client has no such routes: godma
+// makes the calls (eve/client/script/environment/godma.py), on the dogma location bound for where the pilot is:
+//
+//   Activate(itemID, effectName, target, repeat)   2062, from the module's button (shipmodulebutton.py 1348): the
+//                                                  module's default effect by name, the active target for an effect
+//                                                  aimed at one, and 1000 or 0 for the repeats
+//   Deactivate(itemID, effectName)                 2101, the effect it is stopping
+//
+// THE EFFECT is named always by the client. The page asks the game's data for a module type's default effect
+// (GET /api/types/default-effects, the rule godma's), keeps it, and names it; where it has none to name (no type
+// said, a type with none or more than one, or the data not read) it sends none, as its routes did: the game port
+// names godma's then, and through the gateway the server works out a module's default effect for an Activate,
+// though not for a Deactivate (a propulsion module stopped with no effect named keeps running).
+//
+// THE REPEATS: the page says -1 (until it is stopped) or 0 (one cycle), as its routes took them, and the game port
+// sends the client's 1000 or 0 (src/gamePort/retailCalls.js, activation).
+//
+// ⚠ THE ANSWER IS NOT THE VERDICT, AS THE ROUTES HAD IT: the running modules are read after, as the server's ship
+// has them (GET /api/bridge/modules/:itemID/state), a weapon bank's slave by its master. A stop accepted comes at the
+// cycle's end: the module's cycle is read with the first reading, and the module watched to it (moduleShutdown.ts),
+// the stop never asked again.
+
+/** What a module's switching on or off came to, as the running modules say after it. */
+export interface ModuleActionResult {
+  readonly itemID: number;
+  /** The module is running after an Activate; null where the reading could not say. */
+  readonly active: boolean | null;
+  /** The module has stopped after a Deactivate; null where the reading could not say. */
+  readonly stopped: boolean | null;
+  readonly activeModuleIDs: JsonValue;
+  readonly notifications: readonly JsonValue[];
+}
+
+/** What a client knows of a module type's default effect without asking the server. */
+export interface DefaultEffects {
+  /** The type's default effect by name, or null where it has none or more than one, or it could not be read. */
+  of(typeID: number): Promise<string | null>;
+}
+
+/**
+ * A type's default effect, asked of the static data once for a type and kept: an effect's name, or that the type
+ * has none. A reading that failed answers null and keeps nothing: the call goes with no effect named, as the
+ * routes sent it, and the type is asked again next time.
+ */
+export function createDefaultEffects(
+  read: (typeIDs: readonly number[]) => Promise<Readonly<Record<number, string | null>>>,
+): DefaultEffects {
+  const kept = new Map<number, string | null>();
+  return {
+    async of(typeID) {
+      const known = kept.get(typeID);
+      if (known !== undefined) return known;
+      let answer: Readonly<Record<number, string | null>>;
+      try {
+        answer = await read([typeID]);
+      } catch (reason) {
+        if (failureCode(reason) === "SESSION_NOT_FOUND") throw reason;
+        return null;
+      }
+      const named = answer[typeID];
+      if (named === undefined) return null;
+      kept.set(typeID, named);
+      return named;
+    },
+  };
+}
+
+/** What the page's module calls go by: where the pilot is, the reading of a module, and the types' default effects. */
+export interface ModuleDeps {
+  readonly flightNow: () => Promise<FlightNow>;
+  /** GET /api/bridge/modules/:itemID/state for the ship, the module's cycle with it where `cycle`. */
+  readonly state: (itemID: number, shipID: number, cycle: boolean) => Promise<Record<string, JsonValue>>;
+  readonly effects: DefaultEffects;
+  /** The flow's guard: throws where the flow has gone on to another pilot. */
+  readonly current?: () => void;
+}
+
+/** The effect a call names: the caller's, else the type's default, else none. */
+async function effectFor(deps: ModuleDeps, effect: string | undefined, typeID: number | undefined): Promise<string> {
+  if (effect) return effect;
+  if (!typeID) return "";
+  return (await deps.effects.of(typeID)) ?? "";
+}
+
+/** The ship the pilot is flying, in space. Fails before any call for a pilot docked. */
+async function shipInSpace(deps: ModuleDeps): Promise<number> {
+  const now = await deps.flightNow();
+  if (!now.inSpace || now.shipID === null) throw new Error("The ship is not in space; undock first.");
+  return now.shipID;
+}
+
+const numberOr = (value: JsonValue | undefined): number => (typeof value === "number" && Number.isSafeInteger(value) ? value : Number.NaN);
+const flagOf = (value: JsonValue | undefined): boolean | null => (typeof value === "boolean" ? value : null);
+const noticesOf = (data: Record<string, JsonValue>): readonly JsonValue[] => (Array.isArray(data.notifications) ? data.notifications : []);
+
+/**
+ * Switches a module on: its default effect named, at the target where one is said, until it is stopped (-1, the client's 1000) or
+ * for one cycle (0). Fails as the call fails, and before it for a ship not in space.
+ */
+export async function activateModule(
+  act: Ask,
+  deps: ModuleDeps,
+  itemID: number,
+  opts: { effect?: string; typeID?: number; targetID?: number | null; repeat?: -1 | 0 } = {},
+): Promise<ModuleActionResult> {
+  const shipID = await shipInSpace(deps);
+  const effect = await effectFor(deps, opts.effect, opts.typeID);
+  const targetID = opts.targetID && opts.targetID > 0 ? opts.targetID : null;
+  // Until stopped is the client's 1000 on the wire, once is its 0 (shipmodulebutton.py 112 to 122, GetRepeatCount;
+  // 929, a ctrl-click's 1000); the server tells the ship's watchers the count it was given.
+  await act("dogmaIM", "Activate", [itemID, effect, targetID, opts.repeat === 0 ? 0 : 1000]);
+  const after = await deps.state(itemID, shipID, false);
+  const stopped = flagOf(after.stopped);
+  return { itemID: numberOr(after.itemID), active: stopped === null ? null : !stopped, stopped: null, activeModuleIDs: after.activeModuleIDs ?? null, notifications: noticesOf(after) };
+}
+
+/**
+ * Switches a module off, its effect named, and watches it to its cycle's end where the stop is to come there.
+ * Fails as the call fails, and before it for a ship not in space.
+ */
+export async function deactivateModule(
+  act: Ask,
+  deps: ModuleDeps,
+  itemID: number,
+  opts: { effect?: string; typeID?: number } = {},
+  clock: { now?: () => number; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<ModuleActionResult> {
+  const now = clock.now ?? Date.now;
+  const shipID = await shipInSpace(deps);
+  const effect = await effectFor(deps, opts.effect, opts.typeID);
+  await act("dogmaIM", "Deactivate", [itemID, effect]);
+  const startedAt = now();
+  const first = await deps.state(itemID, shipID, true);
+  const cycleMs = typeof first.cycleMs === "number" && Number.isFinite(first.cycleMs) && first.cycleMs > 0 ? first.cycleMs : null;
+  // As the route waited: the cycle and five seconds where the cycle was read, fifteen seconds where it was not.
+  const budgetMs = cycleMs === null ? 15_000 : Math.ceil(cycleMs) + 5_000;
+  const remainingMs = first.stopped === false ? Math.max(0, startedAt + budgetMs - now()) : 0;
+  const watched = await observeDeferredShutdown({ ...first, remainingMs }, itemID, {
+    current: deps.current ?? (() => {}),
+    read: (ship) => deps.state(itemID, ship, false),
+    now: clock.now,
+    sleep: clock.sleep,
+  });
+  return { itemID: numberOr(watched.itemID), active: null, stopped: flagOf(watched.stopped), activeModuleIDs: watched.activeModuleIDs ?? null, notifications: noticesOf(watched) };
 }
