@@ -105,6 +105,10 @@ const FEATURE_WRITE_METHODS = freezeMethodMap({
   // The customs office's transfer (taxed, and it moves a colony's goods). The
   // game port carries it; the web gateway's list has not got it.
   invbroker: ["ImportExportWithPlanet"],
+  // A shared bookmark folder taken up, and a known one switched on or off
+  // (bookmarkSvc.py 357 and 483). The game port carries both; the web
+  // gateway's list has neither.
+  accessGroupBookmarkMgr: ["AddToKnownFolders", "UpdateKnownFolderState"],
 });
 
 function flattenMethodMap(methodsByService) {
@@ -387,8 +391,19 @@ function isBridgeWritePair(service, method) {
  *                                found, not ready or past stopping, and answers the job as it is after.
  *                                The page asks each by the service's name, with the system its own read of
  *                                the job has, and goes by the job answered.
+ *   accessGroupBookmarkMgr.AddToKnownFolders,  a shared bookmark folder taken up, and a known one switched on
+ *   accessGroupBookmarkMgr.UpdateKnownFolderState  or off. No route ever asked either. Each handler acts on the
+ *                                session's own character's list of folders, takes a folder it has access to
+ *                                and no other (FolderAccessDenied), and takes no one's name. The update refuses
+ *                                a folder on past the limit (TooManyActiveFolders); the adding takes it, not
+ *                                on, and says nothing. Carried on the game port alone.
+ *   accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder  bookmarks moved from one folder to another. Its
+ *                                route confirmed and called, with the ids made a list. The handler moves only
+ *                                from and into folders the session's own character may manage
+ *                                (FolderAccessDenied), and takes no one's name. The game port sends the
+ *                                bookmarks as the client's set. Carried by either transport.
  */
-const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.Invite", "fleetObjectHandler.RejectInvite", "beyonce.BookmarkLocation", "dogmaIM.AddTarget", "dogmaIM.RemoveTarget", "dogmaIM.CancelAddTarget", "ship.ScoopDrone", "industryManager.CompleteJob", "industryManager.CancelJob", "beyonce.CmdWarpToStuff", "beyonce.CmdWarpToStuffAutopilot", "agentMgr.WarpToLocation"]);
+const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.Invite", "fleetObjectHandler.RejectInvite", "beyonce.BookmarkLocation", "dogmaIM.AddTarget", "dogmaIM.RemoveTarget", "dogmaIM.CancelAddTarget", "ship.ScoopDrone", "industryManager.CompleteJob", "industryManager.CancelJob", "beyonce.CmdWarpToStuff", "beyonce.CmdWarpToStuffAutopilot", "agentMgr.WarpToLocation", "accessGroupBookmarkMgr.AddToKnownFolders", "accessGroupBookmarkMgr.UpdateKnownFolderState", "accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder"]);
 const pageWritePairKeySet = new Set(PAGE_WRITE_PAIR_KEYS);
 for (const pair of PAGE_WRITE_PAIR_KEYS) {
   if (!bridgeWritePairKeySet.has(pair)) throw new Error(`${pair} is among the page's writes and is no write.`);

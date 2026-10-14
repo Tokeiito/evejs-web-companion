@@ -4633,7 +4633,7 @@ test("a pilot's fittings and its corporation's go by the generic call as a pilot
 // reads the folders the pilot administers beside the bookmarks, and a folder where one is named, each settled by
 // itself.
 
-test("a pilot's bookmarks go by the generic call as a pilot's read, as it was sent; a bookmark or a folder made, changed or deleted is its route's alone", async () => {
+test("a pilot's bookmarks go by the generic call as a pilot's read, as it was sent; a bookmark or a folder made, changed or deleted is its route's alone, but for a move the page makes", async () => {
   const gateway = fakeGateway();
   const { baseUrl } = await startTestServer({ gateway });
   await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
@@ -4643,11 +4643,16 @@ test("a pilot's bookmarks go by the generic call as a pilot's read, as it was se
   const sent = gateway.calls.call.at(-1);
   assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["accessGroupBookmarkMgr", "GetMyActiveBookmarks", [], null, BRIDGE_SESSION_ID, { userid: 4 }]);
   assert.equal(gateway.calls.call.length, before + 1);
-  for (const method of ["AddFolder", "UpdateFolder", "DeleteFolder", "BookmarkStaticLocation", "UpdateBookmark", "DeleteBookmarks", "MoveBookmarksToFolderAndSubfolder"]) {
+  for (const method of ["AddFolder", "UpdateFolder", "DeleteFolder", "BookmarkStaticLocation", "UpdateBookmark", "DeleteBookmarks"]) {
     const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "accessGroupBookmarkMgr", method, args: [1], kwargs: null, pilot: true, confirm: true } });
     assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"], method);
   }
   assert.equal(gateway.calls.call.length, before + 1);
+  // A salvaged site's bookmark filed away (bridgeCallPolicy.js, PAGE_WRITE_PAIR_KEYS): the page's own write, meant.
+  const moved = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "accessGroupBookmarkMgr", method: "MoveBookmarksToFolderAndSubfolder", args: [7000001, 7000002, null, [9000011]], kwargs: null, pilot: true, confirm: true } });
+  assert.equal(moved.response.status, 200);
+  const move = gateway.calls.call.at(-1);
+  assert.deepEqual([move.service, move.method, move.args], ["accessGroupBookmarkMgr", "MoveBookmarksToFolderAndSubfolder", [7000001, 7000002, null, [9000011]]]);
 });
 
 test("the bookmarks' route reads the bookmarks and the folders the pilot administers, and a folder where one is named; a read that fails is answered as nothing with its code beside it", async () => {

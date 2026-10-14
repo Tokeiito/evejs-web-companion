@@ -523,8 +523,21 @@ export interface ScriptObservation {
   readonly bookmarks?: readonly {
     readonly bookmarkID: number;
     readonly name: string;
+    /** The folder it is filed in. */
+    readonly folderID?: number;
+    /** How long ago it was made, by the server's clock; null where it does not say. */
+    readonly ageMs?: number | null;
     readonly solarSystemID: number | null;
   }[] | null;
+  /**
+   * The pilot's bookmark folders, read when a folder-using step is active: those it KNOWS (its personal ones and
+   * the shared ones it has added, active or not; GetMyActiveBookmarks) and those it may add by name (the shared
+   * folders it administers; SearchFoldersWithAdminAccess). null = unreadable.
+   */
+  readonly bookmarkFolders?: {
+    readonly known: readonly { readonly folderID: number; readonly name: string; readonly isPersonal: boolean; readonly isActive: boolean }[];
+    readonly addable: readonly { readonly folderID: number; readonly name: string; readonly isPersonal: boolean }[];
+  } | null;
   /** The ACTIVE ship's item id (from the docked inventory read). */
   readonly activeShipID?: number | null;
   /** Item ids the repair shop quotes as DAMAGED (read when a repair step is active). */
