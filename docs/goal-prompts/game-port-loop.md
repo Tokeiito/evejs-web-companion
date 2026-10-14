@@ -3789,6 +3789,11 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A test that looks for a removed route's path passes whatever the page
   does**: look for the page's own call by its pair (`call:ship.Undock`)
   instead.
+- **A page's call on the park goes there only by the game port's list**:
+  a `beyonce` call the page makes is put on the ballpark's object only
+  where `ON_THE_PARK` (retailCalls.js) names it; a call a route made by
+  its own bind goes by name once the page makes it. Look for
+  `any(beyonce)` in the recording.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

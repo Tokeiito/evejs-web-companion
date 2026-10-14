@@ -1626,6 +1626,15 @@ undock is made again with the flag set (506 to 511). For a pilot of the page's t
 BFF's: the generic call makes a page's change of place under it since `ea7df3b0` (`dispatchPlaceChangeWrite`), and
 the page makes the undock (`web/src/bridge/placeChanges.ts`).
 
+**A dock, 2026-10-14** (`eve/client/script/ui/services/menuSvcExtras/movementFunctions.py`, `ui/services/menusvc.py`,
+`ui/services/structure/structureDocking.py`). At a station: `RealDock` (503 to 518), `PerformSessionChange('dock',
+bp.CmdDock, itemID, session.shipid)`, on the ballpark's bound object (Tranquility's recordings have it so), from the
+menu's `DockStation` (2991 to 2997, which flies the ship close first) and the flight's `DockOrJumpOrActivateGate`
+(346 on). A station is `idCheckers.IsStation`: 60000000 to 63999999. At a structure: `structureDocking.Dock(structureID,
+session.shipid)`, asked of the service by its name once the ship is close (64 to 80). EveJS answers a station's dock
+from too far with `DockingApproach`. The page docks at a station since `6de7ef5c` (`web/src/bridge/placeChanges.ts`),
+under the BFF's keeping of the change; a structure by its route still.
+
 **A module fitted and unfitted, 2026-10-13** (`eve/client/script/dogma/clientDogmaLocation.py`,
 `ui/shared/fitting/fittingSlotController.py`, `ui/shared/fittingScreen/tryFit.py`,
 `ui/shared/fitting/fittingUtil.py`). Into a slot: `TryFit` (669 to 673),
