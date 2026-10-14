@@ -11,7 +11,6 @@ import {
   presetAllows,
   presetByID,
 } from "./overviewPresets.ts";
-import { createOverviewPresetChoice, overviewPreset } from "./overviewPreset.ts";
 import { bracketRole } from "./tactical.ts";
 import type { SpaceEntity } from "../store/types.ts";
 
@@ -169,45 +168,5 @@ test("filtering keeps the order it was given", () => {
   assert.deepEqual(ids, [...ids].sort((a, b) => a - b), "order must be preserved, not re-sorted");
 });
 
-// --- the shared choice -------------------------------------------------------
-
-test("the choice starts on All", () => {
-  const choice = createOverviewPresetChoice();
-  assert.equal(choice.id.get(), "all");
-  assert.equal(choice.preset.get().id, "all");
-});
-
-test("choosing updates the id AND the resolved preset together", () => {
-  const choice = createOverviewPresetChoice();
-  choice.choose("mining");
-  assert.equal(choice.id.get(), "mining");
-  assert.equal(choice.preset.get().id, "mining");
-});
-
-test("an unrecognised choice leaves BOTH describing All, never one of each", () => {
-  const choice = createOverviewPresetChoice();
-  choice.choose("nonsense" as never);
-  assert.equal(choice.id.get(), "all");
-  assert.equal(choice.preset.get().id, "all");
-});
-
-test("a subscriber is told when the tab changes", () => {
-  // This is what makes a click in the overview repaint the viewport.
-  const choice = createOverviewPresetChoice();
-  const seen: string[] = [];
-  const stop = choice.id.subscribe((id) => seen.push(id));
-  choice.choose("combat");
-  stop();
-  assert.deepEqual(seen, ["all", "combat"]);
-});
-
-test("two choices built separately do not share state", () => {
-  const a = createOverviewPresetChoice();
-  const b = createOverviewPresetChoice();
-  a.choose("mining");
-  assert.equal(b.id.get(), "all");
-});
-
-test("the app's shared choice is a real choice", () => {
-  assert.equal(typeof overviewPreset.choose, "function");
-});
+// (The shared choice of one of four fixed tabs, overviewPreset.ts, went on 2026-10-14 with its tests: the player's own
+// tabs, overviewTabs.ts, are what the overview and the tactical view keep. The loop's item 67.)
