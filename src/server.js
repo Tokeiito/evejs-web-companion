@@ -3498,6 +3498,16 @@ function decodeWalletDivisionNames(result) {
  * source location of a move-out gets the move declined SILENTLY (a 200 with
  * nothing moved). Everywhere a source location is needed, the bridge takes it
  * from the LISTED ROW's own locationID instead of assuming.
+ *
+ * Measured 2026-10-14: EveJS publishes the office's itemID as its officeID
+ * (officeManagerService.js, resolveClientOfficeID), draws the three from three
+ * counters (corporationRuntimeState.js, buildOfficeRecord), and lists as the
+ * office's what lies in any of them (invBrokerService.js,
+ * _listCorporationOfficeItems). In every office of the store (seven, all at
+ * Jita) the three are one number, and a thing the page's own Add put in office
+ * 263 lay in the published one. The client takes a move's source from the row's own
+ * locationID (invControllers.py, _AddItem and AddItems), which the panel's rows
+ * do not keep; the page names the office's published number.
  */
 async function readCorpOffice(held, webSessionID) {
   if (held.structureID) await assertStructureService(held, webSessionID, held.structureID, 3);

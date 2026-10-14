@@ -110,7 +110,8 @@ export type MovePlace =
 /**
  * A corporation hangar's division's flag: flagCorpSAG1 to flagCorpSAG7, 115 to 121 (inventorycommon/const.py 151 to
  * 157; corpFlagByDivision, 238 to 246, where the client counts its divisions from nought and the page from one).
- * The window adds with it (invControllers.BaseCorpContainer: self.locationFlag = corpFlagByDivision.get(divisionID)).
+ * The window adds with it (invControllers.BaseCorpContainer.SetDivisionID, 848 to 850: self.locationFlag =
+ * corpFlagByDivision.get(divisionID)).
  */
 export function corpDivisionFlag(division: number): number {
   if (!Number.isSafeInteger(division) || division < 1 || division > 7) throw new Error("That is no division of a corporation's hangar.");
@@ -120,9 +121,10 @@ export function corpDivisionFlag(division: number): number {
 /**
  * The corporation's office where the pilot is docked, as the client's office manager finds it
  * (officeManager.GetCorpOfficeAtLocation, 99 to 111: the office of GetMyCorporationsOffices() whose stationID is
- * where the session is docked). Its officeID is the inventory the corporation's hangar is
- * (invControllers.StationCorpHangar, 945 to 951: invCache.GetInventoryFromId(officeID)), and the place its things lie
- * in (BaseCorpContainer.IsItemHere: item.locationID == self.itemID). Null where the corporation has no office there.
+ * where the session is docked). Its officeID is the inventory the corporation's hangar is (invControllers.py:
+ * StationCorpHangar's itemID the office's, 949 to 952; BaseCorpContainer._GetInvCacheContainer,
+ * invCache.GetInventoryFromId(that itemID), 856 to 860), and the place its things lie in (BaseCorpContainer.IsItemHere,
+ * 867 to 868: item.locationID == self.itemID). Null where the corporation has no office there.
  */
 export async function officeAt(ask: Ask, dockedAt: number): Promise<number | null> {
   const answer = await ask("officeManager", "GetMyCorporationsOffices", []);
