@@ -132,6 +132,10 @@ function fakeGateway(overrides = {}) {
       if (service === "ship" && method === "Undock") {
         state.inSpace = true;
         state.shipMode = "STOP";
+      } else if (service === "beyonce" && method === "CmdStargateJump") {
+        // The page's own jump, asked by name (the generic call), lands where the bound one did.
+        state.solarSystemID = DEST_SYSTEM_ID;
+        state.shipMode = "STOP";
       } else if (service === "structureJumpBridgeMgr" && method === "GetJbStructureDestination") {
         return { service, method, result: DEST_SYSTEM_ID, notifications: [] };
       } else if (service === "structureJumpBridgeMgr" && method === "CmdJumpThroughStructureStargate") {
@@ -350,39 +354,44 @@ test("warp is refused when docked (NOT_IN_SPACE)", async () => {
   assert.equal(gateway.calls.boundCall.length, 0, "no movement dispatched when docked");
 });
 
-test("POST /api/bridge/flight/jump dispatches CmdStargateJump; the follow-up status shows the new system", async () => {
+// The pilot's jump as the page makes it since 2026-10-14 (web/src/bridge/placeChanges.ts): beyonce.CmdStargateJump(the
+// gate, its far gate, the pilot's ship) through the generic call, under the BFF's keeping of the session change, the
+// park bound again in the new system before the answer (gateJumpSvc.py 98 to 127). Its route is gone: these tests
+// ask the jump so, and watch the fake's call by name where they watched its bound call.
+const jumpBody = { service: "beyonce", method: "CmdStargateJump", args: [GATE_ID, DEST_GATE_ID, SHIP_ID], kwargs: null, pilot: true, confirm: true };
+const jumpsSent = (gateway) => gateway.calls.call.filter((call) => call.method === "CmdStargateJump");
+
+test("the page's jump dispatches CmdStargateJump; the follow-up status shows the new system", async () => {
   const gateway = fakeGateway();
   gateway.state.inSpace = true;
   gateway.state.shipMode = "STOP";
   const { baseUrl } = await startTestServer({ gateway });
   await selectOnServer(baseUrl);
 
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/jump", {
-    method: "POST",
-    body: { fromGateID: GATE_ID, toGateID: DEST_GATE_ID },
-  });
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: jumpBody });
   assert.equal(response.status, 200);
   assert.equal(payload.ok, true);
-  const jump = gateway.calls.boundCall.find((c) => c.method === "CmdStargateJump");
+  const jump = jumpsSent(gateway)[0];
   assert.ok(jump, "CmdStargateJump dispatched");
   assert.deepEqual(jump.args, [GATE_ID, DEST_GATE_ID, SHIP_ID]);
-  assert.equal(payload.flight.solarSystemID, DEST_SYSTEM_ID);
-  assert.equal(payload.transition.phase, "ready");
-  assert.equal(payload.transition.locationReady, true);
-  assert.equal(payload.transition.sceneReady, true);
-  assert.equal(payload.transition.egoReady, true);
+  const after = (await apiRequest(baseUrl, "/api/bridge/flight/status")).payload.flight;
+  assert.equal(after.solarSystemID, DEST_SYSTEM_ID);
+  assert.equal(after.transition.phase, "ready");
+  assert.equal(after.transition.locationReady, true);
+  assert.equal(after.transition.sceneReady, true);
+  assert.equal(after.transition.egoReady, true);
 });
 
 test("a slow jump waits past the ten-second cooldown for observed readiness and dispatches once", async () => {
   const gateway = fakeGateway();
   gateway.state.inSpace = true;
   gateway.state.shipMode = "STOP";
-  const callBoundMethod = gateway.callBoundMethod.bind(gateway);
+  const callMethod = gateway.callMethod.bind(gateway);
   const readFlightStatus = gateway.readFlightStatus.bind(gateway);
   let pendingJump = false;
   let postJumpReads = 0;
-  gateway.callBoundMethod = async (...args) => {
-    const outcome = await callBoundMethod(...args);
+  gateway.callMethod = async (...args) => {
+    const outcome = await callMethod(...args);
     if (args[1] === "CmdStargateJump") {
       // The command was accepted, but the destination session is deliberately
       // not usable until 12.5 simulated seconds later.
@@ -412,16 +421,14 @@ test("a slow jump waits past the ten-second cooldown for observed readiness and 
   });
   await selectOnServer(baseUrl);
 
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/jump", {
-    method: "POST",
-    body: { fromGateID: GATE_ID, toGateID: DEST_GATE_ID },
-  });
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: jumpBody });
 
   assert.equal(response.status, 200);
-  assert.equal(payload.flight.solarSystemID, DEST_SYSTEM_ID);
+  assert.equal(payload.ok, true);
+  assert.equal((await apiRequest(baseUrl, "/api/bridge/flight/status")).payload.flight.solarSystemID, DEST_SYSTEM_ID);
   assert.ok(clockMs > 10_000, `readiness took ${clockMs} simulated ms`);
   assert.equal(
-    gateway.calls.boundCall.filter((call) => call.method === "CmdStargateJump").length,
+    jumpsSent(gateway).length,
     1,
     "the session-changing command is never retried while readiness is pending",
   );
@@ -431,7 +438,7 @@ test("ordinary writes are blocked before transition readiness and allowed during
   const gateway = fakeGateway();
   gateway.state.inSpace = true;
   gateway.state.shipMode = "STOP";
-  const callBoundMethod = gateway.callBoundMethod.bind(gateway);
+  const callMethod = gateway.callMethod.bind(gateway);
   const readFlightStatus = gateway.readFlightStatus.bind(gateway);
   let jumpPending = false;
   let signalJumpIssued;
@@ -439,8 +446,8 @@ test("ordinary writes are blocked before transition readiness and allowed during
   const jumpIssued = new Promise((resolve) => { signalJumpIssued = resolve; });
   const readinessGate = new Promise((resolve) => { releaseReadiness = resolve; });
 
-  gateway.callBoundMethod = async (...args) => {
-    const outcome = await callBoundMethod(...args);
+  gateway.callMethod = async (...args) => {
+    const outcome = await callMethod(...args);
     if (args[1] === "CmdStargateJump") {
       gateway.state.solarSystemID = ORIGIN_SYSTEM_ID;
       jumpPending = true;
@@ -457,10 +464,7 @@ test("ordinary writes are blocked before transition readiness and allowed during
 
   const { baseUrl } = await startTestServer({ gateway });
   await selectOnServer(baseUrl);
-  const jumpRequest = apiRequest(baseUrl, "/api/bridge/flight/jump", {
-    method: "POST",
-    body: { fromGateID: GATE_ID, toGateID: DEST_GATE_ID },
-  });
+  const jumpRequest = apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: jumpBody });
   await jumpIssued;
 
   const allowedRead = await apiRequest(baseUrl, "/api/bridge/call", {
@@ -486,7 +490,7 @@ test("ordinary writes are blocked before transition readiness and allowed during
   releaseReadiness();
   const completedJump = await jumpRequest;
   assert.equal(completedJump.response.status, 200, JSON.stringify(completedJump.payload));
-  assert.equal(completedJump.payload.transition.phase, "ready");
+  assert.equal((await apiRequest(baseUrl, "/api/bridge/flight/status")).payload.flight.transition.phase, "ready");
 
   // Readiness and the next-session-mutation timer are separate. A normal warp
   // is legal immediately after readiness even though another jump/dock/board
@@ -508,15 +512,15 @@ test("a write by the generic call is blocked before transition readiness as a ro
   const gateway = fakeGateway();
   gateway.state.inSpace = true;
   gateway.state.shipMode = "STOP";
-  const callBoundMethod = gateway.callBoundMethod.bind(gateway);
+  const callMethod = gateway.callMethod.bind(gateway);
   const readFlightStatus = gateway.readFlightStatus.bind(gateway);
   let jumpPending = false;
   let signalJumpIssued;
   let releaseReadiness;
   const jumpIssued = new Promise((resolve) => { signalJumpIssued = resolve; });
   const readinessGate = new Promise((resolve) => { releaseReadiness = resolve; });
-  gateway.callBoundMethod = async (...args) => {
-    const outcome = await callBoundMethod(...args);
+  gateway.callMethod = async (...args) => {
+    const outcome = await callMethod(...args);
     if (args[1] === "CmdStargateJump") {
       gateway.state.solarSystemID = ORIGIN_SYSTEM_ID;
       jumpPending = true;
@@ -537,10 +541,7 @@ test("a write by the generic call is blocked before transition readiness as a ro
     body: { service, method, args: [], kwargs: null, ...more },
   });
   const stopsSent = () => [...gateway.calls.call, ...gateway.calls.boundCall].filter((call) => call.method === "CmdStop").length;
-  const jumpRequest = apiRequest(baseUrl, "/api/bridge/flight/jump", {
-    method: "POST",
-    body: { fromGateID: GATE_ID, toGateID: DEST_GATE_ID },
-  });
+  const jumpRequest = apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: jumpBody });
   await jumpIssued;
 
   let read;
@@ -611,9 +612,9 @@ test("an uncertain jump timeout stays latched and blocks a repeated write", asyn
   const gateway = fakeGateway();
   gateway.state.inSpace = true;
   gateway.state.shipMode = "STOP";
-  const callBoundMethod = gateway.callBoundMethod.bind(gateway);
-  gateway.callBoundMethod = async (...args) => {
-    const outcome = await callBoundMethod(...args);
+  const callMethod = gateway.callMethod.bind(gateway);
+  gateway.callMethod = async (...args) => {
+    const outcome = await callMethod(...args);
     if (args[1] === "CmdStargateJump") {
       gateway.state.solarSystemID = ORIGIN_SYSTEM_ID;
     }
@@ -630,22 +631,16 @@ test("an uncertain jump timeout stays latched and blocks a repeated write", asyn
   });
   await selectOnServer(baseUrl);
 
-  const first = await apiRequest(baseUrl, "/api/bridge/flight/jump", {
-    method: "POST",
-    body: { fromGateID: GATE_ID, toGateID: DEST_GATE_ID },
-  });
+  const first = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: jumpBody });
   assert.equal(first.response.status, 504);
   assert.equal(first.payload.error, "TRANSITION_TIMEOUT");
   assert.equal(first.payload.transition.phase, "failed");
 
-  const second = await apiRequest(baseUrl, "/api/bridge/flight/jump", {
-    method: "POST",
-    body: { fromGateID: GATE_ID, toGateID: DEST_GATE_ID },
-  });
+  const second = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: jumpBody });
   assert.equal(second.response.status, 409);
   assert.equal(second.payload.error, "SESSION_CHANGE_IN_PROGRESS");
   assert.equal(
-    gateway.calls.boundCall.filter((call) => call.method === "CmdStargateJump").length,
+    jumpsSent(gateway).length,
     1,
     "an uncertain write is never repeated",
   );
@@ -697,10 +692,10 @@ test("a latched transition heals on the next authoritative status read", async (
   const gateway = fakeGateway();
   gateway.state.inSpace = true;
   gateway.state.shipMode = "STOP";
-  const callBoundMethod = gateway.callBoundMethod.bind(gateway);
+  const callMethod = gateway.callMethod.bind(gateway);
   let jumps = 0;
-  gateway.callBoundMethod = async (...args) => {
-    const outcome = await callBoundMethod(...args);
+  gateway.callMethod = async (...args) => {
+    const outcome = await callMethod(...args);
     if (args[1] === "CmdStargateJump") {
       jumps += 1;
       if (jumps === 1) {
@@ -721,10 +716,7 @@ test("a latched transition heals on the next authoritative status read", async (
   });
   await selectOnServer(baseUrl);
 
-  const first = await apiRequest(baseUrl, "/api/bridge/flight/jump", {
-    method: "POST",
-    body: { fromGateID: GATE_ID, toGateID: DEST_GATE_ID },
-  });
+  const first = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: jumpBody });
   assert.equal(first.response.status, 504);
   assert.equal(first.payload.transition.phase, "failed");
 
@@ -736,15 +728,13 @@ test("a latched transition heals on the next authoritative status read", async (
   assert.equal(statusRead.payload.flight.transition.phase, "ready");
   assert.equal(statusRead.payload.flight.transition.sessionStable, true);
 
-  const second = await apiRequest(baseUrl, "/api/bridge/flight/jump", {
-    method: "POST",
-    body: { fromGateID: GATE_ID, toGateID: DEST_GATE_ID },
-  });
+  const second = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: jumpBody });
   assert.equal(second.response.status, 200, JSON.stringify(second.payload));
-  assert.equal(second.payload.flight.solarSystemID, DEST_SYSTEM_ID);
-  assert.equal(second.payload.transition.phase, "ready");
+  const healed = (await apiRequest(baseUrl, "/api/bridge/flight/status")).payload.flight;
+  assert.equal(healed.solarSystemID, DEST_SYSTEM_ID);
+  assert.equal(healed.transition.phase, "ready");
   assert.equal(
-    gateway.calls.boundCall.filter((call) => call.method === "CmdStargateJump").length,
+    jumpsSent(gateway).length,
     2,
     "the retry dispatches once the read resolved the uncertainty",
   );
@@ -988,22 +978,19 @@ test("a jump re-parks beyonce for the system it ARRIVED in, not the one it left"
   // the order two separate call logs happen to be concatenated in.
   const order = [];
   const bindObject = gateway.bindObject.bind(gateway);
-  const callBoundMethod = gateway.callBoundMethod.bind(gateway);
+  const callMethod = gateway.callMethod.bind(gateway);
   gateway.bindObject = async (service, method, args, ...rest) => {
     order.push(`bind:${Number(args?.[0]?.[0])}`);
     return bindObject(service, method, args, ...rest);
   };
-  gateway.callBoundMethod = async (service, method, ...rest) => {
+  gateway.callMethod = async (service, method, ...rest) => {
     order.push(`call:${method}`);
-    return callBoundMethod(service, method, ...rest);
+    return callMethod(service, method, ...rest);
   };
   const { baseUrl } = await startTestServer({ gateway });
   await selectOnServer(baseUrl);
 
-  const { response } = await apiRequest(baseUrl, "/api/bridge/flight/jump", {
-    method: "POST",
-    body: { fromGateID: GATE_ID, toGateID: DEST_GATE_ID },
-  });
+  const { response } = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: jumpBody });
 
   assert.equal(response.status, 200);
   assert.equal(
@@ -1037,10 +1024,7 @@ test("a re-park that is refused is retried rather than abandoned", async () => {
   const { baseUrl } = await startTestServer({ gateway, transitionSleep: async () => {} });
   await selectOnServer(baseUrl);
 
-  const { response } = await apiRequest(baseUrl, "/api/bridge/flight/jump", {
-    method: "POST",
-    body: { fromGateID: GATE_ID, toGateID: DEST_GATE_ID },
-  });
+  const { response } = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: jumpBody });
 
   assert.equal(response.status, 200);
   assert.equal(refusals, 2, "both refusals were taken");
@@ -1069,12 +1053,9 @@ test("a re-park that never lands still lets the jump succeed — an arrival has 
   try {
     const { baseUrl } = await startTestServer({ gateway, transitionSleep: async () => {} });
     await selectOnServer(baseUrl);
-    const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/jump", {
-      method: "POST",
-      body: { fromGateID: GATE_ID, toGateID: DEST_GATE_ID },
-    });
+    const { response } = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: jumpBody });
     assert.equal(response.status, 200, "the re-park is never load-bearing");
-    assert.equal(payload.flight.solarSystemID, DEST_SYSTEM_ID);
+    assert.equal((await apiRequest(baseUrl, "/api/bridge/flight/status")).payload.flight.solarSystemID, DEST_SYSTEM_ID);
   } finally {
     console.warn = warn;
   }
@@ -1100,10 +1081,7 @@ test("a re-park is not retried into a session that no longer exists", async () =
   const { baseUrl } = await startTestServer({ gateway, transitionSleep: async () => {} });
   await selectOnServer(baseUrl);
 
-  await apiRequest(baseUrl, "/api/bridge/flight/jump", {
-    method: "POST",
-    body: { fromGateID: GATE_ID, toGateID: DEST_GATE_ID },
-  });
+  await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: jumpBody });
 
   assert.equal(
     parkBindsFor(gateway, DEST_SYSTEM_ID).length,

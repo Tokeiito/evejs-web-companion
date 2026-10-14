@@ -6348,7 +6348,7 @@ test("the ship is already flying an order when its own ball says so, and the pil
 
 // (An order to the engines among them is the autopilot's warp, asked by name. The stop was, until it was made on the
 // ballpark's own object, of which a docked pilot has none: 2026-10-11.)
-const LIST_PAIRS = new Set(["beyonce.CmdStargateJump", "stationSvc.GetStation", "dogmaIM.MachoBindObject", "dogmaIM.List", "invbroker.GetInventory", "invbroker.GetInventoryFromId", "invbroker.MachoBindObject", "invbroker.List", "invbroker.ListByFlags", "invbroker.Add", "invbroker.GetCapacity", "station.GetGuests", "slash.SlashCmd", "dogmaIM.AddTarget", "beyonce.CmdStop"]);
+const LIST_PAIRS = new Set(["beyonce.CmdJumpThroughFleet", "stationSvc.GetStation", "dogmaIM.MachoBindObject", "dogmaIM.List", "invbroker.GetInventory", "invbroker.GetInventoryFromId", "invbroker.MachoBindObject", "invbroker.List", "invbroker.ListByFlags", "invbroker.Add", "invbroker.GetCapacity", "station.GetGuests", "slash.SlashCmd", "dogmaIM.AddTarget", "beyonce.CmdStop"]);
 /** A docked pilot with its hangar and its ship bound. Each listing the server answers is a different one, so that what was kept can be told from what was asked for again. */
 async function withContainers(answers = {}) {
   let answered = 0;
@@ -6410,7 +6410,7 @@ test("the pilot's own writes forget every listing, done or refused; its reads, i
   assert.deepEqual([await list(hangar), await list(hangar)], [6, 6]);
   // Reads, an order to the engines, and a lock: no container is changed by any of them.
   await pilots.callMethod("station", "GetGuests", [], null, WHO, handle);
-  await pilots.callMethod("beyonce", "CmdStargateJump", [50001, 50002], null, WHO, handle);
+  await pilots.callMethod("beyonce", "CmdJumpThroughFleet", [140000002, 9002], null, WHO, handle);
   await pilots.callMethod("dogmaIM", "AddTarget", [9001], null, WHO, handle);
   await pilots.callBoundMethod("invbroker", "GetCapacity", [4], null, WHO, handle, hangar);
   assert.deepEqual([await list(hangar), asked()], [6, 6]);
@@ -6574,7 +6574,7 @@ const formationsAsked = (session) => session.calls.filter((call) => call.service
 
 test("the formations are asked for once for a pilot: by its first ballpark, and whatever asks after is answered from that", async () => {
   const hand = handTicked();
-  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "beyonce.GetFormations": FORMATIONS } }, { ...hand.options, allowed: new Set(["beyonce.GetFormations", "beyonce.CmdStargateJump"]) });
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "beyonce.GetFormations": FORMATIONS } }, { ...hand.options, allowed: new Set(["beyonce.GetFormations", "beyonce.CmdJumpThroughFleet"]) });
   const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
   const { pilots, session } = built;
   const asks = async () => (await pilots.callMethod("beyonce", "GetFormations", [], null, WHOSE, handle)).result;
@@ -6588,9 +6588,10 @@ test("the formations are asked for once for a pilot: by its first ballpark, and 
   assert.deepEqual([hand.parks.length, hand.parks[1].space.formations, formationsAsked(session)], [2, FORMATIONS, 1]);
   assert.equal(typeof hand.parks[1].tick, "function", "the second park is ticking");
   // Anything else asked of the service by its name is sent, and is answered as the server answers it.
-  // (A jump through a gate: the autopilot's warp was asked here until it was made on the ballpark's object.)
-  assert.equal((await pilots.callMethod("beyonce", "CmdStargateJump", [50001, 50002], null, WHOSE, handle)).result, null);
-  assert.deepEqual(session.calls.at(-1), { service: "beyonce", method: "CmdStargateJump", args: [50001, 50002], kwargs: null });
+  // (A jump through a fleet member: the autopilot's warp was asked here until it was made on the ballpark's object,
+  // and the stargate jump until 2026-10-14, when it was made there too.)
+  assert.equal((await pilots.callMethod("beyonce", "CmdJumpThroughFleet", [140000002, 9002], null, WHOSE, handle)).result, null);
+  assert.deepEqual(session.calls.at(-1), { service: "beyonce", method: "CmdJumpThroughFleet", args: [140000002, 9002], kwargs: null });
   // Counted once, as the client's own call.
   const row = pilots.callLedger().find((each) => each.pair === "beyonce.GetFormations");
   assert.deepEqual([row.calls, row.statuses], [1, { same: 1 }]);
@@ -6661,7 +6662,7 @@ test("a call the session's object cache answers is not sent and not counted; a w
   // A read, an order to the engines, a lock, and a write by name or on an object: the client's code names nothing beside any of them.
   const listed = await list(hangar);
   await pilots.callMethod("station", "GetGuests", [], null, WHO, handle);
-  await pilots.callMethod("beyonce", "CmdStargateJump", [50001, 50002], null, WHO, handle);
+  await pilots.callMethod("beyonce", "CmdJumpThroughFleet", [140000002, 9002], null, WHO, handle);
   await pilots.callMethod("dogmaIM", "AddTarget", [9001], null, WHO, handle);
   await pilots.callMethod("slash", "SlashCmd", ["/giveitem 34 1"], null, WHO, handle);
   await pilots.callBoundMethod("invbroker", "Add", [1, STATION], { flag: 5 }, WHO, handle, hangar);

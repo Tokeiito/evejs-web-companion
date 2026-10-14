@@ -98,11 +98,16 @@ test("a warp with no range said is the autopilot's own call and one with a range
   assert.equal(requests.some((request) => request.path === "/api/bridge/flight/warp"), false);
 });
 
-test("jump posts both gate IDs; a follow-up status shows the new system", async () => {
+test("jump is the client's CmdStargateJump with both gates and the pilot's ship; a follow-up status shows the new system", async () => {
   const store = createClientStore();
-  const { fetch, requests } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/flight/jump") {
-      return { status: 200, body: { ok: true, result: null, flight: JUMPED, notifications: [] } };
+  let jumped = false;
+  const { fetch, requests } = makeFakeFetch((path, _method, body) => {
+    if (path === "/api/bridge/flight/status") {
+      return { status: 200, body: { ok: true, flight: jumped ? JUMPED : { ...IN_SPACE, shipMode: "STOP", shipSpeedFraction: 0 }, notifications: [] } };
+    }
+    if (path === "/api/bridge/call" && body.method === "CmdStargateJump") {
+      jumped = true;
+      return { status: 200, body: { ok: true, service: "beyonce", method: "CmdStargateJump", result: null, notifications: [] } };
     }
     throw new Error(`unexpected ${path}`);
   });
@@ -110,7 +115,9 @@ test("jump posts both gate IDs; a follow-up status shows the new system", async 
 
   await flow.jump(50001248, 50000802);
 
-  assert.deepEqual(requests[0]?.body, { fromGateID: 50001248, toGateID: 50000802 });
+  // gateJumpSvc.py 124: CmdStargateJump(stargateID, beaconID, session.shipid).
+  const jump = requests.find((request) => request.path === "/api/bridge/call")?.body;
+  assert.deepEqual(jump, { service: "beyonce", method: "CmdStargateJump", args: [50001248, 50000802, 9001], kwargs: null, pilot: true, confirm: true });
   const flight = store.flight.get();
   assert.equal(flight.status?.solarSystemID, 30000140);
   assert.equal(flight.lastAction, "Jump");
@@ -167,14 +174,15 @@ test("a movement refusal is surfaced as a visible reason and the true state re-r
 
 test("R31 — the out-of-range jump reads as a sentence, all the way to the store", async () => {
   // ⚠ THIS IS THE EXACT PAYLOAD THE RUNNING EMULATOR RETURNS. Captured live:
-  // POST /api/bridge/flight/jump with the ship sitting at the station answers
+  // POST /api/bridge/flight/jump (the route, gone since 2026-10-14; the page's own call by the generic call is
+  // answered with the same refusal) with the ship sitting at the station answers
   // 409 with this body, and before R31 the player was shown
   // "Jump refused: CALL_REFUSED: 101,UI/Menusvc/MenuHints/NotWithingMaxJumpDist"
   // — a client resource key, a numeric localization marker, and CCP's own
   // "Withing" typo, in the one place a player is most likely to look.
   const store = createClientStore();
-  const { fetch, requests } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/flight/jump") {
+  const { fetch, requests } = makeFakeFetch((path, _method, body) => {
+    if (path === "/api/bridge/call" && body.method === "CmdStargateJump") {
       return {
         status: 409,
         body: {
