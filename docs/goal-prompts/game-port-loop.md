@@ -3695,6 +3695,28 @@ Take these defaults, and list each under "For the operator" in the log so they c
   script reads both.
 - **The working tree ends lines CRLF.** A patch script's own check of
   a find reads the file with its endings made LF, as `patch.js` does.
+- **The online pilot's station is not where it is.** The store's
+  online pilot keeps the station it was chosen or last docked in, and
+  nothing clears it on an undock. Where the page needs the session's
+  place it reads the flight's (`dockedNow` in `flow.ts`).
+- **A server run is the page's own code.** The bot host loads
+  `web/src/app/flow.ts` from the source at the BFF's start, so a
+  run proves a page's own call once the BFF is restarted on the
+  change. Its log is `bffgp-data/bot-logs/<characterID>.jsonl` in
+  session 2e7ceba2's scratchpad.
+- **A haul in the tab.** Test Two's colony is planet 40176368
+  (Muvolailen I), launchpad 1054656331535, customs office
+  1200040176368. The launchpad is staged with the server stopped
+  (`stage-pad.sh '<contents as JSON>'`, with `pad-stage.js`); an
+  Epithal given (`/giveitem Epithal`, `/giveskill me 3340 1`, which
+  is Gallente Hauler: `gm-say.js` under `MSYS_NO_PATHCONV=1`). In
+  the PI window Test Two is added on its Pilots tab, the colony ticked
+  under Colonies and "Haul 1 colony" pressed. A pilot this tab holds
+  is refused ("A web session is flying this character"): the Station
+  window's "Go offline" lets it go. Take Test Two off the board after
+  ("Remove Test Two").
+- **The page has no Fitting window in space**, so its in-space unfit
+  is not reached from a window.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

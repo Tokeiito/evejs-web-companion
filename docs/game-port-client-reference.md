@@ -1616,6 +1616,18 @@ own `Add(moduleID, shipID, qty=None, flag=const.flagCargo)` in space. EveJS move
 and an `Add` of a thing not there with None. The page makes the calls since `71601be5`
 (`web/src/bridge/fitModule.ts`), and judges by its own reads of the slots.
 
+**A launchpad's goods sent up into a customs office, 2026-10-13** (`eve/client/script/ui/shared/planet/importExportUI.py`).
+The window is opened at an office in space (`ApplyAttributes`, 81 to 103: the office's slim item from the
+ballpark) and asks the office's rate as it resets (`UpdateTaxRate`, 382 to 385:
+`eveMoniker.GetPlanetOrbitalRegistry(session.solarsystemid).GetTaxRate(officeID)`): None where the office's owner
+does not let the pilot use it, and then an export is refused (`ExportCommodity`, 467 to 469). The transfer
+(`ConfirmCommodityTransfer`, 537 to 558) is `invCache.GetInventoryFromId(officeID).ImportExportWithPlanet(
+spaceportPinID, importData, exportData, self.taxRate)`; on `TaxChanged` the rate is asked again, refused where
+there is none, and the pilot asked (`CustomsOfficeTaxRateChanged`) before it sends again. EveJS answers the
+transfer None, and refuses a rate not the office's (`TaxChanged`) and a pin not the pilot's
+(`CannotImportEndpointNotFound`). The page makes the calls since `30c68a1c` (`web/src/bridge/customsWrites.ts`),
+in space only.
+
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
 (`ACTIONS`, by `eventTypeID`) and a level it reckons from `absolutePoints` and the skill's rank
