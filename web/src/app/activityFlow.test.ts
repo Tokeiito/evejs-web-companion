@@ -37,11 +37,13 @@ function mailEmpty(unreadCount = 0) {
   };
 }
 
-test("loadActivity uses only the existing notification, calendar and mail reads", async () => {
+test("loadActivity uses the notification, calendar and mail reads, and the skill history's notifications' two calls", async () => {
   const calls: string[] = [];
   const fetch: typeof globalThis.fetch = async (input) => {
     const url = String(input);
     calls.push(url);
+    // The skill handler's history and skills, by the generic call (skillHistoryProvider.py 32 to 34): nothing.
+    if (url === "/api/bridge/call") return json({ ok: true, result: null });
     if (url.includes("/api/bridge/notifications")) {
       return json({
         ok: true,
@@ -63,6 +65,8 @@ test("loadActivity uses only the existing notification, calendar and mail reads"
   const current = new Date();
   assert.deepEqual(calls.sort(), [
     "/api/bridge/calendar?month=" + (current.getUTCMonth() + 1) + "&year=" + current.getUTCFullYear(),
+    "/api/bridge/call",
+    "/api/bridge/call",
     "/api/bridge/mail",
     "/api/bridge/notifications",
   ].sort());
@@ -76,6 +80,7 @@ test("loadActivity uses only the existing notification, calendar and mail reads"
 test("loadActivity lands partial success when one aggregate read rejects", async () => {
   const fetch: typeof globalThis.fetch = async (input) => {
     const url = String(input);
+    if (url === "/api/bridge/call") return json({ ok: true, result: null });
     if (url.includes("/api/bridge/notifications")) {
       return json({ ok: false, error: "CALL_FAILED", message: "notificationMgr unavailable" }, 503);
     }

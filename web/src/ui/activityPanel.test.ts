@@ -181,9 +181,9 @@ test("PanelHost has an explicit Activity branch", () => {
   assert.doesNotMatch(body, />Chat</);
 });
 
-test("the Activity panel can call only its read flow", () => {
+test("the Activity panel can call only its read flow and the reading of the client's words", () => {
   const source = readFileSync(new URL("./Activity.svelte", import.meta.url), "utf8");
   const calls = [...source.matchAll(/flow\.([A-Za-z0-9_]+)\s*\(/g)].map((match) => match[1]);
-  assert.deepEqual([...new Set(calls)], ["loadActivity"]);
+  assert.deepEqual([...new Set(calls)], ["loadActivity", "requestWords"]);
   assert.doesNotMatch(source, /Mark|Delete|RespondToEvent|CreateEvent|EditEvent/);
 });
