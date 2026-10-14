@@ -1044,37 +1044,8 @@ export interface IndustryPreviewResult {
   readonly monitorID: number | null;
 }
 
-/**
- * What the player HAS of each material the job would consume, from the
- * server's own preview seam. The installation FEE is deliberately absent: no
- * allowlisted retail call quotes a cost without also installing the job, so the
- * panel says so rather than showing an invented estimate.
- */
-export async function previewIndustryJob(
-  request: IndustryJobRequest,
-  options: ApiOptions = {},
-): Promise<IndustryPreviewResult> {
-  const data = await postJson(
-    "/api/bridge/industry/preview",
-    { ...request } as unknown as Record<string, JsonValue>,
-    options,
-  );
-  const available = data.available;
-  const normalized: Record<string, number> = {};
-  if (typeof available === "object" && available !== null && !Array.isArray(available)) {
-    for (const [typeID, quantity] of Object.entries(available)) {
-      normalized[typeID] = Number(quantity) || 0;
-    }
-  }
-  const reckoned = data.timeSeconds;
-  return {
-    available: normalized,
-    timeSeconds: typeof reckoned === "number" && Number.isSafeInteger(reckoned) && reckoned > 0 ? reckoned : null,
-    fee: decodeJobFee(data.fee),
-    materials: decodeJobMaterials(data.materials),
-    monitorID: typeof data.monitorID === "number" && Number.isSafeInteger(data.monitorID) && data.monitorID > 0 ? data.monitorID : null,
-  };
-}
+// What a job will take and what its place has: the page's own since 2026-10-14 (app/flow.ts, previewIndustryJob;
+// bridge/industryMonitor.ts). Until then POST /api/bridge/industry/preview, whose answer this was.
 
 /**
  * An industry mutation's outcome. `applied` is the BFF's RE-READ of the job
@@ -1115,19 +1086,8 @@ export async function installIndustryJob(
   return asIndustryChange(data);
 }
 
-/**
- * One of the Industry window's own events, for the pilot's transport to act on as the game's own client does:
- * `closed`, the window closed (the client lets go the monitor of the job it had, where it had one that was not
- * yet started), and `job-let-go`, the window's job put away while the window stays. Answers whether anything
- * keeps the window's job to act on it: on the game port the transport does, and through the gateway nothing does.
- */
-export async function industryWindowEvent(
-  event: "closed" | "job-let-go",
-  options: ApiOptions = {},
-): Promise<boolean> {
-  const data = await postJson("/api/bridge/industry/window", { event }, options);
-  return data.kept === true;
-}
+// The Industry window's events are the page's own since 2026-10-14 (app/flow.ts, industryWindowClosed and
+// industryJobLetGo): until then POST /api/bridge/industry/window told the transport.
 
 // A finished job is delivered, and a job stopped, by the page's own calls (bridge/industryWrites.ts:
 // industryManager.CompleteJob and CancelJob, each with the job's own solar system, and judged by the job the

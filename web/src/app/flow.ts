@@ -378,7 +378,8 @@ import { reconnectToDrones as reconnectToDronesCall, salvageWithDrones, scoopDro
 import { alignTo as alignToCall, approach as approachCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
 import { dock as dockCall, isStation, jump as jumpCall, undock as undockCall } from "../bridge/placeChanges.ts";
 import { boardCorvette as boardCorvetteCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
-import { createJobReckoner, type JobReckoner, type JobReckoning } from "../bridge/industryJobReckoning.ts";
+import { activityIDOf, createJobReckoner, type JobReckoner, type JobReckoning } from "../bridge/industryJobReckoning.ts";
+import { connectJob, decodeFacilityPlaces, disconnectJob, jobDump, jobPlaces, monitoredAs, type Monitored } from "../bridge/industryMonitor.ts";
 import { NO_OPTIONAL_MATERIAL } from "../bridge/industryReckonings.mjs";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
 import { runSlashCommand } from "../bridge/gmWrites.ts";
@@ -829,11 +830,11 @@ export interface AppFlow {
    */
   installIndustryJob(request: api.IndustryJobRequest): Promise<void>;
   /**
-   * The Industry window closed. The game's own client then lets go what it kept open for the job the window had;
-   * the pilot's transport is told, and does the same. Best effort: where it could not be told, nothing is said.
+   * The Industry window closed. The game's own client then lets go the monitor of the job the window had, and so
+   * does the page. Best effort: where it could not be sent, nothing is said.
    */
   industryWindowClosed(): Promise<void>;
-  /** The window's job put away while the window stays ("Never mind"): told likewise, and as quietly. */
+  /** The window's job put away while the window stays ("Never mind"): nothing is sent, and the next job is made anew. */
   industryJobLetGo(): Promise<void>;
   /** DELIVER a finished job (the retail CompleteJob). */
   deliverIndustryJob(jobID: number): Promise<void>;
@@ -1929,8 +1930,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
   /**
    * A job as the page reckons it itself, for the pilot online; null where there is no pilot, or the reckoning failed
-   * (a lost session is no reckoning, and is passed on). Its materials as the window lists them: an invention's empty
-   * optional place is nothing taken, and is not listed (the route's preview leaves it out too).
+   * (a lost session is no reckoning, and is passed on). Its materials whole, as the job's dump has them: an
+   * invention's empty optional place among them.
    */
   async function reckonedHere(request: api.IndustryJobRequest): Promise<JobReckoning | null> {
     const characterID = store.station.get().online?.characterID ?? null;
@@ -1947,14 +1948,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         timeEfficiency: request.timeEfficiency ?? null,
         materialEfficiency: request.materialEfficiency ?? null,
       });
-      const listed = reckoned.materials === null ? null
-        : Object.fromEntries(Object.entries(reckoned.materials).filter(([name]) => name !== NO_OPTIONAL_MATERIAL));
-      return { ...reckoned, materials: listed };
+      return reckoned;
     } catch (error) {
       if (isSessionLost(error)) throw error;
       return null;
     }
   }
+  // The Industry window's job as the client's industry service keeps it (bridge/industryMonitor.ts): the job
+  // monitored, by what it was made as and the place it takes from, its pilot, and what its monitor answered; or that
+  // the window's job was installed, the window then having the server's job, which is not the one monitored.
+  let industryWindowJob: {
+    readonly characterID: number;
+    readonly monitoredAs: string;
+    readonly blueprintItemID: number;
+    readonly monitored: Monitored;
+  } | "installed" | null = null;
   // The Character Sheet's reads, asked call by call as the client's windows ask them (bridge/characterSheetReads.ts).
   const characterSheetReads = createCharacterSheetReads(bridgeAsk, (typeIDs, attributeIDs) => api.fetchTypeDogma(typeIDs, attributeIDs, callOptions));
   // The wallet's reads, asked call by call as the client's wallet and account services ask them
@@ -14874,20 +14882,52 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     loadIndustry,
 
-    // A job's time, materials and what it costs to start, of every kind of work, are the page's own reckoning
-    // (reckonedHere), as the client's window shows its job's own; the route's preview is asked for what the job's
-    // place has of each material, and its figures are shown only where the page could not reckon one (an input it
-    // could not have). The route reckons by the same module.
+    // The window's job, as the client's makes and shows it: its time, its materials and what it costs to start are
+    // the page's own reckoning (reckonedHere), each null where an input was not had; its runs held to the most it
+    // can have, so that no job of more is sent (job.py 395); its places the facility's for the pilot
+    // (GetFacilityLocations, kept a minute by the client); its monitor connected once for the job (ConnectJob,
+    // industrySvc.py 305 to 307), and what its place has as the monitor answered, or as the server has said since
+    // (OnIndustryMaterials, 324). Until 2026-10-14 the BFF's preview route made the job and its monitor.
     async previewIndustryJob(request) {
+      const online = store.station.get().online;
+      if (!online) throw new Error("No pilot is online.");
       const own = await reckonedHere(request);
-      const previewed = await api.previewIndustryJob(request, callOptions);
-      if (own === null) return previewed;
-      return {
-        ...previewed,
-        timeSeconds: own.timeSeconds ?? previewed.timeSeconds,
-        materials: own.materials ?? previewed.materials,
-        fee: own.fee ?? previewed.fee,
-      };
+      if (own !== null && own.mostRuns !== null && request.runs > Math.max(own.mostRuns, 1)) {
+        const most = Math.max(own.mostRuns, 1);
+        throw Object.assign(new Error(request.activity === "copying"
+          ? `One job copying this blueprint here makes at most ${most} ${most === 1 ? "copy" : "copies"}.`
+          : `One job ${request.activity === "invention" ? "inventing from" : "researching"} this blueprint here has at most ${most} ${most === 1 ? "run" : "runs"}.`), { code: "INVALID_RUNS" });
+      }
+      const places = jobPlaces(decodeFacilityPlaces(await bridgeAsk("facilityManager", "GetFacilityLocations", [request.facilityID, online.characterID])));
+      const dump = jobDump({
+        blueprintItemID: request.blueprintItemID,
+        blueprintTypeID: request.blueprintTypeID,
+        activityID: activityIDOf(request.activity),
+        facilityID: request.facilityID,
+        characterID: online.characterID,
+        corporationID: online.corporationID ?? 0,
+        solarSystemID: online.solarSystemID ?? 0,
+        runs: request.runs,
+        licensedRuns: own?.licensedRuns ?? request.licensedRuns ?? 1,
+        cost: own?.cost ?? null,
+        tax: own?.tax ?? null,
+        time: own?.timeSeconds ?? null,
+        materials: own?.materials ?? null,
+        input: places.input,
+        output: places.output,
+        productTypeID: request.productTypeID ?? null,
+      });
+      const as = monitoredAs(dump);
+      const kept = industryWindowJob !== null && industryWindowJob !== "installed"
+        && industryWindowJob.characterID === online.characterID && industryWindowJob.monitoredAs === as ? industryWindowJob : null;
+      const monitored = kept ? kept.monitored : await connectJob(bridgeDo, dump);
+      if (!kept) industryWindowJob = { characterID: online.characterID, monitoredAs: as, blueprintItemID: request.blueprintItemID, monitored };
+      // What the server has said of the monitored job's place since its monitor answered.
+      const said = store.get().industry.materialsSaid;
+      const available = kept && said !== null && said.monitorID === monitored.monitorID ? said.available : monitored.available;
+      // (An invention's empty optional place is nothing taken, and is not listed.)
+      const listed = own?.materials ? Object.fromEntries(Object.entries(own.materials).filter(([name]) => name !== NO_OPTIONAL_MATERIAL)) : null;
+      return { available, timeSeconds: own?.timeSeconds ?? null, fee: own?.fee ?? null, materials: listed, monitorID: monitored.monitorID };
     },
 
     async loadDecryptors() {
@@ -14898,16 +14938,31 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async installIndustryJob(request) {
-      await runIndustryAction(() => api.installIndustryJob(request, callOptions));
+      await runIndustryAction(async () => {
+        const outcome = await api.installIndustryJob(request, callOptions);
+        // A job the server took: the window has the server's job of it from now on, which is not the one monitored.
+        if (industryWindowJob !== null && industryWindowJob !== "installed" && industryWindowJob.blueprintItemID === request.blueprintItemID) {
+          industryWindowJob = "installed";
+        }
+        return outcome;
+      });
     },
 
+    // industryWnd.Close (107 to 108): industrySvc.DisconnectJob(self.jobData) (311 to 313), which lets the monitor go
+    // where the window's job is the one monitored, sends None where the window has no job, and sends nothing for a
+    // job that was installed. The window has no job after.
     async industryWindowClosed() {
+      const job = industryWindowJob;
+      industryWindowJob = null;
+      if (job === "installed") return;
       // The window is gone whether or not this is heard: there is nobody to tell of a failure.
-      await api.industryWindowEvent("closed", callOptions).catch(() => false);
+      await disconnectJob(bridgeDo, job ? job.monitored.monitorID : null).catch(() => {});
     },
 
+    // The window's job let go while the window stays (industryWnd.OnIndustryRemoveBlueprint: self.jobData = None):
+    // the service's hold on the one monitored is a weak one, and nothing is sent. The next job is made anew.
     async industryJobLetGo() {
-      await api.industryWindowEvent("job-let-go", callOptions).catch(() => false);
+      industryWindowJob = null;
     },
 
     // The page's own calls (bridge/industryWrites.ts), each judged by the job the server answers.

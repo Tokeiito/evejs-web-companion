@@ -37,8 +37,7 @@
 //
 // A facility with rig modifiers is asked for afresh, as the client's job asks it (facilitySvc.GetFreshFacility).
 //
-// NOT DONE: the most runs a job can have, which the routes hold a copy job's, a research's and an invention's to
-// (job.py 395).
+// The most runs a job can have is said beside the job's figures (mostRuns), for the window to hold its runs to.
 
 import type { Ask } from "./ask.ts";
 import { effectiveSkillLevel } from "./skillSheet.ts";
@@ -50,6 +49,7 @@ import {
   copyingJobCost,
   copyingJobFee,
   copyingJobMaterials,
+  copyingJobMostRuns,
   copyingJobSeconds,
   copyingJobTax,
   facilityCharges,
@@ -62,6 +62,7 @@ import {
   inventionJobCost,
   inventionJobFee,
   inventionJobMaterials,
+  inventionJobMostRuns,
   inventionJobSeconds,
   inventionJobTax,
   inventionProductTypeID,
@@ -77,6 +78,7 @@ import {
   researchJobCost,
   researchJobFee,
   researchJobMaterials,
+  researchJobMostRuns,
   researchJobSeconds,
   researchJobTax,
   researchServiceID,
@@ -115,6 +117,9 @@ const KINDS: Readonly<Record<JobActivity, { readonly activityID: number; readonl
   reaction: { activityID: 9, timeAttribute: 2662 },
 });
 type Kind = (typeof KINDS)[JobActivity];
+
+/** A kind of work's activity number, as a job's dump names it. */
+export const activityIDOf = (activity: JobActivity): number => KINDS[activity].activityID;
 
 /** A job's cost through its modifiers, by its kind (a reaction's is a manufacturing job's: activities/reaction.py 16). */
 function costOf(activity: JobActivity, job: Basis & { readonly blueprintPrice: number }, modifiers: {
@@ -204,9 +209,17 @@ export interface JobReckoning {
   readonly cost: number | null;
   readonly tax: number | null;
   readonly fee: JobFee | null;
+  /** The runs each copy is licensed for, as the job goes with them (job.py 639); null where the job has no recipe. */
+  readonly licensedRuns: number | null;
+  /**
+   * The most runs the job can have, as the client's job holds its runs to it (job.py 395; activity.py job_max_runs):
+   * a copy job's, a research's and an invention's, where its time was reckoned; null for any other, or where it
+   * could not be reckoned.
+   */
+  readonly mostRuns: number | null;
 }
 
-const NONE: JobReckoning = Object.freeze({ timeSeconds: null, materials: null, cost: null, tax: null, fee: null });
+const NONE: JobReckoning = Object.freeze({ timeSeconds: null, materials: null, cost: null, tax: null, fee: null, licensedRuns: null, mostRuns: null });
 
 /** A read that fails is none; a lost session is not, and fails the reckoning. */
 async function orNone<T>(read: () => Promise<T>): Promise<T | null> {
@@ -351,25 +364,27 @@ export function createJobReckoner(reads: JobReckoningReads) {
     const decryptor = job.activity === "invention" && (job.decryptorTypeID ?? 0) > 0;
     if (!row && !decryptor) return NONE;
 
-    const timeSeconds = row ? await reckonedTime(job, kind, activity, row, productType, standing, licensedRuns) : null;
+    const timed = row ? await reckonedTime(job, kind, activity, row, productType, standing, licensedRuns) : null;
+    const timeSeconds = timed ? timed.seconds : null;
+    const mostRuns = timed ? timed.mostRuns : null;
     const materials = manufacturing && job.materialEfficiency === null ? null : reckonedMaterials(job, kind, activity, row, productType, licensedRuns);
-    if (!row || standing === null) return { timeSeconds, materials, cost: null, tax: null, fee: null };
+    if (!row || standing === null) return { timeSeconds, materials, cost: null, tax: null, fee: null, licensedRuns, mostRuns };
 
     // The cost, the tax and what it costs to start, off the price table: none of them without one.
     const table = await kept.prices();
-    if (table === null) return { timeSeconds, materials, cost: null, tax: null, fee: null };
+    if (table === null) return { timeSeconds, materials, cost: null, tax: null, fee: null, licensedRuns, mostRuns };
     // The type the base is of (the invented blueprint for an invention), priced by the materials of the work it is
     // priced by (a reaction's own for a reaction, manufacturing's for any other).
     const pricedType = job.activity === "invention" ? inventionProductTypeID(activity, job.productTypeID ?? 0) : job.blueprintTypeID;
     const pricedWork = job.activity === "reaction" ? "reaction" : "manufacturing";
-    if (!(pricedType > 0)) return { timeSeconds, materials, cost: null, tax: null, fee: null };
+    if (!(pricedType > 0)) return { timeSeconds, materials, cost: null, tax: null, fee: null, licensedRuns, mostRuns };
     await definitionsOf([pricedType], pricedWork);
     const price = blueprintPrice(pricedType, {
       activity: pricedWork,
       activitiesOf: (typeID) => definitionsKept.get(typeID)?.activities ?? null,
       adjustedPriceOf: (typeID) => (table.has(typeID) ? table.get(typeID) ?? null : null),
     });
-    if (price === null) return { timeSeconds, materials, cost: null, tax: null, fee: null };
+    if (price === null) return { timeSeconds, materials, cost: null, tax: null, fee: null, licensedRuns, mostRuns };
     const basis: Basis = {
       runs: job.runs,
       licensedRuns,
@@ -396,7 +411,7 @@ export function createJobReckoner(reads: JobReckoningReads) {
     const securities = systemID === null ? null : await orNone(() => reads.security([systemID]));
     const security = securities === null || systemID === null ? null : securities[systemID] ?? null;
     const fee = feeOf(job.activity, based, { cost, tax, sccTaxModifier: charges.sccTaxModifier, security });
-    return { timeSeconds, materials, cost, tax, fee };
+    return { timeSeconds, materials, cost, tax, fee, licensedRuns, mostRuns };
   }
 
   /** The service a structure would do the work by, as the client's activity asks for it (activity.py 54 to 57). */
@@ -418,7 +433,7 @@ export function createJobReckoner(reads: JobReckoningReads) {
     productType: ProductType | null,
     standing: ResearchStanding | null | undefined,
     licensedRuns: number,
-  ): Promise<number | null> {
+  ): Promise<{ readonly seconds: number | null; readonly mostRuns: number | null } | null> {
     const manufacturing = job.activity === "manufacturing";
     const activityTime = Number(activity.time);
     // (What each kind of work wants said of the blueprint: a manufacturing job its time research, a research where
@@ -443,21 +458,23 @@ export function createJobReckoner(reads: JobReckoningReads) {
     };
     switch (job.activity) {
       case "copying":
-        return copyingJobSeconds({ ...timedBy, runs: job.runs, licensedRuns });
+        return { seconds: copyingJobSeconds({ ...timedBy, runs: job.runs, licensedRuns }), mostRuns: copyingJobMostRuns(timedBy) };
       case "research_time":
       case "research_material":
-        return standing ? researchJobSeconds({ ...timedBy, level: standing.level, runs: job.runs }) : null;
+        return standing
+          ? { seconds: researchJobSeconds({ ...timedBy, level: standing.level, runs: job.runs }), mostRuns: researchJobMostRuns({ ...timedBy, runsLeft: standing.runsLeft }) }
+          : null;
       case "invention":
-        return inventionJobSeconds({ ...timedBy, runs: job.runs });
+        return { seconds: inventionJobSeconds({ ...timedBy, runs: job.runs }), mostRuns: inventionJobMostRuns(timedBy) };
       case "reaction":
-        return reactionJobSeconds({ ...timedBy, runs: job.runs });
+        return { seconds: reactionJobSeconds({ ...timedBy, runs: job.runs }), mostRuns: null };
       default: {
         // (Only a skill that has a time per level is among the job's modifiers: industryCommon.GetJobModifiers, 485.)
         const timed = required.flatMap((typeID) => {
           const perLevel = perLevels[typeID]?.[ATTRIBUTE_MANUFACTURE_TIME_PER_LEVEL];
           return perLevel === undefined ? [] : [{ perLevel, level: effectiveSkillLevel(skills, typeID) }];
         });
-        return manufacturingJobSeconds({ ...timedBy, runs: job.runs, skills: timed, timeEfficiency: job.timeEfficiency });
+        return { seconds: manufacturingJobSeconds({ ...timedBy, runs: job.runs, skills: timed, timeEfficiency: job.timeEfficiency }), mostRuns: null };
       }
     }
   }
