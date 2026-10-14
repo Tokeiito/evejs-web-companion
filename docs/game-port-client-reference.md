@@ -1582,6 +1582,17 @@ menu for a mission that is offered (`missionentry.py` 66 to 67); no recording ha
 removal, with an offer or without. The page makes both on the agent's object since `e1b4d4a9`
 (`web/src/bridge/agentWrites.ts`), and the game port sends the opening inside the binding.
 
+**Lost drones reconnected to, 2026-10-13** (`eve/client/script/ui/services/menuSvcExtras/droneFunctions.py`).
+`ReconnectToDrones` (217 to 241), from the ship's own menu and its shortcut: with no ballpark, in a structure or
+with no ball for the ship, nothing; the candidates are every ball of the Drone category that is the pilot's own
+character's and not among the drones the client holds to be its own (`michelle.GetDrones`), twenty-five at most
+(`MAX_DRONE_RECONNECTS`, `appConst.py` 2069, and 25 in the compiled module); with any,
+`eveMoniker.GetEntityAccess().CmdReconnectToDrones(droneCandidates)` (`_ReconnectToDroneCandidates`, 244 to 259),
+and what the server answers of the drones it would not take is told to the pilot; with none, the pilot is told
+so and nothing is asked. No Tranquility recording has it. EveJS answers an empty dict where it refuses nothing,
+and passes over a drone that is another's or is held. The page makes the call since `db24bfc6`
+(`web/src/bridge/boundEntityWrites.ts`), for the drones its window or its lost-drone check names.
+
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
 (`ACTIONS`, by `eventTypeID`) and a level it reckons from `absolutePoints` and the skill's rank

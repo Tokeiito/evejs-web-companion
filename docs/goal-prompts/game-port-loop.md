@@ -3625,6 +3625,25 @@ Take these defaults, and list each under "For the operator" in the log so they c
   under that name and says so (`asAgentRoute` beside `asRead`,
   `web/src/app/agentsFlow.test.ts`); a test of the route itself goes
   with the route.
+- **A short route is read for what it is before it is counted
+  short.** Of the aid's shortest, five were no route's move, of three
+  kinds: one told the transport of a window's closing (the transport
+  keeps that window's job), two were calls on an inventory's own
+  object with a flag the BFF alone names, and two were a call and
+  then the BFF's own watching. What a route keeps, binds or watches is read
+  before its length is believed.
+- **A drone is let go of by a route, and the window does not know.**
+  A loose drone for a look is made by `POST
+  /api/bridge/entity/drones/abandon` (a route still), from a script or
+  from the tab with the page's own token. Done from outside the
+  page's flow, the Drones window offers no "Reconnect" until it reads
+  its drones again, which any order from the window makes it do.
+- **A pilot taken over with a drone loose meets the lost-drone
+  check.** The tab says "DRONE RECOVERY BLOCKED" and offers "Retry
+  Recovery": pressed once it reconnects and recalls, pressed again
+  with the drone home it clears. It is the page's own machinery, and
+  a look that wants the Drones window's own buttons gets past it
+  first.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
