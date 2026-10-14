@@ -41,8 +41,9 @@ export interface ScannerLauncherOperation {
 }
 
 /**
- * Current held-session action authority. IDs remain internal prerequisites;
- * product POSTs accept no IDs and re-read this source server-side before use.
+ * The pilot's scanner as the transport keeps it, which the scanner's orders go by
+ * (bridge/scannerWrites.ts): the page reads it and makes the client's calls with
+ * what it says.
  */
 export interface ScannerOperationsSnapshot {
   readonly inSpace: boolean;
@@ -50,7 +51,14 @@ export interface ScannerOperationsSnapshot {
   readonly shipID: number | null;
   readonly maxActiveProbes: number;
   readonly launcher: ScannerLauncherOperation | null;
+  /** The active probes: the ones that are not switched off. */
   readonly probes: readonly ScannerProbeOperation[];
+  /**
+   * True from the pilot's own asking for a scan until the server says it has
+   * stopped (the client's scanSvc.IsScanning). Absent where the transport does
+   * not say, which is taken for no scan.
+   */
+  readonly scanning?: boolean;
 }
 
 export interface ScannerNameCatalog {
@@ -309,23 +317,32 @@ export type ScannerActionID = "launch" | "recover" | "analyze" | "reconnect";
 export type ScannerActionResult = void | Promise<void>;
 export type ProbeScanMap = Readonly<Record<string, JsonValue>>;
 
+/**
+ * Each binding may say, in `blocked`, why its order is not offered just now: the
+ * client's own rule for its button (bridge/scannerWrites.ts), in the page's
+ * words. An order that is blocked is not enabled, and the sentence is its detail.
+ */
 export interface ScannerActionBindings {
   readonly launch?: {
     readonly moduleID: number;
     readonly count: number;
     readonly launcherName?: string | null;
+    readonly blocked?: string | undefined;
     run(moduleID: number, count: number): ScannerActionResult;
   };
   readonly recover?: {
     readonly probeIDs: readonly number[];
+    readonly blocked?: string | undefined;
     run(probeIDs: readonly number[]): ScannerActionResult;
   };
   readonly analyze?: {
     /** Exact geometry keyed by owned probe id; the panel never fabricates it. */
     readonly probeMap: ProbeScanMap;
+    readonly blocked?: string | undefined;
     run(probeMap: ProbeScanMap): ScannerActionResult;
   };
   readonly reconnect?: {
+    readonly blocked?: string | undefined;
     run(): ScannerActionResult;
   };
 }
@@ -381,6 +398,7 @@ export function scannerActionAvailability(
       const binding = actions.launch;
       const enabled = Boolean(
         binding
+          && !binding.blocked
           && Number.isSafeInteger(binding.moduleID)
           && binding.moduleID > 0
           && Number.isSafeInteger(binding.count)
@@ -392,18 +410,21 @@ export function scannerActionAvailability(
         enabled,
         detail: enabled
           ? `${binding!.count} probe${binding!.count === 1 ? "" : "s"} ready in ${cleanText(binding!.launcherName) ?? "the fitted launcher"}.`
-          : "A fitted probe launcher and its launch count are not available to this panel.",
+          : binding?.blocked || "A fitted probe launcher and its launch count are not available to this panel.",
         confirmation: LAUNCH_CONFIRMATION,
       };
     }
     case "recover": {
       const count = actions.recover ? validProbeIDs(actions.recover.probeIDs).length : 0;
+      const blocked = actions.recover?.blocked || null;
       return {
         id,
         label,
-        enabled: count > 0,
+        enabled: count > 0 && blocked === null,
         detail: actions.recover === undefined
           ? "Active probe IDs are not available to this panel, so recovery cannot be targeted safely."
+          : blocked !== null
+            ? blocked
           : count > 0
             ? `${count} launched probe${count === 1 ? " is" : "s are"} available to recover.`
             : "No launched probes are available to recover.",
@@ -412,12 +433,15 @@ export function scannerActionAvailability(
     }
     case "analyze": {
       const count = actions.analyze ? Object.keys(actions.analyze.probeMap).length : 0;
+      const blocked = actions.analyze?.blocked || null;
       return {
         id,
         label,
-        enabled: count > 0,
+        enabled: count > 0 && blocked === null,
         detail: actions.analyze === undefined
           ? "Probe geometry is not available to this panel, so it will not invent a scan map."
+          : blocked !== null
+            ? blocked
           : count > 0
             ? `${count} probe position${count === 1 ? " is" : "s are"} ready for analysis.`
             : "The supplied probe map is empty, so there is nothing safe to analyze.",
@@ -428,9 +452,9 @@ export function scannerActionAvailability(
       return {
         id,
         label,
-        enabled: actions.reconnect !== undefined,
+        enabled: actions.reconnect !== undefined && !actions.reconnect.blocked,
         detail: actions.reconnect
-          ? "Ask the current-system scan manager to reconnect your lost probes."
+          ? actions.reconnect.blocked || "Ask the current-system scan manager to reconnect your lost probes."
           : "The reconnect route exists, but its callback has not been wired into this panel.",
         confirmation: null,
       };

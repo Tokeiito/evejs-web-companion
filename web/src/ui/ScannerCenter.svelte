@@ -4,6 +4,7 @@
   // scanner slice or active-probe geometry, so absent action bindings remain
   // visibly unavailable instead of being guessed from an empty object.
   import type { ScanFullState } from "../bridge/boundSmallServices.ts";
+  import { panelErrorWords } from "../bridge/refusals.ts";
   import {
     SCANNER_ACTION_IDS,
     buildScannerSitesView,
@@ -36,7 +37,9 @@
   const actionRows = $derived(
     SCANNER_ACTION_IDS.map((id) => scannerActionAvailability(id, actions)),
   );
-  const enabledActionCount = $derived(actionRows.filter((action) => action.enabled).length);
+  const suppliedActionCount = $derived(
+    [actions.launch, actions.recover, actions.analyze, actions.reconnect].filter((binding) => binding !== undefined).length,
+  );
   const pendingPolicy = $derived(
     pendingAction === null ? null : scannerActionAvailability(pendingAction, actions),
   );
@@ -90,8 +93,9 @@
           await actions.reconnect?.run();
           break;
       }
-    } catch {
-      actionError = `${policy.label} could not be completed. Refresh the scanner before trying again.`;
+    } catch (cause) {
+      // Why, in a player's words: the client's own refusal as the page words it, the server's, or the transport's.
+      actionError = `${policy.label}: ${panelErrorWords(cause)}`;
     } finally {
       busyAction = null;
     }
@@ -252,7 +256,10 @@
       <h3>Probe controls</h3>
     </header>
 
-    {#if enabledActionCount === 0}
+    <!-- Only where no order was handed to the panel at all: an order that is
+         there and not offered just now (a scan under way, no probe out) says
+         why on its own card. -->
+    {#if suppliedActionCount === 0}
       <p class="note">
         This panel is currently read-only. The SPA does not store active-probe IDs or geometry,
         and scanner action callbacks have not been connected yet.

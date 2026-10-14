@@ -28,6 +28,7 @@ import { hostilesInReach, pickAdvertisedFleet } from "./scriptConditions.ts";
 import { BOARD_SLOT_KEY } from "../bots/botScript.ts";
 import { refitLanded } from "../bots/startup.ts";
 import { planFittingApply } from "../bridge/fitting.ts";
+import { NO_IDLE_PROBE, SCAN_IN_PROGRESS, launchOf, recallOf, scanOf } from "../bridge/scannerWrites.ts";
 import type { MacroStep, OreFamilyArg, SquadRoleArg, WorldRef } from "../bots/botScript.ts";
 import { dockedAt, type DockableKind } from "./dockableLocation.ts";
 import { launchFullPercent } from "../bots/macroSpecs.ts";
@@ -7487,15 +7488,22 @@ const launchScanProbes: MacroDecider = (_step, obs) => {
   if (scanner.probes.length > 0) {
     return tick(WAIT, "The scan probes are out.", "Launching probes", { kind: "done" });
   }
-  if (scanner.launcher === null || scanner.launcher.launchCount <= 0) {
-    return tick(WAIT, "No probes are ready in an online launcher.", "Launching probes", {
+  // The launch the page would make, by the client's own rule for a formation's button (bridge/scannerWrites.ts):
+  // an order the page refuses is not issued. A scan under way passes by itself; nothing else that stops a launch
+  // with no probe out does.
+  const launch = launchOf(scanner);
+  if ("refusal" in launch) {
+    if (scanner.scanning === true) {
+      return tick(WAIT, "Waiting for the scan under way to finish.", "Launching probes", ACTING, false);
+    }
+    return tick(WAIT, "No formation of probes can be launched.", "Launching probes", {
       kind: "blocked",
-      reason: "Fit an online probe launcher with scanner probes and leave room for active probes.",
+      reason: launch.refusal,
     });
   }
   return tick(
     { kind: "scannerLaunch" },
-    `Launching ${scanner.launcher.launchCount} scan probe${scanner.launcher.launchCount === 1 ? "" : "s"}.`,
+    `Launching ${launch.count} scan probe${launch.count === 1 ? "" : "s"}.`,
     "Launching probes",
     ACTING,
     false,
@@ -7516,6 +7524,18 @@ const analyzeSignatures: MacroDecider = (_step, obs, mem) => {
   if (flag(mem, "issued")) {
     return tick(WAIT, "The signature analysis was requested.", "Analyzing signatures", { kind: "done" });
   }
+  // The scan the page would ask for (bridge/scannerWrites.ts). A scan under way and probes on the move pass by
+  // themselves, and are waited for; what else stops a scan does not.
+  const scan = scanOf(scanner);
+  if ("refusal" in scan) {
+    if (scan.refusal === SCAN_IN_PROGRESS || scan.refusal === NO_IDLE_PROBE) {
+      return tick(WAIT, scan.refusal, "Analyzing signatures", ACTING, false, mem);
+    }
+    return tick(WAIT, "The signatures cannot be analyzed here.", "Analyzing signatures", {
+      kind: "blocked",
+      reason: scan.refusal,
+    });
+  }
   return tick(
     { kind: "scannerAnalyze" },
     "Analyzing signatures with the current probe formation.",
@@ -7533,6 +7553,12 @@ const recoverScanProbes: MacroDecider = (_step, obs) => {
   }
   if (scanner.probes.length === 0) {
     return tick(WAIT, "All scan probes are aboard.", "Recovering probes", { kind: "done" });
+  }
+  // The recall the page would make (bridge/scannerWrites.ts): a scan under way and probes on the move pass by
+  // themselves, and are waited for.
+  const recall = recallOf(scanner);
+  if ("refusal" in recall) {
+    return tick(WAIT, recall.refusal, "Recovering probes", ACTING, false);
   }
   return tick(
     { kind: "scannerRecover" },

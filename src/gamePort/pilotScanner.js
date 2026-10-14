@@ -23,7 +23,11 @@
 //   OnScannerInfoRemoved()                      FlushScannerState: none left
 //
 // and from what it does itself: after asking for a scan its idle probes are
-// "moving" (RequestScans -> SetProbesAsMoving), and so are the ones the server
+// "moving" (RequestScans -> SetProbesAsMoving), and it holds itself to be
+// scanning, with those probes or with its ship where it sent none, until the
+// server says the scan has stopped (scanHandler.SetProbesAsScanning and
+// StopScanning; scanSvc.IsScanning, which its scanner's buttons refuse by:
+// UserErrorIfScanning); and so are the ones the server
 // agreed to recall (RecoverProbes); a probe switched off or on goes between
 // idle and inactive (SetProbeActiveState); and where a probe is to go and how
 // far it is to look are the client's own to keep (SetProbeDestination,
@@ -91,6 +95,8 @@ function createPilotScanner({ typeAttribute = () => null } = {}) {
   const probes = new Map();
   const stepsByType = new Map();
   let lastRangeStepUsed = FIRST_RANGE_STEP;
+  /** scanHandler.scanningProbes: what was sent to scan, from the client's own asking until the scan stops; or null. */
+  let scanning = null;
 
   /** GetScanRangeStepsByTypeID: the eight ranges of a probe type, in metres; null when the type's attributes are not known. */
   function rangeSteps(typeID) {
@@ -177,9 +183,13 @@ function createPilotScanner({ typeAttribute = () => null } = {}) {
       }
       case "OnSystemScanStopped":
         for (const probeID of items(args[0])) setState(number(probeID), PROBE_STATE.IDLE);
+        // scanHandler.OnSystemScanStopped: StopScanning.
+        scanning = null;
         return true;
       case "OnScannerInfoRemoved":
+        // FlushScannerState(clearResults=True): the system's scan handler goes, and what it held to be scanning.
         probes.clear();
+        scanning = null;
         return true;
       default:
         return false;
@@ -190,10 +200,20 @@ function createPilotScanner({ typeAttribute = () => null } = {}) {
 
   return {
     feed,
-    /** probeTracker.Refresh: no probes. The range step last used is kept, as the client keeps it. */
+    /**
+     * probeTracker.Refresh: no probes. The range step last used is kept, as the client keeps it. A scan under way
+     * is over to the client first (scanSvc.OnSessionChanged: OnSystemScanStopped with its own scanning probes).
+     */
     flush() {
       probes.clear();
+      scanning = null;
     },
+    /** scanHandler.SetProbesAsScanning, at the client's own asking for a scan: the probes it sent, or its ship. */
+    scanningBegun(sent) {
+      scanning = [...sent];
+    },
+    /** scanSvc.IsScanning: bool(scanningProbes). */
+    isScanning: () => scanning !== null && scanning.length > 0,
     /** Every probe held, in the order they came. */
     probes: () => [...probes.values()].map(copy),
     /** GetActiveProbes: the ones that are not inactive. */

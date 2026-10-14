@@ -1,9 +1,12 @@
 <script lang="ts">
-  // Store/flow adapter for the pure ScannerCenter view. Action prerequisites
-  // come from EveJS's held-session scanner snapshot; the POST callbacks accept
-  // no authority-bearing browser arguments and re-read that state server-side.
+  // Store/flow adapter for the pure ScannerCenter view. What each order would
+  // send, and why the client would not offer it now, come from the scanner as
+  // the transport keeps it, by the client's own rules (bridge/scannerWrites.ts).
+  // The flow reads the scanner again as an order is made, and makes the
+  // client's call itself.
   import { onMount } from "svelte";
   import ScannerCenter from "./ScannerCenter.svelte";
+  import { SCAN_IN_PROGRESS, launchOf, recallOf, scanOf } from "../bridge/scannerWrites.ts";
   import { nameKey } from "../store/names.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -55,36 +58,37 @@
     if (operations.status !== "ready" || !operations.value.inSpace) {
       return {};
     }
-    const { launcher, probes } = operations.value;
-    const probeMap = Object.fromEntries(
-      probes.map((probe) => [String(probe.probeID), {
-        typeID: probe.typeID,
-        pos: [...probe.pos],
-        destination: [...probe.destination],
-        scanRange: probe.scanRange,
-        rangeStep: probe.rangeStep,
-        state: probe.state,
-        expiry: probe.expiry,
-      }]),
-    );
+    // What each order would send, or why the client would not offer it now (bridge/scannerWrites.ts). The flow
+    // reads the scanner again as an order is made, and goes by that.
+    const read = operations.value;
+    const launch = launchOf(read);
+    const scan = scanOf(read);
+    const recall = recallOf(read);
+    const launcher = read.launcher;
     return {
-      launch: launcher === null ? undefined : {
-        moduleID: launcher.moduleID,
-        count: launcher.launchCount,
-        launcherName: launcher.typeID === null
+      launch: {
+        moduleID: "refusal" in launch ? 0 : launch.moduleID,
+        count: "refusal" in launch ? 0 : launch.count,
+        launcherName: launcher === null || launcher.typeID === null
           ? null
           : typeNames[launcher.typeID] ?? null,
+        blocked: "refusal" in launch ? launch.refusal : undefined,
         run: () => flow.launchScannerProbes(),
       },
       recover: {
-        probeIDs: probes.map((probe) => probe.probeID),
+        probeIDs: "refusal" in recall ? [] : recall.probeIDs,
+        blocked: "refusal" in recall ? recall.refusal : undefined,
         run: () => flow.recoverScannerProbes(),
       },
       analyze: {
-        probeMap,
+        probeMap: "refusal" in scan ? {} : scan.probes,
+        blocked: "refusal" in scan ? scan.refusal : undefined,
         run: () => flow.analyzeScannerSignatures(),
       },
-      reconnect: { run: () => flow.reconnectScannerProbes() },
+      reconnect: {
+        blocked: read.scanning === true ? SCAN_IN_PROGRESS : undefined,
+        run: () => flow.reconnectScannerProbes(),
+      },
     };
   });
 

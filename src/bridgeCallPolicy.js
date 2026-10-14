@@ -387,8 +387,29 @@ function isBridgeWritePair(service, method) {
  *                                found, not ready or past stopping, and answers the job as it is after.
  *                                The page asks each by the service's name, with the system its own read of
  *                                the job has, and goes by the job answered.
+ *
+ * And the scanner's four, since 2026-10-13. Each was a route (POST /api/bridge/scanner/launch, analyze, recover
+ * and reconnect, all over one helper, runAuthoritativeScannerWrite) that read the pilot's scanner for the
+ * launcher, the probes and their places, refused where there was none, made the call with them and read the
+ * scanner after. The page reads its scanner itself (GET /api/bridge/scanner/state, the transport's own keeping
+ * with no call behind it), refuses as the client's scan service refuses, and makes the client's call
+ * (web/src/bridge/scannerWrites.ts):
+ *
+ *   dogmaIM.LaunchProbes         scanSvc.FindModuleAndLaunchProbes (487 to 498): dogmaLM.LaunchProbes(moduleID,
+ *                                numProbes). The handler (dogmaService/moduleOperation.js,
+ *                                _resolveValidatedProbeLaunchContext) takes the module and the number: the module
+ *                                must be the session's own character's, in the session's own ship, a probe
+ *                                launcher and online, with that many scanner probes loaded, and eight out at
+ *                                most. Nothing of another's is reached by either.
+ *   scanMgr.RequestScans         scanSvc.RequestScans (193 to 198), on the system's scan manager: the idle
+ *                                probes by their numbers, or None. The handler moves and scans with the
+ *                                session's own character's probes among those sent, and drops the rest.
+ *   scanMgr.RecoverProbes        scanSvc.AskServerToRecallProbes (340 to 341), on the same object: the probes'
+ *                                numbers. The handler takes back the session's own character's among them and
+ *                                answers which.
+ *   scanMgr.ReconnectToLostProbes scanSvc.ReconnectToLostProbes (269 to 285), on the same object, with nothing.
  */
-const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.Invite", "fleetObjectHandler.RejectInvite", "beyonce.BookmarkLocation", "dogmaIM.AddTarget", "dogmaIM.RemoveTarget", "dogmaIM.CancelAddTarget", "ship.ScoopDrone", "industryManager.CompleteJob", "industryManager.CancelJob", "beyonce.CmdWarpToStuff", "beyonce.CmdWarpToStuffAutopilot", "agentMgr.WarpToLocation"]);
+const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.Invite", "fleetObjectHandler.RejectInvite", "beyonce.BookmarkLocation", "dogmaIM.AddTarget", "dogmaIM.RemoveTarget", "dogmaIM.CancelAddTarget", "ship.ScoopDrone", "industryManager.CompleteJob", "industryManager.CancelJob", "beyonce.CmdWarpToStuff", "beyonce.CmdWarpToStuffAutopilot", "agentMgr.WarpToLocation", "dogmaIM.LaunchProbes", "scanMgr.RequestScans", "scanMgr.RecoverProbes", "scanMgr.ReconnectToLostProbes"]);
 const pageWritePairKeySet = new Set(PAGE_WRITE_PAIR_KEYS);
 for (const pair of PAGE_WRITE_PAIR_KEYS) {
   if (!bridgeWritePairKeySet.has(pair)) throw new Error(`${pair} is among the page's writes and is no write.`);
@@ -465,6 +486,10 @@ function ordersAFollow(service, method) {
  *                                   There is nothing to say which: such a call takes no `of`, and with one is no
  *                                   call. The handler takes nothing from the caller and answers for the session's
  *                                   own system.
+ *   scanMgr.RequestScans,           "scanManager": the scanner's three WRITES on that same object (scanSvc.py 195,
+ *   scanMgr.RecoverProbes,          341 and 279), each one of the page's own writes (above). Through the web
+ *   scanMgr.ReconnectToLostProbes   gateway they go by the bind their routes went by (src/server.js,
+ *                                   systemScanCall).
  *   charMgr.ListStations            "assets": a READ, the stations that hold something of the pilot's
  *                                   (invCache.py 833, for the assets window). The object is the pilot's own
  *                                   global container, Moniker('charMgr', (session.charid, const.containerGlobal)),
@@ -529,7 +554,7 @@ function ordersAFollow(service, method) {
  * A write among them is one of the page's own writes. A read is listed here only once its handler has been read
  * for what it takes from the caller: a planet's reads once answered with another owner's colony.
  */
-const PAGE_OBJECT_CALLS = Object.freeze({ "planetMgr.UserUpdateNetwork": "planet", "planetMgr.UserLaunchCommodities": "planet", "planetMgr.GetProgramResultInfo": "planet", "scanMgr.GetFullState": "scanManager", "agentMgr.WarpToLocation": "agent", "charMgr.ListStations": "assets", "charMgr.ListStationItems": "assets", "fleetObjectHandler.LeaveFleet": "fleet", "fleetObjectHandler.CreateFleet": "fleet", "fleetObjectHandler.AcceptInvite": "fleetByNumber", "fleetObjectHandler.Invite": "fleetExpected", "fleetObjectHandler.RejectInvite": "fleetByNumber" });
+const PAGE_OBJECT_CALLS = Object.freeze({ "planetMgr.UserUpdateNetwork": "planet", "planetMgr.UserLaunchCommodities": "planet", "planetMgr.GetProgramResultInfo": "planet", "scanMgr.GetFullState": "scanManager", "scanMgr.RequestScans": "scanManager", "scanMgr.RecoverProbes": "scanManager", "scanMgr.ReconnectToLostProbes": "scanManager", "agentMgr.WarpToLocation": "agent", "charMgr.ListStations": "assets", "charMgr.ListStationItems": "assets", "fleetObjectHandler.LeaveFleet": "fleet", "fleetObjectHandler.CreateFleet": "fleet", "fleetObjectHandler.AcceptInvite": "fleetByNumber", "fleetObjectHandler.Invite": "fleetExpected", "fleetObjectHandler.RejectInvite": "fleetByNumber" });
 /**
  * The objects there are many of, which a call says which of with `of`: a planet, and a fleet that is not the
  * session's own (the one an invitation names). A scan manager and the pilot's own fleet are the session's.

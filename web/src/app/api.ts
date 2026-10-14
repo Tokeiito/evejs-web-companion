@@ -4474,7 +4474,12 @@ function scannerVector(value: JsonValue | undefined): readonly [number, number, 
   return [0, 1, 2].map((index) => asNumberOrNull(value[index]) ?? 0) as unknown as readonly [number, number, number];
 }
 
-/** Decode EveJS's current held-session scanner authority. */
+/**
+ * The pilot's scanner as the transport keeps it: the launcher, the probes and whether a scan is under way. No call
+ * of the server's is behind it. The scanner's orders are the page's own calls and go by it
+ * (bridge/scannerWrites.ts): their routes (POST /api/bridge/scanner/launch, analyze, recover and reconnect) went
+ * on 2026-10-13.
+ */
 export async function loadScannerOperations(
   options: ApiOptions = {},
 ): Promise<ScannerOperationsSnapshot> {
@@ -4520,25 +4525,9 @@ export async function loadScannerOperations(
           launchCount: Math.max(0, asNumberOrNull(launcherRow.launchCount) ?? 0),
         },
     probes,
+    // Said by a pilot on the game port; a transport that does not say holds no scan to be under way.
+    scanning: scanner.scanning === true,
   };
-}
-
-/** Safe product actions accept no authority-bearing browser arguments. */
-export async function launchScannerProbes(options: ApiOptions = {}): Promise<void> {
-  await postJson("/api/bridge/scanner/launch", { confirm: true }, options);
-}
-
-export async function recoverScannerProbes(options: ApiOptions = {}): Promise<void> {
-  await postJson("/api/bridge/scanner/recover", { confirm: true }, options);
-}
-
-export async function requestScannerAnalysis(options: ApiOptions = {}): Promise<void> {
-  await postJson("/api/bridge/scanner/analyze", { confirm: true }, options);
-}
-
-/** Ask the current-system manager to reconnect the session character's probes. */
-export async function reconnectScannerProbes(options: ApiOptions = {}): Promise<void> {
-  await postJson("/api/bridge/scanner/reconnect", { confirm: true }, options);
 }
 
 /**

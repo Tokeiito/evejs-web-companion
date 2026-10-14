@@ -334,6 +334,8 @@ import {
   type DroneRangeSkillReading,
 } from "../nav/droneControlRange.ts";
 import { readScanFullState } from "../bridge/scanFullState.ts";
+import { createScannerWrites, type ScannerShip } from "../bridge/scannerWrites.ts";
+import { surfaceDistanceMeters } from "../space/overview.ts";
 import { scannerStateFromRead } from "../scanner/scannerCenter.ts";
 import { siteKind } from "../scanner/siteKind.ts";
 import { decodeFittings } from "../bridge/fittings.ts";
@@ -1826,6 +1828,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const attributesOfTypes = keptTypeAttributes((typeIDs, attributeIDs) => api.fetchTypeDogma(typeIDs, attributeIDs, callOptions));
   // The repairs begun (bridge/dogmaWrites.ts): each is ended by the page when its time is up, as a client ends
   // its own, and the ship is read again then, which is when the module is mended.
+  // The scanner's four orders, as the client's scan service makes them (bridge/scannerWrites.ts).
+  const scannerWrites = createScannerWrites(bridgeDo);
   const moduleRepairs = createModuleRepairs(bridgeDo, { ended: () => { void loadSpaceSnapshot().catch(() => {}); } });
   // The ship's weapons linked and unlinked all at once, with the wait the client's button keeps between two of a kind.
   const weaponGrouping = createWeaponGrouping(bridgeDo);
@@ -3957,20 +3961,37 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
+  // The scanner's four orders are the page's own calls (bridge/scannerWrites.ts): each reads the scanner as the
+  // transport keeps it now, refuses as the client's scan service refuses, and makes the client's call with what
+  // the read said. Until 2026-10-13 each was a route that did the reading and the calling.
+
+  /** What the scanner's orders ask of the ship: whether it is a capsule, and how far a thing in the pilot's park is from it. */
+  function scannerShip(): ScannerShip {
+    const snapshot = store.space.get().snapshot;
+    const own = snapshot?.entities.find((entity) => entity.isSelf) ?? null;
+    return {
+      isCapsule: store.flight.get().status?.shipIsCapsule ?? null,
+      surfaceDistanceTo(itemID: number): number | null {
+        const thing = own === null ? undefined : snapshot?.entities.find((entity) => entity.itemID === itemID);
+        return own === null || thing === undefined ? null : surfaceDistanceMeters(own.position, own.radius, thing.position, thing.radius);
+      },
+    };
+  }
+
   function launchScannerProbes(): Promise<void> {
-    return runScannerAction(() => api.launchScannerProbes(callOptions));
+    return runScannerAction(async () => scannerWrites.launch(await api.loadScannerOperations(callOptions)));
   }
 
   function analyzeScannerSignatures(): Promise<void> {
-    return runScannerAction(() => api.requestScannerAnalysis(callOptions));
+    return runScannerAction(async () => scannerWrites.analyze(await api.loadScannerOperations(callOptions)));
   }
 
   function recoverScannerProbes(): Promise<void> {
-    return runScannerAction(() => api.recoverScannerProbes(callOptions));
+    return runScannerAction(async () => scannerWrites.recover(await api.loadScannerOperations(callOptions), scannerShip()));
   }
 
   function reconnectScannerProbes(): Promise<void> {
-    return runScannerAction(() => api.reconnectScannerProbes(callOptions));
+    return runScannerAction(async () => scannerWrites.reconnect(await api.loadScannerOperations(callOptions), scannerShip()));
   }
 
   // --- Fleet Center -------------------------------------------------------
@@ -13507,14 +13528,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             // really changed type, so a refusal costs one attempt on one stack.
             await api.compressOreInSpace(action.itemID, action.facilityID, callOptions);
             return;
+          // The scanner's three, as the Scanner window makes them: the page's own calls, by the scanner as it is
+          // read now (bridge/scannerWrites.ts). What the client refuses, these refuse.
           case "scannerLaunch":
-            await api.launchScannerProbes(callOptions);
+            await scannerWrites.launch(await api.loadScannerOperations(callOptions));
             return;
           case "scannerAnalyze":
-            await api.requestScannerAnalysis(callOptions);
+            await scannerWrites.analyze(await api.loadScannerOperations(callOptions));
             return;
           case "scannerRecover":
-            await api.recoverScannerProbes(callOptions);
+            await scannerWrites.recover(await api.loadScannerOperations(callOptions), scannerShip());
             return;
         }
         return unhandledScriptAction(action);

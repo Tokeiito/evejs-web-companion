@@ -4001,7 +4001,7 @@ function createGamePortPilots({
     const place = whereabouts(entry);
     if (!place.inSpace) {
       return {
-        scanner: { inSpace: false, solarSystemID: place.solarSystemID, shipID: place.shipID, maxActiveProbes: 0, launcher: null, probes: [] },
+        scanner: { inSpace: false, solarSystemID: place.solarSystemID, shipID: place.shipID, maxActiveProbes: 0, launcher: null, probes: [], scanning: false },
         notifications: drain(entry),
       };
     }
@@ -4040,6 +4040,8 @@ function createGamePortPilots({
           state: probe.state,
           expiry: String(probe.expiry ?? "0"),
         })),
+        // scanSvc.IsScanning: from the pilot's own asking for a scan until the server says it has stopped.
+        scanning: entry.scanner.isScanning(),
       },
       notifications: drain(entry),
     };
@@ -4049,7 +4051,8 @@ function createGamePortPilots({
    * What the client's scan service does to its own list after a call to the
    * scan manager has been answered (scanSvc.py, probeTracker.py):
    *
-   *   RequestScans(probes)        the probes it sent are moving (SetProbesAsMoving)
+   *   RequestScans(probes)        the probes it sent are scanning to it, or its ship where it sent none
+   *                               (scanHandler.SetProbesAsScanning), and are moving (SetProbesAsMoving)
    *   RecoverProbes(probeIDs)     the ones the server answers with are moving
    *   DestroyProbe(probeID)       that probe is gone
    *   SetActivityState(ids, on)   each goes between idle and inactive
@@ -4167,8 +4170,10 @@ function createGamePortPilots({
     if (method === "RequestScans") {
       const sent = args[0];
       // As it went out: {probeID: probe}, or None for a scan with no probes.
-      const probeIDs = sent && sent.type === "dict" && Array.isArray(sent.entries) ? sent.entries.map(([probeID]) => probeID) : [];
-      entry.scanner.moving(probeIDs.map(Number).filter(Number.isFinite));
+      const probeIDs = (sent && sent.type === "dict" && Array.isArray(sent.entries) ? sent.entries.map(([probeID]) => probeID) : []).map(Number).filter(Number.isFinite);
+      // scanSvc.RequestScans (193 to 198): probeIDs = probes.keys() if probes is not None else [session.shipid].
+      entry.scanner.scanningBegun(probeIDs.length > 0 ? probeIDs : [whereabouts(entry).shipID]);
+      entry.scanner.moving(probeIDs);
     } else if (method === "RecoverProbes") {
       entry.scanner.moving(list(result).map(Number).filter(Number.isFinite));
     } else if (method === "DestroyProbe") {

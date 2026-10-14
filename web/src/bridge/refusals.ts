@@ -34,6 +34,10 @@
 //      (officeManager's RentOffice is the page's own call since the same day,
 //      and its NotEnoughMoney is in the table with them. So is a fleet's
 //      leaving, on the fleet's object, and its FleetNotInFleet.)
+//      (The probe launch is the page's own call since 2026-10-13
+//      (bridge/scannerWrites.ts). Its helper refuses with two keys, NoCharges
+//      and DeniedShipChanged, which were in the table already, and otherwise
+//      in sentences of its own, which pass as they are.)
 //   3. That leaves the 32 bare codes and 2 localization labels in
 //      SERVER_REFUSALS. The list is asserted in refusals.test.ts.
 //
