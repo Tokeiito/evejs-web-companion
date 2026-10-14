@@ -426,7 +426,7 @@ const flagOf = (value: JsonValue | undefined): boolean | null => (typeof value =
 const noticesOf = (data: Record<string, JsonValue>): readonly JsonValue[] => (Array.isArray(data.notifications) ? data.notifications : []);
 
 /**
- * Switches a module on: its default effect named, at the target where one is said, until it is stopped (-1, the client's 1000) or
+ * Switches a module on: its default effect named, at the target where one is said, until it is stopped (-1) or
  * for one cycle (0). Fails as the call fails, and before it for a ship not in space.
  */
 export async function activateModule(
@@ -438,9 +438,9 @@ export async function activateModule(
   const shipID = await shipInSpace(deps);
   const effect = await effectFor(deps, opts.effect, opts.typeID);
   const targetID = opts.targetID && opts.targetID > 0 ? opts.targetID : null;
-  // Until stopped is the client's 1000 on the wire, once is its 0 (shipmodulebutton.py 112 to 122, GetRepeatCount;
-  // 929, a ctrl-click's 1000); the server tells the ship's watchers the count it was given.
-  await act("dogmaIM", "Activate", [itemID, effect, targetID, opts.repeat === 0 ? 0 : 1000]);
+  // -1 is "as the effect allows": the game port sends the client's 1000 for an effect that can repeat and 0 for one
+  // that cannot (shipmodulebutton.py 112 to 122, GetRepeatCount, and 1338), which it knows as godma knows the module.
+  await act("dogmaIM", "Activate", [itemID, effect, targetID, opts.repeat === 0 ? 0 : -1]);
   const after = await deps.state(itemID, shipID, false);
   const stopped = flagOf(after.stopped);
   return { itemID: numberOr(after.itemID), active: stopped === null ? null : !stopped, stopped: null, activeModuleIDs: after.activeModuleIDs ?? null, notifications: noticesOf(after) };
