@@ -18,6 +18,7 @@ import {
   decideCompanionAction,
   freshLadderMemory,
   supervisorsInFleet,
+  withoutModules,
   type CompanionCargoCharge,
   type CompanionDecision,
   type FleetCompanionAction,
@@ -12188,4 +12189,119 @@ test("the rejoin never fights the flee, a stop, a fleet order, a trip, the warp 
   const warping = decideCompanionAction(REQUEST, rejoinObs({ inWarp: true }));
   assert.deepEqual(warping.action, { kind: "wait" });
   assert.equal(warping.phase, "In warp");
+});
+
+// --- a module the server will not switch on is never asked again -------------
+//
+// Seen live 2026-10-14: a Drone Navigation Computer I, picked by its group name,
+// was refused "Drone Navigation Computer I cannot be activated." once a fight.
+// The lists are gated at start (nav/moduleActivation.ts); these pin the run's
+// own memory of a refusal, for a type whose answer was not read in time.
+
+/** Synthetic module item ids, distinct from every id used above. */
+const PASSIVE_NAV = 1000000001;
+const ACTIVE_LINK = 1000000002;
+const PASSIVE_DC = 1000000003;
+const REAL_HARDENER = 1000000004;
+
+const notActivatable = (name: string): Error =>
+  Object.assign(new Error(`${name} cannot be activated.`), { code: "CALL_REFUSED" });
+
+test("withoutModules takes a module out of every list the ladder switches on, and out of the utilities", () => {
+  const all = [PASSIVE_NAV];
+  const request: FleetCompanionRequest = {
+    ...REQUEST,
+    defenseModuleIDs: [...all, REAL_HARDENER], shieldBoosterModuleIDs: all, armorRepairerModuleIDs: all,
+    hullRepairerModuleIDs: all, remoteShieldModuleIDs: all, remoteArmorModuleIDs: all,
+    remoteCapacitorModuleIDs: all, weaponModuleIDs: all, salvagerModuleIDs: all,
+    droneAssistModuleIDs: [PASSIVE_NAV, ACTIVE_LINK],
+    propulsionModules: [{ itemID: PASSIVE_NAV, typeID: 90000913, kind: null }],
+  };
+  const seen = obs({ combatUtilities: { ...UTILITY_FACTS, modules: [utilityModule(PASSIVE_NAV, "web"), utilityModule(UTILITY_WEB, "web")] } });
+  const known = withoutModules(request, seen, new Set([PASSIVE_NAV]));
+  for (const list of [known.request.shieldBoosterModuleIDs, known.request.armorRepairerModuleIDs,
+    known.request.hullRepairerModuleIDs, known.request.remoteShieldModuleIDs, known.request.remoteArmorModuleIDs,
+    known.request.remoteCapacitorModuleIDs, known.request.weaponModuleIDs, known.request.salvagerModuleIDs]) {
+    assert.deepEqual(list, []);
+  }
+  assert.deepEqual(known.request.defenseModuleIDs, [REAL_HARDENER]);
+  assert.deepEqual(known.request.droneAssistModuleIDs, [ACTIVE_LINK]);
+  assert.deepEqual(known.request.propulsionModules, []);
+  assert.deepEqual(known.obs.combatUtilities?.modules.map((module) => module.itemID), [UTILITY_WEB]);
+  // Nothing known passive is the request and the observation as they were.
+  const none = withoutModules(request, seen, new Set());
+  assert.equal(none.request, request);
+  assert.equal(none.obs, seen);
+});
+
+test("a hardener refused as 'cannot be activated' is never chosen again, and the next one gets the tick", async () => {
+  const activated: number[] = [];
+  const companion = createFleetCompanion(makeDeps({
+    observe: async () => tankObs({ hostileOnGrid: true }),
+    issue: async (action) => {
+      if (action.kind !== "activate") return;
+      activated.push(action.moduleID);
+      if (action.moduleID === PASSIVE_DC) throw notActivatable("Damage Control II");
+    },
+  }).deps);
+  companion.start({ ...REQUEST, defenseModuleIDs: [PASSIVE_DC, REAL_HARDENER] });
+  for (let i = 0; i < 6; i += 1) await companion.tick();
+  assert.equal(activated.filter((id) => id === PASSIVE_DC).length, 1, "asked once, refused, never again");
+  assert.ok(activated.includes(REAL_HARDENER), "and the real hardener is switched on instead");
+});
+
+test("a refusal of the moment ('cannot be activated while ...') is NOT a passive module", async () => {
+  const activated: number[] = [];
+  const companion = createFleetCompanion(makeDeps({
+    observe: async () => tankObs({ hostileOnGrid: true }),
+    issue: async (action) => {
+      if (action.kind !== "activate") return;
+      activated.push(action.moduleID);
+      if (activated.length === 1) {
+        throw Object.assign(new Error("That module cannot be activated while you are warp scrambled."), { code: "CALL_REFUSED" });
+      }
+    },
+  }).deps);
+  companion.start({ ...REQUEST, defenseModuleIDs: [REAL_HARDENER] });
+  for (let i = 0; i < 3; i += 1) await companion.tick();
+  assert.ok(activated.filter((id) => id === REAL_HARDENER).length >= 2, "the same hardener is asked again");
+});
+
+test("the drone navigation computer refused once a fight is asked ONCE a run, not once a fight", async () => {
+  const quiet = obs({
+    snapshot: {
+      ...gridWithEntities([]),
+      ship: { position: { x: 0, y: 0, z: 0 }, radius: 0, mode: null, activeModuleIDs: [] },
+    } as unknown as SpaceSnapshot,
+    hostileOnGrid: false,
+    myDroneIDs: [],
+    combatDroneIDs: [],
+  });
+  // Two fights with a lull between them: the rung tries each assist module once a fight.
+  const script = [
+    ...Array<FleetCompanionObservation>(5).fill(engagementObs("combat")),
+    ...Array<FleetCompanionObservation>(3).fill(quiet),
+    ...Array<FleetCompanionObservation>(5).fill(engagementObs("combat")),
+  ];
+  let at = 0;
+  const activated: number[] = [];
+  const companion = createFleetCompanion(makeDeps({
+    observe: async () => script[Math.min(at++, script.length - 1)]!,
+    issue: async (action) => {
+      if (action.kind !== "activate") return;
+      activated.push(action.moduleID);
+      if (action.moduleID === PASSIVE_NAV) throw notActivatable("Drone Navigation Computer I");
+    },
+  }).deps);
+  companion.start({ ...REQUEST, droneAssistModuleIDs: [PASSIVE_NAV, ACTIVE_LINK] });
+  for (let i = 0; i < script.length; i += 1) await companion.tick();
+  assert.equal(activated.filter((id) => id === PASSIVE_NAV).length, 1, "refused once, never asked again this run");
+  assert.equal(activated.filter((id) => id === ACTIVE_LINK).length, 2, "the tracking link is lit in both fights");
+
+  // A new run starts with nothing remembered: what the type says is the start's own gate.
+  activated.length = 0;
+  at = 0;
+  companion.start({ ...REQUEST, droneAssistModuleIDs: [PASSIVE_NAV, ACTIVE_LINK] });
+  for (let i = 0; i < 5; i += 1) await companion.tick();
+  assert.equal(activated.filter((id) => id === PASSIVE_NAV).length, 1);
 });
