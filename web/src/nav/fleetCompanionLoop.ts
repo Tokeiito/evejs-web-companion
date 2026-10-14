@@ -131,10 +131,16 @@ import {
 // in their own file; this ladder keeps the two call sites and the memory.
 import {
   ammoSkipTrace,
+  clearGridEmptyGunPick,
+  clearGridEmptyGunWords,
+  clearGridRearmed,
   decideAmmoSwap,
+  decideClearGridTopUp,
   emptyGunAmmo,
+  withClearGridToppedUp,
   FRESH_COMPANION_AMMO,
   type AmmoLadder,
+  type ClearGridRule,
   type CompanionAmmoMemory,
   type RatResonances,
   type WeaponCycleFacts,
@@ -3197,6 +3203,27 @@ function decideCompanionStep(
     };
   }
   obeying = obeying === null ? null : { ...obeying, memory: lowerMemory };
+
+  // Rung 8c: a clear grid reloads every gun (operator, 2026-10-14; see "A clear
+  // grid" in companionAmmo.ts). BELOW rung 7 and everything that fights or
+  // positions, because a reload silences a gun for seconds and a fleet order
+  // that moves the ship outranks it; ABOVE the wreck work and the follow,
+  // because it moves nothing and costs one call per charge type per clear. Not
+  // while rung 7 stands on a target: a called target is a fight, whatever the
+  // NPC count says.
+  const toppingUp = decideClearGridTopUp(request, obs, lowerMemory, gridSeenClear(obs) && engagedID === null);
+  lowerMemory = toppingUp.memory;
+  obeying = obeying === null ? null : { ...obeying, memory: lowerMemory };
+  if (toppingUp.load !== null) {
+    return {
+      action: { kind: "loadAmmo", moduleIDs: toppingUp.load.moduleIDs, chargeItemID: toppingUp.load.chargeItemID },
+      phase: obeying?.phase ?? "Reloading",
+      why: toppingUp.load.why,
+      memory: lowerMemory,
+      ...(obeying?.followingOrderFrom === undefined ? {} : { followingOrderFrom: obeying.followingOrderFrom }),
+      ...(obeying?.lastOrderHeard === undefined ? {} : { lastOrderHeard: obeying.lastOrderHeard }),
+    };
+  }
 
   const salvaging = decideSalvaging(request, obs, lowerMemory, nowMs);
   if (salvaging !== null && !(obeying?.holdsNavigation === true && changesShipMovement(salvaging.action))) {
@@ -7651,6 +7678,9 @@ function decideReload(
   obs: FleetCompanionObservation,
   memory: CompanionLadderMemory,
 ): { readonly decision: CompanionDecision | null; readonly memory: CompanionLadderMemory } {
+  // A fight starting again re-arms the clear-grid top-up (companionAmmo.ts).
+  // Here, above rung 7, because a fight's ticks seldom reach the top-up's rung.
+  memory = clearGridRearmed(obs, memory);
   const nothing = { decision: null, memory } as const;
   // ⚠ THE WARP GATE IS BELT AND BRACES, like the follow rung's: rung 1 has
   // already returned before this is reached mid-warp. Kept so the function's
@@ -7702,9 +7732,24 @@ function decideReload(
   }
 
   const groups = obs.weaponChargeGroups ?? null;
+  // ⚠ OPERATOR RULE (2026-10-14): ON A CLEAR GRID AN EMPTY GUN TAKES ITS OWN
+  // CHARGE BACK, ELSE THE OTHER GUNS' CHARGE, ELSE THE MOST VERSATILE ONE --
+  // and when its charge groups are known and nothing aboard fits, nothing. See
+  // `clearGridEmptyGunPick`. Only the CHOICE changes: the budget and banking
+  // below are this rung's, so a load that does not take stops after three
+  // calls exactly as it does mid-fight. A gun whose groups cannot be read
+  // ("unknown") keeps the rule below.
+  const gridClear = gridSeenClear(obs);
+  type ReloadRule = "ranked" | "largest" | ClearGridRule | "nothing-fits";
   // The ranked stack when there is one, else the largest-stack rule below; the
   // rule rides along so the readout can say which one chose.
-  const pickWithRule = (moduleID: number): { charge: CompanionCargoCharge | null; rule: "ranked" | "largest" } => {
+  const pickWithRule = (moduleID: number): { charge: CompanionCargoCharge | null; rule: ReloadRule } => {
+    if (gridClear) {
+      const onClear = clearGridEmptyGunPick(obs, mem, moduleID, charges, empty);
+      if (onClear.rule !== "unknown") {
+        return { charge: onClear.charge, rule: onClear.rule };
+      }
+    }
     const ranked = ammo.pickWithRule(moduleID, charges);
     return ranked.charge !== null ? ranked : { charge: pickChargeFor(moduleID, charges, groups), rule: "largest" };
   };
@@ -7717,13 +7762,15 @@ function decideReload(
   // aboard will fit must not stop the rest of the rack being loaded.
   let first: number | null = null;
   let chosen: CompanionCargoCharge | null = null;
-  let rule: "ranked" | "largest" = "largest";
+  let rule: ReloadRule = "largest";
+  let nothingFits = false;
   for (const moduleID of empty) {
     if (spent(moduleID)) {
       continue;
     }
     const picked = pickWithRule(moduleID);
     if (picked.charge === null) {
+      nothingFits ||= picked.rule === "nothing-fits";
       continue;
     }
     first = moduleID;
@@ -7732,6 +7779,23 @@ function decideReload(
     break;
   }
   if (first === null || chosen === null) {
+    if (nothingFits) {
+      // A clear grid, an empty gun, and its charge groups known with nothing
+      // aboard among them: nothing to issue, and a readout saying so -- the
+      // `standing` shape of the "Out of ammunition" one above, so it replaces
+      // "Standing by" and never a real call. Nothing is spent, so it costs no
+      // call however long it stands.
+      return {
+        decision: {
+          action: WAIT,
+          phase: "Out of ammunition",
+          why: "The grid is clear: a gun is empty and nothing in the cargo bay fits it.",
+          memory: mem,
+          standing: true,
+        },
+        memory: mem,
+      };
+    }
     // Every empty gun has spent its budget. Nothing is issued and nothing is
     // said: there IS ammunition aboard, so "out of ammunition" would be false,
     // and this pilot has done what it can.
@@ -7752,6 +7816,22 @@ function decideReload(
     attempts[moduleID] = (attempts[moduleID] ?? 0) + 1;
   }
   const retrying = (mem.reloadAttempts[first] ?? 0) > 0;
+  // A gun loaded on a clear grid comes up full, so the top-up need not ask it.
+  const loadedMem = gridClear ? withClearGridToppedUp(mem, bank) : mem;
+  if (rule === "own" || rule === "match" || rule === "versatile") {
+    return {
+      decision: {
+        action: { kind: "loadAmmo", moduleIDs: bank, chargeItemID: chosen.itemID },
+        phase: "Reloading",
+        // The name only when the charge facts RESOLVED it, as rung 7c words its
+        // swaps; never one invented here.
+        why: clearGridEmptyGunWords(
+          rule, obs.chargeFactsByTypeID?.[chosen.typeID]?.name ?? null, bank.length, retrying),
+        memory: { ...loadedMem, reloadAttempts: attempts },
+      },
+      memory: mem,
+    };
+  }
   // Which rule picked the stack: ranked for the target, or the largest stack.
   const ruleWords = rule === "ranked" ? " Best ammo for the target." : " Largest stack.";
   return {
@@ -7768,7 +7848,7 @@ function decideReload(
         : bank.length === 1
           ? "A gun is empty. Loading it from the cargo bay."
           : `${bank.length} guns are empty. Loading them from the cargo bay.`) + ruleWords,
-      memory: { ...mem, reloadAttempts: attempts },
+      memory: { ...loadedMem, reloadAttempts: attempts },
     },
     memory: mem,
   };
@@ -9152,6 +9232,19 @@ function rotateHurtDrone(
   return { decision: null, memory: next };
 }
 
+/**
+ * "The grid is clear": the moment the drone rung brings the drones home for
+ * good, and -- operator, 2026-10-14 -- the moment the guns are reloaded too
+ * (companionAmmo.ts, "A clear grid"). ONE definition for both, so the drones
+ * and the guns can never disagree about whether the fight is over.
+ *
+ * ⚠ A CONFIDENT `false` ONLY. `hostileOnGrid` is three-state and `null` is a
+ * read that failed, never a quiet grid.
+ */
+function gridSeenClear(obs: FleetCompanionObservation): boolean {
+  return obs.hostileOnGrid === false;
+}
+
 function decideDrones(
   request: FleetCompanionRequest,
   obs: FleetCompanionObservation,
@@ -9263,7 +9356,7 @@ function decideDrones(
     nothing = { decision: null, memory };
   }
   if (role === null) {
-    if (out.length > 0 && obs.hostileOnGrid === false) {
+    if (out.length > 0 && gridSeenClear(obs)) {
       const held = memory.jobOverRecall;
       if (
         held !== null &&
