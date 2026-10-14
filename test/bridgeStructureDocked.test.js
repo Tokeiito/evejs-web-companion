@@ -228,30 +228,6 @@ test("the services route says what the structure has for the pilot docked in it:
   assert.equal((await said(60003760)).status, 400);
 });
 
-test("a route held to a service the structure has not for the pilot is refused, and one it has goes on", async () => {
-  const state = { answer: services(1, 2, 3, 9, 22) };
-  const { ask, own } = await startTestServer({ onGamePort: true, answers: {
-    "structureSettings.CharacterGetServices": () => state.answer,
-    "repairSvc.GetRepairQuotes": () => ({ type: "list", items: [] }),
-  } });
-  const quotes = () => ask("/api/bridge/station/repair-quotes?itemIDs=5");
-  // No repair among the structure's services: refused before the repair shop is asked.
-  const refused = await quotes();
-  assert.deepEqual([refused.status, refused.payload.error], [409, "STRUCTURE_SERVICE_UNAVAILABLE"]);
-  assert.deepEqual(askedOf(own, "repairSvc"), []);
-  assert.deepEqual(askedOf(own, "structureSettings"), [["CharacterGetServices", [STRUCTURE_ID], null]]);
-  // Repair among them: the shop is asked.
-  state.answer = services(1, 2, 8);
-  const quoted = await quotes();
-  assert.equal(quoted.status, 200, JSON.stringify(quoted.payload));
-  assert.deepEqual(askedOf(own, "repairSvc"), [["GetRepairQuotes", [[5]], null]]);
-  // An industry service is no repair, and an answer that cannot be read is no service.
-  state.answer = services(22, 34);
-  assert.equal((await quotes()).payload.error, "STRUCTURE_SERVICE_UNAVAILABLE");
-  state.answer = null;
-  assert.deepEqual([(await quotes()).status, askedOf(own, "repairSvc").length], [503, 1]);
-});
-
 test("through the web gateway a structure's services have no answer, and each of these is refused as it was", async () => {
   const { ask, own, other } = await startTestServer({ onGamePort: false, answers: {
     "structureSettings.CharacterGetServices": () => assert.fail("the gateway's list has nothing of the structure settings'"),
@@ -260,7 +236,6 @@ test("through the web gateway a structure's services have no answer, and each of
   for (const [path, options] of [
     [`/api/dockable-structures/${STRUCTURE_ID}/services`, {}],
     ["/api/bridge/inventory", {}],
-    ["/api/bridge/station/repair-quotes?itemIDs=5", {}],
   ]) {
     const refused = await ask(path, options);
     assert.deepEqual([refused.status, refused.payload.error], [409, "STRUCTURE_SERVICE_AUTHORITY_UNAVAILABLE"], path);

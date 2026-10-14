@@ -284,66 +284,6 @@ test.afterEach(async () => {
   await Promise.all(closing);
 });
 
-test("GET /api/bridge/lookup dispatches the nine lookupSvc searches with [q, exact] (and groupID for locations)", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/lookup?q=Farmer&exact=1&groupID=15");
-  assert.equal(response.status, 200);
-  assert.equal(payload.ok, true);
-  assert.deepEqual(payload.requested, { q: "Farmer", exact: 1, groupID: 15 });
-  assert.deepEqual(payload.characters, CHARACTERS_RESULT);
-  assert.deepEqual(payload.corporations, CORPORATIONS_RESULT);
-  assert.deepEqual(payload.factions, FACTIONS_RESULT);
-  assert.deepEqual(payload.owners, OWNERS_RESULT);
-  assert.deepEqual(payload.knownLocationsByGroup, LOCATIONS_RESULT);
-  assert.deepEqual(payload.warableOwners, WARABLE_RESULT);
-  assert.deepEqual(payload.errors, {
-    characters: null,
-    evePlayerCharacters: null,
-    corporations: null,
-    factions: null,
-    owners: null,
-    pcOwners: null,
-    nonNPCAccountOwners: null,
-    knownLocationsByGroup: null,
-    warableOwners: null,
-  });
-
-  // The eight name/owner/faction searches carry [q, exact]; the location search
-  // carries [groupID, q, exact].
-  for (const method of [
-    "LookupCharacters",
-    "LookupEvePlayerCharacters",
-    "LookupCorporations",
-    "LookupFactions",
-    "LookupOwners",
-    "LookupPCOwners",
-    "LookupNoneNPCAccountOwners",
-    "LookupWarableCorporationsOrAlliances",
-  ]) {
-    const read = callFor(gateway, method);
-    assert.equal(read.service, "lookupSvc", method);
-    assert.deepEqual(read.args, ["Farmer", 1], `${method} carries [q, exact]`);
-    assert.equal(read.bridgeSessionID, BRIDGE_SESSION_ID);
-  }
-  const location = callFor(gateway, "LookupKnownLocationsByGroup");
-  assert.equal(location.service, "lookupSvc");
-  assert.deepEqual(location.args, [15, "Farmer", 1], "LookupKnownLocationsByGroup carries [groupID, q, exact]");
-});
-
-test("lookup defaults q to '', exact to 0, groupID to 5 when the query omits them", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  const { payload } = await apiRequest(baseUrl, "/api/bridge/lookup");
-  assert.deepEqual(payload.requested, { q: "", exact: 0, groupID: 5 });
-  assert.deepEqual(callFor(gateway, "LookupCharacters").args, ["", 0]);
-  assert.deepEqual(callFor(gateway, "LookupKnownLocationsByGroup").args, [5, "", 0]);
-});
-
 test("GET /api/bridge/presence dispatches GetOnlineStatus([targetID]) + GetInitialState + Prime", async () => {
   const gateway = fakeGateway();
   const { baseUrl } = await startTestServer({ gateway });
@@ -377,49 +317,6 @@ test("presence defaults targetID to 0 when the query omits it", async () => {
   assert.deepEqual(callFor(gateway, "GetOnlineStatus").args, [0]);
 });
 
-test("GET /api/bridge/social dispatches LSC.GetChannels + account.GetDefaultContactCost (arg-less)", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/social");
-  assert.equal(response.status, 200);
-  assert.equal(payload.ok, true);
-  assert.deepEqual(payload.channels, CHANNELS_RESULT);
-  assert.equal(payload.defaultContactCost, null);
-  assert.deepEqual(payload.errors, { channels: null, defaultContactCost: null });
-
-  assert.equal(callFor(gateway, "GetChannels").service, "LSC");
-  assert.deepEqual(callFor(gateway, "GetChannels").args, []);
-  assert.equal(callFor(gateway, "GetDefaultContactCost").service, "account");
-  assert.deepEqual(callFor(gateway, "GetDefaultContactCost").args, []);
-});
-
-test("one failed lookup read carries its own error code; the rest still return (empty ≠ failed)", async () => {
-  const gateway = fakeGateway({
-    async callMethod(service, method) {
-      if (method === "LookupFactions") {
-        const error = new Error("factions unavailable");
-        error.code = "CALL_FAILED";
-        error.statusCode = 502;
-        throw error;
-      }
-      const key = `${service}.${method}`;
-      return { service, method, result: key in RESULTS ? RESULTS[key] : null, notifications: [] };
-    },
-  });
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/lookup?q=Farmer");
-  assert.equal(response.status, 200);
-  assert.equal(payload.ok, true);
-  assert.deepEqual(payload.characters, CHARACTERS_RESULT, "the other reads still return");
-  assert.equal(payload.factions, null, "the failed read has no value");
-  assert.equal(payload.errors.factions, "CALL_FAILED", "the failed read carries its code");
-  assert.equal(payload.errors.characters, null);
-});
-
 test("a lost live session unwinds each R60 route (404 SESSION_NOT_FOUND)", async () => {
   const gateway = fakeGateway({
     async callMethod() {
@@ -429,7 +326,7 @@ test("a lost live session unwinds each R60 route (404 SESSION_NOT_FOUND)", async
       throw error;
     },
   });
-  for (const path of ["/api/bridge/lookup", "/api/bridge/presence", "/api/bridge/social"]) {
+  for (const path of ["/api/bridge/presence"]) {
     const { baseUrl } = await startTestServer({ gateway });
     await selectOnServer(baseUrl);
     const { response, payload } = await apiRequest(baseUrl, path);
@@ -439,7 +336,7 @@ test("a lost live session unwinds each R60 route (404 SESSION_NOT_FOUND)", async
 });
 
 test("each R60 route requires a live session (409 NO_LIVE_SESSION with no character online)", async () => {
-  for (const path of ["/api/bridge/lookup", "/api/bridge/presence", "/api/bridge/social"]) {
+  for (const path of ["/api/bridge/presence"]) {
     const { baseUrl } = await startTestServer();
     const { response, payload } = await apiRequest(baseUrl, path);
     assert.equal(response.status, 409, path);

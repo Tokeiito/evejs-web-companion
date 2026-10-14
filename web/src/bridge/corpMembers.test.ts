@@ -15,7 +15,6 @@ import {
   decodeCorpMembersPaged,
   decodeCorpEveOwners,
 } from "./corpMembers.ts";
-import { decodeCorpMemberTracking } from "./corpMemberTracking.ts";
 import type { JsonValue } from "./wire.ts";
 
 const MEMBER_COLUMNS = [
@@ -129,74 +128,5 @@ test("GetEveOwners decodes the name-resolution rows (list of util.Row)", () => {
   assert.equal(owners[1]!.ownerName, "asdf");
 });
 
-// --- member tracking (CRowset, positional `values` packedrows, {type:long}) -----
-
-const TRACKING_COLUMNS = [
-  ["characterID", 3], ["corporationID", 3], ["title", 130], ["roles", 20],
-  ["grantableRoles", 20], ["baseID", 3], ["startDateTime", 64], ["logonDateTime", 64],
-  ["logoffDateTime", 64], ["lastOnline", 3], ["locationID", 20], ["shipTypeID", 3],
-  ["rolesAtHQ", 20], ["grantableRolesAtHQ", 20], ["rolesAtBase", 20], ["grantableRolesAtBase", 20],
-  ["rolesAtOther", 20], ["grantableRolesAtOther", 20], ["factionID", 3],
-];
-const long = (v: string): JsonValue => ({ type: "long", value: v } as unknown as JsonValue);
-function trackingRow(values: JsonValue[]): JsonValue {
-  return { type: "packedrow", columns: TRACKING_COLUMNS, values } as unknown as JsonValue;
-}
-// Farmer's REAL tracking row (online: logonDateTime a long, lastOnline -1, locationID 60003760).
-const REAL_TRACK_FARMER = trackingRow([
-  140000005, 98000001, "", long("1212031284210036097"), long("1212031284210036097"), 60015249,
-  long("134276026827720000"), long("134292376406920000"), null, -1, 60003760, 32872,
-  long("134209536"), long("134209536"), long("134209536"), long("134209536"), long("134209536"), long("134209536"), 500001,
-]);
-const REAL_TRACK_ASDF = trackingRow([
-  998830009, 98000001, "", long("0"), long("0"), 60015249,
-  long("134276061981200000"), null, null, 453, 60003760, 588,
-  long("0"), long("0"), long("0"), long("0"), long("0"), long("0"), 500001,
-]);
-
-function crowset(rows: JsonValue[]): JsonValue {
-  return {
-    type: "objectex2",
-    header: [[{ type: "token", value: "carbon.common.script.sys.crowset.CRowset" }], { type: "dict", entries: [] }],
-    list: rows, dict: [],
-  } as unknown as JsonValue;
-}
-
-test("GetMemberTrackingInfoSimple decodes the CRowset tracking rows", () => {
-  const rows = decodeCorpMemberTracking(crowset([REAL_TRACK_FARMER, REAL_TRACK_ASDF]));
-  assert.equal(rows.length, 2);
-  const farmer = rows[0]!;
-  assert.equal(farmer.characterID, 140000005);
-  assert.equal(farmer.corporationID, 98000001);
-  assert.equal(farmer.locationID, 60003760);
-  assert.equal(farmer.shipTypeID, 32872);
-  assert.equal(farmer.factionID, 500001);
-  assert.equal(farmer.lastOnline, -1); // currently online
-  assert.equal(farmer.logonDateTime, "134292376406920000");
-  assert.equal(farmer.roles, "1212031284210036097");
-  // asdf: never-logged-on style row — logon/logoff null, lastOnline an hours count.
-  assert.equal(rows[1]!.logonDateTime, null);
-  assert.equal(rows[1]!.logoffDateTime, null);
-  assert.equal(rows[1]!.lastOnline, 453);
-  assert.equal(rows[1]!.roles, "0");
-});
-
-test("GetMemberTrackingInfo peels the CachedMethodCallResult wrapper before the CRowset", () => {
-  const cached = {
-    type: "object",
-    name: { type: "rawstr", value: "carbon.common.script.net.objectCaching.CachedMethodCallResult" },
-    args: [
-      { type: "dict", entries: [] },
-      { type: "substream", value: crowset([REAL_TRACK_FARMER]) },
-      { type: "list", items: [long("134292376406940000"), 1045842135] },
-    ],
-  } as unknown as JsonValue;
-  const rows = decodeCorpMemberTracking(cached);
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0]!.characterID, 140000005);
-  assert.equal(rows[0]!.locationID, 60003760);
-});
-
-test("member tracking of an empty corp is []", () => {
-  assert.deepEqual(decodeCorpMemberTracking(crowset([])), []);
-});
+// (The member tracking's tests went on 2026-10-14 with its decoder, a plumbing read's with no screen: the loop's
+// item 64.)

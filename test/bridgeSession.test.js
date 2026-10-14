@@ -2846,8 +2846,8 @@ test("where the transport cannot make a sheet, and on the gateway, the sheet is 
 // sensorSuiteService asks the system's scan manager for the sites it knows of: the object GetSystemScanMgr()
 // answers. The scanner's route asks so on the game port, and by the service's name on the gateway, as it did.
 
-/** The scanner's read through the route; on the game port unless told otherwise. Says what was bound, and asked of what. */
-async function scanFullState({ transport = "gameport", answer = () => ({ type: "list", items: ["sites"] }), call = null } = {}) {
+/** The scanner's read by the page's own call; on the game port unless told otherwise. Says what was bound, and asked of what. */
+async function scanFullState({ transport = "gameport", answer = () => ({ type: "list", items: ["sites"] }), call } = {}) {
   const gamePort = gamePortWithQuestions(() => ({ answered: true }));
   const gateway = fakeGateway();
   const backend = transport === "gameport" ? gamePort : gateway;
@@ -2861,23 +2861,10 @@ async function scanFullState({ transport = "gameport", answer = () => ({ type: "
   const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => transport });
   await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
   asked.length = 0;
-  // By its route; or, given a call, by the page's own call.
-  const read = () => (call === null ? apiRequest(baseUrl, "/api/bridge/scan-full-state") : apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: call }));
+  // By the page's own call. (The scanner's read's route, GET /api/bridge/scan-full-state, went on 2026-10-14 with the plumbing's other unasked reads (the loop's item 64).)
+  const read = () => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: call });
   return { first: await read(), again: await read(), asked };
 }
-
-test("on the game port the scanner's sites are asked of the system's scan manager, bound once, and by name on the gateway as before", async () => {
-  const onGamePort = await scanFullState();
-  assert.deepEqual([onGamePort.first.response.status, onGamePort.first.payload.reads, onGamePort.again.payload.reads], [200, { GetFullState: { result: { type: "list", items: ["sites"] } } }, { GetFullState: { result: { type: "list", items: ["sites"] } } }]);
-  // GetSystemScanMgr() once, and GetFullState() on what it answered, with nothing, each time.
-  const onObject = { onObject: "scanMgr.GetFullState", args: [], kwargs: null, sessionFields: { userid: 4 }, handle: "the-scan-manager" };
-  assert.deepEqual(onGamePort.asked, [{ bound: "scanMgr.GetSystemScanMgr", args: [] }, onObject, onObject]);
-  const onGateway = await scanFullState({ transport: "gateway" });
-  assert.deepEqual([onGateway.first.payload.reads, onGateway.asked], [{ GetFullState: { result: { type: "list", items: ["sites"] } } }, [{ byName: "scanMgr.GetFullState", args: [] }, { byName: "scanMgr.GetFullState", args: [] }]]);
-  // A read the server refuses is the read's own failure, in the route's envelope, on either transport.
-  const refused = await scanFullState({ answer: () => { throw Object.assign(new Error("NotNow"), { code: "CALL_REFUSED", statusCode: 409 }); } });
-  assert.deepEqual([refused.first.response.status, refused.first.payload.reads], [200, { GetFullState: { error: "CALL_REFUSED", message: "NotNow" } }]);
-});
 
 test("the scanner's sites asked by the page's own call are asked of the same object on the game port and by name on the gateway; the call names no object", async () => {
   const theCall = (more = { pilot: true }) => ({ service: "scanMgr", method: "GetFullState", args: [], kwargs: null, ...more });
@@ -3482,44 +3469,7 @@ test("a station's offices that cannot be read are an error, not a station with n
 // is there for a pilot with the renting role whose corporation has no office in the station, and the other for a
 // director whose corporation has one.
 
-const quoteRoute = async (gamePort) => apiRequest(await atTheLobby(gamePort), "/api/bridge/station/office/quote");
 const ownCorporation = SELECT_SESSION_ECHO.corporationID;
-
-test("the price of an office is asked for the pilot's own corporation, of a pilot who may rent one", async () => {
-  const gamePort = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CAN_RENT, quote: { type: "long", value: "100113" } });
-  const { response, payload } = await quoteRoute(gamePort);
-  assert.equal(response.status, 200, JSON.stringify(payload));
-  // appConst.rentalPeriodOffice: thirty days.
-  assert.deepEqual(payload, { ok: true, stationID: HERE, cost: 100113, days: 30 });
-  assert.deepEqual(askedOfTheOffices(gamePort), [["GetPriceQuote", [ownCorporation], null, GAME_PORT_SESSION_ID]]);
-  // A price of nought is a price.
-  assert.equal((await quoteRoute(gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CAN_RENT, quote: 0 }))).payload.cost, 0);
-  // What is no price is not handed on as one.
-  for (const quote of [null, "cheap", -5, 10.5]) {
-    const unreadable = await quoteRoute(gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CAN_RENT, quote }));
-    assert.deepEqual([unreadable.response.status, unreadable.payload.error], [502, "OFFICE_PRICE_UNREADABLE"], String(quote));
-  }
-  // Without the renting role there is no button in the client, and nothing is asked here.
-  const director = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_DIRECTOR });
-  const refused = await quoteRoute(director);
-  assert.deepEqual([refused.response.status, refused.payload.error, askedOfTheOffices(director)], [403, "OFFICE_ROLE_MISSING", []]);
-});
-
-test("an office's price is not asked in a structure, in space, or through the gateway", async () => {
-  // (The rent's and the giving up's routes went on 2026-10-14 with the plumbing's other unasked writes (the loop's item 62): the page makes the client's own calls.)
-  const structure = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CEO, dockedAt: { stationID: null, structureID: STRUCTURE_DOCKED_AT } });
-  const inStructure = await quoteRoute(structure);
-  assert.deepEqual([inStructure.response.status, inStructure.payload.error], [409, "OFFICE_IN_A_STRUCTURE"]);
-  assert.deepEqual(methodsAsked(structure), []);
-  // In space, and through the gateway, there is no station's office object to ask.
-  const inSpace = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CEO, docked: false });
-  assert.equal((await quoteRoute(inSpace)).payload.error, "NOT_DOCKED");
-  const viaGateway = gamePortWithOffices(aSet(), 5, { corpRole: ROLE_CEO });
-  const gatewayBase = await atTheLobby(viaGateway, fakeGateway(), "gateway");
-  const answered = await apiRequest(gatewayBase, "/api/bridge/station/office/quote");
-  assert.deepEqual([answered.response.status, answered.payload.error], [409, "OFFICES_NOT_ON_THIS_TRANSPORT"]);
-  assert.deepEqual(methodsAsked(viaGateway), []);
-});
 
 test("an office's rent and its giving up are writes of the page's own, made on the pilot's connection as they came; the price is a read", async () => {
   const gamePort = gamePortWithOffices(aSet(), 5, { corpRole: "0" });
@@ -3556,25 +3506,6 @@ test("an office's rent and its giving up are writes of the page's own, made on t
 
 const QUIET_STATES = [[[100, null], [200, null], [400, null], [300, null], [500, null]], { type: "dict", entries: [] }, [aSet(), aSet()], 2];
 
-test("the page's read of crimewatch asks the client's states once, on the pilot's own session, and says the server's time beside them", async () => {
-  const asked = [];
-  const backend = fakeGateway({
-    async callMethod(service, method, args, kwargs, sessionFields, bridgeSessionID) {
-      asked.push([service, method, args, kwargs, bridgeSessionID]);
-      return { service, method, result: service === "crimewatch" && method === "GetClientStates" ? QUIET_STATES : null, notifications: [] };
-    },
-  });
-  const { baseUrl } = await startTestServer({ gateway: backend });
-  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
-  asked.length = 0;
-  const before = Date.now();
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/crimewatch");
-  assert.equal(response.status, 200, JSON.stringify(payload));
-  assert.deepEqual([payload.ok, payload.clientStates], [true, QUIET_STATES]);
-  assert.ok(Number.isSafeInteger(payload.serverNowMs) && payload.serverNowMs >= before && payload.serverNowMs <= Date.now(), String(payload.serverNowMs));
-  assert.deepEqual(asked.filter(([service]) => service === "crimewatch").map(([service, method, args, kwargs, handle]) => [method, args, kwargs, handle]), [["GetClientStates", [], null, BRIDGE_SESSION_ID]]);
-});
-
 // ── the clone's grade ────────────────────────────────────────────────────────
 //
 // The retail client asks subscriptionMgr.GetCloneGrade() as the account logs in and keeps it (clone_grade_svc.py
@@ -3597,47 +3528,6 @@ function gamePortWithGrade(grade) {
   return gamePort;
 }
 const askedOfTheSubscription = (backend) => backend.asked.filter(([service]) => service === "subscriptionMgr").map(([service, method, args, kwargs, handle]) => [method, args, kwargs, handle]);
-
-test("a game-port pilot's clone grade is read by the service's name on its own session, and is one of the two grades or none", async () => {
-  for (const [answered, said] of [[0, 0], [1, 1], [null, null], [2, null], ["1", null], [true, null], [-1, null]]) {
-    const gamePort = gamePortWithGrade(answered);
-    const { response, payload } = await apiRequest(await atTheLobby(gamePort), "/api/bridge/clone-grade");
-    assert.equal(response.status, 200, JSON.stringify(payload));
-    assert.deepEqual(payload, { ok: true, available: true, cloneGrade: said }, JSON.stringify(answered));
-    assert.deepEqual(askedOfTheSubscription(gamePort), [["GetCloneGrade", [], null, GAME_PORT_SESSION_ID]], JSON.stringify(answered));
-  }
-});
-
-test("a gateway pilot has no clone grade to read, and nothing is asked for one; a read that fails is an error", async () => {
-  const gamePort = gamePortWithGrade(0);
-  const asked = [];
-  const gateway = fakeGateway({ async callMethod(service, method) { asked.push(`${service}.${method}`); return { service, method, result: 0, notifications: [] }; } });
-  const { response, payload } = await apiRequest(await atTheLobby(gamePort, gateway, "gateway"), "/api/bridge/clone-grade");
-  assert.equal(response.status, 200, JSON.stringify(payload));
-  assert.deepEqual([payload, askedOfTheSubscription(gamePort), asked.filter((pair) => pair.startsWith("subscriptionMgr."))], [{ ok: true, available: false, cloneGrade: null }, [], []]);
-  // On the game port a read the server refused is an error, and says no grade.
-  const refusing = await apiRequest(await atTheLobby(gamePortWithGrade(refusedBy("NotNow"))), "/api/bridge/clone-grade");
-  assert.deepEqual([refusing.response.ok, refusing.payload.ok, "cloneGrade" in refusing.payload], [false, false, false], JSON.stringify(refusing.payload));
-  // A pilot not chosen has none.
-  const { baseUrl } = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePortWithGrade(0), pilotTransportFor: () => "gameport" });
-  const unchosen = await apiRequest(baseUrl, "/api/bridge/clone-grade");
-  assert.equal(unchosen.response.ok, false, JSON.stringify(unchosen.payload));
-});
-
-test("crimewatch's states that cannot be read are an error, and a pilot not chosen has none", async () => {
-  const backend = fakeGateway({
-    async callMethod(service, method) {
-      if (service === "crimewatch") throw Object.assign(new Error("The game server refused crimewatch.GetClientStates."), { code: "EVE_GATEWAY_CALL_FAILED", statusCode: 502 });
-      return { service, method, result: null, notifications: [] };
-    },
-  });
-  const { baseUrl } = await startTestServer({ gateway: backend });
-  const unchosen = await apiRequest(baseUrl, "/api/bridge/crimewatch");
-  assert.equal(unchosen.response.ok, false, JSON.stringify(unchosen.payload));
-  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/crimewatch");
-  assert.deepEqual([response.ok, payload.ok, "clientStates" in payload], [false, false, false], JSON.stringify(payload));
-});
 
 test("a ship aligned is a write of the page's own, asked of beyonce by its name with the thing and the bookmark by name: it goes as it was sent", async () => {
   const gateway = fakeGateway();
@@ -4423,51 +4313,6 @@ test("a pilot's bookmarks go by the generic call as a pilot's read, as it was se
   assert.equal(gateway.calls.call.length, before + 1);
 });
 
-test("the bookmarks' route reads the bookmarks and the folders the pilot administers, and a folder where one is named; a read that fails is answered as nothing with its code beside it", async () => {
-  const asked = [];
-  let failing = null;
-  const gateway = fakeGateway({
-    async callMethod(service, method, args) {
-      asked.push([service, method, args]);
-      if (failing !== null && failing.method === method) throw new gatewayClient.EveGatewayError("the call failed", failing);
-      return { service, method, result: `${method}'s answer`, notifications: [] };
-    },
-  });
-  const { baseUrl } = await startTestServer({ gateway });
-  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
-  asked.length = 0;
-  const BOTH = [["accessGroupBookmarkMgr", "GetMyActiveBookmarks", []], ["accessGroupBookmarkMgr", "SearchFoldersWithAdminAccess", []]];
-  const NO_ERRORS = { active: null, adminFolders: null, folderInfo: null };
-
-  // No folder named, and a folder that is no number: the two reads, and no folder's.
-  for (const path of ["/api/bridge/bookmarks", "/api/bridge/bookmarks?folderID=abc", "/api/bridge/bookmarks?folderID=0", "/api/bridge/bookmarks?folderID=-3"]) {
-    const plain = await apiRequest(baseUrl, path);
-    assert.equal(plain.response.status, 200, path);
-    assert.deepEqual(plain.payload, { ok: true, active: "GetMyActiveBookmarks's answer", adminFolders: "SearchFoldersWithAdminAccess's answer", folderInfo: null, errors: NO_ERRORS }, path);
-    assert.deepEqual(asked.splice(0), BOTH, path);
-  }
-
-  // A folder named: its read beside the two, with the folder as it was sent.
-  const named = await apiRequest(baseUrl, "/api/bridge/bookmarks?folderID=500001");
-  assert.deepEqual(named.payload, { ok: true, active: "GetMyActiveBookmarks's answer", adminFolders: "SearchFoldersWithAdminAccess's answer", folderInfo: "GetFolderInfo's answer", errors: NO_ERRORS });
-  assert.deepEqual(asked.splice(0), [...BOTH, ["accessGroupBookmarkMgr", "GetFolderInfo", [500001]]]);
-
-  // The bookmarks' read failing: 200 all the same, nothing for the bookmarks, and the code beside. What the page
-  // read as no bookmarks, while it asked this route.
-  failing = { method: "GetMyActiveBookmarks", code: "CALL_FAILED", statusCode: 502 };
-  const failed = await apiRequest(baseUrl, "/api/bridge/bookmarks?folderID=500001");
-  assert.equal(failed.response.status, 200);
-  assert.deepEqual(failed.payload, { ok: true, active: null, adminFolders: "SearchFoldersWithAdminAccess's answer", folderInfo: "GetFolderInfo's answer", errors: { ...NO_ERRORS, active: "CALL_FAILED" } });
-  failing = { method: "GetFolderInfo", code: "CALL_REFUSED", statusCode: 409 };
-  const refused = await apiRequest(baseUrl, "/api/bridge/bookmarks?folderID=500001");
-  assert.deepEqual([refused.response.status, refused.payload.active, refused.payload.folderInfo, refused.payload.errors], [200, "GetMyActiveBookmarks's answer", null, { ...NO_ERRORS, folderInfo: "CALL_REFUSED" }]);
-
-  // A session the server no longer has is the whole route's failure, whichever read met it.
-  failing = { method: "SearchFoldersWithAdminAccess", code: "SESSION_NOT_FOUND", statusCode: 404 };
-  const lost = await apiRequest(baseUrl, "/api/bridge/bookmarks");
-  assert.deepEqual([lost.response.status, lost.payload.error], [404, "SESSION_NOT_FOUND"]);
-});
-
 // ── a corporation's members, read by the page itself ─────────────────────────
 //
 // bco_members.__PrimeEveOwners (136): self.GetCorpRegistry().GetEveOwners(), nothing sent. The page asks it as a
@@ -4656,38 +4501,6 @@ test("what is at a station, asked by the page's own call, is asked of the pilot'
     // A read the server refuses is the call's own failure.
     const refused = await assetStations({ transport, call: theCall(), answer: () => { throw Object.assign(new Error("NotNow"), { code: "CALL_REFUSED", statusCode: 409 }); } });
     assert.deepEqual([refused.first.response.status, refused.first.payload.ok, refused.first.payload.error], [409, false, "CALL_REFUSED"], transport);
-  }
-});
-
-test("the station's route asks the same of the same container, reading the flight first, and answers each type's volume from static data beside it", async () => {
-  const typesAsked = [];
-  const staticData = { ...fakeStaticData(), getType(typeID) { typesAsked.push(typeID); return { 588: { volume: 15800 }, 34: { volume: 0 } }[typeID] ?? null; } };
-  const route = "/api/bridge/assets/station?stationID=60003760";
-  for (const transport of ["gameport", "gateway"]) {
-    typesAsked.length = 0;
-    const read = await assetStations({ transport, route, staticData, answer: () => STATION_ITEMS });
-    // A type is measured once however many of its items there are; one with no volume above nought is left out.
-    assert.deepEqual([read.first.response.status, read.first.payload], [200, { ok: true, stationID: 60003760, items: STATION_ITEMS, volumes: { 588: 15800 }, hasNoItems: false, error: null }], transport);
-    assert.deepEqual(read.asked, ["the flight", ASSETS_BOUND, itemsAsked(), "the flight", itemsAsked()], transport);
-    assert.deepEqual(typesAsked, [588, 34, 588, 34], transport);
-    const empty = await assetStations({ transport, route, staticData, answer: () => ({ type: "list", items: [] }) });
-    assert.deepEqual(empty.first.payload, { ok: true, stationID: 60003760, items: { type: "list", items: [] }, volumes: {}, hasNoItems: true, error: null }, transport);
-    // What is no list is not an empty station.
-    for (const odd of [null, STATIONS_ROWSET, []]) {
-      const unread = await assetStations({ transport, route, staticData, answer: () => odd });
-      assert.deepEqual([unread.first.payload.hasNoItems, unread.first.payload.volumes, unread.first.payload.error], [false, {}, null], `${transport} ${JSON.stringify(odd)}`);
-    }
-    // No station named, or what is none: refused, and nothing asked.
-    for (const none of ["/api/bridge/assets/station", "/api/bridge/assets/station?stationID=0", "/api/bridge/assets/station?stationID=abc", "/api/bridge/assets/station?stationID=-5"]) {
-      const refused = await assetStations({ transport, route: none, staticData });
-      assert.deepEqual([refused.first.response.status, refused.first.payload.error, refused.asked], [400, "ASSET_LOCATION_INVALID", []], `${transport} ${none}`);
-    }
-    // A read the server refuses: 200 all the same, with the code, and an empty station not said.
-    const refused = await assetStations({ transport, route, staticData, answer: () => { throw Object.assign(new Error("NotNow"), { code: "CALL_REFUSED", statusCode: 409 }); } });
-    assert.deepEqual([refused.first.response.status, refused.first.payload], [200, { ok: true, stationID: 60003760, items: null, hasNoItems: false, error: "CALL_REFUSED" }], transport);
-    // A session the server no longer has is the route's failure.
-    const lost = await assetStations({ transport, route, staticData, answer: () => { throw new gatewayClient.EveGatewayError("gone", { code: "SESSION_NOT_FOUND", statusCode: 404 }); } });
-    assert.deepEqual([lost.first.response.status, lost.first.payload.error], [404, "SESSION_NOT_FOUND"], transport);
   }
 });
 

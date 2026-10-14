@@ -205,86 +205,6 @@ test.afterEach(async () => {
   await Promise.all(closing);
 });
 
-test("GET /api/bridge/character-profile dispatches the seven charMgr reads top-level, arg-less", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/character-profile");
-  assert.equal(response.status, 200);
-  assert.equal(payload.ok, true);
-  assert.deepEqual(payload.publicInfo, PUBLIC_INFO);
-  assert.deepEqual(payload.homeStationRow, HOME_STATION_ROW);
-  assert.deepEqual(payload.creationDate, CREATION_DATE);
-  assert.deepEqual(payload.settingsInfo, SETTINGS_INFO);
-  assert.equal(payload.paperdollState, 0);
-  assert.deepEqual(payload.cohorts, COHORTS);
-  assert.deepEqual(payload.corpChange, CORP_CHANGE);
-  assert.deepEqual(payload.errors, {
-    publicInfo: null,
-    homeStationRow: null,
-    creationDate: null,
-    settingsInfo: null,
-    paperdollState: null,
-    cohorts: null,
-    corpChange: null,
-  });
-
-  const methods = [
-    "GetPublicInfo",
-    "GetHomeStationRow",
-    "GetCharacterCreationDate",
-    "GetSettingsInfo",
-    "GetPaperdollState",
-    "GetCohortsForCharacter",
-    "GetPrivateInfoOnCorpChange",
-  ];
-  for (const method of methods) {
-    const read = gateway.calls.call.find((c) => c.method === method);
-    assert.ok(read, `${method} dispatched`);
-    assert.equal(read.service, "charMgr");
-    assert.deepEqual(read.args, [], `${method} arg-less (scopes to session character)`);
-    assert.equal(read.bridgeSessionID, BRIDGE_SESSION_ID);
-  }
-});
-
-test("GET /api/bridge/character-notes dispatches labels arg-less + note reads with the query ids", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/character-notes?noteID=1&itemID=42");
-  assert.equal(response.status, 200);
-  assert.equal(payload.ok, true);
-  assert.deepEqual(payload.requested, { noteID: 1, itemID: 42 });
-  assert.deepEqual(payload.labels, OWNER_NOTE_LABELS);
-  assert.deepEqual(payload.ownerNote, OWNER_NOTE);
-  assert.equal(payload.entityNote, "");
-
-  const labels = gateway.calls.call.find((c) => c.method === "GetOwnerNoteLabels");
-  const ownerNote = gateway.calls.call.find((c) => c.method === "GetOwnerNote");
-  const entityNote = gateway.calls.call.find((c) => c.method === "GetNote");
-  assert.equal(labels.service, "charMgr");
-  assert.deepEqual(labels.args, []);
-  // The two id-bearing reads carry the query args, so a UI can page the notes.
-  assert.deepEqual(ownerNote.args, [1]);
-  assert.deepEqual(entityNote.args, [42]);
-  for (const read of [labels, ownerNote, entityNote]) {
-    assert.equal(read.bridgeSessionID, BRIDGE_SESSION_ID);
-  }
-});
-
-test("character-notes defaults noteID/itemID to 1 when the query omits them", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  const { payload } = await apiRequest(baseUrl, "/api/bridge/character-notes");
-  assert.deepEqual(payload.requested, { noteID: 1, itemID: 1 });
-  assert.deepEqual(gateway.calls.call.find((c) => c.method === "GetOwnerNote").args, [1]);
-  assert.deepEqual(gateway.calls.call.find((c) => c.method === "GetNote").args, [1]);
-});
-
 test("GET /api/bridge/contact-list dispatches charMgr.GetContactList (empty ok)", async () => {
   const gateway = fakeGateway();
   const { baseUrl } = await startTestServer({ gateway });
@@ -303,30 +223,6 @@ test("GET /api/bridge/contact-list dispatches charMgr.GetContactList (empty ok)"
   assert.equal(read.bridgeSessionID, BRIDGE_SESSION_ID);
 });
 
-test("one failed profile read carries its own error code; the rest still return (empty ≠ failed)", async () => {
-  const gateway = fakeGateway({
-    async callMethod(service, method) {
-      if (method === "GetSettingsInfo") {
-        const error = new Error("settings unavailable");
-        error.code = "CALL_FAILED";
-        error.statusCode = 502;
-        throw error;
-      }
-      return { service, method, result: method in CHARMGR_RESULTS ? CHARMGR_RESULTS[method] : null, notifications: [] };
-    },
-  });
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/character-profile");
-  assert.equal(response.status, 200);
-  assert.equal(payload.ok, true);
-  assert.deepEqual(payload.publicInfo, PUBLIC_INFO, "the identity read still returns");
-  assert.equal(payload.settingsInfo, null, "the failed read has no value");
-  assert.equal(payload.errors.settingsInfo, "CALL_FAILED", "the failed read carries its code");
-  assert.equal(payload.errors.publicInfo, null);
-});
-
 test("a lost live session unwinds each read route (404 SESSION_NOT_FOUND)", async () => {
   const gateway = fakeGateway({
     async callMethod() {
@@ -336,7 +232,7 @@ test("a lost live session unwinds each read route (404 SESSION_NOT_FOUND)", asyn
       throw error;
     },
   });
-  for (const path of ["/api/bridge/character-profile", "/api/bridge/character-notes", "/api/bridge/contact-list"]) {
+  for (const path of ["/api/bridge/contact-list"]) {
     const { baseUrl } = await startTestServer({ gateway });
     await selectOnServer(baseUrl);
     const { response, payload } = await apiRequest(baseUrl, path);
@@ -346,7 +242,7 @@ test("a lost live session unwinds each read route (404 SESSION_NOT_FOUND)", asyn
 });
 
 test("each read route requires a live session (409 NO_LIVE_SESSION with no character online)", async () => {
-  for (const path of ["/api/bridge/character-profile", "/api/bridge/character-notes", "/api/bridge/contact-list"]) {
+  for (const path of ["/api/bridge/contact-list"]) {
     const { baseUrl } = await startTestServer();
     const { response, payload } = await apiRequest(baseUrl, path);
     assert.equal(response.status, 409, path);

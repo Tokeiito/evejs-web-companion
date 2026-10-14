@@ -222,52 +222,6 @@ test.afterEach(async () => {
   await Promise.all(closing);
 });
 
-test("GET /api/bridge/mail-aux dispatches GetLabels + the four mailingLists reads (empty ok)", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/mail-aux?listID=100");
-  assert.equal(response.status, 200);
-  assert.equal(payload.ok, true);
-  assert.deepEqual(payload.requested, { listID: 100 });
-  assert.deepEqual(payload.labels, LABELS);
-  assert.deepEqual(payload.joinedLists, JOINED_LISTS);
-  assert.equal(payload.listInfo, null);
-  assert.deepEqual(payload.listMembers, LIST_MEMBERS);
-  assert.equal(payload.listSettings, null);
-  assert.deepEqual(payload.errors, {
-    labels: null,
-    joinedLists: null,
-    listInfo: null,
-    listMembers: null,
-    listSettings: null,
-  });
-
-  // GetLabels + GetJoinedLists are arg-less (session-scoped); the three detail
-  // reads carry the query listID.
-  assert.equal(callFor(gateway, "GetLabels").service, "mailMgr");
-  assert.deepEqual(callFor(gateway, "GetLabels").args, []);
-  assert.equal(callFor(gateway, "GetJoinedLists").service, "mailingListsMgr");
-  assert.deepEqual(callFor(gateway, "GetJoinedLists").args, []);
-  for (const method of ["GetInfo", "GetMembers", "GetSettings"]) {
-    const read = callFor(gateway, method);
-    assert.equal(read.service, "mailingListsMgr", method);
-    assert.deepEqual(read.args, [100], `${method} carries the query listID`);
-    assert.equal(read.bridgeSessionID, BRIDGE_SESSION_ID);
-  }
-});
-
-test("mail-aux defaults listID to 0 when the query omits it", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  const { payload } = await apiRequest(baseUrl, "/api/bridge/mail-aux");
-  assert.deepEqual(payload.requested, { listID: 0 });
-  assert.deepEqual(callFor(gateway, "GetInfo").args, [0]);
-});
-
 test("GET /api/bridge/notifications dispatches the three notificationMgr reads", async () => {
   const gateway = fakeGateway();
   const { baseUrl } = await startTestServer({ gateway });
@@ -359,31 +313,6 @@ test("an event named without its owner is asked for with None for the owner", as
   assert.deepEqual(callFor(gateway, "GetEventDetails").args, [980000000006, null]);
 });
 
-test("one failed read carries its own error code; the rest still return (empty ≠ failed)", async () => {
-  const gateway = fakeGateway({
-    async callMethod(service, method) {
-      if (method === "GetSettings") {
-        const error = new Error("settings unavailable");
-        error.code = "CALL_FAILED";
-        error.statusCode = 502;
-        throw error;
-      }
-      const key = `${service}.${method}`;
-      return { service, method, result: key in RESULTS ? RESULTS[key] : null, notifications: [] };
-    },
-  });
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/mail-aux");
-  assert.equal(response.status, 200);
-  assert.equal(payload.ok, true);
-  assert.deepEqual(payload.labels, LABELS, "the other reads still return");
-  assert.equal(payload.listSettings, null, "the failed read has no value");
-  assert.equal(payload.errors.listSettings, "CALL_FAILED", "the failed read carries its code");
-  assert.equal(payload.errors.labels, null);
-});
-
 test("a lost live session unwinds each comms route (404 SESSION_NOT_FOUND)", async () => {
   const gateway = fakeGateway({
     async callMethod() {
@@ -393,7 +322,7 @@ test("a lost live session unwinds each comms route (404 SESSION_NOT_FOUND)", asy
       throw error;
     },
   });
-  for (const path of ["/api/bridge/mail-aux", "/api/bridge/notifications", "/api/bridge/calendar"]) {
+  for (const path of ["/api/bridge/notifications", "/api/bridge/calendar"]) {
     const { baseUrl } = await startTestServer({ gateway });
     await selectOnServer(baseUrl);
     const { response, payload } = await apiRequest(baseUrl, path);
@@ -403,7 +332,7 @@ test("a lost live session unwinds each comms route (404 SESSION_NOT_FOUND)", asy
 });
 
 test("each comms route requires a live session (409 NO_LIVE_SESSION with no character online)", async () => {
-  for (const path of ["/api/bridge/mail-aux", "/api/bridge/notifications", "/api/bridge/calendar"]) {
+  for (const path of ["/api/bridge/notifications", "/api/bridge/calendar"]) {
     const { baseUrl } = await startTestServer();
     const { response, payload } = await apiRequest(baseUrl, path);
     assert.equal(response.status, 409, path);
