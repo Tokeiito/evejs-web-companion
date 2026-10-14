@@ -116,6 +116,20 @@ export function skillInTraining(queue: unknown): number | null {
   return fields.get("trainingEndTime") ? number(fields.get("trainingTypeID")) : null;
 }
 
+/**
+ * skillsvc.MyEffectiveSkillLevelsByID().get(typeID, 0), which the client's industry reads of each skill a job
+ * requires (industrySvc._UpdateSkills, 224: skillInfo.effectiveSkillLevel): the larger of the level trained and the
+ * level lent, out of skillHandler.GetSkills as answered. Nought for a skill the pilot has not.
+ */
+export function effectiveSkillLevel(skills: unknown, typeID: number): number {
+  for (const [key, entry] of entriesOf(skills)) {
+    if (number(key) !== typeID) continue;
+    const fields = skillFields(entry);
+    return fields ? Math.max(number(fields[1]) ?? 0, number(fields[4]) ?? 0) : 0;
+  }
+  return 0;
+}
+
 /** The types of the skills a list of them names, as answered: those that are a skill's entry at a level. */
 export function skillTypeIDs(skills: unknown): readonly number[] {
   const types: number[] = [];
