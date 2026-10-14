@@ -10,22 +10,22 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 
 | The game port | Kinds | Calls | Meaning |
 |---|---|---|---|
-| at login | 67 | 76 | The game port asks this at login too. |
+| at login | 73 | 82 | The game port asks this at login too. |
 | by a feature | 6 | 10 | A feature of the web client asks this when it is wanted, in a form read against the client's. |
 | by a route | 7 | 8 | The BFF has a route that can ask this. It has not been read against the client's. |
-| never | 20 | 23 | Nothing of ours asks this. |
+| never | 14 | 17 | Nothing of ours asks this. |
 
 ## Before a character is chosen
 
 | Call | Times | The game port |
 |---|---|---|
 | `machoNet.GetServiceInfo` | 1 | at login |
-| `config.GetBlackListedPlanets` | 1 | never |
-| `config.GetOldStationData` | 1 | never |
+| `config.GetBlackListedPlanets` | 1 | at login |
+| `config.GetOldStationData` | 1 | at login |
 | `machoNet.GetTime` | 5 | at login |
-| `air_npe.is_air_npe_enabled` | 1 | never |
+| `air_npe.is_air_npe_enabled` | 1 | at login |
 | `invbroker.GetItemDescriptor` | 1 | by a route |
-| `raffleProxy.AmIBanned` | 1 | never |
+| `raffleProxy.AmIBanned` | 1 | at login |
 | `subscriptionMgr.GetCloneGrade` | 1 | at login |
 | `charUnboundMgr.GetCharacterSelectionData` | 2 | at login |
 | `config.GetMultiOwnersEx` | 1 | by a feature |
@@ -42,8 +42,8 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `charUnboundMgr.UpdateCharacterGender` | 1 | by a route |
 | `paperDollServer.UpdateExistingCharacterFull` | 1 | never |
 | `photoUploadSvc.Upload` | 1 | never |
-| `populationCap.MachoResolveObject` | 1 | never |
-| `populationCap.MachoBindObject` | 1 | never |
+| `populationCap.MachoResolveObject` | 1 | at login |
+| `populationCap.MachoBindObject` | 1 | at login |
 | `charUnboundMgr.GetCharacterLockType` | 1 | at login |
 
 ## From the choosing of a character

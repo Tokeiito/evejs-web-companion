@@ -1517,7 +1517,20 @@ sites service has as banned in chat, each normalized, kept thirty hours (21 to 2
 flagged 1, each one's domain (`carbonui/control/browser/sites.py` 348 to 354, 416 to 432), the flagged sites
 being the list on disk unless its MD5 is not `browserLockdownSvc.GetFlaggedSitesHash()`, when
 `GetFlaggedSitesList()` is asked (380 to 406). Tranquility and EveJS both answer the MD5 of `[]`. A pilot on the
-game port checks so since `5f0b9627`. A pilot on the game port reconnects
+game port checks so since `5f0b9627`.
+Before a character is chosen. The cfg, as its data are loaded, asks `config.GetBlackListedPlanets()`
+(`eve/common/script/sys/eveCfg.py` 367, 475 to 477) and, by a thread, `config.GetOldStationData()` (701, 741 to
+753). The AIR tutorial's controller asks `air_npe.is_air_npe_enabled()` at each coming of the global config
+(`storylines/client/airnpe.py` 72 to 76). The raffle service, on a session with a country, asks
+`raffleProxy.AmIBanned()` at the proxy once, the commands' list wanting to know whether the raffles are open
+(`raffles/client/raffle_service.py` 39 to 57; `eveCommands.py` 744). As a character is entered as,
+`characterSelection.TryEnterGame` (`eve/client/script/ui/login/charSelection/characterSelection.py` 742 to 767)
+makes `Moniker('populationCap', (charID, 1))` and asks `GetCharacterLoadSlot(charID)`, the call in the bind;
+with more than one place answered it asks its player to choose and calls `MoveCharacterToNewSystem`. Tranquility
+answers one place, a solar system to a slot's key. The character selection screen's own: the daily rewards
+(`loginCampaignManager.get_client_campaign_state`, `seasonalLoginCampaignManager.get_active_campaign`), the lapsed
+game time's warning (`GetCharOmegaDowngradeStatus`, 299 to 306), the paper dolls its portraits are drawn from, the
+redeeming's tokens. The game port makes the first five since `8a6c3738` and none of the screen's own. A pilot on the game port reconnects
 and checks so since `3611198a`, and follows its session since `82986a37`.
 
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill

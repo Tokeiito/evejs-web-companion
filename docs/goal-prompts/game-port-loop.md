@@ -3534,6 +3534,15 @@ Take these defaults, and list each under "For the operator" in the log so they c
   longer so. It was put right before it was committed. The records
   script is given the origin's hash as well as the head's, both read
   as it is run, and holds the state file to naming both.
+- **Tranquility's recordings of a login begin at its fortieth call.**
+  What a client asks before a character is chosen is not in them
+  (the cfg's loading, the global config's coming), but for the last
+  of it, the population cap's moniker. For those the truth is this
+  server's log of a retail client's own login
+  (`direct-tcp-real-client-*.stdout.log`, names alone) and the
+  client's code; a search of the recordings that finds nothing is
+  checked against where they begin before it is said that the client
+  does not make the call.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
