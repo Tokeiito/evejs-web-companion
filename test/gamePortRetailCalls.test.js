@@ -1771,6 +1771,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "structureGuests.GetGuests",
     // A pilot's dock at a structure and its undock, by the client's structure docking service. The gateway's list has nothing of them.
     "structureDocking.Dock", "structureDocking.Undock",
+    // A pilot's employment record and transfers, by the client's History panel. The gateway's list has nothing of the corporation service's.
+    "corporationSvc.GetEmployementRecordAndCharacterTransfers",
   ]);
   // structureGuests.py 25: sm.RemoteSvc('structureGuests').GetGuests(session.structureid), by the service's name,
   // with the structure the session is docked in and nothing else.
