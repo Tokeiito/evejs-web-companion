@@ -6860,13 +6860,14 @@ test("a sale asks for the two halves of its item's price history first, and the 
   assert.deepEqual(Object.fromEntries(pilots.callLedger().filter((row) => row.pair.startsWith("marketProxy.")).map((row) => [row.pair, row.statuses])),
     { "marketProxy.GetOldPriceHistory": { same: 1 }, "marketProxy.GetNewPriceHistory": { same: 1 }, "marketProxy.PlaceMultiSellOrder": { reshaped: 1 } });
   // A type nothing has traded: its base price over its portion size, from the game's data.
+  // (A delta of one whole goes as the client's quotient goes, a float: retailCalls.js, asFloat.)
   await sale(35, 250);
-  assert.equal(fieldOfSaleItem(lastMarketCall(session), "delta"), (250 - 125) / 125);
+  assert.deepEqual(fieldOfSaleItem(lastMarketCall(session), "delta"), { type: "real", value: (250 - 125) / 125 });
   // The halves are asked for again at each sale, as each entry of the client's asks.
   assert.equal(session.proxyCalls.filter((call) => call.method === "GetOldPriceHistory").length, 2);
   // Two items of two types in one sale: each by its own type's average.
   await pilots.callMethod("marketProxy", "PlaceMultiSellOrder", [[{ itemID: 9001, typeID: 35, stationID: 60003760, price: 250, quantity: 2 }, { itemID: 9002, typeID: 34, stationID: 60003760, price: 5.5, quantity: 1 }], false, 1, null], null, WHO, handle);
-  assert.deepEqual(lastMarketCall(session).args[0].items.map((item) => item.args.entries.find(([key]) => key === "delta")[1]), [(250 - 125) / 125, (5.5 - average) / average]);
+  assert.deepEqual(lastMarketCall(session).args[0].items.map((item) => item.args.entries.find(([key]) => key === "delta")[1]), [{ type: "real", value: (250 - 125) / 125 }, (5.5 - average) / average]);
   // An average is the sale's own: a history that cannot be read at the next sale leaves that sale's item without a delta.
   unreadable = true;
   await sale(34, 5.5);
@@ -10250,7 +10251,8 @@ test("what a structure answers for its market tax makes the rate as the client's
   assert.deepEqual(await rateFor(3n), [0.03, ["reshaped"]]);
   assert.deepEqual(await rateFor(11.5), [0.115, ["reshaped"]]);
   // None is no market there for the pilot, and False and nought no tax: a rate of nothing (marketsvc.py 165).
-  for (const none of [null, false, 0]) assert.deepEqual(await rateFor(none), [0, ["reshaped"]], String(none));
+  // (A rate of nought goes as the client's rate goes, a float: retailCalls.js, asFloat.)
+  for (const none of [null, false, 0]) assert.deepEqual(await rateFor(none), [{ type: "real", value: 0 }, ["reshaped"]], String(none));
   // What is no tax, and a tax that could not be asked: no rate is made of a guess, and the order goes as it came.
   for (const unknown of ["2.5", { type: "list", items: [] }, NaN, Infinity, () => { throw refusedBy("NotNow"); }]) {
     assert.deepEqual(await rateFor(unknown), [null, ["differs"]], String(unknown));

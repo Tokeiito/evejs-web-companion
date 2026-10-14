@@ -1397,8 +1397,9 @@ test("a buy order with no fee named goes out with the rate the client would name
     assert.deepEqual([unnamed.status, unnamed.args], ["differs", [60000004, ...nine.slice(1), null]]);
     assert.match(unnamed.note, /fee/);
   }
-  // A rate of nought is a rate.
-  assert.deepEqual(withContext("marketProxy.PlaceBuyOrder", [...nine, null], null, feeKnown(0)).args[8], 0);
+  // A rate of nought is a rate, and goes as the client's rate goes, a float (brokerFee.py, a percentage less its
+  // reductions): a whole number would go out an int.
+  assert.deepEqual(withContext("marketProxy.PlaceBuyOrder", [...nine, null], null, feeKnown(0)).args[8], { type: "real", value: 0 });
   assert.equal(retailNeeds("marketProxy", "PlaceBuyOrder"), "fee");
 });
 
@@ -1435,8 +1436,8 @@ test("a sale's item is given how far its price is from the type's average, and w
   const whole = withContext("marketProxy.PlaceMultiSellOrder", [[ROUTES_ITEM], false, 1, null], null, averageKnown());
   assert.equal(whole.status, "reshaped");
   assert.deepEqual(whole.args, [{ type: "list", items: [saleKeyVal([["itemID", 9988400109051], ["typeID", 34], ["rawBrokerFeePercentage", 0.03], ["price", 987654.32], ["officeID", null], ["stationID", 60003760], ["delta", delta], ["quantity", 1]])] }, false, 1, 0.03]);
-  // A price at the average is no distance from it, and that is a delta.
-  assert.equal(withContext("marketProxy.PlaceMultiSellOrder", [[ROUTES_ITEM], false, 1, null], null, averageKnown(987654.32)).args[0].items[0].args.entries.find(([name]) => name === "delta")[1], 0);
+  // A price at the average is no distance from it, and that is a delta: the quotient's float (GetDelta), not an int.
+  assert.deepEqual(withContext("marketProxy.PlaceMultiSellOrder", [[ROUTES_ITEM], false, 1, null], null, averageKnown(987654.32)).args[0].items[0].args.entries.find(([name]) => name === "delta")[1], { type: "real", value: 0 });
   // A delta given with the item is not worked out again.
   assert.equal(withContext("marketProxy.PlaceMultiSellOrder", [[{ ...ROUTES_ITEM, delta: -0.25 }], false, 1, null], null, averageKnown()).args[0].items[0].args.entries.find(([name]) => name === "delta")[1], -0.25);
   // No average to be had, or an average of nothing: no delta is made up, and the sale is noted for it.

@@ -508,30 +508,55 @@ test("listOreFamilies loads the ore families from static data", async () => {
 // What the flow owes a player who has just spent ISK:
 //   - the panel reloaded from the SERVER before anything is said about what
 //     happened, so the orders and the balance on screen are server truth;
-//   - the amount reported is the one the BFF measured from the WALLET, never
+//   - the amount reported is the one the page measured from the WALLET, never
 //     the estimate the confirm step showed;
 //   - a silent decline said plainly, with no invented cause;
 //   - a thrown refusal in the server's own words.
+// Each write is the page's own call since 2026-10-14 (bridge/marketOrderWrites.ts), as the client's market service
+// makes it (marketsvc.py: BuyStuff 256 to 268, SellMulti 275 to 276, ModifyOrder 285 to 289), at the station the
+// pilot is docked in; the wallet is read before and after through the same call.
 
-function changeResult(overrides: Record<string, unknown> = {}) {
-  return {
-    ok: true,
-    applied: true,
-    declinedSilently: false,
-    charged: "1137.50",
-    balanceBefore: "1000000.00",
-    balanceAfter: "998862.50",
-    ownOrders: null,
-    ...overrides,
+/** The pilot docked at Jita, as a choosing tells the store. */
+function dockedAtJita(store: ReturnType<typeof createClientStore>): void {
+  store.apply({
+    type: "character/online",
+    character: { characterID: CHARACTER_ID, characterName: "Synthetic Pilot", stationID: STATION_ID, structureID: null, solarSystemID: SOLAR_SYSTEM_ID, corporationID: 98000001 },
+    station: null,
+  });
+}
+
+/**
+ * The page's own calls, answered in the generic call's envelope: the wallet's balance as the server sends it (a
+ * real), one answer of `balances` at each asking and the last from then on; the pilot's orders, the one order of
+ * the panel's; and every other call by `write`, which answers nothing where it gives no answer of its own.
+ */
+function marketCalls(
+  balances: readonly number[],
+  write: (method: string) => { status: number; body: unknown } | null = () => null,
+) {
+  let asked = 0;
+  return (path: string, _method: string, body: Record<string, unknown>) => {
+    if (path !== "/api/bridge/call") return null;
+    const method = String(body.method);
+    const own = write(method);
+    if (own !== null) return own;
+    const result = method === "GetCashBalance"
+      ? { type: "real", value: balances[Math.min(asked++, balances.length - 1)] }
+      : method === "GetCharOrders"
+        ? cached(ownOrderRowset([ownOrder()]))
+        : null;
+    return { status: 200, body: { ok: true, service: body.service, method, result, notifications: [] } };
   };
 }
 
-test("placing a buy sends confirm:true and the rounded price, and reloads the panel", async () => {
-  const { store, flow, requests } = makeFlow(
-    respondOk((path) =>
-      path === "/api/bridge/market/buy" ? { status: 200, body: changeResult() } : null,
-    ),
-  );
+/** The page's own call by its method, as it went to the generic call. */
+function callOf(requests: readonly Recorded[], method: string): Recorded | undefined {
+  return requests.find((entry) => entry.path === "/api/bridge/call" && entry.body.method === method);
+}
+
+test("placing a buy is the client's PlaceBuyOrder, a pilot's write, and the panel is reloaded", async () => {
+  const { store, flow, requests } = makeFlow(respondOk(marketCalls([1000000, 998862.5])));
+  dockedAtJita(store);
   await flow.loadMarket(TYPE_ID);
   await flow.placeMarketOrder({
     side: "buy",
@@ -541,12 +566,15 @@ test("placing a buy sends confirm:true and the rounded price, and reloads the pa
     durationDays: 30,
   });
 
-  const buy = requests.find((entry) => entry.path === "/api/bridge/market/buy");
-  assert.ok(buy, "the buy must reach the BFF");
-  // The BFF refuses without this; the UI's two-step confirm is the first gate.
+  const buy = callOf(requests, "PlaceBuyOrder");
+  assert.ok(buy, "the buy must be asked of the server");
+  assert.equal(buy.body.service, "marketProxy");
   assert.equal(buy.body.confirm, true);
-  assert.equal(buy.body.price, 10);
-  assert.equal(buy.body.quantity, 100);
+  assert.equal(buy.body.pilot, true);
+  // marketsvc.py 266: (stationID, typeID, price, quantity, orderRange, minVolume, duration, useCorp,
+  // expectedBrokersFee); the range the station's where the window names none, and the least a fill takes 1
+  // (buyThisTypeWindow.py 667 to 679). The Market read named no rate, so none is named.
+  assert.deepEqual(buy.body.args, [STATION_ID, TYPE_ID, 10, 100, -1, 1, 30, false, null]);
   // The panel is reloaded from the server BEFORE any verdict is shown.
   assert.equal(
     requests.filter((entry) => entry.path.startsWith("/api/bridge/market?")).length >= 1,
@@ -555,14 +583,9 @@ test("placing a buy sends confirm:true and the rounded price, and reloads the pa
   assert.equal(store.get().market.lastOutcome?.applied, true);
 });
 
-test("the reported amount is the SERVER's charge, not the client's estimate", async () => {
-  const { store, flow } = makeFlow(
-    respondOk((path) =>
-      path === "/api/bridge/market/buy"
-        ? { status: 200, body: changeResult({ charged: "1137.50" }) }
-        : null,
-    ),
-  );
+test("the reported amount is the WALLET's difference, not the client's estimate", async () => {
+  const { store, flow } = makeFlow(respondOk(marketCalls([1000000, 998862.5])));
+  dockedAtJita(store);
   await flow.loadMarket(TYPE_ID);
   await flow.placeMarketOrder({
     side: "buy",
@@ -580,12 +603,12 @@ test("the reported amount is the SERVER's charge, not the client's estimate", as
   assert.equal(outcome?.kind, "buy");
 });
 
-test("selling names the STACK — a sell carries an itemID, a buy does not", async () => {
-  const { flow, requests } = makeFlow(
-    respondOk((path) =>
-      path === "/api/bridge/market/sell" ? { status: 200, body: changeResult() } : null,
-    ),
-  );
+test("selling names the STACK: one item of the client's sale, with its station, type and number", async () => {
+  const { store, flow, requests } = makeFlow(respondOk(marketCalls([1000000, 999862.5], (method) =>
+    method === "PlaceMultiSellOrder"
+      ? { status: 200, body: { ok: true, service: "marketProxy", method, result: true, notifications: [] } }
+      : null)));
+  dockedAtJita(store);
   await flow.loadMarket(TYPE_ID);
   await flow.placeMarketOrder({
     side: "sell",
@@ -596,70 +619,53 @@ test("selling names the STACK — a sell carries an itemID, a buy does not", asy
     durationDays: 90,
   });
 
-  const sell = requests.find((entry) => entry.path === "/api/bridge/market/sell");
-  assert.ok(sell, "a sell must go to the sell route, not the buy route");
-  assert.equal(sell.body.itemID, 7_000_000_001);
+  const sell = callOf(requests, "PlaceMultiSellOrder");
+  assert.ok(sell, "a sale must be asked of the server");
   assert.equal(sell.body.confirm, true);
+  // marketsvc.py 276: (itemList, useCorp, duration, expectedBrokersFee); each item names its stack (sellMulti.py
+  // 501), and the rate is named for an order that stands, none here being known (443 to 446).
+  assert.deepEqual(sell.body.args, [[{ stationID: STATION_ID, typeID: TYPE_ID, itemID: 7_000_000_001, price: 12.5, quantity: 10 }], false, 90, null]);
+  assert.equal(store.get().market.lastOutcome?.applied, true, "the sale answered that it set an order up");
 });
 
-/**
- * The page's own calls about an order's taking down (bridge/marketOrderWrites.ts), answered in the generic call's
- * envelope: the wallet's balance, one answer of `balances` at each asking and the last from then on; the pilot's
- * orders, answered with nothing the decoder reads as a row; and the taking down, which answers nothing.
- */
-function cancelCalls(balances: readonly number[]) {
-  let asked = 0;
-  return (path: string, _method: string, body: Record<string, unknown>) => {
-    if (path !== "/api/bridge/call") return null;
-    const result = body.method === "GetCashBalance" ? balances[Math.min(asked++, balances.length - 1)] ?? null : null;
-    return { status: 200, body: { ok: true, service: body.service, method: body.method, result, notifications: [] } };
-  };
-}
-
-test("cancelling and repricing both go behind confirm", async () => {
-  const calls = cancelCalls([1000000, 1002450]);
-  const { flow, requests } = makeFlow(
-    respondOk((path, method, body) =>
-      path === "/api/bridge/market/modify"
-        ? { status: 200, body: changeResult({ charged: "-2450.00" }) }
-        : calls(path, method, body),
-    ),
-  );
+test("cancelling and repricing both go behind confirm, the reprice naming the order's own row", async () => {
+  const { store, flow, requests } = makeFlow(respondOk(marketCalls([1000000, 1002450])));
+  dockedAtJita(store);
   await flow.loadMarket(TYPE_ID);
   await flow.cancelMarketOrder("8000000101");
   await flow.modifyMarketOrder("8000000101", 12);
 
   // The taking down is the page's own call since 2026-10-13 (marketsvc.py 282: CancelCharOrder(orderID,
   // regionID)), as a pilot's write the page means: the order's number first.
-  const cancel = requests.find((entry) => entry.path === "/api/bridge/call" && entry.body.method === "CancelCharOrder");
-  const modify = requests.find((entry) => entry.path === "/api/bridge/market/modify");
+  const cancel = callOf(requests, "CancelCharOrder");
   assert.equal(cancel?.body.confirm, true);
   assert.equal(cancel?.body.pilot, true);
   assert.equal((cancel?.body.args as unknown[])[0], "8000000101");
+  // marketsvc.py 288: ModifyCharOrder(order.orderID, newPrice, order.bid, order.stationID, order.solarSystemID,
+  // order.price, order.range, order.volRemaining, order.issueDate), all but the new price off the order's row.
+  const modify = callOf(requests, "ModifyCharOrder");
   assert.equal(modify?.body.confirm, true);
-  assert.equal(modify?.body.price, 12);
+  assert.equal(modify?.body.pilot, true);
+  const args = modify?.body.args as unknown[];
+  assert.equal(args.length, 9);
+  assert.deepEqual(args.slice(0, 4), ["8000000101", 12, true, STATION_ID]);
 });
 
 test("a refund is recorded as a NEGATIVE charge, so the panel can say ISK came back", async () => {
   // The page reads the wallet itself before the taking down and after, and the difference is its own: 2,450
   // ISK more after than before is a charge of that much less than nothing.
-  const { store, flow } = makeFlow(respondOk(cancelCalls([1000000, 1002450])));
+  const { store, flow } = makeFlow(respondOk(marketCalls([1000000, 1002450])));
+  dockedAtJita(store);
   await flow.loadMarket(TYPE_ID);
   await flow.cancelMarketOrder("8000000101");
   assert.equal(store.get().market.lastOutcome?.charged, "-2450.00");
 });
 
 test("a SILENT decline is reported as exactly that — no cause is invented", async () => {
-  const { store, flow } = makeFlow(
-    respondOk((path) =>
-      path === "/api/bridge/market/buy"
-        ? {
-            status: 200,
-            body: changeResult({ applied: false, declinedSilently: true, charged: "0.00" }),
-          }
-        : null,
-    ),
-  );
+  // PlaceBuyOrder answers None whether it bought, set an order up, or neither: a wallet that did not move says
+  // nothing was done.
+  const { store, flow } = makeFlow(respondOk(marketCalls([1000000, 1000000])));
+  dockedAtJita(store);
   await flow.loadMarket(TYPE_ID);
   await flow.placeMarketOrder({
     side: "buy",
@@ -678,20 +684,11 @@ test("a SILENT decline is reported as exactly that — no cause is invented", as
 });
 
 test("a THROWN refusal keeps the server's own words and does not reload a verdict", async () => {
-  const { store, flow } = makeFlow(
-    respondOk((path) =>
-      path === "/api/bridge/market/buy"
-        ? {
-            status: 409,
-            body: {
-              ok: false,
-              error: "CALL_REFUSED",
-              message: "No matching sell orders were available at the requested price.",
-            },
-          }
-        : null,
-    ),
-  );
+  const { store, flow } = makeFlow(respondOk(marketCalls([1000000], (method) =>
+    method === "PlaceBuyOrder"
+      ? { status: 409, body: { ok: false, error: "CALL_REFUSED", message: "No matching sell orders were available at the requested price." } }
+      : null)));
+  dockedAtJita(store);
   await flow.loadMarket(TYPE_ID);
   await flow.placeMarketOrder({
     side: "buy",
@@ -712,16 +709,11 @@ test("a THROWN refusal keeps the server's own words and does not reload a verdic
 });
 
 test("a NAMED market refusal becomes a sentence a player can read", async () => {
-  const { store, flow } = makeFlow(
-    respondOk((path) =>
-      path === "/api/bridge/market/buy"
-        ? {
-            status: 409,
-            body: { ok: false, error: "CALL_REFUSED", message: "MktBrokersFeeUnexpected2" },
-          }
-        : null,
-    ),
-  );
+  const { store, flow } = makeFlow(respondOk(marketCalls([1000000], (method) =>
+    method === "PlaceBuyOrder"
+      ? { status: 409, body: { ok: false, error: "CALL_REFUSED", message: "MktBrokersFeeUnexpected2" } }
+      : null)));
+  dockedAtJita(store);
   await flow.loadMarket(TYPE_ID);
   await flow.placeMarketOrder({
     side: "buy",
@@ -737,13 +729,9 @@ test("a NAMED market refusal becomes a sentence a player can read", async () => 
 });
 
 test("a lost session during a write unwinds to character select rather than reporting a charge", async () => {
-  const { store, flow } = makeFlow(
-    respondOk((path) =>
-      path === "/api/bridge/market/buy"
-        ? { status: 404, body: { ok: false, error: "SESSION_NOT_FOUND" } }
-        : null,
-    ),
-  );
+  const { store, flow } = makeFlow(respondOk(marketCalls([1000000], (method) =>
+    method === "PlaceBuyOrder" ? { status: 404, body: { ok: false, error: "SESSION_NOT_FOUND" } } : null)));
+  dockedAtJita(store);
   await flow.loadMarket(TYPE_ID);
   await assert.rejects(() =>
     flow.placeMarketOrder({
