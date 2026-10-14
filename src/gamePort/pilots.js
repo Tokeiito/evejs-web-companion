@@ -598,6 +598,21 @@ function pricesByType(answered) {
   return prices;
 }
 
+/**
+ * The price table as config.GetAverageMarketPrices answered it ({typeID: KeyVal(averagePrice, adjustedPrice)}, in
+ * the bridge's form), out of what is kept: the page's asking for it is answered so, and the server asked nothing.
+ */
+function pricesAnswered(prices) {
+  return {
+    type: "dict",
+    entries: [...prices].map(([typeID, [averagePrice, adjustedPrice]]) => [typeID, {
+      type: "object",
+      name: "util.KeyVal",
+      args: { type: "dict", entries: [["averagePrice", averagePrice], ["adjustedPrice", adjustedPrice]] },
+    }]),
+  };
+}
+
 /** A facility's own ID off its row (the facility manager's KeyVal), or null. */
 const facilityIDOf = (row) => wholeOf(row && row.type === "object" && row.args ? dictValue(row.args, "facilityID") : undefined);
 /** The facility of an ID among the region's as they are kept, or null. */
@@ -2091,6 +2106,13 @@ function createGamePortPilots({
 
   async function callMethod(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined) {
     const entry = held(bridgeSessionID, sessionFields);
+    // The cfg's price table is the cfg's own, asked once two seconds after it loads (eveCfg.GetAveragePricesThread,
+    // 522 to 525; averagePricesThread): the page's asking is answered from it, and the server asked nothing. Where
+    // the cfg has no table yet, or its one asking failed, there is none to answer.
+    if (service === "config" && method === "GetAverageMarketPrices") {
+      if (entry.averagePrices === null) throw fail("PRICES_NOT_HAD", "The price table has not come, or could not be had.");
+      return { service, method, result: pricesAnswered(entry.averagePrices), notifications: drain(entry) };
+    }
     assertAllowed(service, method);
     // What the client has to hand before it makes this call: godma primed for the ship, which it is from the moment it has one,
     // and anything just fitted answered for.
