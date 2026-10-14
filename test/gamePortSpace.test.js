@@ -394,7 +394,7 @@ test("the snapshot of a real grid: every ball that has a slim item, in the gatew
     position: { ...ball.newPos }, velocity: { ...ball.newVel }, shieldRatio: 1, armorRatio: 1, hullRatio: 1,
     capacitorRatio: null, shieldCapacity: null, armorCapacity: null, hullCapacity: null,
     // Dogma has not been asked: what only it knows is not known, which is null and not "none".
-    activeModuleIDs: [], overloadedModuleIDs: [], moduleDamage: null, weaponBanks: null, rackHeat: null,
+    activeModuleIDs: [], activeModuleTargets: null, moduleRanges: null, overloadedModuleIDs: [], moduleDamage: null, weaponBanks: null, rackHeat: null,
   });
   // A station: no ship's fields, and the health the server sent for it.
   const station = row(60003760);

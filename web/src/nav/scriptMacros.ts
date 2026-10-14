@@ -32,7 +32,7 @@ import { NO_IDLE_PROBE, SCAN_IN_PROGRESS, launchOf, recallOf, scanOf } from "../
 import type { Arg, MacroStep, OreFamilyArg, SquadRoleArg, WorldRef } from "../bots/botScript.ts";
 import { dockedAt, type DockableKind } from "./dockableLocation.ts";
 import { launchFullPercent } from "../bots/macroSpecs.ts";
-import type { SpaceEntity, SpaceSnapshot } from "../store/types.ts";
+import type { SpaceEntity, SpaceSnapshot, SpaceVector } from "../store/types.ts";
 import { beltTravelStep, freightHoldItemIDs, holdsFreeM3, isMineableRock } from "./miningBotLoop.ts";
 import { nearestUnworkedBelt, type BeltOption } from "./beltRotation.ts";
 import {
@@ -63,6 +63,8 @@ import { FREIGHT_BAYS, planLootTransfers, preferredBays } from "../bridge/bayRou
 import { preferredResources } from "./resourcePriority.ts";
 import { holdFreeM3 } from "../bridge/holdFit.ts";
 import { isNpcCorporation } from "../bridge/standingsReads.ts";
+import { planSalvageTick } from "./salvageSitePlan.ts";
+import { isLootableContainer } from "./lootableContainers.ts";
 import { MAX_ACTIVE_PERSONAL_FOLDERS, MAX_ACTIVE_SHARED_FOLDERS, MAX_KNOWN_FOLDERS } from "../bridge/bookmarkFolders.ts";
 import { isUnreachable, NO_STEP_ID, refusalFor, refusalTargets, shipHasNoRoom, shouldSetAside } from "./refusalLedger.ts";
 import { movableRows, pickedRows, type KeepRule } from "../bridge/keepAboard.ts";
@@ -3106,6 +3108,11 @@ function isOwnWreck(wreck: SpaceEntity, obs: ScriptObservation): boolean {
   if ((me !== null && wreck.ownerID === me) || (corp !== null && wreck.ownerID === corp)) {
     return true;
   }
+  // Not a player's at all (the system's, an NPC's, below idCheckers' minPlayerOwner): free to anyone, as the
+  // server's loot right has it (spaceLootEntitlement, !isPlayerCharacterOwner).
+  if (wreck.ownerID > 0 && wreck.ownerID < 90_000_000) {
+    return true;
+  }
   return corp !== null && !isNpcCorporation(corp) && wreck.corporationID === corp;
 }
 
@@ -5433,6 +5440,141 @@ const SALVAGE_ROOM_M3 = 10;
  */
 const SITE_OPENS_AFTER_MS = 150_000;
 
+// ── The salvager's work on a site ────────────────────────────────────────────
+// One tick of the site, decided by the planner (nav/salvageSitePlan.ts) from
+// what this tick can see: every wreck and every can we may take on the grid,
+// the tractor beams and salvagers fitted, what each is cycling on, the locks.
+// The planner works the field from one spot, as EVE University teaches it: the
+// spot with the most wrecks inside tractor reach, the tractors pulling them in,
+// one salvager on each wreck close by, the cans looted as they come.
+//
+// What the planner cannot see it is told from this step's memory: what has been
+// looted (a wreck's contents cannot be read from afar), which locks are still
+// coming, what each module was last set on where godma does not say, and the
+// spot it last chose to fly to.
+const SITE_PHASE = "Working the site";
+const TRACTOR_RANGE_FALLBACK_M = 20_000;
+const SALVAGER_RANGE_FALLBACK_M = 5_000;
+const ANCHOR_REISSUE_TICKS = 10;
+const ANCHOR_REISSUES = 5;
+
+type SiteOutcome = { readonly tick: MacroTick } | { readonly finished: true } | { readonly full: true };
+
+function workSalvageSite(step: MacroStep, obs: ScriptObservation, mem: MacroMemory): SiteOutcome {
+  const snapshot = obs.snapshot ?? null;
+  if (obs.inWarp === true || obs.inSpace !== true || snapshot === null || snapshot.ship === null) {
+    return { tick: tick(WAIT, "Waiting to be on the site.", SITE_PHASE, ACTING, false, mem) };
+  }
+  const ship = snapshot.ship;
+  // The last loot attempt, judged one tick later as loot-wrecks judges it.
+  const attempted = num(mem, "attempted");
+  const lootedRaw = mem["looted"];
+  const looted = new Set<number>(Array.isArray(lootedRaw) ? (lootedRaw as number[]) : []);
+  if (attempted !== null && refusalFor(obs.refusals, step.id, "lootWreck", attempted) === null) looted.add(attempted);
+  let next: Record<string, unknown> = { ...mem, attempted: null, looted: [...looted] };
+
+  const freeM3 = holdsFreeM3(obs.holds ?? null);
+  if ((freeM3 !== null && freeM3 <= 0) || shipHasNoRoom(obs.refusals, step.id, "lootWreck")) return { full: true };
+  const salvagerIDs = obs.salvageModuleIDs ?? [];
+  if (salvagerIDs.length > 0 && freeM3 !== null && freeM3 < SALVAGE_ROOM_M3) return { full: true };
+
+  // The modules: running or not, and on what. Godma's word first, this step's own last order where godma says none.
+  const active = new Set(ship.activeModuleIDs ?? []);
+  const said = new Map((ship.activeModuleTargets ?? []).map((pair) => [pair.moduleID, pair.targetID]));
+  const lastSet = (mem["lastSet"] as Record<string, number> | undefined) ?? {};
+  const module = (moduleID: number) => ({
+    moduleID,
+    active: active.has(moduleID),
+    targetID: active.has(moduleID) ? said.get(moduleID) ?? lastSet[String(moduleID)] ?? null : null,
+  });
+  const tractorIDs = obs.tractorModuleIDs ?? [];
+  const ranges = new Map((ship.moduleRanges ?? []).map((pair) => [pair.moduleID, pair.rangeM]));
+  const shortest = (ids: readonly number[], fallback: number) => {
+    const known = ids.map((id) => ranges.get(id)).filter((range): range is number => range !== undefined);
+    return known.length > 0 ? Math.min(...known) : fallback;
+  };
+
+  // Locks asked for and not yet made hold their place in the budget for a few ticks.
+  const pendingRaw = (mem["pending"] as Record<string, number> | undefined) ?? {};
+  const locked = new Set(obs.lockedTargetIDs ?? []);
+  const pending: Record<string, number> = {};
+  for (const [id, ticks] of Object.entries(pendingRaw)) {
+    if (!locked.has(Number(id)) && ticks < MAX_LOCK_WAIT_TICKS) pending[id] = ticks + 1;
+  }
+
+  const setAside = (id: number) =>
+    shouldSetAside(obs.refusals, step.id, "lootWreck", id, MAX_BLOCK_ATTEMPTS) ||
+    shouldSetAside(obs.refusals, step.id, "activate", id, MAX_BLOCK_ATTEMPTS) ||
+    shouldSetAside(obs.refusals, step.id, "lock", id, MAX_BLOCK_ATTEMPTS);
+  const who = { characterID: obs.myCharacterID ?? null, corporationID: obs.myCorporationID ?? null };
+  const wrecks = wrecksOnGrid(snapshot).map((w) => {
+    const ours = isOwnWreck(w, obs);
+    return { itemID: w.itemID, position: w.position, velocity: w.velocity, lootable: ours, looted: looted.has(w.itemID), tractorable: ours, setAside: setAside(w.itemID) };
+  });
+  const containers = snapshot.entities.filter((e) => e.kind === "container" && !e.isSelf).map((c) => {
+    const ours = isLootableContainer(c, who);
+    return { itemID: c.itemID, position: c.position, velocity: c.velocity, lootable: ours, looted: looted.has(c.itemID), tractorable: ours, setAside: setAside(c.itemID) };
+  });
+
+  // The spot last chosen, until the ship is there.
+  const anchorRaw = mem["anchor"] as SpaceVector | null | undefined;
+  const anchor = anchorRaw && Math.hypot(ship.position.x - anchorRaw.x, ship.position.y - anchorRaw.y, ship.position.z - anchorRaw.z) > 400 ? anchorRaw : null;
+  if (anchor === null) next = { ...next, anchor: null, anchorTicks: null, anchorIssues: null };
+
+  const plan = planSalvageTick({
+    ship: { position: ship.position, velocity: ship.velocity },
+    wrecks, containers,
+    tractors: tractorIDs.map(module),
+    salvagers: salvagerIDs.map(module),
+    lockedTargetIDs: [...locked],
+    pendingLockIDs: Object.keys(pending).map(Number),
+    maxLockedTargets: obs.maxLockedTargets ?? 2,
+    lockRangeM: obs.maxTargetRangeM ?? SALVAGER_RANGE_FALLBACK_M,
+    tractorRangeM: shortest(tractorIDs, TRACTOR_RANGE_FALLBACK_M),
+    salvageRangeM: shortest(salvagerIDs, SALVAGER_RANGE_FALLBACK_M),
+    lootRangeM: LOOT_RANGE_M,
+    committedAnchor: anchor,
+  });
+  next = { ...next, pending };
+  if ("done" in plan) return { finished: true };
+  if ("wait" in plan) {
+    const anchorTicks = (num(next, "anchorTicks") ?? 0) + 1;
+    return { tick: tick(WAIT, plan.why, SITE_PHASE, ACTING, true, anchor === null ? next : { ...next, anchorTicks }) };
+  }
+  const action = plan.action;
+  switch (action.kind) {
+    case "lootWreck":
+      return { tick: tick({ kind: "lootWreck", wreckID: action.wreckID }, plan.why, SITE_PHASE, ACTING, true, { ...next, attempted: action.wreckID }) };
+    case "lock":
+      return { tick: tick({ kind: "lock", targetID: action.targetID }, plan.why, SITE_PHASE, ACTING, true, { ...next, pending: { ...pending, [String(action.targetID)]: 0 } }) };
+    case "unlock":
+      return { tick: tick({ kind: "unlock", targetID: action.targetID }, plan.why, SITE_PHASE, ACTING, true, next) };
+    case "activate":
+      return { tick: tick({ kind: "activate", moduleID: action.moduleID, targetID: action.targetID }, plan.why, SITE_PHASE, ACTING, true,
+        { ...next, lastSet: { ...lastSet, [String(action.moduleID)]: action.targetID } }) };
+    case "deactivate": {
+      const { [String(action.moduleID)]: _gone, ...rest } = lastSet;
+      return { tick: tick({ kind: "deactivate", moduleID: action.moduleID }, plan.why, SITE_PHASE, ACTING, true, { ...next, lastSet: rest }) };
+    }
+    case "gotoPoint": {
+      const systemID = obs.flightStatus?.solarSystemID ?? null;
+      const shipID = ship.itemID ?? obs.flightStatus?.shipID ?? null;
+      if (systemID === null || shipID === null) return { tick: tick(WAIT, "Waiting to know which system this is.", SITE_PHASE, ACTING, true, next) };
+      // The same spot again: only after a while with no arrival, and not for ever.
+      const same = anchor !== null && Math.hypot(anchor.x - action.position.x, anchor.y - action.position.y, anchor.z - action.position.z) < 1;
+      const issues = same ? num(next, "anchorIssues") ?? 1 : 0;
+      if (same && (num(next, "anchorTicks") ?? 0) < ANCHOR_REISSUE_TICKS) {
+        return { tick: tick(WAIT, "Flying to the next spot.", SITE_PHASE, ACTING, true, { ...next, anchorTicks: (num(next, "anchorTicks") ?? 0) + 1 }) };
+      }
+      if (issues >= ANCHOR_REISSUES) {
+        return { tick: tick(WAIT, "The ship will not reach the next spot.", SITE_PHASE, { kind: "blocked", reason: "The salvager could not reach the next cluster of wrecks, so the bot stopped." }) };
+      }
+      return { tick: tick({ kind: "gotoPoint", position: action.position, shipID, solarSystemID: systemID }, plan.why, SITE_PHASE, ACTING, true,
+        { ...next, anchor: action.position, anchorTicks: 0, anchorIssues: issues + 1 }) };
+    }
+  }
+}
+
 function knownFolderID(arg: Arg | undefined, known: readonly { folderID: number; name: string }[]): number | null {
   if (arg === undefined || arg.kind !== "bookmarkFolder") return null;
   const byName = arg.name !== null && arg.name !== "" ? known.filter((f) => f.name === arg.name) : [];
@@ -5503,7 +5645,7 @@ const salvageBookmarkedSites: MacroDecider = (step, obs, mem, board) => {
       return tick({ kind: "moveBookmarks", fromFolderID: fromID, toFolderID: doneID, bookmarkIDs: [filing] }, "Filing the finished site again.", SALVAGER_PHASE, ACTING, false,
         { ...mem, fileWaits: 0, fileTries: tries + 1 });
     }
-    mem = { ...mem, filing: null, fileWaits: null, fileTries: null, site: null, stage: null, warp: null, loot: null, salvage: null };
+    mem = { ...mem, filing: null, fileWaits: null, fileTries: null, site: null, stage: null, warp: null, work: null, salvage: null };
   }
 
   const docked = obs.flightStatus?.docked === true;
@@ -5546,7 +5688,7 @@ const salvageBookmarkedSites: MacroDecider = (step, obs, mem, board) => {
     const recall = recallBeforeLeaving(obs, mem, SALVAGER_PHASE, null);
     if (recall !== null) return recall;
     const ride = rideAutopilotTo(obs, homeRef.id, SALVAGER_PHASE, homeRef.kind);
-    if (ride !== null) return { ...ride, nextMem: { ...mem, returning: true, site: null, stage: null, warp: null, loot: null, salvage: null } };
+    if (ride !== null) return { ...ride, nextMem: { ...mem, returning: true, site: null, stage: null, warp: null, work: null, salvage: null } };
     return tick(WAIT, "Docked at the station.", SALVAGER_PHASE, ACTING, false, mem);
   }
 
@@ -5556,7 +5698,7 @@ const salvageBookmarkedSites: MacroDecider = (step, obs, mem, board) => {
   if (target === undefined) {
     const ordered = [...open].sort((a, b) => a.bookmarkID - b.bookmarkID);
     target = ordered.find((bm) => bm.solarSystemID !== null && bm.solarSystemID === here) ?? ordered[0]!;
-    mem = { ...mem, site: target.bookmarkID, stage: "travel", warp: null, loot: null, salvage: null };
+    mem = { ...mem, site: target.bookmarkID, stage: "travel", warp: null, work: null, salvage: null };
   }
   const stage = (mem["stage"] as string | undefined) ?? "travel";
   const spot: Arg = { kind: "bookmark", bookmarkID: target.bookmarkID, name: null };
@@ -5577,23 +5719,19 @@ const salvageBookmarkedSites: MacroDecider = (step, obs, mem, board) => {
     }
     const warp = warpToBookmark({ ...step, args: { bookmark: spot } }, obs, sub("warp"), board);
     if (warp.outcome.kind !== "done") return through(warp, "warp");
-    mem = { ...mem, stage: "loot", warp: null, loot: null };
+    mem = { ...mem, stage: "site", warp: null, work: null };
   }
-  if (mem["stage"] === "loot") {
-    const loot = lootWrecks(step, obs, sub("loot"), board);
-    if (loot.outcome.kind !== "done") return through(loot, "loot");
-    const full = (freeM3 !== null && freeM3 <= 0) || shipHasNoRoom(obs.refusals, step.id, "lootWreck");
-    if (full) {
+  if (mem["stage"] === "site") {
+    const site = workSalvageSite(step, obs, sub("work"));
+    if ("full" in site) {
       return tick(WAIT, "The hold is full; going home to unload, and coming back to this site after.", SALVAGER_PHASE, ACTING, false,
-        { ...mem, returning: true, site: null, stage: null, loot: null });
+        { ...mem, returning: true, site: null, stage: null, work: null });
     }
-    mem = { ...mem, stage: "salvage", loot: null, salvage: null };
+    if ("tick" in site) return through(site.tick, "work");
+    // The modules have done what they can. A hull with no salvager may still have salvage drones for the rest.
+    mem = { ...mem, stage: (obs.salvageModuleIDs ?? []).length === 0 ? "drones" : "file", work: null, salvage: null };
   }
-  if (mem["stage"] === "salvage") {
-    if (freeM3 !== null && freeM3 < SALVAGE_ROOM_M3) {
-      return tick(WAIT, "Too little room left to salvage; going home to unload first.", SALVAGER_PHASE, ACTING, false,
-        { ...mem, returning: true, site: null, stage: null, salvage: null });
-    }
+  if (mem["stage"] === "drones") {
     const salvage = salvageWrecks(step, obs, sub("salvage"), board);
     if (salvage.outcome.kind === "skipped") {
       return tick(WAIT, "This ship cannot salvage.", SALVAGER_PHASE, {
