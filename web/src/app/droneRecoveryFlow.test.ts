@@ -65,14 +65,10 @@ function makeFakeBff(options: {
     if (path === "/api/login") {
       return respond({ ok: true, account: { accountID: 2, username: "test2" } });
     }
-    if (path === "/api/bridge/entity/drones/reconnect") {
-      return respond({
-        ok: true,
-        inSpace: options.inSpaceAfter,
-        launched: [],
-        result: options.result ?? null,
-        notifications: [],
-      });
+    // The reconnection is the page's own call too, since 2026-10-13: what the server says of each drone is its
+    // answer, and the drones are read after by the read below.
+    if (path === "/api/bridge/call" && body.method === "CmdReconnectToDrones") {
+      return respond({ ok: true, service: "entity", method: "CmdReconnectToDrones", result: options.result ?? null, notifications: [] });
     }
     // The scoop is the page's own call (bridge/boundEntityWrites.ts): what the server says of each drone is its answer.
     if (path === "/api/bridge/call" && body.method === "ScoopDrone") {
@@ -86,15 +82,17 @@ function makeFakeBff(options: {
   return { fetch: fakeFetch, requests };
 }
 
-test("reconnect asks the BFF with confirm, and lands the re-read", async () => {
+test("reconnect is the page's own call of the entity service, and lands the re-read", async () => {
   const store = createClientStore();
   const bff = makeFakeBff({ inSpaceAfter: [droneRow(DRONE_ID, true)] });
   const flow = createAppFlow(store, { fetch: bff.fetch });
 
   await flow.reconnectDrones([DRONE_ID]);
 
-  const write = bff.requests.find((r) => r.path === "/api/bridge/entity/drones/reconnect");
-  assert.deepEqual(write?.body, { droneIDs: [DRONE_ID], confirm: true });
+  // droneFunctions.py 254: entity.CmdReconnectToDrones(droneCandidates), the drones as one list, as a pilot's
+  // write the page means.
+  const write = bff.requests.find((r) => r.path === "/api/bridge/call" && r.body.method === "CmdReconnectToDrones");
+  assert.deepEqual(write?.body, { service: "entity", method: "CmdReconnectToDrones", args: [[DRONE_ID]], kwargs: null, pilot: true, confirm: true });
   const state = store.drones.get();
   assert.equal(state.lastAction, "Reconnect");
   assert.equal(state.silentDecline, null, "it worked — the drone is controlled now");

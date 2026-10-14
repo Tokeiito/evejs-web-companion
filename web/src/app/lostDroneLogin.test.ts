@@ -8,9 +8,11 @@ function browserPilot(config: { docked?: boolean; drones?: unknown; reconnectFai
   const paths: string[] = [];
   let drones = config.drones ?? [];
   const fetcher = (async (input: unknown, init?: { body?: string }) => {
-    const path = String(input);
-    paths.push(path);
     const body = init?.body ? JSON.parse(init.body) as Record<string, unknown> : {};
+    // The reconnection is the page's own call since 2026-10-13 (entity.CmdReconnectToDrones through the generic
+    // call), where it was a route: it is named here by the call, and every other request by its path.
+    const path = String(input) === "/api/bridge/call" && body.service === "entity" && body.method === "CmdReconnectToDrones" ? "entity.CmdReconnectToDrones" : String(input);
+    paths.push(path);
     const answer = (value: unknown, status = 200) => ({ ok: status < 400, status, json: async () => value });
     if (path === "/api/bridge/select" && body.characterID !== 42)
       return answer({ ok: false, error: "DRONE_RECOVERY_PENDING" }, 409);
@@ -23,12 +25,12 @@ function browserPilot(config: { docked?: boolean; drones?: unknown; reconnectFai
       await config.holdDroneRead;
       return answer({ ok: true, activeShipID: 50, inSpace: drones, bay: [], shipInfo: null, errors: {} });
     }
-    if (path === "/api/bridge/entity/drones/reconnect") {
+    if (path === "entity.CmdReconnectToDrones") {
       if (config.reconnectFails) return answer({ ok: false, error: "CALL_REFUSED", message: "Reconnect refused" }, 409);
-      const ids = body.droneIDs as number[];
+      const ids = (body.args as number[][])[0]!;
       drones = (drones as Array<Record<string, unknown>>).map(row =>
         ids.includes(row.itemID as number) ? { ...row, controlled: true, reconnectCandidate: false } : row);
-      return answer({ ok: true, inSpace: drones });
+      return answer({ ok: true, service: "entity", method: "CmdReconnectToDrones", result: null, notifications: [] });
     }
     if (path === "/api/bridge/drones/recall") {
       drones = [];
@@ -57,7 +59,8 @@ test("browser pilot selection starts recovery before bot, script and travel work
   await flow.retryDroneRecovery();
   assert.equal(flow.droneRecovery.get().phase, "ready");
   assert.doesNotThrow(() => flow.requireAutomationReady());
-  assert.ok(paths.indexOf("/api/bridge/entity/drones/reconnect") < paths.indexOf("/api/bridge/drones/recall"));
+  assert.ok(paths.includes("entity.CmdReconnectToDrones"), "the reconnection was asked");
+  assert.ok(paths.indexOf("entity.CmdReconnectToDrones") < paths.indexOf("/api/bridge/drones/recall"));
   assert.ok(paths.indexOf("/api/bridge/drones/recall") < paths.indexOf("/api/bridge/drone-recovery/ready"));
   const flightReads = paths.filter(path => path === "/api/bridge/flight/status").length;
   await flow.retryDroneRecovery();

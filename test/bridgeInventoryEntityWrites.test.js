@@ -11,7 +11,7 @@
 // entity.MachoBindObject bind. Each dispatches as a BOUND method (boundCall →
 // callBoundMethod), NOT the top-level /call seam. Every route is CONFIRM-GATED:
 // without `confirm: true` it answers 400 CONFIRMATION_REQUIRED and NOTHING
-// dispatches (no bind, no bound call). This suite proves the gate (all 11 refuse
+// dispatches (no bind, no bound call). This suite proves the gate (all 10 refuse
 // without confirm), that representative writes forward their args as a bound call
 // ONCE confirmed against a FAKE recording gateway, and that no route dispatches
 // without a held bridge session. NO write was ever fired against the live world.
@@ -190,7 +190,8 @@ test.afterEach(async () => {
   await Promise.all(closing);
 });
 
-// --- the 11 R102 inventory + drone-command write routes ----------------------
+// --- the 10 R102 inventory + drone-command write routes ----------------------
+// (Eleven until 2026-10-13, when the reconnection to lost drones became the page's own call.)
 
 const R102_WRITE_ROUTES = [
   // WB-INV (7)
@@ -201,18 +202,17 @@ const R102_WRITE_ROUTES = [
   ["/api/bridge/inventory/break-plastic-wrap", { itemID: 7400000031 }],
   ["/api/bridge/inventory/deliver-to-corp-hangar", { itemIDs: [7400000020, 7400000021], officeID: 9500001, flag: 116 }],
   ["/api/bridge/inventory/deliver-to-corp-member", { itemIDs: [7400000020], memberID: CHARACTER_ID }],
-  // WB-ENTITY (4)
+  // WB-ENTITY (3: the reconnection is the page's own call since 2026-10-13, and has no route)
   ["/api/bridge/entity/drones/return-home", { droneIDs: [9000000001] }],
   ["/api/bridge/entity/drones/salvage", { droneIDs: [9000000001], targetID: 5000000009 }],
   ["/api/bridge/entity/drones/abandon", { droneIDs: [9000000001, 9000000002] }],
-  ["/api/bridge/entity/drones/reconnect", { droneIDs: [9000000001] }],
 ];
 
 test("⚠ every R102 inventory/entity write REFUSES without confirm — no bind, no dispatch (nothing fired)", async () => {
   const gateway = fakeGateway();
   const { baseUrl } = await startTestServer({ gateway });
   await selectOnServer(baseUrl);
-  assert.equal(R102_WRITE_ROUTES.length, 11, "all 11 R102 write routes are covered");
+  assert.equal(R102_WRITE_ROUTES.length, 10, "all 10 R102 write routes are covered");
   for (const [path, body] of R102_WRITE_ROUTES) {
     const { response, payload } = await apiRequest(baseUrl, path, { method: "POST", body });
     assert.equal(response.status, 400, `${path} must refuse without confirm`);
@@ -310,44 +310,9 @@ test("R102 CmdSalvage forwards [[droneIDs], targetID] as a bound entity call onc
   assert.deepEqual(call.args, [[9000000001], 5000000009]);
 });
 
-// ⚠ THE REGRESSION THIS PINS. Reconnect is the one entity write the Drones
-// panel actually calls, and the page judges it by the snapshot — success is the
-// drone becoming CONTROLLED, which the call's own empty dict cannot say. While
-// this route answered the bare ack, `inSpace` arrived undefined and EVERY
-// reconnect, the ones that worked included, reported "The reconnect was
-// accepted, but space could not be re-read."
-test("⚠ CmdReconnectToDrones answers with the SPACE RE-READ, not the bare ack", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/entity/drones/reconnect", {
-    method: "POST",
-    body: { droneIDs: [DRONE_ID], confirm: true },
-  });
-  assert.equal(response.status, 200);
-  const call = gateway.calls.boundCall.find((c) => c.method === "CmdReconnectToDrones");
-  assert.ok(call, "CmdReconnectToDrones must reach the gateway once confirmed");
-  assert.deepEqual(call.args, [[DRONE_ID]]);
-  assert.equal(gateway.calls.space.length, 1, "space is re-read AFTER the command");
-  assert.ok(Array.isArray(payload.inSpace), "inSpace must be a list, not undefined");
-  assert.equal(payload.inSpace.length, 1);
-  assert.equal(payload.inSpace[0].itemID, DRONE_ID);
-  assert.equal(payload.inSpace[0].controlled, true, "control is what the page reads to say it worked");
-  // The per-drone refusal dict still rides along untouched (R34).
-  assert.equal(payload.result, null);
-});
-
-test("a reconnect the server ignored answers inSpace with the drone STILL uncontrolled", async () => {
-  // Same drone, still flown by nobody this hull owns.
-  const gateway = fakeGateway({ controllerID: 0 });
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { payload } = await apiRequest(baseUrl, "/api/bridge/entity/drones/reconnect", {
-    method: "POST",
-    body: { droneIDs: [DRONE_ID], confirm: true },
-  });
-  assert.equal(payload.inSpace[0].controlled, false);
-});
+// (Lost drones are reconnected to by the page's own call since 2026-10-13 (entity.CmdReconnectToDrones through
+// the generic call, and then the page's own read of its drones). The route that made the call and answered with
+// the drones in space, POST /api/bridge/entity/drones/reconnect, is gone, and the two tests of it with it.)
 
 test("the three plumbing-only entity writes keep the bare ack — no snapshot read", async () => {
   const gateway = fakeGateway();
