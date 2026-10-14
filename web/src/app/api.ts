@@ -1238,49 +1238,8 @@ export async function loadMailBody(
   };
 }
 
-export interface MailSendRequest {
-  /** ⚠ A LIST on the way in, even though headers read it back as a string. */
-  readonly toCharacterIDs: readonly number[];
-  readonly title: string;
-  readonly body: string;
-}
-
-export interface MailSendResult {
-  /** Did the message really land? From the sender-copy re-read, not the 200. */
-  readonly applied: boolean;
-  /** True when the server answered success and wrote nothing. */
-  readonly declinedSilently: boolean;
-  readonly messageID: number | null;
-  readonly unreadCount: number | null;
-  readonly recipientCount: number;
-  /** What the server said when it declined without a reason. */
-  readonly message: string | null;
-}
-
-/**
- * Send mail. No `confirm` gate, unlike R12/R14/R15/R16: nothing is spent and
- * nothing is deleted. The BFF still refuses an empty recipient list, because
- * the SERVER cannot — its NO_RECIPIENTS guard can never fire through the
- * gateway, so mail to nobody would be written and would look sent.
- */
-export async function sendMail(
-  request: MailSendRequest,
-  options: ApiOptions = {},
-): Promise<MailSendResult> {
-  const data = await postJson(
-    "/api/bridge/mail/send",
-    request as unknown as Record<string, JsonValue>,
-    options,
-  );
-  return {
-    applied: data.applied === true,
-    declinedSilently: data.declinedSilently === true,
-    messageID: asNumberOrNull(data.messageID),
-    unreadCount: asNumberOrNull(data.unreadCount),
-    recipientCount: Number(data.recipientCount) || 0,
-    message: typeof data.message === "string" ? data.message : null,
-  };
-}
+// A mail is sent by the page itself, with the client's own call (bridge/mailWrites.ts, sendMail), held to the
+// compose window's own checks: it left its route (POST /api/bridge/mail/send) on 2026-10-14.
 
 // --- R17 Contracts ----------------------------------------------------------
 // The BFF issues five independent reads plus a fan-out for the contracts

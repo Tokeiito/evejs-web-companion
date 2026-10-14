@@ -4856,9 +4856,6 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
 /** The cold-start SyncMail window: "I hold nothing, send me the lot." */
 const MAIL_COLD_START_SYNC = Object.freeze([null, 0]);
 const MAIL_STATUS_MASK_READ = 1;
-const MAIL_MAX_RECIPIENTS = 20;
-const MAIL_MAX_TITLE = 200;
-const MAIL_MAX_BODY = 8000;
 
 /**
  * ⚠ THE ZLIB RULE, and the single place it is implemented.
@@ -5095,126 +5092,10 @@ app.get("/api/bridge/mail/body", requireAuth, async (req, res, next) => {
   }
 });
 
-/**
- * POST /api/bridge/mail/send — write to another character.
- *
- * ⚠ EXACT POSITIONAL SIGNATURE (Handle_SendMail reads by index; a mis-ordered
- * list is a silently different message, not an error):
- *   [toCharacterIDs, toListID, toCorpOrAllianceID, title, body,
- *    isReplyTo, isForwardedFrom]
- * args[0] is a LIST on the way in even though headers read it back as a
- * comma-joined string on the way out. toListID and toCorpOrAllianceID are
- * always null: mailing lists are a separate service and corp/alliance mail fans
- * out to every member — neither is in this slice.
- *
- * This is a write, but not a destructive or costly one — nothing is spent and
- * nothing is deleted — so it takes no `confirm` gate, unlike R12/R14/R15/R16.
- * What it does take is a RECIPIENT CHECK, because the server has none: see the
- * empty-list note above.
- */
-app.post("/api/bridge/mail/send", requireAuth, async (req, res, next) => {
-  const held = requireHeldBridgeSession(req, res);
-  if (!held) {
-    return;
-  }
-  const payload = req.body && typeof req.body === "object" ? req.body : {};
-  const recipients = Array.isArray(payload.toCharacterIDs)
-    ? [...new Set(payload.toCharacterIDs.map((id) => Number(id) || 0).filter((id) => id > 0))]
-    : [];
-  const title = typeof payload.title === "string" ? payload.title.trim() : "";
-  const body = typeof payload.body === "string" ? payload.body : "";
-
-  // ⚠ THE GUARD THE SERVER DOES NOT HAVE. Without this, mail to nobody is
-  // written into the sender's own mailbox and looks sent.
-  if (recipients.length === 0) {
-    res.status(400).json({
-      ok: false,
-      error: "MAIL_NO_RECIPIENT",
-      message: "Choose someone to send this to first.",
-    });
-    return;
-  }
-  if (recipients.length > MAIL_MAX_RECIPIENTS) {
-    res.status(400).json({
-      ok: false,
-      error: "MAIL_TOO_MANY_RECIPIENTS",
-      message: `You can send to at most ${MAIL_MAX_RECIPIENTS} people at once.`,
-    });
-    return;
-  }
-  if (!title) {
-    res.status(400).json({
-      ok: false,
-      error: "MAIL_NO_SUBJECT",
-      message: "Give your message a subject first.",
-    });
-    return;
-  }
-  if (title.length > MAIL_MAX_TITLE || body.length > MAIL_MAX_BODY) {
-    res.status(400).json({
-      ok: false,
-      error: "MAIL_TOO_LONG",
-      message: "That message is longer than the mail system accepts.",
-    });
-    return;
-  }
-
-  try {
-    const sent = await heldTopLevelCall(
-      held,
-      req.webSessionID,
-      "mailMgr",
-      "SendMail",
-      [recipients, null, null, title, body, null, null],
-      null,
-    );
-    const messageID = mailNumber(sent.result);
-
-    // ⚠ THE SILENT DECLINE. SendMail answers a bare null on failure with NO
-    // reason attached. Say exactly that rather than inventing a cause.
-    if (!messageID) {
-      res.json({
-        ok: true,
-        applied: false,
-        declinedSilently: true,
-        messageID: null,
-        message: "The server did not send that message, and did not say why.",
-      });
-      return;
-    }
-
-    // ⚠ A 200 IS NOT PROOF. Re-read the sender's own mailbox: the handler keeps
-    // a sender copy, so the message must be visible there if it really landed.
-    let applied = true;
-    let unreadCount = null;
-    try {
-      const sync = await heldTopLevelCall(
-        held,
-        req.webSessionID,
-        "mailMgr",
-        "SyncMail",
-        MAIL_COLD_START_SYNC,
-        null,
-      );
-      applied = mailHeaderIDs(sync.result).has(messageID);
-      unreadCount = mailUnreadCount(sync.result);
-    } catch {
-      // Keep `applied` as the messageID implies; a failed re-read is not
-      // evidence the send failed.
-    }
-
-    res.json({
-      ok: true,
-      applied,
-      declinedSilently: false,
-      messageID,
-      unreadCount,
-      recipientCount: recipients.length,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
+// A mail is sent by the page's own call since 2026-10-14 (web/src/bridge/mailWrites.ts: mailMgr.SendMail,
+// mailSvc.py 959 to 993), held to the compose window's own checks, which refuse a message to nobody before the
+// call (the server's own guard of that never fires: see the note above). Its route (POST /api/bridge/mail/send),
+// its limits and its read of the sender's mailbox after are gone.
 
 // --- R86 Mail + mailing-list WRITES (mailMgr / mailingListsMgr) -------------
 //

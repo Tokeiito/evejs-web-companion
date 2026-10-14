@@ -214,9 +214,14 @@ export function audienceOf(header: MailHeaderRow): MailAudience {
 
 // --- Composing --------------------------------------------------------------
 
-/** Retail's own ceilings, so a too-long message is caught before it is sent. */
-export const MAIL_MAX_RECIPIENTS = 20;
-export const MAIL_MAX_TITLE = 200;
+/**
+ * The client's own ceilings (appConst.py 1782, 1784 and 1785: mailMaxRecipients, mailMaxSubjectSize,
+ * mailMaxBodySize), so a too-long message is caught before it is sent, as the compose window catches it (evemail.py:
+ * the fields' own lengths, 1794 and 1838; the 51st recipient refused, 1909 to 1910). Until 2026-10-14 they were the
+ * BFF route's (20, 200 and 8000).
+ */
+export const MAIL_MAX_RECIPIENTS = 50;
+export const MAIL_MAX_TITLE = 150;
 export const MAIL_MAX_BODY = 8000;
 
 export interface DraftCheck {

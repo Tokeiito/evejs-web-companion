@@ -51,6 +51,7 @@ import {
   toAmountString,
 } from "../bridge/market.ts";
 import { decodeMailbox, mailRefusalMessage } from "../bridge/mail.ts";
+import { sendMail as sendMailCall, type MailToSend } from "../bridge/mailWrites.ts";
 import {
   activityReadError,
   decodeActivityCalendar,
@@ -997,7 +998,7 @@ export interface AppFlow {
    * but an empty recipient list is refused, because the SERVER will not refuse
    * it and mail addressed to nobody would look sent.
    */
-  sendMail(request: api.MailSendRequest): Promise<void>;
+  sendMail(request: MailToSend): Promise<void>;
   /**
    * Load the Contracts panel: the public courier browse, the player's own
    * contracts (waiting / taken on / expired), the summary counts, and every
@@ -5181,18 +5182,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   /**
-   * Send a message, then reload the inbox so the panel shows the server's own
-   * picture, and record what ACTUALLY happened.
+   * Send a message by the page's own call (bridge/mailWrites.ts: mailSvc.SendMail, the compose window's own checks
+   * first), then reload the inbox so the panel shows the server's own picture, and record what happened.
    *
-   * Same three outcomes as a market write: a thrown refusal becomes a sentence
-   * without inventing a cause; a SILENT decline (SendMail's bare null, which
-   * carries no reason at all) is reported as exactly that; and a success is
-   * confirmed by the BFF's re-read of the sender's own copy, not by the 200.
+   * A thrown refusal becomes a sentence without inventing a cause; a SILENT decline (SendMail's bare None, which
+   * carries no reason at all) is reported as exactly that; and a message's number answered is taken for sent, as the
+   * client takes it (it reads nothing again). Until 2026-10-14 the BFF's route made the call and read the sender's
+   * mailbox again for the message.
    */
-  async function sendMail(request: api.MailSendRequest): Promise<void> {
-    let outcome: Awaited<ReturnType<typeof api.sendMail>>;
+  async function sendMail(request: MailToSend): Promise<void> {
+    let messageID: number | null;
     try {
-      outcome = await api.sendMail(request, callOptions);
+      messageID = await sendMailCall(bridgeDo, request);
     } catch (error) {
       throwIfRequestRetired(error);
       if (isSessionLost(error)) {
@@ -5208,10 +5209,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       type: "mail/outcome",
       outcome: {
         kind: "send",
-        applied: outcome.applied,
-        declinedSilently: outcome.declinedSilently,
-        recipientCount: outcome.recipientCount,
-        message: outcome.message,
+        applied: messageID !== null,
+        declinedSilently: messageID === null,
+        recipientCount: new Set(request.toCharacterIDs).size,
+        message: messageID === null ? "The server did not send that message, and did not say why." : null,
       },
     });
   }

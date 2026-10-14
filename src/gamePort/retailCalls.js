@@ -885,6 +885,8 @@ const aJobAndItsSystem = (args, kwargs) => (args.length === 2 && Number.isSafeIn
 
 /** droneFunctions.py: an order to drones names them as a list, as every recorded one does. */
 const dronesListed = ([drones, ...rest], kwargs) => ({ args: [list(drones), ...rest], kwargs });
+/** mailSvc.SendMail (965): the recipients a list, as the compose window's self.toChars.values() is (evemail.py 2281). */
+const recipientsListed = ([recipients, ...rest], kwargs) => ({ args: [list(recipients), ...rest], kwargs });
 
 const aFiniteNumber = (value) => typeof value === "number" && Number.isFinite(value);
 const asReal = (value) => ({ type: "real", value });
@@ -1737,6 +1739,8 @@ const RETAIL_CALLS = Object.freeze({
 
   // ── mail and notifications ────────────────────────────────────────────────
   "mailMgr.SyncMail": same(`${MAIL_SERVICES}/mailSvc.py:157`, "RemoteSvc('mailMgr').SyncMail(firstID, lastID): the lowest and highest message IDs the client holds, (None, 0) when it holds none"),
+  "mailMgr.SendMail": reshaped(`${MAIL_SERVICES}/mailSvc.py:965`, recipientsListed,
+    "self.mailMgr.SendMail(toCharacterIDs, toListID, toCorpOrAllianceID, title, body, isReplyTo, isForwardedFrom), through eveMisc.CSPAChargedAction: the recipients a list (the compose window's self.toChars.values(), evemail.py 2281), the message answered and the one forwarded 0 for none. In no recording."),
   "notificationMgr.GetByGroupID": same(`${MAIL_SERVICES}/notificationSvc.py:64`, "RemoteSvc('notificationMgr').GetByGroupID(groupID)"),
   "notificationMgr.GetUnprocessed": same(`${MAIL_SERVICES}/notificationSvc.py:107`, "RemoteSvc('notificationMgr').GetUnprocessed(), no arguments"),
   "notificationMgr.GetAllNotifications": Object.freeze({
