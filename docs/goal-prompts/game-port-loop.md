@@ -3717,6 +3717,15 @@ Take these defaults, and list each under "For the operator" in the log so they c
   ("Remove Test Two").
 - **The page has no Fitting window in space**, so its in-space unfit
   is not reached from a window.
+- **Two stacks of a type for a look.** `/giveitem` adds to a stack
+  there is. A stack is split by the client's own form, part of it
+  added to the inventory it is in: `invbroker.Add(stack, station,
+  qty=N, flag=4)` with `of: "hangar"` (`merge-live.js`). Test
+  Three, in a capsule at Jita, takes `/giveitem 34 50` as the other
+  pilot's stack in the same hangar.
+- **The Inventory & Ship window's rows** are `li.stn-row`, each with
+  its own checkbox ("Select <name>"); two of a type ticked offer
+  "Merge the two stacks".
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

@@ -1628,6 +1628,16 @@ transfer None, and refuses a rate not the office's (`TaxChanged`) and a pin not 
 (`CannotImportEndpointNotFound`). The page makes the calls since `30c68a1c` (`web/src/bridge/customsWrites.ts`),
 in space only.
 
+**A stack dropped on a stack, 2026-10-13** (`eve/client/script/ui/shared/item.py`,
+`environment/invControllers.py`, `environment/invCache.py`). An item's `OnDropData` (958 on) takes each dropped stack
+of the target's type as (its itemID, the target's, its whole stack, or a number asked with shift held), the source
+where the dropped stacks lie (`node.rec.locationID`, 1004); the target's container's controller
+(`MultiMerge`, 327 to 335) hands `[(source, destination, qty)]` to its inventory, whose `MultiMerge` (1100 to
+1124) sends `self.moniker.MultiMerge(ops, sourceContainerID)`. Recorded once on Tranquility, in the hangar's
+container: `MultiMerge([(source, target, 3822)], 60001717)`. EveJS answers None whether it merged or not, and
+merges nothing of a stack in a hangar that is not the session's own character's. The page makes the call since
+`8ab05f70` (`web/src/bridge/inventoryWrites.ts`) where it holds the place's rows.
+
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
 (`ACTIONS`, by `eventTypeID`) and a level it reckons from `absolutePoints` and the skill's rank
