@@ -130,6 +130,13 @@ function respond(path: string, _method: string, body: Record<string, unknown>): 
     if (m === "GetAgents") {
       return { status: 200, body: agentsTableAnswer([...agentsFor(STATION_A), ...agentsFor(STATION_B)]) };
     }
+    // The page's own dock at a station (bridge/placeChanges.ts): the live location advances to station B, as the sim would.
+    if (m === "CmdDock") {
+      current.stationID = STATION_B;
+      current.solarSystemID = SYSTEM_B;
+      current.inSpace = false;
+      return { status: 200, body: { ok: true, service: "beyonce", method: m, result: null, notifications: [] } };
+    }
     if (m === "GetStationItemBits") {
       return { status: 200, body: { ok: true, service: "stationSvc", method: m, result: [1000035, current.stationID, 26, 1529], notifications: [] } };
     }
@@ -151,13 +158,6 @@ function respond(path: string, _method: string, body: Record<string, unknown>): 
   }
   if (path === "/api/bridge/flight/status") {
     return { status: 200, body: { ok: true, flight: dockedSnapshot(), notifications: [] } };
-  }
-  if (path === "/api/bridge/flight/dock") {
-    // The dock advances the live location to station B (as the sim would).
-    current.stationID = STATION_B;
-    current.solarSystemID = SYSTEM_B;
-    current.inSpace = false;
-    return { status: 200, body: { ok: true, result: null, flight: dockedSnapshot(), notifications: [] } };
   }
   // The route, which nothing is to ask: it answers a station that is neither.
   if (path === "/api/bridge/agents") {

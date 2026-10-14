@@ -2976,7 +2976,9 @@ test("what the game port makes on an object though it is asked by name: a monike
   assert.ok(ON_THE_PARK.size >= 10);
   for (const method of ON_THE_PARK) assert.equal(madeOnAnObject("beyonce", method), true, method);
   // Beyonce's own by name, a command a route makes on the park itself, and the park's command asked of another service.
-  assert.deepEqual([madeOnAnObject("beyonce", "GetFormations"), madeOnAnObject("beyonce", "CmdDock"), madeOnAnObject("michelle", "CmdStop")], [false, false, false]);
+  // (The dock was such a command until 2026-10-14; the page makes it now, and it is the park's as Tranquility records it,
+  // on the ballpark's bound object: in ON_THE_PARK. The jump is still its route's.)
+  assert.deepEqual([madeOnAnObject("beyonce", "GetFormations"), madeOnAnObject("beyonce", "CmdStargateJump"), madeOnAnObject("michelle", "CmdStop")], [false, false, false]);
   assert.deepEqual([madeOnAnObject("dogmaIM", "AddTarget"), madeOnAnObject("ship", "Undock"), madeOnAnObject("entity", "CmdSalvage"), madeOnAnObject("skillHandler", "SaveNewQueue")], [true, true, true, true]);
   // What the client asks of a moniker's service by its name all the same, and the bind itself.
   assert.deepEqual([madeOnAnObject("ship", "GetShipFittingInfo"), madeOnAnObject("dogmaIM", "CreateNewbieShip"), madeOnAnObject("dogmaIM", "MachoBindObject")], [false, false, false]);

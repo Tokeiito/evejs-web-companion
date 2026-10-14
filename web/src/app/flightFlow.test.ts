@@ -116,11 +116,16 @@ test("jump posts both gate IDs; a follow-up status shows the new system", async 
   assert.equal(flight.lastAction, "Jump");
 });
 
-test("dock returns the character to a station", async () => {
+test("dock returns the character to a station, by the client's CmdDock with the pilot's ship", async () => {
   const store = createClientStore();
-  const { fetch, requests } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/flight/dock") {
-      return { status: 200, body: { ok: true, result: null, flight: DOCKED, notifications: [] } };
+  let docked = false;
+  const { fetch, requests } = makeFakeFetch((path, _method, body) => {
+    if (path === "/api/bridge/flight/status") {
+      return { status: 200, body: { ok: true, flight: docked ? DOCKED : { ...IN_SPACE, shipMode: "STOP", shipSpeedFraction: 0 }, notifications: [] } };
+    }
+    if (path === "/api/bridge/call" && body.method === "CmdDock") {
+      docked = true;
+      return { status: 200, body: { ok: true, service: "beyonce", method: "CmdDock", result: null, notifications: [] } };
     }
     throw new Error(`unexpected ${path}`);
   });
@@ -128,7 +133,9 @@ test("dock returns the character to a station", async () => {
 
   await flow.dock(60003760);
 
-  assert.deepEqual(requests[0]?.body, { stationID: 60003760 });
+  // movementFunctions.RealDock (517): PerformSessionChange('dock', bp.CmdDock, itemID, session.shipid).
+  const dock = requests.find((request) => request.path === "/api/bridge/call")?.body;
+  assert.deepEqual(dock, { service: "beyonce", method: "CmdDock", args: [60003760, 9001], kwargs: null, pilot: true, confirm: true });
   assert.equal(store.flight.get().status?.docked, true);
   assert.equal(store.flight.get().lastAction, "Dock");
 });

@@ -294,6 +294,11 @@ function inSpaceResponder(path: string): { status: number; body: unknown } {
   if (path.startsWith("/api/bridge/flight/")) {
     return { status: 200, body: { ok: true, result: null, flight: IN_SPACE_ALPHA, notifications: [] } };
   }
+  // The page's own movement calls (a warp, an approach, a dock at a station: bridge/movementWrites.ts,
+  // bridge/placeChanges.ts) go by the generic call, and answer 200 here too.
+  if (path === "/api/bridge/call") {
+    return { status: 200, body: { ok: true, result: null, notifications: [] } };
+  }
   return defaultResponder(path);
 }
 
