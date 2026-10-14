@@ -3207,12 +3207,27 @@ function createGamePortPilots({
     const entry = held(bridgeSessionID, sessionFields);
     ledger.note(XMPP_CHAT_MGR, "Hostname", CHAT_HOSTNAME_AS_THE_CLIENT_ASKS);
     const hostname = packets.text(await entry.session.proxyCall(XMPP_CHAT_MGR, "Hostname", [], null));
-    let address = packets.text(packets.dictGet(packets.dictGet(entry.session.loginResponse, "config_vals"), EJABBERD_CLIENT_ADDRESS_CONFIG));
+    const globalConfig = packets.dictGet(entry.session.loginResponse, "config_vals");
+    let address = packets.text(packets.dictGet(globalConfig, EJABBERD_CLIENT_ADDRESS_CONFIG));
     if (address === null || address.length === 0) {
       ledger.note(XMPP_CHAT_MGR, "GetDeprecatedPrefsFallback", CHAT_ADDRESS_AS_THE_CLIENT_ASKS);
       address = packets.text(await entry.session.proxyCall(XMPP_CHAT_MGR, "GetDeprecatedPrefsFallback", [], null));
     }
-    return { hostname, address };
+    return { hostname, address, idleSeconds: chatIdleSeconds(globalConfig) };
+  }
+
+  /**
+   * GetMaxChatChannelIdleTime (globalConfig/getFunctions.py 88 to 89; 24 to 31): the global config's
+   * 'maxChatChannelIdleTimeSeconds' as int() makes it, 180 where the config has none of it (const.py 20 to 21) and 0
+   * where what it has is not a number. How long a chat window lets its channel be quiet before it checks its
+   * connection (xmppchatclient/xmppchatwindow.py 1344 to 1364).
+   */
+  function chatIdleSeconds(globalConfig) {
+    const configured = packets.dictGet(globalConfig, "maxChatChannelIdleTimeSeconds");
+    if (configured === undefined) return 180;
+    if (typeof configured === "number" || typeof configured === "bigint") return Math.trunc(Number(configured));
+    const written = packets.text(configured);
+    return written !== null && /^\s*[-+]?\d+\s*$/.test(written) ? Number(written) : 0;
   }
 
   /**

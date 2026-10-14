@@ -362,6 +362,14 @@ class XmppChatSession {
     // left at a change, which a late presence from one must not bring back.
     this.sessionRooms = new Map();
     this.leftRooms = new Set();
+    // What the game server answered the chat's login (`loginDetails`), kept.
+    this.loginAsked = null;
+    // The client's windows' own check of a quiet channel (`watchChannel`): how
+    // long a channel may be quiet, when each channel last had anything in it,
+    // and each channel's waiting check.
+    this.idleSeconds = 180;
+    this.activityAtMs = new Map();
+    this.idleChecks = new Map();
     this.stopHearingSession =
       this.login && typeof this.login.onSessionChange === "function"
         ? this.login.onSessionChange((changes) => this.onSessionChanged(changes))
@@ -436,13 +444,14 @@ class XmppChatSession {
       // join_room (296 to 310). No password and no history: a system channel
       // has no password, and the client asks history only of a window checking
       // its connection after a reconnect (xmppchatclient/xmppchatwindow.py 1360).
-      join: (roomJid) => {
+      join: (roomJid, historySeconds = 0) => {
         const id = requestID();
+        const history = historySeconds > 0 ? `<history seconds='${Math.trunc(historySeconds)}'/>` : "";
         return {
           id,
           xml:
             `<presence from='${escapeXml(jid())}' id='${id}' to='${escapeXml(roomJid)}/${nick}'>` +
-            "<x xmlns='http://jabber.org/protocol/muc'></x></presence>",
+            `<x xmlns='http://jabber.org/protocol/muc'>${history}</x></presence>`,
         };
       },
       // leave_room (312 to 318).
@@ -494,14 +503,20 @@ class XmppChatSession {
       this.resource = XMPP_RESOURCE;
       return { host: xmppHost(), port, domain: this.domain, secret: async () => "" };
     }
-    let asked = null;
-    try {
-      asked = await this.login.connection();
-    } catch (error) {
-      throw new XmppChatError(
-        `The game server could not be asked for the chat's login: ${error.message}`,
-        { code: "CHAT_LOGIN_UNAVAILABLE" },
-      );
+    // Asked once, and kept as long as this chat session lasts: the client's
+    // connection object keeps its hostname and its address from the login on,
+    // and a reconnect goes to the same (xmpp/xmppConnection.py 426 to 448;
+    // `_CreateConnection` is the login's alone, xmppchatsvc.py 247 to 248).
+    let asked = this.loginAsked;
+    if (!asked) {
+      try {
+        asked = await this.login.connection();
+      } catch (error) {
+        throw new XmppChatError(
+          `The game server could not be asked for the chat's login: ${error.message}`,
+          { code: "CHAT_LOGIN_UNAVAILABLE" },
+        );
+      }
     }
     const hostname = String((asked && asked.hostname) || "").trim();
     if (!hostname) {
@@ -509,6 +524,10 @@ class XmppChatSession {
         code: "CHAT_LOGIN_UNAVAILABLE",
       });
     }
+    this.loginAsked = asked;
+    // GetMaxChatChannelIdleTime: the global config's, 180 where it has none
+    // and 0 where it is not a number (globalConfig/getFunctions.py 88 to 89).
+    this.idleSeconds = Number.isFinite(asked.idleSeconds) ? Number(asked.idleSeconds) : 180;
     this.domain = hostname;
     // GetFullRoomName: '{0}@conference.{1}'.format(channelName, self.hostname).
     this.conferenceDomain = `conference.${hostname}`;
@@ -811,8 +830,19 @@ class XmppChatSession {
   }
 
   onSocketGone() {
+    // A connection that was up and is lost is made again no sooner than five
+    // seconds on, for a pilot logged in the retail client's way: the client
+    // waits that long before it connects again (xmpp/xmppConnection.py 450 to
+    // 465), and as long again after each try that fails (426 to 448).
+    if (this.login && this.ready && !this.closed) {
+      this.lastConnectFailureAtMs = Date.now();
+      this.lastConnectError = new XmppChatError("The chat connection was lost.", {
+        code: "CHAT_TRANSPORT_UNAVAILABLE",
+      });
+    }
     this.ready = false;
     this.stopPing();
+    this.stopWatchingChannels();
     // ⚠ THE ROOMS GO WITH THE SOCKET. MUC membership is per connection, so a
     // reconnect has to join again — remembering a room jid across a dropped
     // socket would leave a session that believes it is listening to a room the
@@ -837,6 +867,7 @@ class XmppChatSession {
 
   teardownSocket() {
     this.stopPing();
+    this.stopWatchingChannels();
     this.ready = false;
     this.rooms.clear();
     this.sessionRooms.clear();
@@ -898,8 +929,13 @@ class XmppChatSession {
     if (!characterID) {
       return;
     }
-    if (this.login && !/\btype=['"](unavailable|leave)['"]/i.test(xml)) {
-      this.takeSessionChannel(roomJid, roomName, characterID);
+    if (this.login) {
+      // A character come into a channel or gone from it is the window's
+      // activity (xmppchatclient/xmppchatwindow.py 485 to 488, 570 to 571).
+      this.activityAtMs.set(this.channelOf(roomName), Date.now());
+      if (!/\btype=['"](unavailable|leave)['"]/i.test(xml)) {
+        this.takeSessionChannel(roomJid, roomName, characterID);
+      }
     }
     if (!this.rosters.has(roomName)) {
       this.rosters.set(roomName, new Map());
@@ -998,6 +1034,10 @@ class XmppChatSession {
     if (!this.messages.has(roomName)) {
       this.messages.set(roomName, []);
     }
+    if (this.login) {
+      // A line put out in a window is its activity (xmppchatwindow.py 353 to 357).
+      this.activityAtMs.set(this.channelOf(roomName), Date.now());
+    }
     const log = this.messages.get(roomName);
     log.push(entry);
     if (log.length > MAX_BUFFERED_MESSAGES) {
@@ -1045,6 +1085,7 @@ class XmppChatSession {
       room.pending = null;
       this.rooms.set(channel, room);
       this.rememberSessionRoom(channel, roomName, roomJid);
+      this.watchChannel(channel);
       pending.resolve(room);
       return;
     }
@@ -1122,6 +1163,56 @@ class XmppChatSession {
       });
     }
     return room.pending ? room.pending.promise : room;
+  }
+
+  /**
+   * A chat window's own check of its connection
+   * (`_CheckConnectionStatus`, xmppchatclient/xmppchatwindow.py 1344 to 1364),
+   * for the channel a window would show: every so often (the global config's
+   * idle time and up to three seconds more, a new wait each time) a channel
+   * that has had nothing in it for longer than that wait is joined again,
+   * asking the history of the time it was quiet less two seconds. An idle time
+   * of nought is no check. A channel's first watch starts as it gets a room;
+   * one check waits at a time for a channel.
+   *
+   * On this server a pilot's own presence comes to each of its rooms every
+   * thirty seconds, which is activity, and the check finds nothing quiet.
+   */
+  watchChannel(channel) {
+    if (!this.login || this.closed || this.idleChecks.has(channel)) {
+      return;
+    }
+    if (!this.activityAtMs.has(channel)) {
+      this.activityAtMs.set(channel, Date.now());
+    }
+    if (!(this.idleSeconds > 0)) {
+      return;
+    }
+    const waitSeconds = this.idleSeconds + Math.random() * 3;
+    const check = setTimeout(() => {
+      this.idleChecks.delete(channel);
+      const room = this.rooms.get(channel) || null;
+      if (!this.ready || this.closed || !room) {
+        return;
+      }
+      const quietSeconds = (Date.now() - (this.activityAtMs.get(channel) || 0)) / 1000;
+      if (quietSeconds > waitSeconds && room.roomJid && !room.pending) {
+        this.write(this.retailStanzas().join(room.roomJid, quietSeconds - 2).xml);
+      }
+      this.watchChannel(channel);
+    }, waitSeconds * 1000);
+    if (typeof check.unref === "function") {
+      check.unref();
+    }
+    this.idleChecks.set(channel, check);
+  }
+
+  stopWatchingChannels() {
+    for (const check of this.idleChecks.values()) {
+      clearTimeout(check);
+    }
+    this.idleChecks.clear();
+    this.activityAtMs.clear();
   }
 
   /** A channel's category as a page reads it: the local kinds are all Local. */
@@ -1227,6 +1318,7 @@ class XmppChatSession {
       pending: null,
     });
     this.rememberSessionRoom(channel, roomName, roomJid);
+    this.watchChannel(channel);
   }
 
   /**
