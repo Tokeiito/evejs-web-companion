@@ -1252,6 +1252,11 @@ export interface AppFlow {
    * — it never names a cause it does not have.
    */
   compressOre(itemID: number, facilityID: number): Promise<void>;
+  /**
+   * The compressed forms of these types as the static data has them: a type's own, or null where it has none. A
+   * type the data could not speak of is absent, and is not to be offered as compressible.
+   */
+  compressedTypesOf(typeIDs: readonly number[]): Promise<ReadonlyMap<number, number | null>>;
   // --- R25 slice A: drones -------------------------------------------------
   //
   // ⚠ NOT ONE of these four server calls can be trusted on its return value.
@@ -5123,6 +5128,39 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const volume = typeVolumes.get(typeID);
       if (typeof volume === "number") {
         known[String(typeID)] = volume;
+      }
+    }
+    return known;
+  }
+
+  /** Each type's compressed form as the BFF's static data has it: null where it has none. Kept once it is answered. */
+  const compressedTypes = new Map<number, number | null>();
+
+  /**
+   * The compressed forms of these types (menucheckers/itemCheckers.py, OfferCompressInSpace: the client offers to
+   * compress a type that has one, from its own static data). A type is asked for once and kept, being the same for
+   * everyone; one the answer did not speak of, or a read that failed, is left out this once and asked for again.
+   */
+  async function compressedTypesOf(typeIDs: readonly number[]): Promise<ReadonlyMap<number, number | null>> {
+    const unasked = [...new Set(typeIDs)].filter((typeID) => !compressedTypes.has(typeID));
+    if (unasked.length > 0) {
+      try {
+        const answered = (await api.loadCompressedTypes(unasked, callOptions)).compressedTypeIDs;
+        for (const typeID of unasked) {
+          const compressed = answered[typeID];
+          if (compressed !== undefined) {
+            compressedTypes.set(typeID, compressed);
+          }
+        }
+      } catch (error) {
+        throwIfRequestRetired(error);
+      }
+    }
+    const known = new Map<number, number | null>();
+    for (const typeID of typeIDs) {
+      const compressed = compressedTypes.get(typeID);
+      if (compressed !== undefined) {
+        known.set(typeID, compressed);
       }
     }
     return known;
@@ -15495,6 +15533,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     reprocessItems,
     jettisonItems,
     compressOre,
+    compressedTypesOf,
     loadSkills,
     loadPlanets,
     selectColony,

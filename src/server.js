@@ -21491,6 +21491,33 @@ app.get("/api/types/combat-utility", requireAuth, async (req, res, next) => {
  */
 const TYPE_VOLUME_TYPE_LIMIT = 500;
 
+// GET /api/types/compressed?typeIDs=... answers { compressedTypeIDs }: each type's compressed form, or null where it
+// has none, as the server compresses (staticData.getCompressedTypeID, the server's own reprocessing table). The
+// client has it in its own static data (itemcompression/data.py) and offers to compress in space only a type that has
+// one (menucheckers/itemCheckers.py, OfferCompressInSpace). A type the table cannot speak of is left out of the
+// answer, and is not "none". Not a bridge call, and no live session: it cannot vary by player.
+app.get("/api/types/compressed", requireAuth, (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) {
+        asked.push(typeID);
+      }
+    }
+    const compressedTypeIDs = {};
+    for (const typeID of asked.slice(0, TYPE_VOLUME_TYPE_LIMIT)) {
+      const compressed = typeof staticData.getCompressedTypeID === "function" ? staticData.getCompressedTypeID(typeID) : undefined;
+      if (compressed !== undefined) {
+        compressedTypeIDs[String(typeID)] = compressed;
+      }
+    }
+    res.json({ ok: true, source: "static-data", compressedTypeIDs, capped: asked.length > TYPE_VOLUME_TYPE_LIMIT, limit: TYPE_VOLUME_TYPE_LIMIT });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/types/volumes", requireAuth, async (req, res, next) => {
   try {
     const asked = [];

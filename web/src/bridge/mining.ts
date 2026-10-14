@@ -226,6 +226,14 @@ export function quoteRefinesNothing(quotes: readonly ReprocessingQuote[]): boole
   return quotes.length > 0 && quotes.every((quote) => quote.quantityToProcess === 0);
 }
 
+/**
+ * A stack's amount as the client shows it (uix.GetItemQty, uix.py 254 to 263): nothing at all for a singleton (a
+ * thing assembled, which the server keeps with a quantity below nought), and the stack's size otherwise.
+ */
+export function stackAmountText(quantity: number): string {
+  return quantity < 0 ? "" : quantity.toLocaleString();
+}
+
 /** Of what is picked, the stacks that are in the ship's holds: the unloading is theirs, and no hangar's stack's. */
 export function picksInHolds(selected: readonly number[], holds: readonly MiningHold[]): readonly number[] {
   const held = new Set(holds.flatMap((hold) => (hold.items ?? []).map((item) => item.itemID)));

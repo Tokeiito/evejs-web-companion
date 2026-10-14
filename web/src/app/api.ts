@@ -3489,6 +3489,41 @@ export async function loadOverloadEffects(
   return effects;
 }
 
+// --- A type's compressed form (static reference data) -------------------------
+// GET /api/types/compressed?typeIDs=... answers { compressedTypeIDs }: each type's compressed form, or null where it
+// has none, as the server compresses. The client has it in its own static data (itemcompression/data.py) and offers
+// to compress in space only a type that has one. A type the answer does not speak of is absent, never "none".
+
+export interface CompressedTypesResult {
+  /** typeID -> its compressed form's typeID, or null where it has none. A type not answered for is absent. */
+  readonly compressedTypeIDs: Readonly<Record<number, number | null>>;
+}
+
+export async function loadCompressedTypes(
+  typeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<CompressedTypesResult> {
+  const compressedTypeIDs: Record<number, number | null> = {};
+  for (let at = 0; at < typeIDs.length; at += TYPE_VOLUMES_PER_REQUEST) {
+    const data = await getJson(
+      `/api/types/compressed?typeIDs=${encodeURIComponent(typeIDs.slice(at, at + TYPE_VOLUMES_PER_REQUEST).join(","))}`,
+      options,
+    );
+    const raw =
+      typeof data.compressedTypeIDs === "object" && data.compressedTypeIDs !== null && !Array.isArray(data.compressedTypeIDs)
+        ? (data.compressedTypeIDs as Record<string, JsonValue>)
+        : {};
+    for (const [key, value] of Object.entries(raw)) {
+      const typeID = Number(key);
+      if (!Number.isSafeInteger(typeID) || typeID <= 0) {
+        continue;
+      }
+      compressedTypeIDs[typeID] = typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
+    }
+  }
+  return { compressedTypeIDs };
+}
+
 // --- A type's volume (static reference data) ---------------------------------
 // GET /api/types/volumes?typeIDs=... answers { volumes }: each type's volume in m³, or null where the static
 // tables have none. A client has it in its own static data; the page asks here, once for a type, where it lists

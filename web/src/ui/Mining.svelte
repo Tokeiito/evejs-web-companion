@@ -29,7 +29,7 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import { holdCapacityText, holdFillPercent } from "./holdFill.ts";
-  import { picksInHolds, quoteRefinesNothing, refinableHangarStacks } from "../bridge/mining.ts";
+  import { picksInHolds, quoteRefinesNothing, refinableHangarStacks, stackAmountText } from "../bridge/mining.ts";
   import type { MiningHold } from "../store/types.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
 
@@ -172,10 +172,33 @@
     holds.flatMap((hold) =>
       (hold.items ?? []).map((item) => ({
         itemID: item.itemID,
+        typeID: item.typeID,
         label: itemName(item.typeID),
         quantity: item.quantity,
       })),
     ),
+  );
+
+  /**
+   * The held types' compressed forms, as the static data has them (the flow keeps each once it is answered). The
+   * client offers to compress a stack in the active ship only where its type has one (menucheckers/itemCheckers.py,
+   * OfferCompressInSpace 197 to 206); a type not yet known is not offered.
+   */
+  let compressedForms = $state<ReadonlyMap<number, number | null>>(new Map());
+  const heldTypesKey = $derived([...new Set(heldStacks.map((stack) => stack.typeID))].sort((a, b) => a - b).join(","));
+  $effect(() => {
+    const key = heldTypesKey;
+    if (key === "") return;
+    let current = true;
+    flow.compressedTypesOf(key.split(",").map(Number)).then((known) => {
+      if (current) compressedForms = known;
+    }).catch(() => {});
+    return () => {
+      current = false;
+    };
+  });
+  const compressibleStacks = $derived(
+    heldStacks.filter((stack) => typeof compressedForms.get(stack.typeID) === "number"),
   );
 
   /**
@@ -360,7 +383,7 @@
                       {itemName(item.typeID)}
                     </span>
                   </td>
-                  <td class="num" data-label="Amount">{item.quantity.toLocaleString()}</td>
+                  <td class="num" data-label="Amount">{stackAmountText(item.quantity)}</td>
                 </tr>
               {/each}
             </tbody>
@@ -448,8 +471,6 @@
         No mining support ship on this grid is running its compression gear.
         Bring one, or switch yours on, and it will appear here.
       </p>
-    {:else if heldStacks.length === 0}
-      <p class="note">Nothing in your holds to compress.</p>
     {:else}
       <p class="controls">
         <GridPicker
@@ -464,11 +485,19 @@
         <!-- Drawn, wearing its reason — never a greyed control in silence. -->
         <p class="note error">{compressRefusal}</p>
       {/if}
+      <!--
+        Only a stack whose type has a compressed form, as the client offers it (OfferCompressInSpace): a singleton,
+        a module or ore already compressed is not offered. The facts are asked of the static data as the hold
+        changes, so the list waits on them; the picker above does not.
+      -->
+      {#if compressibleStacks.length === 0}
+        <p class="note">Nothing in your holds to compress.</p>
+      {:else}
       <ul class="compress-list">
-        {#each heldStacks as stack (stack.itemID)}
+        {#each compressibleStacks as stack (stack.itemID)}
           <li>
             <span class="compress-name">{stack.label}</span>
-            <span class="compress-qty">{stack.quantity.toLocaleString()}</span>
+            <span class="compress-qty">{stackAmountText(stack.quantity)}</span>
             <button
               type="button"
               disabled={busy || facilityID === 0 || compressRefusal !== null}
@@ -480,6 +509,7 @@
           </li>
         {/each}
       </ul>
+      {/if}
     {/if}
   </section>
 
