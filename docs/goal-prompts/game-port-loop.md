@@ -3589,6 +3589,24 @@ Take these defaults, and list each under "For the operator" in the log so they c
   `grep -r` over `eve.js` from its root ran past two minutes and was
   stopped: `server/src`, `server/tests`, `doc` or the client's code
   are named, never the root.
+- **The server's prepared scanning ship is over its CPU.** `/probe2`
+  gives a Stratios at 590 of 484 CPU with one module of fifteen
+  offline: a module taken offline there is refused back until a
+  larger one is off (the expanded probe launcher makes room for the
+  damage control). An online in space leaves 5 in 100 of the
+  capacitor, and the next is refused under 95: a look that onlines
+  twice in space waits, or onlines docked.
+- **The fitting's read is the wire's own.** `GET /api/bridge/fitting`
+  answers `slots`, `shipInfo` and `online` as they came: a script
+  takes the online modules from `online` as a list, a module's type
+  from the row of `slots` that names the ship, and CPU and powergrid
+  from the dict of `shipInfo` that has attributes 48 and 49
+  (`online-cpu.js`, which only reads).
+- **A window that words its own verdict is read beside the flow's.**
+  The Equipment window said "gave no reason" beside the reason the
+  flow had from the server. Where a flow already says why an order
+  failed, a window's own check after it is for the case the flow says
+  nothing of.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in

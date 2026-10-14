@@ -1560,6 +1560,19 @@ minute of the last. No Tranquility recording has a probe. EveJS tells the scan's
 asking where no probe has to move (1 and 7 ms before, on the wire), and does a recall asked in the middle of a
 scan. The page makes the four so since `0c36b290` (`web/src/bridge/scannerWrites.ts`).
 
+**A module online and offline, 2026-10-13** (`eve/client/script/dogma/clientDogmaLocation.py`). From a fitting slot
+(`ui/shared/fitting/fittingSlotController.py`, `ToggleOnlineModule`, 357 to 366): `OnlineModule` (698 to 711)
+starts the online effect in the client's own dogma and asks `remoteDogmaLM.SetModuleOnline(dogmaItem.locationID,
+moduleID)`, the ship the module is in and the module, taking `EffectAlreadyActive2` for no refusal;
+`OfflineModule` (713 to 723) asks `TakeModuleOffline` with the same two, and nothing for a ship being boarded or
+left. A module in a weapon bank is asked about first (`QueryGroupOffline`, 359 to 362). The client onlines a
+module newly fitted by itself (`_OnlineModuleIfApplicable`, 624 to 632), and that is the one
+`SetModuleOnline(shipID, moduleID)` Tranquility has recorded, on the dogma location's object. The module's button
+on the rack goes by the online effect instead (`shipmodulebutton._ChangeOnline`, 823 to 847: godma's
+`Activate(itemID, 'online', None, 0)` and `Deactivate(itemID, 'online')`), asking before any offline. EveJS wants
+95 in 100 of the capacitor for an online in space and leaves 5; asked for what is so already it answers nothing.
+The page makes the slot's two since `130ae40f` (`web/src/bridge/dogmaWrites.ts`).
+
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
 (`ACTIONS`, by `eventTypeID`) and a level it reckons from `absolutePoints` and the skill's rank
