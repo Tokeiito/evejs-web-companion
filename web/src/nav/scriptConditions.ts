@@ -354,6 +354,8 @@ export interface ScriptObservation {
   readonly miningModuleIDs?: readonly number[];
   /** Fitted salvager ids, refreshed when the active hull or fit changes. */
   readonly salvageModuleIDs?: readonly number[];
+  /** The fitted, online tractor beams (group "Tractor Beam"), as `salvageModuleIDs` reads the salvagers. */
+  readonly tractorModuleIDs?: readonly number[];
   /** Fitted repairers by layer, refreshed when the active hull or fit changes. */
   readonly shieldRepairerIDs?: readonly number[];
   readonly armorRepairerIDs?: readonly number[];
