@@ -7543,23 +7543,29 @@ test("a job refused at a facility has the facility asked for afresh, as the clie
 
 test("the facility a job is given is the one kept, asked for afresh where it has rig modifiers or is not among the region's", async () => {
   // industrySvc.CreateJob (109): job.facility = facilitySvc.GetFreshFacility(facilityID) (107 to 112; GetFacility, 66 to 74).
+  // Asked as the page asks it for a job's facility: facilityManager.GetFacility by the generic call.
   const { pilots, handle, asked } = await withFacilities();
-  const fresh = async (facilityID) => { const row = await pilots.freshFacility(WHO, handle, facilityID); return row === null ? null : [fieldIn(row, "facilityID"), fieldIn(row, "tax")]; };
+  const fresh = async (facilityID) => {
+    const row = (await pilots.callMethod("facilityManager", "GetFacility", [facilityID], null, FIELDS, handle)).result;
+    return row === null ? null : [fieldIn(row, "facilityID"), fieldIn(row, "tax")];
+  };
   // Nothing kept: the region's are asked for, and the facility is among them.
   assert.deepEqual([await fresh(STATION), asked.region, asked.one], [[STATION, 1], 1, []]);
   // Kept, with no rig modifiers: nothing is asked.
   assert.deepEqual([await fresh(A_STRUCTURE), await fresh(STATION), asked.region, asked.one], [[A_STRUCTURE, 1], [STATION, 1], 1, []]);
   // One that is not among the region's is asked for by itself, and kept from then on.
   assert.deepEqual([await fresh(A_STRUCTURE + 1), await fresh(A_STRUCTURE + 1), asked.region, asked.one], [[A_STRUCTURE + 1, 101], [A_STRUCTURE + 1, 101], 1, [A_STRUCTURE + 1]]);
-  // No facility named: none (`if facilityID:`), and nothing asked.
-  assert.deepEqual([await fresh(0), await fresh(null), asked.region, asked.one.length], [null, null, 1, 1]);
+  // No facility named: refused before anything is asked (the client's `if facilityID:` has none to give).
+  await rejects(pilots.callMethod("facilityManager", "GetFacility", [0], null, FIELDS, handle), "INVALID_FACILITY");
+  await rejects(pilots.callMethod("facilityManager", "GetFacility", [null], null, FIELDS, handle), "INVALID_FACILITY");
+  assert.deepEqual([asked.region, asked.one.length], [1, 1]);
   assert.deepEqual([ledgerOf(pilots, FACILITIES)[0], ledgerOf(pilots, ONE_FACILITY)[0]], [{ same: 1 }, { same: 1 }]);
   // Another account's session reads nothing.
-  await assert.rejects(pilots.freshFacility({ userid: 9 }, handle, STATION), (error) => error.code === "SESSION_NOT_FOUND");
+  await assert.rejects(pilots.callMethod("facilityManager", "GetFacility", [STATION], null, { userid: 9 }, handle), (error) => error.code === "SESSION_NOT_FOUND");
 
   // One kept with rig modifiers is let go and asked for by itself, each time a job is given it.
   const rigged = await withFacilities({}, SOME_RIGS);
-  const again = async (facilityID) => fieldIn(await rigged.pilots.freshFacility(WHO, rigged.handle, facilityID), "tax");
+  const again = async (facilityID) => fieldIn((await rigged.pilots.callMethod("facilityManager", "GetFacility", [facilityID], null, FIELDS, rigged.handle)).result, "tax");
   // (Not kept yet, the region's are asked for and it is among them: the client looks for rig modifiers in what it holds, before it asks.)
   assert.deepEqual([await again(A_STRUCTURE), rigged.asked.region, rigged.asked.one], [1, 1, []]);
   assert.deepEqual([await again(A_STRUCTURE), await again(A_STRUCTURE), rigged.asked.region, rigged.asked.one], [101, 102, 1, [A_STRUCTURE, A_STRUCTURE]]);
@@ -7569,7 +7575,7 @@ test("the facility a job is given is the one kept, asked for afresh where it has
   // Refused, the asking fails as it failed, and the facility is not among what is kept.
   const gone = await withFacilities({ [ONE_FACILITY]: () => { throw refusedBy("CustomNotify", "That facility could not be found."); } }, SOME_RIGS);
   await gone.region();
-  await rejects(gone.pilots.freshFacility(WHO, gone.handle, A_STRUCTURE), "CALL_REFUSED");
+  await rejects(gone.pilots.callMethod("facilityManager", "GetFacility", [A_STRUCTURE], null, FIELDS, gone.handle), "CALL_REFUSED");
   assert.deepEqual(await gone.region(), { [STATION]: 1 });
 });
 
