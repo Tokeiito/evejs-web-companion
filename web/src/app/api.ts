@@ -963,34 +963,9 @@ export interface FittingChangeResult {
   readonly applied: boolean;
 }
 
-/** Fit a module from the station hangar or the ship's cargo into a slot. */
-export async function fitModule(
-  itemID: number,
-  source: "hangar" | "cargo",
-  slot: { readonly family: SlotFamily; readonly index: number } | "auto",
-  options: ApiOptions = {},
-): Promise<FittingChangeResult> {
-  const body: Record<string, JsonValue> =
-    slot === "auto"
-      ? { itemID, source, family: "auto" }
-      : { itemID, source, family: slot.family, index: slot.index };
-  const data = await postJson("/api/bridge/fitting/fit", body, options);
-  return { applied: data.applied === true };
-}
-
-/** Unfit a module back to the station hangar or the ship's cargo. */
-export async function unfitModule(
-  itemID: number,
-  destination: "hangar" | "cargo",
-  options: ApiOptions = {},
-): Promise<FittingChangeResult> {
-  const data = await postJson(
-    "/api/bridge/fitting/unfit",
-    { itemID, destination },
-    options,
-  );
-  return { applied: data.applied === true };
-}
+// A module is fitted and unfitted by the page's own call on an inventory's own object (bridge/fitModule.ts), by
+// the page's own read of the slots before and after: the two routes (POST /api/bridge/fitting/fit and .../unfit)
+// went on 2026-10-13.
 
 // A fitted module is put online and taken offline by the page's own call (bridge/dogmaWrites.ts,
 // setModuleOnline): its route (POST /api/bridge/fitting/state) went on 2026-10-13.

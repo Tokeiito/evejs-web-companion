@@ -334,6 +334,7 @@ import {
   type DroneRangeSkillReading,
 } from "../nav/droneControlRange.ts";
 import { readScanFullState } from "../bridge/scanFullState.ts";
+import { fitModule as fitModuleCall, unfitModule as unfitModuleCall } from "../bridge/fitModule.ts";
 import { cancelOrder as cancelOrderCall } from "../bridge/marketOrderWrites.ts";
 import { doAgentAction, removeOfferFromJournal } from "../bridge/agentWrites.ts";
 import { createScannerWrites, type ScannerShip } from "../bridge/scannerWrites.ts";
@@ -779,8 +780,8 @@ export interface AppFlow {
     source: "hangar" | "cargo",
     slot: { readonly family: SlotFamily; readonly index: number } | "auto",
   ): Promise<void>;
-  /** Unfit a module back to the station hangar or the ship's cargo. */
-  unfitModule(itemID: number, destination: "hangar" | "cargo"): Promise<void>;
+  /** Unfit a module, as the client's Unfit does: to the hangar docked, and to the ship's own hold in space. */
+  unfitModule(itemID: number): Promise<void>;
   /** Bring a fitted module online, or take it offline. */
   setModuleOnline(itemID: number, online: boolean): Promise<void>;
   /**
@@ -1845,6 +1846,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const online = store.station.get().online;
     if (shipID === null || !online) throw new Error("Which ship this is is not known yet.");
     return { shipID, characterID: online.characterID, dockedAt: online.structureID ?? online.stationID ?? null };
+  }
+  /** The modules fitted to the ship now, each by its own number with a name for its slot: the page's own read of the fitting. */
+  async function fittedNow(): Promise<ReadonlyMap<number, string>> {
+    const reads = await api.loadFitting(callOptions);
+    const fitted = new Map<number, string>();
+    for (const slot of buildSlots(reads.slots, reads.shipInfo, reads.online)) {
+      if (slot.module) fitted.set(slot.module.itemID, `${slot.family}:${slot.index}`);
+    }
+    return fitted;
   }
   /** Charges put into modules from the ship's own hold or the hangar, by the client's own call (bridge/dogmaWrites.ts). */
   const loadAmmoFrom = async (moduleIDs: readonly number[], chargeItemIDs: readonly number[], source: AmmoPlace): Promise<void> =>
@@ -14531,12 +14541,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     loadDogma,
 
+    // A module fitted and unfitted: the page's own calls on an inventory's own object (bridge/fitModule.ts), as
+    // the client's dogma location and its fitting slot make them, judged by the page's own read of the slots.
     async fitModule(itemID, source, slot) {
-      await runFittingAction(() => api.fitModule(itemID, source, slot, callOptions));
+      await runFittingAction(() => fitModuleCall(bridgeDo, fittedNow, ammoSession(), itemID, source, slot));
     },
 
-    async unfitModule(itemID, destination) {
-      await runFittingAction(() => api.unfitModule(itemID, destination, callOptions));
+    async unfitModule(itemID) {
+      await runFittingAction(() => unfitModuleCall(bridgeDo, fittedNow, ammoSession(), itemID));
     },
 
     async setModuleOnline(itemID, online) {

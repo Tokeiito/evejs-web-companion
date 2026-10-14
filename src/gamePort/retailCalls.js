@@ -417,6 +417,19 @@ const reprocessingItems = (args, kwargs) => {
   }
   return { args: [list(itemIDs), from, owner, outputLocation, outputFlag], status: "reshaped" };
 };
+/** inventorycommon/const.py flagHangar and flagCargo. */
+const FLAG_HANGAR = 4;
+const FLAG_CARGO = 5;
+/**
+ * Is an Add the fitting's own unfitting of a module (fittingSlotController.UnfitModule, 238 and 241): a thing in a
+ * slot of the pilot's ship, moved out of that ship to the hangar with no quantity named, or to the ship's own hold
+ * with a quantity of None.
+ */
+const unfitsAModule = (args, kwargs, context) => {
+  if (!context || typeof context.slotOf !== "function" || args.length !== 2 || args[1] !== context.shipID) return false;
+  if (context.slotOf(args[0]) === null) return false;
+  return kwargs.flag === FLAG_HANGAR ? !Object.hasOwn(kwargs, "qty") : kwargs.flag === FLAG_CARGO && kwargs.qty === null;
+};
 const reshaped = (source, shape, note) => Object.freeze({ status: "reshaped", source, shape, note });
 const differs = (source, note) => Object.freeze({ status: "differs", source, note });
 /** Same or differs, depending on what the call carries: `judge` answers { status, note }. */
@@ -1509,8 +1522,15 @@ const RETAIL_CALLS = Object.freeze({
     // Add(itemID, sourceLocationID, qty=quantity, flag=self.locationFlag): both keywords, always. The quantity is
     // the stack's size when the whole stack moves (_AddItem: quantity = item.stacksize, from the item the client's
     // inventory cache holds). A call with none is given it from what the pilot's own listings hold of the item.
+    //
+    // But for a module taken out of its slot, which is the fitting's own Add and names no quantity
+    // (fittingSlotController.UnfitModule): docked, of the hangar's inventory with no qty at all (238:
+    // Add(moduleID, shipID, flag=const.flagHangar)), and in space, of the ship's own with a qty of None (241:
+    // Add(moduleID, shipID, qty=None, flag=const.flagCargo)). A call of either form, of a thing a listing has in a
+    // slot of the pilot's ship, goes as it is said.
     (args, kwargs, context) => {
       if (kwargs.qty !== undefined && kwargs.qty !== null) return { status: "same" };
+      if (unfitsAModule(args, kwargs, context)) return { status: "same" };
       const size = context && context.stackSize ? context.stackSize(args[0]) : null;
       return size === null
         ? { status: "differs", note: "The client always sends qty, the stack's size when the whole stack moves. This call has none, and the item is in no listing the pilot holds." }

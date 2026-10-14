@@ -1018,6 +1018,12 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
     res.status(400).json({ ok: false, error: "INVALID_AGENT", message: "A positive agentID is required." });
     return;
   }
+  // (An inventory is a thing's own, said by the thing's number, or the hangar of where the pilot is docked, said
+  // by its word: invCache.GetInventoryFromId(itemID) and invCache.GetInventory(const.containerHangar).)
+  if (objectKind === "inventory" && !((Number.isSafeInteger(body.of) && body.of > 0) || body.of === "hangar")) {
+    res.status(400).json({ ok: false, error: "INVALID_INVENTORY", message: "An inventory is a thing's own, said by its number, or \"hangar\"." });
+    return;
+  }
   // (A fleet's number as its routes take one: a whole number above nought, or the text of one.)
   if (objectKind === "fleetByNumber" && strictPositiveID(body.of) === null) {
     res.status(400).json({ ok: false, error: "INVALID_FLEET_ID", message: "A positive fleetID is required." });
@@ -1091,6 +1097,11 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
       : objectKind === "agent"
       ? { service: body.service, method: body.method, ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => boundCall(
         heldBridgeSession, req.webSessionID, agentBindSpec(body.of), body.method, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null)) }
+      // (A call on an inventory's own object goes by the bind an inventory's routes go by, held to where the pilot
+      // is docked as they held it.)
+      : objectKind === "inventory"
+      ? { service: body.service, method: body.method, ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => inventoryCall(
+        heldBridgeSession, req.webSessionID, body.of, body.method, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null)) }
       // (And a call on the system's scan manager, by the object its route went by.)
       : objectKind === "scanManager"
       ? { service: body.service, method: body.method, ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => systemScanCall(
@@ -1851,6 +1862,28 @@ async function assertDockedInventoryAccess(held, webSessionID, serviceID = 1) {
   }
   if (held.structureID) await assertStructureService(held, webSessionID, held.structureID, serviceID);
   return inventoryLocationID(held);
+}
+
+/**
+ * A call the client makes on an inventory's own object: what invCache.GetInventoryFromId(itemID) answered for a
+ * thing (a ship, a container, a customs office), or what invCache.GetInventory(const.containerHangar) answered
+ * for the hangar of where the pilot is docked. The page says which (bridgeCallPolicy.js, PAGE_OBJECT_CALLS:
+ * "inventory"): a thing's number, or "hangar". It is bound as the inventory's routes bound it: the pilot's own
+ * ship under the key its other reads share, the hangar only where the pilot is docked (it is asked for nowhere
+ * else, and is refused here elsewhere as the routes refused), and, for a pilot docked in a structure, held to
+ * that structure, so that a write asked there is not made after the pilot has left. boundCall reads the pilot's
+ * place again before every inventory write, whoever asks.
+ */
+async function inventoryCall(held, webSessionID, of, method, args, kwargs) {
+  let spec;
+  if (of === "hangar") {
+    await assertDockedInventoryAccess(held, webSessionID);
+    spec = hangarBindSpec(held);
+  } else {
+    spec = Number(of) === Number(held.activeShipID) ? cargoBindSpec(held, held.activeShipID) : containerBindSpec(Number(of));
+  }
+  if (held.structureID) spec = { ...spec, expectedDockedLocationID: inventoryLocationID(held) };
+  return boundCall(held, webSessionID, spec, method, args, kwargs);
 }
 
 // Bind spec factories for the semantic targets the page addresses.
@@ -4674,8 +4707,8 @@ app.post("/api/bridge/ship/board", requireAuth, async (req, res, next) => {
 //   read  slots      ship binding . ListByFlags(<every slot flag>)
 //   read  resources  dogmaIM.ShipGetInfo()        [top level, no bind]
 //   read  online     dogmaIM.ShipOnlineModules()  [top level, no bind]
-//   fit              ship binding . Add(moduleID, sourceID, {flag:<slot>})
-//   unfit            hangar/ship binding . Add(moduleID, shipID, {flag:4|5})
+//   fit              ship binding . Add(moduleID, sourceID, {flag:<slot>})  [the page's own call; no route]
+//   unfit            hangar/ship binding . Add(moduleID, shipID, {flag:4|5})  [the page's own call; no route]
 //   online/offline   dogmaIM.SetModuleOnline / TakeModuleOffline  [the page's own call; no route]
 //   remove a rig     ship binding . DestroyFitting(rigID)  -- DESTRUCTIVE
 //
@@ -4703,31 +4736,11 @@ const ALL_SLOT_FLAGS = Object.freeze([
   ...SLOT_FAMILY_FLAGS.rig,
   ...SLOT_FAMILY_FLAGS.subsystem,
 ]);
-// flag 0 is flagAutoFit: the SERVER picks the slot. The panel offers this as
-// "first free slot" so a player never has to think in slot numbers at all.
-const ITEM_FLAG_AUTO_FIT = 0;
 
 // The ship's resource attributes (CPU / powergrid / capacitor / calibration)
 // ride back in the raw ShipGetInfo result and are decoded browser side, like
 // every other retail-shaped read here — see web/src/bridge/fitting.ts for the
 // dogma attribute IDs and why the capacitor read is capacity-or-charge.
-
-// Resolve a browser-addressed slot ("high", index 2) to its flagID. `family`
-// "auto" (or a missing index) means let the server choose the slot.
-function resolveSlotFlag(family, index) {
-  if (family === "auto") {
-    return ITEM_FLAG_AUTO_FIT;
-  }
-  const flags = SLOT_FAMILY_FLAGS[family];
-  if (!flags) {
-    return null;
-  }
-  const numericIndex = Number(index);
-  if (!Number.isSafeInteger(numericIndex) || numericIndex < 0 || numericIndex >= flags.length) {
-    return null;
-  }
-  return flags[numericIndex];
-}
 
 /**
  * The pilot's own ship as dogma has it, in the shapes ShipGetInfo and
@@ -4862,129 +4875,13 @@ function decodeFittedSlotMap(result) {
   return byItemID;
 }
 
-/**
- * Did a fit land? The named itemID is checked first, then — because fitting a
- * unit out of a STACK mints a new row the caller cannot predict — whether any
- * slot that was empty before is occupied now.
- *
- * Both maps are itemID -> flagID, so "a slot filled" is read as a flagID that
- * was not present before. This is the same mint-at-destination problem the
- * inventory transfer route hits with wreck loot, answered the same way: judge
- * the OUTCOME, never the identity of the row.
- */
-function fitLanded(before, after, itemID) {
-  if (after.has(itemID)) {
-    return true;
-  }
-  const occupiedBefore = new Set(before.values());
-  for (const flagID of after.values()) {
-    if (!occupiedBefore.has(flagID)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// Fit a module from the station hangar or the ship's own cargo into a slot.
-// The bound object is the SHIP (the destination); the source location is the
-// station when fitting from the hangar and the ship when fitting from cargo.
-app.post("/api/bridge/fitting/fit", requireAuth, async (req, res, next) => {
-  const held = requireHeldBridgeSession(req, res);
-  if (!held) {
-    return;
-  }
-  const body = req.body || {};
-  const itemID = Number(body.itemID) || 0;
-  const source = String(body.source || "hangar");
-  const family = String(body.family || "auto");
-  const slotFlag = resolveSlotFlag(family, body.index);
-  if (itemID <= 0 || slotFlag === null || (source !== "hangar" && source !== "cargo")) {
-    res.status(400).json({
-      ok: false,
-      error: "INVALID_FIT",
-      message: "A module, a source of 'hangar' or 'cargo', and a real slot are required.",
-    });
-    return;
-  }
-  const shipID = held.activeShipID;
-  if (!shipID) {
-    res.status(409).json({ ok: false, error: "NO_ACTIVE_SHIP", message: "No active ship to fit to." });
-    return;
-  }
-  try {
-    const locationID = await assertDockedInventoryAccess(held, req.webSessionID, 2);
-    // The slots BEFORE, so a fit that arrives under a new itemID is still
-    // recognised. Fitting ONE module out of a STACK peels a unit off and mints
-    // a fresh row: measured live, fitting two turrets from a stack of three
-    // produced ids the caller had never seen while the stack fell 3 -> 1, and
-    // judging by `fitted.has(itemID)` called both successful fits a failure.
-    const before = await readFittedItemIDs(held, req.webSessionID, shipID);
-    const outcome = await boundCall(
-      held,
-      req.webSessionID,
-      held.structureID ? { ...cargoBindSpec(held, shipID), expectedDockedLocationID: locationID } : cargoBindSpec(held, shipID),
-      "Add",
-      [itemID, source === "cargo" ? shipID : locationID],
-      { qty: 1, flag: slotFlag },
-    );
-    // Verify: a silent decline is indistinguishable from success at the call
-    // seam, so the answer is what the SLOTS say afterwards.
-    const fitted = await readFittedItemIDs(held, req.webSessionID, shipID);
-    res.json({
-      ok: true,
-      applied: fitLanded(before, fitted, itemID),
-      notifications: outcome.notifications,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// Unfit a module back to the station hangar (docked) or the ship's cargo. The
-// same Add, reversed: the DESTINATION container is the bound object, the ship
-// is the source location, and the flag is the hangar/cargo flag.
-app.post("/api/bridge/fitting/unfit", requireAuth, async (req, res, next) => {
-  const held = requireHeldBridgeSession(req, res);
-  if (!held) {
-    return;
-  }
-  const body = req.body || {};
-  const itemID = Number(body.itemID) || 0;
-  const destination = String(body.destination || "hangar");
-  if (itemID <= 0 || (destination !== "hangar" && destination !== "cargo")) {
-    res.status(400).json({
-      ok: false,
-      error: "INVALID_UNFIT",
-      message: "A module and a destination of 'hangar' or 'cargo' are required.",
-    });
-    return;
-  }
-  const shipID = held.activeShipID;
-  if (!shipID) {
-    res.status(409).json({ ok: false, error: "NO_ACTIVE_SHIP", message: "No active ship to unfit from." });
-    return;
-  }
-  try {
-    const locationID = await assertDockedInventoryAccess(held, req.webSessionID, 2);
-    const destSpec = destination === "cargo" ? cargoBindSpec(held, shipID) : hangarBindSpec(held);
-    const outcome = await boundCall(
-      held,
-      req.webSessionID,
-      held.structureID ? { ...destSpec, expectedDockedLocationID: locationID } : destSpec,
-      "Add",
-      [itemID, shipID],
-      { qty: 1, flag: destination === "cargo" ? ITEM_FLAG_CARGO_HOLD : ITEM_FLAG_HANGAR },
-    );
-    const fitted = await readFittedItemIDs(held, req.webSessionID, shipID);
-    res.json({
-      ok: true,
-      applied: !fitted.has(itemID),
-      notifications: outcome.notifications,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
+// (A module is fitted and unfitted by the page's own call since 2026-10-13: invbroker.Add on the ship's own
+// inventory, or on the hangar's, and invbroker.MultiAdd on the ship's for one fitted to no slot of it, through the
+// generic call, with the slot's flag the page names and the page's own read of the slots before and after
+// (bridgeCallPolicy.js, PAGE_OBJECT_CALLS: "inventory"; web/src/bridge/fitModule.ts). The two routes that named
+// the flag and read the slots, POST /api/bridge/fitting/fit and .../unfit, are gone, and with them their check
+// of a structure's fitting service before the call: the client makes none before either call, and the server
+// refuses a fitting at a structure whose service is not to be had.)
 
 // (A module is put online and taken offline by the page's own call since 2026-10-13: dogmaIM.SetModuleOnline and
 // TakeModuleOffline through the generic call, with the ship the page's own fitting is of

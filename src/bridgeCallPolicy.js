@@ -446,8 +446,23 @@ function isBridgeWritePair(service, method) {
  *                                regionID), both off the order's row (quote.py 302). The handler
  *                                (marketProxyService.Handle_CancelCharOrder) reads the order's number alone,
  *                                loads that order for the session's own character, and refuses another's.
+ *
+ * And a module fitted and unfitted, since 2026-10-13: the first of the page's own calls on an inventory's own
+ * object (PAGE_OBJECT_CALLS, below: "inventory"). Each was a route (POST /api/bridge/fitting/fit and .../unfit)
+ * that named the slot's flag, read the ship's slots, made the one call on the inventory it had bound and read the
+ * slots again. The page names the flag, reads its slots itself, and makes the call
+ * (web/src/bridge/fitModule.ts):
+ *
+ *   invbroker.Add                clientDogmaLocation.TryFit (669 to 673): the ship's own inventory's
+ *                                Add(itemID, the place the item lies in, qty=1, flag=the slot's); and
+ *                                fittingSlotController.UnfitModule (217 to 243): the hangar's inventory's
+ *                                Add(moduleID, shipID, flag=flagHangar) docked, the ship's own Add(moduleID,
+ *                                shipID, qty=None, flag=flagCargo) in space.
+ *   invbroker.MultiAdd           fittingUtil.TryFit (117 to 157) and the fitting screen's FitModule (tryFit.py
+ *                                125 to 135): a module fitted to no slot of the ship's, the server to pick,
+ *                                shipInv.moniker.MultiAdd(itemIDs, sourceID, flag=flagAutoFit).
  */
-const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.Invite", "fleetObjectHandler.RejectInvite", "beyonce.BookmarkLocation", "dogmaIM.AddTarget", "dogmaIM.RemoveTarget", "dogmaIM.CancelAddTarget", "ship.ScoopDrone", "industryManager.CompleteJob", "industryManager.CancelJob", "beyonce.CmdWarpToStuff", "beyonce.CmdWarpToStuffAutopilot", "agentMgr.WarpToLocation", "dogmaIM.LaunchProbes", "scanMgr.RequestScans", "scanMgr.RecoverProbes", "scanMgr.ReconnectToLostProbes", "dogmaIM.SetModuleOnline", "dogmaIM.TakeModuleOffline", "agentMgr.DoAction", "agentMgr.RemoveOfferFromJournal", "entity.CmdReconnectToDrones", "marketProxy.CancelCharOrder"]);
+const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.Invite", "fleetObjectHandler.RejectInvite", "beyonce.BookmarkLocation", "dogmaIM.AddTarget", "dogmaIM.RemoveTarget", "dogmaIM.CancelAddTarget", "ship.ScoopDrone", "industryManager.CompleteJob", "industryManager.CancelJob", "beyonce.CmdWarpToStuff", "beyonce.CmdWarpToStuffAutopilot", "agentMgr.WarpToLocation", "dogmaIM.LaunchProbes", "scanMgr.RequestScans", "scanMgr.RecoverProbes", "scanMgr.ReconnectToLostProbes", "dogmaIM.SetModuleOnline", "dogmaIM.TakeModuleOffline", "agentMgr.DoAction", "agentMgr.RemoveOfferFromJournal", "entity.CmdReconnectToDrones", "marketProxy.CancelCharOrder", "invbroker.Add", "invbroker.MultiAdd"]);
 const pageWritePairKeySet = new Set(PAGE_WRITE_PAIR_KEYS);
 for (const pair of PAGE_WRITE_PAIR_KEYS) {
   if (!bridgeWritePairKeySet.has(pair)) throw new Error(`${pair} is among the page's writes and is no write.`);
@@ -596,15 +611,36 @@ function ordersAFollow(service, method) {
  *                                   the same object, with nothing: the session's own character's offer from
  *                                   that agent.
  *
+ * And one on an inventory's own object, of which there are many: the call says which.
+ *
+ *   invbroker.Add                   "inventory": a WRITE, a thing moved into an inventory (a module fitted or
+ *                                   unfitted: clientDogmaLocation.py 669 to 673, fittingSlotController.py 217 to
+ *                                   243). The client asks an inventory by the thing it is of,
+ *                                   invCache.GetInventoryFromId(itemID), or by const.containerHangar for the
+ *                                   hangar of where it is docked: `of` is a thing's number, or "hangar". The
+ *                                   BFF binds it as its routes bound it, and reads the pilot's place again
+ *                                   before the write as it does for every inventory write (src/server.js,
+ *                                   inventoryCall and boundCall). The server's handler
+ *                                   (invBrokerService.Handle_Add) takes the item, the place it is said to lie
+ *                                   in and the flag of the caller: asked live on 2026-10-13 for a stack that
+ *                                   was another pilot's, in the hangar of the station both were docked in, it
+ *                                   refused (FakeItemNotFound) and moved nothing.
+ *   invbroker.MultiAdd              "inventory": a WRITE, things moved into an inventory together (a module
+ *                                   fitted to no slot of the ship's: fittingUtil.py 157, tryFit.py 135). Its
+ *                                   handler (Handle_MultiAdd) moves each item by the same path as Add's, and
+ *                                   with it the same check of whose the item is (read, not asked live:
+ *                                   _moveSourceItemToDestination and _ensureInventoryCustodyTransferAccess).
+ *
  * A write among them is one of the page's own writes. A read is listed here only once its handler has been read
  * for what it takes from the caller: a planet's reads once answered with another owner's colony.
  */
-const PAGE_OBJECT_CALLS = Object.freeze({ "planetMgr.UserUpdateNetwork": "planet", "planetMgr.UserLaunchCommodities": "planet", "planetMgr.GetProgramResultInfo": "planet", "scanMgr.GetFullState": "scanManager", "scanMgr.RequestScans": "scanManager", "scanMgr.RecoverProbes": "scanManager", "scanMgr.ReconnectToLostProbes": "scanManager", "agentMgr.WarpToLocation": "agent", "agentMgr.DoAction": "agent", "agentMgr.RemoveOfferFromJournal": "agent", "charMgr.ListStations": "assets", "charMgr.ListStationItems": "assets", "fleetObjectHandler.LeaveFleet": "fleet", "fleetObjectHandler.CreateFleet": "fleet", "fleetObjectHandler.AcceptInvite": "fleetByNumber", "fleetObjectHandler.Invite": "fleetExpected", "fleetObjectHandler.RejectInvite": "fleetByNumber" });
+const PAGE_OBJECT_CALLS = Object.freeze({ "planetMgr.UserUpdateNetwork": "planet", "planetMgr.UserLaunchCommodities": "planet", "planetMgr.GetProgramResultInfo": "planet", "scanMgr.GetFullState": "scanManager", "scanMgr.RequestScans": "scanManager", "scanMgr.RecoverProbes": "scanManager", "scanMgr.ReconnectToLostProbes": "scanManager", "agentMgr.WarpToLocation": "agent", "agentMgr.DoAction": "agent", "agentMgr.RemoveOfferFromJournal": "agent", "invbroker.Add": "inventory", "invbroker.MultiAdd": "inventory","charMgr.ListStations": "assets", "charMgr.ListStationItems": "assets", "fleetObjectHandler.LeaveFleet": "fleet", "fleetObjectHandler.CreateFleet": "fleet", "fleetObjectHandler.AcceptInvite": "fleetByNumber", "fleetObjectHandler.Invite": "fleetExpected", "fleetObjectHandler.RejectInvite": "fleetByNumber" });
 /**
- * The objects there are many of, which a call says which of with `of`: a planet, and a fleet that is not the
- * session's own (the one an invitation names). A scan manager and the pilot's own fleet are the session's.
+ * The objects there are many of, which a call says which of with `of`: a planet, a fleet that is not the
+ * session's own (the one an invitation names), an agent, and an inventory (a thing's own, or the hangar's). A
+ * scan manager and the pilot's own fleet are the session's.
  */
-const OBJECTS_THE_PAGE_NAMES = Object.freeze(new Set(["planet", "fleetByNumber", "agent"]));
+const OBJECTS_THE_PAGE_NAMES = Object.freeze(new Set(["planet", "fleetByNumber", "agent", "inventory"]));
 /**
  * The objects the session has one of that a call may say the number of all the same, to be held to it: the
  * pilot's own fleet, where the invitation is to that fleet and no other. With no `of` it is the session's own.

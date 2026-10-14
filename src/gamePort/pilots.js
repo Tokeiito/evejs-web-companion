@@ -61,7 +61,7 @@ const { GAME_PORT_ONLY_CALLS, ON_AN_ANSWERED_OBJECT, ON_THE_PARK, couldBeAPilot,
 const { createPilotSpace } = require("./pilotSpace");
 const { bannedInChat } = require("./chatSpam");
 const { createPilotClock } = require("./pilotClock");
-const { EFFECT_CATEGORY, EFFECT_ONLINE, createPilotDogma, rowFields } = require("./pilotDogma");
+const { EFFECT_CATEGORY, EFFECT_ONLINE, createPilotDogma, inASlot, rowFields } = require("./pilotDogma");
 const { MAX_PROBES, createPilotScanner } = require("./pilotScanner");
 const { createPilotFleet } = require("./pilotFleet");
 const { createPilotStandings } = require("./pilotStandings");
@@ -4608,6 +4608,25 @@ function createGamePortPilots({
   }
 
   /**
+   * The slot of the ship the pilot is in that an item is fitted in, by its flag, as a listing the pilot holds has
+   * the item's row (INVENTORY_LISTINGS): what the client's fitting window knows of a module it shows fitted. Null
+   * for a thing that is in no slot of that ship, and for an item no listing held has.
+   */
+  function slotOfItem(entry, itemID) {
+    const wanted = positive(itemID);
+    const shipID = positive(attribute(entry, "shipid"));
+    if (wanted === null || shipID === null) return null;
+    for (const listing of entry.listings.answers()) {
+      for (const row of itemsOf(listing)) {
+        const fields = rowFields(row);
+        if (fields === null || positive(fields.itemID) !== wanted) continue;
+        return positive(fields.locationID) === shipID && inASlot(fields.flagID) ? fields.flagID : null;
+      }
+    }
+    return null;
+  }
+
+  /**
    * An item's row as the client's inventory cache would have it, from a listing the pilot holds
    * (INVENTORY_LISTINGS): the packed row the server listed, its text read as text, which the codec writes again as
    * the bytes it was read from. Null for an item no listing held has, and for a row that is no packed row.
@@ -4650,6 +4669,8 @@ function createGamePortPilots({
       stackSize: (itemID) => stackSizeOf(entry, itemID),
       // invCache: the item's own row, as a listing has it.
       itemRow: (itemID) => rowOfItem(entry, itemID),
+      // The slot of the pilot's ship a listing has the item fitted in, and none for a thing in no slot of it.
+      slotOf: (itemID) => slotOfItem(entry, itemID),
       // marketQuote.GetMyOrders: one of the pilot's own orders, as its row has it.
       ownOrder: (orderID) => ownOrderOf(entry, orderID),
       // marketQuote.GetBrokersFeeCommissionFromStationID: the rate the client names with an order there.

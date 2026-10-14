@@ -652,7 +652,7 @@
 
   function unfit(itemID: number): void {
     void run(async () => {
-      await flow.unfitModule(itemID, "hangar");
+      await flow.unfitModule(itemID);
       selected = null;
       await flow.loadInventory();
     });

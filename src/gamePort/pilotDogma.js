@@ -170,6 +170,8 @@ const SLOTS = Object.freeze([[11, 34], [92, 94], [125, 128], [164, 171], [156, 1
 const KEPT_READY = Object.freeze([[87, 87], [159, 163]]);
 const within = (ranges, flagID) => ranges.some(([first, last]) => flagID >= first && flagID <= last);
 const isFittedAt = (flagID) => within(SLOTS, flagID) || within(KEPT_READY, flagID);
+/** A flag that is one of a ship's slots (SLOTS): where a module, a rig or a subsystem is fitted. */
+const inASlot = (flagID) => typeof flagID === "number" && within(SLOTS, flagID);
 /** godma.chargedAttributeTauCaps: a recharging attribute, the attribute that is its recharge time, and the one that is its capacity. */
 const CHARGED = new Map([
   [ATTRIBUTE.CHARGE, [ATTRIBUTE.RECHARGE_RATE, ATTRIBUTE.CAPACITOR_CAPACITY]],
@@ -858,4 +860,4 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
   };
 }
 
-module.exports = { ATTRIBUTE, CHARGED, DGM_TAU_CONSTANT, EFFECT_CATEGORY, EFFECT_ONLINE, HEAT, calculateHeat, chargeValue, createPilotDogma, filetimeNow, rowFields };
+module.exports = { ATTRIBUTE, CHARGED, DGM_TAU_CONSTANT, EFFECT_CATEGORY, EFFECT_ONLINE, HEAT, calculateHeat, chargeValue, createPilotDogma, filetimeNow, inASlot, rowFields };
