@@ -845,6 +845,71 @@ export function welcomeMailOf(answer: JsonValue): WelcomeMail | null {
   return first === undefined ? null : { title: toText(readKeyVal(first, "title")), body: toText(readKeyVal(first, "body")) };
 }
 
+/** How the mail window shows a mail (MailEntry.LoadMailEntry, evemail.py 1449 to 1468): not read; else replied, then forwarded; else read. */
+export type MailRowState = "unread" | "replied" | "forwarded" | "read";
+
+export function mailRowState(status: MailStatusRow | undefined): MailRowState {
+  if (status === undefined || !status.read) {
+    return "unread";
+  }
+  if ((status.statusMask & MAIL_STATUS_REPLIED) !== 0) {
+    return "replied";
+  }
+  return (status.statusMask & MAIL_STATUS_FORWARDED) !== 0 ? "forwarded" : "read";
+}
+
+/**
+ * A mail's one recipient as the Sent folder names it (mailSvc.GetRecipient, 638 to 672): more than one counted with
+ * its list and its corporation; else its first pilot, its corporation or alliance, or its list.
+ */
+export type MailRecipient =
+  | { readonly kind: "multiple" }
+  | { readonly kind: "character"; readonly id: number }
+  | { readonly kind: "corporation"; readonly id: number }
+  | { readonly kind: "list"; readonly listID: number }
+  | { readonly kind: "none" };
+
+export function mailRecipientOf(header: MailHeaderRow): MailRecipient {
+  const count = header.toCharacterIDs.length + (header.toCorpOrAllianceID !== null ? 1 : 0) + (header.toListID !== null ? 1 : 0);
+  if (count > 1) {
+    return { kind: "multiple" };
+  }
+  const firstPilot = header.toCharacterIDs[0];
+  if (firstPilot !== undefined) {
+    return { kind: "character", id: firstPilot };
+  }
+  if (header.toCorpOrAllianceID !== null) {
+    return { kind: "corporation", id: header.toCorpOrAllianceID };
+  }
+  return header.toListID !== null ? { kind: "list", listID: header.toListID } : { kind: "none" };
+}
+
+/** How many mails a page of the mail window shows (evemail.py DEFAULTNUMMAILS, 64; the mail settings' MAILS_PER_PAGE). */
+export const MAILS_PER_PAGE = 30;
+
+/** A folder's mails as the window sorts them by Received, its default (mailSvc.py PrepareOrder and DoSort, 570 to 606): the newest first. */
+export function mailsNewestFirst(rows: readonly MailHeaderRow[]): readonly MailHeaderRow[] {
+  return [...rows].sort((left, right) => right.messageID - left.messageID);
+}
+
+/**
+ * GetLabelText (evemail.py 697 to 714): the names of a mail's labels (GetLabelMaskAsList, mailSvc.py 236 to 247), the
+ * window's four by their words over the pilot's own (GetAllLabels, 681 to 710), sorted, joined by ", ".
+ */
+export function mailLabelText(labelMask: number, ownLabels: readonly MailLabel[], fourNames: ReadonlyMap<number, string>): string {
+  const names: string[] = [];
+  for (let bit = 1; bit > 0 && bit <= labelMask; bit *= 2) {
+    if ((labelMask & bit) === 0) {
+      continue;
+    }
+    const name = fourNames.get(bit) ?? ownLabels.find((label) => label.labelID === bit)?.name;
+    if (name !== undefined) {
+      names.push(name);
+    }
+  }
+  return names.sort((left, right) => (left < right ? -1 : left > right ? 1 : 0)).join(", ");
+}
+
 /** A list off the wire, its items; anything else, none. */
 function itemsOf(value: JsonValue | undefined): readonly JsonValue[] {
   return Array.isArray(value) ? value : listItems(value);

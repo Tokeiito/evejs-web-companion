@@ -47,6 +47,11 @@
     MAILING_LIST_BLOCKED,
     type OwnerMatch,
     MAIL_MAX_TAGGED_BODY,
+    MAILS_PER_PAGE,
+    mailLabelText,
+    mailRecipientOf,
+    mailRowState,
+    mailsNewestFirst,
   } from "../bridge/mail.ts";
   import { MAIL_QUOTE_LABELS, mailBodyLines, mailMarkupOfTyped, mailQuoteMarkup } from "../bridge/mailMarkup.ts";
   import { pyIntDictOrder } from "../bridge/pyDict.ts";
@@ -136,6 +141,15 @@
   const unreadCounts = $derived(unreadByLabel($mail));
   const ownLabels = $derived([...($mail.labels ?? [])].sort((left, right) => left.name.toLowerCase().localeCompare(right.name.toLowerCase())));
   const shownMessages = $derived(viewingList !== null ? mailsOfList($mail, viewingList) : mailsInFolder($mail, folder));
+  /** The page of the folder shown (the window's startPos), the first as a folder is shown; newest first, thirty to a page. */
+  let mailPage = $state(0);
+  const sortedMessages = $derived(mailsNewestFirst(shownMessages));
+  const mailPages = $derived(Math.max(1, Math.ceil(sortedMessages.length / MAILS_PER_PAGE)));
+  const pageShown = $derived(Math.min(mailPage, mailPages - 1));
+  const pageMessages = $derived(sortedMessages.slice(pageShown * MAILS_PER_PAGE, (pageShown + 1) * MAILS_PER_PAGE));
+  /** The Sent folder names a mail's recipient where any other names its sender (RefreshMsgScrollHeaders, evemail.py 656 to 672). */
+  const inSent = $derived(viewingList === null && folder === MAIL_FOLDER_SENT);
+  const statusByID = $derived(new Map($mail.statuses.map((status) => [status.messageID, status] as const)));
   const listUnread = $derived(unreadByList($mail));
   /** The lists joined, by name (GetMaillistSubContent). */
   const joinedLists = $derived([...($mail.lists ?? [])].sort((left, right) => left.displayName.toLowerCase().localeCompare(right.displayName.toLowerCase())));
@@ -1032,6 +1046,116 @@
     });
   }
 
+  /** The mail list's words, by their labels (LoadMails 640 to 645; RefreshMsgScrollHeaders; MailEntry; GetAllLabels). */
+  const LIST_WORDS = {
+    status: "UI/Mail/Status",
+    sender: "UI/Mail/Sender",
+    recipient: "UI/Mail/Recipient",
+    subject: "UI/Mail/Subject",
+    received: "UI/Mail/Received",
+    dateSent: "UI/Mail/DateSent",
+    labels: "UI/Mail/Labels",
+    unread: "UI/Mail/Unread",
+    read: "UI/Mail/Read",
+    replied: "UI/Mail/Replied",
+    forwarded: "UI/Mail/Forwarded",
+    multiple: "UI/Mail/Multiple",
+    noMails: "UI/Mail/NoMailsFound",
+    previous: "UI/Common/Previous",
+    next: "UI/Common/Next",
+    labelAlliance: "UI/Mail/LabelAlliance",
+    labelCorp: "UI/Mail/LabelCorp",
+    labelInbox: "UI/Mail/LabelInbox",
+    labelSent: "UI/Mail/LabelSent",
+  } as const;
+  /** The window's four labels by their words, as the Labels column names them (GetAllLabels, mailSvc.py 681 to 710). */
+  const fourLabelNames = $derived(
+    new Map<number, string>([
+      [MAIL_FOLDER_ALLIANCE, word(LIST_WORDS.labelAlliance, "[Alliance]")],
+      [MAIL_FOLDER_CORPORATION, word(LIST_WORDS.labelCorp, "[Corp]")],
+      [MAIL_FOLDER_INBOX, word(LIST_WORDS.labelInbox, "Inbox")],
+      [MAIL_FOLDER_SENT, word(LIST_WORDS.labelSent, "Sent")],
+    ]),
+  );
+
+  /** A mail's Status as the window writes it (MailEntry.LoadMailEntry: its icon's hint). */
+  function stateWord(messageID: number): string {
+    const state = mailRowState(statusByID.get(messageID));
+    return state === "unread" ? word(LIST_WORDS.unread, "Unread") : state === "replied" ? word(LIST_WORDS.replied, "Replied") : state === "forwarded" ? word(LIST_WORDS.forwarded, "Forwarded") : word(LIST_WORDS.read, "Read");
+  }
+
+  /** A mail's name column (GetMsgEntry, 678 to 681): its sender, or in the Sent folder its recipient (GetRecipient). */
+  function nameCell(header: MailHeaderRow): string {
+    if (!inSent) {
+      return senderName(header);
+    }
+    const recipient = mailRecipientOf(header);
+    switch (recipient.kind) {
+      case "multiple":
+        return word(LIST_WORDS.multiple, "[Multiple]");
+      case "character":
+        return personName(recipient.id);
+      case "corporation":
+        return ownerName(recipient.id);
+      case "list":
+        return listName(recipient.listID) ?? "a mailing list";
+      default:
+        return "";
+    }
+  }
+
+  /** A mail's Labels column (GetLabelText). */
+  function labelsText(header: MailHeaderRow): string {
+    return mailLabelText(statusByID.get(header.messageID)?.labelMask ?? 0, $mail.labels ?? [], fourLabelNames);
+  }
+
+  /** FmtDate(sentDate, 'ls'), as the list writes a mail's date (GetMsgEntry, 677). */
+  function dateText(sentDate: bigint | null): string {
+    if (sentDate === null) {
+      return "";
+    }
+    const nameOf = (kind: Parameters<typeof resolvedName>[1], id: number) => resolvedName($names.resolved, kind, id, "");
+    return plainText(formatTemplate(word(DATE_LABEL, "{[datetime]datetime}"), { datetime: String(sentDate) }, { nameOf }));
+  }
+
+  /** A folder shown, from its first page (the window's startPos 0). */
+  function showFolder(id: number | null): void {
+    folder = id;
+    viewingList = null;
+    mailPage = 0;
+    nameSentLists();
+  }
+
+  /** A mailing list's mails shown, from their first page (LoadMailinglistMails, evemail.py 529 to 534). */
+  function showList(listID: number): void {
+    viewingList = listID;
+    mailPage = 0;
+  }
+
+  /** BrowseMail: the page before or after. */
+  function turnMailPage(change: number): void {
+    mailPage = pageShown + change;
+    nameSentLists();
+  }
+
+  /** The Sent folder's page drawn (GetMsgEntry, 678 to 679): a list that is a mail's one recipient named, asked where not known (GetDisplayName). */
+  function nameSentLists(): void {
+    if (!inSent) {
+      return;
+    }
+    const unnamed = [...new Set(pageMessages.flatMap((header) => {
+      const recipient = mailRecipientOf(header);
+      return recipient.kind === "list" && listName(recipient.listID) === null ? [recipient.listID] : [];
+    }))];
+    if (unnamed.length > 0) {
+      void run(async () => {
+        for (const listID of unnamed) {
+          await flow.nameMailingList(listID);
+        }
+      });
+    }
+  }
+
   onMount(() => {
     flow.requestWords([
       ...Object.values(MAIL_QUOTE_LABELS), DATE_LABEL, ...Object.values(FOLDER_WORDS), ...Object.values(WRITE_WORDS), ...Object.values(FOLDER_WRITE_WORDS),
@@ -1044,6 +1168,7 @@
       "dialog:PICKERRORNOTIFY/title",
       "dialog:PICKERRORNOTIFY/body",
       ...Object.values(WELCOME_WORDS),
+      ...Object.values(LIST_WORDS),
       "dialog:NoSubject/title",
       "dialog:NoSubject/body",
       "dialog:MailingListNoSuchList/title",
@@ -1353,14 +1478,14 @@
       <!-- The window's folders, then the pilot's labels by name (evemail.py LoadLeftSide), whatever the mailbox holds. -->
       <nav class="mail-folders">
         {#each SYSTEM_FOLDERS as [id, label, own] (label)}
-          <button type="button" class:active={viewingList === null && folder === id} class:mail-bold={folderUnread(id) > 0} onclick={() => { folder = id; viewingList = null; }}>
+          <button type="button" class:active={viewingList === null && folder === id} class:mail-bold={folderUnread(id) > 0} onclick={() => showFolder(id)}>
             {folderText(word(label, own), id)}
           </button>
         {/each}
         {#if ownLabels.length > 0}
           <span class="mail-folders-group">{word(FOLDER_WORDS.labels, "Labels")}</span>
           {#each ownLabels as label (label.labelID)}
-            <button type="button" class:active={viewingList === null && folder === label.labelID} class:mail-bold={folderUnread(label.labelID) > 0} onclick={() => { folder = label.labelID; viewingList = null; }}>
+            <button type="button" class:active={viewingList === null && folder === label.labelID} class:mail-bold={folderUnread(label.labelID) > 0} onclick={() => showFolder(label.labelID)}>
               {folderText(label.name, label.labelID)}
             </button>
           {/each}
@@ -1369,7 +1494,7 @@
           <span class="mail-folders-group">{word(FOLDER_WORDS.lists, "Mailing Lists")}</span>
           {#each joinedLists as list (list.listID)}
             {@const unread = listUnread.get(list.listID) ?? 0}
-            <button type="button" class:active={viewingList === list.listID} class:mail-bold={unread > 0} onclick={() => (viewingList = list.listID)}>
+            <button type="button" class:active={viewingList === list.listID} class:mail-bold={unread > 0} onclick={() => showList(list.listID)}>
               {unread > 0 ? filledWord(FOLDER_WORDS.withCount, "{folderName} ({unreadCount})", { folderName: list.displayName, unreadCount: String(unread) }) : list.displayName}
             </button>
           {/each}
@@ -1437,33 +1562,31 @@
           </button>
         {/if}
       </p>
-      {#if $mail.messages.length === 0}
-        <p class="empty">You have no mail.</p>
-      {:else if shownMessages.length === 0}
-        <p class="empty">Nothing in this folder.</p>
+      {#if shownMessages.length === 0}
+        <p class="empty">{word(LIST_WORDS.noMails, "No Mails Found")}</p>
       {:else}
       <div class="table-wrap overflow-x-auto">
         <table class="guests reflow">
+          <!-- The window's columns (LoadMails, 640 to 645): Status, Sender (Recipient in the Sent folder), Subject,
+               Received (Date Sent in the Sent folder), Labels; an unread mail in bold (MailEntry.UpdateLabel). -->
           <thead>
             <tr>
-              <th>From</th>
-              <th>Subject</th>
-              <th>To</th>
-              <th>Arrived</th>
-              <th>Status</th>
+              <th>{word(LIST_WORDS.status, "Status")}</th>
+              <th>{inSent ? word(LIST_WORDS.recipient, "Recipient") : word(LIST_WORDS.sender, "Sender")}</th>
+              <th>{word(LIST_WORDS.subject, "Subject")}</th>
+              <th>{inSent ? word(LIST_WORDS.dateSent, "Date Sent") : word(LIST_WORDS.received, "Received")}</th>
+              <th>{word(LIST_WORDS.labels, "Labels")}</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
-            {#each shownMessages as header (header.messageID)}
-              <tr class:unread={isUnread(header.messageID)}>
-                <td data-label="From">{senderName(header)}</td>
-                <td data-label="Subject">{header.title || "(no subject)"}</td>
-                <td data-label="To">{audienceText(header)}</td>
-                <td data-label="Arrived">{whenText(header.sentDate)}</td>
-                <td data-label="Status">
-                  {isUnread(header.messageID) ? "Unread" : "Read"}
-                </td>
+            {#each pageMessages as header (header.messageID)}
+              <tr class:unread={isUnread(header.messageID)} class:mail-bold={isUnread(header.messageID)}>
+                <td data-label={word(LIST_WORDS.status, "Status")}>{stateWord(header.messageID)}</td>
+                <td data-label={inSent ? word(LIST_WORDS.recipient, "Recipient") : word(LIST_WORDS.sender, "Sender")}>{nameCell(header)}</td>
+                <td data-label={word(LIST_WORDS.subject, "Subject")}>{header.title}</td>
+                <td data-label={inSent ? word(LIST_WORDS.dateSent, "Date Sent") : word(LIST_WORDS.received, "Received")}>{dateText(header.sentDate)}</td>
+                <td data-label={word(LIST_WORDS.labels, "Labels")}>{labelsText(header)}</td>
                 <td data-label="">
                   <div class="row-actions">
                     <button type="button" disabled={busy} onclick={() => open(header.messageID)}>
@@ -1525,6 +1648,19 @@
           </tbody>
         </table>
       </div>
+      <!-- ShowHideBrowse (716 to 736): Previous where there is a page before, Next where there is one after, and the
+           page of the pages where either is. -->
+      {#if pageShown > 0 || (pageShown + 1) * MAILS_PER_PAGE < sortedMessages.length}
+        <p class="controls">
+          {#if pageShown > 0}
+            <button type="button" class="minor" disabled={busy} onclick={() => turnMailPage(-1)}>{word(LIST_WORDS.previous, "Previous")}</button>
+          {/if}
+          {#if (pageShown + 1) * MAILS_PER_PAGE < sortedMessages.length}
+            <button type="button" class="minor" disabled={busy} onclick={() => turnMailPage(1)}>{word(LIST_WORDS.next, "Next")}</button>
+          {/if}
+          <span>{pageShown + 1}/{mailPages}</span>
+        </p>
+      {/if}
       {/if}
     {/if}
 

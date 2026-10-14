@@ -1051,6 +1051,8 @@ export interface AppFlow {
   leaveMailingList(listID: number): Promise<void>;
   /** Delete a mailing list of the pilot's own, as its menu's Delete does. */
   deleteMailingList(listID: number): Promise<void>;
+  /** A mailing list by its name as the client's lists service names it (GetDisplayName): asked of the server where not known; null for none. */
+  nameMailingList(listID: number): Promise<string | null>;
   /** A mailing list's settings, asked as its management window asks them: null where it answered none. */
   readMailingListSettings(listID: number): Promise<MailingListSettings | null>;
   /** A mailing list's members and their places, asked as its management window's Members tab asks them. */
@@ -16002,6 +16004,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     createMailingList,
     leaveMailingList,
     deleteMailingList,
+    nameMailingList: mailingListName,
     readMailingListSettings,
     readMailingListMembers,
     setMailingListMembers,
