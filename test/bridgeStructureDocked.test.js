@@ -297,10 +297,13 @@ test("on the game port the reprocessing plant's quote has the hangar listed for 
   assert.deepEqual(own.calls.boundCall.slice(asked).map((call) => [call.method, call.args, call.boundHandle]),
     [["List", [FLAG_HANGAR], HANGAR], ["List", [134], SHIP], ["List", [135], SHIP], ["List", [181], SHIP], ["List", [182], SHIP], ["List", [FLAG_CARGO], SHIP], ["GetQuotes", [[101]], PLANT]]);
 
-  // The reprocessing: each item as of its own place (the structure's hangar; the ship), for the pilot, to the
-  // structure's hangar by name.
-  const done = await ask("/api/bridge/reprocessing/reprocess", { method: "POST", body: { itemIDs: [100, 101], confirm: true } });
-  assert.equal(done.status, 200, JSON.stringify(done.payload));
+  // The reprocessing, as the page makes it since 2026-10-14 (web/src/bridge/reprocessWrites.ts): each item as of
+  // its own place (the structure's hangar; the ship), for the pilot, to the structure's hangar by name, on the plant.
+  const refine = (itemIDs, place) => ask("/api/bridge/call", { method: "POST", body: { service: "reprocessingSvc", method: "Reprocess", args: [itemIDs, place, 7, STRUCTURE_ID, FLAG_HANGAR], kwargs: null, pilot: true, confirm: true } });
+  for (const [itemIDs, place] of [[[100], STRUCTURE_ID], [[101], SHIP_ID]]) {
+    const done = await refine(itemIDs, place);
+    assert.equal(done.status, 200, JSON.stringify(done.payload));
+  }
   assert.deepEqual(bound("Reprocess"), [
     ["reprocessingSvc", [[100], STRUCTURE_ID, 7, STRUCTURE_ID, FLAG_HANGAR], null, PLANT],
     ["reprocessingSvc", [[101], SHIP_ID, 7, STRUCTURE_ID, FLAG_HANGAR], null, PLANT],
@@ -309,10 +312,10 @@ test("on the game port the reprocessing plant's quote has the hangar listed for 
   // A structure with no reprocessing for the pilot: neither is asked of the plant.
   state.answer = services(1, 2, 3, 8);
   const before = own.calls.boundCall.length;
-  for (const [path, options] of [["/api/bridge/reprocessing/quote?itemIDs=100", {}], ["/api/bridge/reprocessing/reprocess", { method: "POST", body: { itemIDs: [100], confirm: true } }]]) {
-    const refused = await ask(path, options);
-    assert.deepEqual([refused.status, refused.payload.error], [409, "STRUCTURE_SERVICE_UNAVAILABLE"], path);
-  }
+  const refusedQuote = await ask("/api/bridge/reprocessing/quote?itemIDs=100");
+  assert.deepEqual([refusedQuote.status, refusedQuote.payload.error], [409, "STRUCTURE_SERVICE_UNAVAILABLE"]);
+  const refusedRefining = await refine([100], STRUCTURE_ID);
+  assert.deepEqual([refusedRefining.status, refusedRefining.payload.error], [409, "STRUCTURE_SERVICE_UNAVAILABLE"]);
   assert.equal(own.calls.boundCall.length, before);
   assert.deepEqual([other.calls.call, other.calls.bind, other.calls.boundCall], [[], [], []]);
 });
