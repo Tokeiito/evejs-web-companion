@@ -20,6 +20,10 @@
 //   costs rung 7 nothing: a tick on which rung 7 has a real call is simply not
 //   counted towards the swap's persistence.
 //
+//   A CLEAR GRID (operator, 2026-10-14) touches both: an empty gun's choice
+//   changes, and every loaded gun is topped up once. See the section of that
+//   name below.
+//
 // ⚠ BANKED GUNS ARE ONE UNIT. The server expands a bank master to every linked
 // module (`_expandGroupedModuleIDs`), and a bank shares one charge type, so a
 // bank is ranked once, remembered once (keyed by its master) and loaded with
@@ -71,6 +75,7 @@ import {
   appliedDamage,
   decideSwap,
   layerUnderFire,
+  rankByVersatility,
   rankCharges,
   type ChargeOption,
   type Resonances,
@@ -174,9 +179,17 @@ export interface CompanionAmmoMemory {
   readonly targetID: number | null;
   /** Per gun, its last measured loaded reach. Bounded by the rack. */
   readonly lastLoaded: Readonly<Record<number, LoadedReachRecord>>;
+  /**
+   * The guns already reloaded on THIS clear grid (see "A clear grid" below), so
+   * each is asked once per clear. Emptied when a fight starts again. Bounded
+   * by the rack.
+   */
+  readonly clearGridToppedUp: readonly number[];
 }
 
-export const FRESH_COMPANION_AMMO: CompanionAmmoMemory = Object.freeze({ swap: {}, targetID: null, lastLoaded: {} });
+export const FRESH_COMPANION_AMMO: CompanionAmmoMemory = Object.freeze({
+  swap: {}, targetID: null, lastLoaded: {}, clearGridToppedUp: [],
+});
 
 function ammoOf(memory: CompanionLadderMemory): CompanionAmmoMemory {
   // Defensive: a memory built before this field existed reads as fresh.
@@ -341,6 +354,307 @@ export function emptyGunAmmo(obs: FleetCompanionObservation, memory: CompanionLa
       const charge = pick(moduleID, charges);
       return { charge, rule: charge === null ? "largest" : "ranked" };
     },
+  };
+}
+
+// ─── A clear grid ────────────────────────────────────────────────────────────
+//
+// ⚠ OPERATOR RULE (2026-10-14): "When the companion determines that the grid is
+// clear and decides to recall drones if they have them, it should as well
+// reload weapons. Just reload all. If no ammo left at all and they are empty,
+// reload the one which is most versatile." And, the same day: the most
+// versatile charge only when EVERY gun is empty; otherwise an empty gun whose
+// own charge is gone follows the charge the other guns have loaded.
+//
+// "The grid is clear" is the moment the drone rung brings the drones home for
+// good: `hostileOnGrid === false`, a confident false and never a `null` (a
+// snapshot that stumbled). The ladder computes it once (`gridSeenClear`) and
+// hands the answer in, so there is one definition and not two.
+//
+// Two halves, at the two places the ladder already loads ammunition:
+//
+//   EMPTY GUNS (`clearGridEmptyGunPick`, from `decideReload`, above rung 7).
+//   Only WHICH stack changes; the reload rung's budget and banking stand. In
+//   order: the gun's own last charge if any is left; else the charge most of
+//   the OTHER loaded guns that take the same charges carry; else the most
+//   versatile charge aboard (`rankByVersatility`). Nothing that fits: nothing
+//   is loaded and the rung says so.
+//
+//   LOADED GUNS (`decideClearGridTopUp`, below rung 7). A LoadAmmo naming the
+//   charge a gun already has, from the cargo stack of that type.
+//
+// ⚠ SERVER FACT, READ IN eve.js (`Handle_LoadAmmo`, dogmaService/
+// moduleOperation.js): in space, a LoadAmmo with the SAME charge type is a
+// top-up. A gun whose magazine is already full is skipped outright (no reload,
+// nothing changes); a gun with a reload already pending keeps that one
+// (`_queuePendingModuleReload` answers `alreadyPending`); any other gun queues
+// a reload that, when it completes, merges cargo rounds into the loaded stack
+// up to capacity. That is why this half needs no magazine capacity, which the
+// observation does not carry: the server is the one that knows a gun is full,
+// and asking a full one costs a call and nothing else. It is also why it is
+// once per gun per clear -- a reload is seconds of a gun that cannot fire,
+// which is only free on a grid with nothing left to shoot.
+
+/** The charge groups a gun takes; null when unknown, which is never "none". */
+function acceptedGroupsOf(
+  obs: FleetCompanionObservation,
+  moduleID: number,
+  weapon: CombatWeapon | null,
+): readonly number[] | null {
+  const accepted = obs.weaponChargeGroups?.[moduleID] ?? weapon?.acceptedGroups ?? null;
+  return accepted === null || accepted.length === 0 ? null : accepted;
+}
+
+/**
+ * The biggest stack, ties on the lower item id -- the reload rung's own
+ * `largestStack` rule, restated here because the ladder file cannot be
+ * imported for a value from this one.
+ */
+function largestOf(charges: readonly CompanionCargoCharge[]): CompanionCargoCharge | null {
+  let best: CompanionCargoCharge | null = null;
+  for (const charge of charges) {
+    if (charge.quantity <= 0) continue;
+    if (best === null || charge.quantity > best.quantity ||
+      (charge.quantity === best.quantity && charge.itemID < best.itemID)) {
+      best = charge;
+    }
+  }
+  return best;
+}
+
+/** How a clear-grid choice was made, for the readout. */
+export type ClearGridRule = "own" | "match" | "versatile";
+
+export interface ClearGridPick {
+  /** The stack to load; null for "nothing-fits" and "unknown". */
+  readonly charge: CompanionCargoCharge | null;
+  /**
+   * How it was chosen. "nothing-fits": the gun's charge groups are known and
+   * no stack aboard is one of them. "unknown": the groups (or a stack's group)
+   * could not be read, so the reload rung's own rule applies instead.
+   */
+  readonly rule: ClearGridRule | "nothing-fits" | "unknown";
+}
+
+/**
+ * Which stack an EMPTY gun takes on a clear grid. See "A clear grid" above for
+ * the order; `emptyIDs` is the rung's empty list, so a gun that is empty is
+ * never counted as one the others "carry".
+ *
+ * ⚠ "CANNOT SAY" STAYS NEUTRAL, as everywhere in the reload rung: a gun with no
+ * known group list, or a cargo stack whose group was not decoded, is "unknown"
+ * and goes back to the rung's own rule -- never a "nothing fits" readout that
+ * nothing measured. A stack's SIZE only excludes it when both sizes are known.
+ *
+ * ⚠ "THE OTHER GUNS" ARE THE ONES THAT TAKE THE SAME CHARGES: the same module
+ * type, or a known group list sharing a group with this gun's. Only charges
+ * still aboard are counted; the most carried wins, ties to the larger total in
+ * cargo, then the lower type id. A charge they carry that is gone from cargo
+ * does not stop the next most carried one being matched; when none of theirs
+ * is aboard (or every gun is empty) it is the most versatile.
+ */
+export function clearGridEmptyGunPick(
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+  moduleID: number,
+  charges: readonly CompanionCargoCharge[],
+  emptyIDs: readonly number[],
+): ClearGridPick {
+  const weapons = obs.combatWeapons?.weapons ?? [];
+  const weapon = weapons.find((row) => row.itemID === moduleID) ?? null;
+  const accepted = acceptedGroupsOf(obs, moduleID, weapon);
+  if (accepted === null) {
+    return { charge: null, rule: "unknown" };
+  }
+  const gunSize = weapon?.chargeSize ?? null;
+  const compatible = charges.filter((charge) => {
+    if (charge.quantity <= 0 || charge.groupID === null || !accepted.includes(charge.groupID)) {
+      return false;
+    }
+    const size = chargeFactsOf(obs, charge.typeID)?.size ?? null;
+    return gunSize === null || size === null || size === gunSize;
+  });
+  if (compatible.length === 0) {
+    const undecoded = charges.some((charge) => charge.quantity > 0 && charge.groupID === null);
+    return { charge: null, rule: undecoded ? "unknown" : "nothing-fits" };
+  }
+
+  // 1. Its own last charge, if any of it is left.
+  const last = ammoOf(memory).lastLoaded[moduleID] ?? null;
+  if (last !== null) {
+    const own = largestOf(compatible.filter((charge) => charge.typeID === last.chargeTypeID));
+    if (own !== null) {
+      return { charge: own, rule: "own" };
+    }
+  }
+
+  // 2. The charge the other loaded guns that take the same charges carry.
+  const empty = new Set(emptyIDs);
+  const counts = new Map<number, number>();
+  for (const peer of weapons) {
+    if (peer.itemID === moduleID || empty.has(peer.itemID) || peer.chargeTypeID === null ||
+      !((peer.chargeQuantity ?? 0) > 0)) {
+      continue;
+    }
+    const peerGroups = acceptedGroupsOf(obs, peer.itemID, peer);
+    const sameCharges = (weapon !== null && peer.typeID === weapon.typeID) ||
+      (peerGroups !== null && peerGroups.some((group) => accepted.includes(group)));
+    const typeID = peer.chargeTypeID;
+    if (sameCharges && compatible.some((charge) => charge.typeID === typeID)) {
+      counts.set(typeID, (counts.get(typeID) ?? 0) + 1);
+    }
+  }
+  const aboard = (typeID: number): number =>
+    compatible.filter((charge) => charge.typeID === typeID).reduce((sum, charge) => sum + charge.quantity, 0);
+  let matched: number | null = null;
+  for (const [typeID, count] of counts) {
+    if (matched === null) {
+      matched = typeID;
+      continue;
+    }
+    const best = counts.get(matched) ?? 0;
+    if (count > best || (count === best && (aboard(typeID) > aboard(matched) ||
+      (aboard(typeID) === aboard(matched) && typeID < matched)))) {
+      matched = typeID;
+    }
+  }
+  if (matched !== null) {
+    const typeID = matched;
+    const stack = largestOf(compatible.filter((charge) => charge.typeID === typeID));
+    if (stack !== null) {
+      return { charge: stack, rule: "match" };
+    }
+  }
+
+  // 3. The most versatile charge aboard. Reach is scaled off the gun's last
+  // measured charge when there is one; without it reach is unknown and the
+  // ranking falls to damage, then the biggest stack (see `rankByVersatility`).
+  const gun: LoadedGunReach = last === null
+    ? { reachM: null, optimalM: null, turret: null }
+    : { reachM: last.reachM, optimalM: last.optimalM, turret: last.turret };
+  const options = compatible.map((charge) => optionFor(charge, gun, last?.chargeTypeID ?? null, obs));
+  const best = rankByVersatility(options)[0];
+  const charge = best === undefined ? null : (compatible.find((row) => row.itemID === best.itemID) ?? null);
+  return charge === null ? { charge: null, rule: "nothing-fits" } : { charge, rule: "versatile" };
+}
+
+/** The readout for an empty gun loaded on a clear grid. */
+export function clearGridEmptyGunWords(
+  rule: ClearGridRule,
+  name: string | null,
+  guns: number,
+  retrying: boolean,
+): string {
+  const start = retrying
+    ? guns === 1 ? "The grid is clear and that gun is still empty" : `The grid is clear and those ${guns} guns are still empty`
+    : guns === 1 ? "The grid is clear: a gun is empty" : `The grid is clear: ${guns} guns are empty`;
+  if (rule === "own") {
+    return `${start}. Loading ${name ?? (guns === 1 ? "the charge it had" : "the charge they had")} again.`;
+  }
+  const gone = guns === 1 ? "its ammo is gone" : "their ammo is gone";
+  if (rule === "match") {
+    return name === null
+      ? `${start} and ${gone}. Loading the charge the other guns have, to match them.`
+      : `${start} and ${gone}. Loading ${name} to match the other guns.`;
+  }
+  return name === null
+    ? `${start} and ${gone}. Loading the most versatile charge I carry.`
+    : `${start} and ${gone}. Loading ${name}, the most versatile I carry.`;
+}
+
+/**
+ * Re-arm the clear-grid top-up when a fight starts: a confident
+ * `hostileOnGrid === true`. Called by the reload rung on every tick it runs,
+ * because the top-up itself sits below rung 7 and a fight's ticks seldom get
+ * that far.
+ */
+export function clearGridRearmed(obs: FleetCompanionObservation, memory: CompanionLadderMemory): CompanionLadderMemory {
+  const ammo = ammoOf(memory);
+  if (obs.hostileOnGrid !== true || (ammo.clearGridToppedUp ?? []).length === 0) {
+    return memory;
+  }
+  return { ...memory, ammo: { ...ammo, clearGridToppedUp: [] } };
+}
+
+/** Mark guns as already loaded on this clear grid, so the top-up does not ask them again. */
+export function withClearGridToppedUp(
+  memory: CompanionLadderMemory,
+  moduleIDs: readonly number[],
+): CompanionLadderMemory {
+  const ammo = ammoOf(memory);
+  const before = ammo.clearGridToppedUp ?? [];
+  const added = moduleIDs.filter((id) => !before.includes(id));
+  return added.length === 0 ? memory : { ...memory, ammo: { ...ammo, clearGridToppedUp: [...before, ...added] } };
+}
+
+export interface ClearGridTopUp {
+  readonly load: { readonly moduleIDs: readonly number[]; readonly chargeItemID: number; readonly why: string } | null;
+  readonly memory: CompanionLadderMemory;
+}
+
+/**
+ * The loaded half of "a clear grid": once per clear, every loaded gun is asked
+ * to reload with the charge it already has, from the largest cargo stack of
+ * that type. One call per tick: the first firing unit not yet asked, plus every
+ * other unit that takes the same stack. Banks are one unit (`firingUnits`).
+ *
+ * Skipped: a unit with an empty gun in it (the reload rung's), a gun whose
+ * charge could not be read, and a gun whose charge is no longer in cargo (there
+ * is nothing to top up from -- and the server would still start a reload,
+ * silencing the gun for nothing). A full gun is NOT skipped here: the
+ * observation has no magazine capacity, and the server skips it itself (see
+ * the server fact above). Each unit is latched when asked, so a clear grid
+ * costs at most one call per charge type in the rack.
+ */
+export function decideClearGridTopUp(
+  request: FleetCompanionRequest,
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+  gridClear: boolean,
+): ClearGridTopUp {
+  const nothing = { load: null, memory };
+  const weapons = obs.combatWeapons?.weapons ?? null;
+  const cargo = obs.cargoCharges ?? null;
+  const emptyIDs = obs.emptyWeaponModuleIDs ?? null;
+  if (!gridClear || obs.inSpace !== true || obs.inWarp === true || weapons === null || cargo === null ||
+    emptyIDs === null) {
+    return nothing;
+  }
+  const asked = new Set(ammoOf(memory).clearGridToppedUp ?? []);
+  const empty = new Set(emptyIDs);
+  const units = firingUnits(request.weaponModuleIDs, obs.snapshot?.ship?.weaponBanks ?? null);
+  const stackFor = (unit: readonly number[]): CompanionCargoCharge | null => {
+    if (unit.some((id) => asked.has(id) || empty.has(id))) {
+      return null;
+    }
+    const lead = weapons.find((row) => row.itemID === unit[0]) ?? null;
+    if (lead === null || lead.chargeTypeID === null || !((lead.chargeQuantity ?? 0) > 0)) {
+      return null;
+    }
+    return largestOf(cargo.filter((charge) => charge.typeID === lead.chargeTypeID));
+  };
+  let chosen: CompanionCargoCharge | null = null;
+  const moduleIDs: number[] = [];
+  for (const unit of units) {
+    const stack = stackFor(unit);
+    if (stack === null || (chosen !== null && stack.itemID !== chosen.itemID)) {
+      continue;
+    }
+    chosen = stack;
+    moduleIDs.push(...unit);
+  }
+  if (chosen === null) {
+    return nothing;
+  }
+  const name = chargeFactsOf(obs, chosen.typeID)?.name ?? null;
+  const guns = moduleIDs.length === 1 ? "a gun" : `${moduleIDs.length} guns`;
+  return {
+    load: {
+      moduleIDs,
+      chargeItemID: chosen.itemID,
+      why: `The grid is clear: reloading the guns (${guns}, ${name ?? "the charge already in them"}).`,
+    },
+    memory: withClearGridToppedUp(memory, moduleIDs),
   };
 }
 

@@ -254,6 +254,49 @@ export function rankCharges(
   return keyed.map((k) => k.o);
 }
 
+/**
+ * Rank the options by VERSATILITY, best first: the charge to load when nobody
+ * knows where the next target will be.
+ *
+ * ⚠ VERSATILITY IS RAW DAMAGE x REACH, and that product is not arbitrary. With
+ * no target there is no distance and no resist, so the honest question is "what
+ * does this charge deal to a target somewhere inside the envelope I carry for?"
+ * Take that target's distance as equally likely anywhere out to the longest
+ * reach aboard: a charge reaching R hits it with probability R / longest, so its
+ * expected damage per shot is damage x R / longest, and `longest` is the same
+ * for every option. Maximising damage x reach is maximising that expectation.
+ * It is why neither end wins by default: the short, heavy charge loses on reach
+ * and the long, light one on damage, and the middle charge that keeps most of
+ * both comes out on top -- the operator's "the one which is most versatile"
+ * (2026-10-14), read as a number.
+ *
+ * Ties and unknowns, in order: (1) a known score above an unknown one (reach or
+ * damage unknown), (2) higher raw damage, unknown below known, (3) larger
+ * quantity, (4) lower item id. Unknown never wins over known and never makes the
+ * comparator NaN; with every score unknown it degrades to "most damage, then the
+ * biggest stack". Stacks that `rankCharges` would drop are dropped here too.
+ */
+export function rankByVersatility(options: readonly ChargeOption[]): readonly ChargeOption[] {
+  const keyed = options.filter(isUsable).map((o) => {
+    const dmg = appliedDamage(o, null);
+    const reach = o.reachM !== null && Number.isFinite(o.reachM) ? o.reachM : null;
+    const score = dmg === null || reach === null ? null : dmg * reach;
+    return { o, dmg, score: score !== null && Number.isFinite(score) ? score : null };
+  });
+  const higherFirst = (a: number | null, b: number | null): number => {
+    if (a === b) return 0;
+    if (a === null) return 1;
+    if (b === null) return -1;
+    return b > a ? 1 : -1;
+  };
+  keyed.sort((a, b) =>
+    higherFirst(a.score, b.score) ||
+    higherFirst(a.dmg, b.dmg) ||
+    higherFirst(a.o.quantity, b.o.quantity) ||
+    (a.o.itemID === b.o.itemID ? 0 : a.o.itemID < b.o.itemID ? -1 : 1));
+  return keyed.map((k) => k.o);
+}
+
 /** Per-gun memory the caller stores between ticks. */
 export interface SwapMemory {
   readonly wantedTypeID: number | null;

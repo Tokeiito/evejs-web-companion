@@ -24,6 +24,7 @@ import {
   ratResonancesFromAttributes,
   weaponCycleFromAttributes,
   type AmmoLadder,
+  type LoadedReachRecord,
 } from "./companionAmmo.ts";
 import { chargeFactsFromAttributes } from "./ammoReach.ts";
 import type { CombatWeapon } from "./combatWeapons.ts";
@@ -507,4 +508,143 @@ test("emptyGunAmmo: the rule says ranked when the target is known and a stack ra
   const wrongGroup = ALL_THREE.map((charge) => ({ ...charge, groupID: 86 }));
   assert.deepEqual(ranked.pickWithRule(FIGHT_GUN_1, wrongGroup), { charge: null, rule: "largest" });
   assert.equal(ranked.pick(FIGHT_GUN_1, wrongGroup), null);
+});
+
+// ─── A clear grid (operator, 2026-10-14) ─────────────────────────────────────
+//
+// "When the companion determines that the grid is clear and decides to recall
+// drones ... it should as well reload weapons. Just reload all." Empty guns:
+// own charge, else the other guns' charge, else the most versatile.
+
+/** The last charge a gun measured: C, gone from cargo in these tests unless put back. */
+const LAST_C = { chargeTypeID: C, reachM: 20_000, optimalM: 15_000, turret: true } as const;
+
+/** No rat, nothing called or locked, `hostileOnGrid` a confident false. */
+function clearObs(
+  weapons: readonly CombatWeapon[],
+  overrides: Partial<FleetCompanionObservation> = {},
+  fcOnGrid = true,
+): FleetCompanionObservation {
+  const quiet = fightGrid({ rats: [], fcAt: fcOnGrid ? -5_000 : null });
+  return ammoObs(quiet, {
+    hostileOnGrid: false,
+    fleetTargetTags: null,
+    lockedTargetIDs: [],
+    ...overrides,
+  }, weapons);
+}
+
+function withLastLoaded(records: Readonly<Record<number, LoadedReachRecord>>): CompanionLadderMemory {
+  return { ...freshLadderMemory(), ammo: { ...FRESH_COMPANION_AMMO, lastLoaded: records } };
+}
+
+test("a clear grid reloads every loaded gun with the charge it has, once per gun", () => {
+  const weapons = [loadedGun(FIGHT_GUN_1, A), loadedGun(FIGHT_GUN_2, B)];
+  const { decisions, memory } = run(() => clearObs(weapons), 8, freshLadderMemory(), TWO_GUNS);
+  assert.deepEqual(loads(decisions).map((decision) => decision.action), [
+    { kind: "loadAmmo", moduleIDs: [FIGHT_GUN_1], chargeItemID: STACK_A },
+    { kind: "loadAmmo", moduleIDs: [FIGHT_GUN_2], chargeItemID: STACK_B },
+  ], "one call per charge type, then never again on this clear grid");
+  assert.equal(decisions[0]!.why, "The grid is clear: reloading the guns (a gun, Charge A).");
+  assert.deepEqual([...memory.ammo.clearGridToppedUp].sort(), [FIGHT_GUN_1, FIGHT_GUN_2].sort());
+
+  // Guns on the same charge share the call.
+  const same = run(() => clearObs([loadedGun(FIGHT_GUN_1, A), loadedGun(FIGHT_GUN_2, A)]), 6,
+    freshLadderMemory(), TWO_GUNS);
+  assert.deepEqual(loads(same.decisions).map((decision) => decision.action),
+    [{ kind: "loadAmmo", moduleIDs: [FIGHT_GUN_1, FIGHT_GUN_2], chargeItemID: STACK_A }]);
+  assert.equal(loads(same.decisions)[0]!.why, "The grid is clear: reloading the guns (2 guns, Charge A).");
+});
+
+test("a clear grid: a gun whose charge is gone from cargo is not topped up", () => {
+  const { decisions } = run(() => clearObs([loadedGun(FIGHT_GUN_1, A)], {
+    cargoCharges: [stack(STACK_B, B, 500)],
+  }), 4, freshLadderMemory());
+  assert.equal(loads(decisions).length, 0);
+});
+
+test("no top-up while hostiles remain, on a read that stumbled, or on a called target", () => {
+  const weapons = [loadedGun(FIGHT_GUN_1, A)];
+  const fighting = run(() => clearObs(weapons, { hostileOnGrid: true }), 6, freshLadderMemory());
+  assert.equal(loads(fighting.decisions).length, 0, "hostiles on grid");
+  const blind = run(() => clearObs(weapons, { hostileOnGrid: null }), 6, freshLadderMemory());
+  assert.equal(loads(blind.decisions).length, 0, "null is a failed read, never a clear grid");
+  // A called, locked target the NPC count does not see: rung 7 stands on it.
+  const called = run(() => ammoObs(grid(10_000), { hostileOnGrid: false }), 6);
+  assert.equal(loads(called.decisions).length, 0, "a called target is a fight");
+});
+
+test("a fight starting again re-arms the clear-grid top-up", () => {
+  const weapons = [loadedGun(FIGHT_GUN_1, A)];
+  const first = run(() => clearObs(weapons), 3, freshLadderMemory());
+  assert.equal(loads(first.decisions).length, 1);
+  const fight = decideCompanionAction(ONE_GUN, clearObs(weapons, { hostileOnGrid: true }), first.memory, T0 + 10_000);
+  assert.deepEqual(fight.memory.ammo.clearGridToppedUp, [], "re-armed");
+  const second = run(() => clearObs(weapons), 3, fight.memory);
+  assert.deepEqual(loads(second.decisions).map((decision) => decision.action),
+    [{ kind: "loadAmmo", moduleIDs: [FIGHT_GUN_1], chargeItemID: STACK_A }], "the next clear grid reloads again");
+});
+
+test("a clear grid: an empty gun takes its own last charge back while any is aboard", () => {
+  const memory = withLastLoaded({ [FIGHT_GUN_1]: { ...LAST_C, chargeTypeID: B } });
+  const decision = decideCompanionAction(ONE_GUN, clearObs([loadedGun(FIGHT_GUN_1, null)], {
+    emptyWeaponModuleIDs: [FIGHT_GUN_1],
+  }), memory, T0);
+  assert.deepEqual(decision.action, { kind: "loadAmmo", moduleIDs: [FIGHT_GUN_1], chargeItemID: STACK_B },
+    "B, its own, and not the larger A stack");
+  assert.equal(decision.why, "The grid is clear: a gun is empty. Loading Charge B again.");
+});
+
+test("a clear grid: one empty gun next to loaded guns takes their charge, not the most versatile", () => {
+  // GUN_2 runs on C; A is the bigger stack AND the more versatile one (equal
+  // score, more of it), so only the match rule picks C.
+  const weapons = [loadedGun(FIGHT_GUN_1, null), loadedGun(FIGHT_GUN_2, C)];
+  const decision = decideCompanionAction(TWO_GUNS, clearObs(weapons, { emptyWeaponModuleIDs: [FIGHT_GUN_1] }),
+    freshLadderMemory(), T0);
+  assert.deepEqual(decision.action, { kind: "loadAmmo", moduleIDs: [FIGHT_GUN_1], chargeItemID: STACK_C });
+  assert.equal(decision.why,
+    "The grid is clear: a gun is empty and its ammo is gone. Loading Charge C to match the other guns.");
+});
+
+test("a clear grid: every gun empty and their charge gone -- the most versatile charge", () => {
+  // Last loaded C, which is gone. B is the biggest stack (the rung's old rule);
+  // A is the most versatile: 12 x 20 km against B's 5 x 29 km.
+  const memory = withLastLoaded({ [FIGHT_GUN_1]: LAST_C, [FIGHT_GUN_2]: LAST_C });
+  const weapons = [loadedGun(FIGHT_GUN_1, null), loadedGun(FIGHT_GUN_2, null)];
+  const decision = decideCompanionAction(TWO_GUNS, clearObs(weapons, {
+    emptyWeaponModuleIDs: [FIGHT_GUN_1, FIGHT_GUN_2],
+    cargoCharges: [stack(STACK_A, A, 100), stack(STACK_B, B, 1_000)],
+  }), memory, T0);
+  assert.deepEqual(decision.action, { kind: "loadAmmo", moduleIDs: [FIGHT_GUN_1, FIGHT_GUN_2], chargeItemID: STACK_A });
+  assert.equal(decision.why,
+    "The grid is clear: 2 guns are empty and their ammo is gone. Loading Charge A, the most versatile I carry.");
+});
+
+test("a clear grid: the loaded guns' charge is not in cargo either -- the most versatile charge", () => {
+  const memory = withLastLoaded({ [FIGHT_GUN_1]: LAST_C });
+  const weapons = [loadedGun(FIGHT_GUN_1, null), loadedGun(FIGHT_GUN_2, C)];
+  const decision = decideCompanionAction(TWO_GUNS, clearObs(weapons, {
+    emptyWeaponModuleIDs: [FIGHT_GUN_1],
+    cargoCharges: [stack(STACK_A, A, 100), stack(STACK_B, B, 1_000)],
+  }), memory, T0);
+  assert.deepEqual(decision.action, { kind: "loadAmmo", moduleIDs: [FIGHT_GUN_1], chargeItemID: STACK_A });
+  assert.match(decision.why, /Loading Charge A, the most versatile I carry\.$/);
+});
+
+test("a clear grid: nothing aboard fits an empty gun -- no load, and a readout saying so", () => {
+  const weapons = [loadedGun(FIGHT_GUN_1, null)];
+  const obs = clearObs(weapons, {
+    emptyWeaponModuleIDs: [FIGHT_GUN_1],
+    cargoCharges: [{ itemID: STACK_A, typeID: A, groupID: 86, quantity: 1_000 }],
+  }, false);
+  const { decisions } = run(() => obs, 5, freshLadderMemory());
+  assert.equal(loads(decisions).length, 0, "nothing is loaded, and no attempt is spent guessing");
+  assert.equal(decisions[0]!.why, "The grid is clear: a gun is empty and nothing in the cargo bay fits it.");
+
+  // A stack whose group could not be decoded is "cannot say": the rung's own rule loads it.
+  const undecoded = decideCompanionAction(ONE_GUN, clearObs(weapons, {
+    emptyWeaponModuleIDs: [FIGHT_GUN_1],
+    cargoCharges: [{ itemID: STACK_A, typeID: A, groupID: null, quantity: 1_000 }],
+  }, false), freshLadderMemory(), T0);
+  assert.deepEqual(undecoded.action, { kind: "loadAmmo", moduleIDs: [FIGHT_GUN_1], chargeItemID: STACK_A });
 });
