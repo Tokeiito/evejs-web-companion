@@ -17,6 +17,16 @@
 // bridgeCallPolicy.js, PAGE_PLACE_CHANGE_CALLS). A refusal for contraband comes back as CONTRABAND_WARNING, in the
 // words of the client's own dialog where the BFF has them.
 //
+// UNDOCKED FROM A PLAYER STRUCTURE (since 2026-10-14; until then the station's ship.Undock, which this server takes
+// from a structure too). The client's structure docking service (structureDocking.py, Undock 26 to 51) asks
+//
+//   sm.GetService('sessionMgr').PerformSessionChange('undock', TryUndockOnServer, doIgnoreContraband=...)
+//   ... sm.RemoteSvc('structureDocking').Undock(session.structureid, shipID, ignoreContraband=doIgnoreContraband)
+//
+// the structure's own service, by its name, with the structure the session is docked in and the ship (None where the
+// ship is the structure, a pilot controlling it); ignoreContraband a keyword, false first and true once the pilot
+// has said to go on, as at a station (37 to 45). No online modules are named. The same keeping as the station's.
+//
 // THE ONLINE MODULES ARE NOT THE PAGE'S TO NAME: godma's list is the client's, and the game port names it
 // (src/gamePort/retailCalls.js, undocking). The page sends none, as its route sent none; the server leaves the
 // modules as they are where none are named (shipService._syncRequestedOnlineModulesForUndock).
@@ -33,8 +43,7 @@
 // the autopilot docks again where the ship is still in space.
 //
 // ⚠ A STRUCTURE IS DOCKED AT ANOTHER WAY: structureDocking.Dock(structureID, session.shipid), asked of the service
-// by its name once the ship is close (structureDocking.py 64 to 80). The page does not make that call yet, and
-// docks at a structure by its route (src/server.js, POST /api/bridge/flight/dock), as before.
+// by its name once the ship is close (structureDocking.py 64 to 80): dockAtStructure, below.
 
 //
 // THROUGH A STARGATE. The menu's jump (menusvc.StargateJump, 3025 on, flying the ship close first) comes to the gate
@@ -57,9 +66,9 @@ import type { Ask } from "./ask.ts";
 import type { FlightNow } from "./movementWrites.ts";
 
 /**
- * Undocks the pilot's ship from where it is docked. `ignoreContraband` is the client's second argument: false
- * first, true once the pilot has said to go on. Fails as the call fails, and before it for a ship already in space
- * or none known.
+ * Undocks the pilot's ship from where it is docked: from a station by the ship's Undock, from a player structure by
+ * the structure's own (the flight read naming the structure). `ignoreContraband` is the client's: false first, true
+ * once the pilot has said to go on. Fails as the call fails, and before it for a ship already in space or none known.
  *
  * ⚠ THE CALL COMING BACK IS THE SESSION IN SPACE: the BFF answers once the change is ready.
  */
@@ -67,6 +76,11 @@ export async function undock(act: Ask, flightNow: () => Promise<FlightNow>, igno
   const now = await flightNow();
   if (now.inSpace) throw new Error("The ship is already in space.");
   if (now.shipID === null) throw new Error("There is no ship to undock in.");
+  const structureID = now.structureID ?? null;
+  if (structureID !== null) {
+    await act("structureDocking", "Undock", [structureID, now.shipID === structureID ? null : now.shipID], { ignoreContraband });
+    return;
+  }
   await act("ship", "Undock", [now.shipID, ignoreContraband], { onlineModules: [] });
 }
 
@@ -83,6 +97,30 @@ export async function dock(act: Ask, flightNow: () => Promise<FlightNow>, statio
   if (!now.inSpace) throw new Error("The ship is not in space; undock first.");
   if (now.shipID === null) throw new Error("There is no ship to dock.");
   await act("beyonce", "CmdDock", [stationID, now.shipID]);
+}
+
+// DOCKED AT A PLAYER STRUCTURE (since 2026-10-14; until then by the dock route, POST /api/bridge/flight/dock, as the
+// park's CmdDock). The client's structure docking service (structureDocking.py, Dock 64 to 80) flies the ship to
+// within 2,500 m first (autoPilot.NavigateSystemTo(structureID, 2500, RequestDocking)) and then asks
+//
+//   sm.RemoteSvc('structureDocking').Dock(structureID, session.shipid)
+//
+// the structure's own service, by its name, not the park. The page asks it where the ship is: this server answers a
+// ship still too far with DockingApproach, having set it approaching (structureDockingService.Handle_Dock), and the
+// autopilot approaches and asks again on that refusal (nav/autopilotLoop.ts, isDockingApproach), as it does for a
+// station. The same keeping as a station's dock, the BFF's.
+
+/**
+ * Docks the pilot's ship at a player structure. Fails as the call fails, and before it for a station (docked at by
+ * the park's dock) or what is no structure's number, and for a ship not in space or none known.
+ */
+export async function dockAtStructure(act: Ask, flightNow: () => Promise<FlightNow>, structureID: number): Promise<void> {
+  if (isStation(structureID)) throw new Error("A station is docked at by the ballpark's dock.");
+  if (!Number.isSafeInteger(structureID) || structureID <= 0) throw new Error("That structure could not be identified.");
+  const now = await flightNow();
+  if (!now.inSpace) throw new Error("The ship is not in space; undock first.");
+  if (now.shipID === null) throw new Error("There is no ship to dock.");
+  await act("structureDocking", "Dock", [structureID, now.shipID]);
 }
 
 /**

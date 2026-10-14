@@ -105,6 +105,11 @@ const FEATURE_WRITE_METHODS = freezeMethodMap({
   // The customs office's transfer (taxed, and it moves a colony's goods). The
   // game port carries it; the web gateway's list has not got it.
   invbroker: ["ImportExportWithPlanet"],
+  // A pilot's dock at a player structure and its undock from one, by the
+  // client's structure docking service (structureDocking.py 69 and 36). The game
+  // port carries both; through the web gateway, whose list has neither, the
+  // park's CmdDock and the ship's Undock are asked in their place.
+  structureDocking: ["Dock", "Undock"],
 });
 
 function flattenMethodMap(methodsByService) {
@@ -579,7 +584,7 @@ function isBridgeWritePair(service, method) {
  *   inSpaceCompressionMgr.CompressItemInSpace   itemCompression.CompressItemInSpace (9): CompressItemInSpace(
  *                                    itemID, compressionFacilityBallID), answered None or the six of what was made.
  */
-const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.Invite", "fleetObjectHandler.RejectInvite", "beyonce.BookmarkLocation", "dogmaIM.AddTarget", "dogmaIM.RemoveTarget", "dogmaIM.CancelAddTarget", "ship.ScoopDrone", "industryManager.CompleteJob", "industryManager.CancelJob", "industryMonitor.ConnectJob", "industryMonitor.DisconnectJob", "industryManager.InstallJob", "beyonce.CmdWarpToStuff", "beyonce.CmdWarpToStuffAutopilot", "agentMgr.WarpToLocation", "dogmaIM.LaunchProbes", "scanMgr.RequestScans", "scanMgr.RecoverProbes", "scanMgr.ReconnectToLostProbes", "dogmaIM.SetModuleOnline", "dogmaIM.TakeModuleOffline", "dogmaIM.Activate", "dogmaIM.Deactivate", "agentMgr.DoAction", "agentMgr.RemoveOfferFromJournal", "entity.CmdReconnectToDrones", "entity.CmdEngage", "entity.CmdMineRepeatedly", "entity.CmdReturnBay", "inSpaceCompressionMgr.CompressItemInSpace", "ship.Board", "invbroker.DestroyFitting", "mailMgr.SendMail", "ship.LaunchDrones", "marketProxy.CancelCharOrder", "marketProxy.PlaceBuyOrder", "marketProxy.PlaceMultiSellOrder", "marketProxy.ModifyCharOrder", "ship.Jettison", "ship.Undock", "beyonce.CmdDock", "beyonce.CmdStargateJump", "invbroker.Add", "invbroker.MultiAdd", "invbroker.ImportExportWithPlanet", "invbroker.MultiMerge", "invbroker.TrashItems", "invbroker.FitFitting", "invbroker.StackAll"]);
+const PAGE_WRITE_PAIR_KEYS = Object.freeze(["skillHandler.AbortTraining", "skillHandler.SaveNewQueue", "skillHandler.ApplyFreeSkillPoints", "crimewatch.SetSafetyLevel", "contractProxy.AcceptContract", "planetMgr.DeleteLaunch", "fleetProxy.ApplyToJoinFleet", "fleetMgr.BroadcastToBubble", "dogmaIM.Overload", "dogmaIM.StopOverload", "dogmaIM.InitiateModuleRepair", "dogmaIM.StopModuleRepair", "dogmaIM.LinkAllWeapons", "dogmaIM.UnlinkAllModules", "dogmaIM.LoadAmmo", "dogmaIM.UnloadAmmo", "beyonce.CmdFleetTagTarget", "entity.CmdSalvage", "beyonce.CmdGotoPoint", "planetMgr.UserUpdateNetwork", "planetMgr.UserLaunchCommodities", "ship.LeaveShip", "dogmaIM.CreateNewbieShip", "officeManager.RentOffice", "officeManager.UnrentOffice", "slash.SlashCmd", "repairSvc.RepairItemsInStation", "repairSvc.RepairItemsInStructure", "fleetObjectHandler.LeaveFleet", "beyonce.CmdAlignTo", "beyonce.CmdFollowBall", "beyonce.CmdSetSpeedFraction", "beyonce.CmdOrbit", "beyonce.CmdStop", "fleetObjectHandler.CreateFleet", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.Invite", "fleetObjectHandler.RejectInvite", "beyonce.BookmarkLocation", "dogmaIM.AddTarget", "dogmaIM.RemoveTarget", "dogmaIM.CancelAddTarget", "ship.ScoopDrone", "industryManager.CompleteJob", "industryManager.CancelJob", "industryMonitor.ConnectJob", "industryMonitor.DisconnectJob", "industryManager.InstallJob", "beyonce.CmdWarpToStuff", "beyonce.CmdWarpToStuffAutopilot", "agentMgr.WarpToLocation", "dogmaIM.LaunchProbes", "scanMgr.RequestScans", "scanMgr.RecoverProbes", "scanMgr.ReconnectToLostProbes", "dogmaIM.SetModuleOnline", "dogmaIM.TakeModuleOffline", "dogmaIM.Activate", "dogmaIM.Deactivate", "agentMgr.DoAction", "agentMgr.RemoveOfferFromJournal", "entity.CmdReconnectToDrones", "entity.CmdEngage", "entity.CmdMineRepeatedly", "entity.CmdReturnBay", "inSpaceCompressionMgr.CompressItemInSpace", "ship.Board", "invbroker.DestroyFitting", "mailMgr.SendMail", "ship.LaunchDrones", "reprocessingSvc.Reprocess", "structureDocking.Dock", "structureDocking.Undock", "marketProxy.CancelCharOrder", "marketProxy.PlaceBuyOrder", "marketProxy.PlaceMultiSellOrder", "marketProxy.ModifyCharOrder", "ship.Jettison", "ship.Undock", "beyonce.CmdDock", "beyonce.CmdStargateJump", "invbroker.Add", "invbroker.MultiAdd", "invbroker.ImportExportWithPlanet", "invbroker.MultiMerge", "invbroker.TrashItems", "invbroker.FitFitting", "invbroker.StackAll"]);
 const pageWritePairKeySet = new Set(PAGE_WRITE_PAIR_KEYS);
 for (const pair of PAGE_WRITE_PAIR_KEYS) {
   if (!bridgeWritePairKeySet.has(pair)) throw new Error(`${pair} is among the page's writes and is no write.`);
@@ -634,15 +639,23 @@ function swapTargetOf(service, method, args) {
  *   ship.Undock      ui/station/base.py _DoUndockAttempt (488 to 521): the session from a station into space.
  *                    (A ship boarded is the session's change too, 'board'; it is kept as a swap of the pilot's
  *                    ship, PAGE_SHIP_SWAP_CALLS, as its route kept it.)
+ *   structureDocking.Undock   structureDocking.Undock (26 to 51): the session from a player structure into space,
+ *                    the structure's own service, with the structure the pilot is docked in. Kept as a station's
+ *                    undock is. Through the web gateway, whose list has no structureDocking, the ship's Undock is
+ *                    asked in its place, which this server takes from a structure too.
  *   beyonce.CmdDock  movementFunctions.RealDock (503 to 518): the session from space into a station. A dock the
  *                    server takes and does not carry out answers nothing, so its keeping waits only a short while
  *                    and never latches, as its route's did. A structure is docked at by its own service, which the
  *                    page does not make yet.
+ *   structureDocking.Dock   structureDocking.Dock (64 to 80): the session from space into a player structure, the
+ *                    structure's own service once the ship is within 2,500 m. Kept as a station's dock is. Through
+ *                    the web gateway, whose list has no structureDocking, the park's CmdDock of the structure is
+ *                    asked, as the dock route asked it until 2026-10-14.
  *   beyonce.CmdStargateJump  gateJumpSvc.JumpThroughGate (98 to 127) and autopilot.py 358: the session from one
  *                    system into the next through a stargate. Its keeping binds the park again in the new system
  *                    before it answers, as its route's did (reparkAfterArrival).
  */
-const PAGE_PLACE_CHANGE_CALLS = Object.freeze(new Map([["ship.Undock", "undock"], ["beyonce.CmdDock", "dock"], ["beyonce.CmdStargateJump", "stargate"]]));
+const PAGE_PLACE_CHANGE_CALLS = Object.freeze(new Map([["ship.Undock", "undock"], ["structureDocking.Undock", "undock"], ["beyonce.CmdDock", "dock"], ["structureDocking.Dock", "dock"], ["beyonce.CmdStargateJump", "stargate"]]));
 for (const pair of PAGE_PLACE_CHANGE_CALLS.keys()) {
   if (!pageWritePairKeySet.has(pair)) throw new Error(`${pair} is among the page's changes of place and is none of its writes.`);
 }
@@ -805,6 +818,13 @@ function ordersAFollow(service, method) {
  * And one on the inventory manager of where the pilot is, which the call does not name (eveMoniker.GetInventoryMgr:
  * the solar system's where the session has one, else the station's):
  *
+ *   reprocessingSvc.Reprocess       "refinery", on the refinery of where the pilot is docked, which the call
+ *                                   does not name (Moniker('reprocessingSvc', session.structureid or
+ *                                   session.stationid)): a WRITE, items reprocessed (itemReprocessor.py 71), one
+ *                                   call for each place they lie in. Its handler takes the session's own items
+ *                                   and charges the station's tax; the BFF asks a structure's hangar access first,
+ *                                   as the route asked it (since 2026-10-14; until then POST
+ *                                   /api/bridge/reprocessing/reprocess).
  *   invbroker.TrashItems            "inventoryManager": a WRITE, items destroyed (invItemFunctions.py 618). Its
  *                                   handler (invBroker/trash.js, read 2026-10-13) destroys only the session's
  *                                   own character's items, or a director's corporation items in the office
@@ -814,7 +834,7 @@ function ordersAFollow(service, method) {
  * A write among them is one of the page's own writes. A read is listed here only once its handler has been read
  * for what it takes from the caller: a planet's reads once answered with another owner's colony.
  */
-const PAGE_OBJECT_CALLS = Object.freeze({ "planetMgr.UserUpdateNetwork": "planet", "planetMgr.UserLaunchCommodities": "planet", "planetMgr.GetProgramResultInfo": "planet", "scanMgr.GetFullState": "scanManager", "scanMgr.RequestScans": "scanManager", "scanMgr.RecoverProbes": "scanManager", "scanMgr.ReconnectToLostProbes": "scanManager", "agentMgr.WarpToLocation": "agent", "agentMgr.DoAction": "agent", "agentMgr.RemoveOfferFromJournal": "agent", "invbroker.Add": "inventory", "invbroker.MultiAdd": "inventory", "invbroker.ImportExportWithPlanet": "inventory", "invbroker.MultiMerge": "inventory", "invbroker.TrashItems": "inventoryManager", "invbroker.FitFitting": "inventory", "invbroker.StackAll": "inventory", "invbroker.DestroyFitting": "inventory", "charMgr.ListStations": "assets", "charMgr.ListStationItems": "assets", "fleetObjectHandler.LeaveFleet": "fleet", "fleetObjectHandler.CreateFleet": "fleet", "fleetObjectHandler.AcceptInvite": "fleetByNumber", "fleetObjectHandler.Invite": "fleetExpected", "fleetObjectHandler.RejectInvite": "fleetByNumber" });
+const PAGE_OBJECT_CALLS = Object.freeze({ "planetMgr.UserUpdateNetwork": "planet", "planetMgr.UserLaunchCommodities": "planet", "planetMgr.GetProgramResultInfo": "planet", "scanMgr.GetFullState": "scanManager", "scanMgr.RequestScans": "scanManager", "scanMgr.RecoverProbes": "scanManager", "scanMgr.ReconnectToLostProbes": "scanManager", "agentMgr.WarpToLocation": "agent", "agentMgr.DoAction": "agent", "agentMgr.RemoveOfferFromJournal": "agent", "invbroker.Add": "inventory", "invbroker.MultiAdd": "inventory", "invbroker.ImportExportWithPlanet": "inventory", "invbroker.MultiMerge": "inventory", "invbroker.TrashItems": "inventoryManager", "invbroker.FitFitting": "inventory", "invbroker.StackAll": "inventory", "invbroker.DestroyFitting": "inventory", "reprocessingSvc.Reprocess": "refinery", "charMgr.ListStations": "assets", "charMgr.ListStationItems": "assets", "fleetObjectHandler.LeaveFleet": "fleet", "fleetObjectHandler.CreateFleet": "fleet", "fleetObjectHandler.AcceptInvite": "fleetByNumber", "fleetObjectHandler.Invite": "fleetExpected", "fleetObjectHandler.RejectInvite": "fleetByNumber" });
 /**
  * The objects there are many of, which a call says which of with `of`: a planet, a fleet that is not the
  * session's own (the one an invitation names), an agent, and an inventory (a thing's own, or the hangar's). A

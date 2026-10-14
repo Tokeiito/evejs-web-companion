@@ -52,6 +52,7 @@ import {
 } from "../bridge/market.ts";
 import { decodeMailbox, mailRefusalMessage } from "../bridge/mail.ts";
 import { sendMail as sendMailCall, type MailToSend } from "../bridge/mailWrites.ts";
+import { reprocess as reprocessCall } from "../bridge/reprocessWrites.ts";
 import {
   activityReadError,
   decodeActivityCalendar,
@@ -237,7 +238,7 @@ import { buildGateLinks, type GateLink } from "../space/gateLinks.ts";
 import { CRIMEWATCH_NOTICES, CRIMEWATCH_SESSION_NAMES } from "../space/crimewatch.ts";
 import type { SafetyLevel } from "../space/crimewatch.ts";
 import { CLONE_GRADE_NOTICE, cloneGradeOf } from "../bridge/cloneGrade.ts";
-import type { AgentFinderRow } from "../store/types.ts";
+import type { AgentFinderRow, HoldItem } from "../store/types.ts";
 import {
   MENU_WARP_RANGE_M,
   createAutopilot,
@@ -407,7 +408,7 @@ import {
   scoopDrones as scoopDronesCall,
 } from "../bridge/boundEntityWrites.ts";
 import { alignTo as alignToCall, approach as approachCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
-import { dock as dockCall, isStation, jump as jumpCall, undock as undockCall } from "../bridge/placeChanges.ts";
+import { dock as dockCall, dockAtStructure as dockAtStructureCall, isStation, jump as jumpCall, undock as undockCall } from "../bridge/placeChanges.ts";
 import { boardCorvette as boardCorvetteCall, boardShip as boardShipCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
 import { activityIDOf, createJobReckoner, type JobReckoner, type JobReckoning } from "../bridge/industryJobReckoning.ts";
 import { connectJob, decodeFacilityPlaces, disconnectJob, installJob, jobDump, jobPlaces, monitoredAs, type Monitored } from "../bridge/industryMonitor.ts";
@@ -1271,6 +1272,11 @@ export interface AppFlow {
    * — it never names a cause it does not have.
    */
   compressOre(itemID: number, facilityID: number): Promise<void>;
+  /**
+   * The compressed forms of these types as the static data has them: a type's own, or null where it has none. A
+   * type the data could not speak of is absent, and is not to be offered as compressible.
+   */
+  compressedTypesOf(typeIDs: readonly number[]): Promise<ReadonlyMap<number, number | null>>;
   // --- R25 slice A: drones -------------------------------------------------
   //
   // ⚠ NOT ONE of these four server calls can be trusted on its return value.
@@ -4813,12 +4819,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * is a session lost.
    */
   /**
-   * Docks: at a station by the page's own call (bridge/placeChanges.ts, the client's RealDock), between two reads of
-   * the flight; at a structure by its route still, the client's own call there being the structure's docking
-   * service's, which the page does not make yet.
+   * Docks by the page's own call (bridge/placeChanges.ts), between two reads of the flight: at a station the client's
+   * RealDock, the park's CmdDock; at a player structure the structure's own docking service's Dock (since 2026-10-14;
+   * until then by the dock route).
    */
   function dockStep(stationID: number): Promise<FlightStepResult> {
-    return isStation(stationID) ? orderedStep((flightNow) => dockCall(bridgeDo, flightNow, stationID)) : api.dock(stationID, callOptions);
+    return orderedStep((flightNow) => (isStation(stationID)
+      ? dockCall(bridgeDo, flightNow, stationID)
+      : dockAtStructureCall(bridgeDo, flightNow, stationID)));
   }
 
   /**
@@ -5191,6 +5199,39 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const volume = typeVolumes.get(typeID);
       if (typeof volume === "number") {
         known[String(typeID)] = volume;
+      }
+    }
+    return known;
+  }
+
+  /** Each type's compressed form as the BFF's static data has it: null where it has none. Kept once it is answered. */
+  const compressedTypes = new Map<number, number | null>();
+
+  /**
+   * The compressed forms of these types (menucheckers/itemCheckers.py, OfferCompressInSpace: the client offers to
+   * compress a type that has one, from its own static data). A type is asked for once and kept, being the same for
+   * everyone; one the answer did not speak of, or a read that failed, is left out this once and asked for again.
+   */
+  async function compressedTypesOf(typeIDs: readonly number[]): Promise<ReadonlyMap<number, number | null>> {
+    const unasked = [...new Set(typeIDs)].filter((typeID) => !compressedTypes.has(typeID));
+    if (unasked.length > 0) {
+      try {
+        const answered = (await api.loadCompressedTypes(unasked, callOptions)).compressedTypeIDs;
+        for (const typeID of unasked) {
+          const compressed = answered[typeID];
+          if (compressed !== undefined) {
+            compressedTypes.set(typeID, compressed);
+          }
+        }
+      } catch (error) {
+        throwIfRequestRetired(error);
+      }
+    }
+    const known = new Map<number, number | null>();
+    for (const typeID of typeIDs) {
+      const compressed = compressedTypes.get(typeID);
+      if (compressed !== undefined) {
+        known.set(typeID, compressed);
       }
     }
     return known;
@@ -7216,10 +7257,44 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return reply;
   }
 
+  /**
+   * The ship's mining holds unloaded into the pilot's own hangar by the page's own call (bridge/inventoryWrites.ts,
+   * moveItems: invCache.GetInventory(const.containerHangar), Add for one stack and MultiAdd for several, from the
+   * ship they lie in), the holds read before for the stacks named (one in none of them is moved by nobody) and after
+   * for what stayed, as the unload's route read them. A stack still in a hold did not move. Until 2026-10-14 the
+   * BFF's route made it, which keeps a corporation division's delivery and an operation's for the bot host.
+   */
+  async function unloadToOwnHangar(itemIDs: readonly number[]): Promise<{ readonly requested: readonly number[]; readonly moved: readonly number[] | null }> {
+    const now = decodeFlightStatus((await api.getFlightStatus(callOptions)).flight);
+    if (!now.docked) throw Object.assign(new Error("Dock at a station before unloading."), { code: "NOT_DOCKED" });
+    const requested = [...new Set(itemIDs.filter((itemID) => Number.isSafeInteger(itemID) && itemID > 0))];
+    const held = async (): Promise<{ readonly shipID: number | null; readonly rows: readonly HoldItem[] }> => {
+      const read = await api.getMiningHolds(callOptions);
+      return { shipID: read.activeShipID, rows: decodeMiningHolds(read.holds).flatMap((hold) => hold.items ?? []) };
+    };
+    const before = await held();
+    const shipID = before.shipID ?? now.shipID ?? null;
+    if (shipID === null) throw Object.assign(new Error("No active ship."), { code: "NO_ACTIVE_SHIP" });
+    const rows = requested.flatMap((itemID) => {
+      const row = before.rows.find((each) => each.itemID === itemID);
+      // (A quantity below nought is a singleton's, as the client reads one: eveMisc.LaunchFromShip, 19 to 21.)
+      return row ? [{ itemID, quantity: row.quantity, singleton: row.quantity < 0 }] : [];
+    });
+    if (rows.length > 0) await moveItemsCall(bridgeDo, "hangar", { kind: "hangar" }, shipID, rows, null);
+    let after: readonly HoldItem[];
+    try {
+      after = (await held()).rows;
+    } catch {
+      return { requested, moved: null };
+    }
+    const still = new Set(after.map((row) => row.itemID));
+    return { requested, moved: requested.filter((itemID) => !still.has(itemID) && rows.some((row) => row.itemID === itemID)) };
+  }
+
   async function unloadMiningHolds(itemIDs: readonly number[]): Promise<void> {
     await runMiningAction(
       "Unload",
-      () => api.unloadMiningHolds(itemIDs, callOptions),
+      () => unloadToOwnHangar(itemIDs),
       (moved, total) =>
         `Only ${moved} of ${total} stacks moved to your hangar. The server did not say why the rest stayed.`,
       "Nothing moved to your hangar, and the server gave no reason.",
@@ -7228,10 +7303,58 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   /**
+   * The refinery's Reprocess by the page's own calls (bridge/reprocessWrites.ts: itemReprocessor.Reprocess), each
+   * item's place read as the route read it until 2026-10-14: the hangar of where the pilot is docked, and the ship's
+   * mining holds where an item is not in it (an item in neither is asked of nobody). What an answer said it
+   * reprocessed was; where an answer did not say, the places are read again, and a stack still there is taken for not
+   * reprocessed (null, "could not check", where that read fails).
+   */
+  async function reprocessNow(itemIDs: readonly number[]): Promise<{ readonly requested: readonly number[]; readonly moved: readonly number[] | null }> {
+    const now = decodeFlightStatus((await api.getFlightStatus(callOptions)).flight);
+    const dockedAt = now.docked ? now.structureID ?? now.stationID ?? null : null;
+    if (dockedAt === null) throw Object.assign(new Error("Dock at a station to use its refinery."), { code: "NOT_DOCKED" });
+    const online = store.station.get().online;
+    if (!online) throw new Error("No pilot is online.");
+    const requested = [...new Set(itemIDs.filter((itemID) => Number.isSafeInteger(itemID) && itemID > 0))];
+    let activeShipID: number | null = now.shipID ?? null;
+    const placesOf = async (wanted: readonly number[]): Promise<Map<number, number>> => {
+      const places = new Map<number, number>();
+      for (const row of decodeInventoryRows((await api.loadInventory(callOptions)).hangar.list)) {
+        if (wanted.includes(row.itemID)) places.set(row.itemID, dockedAt);
+      }
+      if (wanted.every((itemID) => places.has(itemID))) return places;
+      const holds = await api.getMiningHolds(callOptions);
+      activeShipID = holds.activeShipID ?? activeShipID;
+      for (const hold of decodeMiningHolds(holds.holds)) {
+        for (const item of hold.items ?? []) {
+          if (wanted.includes(item.itemID) && !places.has(item.itemID) && activeShipID !== null) places.set(item.itemID, activeShipID);
+        }
+      }
+      return places;
+    };
+    const outcomes = await reprocessCall(bridgeDo, requested, await placesOf(requested), activeShipID, { dockedAt, ownerID: online.characterID });
+    const said = new Set<number>();
+    const unsaid: number[] = [];
+    for (const outcome of outcomes) {
+      if (outcome.said === null) unsaid.push(...outcome.asked);
+      else for (const itemID of outcome.said) said.add(itemID);
+    }
+    let gone = new Set<number>();
+    if (unsaid.length > 0) {
+      try {
+        const still = await placesOf(unsaid);
+        gone = new Set(unsaid.filter((itemID) => !still.has(itemID)));
+      } catch {
+        return { requested, moved: null };
+      }
+    }
+    return { requested, moved: requested.filter((itemID) => said.has(itemID) || gone.has(itemID)) };
+  }
+
+  /**
    * ⚠ REPROCESS. This consumes the ore and charges the station's ISK tax. The
-   * panel confirms first (showing the quote AND the tax); the BFF confirms
-   * again. This method is unconditional by design — the gates are on either
-   * side of it, as with destroyRig.
+   * panel confirms first (showing the quote AND the tax). This method is
+   * unconditional by design — the gate is before it, as with destroyRig.
    */
   async function reprocessItems(itemIDs: readonly number[]): Promise<void> {
     // What the quote on the page said of these stacks before they were refined: one with nothing to process is too
@@ -7239,7 +7362,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const tooFew = new Set(store.mining.get().quotes.filter((quote) => quote.quantityToProcess === 0).map((quote) => quote.itemID));
     await runMiningAction(
       "Reprocess",
-      () => api.reprocessItems(itemIDs, callOptions),
+      () => reprocessNow(itemIDs),
       (moved, total) =>
         `Only ${moved} of ${total} stacks were reprocessed. The server did not say why the rest were left.`,
       "Nothing was reprocessed, and the server gave no reason.",
@@ -9548,7 +9671,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       engageDrones: async (ids, targetID) => { await engageDronesConfirmed(ids, targetID); },
       mineDrones: async (ids, targetID) => { await mineWithDronesCall(bridgeDo, ids, targetID); },
       unloadHolds: async (itemIDs) => {
-        await api.unloadMiningHolds(itemIDs, callOptions);
+        await unloadToOwnHangar(itemIDs);
       },
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       onProgress: (progress) => {
@@ -14000,12 +14123,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
               // delivery that moved nothing looked exactly like one that
               // worked. Raising here is what puts it in front of the refusal
               // ledger instead of nowhere.
-              const result = await api.unloadMiningHolds(
-                action.itemIDs,
-                callOptions,
-                action.division ?? null,
-                action.strictCorp === true,
-              );
+              // Into the pilot's own hangar by the page's own call; a corporation division's delivery and an
+              // operation's strict one by the route, which keeps the bot host's custody of them.
+              const result = action.division === undefined && action.strictCorp !== true
+                ? { ...(await unloadToOwnHangar(action.itemIDs)), fellBack: null }
+                : await api.unloadMiningHolds(
+                  action.itemIDs,
+                  callOptions,
+                  action.division ?? null,
+                  action.strictCorp === true,
+                );
               const moved = result.moved ?? null;
               if (moved !== null && moved.length === 0) {
                 throw new Error("Nothing moved to your hangar, and the server gave no reason.");
@@ -14304,11 +14431,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           }
           case "reprocessOre":
             if (action.itemIDs.length > 0) {
-              // The BFF goes by the server's own word of what it reprocessed;
-              // the block confirms on its own next-tick read too, so a silent
-              // decline just retries within the block's bound instead of being
-              // believed.
-              await api.reprocessItems(action.itemIDs, callOptions);
+              // The page goes by the server's own word of what it reprocessed
+              // (reprocessNow); the block confirms on its own next-tick read too,
+              // so a silent decline just retries within the block's bound
+              // instead of being believed.
+              await reprocessNow(action.itemIDs);
             }
             return;
           case "lootWreck": {
@@ -15953,6 +16080,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     reprocessItems,
     jettisonItems,
     compressOre,
+    compressedTypesOf,
     loadSkills,
     loadPlanets,
     selectColony,

@@ -872,98 +872,18 @@ test("a quote is a PURE READ — it never reaches Reprocess", async () => {
 
 // --- The confirm gate -------------------------------------------------------
 
-test("⚠ reprocess is REFUSED without an explicit confirmation", async () => {
-  const { gateway, baseUrl } = await docked();
+// The reprocess route's tests went on 2026-10-14 with the route (POST /api/bridge/reprocessing/reprocess): the page
+// makes the refinery's Reprocess itself (web/src/bridge/reprocessWrites.ts), one call for each place, each item's
+// place read by the page and the answer read for what was reprocessed (web/src/app/flow.ts, reprocessNow; its own
+// tests are web/src/app/miningFlow.test.ts). What they held of the places' reading, the call's arguments, a silent
+// answer read again and a refusal's words is the page's now.
 
-  for (const body of [
-    { itemIDs: [ORE_STACK_ID] },
-    { itemIDs: [ORE_STACK_ID], confirm: false },
-    { itemIDs: [ORE_STACK_ID], confirm: "true" },
-    { itemIDs: [ORE_STACK_ID], confirm: 1 },
-  ]) {
-    const { response, payload } = await apiRequest(baseUrl, "/api/bridge/reprocessing/reprocess", {
-      method: "POST",
-      body,
-    });
-    assert.equal(response.status, 400, JSON.stringify(body));
-    assert.equal(payload.error, "CONFIRMATION_REQUIRED", JSON.stringify(body));
-    // The message says what it would cost, in plain words.
-    assert.match(payload.message, /consumes the ore and charges/i);
-  }
-  // Nothing was consumed and the refinery was never even reached.
-  assert.equal(boundOf(gateway, "reprocessingSvc", "Reprocess").length, 0);
-  assert.ok(gateway.state.placement.has(ORE_STACK_ID));
-});
 
-test("with confirm:true it reprocesses a hold's stack as the ship's, which is where it is, and where the plant does not say what went the places are read again", async () => {
-  const { gateway, baseUrl } = await docked();
-  const lists = boundOf(gateway, "invbroker", "List").length;
 
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/reprocessing/reprocess", {
-    method: "POST",
-    body: { itemIDs: [ORE_STACK_ID], confirm: true },
-  });
-  assert.equal(response.status, 200, JSON.stringify(payload));
-  assert.deepEqual(payload.processed, [ORE_STACK_ID], "the stack is gone, so it was processed");
-  assert.deepEqual(payload.remaining, []);
 
-  const runs = boundOf(gateway, "reprocessingSvc", "Reprocess");
-  assert.equal(runs.length, 1);
-  // Reprocess(itemIDs, fromLocationID, ownerID, outputLocationID, outputFlagID): the stack is in the ore hold, so
-  // it is of the ship (reprocessing/ui/itemReprocessor.py 19 to 23: each item's own place); and the output is the
-  // hangar of where the pilot is docked, named (the client's window names that hangar, and never leaves it unnamed).
-  assert.deepEqual(runs[0].args, [[ORE_STACK_ID], SHIP_ID, 7, ORIGIN_STATION_ID, 4]);
-  assert.equal(runs[0].kwargs, null);
-  // Where it is was found in the listings: the hangar's, then the ship's holds down the ladder as far as the one
-  // it is in. The stand-in's plant does not say what it reprocessed, so the places were read again: every hold this
-  // time, the stack being in none.
-  const HANGAR = `handle:invbroker:[${ORIGIN_STATION_ID}]`;
-  const SHIP = `handle:invbroker:[${SHIP_ID}]`;
-  assert.deepEqual(
-    boundOf(gateway, "invbroker", "List").slice(lists).map((call) => [call.args[0], call.boundHandle]),
-    [[FLAG_HANGAR, HANGAR], [FLAG_ORE_HOLD, SHIP],
-      [FLAG_HANGAR, HANGAR], [FLAG_ORE_HOLD, SHIP], [FLAG_GAS_HOLD, SHIP], [FLAG_ICE_HOLD, SHIP], [FLAG_ASTEROID_HOLD, SHIP], [FLAG_CARGO, SHIP]],
-  );
-});
-
-test("a reprocess the server ignores is reported as NOT processed", async () => {
-  const { gateway, baseUrl } = await docked();
-  gateway.state.inert.add("Reprocess");
-  // The stack must be in the HANGAR for the verification re-read to find it.
-  gateway.state.placement.set(ORE_STACK_ID, FLAG_HANGAR);
-
-  const { payload } = await apiRequest(baseUrl, "/api/bridge/reprocessing/reprocess", {
-    method: "POST",
-    body: { itemIDs: [ORE_STACK_ID], confirm: true },
-  });
-  assert.equal(payload.ok, true, "the call itself succeeded");
-  assert.deepEqual(payload.processed, [], "but the stack is still in the hangar");
-  assert.deepEqual(payload.remaining, [ORE_STACK_ID]);
-});
-
-test("a refinery refusal carries the SERVER's own reason", async () => {
-  const { gateway, baseUrl } = await docked();
-  gateway.state.refuse.set("Reprocess", "You do not have enough ISK to pay the reprocessing tax.");
-
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/reprocessing/reprocess", {
-    method: "POST",
-    body: { itemIDs: [ORE_STACK_ID], confirm: true },
-  });
-  assert.equal(response.status, 409);
-  assert.match(payload.message, /enough ISK/);
-});
-
-test("the refinery routes refuse in space and refuse an empty selection", async () => {
-  const { gateway, baseUrl } = await docked();
-  gateway.state.docked = false;
-  const inSpace = await apiRequest(baseUrl, "/api/bridge/reprocessing/reprocess", {
-    method: "POST",
-    body: { itemIDs: [ORE_STACK_ID], confirm: true },
-  });
-  assert.equal(inSpace.response.status, 409);
-  assert.equal(inSpace.payload.error, "NOT_DOCKED");
-
-  gateway.state.docked = true;
+test("the refinery's quote refuses an empty selection", async () => {
+  // (Its refusal in space was the reprocess route's, which went on 2026-10-14: the page refuses that itself.)
+  const { baseUrl } = await docked();
   const empty = await apiRequest(baseUrl, "/api/bridge/reprocessing/quote?itemIDs=");
   assert.equal(empty.response.status, 400);
   assert.equal(empty.payload.error, "NOTHING_SELECTED");
@@ -976,7 +896,6 @@ test("every mining route requires the web login session", async () => {
     ["/api/bridge/ship/ore-hold/unload", "POST"],
     ["/api/bridge/mining/scan", "GET"],
     ["/api/bridge/reprocessing/quote", "GET"],
-    ["/api/bridge/reprocessing/reprocess", "POST"],
   ]) {
     const { response } = await apiRequest(baseUrl, path, {
       method,
@@ -1013,161 +932,13 @@ test("a scoped collection transfer refuses a changed ship/system before any inve
 
 
 
-test("a stack that is no whole number of portions stays in the hangar, the less, and is reprocessed all the same: what is reprocessed is what the server says it reprocessed", async () => {
-  // reprocessing/ui/controller.py 78 to 82: the window takes the first of Reprocess's two answers as what was
-  // reprocessed. Seen live 2026-10-12: 5,050 Veldspar reprocessed to 50, 10,000 Tritanium made, the tax taken, and
-  // the route's reading of the hangar for what was gone answering that nothing was reprocessed.
-  const OTHER_STACK_ID = ORE_STACK_ID + 1;
-  const { gateway, baseUrl } = await docked();
-  // Both stacks are in the hangar, and stay there: what is left over of each.
-  gateway.state.placement.set(ORE_STACK_ID, FLAG_HANGAR);
-  gateway.state.placement.set(OTHER_STACK_ID, FLAG_HANGAR);
-  gateway.state.inert.add("Reprocess");
-  const state = { answer: null };
-  const bound = gateway.callBoundMethod;
-  gateway.callBoundMethod = async (service, method, ...rest) => {
-    const outcome = await bound.call(gateway, service, method, ...rest);
-    return service === "reprocessingSvc" && method === "Reprocess" ? { ...outcome, result: state.answer } : outcome;
-  };
-  const answered = (...ids) => [{ type: "list", items: ids }, { type: "dict", entries: [[34, 1000]] }];
-  const reprocess = async (itemIDs = [ORE_STACK_ID, OTHER_STACK_ID]) => {
-    const lists = boundOf(gateway, "invbroker", "List").length;
-    const { payload } = await apiRequest(baseUrl, "/api/bridge/reprocessing/reprocess", { method: "POST", body: { itemIDs, confirm: true } });
-    return [payload.processed, payload.remaining, boundOf(gateway, "invbroker", "List").length - lists];
-  };
-  // The server names both: both are reprocessed, whatever is still in the hangar. The hangar is read the once, for
-  // where the stacks are, and not again.
-  state.answer = answered(ORE_STACK_ID, OTHER_STACK_ID);
-  assert.deepEqual(await reprocess(), [[ORE_STACK_ID, OTHER_STACK_ID], [], 1]);
-  // It names one, or none: the rest were not reprocessed. One it names that was not asked for is nobody's.
-  state.answer = answered(OTHER_STACK_ID);
-  assert.deepEqual(await reprocess(), [[OTHER_STACK_ID], [ORE_STACK_ID], 1]);
-  state.answer = answered();
-  assert.deepEqual(await reprocess(), [[], [ORE_STACK_ID, OTHER_STACK_ID], 1]);
-  state.answer = answered(ORE_STACK_ID, 999);
-  assert.deepEqual(await reprocess([ORE_STACK_ID]), [[ORE_STACK_ID], [], 1]);
-  // An answer that does not say which: the hangar is read again, and a stack still in it is taken for not reprocessed.
-  for (const unsaid of [null, [{ type: "list", items: [ORE_STACK_ID] }], [{ type: "list", items: [ORE_STACK_ID] }, null, null], [[ORE_STACK_ID], null], [{ type: "list", items: ["x"] }, null], [{ type: "list", items: [0] }, null], [{ type: "dict", entries: [] }, null],
-    [{ type: "tuple", items: [ORE_STACK_ID] }, null], [{ type: "list", items: [String(ORE_STACK_ID)] }, null], [{ type: "list", items: [ORE_STACK_ID + 0.5] }, null]]) {
-    state.answer = unsaid;
-    assert.deepEqual(await reprocess(), [[], [ORE_STACK_ID, OTHER_STACK_ID], 2], JSON.stringify(unsaid));
-  }
-});
+// (Five more tests of the reprocess route went with it on 2026-10-14: a stack of no whole number of portions, each
+// item as of its own place, an answer that says of one place and not another, a pilot of no known ship, and a hull's
+// holds read for an item's place. The page reads the places itself, and goes by the plant's word.)
 
-test("each item is reprocessed as of its own place, one call for each place as the client's reprocessor makes them, and an item that is in no listing is asked of nobody", async () => {
-  // reprocessing/ui/itemReprocessor.py 19 to 44: the items are sorted by their rows' places, and each place has its
-  // own Reprocess. Seen live 2026-10-12: a hold's stack, named as the hangar's, was quoted and passed over.
-  const HANGAR_STACK_ID = ORE_STACK_ID + 10;
-  const PLACELESS_STACK_ID = ORE_STACK_ID + 11;
-  const NOWHERE = 999;
-  const { gateway, baseUrl } = await docked();
-  gateway.state.placement.set(HANGAR_STACK_ID, FLAG_HANGAR);
-  gateway.state.placement.set(PLACELESS_STACK_ID, FLAG_CARGO);
-  gateway.state.placeless.add(PLACELESS_STACK_ID);
-  // The plant says what it reprocessed, which is all it was asked for; and each stack stays, the less.
-  gateway.state.inert.add("Reprocess");
-  gateway.state.reprocessed = (args) => [{ type: "list", items: args[0] }, { type: "dict", entries: [[34, 1000]] }];
-  const reprocess = async (itemIDs) => {
-    const before = [boundOf(gateway, "reprocessingSvc", "Reprocess").length, boundOf(gateway, "invbroker", "List").length];
-    const { response, payload } = await apiRequest(baseUrl, "/api/bridge/reprocessing/reprocess", { method: "POST", body: { itemIDs, confirm: true } });
-    assert.equal(response.status, 200, JSON.stringify(payload));
-    return {
-      asked: boundOf(gateway, "reprocessingSvc", "Reprocess").slice(before[0]).map((call) => call.args),
-      listed: boundOf(gateway, "invbroker", "List").slice(before[1]).map((call) => call.args[0]),
-      answered: [payload.requested, payload.processed, payload.remaining],
-      notices: payload.notifications,
-    };
-  };
-  const EVERY_HOLD = [FLAG_ORE_HOLD, FLAG_GAS_HOLD, FLAG_ICE_HOLD, FLAG_ASTEROID_HOLD, FLAG_CARGO];
-  // The ore hold's, the hangar's, one that is nowhere, the ice hold's, and one whose row names no place.
-  const all = [ORE_STACK_ID, HANGAR_STACK_ID, NOWHERE, ICE_STACK_ID, PLACELESS_STACK_ID];
-  assert.deepEqual(await reprocess(all), {
-    // The ship's first, its stack having been named first; and each call's items in the order they were named.
-    asked: [[[ORE_STACK_ID, ICE_STACK_ID], SHIP_ID, 7, ORIGIN_STATION_ID, 4], [[HANGAR_STACK_ID], ORIGIN_STATION_ID, 7, ORIGIN_STATION_ID, 4]],
-    // Every hold was read, two of the items being found in none; and the plant having said what it did, nothing
-    // was read again.
-    listed: [FLAG_HANGAR, ...EVERY_HOLD],
-    answered: [all, [ORE_STACK_ID, HANGAR_STACK_ID, ICE_STACK_ID], [NOWHERE, PLACELESS_STACK_ID]],
-    // What each call sent with its answer, both calls'.
-    notices: [{ reprocessedOf: SHIP_ID }, { reprocessedOf: ORIGIN_STATION_ID }],
-  });
-  // The hangar's alone: the ship's holds are not read.
-  assert.deepEqual(await reprocess([HANGAR_STACK_ID]), {
-    asked: [[[HANGAR_STACK_ID], ORIGIN_STATION_ID, 7, ORIGIN_STATION_ID, 4]],
-    listed: [FLAG_HANGAR],
-    answered: [[HANGAR_STACK_ID], [HANGAR_STACK_ID], []],
-    notices: [{ reprocessedOf: ORIGIN_STATION_ID }],
-  });
-  // The ice hold's: the holds are read down the ladder as far as it, and no further.
-  assert.deepEqual((await reprocess([ICE_STACK_ID])).listed, [FLAG_HANGAR, FLAG_ORE_HOLD, FLAG_GAS_HOLD, FLAG_ICE_HOLD]);
-  // None of them anywhere: the plant is asked nothing, and nothing is reprocessed.
-  assert.deepEqual(await reprocess([NOWHERE, PLACELESS_STACK_ID]), {
-    asked: [],
-    listed: [FLAG_HANGAR, ...EVERY_HOLD],
-    answered: [[NOWHERE, PLACELESS_STACK_ID], [], [NOWHERE, PLACELESS_STACK_ID]],
-    notices: [],
-  });
-});
 
-test("where the plant says what it reprocessed of one place and not of another, the other's are told by reading again; where that cannot be read nothing is claimed; and a listing that cannot be read before refuses the reprocessing", async () => {
-  const HANGAR_STACK_ID = ORE_STACK_ID + 10;
-  const { gateway, baseUrl } = await docked();
-  const state = { afterTheShips: () => {} };
-  // The hangar's call is answered as the server answers, naming nothing it reprocessed; the ship's with no answer.
-  gateway.state.reprocessed = (args) => {
-    if (args[1] === ORIGIN_STATION_ID) return [{ type: "list", items: [] }, { type: "dict", entries: [] }];
-    state.afterTheShips();
-    return null;
-  };
-  const reprocess = async () => {
-    gateway.state.refuse.delete("List");
-    for (const [itemID, flag] of [[HANGAR_STACK_ID, FLAG_HANGAR], [ORE_STACK_ID, FLAG_ORE_HOLD], [ICE_STACK_ID, FLAG_ICE_HOLD]]) gateway.state.placement.set(itemID, flag);
-    const { response, payload } = await apiRequest(baseUrl, "/api/bridge/reprocessing/reprocess", { method: "POST", body: { itemIDs: [HANGAR_STACK_ID, ORE_STACK_ID, ICE_STACK_ID], confirm: true } });
-    return [response.status, payload.processed, payload.remaining];
-  };
-  // The stand-in takes away every stack it is asked to reprocess. The hangar's is gone and is not reprocessed, the
-  // plant having said so; the ship's two are gone, and so are reprocessed.
-  assert.deepEqual(await reprocess(), [200, [ORE_STACK_ID, ICE_STACK_ID], [HANGAR_STACK_ID]]);
-  // One of the ship's is still in its hold when the places are read again: it is not reprocessed.
-  state.afterTheShips = () => gateway.state.placement.set(ICE_STACK_ID, FLAG_ICE_HOLD);
-  assert.deepEqual(await reprocess(), [200, [ORE_STACK_ID], [HANGAR_STACK_ID, ICE_STACK_ID]]);
-  // The places cannot be read again: neither is claimed, of any of them.
-  state.afterTheShips = () => gateway.state.refuse.set("List", "The hangar is locked.");
-  assert.deepEqual(await reprocess(), [200, null, null]);
-  // And a listing that cannot be read before anything is asked: the refusal is the answer, and the plant is asked
-  // nothing.
-  const asked = boundOf(gateway, "reprocessingSvc", "Reprocess").length;
-  gateway.state.refuse.set("List", "The hangar is locked.");
-  const refused = await apiRequest(baseUrl, "/api/bridge/reprocessing/reprocess", { method: "POST", body: { itemIDs: [ORE_STACK_ID], confirm: true } });
-  assert.deepEqual([refused.response.status, boundOf(gateway, "reprocessingSvc", "Reprocess").length - asked], [409, 0]);
-  assert.match(refused.payload.message, /locked/);
-});
 
-test("a pilot the BFF knows no ship of has the hangar read for where its items are, and no hold", async () => {
-  const gateway = fakeGateway();
-  const select = gateway.selectCharacter;
-  gateway.selectCharacter = async (...args) => {
-    const outcome = await select(...args);
-    return { ...outcome, session: { ...outcome.session, shipID: null } };
-  };
-  const { baseUrl } = await startTestServer({ gateway });
-  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
-  // The stack is in the ore hold of a ship this pilot is not said to be in.
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/reprocessing/reprocess", { method: "POST", body: { itemIDs: [ORE_STACK_ID], confirm: true } });
-  assert.deepEqual([response.status, payload.processed, payload.remaining], [200, [], [ORE_STACK_ID]], JSON.stringify(payload));
-  assert.deepEqual(gateway.calls.boundCall.map((call) => [call.service, call.method, call.args]), [["invbroker", "List", [FLAG_HANGAR]]]);
-  assert.deepEqual(gateway.calls.bind.map((bind) => [bind.service, bind.method, bind.args]).filter(([service]) => service === "invbroker"), [["invbroker", "GetInventory", [ORIGIN_STATION_ID]]]);
-});
 
-test("a hull whose type is known has only the holds it carries read for where an item is", async () => {
-  // As the hold read itself has it (above): a barge's type carries a mining hold and its cargo, and no other.
-  const { gateway, baseUrl } = await docked(undefined, { staticData: hullStaticData() });
-  gateway.state.shipTypeID = BARGE_TYPE_ID;
-  const lists = boundOf(gateway, "invbroker", "List").length;
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/reprocessing/reprocess", { method: "POST", body: { itemIDs: [999], confirm: true } });
-  assert.deepEqual([response.status, payload.processed, payload.remaining], [200, [], [999]], JSON.stringify(payload));
-  assert.deepEqual(boundOf(gateway, "invbroker", "List").slice(lists).map((call) => call.args[0]), [FLAG_HANGAR, FLAG_ORE_HOLD, FLAG_CARGO]);
-});
 
 test("a quote's nought is nought: a stack of too few has nothing to process, said as 0 and not as unknown; and what the quote has not got is null", async () => {
   const TOO_FEW = ORE_STACK_ID + 20;

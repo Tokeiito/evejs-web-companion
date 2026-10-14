@@ -369,9 +369,11 @@ test("a docked bot unloads first and only then undocks — and the readout says 
     if (path === "/api/bridge/ship/ore-hold") {
       return { status: 200, body: holdsBody(items.length > 0 ? 4_000 : 0, items) };
     }
-    if (path === "/api/bridge/ship/ore-hold/unload") {
+    // The unloading into the pilot's own hangar is the page's own since 2026-10-14 (app/flow.ts, unloadToOwnHangar):
+    // the hangar's move through the generic call.
+    if (path === "/api/bridge/call" && body.service === "invbroker") {
       items = [];
-      return { status: 200, body: { ok: true, requested: [90001], moved: [90001], remaining: [] } };
+      return { status: 200, body: { ok: true, service: "invbroker", method: body.method, result: null, notifications: [] } };
     }
     if (path === "/api/bridge/fitting") return { status: 200, body: fittingBody() };
     if (path === "/api/names") return { status: 200, body: namesBody(body) };
@@ -383,8 +385,7 @@ test("a docked bot unloads first and only then undocks — and the readout says 
   await new Promise((resolve) => setTimeout(resolve, 80));
   flow.stopMiningBot();
 
-  const order = requests.map((r) => r.path);
-  const unloadAt = order.indexOf("/api/bridge/ship/ore-hold/unload");
+  const unloadAt = requests.findIndex((r) => r.path === "/api/bridge/call" && r.body.service === "invbroker");
   // The undock is the page's own call (bridge/placeChanges.ts): ship.Undock through the generic call.
   const undockAt = requests.findIndex((r) => r.path === "/api/bridge/call" && r.body.service === "ship" && r.body.method === "Undock");
   assert.ok(unloadAt >= 0, "it unloaded");

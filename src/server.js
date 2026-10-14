@@ -1122,6 +1122,11 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
       : objectKind === "inventoryManager"
       ? { service: body.service, method: body.method, ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => boundCall(
         heldBridgeSession, req.webSessionID, inventoryManagerBindSpec(heldBridgeSession), body.method, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null)) }
+      // (And a call on the refinery of where the pilot is docked, by the object its route went by: a structure's
+      // hangar access asked first, as the route asked it.)
+      : objectKind === "refinery"
+      ? { service: body.service, method: body.method, ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => refineryCall(
+        heldBridgeSession, req.webSessionID, body.method, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null)) }
       // (And a call on the system's scan manager, by the object its route went by.)
       : objectKind === "scanManager"
       ? { service: body.service, method: body.method, ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => systemScanCall(
@@ -5606,7 +5611,15 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
         res.status(409).json({ ok: false, error: "ALREADY_IN_SPACE", message: "The ship is already in space." });
         return;
       }
-      if (shipID <= 0 || Number(args[0]) !== shipID) {
+      // (From a player structure the structure's own service's Undock(structureID, shipID), the ship None where it is
+      // the structure, structureDocking.py 26 to 36; from a station the ship's Undock(shipID, ignoreContraband).)
+      const fromAStructure = service === "structureDocking";
+      if (fromAStructure && (!isPlayerStructureID(Number(args[0])) || Number(args[0]) !== Number(before.flight.structureID))) {
+        res.status(400).json({ ok: false, error: "INVALID_STRUCTURE", message: "A pilot undocks from the structure it is docked in." });
+        return;
+      }
+      const undockingShipID = fromAStructure ? Number(args[1] ?? args[0]) : Number(args[0]);
+      if (shipID <= 0 || undockingShipID !== shipID) {
         res.status(400).json({ ok: false, error: "INVALID_SHIP", message: "A pilot undocks in the ship it is in." });
         return;
       }
@@ -5617,8 +5630,12 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
         return;
       }
       const stationID = Number(args[0]);
-      if (!isClientStationID(stationID)) {
-        res.status(400).json({ ok: false, error: "INVALID_STATION", message: "A station is docked at by its number." });
+      // (A player structure is docked at by its own service's Dock, structureDocking.py 64 to 80; a station by the park's.)
+      const atAStructure = service === "structureDocking";
+      if (atAStructure ? !isPlayerStructureID(stationID) : !isClientStationID(stationID)) {
+        res.status(400).json(atAStructure
+          ? { ok: false, error: "INVALID_STRUCTURE", message: "A player structure is docked at by its number." }
+          : { ok: false, error: "INVALID_STATION", message: "A station is docked at by its number." });
         return;
       }
       if (shipID <= 0 || Number(args[1]) !== shipID) {
@@ -5652,9 +5669,15 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
     if (!await acquireRouteTransition(res, held, kind, expected)) {
       return;
     }
-    // (By the name the transport knows it by, as the generic call asks any write: bridgeCallPolicy.js, gatewaysNameFor.)
-    const named = gamePortPilots && isGamePortHandle(held.bridgeSessionID) ? method : gatewaysNameFor(service, method);
-    const outcome = await heldTopLevelCall(held, req.webSessionID, service, named, args, kwargs);
+    // (By the name the transport knows it by, as the generic call asks any write: bridgeCallPolicy.js, gatewaysNameFor.
+    // A structure's Dock and Undock the web gateway's list has not: there the park's CmdDock of the structure is asked,
+    // as the dock route asked it until 2026-10-14, and the ship's Undock, which this server takes from a structure.)
+    const onTheGamePort = Boolean(gamePortPilots && isGamePortHandle(held.bridgeSessionID));
+    const outcome = onTheGamePort || service !== "structureDocking"
+      ? await heldTopLevelCall(held, req.webSessionID, service, onTheGamePort ? method : gatewaysNameFor(service, method), args, kwargs)
+      : method === "Dock"
+        ? await heldTopLevelCall(held, req.webSessionID, "beyonce", "CmdDock", args, kwargs)
+        : await heldTopLevelCall(held, req.webSessionID, "ship", "Undock", [shipID, Boolean(kwargs && kwargs.ignoreContraband)], null);
     markTransitionAccepted(held);
     const after = await awaitRouteTransition(held, req.webSessionID, kind, expected, waiting);
     if (!after.ok && kind === "dock") {
@@ -14779,15 +14802,6 @@ async function accessibleStructureMatches(req, query, characterID = 0) {
   return matches.sort((a, b) => a.name.localeCompare(b.name)).slice(0, 25);
 }
 
-async function assertStructureDockAccess(held, webSessionID, structureID) {
-  const result = await heldTopLevelCall(held, webSessionID, "structureDirectory",
-    "CheckMyDockingAccessToStructures", [[structureID]], null);
-  if (!structureIDsFromList(result.result).includes(structureID)) {
-    throw Object.assign(new Error("Docking access to this structure is unavailable."),
-      { code: "STRUCTURE_DOCK_ACCESS_DENIED", statusCode: 409 });
-  }
-}
-
 /**
  * structures/services.py ONLINE_SERVICES_UNRESTRICTED_ACCESS: what a structure does for anyone docked in it,
  * whatever its services say: its docking, which is its hangars, and its fitting.
@@ -16893,91 +16907,12 @@ app.post("/api/bridge/flight/jump-through-structure", requireAuth, async (req, r
   }
 });
 
-// Dock at the destination station: beyonce.CmdDock(stationID, shipID). If the
-// ship is out of docking range the handler refuses with a DockingApproach user
-// error (surfaced as the reason); on the live server the sim completes the
-// pending dock, so the page polls flight status to see the docked state.
-//
-// (Since 2026-10-14 the page docks at a station by its own call, under the same keeping
-// (dispatchPlaceChangeWrite, "dock"; web/src/bridge/placeChanges.ts), and asks this route for a
-// structure alone: the client's own call there is structureDocking.Dock(structureID, shipid)
-// (structureDocking.py 64 to 80), which the page does not make yet.)
-app.post("/api/bridge/flight/dock", requireAuth, async (req, res, next) => {
-  const held = requireHeldBridgeSession(req, res);
-  if (!held) {
-    return;
-  }
-  const stationID = Number(req.body && req.body.stationID) || 0;
-  if (stationID <= 0) {
-    res.status(400).json({ ok: false, error: "INVALID_STATION", message: "A positive stationID is required." });
-    return;
-  }
-  try {
-    const before = await readHeldFlight(held, req.webSessionID);
-    if (!requireInSpace(res, before.flight)) {
-      return;
-    }
-    if (isPlayerStructureID(stationID)) await assertStructureDockAccess(held, req.webSessionID, stationID);
-    const shipID = Number(before.flight.shipID) || 0;
-    const expected = { stationID, shipID };
-    if (!await acquireRouteTransition(res, held, "dock", expected)) {
-      return;
-    }
-    const outcome = await boundCall(
-      held,
-      req.webSessionID,
-      parkBindSpec(before.flight.solarSystemID),
-      "CmdDock",
-      [stationID, shipID],
-      null,
-    );
-    markTransitionAccepted(held);
-    // R24 measured Handle_CmdDock answering 200/null while DECLINING silently
-    // (warp landing pending, ship immobile, docking approach required…), and
-    // the autopilot's silent-dock ladder exists to re-issue a dock that did
-    // not take. That ladder only works if this route ANSWERS — so dock waits
-    // on a SHORT non-latching probe rather than the full readiness barrier. A
-    // dock the sim accepted seats within a couple of seconds; a probe that
-    // ends with the ship still fully in space is the silent decline it almost
-    // certainly is. The transition is cancelled (CmdDock is safe to re-issue —
-    // retail's own client re-docks through DockingApproach) and the in-space
-    // flight goes back so the ladder can decide. Dock therefore never burns
-    // the 45 s barrier and never latches the session.
-    const probeMs = Number(options.dockProbeTimeoutMs) ||
-      Math.min(DOCK_SILENT_DECLINE_PROBE_MS, Number(options.transitionReadyTimeoutMs) || DOCK_SILENT_DECLINE_PROBE_MS);
-    const after = await awaitRouteTransition(held, req.webSessionID, "dock", expected, {
-      timeoutMs: probeMs,
-      latchOnTimeout: false,
-    });
-    if (!after.ok) {
-      if (after.code !== "TRANSITION_SUPERSEDED") {
-        cancelHeldTransition(held);
-      }
-      res.json({
-        ok: true,
-        result: outcome.result,
-        flight: { ...(after.flight || before.flight), transition: publicTransition(held) },
-        transition: publicTransition(held),
-        notifications: [...outcome.notifications, ...(after.notifications || [])],
-      });
-      return;
-    }
-    res.json({
-      ok: true,
-      result: outcome.result,
-      flight: { ...after.flight, transition: after.transition },
-      transition: after.transition,
-      notifications: [...outcome.notifications, ...after.notifications],
-    });
-  } catch (error) {
-    if (held.transition && held.transition.kind === "dock") {
-      // Dock never latches: CmdDock is safe to re-issue, so an error mid-wait
-      // releases the barrier instead of locking the session behind it.
-      cancelHeldTransition(held);
-    }
-    next(error);
-  }
-});
+// A station and a player structure are docked at by the page's own calls since 2026-10-14, under the keeping of a
+// dock (dispatchPlaceChangeWrite, "dock"; web/src/bridge/placeChanges.ts): the park's CmdDock(stationID, shipID) for a
+// station, the structure's own structureDocking.Dock(structureID, shipID) for a structure (structureDocking.py 64 to
+// 80), which through the gateway is asked as the park's CmdDock. The dock route (POST /api/bridge/flight/dock) is gone,
+// and with it its check of a structure's docking access before the call: the server's handler checks it itself
+// (structureDockingService.Handle_Dock), as the client goes by.
 
 // Approach a gate/target:
 // beyonce.CmdSetSpeedFraction(1.0) + CmdFollowBall(destinationID, range).
@@ -18493,6 +18428,15 @@ app.get("/api/mining/compression-compatibility", requireAuth, (req, res, next) =
 // inSpaceCompressionMgr.CompressItemInSpace, itemCompression.py 9); its support collection reads the flight first,
 // as the route did. The route (POST /api/bridge/mining/compress) is gone.
 
+/**
+ * A call of the page's on the refinery of where the pilot is docked (bridgeCallPolicy.js, PAGE_OBJECT_CALLS:
+ * "refinery"), by the object the reprocessing routes bind, a structure's hangar access asked first as they asked it.
+ */
+async function refineryCall(held, webSessionID, method, args, kwargs) {
+  if (held.structureID) await assertDockedInventoryAccess(held, webSessionID, 4);
+  return boundCall(held, webSessionID, reprocessingBindSpec(held), method, args, kwargs);
+}
+
 // R3's bound-object machinery, reused: Moniker('reprocessingSvc', stationID).
 // Keyed by station so docking somewhere else binds that station's refinery
 // rather than reusing a stale OID.
@@ -18676,113 +18620,10 @@ app.get("/api/bridge/reprocessing/quote", requireAuth, async (req, res, next) =>
   }
 });
 
-/**
- * The items a Reprocess answered as reprocessed: the first of the two it answers (the items, and what they made by
- * type). Null where the answer is no such thing.
- */
-function reprocessedItemIDs(result) {
-  const first = Array.isArray(result) && result.length === 2 ? result[0] : null;
-  const items = first && first.type === "list" && Array.isArray(first.items) ? first.items : null;
-  return items !== null && items.every((id) => Number.isSafeInteger(id) && id > 0) ? new Set(items) : null;
-}
-
-// ⚠ REPROCESS CONSUMES THE INPUT STACKS AND CHARGES ISK TAX. It is the only
-// destructive route in the mining loop, so it refuses outright unless the caller
-// explicitly confirms — a second gate behind the page's own two-step
-// confirmation, exactly like R12's destroy-rig. Neither a stray click nor a
-// stray POST can consume a hold full of ore.
-app.post("/api/bridge/reprocessing/reprocess", requireAuth, async (req, res, next) => {
-  const held = requireHeldBridgeSession(req, res);
-  if (!held) {
-    return;
-  }
-  const body = req.body || {};
-  const itemIDs = Array.isArray(body.itemIDs)
-    ? body.itemIDs.map((value) => Number(value) || 0).filter((value) => value > 0)
-    : [];
-  if (itemIDs.length === 0) {
-    res.status(400).json({
-      ok: false,
-      error: "NOTHING_SELECTED",
-      message: "Choose what to reprocess first.",
-    });
-    return;
-  }
-  if (body.confirm !== true) {
-    res.status(400).json({
-      ok: false,
-      error: "CONFIRMATION_REQUIRED",
-      message:
-        "Reprocessing consumes the ore and charges the station's tax. This action must be confirmed explicitly.",
-    });
-    return;
-  }
-  try {
-    const before = await readHeldFlight(held, req.webSessionID);
-    if (!before.flight || before.flight.docked !== true) {
-      res.status(409).json({
-        ok: false,
-        error: "NOT_DOCKED",
-        message: "Dock at a station to use its refinery.",
-      });
-      return;
-    }
-    if (held.structureID) await assertDockedInventoryAccess(held, req.webSessionID, 4);
-    const spec = reprocessingBindSpec(held);
-    const dockedAt = inventoryLocationID(held);
-    // Reprocess(itemIDs, fromLocationID, ownerID, outputLocationID, outputFlagID). The items of a call are all of
-    // one place, the items' own, and the client's reprocessor makes a call for each place its items are of
-    // (reprocessing/ui/itemReprocessor.py 19 to 44): a stack in a hold of the ship is of the ship, and the server
-    // passes over an item that is not of the place named (seen live 2026-10-12: a hold's stack, named as the
-    // hangar's, was quoted and not reprocessed). An item of no place found is asked of nobody. The output is named,
-    // as the client's window names it (its own choice is the hangar of where the pilot is docked: reprocessingWnd.py
-    // 344 to 367), so the minerals land in that hangar; the client never leaves it unnamed.
-    const places = await reprocessingPlacesOf(held, req.webSessionID, itemIDs, before);
-    const byPlace = new Map();
-    for (const itemID of itemIDs) {
-      const place = places.get(itemID);
-      if (place !== undefined) byPlace.set(place, [...(byPlace.get(place) || []), itemID]);
-    }
-    // The server answers which items it reprocessed, and what they made; the client's window goes by the first
-    // (reprocessing/ui/controller.py 78 to 82). A stack that is no whole number of portions stays where it was,
-    // the less, and is reprocessed all the same: seen live 2026-10-12, 5,050 Veldspar reprocessed to 50, which a
-    // reading of the hangar for what is gone took for not reprocessed.
-    const notifications = [];
-    const said = new Set();
-    const unsaid = [];
-    for (const [place, ofPlace] of byPlace) {
-      const outcome = await boundCall(held, req.webSessionID, spec, "Reprocess", [ofPlace, place, held.characterID || 0, dockedAt, ITEM_FLAG_HANGAR], null);
-      notifications.push(...outcome.notifications);
-      const named = reprocessedItemIDs(outcome.result);
-      if (named === null) unsaid.push(...ofPlace);
-      else for (const itemID of named) said.add(itemID);
-    }
-    // An answer that does not say: the places are read again for which of its stacks are gone. A stack still there
-    // is then taken for not reprocessed.
-    let gone = new Set();
-    if (unsaid.length > 0) {
-      try {
-        const still = await reprocessingPlacesOf(held, req.webSessionID, unsaid, before);
-        gone = new Set(unsaid.filter((itemID) => !still.has(itemID)));
-      } catch {
-        // They could not be read again, so nothing can be claimed either way: null, "we could not check", which is
-        // reported as such and never as success.
-        res.json({ ok: true, requested: itemIDs, processed: null, remaining: null, notifications });
-        return;
-      }
-    }
-    const processed = itemIDs.filter((itemID) => said.has(itemID) || gone.has(itemID));
-    res.json({
-      ok: true,
-      requested: itemIDs,
-      processed,
-      remaining: itemIDs.filter((itemID) => !processed.includes(itemID)),
-      notifications,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
+// Items are reprocessed by the page's own calls since 2026-10-14 (web/src/bridge/reprocessWrites.ts:
+// reprocessingSvc.Reprocess on the refinery, itemReprocessor.py 71, one call for each place; refineryCall above), each
+// item's place read by the page. The route (POST /api/bridge/reprocessing/reprocess) and its reading of the answer
+// are gone.
 
 // Two things about a rock that live in STATIC DATA rather than in the scene, and
 // so are stamped onto each ROCK row of a space snapshot before it reaches the
@@ -21681,6 +21522,33 @@ app.get("/api/types/combat-utility", requireAuth, async (req, res, next) => {
  * No gateway call and no live session: this cannot vary by player.
  */
 const TYPE_VOLUME_TYPE_LIMIT = 500;
+
+// GET /api/types/compressed?typeIDs=... answers { compressedTypeIDs }: each type's compressed form, or null where it
+// has none, as the server compresses (staticData.getCompressedTypeID, the server's own reprocessing table). The
+// client has it in its own static data (itemcompression/data.py) and offers to compress in space only a type that has
+// one (menucheckers/itemCheckers.py, OfferCompressInSpace). A type the table cannot speak of is left out of the
+// answer, and is not "none". Not a bridge call, and no live session: it cannot vary by player.
+app.get("/api/types/compressed", requireAuth, (req, res, next) => {
+  try {
+    const asked = [];
+    for (const part of String((req.query && req.query.typeIDs) || "").split(",")) {
+      const typeID = Number(part);
+      if (Number.isSafeInteger(typeID) && typeID > 0 && !asked.includes(typeID)) {
+        asked.push(typeID);
+      }
+    }
+    const compressedTypeIDs = {};
+    for (const typeID of asked.slice(0, TYPE_VOLUME_TYPE_LIMIT)) {
+      const compressed = typeof staticData.getCompressedTypeID === "function" ? staticData.getCompressedTypeID(typeID) : undefined;
+      if (compressed !== undefined) {
+        compressedTypeIDs[String(typeID)] = compressed;
+      }
+    }
+    res.json({ ok: true, source: "static-data", compressedTypeIDs, capped: asked.length > TYPE_VOLUME_TYPE_LIMIT, limit: TYPE_VOLUME_TYPE_LIMIT });
+  } catch (error) {
+    next(error);
+  }
+});
 
 app.get("/api/types/volumes", requireAuth, async (req, res, next) => {
   try {

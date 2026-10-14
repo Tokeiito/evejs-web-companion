@@ -1536,6 +1536,18 @@ function listMiningResources() {
   return rows;
 }
 
+/**
+ * A type's compressed form as the server compresses (reprocessingStaticData.getCompressedTypeID, from the same
+ * reference table; the client has the same mapping as its compressibleTypes, itemcompression/data.py): its typeID,
+ * null where the type has none, and undefined where the table cannot be read.
+ */
+function getCompressedTypeID(typeID) {
+  const table = readStaticTable("reprocessingStatic").compressedTypeBySourceTypeID;
+  if (!table || typeof table !== "object") return undefined;
+  const compressed = Number(table[String(typeID)]);
+  return Number.isSafeInteger(compressed) && compressed > 0 ? compressed : null;
+}
+
 function getMiningCompressionCompatibility(typeIDs, typeListIDs) {
   const { compressionCompatibility } = require("./miningCompressionCompatibility");
   return compressionCompatibility(typeIDs.map(typeID => getType(typeID) || { typeID }), typeListIDs,
@@ -2007,6 +2019,7 @@ module.exports = {
   listOreFamilies,
   listMiningResources,
   getMiningCompressionCompatibility,
+  getCompressedTypeID,
   getMarketGroupChildren,
   getMarketGroupTypes,
   getNpcIndustryFacility,

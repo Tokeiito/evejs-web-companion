@@ -232,6 +232,8 @@ export interface FlightNow {
   readonly inSpace: boolean;
   readonly shipID: number | null;
   readonly solarSystemID: number | null;
+  /** The player structure the pilot is docked in, where the read says one; a station's dock says none. */
+  readonly structureID?: number | null;
 }
 
 /** A site as the page's read of the scanner has it: its own number, and the label a scan result of it goes by. */

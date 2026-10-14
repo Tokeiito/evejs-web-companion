@@ -2165,17 +2165,8 @@ export function isContrabandWarning(error: unknown): error is BridgeCallError {
 // the game port names the gate's own off its slim item, as the client does, and the server works it out from the gate
 // (jumpSessionViaStargate rejects only a far gate that contradicts it).
 
-/**
- * Dock at a structure, by its route (beyonce.CmdDock on the park). A station is docked at by the page's own call
- * since 2026-10-14 (bridge/placeChanges.ts, dock); the client docks at a structure by the structure's docking service
- * (structureDocking.Dock), which the page does not make yet, and the flow asks this for a structure alone.
- */
-export async function dock(
-  stationID: number,
-  options: ApiOptions = {},
-): Promise<FlightStepResult> {
-  return readFlightStep(await postJson("/api/bridge/flight/dock", { stationID }, options));
-}
+// A station and a player structure are docked at by the page's own calls since 2026-10-14 (bridge/placeChanges.ts,
+// dock and dockAtStructure): the dock route (POST /api/bridge/flight/dock) is gone.
 
 // A fleet's target tag is set and cleared by the page itself, with the client's
 // own call on its ballpark (bridge/fleetWrites.ts; the plan's Phase 6b): the
@@ -2403,6 +2394,9 @@ export async function getMiningHolds(options: ApiOptions = {}): Promise<MiningHo
  * reach, at the station they flew to, rather than stuck aboard a ship that
  * cannot finish its lap.
  */
+// (An unloading into the pilot's own hangar is the page's own call since 2026-10-14: app/flow.ts, unloadToOwnHangar,
+// by bridge/inventoryWrites.ts, moveItems. This route is asked for a corporation division's delivery and an
+// operation's strict one, which the bot host keeps.)
 export async function unloadMiningHolds(
   itemIDs: readonly number[],
   options: ApiOptions = {},
@@ -2454,28 +2448,9 @@ export async function getReprocessingQuote(
   };
 }
 
-/**
- * ⚠ REPROCESS. This CONSUMES the chosen stacks and CHARGES the station's ISK
- * tax, so the BFF refuses it outright unless `confirm` is true. The panel asks
- * first — showing the quote and the tax — and this flag is the second gate
- * behind that, exactly as destroyRig does for a rig.
- */
-export async function reprocessItems(
-  itemIDs: readonly number[],
-  options: ApiOptions = {},
-): Promise<MiningActionResult> {
-  const data = await postJson(
-    "/api/bridge/reprocessing/reprocess",
-    { itemIDs: [...itemIDs], confirm: true },
-    options,
-  );
-  return {
-    requested: readIDArray(data.requested) ?? [],
-    moved: readIDArray(data.processed),
-    remaining: readIDArray(data.remaining),
-    notifications: Array.isArray(data.notifications) ? data.notifications : [],
-  };
-}
+// Stacks are reprocessed at the refinery by the page itself, with the client's own call (bridge/reprocessWrites.ts),
+// each item's place read by the page (app/flow.ts, reprocessNow): it left its route
+// (POST /api/bridge/reprocessing/reprocess) on 2026-10-14.
 
 // --- R5b Travel (client-side route solver static data) ---------------------
 // The system-adjacency graph the browser route solver runs BFS over is served
@@ -3553,6 +3528,41 @@ export async function loadTypeActivation(
     }
   }
   return activatable;
+}
+
+// --- A type's compressed form (static reference data) -------------------------
+// GET /api/types/compressed?typeIDs=... answers { compressedTypeIDs }: each type's compressed form, or null where it
+// has none, as the server compresses. The client has it in its own static data (itemcompression/data.py) and offers
+// to compress in space only a type that has one. A type the answer does not speak of is absent, never "none".
+
+export interface CompressedTypesResult {
+  /** typeID -> its compressed form's typeID, or null where it has none. A type not answered for is absent. */
+  readonly compressedTypeIDs: Readonly<Record<number, number | null>>;
+}
+
+export async function loadCompressedTypes(
+  typeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<CompressedTypesResult> {
+  const compressedTypeIDs: Record<number, number | null> = {};
+  for (let at = 0; at < typeIDs.length; at += TYPE_VOLUMES_PER_REQUEST) {
+    const data = await getJson(
+      `/api/types/compressed?typeIDs=${encodeURIComponent(typeIDs.slice(at, at + TYPE_VOLUMES_PER_REQUEST).join(","))}`,
+      options,
+    );
+    const raw =
+      typeof data.compressedTypeIDs === "object" && data.compressedTypeIDs !== null && !Array.isArray(data.compressedTypeIDs)
+        ? (data.compressedTypeIDs as Record<string, JsonValue>)
+        : {};
+    for (const [key, value] of Object.entries(raw)) {
+      const typeID = Number(key);
+      if (!Number.isSafeInteger(typeID) || typeID <= 0) {
+        continue;
+      }
+      compressedTypeIDs[typeID] = typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
+    }
+  }
+  return { compressedTypeIDs };
 }
 
 // --- A type's volume (static reference data) ---------------------------------

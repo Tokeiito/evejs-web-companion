@@ -68,6 +68,64 @@ function holdsBody(): unknown {
   return { ok: true, activeShipID: 9001, stationID: 60003760, holds: HOLDS };
 }
 
+/**
+ * The page's own unloading into the pilot's hangar (app/flow.ts, unloadToOwnHangar, since 2026-10-14): the pilot's
+ * flight docked, the hangar's move through the generic call, and the holds read before it and after it, holding after
+ * it what `stays` names of what was asked (null: the read after fails). Null for any other request.
+ */
+function unloading(stays: (asked: number[]) => number[] | null) {
+  let asked: number[] | null = null;
+  return (path: string, _method: string, body: Record<string, unknown>): { status: number; body: unknown } | null => {
+    if (path === "/api/bridge/flight/status") {
+      return { status: 200, body: { ok: true, flight: { inSpace: false, docked: true, solarSystemID: 30000142, stationID: 60003760, structureID: null, shipID: 9001 }, notifications: [] } };
+    }
+    if (path === "/api/bridge/call" && body.service === "invbroker") {
+      const args = body.args as unknown[];
+      asked = body.method === "MultiAdd" ? (args[0] as number[]) : [args[0] as number];
+      return { status: 200, body: { ok: true, service: "invbroker", method: body.method, result: null, notifications: [] } };
+    }
+    if (path === "/api/bridge/ship/ore-hold" && asked !== null) {
+      const moved = asked;
+      const left = stays(moved);
+      if (left === null) return { status: 502, body: { ok: false, error: "CALL_REFUSED", message: "Read failed" } };
+      return { status: 200, body: { ok: true, activeShipID: 9001, stationID: 60003760,
+        holds: HOLDS.map((hold) => ({ ...hold, items: hold.items.filter((item) => left.includes(item.itemID) || !moved.includes(item.itemID)) })) } };
+    }
+    return null;
+  };
+}
+
+/** A pilot online, docked at 60003760 in the ship 9001: whose the refinery's output is. */
+function pilotOnline(store: ReturnType<typeof createClientStore>): void {
+  store.apply({ type: "character/online", character: {
+    characterID: 140000001, characterName: "Pilot", stationID: 60003760, structureID: null, solarSystemID: 30000142, corporationID: 98000000,
+  }, station: null });
+}
+
+/**
+ * The page's own reprocessing (app/flow.ts, reprocessNow, since 2026-10-14): the pilot's flight docked, the hangar
+ * (`hangar`: its items' numbers), and the refinery's Reprocess through the generic call answering what `said` names
+ * of what it was asked (null: an answer that says nothing), or refusing with `refusal`. Null for any other request.
+ */
+function refinery(said: (asked: number[]) => number[] | null, hangar: number[] = [], refusal: string | null = null) {
+  return (path: string, _method: string, body: Record<string, unknown>): { status: number; body: unknown } | null => {
+    if (path === "/api/bridge/flight/status") {
+      return { status: 200, body: { ok: true, flight: { inSpace: false, docked: true, solarSystemID: 30000142, stationID: 60003760, structureID: null, shipID: 9001 }, notifications: [] } };
+    }
+    if (path === "/api/bridge/inventory") {
+      return { status: 200, body: { ok: true, stationID: 60003760, structureID: null, activeShipID: 9001, volumes: {},
+        hangar: { list: { type: "list", items: hangar.map((itemID) => ({ type: "packedrow", fields: { itemID, typeID: 1228, groupID: 460, categoryID: 25, flagID: 4, quantity: 700, singleton: 0 } })) }, capacity: null, error: null },
+        cargo: { list: { type: "list", items: [] }, capacity: null, error: null } } };
+    }
+    if (path === "/api/bridge/call" && body.method === "Reprocess") {
+      if (refusal !== null) return { status: 409, body: { ok: false, error: "CALL_REFUSED", message: refusal } };
+      const done = said((body.args as number[][])[0]!);
+      return { status: 200, body: { ok: true, service: "reprocessingSvc", method: "Reprocess", result: done === null ? null : [{ type: "list", items: done }, { type: "dict", entries: [] }], notifications: [] } };
+    }
+    return null;
+  };
+}
+
 // --- Reads ------------------------------------------------------------------
 
 test("loadMiningHolds lands the holds, by name", async () => {
@@ -222,18 +280,15 @@ test("a failed quote CLEARS the previous one rather than leaving stale numbers u
 
 test("unloadMiningHolds reports success quietly, and re-reads the holds", async () => {
   const store = createClientStore();
-  const { fetch, requests } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/ship/ore-hold/unload") {
-      return {
-        status: 200,
-        body: { ok: true, requested: [ORE_STACK_ID], moved: [ORE_STACK_ID], remaining: [] },
-      };
-    }
-    return { status: 200, body: holdsBody() };
-  });
+  const answers = unloading(() => []);
+  const { fetch, requests } = makeFakeFetch((path, method, body) => answers(path, method, body) ?? { status: 200, body: holdsBody() });
   const flow = createAppFlow(store, { fetch });
 
   await flow.unloadMiningHolds([ORE_STACK_ID]);
+  // The hangar's own Add, the whole stack, from the ship it lies in, as the page moves one stack (bridge/inventoryWrites.ts).
+  assert.deepEqual(requests.filter((entry) => entry.path === "/api/bridge/call").map((entry) => entry.body), [
+    { service: "invbroker", method: "Add", args: [ORE_STACK_ID, 9001], kwargs: { qty: 500, flag: 4 }, pilot: true, confirm: true, of: "hangar" },
+  ]);
   const state = store.mining.get();
   assert.equal(state.lastAction, "Unload");
   assert.equal(state.silentDecline, null);
@@ -246,15 +301,8 @@ test("unloadMiningHolds reports success quietly, and re-reads the holds", async 
 
 test("an unload that moved NOTHING is a silent decline, with no cause invented", async () => {
   const store = createClientStore();
-  const { fetch } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/ship/ore-hold/unload") {
-      return {
-        status: 200,
-        body: { ok: true, requested: [ORE_STACK_ID], moved: [], remaining: [ORE_STACK_ID] },
-      };
-    }
-    return { status: 200, body: holdsBody() };
-  });
+  const answers = unloading((asked) => asked);
+  const { fetch } = makeFakeFetch((path, method, body) => answers(path, method, body) ?? { status: 200, body: holdsBody() });
   const flow = createAppFlow(store, { fetch });
 
   await flow.unloadMiningHolds([ORE_STACK_ID]);
@@ -265,21 +313,10 @@ test("an unload that moved NOTHING is a silent decline, with no cause invented",
 });
 
 test("a PARTIAL unload says exactly how much moved", async () => {
+  // (The ice stack is in no hold the read gives, so it is moved by nobody, and stays unmoved.)
   const store = createClientStore();
-  const { fetch } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/ship/ore-hold/unload") {
-      return {
-        status: 200,
-        body: {
-          ok: true,
-          requested: [ORE_STACK_ID, ICE_STACK_ID],
-          moved: [ORE_STACK_ID],
-          remaining: [ICE_STACK_ID],
-        },
-      };
-    }
-    return { status: 200, body: holdsBody() };
-  });
+  const answers = unloading(() => []);
+  const { fetch } = makeFakeFetch((path, method, body) => answers(path, method, body) ?? { status: 200, body: holdsBody() });
   const flow = createAppFlow(store, { fetch });
 
   await flow.unloadMiningHolds([ORE_STACK_ID, ICE_STACK_ID]);
@@ -288,16 +325,9 @@ test("a PARTIAL unload says exactly how much moved", async () => {
 
 test("an unload that could not be VERIFIED says 'unknown', not success", async () => {
   const store = createClientStore();
-  const { fetch } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/ship/ore-hold/unload") {
-      // moved: null — the BFF could not re-read the holds.
-      return {
-        status: 200,
-        body: { ok: true, requested: [ORE_STACK_ID], moved: null, remaining: null },
-      };
-    }
-    return { status: 200, body: holdsBody() };
-  });
+  // The holds cannot be read again after the move.
+  const answers = unloading(() => null);
+  const { fetch } = makeFakeFetch((path, method, body) => answers(path, method, body) ?? { status: 200, body: holdsBody() });
   const flow = createAppFlow(store, { fetch });
 
   await flow.unloadMiningHolds([ORE_STACK_ID]);
@@ -324,27 +354,26 @@ test("an unload refusal carries the server's own reason", async () => {
 
 // --- Reprocessing -----------------------------------------------------------
 
-test("⚠ reprocessItems always sends confirm:true — it is never a variable", async () => {
+test("reprocessItems is the page's own Reprocess: a hold's stack as the ship's, the output the hangar of where the pilot is docked", async () => {
+  // itemReprocessor.Reprocess (13 to 41, 71): one call for each place, Reprocess(itemIDs, fromLocation, ownerID,
+  // outputLocationID, outputFlagID), the output the window's own (the hangar, the pilot's).
   const store = createClientStore();
-  const { fetch, requests } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/reprocessing/reprocess") {
-      return {
-        status: 200,
-        body: { ok: true, requested: [ORE_STACK_ID], processed: [ORE_STACK_ID], remaining: [] },
-      };
-    }
-    return { status: 200, body: holdsBody() };
-  });
+  pilotOnline(store);
+  const answers = refinery((asked) => asked);
+  const { fetch, requests } = makeFakeFetch((path, method, body) => answers(path, method, body) ?? { status: 200, body: holdsBody() });
   const flow = createAppFlow(store, { fetch });
 
   await flow.reprocessItems([ORE_STACK_ID]);
-  const post = requests.find((entry) => entry.path === "/api/bridge/reprocessing/reprocess");
-  assert.equal(post?.body.confirm, true, "never without an explicit confirmation");
-  assert.deepEqual(post?.body.itemIDs, [ORE_STACK_ID]);
+  const calls = requests.filter((entry) => entry.path === "/api/bridge/call").map((entry) => entry.body);
+  assert.deepEqual(calls, [
+    { service: "reprocessingSvc", method: "Reprocess", args: [[ORE_STACK_ID], 9001, 140000001, 60003760, 4], kwargs: null, pilot: true, confirm: true },
+  ]);
+  assert.equal(store.mining.get().silentDecline, null);
 });
 
 test("after reprocessing, the stale quote is dropped", async () => {
   const store = createClientStore();
+  pilotOnline(store);
   const { fetch } = makeFakeFetch((path) => {
     if (path === "/api/bridge/reprocessing/quote") {
       return { status: 200, body: { ok: true, taxRate: 0.05, quotes: [] } };
@@ -359,13 +388,7 @@ test("after reprocessing, the stale quote is dropped", async () => {
         },
       };
     }
-    if (path === "/api/bridge/reprocessing/reprocess") {
-      return {
-        status: 200,
-        body: { ok: true, requested: [ORE_STACK_ID], processed: [ORE_STACK_ID], remaining: [] },
-      };
-    }
-    return { status: 200, body: holdsBody() };
+    return refinery((asked) => asked)(path, "", {}) ?? { status: 200, body: holdsBody() };
   });
   const flow = createAppFlow(store, { fetch });
 
@@ -378,15 +401,9 @@ test("after reprocessing, the stale quote is dropped", async () => {
 
 test("a reprocess that consumed NOTHING is a silent decline", async () => {
   const store = createClientStore();
-  const { fetch } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/reprocessing/reprocess") {
-      return {
-        status: 200,
-        body: { ok: true, requested: [ORE_STACK_ID], processed: [], remaining: [ORE_STACK_ID] },
-      };
-    }
-    return { status: 200, body: holdsBody() };
-  });
+  pilotOnline(store);
+  const answers = refinery(() => []);
+  const { fetch } = makeFakeFetch((path, method, body) => answers(path, method, body) ?? { status: 200, body: holdsBody() });
   const flow = createAppFlow(store, { fetch });
 
   await flow.reprocessItems([ORE_STACK_ID]);
@@ -395,14 +412,9 @@ test("a reprocess that consumed NOTHING is a silent decline", async () => {
 
 test("a refinery refusal carries the server's own reason", async () => {
   const store = createClientStore();
-  const { fetch } = makeFakeFetch(() => ({
-    status: 409,
-    body: {
-      ok: false,
-      error: "CALL_REFUSED",
-      message: "You do not have enough ISK to pay the reprocessing tax.",
-    },
-  }));
+  pilotOnline(store);
+  const answers = refinery(() => null, [], "You do not have enough ISK to pay the reprocessing tax.");
+  const { fetch } = makeFakeFetch((path, method, body) => answers(path, method, body) ?? { status: 200, body: holdsBody() });
   const flow = createAppFlow(store, { fetch });
 
   await flow.reprocessItems([ORE_STACK_ID]);
@@ -420,12 +432,26 @@ const hangarBody = () => ({
 /** A flow whose BFF answers the holds, the hangar (or refuses it) and the two actions, with every request listed. */
 function windowFlow(options: { docked?: boolean; hangarRefused?: boolean } = {}) {
   const store = createClientStore();
+  pilotOnline(store);
   store.apply({ type: "flight/status", status: { ...FLIGHT, docked: options.docked !== false, inSpace: options.docked === false } });
-  const { fetch, requests } = makeFakeFetch((path) => {
+  // The refining is the page's own since 2026-10-14 (app/flow.ts, reprocessNow): the flight read, the hangar read for
+  // each item's place, and the plant's Reprocess through the generic call, which says it reprocessed what it was asked.
+  let hangarReads = 0;
+  const { fetch, requests } = makeFakeFetch((path, _method, body) => {
     if (path === "/api/bridge/ship/ore-hold") return { status: 200, body: holdsBody() };
-    if (path === "/api/bridge/inventory") return options.hangarRefused ? { status: 409, body: { ok: false, error: "NOT_DOCKED", message: "Dock first." } } : { status: 200, body: hangarBody() };
-    if (path === "/api/bridge/ship/ore-hold/unload") return { status: 200, body: { ok: true, requested: [ORE_STACK_ID], moved: [ORE_STACK_ID], remaining: [] } };
-    if (path === "/api/bridge/reprocessing/reprocess") return { status: 200, body: { ok: true, requested: [7700001], processed: [7700001], remaining: [] } };
+    if (path === "/api/bridge/flight/status") {
+      return { status: 200, body: { ok: true, flight: { inSpace: options.docked === false, docked: options.docked !== false, solarSystemID: 30000142, stationID: options.docked === false ? null : 60003760, structureID: null, shipID: 9001 }, notifications: [] } };
+    }
+    // The unloading into the pilot's own hangar is the page's own since 2026-10-14 (app/flow.ts, unloadToOwnHangar).
+    if (path === "/api/bridge/call" && body.service === "invbroker") return { status: 200, body: { ok: true, service: "invbroker", method: body.method, result: null, notifications: [] } };
+    if (path === "/api/bridge/inventory") {
+      hangarReads += 1;
+      // (A refused hangar is the window's read after the refining; the refining's own read of the places is answered.)
+      return options.hangarRefused && hangarReads > 1 ? { status: 409, body: { ok: false, error: "NOT_DOCKED", message: "Dock first." } } : { status: 200, body: hangarBody() };
+    }
+    if (path === "/api/bridge/call" && body.method === "Reprocess") {
+      return { status: 200, body: { ok: true, service: "reprocessingSvc", method: "Reprocess", result: [{ type: "list", items: (body.args as number[][])[0] }, { type: "dict", entries: [] }], notifications: [] } };
+    }
     throw new Error(`unexpected ${path}`);
   });
   const paths = () => requests.map((entry) => entry.path);
@@ -448,15 +474,20 @@ test("the Mining window's read is the holds, and the hangar too where the pilot 
 test("after an unloading and after a refining the hangar is read again where the pilot is docked, for what went into it and what was made", async () => {
   const unloaded = windowFlow();
   await unloaded.flow.unloadMiningHolds([ORE_STACK_ID]);
-  assert.deepEqual(unloaded.paths(), ["/api/bridge/ship/ore-hold/unload", "/api/bridge/ship/ore-hold", "/api/bridge/inventory"]);
+  // (The flight, the holds read for the stacks, the hangar's move and the holds read for what stayed; then the
+  // window's reads.)
+  assert.deepEqual(unloaded.paths(), ["/api/bridge/flight/status", "/api/bridge/ship/ore-hold", "/api/bridge/call", "/api/bridge/ship/ore-hold", "/api/bridge/ship/ore-hold", "/api/bridge/inventory"]);
   const refined = windowFlow();
   await refined.flow.reprocessItems([7700001]);
-  assert.deepEqual(refined.paths(), ["/api/bridge/reprocessing/reprocess", "/api/bridge/ship/ore-hold", "/api/bridge/inventory"]);
+  // (The flight and the hangar read for the stack's place, the plant's call, then the window's reads.)
+  assert.deepEqual(refined.paths(), ["/api/bridge/flight/status", "/api/bridge/inventory", "/api/bridge/call", "/api/bridge/ship/ore-hold", "/api/bridge/inventory"]);
   assert.deepEqual([refined.store.mining.get().silentDecline, refined.store.mining.get().actionError], [null, null]);
-  // In space neither reads a hangar there is none of; and a hangar that cannot be read fails neither.
+  // In space the unloading is refused before anything else is asked (as its route refused it), and no hangar is
+  // read; and a hangar that cannot be read fails no refining.
   const inSpace = windowFlow({ docked: false });
   await inSpace.flow.unloadMiningHolds([ORE_STACK_ID]);
-  assert.deepEqual(inSpace.paths(), ["/api/bridge/ship/ore-hold/unload", "/api/bridge/ship/ore-hold"]);
+  assert.deepEqual(inSpace.paths(), ["/api/bridge/flight/status"]);
+  assert.ok(inSpace.store.mining.get().actionError);
   const refused = windowFlow({ hangarRefused: true });
   await refused.flow.reprocessItems([7700001]);
   assert.deepEqual([refused.store.mining.get().lastAction, refused.store.mining.get().actionError], ["Reprocess", null]);
@@ -470,15 +501,15 @@ test("a refining that leaves only the stacks its quote said were too few is no d
   /** A flow whose plant quotes each stack with what is to process of it, and reprocesses what `processed` names. */
   const quotedThenRefined = async (toProcess: Record<number, number | null>, processed: number[], quoteFirst = true) => {
     const store = createClientStore();
+    pilotOnline(store);
     const ids = Object.keys(toProcess).map(Number);
-    const { fetch } = makeFakeFetch((path) => {
+    // Each stack in the hangar, and the plant saying it reprocessed what `processed` names of what it was asked.
+    const answers = refinery((asked) => asked.filter((itemID) => processed.includes(itemID)), ids);
+    const { fetch } = makeFakeFetch((path, method, body) => {
       if (path.startsWith("/api/bridge/reprocessing/quote")) {
         return { status: 200, body: { ok: true, taxRate: 0.05, quotes: ids.map((itemID) => ({ itemID, typeID: 1230, quantityToProcess: toProcess[itemID], leftOvers: 50, iskCost: 0, outputs: [] })) } };
       }
-      if (path === "/api/bridge/reprocessing/reprocess") {
-        return { status: 200, body: { ok: true, requested: ids, processed, remaining: ids.filter((itemID) => !processed.includes(itemID)) } };
-      }
-      return { status: 200, body: holdsBody() };
+      return answers(path, method, body) ?? { status: 200, body: holdsBody() };
     });
     const flow = createAppFlow(store, { fetch });
     if (quoteFirst) await flow.loadReprocessingQuote(ids);
