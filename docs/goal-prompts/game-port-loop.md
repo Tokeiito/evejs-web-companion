@@ -3752,6 +3752,11 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **The panel's moves**: a row's "Move <name> to Ship cargo" and,
   with rows ticked, the bar's place buttons ("Item hangar") each ask
   "Move N stacks · M m³ to …?" before "Confirm move".
+- **A constant the client names is read from its compiled module**,
+  with the oracle (`bayflags-snippet.py`: LOAD_CONST then STORE_NAME in
+  `inventorycommon/const.pyc`), before the page holds it.
+- **A bay's own moves in the tab**: a hangar row's "▾" offers "Move to
+  <bay>"; a bay's row moves to the hangar by its own button.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
