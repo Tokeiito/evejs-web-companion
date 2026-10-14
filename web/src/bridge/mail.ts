@@ -385,6 +385,43 @@ export function unreadMailCount(statuses: readonly MailStatusRow[]): number {
   return statuses.reduce((total, status) => (status.read || isTrashed(status) ? total : total + 1), 0);
 }
 
+/** How many bodies the client keeps in hand (mailSvc.py 27, BODIES_IN_CACHE): past it, the first kept goes. */
+export const MAIL_BODIES_KEPT = 30;
+
+/** A message's text, or that it would not be read. */
+export interface MailBody {
+  readonly text: string | null;
+  readonly unreadable: boolean;
+}
+
+/**
+ * GetBody's answer made into the message's text, as the client makes it (mailSvc.py 512 to 517): None is a message
+ * with nothing in it; otherwise the bytes inflated (zlib.decompress) and read as UTF-8. The body crosses the bridge
+ * as {type:"Buffer", data}, and the browser inflates it with its own zlib (DecompressionStream "deflate", which is
+ * the zlib format). A body that will not inflate, or is not UTF-8, is said to be unreadable, and no byte of it shown.
+ */
+export async function inflateMailBody(answer: JsonValue | undefined): Promise<MailBody> {
+  if (answer === null || answer === undefined) {
+    return { text: "", unreadable: false };
+  }
+  // A body the bridge found to be text already is text.
+  if (typeof answer === "string") {
+    return { text: answer, unreadable: false };
+  }
+  const data = readPlainJsonField(answer, "data");
+  if (readPlainJsonField(answer, "type") !== "Buffer" || !Array.isArray(data)) {
+    return { text: null, unreadable: true };
+  }
+  try {
+    const bytes = new Uint8Array(data.map((byte) => Number(byte)));
+    const inflated = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate"));
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(await new Response(inflated).arrayBuffer());
+    return { text, unreadable: false };
+  } catch {
+    return { text: null, unreadable: true };
+  }
+}
+
 /** SyncMail's two arguments (mailSvc.py 147 to 156): the lowest and highest messages held, or None and 0 for none. */
 export function syncMailArguments(held: readonly MailHeaderRow[]): [number | null, number] {
   if (held.length === 0) {

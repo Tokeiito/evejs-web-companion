@@ -809,16 +809,15 @@ export interface MailStatusRow {
 export interface MailOpenMessage {
   readonly messageID: number;
   /**
-   * ⚠ Already INFLATED. mailMgr.GetBody answers a zlib-DEFLATED buffer; the BFF
-   * inflates it (src/server.js, mailBodyText) so this is plain text and the
-   * browser never handles a compressed byte.
+   * ⚠ Already INFLATED. mailMgr.GetBody answers a zlib-DEFLATED buffer; the page
+   * inflates it (bridge/mail.ts, inflateMailBody), so this is plain text.
    */
   readonly body: string | null;
   /** True when the body arrived but would not inflate — say so, show no garbage. */
   readonly unreadable: boolean;
   /**
-   * Whether the server now holds this message as read, from a RE-READ after
-   * opening it. null when that re-read failed — in which case no claim is made.
+   * Whether the message is read now that it is open: the client takes its own asking for it, and reads nothing
+   * again (mailSvc.py 509 to 519). null where that is not known.
    */
   readonly markedRead: boolean | null;
 }

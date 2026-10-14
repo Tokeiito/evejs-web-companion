@@ -50,6 +50,9 @@ import {
   toAmountString,
 } from "../bridge/market.ts";
 import {
+  inflateMailBody,
+  MAIL_BODIES_KEPT,
+  type MailBody,
   mailboxAfterNotice,
   mailboxAfterSync,
   mailboxMarkedRead,
@@ -995,9 +998,8 @@ export interface AppFlow {
   /** Check for new mail: the mailbox synced again, with the lowest and highest messages it holds. */
   refreshMail(): Promise<void>;
   /**
-   * Open one message. ⚠ The body arrives as plain TEXT — mailMgr.GetBody
-   * answers a zlib-DEFLATED buffer and the BFF inflates it. `markRead` makes
-   * this a WRITE, and whether the flag really moved is RE-READ afterwards.
+   * Open one message: mailMgr.GetBody's zlib-DEFLATED buffer, inflated by the page. `markRead` asks the server to
+   * mark it read, as the client asks for a message not yet read.
    */
   openMail(messageID: number, markRead: boolean): Promise<void>;
   /** Close the open message without touching the server. */
@@ -4975,10 +4977,29 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * when that re-read failed it is null and NO claim is made. On a successful
    * mark-read the inbox is reloaded so the unread count and the list row agree.
    */
+  // mailSvc.GetBody (493 to 524): a body kept is shown from what is kept, and a message not read is marked read with
+  // the server (MarkAsRead); one not kept is asked of the mail manager with whether to mark it read (the panel asks
+  // for a message not read), by the generic call, its answer inflated and kept, and the message marked read in what
+  // is kept, the server having marked it. The bodies are kept by the pilot's and the message's numbers, thirty at
+  // most, the first kept going first; a page newly loaded keeps none, as a client with no file of bodies.
+  const mailBodies = new Map<string, MailBody>();
   async function openMail(messageID: number, markRead: boolean): Promise<void> {
-    let result: Awaited<ReturnType<typeof api.loadMailBody>>;
+    const bodyKey = `${store.station.get().online?.characterID ?? 0}:${messageID}`;
+    let body: MailBody;
     try {
-      result = await api.loadMailBody(messageID, markRead, callOptions);
+      const kept = mailBodies.get(bodyKey);
+      if (kept !== undefined) {
+        if (markRead) {
+          await bridgeDo("mailMgr", "MarkAsRead", [[messageID]]);
+        }
+        body = kept;
+      } else {
+        body = await inflateMailBody(await bridgeAsk("mailMgr", "GetBody", [messageID, markRead]));
+        if (mailBodies.size >= MAIL_BODIES_KEPT) {
+          mailBodies.delete(mailBodies.keys().next().value as string);
+        }
+        mailBodies.set(bodyKey, body);
+      }
     } catch (error) {
       throwIfRequestRetired(error);
       if (isSessionLost(error)) {
@@ -4989,18 +5010,19 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       store.apply({ type: "mail/action-error", message: mailRefusalMessage(error) });
       return;
     }
-    if (markRead && result.markedRead === true) {
-      // mailSvc.GetBody (509 to 519): the message asked for with the flag is marked read in what is kept, and
-      // nothing more is asked. BEFORE recording the open: mail/loaded clears the action error.
+    if (markRead) {
+      // MarkMessagesAsRead (509 to 519): marked read in what is kept, and nothing more is asked. BEFORE recording
+      // the open: mail/loaded clears the action error.
       mailboxLoaded(mailboxMarkedRead(store.mail.get(), [messageID]));
     }
     store.apply({
       type: "mail/opened",
       open: {
-        messageID: result.messageID,
-        body: result.body,
-        unreadable: result.unreadable,
-        markedRead: result.markedRead,
+        messageID,
+        body: body.text,
+        unreadable: body.unreadable,
+        // Read as the mailbox kept now holds it: marked just now, or read before.
+        markedRead: store.mail.get().statuses.find((status) => status.messageID === messageID)?.read ?? null,
       },
     });
   }

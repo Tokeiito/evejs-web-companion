@@ -1749,6 +1749,9 @@ const RETAIL_CALLS = Object.freeze({
   "facilityManager.GetMaxActivityModifiers": same(`${INDUSTRY}/facilitySvc.py:87`, "RemoteSvc('facilityManager').GetMaxActivityModifiers(), no arguments"),
 
   // ── mail and notifications ────────────────────────────────────────────────
+  "mailMgr.GetMailHeaders": same(`${MAIL_SERVICES}/mailSvc.py:193`, "self.mailMgr.GetMailHeaders(toFetch.keys()): one list of the messages the sync gave a status of whose header the client does not hold. In no recording."),
+  "mailMgr.GetBody": same(`${MAIL_SERVICES}/mailSvc.py:512`, "self.mailMgr.GetBody(messageID, shouldMarkAsRead): whether to mark it read a bool, true for a message not read; answered the body deflated, or None. In no recording."),
+  "mailMgr.MarkAsRead": same(`${MAIL_SERVICES}/mailSvc.py:339`, "self.mailMgr.MarkAsRead(messageIDs): a list; asked by GetBody for a body kept of a message not read (497 to 498). In no recording."),
   "mailMgr.SyncMail": same(`${MAIL_SERVICES}/mailSvc.py:157`, "RemoteSvc('mailMgr').SyncMail(firstID, lastID): the lowest and highest message IDs the client holds, (None, 0) when it holds none"),
   "mailMgr.SendMail": reshaped(`${MAIL_SERVICES}/mailSvc.py:965`, recipientsListed,
     "self.mailMgr.SendMail(toCharacterIDs, toListID, toCorpOrAllianceID, title, body, isReplyTo, isForwardedFrom), through eveMisc.CSPAChargedAction: the recipients a list (the compose window's self.toChars.values(), evemail.py 2281), the message answered and the one forwarded 0 for none. In no recording."),

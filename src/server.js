@@ -5,9 +5,6 @@ const fs = require("fs");
 const http = require("http");
 const path = require("path");
 const { randomUUID, createHash } = require("crypto");
-// R17 mail: mailMgr.GetBody answers a zlib-DEFLATED buffer, and inflating it is
-// this file's job — see mailBodyText. The browser never sees a compressed byte.
-const zlib = require("zlib");
 const { spawn } = require("child_process");
 const eveStore = require("./eveStore");
 const eveGatewayClient = require("./eveGatewayClient");
@@ -4198,9 +4195,6 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
 // passes the cold-start pair [null, 0] — "I hold nothing, send everything".
 // (server/tests/webGatewayMail.test.js pins both the cold and the warm shape.)
 //
-// ⚠ GetBody RETURNS A ZLIB-DEFLATED BUFFER, NOT TEXT, and inflating it is THIS
-// FILE'S JOB. See mailBodyText below. The browser never sees a compressed byte.
-//
 // ⚠ AN EMPTY RECIPIENT LIST IS NOT REFUSED BY THE SERVER. mailState.sendMail's
 // NO_RECIPIENTS guard reads `recipients.length === 0 && !saveSenderCopy`, and
 // the handler hardcodes saveSenderCopy: true — so the guard can never fire
@@ -4211,49 +4205,6 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
 /** The cold-start SyncMail window: "I hold nothing, send me the lot." */
 const MAIL_COLD_START_SYNC = Object.freeze([null, 0]);
 const MAIL_STATUS_MASK_READ = 1;
-
-/**
- * ⚠ THE ZLIB RULE, and the single place it is implemented.
- *
- * mailMgr.GetBody answers zlib.deflateSync(body). A Node Buffer crosses the
- * JSON bridge as {type:"Buffer", data:[...]}, so rendering the return directly
- * would show the player a wall of byte values. This inflates it and hands back
- * plain text. Decompressing in the BROWSER is not an option worth taking: it
- * would mean shipping an inflate implementation to every page load to undo
- * something the server did for a wire format the browser never speaks.
- *
- * Returns null for "no such message" (GetBody's own answer for one the
- * character cannot see) and throws nothing on a corrupt stream — a body that
- * will not inflate is reported as unreadable rather than blanking the message.
- */
-function mailBodyText(result) {
-  if (result === null || result === undefined) {
-    return { text: null, unreadable: false };
-  }
-  let bytes = null;
-  if (Buffer.isBuffer(result)) {
-    bytes = result;
-  } else if (
-    result &&
-    typeof result === "object" &&
-    result.type === "Buffer" &&
-    Array.isArray(result.data)
-  ) {
-    bytes = Buffer.from(result.data);
-  } else if (typeof result === "string") {
-    // Not a shape the service produces today, but if a body ever arrives
-    // already-decoded it is text, not an error.
-    return { text: result, unreadable: false };
-  }
-  if (!bytes) {
-    return { text: null, unreadable: true };
-  }
-  try {
-    return { text: zlib.inflateSync(bytes).toString("utf8"), unreadable: false };
-  } catch {
-    return { text: null, unreadable: true };
-  }
-}
 
 function readMailKeyVal(row, key) {
   const entries =
@@ -4304,15 +4255,6 @@ function mailHeaderIDs(syncResult) {
     }
   }
   return ids;
-}
-
-function mailIsRead(syncResult, messageID) {
-  for (const row of mailListItems(readMailKeyVal(syncResult, "mailStatus"))) {
-    if (mailNumber(readMailKeyVal(row, "messageID")) === Number(messageID)) {
-      return (mailNumber(readMailKeyVal(row, "statusMask")) & MAIL_STATUS_MASK_READ) !== 0;
-    }
-  }
-  return false;
 }
 
 /**
@@ -4377,79 +4319,9 @@ app.get("/api/bridge/mail", requireAuth, async (req, res, next) => {
   }
 });
 
-/**
- * GET /api/bridge/mail/body?messageID=&markRead= — one message, as TEXT.
- *
- * ⚠ markRead=1 makes this a WRITE: it clears the unread bit and pushes
- * OnMailUpdatedByExternal to the character's other sessions. Opening a message
- * is the player's own deliberate act, so it needs no confirm gate — but it is
- * re-read anyway, because a 200 is not proof that the flag moved.
- */
-app.get("/api/bridge/mail/body", requireAuth, async (req, res, next) => {
-  const held = requireHeldBridgeSession(req, res);
-  if (!held) {
-    return;
-  }
-  const messageID = Number(req.query.messageID) || 0;
-  if (messageID <= 0) {
-    res.status(400).json({ ok: false, error: "MAIL_INVALID", message: "No message was named." });
-    return;
-  }
-  const markRead = req.query.markRead === "1" || req.query.markRead === "true";
-  try {
-    const body = await heldTopLevelCall(
-      held,
-      req.webSessionID,
-      "mailMgr",
-      "GetBody",
-      [messageID, markRead ? 1 : 0],
-      null,
-    );
-    const { text, unreadable } = mailBodyText(body.result);
-
-    // GetBody answers null for a message this character cannot see. That is a
-    // definite answer, not a failure, and it is reported as one.
-    if (text === null && !unreadable) {
-      res.status(404).json({
-        ok: false,
-        error: "MAIL_NOT_FOUND",
-        message: "That message is not in your mailbox.",
-      });
-      return;
-    }
-
-    // ⚠ A 200 IS NOT PROOF. Re-read the mailbox and report the flag the server
-    // actually holds, not the one we asked for.
-    let nowRead = null;
-    let unreadCount = null;
-    try {
-      const sync = await heldTopLevelCall(
-        held,
-        req.webSessionID,
-        "mailMgr",
-        "SyncMail",
-        MAIL_COLD_START_SYNC,
-        null,
-      );
-      nowRead = mailIsRead(sync.result, messageID);
-      unreadCount = mailUnreadCount(sync.result);
-    } catch {
-      // The body is in hand and worth showing; a failed re-read only means we
-      // decline to make a claim about the read flag.
-    }
-
-    res.json({
-      ok: true,
-      messageID,
-      body: text,
-      unreadable,
-      markedRead: nowRead,
-      unreadCount,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
+// The body of a message is the page's own call since 2026-10-14 (web/src/app/flow.ts, openMail: mailMgr.GetBody,
+// mailSvc.py 493 to 524), inflated by the page. Its route (GET /api/bridge/mail/body), its inflating and its
+// cold sync of the whole mailbox after are gone.
 
 // A mail is sent by the page's own call since 2026-10-14 (web/src/bridge/mailWrites.ts: mailMgr.SendMail,
 // mailSvc.py 959 to 993), held to the compose window's own checks, which refuse a message to nobody before the

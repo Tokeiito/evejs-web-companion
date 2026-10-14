@@ -1165,36 +1165,8 @@ export async function loadBoundFleet(options: ApiOptions = {}): Promise<Record<s
 // (POST /api/bridge/fleet/broadcast/bubble), on 2026-10-10.
 
 // --- R17 Mail ---------------------------------------------------------------
-// The mailbox the page syncs and keeps itself, by the generic call (app/flow.ts, syncMail). The message BODY
-// still arrives through the BFF, as plain TEXT because mailMgr.GetBody answers a zlib-DEFLATED buffer and the BFF
-// inflates it. The browser never handles a compressed byte.
-
-export interface MailBodyResult {
-  readonly messageID: number;
-  /** ⚠ Already inflated by the BFF — plain text, never compressed bytes. */
-  readonly body: string | null;
-  /** True when the body arrived but would not inflate. */
-  readonly unreadable: boolean;
-  /** From a RE-READ after opening; null when that re-read failed. */
-  readonly markedRead: boolean | null;
-  readonly unreadCount: number | null;
-}
-
-export async function loadMailBody(
-  messageID: number,
-  markRead: boolean,
-  options: ApiOptions = {},
-): Promise<MailBodyResult> {
-  const query = `?messageID=${encodeURIComponent(String(messageID))}${markRead ? "&markRead=1" : ""}`;
-  const data = await getJson(`/api/bridge/mail/body${query}`, options);
-  return {
-    messageID: Number(data.messageID) || messageID,
-    body: typeof data.body === "string" ? data.body : null,
-    unreadable: data.unreadable === true,
-    markedRead: typeof data.markedRead === "boolean" ? data.markedRead : null,
-    unreadCount: asNumberOrNull(data.unreadCount),
-  };
-}
+// The mailbox and the bodies of its messages the page asks and keeps itself, by the generic call (app/flow.ts,
+// syncMail and openMail), inflating a body as the client does (bridge/mail.ts, inflateMailBody).
 
 // A mail is sent by the page itself, with the client's own call (bridge/mailWrites.ts, sendMail), held to the
 // compose window's own checks: it left its route (POST /api/bridge/mail/send) on 2026-10-14.
