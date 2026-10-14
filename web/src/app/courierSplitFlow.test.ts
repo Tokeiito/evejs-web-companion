@@ -51,10 +51,13 @@ test("custom courier turn-in forwards exactly the required split to the BFF and 
     if (path === "/api/bridge/call" && body.service === "agentMgr" && body.method === "GetMyJournalDetails") result = { ok: true, service: body.service, method: body.method, result: tuple([
       list(accepted && !completed ? [tuple([2, 0, "Courier", 1, AGENT, null, list([]), 0, 0, 7])] : []), list([]),
     ]), notifications: [] };
-    if (path === `/api/bridge/agents/${AGENT}/action`) {
-      if (body.actionID === 816) accepted = true;
-      if (body.actionID === 821) completed = true;
-      result = { ok: true, result: tuple([
+    // What is said to the agent, by the page's own call on the agent's object (bridge/agentWrites.ts): a route
+    // until 2026-10-13.
+    if (path === "/api/bridge/call" && body.service === "agentMgr" && body.method === "DoAction" && body.of === AGENT) {
+      const actionID = Array.isArray(body.args) ? body.args[0] : undefined;
+      if (actionID === 816) accepted = true;
+      if (actionID === 821) completed = true;
+      result = { ok: true, service: body.service, method: body.method, notifications: [], result: tuple([
         tuple([tuple([127958, 7]), list([tuple(accepted ? [821, 7] : [816, 3])])]),
         dict([["missionCompleted", completed]]),
       ]) };

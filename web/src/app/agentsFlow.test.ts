@@ -130,6 +130,31 @@ const JOURNAL_READ = "agentMgr.GetMyJournalDetails()";
 const asRead = (path: string, body: Record<string, unknown>): string =>
   (path === "/api/bridge/call" && body.service === "agentMgr" && body.method === "GetMyJournalDetails" && JSON.stringify(body.args) === "[]" && body.kwargs === null && body.pilot === true ? JOURNAL_READ : path);
 
+/**
+ * The page's own calls on an agent's object, as these tests name them. What is said to an agent
+ * (agentMgr.DoAction(actionID), a pilot's write, of that agent) and an offer taken out of the journal
+ * (agentMgr.RemoveOfferFromJournal()) were routes until 2026-10-13, and these tests were written to the routes: to
+ * their paths, to the action's number in the body, and to an answer that names no service. The stand-ins hand such
+ * a call to a test under its route's path and body, and name the service and the method in what the test answers,
+ * as the generic call's envelope does. A call that is not the page's (no agent said, not a pilot's, not said to
+ * be meant) keeps the generic call's path, and nothing here answers it.
+ */
+function asAgentRoute(path: string, body: Record<string, unknown>): { path: string; body: Record<string, unknown>; called: { service: string; method: string } | null } {
+  const anAgents = path === "/api/bridge/call" && body.service === "agentMgr" && body.pilot === true && body.confirm === true && typeof body.of === "number" && (body.kwargs === null || body.kwargs === undefined);
+  if (anAgents && body.method === "DoAction" && Array.isArray(body.args) && body.args.length === 1) {
+    return { path: `/api/bridge/agents/${body.of}/action`, body: { actionID: body.args[0] }, called: { service: "agentMgr", method: "DoAction" } };
+  }
+  if (anAgents && body.method === "RemoveOfferFromJournal" && JSON.stringify(body.args) === "[]") {
+    return { path: `/api/bridge/agents/${body.of}/remove-offer`, body: { confirm: true }, called: { service: "agentMgr", method: "RemoveOfferFromJournal" } };
+  }
+  return { path, body, called: null };
+}
+/** What a test answered such a call with, in the generic call's envelope: a refusal as it is. */
+function enveloped(called: { service: string; method: string } | null, answer: unknown): unknown {
+  const answered = answer !== null && typeof answer === "object" && (answer as { ok?: unknown }).ok === true && !("service" in answer);
+  return called !== null && answered ? { ...(answer as object), ...called } : answer;
+}
+
 /** What that call answers, in the generic call's own envelope. */
 function journalResponse(active: readonly unknown[]) {
   return {
@@ -158,8 +183,9 @@ function makeFakeFetch(
   const requests: Recorded[] = [];
   const fakeFetch = (async (input: unknown, init?: { method?: string; body?: unknown }) => {
     const method = (init && init.method) || "GET";
-    const body = init && typeof init.body === "string" ? JSON.parse(init.body) : {};
-    const path = asRead(String(input), body);
+    const sent = init && typeof init.body === "string" ? JSON.parse(init.body) : {};
+    const { path: named, body, called } = asAgentRoute(String(input), sent);
+    const path = asRead(named, body);
     requests.push({ path, method, body });
     let outcome: { status: number; body: unknown };
     try {
@@ -174,7 +200,7 @@ function makeFakeFetch(
       ok: outcome.status >= 200 && outcome.status < 300,
       status: outcome.status,
       async json() {
-        return outcome.body;
+        return enveloped(called, outcome.body);
       },
     };
   }) as unknown as typeof fetch;
@@ -939,8 +965,9 @@ async function listening(
     busyCode: "SESSION_CHANGE_IN_PROGRESS" | "CHARACTER_IN_USE";
   } = { hold: null, holdAction: null, journalHold: null, failAction: false, sessionGone: false, failJournal: false, busyFor: 0, busyCode: "SESSION_CHANGE_IN_PROGRESS" };
   const fetchImpl = (async (input: unknown, init?: { method?: string; body?: unknown }) => {
-    const body = init && typeof init.body === "string" ? JSON.parse(init.body) : {};
-    const path = asRead(String(input), body);
+    const sent = init && typeof init.body === "string" ? JSON.parse(init.body) : {};
+    const { path: named, body, called } = asAgentRoute(String(input), sent);
+    const path = asRead(named, body);
     requests.push({ path, method: (init && init.method) || "GET", body });
     let status = 200;
     let answer: unknown = { ok: true };
@@ -987,7 +1014,7 @@ async function listening(
         answer = journalResponse([ACTIVE_MISSION_ROW]);
       }
     }
-    return { ok: status >= 200 && status < 300, status, async json() { return answer; } };
+    return { ok: status >= 200 && status < 300, status, async json() { return enveloped(called, answer); } };
   }) as unknown as typeof fetch;
   const sources: PushSource[] = [];
   const eventSource = (): PushSource => {
