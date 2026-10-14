@@ -5,9 +5,11 @@
 //   POST /api/bridge/ship/jettison
 //   POST /api/bridge/ship/jettison/reconcile
 //
-// The first is three things, by what the BFF alone knows of who asks. A pilot in a cockpit (the Mining window's
-// dumping) and a bot of no operation make the client's one call. A hosted bot of a Mining Operation has the can it
-// made found in space and given to the operation, so that the operation's hauler takes that can and no other. And
+// The first was three things, by what the BFF alone knows of who asks. A pilot in a cockpit (the Mining window's
+// dumping) and a bot of no operation made the client's one call: since 2026-10-14 that is the page's own call
+// (web/src/bridge/shipWrites.ts, jettison, by the generic call), and the route refuses it. A hosted bot of a Mining
+// Operation has the can it made found in space and given to the operation, so that the operation's hauler takes that
+// can and no other. And
 // a hosted miner whose routine is the operation's own has its jettison kept as custody by the bot host: what was
 // to go, whether the call was issued, and what became of it, so that a session lost in the middle is taken up
 // from what is known. The second route is that custody looked at again, with nothing sent.
@@ -337,47 +339,13 @@ test.afterEach(async () => {
 // ---------------------------------------------------------------------------------------------------------------
 // The one call
 // ---------------------------------------------------------------------------------------------------------------
-
-test("a cockpit's jettison: the page posts the items with its confirmation, the BFF makes the client's one call with the items as one list, and the page reads nothing of the answer", { timeout: 20000 }, async () => {
-  const world = space();
-  const { api, tab, paths, bodies, answers, held, asking } = await crew(world);
-  world.stack(7009, 901);
-  world.stack(7009, 902, { flagID: CARGO, typeID: 34, categoryID: 4 });
-  assert.equal(await api.jettisonItems([901, 902], tab), null);
-  assert.deepEqual([paths, bodies], [["POST /api/bridge/ship/jettison"], [{ itemIDs: [901, 902], confirm: true }]]);
-  // GetShipAccess().Jettison(itemIDs) (invItemFunctions.py 63): the items' IDs as one list, and nothing else.
-  assert.deepEqual(world.sent, [{ call: "ship.Jettison", args: [[901, 902]], kwargs: null, of: "held-7009" }]);
-  assert.deepEqual(answers[0], [200, { ok: true, applied: true, result: [list([901, 902]), list([])], notifications: [] }]);
-  // Nothing of space or of a hold is read for it: the cockpit's own next read of its hold is what says what went.
-  assert.deepEqual(world.asked, []);
-  assert.deepEqual([...world.cans.keys()], [9001]);
-
-  // A jettison the server answers as having moved nothing is answered the same way: the page is not told.
-  world.jettison = "refused";
-  world.stack(7009, 903);
-  assert.equal(await api.jettisonItems([903], tab), null);
-  assert.deepEqual(answers[1][1].result, [list([]), list([])]);
-  // Nobody held by the tab: refused, and nothing sent.
-  held.delete("session-tab");
-  await assert.rejects(api.jettisonItems([903], tab), refusedAs(409, "NO_LIVE_SESSION"));
-  await assert.rejects(api.jettisonItems([903], asking(null)), refusedAs(401, "AUTH_REQUIRED"));
-  assert.equal(world.sent.length, 2);
-});
-
-test("a hosted bot of no operation jettisons as a cockpit does: the one call, with no scene read and no can kept", { timeout: 20000 }, async () => {
-  const world = space();
-  const { api, hosted, answers, asking } = await crew(world);
-  const bot = await hosted(ALONE);
-  world.stack(7004, 911);
-  // A bot's action sends its invocation only where its jettison is the host's to keep: this one's is not.
-  assert.equal(await api.jettisonItems([911], bot.options), null);
-  assert.deepEqual(world.sent, [{ call: "ship.Jettison", args: [[911]], kwargs: null, of: "held-7004" }]);
-  assert.deepEqual([answers[0][0], answers[0][1].applied, world.asked, bot.custodyOf()], [200, true, [], null]);
-  // The bot's session asked with its token alone, as anything but the host's own fetch would: it has not the
-  // bot's claim on it, and a hosted pilot's writes are the bot's alone.
-  await assert.rejects(api.jettisonItems([911], asking(bot.token)), refusedAs(409, "HOSTED_GENERATION_CHANGED"));
-  assert.equal(world.sent.length, 1);
-});
+//
+// A cockpit's jettison and a hosted bot's of no operation are the page's own call since 2026-10-14
+// (web/src/bridge/shipWrites.ts, jettison: GetShipAccess().Jettison(itemIDs), invItemFunctions.py 63, made by the
+// generic call), and the route refuses them (OPERATION_REQUIRED). The two tests of them that were here are gone:
+// that the route made the one call with the items as one list and read nothing of space for it, that a jettison the
+// server answered as moving nothing was answered as done, that nobody held was refused, and that a hosted bot's
+// session asked without the bot's claim was refused.
 
 // ---------------------------------------------------------------------------------------------------------------
 // A Mining Operation's can
