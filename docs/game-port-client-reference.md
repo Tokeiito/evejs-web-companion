@@ -1659,8 +1659,11 @@ effect is always named. EveJS takes the module's first activatable effect where 
 not carry (`space/runtime/scene/modules.js` 1213 to 1222), keeps the count as given and tells the ship's watchers
 it, a negative count kept as none (`space/runtime/moduleCycleSchedule.js`, `normalizeEffectRepeatCount`). The page
 makes both since `e773e6dd` (`web/src/bridge/dogmaWrites.ts`), the effect the type's default from the game's data
-(`GET /api/types/default-effects`) where the caller gives the type, until stopped as 1000, and reads the module's
-own state after (`GET /api/bridge/modules/:itemID/state`).
+(`GET /api/types/default-effects`) where the caller gives the type, until stopped as -1, and reads the module's
+own state after (`GET /api/bridge/modules/:itemID/state`). The game port makes each the client's
+(`src/gamePort/retailCalls.js`, `activation` and `deactivation`): it names the module's default effect where the page
+names none, as godma knows the module, gives a target only to an effect aimed at one, and sends 1000 or 0 for -1 by
+whether the effect can repeat.
 
 **A stargate jump, 2026-10-14** (`stargate/client/gateJumpSvc.py`, `eve/client/script/parklife/autopilot.py`). The
 menu's `StargateJump` (`menusvc.py` 3025 on, flying the ship close first) and the autopilot (358) come to
