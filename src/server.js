@@ -42,7 +42,7 @@ const { createPiPlanStore } = require("./piPlanStore");
 const { createPiExpansionStore } = require("./piExpansionStore");
 const { createIndustryPlanStore } = require("./industryPlanStore");
 const industryRecipes = require("./industryRecipes");
-const industryInstall = require("./industryInstall");
+const industryInstall = require("../web/src/bridge/industryReckonings.mjs");
 const botHostModule = require("./botHost");
 const { createAccountCache } = require("./accountCache");
 const { createBeltMemory } = require("./beltMemory");
@@ -4940,7 +4940,7 @@ const INDUSTRY_CASH_ACCOUNT_KEY = 1000;
  * contract than a complete one. A decryptor is in the materials and nowhere
  * else: the client's dump has no name for it, and the server reads none. An
  * invention's materials have the place of that optional material whether a
- * decryptor is in it or not (src/industryInstall.js, inventionJobMaterials).
+ * decryptor is in it or not (web/src/bridge/industryReckonings.mjs, inventionJobMaterials).
  */
 function buildInstallJobPayload(held, request) {
   // (Where the facility gave any place, the first is both of the job's or the one its materials are taken from.)
@@ -4971,7 +4971,7 @@ function buildInstallJobPayload(held, request) {
     // The job's time as the client's own job reckons it, where it could be reckoned whole; else nought, which
     // the server does not check.
     time: request.time || 0,
-    // The client's own reckoning, where they could be reckoned whole (src/industryInstall.js): an invention's have
+    // The client's own reckoning, where they could be reckoned whole (web/src/bridge/industryReckonings.mjs): an invention's have
     // its decryptor, which the server takes from this map and from nowhere else.
     // Empty otherwise, which the server reads as its own to work out from the blueprint.
     materials: request.materials || {},
@@ -5158,7 +5158,7 @@ const ATTRIBUTE_INVENTION_SPEED = 1959;
 /** const.attributeReactionTimeMultiplier: the pilot's own time for a reaction. */
 const ATTRIBUTE_REACTION_TIME_MULTIPLIER = 2662;
 
-/** The reckonings of a research job, which the two researches share (src/industryInstall.js). */
+/** The reckonings of a research job, which the two researches share (web/src/bridge/industryReckonings.mjs). */
 const RESEARCH_RECKONINGS = Object.freeze({
   cost: industryInstall.researchJobCost,
   tax: industryInstall.researchJobTax,
@@ -5170,7 +5170,7 @@ const RESEARCH_RECKONINGS = Object.freeze({
  * The kinds of work whose job is reckoned here as the client's own job reckons it, each with the name its recipe
  * has in the game's data, the attribute of the pilot's that is its own time for that work
  * (industryCommon.CHARACTER_MODIFIERS, 19 to 43), and its reckonings of what the job is charged and takes
- * (src/industryInstall.js). A reaction's cost, its tax and what it costs to start are a manufacturing job's
+ * (web/src/bridge/industryReckonings.mjs). A reaction's cost, its tax and what it costs to start are a manufacturing job's
  * reckonings: its base is the same (activities/reaction.py 16: the formula's price times the runs), the formula's
  * price being by its reaction's materials (jobBlueprintPrice). Its materials have nothing of the blueprint's in
  * them: a formula has no research.
@@ -5216,7 +5216,7 @@ const JOB_RECKONINGS = Object.freeze({
 const pricedWorkOf = (request) => (request.activityID === INDUSTRY_ACTIVITY_IDS.reaction ? "reaction" : "manufacturing");
 
 /**
- * The type whose price a job's base is of (the bases of src/industryInstall.js): the job's own blueprint's, and for
+ * The type whose price a job's base is of (the bases of web/src/bridge/industryReckonings.mjs): the job's own blueprint's, and for
  * an invention the blueprint it is to make (activities/invention.py 27 to 31: job.product), which is the only one
  * its recipe has or the one the page named. Nought where there is no telling which.
  */
@@ -5235,7 +5235,7 @@ function materialsSaid(materials) {
 }
 
 /**
- * Where the request's blueprint stands in the research the request is for (src/industryInstall.js,
+ * Where the request's blueprint stands in the research the request is for (web/src/bridge/industryReckonings.mjs,
  * researchStanding), by the research of that kind the page read of the blueprint: its time research for a research
  * of time, its material research for one of materials. Undefined for a job that is no research, and null for a
  * research of which the page said nothing.
@@ -5250,7 +5250,7 @@ function researchStandingOf(request) {
 
 /**
  * What a job's base is of, beside the blueprint's price, by its kind of work (the three bases of
- * src/industryInstall.js): its runs; for a copy job the runs each copy is licensed for; and for a research job the
+ * web/src/bridge/industryReckonings.mjs): its runs; for a copy job the runs each copy is licensed for; and for a research job the
  * activity's time and the level the blueprint is at. Null for a research of which the page said nothing.
  */
 function jobBasis(request, recipe) {
@@ -5298,7 +5298,7 @@ async function skillLevelsFor(account, held, typeIDs) {
 
 /**
  * The time of a manufacturing job, a copy job, a research job or an invention, in whole seconds, as the client's
- * own job reckons it before sending the job (industry/job.py 460 to 468; src/industryInstall.js,
+ * own job reckons it before sending the job (industry/job.py 460 to 468; web/src/bridge/industryReckonings.mjs,
  * manufacturingJobSeconds, copyingJobSeconds, researchJobSeconds and inventionJobSeconds, have the order and why it
  * matters). What it is reckoned from, and where the client has each:
  *
@@ -5414,7 +5414,7 @@ async function reckonedJobSeconds(account, held, webSessionID, request, facility
 /**
  * The materials of a manufacturing job, a copy job, a research job or an invention, each type to its quantity, as
  * the client's own job reckons them before it sends the job (industry/job.py 470 to 485 and 637;
- * src/industryInstall.js, manufacturingJobMaterials, copyingJobMaterials, researchJobMaterials and
+ * web/src/bridge/industryReckonings.mjs, manufacturingJobMaterials, copyingJobMaterials, researchJobMaterials and
  * inventionJobMaterials, have the order and the rounding, and why each matters): from the blueprint's own
  * quantities out of the game's data, its material research as the page read it of the blueprint, and the job's
  * facility's material modifiers for the product. Only a manufacturing job's are of the material research; a copy
@@ -5496,7 +5496,7 @@ const ATTRIBUTE_JOB_COST_MULTIPLIER = 1954;
 
 /**
  * The price of a blueprint a job's base is of (`blueprintTypeID`: pricedTypeOf), off the pilot's own price table
- * (src/industryInstall.js, blueprintPrice): by the blueprint's manufacturing materials, for any kind of work but a
+ * (web/src/bridge/industryReckonings.mjs, blueprintPrice): by the blueprint's manufacturing materials, for any kind of work but a
  * reaction, whose formula is priced by its reaction's materials (`work`: pricedWorkOf;
  * industryCommon.GetBlueprintPrice, 526 to 528). Null where there is none to read: a pilot through the gateway,
  * who has no table; one on the game port whose table has not come yet; no blueprint named. (A blueprint that has
@@ -5555,7 +5555,7 @@ function jobServiceOf(request) {
 
 /**
  * A manufacturing job's tax, a copy job's or a research job's, and what the job costs to start, as the client's own
- * job reckons the one and adds up the other (industry/job.py 450 to 458 and 127 to 174; src/industryInstall.js,
+ * job reckons the one and adds up the other (industry/job.py 450 to 458 and 127 to 174; web/src/bridge/industryReckonings.mjs,
  * manufacturingJobTax and manufacturingJobFee, and the two of a copy job and of a research job, whose SCC surcharge
  * is halved). `cost` is the job's cost as it was reckoned (reckonedJobCost), or null.
  *
@@ -5612,7 +5612,7 @@ async function reckonedJobFee(held, webSessionID, request, facilityOf, cost) {
 
 /**
  * A manufacturing job's cost, a copy job's or a research job's, in whole ISK, as the client's own job reckons it
- * before sending the job (industry/job.py 310 to 320; src/industryInstall.js, manufacturingJobCost, copyingJobCost
+ * before sending the job (industry/job.py 310 to 320; web/src/bridge/industryReckonings.mjs, manufacturingJobCost, copyingJobCost
  * and researchJobCost, have the order and why it matters). What it is reckoned from, and where the client has each:
  *
  *   the blueprint's materials, and its type's own cost multiplier (1954)    the game's own data

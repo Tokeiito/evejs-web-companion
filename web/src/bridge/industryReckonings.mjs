@@ -1,5 +1,7 @@
-"use strict";
-
+// The job's reckonings, one module the page and the BFF both use (until 2026-10-14 the BFF's own,
+// src/industryInstall.js): an ES module, which the page imports (its exports declared in industryReckonings.d.mts)
+// and the BFF requires (src/server.js, src/gamePort/retailCalls.js). Pure: nothing is asked of anyone here.
+//
 // What an InstallJob request carries that the client's own job reckons before it sends the job: the time, the cost,
 // the tax and the materials of a manufacturing job, a copy job, a research job and an invention.
 //
@@ -955,7 +957,7 @@ function inventionProductTypeID(invention, requested) {
   return products.length === 1 ? toInt(products[0].typeID) : 0;
 }
 
-module.exports = {
+export {
   COPYING_MAX_RUNS,
   DECRYPTOR_GROUP_ID,
   INVENTION_ACTIVITY_ID,

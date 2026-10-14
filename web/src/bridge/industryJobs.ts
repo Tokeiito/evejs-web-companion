@@ -375,7 +375,7 @@ export function installCheck(
  * copy carries, as the server allows no more). An original cannot be invented
  * from, so only copies are tried. A decryptor the plan chose goes with the
  * job, one per run like the datacores, and must be in the same hangar; the
- * Industry panel adds it to the install (src/industryInstall.js says how).
+ * Industry panel adds it to the install (web/src/bridge/industryReckonings.mjs says how).
  * The blueprint the row is for is named too: a T1 blueprint can invent one
  * of several, and the job makes the one that is chosen.
  */

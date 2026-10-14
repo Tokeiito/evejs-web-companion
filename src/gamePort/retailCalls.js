@@ -47,7 +47,7 @@
 
 const { isDeepStrictEqual } = require("node:util");
 const { constructorKeywordOrder, dictOrder, orderEntries } = require("./py27");
-const { NO_OPTIONAL_MATERIAL } = require("../industryInstall");
+const { NO_OPTIONAL_MATERIAL } = require("../../web/src/bridge/industryReckonings.mjs");
 
 /** A Python list, from a JS array (which would go out as a tuple) or from one already wrapped. */
 const list = (value) => (Array.isArray(value) ? { type: "list", items: value } : value);
@@ -1204,14 +1204,14 @@ const withJustTheNames = (value, names) => heldPlainly(value) && Object.keys(val
  *
  * The BFF's routes hold the job as a plain object of the seventeen names, which the gateway takes as it is and
  * no marshal can write. Here it is made the client's dict. A job's time, its cost, its tax and its materials are
- * the client's own reckoning where the routes could make it (src/industryInstall.js), and nought and an empty map
+ * the client's own reckoning where the routes could make it (web/src/bridge/industryReckonings.mjs), and nought and an empty map
  * where they could not: the server reckons each itself, and checks only a number that is not nought and a map
  * that is not empty. (The materials go in the order of their types, where the client's dict has its Python's
  * order for one filled in the blueprint's: the value read is the same.)
  *
  * An invention's materials have the place of its optional material, the decryptor, whether one is in it or not:
  * with none, the client's dict has the place under None (industryCommon.GetDecryptors, 458 to 482; job.py 637),
- * and the routes' job has it under the name src/industryInstall.js gives it, which is written here as that None.
+ * and the routes' job has it under the name web/src/bridge/industryReckonings.mjs gives it, which is written here as that None.
  */
 const jobDumped = (args, kwargs) => {
   const [job] = args;
