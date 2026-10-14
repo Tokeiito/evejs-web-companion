@@ -3390,7 +3390,7 @@ test("a hurt ARMOUR starts its own armour repairer, NEVER the shield booster", (
   };
   const decision = decideCompanionAction(request, tankObs({ armorRatio: 0.5 }));
   assert.deepEqual(decision.action, { kind: "activate", moduleID: ARMOR_REPAIRER, targetID: 0 });
-  assert.match(decision.why, /armor/i);
+  assert.match(decision.why, /armour/i);
 });
 
 test("a hurt HULL starts its own hull repairer, never a shield or armour repairer", () => {
@@ -3449,6 +3449,33 @@ test("a layer that heals back to the threshold switches its running repairer off
   assert.deepEqual(decision.action, { kind: "deactivate", moduleID: ARMOR_REPAIRER });
   assert.match(decision.why, /whole/i);
   assert.doesNotMatch(decision.why, /capacitor/i);
+});
+
+test("the tank readouts say armour in a fight and on a clear grid, never the raw layer name", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, armorRepairerModuleIDs: [ARMOR_REPAIRER] };
+  const inFightOff = decideCompanionAction(
+    request,
+    tankObs({
+      hostileOnGrid: true,
+      armorRatio: 0.9,
+      snapshot: gridWithShipsAndActive([], [ARMOR_REPAIRER]),
+    }),
+  );
+  assert.equal(inFightOff.why, "The armour is whole again, so its repairer is switching off.");
+  const inFightOn = decideCompanionAction(request, tankObs({ hostileOnGrid: true, armorRatio: 0.5 }));
+  assert.equal(inFightOn.why, "The armour is hurt, so a fitted repairer is switching on.");
+  const clearOff = decideCompanionAction(
+    request,
+    tankObs({
+      hostileOnGrid: false,
+      armorRatio: 1,
+      snapshot: gridWithShipsAndActive([], [ARMOR_REPAIRER]),
+    }),
+  );
+  assert.equal(clearOff.why, "The grid is clear and the armour is whole again, so its repairer is switching off.");
+  for (const said of [inFightOff.why, inFightOn.why, clearOff.why]) {
+    assert.doesNotMatch(said, /armor/i);
+  }
 });
 
 // --- an unreadable layer ratio is undecidable, not "not hurt" -----------------
@@ -4005,7 +4032,7 @@ test("hostiles back, a lock on this ship or a blind read: the fight numbers own 
     const running = decideCompanionAction(request,
       tankObs({ ...fight, armorRatio: 0.9, snapshot: gridWithShipsAndActive([], [ARMOR_REPAIRER]) }));
     assert.deepEqual(running.action, { kind: "deactivate", moduleID: ARMOR_REPAIRER }, JSON.stringify(fight));
-    assert.match(running.why, /^The armor is whole again/);
+    assert.match(running.why, /^The armour is whole again, so its repairer is switching off.$/);
   }
 });
 
