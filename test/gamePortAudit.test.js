@@ -283,7 +283,8 @@ test("the app itself lists the routes its source's text has not, and the page's 
   }
   // And every route the text has, each once.
   const byText = [...fs.readFileSync(path.join(root, "src/server.js"), "utf8").matchAll(/app\.(get|post|put|delete)\("(\/api\/[^"]+)"/g)].map((found) => [found[1].toUpperCase(), found[2]]);
-  assert.ok(byText.length > 500, String(byText.length));
+  // (Fewer than five hundred since 2026-10-14, when the plumbing's unasked write routes went: the loop's item 62.)
+  assert.ok(byText.length > 200, String(byText.length));
   assert.deepEqual(byText.filter(([method, at]) => !has(method, at)), []);
   assert.equal(new Set(table.map((route) => `${route.method} ${route.path}`)).size, table.length);
 
@@ -292,7 +293,7 @@ test("the app itself lists the routes its source's text has not, and the page's 
   // Named by the page's api.ts, though the text of the BFF's source has no such route; named by another source of
   // the page's than its api.ts (the generic call, the event stream); and named by nothing of the page's.
   assert.deepEqual([named("GET", "/api/bridge/drones"), named("POST", "/api/bridge/provisioning/reconcile"), named("POST", "/api/bridge/call"), named("GET", "/api/bridge/events"),
-    named("POST", "/api/bridge/mail/mark-read"), named("POST", "/api/bridge/chat/send-message")], [true, true, true, true, false, false]);
+    named("POST", "/api/bridge/mail/mark-read"), named("POST", "/api/bridge/mail/trash")], [true, true, true, true, false, false]);
 });
 
 test("findings are gathered by kind, route and call, each route by the BFF's own pattern for it", () => {

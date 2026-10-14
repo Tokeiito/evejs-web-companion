@@ -1060,11 +1060,7 @@ test("a write is made by the generic call only as the page makes one: a pilot's,
   assert.equal(gateway.calls.call.length, before + 1);
   const sent = gateway.calls.call.at(-1);
   assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["skillHandler", "AbortTraining", [], null, BRIDGE_SESSION_ID, { userid: 4 }]);
-  // The route stands, and makes the same call.
-  const byRoute = await apiRequest(baseUrl, "/api/bridge/skills/abort-training", { method: "POST", body: { confirm: true } });
-  assert.deepEqual([byRoute.response.status, byRoute.payload.applied, gateway.calls.call.length], [200, true, before + 2]);
-  const routed = gateway.calls.call.at(-1);
-  assert.deepEqual([routed.service, routed.method, routed.args, routed.kwargs, routed.bridgeSessionID], [sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID]);
+  // (Its route, POST /api/bridge/skills/abort-training, went on 2026-10-14 with the plumbing's other unasked writes.)
 });
 
 test("the queue's saving is a write of the page's own: its queue and its keyword go as they were sent, and a transport that does not carry it says so", async () => {
@@ -1117,11 +1113,7 @@ test("free points put into a skill are a write of the page's own: the skill and 
   assert.deepEqual([made.response.status, made.payload.service, made.payload.method, made.payload.result], [200, "skillHandler", "ApplyFreeSkillPoints", 3800]);
   const sent = gateway.calls.call.at(-1);
   assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["skillHandler", "ApplyFreeSkillPoints", [3327, 1200], null, BRIDGE_SESSION_ID, { userid: 4 }]);
-  // The route stands, and makes the same call from its own spelling of the two.
-  const byRoute = await apiRequest(baseUrl, "/api/bridge/skills/apply-free-points", { method: "POST", body: { skills: 3327, points: 1200, confirm: true } });
-  const routed = gateway.calls.call.at(-1);
-  assert.deepEqual([byRoute.response.status, byRoute.payload.result, gateway.calls.call.length], [200, 3800, before + 2]);
-  assert.deepEqual([routed.service, routed.method, routed.args, routed.kwargs, routed.bridgeSessionID], [sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID]);
+  // (Its route, POST /api/bridge/skills/apply-free-points, went on 2026-10-14 with the plumbing's other unasked writes.)
 });
 
 test("the safety level set is a write of the page's own: the level goes as it was sent, and what the route checked of it is the server's to judge", async () => {
@@ -1140,15 +1132,9 @@ test("the safety level set is a write of the page's own: the level goes as it wa
   assert.deepEqual([made.response.status, made.payload.service, made.payload.method], [200, "crimewatch", "SetSafetyLevel"]);
   const sent = gateway.calls.call.at(-1);
   assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["crimewatch", "SetSafetyLevel", [1], null, BRIDGE_SESSION_ID, { userid: 4 }]);
-  // The route stands, and makes the same call.
-  const byRoute = await apiRequest(baseUrl, "/api/bridge/safety/set-level", { method: "POST", body: { level: 1, confirm: true } });
-  const routed = gateway.calls.call.at(-1);
-  assert.deepEqual([byRoute.response.status, gateway.calls.call.length], [200, before + 2]);
-  assert.deepEqual([routed.service, routed.method, routed.args, routed.kwargs, routed.bridgeSessionID], [sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID]);
-  // The route refused a level that is none of the three before asking anything. The generic call hands on what
-  // it was given, as it does for any call: what such a level comes to is the server's to say.
-  const odd = await apiRequest(baseUrl, "/api/bridge/safety/set-level", { method: "POST", body: { level: 7, confirm: true } });
-  assert.deepEqual([odd.response.status, odd.payload.error, gateway.calls.call.length], [400, "INVALID_SAFETY_LEVEL", before + 2]);
+  // (Its route, POST /api/bridge/safety/set-level, went on 2026-10-14 with the plumbing's other unasked writes.)
+  // The generic call hands on what it was given, as it does for any call: what a level that is none of the three
+  // comes to is the server's to say.
   assert.deepEqual([(await set(7, { pilot: true, confirm: true })).response.status, gateway.calls.call.at(-1).args], [200, [7]]);
 });
 
@@ -1173,11 +1159,7 @@ test("a contract taken on is a write of the page's own: its ID and for whom go a
   assert.deepEqual([made.response.status, made.payload.service, made.payload.method], [200, "contractProxy", "AcceptContract"]);
   const sent = gateway.calls.call.at(-1);
   assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["contractProxy", "AcceptContract", [8100, false], null, BRIDGE_SESSION_ID, { userid: 4 }]);
-  // The route stands, and makes the same call from its own spelling of the two.
-  const byRoute = await apiRequest(baseUrl, "/api/bridge/contracts/accept", { method: "POST", body: { contractID: 8100, forCorp: false, confirm: true } });
-  const routed = gateway.calls.call.at(-1);
-  assert.deepEqual([byRoute.response.status, gateway.calls.call.length], [200, before + 2]);
-  assert.deepEqual([routed.service, routed.method, routed.args, routed.kwargs, routed.bridgeSessionID], [sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID]);
+  // (Its route, POST /api/bridge/contracts/accept, went on 2026-10-14 with the plumbing's other unasked writes.)
   // For the corporation is said by the caller, on either way: whether this character may is the server's to say.
   assert.deepEqual([(await accept([8100, true], { pilot: true, confirm: true })).response.status, gateway.calls.call.at(-1).args], [200, [8100, true]]);
 });
@@ -1209,11 +1191,7 @@ test("a launch's record removed is a write of the page's own: its ID goes as it 
   assert.deepEqual([made.response.status, made.payload.service, made.payload.method], [200, "planetMgr", "DeleteLaunch"]);
   const sent = gateway.calls.call.at(-1);
   assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["planetMgr", "DeleteLaunch", [500002], null, BRIDGE_SESSION_ID, { userid: 4 }]);
-  // The route stands, and makes the same call.
-  const byRoute = await apiRequest(baseUrl, "/api/bridge/planet/launch/delete", { method: "POST", body: { launchID: 500002, confirm: true } });
-  const routed = gateway.calls.call.at(-1);
-  assert.deepEqual([byRoute.response.status, gateway.calls.call.length], [200, before + 2]);
-  assert.deepEqual([routed.service, routed.method, routed.args, routed.kwargs, routed.bridgeSessionID], [sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID]);
+  // (Its route, POST /api/bridge/planet/launch/delete, went on 2026-10-14 with the plumbing's other unasked writes.)
 });
 
 test("a fleet applied to and a broadcast to the bubble are writes of the page's own: each goes as it was sent", async () => {
@@ -1562,14 +1540,12 @@ test("the page's own write is under the checks every write of a held pilot's is 
   // As its route makes it: with the account alone for the session's fields, whatever the page sent of its own.
   assert.deepEqual(gateway.calls.call.at(-1).sessionFields, { userid: 4 });
   const made = gateway.calls.call.length;
-  // A pilot whose earlier selection's release is not confirmed: no write is made for it, by its route or by the
-  // page's own call.
+  // A pilot whose earlier selection's release is not confirmed: no write is made for it by the page's own call. (Its
+  // route, POST /api/bridge/skills/abort-training, went on 2026-10-14.)
   const [held] = [...app.locals.bridgeSessions.values()];
   held.selectionReleaseUnverified = true;
   const refused = await pause();
   assert.deepEqual([refused.response.status, refused.payload.error, gateway.calls.call.length], [409, "PILOT_RELEASE_UNVERIFIED", made]);
-  const byRoute = await apiRequest(baseUrl, "/api/bridge/skills/abort-training", { method: "POST", body: { confirm: true } });
-  assert.deepEqual([byRoute.response.status, byRoute.payload.error, gateway.calls.call.length], [409, "PILOT_RELEASE_UNVERIFIED", made]);
   held.selectionReleaseUnverified = false;
   assert.equal((await pause()).response.status, 200);
 });

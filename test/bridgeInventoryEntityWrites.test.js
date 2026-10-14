@@ -202,17 +202,15 @@ const R102_WRITE_ROUTES = [
   ["/api/bridge/inventory/break-plastic-wrap", { itemID: 7400000031 }],
   ["/api/bridge/inventory/deliver-to-corp-hangar", { itemIDs: [7400000020, 7400000021], officeID: 9500001, flag: 116 }],
   ["/api/bridge/inventory/deliver-to-corp-member", { itemIDs: [7400000020], memberID: CHARACTER_ID }],
-  // WB-ENTITY (3: the reconnection is the page's own call since 2026-10-13, and has no route)
-  ["/api/bridge/entity/drones/return-home", { droneIDs: [9000000001] }],
-  ["/api/bridge/entity/drones/salvage", { droneIDs: [9000000001], targetID: 5000000009 }],
-  ["/api/bridge/entity/drones/abandon", { droneIDs: [9000000001, 9000000002] }],
+  // (WB-ENTITY's three plumbing routes went on 2026-10-14, nothing asking them; the reconnection is the page's own
+  // call since 2026-10-13.)
 ];
 
 test("⚠ every R102 inventory/entity write REFUSES without confirm — no bind, no dispatch (nothing fired)", async () => {
   const gateway = fakeGateway();
   const { baseUrl } = await startTestServer({ gateway });
   await selectOnServer(baseUrl);
-  assert.equal(R102_WRITE_ROUTES.length, 9, "all 9 R102 write routes are covered");
+  assert.equal(R102_WRITE_ROUTES.length, 6, "all 6 R102 inventory write routes are covered");
   for (const [path, body] of R102_WRITE_ROUTES) {
     const { response, payload } = await apiRequest(baseUrl, path, { method: "POST", body });
     assert.equal(response.status, 400, `${path} must refuse without confirm`);
@@ -276,63 +274,11 @@ test("R102 DeliverToCorpHangar forwards itemIDs/officeID/flag as bound kwargs on
   assert.deepEqual(call.kwargs, { itemIDs: [7400000020, 7400000021], officeID: 9500001, flag: 116, qty: null });
 });
 
-test("⚠ R102 CmdAbandonDrone forwards [[droneIDs]] as a BOUND entity call once confirmed", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/entity/drones/abandon", {
-    method: "POST",
-    body: { droneIDs: [9000000001, 9000000002], confirm: true },
-  });
-  assert.equal(response.status, 200);
-  assert.equal(payload.applied, true);
-  const bind = gateway.calls.bind.find((c) => c.service === "entity");
-  assert.ok(bind, "the entity object is bound");
-  assert.equal(bind.method, "MachoBindObject");
-  const call = gateway.calls.boundCall.find((c) => c.method === "CmdAbandonDrone");
-  assert.ok(call, "CmdAbandonDrone must reach the gateway once confirmed");
-  assert.equal(call.service, "entity");
-  assert.deepEqual(call.args, [[9000000001, 9000000002]]);
-});
-
-test("R102 CmdSalvage forwards [[droneIDs], targetID] as a bound entity call once confirmed", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { response } = await apiRequest(baseUrl, "/api/bridge/entity/drones/salvage", {
-    method: "POST",
-    body: { droneIDs: [9000000001], targetID: 5000000009, confirm: true },
-  });
-  assert.equal(response.status, 200);
-  const call = gateway.calls.boundCall.find((c) => c.method === "CmdSalvage");
-  assert.ok(call, "CmdSalvage must reach the gateway once confirmed");
-  assert.equal(call.service, "entity");
-  assert.deepEqual(call.args, [[9000000001], 5000000009]);
-});
-
 // (Lost drones are reconnected to by the page's own call since 2026-10-13 (entity.CmdReconnectToDrones through
 // the generic call, and then the page's own read of its drones). The route that made the call and answered with
 // the drones in space, POST /api/bridge/entity/drones/reconnect, is gone, and the two tests of it with it.)
 
-test("the three plumbing-only entity writes keep the bare ack — no snapshot read", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  for (const [path, body] of [
-    ["/api/bridge/entity/drones/return-home", { droneIDs: [DRONE_ID] }],
-    ["/api/bridge/entity/drones/salvage", { droneIDs: [DRONE_ID], targetID: 5000000009 }],
-    ["/api/bridge/entity/drones/abandon", { droneIDs: [DRONE_ID] }],
-  ]) {
-    const { response, payload } = await apiRequest(baseUrl, path, {
-      method: "POST",
-      body: { ...body, confirm: true },
-    });
-    assert.equal(response.status, 200);
-    assert.equal(payload.applied, true);
-    assert.equal(payload.inSpace, undefined, `${path} is not a panel route and must not re-read space`);
-  }
-  assert.equal(gateway.calls.space.length, 0, "no snapshot read for the plumbing-only writes");
-});
+// (The three plumbing-only entity write routes went on 2026-10-14, and their tests with them.)
 
 test("R102 write routes refuse without a held bridge session", async () => {
   const gateway = fakeGateway();
