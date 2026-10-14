@@ -81,6 +81,32 @@ export async function boardCorvette(act: Ask, ship: PilotsShip, sure: () => bool
   return true;
 }
 
+// A SHIP BOARDED, as the client boards one (menuFunctions.Board, 190 to 209), from a ship's menu in the hangar or
+// in space:
+//
+//   sm.StartService('sessionMgr').PerformSessionChange('board', ship.Board, itemID, session.shipid or session.stationid)
+//
+// ship the ship's object for where the pilot is (gameui.GetShipAccess()); the second argument the ship left, or the
+// station where the pilot is in none. Before it the client asks for the skills the ship's type needs and, where
+// any is missing, says which and boards nothing (prompt_missing_skill_requirements); the page does not ask (its
+// route did not either), and the server refuses a ship the pilot cannot fly. Recorded on Tranquility in space as
+// (shipID, the ship left), the bind carrying it (src/gamePort/retailCalls.js).
+//
+// THE SESSION CHANGE IS KEPT BY THE BFF, as a swap of the pilot's ship held to the ship boarded (src/server.js, the
+// generic call's swaps; bridgeCallPolicy.js, PAGE_SHIP_SWAP_CALLS): answered once the pilot is in it. Until
+// 2026-10-14 the call was a route's (POST /api/bridge/ship/board), which named the BFF's word for the ship left.
+
+/**
+ * Boards the ship `shipID`: the pilot is in it when this is answered. `leaving` is the ship the pilot is in, or
+ * where it is docked where it is in none. Fails as the call fails, and before it where the ship to board is not known.
+ */
+export async function boardShip(act: Ask, shipID: number, leaving: number | null): Promise<void> {
+  if (!known(shipID)) {
+    throw new Error("Which ship that is is not known yet.");
+  }
+  await act("ship", "Board", [shipID, known(leaving) ? leaving : null]);
+}
+
 /**
  * Leaves the ship the pilot is in, docked: the pilot is in its capsule when this is answered. Fails as the call
  * fails, and before it where the ship is not known.

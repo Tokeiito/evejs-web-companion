@@ -531,13 +531,8 @@ export async function loadInventory(
 // (Stack All of the hangar or the ship's hold is the page's own call since 2026-10-14, the client's StackAll on the
 // place's own inventory: bridge/inventoryWrites.ts. Its route, POST /api/bridge/inventory/stack, is gone.)
 
-/** Board a ship sitting in the station hangar (it becomes the active ship). */
-export async function boardShip(
-  shipID: number,
-  options: ApiOptions = {},
-): Promise<void> {
-  await postJson("/api/bridge/ship/board", { shipID }, options);
-}
+// A ship is boarded by the page itself, with the client's own call (bridge/shipWrites.ts, boardShip): it left its
+// route (POST /api/bridge/ship/board) on 2026-10-14.
 
 // --- R14 Inventory depth + corporation hangars ------------------------------
 // The browser names a PLACE — the hangar, the ship's cargo, a container, a

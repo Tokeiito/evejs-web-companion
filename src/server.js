@@ -77,6 +77,7 @@ const {
   pageNamesTheObject,
   pickSafeBrowserSessionFields,
   swapsThePilotsShip,
+  swapTargetOf,
   placeChangeOf,
 } = require("./bridgeCallPolicy");
 const {
@@ -1070,7 +1071,9 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
   // it (bridgeCallPolicy.js, PAGE_SHIP_SWAP_CALLS): the BFF's word for the pilot's ship is kept there. It is
   // answered as any call here is, once the pilot's flight says another ship.
   if (swapsThePilotsShip(body.service, body.method)) {
-    await dispatchShipSwapWrite(req, res, next, body.service, body.method, Array.isArray(body.args) ? body.args : [], null, (outcome, after) => ({
+    const args = Array.isArray(body.args) ? body.args : [];
+    // The ship boarded is held to, as the board's route held it: the swap is over when the pilot is in that ship.
+    await dispatchShipSwapWrite(req, res, next, body.service, body.method, args, swapTargetOf(body.service, body.method, args), (outcome, after) => ({
       ok: true,
       service: body.service,
       method: body.method,
@@ -4454,53 +4457,10 @@ app.post("/api/bridge/station/office/give-up", requireAuth, async (req, res, nex
 // Board a ship sitting in the station hangar (the retail
 // Moniker('ship',(stationID,groupStation)).Board(shipID, oldShipID)). On
 // success the newly boarded ship becomes the active ship for cargo reads.
-app.post("/api/bridge/ship/board", requireAuth, async (req, res, next) => {
-  const held = requireHeldBridgeSession(req, res);
-  if (!held) {
-    return;
-  }
-  const shipID = Number((req.body && req.body.shipID) || 0);
-  if (shipID <= 0) {
-    res.status(400).json({ ok: false, error: "INVALID_SHIP", message: "A positive shipID is required." });
-    return;
-  }
-  if (!await acquireRouteTransition(res, held, "board", { shipID })) {
-    return;
-  }
-  try {
-    const outcome = await boundCall(
-      held,
-      req.webSessionID,
-      shipBindSpec(held),
-      "Board",
-      [shipID, held.activeShipID || null],
-      null,
-    );
-    markTransitionAccepted(held);
-    const ready = await awaitRouteTransition(held, req.webSessionID, "board", { shipID });
-    if (!ready.ok) {
-      sendTransitionTimeout(res, ready, outcome.notifications);
-      return;
-    }
-    // Only an authoritative postcondition changes the active hull. The epoch
-    // already evicted all ship/dogma/inventory bindings.
-    held.activeShipID = Number(ready.flight.shipID) || null;
-    res.json({
-      ok: true,
-      activeShipID: held.activeShipID,
-      flight: { ...ready.flight, transition: ready.transition },
-      transition: ready.transition,
-      notifications: [...outcome.notifications, ...ready.notifications],
-    });
-  } catch (error) {
-    if (held.transition && held.transition.phase === "requested") {
-      cancelHeldTransition(held);
-    } else {
-      markTransitionFailed(held, error && error.message);
-    }
-    next(error);
-  }
-});
+// A ship is boarded by the page's own call since 2026-10-14 (web/src/bridge/shipWrites.ts: ship.Board(shipID, the ship
+// left or where the pilot is docked), menuFunctions.py 209), under the BFF's keeping of the swap with the ship boarded
+// pinned (the generic call, dispatchShipSwapWrite; bridgeCallPolicy.js, swapTargetOf). Its route
+// (POST /api/bridge/ship/board) is gone.
 
 // --- R12 Ship fitting -------------------------------------------------------
 // Fitting is NOT a dedicated service: it is the SAME bound-object two-step the

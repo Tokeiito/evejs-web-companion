@@ -386,7 +386,7 @@ import {
 } from "../bridge/boundEntityWrites.ts";
 import { alignTo as alignToCall, approach as approachCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
 import { dock as dockCall, isStation, jump as jumpCall, undock as undockCall } from "../bridge/placeChanges.ts";
-import { boardCorvette as boardCorvetteCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
+import { boardCorvette as boardCorvetteCall, boardShip as boardShipCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
 import { activityIDOf, createJobReckoner, type JobReckoner, type JobReckoning } from "../bridge/industryJobReckoning.ts";
 import { connectJob, decodeFacilityPlaces, disconnectJob, installJob, jobDump, jobPlaces, monitoredAs, type Monitored } from "../bridge/industryMonitor.ts";
 import { NO_OPTIONAL_MATERIAL } from "../bridge/industryReckonings.mjs";
@@ -2011,6 +2011,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       productTypeID: request.productTypeID ?? null,
     });
     return { characterID: online.characterID, own, dump };
+  }
+  /**
+   * The ship boarded by the page's own call (bridge/shipWrites.ts: menuFunctions.Board), naming what the client names
+   * beside it, the ship the pilot is in or the station where it is in none, as the pilot's flight says now.
+   */
+  async function boardShipNow(shipID: number): Promise<void> {
+    const now = decodeFlightStatus((await api.getFlightStatus(callOptions)).flight);
+    await boardShipCall(bridgeDo, shipID, now.shipID ?? now.stationID ?? null);
   }
   // The Character Sheet's reads, asked call by call as the client's windows ask them (bridge/characterSheetReads.ts).
   const characterSheetReads = createCharacterSheetReads(bridgeAsk, (typeIDs, attributeIDs) => api.fetchTypeDogma(typeIDs, attributeIDs, callOptions));
@@ -13646,7 +13654,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             }
             return;
           case "boardShip":
-            await api.boardShip(action.shipID, callOptions);
+            await boardShipNow(action.shipID);
             capabilityCache.invalidate();
             bayCache = null;
             return;
@@ -14691,7 +14699,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async boardShip(shipID) {
-      await runMutation(() => api.boardShip(shipID, callOptions));
+      await runMutation(() => boardShipNow(shipID));
       await refreshActiveShipViews();
     },
 
