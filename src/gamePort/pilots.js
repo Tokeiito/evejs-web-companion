@@ -5134,8 +5134,9 @@ function createGamePortPilots({
     const sent = async () => {
       ledger.note(service, method, form);
       // fittingSvc.LoadFitting: the fitting is applied on the ship's own inventory, invCache.GetInventoryFromId(ship),
-      // which the location's manager is asked for. The BFF's route has the manager's handle.
-      if (service === "invbroker" && method === "FitFitting") {
+      // which the location's manager is asked for. Where the call comes on the manager's handle, the ship's inventory
+      // is had first; where it comes on the ship's own inventory (the page's call), it goes there as it is.
+      if (service === "invbroker" && method === "FitFitting" && object.params !== undefined) {
         // invCache.GetInventoryFromId(itemid, passive=0), noted as the bind of an inventory it is.
         ledger.note("invbroker", "GetInventoryFromId", BOUND_AS_THE_CLIENT_BINDS);
         const shipInventory = boundObjectID(await inventoryCall(entry, "location", "GetInventoryFromId", [argumentsToWire(form.args[0]), 0]));

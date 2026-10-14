@@ -4342,22 +4342,8 @@ export async function exportToCustomsOffices(
 // (bridge/fittingReads.ts): they left their routes (GET /api/bridge/fittings
 // and GET /api/bridge/shared-fittings) on 2026-10-11.
 
-/** Apply a saved fitting to a ship — modules pulled from the docked hangar. */
-export async function applySavedFitting(
-  shipID: number,
-  sourceLocationID: number,
-  modulesByFlag: Readonly<Record<number, number>>,
-  itemsByType: Readonly<Record<number, readonly number[]>>,
-  options: ApiOptions = {},
-): Promise<void> {
-  // fitRigs off: a refit never touches rigs (unfitting one destroys it).
-  await postJson(
-    "/api/bridge/inventory/fit-fitting",
-    { shipID, sourceLocationID, modulesByFlag: modulesByFlag as unknown as JsonValue,
-      itemsByType: itemsByType as unknown as JsonValue, fitRigs: false, confirm: true },
-    options,
-  );
-}
+// (A saved fitting is applied by the page itself since 2026-10-14, with the client's own call on the ship's own
+// inventory: bridge/fitModule.ts, applyFitting. Its route, POST /api/bridge/inventory/fit-fitting, is gone.)
 
 // The scanner's sites are the page's own call of the system's scan manager
 // (bridge/scanFullState.ts; the plan's Phase 6b): they left their route

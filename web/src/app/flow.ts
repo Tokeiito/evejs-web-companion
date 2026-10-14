@@ -334,7 +334,7 @@ import {
   type DroneRangeSkillReading,
 } from "../nav/droneControlRange.ts";
 import { readScanFullState } from "../bridge/scanFullState.ts";
-import { fitModule as fitModuleCall, unfitModule as unfitModuleCall } from "../bridge/fitModule.ts";
+import { applyFitting, fitModule as fitModuleCall, unfitModule as unfitModuleCall } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
 import { mergeStacks as mergeStacksCall, trashItems as trashItemsCall } from "../bridge/inventoryWrites.ts";
 import { cancelOrder as cancelOrderCall } from "../bridge/marketOrderWrites.ts";
@@ -13458,7 +13458,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             });
             const plan = planFittingApply(fitting, decodeInventoryRows(panel.hangar.list, panel.volumes), fitted);
             if (Object.keys(plan.modulesByFlag).length > 0) {
-              await api.applySavedFitting(shipID, stationID, plan.modulesByFlag, plan.itemsByType, callOptions);
+              // The client's own call on the ship's own inventory (bridge/fitModule.ts), naming the ship's type as
+              // the flight read has it.
+              await applyFitting(bridgeDo, { shipID, typeID: fittingFlight.shipTypeID ?? null }, stationID, plan.modulesByFlag, plan.itemsByType);
             }
             capabilityCache.invalidate();
             bayCache = null;

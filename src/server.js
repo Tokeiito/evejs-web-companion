@@ -12210,10 +12210,6 @@ async function dispatchBoundInventoryWrite(req, res, next, method, args, kwargs 
     // Sync held station/ship to the live position first so the manager bind
     // targets the CURRENT station (matching /api/bridge/bound-inventory).
     await readHeldFlight(held, req.webSessionID);
-    if (method === "FitFitting" && held.structureID) {
-      throw Object.assign(new Error("Scripted fitting requires the active ship at its NPC station hangar."),
-        { code: "SCRIPTED_FITTING_STATION_ONLY", statusCode: 409 });
-    }
     const outcome = await boundCall(held, req.webSessionID, inventoryManagerBindSpec(held), method, args, kwargs);
     res.json({ ok: true, applied: true, result: outcome.result ?? null, notifications: outcome.notifications });
   } catch (error) {
@@ -12245,21 +12241,10 @@ app.post("/api/bridge/inventory/strip-fitting", requireAuth, async (req, res, ne
   await dispatchBoundInventoryWrite(req, res, next, "StripFitting", []);
 });
 
-// FitFitting(shipID, …, itemsByType, sourceLocationID, modulesByFlag, cargoByType,
-// fitRigs) — apply a saved fitting to a ship. Educated-guess positional shape.
-app.post("/api/bridge/inventory/fit-fitting", requireAuth, async (req, res, next) => {
-  if (!requireWriteConfirmation(req, res, "This applies that fitting to the ship (moves/fits modules). Confirm to continue.")) {
-    return;
-  }
-  const body = req.body || {};
-  const shipID = Number(body.shipID) || 0;
-  const sourceLocationID = Number(body.sourceLocationID) || 0;
-  const itemsByType = body.itemsByType && typeof body.itemsByType === "object" ? body.itemsByType : {};
-  const modulesByFlag = body.modulesByFlag && typeof body.modulesByFlag === "object" ? body.modulesByFlag : {};
-  const cargoItemsByType = body.cargoItemsByType && typeof body.cargoItemsByType === "object" ? body.cargoItemsByType : {};
-  const fitRigs = body.fitRigs === undefined ? true : Boolean(body.fitRigs);
-  await dispatchBoundInventoryWrite(req, res, next, "FitFitting", [shipID, null, itemsByType, sourceLocationID, modulesByFlag, cargoItemsByType, fitRigs]);
-});
+// (A saved fitting is applied by the page's own call since 2026-10-14, as the client applies one: FitFitting on
+// the ship's own inventory (fittingSvc.LoadFitting, 554 to 618), through the generic call (bridgeCallPolicy.js,
+// PAGE_OBJECT_CALLS: "inventory"; web/src/bridge/fitModule.ts, applyFitting). The route that sent it on the
+// inventory manager's handle, POST /api/bridge/inventory/fit-fitting, is gone.)
 
 // AssembleCargoContainer(itemID) — assemble a packaged cargo container. Server-side
 // no-op today; plumbed for parity.

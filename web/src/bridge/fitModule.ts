@@ -114,3 +114,31 @@ export async function unfitModule(
   }
   return { applied: !(await fitted()).has(itemID) };
 }
+
+/**
+ * A saved fitting applied to the ship the pilot is in (the plan's Phase 6b): until 2026-10-14 a route of the BFF's
+ * (POST /api/bridge/inventory/fit-fitting), which sent the call on the inventory manager's handle. The client
+ * (fittingSvc.LoadFitting, 554 to 618) asks it of the ship's own inventory:
+ *
+ *   shipInv = invCache.GetInventoryFromId(eveCfg.GetActiveShip())
+ *   shipInv.FitFitting(activeShip, shipTypeID, itemsToFit, session.stationid or session.structureid,
+ *                      fittingObjKeyVal, cargoItemsByType, fitRigs)
+ *
+ * the hangar's items to fit from by type, the fitting's modules by slot (the game port makes the KeyVal of them,
+ * retailCalls.js), what goes in the cargo by type, and whether rigs are fitted. It answers what failed to load.
+ * The server refuses a ship that is not the pilot's (FakeItemNotFound: asked live on 2026-10-14, one pilot's module
+ * into another's Rifter in the same station). Rigs are left as they are and nothing goes in the cargo: the page's
+ * refit names no rig.
+ */
+export async function applyFitting(
+  act: Ask,
+  ship: { readonly shipID: number; readonly typeID: number | null },
+  dockedAt: number,
+  modulesByFlag: Readonly<Record<number, number>>,
+  itemsByType: Readonly<Record<number, readonly number[]>>,
+): Promise<void> {
+  const shipID = itemNumber(ship.shipID);
+  if (!Number.isSafeInteger(dockedAt) || dockedAt <= 0) throw new Error("A fitting is applied only while docked.");
+  const items = Object.fromEntries(Object.entries(itemsByType).map(([typeID, itemIDs]) => [typeID, [...itemIDs]]));
+  await act("invbroker", "FitFitting", [shipID, ship.typeID, items, dockedAt, { ...modulesByFlag }, {}, false], null, shipID);
+}
