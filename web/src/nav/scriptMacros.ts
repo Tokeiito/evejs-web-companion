@@ -19,6 +19,7 @@ import type {
   MacroDecider,
   MacroMemory,
   MacroTick,
+  ScriptAction,
   ScriptBoard,
 } from "./scriptDecide.ts";
 import type { DryBelt, ScriptObservation } from "./scriptConditions.ts";
@@ -63,7 +64,7 @@ import { FREIGHT_BAYS, planLootTransfers, preferredBays } from "../bridge/bayRou
 import { preferredResources } from "./resourcePriority.ts";
 import { holdFreeM3 } from "../bridge/holdFit.ts";
 import { isNpcCorporation } from "../bridge/standingsReads.ts";
-import { planSalvageTick } from "./salvageSitePlan.ts";
+import { planSalvageTick, type SalvageAction, type SalvageModule, type SalvagePlan, type SalvagePlanInput } from "./salvageSitePlan.ts";
 import { isLootableContainer, lootRightsGrant } from "./lootableContainers.ts";
 import { MAX_ACTIVE_PERSONAL_FOLDERS, MAX_ACTIVE_SHARED_FOLDERS, MAX_KNOWN_FOLDERS } from "../bridge/bookmarkFolders.ts";
 import { isUnreachable, NO_STEP_ID, refusalFor, refusalTargets, shipHasNoRoom, shouldSetAside } from "./refusalLedger.ts";
@@ -5506,7 +5507,9 @@ function workSalvageSite(step: MacroStep, obs: ScriptObservation, mem: MacroMemo
     if (!locked.has(Number(id)) && ticks < MAX_LOCK_WAIT_TICKS) pending[id] = ticks + 1;
   }
 
+  const triedRaw = (mem["tries"] as Record<string, number> | undefined) ?? {};
   const setAside = (id: number) =>
+    (triedRaw[String(id)] ?? 0) >= BATCH_TRIES ||
     shouldSetAside(obs.refusals, step.id, "lootWreck", id, MAX_BLOCK_ATTEMPTS) ||
     shouldSetAside(obs.refusals, step.id, "activate", id, MAX_BLOCK_ATTEMPTS) ||
     shouldSetAside(obs.refusals, step.id, "lock", id, MAX_BLOCK_ATTEMPTS);
@@ -5525,7 +5528,7 @@ function workSalvageSite(step: MacroStep, obs: ScriptObservation, mem: MacroMemo
   const anchor = anchorRaw && Math.hypot(ship.position.x - anchorRaw.x, ship.position.y - anchorRaw.y, ship.position.z - anchorRaw.z) > 400 ? anchorRaw : null;
   if (anchor === null) next = { ...next, anchor: null, anchorTicks: null, anchorIssues: null };
 
-  const plan = planSalvageTick({
+  const planInput: SalvagePlanInput = {
     ship: { position: ship.position, velocity: ship.velocity },
     wrecks, containers,
     tractors: tractorIDs.map(module),
@@ -5538,8 +5541,41 @@ function workSalvageSite(step: MacroStep, obs: ScriptObservation, mem: MacroMemo
     salvageRangeM: shortest(salvagerIDs, SALVAGER_RANGE_FALLBACK_M),
     lootRangeM: LOOT_RANGE_M,
     committedAnchor: anchor,
-  });
+  };
+  const plan = planSalvageTick(planInput);
   next = { ...next, pending };
+  // ⚠ ALL AT ONCE, AS A PILOT DOES IT. Module work is gathered for the whole tick: each step the planner gives is
+  // taken as done (the beam on its wreck, the salvager on its, the lock asked for) and the planner asked again,
+  // until it wants something that is not module work (a loot, a move) or nothing. Seen live 2026-10-14: one step a
+  // tick left three beams and four salvagers waiting while one beam was let go and taken again.
+  if ("action" in plan && BATCHABLE.has(plan.action.kind)) {
+    const steps: SalvageBatchStep[] = [];
+    let state = planInput;
+    let step: SalvagePlan = plan;
+    while ("action" in step && BATCHABLE.has(step.action.kind) && steps.length < BATCH_MAX) {
+      const a = step.action;
+      if (a.kind === "lock" || a.kind === "unlock") steps.push({ kind: a.kind, targetID: a.targetID });
+      else if (a.kind === "activate") steps.push({ kind: "activate", moduleID: a.moduleID, targetID: a.targetID });
+      else if (a.kind === "deactivate") steps.push({ kind: "deactivate", moduleID: a.moduleID });
+      state = afterStep(state, a);
+      step = planSalvageTick(state);
+    }
+    // Each target a step was aimed at, counted: a target asked for again and again without taking is set aside.
+    const tries = { ...((mem["tries"] as Record<string, number> | undefined) ?? {}) };
+    const newPending = { ...pending };
+    let newLastSet = { ...lastSet };
+    for (const st of steps) {
+      if (st.kind === "lock") { newPending[String(st.targetID)] = 0; tries[String(st.targetID)] = (tries[String(st.targetID)] ?? 0) + 1; }
+      if (st.kind === "activate") { newLastSet = { ...newLastSet, [String(st.moduleID)]: st.targetID }; tries[String(st.targetID)] = (tries[String(st.targetID)] ?? 0) + 1; }
+      if (st.kind === "deactivate") { const { [String(st.moduleID)]: _gone, ...rest } = newLastSet; newLastSet = rest; }
+    }
+    const nextMem = { ...next, pending: newPending, lastSet: newLastSet, tries };
+    const action: ScriptAction = steps.length === 1
+      ? (steps[0]!.kind === "activate" ? { kind: "activate", moduleID: steps[0]!.moduleID, targetID: steps[0]!.targetID }
+        : steps[0]!.kind === "deactivate" ? { kind: "deactivate", moduleID: steps[0]!.moduleID } : steps[0]!)
+      : { kind: "salvageBatch", steps };
+    return { tick: tick(action, steps.length === 1 ? plan.why : `${plan.why} (and ${steps.length - 1} more at once)`, SITE_PHASE, ACTING, true, nextMem) };
+  }
   if ("done" in plan) return { finished: true };
   if ("wait" in plan) {
     const anchorTicks = (num(next, "anchorTicks") ?? 0) + 1;
@@ -5578,6 +5614,30 @@ function workSalvageSite(step: MacroStep, obs: ScriptObservation, mem: MacroMemo
       return { tick: tick({ kind: "gotoPoint", position: action.position, shipID, solarSystemID: systemID }, plan.why, SITE_PHASE, ACTING, true,
         { ...next, anchor: action.position, anchorTicks: 0, anchorIssues: issues + 1 }) };
     }
+  }
+}
+
+const BATCHABLE = new Set(["lock", "unlock", "activate", "deactivate"]);
+const BATCH_MAX = 16;
+/** A wreck a module or a lock was aimed at this many times without being done with is set aside. */
+const BATCH_TRIES = 12;
+type SalvageBatchStep = Extract<ScriptAction, { kind: "salvageBatch" }>["steps"][number];
+
+/** The plan's input as it will be once `action` has been done: the module on its target, the lock asked for. */
+function afterStep(state: SalvagePlanInput, action: SalvageAction): SalvagePlanInput {
+  const set = (mods: readonly SalvageModule[], moduleID: number, active: boolean, targetID: number | null) =>
+    mods.map((m) => (m.moduleID === moduleID ? { ...m, active, targetID } : m));
+  switch (action.kind) {
+    case "activate":
+      return { ...state, tractors: set(state.tractors, action.moduleID, true, action.targetID), salvagers: set(state.salvagers, action.moduleID, true, action.targetID) };
+    case "deactivate":
+      return { ...state, tractors: set(state.tractors, action.moduleID, false, null), salvagers: set(state.salvagers, action.moduleID, false, null) };
+    case "lock":
+      return { ...state, pendingLockIDs: [...(state.pendingLockIDs ?? []), action.targetID] };
+    case "unlock":
+      return { ...state, lockedTargetIDs: state.lockedTargetIDs.filter((id) => id !== action.targetID) };
+    default:
+      return state;
   }
 }
 
