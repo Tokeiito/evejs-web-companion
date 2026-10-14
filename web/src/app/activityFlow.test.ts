@@ -11,20 +11,12 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-function calendarEmpty() {
-  return {
-    ok: true,
-    responsesForCharacter: { type: "list", items: [] },
-    eventList: [{ type: "list", items: [] }, null, null],
-    responsesToEvent: null,
-    eventDetails: null,
-    errors: {
-      responsesForCharacter: null,
-      eventList: null,
-      responsesToEvent: "NOT_REQUESTED",
-      eventDetails: "NOT_REQUESTED",
-    },
-  };
+/** What the generic call answers, by the service asked: nothing of each, in the form the server answers in. */
+function emptyAnswerOf(service: string | undefined): unknown {
+  if (service === "notificationMgr") return [];
+  if (service === "calendarProxy") return [{ type: "list", items: [] }, { type: "list", items: [] }, null];
+  if (service === "calendarMgr") return { type: "list", items: [] };
+  return null;
 }
 
 function mailEmpty(unreadCount = 0) {
@@ -37,18 +29,17 @@ function mailEmpty(unreadCount = 0) {
   };
 }
 
-test("loadActivity uses the calendar and mail reads, and by the generic call the notification service's two and the skill history's notifications' two", async () => {
+test("loadActivity uses the mail read, and by the generic call the notification service's two, the calendar service's three and the skill history's notifications' two", async () => {
   const calls: string[] = [];
   const fetch: typeof globalThis.fetch = async (input, init) => {
     const url = String(input);
     calls.push(url);
-    // By the generic call (notificationSvc.py 93 and 107; skillHistoryProvider.py 32 to 34): no notifications,
-    // and nothing of the skill handler's.
+    // By the generic call (notificationSvc.py 93 and 107; eveCalendarsvc.py 239 and 252; skillHistoryProvider.py
+    // 32 to 34): no notifications, no events, no responses, and nothing of the skill handler's.
     if (url === "/api/bridge/call") {
       const sent = JSON.parse(String(init?.body ?? "{}")) as { service?: string };
-      return json({ ok: true, result: sent.service === "notificationMgr" ? [] : null });
+      return json({ ok: true, result: emptyAnswerOf(sent.service) });
     }
-    if (url.includes("/api/bridge/calendar")) return json(calendarEmpty());
     if (url.includes("/api/bridge/mail")) return json(mailEmpty(2));
     throw new Error(`unexpected fetch: ${url}`);
   };
@@ -57,13 +48,8 @@ test("loadActivity uses the calendar and mail reads, and by the generic call the
   const flow = createAppFlow(store, { fetch });
   await flow.loadActivity();
 
-  const current = new Date();
   assert.deepEqual(calls.sort(), [
-    "/api/bridge/calendar?month=" + (current.getUTCMonth() + 1) + "&year=" + current.getUTCFullYear(),
-    "/api/bridge/call",
-    "/api/bridge/call",
-    "/api/bridge/call",
-    "/api/bridge/call",
+    ...Array.from({ length: 7 }, () => "/api/bridge/call"),
     "/api/bridge/mail",
   ].sort());
   assert.equal(store.get().activity.notifications.status, "ready");
@@ -80,9 +66,8 @@ test("loadActivity lands partial success when the notification service's reads f
       const sent = JSON.parse(String(init?.body ?? "{}")) as { service?: string };
       return sent.service === "notificationMgr"
         ? json({ ok: false, error: "CALL_FAILED", message: "notificationMgr unavailable" }, 503)
-        : json({ ok: true, result: null });
+        : json({ ok: true, result: emptyAnswerOf(sent.service) });
     }
-    if (url.includes("/api/bridge/calendar")) return json(calendarEmpty());
     if (url.includes("/api/bridge/mail")) return json(mailEmpty(0));
     throw new Error(`unexpected fetch: ${url}`);
   };
