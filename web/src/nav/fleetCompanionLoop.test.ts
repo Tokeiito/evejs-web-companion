@@ -12034,8 +12034,30 @@ test("a refusal that means the commander is not here stops the rejoin at once, a
   }
   assert.equal(counter.warps, 1, "no second warp while the roster says the same");
   assert.equal(companion.snapshot().phase, "Standing by");
-  assert.equal(companion.snapshot().why, "The commander is not in this system: waiting for the fleet.");
+  assert.equal(companion.snapshot().why,
+    "The warp to the commander was refused (too close, cloaked, or not where the roster says): waiting for the commander to show.");
   assert.doesNotMatch(companion.snapshot().why ?? "", /Trying again shortly/);
+  // Seen live 2026-10-14: the commander was in this system, jump-cloaked at the
+  // gate, so the readout must not claim where they are.
+  assert.doesNotMatch(companion.snapshot().why ?? "", /not in this system/i);
+});
+
+test("a refused call reads refused, and a call the server never confirmed does not", async () => {
+  const run = async (error: Error) => {
+    const companion = createFleetCompanion(makeDeps({
+      observe: async () => rejoinObs(),
+      issue: async (action) => { if (action.kind === "warpToFleetMember") throw error; },
+    }).deps);
+    companion.start(REQUEST);
+    await companion.tick();
+    return companion.snapshot().why ?? "";
+  };
+  assert.match(await run(Object.assign(new Error("SomeUnlistedClass"), { code: "CALL_REFUSED" })),
+    /The server refused that call\.$/);
+  const lost = await run(Object.assign(new Error("Could not confirm every drone engagement order."),
+    { code: "BRIDGE_NETWORK_ERROR" }));
+  assert.match(lost, /The server did not confirm that call\.$/);
+  assert.doesNotMatch(lost, /refused/);
 });
 
 test("a not-here refusal is asked again once the roster puts the commander somewhere else", async () => {
