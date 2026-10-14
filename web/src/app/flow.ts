@@ -52,6 +52,7 @@ import {
 } from "../bridge/market.ts";
 import { decodeMailbox, mailRefusalMessage } from "../bridge/mail.ts";
 import { sendMail as sendMailCall, type MailToSend } from "../bridge/mailWrites.ts";
+import { reprocess as reprocessCall } from "../bridge/reprocessWrites.ts";
 import {
   activityReadError,
   decodeActivityCalendar,
@@ -7157,10 +7158,58 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   /**
+   * The refinery's Reprocess by the page's own calls (bridge/reprocessWrites.ts: itemReprocessor.Reprocess), each
+   * item's place read as the route read it until 2026-10-14: the hangar of where the pilot is docked, and the ship's
+   * mining holds where an item is not in it (an item in neither is asked of nobody). What an answer said it
+   * reprocessed was; where an answer did not say, the places are read again, and a stack still there is taken for not
+   * reprocessed (null, "could not check", where that read fails).
+   */
+  async function reprocessNow(itemIDs: readonly number[]): Promise<{ readonly requested: readonly number[]; readonly moved: readonly number[] | null }> {
+    const now = decodeFlightStatus((await api.getFlightStatus(callOptions)).flight);
+    const dockedAt = now.docked ? now.structureID ?? now.stationID ?? null : null;
+    if (dockedAt === null) throw Object.assign(new Error("Dock at a station to use its refinery."), { code: "NOT_DOCKED" });
+    const online = store.station.get().online;
+    if (!online) throw new Error("No pilot is online.");
+    const requested = [...new Set(itemIDs.filter((itemID) => Number.isSafeInteger(itemID) && itemID > 0))];
+    let activeShipID: number | null = now.shipID ?? null;
+    const placesOf = async (wanted: readonly number[]): Promise<Map<number, number>> => {
+      const places = new Map<number, number>();
+      for (const row of decodeInventoryRows((await api.loadInventory(callOptions)).hangar.list)) {
+        if (wanted.includes(row.itemID)) places.set(row.itemID, dockedAt);
+      }
+      if (wanted.every((itemID) => places.has(itemID))) return places;
+      const holds = await api.getMiningHolds(callOptions);
+      activeShipID = holds.activeShipID ?? activeShipID;
+      for (const hold of decodeMiningHolds(holds.holds)) {
+        for (const item of hold.items ?? []) {
+          if (wanted.includes(item.itemID) && !places.has(item.itemID) && activeShipID !== null) places.set(item.itemID, activeShipID);
+        }
+      }
+      return places;
+    };
+    const outcomes = await reprocessCall(bridgeDo, requested, await placesOf(requested), activeShipID, { dockedAt, ownerID: online.characterID });
+    const said = new Set<number>();
+    const unsaid: number[] = [];
+    for (const outcome of outcomes) {
+      if (outcome.said === null) unsaid.push(...outcome.asked);
+      else for (const itemID of outcome.said) said.add(itemID);
+    }
+    let gone = new Set<number>();
+    if (unsaid.length > 0) {
+      try {
+        const still = await placesOf(unsaid);
+        gone = new Set(unsaid.filter((itemID) => !still.has(itemID)));
+      } catch {
+        return { requested, moved: null };
+      }
+    }
+    return { requested, moved: requested.filter((itemID) => said.has(itemID) || gone.has(itemID)) };
+  }
+
+  /**
    * ⚠ REPROCESS. This consumes the ore and charges the station's ISK tax. The
-   * panel confirms first (showing the quote AND the tax); the BFF confirms
-   * again. This method is unconditional by design — the gates are on either
-   * side of it, as with destroyRig.
+   * panel confirms first (showing the quote AND the tax). This method is
+   * unconditional by design — the gate is before it, as with destroyRig.
    */
   async function reprocessItems(itemIDs: readonly number[]): Promise<void> {
     // What the quote on the page said of these stacks before they were refined: one with nothing to process is too
@@ -7168,7 +7217,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const tooFew = new Set(store.mining.get().quotes.filter((quote) => quote.quantityToProcess === 0).map((quote) => quote.itemID));
     await runMiningAction(
       "Reprocess",
-      () => api.reprocessItems(itemIDs, callOptions),
+      () => reprocessNow(itemIDs),
       (moved, total) =>
         `Only ${moved} of ${total} stacks were reprocessed. The server did not say why the rest were left.`,
       "Nothing was reprocessed, and the server gave no reason.",
@@ -13757,11 +13806,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           }
           case "reprocessOre":
             if (action.itemIDs.length > 0) {
-              // The BFF goes by the server's own word of what it reprocessed;
-              // the block confirms on its own next-tick read too, so a silent
-              // decline just retries within the block's bound instead of being
-              // believed.
-              await api.reprocessItems(action.itemIDs, callOptions);
+              // The page goes by the server's own word of what it reprocessed
+              // (reprocessNow); the block confirms on its own next-tick read too,
+              // so a silent decline just retries within the block's bound
+              // instead of being believed.
+              await reprocessNow(action.itemIDs);
             }
             return;
           case "lootWreck": {

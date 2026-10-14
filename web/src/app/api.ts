@@ -2448,28 +2448,9 @@ export async function getReprocessingQuote(
   };
 }
 
-/**
- * ⚠ REPROCESS. This CONSUMES the chosen stacks and CHARGES the station's ISK
- * tax, so the BFF refuses it outright unless `confirm` is true. The panel asks
- * first — showing the quote and the tax — and this flag is the second gate
- * behind that, exactly as destroyRig does for a rig.
- */
-export async function reprocessItems(
-  itemIDs: readonly number[],
-  options: ApiOptions = {},
-): Promise<MiningActionResult> {
-  const data = await postJson(
-    "/api/bridge/reprocessing/reprocess",
-    { itemIDs: [...itemIDs], confirm: true },
-    options,
-  );
-  return {
-    requested: readIDArray(data.requested) ?? [],
-    moved: readIDArray(data.processed),
-    remaining: readIDArray(data.remaining),
-    notifications: Array.isArray(data.notifications) ? data.notifications : [],
-  };
-}
+// Stacks are reprocessed at the refinery by the page itself, with the client's own call (bridge/reprocessWrites.ts),
+// each item's place read by the page (app/flow.ts, reprocessNow): it left its route
+// (POST /api/bridge/reprocessing/reprocess) on 2026-10-14.
 
 // --- R5b Travel (client-side route solver static data) ---------------------
 // The system-adjacency graph the browser route solver runs BFS over is served

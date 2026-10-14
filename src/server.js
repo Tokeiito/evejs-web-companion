@@ -1122,6 +1122,11 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
       : objectKind === "inventoryManager"
       ? { service: body.service, method: body.method, ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => boundCall(
         heldBridgeSession, req.webSessionID, inventoryManagerBindSpec(heldBridgeSession), body.method, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null)) }
+      // (And a call on the refinery of where the pilot is docked, by the object its route went by: a structure's
+      // hangar access asked first, as the route asked it.)
+      : objectKind === "refinery"
+      ? { service: body.service, method: body.method, ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => refineryCall(
+        heldBridgeSession, req.webSessionID, body.method, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null)) }
       // (And a call on the system's scan manager, by the object its route went by.)
       : objectKind === "scanManager"
       ? { service: body.service, method: body.method, ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => systemScanCall(
@@ -18461,6 +18466,15 @@ app.get("/api/mining/compression-compatibility", requireAuth, (req, res, next) =
 // inSpaceCompressionMgr.CompressItemInSpace, itemCompression.py 9); its support collection reads the flight first,
 // as the route did. The route (POST /api/bridge/mining/compress) is gone.
 
+/**
+ * A call of the page's on the refinery of where the pilot is docked (bridgeCallPolicy.js, PAGE_OBJECT_CALLS:
+ * "refinery"), by the object the reprocessing routes bind, a structure's hangar access asked first as they asked it.
+ */
+async function refineryCall(held, webSessionID, method, args, kwargs) {
+  if (held.structureID) await assertDockedInventoryAccess(held, webSessionID, 4);
+  return boundCall(held, webSessionID, reprocessingBindSpec(held), method, args, kwargs);
+}
+
 // R3's bound-object machinery, reused: Moniker('reprocessingSvc', stationID).
 // Keyed by station so docking somewhere else binds that station's refinery
 // rather than reusing a stale OID.
@@ -18644,113 +18658,10 @@ app.get("/api/bridge/reprocessing/quote", requireAuth, async (req, res, next) =>
   }
 });
 
-/**
- * The items a Reprocess answered as reprocessed: the first of the two it answers (the items, and what they made by
- * type). Null where the answer is no such thing.
- */
-function reprocessedItemIDs(result) {
-  const first = Array.isArray(result) && result.length === 2 ? result[0] : null;
-  const items = first && first.type === "list" && Array.isArray(first.items) ? first.items : null;
-  return items !== null && items.every((id) => Number.isSafeInteger(id) && id > 0) ? new Set(items) : null;
-}
-
-// ⚠ REPROCESS CONSUMES THE INPUT STACKS AND CHARGES ISK TAX. It is the only
-// destructive route in the mining loop, so it refuses outright unless the caller
-// explicitly confirms — a second gate behind the page's own two-step
-// confirmation, exactly like R12's destroy-rig. Neither a stray click nor a
-// stray POST can consume a hold full of ore.
-app.post("/api/bridge/reprocessing/reprocess", requireAuth, async (req, res, next) => {
-  const held = requireHeldBridgeSession(req, res);
-  if (!held) {
-    return;
-  }
-  const body = req.body || {};
-  const itemIDs = Array.isArray(body.itemIDs)
-    ? body.itemIDs.map((value) => Number(value) || 0).filter((value) => value > 0)
-    : [];
-  if (itemIDs.length === 0) {
-    res.status(400).json({
-      ok: false,
-      error: "NOTHING_SELECTED",
-      message: "Choose what to reprocess first.",
-    });
-    return;
-  }
-  if (body.confirm !== true) {
-    res.status(400).json({
-      ok: false,
-      error: "CONFIRMATION_REQUIRED",
-      message:
-        "Reprocessing consumes the ore and charges the station's tax. This action must be confirmed explicitly.",
-    });
-    return;
-  }
-  try {
-    const before = await readHeldFlight(held, req.webSessionID);
-    if (!before.flight || before.flight.docked !== true) {
-      res.status(409).json({
-        ok: false,
-        error: "NOT_DOCKED",
-        message: "Dock at a station to use its refinery.",
-      });
-      return;
-    }
-    if (held.structureID) await assertDockedInventoryAccess(held, req.webSessionID, 4);
-    const spec = reprocessingBindSpec(held);
-    const dockedAt = inventoryLocationID(held);
-    // Reprocess(itemIDs, fromLocationID, ownerID, outputLocationID, outputFlagID). The items of a call are all of
-    // one place, the items' own, and the client's reprocessor makes a call for each place its items are of
-    // (reprocessing/ui/itemReprocessor.py 19 to 44): a stack in a hold of the ship is of the ship, and the server
-    // passes over an item that is not of the place named (seen live 2026-10-12: a hold's stack, named as the
-    // hangar's, was quoted and not reprocessed). An item of no place found is asked of nobody. The output is named,
-    // as the client's window names it (its own choice is the hangar of where the pilot is docked: reprocessingWnd.py
-    // 344 to 367), so the minerals land in that hangar; the client never leaves it unnamed.
-    const places = await reprocessingPlacesOf(held, req.webSessionID, itemIDs, before);
-    const byPlace = new Map();
-    for (const itemID of itemIDs) {
-      const place = places.get(itemID);
-      if (place !== undefined) byPlace.set(place, [...(byPlace.get(place) || []), itemID]);
-    }
-    // The server answers which items it reprocessed, and what they made; the client's window goes by the first
-    // (reprocessing/ui/controller.py 78 to 82). A stack that is no whole number of portions stays where it was,
-    // the less, and is reprocessed all the same: seen live 2026-10-12, 5,050 Veldspar reprocessed to 50, which a
-    // reading of the hangar for what is gone took for not reprocessed.
-    const notifications = [];
-    const said = new Set();
-    const unsaid = [];
-    for (const [place, ofPlace] of byPlace) {
-      const outcome = await boundCall(held, req.webSessionID, spec, "Reprocess", [ofPlace, place, held.characterID || 0, dockedAt, ITEM_FLAG_HANGAR], null);
-      notifications.push(...outcome.notifications);
-      const named = reprocessedItemIDs(outcome.result);
-      if (named === null) unsaid.push(...ofPlace);
-      else for (const itemID of named) said.add(itemID);
-    }
-    // An answer that does not say: the places are read again for which of its stacks are gone. A stack still there
-    // is then taken for not reprocessed.
-    let gone = new Set();
-    if (unsaid.length > 0) {
-      try {
-        const still = await reprocessingPlacesOf(held, req.webSessionID, unsaid, before);
-        gone = new Set(unsaid.filter((itemID) => !still.has(itemID)));
-      } catch {
-        // They could not be read again, so nothing can be claimed either way: null, "we could not check", which is
-        // reported as such and never as success.
-        res.json({ ok: true, requested: itemIDs, processed: null, remaining: null, notifications });
-        return;
-      }
-    }
-    const processed = itemIDs.filter((itemID) => said.has(itemID) || gone.has(itemID));
-    res.json({
-      ok: true,
-      requested: itemIDs,
-      processed,
-      remaining: itemIDs.filter((itemID) => !processed.includes(itemID)),
-      notifications,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
+// Items are reprocessed by the page's own calls since 2026-10-14 (web/src/bridge/reprocessWrites.ts:
+// reprocessingSvc.Reprocess on the refinery, itemReprocessor.py 71, one call for each place; refineryCall above), each
+// item's place read by the page. The route (POST /api/bridge/reprocessing/reprocess) and its reading of the answer
+// are gone.
 
 // Two things about a rock that live in STATIC DATA rather than in the scene, and
 // so are stamped onto each ROCK row of a space snapshot before it reaches the
