@@ -61,6 +61,13 @@ test("traceSummary only speaks for the rungs that wrote a slice", () => {
   assert.equal(traceSummary(undefined), "");
 });
 
+test("traceSummary says how hurt a health hold was, against what, and whether anything was repairing it", () => {
+  assert.equal(
+    traceSummary({ health: { code: "rejoin-under-mark", tank: 0.42, layer: "armor", floor: 0.3, mark: 0.5, repairer: "fitted" } }),
+    "health: rejoin-under-mark armor 42% (floor 30%, mark 50%), repairer fitted",
+  );
+});
+
 test("traceSummary covers skipped ammo, gave-up utilities, short distances and cleared latches", () => {
   const summary = traceSummary({
     combat: { ...FULL_TRACE.combat!, outcome: "no-reach", distanceM: 850, far: false, leashed: true },

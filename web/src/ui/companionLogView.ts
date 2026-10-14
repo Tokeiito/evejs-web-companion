@@ -115,6 +115,12 @@ export function traceSummary(trace: CompanionTrace | null | undefined): string {
     parts.push(`cleared: ${x.by}${which === "" ? "" : ` (${which})`}`);
   }
 
+  const h = trace.health;
+  if (h !== undefined) {
+    const pct = (ratio: number | null | undefined): string => typeof ratio === "number" ? `${Math.round(ratio * 100)}%` : "?";
+    parts.push(`health: ${h.code} ${h.layer ?? "tank"} ${pct(h.tank)} (floor ${pct(h.floor)}, mark ${pct(h.mark)}), repairer ${h.repairer}`);
+  }
+
   return parts.join(" | ");
 }
 
