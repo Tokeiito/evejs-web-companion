@@ -21,8 +21,9 @@
 // reports. Which objects a pilot has chosen not to look at is a preference of
 // theirs, belongs to no session, and has to survive a reload and a
 // reconnection. Putting it in the store would mean it reset on every
-// character switch and could be clobbered by a snapshot poll — see the same
-// argument in `overviewPreset.ts` for why view state is kept out.
+// character switch and could be clobbered by a snapshot poll: which tab or which
+// objects a player is looking through is a thing they are doing with their eyes,
+// and no poll of the server's may change it.
 //
 // ⚠ PERSISTENCE IS BEST-EFFORT AND ITS FAILURE IS NOT HIDDEN. A blocked or
 // full store costs the lists across reloads, not the session, so the write is
