@@ -2397,6 +2397,9 @@ export async function getMiningHolds(options: ApiOptions = {}): Promise<MiningHo
  * reach, at the station they flew to, rather than stuck aboard a ship that
  * cannot finish its lap.
  */
+// (An unloading into the pilot's own hangar is the page's own call since 2026-10-14: app/flow.ts, unloadToOwnHangar,
+// by bridge/inventoryWrites.ts, moveItems. This route is asked for a corporation division's delivery and an
+// operation's strict one, which the bot host keeps.)
 export async function unloadMiningHolds(
   itemIDs: readonly number[],
   options: ApiOptions = {},

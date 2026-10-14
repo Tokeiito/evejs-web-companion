@@ -226,7 +226,7 @@ import { buildGateLinks, type GateLink } from "../space/gateLinks.ts";
 import { CRIMEWATCH_NOTICES, CRIMEWATCH_SESSION_NAMES } from "../space/crimewatch.ts";
 import type { SafetyLevel } from "../space/crimewatch.ts";
 import { CLONE_GRADE_NOTICE, cloneGradeOf } from "../bridge/cloneGrade.ts";
-import type { AgentFinderRow } from "../store/types.ts";
+import type { AgentFinderRow, HoldItem } from "../store/types.ts";
 import {
   MENU_WARP_RANGE_M,
   createAutopilot,
@@ -7146,10 +7146,44 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return reply;
   }
 
+  /**
+   * The ship's mining holds unloaded into the pilot's own hangar by the page's own call (bridge/inventoryWrites.ts,
+   * moveItems: invCache.GetInventory(const.containerHangar), Add for one stack and MultiAdd for several, from the
+   * ship they lie in), the holds read before for the stacks named (one in none of them is moved by nobody) and after
+   * for what stayed, as the unload's route read them. A stack still in a hold did not move. Until 2026-10-14 the
+   * BFF's route made it, which keeps a corporation division's delivery and an operation's for the bot host.
+   */
+  async function unloadToOwnHangar(itemIDs: readonly number[]): Promise<{ readonly requested: readonly number[]; readonly moved: readonly number[] | null }> {
+    const now = decodeFlightStatus((await api.getFlightStatus(callOptions)).flight);
+    if (!now.docked) throw Object.assign(new Error("Dock at a station before unloading."), { code: "NOT_DOCKED" });
+    const requested = [...new Set(itemIDs.filter((itemID) => Number.isSafeInteger(itemID) && itemID > 0))];
+    const held = async (): Promise<{ readonly shipID: number | null; readonly rows: readonly HoldItem[] }> => {
+      const read = await api.getMiningHolds(callOptions);
+      return { shipID: read.activeShipID, rows: decodeMiningHolds(read.holds).flatMap((hold) => hold.items ?? []) };
+    };
+    const before = await held();
+    const shipID = before.shipID ?? now.shipID ?? null;
+    if (shipID === null) throw Object.assign(new Error("No active ship."), { code: "NO_ACTIVE_SHIP" });
+    const rows = requested.flatMap((itemID) => {
+      const row = before.rows.find((each) => each.itemID === itemID);
+      // (A quantity below nought is a singleton's, as the client reads one: eveMisc.LaunchFromShip, 19 to 21.)
+      return row ? [{ itemID, quantity: row.quantity, singleton: row.quantity < 0 }] : [];
+    });
+    if (rows.length > 0) await moveItemsCall(bridgeDo, "hangar", { kind: "hangar" }, shipID, rows, null);
+    let after: readonly HoldItem[];
+    try {
+      after = (await held()).rows;
+    } catch {
+      return { requested, moved: null };
+    }
+    const still = new Set(after.map((row) => row.itemID));
+    return { requested, moved: requested.filter((itemID) => !still.has(itemID) && rows.some((row) => row.itemID === itemID)) };
+  }
+
   async function unloadMiningHolds(itemIDs: readonly number[]): Promise<void> {
     await runMiningAction(
       "Unload",
-      () => api.unloadMiningHolds(itemIDs, callOptions),
+      () => unloadToOwnHangar(itemIDs),
       (moved, total) =>
         `Only ${moved} of ${total} stacks moved to your hangar. The server did not say why the rest stayed.`,
       "Nothing moved to your hangar, and the server gave no reason.",
@@ -9388,7 +9422,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       engageDrones: async (ids, targetID) => { await engageDronesConfirmed(ids, targetID); },
       mineDrones: async (ids, targetID) => { await mineWithDronesCall(bridgeDo, ids, targetID); },
       unloadHolds: async (itemIDs) => {
-        await api.unloadMiningHolds(itemIDs, callOptions);
+        await unloadToOwnHangar(itemIDs);
       },
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       onProgress: (progress) => {
@@ -13502,12 +13536,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
               // delivery that moved nothing looked exactly like one that
               // worked. Raising here is what puts it in front of the refusal
               // ledger instead of nowhere.
-              const result = await api.unloadMiningHolds(
-                action.itemIDs,
-                callOptions,
-                action.division ?? null,
-                action.strictCorp === true,
-              );
+              // Into the pilot's own hangar by the page's own call; a corporation division's delivery and an
+              // operation's strict one by the route, which keeps the bot host's custody of them.
+              const result = action.division === undefined && action.strictCorp !== true
+                ? { ...(await unloadToOwnHangar(action.itemIDs)), fellBack: null }
+                : await api.unloadMiningHolds(
+                  action.itemIDs,
+                  callOptions,
+                  action.division ?? null,
+                  action.strictCorp === true,
+                );
               const moved = result.moved ?? null;
               if (moved !== null && moved.length === 0) {
                 throw new Error("Nothing moved to your hangar, and the server gave no reason.");
