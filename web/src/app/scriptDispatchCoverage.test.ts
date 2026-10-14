@@ -79,7 +79,10 @@ test("a launchpad sent up at its office is carried out by the customs office's o
   const flow = readFileSync(fileURLToPath(new URL("./flow.ts", import.meta.url)), "utf8");
   const at = flow.indexOf('case "exportCustoms":');
   assert.ok(at >= 0);
-  assert.match(flow.slice(at, at + 220), /^case "exportCustoms":\s+await api\.exportToCustomsOffice\(action\.officeID, action\.pinID, action\.commodities, callOptions\);\s+return;/);
+  // The page's own two calls since 2026-10-13 (bridge/customsWrites.ts), where the pilot is as the flight read has it.
+  assert.match(flow.slice(at, at + 400), /^case "exportCustoms": \{[\s\S]*?await exportToCustomsOffice\(bridgeAsk, bridgeDo, \{ dockedAt: dockedNow\(\) \}, action\.officeID, action\.pinID, action\.commodities\);\s+return;\s+\}/);
+  const api = readFileSync(fileURLToPath(new URL("./api.ts", import.meta.url)), "utf8");
+  assert.equal(api.includes('"/api/bridge/planet/customs/export"'), false);
   // The block needs what each launchpad holds, so the read that gives it runs for this block too.
   assert.match(flow, /if \(macro === "restart-extractors" \|\| macro === "launch-commodities" \|\| macro === "collect-customs"\) \{/);
 });

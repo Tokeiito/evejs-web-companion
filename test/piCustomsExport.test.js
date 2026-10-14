@@ -1035,7 +1035,7 @@ test("the route is bounded and signed-in only", async () => {
 // ── a pilot on the game port ─────────────────────────────────────────────────
 //
 // The retail client sends a launchpad's goods up from the customs office's own window, at the office. For a pilot
-// on the game port the haul's run does the same (the collecting block, with /api/bridge/planet/customs/export),
+// on the game port the haul's run does the same (the collecting block, with the page's own two calls),
 // so this route sends nothing up beforehand: no second login, nobody logged out, no colony read.
 
 test("for a pilot on the game port nothing is sent up before the run: the route says the run does it, at the offices", async () => {

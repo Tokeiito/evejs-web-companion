@@ -7,7 +7,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { exportToCustomsOffice, exportToCustomsOffices } from "./api.ts";
+import { exportToCustomsOffices } from "./api.ts";
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -25,14 +25,9 @@ function recordingFetch(reply: (path: string, method: string, body: unknown) => 
   return { fetch: fake, requests };
 }
 
-test("exportToCustomsOffice posts the office, the launchpad, the goods and the confirmation", async () => {
-  const { fetch, requests } = recordingFetch(() => json({ ok: true, applied: true, taxRate: 0.05, result: null, notifications: [] }));
-  await exportToCustomsOffice(1200040176368, 1054656331535, { 2268: 200, 2073: 50 }, { fetch, token: "t" });
-  assert.equal(requests.length, 1);
-  assert.match(requests[0]!.path, /\/api\/bridge\/planet\/customs\/export$/);
-  assert.equal(requests[0]!.method, "POST");
-  assert.deepEqual(requests[0]!.body, { officeID: 1200040176368, pinID: 1054656331535, commodities: { 2268: 200, 2073: 50 }, confirm: true });
-});
+// (A launchpad's goods sent up at its office are the page's own two calls since 2026-10-13, as the client's customs
+// window makes them: bridge/customsWrites.ts. The asker of the route, POST /api/bridge/planet/customs/export, is
+// gone, and the test of what it posted with it.)
 
 test("the export before a haul says when the run itself will send the launchpads up, at the offices", async () => {
   const told = recordingFetch(() => json({ ok: true, characterID: 90000001, connected: false, handedBack: null, atTheOffices: true, planets: [
