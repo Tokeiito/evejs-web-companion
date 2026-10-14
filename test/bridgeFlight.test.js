@@ -27,7 +27,6 @@ const SHIP_ID = 9001;
 const GATE_ID = 50001248;
 const DEST_GATE_ID = 50000802;
 const STRUCTURE_GATE_ID = 1030000000001;
-const DOCKABLE_STRUCTURE_ID = 1030000000002;
 
 const ORIGINAL_FETCH = global.fetch;
 const activeServers = new Set();
@@ -136,6 +135,11 @@ function fakeGateway(overrides = {}) {
         // The page's own jump, asked by name (the generic call), lands where the bound one did.
         state.solarSystemID = DEST_SYSTEM_ID;
         state.shipMode = "STOP";
+      } else if (service === "beyonce" && method === "CmdDock") {
+        // The page's own dock, asked by name (the generic call), seats the ship where the bound one did.
+        state.inSpace = false;
+        state.stationID = Number(args[0]);
+        state.shipMode = null;
       } else if (service === "structureJumpBridgeMgr" && method === "GetJbStructureDestination") {
         return { service, method, result: DEST_SYSTEM_ID, notifications: [] };
       } else if (service === "structureJumpBridgeMgr" && method === "CmdJumpThroughStructureStargate") {
@@ -160,10 +164,6 @@ function fakeGateway(overrides = {}) {
       } else if (method === "CmdStargateJump") {
         state.solarSystemID = DEST_SYSTEM_ID;
         state.shipMode = "STOP";
-      } else if (method === "CmdDock") {
-        state.inSpace = false;
-        state.stationID = Number(args[0]);
-        state.shipMode = null;
       }
       return { service, method, result: null, notifications: [] };
     },
@@ -740,22 +740,29 @@ test("a latched transition heals on the next authoritative status read", async (
   );
 });
 
+// The pilot's dock as the page makes it (web/src/bridge/placeChanges.ts; a station's since 2026-10-14, a structure's
+// since the dock route went the same day): beyonce.CmdDock(the station, the pilot's ship) through the generic call,
+// under the BFF's keeping of the session change (movementFunctions.RealDock). Its route is gone: these tests ask the
+// dock so, and watch the fake's call by name where they watched its bound call.
+const dockBody = (stationID) => ({ service: "beyonce", method: "CmdDock", args: [stationID, SHIP_ID], kwargs: null, pilot: true, confirm: true });
+const docksSent = (gateway) => gateway.calls.call.filter((call) => call.method === "CmdDock");
+
 test("a silently declined dock answers in-space instead of burning the barrier, and the retry is legal", async () => {
   const gateway = fakeGateway();
   gateway.state.inSpace = true;
   gateway.state.shipMode = "STOP";
-  const callBoundMethod = gateway.callBoundMethod.bind(gateway);
+  const callMethod = gateway.callMethod.bind(gateway);
   let docks = 0;
-  gateway.callBoundMethod = async (...args) => {
+  gateway.callMethod = async (...args) => {
     if (args[1] === "CmdDock") {
       docks += 1;
       if (docks === 1) {
         // R24's measured silent decline: 200/null and the ship never seats.
-        gateway.calls.boundCall.push({ service: args[0], method: args[1], args: args[2] });
+        gateway.calls.call.push({ service: args[0], method: args[1], args: args[2] });
         return { service: args[0], method: args[1], result: null, notifications: [] };
       }
     }
-    return callBoundMethod(...args);
+    return callMethod(...args);
   };
 
   let clockMs = 0;
@@ -768,26 +775,22 @@ test("a silently declined dock answers in-space instead of burning the barrier, 
   });
   await selectOnServer(baseUrl);
 
-  const first = await apiRequest(baseUrl, "/api/bridge/flight/dock", {
-    method: "POST",
-    body: { stationID: ORIGIN_STATION_ID },
-  });
+  const first = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: dockBody(ORIGIN_STATION_ID) });
   // Not a 504, not a latch: the probe ends with the ship still in space and
   // hands the decision back to the client's silent-dock ladder.
   assert.equal(first.response.status, 200, JSON.stringify(first.payload));
   assert.equal(first.payload.ok, true);
-  assert.equal(first.payload.flight.inSpace, true);
-  assert.equal(first.payload.transition.phase, "ready");
+  const afterFirst = (await apiRequest(baseUrl, "/api/bridge/flight/status")).payload.flight;
+  assert.equal(afterFirst.inSpace, true);
+  assert.equal(afterFirst.transition.phase, "ready");
 
-  const second = await apiRequest(baseUrl, "/api/bridge/flight/dock", {
-    method: "POST",
-    body: { stationID: ORIGIN_STATION_ID },
-  });
+  const second = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: dockBody(ORIGIN_STATION_ID) });
   assert.equal(second.response.status, 200, JSON.stringify(second.payload));
-  assert.equal(second.payload.flight.docked, true);
-  assert.equal(second.payload.transition.phase, "ready");
+  const afterSecond = (await apiRequest(baseUrl, "/api/bridge/flight/status")).payload.flight;
+  assert.equal(afterSecond.docked, true);
+  assert.equal(afterSecond.transition.phase, "ready");
   assert.equal(
-    gateway.calls.boundCall.filter((call) => call.method === "CmdDock").length,
+    docksSent(gateway).length,
     2,
     "the ladder's re-issued dock is not blocked by the declined one",
   );
@@ -872,7 +875,7 @@ test("structure-gate jump is confirm-gated and refuses an unavailable destinatio
   );
 });
 
-test("POST /api/bridge/flight/dock dispatches CmdDock and returns docked", async () => {
+test("the page's dock dispatches CmdDock; the follow-up status shows the ship docked", async () => {
   const gateway = fakeGateway();
   gateway.state.inSpace = true;
   gateway.state.solarSystemID = DEST_SYSTEM_ID;
@@ -880,38 +883,20 @@ test("POST /api/bridge/flight/dock dispatches CmdDock and returns docked", async
   const { baseUrl } = await startTestServer({ gateway });
   await selectOnServer(baseUrl);
 
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/dock", {
-    method: "POST",
-    body: { stationID: DEST_STATION_ID },
-  });
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: dockBody(DEST_STATION_ID) });
   assert.equal(response.status, 200);
   assert.equal(payload.ok, true);
-  const dock = gateway.calls.boundCall.find((c) => c.method === "CmdDock");
+  const dock = docksSent(gateway)[0];
   assert.ok(dock, "CmdDock dispatched");
   assert.deepEqual(dock.args, [DEST_STATION_ID, SHIP_ID]);
-  assert.equal(payload.flight.docked, true);
-  assert.equal(payload.flight.stationID, DEST_STATION_ID);
+  const after = (await apiRequest(baseUrl, "/api/bridge/flight/status")).payload.flight;
+  assert.equal(after.docked, true);
+  assert.equal(after.stationID, DEST_STATION_ID);
 });
 
-test("structure docking rechecks current access before issuing CmdDock", async () => {
-  const gateway = fakeGateway();
-  gateway.state.inSpace = true;
-  gateway.state.shipMode = "STOP";
-  gateway.callMethod = async (service, method, args) => {
-    gateway.calls.call.push({ service, method, args });
-    if (method === "CheckMyDockingAccessToStructures") return { result: { type: "list", items: [] }, notifications: [] };
-    return { result: null, notifications: [] };
-  };
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const denied = await apiRequest(baseUrl, "/api/bridge/flight/dock", {
-    method: "POST", body: { stationID: DOCKABLE_STRUCTURE_ID },
-  });
-  assert.equal(denied.response.status, 409);
-  assert.equal(gateway.calls.boundCall.some((call) => call.method === "CmdDock"), false);
-  assert.deepEqual(gateway.calls.call.find((call) => call.method === "CheckMyDockingAccessToStructures").args,
-    [[DOCKABLE_STRUCTURE_ID]]);
-});
+// (The route's check of a structure's docking access before its CmdDock, structureDirectory.
+// CheckMyDockingAccessToStructures, went with the route on 2026-10-14: the client asks structureDocking.Dock without
+// it (structureDocking.py 64 to 80), and the server's handler checks the access itself.)
 
 test("a movement refusal passes through as the handler's own CALL_REFUSED message", async () => {
   const gateway = fakeGateway({
