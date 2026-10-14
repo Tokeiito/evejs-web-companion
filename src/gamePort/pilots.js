@@ -2113,6 +2113,15 @@ function createGamePortPilots({
       if (entry.averagePrices === null) throw fail("PRICES_NOT_HAD", "The price table has not come, or could not be had.");
       return { service, method, result: pricesAnswered(entry.averagePrices), notifications: drain(entry) };
     }
+    // A facility asked for by itself is the client's facility service's to answer, as its job is given one
+    // (facilitySvc.GetFreshFacility, 109, and GetFacility, 72 to 78): one with rig modifiers let go and asked for
+    // afresh, one kept answered as it is kept, one not among the region's asked for and kept.
+    if (service === FACILITY_MANAGER && method === "GetFacility") {
+      const id = positive(args[0]);
+      if (id === null) throw fail("INVALID_FACILITY", "A facility is named by its number.");
+      const row = await run(entry, FACILITY_MANAGER, "GetFacility", () => facilityGivenAfresh(entry, id));
+      return { service, method, result: wireToBridgeJson(row === undefined ? null : row), notifications: drain(entry) };
+    }
     assertAllowed(service, method);
     // What the client has to hand before it makes this call: godma primed for the ship, which it is from the moment it has one,
     // and anything just fitted answered for.
