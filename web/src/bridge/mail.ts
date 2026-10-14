@@ -887,9 +887,47 @@ export function mailRecipientOf(header: MailHeaderRow): MailRecipient {
 /** How many mails a page of the mail window shows (evemail.py DEFAULTNUMMAILS, 64; the mail settings' MAILS_PER_PAGE). */
 export const MAILS_PER_PAGE = 30;
 
-/** A folder's mails as the window sorts them by Received, its default (mailSvc.py PrepareOrder and DoSort, 570 to 606): the newest first. */
-export function mailsNewestFirst(rows: readonly MailHeaderRow[]): readonly MailHeaderRow[] {
-  return [...rows].sort((left, right) => right.messageID - left.messageID);
+/** What the mail list may be sorted by (evemail.py 205 to 213): its headers but Labels, in the list's order. */
+export type MailSortKey = "status" | "sender" | "subject" | "received";
+export const MAIL_SORT_KEYS: readonly MailSortKey[] = ["status", "sender", "subject", "received"];
+
+/**
+ * PrepareOrder and DoSort (mailSvc.py 570 to 606): each mail keyed by the header sorted by (the order of its state,
+ * unread, replied, forwarded, read; its name, case folded; its subject, case folded; or its number, for Received),
+ * then by its number, made negative where the order is not reversed, so that mails keyed alike keep the newest
+ * first; sorted, and reversed where the order is (Received reversed: the newest first, the window's own order).
+ */
+export function mailsSorted(
+  rows: readonly MailHeaderRow[],
+  sortBy: MailSortKey,
+  reversed: boolean,
+  nameOf: (header: MailHeaderRow) => string,
+  stateOf: (header: MailHeaderRow) => MailRowState,
+): readonly MailHeaderRow[] {
+  const STATE_ORDER: Readonly<Record<MailRowState, number>> = { unread: 1, replied: 2, forwarded: 3, read: 4 };
+  const first = (header: MailHeaderRow): number | string => {
+    switch (sortBy) {
+      case "status":
+        return STATE_ORDER[stateOf(header)];
+      case "sender":
+        return nameOf(header).toLowerCase();
+      case "subject":
+        return header.title.toLowerCase();
+      default:
+        return header.messageID;
+    }
+  };
+  const keyed = rows.map((header) => ({ header, first: first(header), second: reversed ? header.messageID : -header.messageID }));
+  keyed.sort((left, right) => {
+    if (left.first !== right.first) {
+      return left.first < right.first ? -1 : 1;
+    }
+    return left.second - right.second;
+  });
+  if (reversed) {
+    keyed.reverse();
+  }
+  return keyed.map((each) => each.header);
 }
 
 /**

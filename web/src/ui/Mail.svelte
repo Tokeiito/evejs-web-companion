@@ -51,7 +51,9 @@
     mailLabelText,
     mailRecipientOf,
     mailRowState,
-    mailsNewestFirst,
+    mailsSorted,
+    MAIL_SORT_KEYS,
+    type MailSortKey,
   } from "../bridge/mail.ts";
   import { MAIL_QUOTE_LABELS, mailBodyLines, mailMarkupOfTyped, mailQuoteMarkup } from "../bridge/mailMarkup.ts";
   import { pyIntDictOrder } from "../bridge/pyDict.ts";
@@ -143,7 +145,11 @@
   const shownMessages = $derived(viewingList !== null ? mailsOfList($mail, viewingList) : mailsInFolder($mail, folder));
   /** The page of the folder shown (the window's startPos), the first as a folder is shown; newest first, thirty to a page. */
   let mailPage = $state(0);
-  const sortedMessages = $derived(mailsNewestFirst(shownMessages));
+  /** The list's sort as last left (the window's sortBy and sortOrder): Received, reversed, where none was. */
+  const keptSort = flow.mailSort();
+  let sortBy = $state<MailSortKey>(keptSort.by);
+  let sortReversed = $state(keptSort.reversed);
+  const sortedMessages = $derived(mailsSorted(shownMessages, sortBy, sortReversed, nameCell, (header) => mailRowState(statusByID.get(header.messageID))));
   const mailPages = $derived(Math.max(1, Math.ceil(sortedMessages.length / MAILS_PER_PAGE)));
   const pageShown = $derived(Math.min(mailPage, mailPages - 1));
   const pageMessages = $derived(sortedMessages.slice(pageShown * MAILS_PER_PAGE, (pageShown + 1) * MAILS_PER_PAGE));
@@ -1138,12 +1144,43 @@
     nameSentLists();
   }
 
-  /** The Sent folder's page drawn (GetMsgEntry, 678 to 679): a list that is a mail's one recipient named, asked where not known (GetDisplayName). */
+  /**
+   * A header clicked (the scroll's ChangeSortBy, carbonui/control/scroll.py 966 to 992; SortMail, evemail.py 910 to
+   * 923): the header sorted by again reverses the order, another sorts by it not reversed; kept; from the first page.
+   * Labels sorts nothing.
+   */
+  function sortMail(by: MailSortKey): void {
+    const reversed = by === sortBy ? !sortReversed : false;
+    sortBy = by;
+    sortReversed = reversed;
+    flow.keepMailSort(by, reversed);
+    mailPage = 0;
+    nameSentLists();
+  }
+
+  /** A sortable header's words: Sender and Received read Recipient and Date Sent in the Sent folder. */
+  function headerText(key: MailSortKey): string {
+    switch (key) {
+      case "status":
+        return word(LIST_WORDS.status, "Status");
+      case "sender":
+        return inSent ? word(LIST_WORDS.recipient, "Recipient") : word(LIST_WORDS.sender, "Sender");
+      case "subject":
+        return word(LIST_WORDS.subject, "Subject");
+      default:
+        return inSent ? word(LIST_WORDS.dateSent, "Date Sent") : word(LIST_WORDS.received, "Received");
+    }
+  }
+
+  /**
+   * The Sent folder's page drawn (GetMsgEntry, 678 to 679): a list that is a mail's one recipient named, asked where
+   * not known (GetDisplayName); sorted by Recipient, every sent mail's (PrepareOrder's GetRecipient, mailSvc.py 584).
+   */
   function nameSentLists(): void {
     if (!inSent) {
       return;
     }
-    const unnamed = [...new Set(pageMessages.flatMap((header) => {
+    const unnamed = [...new Set((sortBy === "sender" ? sortedMessages : pageMessages).flatMap((header) => {
       const recipient = mailRecipientOf(header);
       return recipient.kind === "list" && listName(recipient.listID) === null ? [recipient.listID] : [];
     }))];
@@ -1571,10 +1608,12 @@
                Received (Date Sent in the Sent folder), Labels; an unread mail in bold (MailEntry.UpdateLabel). -->
           <thead>
             <tr>
-              <th>{word(LIST_WORDS.status, "Status")}</th>
-              <th>{inSent ? word(LIST_WORDS.recipient, "Recipient") : word(LIST_WORDS.sender, "Sender")}</th>
-              <th>{word(LIST_WORDS.subject, "Subject")}</th>
-              <th>{inSent ? word(LIST_WORDS.dateSent, "Date Sent") : word(LIST_WORDS.received, "Received")}</th>
+              <!-- Each header but Labels sorts the list by it (SortMail), its arrow where it is the one sorted by. -->
+              {#each MAIL_SORT_KEYS as key (key)}
+                <th aria-sort={sortBy === key ? (sortReversed ? "descending" : "ascending") : "none"}>
+                  <button type="button" class="mail-sort" onclick={() => sortMail(key)}>{headerText(key)}{sortBy === key ? (sortReversed ? " ▼" : " ▲") : ""}</button>
+                </th>
+              {/each}
               <th>{word(LIST_WORDS.labels, "Labels")}</th>
               <th></th>
             </tr>
@@ -1855,6 +1894,14 @@
   }
   .mail-quote {
     opacity: 0.8;
+  }
+  .mail-sort {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
   }
   .mail-folders {
     display: flex;

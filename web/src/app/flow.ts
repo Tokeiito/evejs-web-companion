@@ -66,6 +66,8 @@ import {
   type MailingListSettings,
   mailingListSettingsOf,
   MAIL_STATUS_AUTOMATED,
+  MAIL_SORT_KEYS,
+  type MailSortKey,
   type WelcomeMail,
   welcomeMailOf,
   ownerMatchesOf,
@@ -1077,6 +1079,10 @@ export interface AppFlow {
   welcomeToAll(listID: number): boolean;
   /** The tab's "send to all" box kept for a list, on this machine. */
   keepWelcomeToAll(listID: number, checked: boolean): void;
+  /** The mail list's sort as last left on this machine: Received, reversed, where none was. */
+  mailSort(): { readonly by: MailSortKey; readonly reversed: boolean };
+  /** The mail list's sort kept, on this machine. */
+  keepMailSort(by: MailSortKey, reversed: boolean): void;
   /** Mark messages read, or not read, as the mail window's Mark as Read and Mark as Unread do. */
   markMail(messageIDs: readonly number[], read: boolean): Promise<void>;
   /** Move messages to the trash, as the mail window's Trash does. */
@@ -5347,6 +5353,29 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       settingsStorage?.setItem(welcomeToAllKey(listID), checked ? "1" : "0");
     } catch {
       // Storage full or refused: the box lasts as long as the page.
+    }
+  }
+
+  // The mail list's sort, as the client keeps it in the user's settings (evemail.py 205 to 214, SortMail 910 to 917:
+  // evemail_sortBy, a header but Labels, else Received; evemail_sortOrder, else True), kept in this browser.
+  const MAIL_SORT_KEPT = "evejs.mail.sort";
+
+  function mailSort(): { readonly by: MailSortKey; readonly reversed: boolean } {
+    let kept: { by?: unknown; reversed?: unknown } | null = null;
+    try {
+      kept = JSON.parse(settingsStorage?.getItem(MAIL_SORT_KEPT) ?? "null") as { by?: unknown; reversed?: unknown } | null;
+    } catch {
+      kept = null;
+    }
+    const by = kept !== null && MAIL_SORT_KEYS.includes(kept.by as MailSortKey) ? (kept.by as MailSortKey) : "received";
+    return { by, reversed: kept !== null && typeof kept.reversed === "boolean" ? kept.reversed : true };
+  }
+
+  function keepMailSort(by: MailSortKey, reversed: boolean): void {
+    try {
+      settingsStorage?.setItem(MAIL_SORT_KEPT, JSON.stringify({ by, reversed }));
+    } catch {
+      // Storage full or refused: the sort lasts as long as the page.
     }
   }
 
@@ -16017,6 +16046,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     clearMailingListWelcome,
     welcomeToAll,
     keepWelcomeToAll,
+    mailSort,
+    keepMailSort,
     markMail,
     trashMail,
     restoreMail,
