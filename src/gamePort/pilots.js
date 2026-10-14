@@ -489,7 +489,7 @@ const KEPT_UNTIL_CHANGED = Object.freeze({
   // facilitySvc: the server says the system's activity changed (OnSystemActivityUpdated, 37), and the largest
   // indices and every facility are let go. In another region the facilities alone are (29), which the session's
   // change sees to. A facility the server names (42), one a job was refused at and one a job is given are asked
-  // for by themselves and worked into what is kept, where each happens (facilitiesAskedAfresh, freshFacility, and
+  // for by themselves and worked into what is kept, where each happens (facilitiesAskedAfresh, facilityGivenAfresh, and
   // jobsGivenTheirFacilities for the jobs the server answers).
   [FACILITY_MANAGER]: Object.freeze({
     keptAs: facilitiesKeptAs,
@@ -619,14 +619,6 @@ function withFacility(facilities, facilityID, row = null) {
   const all = row ? [...others, row] : others;
   return Array.isArray(facilities) ? all : { ...facilities, items: all };
 }
-/**
- * By what a job is the one a window made: its blueprint, its work and its facility (industryWnd._OnBlueprintSelected
- * makes another for another blueprint or other work, 139 to 152). Null where one of them is not said.
- */
-const jobMadeAs = (blueprintID, activityID, facilityID) => {
-  const ids = [positive(blueprintID), positive(activityID), positive(facilityID)];
-  return ids.includes(null) ? null : ids.join(":");
-};
 /** The facility a job's row names, as the server answers a job (industryCommon.JobData reads data.facilityID), or null. */
 const rowsFacility = (row) => positive(row && row.type === "object" && row.args ? dictValue(row.args, "facilityID") : null);
 /** The blueprint a job names, as a route holds the job (a plain object) or as the client's dict has it. */
@@ -1514,8 +1506,6 @@ function createGamePortPilots({
       facilityPlaces: new Map(),
       /** marketsvc.GetMarketTaxAtStructure's own keeping: a structure's market tax for the pilot, by the structure, each with when it was answered. */
       marketTaxes: new Map(),
-      /** What the job the window made was made as (jobMadeAs): it was given its facility afresh then, and is not again. */
-      jobMade: null,
       /** cfg._averageMarketPrice: the price table, by type, once the cfg's one asking for it is answered; null until then, and where it could not be asked. */
       averagePrices: null,
       /** The timer of the cfg's thread that asks for it, while it has not gone off. */
@@ -2321,11 +2311,6 @@ function createGamePortPilots({
     // are anyone's to read.
     if (service === "industryManager" && (method === "GetJobsByOwner" || method === "GetJob")) {
       await jobsGivenTheirFacilities(entry, method === "GetJob" ? [result] : itemsOf(result));
-    }
-    // A job the server took: the window has the server's job of it from now on, and the next job it makes is another.
-    if (service === "industryManager" && method === "InstallJob") {
-      const blueprintID = positive(jobsBlueprint(Array.isArray(args) ? args[0] : null));
-      if (entry.jobMade !== null && blueprintID !== null && entry.jobMade.startsWith(`${blueprintID}:`)) entry.jobMade = null;
     }
     // crimewatchSvc.SetSafetyLevel (343 to 345): once the server has taken the level, it is the level the client has.
     // A call that is not the client's (a level that is none of its three) leaves nothing the client would keep:
@@ -3489,28 +3474,6 @@ function createGamePortPilots({
     });
     entry.facilitiesWork = asking.catch(() => {});
     return asking;
-  }
-
-  /**
-   * facilitySvc.GetFreshFacility (107 to 112), which is what the client's industry service gives a job for its
-   * facility (industrySvc.CreateJob, 109). One that is kept and has rig modifiers is let go; the region's are asked
-   * for where they are not kept (GetFacility, 68); and the facility, where it is not among them, is asked for by
-   * itself and kept (71). Answers the facility's row, or null where none is named (`if facilityID:`). Fails as
-   * the asking of it fails: the server will not answer for a facility it does not know.
-   */
-  async function freshFacility(sessionFields = {}, bridgeSessionID = undefined, facilityID = null, job = null) {
-    const entry = held(bridgeSessionID, sessionFields);
-    const id = positive(facilityID);
-    if (id === null) return null;
-    // The job a window has was given its facility when it was made, once (CreateJob, 109): asked of for the same
-    // job again, the facility is the one kept, where it is kept still.
-    const made = job ? jobMadeAs(job.blueprintID, job.activityID, id) : null;
-    return run(entry, FACILITY_MANAGER, "GetFacility", async () => {
-      const had = made !== null && entry.jobMade === made ? facilityAmong(await regionsFacilities(entry), id) : null;
-      const row = had ?? await facilityGivenAfresh(entry, id);
-      if (made !== null) entry.jobMade = made;
-      return wireToBridgeJson(row);
-    });
   }
 
   /**
@@ -5227,7 +5190,6 @@ function createGamePortPilots({
     brokersFeeRate: brokersFeeRateFor,
     skillSheet,
     skillLevels,
-    freshFacility,
     averageMarketPrice,
     serverNowMs,
     saveSkillQueue,

@@ -149,3 +149,14 @@ export async function connectJob(act: Ask, dump: Record<string, JsonValue>): Pro
 export async function disconnectJob(act: Ask, monitorID: number | null): Promise<void> {
   await act("industryMonitor", "DisconnectJob", [monitorID]);
 }
+
+/**
+ * industrySvc.InstallJob (139 to 144), from the window's Start (submitButton.py 221):
+ * RemoteSvc('industryManager').InstallJob(job.dump()), answered the job's number. A refusal stands (its
+ * IndustryValidationError names what is wrong); the client asks the facility afresh then (facilitySvc.Reload), which
+ * is the caller's to do. Null where no job's number was answered: the server started none.
+ */
+export async function installJob(act: Ask, dump: Record<string, JsonValue>): Promise<number | null> {
+  const answer = await act("industryManager", "InstallJob", [dump]);
+  return typeof answer === "number" && Number.isSafeInteger(answer) && answer > 0 ? answer : null;
+}

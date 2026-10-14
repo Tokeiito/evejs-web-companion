@@ -505,7 +505,15 @@ export function createJobReckoner(reads: JobReckoningReads) {
     }
   }
 
-  return { reckon };
+  /**
+   * The region's facilities let go, as the client's facility service lets a facility go where a job at it was refused
+   * (industrySvc.InstallJob, 142 to 143: facilitySvc.Reload): the next reckoning asks for them again.
+   */
+  function facilityReloaded(): void {
+    facilities = null;
+  }
+
+  return { reckon, facilityReloaded };
 }
 
 export type JobReckoner = ReturnType<typeof createJobReckoner>;

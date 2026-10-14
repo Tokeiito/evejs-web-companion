@@ -1047,44 +1047,8 @@ export interface IndustryPreviewResult {
 // What a job will take and what its place has: the page's own since 2026-10-14 (app/flow.ts, previewIndustryJob;
 // bridge/industryMonitor.ts). Until then POST /api/bridge/industry/preview, whose answer this was.
 
-/**
- * An industry mutation's outcome. `applied` is the BFF's RE-READ of the job
- * after the call, never an echo of the request — the R12/R14 lesson.
- */
-export interface IndustryChangeResult {
-  readonly applied: boolean;
-  readonly declinedSilently: boolean;
-  readonly jobID: number | null;
-  /** The re-read job row (raw; decoded by bridge/industry.ts). */
-  readonly job: JsonValue;
-}
-
-function asIndustryChange(data: Record<string, JsonValue>): IndustryChangeResult {
-  return {
-    applied: data.applied === true,
-    declinedSilently: data.declinedSilently === true,
-    jobID: asNumberOrNull(data.jobID),
-    job: data.job ?? null,
-  };
-}
-
-/**
- * INSTALL a job. This spends materials and charges an installation fee, so the
- * BFF refuses the route outright without `confirm`. The UI asks first; this
- * flag is the second gate behind that, exactly as `trashItems` and `destroyRig`
- * are fenced.
- */
-export async function installIndustryJob(
-  request: IndustryJobRequest,
-  options: ApiOptions = {},
-): Promise<IndustryChangeResult> {
-  const data = await postJson(
-    "/api/bridge/industry/install",
-    { ...request, confirm: true } as unknown as Record<string, JsonValue>,
-    options,
-  );
-  return asIndustryChange(data);
-}
+// A job is installed by the page's own call since 2026-10-14 (app/flow.ts, installIndustryJob;
+// bridge/industryMonitor.ts, installJob). Until then POST /api/bridge/industry/install.
 
 // The Industry window's events are the page's own since 2026-10-14 (app/flow.ts, industryWindowClosed and
 // industryJobLetGo): until then POST /api/bridge/industry/window told the transport.

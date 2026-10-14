@@ -379,7 +379,7 @@ import { alignTo as alignToCall, approach as approachCall, autopilotWarp as auto
 import { dock as dockCall, isStation, jump as jumpCall, undock as undockCall } from "../bridge/placeChanges.ts";
 import { boardCorvette as boardCorvetteCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
 import { activityIDOf, createJobReckoner, type JobReckoner, type JobReckoning } from "../bridge/industryJobReckoning.ts";
-import { connectJob, decodeFacilityPlaces, disconnectJob, jobDump, jobPlaces, monitoredAs, type Monitored } from "../bridge/industryMonitor.ts";
+import { connectJob, decodeFacilityPlaces, disconnectJob, installJob, jobDump, jobPlaces, monitoredAs, type Monitored } from "../bridge/industryMonitor.ts";
 import { NO_OPTIONAL_MATERIAL } from "../bridge/industryReckonings.mjs";
 import { giveUpOffice, quoteOffice, rentOffice, type DockedIn } from "../bridge/officeWrites.ts";
 import { runSlashCommand } from "../bridge/gmWrites.ts";
@@ -1963,6 +1963,46 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     readonly blueprintItemID: number;
     readonly monitored: Monitored;
   } | "installed" | null = null;
+  /**
+   * The window's job as the client makes it before it sends it, for the pilot online: reckoned by the page, its runs
+   * held to the most it can have so that no job of more is sent (job.py 395), its places the facility's for the
+   * pilot (GetFacilityLocations, kept a minute by the client), and its dump (industry.Job.dump(), job.py 624 to 640).
+   */
+  async function windowsJob(request: api.IndustryJobRequest): Promise<{
+    readonly characterID: number;
+    readonly own: JobReckoning | null;
+    readonly dump: Record<string, JsonValue>;
+  }> {
+    const online = store.station.get().online;
+    if (!online) throw new Error("No pilot is online.");
+    const own = await reckonedHere(request);
+    if (own !== null && own.mostRuns !== null && request.runs > Math.max(own.mostRuns, 1)) {
+      const most = Math.max(own.mostRuns, 1);
+      throw Object.assign(new Error(request.activity === "copying"
+        ? `One job copying this blueprint here makes at most ${most} ${most === 1 ? "copy" : "copies"}.`
+        : `One job ${request.activity === "invention" ? "inventing from" : "researching"} this blueprint here has at most ${most} ${most === 1 ? "run" : "runs"}.`), { code: "INVALID_RUNS" });
+    }
+    const places = jobPlaces(decodeFacilityPlaces(await bridgeAsk("facilityManager", "GetFacilityLocations", [request.facilityID, online.characterID])));
+    const dump = jobDump({
+      blueprintItemID: request.blueprintItemID,
+      blueprintTypeID: request.blueprintTypeID,
+      activityID: activityIDOf(request.activity),
+      facilityID: request.facilityID,
+      characterID: online.characterID,
+      corporationID: online.corporationID ?? 0,
+      solarSystemID: online.solarSystemID ?? 0,
+      runs: request.runs,
+      licensedRuns: own?.licensedRuns ?? request.licensedRuns ?? 1,
+      cost: own?.cost ?? null,
+      tax: own?.tax ?? null,
+      time: own?.timeSeconds ?? null,
+      materials: own?.materials ?? null,
+      input: places.input,
+      output: places.output,
+      productTypeID: request.productTypeID ?? null,
+    });
+    return { characterID: online.characterID, own, dump };
+  }
   // The Character Sheet's reads, asked call by call as the client's windows ask them (bridge/characterSheetReads.ts).
   const characterSheetReads = createCharacterSheetReads(bridgeAsk, (typeIDs, attributeIDs) => api.fetchTypeDogma(typeIDs, attributeIDs, callOptions));
   // The wallet's reads, asked call by call as the client's wallet and account services ask them
@@ -14889,39 +14929,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // industrySvc.py 305 to 307), and what its place has as the monitor answered, or as the server has said since
     // (OnIndustryMaterials, 324). Until 2026-10-14 the BFF's preview route made the job and its monitor.
     async previewIndustryJob(request) {
-      const online = store.station.get().online;
-      if (!online) throw new Error("No pilot is online.");
-      const own = await reckonedHere(request);
-      if (own !== null && own.mostRuns !== null && request.runs > Math.max(own.mostRuns, 1)) {
-        const most = Math.max(own.mostRuns, 1);
-        throw Object.assign(new Error(request.activity === "copying"
-          ? `One job copying this blueprint here makes at most ${most} ${most === 1 ? "copy" : "copies"}.`
-          : `One job ${request.activity === "invention" ? "inventing from" : "researching"} this blueprint here has at most ${most} ${most === 1 ? "run" : "runs"}.`), { code: "INVALID_RUNS" });
-      }
-      const places = jobPlaces(decodeFacilityPlaces(await bridgeAsk("facilityManager", "GetFacilityLocations", [request.facilityID, online.characterID])));
-      const dump = jobDump({
-        blueprintItemID: request.blueprintItemID,
-        blueprintTypeID: request.blueprintTypeID,
-        activityID: activityIDOf(request.activity),
-        facilityID: request.facilityID,
-        characterID: online.characterID,
-        corporationID: online.corporationID ?? 0,
-        solarSystemID: online.solarSystemID ?? 0,
-        runs: request.runs,
-        licensedRuns: own?.licensedRuns ?? request.licensedRuns ?? 1,
-        cost: own?.cost ?? null,
-        tax: own?.tax ?? null,
-        time: own?.timeSeconds ?? null,
-        materials: own?.materials ?? null,
-        input: places.input,
-        output: places.output,
-        productTypeID: request.productTypeID ?? null,
-      });
+      const { characterID, own, dump } = await windowsJob(request);
       const as = monitoredAs(dump);
       const kept = industryWindowJob !== null && industryWindowJob !== "installed"
-        && industryWindowJob.characterID === online.characterID && industryWindowJob.monitoredAs === as ? industryWindowJob : null;
+        && industryWindowJob.characterID === characterID && industryWindowJob.monitoredAs === as ? industryWindowJob : null;
       const monitored = kept ? kept.monitored : await connectJob(bridgeDo, dump);
-      if (!kept) industryWindowJob = { characterID: online.characterID, monitoredAs: as, blueprintItemID: request.blueprintItemID, monitored };
+      if (!kept) industryWindowJob = { characterID, monitoredAs: as, blueprintItemID: request.blueprintItemID, monitored };
       // What the server has said of the monitored job's place since its monitor answered.
       const said = store.get().industry.materialsSaid;
       const available = kept && said !== null && said.monitorID === monitored.monitorID ? said.available : monitored.available;
@@ -14937,14 +14950,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return [...terms.decryptors.values()];
     },
 
+    // The window's Start (submitButton.py 221): industrySvc.InstallJob(job), InstallJob(job.dump()) (139 to 144), the
+    // job made as the preview makes it. Until 2026-10-14 the BFF's install route made it.
     async installIndustryJob(request) {
       await runIndustryAction(async () => {
-        const outcome = await api.installIndustryJob(request, callOptions);
+        const { characterID, dump } = await windowsJob(request);
+        let jobID: number | null;
+        try {
+          jobID = await installJob(bridgeDo, dump);
+        } catch (error) {
+          // (142 to 144: a refused job's facility is asked for afresh, and the refusal stands.)
+          if (!isSessionLost(error)) jobReckonerFor(characterID).facilityReloaded();
+          throw error;
+        }
         // A job the server took: the window has the server's job of it from now on, which is not the one monitored.
-        if (industryWindowJob !== null && industryWindowJob !== "installed" && industryWindowJob.blueprintItemID === request.blueprintItemID) {
+        if (jobID !== null && industryWindowJob !== null && industryWindowJob !== "installed" && industryWindowJob.blueprintItemID === request.blueprintItemID) {
           industryWindowJob = "installed";
         }
-        return outcome;
+        return { applied: jobID !== null };
       });
     },
 
