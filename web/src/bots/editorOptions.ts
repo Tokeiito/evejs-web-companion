@@ -152,6 +152,10 @@ export const ARG_KIND_LABEL: Readonly<Record<Arg["kind"], string>> = {
  * someone gives it a sharper name.
  */
 const ARG_KEY_LABEL: Readonly<Record<string, string>> = {
+  fromFolder: "Sites to salvage (folder)",
+  doneFolder: "Move finished sites to (folder)",
+  folder: "Bookmark folder",
+  alsoFolder: "Second bookmark folder",
   exceptBays: "Bays to leave alone",
   keepItems: "Items to keep aboard",
   items: "What to load",
