@@ -49,7 +49,16 @@ import {
   marketRefusalMessage,
   toAmountString,
 } from "../bridge/market.ts";
-import { decodeMailbox, mailRefusalMessage } from "../bridge/mail.ts";
+import {
+  mailboxAfterNotice,
+  mailboxAfterSync,
+  mailboxMarkedRead,
+  mailboxWithHeaders,
+  mailRefusalMessage,
+  syncMailArguments,
+  unreadMailCount,
+  type DecodedMailbox,
+} from "../bridge/mail.ts";
 import { sendMail as sendMailCall, type MailToSend } from "../bridge/mailWrites.ts";
 import { reprocess as reprocessCall } from "../bridge/reprocessWrites.ts";
 import {
@@ -979,11 +988,12 @@ export interface AppFlow {
   /** What a colony's command centre holds, launched into orbit: the quantities by type. It costs export tax. */
   launchCommodities(planetID: number, commandPinID: number, commodities: Readonly<Record<number, number>>): Promise<void>;
   /**
-   * Load the Mail panel: the whole inbox, plus the NAME of everyone who sent or
-   * received a message. ⚠ The inbox is a DELTA SYNC the BFF cold-starts, so
-   * this is always the entire mailbox rather than a page of it.
+   * Load the Mail panel: the mailbox, synced once for the character as the client's mail service syncs it
+   * (TrySyncMail), and the NAME of everyone who sent or received a message. Once synced it asks nothing.
    */
   loadMail(): Promise<void>;
+  /** Check for new mail: the mailbox synced again, with the lowest and highest messages it holds. */
+  refreshMail(): Promise<void>;
   /**
    * Open one message. ⚠ The body arrives as plain TEXT — mailMgr.GetBody
    * answers a zlib-DEFLATED buffer and the BFF inflates it. `markRead` makes
@@ -2422,6 +2432,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (missionChange !== null) {
       onMissionChange(missionChange);
       return;
+    }
+    // mailSvc's notices (1119 to 1195): what the mailbox holds is kept right from them, asking nothing; after a mail
+    // brought back from deletion it is synced again. A mailbox not yet synced takes them in at its sync.
+    const mailNow = store.mail.get();
+    if (method !== null && mailNow.loaded) {
+      const after = mailboxAfterNotice(mailNow, method, args as readonly JsonValue[], store.station.get().online?.characterID ?? 0);
+      if (after === "sync") {
+        void refreshMail().catch(() => {});
+        return;
+      }
+      if (after !== null) {
+        mailboxLoaded(after);
+        return;
+      }
     }
     // walletSvc.OnAccountChange and accountsvc.OnAccountChange (accountKey, ownerID, balance): the server's word
     // that an account changed, and what is in it now. The pilot's ISK is that from then on with nothing asked,
@@ -4873,10 +4897,37 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // --- R17 Mail -------------------------------------------------------------
 
+  // mailSvc.TrySyncMail (121 to 131): the mailbox is synced once for the character, and kept from then on by what
+  // the server tells of it (the mail notices, applyPushedNotification); a load after that asks nothing.
   async function loadMail(): Promise<void> {
-    let inbox: Awaited<ReturnType<typeof api.loadMail>>;
+    if (store.mail.get().loaded) {
+      return;
+    }
+    await refreshMail();
+  }
+
+  // One sync at a time, as the client's service locks its own (mailSvc.py 135): a second asker waits for it.
+  let mailSyncing: Promise<void> | null = null;
+  function refreshMail(): Promise<void> {
+    mailSyncing ??= syncMail().finally(() => {
+      mailSyncing = null;
+    });
+    return mailSyncing;
+  }
+
+  // mailSvc.SyncMail (133 to 233): the mail manager asked with the lowest and highest messages held, or None and
+  // 0 for none, by the generic call; its answer worked into what is held; and the headers of any message it gives
+  // a status of but whose header is not held asked for (GetMailHeaders, a list of them). A page newly loaded holds
+  // none, as a client with no file of headers.
+  async function syncMail(): Promise<void> {
+    const now = store.mail.get();
+    const held: DecodedMailbox = now.loaded ? now : { messages: [], statuses: [] };
+    let mailbox: DecodedMailbox;
     try {
-      inbox = await api.loadMail(callOptions);
+      const synced = mailboxAfterSync(held, await bridgeAsk("mailMgr", "SyncMail", syncMailArguments(held.messages)));
+      mailbox = synced.toFetch.length > 0
+        ? mailboxWithHeaders(synced.mailbox, await bridgeAsk("mailMgr", "GetMailHeaders", [[...synced.toFetch]]))
+        : synced.mailbox;
     } catch (error) {
       if (isSessionLost(error)) {
         stopLiveStream();
@@ -4884,14 +4935,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       throw error;
     }
-    // ⚠ The sync's two header arms plus any backfill ARE the whole mailbox:
-    // the BFF cold-started the delta, so there is no window and no paging.
-    const { messages, statuses } = decodeMailbox(inbox.sync, inbox.backfill);
+    mailboxLoaded(mailbox);
+  }
+
+  /** The mailbox as it is now, in the store, its unread counted as the client counts it, and its people named. */
+  function mailboxLoaded(mailbox: DecodedMailbox): void {
+    const { messages, statuses } = mailbox;
     store.apply({
       type: "mail/loaded",
       messages,
       statuses,
-      unreadCount: inbox.unreadCount,
+      unreadCount: unreadMailCount(statuses),
       inboxError: null,
     });
 
@@ -4936,9 +4990,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return;
     }
     if (markRead && result.markedRead === true) {
-      // Reload BEFORE recording the open: mail/loaded clears the action error
-      // and the list must agree with the count.
-      await loadMail();
+      // mailSvc.GetBody (509 to 519): the message asked for with the flag is marked read in what is kept, and
+      // nothing more is asked. BEFORE recording the open: mail/loaded clears the action error.
+      mailboxLoaded(mailboxMarkedRead(store.mail.get(), [messageID]));
     }
     store.apply({
       type: "mail/opened",
@@ -5301,7 +5355,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       store.apply({ type: "mail/action-error", message: mailRefusalMessage(error) });
       return;
     }
-    await loadMail();
+    // mailSvc.SendMail (959 to 990) takes no header of the mail in: the server's OnMailSent brings it, as it brings
+    // the client's (1119 to 1153). A stale refusal is cleared, as a load cleared it.
+    store.apply({ type: "mail/action-error", message: null });
     store.apply({
       type: "mail/outcome",
       outcome: {
@@ -15374,6 +15430,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     rerouteExtractor,
     launchCommodities,
     loadMail,
+    refreshMail,
     openMail,
     closeMail,
     findCharacters: (q: string) => api.findCharacters(q, callOptions),

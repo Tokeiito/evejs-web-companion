@@ -798,6 +798,11 @@ export interface MailStatusRow {
   readonly labelMask: number;
   /** The read bit of statusMask, pulled out because it is the one that shows. */
   readonly read: boolean;
+  /**
+   * Whether it is trashed, where a notice has said since the sync (bridge/mail.ts, isTrashed): the client keeps
+   * this apart from the mask, which a restoring leaves the trashed bit in.
+   */
+  readonly trashed?: boolean;
 }
 
 /** The body of the message currently open, as TEXT. */
@@ -822,9 +827,9 @@ export interface MailOpenMessage {
  * The Mail page state (goal R17, Slice A).
  *
  * ⚠ The inbox arrives as a DELTA SYNC, not a list: SyncMail answers only what
- * falls outside the window the caller holds. The browser caches nothing across
- * a page load, so it is permanently cold and `messages` is always the whole
- * mailbox rather than a page of it.
+ * falls outside the window the caller holds. The page keeps the mailbox as the
+ * client's mail service keeps it (bridge/mail.ts): synced once for the
+ * character, and kept right from then on by the server's mail notices.
  */
 export interface MailState {
   readonly messages: readonly MailHeaderRow[];

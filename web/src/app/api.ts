@@ -1165,29 +1165,9 @@ export async function loadBoundFleet(options: ApiOptions = {}): Promise<Record<s
 // (POST /api/bridge/fleet/broadcast/bubble), on 2026-10-10.
 
 // --- R17 Mail ---------------------------------------------------------------
-// The BFF cold-starts the delta sync and hands back the RAW retail-shaped
-// arms, decoded in the flow with bridge/mail.ts — except the message BODY,
-// which arrives as plain TEXT because mailMgr.GetBody answers a zlib-DEFLATED
-// buffer and the BFF inflates it. The browser never handles a compressed byte.
-
-export interface RawMailInbox {
-  readonly characterID: number | null;
-  /** The raw SyncMail answer: {newMail, oldMail, mailStatus}. */
-  readonly sync: JsonValue;
-  /** Raw GetMailHeaders rows, when a status row had no header; else null. */
-  readonly backfill: JsonValue;
-  readonly unreadCount: number;
-}
-
-export async function loadMail(options: ApiOptions = {}): Promise<RawMailInbox> {
-  const data = await getJson("/api/bridge/mail", options);
-  return {
-    characterID: asNumberOrNull(data.characterID),
-    sync: data.sync ?? null,
-    backfill: data.backfill ?? null,
-    unreadCount: Number(data.unreadCount) || 0,
-  };
-}
+// The mailbox the page syncs and keeps itself, by the generic call (app/flow.ts, syncMail). The message BODY
+// still arrives through the BFF, as plain TEXT because mailMgr.GetBody answers a zlib-DEFLATED buffer and the BFF
+// inflates it. The browser never handles a compressed byte.
 
 export interface MailBodyResult {
   readonly messageID: number;

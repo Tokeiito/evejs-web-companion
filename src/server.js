@@ -4318,6 +4318,10 @@ function mailIsRead(syncResult, messageID) {
 /**
  * GET /api/bridge/mail — the whole inbox, cold-started.
  *
+ * The page no longer asks it: it keeps the mailbox as the client's mail service does, synced once with
+ * SyncMail(firstID, lastID) by the generic call and kept by the mail notices (web/src/app/flow.ts, syncMail).
+ * Kept for scripts/bff-parity.js.
+ *
  * One call does it: a cold SyncMail IS the full mailbox. GetMailHeaders is the
  * backfill for any messageID that has a status row but no header, which a cold
  * sync should never produce — it is issued only when that actually happens, so

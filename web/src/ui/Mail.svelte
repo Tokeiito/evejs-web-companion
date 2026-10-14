@@ -190,7 +190,7 @@
       <p class="stat-line"><span class="badge accent">{$mail.unreadCount} unread</span></p>
     {/if}
     <p class="controls">
-      <button type="button" class="primary" disabled={busy} onclick={() => void run(() => flow.loadMail())}>
+      <button type="button" class="primary" disabled={busy} onclick={() => void run(() => flow.refreshMail())}>
         Check for new mail
       </button>
     </p>

@@ -2,11 +2,9 @@
 //
 // ⚠ THE INBOX IS A DELTA SYNC, NOT A LIST. SyncMail(firstID, lastID) answers
 // only what falls OUTSIDE the window the caller already holds, split across
-// three arms: {newMail, oldMail, mailStatus}. The browser caches nothing across
-// a page load, so the BFF always cold-starts it with [null, 0] and both header
-// arms together are the whole mailbox. `decodeMailbox` merges them; nothing
-// here cares which arm a header arrived in, because for a cold client the split
-// carries no information.
+// three arms: {newMail, oldMail, mailStatus}. The page keeps the mailbox as the
+// client's mail service keeps it (the kept mailbox, at the end of this file):
+// a page newly loaded holds none, and its first sync is [null, 0].
 //
 // ⚠ `toCharacterIDs` IS A COMMA-JOINED STRING, NOT A LIST. buildMailHeaderRow
 // joins the recipient ids with "," (or null for none), while SendMail wants a
@@ -357,3 +355,206 @@ export function mailRefusalMessage(error: unknown): string {
   }
   return message || "That message could not be sent.";
 }
+
+// --- The mailbox kept, as the client's mail service keeps it ------------------
+//
+// The client's mail service (eve/client/script/ui/services/mail/mailSvc.py) syncs the mailbox once for the
+// character, when the mail window first asks for it (TrySyncMail, 121 to 131; evemail.py 217), and from then on
+// keeps it right from what the server tells it, asking nothing: a mail sent (OnMailSent, 1119 to 1153), deleted
+// (1155 to 1172), read or relabelled elsewhere (1174 to 1182), trashed or restored (1189 to 1195). Only a mail
+// brought back from deletion has it sync again (1184 to 1187). Its sync asks with the lowest and the highest
+// message it holds (147 to 157), and works the answer into what it holds (158 to 233). The page holds the mailbox
+// in its store in place of the client's file of headers: a page newly loaded holds none, as a client with no file.
+
+/** The trashed bit of a status mask, and the labels of the system's own folders (appConst.py 1771 to 1780). */
+export const MAIL_STATUS_TRASHED = 8;
+const MAIL_LABEL_INBOX = 1;
+const MAIL_LABEL_SENT = 2;
+const MAIL_LABEL_CORPORATION = 4;
+const MAIL_LABEL_ALLIANCE = 8;
+/** mailSvc.py 30: what a status mask is cut down by when a bit is taken off it. */
+const ALL_LABELS = 255;
+
+/** Whether a message is trashed: as the sync said, or as a notice since made it (mailSvc.py 169, 314 to 321). */
+export function isTrashed(status: MailStatusRow): boolean {
+  return status.trashed ?? (status.statusMask & MAIL_STATUS_TRASHED) !== 0;
+}
+
+/** GetUnreadCounts (mailSvc.py 249 to 276): the messages neither read nor trashed. */
+export function unreadMailCount(statuses: readonly MailStatusRow[]): number {
+  return statuses.reduce((total, status) => (status.read || isTrashed(status) ? total : total + 1), 0);
+}
+
+/** SyncMail's two arguments (mailSvc.py 147 to 156): the lowest and highest messages held, or None and 0 for none. */
+export function syncMailArguments(held: readonly MailHeaderRow[]): [number | null, number] {
+  if (held.length === 0) {
+    return [null, 0];
+  }
+  const ids = held.map((header) => header.messageID);
+  return [Math.min(...ids), Math.max(...ids)];
+}
+
+/** The newest first, by date and then by number (the order the panel lists them in). */
+function newestFirst(messages: Iterable<MailHeaderRow>): MailHeaderRow[] {
+  return [...messages].sort((left, right) => {
+    if (left.sentDate !== null && right.sentDate !== null && left.sentDate !== right.sentDate) {
+      return right.sentDate > left.sentDate ? 1 : -1;
+    }
+    return right.messageID - left.messageID;
+  });
+}
+
+/**
+ * SyncMail's answer worked into the mailbox held (mailSvc.py 157 to 233): the headers it carries (newMail, and
+ * oldMail where there is one) taken in; every message it gives a status of kept with that status; a status of a
+ * message whose header is not held is a header to fetch (GetMailHeaders); and a held message it gives no status of
+ * is gone.
+ */
+export function mailboxAfterSync(held: DecodedMailbox, answer: JsonValue): { readonly mailbox: DecodedMailbox; readonly toFetch: readonly number[] } {
+  const headers = new Map(held.messages.map((header) => [header.messageID, header] as const));
+  for (const arm of ["newMail", "oldMail"] as const) {
+    for (const row of listItems(readKeyVal(answer, arm))) {
+      const header = decodeHeaderRow(row);
+      if (header) headers.set(header.messageID, header);
+    }
+  }
+  const statuses: MailStatusRow[] = [];
+  const toFetch: number[] = [];
+  for (const row of listItems(readKeyVal(answer, "mailStatus"))) {
+    const status = decodeStatusRow(row);
+    if (!status) continue;
+    statuses.push(status);
+    if (!headers.has(status.messageID)) toFetch.push(status.messageID);
+  }
+  const kept = new Set(statuses.map((status) => status.messageID));
+  return {
+    mailbox: { messages: newestFirst([...headers.values()].filter((header) => kept.has(header.messageID))), statuses },
+    toFetch,
+  };
+}
+
+/** GetMailHeaders' answer worked in (mailSvc.py 193 to 207): the headers of messages the sync gave a status of. */
+export function mailboxWithHeaders(mailbox: DecodedMailbox, answer: JsonValue): DecodedMailbox {
+  const headers = new Map(mailbox.messages.map((header) => [header.messageID, header] as const));
+  const kept = new Set(mailbox.statuses.map((status) => status.messageID));
+  for (const row of listItems(answer)) {
+    const header = decodeHeaderRow(row);
+    if (header && kept.has(header.messageID)) headers.set(header.messageID, header);
+  }
+  return { messages: newestFirst(headers.values()), statuses: mailbox.statuses };
+}
+
+/** The statuses of the messages named, each made anew; the rest as they were. */
+function withStatuses(mailbox: DecodedMailbox, messageIDs: readonly number[], change: (status: MailStatusRow) => MailStatusRow): DecodedMailbox {
+  const named = new Set(messageIDs);
+  return { messages: mailbox.messages, statuses: mailbox.statuses.map((status) => (named.has(status.messageID) ? change(status) : status)) };
+}
+
+/** MarkMessagesAsRead (mailSvc.py 336 to 348): read, and the read bit in its mask. */
+export function mailboxMarkedRead(mailbox: DecodedMailbox, messageIDs: readonly number[]): DecodedMailbox {
+  return withStatuses(mailbox, messageIDs, (status) => ({ ...status, read: true, statusMask: status.statusMask | MAIL_STATUS_READ }));
+}
+
+/** MarkMessagesAsUnread (mailSvc.py 323 to 334): not read, the read bit taken off its mask. */
+function mailboxMarkedUnread(mailbox: DecodedMailbox, messageIDs: readonly number[]): DecodedMailbox {
+  return withStatuses(mailbox, messageIDs, (status) => ({ ...status, read: false, statusMask: status.statusMask & (ALL_LABELS - MAIL_STATUS_READ) }));
+}
+
+/** A list off the wire, its items; anything else, none. */
+function itemsOf(value: JsonValue | undefined): readonly JsonValue[] {
+  return Array.isArray(value) ? value : listItems(value);
+}
+
+/** The numbers of a list off the wire. */
+function idsOf(value: JsonValue | undefined): readonly number[] {
+  return itemsOf(value).map((item) => toNumber(item)).filter((id) => id > 0);
+}
+
+/**
+ * A notice of the mail service's worked into the mailbox held, as the client works it in (mailSvc.py 1119 to
+ * 1195), for the pilot `characterID`: the mailbox as it is after it; "sync" for the one notice after which the
+ * client syncs again (OnMailUndeleted); or null for a notice that is not the mail service's.
+ */
+export function mailboxAfterNotice(mailbox: DecodedMailbox, method: string, args: readonly JsonValue[], characterID: number): DecodedMailbox | "sync" | null {
+  switch (method) {
+    case "OnMailSent": {
+      // OnMailSent (1119 to 1153): a message not held is taken in, its labels and its read flag as the client
+      // makes them: the inbox where the pilot is among its recipients; sent, and read where it went to no one but
+      // others, where the pilot sent it; the corporation's or the alliance's where it went to one.
+      const messageID = toNumber(args[0]);
+      if (messageID <= 0 || mailbox.messages.some((header) => header.messageID === messageID)) return mailbox;
+      const senderID = toNumber(args[1]);
+      const toCharacterIDs = idsOf(args[3]);
+      const toListID = toNumber(args[4]);
+      const toCorpOrAllianceID = toNumber(args[5]);
+      let statusMask = toNumber(args[7]);
+      let labelMask = 0;
+      let read = false;
+      if (toCharacterIDs.includes(characterID)) labelMask = MAIL_LABEL_INBOX;
+      if (senderID === characterID) {
+        if (labelMask === 0 && toCorpOrAllianceID <= 0 && toListID <= 0) {
+          read = true;
+          statusMask |= MAIL_STATUS_READ;
+        }
+        labelMask |= MAIL_LABEL_SENT;
+      }
+      if (toCorpOrAllianceID > 0) {
+        // idCheckers.IsCorporation (222 to 227): an NPC corporation's ID or a player corporation's (inventorycommon/
+        // const.py 9 to 10, 79 to 80). The client looks an older one up among the owners it knows, which the page
+        // has not; it is taken for an alliance's.
+        const isCorporation = (toCorpOrAllianceID >= 98000000 && toCorpOrAllianceID < 99000000) || (toCorpOrAllianceID >= 1000000 && toCorpOrAllianceID < 2000000);
+        labelMask |= isCorporation ? MAIL_LABEL_CORPORATION : MAIL_LABEL_ALLIANCE;
+      }
+      const header: MailHeaderRow = {
+        messageID,
+        senderID,
+        toCharacterIDs,
+        toListID: toListID > 0 ? toListID : null,
+        toCorpOrAllianceID: toCorpOrAllianceID > 0 ? toCorpOrAllianceID : null,
+        title: toText(args[6]),
+        sentDate: toFiletime(args[2]),
+      };
+      return {
+        messages: newestFirst([...mailbox.messages, header]),
+        statuses: [...mailbox.statuses, { messageID, statusMask, labelMask, read, trashed: false }],
+      };
+    }
+    case "OnMailDeleted": {
+      // OnMailDeleted (1155 to 1172): the messages named are gone.
+      const gone = new Set(idsOf(args[0]));
+      return {
+        messages: mailbox.messages.filter((header) => !gone.has(header.messageID)),
+        statuses: mailbox.statuses.filter((status) => !gone.has(status.messageID)),
+      };
+    }
+    case "OnMailUpdatedByExternal": {
+      // OnMailUpdatedByExternal (1174 to 1182): read or unread where it says, and the labels replaced where it
+      // gives a label (ReplaceLabels, 792 to 807).
+      const messageIDs = idsOf(args[0]);
+      let after = mailbox;
+      if (args[1] === true) after = mailboxMarkedRead(after, messageIDs);
+      if (args[1] === false) after = mailboxMarkedUnread(after, messageIDs);
+      if (args[2] !== null && args[2] !== undefined) {
+        const labelMask = toNumber(args[2]);
+        after = withStatuses(after, messageIDs, (status) => ({ ...status, labelMask }));
+      }
+      return after;
+    }
+    case "OnMailTrashed":
+      // OnMailTrashed (1189 to 1191; 298 to 301): trashed, and the trashed bit in its mask.
+      return withStatuses(mailbox, idsOf(args[0]), (status) => ({ ...status, trashed: true, statusMask: status.statusMask | MAIL_STATUS_TRASHED }));
+    case "OnMailRestored":
+      // OnMailRestored (1193 to 1195; 309 to 312): not trashed; its mask cut down as the client cuts it, by the
+      // read bit (the trashed bit stays in it).
+      return withStatuses(mailbox, idsOf(args[0]), (status) => {
+        const statusMask = status.statusMask & (ALL_LABELS - MAIL_STATUS_READ);
+        return { ...status, trashed: false, statusMask, read: (statusMask & MAIL_STATUS_READ) !== 0 };
+      });
+    case "OnMailUndeleted":
+      // OnMailUndeleted (1184 to 1187): the client syncs again.
+      return "sync";
+    default:
+      return null;
+  }
+}
+
