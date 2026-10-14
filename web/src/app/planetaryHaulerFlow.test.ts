@@ -26,6 +26,8 @@ for (const failure of ["capacity", "request"] as const) {
     let resolveBoarded!: (shipID: number) => void;
     const boarded = new Promise<number>(resolve => { resolveBoarded = resolve; });
     const paths: string[] = [];
+    // The board is the page's own call since 2026-10-14 (ship.Board through the generic call): named by the call.
+    const boards: unknown[] = [];
     const flow = createAppFlow(store, { livePush: false, fetch: async (input, init) => {
       const path = String(input);
       paths.push(path);
@@ -61,7 +63,10 @@ for (const failure of ["capacity", "request"] as const) {
           items: haulerReads === 1 ? null : [], error: haulerReads === 1 ? "READ_FAILED" : null }],
         };
       }
-      if (path === "/api/bridge/ship/board") resolveBoarded(body.shipID);
+      if (path === "/api/bridge/call" && body.service === "ship" && body.method === "Board") {
+        boards.push(body.args);
+        resolveBoarded(body.args[0]);
+      }
       return new Response(JSON.stringify(result));
     } });
     let resolveFirst!: (state: CustomBotState) => void;
@@ -74,7 +79,7 @@ for (const failure of ["capacity", "request"] as const) {
       const first = await firstDecision;
       assert.equal(first.status, "running", first.pauseReason ?? first.why ?? "");
       assert.equal(first.why, "Reading the ships parked here.");
-      assert.equal(paths.includes("/api/bridge/ship/board"), false);
+      assert.equal(boards.length, 0);
       // Let the first tick schedule its ordinary cadence, then advance to its retry.
       await new Promise<void>(resolve => setImmediate(resolve));
       context.mock.timers.tick(2000);

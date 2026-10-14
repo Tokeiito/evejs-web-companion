@@ -39,14 +39,17 @@ function fakeServer(): { fetch: typeof fetch; requests: Recorded[] } {
   const requests: Recorded[] = [];
   let activeShipID = OLD_SHIP;
 
-  const impl = (async (input: unknown, init?: { method?: string }) => {
+  const impl = (async (input: unknown, init?: { method?: string; body?: unknown }) => {
     const path = String(input);
     requests.push({ path });
+    const sent = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : {};
     let body: unknown = { ok: true };
 
-    if (path === "/api/bridge/ship/board") {
+    // The board is the page's own call since 2026-10-14 (ship.Board through the generic call), answered once the
+    // pilot is in the ship boarded.
+    if (path === "/api/bridge/call" && sent.service === "ship" && sent.method === "Board") {
       activeShipID = NEW_SHIP;
-      body = { ok: true, activeShipID };
+      body = { ok: true, service: "ship", method: "Board", result: null, notifications: [] };
     } else if (path === "/api/bridge/inventory") {
       body = {
         ok: true,

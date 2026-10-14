@@ -386,12 +386,9 @@ async function apiRequest(baseUrl, path, options = {}) {
 async function docked(overrides, options = {}) {
   const gateway = fakeGateway(overrides);
   const { baseUrl } = await startTestServer({ gateway, ...options });
+  // The select names the fixture's ship as the pilot's, which the ore-hold read binds. (Until 2026-10-14 the
+  // helper boarded it again by the board's route, which is gone.)
   await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
-  // Board the fixture ship so the ore-hold read has a ship to bind.
-  await apiRequest(baseUrl, "/api/bridge/ship/board", {
-    method: "POST",
-    body: { shipID: SHIP_ID },
-  });
   return { gateway, baseUrl };
 }
 

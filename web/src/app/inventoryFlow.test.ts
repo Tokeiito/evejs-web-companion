@@ -149,11 +149,16 @@ test("Stack All is the client's StackAll on the hangar's own inventory with the 
   assert.equal(requests.some((r) => r.path === "/api/bridge/inventory/stack"), false);
 });
 
-test("boardShip posts its BFF mutation then reloads", async () => {
+test("boardShip is the page's own call, the ship left beside the ship boarded, then reloads", async () => {
+  // menuFunctions.Board (209): ship.Board(itemID, session.shipid or session.stationid), the page's own call since
+  // 2026-10-14, the ship the pilot is in as its flight says.
   const store = createClientStore();
   const { fetch, requests } = makeFakeFetch((path) => {
-    if (path === "/api/bridge/ship/board") {
-      return { status: 200, body: { ok: true, activeShipID: 200 } };
+    if (path === "/api/bridge/call") {
+      return { status: 200, body: { ok: true, service: "ship", method: "Board", result: null, notifications: [] } };
+    }
+    if (path === "/api/bridge/flight/status") {
+      return { status: 200, body: { ok: true, flight: { docked: true, inSpace: false, stationID: 60003760, shipID: 100 }, notifications: [] } };
     }
     return { status: 200, body: inventoryPanel() };
   });
@@ -161,8 +166,9 @@ test("boardShip posts its BFF mutation then reloads", async () => {
 
   await flow.boardShip(200);
 
-  const board = requests.find((r) => r.path === "/api/bridge/ship/board");
-  assert.deepEqual(board!.body, { shipID: 200 });
+  assert.deepEqual(requests.filter((r) => r.path === "/api/bridge/call").map((r) => r.body), [
+    { service: "ship", method: "Board", args: [200, 100], kwargs: null, pilot: true, confirm: true },
+  ]);
   assert.equal(requests.filter((r) => r.path === "/api/bridge/inventory").length, 1);
 });
 

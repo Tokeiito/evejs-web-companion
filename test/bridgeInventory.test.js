@@ -343,46 +343,10 @@ test("a bind handle is reused across reads (cached per semantic key)", async () 
 // (A test held the stack route to StackAll on the place's binding: the route went on 2026-10-14, the page's own
 // call taking its place.)
 
-test("board binds ship, boards, and makes the boarded ship the new active ship for cargo", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
+// (Two tests held the board's route (POST /api/bridge/ship/board) to Board on the ship's binding, with the ship left,
+// and to its failure after the server took it: the route went on 2026-10-14, the page boarding by its own call under
+// the generic call's keeping of a swap of the pilot's ship, held to the ship boarded.)
 
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/ship/board", {
-    method: "POST",
-    body: { shipID: 200 },
-  });
-  assert.equal(response.status, 200);
-  assert.equal(payload.activeShipID, 200);
-
-  const board = gateway.calls.boundCall.find((c) => c.method === "Board");
-  assert.equal(board.service, "ship");
-  assert.deepEqual(board.args, [200, ACTIVE_SHIP_ID]);
-  assert.ok(gateway.calls.bind.some((b) => b.service === "ship" && b.method === "MachoBindObject"));
-
-  // A later cargo read binds against the newly boarded ship.
-  await apiRequest(baseUrl, "/api/bridge/inventory");
-  assert.ok(gateway.calls.bind.some((b) => b.method === "GetInventoryFromId" && b.args[0] === 200));
-});
-
-test("a board that fails after the server accepted it passes that failure on, and not one of its own", async () => {
-  // The answer cannot be put together (its notifications are missing), which is found only after the
-  // boarding itself went through. From 2026-07-28 until 2026-10-08 a misplaced branch in this route's
-  // error handling threw "kind is not defined" here instead.
-  const gateway = fakeGateway();
-  const callBoundMethod = gateway.callBoundMethod.bind(gateway);
-  gateway.callBoundMethod = async (service, method, ...rest) => {
-    const outcome = await callBoundMethod(service, method, ...rest);
-    return method === "Board" ? { ...outcome, notifications: undefined } : outcome;
-  };
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/ship/board", { method: "POST", body: { shipID: 200 } });
-  assert.equal(response.status, 500);
-  assert.equal(payload.ok, false);
-  assert.doesNotMatch(JSON.stringify(payload), /kind is not defined/);
-  assert.equal(gateway.calls.boundCall.filter((call) => call.method === "Board").length, 1);
-});
 
 test("alternate hull-swap writes wait for the authoritative active ship before answering", async () => {
   const gateway = fakeGateway();
