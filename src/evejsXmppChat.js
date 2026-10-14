@@ -75,6 +75,7 @@
 const net = require("net");
 const tls = require("tls");
 const { withoutCategoryC } = require("./gamePort/py27");
+const { isSpam, normalizeForSpam } = require("./gamePort/chatSpam");
 
 class XmppChatError extends Error {
   constructor(message, options = {}) {
@@ -370,6 +371,9 @@ class XmppChatSession {
     this.idleSeconds = 180;
     this.activityAtMs = new Map();
     this.idleChecks = new Map();
+    // The lines that came in, kept one after another once each has passed
+    // the spam check (`onMessage`).
+    this.linesWork = Promise.resolve();
     this.stopHearingSession =
       this.login && typeof this.login.onSessionChange === "function"
         ? this.login.onSessionChange((changes) => this.onSessionChanged(changes))
@@ -1031,18 +1035,56 @@ class XmppChatSession {
       message: text,
       createdAtMs: Date.now(),
     };
+    if (!this.login) {
+      this.keepLine(roomName, entry);
+      return;
+    }
+    // A line put out in a window is its activity, and then the window drops
+    // it where it is spam, whoever said it (xmppchatwindow.py 353 to 359).
+    // The lines are kept in the order they came, each once what is banned in
+    // chat is known: the first line waits on the game server's answer, as the
+    // client's window waits on it.
+    this.activityAtMs.set(this.channelOf(roomName), Date.now());
+    this.linesWork = this.linesWork
+      .then(() => this.taboosKnown())
+      .then((taboos) => {
+        if (!isSpam(text, taboos)) {
+          this.keepLine(roomName, entry);
+        }
+      })
+      .catch(() => {});
+  }
+
+  /** Keep a line at the tail of its room's, and no more of them than the tail is long. */
+  keepLine(roomName, entry) {
     if (!this.messages.has(roomName)) {
       this.messages.set(roomName, []);
-    }
-    if (this.login) {
-      // A line put out in a window is its activity (xmppchatwindow.py 353 to 357).
-      this.activityAtMs.set(this.channelOf(roomName), Date.now());
     }
     const log = this.messages.get(roomName);
     log.push(entry);
     if (log.length > MAX_BUFFERED_MESSAGES) {
       log.splice(0, log.length - MAX_BUFFERED_MESSAGES);
     }
+  }
+
+  /**
+   * What is banned in chat, each domain as the spam check spells it
+   * (chatutil.spam.GetTaboos, chatutil/spam.py 21 to 24). The game server is
+   * asked through the pilot's game-port session, which keeps the answer as
+   * long as the client's memo does; a server that cannot be asked bans
+   * nothing, as the client's sites service has no list where its asking
+   * fails (carbonui/control/browser/sites.py 410 to 412).
+   */
+  taboosKnown() {
+    if (!this.login || typeof this.login.taboos !== "function") {
+      return Promise.resolve([]);
+    }
+    return Promise.resolve()
+      .then(() => this.login.taboos())
+      .then(
+        (banned) => (Array.isArray(banned) ? banned : []).map((domain) => normalizeForSpam(domain)),
+        () => [],
+      );
   }
 
   /**
@@ -1575,6 +1617,14 @@ class XmppChatSession {
   async send(channel, message, context = {}) {
     const room = await this.ensureChannel(channel, context);
     const typed = String(message || "").trim();
+    // The client's window sends no line it takes for spam, and says nothing
+    // of it (`_Send`, xmppchatwindow.py 952 to 956). Here the sender is told.
+    if (this.login && typed && isSpam(typed, await this.taboosKnown())) {
+      throw new XmppChatError("The line has in it a site that is banned in chat, and was not sent.", {
+        code: "CHAT_LINE_REFUSED",
+        statusCode: 409,
+      });
+    }
     // What the client's chat service and its XMPP handler make of a line
     // before it goes out (xmppchatsvc.py 342: TruncateVeryLongText; xmpphandler
     // 118 to 120: the characters of the control categories taken out). A pilot

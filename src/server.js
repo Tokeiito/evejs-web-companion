@@ -18348,6 +18348,10 @@ function heldChatLogin(held) {
     connection: () => gamePortPilots.chatConnection(...whose()),
     secret: () => gamePortPilots.chatSecret(...whose()),
     channels: () => gamePortPilots.chatChannels(...whose()),
+    // The domains banned in chat, for the client's spam check of each line
+    // (chatutil/spam.py 21 to 24).
+    taboos: () =>
+      (typeof gamePortPilots.chatTaboos === "function" ? gamePortPilots.chatTaboos(...whose()) : []),
     // The session's changes, at which the client's chat service leaves the
     // channels of what changed (xmppchatsvc.py 149 to 164).
     onSessionChange: (listener) =>

@@ -59,6 +59,7 @@ const { longKeptToBridgeJson, notificationToBridgeJson, sessionChangeToBridgeJso
 const { GAME_PORT_HANDLE_PREFIX } = require("../pilotTransport");
 const { GAME_PORT_ONLY_CALLS, ON_AN_ANSWERED_OBJECT, ON_THE_PARK, couldBeAPilot, createCallLedger, madeAfresh, retailForm, retailNeeds } = require("./retailCalls");
 const { createPilotSpace } = require("./pilotSpace");
+const { bannedInChat } = require("./chatSpam");
 const { createPilotClock } = require("./pilotClock");
 const { EFFECT_CATEGORY, EFFECT_ONLINE, createPilotDogma, rowFields } = require("./pilotDogma");
 const { MAX_PROBES, createPilotScanner } = require("./pilotScanner");
@@ -327,6 +328,8 @@ const XMPP_CHAT_MGR = "XmppChatMgr";
 const CHAT_AUTHENTICATION = "chatAuthenticationService";
 /** The global config's name for the chat server's address (globalConfig/const.py 57). */
 const EJABBERD_CLIENT_ADDRESS_CONFIG = "ejabberd_client_address";
+/** hashlib.md5(str([])).hexdigest(): the hash of a list of flagged sites with none in it (carbonui/control/browser/sites.py 394 to 396). */
+const HASH_OF_NO_FLAGGED_SITES = crypto.createHash("md5").update("[]").digest("hex");
 const OFFICE_MANAGER = "officeManager";
 /**
  * What the client hands back to the server as it was answered, and so with the Python type it came with:
@@ -1117,6 +1120,9 @@ function createGamePortPilots({
   const CHAT_TOKEN_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "xmppchatclient/xmppchatsvc.py:318", note: null });
   /** XmppChat._JoinSystemChannels: self.XmppChatMgr.ResyncSystemChannelAccess(), at the proxy with nothing. */
   const CHAT_RESYNC_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "xmppchatclient/xmppchatsvc.py:350", note: null });
+  /** sites.__PopulateSystemLists: sm.RemoteSvc('browserLockdownSvc').GetFlaggedSitesHash(), with nothing, and GetFlaggedSitesList() where the hash is not the kept list's. */
+  const FLAGGED_HASH_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbonui/control/browser/sites.py:396", note: null });
+  const FLAGGED_LIST_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbonui/control/browser/sites.py:398", note: null });
   /** cfg.eveowners' priming: config.GetMultiOwnersEx(list(keysToGet)), which no route of the BFF's may ask by name. */
   const OWNERS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbon/common/script/sys/cfg.py:579", note: null });
   /**
@@ -1593,6 +1599,11 @@ function createGamePortPilots({
       /** redeem.tokens: what the account may redeem, as the server last answered; undefined while it was not fetched. And the fetches, one after another. */
       redeemTokens: undefined,
       redeemTokensWork: Promise.resolve(),
+      /** sites.systemLists.bannedInChat: the domains the server has flagged as blacklisted, each alone; undefined while the lists were not populated or since the server said they changed. */
+      bannedInChat: undefined,
+      /** chatutil.spam.GetTaboos' memoized answer, as { banned, until }; undefined while it was not asked. And its askings, one after another. */
+      chatTaboos: undefined,
+      chatTaboosWork: Promise.resolve(),
       /** ProjectDiscoveryClient._is_enabled: whether Project Discovery is enabled, as the server answered once; undefined while it was not asked. And its askings, one after another. */
       discoveryEnabled: undefined,
       discoveryEnabledWork: Promise.resolve(),
@@ -1682,6 +1693,8 @@ function createGamePortPilots({
       }
       // redeem.OnRedeemingQueueUpdated (162 to 169): what the account may redeem has changed, and it is fetched again.
       if (notification.method === "OnRedeemingQueueUpdated") redeemTokensFetched(entry).catch(() => {});
+      // sites.OnFlaggedListsChange (442 to 447): the lists kept are let go, and are populated again when next wanted.
+      if (notification.method === "OnFlaggedListsChange") entry.bannedInChat = undefined;
       // insurgencyCampaignSvc's three notices of a campaign where the client is (59 to 90): the campaigns kept are
       // let go, and are asked for when they are next wanted.
       if (CAMPAIGN_NOTICES.has(notification.method)) entry.visibleCampaigns = undefined;
@@ -3256,6 +3269,44 @@ function createGamePortPilots({
     const answered = await entry.session.proxyCall(XMPP_CHAT_MGR, "ResyncSystemChannelAccess", [], null);
     const names = Array.isArray(answered) ? answered : answered && Array.isArray(answered.items) ? answered.items : [];
     return names.map((name) => packets.text(name)).filter((name) => typeof name === "string" && name.length > 0);
+  }
+
+  /**
+   * chatutil.spam.GetTaboos (chatutil/spam.py 21 to 24): the domains that are banned in chat, which a chat window
+   * asks for as it first puts a line out or sends one (IsSpam: xmppchatclient/xmppchatwindow.py 358, 955), memoized
+   * with no argument: thirty hours (caching/memoize.py 12 to 34). They are the sites service's
+   * (GetBannedInChatList, carbonui/control/browser/sites.py 348 to 354), which populates its lists where it has
+   * none (380 to 432): the list of flagged sites it has on disk, none in a client that has never fetched one, is
+   * hashed, sm.RemoteSvc('browserLockdownSvc').GetFlaggedSitesHash() is asked by the service's name with nothing,
+   * and where the two differ GetFlaggedSitesList() is asked and kept. The hash is the MD5 of the list as Python
+   * writes it, which for no sites is that of '[]': what Tranquility's recordings have the hash answered, and
+   * what this server answers. So here: no list is kept from one session to the next, the hash is asked, and the
+   * list where the hash is not the empty list's. No list with a site in it has been seen: a site is read as a
+   * dict of siteFlag and siteUrl, and what is not one is passed over. One asking at a time.
+   */
+  function chatTaboos(sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    const asking = entry.chatTaboosWork.then(async () => {
+      if (entry.chatTaboos !== undefined && now() < entry.chatTaboos.until) return entry.chatTaboos.banned;
+      if (entry.bannedInChat === undefined) {
+        ledger.note("browserLockdownSvc", "GetFlaggedSitesHash", FLAGGED_HASH_AS_THE_CLIENT_ASKS);
+        const hash = packets.text(await entry.session.call("browserLockdownSvc", "GetFlaggedSitesHash", [], null));
+        let sites = [];
+        if (hash !== HASH_OF_NO_FLAGGED_SITES) {
+          ledger.note("browserLockdownSvc", "GetFlaggedSitesList", FLAGGED_LIST_AS_THE_CLIENT_ASKS);
+          const listed = await entry.session.call("browserLockdownSvc", "GetFlaggedSitesList", [], null);
+          const rows = Array.isArray(listed) ? listed : listed && Array.isArray(listed.items) ? listed.items : [];
+          sites = rows
+            .filter((row) => row && row.type === "dict")
+            .map((row) => ({ siteFlag: Number(packets.dictGet(row, "siteFlag")) || 0, siteUrl: packets.text(packets.dictGet(row, "siteUrl")) ?? "" }));
+        }
+        entry.bannedInChat = bannedInChat(sites);
+      }
+      entry.chatTaboos = { banned: entry.bannedInChat, until: now() + MEMOIZED_FOR_MS };
+      return entry.chatTaboos.banned;
+    });
+    entry.chatTaboosWork = asking.catch(() => {});
+    return asking;
   }
 
   /**
@@ -5107,6 +5158,7 @@ function createGamePortPilots({
     chatSecret,
     chatChannels,
     chatSessionChanges,
+    chatTaboos,
     shutdown,
     /** Every pair called since this transport was made, most called first, with how each compares with the retail client's. */
     callLedger: () => ledger.rows(),

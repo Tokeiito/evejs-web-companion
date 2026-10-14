@@ -532,12 +532,15 @@ const PROXY_SERVICES = Object.freeze(new Set([
  * at it, and where a job is given one that has rig modifiers or is not among the region's; the price table
  * the client's cfg asks for two seconds after it loads; and the chat service's four as it logs in to the chat
  * server (xmppchatclient/xmppchatsvc.py 284, 312, 318, 350): the chat's hostname, the address where the global
- * config names none, the secret, and the system channels to join.
+ * config names none, the secret, and the system channels to join; and the sites service's two as its lists are
+ * populated for the chat's spam check (carbonui/control/browser/sites.py 396, 398): the hash of the flagged
+ * sites, and the sites where the hash is not the kept list's.
  */
 // (The station's office object's reads are the lobby's, which the gateway never had: see GAME_PORT_ONLY_CALLS.)
 const TRANSPORT_OWN_CALLS = Object.freeze([
   "config.GetMultiOwnersEx", "facilityManager.GetFacility", "config.GetAverageMarketPrices",
   "XmppChatMgr.Hostname", "XmppChatMgr.GetDeprecatedPrefsFallback", "chatAuthenticationService.GetAuthenticationToken", "XmppChatMgr.ResyncSystemChannelAccess",
+  "browserLockdownSvc.GetFlaggedSitesHash", "browserLockdownSvc.GetFlaggedSitesList",
 ]);
 
 /**
