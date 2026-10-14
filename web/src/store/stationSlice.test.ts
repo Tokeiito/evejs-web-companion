@@ -38,7 +38,6 @@ test("character/online seeds the station slice and resets stale panel reads", ()
   assert.deepEqual(slice.station, STATION);
   assert.equal(slice.bits, null, "stale bits must not survive a fresh docked entry");
   assert.deepEqual(slice.guests, []);
-  assert.equal(slice.stationInfoCached, null);
 });
 
 test("docked-read events populate the panel on the live session", () => {
@@ -54,13 +53,11 @@ test("docked-read events populate the panel on the live session", () => {
       { characterID: 140000003, corporationID: 98000000, allianceID: null, warFactionID: null },
     ],
   });
-  store.apply({ type: "station/info-cached", cached: true });
 
   const slice = store.station.get();
   assert.equal(slice.bits?.stationID, 60003760);
   assert.equal(slice.guests.length, 1);
   assert.equal(slice.guests[0]?.characterID, 140000003);
-  assert.equal(slice.stationInfoCached, true);
 });
 
 test("character/offline and session/logged-out clear the station slice", () => {
@@ -82,7 +79,8 @@ test("whole-store subscribers see one notification per applied station event", (
     notifications += 1;
   });
   store.apply({ type: "character/online", character: ONLINE, station: STATION });
-  store.apply({ type: "station/info-cached", cached: true });
+  // (A station event other than the map's stations', whose event went on 2026-10-14.)
+  store.apply({ type: "station/bits", bits: { ownerID: 1000035, stationID: 60003760, operationID: 26, stationTypeID: 1529 } });
   assert.equal(notifications, 2);
-  assert.equal(store.get().station.stationInfoCached, true);
+  assert.equal(store.get().station.bits?.stationID, 60003760);
 });

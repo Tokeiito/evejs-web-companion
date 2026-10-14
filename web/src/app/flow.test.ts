@@ -238,16 +238,16 @@ test("selectCharacter brings the character online and runs the three docked read
     stationTypeID: 1529,
   });
   assert.equal(slice.guests.length, 1);
-  assert.equal(slice.stationInfoCached, true);
 
   const dockedReads = requests
     .filter((request) => request.path === "/api/bridge/call")
     .map((request) => `${request.body.service}.${request.body.method}`);
-  // The three docked reads; and beside them what the choosing reads of the pilot itself, each by the page's own
-  // call since 2026-10-10 where it was a route's: its crimewatch states and its clone's grade.
+  // The two docked reads (the map's stations are not asked since 2026-10-14: the client asks them once in a session as
+  // its station service sets up, station/base.py 185, and the game port's transport asks them so); and beside them
+  // what the choosing reads of the pilot itself, each by the page's own call since 2026-10-10 where it was a route's:
+  // its crimewatch states and its clone's grade.
   assert.deepEqual(dockedReads.slice(1).sort(), [
     "crimewatch.GetClientStates",
-    "map.GetStationInfo",
     "station.GetGuests",
     "stationSvc.GetStationItemBits",
     "subscriptionMgr.GetCloneGrade",
@@ -288,11 +288,12 @@ test("a structure selection keeps its real identity and reads accessible service
   [["structureGuests", "GetGuests", [structureID]]]);
 });
 
-test("a failed GetStationInfo does not blank the services row or guests", async () => {
-  // The cold-start blocker: one heavy read failing must not take down the
-  // whole panel or throw invisibly after the view has switched.
+test("a failed docked read does not blank the other", async () => {
+  // The cold-start blocker: one read failing must not take down the
+  // whole panel or throw invisibly after the view has switched. (The failing read was the map's stations until
+  // 2026-10-14, when the page stopped asking them; it is the station's item now.)
   const { fetch } = makeFakeFetch((path, body) => {
-    if (path === "/api/bridge/call" && body.method === "GetStationInfo") {
+    if (path === "/api/bridge/call" && body.method === "GetStationItemBits") {
       return {
         status: 502,
         body: { ok: false, error: "EVE_GATEWAY_TIMEOUT", message: "EveJS gateway timed out." },
@@ -309,16 +310,15 @@ test("a failed GetStationInfo does not blank the services row or guests", async 
 
   const slice = store.station.get();
   assert.equal(slice.online?.characterID, 140000003, "character stays online");
-  assert.equal(slice.bits?.stationID, 60003760, "services row still loaded");
   assert.equal(slice.guests.length, 1, "guest list still loaded");
-  assert.equal(slice.stationInfoCached, null, "the failed read left its slice untouched");
-  assert.match(slice.readError ?? "", /GetStationInfo/, "the failure is visible in the panel");
+  assert.equal(slice.bits, null, "the failed read left its slice untouched");
+  assert.match(slice.readError ?? "", /GetStationItemBits/, "the failure is visible in the panel");
 });
 
 test("a clean refresh clears a stale docked-read error", async () => {
   let failInfo = true;
   const { fetch } = makeFakeFetch((path, body) => {
-    if (path === "/api/bridge/call" && body.method === "GetStationInfo" && failInfo) {
+    if (path === "/api/bridge/call" && body.method === "GetStationItemBits" && failInfo) {
       return { status: 502, body: { ok: false, error: "EVE_GATEWAY_TIMEOUT", message: "timed out" } };
     }
     return bridgeCallResponder(path, body);
@@ -333,7 +333,7 @@ test("a clean refresh clears a stale docked-read error", async () => {
   failInfo = false;
   await flow.refreshStationPanel();
   assert.equal(store.station.get().readError, null, "a clean refresh clears the error");
-  assert.equal(store.station.get().stationInfoCached, true, "the recovered read applied");
+  assert.equal(store.station.get().bits?.stationID, 60003760, "the recovered read applied");
 });
 
 test("releaseSession puts the flow back to character select", async () => {

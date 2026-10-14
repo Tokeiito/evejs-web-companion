@@ -8,7 +8,6 @@ import {
   decodeStationGuests,
   decodeStationItemBits,
   decodeStructureGuests,
-  isCachedMethodCallResult,
 } from "./stationPanel.ts";
 import type { JsonValue } from "./wire.ts";
 
@@ -94,30 +93,8 @@ test("decodeStationGuests returns [] for non-list results", () => {
   assert.deepEqual(decodeStationGuests({ type: "dict", entries: [] }), []);
 });
 
-test("isCachedMethodCallResult recognizes the retail cached envelope (rawstring and plain name)", () => {
-  assert.equal(
-    isCachedMethodCallResult({
-      type: "object",
-      name: {
-        type: "rawstr",
-        value: "carbon.common.script.net.objectCaching.CachedMethodCallResult",
-      },
-      args: [],
-    } as unknown as JsonValue),
-    true,
-  );
-  assert.equal(
-    isCachedMethodCallResult({
-      type: "object",
-      name: "carbon.common.script.net.objectCaching.CachedMethodCallResult",
-      args: [],
-    }),
-    true,
-  );
-  assert.equal(isCachedMethodCallResult({ type: "list", items: [] }), false);
-  assert.equal(isCachedMethodCallResult(null), false);
-  assert.equal(isCachedMethodCallResult([1, 2, 3]), false);
-});
+// (The cached envelope's recognizer went on 2026-10-14 with the page's asking of the map's stations: the client asks
+// them once in a session as its station service sets up, and the game port's transport asks them so.)
 
 // structureGuests.GetGuests answers a dict: each guest's (corporationID, allianceID, factionID) by its character
 // (services/structure/structureGuests.py 25; dockedUI/guests.py 98 to 101). Tranquility's recording of a client
