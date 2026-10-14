@@ -22,6 +22,7 @@
     checkDraft,
     readFlags,
   } from "../bridge/mail.ts";
+  import { mailBodyLines } from "../bridge/mailMarkup.ts";
   import { isSessionLost } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -300,8 +301,16 @@
           <!-- The body arrived but would not inflate. Say so; show no garbage. -->
           <p class="error">This message arrived damaged and cannot be read.</p>
         {:else}
-          <!-- Already plain text: the BFF inflated the zlib buffer. -->
-          <p class="mail-body">{$mail.open.body}</p>
+          <!-- The body's markup as the client's reading pane shows it: its lines, and in them runs as marked. -->
+          <div class="mail-body">
+            {#each mailBodyLines($mail.open.body) as line, place (place)}
+              <p class="mail-line">{#each line as run, at (at)}<span
+                    class:mail-bold={run.bold}
+                    class:mail-italic={run.italic}
+                    class:mail-underline={run.underline || run.link !== null}
+                    title={run.link ?? undefined}>{run.text}</span>{/each}</p>
+            {/each}
+          </div>
         {/if}
         {#if $mail.open.markedRead === null}
           <p class="note">
@@ -436,6 +445,19 @@
   .mail-body {
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+  }
+  .mail-line {
+    margin: 0;
+    min-height: 1lh;
+  }
+  .mail-bold {
+    font-weight: 700;
+  }
+  .mail-italic {
+    font-style: italic;
+  }
+  .mail-underline {
+    text-decoration: underline;
   }
   /* An unread row reads as unread without relying on colour alone. */
   tr.unread td {

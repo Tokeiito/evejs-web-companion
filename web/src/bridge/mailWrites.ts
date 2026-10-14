@@ -25,6 +25,7 @@
 
 import type { Ask } from "./ask.ts";
 import { MAIL_MAX_BODY, MAIL_MAX_RECIPIENTS, MAIL_MAX_TITLE } from "./mail.ts";
+import { mailMarkupOfTyped } from "./mailMarkup.ts";
 import { unwrapLong, type JsonValue } from "./wire.ts";
 
 /** A plain message from the compose window: to pilots, with a subject and a body. */
@@ -53,7 +54,8 @@ export async function sendMail(act: Ask, mail: MailToSend): Promise<number | nul
     throw Object.assign(new Error("That message is longer than the mail system accepts."), { code: "MAIL_TOO_LONG" });
   }
   const answer: JsonValue = await act("mailMgr", "SendMail", [
-    recipients, null, null, mail.title, mail.body, mail.isReplyTo ?? 0, mail.isForwardedFrom ?? 0,
+    // The body as the client's editor sends what is typed in it (bridge/mailMarkup.ts).
+    recipients, null, null, mail.title, mailMarkupOfTyped(mail.body), mail.isReplyTo ?? 0, mail.isForwardedFrom ?? 0,
   ]);
   const messageID = Number(unwrapLong(answer) ?? Number.NaN);
   return Number.isSafeInteger(messageID) && messageID > 0 ? messageID : null;
