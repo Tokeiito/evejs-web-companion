@@ -1544,6 +1544,22 @@ whatever a preset has (`IsGroupIDShown`, 286 to 289), and what in space may be c
 (`is_interactable_entity`, 132 to 133; `ui/inflight/navigation.py` 509). The page's `overviewCanList`
 (`web/src/space/overview.ts`) has the whole table since `44c2c9fc`.
 
+**The scanner's orders, 2026-10-13** (`eve/client/script/parklife/scanSvc.py`, `probescanning/probeTracker.py`). A
+launch is a formation's: `MoveProbesToFormation` (169 to 182) refuses where the probes held and the charges
+loaded are fewer than the formation's (`CheckCanCreateFormation`, 163 to 166; eight for the pinpoint and the
+spread, by the compiled module), and launches the formation's number less the active probes,
+`dogmaLM.LaunchProbes(module.itemID, numProbes)` on the ship's dogma location (`FindModuleAndLaunchProbes`, 487
+to 498). A scan is `GetScanMan().RequestScans(probes)` (193 to 198): the idle probes, `{probeID: KeyVal}`, or
+None; after it the client holds itself to be scanning (`scanHandler.SetProbesAsScanning`, with its ship where it
+sent None) until `OnSystemScanStopped`, and its probes to be moving. A recall is `RecoverProbes(probeIDs)` (340
+to 341), every active probe, answered with the ones recalled; a reconnection is `ReconnectToLostProbes()` (269 to
+285). The three are asked of the object `GetSystemScanMgr()` answered. Before it asks, the client refuses: all
+while scanning (`UserErrorIfScanning`, 40 to 48); a recall or a reconnection from a capsule; a recall with a
+probe's ball within 2,000 metres; a scan in void space; a reconnection without an online launcher or inside a
+minute of the last. No Tranquility recording has a probe. EveJS tells the scan's start before it answers the
+asking where no probe has to move (1 and 7 ms before, on the wire), and does a recall asked in the middle of a
+scan. The page makes the four so since `0c36b290` (`web/src/bridge/scannerWrites.ts`).
+
 **The skill history, 2026-10-13.** `skillsvc.GetSkillHistory(maxresults=50)` (361 to 364) asks the bound skill
 handler once and keeps the answer; the character sheet's History tab shows each row's date, skill, what happened
 (`ACTIONS`, by `eventTypeID`) and a level it reckons from `absolutePoints` and the skill's rank

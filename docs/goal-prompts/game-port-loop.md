@@ -3568,6 +3568,27 @@ Take these defaults, and list each under "For the operator" in the log so they c
   source and reads back what it wrote. A bare number among the names
   is told from a constant's place so: here the 11 was the module's
   own.
+- **A route that is only a read, a guard and a call is the page's
+  to make where the page has the read.** The scanner's four each read
+  the transport's keeping, refused by it, and called with it; the
+  page reads the same keeping. What decides is whether the route goes
+  by something the BFF alone knows: read every branch for that
+  before its length is believed, and count the routes over a helper
+  (the list said three, and there were four).
+- **A page's order that takes the client's rule takes it for the
+  bots too.** A bot's block that issues an order the page now refuses
+  stops the bot's run: the blocks that decide by the same read are
+  given the same rule (`launchOf`, `scanOf`, `recallOf`), and wait
+  where what stops the order passes by itself.
+- **A read of space made in a launch's own second has not the things
+  launched.** The scanner's read had all eight probes at once (their
+  notices come before the launch's answer); the space snapshot had
+  none of them yet, and had each a little later. A look at where a
+  new thing is waits for the ball.
+- **A search of a whole repository is given its folders.** A
+  `grep -r` over `eve.js` from its root ran past two minutes and was
+  stopped: `server/src`, `server/tests`, `doc` or the client's code
+  are named, never the root.
 - **A command centre launches once a minute.** A launch inside the minute after another is
   refused (`CannotLaunchCommandPinNotReady`), whatever else is wrong with it: a check on two
   transports waits the minute out between them (`node -e "setTimeout(()=>{}, 25000)"` in
