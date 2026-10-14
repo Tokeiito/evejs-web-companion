@@ -342,14 +342,12 @@ test("R104 scan write routes refuse without a held bridge session", async () => 
   assert.equal(gateway.calls.boundCall.length, 0, "no dispatch without a held session");
 });
 
-// --- Product scanner surface: no browser-supplied authority -----------------
-
-const PRODUCT_SCANNER_WRITES = [
-  "/api/bridge/scanner/launch",
-  "/api/bridge/scanner/analyze",
-  "/api/bridge/scanner/recover",
-  "/api/bridge/scanner/reconnect",
-];
+// --- Product scanner state --------------------------------------------------
+//
+// The four writes that stood beside this read (POST /api/bridge/scanner/launch, analyze, recover and reconnect)
+// went on 2026-10-13, and the tests of them with them: the page makes the client's own calls
+// (web/src/bridge/scannerWrites.ts) through the generic call, which the policy's tests have
+// (test/bridgeCallPolicy.test.js).
 
 test("product scanner state exposes EveJS's held-session authority", async () => {
   const gateway = fakeGateway();
@@ -360,102 +358,3 @@ test("product scanner state exposes EveJS's held-session authority", async () =>
   assert.deepEqual(payload.scanner, AUTHORITATIVE_SCANNER);
 });
 
-test("every product scanner write is confirm-gated", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  for (const path of PRODUCT_SCANNER_WRITES) {
-    const { response, payload } = await apiRequest(baseUrl, path, {
-      method: "POST",
-      body: {},
-    });
-    assert.equal(response.status, 400, path);
-    assert.equal(payload.error, "CONFIRMATION_REQUIRED", path);
-  }
-  assert.equal(gateway.calls.boundCall.length, 0);
-});
-
-test("product launch ignores spoofed module/count and dispatches EveJS authority", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  const { response } = await apiRequest(baseUrl, "/api/bridge/scanner/launch", {
-    method: "POST",
-    body: { confirm: true, moduleID: 666, count: 99 },
-  });
-  assert.equal(response.status, 200);
-  const call = gateway.calls.boundCall.find((entry) => entry.method === "LaunchProbes");
-  assert.ok(call);
-  assert.deepEqual(call.args, [LAUNCHER_ID, 7]);
-});
-
-test("product analyze and recover use exact authoritative probe data, never spoofed input", async () => {
-  const gateway = fakeGateway();
-  const { baseUrl } = await startTestServer({ gateway });
-  await selectOnServer(baseUrl);
-  await apiRequest(baseUrl, "/api/bridge/scanner/analyze", {
-    method: "POST",
-    body: { confirm: true, probeMap: { 666: { pos: [99, 99, 99] } } },
-  });
-  await apiRequest(baseUrl, "/api/bridge/scanner/recover", {
-    method: "POST",
-    body: { confirm: true, probeIDs: [666] },
-  });
-  const analyze = gateway.calls.boundCall.find((entry) => entry.method === "RequestScans");
-  assert.ok(analyze);
-  assert.deepEqual(analyze.args, [{
-    [PROBE_ID]: {
-      typeID: 30013,
-      pos: [1, 2, 3],
-      destination: [4, 5, 6],
-      scanRange: 149597870700,
-      rangeStep: 4,
-      state: 1,
-      expiry: "133999999999999999",
-    },
-  }]);
-  const recover = gateway.calls.boundCall.find((entry) => entry.method === "RecoverProbes");
-  assert.ok(recover);
-  assert.deepEqual(recover.args, [[PROBE_ID]]);
-});
-
-// --- Product reconnect: asks the scan manager, probes known or not ----------
-//
-// The retail client knows of no probes after logging in until it has asked the
-// scan manager to reconnect it to them (scanSvc.ReconnectToLostProbes), so the
-// route cannot wait for a probe to be known before it asks.
-
-test("product reconnect asks the scan manager to reconnect, whether or not a probe is known yet", async () => {
-  for (const probes of [AUTHORITATIVE_SCANNER.probes, []]) {
-    const gateway = fakeGateway();
-    gateway.readScannerState = async () => ({ scanner: { ...structuredClone(AUTHORITATIVE_SCANNER), probes: structuredClone(probes) }, notifications: [] });
-    const { baseUrl } = await startTestServer({ gateway });
-    await selectOnServer(baseUrl);
-    const { response, payload } = await apiRequest(baseUrl, "/api/bridge/scanner/reconnect", { method: "POST", body: { confirm: true, probeIDs: [666] } });
-    assert.equal(response.status, 200, JSON.stringify(payload));
-    assert.equal(payload.applied, true);
-    assert.deepEqual(payload.scanner.probes, probes);
-    const calls = gateway.calls.boundCall.map((entry) => [entry.service, entry.method, entry.args]);
-    assert.deepEqual(calls, [["scanMgr", "ReconnectToLostProbes", []]], `with ${probes.length} probes known`);
-  }
-});
-
-test("product reconnect still needs a ship in space, and passes a refusal on", async () => {
-  const docked = fakeGateway();
-  docked.readScannerState = async () => ({ scanner: { ...structuredClone(AUTHORITATIVE_SCANNER), inSpace: false, probes: [] }, notifications: [] });
-  const first = await startTestServer({ gateway: docked });
-  await selectOnServer(first.baseUrl);
-  const refused = await apiRequest(first.baseUrl, "/api/bridge/scanner/reconnect", { method: "POST", body: { confirm: true } });
-  assert.equal(refused.response.status, 409);
-  assert.equal(refused.payload.error, "SCANNER_NOT_IN_SPACE");
-  assert.equal(docked.calls.boundCall.length, 0);
-
-  const waiting = fakeGateway();
-  waiting.callBoundMethod = async () => { throw Object.assign(new Error("ScannerProbeReconnectWait"), { code: "CALL_REFUSED", statusCode: 409 }); };
-  const second = await startTestServer({ gateway: waiting });
-  await selectOnServer(second.baseUrl);
-  const told = await apiRequest(second.baseUrl, "/api/bridge/scanner/reconnect", { method: "POST", body: { confirm: true } });
-  assert.equal(told.response.status, 409);
-  assert.equal(told.payload.error, "CALL_REFUSED");
-  assert.match(told.payload.message, /ScannerProbeReconnectWait/);
-});

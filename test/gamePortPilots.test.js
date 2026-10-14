@@ -699,7 +699,7 @@ test("the space snapshot and the flight status are read from the pilot's own bal
   assert.ok(Math.abs(moved - 2 * 341) < 1e-3, `${moved} m in two ticks`);
   assert.equal(later.sampledAtMs - space.sampledAtMs, 2000);
   // The scanner in space answers too: this ship has no launcher that godma was told of, and no probes are out.
-  assert.deepEqual((await built.pilots.readScannerState(handle)).scanner, { inSpace: true, solarSystemID: SYSTEM, shipID: SHIP, maxActiveProbes: 8, launcher: null, probes: [] });
+  assert.deepEqual((await built.pilots.readScannerState(handle)).scanner, { inSpace: true, solarSystemID: SYSTEM, shipID: SHIP, maxActiveProbes: 8, launcher: null, probes: [], scanning: false });
   assert.deepEqual(hand.errors, []);
 });
 
@@ -1417,7 +1417,7 @@ test("docked, the space snapshot and the scanner are the gateway's docked answer
     inSpace: false, solarSystemID: SYSTEM, shipID: SHIP, sampledAtMs: 1234, entities: [], ship: null, timeDilation: 1,
   });
   assert.deepEqual((await pilots.readScannerState(handle, { userid: ACCOUNT })).scanner, {
-    inSpace: false, solarSystemID: SYSTEM, shipID: SHIP, maxActiveProbes: 0, launcher: null, probes: [],
+    inSpace: false, solarSystemID: SYSTEM, shipID: SHIP, maxActiveProbes: 0, launcher: null, probes: [], scanning: false,
   });
 });
 
@@ -2385,6 +2385,8 @@ test("in space the scanner is the launcher godma shows and the probes the server
     inSpace: true, solarSystemID: SYSTEM, shipID: SHIP, maxActiveProbes: 8,
     launcher: { ...LAUNCHER, loadedCount: 8, launchCount: 8 },
     probes: [],
+    // scanSvc.IsScanning: no scan has been asked for.
+    scanning: false,
   });
   // godma is primed once for the ship in this place, as for the ship's panel.
   assert.equal(session.boundCalls.filter((call) => call.method === "GetAllInfo").length, 1);
@@ -2444,7 +2446,7 @@ test("a launcher holding something that is not a scan probe has nothing to launc
   assert.deepEqual((await other.scanner()).launcher, { moduleID: probeFlight.moduleID, typeID: 17938, online: true, chargeTypeID: null, loadedCount: 0, launchCount: 0 });
   // The ship of the earlier tests: one module, no launcher.
   const bare = await scanning({}, () => shipAllInfo());
-  assert.deepEqual(await bare.scanner(), { inSpace: true, solarSystemID: SYSTEM, shipID: SHIP, maxActiveProbes: 8, launcher: null, probes: [] });
+  assert.deepEqual(await bare.scanner(), { inSpace: true, solarSystemID: SYSTEM, shipID: SHIP, maxActiveProbes: 8, launcher: null, probes: [], scanning: false });
   // godma could not be asked: no launcher is known, and the probes the server told of are still there.
   const unasked = await scanning({}, () => { throw new Error("not now"); });
   unasked.feed("launch");
@@ -2568,7 +2570,7 @@ test("another system, another ship or a structure, and the scanner knows of no p
 
 test("docked, the scanner is the docked answer whatever probes were out", async () => {
   const { pilots, handle } = await selected({}, { now: () => 1234, ...scannerStatics });
-  assert.deepEqual((await pilots.readScannerState(handle, WHOSE)).scanner, { inSpace: false, solarSystemID: SYSTEM, shipID: SHIP, maxActiveProbes: 0, launcher: null, probes: [] });
+  assert.deepEqual((await pilots.readScannerState(handle, WHOSE)).scanner, { inSpace: false, solarSystemID: SYSTEM, shipID: SHIP, maxActiveProbes: 0, launcher: null, probes: [], scanning: false });
 });
 
 // ── weapon banks and module damage, through the snapshot ─────────────────────

@@ -104,66 +104,9 @@ test("a scan the server refuses stays unavailable while the probes' state remain
   assert.equal(scanner.operations.status, "ready");
 });
 
-test("probe reconnect confirms the write and always follows it with authoritative reads", async () => {
-  const calls: Array<{ url: string; method: string; body: unknown }> = [];
-  const fetch: typeof globalThis.fetch = async (input, init = {}) => {
-    const url = String(input);
-    calls.push({
-      url,
-      method: String(init.method ?? "GET"),
-      body: typeof init.body === "string" ? JSON.parse(init.body) : null,
-    });
-    if (url === "/api/bridge/scanner/reconnect") {
-      return json({ ok: true, applied: true, result: null, notifications: [] });
-    }
-    if (url === CALL) return json(scanAnswer());
-    if (url === "/api/bridge/scanner/state") return json(operationsEnvelope());
-    throw new Error(`unexpected fetch: ${url}`);
-  };
-
-  const store = createClientStore();
-  await createAppFlow(store, { fetch }).reconnectScannerProbes();
-
-  assert.deepEqual(calls[0], {
-    url: "/api/bridge/scanner/reconnect",
-    method: "POST",
-    body: { confirm: true },
-  });
-  assert.deepEqual(calls.slice(1).map((call) => call.url).sort(), [CALL, "/api/bridge/scanner/state"]);
-  assert.deepEqual(calls.find((call) => call.url === CALL)!.body, THE_SCAN);
-  assert.equal(store.get().scanner.scan.status, "ready");
-});
-
-test("launch, analyze, and recover use no-input product routes and re-read afterward", async () => {
-  const actions = [
-    ["launchScannerProbes", "/api/bridge/scanner/launch"],
-    ["analyzeScannerSignatures", "/api/bridge/scanner/analyze"],
-    ["recoverScannerProbes", "/api/bridge/scanner/recover"],
-  ] as const;
-  for (const [method, expectedPath] of actions) {
-    const calls: Array<{ url: string; method: string; body: unknown }> = [];
-    const fetch: typeof globalThis.fetch = async (input, init = {}) => {
-      const url = String(input);
-      calls.push({
-        url,
-        method: String(init.method ?? "GET"),
-        body: typeof init.body === "string" ? JSON.parse(init.body) : null,
-      });
-      if (url === expectedPath) return json({ ok: true, applied: true });
-      if (url === CALL) return json(scanAnswer());
-      if (url === "/api/bridge/scanner/state") return json(operationsEnvelope());
-      throw new Error(`unexpected fetch: ${url}`);
-    };
-    const flow = createAppFlow(createClientStore(), { fetch });
-    await flow[method]();
-    assert.deepEqual(calls[0], {
-      url: expectedPath,
-      method: "POST",
-      body: { confirm: true },
-    });
-    assert.deepEqual(calls.slice(1).map((call) => call.url).sort(), [CALL, "/api/bridge/scanner/state"], "one write, then the scanner's two reads");
-  }
-});
+// The scanner's four orders (launch, analyze, recover, reconnect) were asked of four routes until 2026-10-13, and
+// two tests here held the flow to those routes. The routes are gone: the flow makes the client's own calls
+// (bridge/scannerWrites.ts), by the client's own rules, with what the scanner's read says.
 
 test("a system change clears the old scan and automatically reads the new system", async () => {
   let solarSystemID = SYSTEM_A;
