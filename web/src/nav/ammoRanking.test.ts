@@ -24,6 +24,7 @@ import {
   decideSwap,
   inReach,
   layerUnderFire,
+  rankByVersatility,
   rankCharges,
   type ChargeOption,
   type Resonances,
@@ -203,6 +204,66 @@ test("rankCharges: unusable stacks are dropped and the comparator never returns 
   const a = rankCharges([good, empty, nanQty], 5_000, NO_RESIST, null).map((c) => c.typeID);
   const b = rankCharges([nanQty, empty, good], 5_000, NO_RESIST, null).map((c) => c.typeID);
   assert.deepEqual(a, b);
+});
+
+// ─── Versatility (a clear grid, operator 2026-10-14) ─────────────────────────
+
+test("rankByVersatility: raw damage x reach, best first -- the middle charge beats both ends", () => {
+  const rows: readonly { readonly name: string; readonly options: readonly ChargeOption[]; readonly order: readonly number[] }[] = [
+    {
+      name: "short heavy 12 x 10 km = 120k, middle 9 x 20 km = 180k, long light 4 x 40 km = 160k",
+      options: [
+        charge(1, { total: 12, reachM: 10_000 }),
+        charge(2, { total: 9, reachM: 20_000 }),
+        charge(3, { total: 4, reachM: 40_000 }),
+      ],
+      order: [2, 3, 1],
+    },
+    {
+      name: "equal score: more damage first (20 x 10 km over 10 x 20 km)",
+      options: [charge(1, { total: 10, reachM: 20_000 }), charge(2, { total: 20, reachM: 10_000 })],
+      order: [2, 1],
+    },
+    {
+      name: "equal score and damage: the bigger stack, then the lower item id",
+      options: [
+        charge(1, { quantity: 100 }),
+        charge(2, { quantity: 500 }),
+        { ...charge(3, { quantity: 500 }), itemID: 5 },
+      ],
+      order: [3, 2, 1],
+    },
+    {
+      name: "a known score outranks an unknown one, however big the unknown's damage",
+      options: [charge(1, { total: 999, reachM: null }), charge(2, { total: 1, reachM: 1_000 })],
+      order: [2, 1],
+    },
+    {
+      name: "unknown damage is an unknown score too",
+      options: [{ ...charge(1), damage: null }, charge(2, { total: 1, reachM: 1_000 })],
+      order: [2, 1],
+    },
+    {
+      name: "every score unknown: damage, then the bigger stack",
+      options: [
+        charge(1, { total: 5, reachM: null, quantity: 900 }),
+        charge(2, { total: 8, reachM: null, quantity: 10 }),
+        charge(3, { total: 5, reachM: null, quantity: 950 }),
+      ],
+      order: [2, 3, 1],
+    },
+    {
+      name: "unusable stacks are dropped",
+      options: [charge(1, { quantity: 0, total: 999 }), charge(2, { reachM: Number.NaN }), charge(3)],
+      order: [3],
+    },
+  ];
+  for (const row of rows) {
+    assert.deepEqual(rankByVersatility(row.options).map((c) => c.typeID), row.order, row.name);
+    assert.deepEqual(rankByVersatility([...row.options].reverse()).map((c) => c.typeID), row.order,
+      `${row.name} (input reversed)`);
+  }
+  assert.deepEqual(rankByVersatility([]), []);
 });
 
 test("rankCharges: the loaded charge is sticky past its reach, another is not", () => {
