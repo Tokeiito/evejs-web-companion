@@ -1777,6 +1777,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "mailMgr.MarkAsReadByLabel", "mailMgr.MoveToTrashByLabel", "mailMgr.MoveAllFromTrash",
     // A mailing list's mails marked read and trashed, and its owner's delete of it. The gateway's list has none of them.
     "mailMgr.MarkAsReadByList", "mailMgr.MoveToTrashByList", "mailingListsMgr.Delete",
+    // A mailing list's members made members, muted or operators, and kicked. The gateway's list has none of them.
+    "mailingListsMgr.SetMembersClear", "mailingListsMgr.SetMembersMuted", "mailingListsMgr.SetMembersOperator", "mailingListsMgr.KickMembers",
   ]);
   // structureGuests.py 25: sm.RemoteSvc('structureGuests').GetGuests(session.structureid), by the service's name,
   // with the structure the session is docked in and nothing else.
