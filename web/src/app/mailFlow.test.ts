@@ -1,18 +1,13 @@
-// The R17 Mail controller against a faked BFF: loadMail decodes the cold delta
-// sync into the store and asks for the NAME of everyone it will render;
+// The R17 Mail controller against a faked BFF: loadMail syncs the mailbox by
+// the generic call (mailSvc.SyncMail) and asks for the NAME of everyone it will render;
 // openMail carries plain text (the BFF already inflated it); sendMail reports
 // what the server actually did.
 //
 // The properties that matter here are the ones that keep the panel honest:
-//  - the inbox is a DELTA SYNC, so the store's message list is REPLACED on
-//    every load — a row surviving a reload would be a message the server no
-//    longer says the player has;
 //  - EVERY person the panel will name is asked for, senders and recipients
 //    alike, or the inbox renders "someone" where a name belongs;
 //  - a SILENT decline (SendMail's bare null, which carries no reason) reaches
 //    the store as exactly that, with no invented cause;
-//  - a message marked read reloads the inbox, so the unread count and the list
-//    row cannot disagree;
 //  - a lost session unwinds to character select.
 
 import test from "node:test";
@@ -59,6 +54,16 @@ function header(overrides: Record<string, unknown> = {}): unknown {
 
 function status(overrides: Record<string, unknown> = {}): unknown {
   return keyVal({ messageID: MESSAGE_ID, statusMask: 0, labelMask: 1, ...overrides });
+}
+
+/** Whether a request is the mail manager's SyncMail, by the generic call. */
+function isSync(path: string, body: Record<string, unknown>): boolean {
+  return path === "/api/bridge/call" && body.service === "mailMgr" && body.method === "SyncMail";
+}
+
+/** SyncMail's answer by the generic call, of the parts given. */
+function syncAnswer(parts: Parameters<typeof inboxPayload>[0] = {}): { status: number; body: unknown } {
+  return { status: 200, body: { ok: true, service: "mailMgr", method: "SyncMail", result: inboxPayload(parts).sync, notifications: [] } };
 }
 
 function inboxPayload(parts: {
@@ -146,8 +151,8 @@ function respondOk(
         },
       };
     }
-    if (path.startsWith("/api/bridge/mail")) {
-      return { status: 200, body: inboxPayload() };
+    if (isSync(path, body)) {
+      return syncAnswer();
     }
     if (path.startsWith("/api/characters/find")) {
       return {
@@ -177,14 +182,14 @@ function makeFlow(responder: ReturnType<typeof respondOk>) {
 
 // --- loading the inbox ------------------------------------------------------
 
-test("loadMail decodes the cold sync into the store", async () => {
+test("loadMail syncs the mailbox into the store", async () => {
   const { store, flow, requests } = makeFlow(respondOk());
   await flow.loadMail();
 
-  assert.ok(
-    requests.some((entry) => entry.path === "/api/bridge/mail" && entry.method === "GET"),
-    "the inbox is one GET; the delta window is the BFF's business",
-  );
+  // mailSvc.SyncMail (147 to 157): a page holding nothing asks with None and 0.
+  const sync = requests.find((entry) => isSync(entry.path, entry.body));
+  assert.ok(sync, "the mailbox is the mail manager's SyncMail");
+  assert.deepEqual(sync.body.args, [null, 0]);
   const mail = store.get().mail;
   assert.equal(mail.loaded, true);
   assert.equal(mail.messages.length, 1);
@@ -195,14 +200,9 @@ test("loadMail decodes the cold sync into the store", async () => {
 
 test("⚠ every person the panel will NAME is asked for — senders and recipients", async () => {
   const { flow, requests } = makeFlow(
-    respondOk((path) =>
-      path === "/api/bridge/mail"
-        ? {
-            status: 200,
-            body: inboxPayload({
-              newMail: [header({ toCharacterIDs: `${CHARACTER_ID},${THIRD_ID}` })],
-            }),
-          }
+    respondOk((path, _method, body) =>
+      isSync(path, body)
+        ? syncAnswer({ newMail: [header({ toCharacterIDs: `${CHARACTER_ID},${THIRD_ID}` })] })
         : null,
     ),
   );
@@ -220,16 +220,9 @@ test("⚠ every person the panel will NAME is asked for — senders and recipien
 
 test("a corporation-wide message asks for the CORPORATION's name", async () => {
   const { flow, requests } = makeFlow(
-    respondOk((path) =>
-      path === "/api/bridge/mail"
-        ? {
-            status: 200,
-            body: inboxPayload({
-              newMail: [
-                header({ toCharacterIDs: null, toCorpOrAllianceID: CORP_ID }),
-              ],
-            }),
-          }
+    respondOk((path, _method, body) =>
+      isSync(path, body)
+        ? syncAnswer({ newMail: [header({ toCharacterIDs: null, toCorpOrAllianceID: CORP_ID })] })
         : null,
     ),
   );
@@ -244,41 +237,10 @@ test("a corporation-wide message asks for the CORPORATION's name", async () => {
   );
 });
 
-test("⚠ a reload REPLACES the mailbox — a cold sync is the whole truth", async () => {
-  let second = false;
-  const { store, flow } = makeFlow(
-    respondOk((path) => {
-      if (path !== "/api/bridge/mail") {
-        return null;
-      }
-      if (!second) {
-        second = true;
-        return {
-          status: 200,
-          body: inboxPayload({ newMail: [header({ messageID: 1 }), header({ messageID: 2 })] }),
-        };
-      }
-      // The server now says only one message exists.
-      return { status: 200, body: inboxPayload({ newMail: [header({ messageID: 2 })] }) };
-    }),
-  );
-
-  await flow.loadMail();
-  assert.equal(store.get().mail.messages.length, 2);
-  await flow.loadMail();
-  assert.deepEqual(
-    store.get().mail.messages.map((row) => row.messageID),
-    [2],
-    "a message the server dropped must not survive in the panel",
-  );
-});
-
 test("an empty mailbox loads as an empty inbox, not an error", async () => {
   const { store, flow } = makeFlow(
-    respondOk((path) =>
-      path === "/api/bridge/mail"
-        ? { status: 200, body: inboxPayload({ newMail: [], mailStatus: [], unreadCount: 0 }) }
-        : null,
+    respondOk((path, _method, body) =>
+      isSync(path, body) ? syncAnswer({ newMail: [], mailStatus: [], unreadCount: 0 }) : null,
     ),
   );
   await flow.loadMail();
@@ -309,7 +271,7 @@ test("openMail stores the already-inflated TEXT", async () => {
   assert.equal(store.get().mail.open?.unreadable, false);
 });
 
-test("marking read RELOADS the inbox so the count and the list agree", async () => {
+test("marking read sends the flag with the body's read", async () => {
   const { store, flow, requests } = makeFlow(
     respondOk((path) =>
       path.startsWith("/api/bridge/mail/body")
@@ -329,15 +291,10 @@ test("marking read RELOADS the inbox so the count and the list agree", async () 
     ),
   );
   await flow.loadMail();
-  const before = requests.filter((entry) => entry.path === "/api/bridge/mail").length;
   await flow.openMail(MESSAGE_ID, true);
 
   const bodyRequest = requests.find((entry) => entry.path.includes("markRead=1"));
   assert.ok(bodyRequest, "markRead=1 must reach the BFF");
-  assert.ok(
-    requests.filter((entry) => entry.path === "/api/bridge/mail").length > before,
-    "a successful mark-read reloads the inbox",
-  );
   assert.equal(store.get().mail.open?.markedRead, true);
 });
 
@@ -418,10 +375,9 @@ test("a body read that fails records a refusal instead of throwing", async () =>
 
 // --- sending ----------------------------------------------------------------
 
-test("sendMail is the page's own SendMail, the recipients a LIST, and reloads afterwards", async () => {
+test("sendMail is the page's own SendMail, the recipients a LIST", async () => {
   const { store, flow, requests } = makeFlow(respondOk());
   await flow.loadMail();
-  const before = requests.filter((entry) => entry.path === "/api/bridge/mail").length;
   await flow.sendMail({ toCharacterIDs: [SENDER_ID], title: "Hi", body: "there" });
 
   // mailSvc.SendMail (959): the seven arguments, the recipients a list, no list and no corporation, and 0 for the
@@ -429,10 +385,6 @@ test("sendMail is the page's own SendMail, the recipients a LIST, and reloads af
   const send = requests.find((entry) => entry.path === "/api/bridge/call" && entry.body.method === "SendMail");
   assert.ok(send);
   assert.deepEqual(send.body.args, [[SENDER_ID], null, null, "Hi", "there", 0, 0]);
-  assert.ok(
-    requests.filter((entry) => entry.path === "/api/bridge/mail").length > before,
-    "the panel shows the server's own picture before it says anything happened",
-  );
   const outcome = store.get().mail.lastOutcome;
   assert.equal(outcome?.applied, true);
   assert.equal(outcome?.recipientCount, 1);
@@ -488,8 +440,8 @@ test("a too-short search asks the server nothing", async () => {
 
 test("a lost session unwinds to character select", async () => {
   const { store, flow } = makeFlow(
-    respondOk((path) =>
-      path === "/api/bridge/mail"
+    respondOk((path, _method, body) =>
+      isSync(path, body)
         ? { status: 404, body: { ok: false, error: "SESSION_NOT_FOUND" } }
         : null,
     ),

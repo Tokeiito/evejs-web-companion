@@ -16,31 +16,37 @@ function emptyAnswerOf(service: string | undefined): unknown {
   if (service === "notificationMgr") return [];
   if (service === "calendarProxy") return [{ type: "list", items: [] }, { type: "list", items: [] }, null];
   if (service === "calendarMgr") return { type: "list", items: [] };
+  // mailSvc.SyncMail (157): two messages, neither read.
+  if (service === "mailMgr") return mailSyncOf(2);
   return null;
 }
 
-function mailEmpty(unreadCount = 0) {
-  return {
-    ok: true,
-    characterID: 140000005,
-    sync: null,
-    backfill: null,
-    unreadCount,
-  };
+function keyVal(fields: Record<string, unknown>): unknown {
+  return { type: "object", name: "util.KeyVal", args: { type: "dict", entries: Object.entries(fields) } };
 }
 
-test("loadActivity uses the mail read, and by the generic call the notification service's two, the calendar service's three and the skill history's notifications' two", async () => {
+/** SyncMail's answer of so many messages, none of them read. */
+function mailSyncOf(unread: number): unknown {
+  const ids = Array.from({ length: unread }, (_, place) => 4000 + place);
+  return keyVal({
+    newMail: { type: "list", items: ids.map((messageID) => keyVal({ messageID, senderID: 140000004, toCharacterIDs: "140000005", toListID: null, toCorpOrAllianceID: null, title: "Mail", sentDate: { type: "long", value: "133000000000000000" } })) },
+    oldMail: { type: "list", items: [] },
+    mailStatus: { type: "list", items: ids.map((messageID) => keyVal({ messageID, statusMask: 0, labelMask: 1 })) },
+  });
+}
+
+test("loadActivity asks by the generic call the notification service's two, the calendar service's three, the mail service's sync and the skill history's notifications' two", async () => {
   const calls: string[] = [];
   const fetch: typeof globalThis.fetch = async (input, init) => {
     const url = String(input);
     calls.push(url);
-    // By the generic call (notificationSvc.py 93 and 107; eveCalendarsvc.py 239 and 252; skillHistoryProvider.py
-    // 32 to 34): no notifications, no events, no responses, and nothing of the skill handler's.
+    // By the generic call (notificationSvc.py 93 and 107; eveCalendarsvc.py 239 and 252; mailSvc.py 157;
+    // skillHistoryProvider.py 32 to 34): no notifications, no events, no responses, two unread mails, and nothing
+    // of the skill handler's.
     if (url === "/api/bridge/call") {
       const sent = JSON.parse(String(init?.body ?? "{}")) as { service?: string };
       return json({ ok: true, result: emptyAnswerOf(sent.service) });
     }
-    if (url.includes("/api/bridge/mail")) return json(mailEmpty(2));
     throw new Error(`unexpected fetch: ${url}`);
   };
 
@@ -48,10 +54,7 @@ test("loadActivity uses the mail read, and by the generic call the notification 
   const flow = createAppFlow(store, { fetch });
   await flow.loadActivity();
 
-  assert.deepEqual(calls.sort(), [
-    ...Array.from({ length: 7 }, () => "/api/bridge/call"),
-    "/api/bridge/mail",
-  ].sort());
+  assert.deepEqual(calls, Array.from({ length: 8 }, () => "/api/bridge/call"));
   assert.equal(store.get().activity.notifications.status, "ready");
   assert.deepEqual(store.get().activity.notifications.value, []);
   assert.equal(store.get().activity.calendarEvents.status, "ready");
@@ -68,7 +71,6 @@ test("loadActivity lands partial success when the notification service's reads f
         ? json({ ok: false, error: "CALL_FAILED", message: "notificationMgr unavailable" }, 503)
         : json({ ok: true, result: emptyAnswerOf(sent.service) });
     }
-    if (url.includes("/api/bridge/mail")) return json(mailEmpty(0));
     throw new Error(`unexpected fetch: ${url}`);
   };
 
