@@ -13,7 +13,7 @@
 // The dialogs the page asks that the client asks with suppress=uiconst.ID_YES, so that Yes alone is kept: the mail
 // window's folder and list writes (evemail.py 1116 to 1158), the notification window's four (neocom/notifications.py
 // 233 to 246; notificationSvc.py 223), a bookmark's removal (addressbookService.py DeleteBookmarks, 457 and 459), and
-// the Locations window's folders and subfolders (bookmarksPanel.py DeleteACLFolder, DeleteSubfolder and
+// the Locations window's folders and subfolders (bookmarksPanel.py DeleteACLFolder, ForgetFolder, DeleteSubfolder and
 // CreateSubfolder, 435 to 487; locations/window.py _create_sub_folder, 152), and the folder window's two before a
 // folder is made offline or with a name another has (bookmarkContainerWindow.py Confirm, 231 to 237).
 
@@ -38,6 +38,7 @@ export const ASKED_KEEPING_YES: ReadonlySet<string> = new Set([
   "ConfirmCreateAsInactivePersonalFolder",
   "ConfirmCreateAsInactiveSharedFolder",
   "ConfirmCreateFolderWithDuplicateName",
+  "ConfirmForgetFolder",
 ]);
 
 /** The checkbox's words on a dialog that asks (messagebox.py 164 to 168). */

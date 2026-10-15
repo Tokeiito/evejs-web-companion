@@ -51,7 +51,7 @@
 // THE ROUTE STILL STANDS (src/server.js). Nothing of the page's asks it now.
 
 import type { Ask } from "./ask.ts";
-import { decodeAccessGroups, decodeActiveBookmarks, decodeFolderInfo, type AccessGroup, type ActiveBookmarks, type BookmarkFolder } from "./bookmarks.ts";
+import { decodeAccessGroup, decodeAccessGroups, decodeActiveBookmarks, decodeFolderInfo, type AccessGroup, type ActiveBookmarks, type BookmarkFolder } from "./bookmarks.ts";
 
 /**
  * The folders the pilot knows, active or not, and the bookmarks and subfolders of the active ones, as the server
@@ -86,4 +86,13 @@ export async function readFolderInfo(ask: Ask, folderID: number): Promise<Bookma
  */
 export async function readMyAccessGroups(ask: Ask): Promise<readonly AccessGroup[]> {
   return decodeAccessGroups(await ask("ownerGroupManager", "GetMyGroups", []));
+}
+
+/**
+ * An access list that is none of the pilot's, by its number (accessGroupsController.GetGroupInfoFromID with
+ * fetchToServer, 173 to 186: ownerGroupManager.GetGroup(groupID)), for its name. Answers null where the server has none
+ * the pilot may see. Fails as the call fails.
+ */
+export async function readAccessGroup(ask: Ask, groupID: number): Promise<AccessGroup | null> {
+  return decodeAccessGroup(await ask("ownerGroupManager", "GetGroup", [groupID]));
 }

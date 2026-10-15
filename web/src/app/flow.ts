@@ -411,7 +411,7 @@ import { scannerStateFromRead } from "../scanner/scannerCenter.ts";
 import { siteKind } from "../scanner/siteKind.ts";
 import { decodeFittings } from "../bridge/fittings.ts";
 import { decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge/sharedFittings.ts";
-import { readFolderInfo, readMyAccessGroups, readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
+import { readAccessGroup, readFolderInfo, readMyAccessGroups, readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
 import type { AccessGroup, ActiveBookmarks, BookmarkFolder } from "../bridge/bookmarks.ts";
 import { agentsAtStation, readAgentsTable } from "../bridge/agentReads.ts";
 import { readCorporationMemberIDs } from "../bridge/corpMemberReads.ts";
@@ -434,7 +434,7 @@ import { readMyLaunches } from "../bridge/launchReads.ts";
 import { readCharacterFittings, readCorporationFittings } from "../bridge/fittingReads.ts";
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
-import { BOOKMARK_EXPIRY, addFolder as addFolderCall, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, createSubfolder as createSubfolderCall, updateFolder as updateFolderCall, type FolderAccess, deleteBookmarks as deleteBookmarksCall, deleteFolder as deleteFolderCall, deleteSubfolder as deleteSubfolderCall, setFolderActive as setFolderActiveCall, updateBookmark as updateBookmarkCall, updateSubfolder as updateSubfolderCall } from "../bridge/bookmarkWrites.ts";
+import { BOOKMARK_EXPIRY, addFolder as addFolderCall, removeFromKnownFolders as removeFromKnownFoldersCall, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, createSubfolder as createSubfolderCall, updateFolder as updateFolderCall, type FolderAccess, deleteBookmarks as deleteBookmarksCall, deleteFolder as deleteFolderCall, deleteSubfolder as deleteSubfolderCall, setFolderActive as setFolderActiveCall, updateBookmark as updateBookmarkCall, updateSubfolder as updateSubfolderCall } from "../bridge/bookmarkWrites.ts";
 import { giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
 import { afterArriving, keepWaypoints, readWaypoints, withWaypoint, withoutWaypoint, type PilotPlace } from "../nav/waypoints.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
@@ -1812,6 +1812,10 @@ export interface AppFlow {
    */
   readFolderInfo(folderID: number): Promise<BookmarkFolder>;
   readAccessGroups(): Promise<readonly AccessGroup[]>;
+  /** An access list that is none of the pilot's, by its number (ownerGroupManager.GetGroup), or null where there is none. */
+  readAccessGroup(groupID: number): Promise<AccessGroup | null>;
+  /** Disconnect from Folder (bookmarkSvc.RemoveFromKnownFolders, 459 to 464): a shared folder the pilot no longer knows. */
+  removeFromKnownFolders(folderID: number): Promise<void>;
   addFolder(isPersonal: boolean, name: string, description: string, access: FolderAccess): Promise<BookmarkFolder | null>;
   updateFolder(folderID: number, isPersonal: boolean, name: string, description: string, access: FolderAccess): Promise<number | null>;
   /**
@@ -17460,6 +17464,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     readAccessGroups() {
       return readMyAccessGroups(bridgeAsk);
+    },
+
+    readAccessGroup(groupID) {
+      return readAccessGroup(bridgeAsk, groupID);
+    },
+
+    removeFromKnownFolders(folderID) {
+      return removeFromKnownFoldersCall(bridgeDo, folderID);
     },
 
     addFolder(isPersonal, name, description, access) {

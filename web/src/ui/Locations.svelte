@@ -23,9 +23,10 @@
   // RemoveMultipleLocation, whose Yes may be kept (addressbookService.py DeleteBookmarks, 452 to 473).
   //
   // A folder's menu (bookmarksPanel.py BookmarkACLFolderMenu, 320 to 338), on an online folder and on an offline one,
-  // has the part the page offers: Edit Folder and Delete Folder for a personal folder or one the pilot administers
-  // (EditACLFolder reads the folder afresh, GetFolderInfo, before the folder window opens on it; ConfirmDeleteFolder
-  // first), Offline Folder or Online Folder (bookmarkSvc.UpdateFolderActiveState: TooManyActiveFolders where the
+  // has the part the page offers: Folder Information (FolderInfoWindow.svelte, on the folder as the window keeps it);
+  // Edit Folder and Delete Folder for a personal folder or one the pilot administers (EditACLFolder reads the folder
+  // afresh, GetFolderInfo, before the folder window opens on it; ConfirmDeleteFolder first); Disconnect from Folder for
+  // a shared one (ConfirmForgetFolder first; bookmarkSvc.RemoveFromKnownFolders); Offline Folder or Online Folder (bookmarkSvc.UpdateFolderActiveState: TooManyActiveFolders where the
   // pilot has the most online of its kind already), and Create Subfolder on an online folder the pilot does more than
   // view. A subfolder's menu (BookmarkSubfolderMenu, 408 to 417), where the pilot may write to its folder and, using
   // it only, made the subfolder: Edit Subfolder (not one the system made) and Delete Subfolder (ConfirmDeleteSubfolder
@@ -35,7 +36,7 @@
   // one, its Yes the folder window. The subfolder window is SubfolderWindow.svelte.
   //
   // Not here yet: the Search tab, the Agent Missions group (the agents' bookmarks), the folders the pilot may
-  // administer, Folder Information, Disconnect from Folder, a structure's Add Location, the rest of a bookmark's
+  // administer, a structure's Add Location, the rest of a bookmark's
   // menu (a gate's jumps, the fleet's warps and broadcast, the map's and the camera's entries, avoiding a place,
   // Move), a choice by Shift, and a shared bookmark shown dim before its delay has passed. Show Info shows a thing
   // the page has read in space as that thing, and any other place by its type (the info window has no station or
@@ -65,6 +66,7 @@
   import BookmarkWindow from "./BookmarkWindow.svelte";
   import SubfolderWindow from "./SubfolderWindow.svelte";
   import FolderWindow from "./FolderWindow.svelte";
+  import FolderInfoWindow from "./FolderInfoWindow.svelte";
   import { ASKED_KEEPING_YES, DO_NOT_ASK_AGAIN_LABEL, suppressableKey } from "../bridge/dialogSuppression.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
   import { isSessionLost } from "../app/flow.ts";
@@ -134,6 +136,8 @@
     createSubfolder: "UI/AclBookmarks/CreateSubfolder",
     createFolder: "UI/PeopleAndPlaces/CreateFolder",
     editFolder: "UI/AclBookmarks/EditBookmarkFolder",
+    folderInformation: "UI/AclBookmarks/FolderInformation",
+    forgetFolder: "UI/AclBookmarks/ForgetBookmarkFolder",
     editSubfolder: "UI/AclBookmarks/EditSubfolder",
     deleteSubfolder: "UI/AclBookmarks/DeleteSubfolder",
     tooManyOnline: "dialog:TooManyActiveFolders/body",
@@ -144,13 +148,14 @@
    * folder's and a subfolder's deletion (bookmarksPanel.py 435 to 487), and Create Subfolder with no folder to put it
    * in (window.py 152); each with the page's own words where the install's are not to hand.
    */
-  const DIALOGS = ["RemoveLocation", "RemoveMultipleLocation", "ConfirmDeleteFolder", "ConfirmDeleteSubfolder", "CreateBookmarkFolderAsNoneValid"] as const;
+  const DIALOGS = ["RemoveLocation", "RemoveMultipleLocation", "ConfirmDeleteFolder", "ConfirmDeleteSubfolder", "CreateBookmarkFolderAsNoneValid", "ConfirmForgetFolder"] as const;
   const OWN_QUESTIONS: Readonly<Record<(typeof DIALOGS)[number], readonly [string, string]>> = {
     RemoveLocation: ["Take off?", "Take {locationName} off?"],
     RemoveMultipleLocation: ["Take off?", "Take {numLocations} places off?"],
     ConfirmDeleteFolder: ["Throw the folder away?", "Throw this folder away, with all it holds?"],
     ConfirmDeleteSubfolder: ["Throw the subfolder away?", "Throw this subfolder away, with all it holds?"],
     CreateBookmarkFolderAsNoneValid: ["No folder", "There is no folder to put it in. Make one?"],
+    ConfirmForgetFolder: ["Let it go?", "Stop seeing this shared folder?"],
   };
   /** appConst: the access levels, and how many folders of each kind may be online at once. */
   const ACCESS_PERSONAL = 1;
@@ -479,11 +484,12 @@
   }
 
   /** BookmarkACLFolderMenu (320 to 338): the part the page offers. */
-  function folderMenuOf(folder: BookmarkFolder): { readonly edit: boolean; readonly remove: boolean; readonly offline: boolean; readonly online: boolean; readonly createSubfolder: boolean } {
+  function folderMenuOf(folder: BookmarkFolder): { readonly edit: boolean; readonly remove: boolean; readonly forget: boolean; readonly offline: boolean; readonly online: boolean; readonly createSubfolder: boolean } {
     const owns = folder.accessLevel === ACCESS_PERSONAL || folder.accessLevel === ACCESS_ADMIN;
     return {
       edit: owns,
       remove: owns,
+      forget: !folder.isPersonal,
       offline: folder.isActive,
       online: !folder.isActive,
       createSubfolder: folder.isActive && folder.accessLevel !== ACCESS_VIEW,
@@ -518,6 +524,31 @@
     folderWindow = null;
     if (said !== undefined) notice = said;
     if (made) void load();
+  }
+
+  /** Folder Information (ShowBookmarkFolderInfo, 424 to 426), open on a folder the pilot knows. */
+  let folderInfo = $state<BookmarkFolder | null>(null);
+
+  function showFolderInfo(folder: BookmarkFolder): void {
+    folderMenuFor = null;
+    folderInfo = folder;
+  }
+
+  /** Its Online Folder and Offline Folder (linkedBookmarkFolderWindow.py 177 to 185), which close it. */
+  function folderInfoOnline(isActive: boolean): void {
+    const shown = folderInfo;
+    folderInfo = null;
+    if (shown !== null) setFolderOnline(shown, isActive);
+  }
+
+  /** Disconnect from Folder (ForgetFolder, 444 to 447): ConfirmForgetFolder, then the folder no longer known and the list read again. */
+  function askForgetFolder(folder: BookmarkFolder): void {
+    folderMenuFor = null;
+    ask("ConfirmForgetFolder", {}, async () => {
+      await flow.removeFromKnownFolders(folder.folderID);
+      selected = [];
+      await load();
+    });
   }
 
   /** DeleteACLFolder (435 to 441): ConfirmDeleteFolder, then the folder deleted and the list read again. */
@@ -791,15 +822,19 @@
 
 {#snippet folderMenu(folder: BookmarkFolder, depth: number)}
   {#if folderMenuFor === folder.folderID}
-    <!-- BookmarkACLFolderMenu, in its order: Edit Folder, Delete Folder, Offline Folder and Create Subfolder, or Online
-         Folder. -->
+    <!-- BookmarkACLFolderMenu, in its order: Folder Information, Edit Folder, Delete Folder, Disconnect from Folder,
+         Offline Folder and Create Subfolder, or Online Folder. -->
     {@const menu = folderMenuOf(folder)}
     <p class="controls locations-submenu" style={`margin-left: ${depth * 1.25 + 1.5}rem`}>
+      <button type="button" class="minor" onclick={() => showFolderInfo(folder)}>{word(WORDS.folderInformation, "About it")}</button>
       {#if menu.edit}
         <button type="button" class="minor" disabled={busy || folderWindow !== null} onclick={() => editFolder(folder)}>{word(WORDS.editFolder, "Change it")}</button>
       {/if}
       {#if menu.remove}
         <button type="button" class="minor" disabled={busy} onclick={() => askDeleteFolder(folder)}>{word(WORDS.deleteFolder, "Throw it away")}</button>
+      {/if}
+      {#if menu.forget}
+        <button type="button" class="minor" disabled={busy} onclick={() => askForgetFolder(folder)}>{word(WORDS.forgetFolder, "Let it go")}</button>
       {/if}
       {#if menu.offline}
         <button type="button" class="minor" disabled={busy} onclick={() => setFolderOnline(folder, false)}>{word(WORDS.offlineFolder, "Take it offline")}</button>
@@ -879,6 +914,11 @@
   {/if}
   {#if folderWindow !== null && active !== null}
     <FolderWindow {store} {flow} {active} folder={folderWindow.folder} onDone={folderDone} />
+  {/if}
+  {#if folderInfo !== null && active !== null}
+    {#key folderInfo.folderID}
+      <FolderInfoWindow {store} {flow} {active} folder={folderInfo} onSetOnline={folderInfoOnline} onClose={() => (folderInfo = null)} />
+    {/key}
   {/if}
   {#if notice}
     <p class="note">{notice}</p>
