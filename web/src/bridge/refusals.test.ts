@@ -93,7 +93,9 @@ const EVEJS_REFUSAL_VOCABULARY: readonly string[] = [
   "NotEnoughCapacitorForOnline",
   // invbroker Add/MultiAdd — reachable via the docked hangar→ship-hold move.
   "NotEnoughCargoSpace",
-  // officeManager Handle_RentOffice — reachable from the Station panel's "Rent it and pay".
+  // officeManager Handle_RentOffice — reachable from the Station panel's "Rent it and pay";
+  // invbroker.ImportExportWithPlanet — the customs office's export tax, charged from the
+  // wallet (planetMgrService throwNotEnoughMoney).
   "NotEnoughMoney",
   // ship Handle_Jettison — reachable from the Mining window's dumping, a second time inside three minutes.
   "ShpJettisonPending",
