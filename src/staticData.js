@@ -168,6 +168,16 @@ function getRegion(regionID) {
   return buildJsonlIndex("mapRegions.jsonl").get(Number(regionID) || 0) || null;
 }
 
+/** A constellation's row (the SDE's mapConstellations). */
+function getConstellation(constellationID) {
+  return buildJsonlIndex("mapConstellations.jsonl").get(Number(constellationID) || 0) || null;
+}
+
+function getConstellationName(constellationID) {
+  const entry = getConstellation(constellationID);
+  return entry ? getLocalizedName(entry, `Constellation ${constellationID}`) : null;
+}
+
 function getRegionName(regionID) {
   const numericRegionID = Number(regionID) || 0;
   if (!numericRegionID) {
@@ -1820,6 +1830,18 @@ function resolveOneName(kind, id) {
       return getSolarSystem(numericID) ? getSolarSystemName(numericID) : null;
     case "region":
       return getRegion(numericID) ? getRegionName(numericID) : null;
+    case "constellation":
+      return getConstellationName(numericID);
+    // A solar system's constellation and region by the system's number: the Locations window's CON and REG
+    // (addressbookService.py GetSolConReg, 354 to 374, by GetSolarSystemDetails).
+    case "systemConstellation": {
+      const system = getSolarSystem(numericID);
+      return system && system.constellationID ? getConstellationName(system.constellationID) : null;
+    }
+    case "systemRegion": {
+      const system = getSolarSystem(numericID);
+      return system && system.regionID && getRegion(system.regionID) ? getRegionName(system.regionID) : null;
+    }
     case "owner":
       return resolveOwnerName(numericID);
     case "ownerGroup":
@@ -2022,6 +2044,8 @@ module.exports = {
   getCommodityTier,
   getRegion,
   getRegionName,
+  getConstellation,
+  getConstellationName,
   getSolarSystem,
   getSolarSystemGraph,
   getSolarSystemName,

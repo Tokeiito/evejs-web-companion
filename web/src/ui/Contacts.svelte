@@ -51,10 +51,10 @@
   // format them, newest first, each its body's first two parts; its menu the sender's contact and block, and Delete
   // notification (contactNotificationEntry.py).
   //
-  // An agent's menu has the client's Show Info and Dock in Station (menusvc.py 579 to 580, 619 to 624).
+  // An agent's menu has the client's Show Info, its place's Set Destination and Add or Remove Waypoint, and Dock in
+  // Station (menusvc.py 579 to 580, 619 to 624; _MapMenu, 172 to 184).
   //
-  // Not here yet: Capture Portrait, the rest of an agent's place menu (Set Destination, Add or Remove Waypoint, which
-  // wait on the client's route of waypoints, and Bookmark Location, which waits on the client's bookmark window),
+  // Not here yet: Capture Portrait, an agent's Bookmark Location, which waits on the client's bookmark window,
   // selecting several agents, and the rest of an owner's menu (chat, Invite to Fleet's places in the fleet, the
   // fleet's own menu).
   import { onMount } from "svelte";
@@ -104,6 +104,8 @@
   const fleetState = store.fleet;
   // svelte-ignore state_referenced_locally
   const flightState = store.flight;
+  // svelte-ignore state_referenced_locally
+  const waypointsState = flow.waypoints;
 
   /** The window's words, by their labels (addressBookWindow.py 60, 86; contactsForm.py 136, 144 to 265, 416 to 497). */
   const WORDS = {
@@ -232,6 +234,9 @@
     stateAccepted: "UI/Journal/JournalWindow/Agents/StateAccepted",
     stateFailed: "UI/Journal/JournalWindow/Agents/StateFailed",
     dockInStation: "UI/Inflight/DockInStation",
+    setDestination: "UI/Inflight/SetDestination",
+    addWaypoint: "UI/Inflight/AddWaypoint",
+    removeWaypoint: "UI/Inflight/RemoveWaypoint",
   } as const;
   /** The client's dialogs the window says things with. */
   const DIALOGS = ["RemoveOneFromContacts", "RemoveManyFromContacts", "DeleteMailLabel", "MailLabelNameExists", "LookupStringMinimum", "NoStandingsSelected", "RemoveAgents", "ConfirmDeleteFolder", "PartialSearchLessThanMinLength"] as const;
@@ -1256,6 +1261,37 @@
     });
   }
 
+  /**
+   * The agent's place (characterCheckers.py GetAgentLocation, 432 to 440: its station, else its system), where the
+   * map menu is offered for it (OfferMapMenu, 218 to 234: it has a system, and the place is a station or a system).
+   */
+  function agentPlace(agentID: number): number | null {
+    const record = $agentsState.agentRecords[agentID] ?? null;
+    if (record === null || record.solarSystemID == null) return null;
+    return record.stationID ?? record.solarSystemID;
+  }
+
+  /** MapChecker.OfferSetDestination (mapCheckers.py 17 to 18): the place is not the station or structure the pilot is in. */
+  function agentDestinationOffered(agentID: number): boolean {
+    const place = agentPlace(agentID);
+    if (place === null) return false;
+    const status = $flightState.status;
+    const docked = status !== null ? (status.docked ? status.stationID : null) : ($station.online?.stationID ?? null);
+    const structure = status !== null ? status.structureID : ($station.online?.structureID ?? null);
+    return place !== docked && place !== structure;
+  }
+
+  /** The map menu's entries (_MapMenu, 176 to 181): Set Destination, and Remove Waypoint or Add Waypoint. */
+  function agentRoute(agentID: number, how: "destination" | "add" | "remove"): void {
+    agentMenuFor = null;
+    searchMenuFor = null;
+    const place = agentPlace(agentID);
+    if (place === null) return;
+    if (how === "destination") flow.setDestination(place);
+    else if (how === "add") flow.addWaypoint(place);
+    else flow.clearWaypoints(place);
+  }
+
   /** OfferShowInfo (characterCheckers.py 350 to 353): an agent's, unless it is an aura agent. */
   function agentInfoOffered(agentID: number): boolean {
     return ($agentsState.agentRecords[agentID]?.agentTypeID ?? null) !== AGENT_TYPE.aura;
@@ -1742,6 +1778,17 @@
                         {/if}
                         <button type="button" class="minor" disabled={busy} onclick={() => startConversation(line.agentID)}>{word(AGENT_WORDS.startConversation, "Talk")}</button>
                         <button type="button" class="minor" disabled={busy} onclick={() => removeAgent(line.agentID)}>{word(AGENT_WORDS.removeFromAddressbook, "Remove")}</button>
+                        {#if agentPlace(line.agentID) !== null}
+                          {@const place = agentPlace(line.agentID)}
+                          {#if agentDestinationOffered(line.agentID)}
+                            <button type="button" class="minor" onclick={() => agentRoute(line.agentID, "destination")}>{word(AGENT_WORDS.setDestination, "Head there")}</button>
+                          {/if}
+                          {#if place !== null && $waypointsState.includes(place)}
+                            <button type="button" class="minor" onclick={() => agentRoute(line.agentID, "remove")}>{word(AGENT_WORDS.removeWaypoint, "Take off the route")}</button>
+                          {:else}
+                            <button type="button" class="minor" onclick={() => agentRoute(line.agentID, "add")}>{word(AGENT_WORDS.addWaypoint, "Put on the route")}</button>
+                          {/if}
+                        {/if}
                         {#if agentDockStation(line.agentID) !== null}
                           <button type="button" class="minor" onclick={() => dockAtAgent(line.agentID)}>{word(AGENT_WORDS.dockInStation, "Dock there")}</button>
                         {/if}
@@ -1842,6 +1889,17 @@
                         <button type="button" class="minor" disabled={busy} onclick={() => { searchMenuFor = null; removeAgent(owner.id); }}>{word(AGENT_WORDS.removeFromAddressbook, "Remove")}</button>
                       {:else}
                         <button type="button" class="minor" disabled={busy} onclick={() => addAgent(owner.id, owner.name)}>{word(SEARCH_WORDS.addToAddressbook, "Add to address book")}</button>
+                      {/if}
+                      {#if agentPlace(owner.id) !== null}
+                        {@const place = agentPlace(owner.id)}
+                        {#if agentDestinationOffered(owner.id)}
+                          <button type="button" class="minor" onclick={() => agentRoute(owner.id, "destination")}>{word(AGENT_WORDS.setDestination, "Head there")}</button>
+                        {/if}
+                        {#if place !== null && $waypointsState.includes(place)}
+                          <button type="button" class="minor" onclick={() => agentRoute(owner.id, "remove")}>{word(AGENT_WORDS.removeWaypoint, "Take off the route")}</button>
+                        {:else}
+                          <button type="button" class="minor" onclick={() => agentRoute(owner.id, "add")}>{word(AGENT_WORDS.addWaypoint, "Put on the route")}</button>
+                        {/if}
                       {/if}
                       {#if agentDockStation(owner.id) !== null}
                         <button type="button" class="minor" onclick={() => dockAtAgent(owner.id)}>{word(AGENT_WORDS.dockInStation, "Dock there")}</button>
