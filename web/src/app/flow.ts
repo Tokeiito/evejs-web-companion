@@ -7756,10 +7756,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         }
       }
       await layOutConversation(agentID, conversation);
-      // A press changes what there is between the pilot and the agent: a mission requested is an offer in the journal.
-      if (first !== null) {
-        await loadJournal();
-      }
+      // A press changes what there is between the pilot and the agent (a mission requested is an offer in the
+      // journal), and the server says so (OnAgentMissionChange "offered"), which reads the journal again
+      // (refreshJournal); the client's window reads nothing of its own.
     });
   }
 
@@ -18838,8 +18837,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         }
         // The briefing and the objectives are read again for this layout, as for every one, and shown
         // by the client's rule (layOutConversation). Completing a mission pays out: pull the Step-12
-        // reward reads (wallet / LP / standings). The journal always refreshes so the
-        // offered/accepted/cleared state stays truthful.
+        // reward reads (wallet / LP / standings). The journal is not read here: a press that changes it
+        // is followed by the server's OnAgentMissionChange, which reads it again (refreshJournal), as the
+        // client's journal takes it; agentDialogueWindow.ExecuteAgentAction reads nothing of its own.
         await layOutConversation(agentID, decoded);
         //
         // ⚠ PRESSING COMPLETE IS NOT COMPLETING. agentMgr.DoAction answers 200
@@ -18864,7 +18864,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // mission exactly as it was, and the layout above has read it again and keeps showing it.
           await loadRewards();
         }
-        await loadJournal();
       });
     },
 
