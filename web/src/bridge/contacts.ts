@@ -30,11 +30,11 @@ export interface AddressBook {
   readonly blocked: readonly number[];
 }
 
-/** One of the pilot's contact labels (charMgr.GetLabels): its bit, its name and its colour. */
+/** One of the pilot's contact labels (charMgr.GetLabels): its bit, its name and its colour, none where it has none. */
 export interface ContactLabel {
   readonly labelID: bigint;
   readonly name: string;
-  readonly color: number;
+  readonly color: number | null;
 }
 
 /**
@@ -50,7 +50,8 @@ export function contactLabelsOf(answer: JsonValue): readonly ContactLabel[] {
     if (labelID === null || labelID <= 0n || readKeyVal(value, "static") === true) {
       continue;
     }
-    labels.push({ labelID, name: typeof name === "string" ? name : "", color: Number(readKeyVal(value, "color") ?? 0) || 0 });
+    const color = readKeyVal(value, "color");
+    labels.push({ labelID, name: typeof name === "string" ? name : "", color: typeof color === "number" ? color : null });
   }
   const order = pyIntDictOrder(labels.map((label) => Number(label.labelID)));
   return order.flatMap((labelID) => labels.filter((label) => Number(label.labelID) === labelID));
@@ -62,6 +63,55 @@ export function hasContactLabel(labelID: bigint, labelMask: bigint): boolean {
     return labelMask === 0n;
   }
   return (labelMask & labelID) === labelID;
+}
+
+/** appConst.maxLong: every bit a label may have. */
+export const MAX_LONG = 9_223_372_036_854_775_807n;
+
+/** Names in the order SortListOfTuples gives them by the key made of each. */
+const byKey = <T>(items: readonly T[], key: (item: T) => string): T[] =>
+  items.map((item, place) => ({ item, place, key: key(item) }))
+    .sort((left, right) => (left.key < right.key ? -1 : left.key > right.key ? 1 : left.place - right.place))
+    .map(({ item }) => item);
+
+/**
+ * addressbookService.GetAssignLabelMenu (1149 to 1167): the labels not every one of the entries has (their masks'
+ * AND, from maxLong), by name in lower case. An entry with no mask leaves the AND as it is.
+ */
+export function labelsToAssign(masks: readonly (bigint | null)[], labels: readonly ContactLabel[]): ContactLabel[] {
+  const all = masks.reduce<bigint>((mask, each) => (each === null ? mask : mask & each), MAX_LONG);
+  return byKey(labels.filter((label) => (all & label.labelID) !== label.labelID), (label) => label.name.toLowerCase());
+}
+
+/** GetRemoveLabelMenu (1169 to 1187): the labels any of the entries has (their masks' OR), by name as it is. */
+export function labelsToRemove(masks: readonly (bigint | null)[], labels: readonly ContactLabel[]): ContactLabel[] {
+  const any = masks.reduce<bigint>((mask, each) => (each === null ? mask : mask | each), 0n);
+  return byKey(labels.filter((label) => (any & label.labelID) === label.labelID), (label) => label.name);
+}
+
+/** GetLabelNameList (1204 to 1213; mailSvc.GetLabelMaskAsList): the names of the pilot's labels a mask has, by name in lower case. */
+export function labelNamesOf(labelMask: bigint, labels: readonly ContactLabel[]): string[] {
+  return byKey(labels.filter((label) => label.labelID > 0n && (labelMask & label.labelID) === label.labelID), (label) => label.name.toLowerCase())
+    .map((label) => label.name);
+}
+
+/** A mask with bits taken off it, as the client takes them (labelMask & const.maxLong - labelID: 1084, 1145). */
+export function labelMaskWithout(labelMask: bigint, bits: bigint): bigint {
+  return labelMask & (MAX_LONG - bits);
+}
+
+/**
+ * A label's bit, or a sum of them, as the page sends it: a number where a number holds it exactly, and past that
+ * the text of its digits, which the game port's table sends as a long.
+ */
+export function labelBitsSent(bits: bigint): number | string {
+  return bits <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(bits) : bits.toString();
+}
+
+/** charMgr.CreateLabel's answer: the new label's bit, or null for what is none. */
+export function createdLabelOf(answer: JsonValue): bigint | null {
+  const bits = typeof answer === "number" && Number.isSafeInteger(answer) ? BigInt(answer) : unwrapLong(answer);
+  return bits !== null && bits > 0n ? bits : null;
 }
 
 /** onlineStatus.GetInitialState's answer, indexed by contactID as the client's service indexes it: online or not. */

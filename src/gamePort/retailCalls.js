@@ -693,6 +693,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // A contact edited (addressbookService.py AddToAddressBook, 786 to 789). The gateway's list has its adding and
   // not this.
   "charMgr.EditContact",
+  // The pilot's contact labels made, renamed and deleted, and given to contacts or taken off them
+  // (addressbookService.py 1001 to 1147). The gateway's list has none of them.
+  "charMgr.CreateLabel", "charMgr.EditLabel", "charMgr.DeleteLabel", "charMgr.AssignLabels", "charMgr.RemoveLabels",
 ]);
 
 /**
@@ -919,6 +922,18 @@ const aJobAndItsSystem = (args, kwargs) => (args.length === 2 && Number.isSafeIn
 const dronesListed = ([drones, ...rest], kwargs) => ({ args: [list(drones), ...rest], kwargs });
 /** The address book's writes of owners (addressbookService.py 658, 674, 842): the owners a list, as the client's are. */
 const ownersListed = ([owners, ...rest], kwargs) => ({ args: [list(owners), ...rest], kwargs });
+/**
+ * A contact label's bit, or the sum of several (manageLabels.py ManageLabel, 76 to 78), as the page sends it: a
+ * number as it is, and past what a number holds exactly the text of its digits, a long. Anything else as it came.
+ */
+const labelBits = (value) => orderNumber(value) ?? value;
+/** The address book's labels given or taken (addressbookService.py 1097, 1134): the owners a list, then the label's bits. */
+const ownersLabelled = ([owners, bits, ...rest], kwargs) => ({ args: [list(owners), labelBits(bits), ...rest], kwargs });
+/** A contact label renamed or deleted (1004, 1073): the label's bit first; the client's call where it goes as it came. */
+const labelFirst = ([bits, ...rest], kwargs) => {
+  const sent = labelBits(bits);
+  return { args: [sent, ...rest], kwargs, ...(sent === bits ? { status: "same" } : {}) };
+};
 /** mailSvc.SendMail (965): the recipients a list, as the compose window's self.toChars.values() is (evemail.py 2281). */
 const recipientsListed = ([recipients, ...rest], kwargs) => ({ args: [list(recipients), ...rest], kwargs });
 /** A mailing list's number, then its members chosen, a list (evemailingListConfig.py _GetSelectedMembers, 295 to 300). */
@@ -1795,6 +1810,12 @@ const RETAIL_CALLS = Object.freeze({
   "charMgr.BlockOwners": reshaped("eve/client/script/ui/shared/neocom/addressBook/addressbookService.py:658", ownersListed, "sm.RemoteSvc('charMgr').BlockOwners([ownerID]): one owner, in a list, not the pilot, no NPC's and none blocked already. In no recording."),
   "charMgr.UnblockOwners": reshaped("eve/client/script/ui/shared/neocom/addressBook/addressbookService.py:674", ownersListed, "sm.RemoteSvc('charMgr').UnblockOwners(blocked): the owners blocked among those named, a list. In no recording."),
   "charMgr.GetLabels": same("eve/client/script/ui/shared/neocom/addressBook/addressbookService.py:1029", "GetContactLabels('contact'): RemoteSvc('charMgr').GetLabels(), no arguments, by the service's name: the pilot's contact labels, asked as the Contacts window's labels are first shown (contactsForm.py GetLabelsSubContent) and kept. In no recording."),
+  "charMgr.EditContactsRelationshipID": reshaped("eve/client/script/ui/shared/neocom/addressBook/addressbookService.py:688", ownersListed, "sm.RemoteSvc('charMgr').EditContactsRelationshipID(contactIDs, relationshipID): from the window that edits several contacts (ContactManagementMultiEditWnd), the contacts selected a list and the standing one of the five. In no recording."),
+  "charMgr.CreateLabel": typing(same("eve/client/script/ui/shared/neocom/addressBook/addressbookService.py:1016", "CreateContactLabel(name): self.GetSvc().CreateLabel(name, color), the color None, from the Manage Labels window's Create (evemail.py ManageLabelsBase.CreateLabel), the name its field's, stripped, unicode; answered the label's bit. In no recording."), [0]),
+  "charMgr.EditLabel": typing(reshaped("eve/client/script/ui/shared/neocom/addressBook/addressbookService.py:1004", labelFirst, "EditContactLabel(labelID, name=name): self.GetSvc().EditLabel(labelID, name, color), a rename (RenameContactLabelFromUI, 990 to 999), the name the popup's, stripped, unicode, and the color None. In no recording."), [1]),
+  "charMgr.DeleteLabel": reshaped("eve/client/script/ui/shared/neocom/addressBook/addressbookService.py:1073", labelFirst, "self.GetSvc().DeleteLabel(labelID), after the DeleteMailLabel dialog (DeleteContactLabelFromUI, 1067 to 1070); then the labels asked again (1074 to 1084). In no recording."),
+  "charMgr.AssignLabels": reshaped("eve/client/script/ui/shared/neocom/addressBook/addressbookService.py:1097", ownersLabelled, "self.GetSvc().AssignLabels(selIDs, labelID): the contacts a list and the label's bit, or from the Manage Labels window the sum of the labels ticked (manageLabels.py 76 to 78). In no recording."),
+  "charMgr.RemoveLabels": reshaped("eve/client/script/ui/shared/neocom/addressBook/addressbookService.py:1134", ownersLabelled, "self.GetSvc().RemoveLabels(selIDs, labelID): as AssignLabels, the label taken off. In no recording."),
   "onlineStatus.GetInitialState": same("eve/client/script/ui/shared/comtool/onlineStatus.py:79", "RemoteSvc('onlineStatus').GetInitialState(), no arguments: asked once (Prime), as the character is chosen, and kept by contact"),
   "onlineStatus.GetOnlineStatus": same("eve/client/script/ui/shared/comtool/onlineStatus.py:56", "RemoteSvc('onlineStatus').GetOnlineStatus(charID), for a character the kept state does not have, and kept"),
   "onlineStatus.Prime": webOnly("eve/client/script/ui/shared/comtool/onlineStatus.py:74", "The client never asks this of the server. Prime is its own service's method, which asks GetInitialState() once."),

@@ -97,7 +97,7 @@ import {
   isNpcOwner,
   type DecodedMailbox,
 } from "../bridge/mail.ts";
-import { addressBookOf, contactLabelsOf, onlineStatesOf, type ContactWrite, type NamedAddressBook } from "../bridge/contacts.ts";
+import { addressBookOf, contactLabelsOf, createdLabelOf, labelBitsSent, onlineStatesOf, type ContactLabel, type ContactWrite, type NamedAddressBook } from "../bridge/contacts.ts";
 import { sendMail as sendMailCall, type MailToSend } from "../bridge/mailWrites.ts";
 import { mailMarkupOfTyped } from "../bridge/mailMarkup.ts";
 import { reprocess as reprocessCall } from "../bridge/reprocessWrites.ts";
@@ -1105,6 +1105,16 @@ export interface AppFlow {
   blockOwners(ownerIDs: readonly number[]): Promise<void>;
   /** Owners no longer blocked (charMgr.UnblockOwners); fails with the server's words. */
   unblockOwners(ownerIDs: readonly number[]): Promise<void>;
+  /** Several contacts given one standing (charMgr.EditContactsRelationshipID); fails with the server's words. */
+  editContactsRelationship(contactIDs: readonly number[], relationshipID: number): Promise<void>;
+  /** A contact label made (charMgr.CreateLabel), answered its bit; fails with the server's words. */
+  createContactLabel(name: string): Promise<bigint | null>;
+  /** A contact label renamed (charMgr.EditLabel); fails with the server's words. */
+  renameContactLabel(labelID: bigint, name: string): Promise<void>;
+  /** A contact label deleted (charMgr.DeleteLabel), and the labels asked again, as the client asks them; null where they could not be read. */
+  deleteContactLabel(labelID: bigint): Promise<readonly ContactLabel[] | null>;
+  /** A label's bits, or a sum of them, given to contacts or taken off them (charMgr.AssignLabels, RemoveLabels); fails with the server's words. */
+  labelContacts(contactIDs: readonly number[], bits: bigint, give: boolean): Promise<void>;
   /** The Contacts window's last group viewed by the pilot online, kept on this machine; none where none was. */
   contactsLastSelected(): number | string | null;
   /** The Contacts window's group viewed kept for the pilot online, on this machine. */
@@ -5559,9 +5569,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // The address book's writes (addressbookService.py 645 to 869), each a page write by the generic call; a refusal
   // told in the server's words, as the mail's are.
-  async function contactWrite(method: string, args: readonly JsonValue[]): Promise<void> {
+  async function contactWrite(method: string, args: readonly JsonValue[]): Promise<JsonValue> {
     try {
-      await bridgeDo("charMgr", method, [...args]);
+      return await bridgeDo("charMgr", method, [...args]);
     } catch (error) {
       throwIfRequestRetired(error);
       if (isSessionLost(error)) {
@@ -5602,6 +5612,32 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   async function unblockOwners(ownerIDs: readonly number[]): Promise<void> {
     await contactWrite("UnblockOwners", [[...ownerIDs]]);
+  }
+
+  // EditContacts (682 to 703), from the window that edits several: EditContactsRelationshipID with the contacts, a
+  // list, and the standing chosen.
+  async function editContactsRelationship(contactIDs: readonly number[], relationshipID: number): Promise<void> {
+    await contactWrite("EditContactsRelationshipID", [[...contactIDs], relationshipID]);
+  }
+
+  // The contact labels' writes (1001 to 1147): CreateLabel(name, None), answered the label's bit; EditLabel(labelID,
+  // name, None), a rename; DeleteLabel(labelID), after which the client lets its labels go and asks them again
+  // (1074 to 1084); AssignLabels and RemoveLabels(contactIDs, labelID), the contacts a list.
+  async function createContactLabel(name: string): Promise<bigint | null> {
+    return createdLabelOf(await contactWrite("CreateLabel", [name, null]));
+  }
+
+  async function renameContactLabel(labelID: bigint, name: string): Promise<void> {
+    await contactWrite("EditLabel", [labelBitsSent(labelID), name, null]);
+  }
+
+  async function deleteContactLabel(labelID: bigint): Promise<readonly ContactLabel[] | null> {
+    await contactWrite("DeleteLabel", [labelBitsSent(labelID)]);
+    return bridgeAsk("charMgr", "GetLabels", []).then(contactLabelsOf, () => null);
+  }
+
+  async function labelContacts(contactIDs: readonly number[], bits: bigint, give: boolean): Promise<void> {
+    await contactWrite(give ? "AssignLabels" : "RemoveLabels", [[...contactIDs], labelBitsSent(bits)]);
   }
 
   function contactLoggedOnOrOff(method: string | null, args: readonly unknown[]): void {
@@ -16389,6 +16425,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     deleteContacts,
     blockOwners,
     unblockOwners,
+    editContactsRelationship,
+    createContactLabel,
+    renameContactLabel,
+    deleteContactLabel,
+    labelContacts,
     contactsLastSelected,
     onlineBuddyOnly,
     keepOnlineBuddyOnly,
