@@ -953,6 +953,42 @@ const oneBubbleBroadcast = (args, kwargs, context) => {
   return context.fleetID === null ? { status: "differs", note: "The client broadcasts only from a session in a fleet: in none it sends nothing." } : {};
 };
 
+/**
+ * fleetSvc's watchlist, self.favorites: a set, which blue writes by the reduce protocol, (set, ([...],)) (blue's
+ * src/Marshal.cpp WriteObjectReduce; set.__reduce_ex__(2) in the client's Python), its items in the set's own order.
+ * The page says a list, of pilots' numbers. Null where what was given is no such list.
+ */
+const watchlistSet = (given) => {
+  const listed = Array.isArray(given) ? given : given && given.type === "list" && Array.isArray(given.items) ? given.items : null;
+  if (listed === null || !listed.every((id) => Number.isSafeInteger(id) && id > 0)) return null;
+  return { type: "objectex1", header: [token("__builtin__.set"), [{ type: "list", items: dictOrder(listed) }]], list: [], dict: [] };
+};
+/**
+ * fleetSvc.AddFavorite (640 to 682): fleetMgr.AddToWatchlist(newCharsAdded, fav), the pilots just added (a list) and
+ * every favourite with them (GetWatchlistMembers, 788: the set; None with damage updates off, which the page never is);
+ * from a session in a fleet (CheckIsInFleet, 641). No recording has one.
+ */
+const addingToWatchlist = (args, kwargs, context) => {
+  const [added, favorites] = args;
+  const set = watchlistSet(favorites);
+  if (!(args.length === 2 && Array.isArray(added) && added.length > 0 && added.every((id) => Number.isSafeInteger(id) && id > 0) && set !== null && Object.keys(kwargs).length === 0)) {
+    return { args, kwargs, status: "differs", note: "The client sends the pilots it added, as a list, and every favourite, as its set: AddToWatchlist(newCharsAdded, favorites)." };
+  }
+  if (context.fleetID === null) return { args, kwargs, status: "differs", note: "The client keeps a watchlist only in a fleet: in none it sends nothing." };
+  // newCharsAdded is a list the client appends to (659 to 663); an array of the page's goes as a tuple else.
+  return { args: [{ type: "list", items: added }, set], kwargs };
+};
+/** fleetSvc.RemoveFavorite (715 to 723): fleetMgr.RemoveFromWatchlist(charID, favs), the pilot taken off and every favourite left (the set). */
+const removingFromWatchlist = (args, kwargs, context) => {
+  const [taken, favorites] = args;
+  const set = watchlistSet(favorites);
+  if (!(args.length === 2 && Number.isSafeInteger(taken) && taken > 0 && set !== null && Object.keys(kwargs).length === 0)) {
+    return { args, kwargs, status: "differs", note: "The client sends the pilot it took off and every favourite left, as its set: RemoveFromWatchlist(charID, favorites)." };
+  }
+  if (context.fleetID === null) return { args, kwargs, status: "differs", note: "The client keeps a watchlist only in a fleet: in none it sends nothing." };
+  return { args: [taken, set], kwargs };
+};
+
 /** droneFunctions.RealScoopToDroneBay (195): ship.ScoopDrone(objectIDs), the drones as one list of their IDs and nothing else. */
 const scooping = (args, kwargs) => (args.length === 1 && Array.isArray(args[0]) && args[0].length > 0 && args[0].every((each) => Number.isSafeInteger(each) && each > 0)
   && Object.keys(kwargs).length === 0 ? {} : { status: "differs", note: "The client sends the drones as one list of their IDs, and nothing else." });
@@ -2208,6 +2244,8 @@ const RETAIL_CALLS = Object.freeze({
     "bp.CmdAlignTo(dstID=targetID, bookmarkID=bookmarkID), on the ballpark's object: a thing or a bookmark by name, the other None, and nothing by position; from the menu, the shortcut and a site's bracket. With no park, and for the pilot's own ship, it sends nothing. It answers nothing. Tranquility's two recordings have it so, the thing a long."),
   "beyonce.CmdFleetTagTarget": judged("eve/client/script/ui/services/menusvc.py:2825", tagging,
     "michelle.GetRemotePark().CmdFleetTagTarget(itemID, tag): a fleet's tag on a thing in space, from the menu and from the shortcuts, on the ballpark's object. It answers nothing, set or not. No recording has one."),
+  "fleetMgr.AddToWatchlist": judged(`${FLEET_SVC}:669`, addingToWatchlist, "sm.RemoteSvc('fleetMgr').AddToWatchlist(newCharsAdded, fav): the pilots added and every favourite, the client's set"),
+  "fleetMgr.RemoveFromWatchlist": judged(`${FLEET_SVC}:719`, removingFromWatchlist, "sm.RemoteSvc('fleetMgr').RemoveFromWatchlist(charID, favs): the pilot taken off and every favourite left, the client's set"),
   "fleetMgr.BroadcastToBubble": judged(`${FLEET_SVC}:998`, oneBubbleBroadcast,
     "sm.RemoteSvc('fleetMgr').BroadcastToBubble(name, self.broadcastScope, itemID, typeID): the client's broadcasts to its bubble (the three calls for repair, Target and HealTarget), the type left at None, and none sent inside the client's own wait since its last broadcast. No recording has one."),
   "fleetMgr.ForceLeaveFleet": judged(`${FLEET_SVC}:367`, leavingByName, "sm.RemoteSvc('fleetMgr').ForceLeaveFleet(), no arguments: asked only where the client holds no object for a fleet the session is in"),

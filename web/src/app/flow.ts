@@ -434,7 +434,7 @@ import { readAvailableFleetAds, readFleetFinder as readFleetFinderCalls } from "
 import { readMyLaunches } from "../bridge/launchReads.ts";
 import { readCharacterFittings, readCorporationFittings } from "../bridge/fittingReads.ts";
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
-import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, kickFleetMember as kickFleetMemberCall, leaveFleet as leaveFleetCall, makeFleetLeader as makeFleetLeaderCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
+import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, kickFleetMember as kickFleetMemberCall, leaveFleet as leaveFleetCall, makeFleetLeader as makeFleetLeaderCall, tagFleetTarget, addToWatchlist as addToWatchlistCall, removeFromWatchlist as removeFromWatchlistCall, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { BOOKMARK_EXPIRY, addFolder as addFolderCall, addToKnownFolders as addToKnownFoldersCall, copyBookmarks as copyBookmarksCall, moveBookmarks as moveBookmarksCall, removeFromKnownFolders as removeFromKnownFoldersCall, type MovedOrCopied, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, createSubfolder as createSubfolderCall, updateFolder as updateFolderCall, type FolderAccess, deleteBookmarks as deleteBookmarksCall, deleteFolder as deleteFolderCall, deleteSubfolder as deleteSubfolderCall, setFolderActive as setFolderActiveCall, updateBookmark as updateBookmarkCall, updateSubfolder as updateSubfolderCall } from "../bridge/bookmarkWrites.ts";
 import { giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
 import { afterArriving, keepWaypoints, readWaypoints, withWaypoint, withoutWaypoint, type PilotPlace } from "../nav/waypoints.ts";
@@ -1017,6 +1017,14 @@ export interface AppFlow {
    * FleetCannotDoInStructure).
    */
   broadcastTravelToMe(): Promise<"sent" | "unsent" | "not-in-fleet" | "in-station" | "in-structure">;
+  /**
+   * Add Pilot to Watchlist, from the fleet's menu for a member: the pilots added to the pilot's watchlist and the
+   * server told, after the client's checks. What came of it: added, nothing to add (the pilot's own, one no member,
+   * or one already on it), or refused (not in a fleet: FleetNotInFleet; the list full: FleetTooManyFavorites).
+   */
+  addToFleetWatchlist(characterIDs: readonly number[]): Promise<"added" | "unchanged" | "not-in-fleet" | "too-many">;
+  /** Remove Pilot from Watchlist, from the same menu: the pilot taken off and the server told; refused out of a fleet. */
+  removeFromFleetWatchlist(characterID: number): Promise<"removed" | "not-in-fleet">;
   /**
    * The fleet finder, for a pilot that has been told which fleet to join: the
    * adverts open to this session, and the name of the fleet it is already in.
@@ -5141,6 +5149,60 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return "in-station";
     }
     return (await fleetBroadcasts.toFleet("TravelTo", FLEET_BROADCAST_SCOPE_ALL, now.solarSystemID)) ? "sent" : "unsent";
+  }
+
+  /** evefleet MAX_DAMAGE_SENDERS: the most pilots a watchlist holds. */
+  const MAX_WATCHLIST = 100;
+
+  // fleetSvc.AddFavorite (640 to 682): CheckIsInFleet (FleetNotInFleet); the pilot's own number dropped; the list full
+  // already refused (FleetTooManyFavorites); of the rest, the fleet's members not on it yet are added while there is
+  // room; then fleetMgr.AddToWatchlist(newCharsAdded, favorites), every favourite after the adding. The list is kept
+  // whatever the call comes to, as the client keeps its set.
+  async function addToFleetWatchlist(characterIDs: readonly number[]): Promise<"added" | "unchanged" | "not-in-fleet" | "too-many"> {
+    const state = store.fleet.get();
+    if (state.availability !== "ready" || state.fleet === null) {
+      return "not-in-fleet";
+    }
+    const me = onlineCharacterID();
+    const wanted = characterIDs.filter((id) => id !== me);
+    if (wanted.length === 0) {
+      return "unchanged";
+    }
+    const favorites = [...(state.watchlist ?? [])];
+    if (favorites.length >= MAX_WATCHLIST) {
+      return "too-many";
+    }
+    const members = new Set(state.fleet.initState.value.members.map((member) => Number(member.charID)));
+    const added: number[] = [];
+    for (const id of wanted) {
+      if (!members.has(id) || favorites.includes(id)) {
+        continue;
+      }
+      if (favorites.length >= MAX_WATCHLIST) {
+        break;
+      }
+      favorites.push(id);
+      added.push(id);
+    }
+    if (added.length === 0) {
+      return "unchanged";
+    }
+    store.apply({ type: "fleet/watchlist", members: favorites });
+    await addToWatchlistCall(bridgeDo, added, favorites);
+    return "added";
+  }
+
+  // fleetSvc.RemoveFavorite (715 to 723): CheckIsInFleet; the pilot taken off; fleetMgr.RemoveFromWatchlist(charID,
+  // favs), every favourite left.
+  async function removeFromFleetWatchlist(characterID: number): Promise<"removed" | "not-in-fleet"> {
+    const state = store.fleet.get();
+    if (state.availability !== "ready" || state.fleet === null) {
+      return "not-in-fleet";
+    }
+    const favorites = (state.watchlist ?? []).filter((id) => id !== characterID);
+    store.apply({ type: "fleet/watchlist", members: favorites });
+    await removeFromWatchlistCall(bridgeDo, characterID, favorites);
+    return "removed";
   }
 
   async function readFleetFinder(inAFleet: boolean | null = null): Promise<FleetFinderRead> {
@@ -17079,6 +17141,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     warpToFleetMember,
     warpFleetToMember,
     broadcastTravelToMe,
+    addToFleetWatchlist,
+    removeFromFleetWatchlist,
     readFleetFinder,
     applyToJoinFleet,
     flyToPoint,

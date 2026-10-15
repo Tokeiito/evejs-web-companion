@@ -393,6 +393,7 @@ const INITIAL_FLEET: FleetCenterState = Object.freeze({
   refreshedAtMs: null,
   lastBroadcast: null,
   targetTags: null,
+  watchlist: [],
   authoritativeFleetID: null,
 });
 
@@ -1583,6 +1584,7 @@ export function createClientStore(): ClientStore {
           pendingInvite: event.availability === "ready" ? null : current.pendingInvite,
           lastBroadcast: switchedFleet ? null : current.lastBroadcast,
           targetTags: switchedFleet ? null : current.targetTags,
+          watchlist: switchedFleet || event.availability === "not-in-fleet" ? [] : current.watchlist,
           // Only an authoritative read moves the basis; a blip leaves it alone.
           authoritativeFleetID: authoritative
             ? event.fleet.fleetID
@@ -1625,6 +1627,9 @@ export function createClientStore(): ClientStore {
         break;
       case "fleet/target-tags":
         fleet.set({ ...fleet.get(), targetTags: event.tags });
+        break;
+      case "fleet/watchlist":
+        fleet.set({ ...fleet.get(), watchlist: event.members });
         break;
       case "fleet/cleared":
         fleet.set(INITIAL_FLEET);

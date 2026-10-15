@@ -255,7 +255,7 @@
     spot: "UI/PeopleAndPlaces/SpotInSolarSystem",
   } as const;
   /** The client's dialogs the window says things with. */
-  const DIALOGS = ["RemoveOneFromContacts", "RemoveManyFromContacts", "DeleteMailLabel", "MailLabelNameExists", "LookupStringMinimum", "NoStandingsSelected", "RemoveAgents", "ConfirmDeleteFolder", "PartialSearchLessThanMinLength", "ConfirmMakeFleetBoss", "FleetNotInFleetInSpace", "FleetCannotDoInStation", "FleetCannotDoInStructure"] as const;
+  const DIALOGS = ["RemoveOneFromContacts", "RemoveManyFromContacts", "DeleteMailLabel", "MailLabelNameExists", "LookupStringMinimum", "NoStandingsSelected", "RemoveAgents", "ConfirmDeleteFolder", "PartialSearchLessThanMinLength", "ConfirmMakeFleetBoss", "FleetNotInFleetInSpace", "FleetCannotDoInStation", "FleetCannotDoInStructure", "FleetNotInFleet", "FleetTooManyFavorites"] as const;
   /** appConst.mailMaxLabelSize: the longest name a label has (evemail.py ManageLabelsBase, 1543; addressbookService.py 991). */
   const MAX_LABEL_NAME = 40;
 
@@ -620,6 +620,8 @@
     /** GetSelectedFormationName (evefleet/client/util.py 37): the formation of a pilot who has chosen none, POINT. */
     formationPoint: "UI/Fleet/FleetFormations/Point",
     travelToMe: "UI/Fleet/FleetBroadcast/Commands/BroadcastTravelToMe",
+    addWatch: "UI/Fleet/AddPilotToWatchlist",
+    removeWatch: "UI/Fleet/RemovePilotFromWatchlist",
   } as const;
   /**
    * A commander's warp of its own to a member (characterCheckers.py OfferWarpFleetToMember, 538 to 563): the fleet's
@@ -668,7 +670,7 @@
    * Make Fleet Leader for another, the pilot its creator; Warp to Member for another, the pilot in space and the member
    * far enough; Leave My Fleet for the pilot's own.
    */
-  function fleetOffersOf(ownerID: number): { readonly kick: boolean; readonly leader: boolean; readonly travelToMe: boolean; readonly warp: boolean; readonly groupWarp: keyof typeof GROUP_WARP_WORDS | null; readonly leave: boolean } {
+  function fleetOffersOf(ownerID: number): { readonly kick: boolean; readonly leader: boolean; readonly addWatch: boolean; readonly removeWatch: boolean; readonly travelToMe: boolean; readonly warp: boolean; readonly groupWarp: keyof typeof GROUP_WARP_WORDS | null; readonly leave: boolean } {
     const mine = ownerID === myID;
     const member = fleetMembers.find((each) => Number(each.charID) === ownerID) ?? null;
     const creator = myFleetMember !== null && (myFleetMember.job & FLEET_JOB_CREATOR) !== 0;
@@ -681,6 +683,10 @@
     return {
       kick: !mine && (creator || subordinate),
       leader: !mine && creator,
+      // OfferAddPilotToWatchlist and OfferRemovePilotFromWatchlist (465 to 468, 526 to 529): another, not on the
+      // pilot's watchlist yet, or on it.
+      addWatch: !mine && !($fleetState.watchlist ?? []).includes(ownerID),
+      removeWatch: !mine && ($fleetState.watchlist ?? []).includes(ownerID),
       // OfferBroadcastTravelToMe (492 to 499): the pilot's own, as the fleet's creator or a commander (fleetCmdrRoles).
       travelToMe: mine && (creator || role === FLEET_ROLE.leader || role === FLEET_ROLE.wingCmdr || role === FLEET_ROLE.squadCmdr),
       warp,
@@ -737,6 +743,23 @@
   function warpToMember(ownerID: number, range: number): void {
     fleetDone();
     void run(() => flow.warpToFleetMember(ownerID, range));
+  }
+
+  /**
+   * Add Pilot to Watchlist and Remove Pilot from Watchlist (fleetSvc.AddFavorite, RemoveFavorite): the pilot's own list
+   * of members to watch, the server told. What the client refuses is said in its own dialog's words.
+   */
+  function watch(ownerID: number, add: boolean): void {
+    fleetDone();
+    void run(async () => {
+      const outcome = add ? await flow.addToFleetWatchlist([ownerID]) : await flow.removeFromFleetWatchlist(ownerID);
+      if (outcome === "not-in-fleet") {
+        throw new Error(filledWord("dialog:FleetNotInFleet/body", "That needs a fleet.", {}));
+      }
+      if (outcome === "too-many") {
+        throw new Error(filledWord("dialog:FleetTooManyFavorites/body", "The watchlist holds {num} pilots at most.", { num: "100" }));
+      }
+    });
   }
 
   /**
@@ -2622,6 +2645,12 @@
       {/if}
       {#if fleetOffers.leader}
         <button type="button" class="minor" disabled={busy} onclick={() => makeBoss(ownerID, name)}>{word(FLEET_WORDS.makeLeader, "Hand the fleet on")}</button>
+      {/if}
+      {#if fleetOffers.addWatch}
+        <button type="button" class="minor" disabled={busy} onclick={() => watch(ownerID, true)}>{word(FLEET_WORDS.addWatch, "Watch this pilot")}</button>
+      {/if}
+      {#if fleetOffers.removeWatch}
+        <button type="button" class="minor" disabled={busy} onclick={() => watch(ownerID, false)}>{word(FLEET_WORDS.removeWatch, "Stop watching this pilot")}</button>
       {/if}
       {#if fleetOffers.travelToMe}
         <button type="button" class="minor" disabled={busy} onclick={broadcastTravelToMe}>{word(FLEET_WORDS.travelToMe, "Call the fleet here")}</button>

@@ -962,6 +962,11 @@ export interface FleetCenterState {
   /** The most recent OnFleetBroadcast call ("shoot that"). Last-write-wins. */
   readonly lastBroadcast: FleetBroadcast | null;
   /**
+   * The pilot's watchlist in this fleet, fleetSvc's self.favorites, in the order its members were added: kept by the
+   * page as the client keeps it, and gone with the fleet (ProcessSessionChange, 1671: favorites.clear()).
+   */
+  readonly watchlist?: readonly number[];
+  /**
    * itemID -> standing target tag, from the last OnFleetStateChange.
    * ⚠ `null` and an empty map mean different things and must stay distinct:
    * `null` = never received (or unreadable) this fleet; an empty map =

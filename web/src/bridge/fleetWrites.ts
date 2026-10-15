@@ -150,6 +150,26 @@ export async function applyToJoinFleet(act: Ask, fleetID: number, autoAccept: bo
   return applyOutcome(await act("fleetProxy", "ApplyToJoinFleet", [fleetID, autoAccept]));
 }
 
+// ── The watchlist ───────────────────────────────────────────────────────────
+//
+// fleetSvc keeps a watchlist of members, self.favorites (a set), and tells fleetMgr of it whenever it changes:
+//
+//   fleetMgr.AddToWatchlist(newCharsAdded, favorites)     AddFavorite (640 to 682)
+//   fleetMgr.RemoveFromWatchlist(charID, favorites)       RemoveFavorite (715 to 723)
+//
+// the favourites every one after the change, the client's set (the transport makes the page's list one). Neither is
+// in a Tranquility recording.
+
+/** Tells the server of pilots added to the watchlist, and of every favourite with them. Fails as the call fails. */
+export async function addToWatchlist(act: Ask, added: readonly number[], favorites: readonly number[]): Promise<void> {
+  await act("fleetMgr", "AddToWatchlist", [[...added], [...favorites]]);
+}
+
+/** Tells the server of a pilot taken off the watchlist, and of every favourite left. Fails as the call fails. */
+export async function removeFromWatchlist(act: Ask, characterID: number, favorites: readonly number[]): Promise<void> {
+  await act("fleetMgr", "RemoveFromWatchlist", [characterID, [...favorites]]);
+}
+
 /** The broadcasts the client sends to its bubble, by the names it sends them with (evefleet/const.py). */
 export type BubbleBroadcast = "HealArmor" | "HealShield" | "HealCapacitor" | "Target" | "HealTarget";
 
