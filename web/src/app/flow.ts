@@ -434,7 +434,7 @@ import { readAvailableFleetAds, readFleetFinder as readFleetFinderCalls } from "
 import { readMyLaunches } from "../bridge/launchReads.ts";
 import { readCharacterFittings, readCorporationFittings } from "../bridge/fittingReads.ts";
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
-import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, kickFleetMember as kickFleetMemberCall, leaveFleet as leaveFleetCall, makeFleetLeader as makeFleetLeaderCall, tagFleetTarget, addToWatchlist as addToWatchlistCall, removeFromWatchlist as removeFromWatchlistCall, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
+import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, kickFleetMember as kickFleetMemberCall, leaveFleet as leaveFleetCall, makeFleetLeader as makeFleetLeaderCall, moveFleetMember as moveFleetMemberCall, tagFleetTarget, addToWatchlist as addToWatchlistCall, removeFromWatchlist as removeFromWatchlistCall, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { BOOKMARK_EXPIRY, addFolder as addFolderCall, addToKnownFolders as addToKnownFoldersCall, copyBookmarks as copyBookmarksCall, moveBookmarks as moveBookmarksCall, removeFromKnownFolders as removeFromKnownFoldersCall, type MovedOrCopied, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, createSubfolder as createSubfolderCall, updateFolder as updateFolderCall, type FolderAccess, deleteBookmarks as deleteBookmarksCall, deleteFolder as deleteFolderCall, deleteSubfolder as deleteSubfolderCall, setFolderActive as setFolderActiveCall, updateBookmark as updateBookmarkCall, updateSubfolder as updateSubfolderCall } from "../bridge/bookmarkWrites.ts";
 import { giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
 import { afterArriving, keepWaypoints, readWaypoints, withWaypoint, withoutWaypoint, type PilotPlace } from "../nav/waypoints.ts";
@@ -1005,6 +1005,8 @@ export interface AppFlow {
   kickFleetMember(characterID: number): Promise<void>;
   /** Hand the fleet's boss on to a member, as the fleet's menu for a member does once asked; the fleet read again. */
   makeFleetLeader(characterID: number): Promise<void>;
+  /** Give a member another place in the fleet, as the fleet's menu for a member does (Move Fleet Member); the fleet read again. */
+  moveFleetMember(characterID: number, wingID: number | null, squadID: number | null, role: number): Promise<void>;
   /** Warp to a member of the pilot's fleet at a range, as the fleet's menu for a member does. */
   warpToFleetMember(characterID: number, range: number): Promise<void>;
   /** Warp the pilot's fleet, wing or squad to a member at a range, as the fleet's menu for a member does for a commander. */
@@ -4918,6 +4920,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         return "The fleet could not be re-read after the member was kicked.";
       case "leader":
         return "The fleet could not be re-read after the boss was handed on.";
+      case "move":
+        return "The fleet could not be re-read after the member was moved.";
     }
   }
 
@@ -5122,6 +5126,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // fleetSvc.MakeLeader (601 to 605): the boss handed on, on the fleet's object, once the question is answered yes.
   async function makeFleetLeader(characterID: number): Promise<void> {
     await runFleetAction("leader", () => makeFleetLeaderCall(bridgeDo, characterID), "ready");
+  }
+
+  // fleetSvc.MoveMember (513 to 520): self.fleet.MoveMember(charID, wingID, squadID, role); the asking of a pilot who
+  // moves itself down (CheckIfIsOKWithDemotion) is the menu's, before this.
+  async function moveFleetMember(characterID: number, wingID: number | null, squadID: number | null, role: number): Promise<void> {
+    await runFleetAction("move", () => moveFleetMemberCall(bridgeDo, characterID, wingID, squadID, role), "ready");
   }
 
   // menusvc.WarpToMember (2748): CmdWarpToStuff('char', charID, minRange=warpRange), from the fleet's menu for a member
@@ -17140,6 +17150,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     leaveFleet,
     kickFleetMember,
     makeFleetLeader,
+    moveFleetMember,
     warpToFleetMember,
     warpFleetToMember,
     broadcastTravelToMe,

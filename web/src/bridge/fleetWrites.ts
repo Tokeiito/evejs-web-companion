@@ -284,6 +284,17 @@ export async function leaveFleet(act: Ask): Promise<void> {
 //
 // ⚠ THE ANSWER IS NO PROOF OF ANYTHING. As with every fleet write here, the fleet is read again after.
 
+/**
+ * Gives a member of the pilot's fleet another place (fleetSvc.MoveMember, 513 to 520): self.fleet.MoveMember(charID,
+ * wingID, squadID, role), None for what the place does not say (evefleet.client.MemberMenu). Fails as the call fails.
+ */
+export async function moveFleetMember(act: Ask, characterID: number, wingID: number | null, squadID: number | null, role: number): Promise<void> {
+  if (!Number.isSafeInteger(characterID) || characterID <= 0) {
+    throw new Error("A fleet member is required.");
+  }
+  await act("fleetObjectHandler", "MoveMember", [characterID, wingID, squadID, role]);
+}
+
 /** Kicks a member of the pilot's fleet (not the pilot's own, which is leaving). Fails as the call fails. */
 export async function kickFleetMember(act: Ask, characterID: number): Promise<void> {
   if (!Number.isSafeInteger(characterID) || characterID <= 0) {

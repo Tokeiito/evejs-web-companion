@@ -66,6 +66,7 @@
   import { onMount } from "svelte";
   import { formatTemplate, plainText, type TemplateArguments } from "../bridge/clientWords.ts";
   import { shownSecurity } from "../bridge/systemSecurity.ts";
+  import { FLEET_ROLE as MENU_ROLE, memberMenu, rankLabel, type MemberMenuEntry, type MemberMenuPlace, type MemberMenuSquad, type MemberMenuWing } from "../bridge/fleetMemberMenu.ts";
   import { resolvedName } from "../store/names.ts";
   import {
     CONTACT_GROUP,
@@ -255,7 +256,7 @@
     spot: "UI/PeopleAndPlaces/SpotInSolarSystem",
   } as const;
   /** The client's dialogs the window says things with. */
-  const DIALOGS = ["RemoveOneFromContacts", "RemoveManyFromContacts", "DeleteMailLabel", "MailLabelNameExists", "LookupStringMinimum", "NoStandingsSelected", "RemoveAgents", "ConfirmDeleteFolder", "PartialSearchLessThanMinLength", "ConfirmMakeFleetBoss", "FleetNotInFleetInSpace", "FleetCannotDoInStation", "FleetCannotDoInStructure", "FleetNotInFleet", "FleetTooManyFavorites"] as const;
+  const DIALOGS = ["RemoveOneFromContacts", "RemoveManyFromContacts", "DeleteMailLabel", "MailLabelNameExists", "LookupStringMinimum", "NoStandingsSelected", "RemoveAgents", "ConfirmDeleteFolder", "PartialSearchLessThanMinLength", "ConfirmMakeFleetBoss", "FleetNotInFleetInSpace", "FleetCannotDoInStation", "FleetCannotDoInStructure", "FleetNotInFleet", "FleetTooManyFavorites", "FleetConfirmDemoteSelf"] as const;
   /** appConst.mailMaxLabelSize: the longest name a label has (evemail.py ManageLabelsBase, 1543; addressbookService.py 991). */
   const MAX_LABEL_NAME = 40;
 
@@ -526,6 +527,20 @@
   const fleetKnown = $derived($fleetState.availability === "ready" || $fleetState.availability === "not-in-fleet");
   const fleetMembers = $derived($fleetState.availability === "ready" ? ($fleetState.fleet?.initState.value.members ?? []) : []);
   const fleetMemberIDs = $derived(new Set(fleetMembers.map((member) => Number(member.charID))));
+  /** The fleet as MemberMenu reads it (fleetSvc.GetMembers, GetWings, GetOptions().isFreeMove), numbers made numbers. */
+  const idOrNull = (value: number | string | null): number | null => (value === null || value === "" || !Number.isFinite(Number(value)) ? null : Number(value));
+  const menuMembers = $derived(fleetMembers.flatMap((member) => {
+    const charID = idOrNull(member.charID);
+    return charID === null ? [] : [{ charID, role: member.role, job: member.job, wingID: idOrNull(member.wingID), squadID: idOrNull(member.squadID) }];
+  }));
+  const menuWings = $derived(($fleetState.availability === "ready" ? ($fleetState.fleet?.initState.value.wings ?? []) : []).flatMap((wing) => {
+    const wingID = idOrNull(wing.wingID);
+    return wingID === null ? [] : [{ wingID, name: wing.name, squads: wing.squads.flatMap((squad) => {
+      const squadID = idOrNull(squad.squadID);
+      return squadID === null ? [] : [{ squadID, name: squad.name }];
+    }) }];
+  }));
+  const fleetIsFreeMove = $derived($fleetState.fleet?.initState.value.options.isFreeMove === true);
   /** IsPilotFleetCreator or IsPilotFleetCommander (characterCheckers.py 425 to 427; sessionChecker.py 120 to 121). */
   const commandsFleet = $derived(fleetMembers.some((member) => Number(member.charID) === myID && isFleetCommander(member)));
 
@@ -620,6 +635,14 @@
     /** GetSelectedFormationName (evefleet/client/util.py 37): the formation of a pilot who has chosen none, POINT. */
     formationPoint: "UI/Fleet/FleetFormations/Point",
     travelToMe: "UI/Fleet/FleetBroadcast/Commands/BroadcastTravelToMe",
+    moveMember: "UI/Fleet/FleetSubmenus/MoveFleetMember",
+    wingX: "UI/Fleet/FleetSubmenus/WingX",
+    squadX: "UI/Fleet/FleetSubmenus/SquadX",
+    squadWithCount: "UI/Fleet/FleetSubmenus/SquadNameWithNumMembers",
+    rankLeader: "UI/Fleet/Ranks/FleetCommander",
+    rankWing: "UI/Fleet/Ranks/WingCommander",
+    rankSquad: "UI/Fleet/Ranks/SquadCommander",
+    rankMember: "UI/Fleet/Ranks/SquadMember",
     addWatch: "UI/Fleet/AddPilotToWatchlist",
     removeWatch: "UI/Fleet/RemovePilotFromWatchlist",
   } as const;
@@ -640,7 +663,7 @@
   const say = $derived(distanceSay($words.templates));
   /** The fleet menu open, by where it is and whose, and which of its parts is open. */
   let fleetMenuFor = $state<string | null>(null);
-  let fleetPart = $state<"kick" | "leave" | "warp" | "default" | "groupWarp" | "groupDefault" | null>(null);
+  let fleetPart = $state<"kick" | "leave" | "warp" | "default" | "groupWarp" | "groupDefault" | "move" | null>(null);
   const myFleetMember = $derived(fleetMembers.find((member) => Number(member.charID) === myID) ?? null);
 
   /** OfferFleetMenu (characterCheckers.py 158 to 165): a character of the pilot's own fleet, no NPC. */
@@ -778,6 +801,54 @@
         throw new Error(filledWord(`dialog:${refusal}/body`, outcome === "not-in-fleet" ? "That needs a fleet, and a ship in space." : outcome === "in-station" ? "That cannot be done from a station." : "That cannot be done from a structure.", {}));
       }
     });
+  }
+
+  /** Move Fleet Member (menusvc.FleetMenu: GetFleetMemberMenu2(charID, fleetSvc.MoveMember, True)): where the member may go. */
+  function moveMenuOf(ownerID: number): MemberMenuEntry[] {
+    if (myID === null) return [];
+    return memberMenu({ targetCharID: ownerID, me: myID, members: menuMembers, wings: menuWings, isFreeMove: fleetIsFreeMove, isMove: true });
+  }
+
+  /** A rank's word (RANK_LABELS), the page's own where the client's is not to hand. */
+  function rankWord(role: number | null): string {
+    const label = rankLabel(role);
+    const own = role === MENU_ROLE.leader ? "Fleet boss" : role === MENU_ROLE.wingCmdr ? "Wing lead" : role === MENU_ROLE.squadCmdr ? "Squad lead" : "Member";
+    return word(label, own);
+  }
+
+  /** A wing's name, or the client's WingX by its number. */
+  function wingWord(wing: MemberMenuWing): string {
+    return wing.name !== "" ? wing.name : filledWord(FLEET_WORDS.wingX, "Wing {wingNumber}", { wingNumber: String(wing.wingNumber) });
+  }
+
+  /** A squad's name, or the client's SquadX by its number, with how many are in it (SquadNameWithNumMembers). */
+  function squadWord(squad: MemberMenuSquad): string {
+    const squadName = squad.name !== "" ? squad.name : filledWord(FLEET_WORDS.squadX, "Squad {squadNumber}", { squadNumber: String(squad.squadNumber) });
+    return filledWord(FLEET_WORDS.squadWithCount, "{squadName} [{numMembers}]", { squadName, numMembers: String(squad.numMembers) });
+  }
+
+  /**
+   * fleetSvc.MoveMember (513 to 520): a pilot that moves itself to a lower role than its own, a fleet or wing
+   * commander and not the fleet's creator, is asked first (CheckIfIsOKWithDemotion, 505 to 511: FleetConfirmDemoteSelf).
+   */
+  function moveMember(ownerID: number, place: MemberMenuPlace): void {
+    fleetDone();
+    const role = place.role ?? MENU_ROLE.member;
+    const mine = myFleetMember;
+    const creator = mine !== null && (mine.job & FLEET_JOB_CREATOR) !== 0;
+    const move = () => fleetWrite(() => flow.moveFleetMember(ownerID, place.wingID, place.squadID, role));
+    if (ownerID === myID && mine !== null && !creator && mine.role < MENU_ROLE.squadCmdr && role > mine.role) {
+      question = {
+        title: filledWord("dialog:FleetConfirmDemoteSelf/title", "Step down?", {}),
+        body: filledWord("dialog:FleetConfirmDemoteSelf/body", "This gives up the command you hold.", {}),
+        answer: (yes) => {
+          question = null;
+          if (yes) move();
+        },
+      };
+      return;
+    }
+    move();
   }
 
   /** Warp Fleet, Wing or Squad to Member, and their Within (menusvc.WarpFleetToMember): the one call, the commander's. */
@@ -2637,6 +2708,7 @@
   <button type="button" class="minor" aria-expanded={fleetMenuFor === key} onclick={() => openFleetMenu(key)}>{word(FLEET_WORDS.fleet, "Fleet")} {fleetMenuFor === key ? "▾" : "▸"}</button>
   {#if fleetMenuFor === key}
     {@const fleetOffers = fleetOffersOf(ownerID)}
+    {@const moves = moveMenuOf(ownerID)}
     <span class="contacts-submenu">
       <button type="button" class="minor" onclick={() => { fleetDone(); ownerInfo(ownerID); }}>{word(WORDS.showInfo, "Info")}</button>
       {#if fleetOffers.kick}
@@ -2692,6 +2764,30 @@
         <button type="button" class="minor" aria-expanded={fleetPart === "leave"} onclick={() => (fleetPart = fleetPart === "leave" ? null : "leave")}>{word(FLEET_WORDS.leave, "Leave")} {fleetPart === "leave" ? "▾" : "▸"}</button>
         {#if fleetPart === "leave"}
           <button type="button" class="minor" disabled={busy} onclick={leaveMyFleet}>{word(FLEET_WORDS.confirm, "Yes, do it")}</button>
+        {/if}
+      {/if}
+      {#if moves.length > 0}
+        <button type="button" class="minor" aria-expanded={fleetPart === "move"} onclick={() => (fleetPart = fleetPart === "move" ? null : "move")}>{word(FLEET_WORDS.moveMember, "Put elsewhere")} {fleetPart === "move" ? "▾" : "▸"}</button>
+        {#if fleetPart === "move"}
+          {#each moves as entry, index (index)}
+            {#if entry.kind === "place"}
+              <button type="button" class="minor" disabled={busy} onclick={() => moveMember(ownerID, entry)}>{rankWord(entry.role)}</button>
+            {:else}
+              <span class="contacts-submenu" data-wing-id={entry.wingID}>{wingWord(entry)}:
+                {#each entry.entries as inner, innerIndex (innerIndex)}
+                  {#if inner.kind === "place"}
+                    <button type="button" class="minor" disabled={busy} onclick={() => moveMember(ownerID, inner)}>{rankWord(inner.role)}</button>
+                  {:else}
+                    <span class="contacts-submenu" data-squad-id={inner.squadID}>{squadWord(inner)}:
+                      {#each inner.places as place, placeIndex (placeIndex)}
+                        <button type="button" class="minor" disabled={busy} onclick={() => moveMember(ownerID, place)}>{rankWord(place.role)}</button>
+                      {/each}
+                    </span>
+                  {/if}
+                {/each}
+              </span>
+            {/if}
+          {/each}
         {/if}
       {/if}
     </span>
