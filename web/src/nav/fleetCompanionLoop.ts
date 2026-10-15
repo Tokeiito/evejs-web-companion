@@ -89,6 +89,23 @@ export interface CompanionHitPoints {
   readonly armor: number | null;
   readonly hull: number | null;
 }
+// `flight auto` (rung 8) and the range gate in rung 7 live in their own file;
+// this ladder keeps only the call sites, the memory and the wrapper.
+import type { RatCombatFacts } from "./combatPosition.ts";
+import {
+  closingOnTheHold,
+  decideCombatPosition,
+  FRESH_COMBAT_POSITION,
+  gunsInReach,
+  gunsInReachWords,
+  isCombatHoldOrder,
+  MAX_COMPANION_POSITION_REFUSALS,
+  settleCombatHold,
+  withoutCombatHold,
+  type CombatPositionLadder,
+  type CombatPositionMemory,
+  type WeaponReachState,
+} from "./companionCombatPosition.ts";
 import {
   COMPANION_FOLLOW_RANGE_M,
   isChatCommandSenderAllowed,
@@ -848,6 +865,18 @@ export interface FleetCompanionObservation extends ScriptObservation {
   readonly cargoCharges?: readonly CompanionCargoCharge[] | null;
   /** Weapon module itemID -> the charge groupIDs its type accepts, from the fit's own chargeFits. */
   readonly weaponChargeGroups?: Readonly<Record<number, readonly number[]>> | null;
+  /**
+   * What each hostile TYPE on this grid fights with and how it moves -- missile
+   * or turret, optimal, falloff, attack range, orbit range, speed -- read from
+   * static type dogma (`ratCombatFromAttributes`), for the `flight auto`
+   * positioning rung. Keyed by type for the reason `threatByTypeID` is.
+   *
+   * A type MISSING from the map has not been read, and one unread hostile makes
+   * the whole grid's reach unknown -- "we do not claim to know", which is never
+   * "it cannot hurt us": an unreadable grid is never kited (see
+   * combatPosition.ts). `null` or absent is the same thing said about every type.
+   */
+  readonly ratCombatByTypeID?: Readonly<Record<number, RatCombatFacts>> | null;
 }
 
 /**
@@ -1140,6 +1169,23 @@ export type FleetCompanionAction =
    * it), so nothing between here and the bridge re-checks the number.
    */
   | { readonly kind: "keepAtRange"; readonly targetID: number; readonly range: number }
+  /**
+   * `flight auto`: circle the engaged target at `range` metres. `CmdOrbit`, the
+   * same call the DSL's orbit block makes.
+   *
+   * ⚠ A STANDING SERVER-SIDE ORDER, LIKE `keepAtRange` ABOVE, AND GATED THE SAME
+   * WAY. The ship goes on orbiting with nothing further sent, so the positioning
+   * rung sends it once per anchor and range (`holdNeedsReissue`, `combatPosition`)
+   * and re-sends it only when the hold moves by more than the hysteresis: every
+   * re-aim turns the ship and throws away the transversal the orbit was for.
+   *
+   * ⚠ IT MOVES THE SHIP, SO IT IS IN `changesShipMovement`, and that is what
+   * makes formation come back after a fight: the wrapper clears the follow latch
+   * on it, so the first quiet tick re-issues the keep-at-range on the commander.
+   * An orbit left out of that list would leave the pilot circling a wreck while
+   * the readout said "Holding station".
+   */
+  | { readonly kind: "orbit"; readonly targetID: number; readonly range: number }
   /**
    * The `stop` chat order: cut the engines where the ship is.
    *
@@ -1799,7 +1845,7 @@ export interface CompanionLadderMemory {
    * operator just called off. The operator's words for `stop` are "it stops
    * where it is", which is a claim about the ship, not about one call. So the
    * standing behaviour is SUSPENDED rather than merely interrupted, and stays
-   * suspended until somebody says `follow` again.
+   * suspended until somebody says `follow` (or `flight auto`) again.
    *
    * Nothing else clears it. A new anchor does not, a warp does not, a fleet
    * order does not: the operator said stop, and only the operator un-says it.
@@ -1921,6 +1967,37 @@ export interface CompanionLadderMemory {
    */
   readonly targetMode: "called" | "all";
   /**
+   * `flight follow|auto`: whether the fleet commander leads the flight while
+   * this pilot fights, or the pilot flies itself into reach of its target
+   * (rung 8, `decideCombatPosition`).
+   *
+   * ⚠ "follow" IS THE DEFAULT, AND IT IS TODAY'S BEHAVIOUR. Positioning is a mode
+   * the commander switches on, not the default (operator, 2026-10-13): a fleet
+   * moving through gates, camping one, or whose FC wants the aggro must not have
+   * its companions break formation on their own. The range gate on the guns
+   * applies in both modes; only the flying differs.
+   *
+   * ⚠ IT LATCHES LIKE `targetMode`, AND A `stop` DOES NOT CLEAR IT, for the same
+   * reason: a mode is not an order. See `withStandingChatOrders`.
+   */
+  readonly flightMode: "follow" | "auto";
+  /**
+   * Rung 8's record of the fight: its standing order, the closing budget and
+   * leash on the engaged target, and whether formation is owed. See
+   * `CombatPositionMemory` (companionCombatPosition.ts) for each part; the
+   * wrapper drops the order on every movement rung 8 did not send.
+   */
+  readonly combatPosition: CombatPositionMemory;
+  /**
+   * Which guns the range gate last judged in and out of reach of `targetID`,
+   * for `inReach`'s stickiness. A gun in neither list has no state yet.
+   *
+   * ⚠ THE STICKINESS IS THE POINT: a rat drifting x, x+1, x across a gun's reach
+   * edge must not toggle that gun (operator: "no flicker"). A new target starts
+   * with no state, so its first answer is the plain edge.
+   */
+  readonly weaponReach: WeaponReachState | null;
+  /**
    * How many `loadAmmo` calls the reload rung has spent on each gun, keyed by
    * the module's own item id.
    *
@@ -2033,6 +2110,10 @@ export function freshLadderMemory(): CompanionLadderMemory {
     propsHeld: null,
     propsStoppingID: null,
     targetMode: "called",
+    // ⚠ "follow", NOT "auto": the commander leads until somebody says otherwise.
+    flightMode: "follow",
+    combatPosition: FRESH_COMBAT_POSITION,
+    weaponReach: null,
     reloadAttempts: {},
   };
 }
@@ -2200,7 +2281,8 @@ function nearestOf(
  *     1  yield to warp              server fleet warp wins, unconditionally
  *     2  supervision / abandonment  decision 5; getting safe lives here
  *     3  tank up                    hardeners, then each layer's repairer
- *     3b prop mod                   burn while travelling; `props on`/`off`
+ *     3b prop mod                   burn while travelling or closing (rung 8);
+ *                                   `props on`/`off`
  *     4  tackle -> tag              letter what is holding this ship
  *     5  flee                       leave, get whole, come back
  *     6  drones                     launch, recall a hurt one, redeploy
@@ -2208,8 +2290,12 @@ function nearestOf(
  *                                   already happened above the gate
  *     6b `destination` trip         the ONE rung that outranks the fleet
  *     6c reload                     load empty guns from this ship's cargo
- *     7  obeying the fleet          tags, broadcasts, chat commands
- *     8  salvage, then loot         the area jobs; both move the ship
+ *     7  obeying the fleet          tags, broadcasts, chat commands; guns
+ *                                   start only in reach of the target
+ *     7b lock-ahead                 the next kill's lock, while one stands
+ *     8  combat positioning         `flight auto` only: orbit / keep at range
+ *                                   on the target; holds navigation
+ *     8b salvage, then loot         the area jobs; both move the ship
  *        (the standing-order readout, if rung 7 had one)
  *     9  follow                     hold station on the FC; standing, endless
  *        "Standing by"
@@ -2276,18 +2362,42 @@ export function decideCompanionAction(
 ): CompanionDecision {
   const decision = decideCompanionStep(request, obs,
     obs.inWarp === true || obs.docked === true
-      ? { ...withoutIssuedFollow(memory), alignmentOrder: null } : memory, nowMs);
+      ? { ...clearMovementLatches(memory, null), alignmentOrder: null } : memory, nowMs);
   // These movements replace keep-at-range. Once requested, a lost response
   // cannot prove the previous formation is still in force. Keep the new
   // movement's own pending latch, but let formation resume when its job ends.
   if (decision.action.kind === "align") {
-    return { ...decision, memory: withoutIssuedFollow(withoutStaleCloseIn(decision.action, decision.memory)) };
+    return { ...decision, memory: clearMovementLatches(withoutStaleCloseIn(decision.action, decision.memory), decision.action) };
   }
   if (changesShipMovement(decision.action)) {
     const next = { ...withoutStaleCloseIn(decision.action, decision.memory), alignmentOrder: null };
-    return { ...decision, memory: decision.action.kind === "keepAtRange" ? next : withoutIssuedFollow(next) };
+    return { ...decision, memory: clearMovementLatches(next, decision.action) };
   }
   return decision;
+}
+
+/**
+ * The standing-movement latches `action` ends: formation's (`withoutIssuedFollow`)
+ * and rung 8's (`withoutCombatHold`). `null` is a warp or a dock, which ends both.
+ *
+ * ⚠ ONLY THE FORMATION ORDER ITSELF KEEPS THE FOLLOW LATCH. This used to exempt
+ * every `keepAtRange`, because rung 9 was the only rung that sent one. Rung 8
+ * sends one on a RAT: exempted, the latch would still name the commander, rung 9
+ * would read "already holding station" after the fight, and the pilot would sit
+ * where the fight ended for the rest of the run (plan §5.5; operator: must be
+ * fixed). So the exemption is the order rung 9 stamped -- a keep-at-range on
+ * `followAnchorID` -- and nothing else.
+ *
+ * ⚠ AND THE MIRROR IMAGE FOR RUNG 8'S OWN LATCH: every movement it did not send
+ * ends its orbit, so its "in position" record goes with it.
+ */
+function clearMovementLatches(
+  memory: CompanionLadderMemory,
+  action: FleetCompanionAction | null,
+): CompanionLadderMemory {
+  const formation = action?.kind === "keepAtRange" && action.targetID === memory.followAnchorID;
+  const kept = formation ? memory : withoutIssuedFollow(memory);
+  return action !== null && isCombatHoldOrder(action, kept) ? kept : withoutCombatHold(kept);
 }
 
 // `closingOn` stands for the approach that set it and nothing else. `decideCloseIn`
@@ -2303,7 +2413,8 @@ function withoutStaleCloseIn(action: FleetCompanionAction, memory: CompanionLadd
 function changesShipMovement(action: FleetCompanionAction): boolean {
   return action.kind === "approach" || action.kind === "align" || action.kind === "warp" ||
     action.kind === "warpToFleetMember" || action.kind === "travelTo" || action.kind === "jumpGate" ||
-    action.kind === "dock" || action.kind === "undock" || action.kind === "stopShip" || action.kind === "keepAtRange";
+    action.kind === "dock" || action.kind === "undock" || action.kind === "stopShip" || action.kind === "keepAtRange" ||
+    action.kind === "orbit";
 }
 
 function withoutIssuedFollow(memory: CompanionLadderMemory): CompanionLadderMemory {
@@ -2469,6 +2580,11 @@ function decideCompanionStep(
     propsHeld: memory.propsHeld,
     propsStoppingID: memory.propsStoppingID,
     targetMode: memory.targetMode,
+    flightMode: memory.flightMode,
+    // The positioning record is carried like the follow latch beside it: a human
+    // arriving moves nothing, so whatever orbit was standing is still standing.
+    combatPosition: memory.combatPosition,
+    weaponReach: memory.weaponReach,
     // Carried for the same reason as the orders above: a supervisor logging
     // back in says nothing about which of this ship's guns are empty or how
     // many loads have already been spent on them.
@@ -2613,7 +2729,7 @@ function decideCompanionStep(
   // as a READOUT while the ladder goes on. Before this, that case returned an
   // ordinary wait and ended the tick, so a standing target call starved every
   // rung beneath it for as long as it stood. See `CompanionDecision.standing`.
-  const obeying = recallBeforeLeavingOnOrder(
+  let obeying = recallBeforeLeavingOnOrder(
     decideFleetOrders(request, obs, reloading.memory, nowMs),
     request,
     obs,
@@ -2642,7 +2758,7 @@ function decideCompanionStep(
     }
   }
 
-  // Rung 8: the `loot` order.
+  // Rung 8b: the `loot` order.
   //
   // ⚠ IT SITS HERE, AT THE VERY BOTTOM, BECAUSE IT MOVES THE SHIP. Every other
   // thing this loop does is fired from where the pilot already is, or is a move
@@ -2657,7 +2773,22 @@ function decideCompanionStep(
   // no consumer since the flee moved above the fleet rung: a pilot whose guns are
   // already running on a called target should go on looting between shots rather
   // than reporting "Standing by" and doing nothing.
-  const lowerMemory = obeying?.memory ?? reloading.memory;
+  //
+  // Rung 8 runs first, though: `flight auto` combat positioning (plan §5.4,
+  // `decideCombatPosition` in companionCombatPosition.ts), after the lock-ahead
+  // because the next kill's lock costs nothing, and above the loot and salvage
+  // rungs because a fight outranks a wreck. A readout it returns replaces the
+  // standing order and HOLDS NAVIGATION, so the two rungs below may work from
+  // where the ship is but may not move it. A fight that has ended drops its
+  // record, which is why its memory flows on even when it decides nothing.
+  let lowerMemory = obeying?.memory ?? reloading.memory;
+  const positioned = decideCombatPosition(request, obs, obeying, lowerMemory, COMBAT_POSITION_LADDER);
+  lowerMemory = positioned.memory;
+  if (positioned.decision !== null && positioned.decision.standing !== true) {
+    return positioned.decision;
+  }
+  obeying = positioned.decision ?? (obeying === null ? null : { ...obeying, memory: lowerMemory });
+
   const salvaging = decideSalvaging(request, obs, lowerMemory);
   if (salvaging !== null && !(obeying?.holdsNavigation === true && changesShipMovement(salvaging.action))) {
     return salvaging;
@@ -2678,7 +2809,7 @@ function decideCompanionStep(
   // even the standing-order readout -- see `decideFollow`'s header for why a
   // rung that moves the ship for ever belongs at the very bottom, and for what
   // being beneath the readout costs.
-  const following = decideFollow(obs, reloading.memory);
+  const following = decideFollow(obs, lowerMemory);
   if (following !== null) {
     return following;
   }
@@ -2690,12 +2821,12 @@ function decideCompanionStep(
   // "Standing by", which is exactly what it is for: a pilot standing there doing
   // nothing should say why.
   if (reloading.decision !== null) {
-    return reloading.decision;
+    return { ...reloading.decision, memory: lowerMemory };
   }
   return waiting(
     "Standing by",
     "No fleet order to obey right now, nothing to loot, nothing hostile to put drones on, and no commander on this grid to hold station off.",
-    reloading.memory,
+    lowerMemory,
   );
 }
 
@@ -3973,6 +4104,7 @@ function lockThenEngage(
   obs: FleetCompanionObservation,
   memory: CompanionLadderMemory,
   nowMs: number,
+  measurement: SpaceMeasurement | null,
 ): CompanionDecision {
   // Free fire obeys nobody, so it says so: its own phase, and no
   // `followingOrderFrom`, which the controller reads as "own-ladder".
@@ -4007,7 +4139,10 @@ function lockThenEngage(
   if (memory.lockPending?.targetID === targetID) {
     memory = { ...memory, lockPending: null };
   }
-  const fire = decideOpenFire(targetID, request, obs, memory);
+  // The range gate (companionCombatPosition.ts): only the guns that reach it start.
+  const gated = gunsInReach(targetID, request, obs, memory, measurement);
+  memory = gated.memory;
+  const fire = decideOpenFire(targetID, { ...request, weaponModuleIDs: gated.inReach }, obs, memory);
   if (fire !== null) {
     return {
       action: { kind: "activate", moduleID: fire.moduleID, targetID },
@@ -4034,7 +4169,7 @@ function lockThenEngage(
       why +
       (request.weaponModuleIDs.length === 0
         ? " Locked. No weapon is picked for this pilot, so it holds the lock without firing."
-        : " Locked, and firing on it."),
+        : gunsInReachWords(gated.inReach.length, request.weaponModuleIDs.length)),
     memory,
     lastOrderHeard: heard,
     engagedTargetID: targetID,
@@ -4355,7 +4490,7 @@ interface NamedOrder {
  */
 type NamedChatCommandKind = Exclude<
   ChatCommand["kind"],
-  "salvage" | "loot" | "stop" | "follow" | "destination" | "props" | "targets"
+  "salvage" | "loot" | "stop" | "follow" | "destination" | "props" | "targets" | "flight"
 >;
 
 const CHAT_ORDER_NAMES: Readonly<Record<NamedChatCommandKind, NamedOrderName>> = Object.freeze({
@@ -4607,6 +4742,7 @@ function withStandingChatOrders(
       command.kind === "stop" ||
       command.kind === "props" ||
       command.kind === "targets" ||
+      command.kind === "flight" ||
       command.kind === "salvage" ||
       command.kind === "loot"
     ) {
@@ -4649,6 +4785,13 @@ function withStandingChatOrders(
     }
     if (command.kind === "targets") {
       next = { ...next, targetMode: command.mode };
+      continue;
+    }
+    if (command.kind === "flight") {
+      // ⚠ `flight auto` UN-SUSPENDS, LIKE `follow`: it is the commander telling
+      // the pilot to move again, and a mode switched on that a `stop` still held
+      // would be a pilot told to fly itself into reach that sits still.
+      next = { ...next, flightMode: command.mode, followHeld: command.mode === "auto" ? false : next.followHeld };
       continue;
     }
     // This is a new stop identity, so it gets one ship stop even when another
@@ -6440,7 +6583,13 @@ function decidePropulsion(
     activeModuleIDs: new Set(active),
     capacitorRatio: obs.capacitorRatio ?? null,
     scrammed: obs.scrammed ?? null,
-    wantBurn: memory.propsHeld ?? isUnderWay(obs, memory),
+    // ⚠ WHILE RUNG 8'S OWN ORDER STANDS, THE BURNER IS RUNG 8'S: lit only while
+    // closing on its hold. A drone boat's keep-at-range on a RAT is FOLLOW mode
+    // and is not formation, so `isUnderWay` alone would read it as travelling
+    // and burn the whole fight -- the bug the formation rule exists to remove.
+    wantBurn: memory.propsHeld ?? (memory.flightMode === "auto" && memory.combatPosition.hold !== null
+      ? closingOnTheHold(memory)
+      : closingOnTheHold(memory) || isUnderWay(obs, memory)),
     capFloor: request.capacitorFloor,
   };
   const call = decidePropulsionModule(inputs);
@@ -6486,6 +6635,7 @@ function decidePropulsion(
         why:
           memory.propsHeld === true
             ? "A commander said props on in chat. Lighting the prop mod."
+            : closingOnTheHold(memory) ? "Closing in on the target. Lighting the prop mod."
             : "Travelling. Lighting the prop mod.",
         memory: { ...memory, propsStoppingID: null },
         ...(memory.propsHeld === true
@@ -7983,6 +8133,41 @@ export const COMPANION_RESEND_WAIT_TICKS = 2;
  */
 export const COMPANION_RETRY_BACKOFF_TICKS = 15;
 
+/**
+ * What rung 8 (companionCombatPosition.ts) borrows from this ladder: rung 9
+ * itself, its commander lookup, the drone bay, and the order limits above.
+ *
+ * ⚠ HANDED OVER, NOT IMPORTED, because that file is imported by this one and a
+ * value import back would be a load-order cycle. And ⚠ DECLARED HERE, BELOW THE
+ * LIMITS IT READS: a `const` above them would capture them uninitialised.
+ */
+const COMBAT_POSITION_LADDER: CombatPositionLadder = Object.freeze({
+  follow: decideFollow,
+  // The first commander the roster names whose ship is on this grid: `decideFollow`'s anchor.
+  commanderShip: (obs: FleetCompanionObservation): SpaceEntity | null => {
+    if ((obs.fleetMemberCharacterIDs ?? null) === null) {
+      return null;
+    }
+    const onGrid = fleetShipsOnGrid(obs);
+    for (const commanderID of commandersFor(obs)) {
+      const ship = onGrid.find((entity) => entity.characterID === commanderID) ?? null;
+      if (ship !== null) {
+        return ship;
+      }
+    }
+    return null;
+  },
+  hasCombatDrones: (obs: FleetCompanionObservation): boolean =>
+    (droneBayFor(obs, "combat")?.length ?? 0) > 0 || droneIDsOutFor(obs, "combat").length > 0,
+  metresBetween,
+  limits: {
+    maxRefusals: MAX_COMPANION_POSITION_REFUSALS,
+    maxDeferrals: MAX_COMPANION_SESSION_DEFERRALS,
+    backoffTicks: COMPANION_RETRY_BACKOFF_TICKS,
+    resendWaitTicks: COMPANION_RESEND_WAIT_TICKS,
+  },
+});
+
 function decideDroneEngagement(
   memory: CompanionLadderMemory, role: "combat" | "repair", flightIDs: readonly number[], targetID: number, why: string,
 ): CompanionDecision | null {
@@ -8277,6 +8462,7 @@ function decideFleetOrders(
       obs,
       memory,
       nowMs,
+      measurement,
     );
   }
 
@@ -8716,6 +8902,12 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
     } };
   }
 
+  // Rung 8's positioning order, settled on the `settleFollow` terms (`settleCombatHold`).
+  function settleCombatPosition(decision: CompanionDecision, succeeded: boolean, error?: unknown): void {
+    mem.ladder = settleCombatHold(decision, mem.ladder, succeeded ? "issued" : isSessionChangeDeferral(error)
+      ? "deferred" : isDefiniteCompanionRefusal(error) ? "refused" : "uncertain");
+  }
+
   function settleDroneEngagement(decision: CompanionDecision, succeeded: boolean, error?: unknown): void {
     if (decision.action.kind !== "engageDrones") return;
     for (const field of ["combatDroneOrder", "repairDroneOrder"] as const) {
@@ -8865,6 +9057,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
         recorder.result(true);
         settleAlignment(decision, "issued");
         settleFollow(decision, true);
+        settleCombatPosition(decision, true);
         settleDroneEngagement(decision, true);
       } catch (error) {
         recorder.result(false, error);
@@ -8888,6 +9081,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
         // rather than prose.
         settleAlignment(decision, isDefiniteCompanionRefusal(error) ? "refused" : "uncertain");
         settleFollow(decision, false, error);
+        settleCombatPosition(decision, false, error);
         settleDroneEngagement(decision, false, error);
         forgetFailedJobOverRecall(decision);
         forgetFailedDroneLaunch(decision);
@@ -9069,6 +9263,13 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
           // re-hear is free fire nobody can see, and the safe mode is the one
           // a pilot may hold without anybody having asked for it.
           targetMode: "called",
+          // ⚠ "follow" FOR THE REASON `followRangeM` RESETS: the `flight auto`
+          // that set it is long out of the chat window and cannot be re-heard, so
+          // carrying it would be a pilot breaking formation on an order nobody
+          // can see. And no positioning order survives the process that sent it.
+          flightMode: "follow",
+          combatPosition: FRESH_COMBAT_POSITION,
+          weaponReach: null,
           // A resumed run has loaded nothing either. Starting the budget empty
           // is the generous answer and the right one: the dead process's loads
           // may well have landed, and if they did, the first live tick sees
