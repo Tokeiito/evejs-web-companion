@@ -460,6 +460,14 @@ import type { PlanetLaunchesRead } from "../bridge/planetLaunches.ts";
 import { readMarketTransactions, type MarketTransactionsRead } from "../bridge/marketTransactions.ts";
 import { decodeEntryKinds, decodeJournalEntries, journalLines, type WalletJournalRead } from "../bridge/walletJournal.ts";
 import type { WalletOverviewRead } from "../bridge/walletOverview.ts";
+import { readMyShares, type ShareHolding } from "../bridge/walletShares.ts";
+
+/** The pilot's shares as the flow keeps them for the wallet's Shares tab. */
+export interface WalletSharesRead {
+  readonly loaded: boolean;
+  readonly holdings: readonly ShareHolding[];
+  readonly error: string | null;
+}
 import { readCharacterFittings, readCorporationFittings } from "../bridge/fittingReads.ts";
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, kickFleetMember as kickFleetMemberCall, leaveFleet as leaveFleetCall, makeFleetLeader as makeFleetLeaderCall, moveFleetMember as moveFleetMemberCall, tagFleetTarget, addToWatchlist as addToWatchlistCall, removeFromWatchlist as removeFromWatchlistCall, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
@@ -1605,6 +1613,9 @@ export interface AppFlow {
    */
   readonly walletOverview: ReadableSignal<WalletOverviewRead>;
   loadWalletOverview(): Promise<void>;
+  /** The wallet's Shares tab (bridge/walletShares.ts): the shares the pilot holds, read as the tab is chosen. */
+  readonly walletShares: ReadableSignal<WalletSharesRead>;
+  loadWalletShares(): Promise<void>;
   warpToPlanetLaunch(launchID: number): Promise<void>;
   removePlanetLaunch(launchID: number): Promise<void>;
   /**
@@ -3146,6 +3157,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // marketSvc.OnOwnOrdersChanged (33 to 35): the trades kept are let go, and read again when the tab is next chosen.
     if (method === "OnOwnOrdersChanged") {
       marketTransactionsFor = null;
+    }
+    // sharesPanel.OnShareChange (89 to 91): the pilot's shares read again where the pilot is the shareholder or the
+    // corporation, once the tab has been chosen.
+    if (method === "OnShareChange" && walletSharesWanted) {
+      const pilot = store.station.get().online?.characterID ?? null;
+      if (pilot !== null && (Number(args[0]) === pilot || Number(args[1]) === pilot)) void loadWalletShares().catch(() => undefined);
     }
     const sessionNames = sessionChangeNames(method, args);
     contactLoggedOnOrOff(method, args);
@@ -5953,6 +5970,26 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       kinds: kinds.status === "fulfilled" ? decodeEntryKinds(kinds.value) : walletOverviewSignal.get().kinds,
       error: entries.status === "rejected" ? (entries.reason instanceof Error ? entries.reason.message : String(entries.reason)) : null,
     });
+  }
+
+  // The wallet's Shares tab (bridge/walletShares.ts): the shares the pilot holds, asked each time the tab is chosen
+  // (sharesPanel.OnTabSelect) and again at the server's word that shares changed where the pilot is the shareholder
+  // or the corporation (OnShareChange) while the tab has been chosen.
+  const NO_WALLET_SHARES: WalletSharesRead = { loaded: false, holdings: [], error: null };
+  const walletSharesSignal = createSignal<WalletSharesRead>(NO_WALLET_SHARES);
+  let walletSharesWanted = false;
+
+  async function loadWalletShares(): Promise<void> {
+    walletSharesWanted = true;
+    const characterID = store.station.get().online?.characterID ?? null;
+    try {
+      const holdings = await readMyShares(bridgeAsk);
+      if ((store.station.get().online?.characterID ?? null) !== characterID) return;
+      walletSharesSignal.set({ loaded: true, holdings, error: null });
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      walletSharesSignal.set({ loaded: true, holdings: [], error: error instanceof Error ? error.message : String(error) });
+    }
   }
 
   /** OnPILaunchesChange: what is kept is let go, and read afresh where the window has wanted it. */
@@ -18130,6 +18167,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       walletJournalSignal.set(NO_WALLET_JOURNAL);
       walletOverviewGeneration += 1;
       walletOverviewSignal.set(NO_WALLET_OVERVIEW);
+      walletSharesSignal.set(NO_WALLET_SHARES);
       // skillQueueSvc.ReInitialize: and what the queue service had reckoned of the training slots.
       trainingSlots.forget();
       requestGeneration++;
@@ -18956,6 +18994,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadWalletJournal,
     walletOverview: readonlySignal(walletOverviewSignal),
     loadWalletOverview,
+    walletShares: readonlySignal(walletSharesSignal),
+    loadWalletShares,
 
     async approachPlanetLaunch(containerID) {
       await runFlightStep("Approach", () => orderedStep((flightNow) => approachCall(bridgeDo, flightNow, containerID, 50)));
