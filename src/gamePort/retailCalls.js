@@ -1141,6 +1141,30 @@ const bookmarkingStatic = (args, kwargs) => {
   return keywords.length === 0 ? { args, kwargs: { subfolderID: null }, status: "reshaped" } : { args, kwargs };
 };
 
+/**
+ * bookmarkSvc.UpdateACLBookmark (642 to 646): UpdateBookmark(bookmarkID, folderID, name, note, subfolderID,
+ * newFolderID, expiryCancel), the last the window's 0 until its Cancel automated expiry box is ticked
+ * (bookmarkLocationWindow.py 55, 180 to 182), then the box's True or False.
+ */
+const updatingBookmark = (args, kwargs) => {
+  if (args.length !== 7 || Object.keys(kwargs).length > 0) {
+    return { args, kwargs, status: "differs", note: "The client sends seven: the bookmark, its folder, the name, the note, the subfolder, the folder chosen and whether its expiry is cancelled." };
+  }
+  const cancel = args[6];
+  return cancel === true || cancel === 0 ? { args, kwargs } : { args: [...args.slice(0, 6), cancel === false ? 0 : cancel], kwargs, status: "reshaped" };
+};
+
+/**
+ * bookmarkSvc.DeleteBookmarks (656 to 668): DeleteBookmarks(folderID, bookmarks), the bookmarks of the folder a set
+ * (a defaultdict(set)'s, by folder), which Python reduces to (set, ([...],)). A route gives a list.
+ */
+const bookmarksOfFolder = ([folderID, given, ...rest], kwargs) => {
+  const listed = Array.isArray(given) ? given : given && given.type === "list" && Array.isArray(given.items) ? given.items : null;
+  if (listed === null) return { args: [folderID, given, ...rest], kwargs };
+  const ids = listed.map(wholeKey).filter((id) => id !== null);
+  return { args: [folderID, { type: "objectex1", header: [token("__builtin__.set"), [{ type: "list", items: dictOrder(ids) }]], list: [], dict: [] }, ...rest], kwargs };
+};
+
 const following = (args, kwargs, context) => {
   const [thing, range] = args;
   if (!(args.length === 2 && Number.isSafeInteger(thing) && thing > 0 && Number.isFinite(range) && range >= 0 && Object.keys(kwargs).length === 0)) {
@@ -2021,6 +2045,13 @@ const RETAIL_CALLS = Object.freeze({
     note: "self.accessGroupBookmarkMgr.BookmarkStaticLocation(itemID, folderID, name, comment, expiry, subfolderID=subfolderID): the bookmark window's Submit (bookmarkLocationWindow.py Confirm, 205 to 225) for a region, a constellation, a system or a station; the name the label's, the comment the notes' editor's, each unicode where it holds text; answered (bookmarkID, itemID, typeID, x, y, z, locationID, expiryDate). In no recording.",
     shape: bookmarkingStatic,
   }), [2, 3]),
+  "accessGroupBookmarkMgr.UpdateBookmark": typing(Object.freeze({
+    status: "same",
+    source: "eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:646",
+    note: "self.accessGroupBookmarkMgr.UpdateBookmark(bookmarkID, folderID, name, note, subfolderID, newFolderID, expiryCancel): the bookmark window's Submit in its edit (Edit Location, a bookmark's menu or its double click); the name the label's and the note the editor's, unicode where they hold text. In no recording.",
+    shape: updatingBookmark,
+  }), [2, 3]),
+  "accessGroupBookmarkMgr.DeleteBookmarks": reshaped("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:664", bookmarksOfFolder, "self.accessGroupBookmarkMgr.DeleteBookmarks(folderID, bookmarks), each folder's bookmarks a set, from Remove Location after RemoveLocation or RemoveMultipleLocation; answered the ones deleted. In no recording."),
   "accessGroupBookmarkMgr.GetMyActiveBookmarks": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:163", sentWithNothing,
     "folders, bookmarks, subfolders = self.accessGroupBookmarkMgr.GetMyActiveBookmarks(), by name and with nothing: recorded on Tranquility so, in three recordings. The client asks once in a session and keeps the three, changing them as it makes, changes and deletes a bookmark and as the server says a shared folder changed. The transport asks as a character is chosen and keeps the three (pilots.js, bookmarksRead): a place bookmarked on the ballpark's object is worked into them as the client works it (afterBookmarkCall), and they are let go at any other write of the pilot's own of a bookmark, a folder or a subfolder and at the server's word of a shared folder, and asked for when they are next wanted. The page asks each time it wants them, and is answered from what is kept."),
   "accessGroupBookmarkMgr.SearchFoldersWithAdminAccess": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:715", sentWithNothing,

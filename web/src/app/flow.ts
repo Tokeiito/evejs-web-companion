@@ -436,7 +436,7 @@ import { readMyLaunches } from "../bridge/launchReads.ts";
 import { readCharacterFittings, readCorporationFittings } from "../bridge/fittingReads.ts";
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
-import { BOOKMARK_EXPIRY, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall } from "../bridge/bookmarkWrites.ts";
+import { BOOKMARK_EXPIRY, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, deleteBookmarks as deleteBookmarksCall, updateBookmark as updateBookmarkCall } from "../bridge/bookmarkWrites.ts";
 import { giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
 import { afterArriving, keepWaypoints, readWaypoints, withWaypoint, withoutWaypoint, type PilotPlace } from "../nav/waypoints.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
@@ -1774,6 +1774,25 @@ export interface AppFlow {
    * to 620): a region, a constellation, a system or a station by the bookmark manager, anything else in space by the
    * park. Answers the new bookmark's number, or null where the answer names none. Fails as the call fails.
    */
+  /**
+   * The bookmark window's Submit in its edit (bookmarkLocationWindow.py _ConfirmAclBookmark, 219 to 220;
+   * bookmarkSvc.UpdateACLBookmark): the bookmark's label, note, folder and subfolder, and its expiry taken away
+   * where `expiryCancel`. Fails as the call fails.
+   */
+  updateBookmark(change: {
+    readonly bookmarkID: number;
+    readonly folderID: number;
+    readonly label: string;
+    readonly note: string;
+    readonly subfolderID: number | null;
+    readonly newFolderID: number;
+    readonly expiryCancel: boolean;
+  }): Promise<void>;
+  /**
+   * Remove Location (bookmarkSvc.DeleteBookmarks, 656 to 668): the bookmarks deleted folder by folder. Answers the
+   * ones the server deleted; none is the client's CouldNotDeleteBookmark, which the caller says. Fails as a call fails.
+   */
+  deleteBookmarks(bookmarks: readonly { readonly bookmarkID: number; readonly folderID: number }[]): Promise<readonly number[]>;
   bookmarkPlace(place: {
     readonly itemID: number;
     readonly folderID: number;
@@ -17439,6 +17458,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     readLocations() {
       return readMyActiveBookmarks(bridgeAsk);
+    },
+
+    updateBookmark(change) {
+      return updateBookmarkCall(bridgeDo, change.bookmarkID, change.folderID, change.label, change.note, change.subfolderID, change.newFolderID, change.expiryCancel);
+    },
+
+    async deleteBookmarks(bookmarks) {
+      const byFolder = new Map<number, number[]>();
+      for (const { bookmarkID, folderID } of bookmarks) byFolder.set(folderID, [...(byFolder.get(folderID) ?? []), bookmarkID]);
+      const deleted: number[] = [];
+      for (const [folderID, ids] of byFolder) deleted.push(...await deleteBookmarksCall(bridgeDo, folderID, ids));
+      return deleted;
     },
 
     bookmarkPlace(place) {

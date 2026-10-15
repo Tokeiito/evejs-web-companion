@@ -1123,7 +1123,9 @@
     "genericBridgeWrites": [
       "accessGroupBookmarkMgr.AddToKnownFolders",
       "accessGroupBookmarkMgr.BookmarkStaticLocation",
+      "accessGroupBookmarkMgr.DeleteBookmarks",
       "accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder",
+      "accessGroupBookmarkMgr.UpdateBookmark",
       "accessGroupBookmarkMgr.UpdateKnownFolderState",
       "account.GiveCash",
       "agentMgr.DoAction",

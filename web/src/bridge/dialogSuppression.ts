@@ -11,8 +11,8 @@
 //   asked again with an answer kept, the dialog is not shown and the call's suppress argument is its answer.
 //
 // The dialogs the page asks that the client asks with suppress=uiconst.ID_YES, so that Yes alone is kept: the mail
-// window's folder and list writes (evemail.py 1116 to 1158) and the notification window's four (neocom/notifications.py
-// 233 to 246; notificationSvc.py 223).
+// window's folder and list writes (evemail.py 1116 to 1158), the notification window's four (neocom/notifications.py
+// 233 to 246; notificationSvc.py 223), and a bookmark's removal (addressbookService.py DeleteBookmarks, 457 and 459).
 
 export const ASKED_KEEPING_YES: ReadonlySet<string> = new Set([
   "EvemailMailMarkAllRead",
@@ -27,6 +27,8 @@ export const ASKED_KEEPING_YES: ReadonlySet<string> = new Set([
   "EvemailNotificationsMarkAllRead",
   "EvemailNotificationsDeleteGroup",
   "EvemailNotificationsMarkGroupRead",
+  "RemoveLocation",
+  "RemoveMultipleLocation",
 ]);
 
 /** The checkbox's words on a dialog that asks (messagebox.py 164 to 168). */
