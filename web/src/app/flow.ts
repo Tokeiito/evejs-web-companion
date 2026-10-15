@@ -17271,7 +17271,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async warpToMissionBookmark(spot, range) {
-      await runFlightStep("Warp", () => orderedStep((flightNow) => warpToMissionLocationCall(bridgeDo, flightNow, spot, range)));
+      await runFlightStep("Warp", () => orderedStep((flightNow) => warpToMissionLocationCall(bridgeDo, flightNow, spot, range, true)));
     },
 
     async approachMissionBookmark(spot) {

@@ -226,6 +226,7 @@
 // other agent, and the three settings of a pilot who has chosen none.
 
 import type { Ask } from "./ask.ts";
+import type { JsonValue } from "./wire.ts";
 import type { MissionSpot } from "../store/types.ts";
 
 /** A point in a solar system, in metres. */
@@ -529,12 +530,15 @@ const FORMATION_OF_NO_CHOICE = Object.freeze({ formationType: 0, formationSpacin
  * Warps the pilot's ship to a mission's marked spot, as the client's menu does: by asking the spot's agent, on
  * that agent's own object, with the spot's type and number as the journal has them, the range chosen (nought where
  * none is), no fleet's word, the other agent the bookmark names or none, and a fleet's formation settings as a pilot
- * has them who has chosen none. Fails as the call
- * fails, and before it for what is no spot of a mission's and for a pilot that is not in space.
+ * has them who has chosen none. The range goes as a float where the warp is the bookmark's menu's (menusvc 1481 to
+ * 1483: float(defaultWarpDist), and WarpToMenu's float(ranges[i])), and as a whole number else, as the surroundings'
+ * and bookmarkUtil's entries send their nought (listSurroundingsBtn 336, bookmarkUtil 38); Tranquility's recordings
+ * have both. Fails as the call fails, and before it for what is no spot of a mission's and for a pilot that is not in
+ * space.
  *
  * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN OR NOT, AND NEVER AN ARRIVAL. The server answers nothing either way.
  */
-export async function warpToMissionLocation(act: Ask, flightNow: () => Promise<FlightNow>, spot: Pick<MissionSpot, "agentID" | "locationType" | "locationNumber" | "referringAgentID">, range = 0): Promise<void> {
+export async function warpToMissionLocation(act: Ask, flightNow: () => Promise<FlightNow>, spot: Pick<MissionSpot, "agentID" | "locationType" | "locationNumber" | "referringAgentID">, range = 0, fromBookmarkMenu = false): Promise<void> {
   if (!isAnID(spot.agentID) || spot.locationType === "" || !Number.isSafeInteger(spot.locationNumber)) {
     throw new Error("That is no spot of a mission's.");
   }
@@ -545,7 +549,8 @@ export async function warpToMissionLocation(act: Ask, flightNow: () => Promise<F
   if (!now.inSpace) {
     throw new Error("The ship is not in space; undock first.");
   }
-  await act("agentMgr", "WarpToLocation", [spot.locationType, spot.locationNumber, range, false, spot.referringAgentID ?? null, { ...FORMATION_OF_NO_CHOICE }], undefined, spot.agentID);
+  const warpRange: JsonValue = fromBookmarkMenu ? { type: "real", value: range } : range;
+  await act("agentMgr", "WarpToLocation", [spot.locationType, spot.locationNumber, warpRange, false, spot.referringAgentID ?? null, { ...FORMATION_OF_NO_CHOICE }], undefined, spot.agentID);
 }
 
 /**
