@@ -48,10 +48,50 @@ export interface NotificationFormatter {
   readonly described: Readonly<Record<string, Described | null>> | null;
 }
 
-/** The client's notification formats, by type (the BFF's answer). */
+/**
+ * The notification window's groups (neocom/notifications.py), as the client's code answers: each group's label
+ * (notificationUtil.groupNamePaths), the group of each type (notificationconst.GetTypeGroup), the types no longer
+ * shown (depricatedNotifications), and the numbers of the Unread and Bounties groups.
+ */
+export interface NotificationGroups {
+  readonly names: ReadonlyMap<number, string>;
+  readonly typeGroup: ReadonlyMap<number, number>;
+  readonly deprecated: ReadonlySet<number>;
+  readonly unread: number;
+  readonly bounties: number;
+}
+
+/** The client's notification formats, by type (the BFF's answer), and its notification window's groups where read. */
 export interface NotificationFormats {
   readonly table: Readonly<Record<string, NotificationTableEntry>>;
   readonly formatters: Readonly<Record<string, NotificationFormatter>>;
+  readonly groups: NotificationGroups | null;
+}
+
+const numberKeyed = <Value>(value: unknown, read: (each: unknown) => Value | null): Map<number, Value> => {
+  const map = new Map<number, Value>();
+  if (!isObject(value)) return map;
+  for (const [key, each] of Object.entries(value)) {
+    const id = Number(key);
+    const found = read(each);
+    if (Number.isSafeInteger(id) && found !== null) map.set(id, found);
+  }
+  return map;
+};
+const wholeOrNull = (value: unknown): number | null => (typeof value === "number" && Number.isSafeInteger(value) ? value : null);
+
+function groupsOf(value: unknown): NotificationGroups | null {
+  if (!isObject(value)) return null;
+  const unread = wholeOrNull(value.unread);
+  const bounties = wholeOrNull(value.bounties);
+  if (unread === null || bounties === null) return null;
+  return {
+    names: numberKeyed(value.names, textOrNull),
+    typeGroup: numberKeyed(value.types, wholeOrNull),
+    deprecated: new Set(Array.isArray(value.deprecated) ? value.deprecated.filter((each): each is number => wholeOrNull(each) !== null) : []),
+    unread,
+    bounties,
+  };
 }
 
 const textOrNull = (value: unknown): string | null => (typeof value === "string" && value !== "" ? value : null);
@@ -74,7 +114,7 @@ export function decodeNotificationFormats(value: unknown): NotificationFormats |
     if (!isObject(entry)) continue;
     formatters[key] = { name: textOrNull(entry.name), subject: textOrNull(entry.subject), body: textOrNull(entry.body), described: describedOf(entry.described) };
   }
-  return { table, formatters };
+  return { table, formatters, groups: groupsOf(value.groups) };
 }
 
 /** A notification's data as arguments by name, where it is a dict; none where it is not (a YAML text not read here). */

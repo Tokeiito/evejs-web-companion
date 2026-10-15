@@ -69,6 +69,7 @@
   import type { CharacterMatch } from "../app/api.ts";
   import type { MailHeaderRow } from "../store/types.ts";
   import { resolvedName } from "../store/names.ts";
+  import MailNotifications from "./MailNotifications.svelte";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -92,7 +93,9 @@
 
   let busy = $state(false);
   let error = $state("");
-  let tab = $state<"inbox" | "compose">("inbox");
+  let tab = $state<"inbox" | "compose" | "notifications">("inbox");
+  /** The window's second tab, by its label (evemail.py 103). */
+  const NOTIFICATIONS_TAB = "UI/Mail/Notifications/Notifications";
 
   // Compose state. `recipients` are the pilots the window holds by name (its toChars); `receiverText` is its one
   // field of names (evemail.py NewNewMessage), each followed by ", ", as ValidateReceivers writes it.
@@ -1875,7 +1878,7 @@
 
   onMount(() => {
     flow.requestWords([
-      ...Object.values(MAIL_QUOTE_LABELS), DATE_LABEL, ...Object.values(FOLDER_WORDS), ...Object.values(WRITE_WORDS), ...Object.values(FOLDER_WRITE_WORDS),
+      ...Object.values(MAIL_QUOTE_LABELS), DATE_LABEL, NOTIFICATIONS_TAB, ...Object.values(FOLDER_WORDS), ...Object.values(WRITE_WORDS), ...Object.values(FOLDER_WRITE_WORDS),
       ...FOLDER_DIALOGS.flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`]),
       ...Object.values(LABEL_WORDS),
       ...LABEL_DIALOGS.flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`]),
@@ -1949,7 +1952,15 @@
     <button type="button" class:active={tab === "compose"} onclick={() => (tab = "compose")}>
       Write a message
     </button>
+    <!-- The mail window's second tab (evemail.py ConstructTabGroup, 100 to 104): the notifications. -->
+    <button type="button" class:active={tab === "notifications"} onclick={() => (tab = "notifications")}>
+      {plainText(word(NOTIFICATIONS_TAB, "Notifications"))}
+    </button>
   </nav>
+
+  {#if tab === "notifications"}
+    <MailNotifications {store} {flow} />
+  {/if}
 
   {#if tab === "inbox"}
     <!-- The labels window (evemail.py ManageLabelsBase): a new label by name, and each of the pilot's own renamed or deleted. -->

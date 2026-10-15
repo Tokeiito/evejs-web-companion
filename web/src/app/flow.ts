@@ -211,6 +211,8 @@ import { isCommunicationType } from "../bridge/contactNotifications.ts";
 import { decodeNotificationFormats, type NotificationFormats } from "../bridge/notificationFormats.ts";
 /** notificationconst.groupContacts: the contacts' notifications' group. */
 const CONTACTS_NOTIFICATION_GROUP = 9;
+/** const.ownerSystem, which a notification's sender of -1 is (neocom/notifications.py 176 to 177). */
+const OWNER_SYSTEM = 1;
 import { itemChangeTouchesDroneBay } from "../bridge/droneBayNotices.ts";
 import * as api from "./api.ts";
 import type { ClientStore } from "../store/clientStore.ts";
@@ -1140,6 +1142,25 @@ export interface AppFlow {
   contactNotifications(): Promise<readonly Notification[]>;
   /** Notifications deleted (notificationMgr.DeleteNotifications); fails with the server's words. */
   deleteNotifications(notificationIDs: readonly number[]): Promise<void>;
+  /**
+   * The notification window's group's notifications (notificationMgr.GetByGroupID), or for its Unread group the
+   * unread ones (GetUnprocessed); those of a communication's type, their senders named.
+   */
+  notificationsOfGroup(groupID: number, unread: boolean): Promise<readonly Notification[]>;
+  /** Notifications marked read (notificationMgr.MarkAsProcessed, a list); fails with the server's words. */
+  markNotificationsRead(notificationIDs: readonly number[]): Promise<void>;
+  /** A group's notifications marked read (notificationMgr.MarkGroupAsProcessed); fails with the server's words. */
+  markNotificationGroupRead(groupID: number): Promise<void>;
+  /** Every notification marked read (notificationMgr.MarkAllAsProcessed); fails with the server's words. */
+  markAllNotificationsRead(): Promise<void>;
+  /** A group's notifications deleted (notificationMgr.DeleteGroupNotifications); fails with the server's words. */
+  deleteNotificationGroup(groupID: number): Promise<void>;
+  /** Every notification deleted (notificationMgr.DeleteAllNotifications); fails with the server's words. */
+  deleteAllNotifications(): Promise<void>;
+  /** The notification window's group last shown on this machine; none where none was. */
+  notificationGroupShown(): number | null;
+  /** The notification window's group shown kept, on this machine. */
+  keepNotificationGroupShown(groupID: number): void;
   /** How the client words each kind of notification, as its own code answers; null where it cannot be read. Asked once. */
   notificationFormats(): Promise<NotificationFormats | null>;
   /** The People & Places window's tab last chosen on this machine; none where none was. */
@@ -5734,9 +5755,19 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // client's service keeps (on the game port the transport keeps it, until a notice or the pilot's own write changes
   // it); those of a type in communications; their senders named (mailSvc.PrimeOwners).
   async function contactNotifications(): Promise<readonly Notification[]> {
+    return notificationsOfGroup(CONTACTS_NOTIFICATION_GROUP, false);
+  }
+
+  // The notification window's lists (neocom/notifications.py LoadGroupFromNode, 159 to 169): for the Unread group
+  // notificationSvc.GetUnreadNotifications (103 to 122: GetUnprocessed()), for any other GetNotificationsByGroupID
+  // (60 to 73: GetByGroupID(groupID)); each keeps those of a type in communications (IsTypeInCommunications) and
+  // primes their senders' names (mailSvc.PrimeOwners). A sender of -1 is the EVE System (const.ownerSystem, LoadGroupFromNode 176 to 177).
+  async function notificationsOfGroup(groupID: number, unread: boolean): Promise<readonly Notification[]> {
     let answer: JsonValue;
     try {
-      answer = await bridgeAsk("notificationMgr", "GetByGroupID", [CONTACTS_NOTIFICATION_GROUP]);
+      answer = unread
+        ? await bridgeAsk("notificationMgr", "GetUnprocessed", [])
+        : await bridgeAsk("notificationMgr", "GetByGroupID", [groupID]);
     } catch (error) {
       if (isSessionLost(error)) {
         stopLiveStream();
@@ -5745,14 +5776,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       throw error;
     }
     const found = decodeNotifications(isListValue(answer) ? answer.items : answer).filter((notification) => isCommunicationType(notification.typeID));
-    await resolveNamesNow([...new Set(found.map((notification) => notification.senderID).filter((id) => id > 0))].map((id) => ({ kind: "owner" as const, id })));
+    const senders = new Set(found.map((notification) => (notification.senderID === -1 ? OWNER_SYSTEM : notification.senderID)).filter((id) => id > 0));
+    await resolveNamesNow([...senders].map((id) => ({ kind: "owner" as const, id })));
     return found;
   }
 
-  // notificationSvc.DeleteNotifications (312 to 321): DeleteNotifications with the notifications, a list.
-  async function deleteNotifications(notificationIDs: readonly number[]): Promise<void> {
+  // A write of the notification window's: the server's refusal said in its words.
+  async function notificationWrite(method: string, args: JsonValue[]): Promise<void> {
     try {
-      await bridgeDo("notificationMgr", "DeleteNotifications", [[...notificationIDs]]);
+      await bridgeDo("notificationMgr", method, args);
     } catch (error) {
       throwIfRequestRetired(error);
       if (isSessionLost(error)) {
@@ -5761,6 +5793,64 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         throw error;
       }
       throw new Error(mailRefusalMessage(error));
+    }
+  }
+
+  // notificationSvc.DeleteNotifications (312 to 321): DeleteNotifications with the notifications, a list.
+  async function deleteNotifications(notificationIDs: readonly number[]): Promise<void> {
+    await notificationWrite("DeleteNotifications", [[...notificationIDs]]);
+  }
+
+  // notificationSvc.MarkAsRead (241 to 260): MarkAsProcessed with the notifications, a list (Tranquility's recording
+  // of a notification read: MarkAsProcessed([notificationID])).
+  async function markNotificationsRead(notificationIDs: readonly number[]): Promise<void> {
+    await notificationWrite("MarkAsProcessed", [[...notificationIDs]]);
+  }
+
+  // notificationSvc.MarkAllReadInGroup (213 to 227): MarkGroupAsProcessed with the group.
+  async function markNotificationGroupRead(groupID: number): Promise<void> {
+    await notificationWrite("MarkGroupAsProcessed", [groupID]);
+  }
+
+  // notificationSvc.MarkAllRead (229 to 239): MarkAllAsProcessed, with nothing.
+  async function markAllNotificationsRead(): Promise<void> {
+    await notificationWrite("MarkAllAsProcessed", []);
+  }
+
+  // notificationSvc.DeleteAllFromGroup (287 to 298): DeleteGroupNotifications with the group.
+  async function deleteNotificationGroup(groupID: number): Promise<void> {
+    await notificationWrite("DeleteGroupNotifications", [groupID]);
+  }
+
+  // notificationSvc.DeleteAll (300 to 310): DeleteAllNotifications, with nothing.
+  async function deleteAllNotifications(): Promise<void> {
+    await notificationWrite("DeleteAllNotifications", []);
+  }
+
+  // The notification window's group last shown, as the client keeps it in the character's settings
+  // (neocom/notifications.py 161: settings.char.ui 'mail_lastnotification'), kept in this browser for the pilot.
+  const NOTIFICATION_GROUP_KEPT = "evejs.mail.lastnotification";
+
+  function notificationGroupShown(): number | null {
+    const characterID = store.character.get().selectedCharacterID;
+    try {
+      const kept: unknown = JSON.parse(settingsStorage?.getItem(NOTIFICATION_GROUP_KEPT) ?? "null");
+      const shown = kept !== null && typeof kept === "object" ? (kept as Record<string, unknown>)[String(characterID)] : undefined;
+      return typeof shown === "number" && Number.isSafeInteger(shown) ? shown : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function keepNotificationGroupShown(groupID: number): void {
+    const characterID = store.character.get().selectedCharacterID;
+    try {
+      const kept: unknown = JSON.parse(settingsStorage?.getItem(NOTIFICATION_GROUP_KEPT) ?? "null");
+      const byPilot = kept !== null && typeof kept === "object" ? { ...(kept as Record<string, unknown>) } : {};
+      byPilot[String(characterID)] = groupID;
+      settingsStorage?.setItem(NOTIFICATION_GROUP_KEPT, JSON.stringify(byPilot));
+    } catch {
+      // Storage full or refused: the group lasts as long as the page.
     }
   }
 
@@ -16637,6 +16727,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     addAgentToAddressBook,
     contactNotifications,
     deleteNotifications,
+    notificationsOfGroup,
+    markNotificationsRead,
+    markNotificationGroupRead,
+    markAllNotificationsRead,
+    deleteNotificationGroup,
+    deleteAllNotifications,
+    notificationGroupShown,
+    keepNotificationGroupShown,
     notificationFormats,
     addressBookTab,
     keepAddressBookTab,

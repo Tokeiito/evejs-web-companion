@@ -12,7 +12,14 @@ python27.dll, and prints what it finds as one JSON object:
     python scripts/client-notification-formats.py <client bin64 folder> <client code.ccp>
 
     {"table": {"<typeID>": {"subject": label, "body": label, "parameters": name or null, "function": name or null}},
-     "formatters": {"<typeID>": {"name": name, "subject": label or null, "body": label or null}}}
+     "formatters": {"<typeID>": {"name": name, "subject": label or null, "body": label or null}},
+     "groups": {"names": {"<groupID>": label}, "types": {"<typeID>": groupID}, "nonCommunication": [typeID],
+                "deprecated": [typeID], "unread": groupID, "bounties": groupID}}
+
+`groups` is what the notification window (neocom/notifications.py) is made of:
+each group's label, the group each type is in as GetTypeGroup answers it, the
+types that are no communication and those no longer shown, and the numbers of
+the Unread and Bounties groups.
 
 The table's entry has `function` where the type is worded whole by a function
 (and no labels), else its two labels and the name of the function that adds to
@@ -427,8 +434,30 @@ for typeID, value in sorted(mapping.__dict__['formatterByNotificationType'].item
         body = None
     formatters.append('"%d":{"name":%s,"subject":%s,"body":%s,"described":%s}' % (typeID, text(name_of(value)), text(subject), text(body), walk(worded_by_formatter(typeID, value))))
 
+# The notification window's groups (neocom/notifications.py): each group's label (notificationUtil.groupNamePaths,
+# which is notificationconst's), the group of each type the groups hold as GetTypeGroup answers it, the types that are
+# no communication (IsTypeInCommunications) and those no longer shown (depricatedNotifications), and the unread and
+# bounties groups' numbers.
+def numbers(values):
+    return '[' + ','.join(['%d' % each for each in sorted(set(values)) if isinstance(each, (int, long))]) + ']'
+
+names = []
+for groupID, label in sorted(util.__dict__['groupNamePaths'].items()):
+    names.append('"%d":%s' % (groupID, text(label)))
+held = set()
+for typeIDs in constants.groupTypes.values():
+    held.update(typeIDs)
+types = []
+for typeID in sorted(held):
+    group = constants.GetTypeGroup(typeID)
+    if isinstance(group, (int, long)):
+        types.append('"%d":%d' % (typeID, group))
+groups = '{"names":{%s},"types":{%s},"nonCommunication":%s,"deprecated":%s,"unread":%d,"bounties":%d}' % (
+    ','.join(names), ','.join(types), numbers(constants.nonCommunicationTypes), numbers(constants.depricatedNotifications),
+    constants.notificationGroupUnread, constants.groupBounties)
+
 __out = open(OUT, 'wb')
-__out.write('{"table":{' + ','.join(table) + '},"formatters":{' + ','.join(formatters) + '}}')
+__out.write('{"table":{' + ','.join(table) + '},"formatters":{' + ','.join(formatters) + '},"groups":' + groups + '}')
 __out.close()
 '''
 

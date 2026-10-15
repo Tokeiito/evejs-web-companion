@@ -20,8 +20,12 @@ import { readDictPairs, unwrapLong, type JsonValue } from "./wire.ts";
 
 /** notificationconst.py's types of the contacts' group. */
 export const CONTACT_NOTIFICATION_TYPE = Object.freeze({ add: 89, edit: 90, signedOn: 2001, signedOff: 2002, buddyAdd: 166, pochvenContract: 251 });
-/** notificationconst.py nonCommunicationTypes: the types a group's read leaves out. */
-const NON_COMMUNICATION_TYPES: ReadonlySet<number> = new Set([1032, 2001, 2002, 1003, 1004, 1005, 1006, 1008, 1007, 141, 140, 1021, 180, 1050, 3001, 179, 1060, 200, 4001, 4002]);
+/**
+ * notificationconst.py nonCommunicationTypes (974 to 994): the types a group's read leaves out, twenty named and the
+ * skill training group's (+ groupTypes[groupSkillTraining]: 1000, 1001, 1002, 1033, 6020, as the client's own code
+ * answers when run, scripts/client-notification-formats.py's groups).
+ */
+const NON_COMMUNICATION_TYPES: ReadonlySet<number> = new Set([1032, 2001, 2002, 1003, 1004, 1005, 1006, 1008, 1007, 141, 140, 1021, 180, 1050, 3001, 179, 1060, 200, 4001, 4002, 1000, 1001, 1002, 1033, 6020]);
 
 /** notificationconst.IsTypeInCommunications (1071 to 1077). */
 export const isCommunicationType = (typeID: number): boolean => !NON_COMMUNICATION_TYPES.has(typeID);

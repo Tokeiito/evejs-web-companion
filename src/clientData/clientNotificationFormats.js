@@ -41,19 +41,19 @@ function runFormats({ python, binFolder, archive, timeoutMs = RUN_TIMEOUT_MS }) 
   });
 }
 
-/** What was printed, as {table, formatters}; anything else is not the formats. */
+/** What was printed, as {table, formatters, groups}; anything else is not the formats. The groups are null where none were printed. */
 function formatsOf(printed) {
   const read = JSON.parse(printed);
   const isTable = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
   if (!isTable(read) || !isTable(read.table) || !isTable(read.formatters)) throw new Error("The client's notification formats are not two tables.");
-  return { table: read.table, formatters: read.formatters };
+  return { table: read.table, formatters: read.formatters, groups: isTable(read.groups) ? read.groups : null };
 }
 
 /**
  * The client's notification formats, read from `clientRoot` (the folder holding `tq`) once, when first asked for.
  *
  *   available()   whether there is a client to read at all
- *   formats()     Promise of {table, formatters}, or null when they cannot be read
+ *   formats()     Promise of {table, formatters, groups}, or null when they cannot be read
  *   status()      {available, python, loaded, error}
  */
 function createClientNotificationFormats({ clientRoot = null, python = "python", run = runFormats, onError = () => {} } = {}) {
