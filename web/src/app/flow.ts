@@ -94,8 +94,10 @@ import {
   syncMailArguments,
   unreadMailCount,
   isAllianceOwner,
+  isNpcOwner,
   type DecodedMailbox,
 } from "../bridge/mail.ts";
+import { addressBookOf } from "../bridge/contacts.ts";
 import { sendMail as sendMailCall, type MailToSend } from "../bridge/mailWrites.ts";
 import { reprocess as reprocessCall } from "../bridge/reprocessWrites.ts";
 import {
@@ -1084,6 +1086,12 @@ export interface AppFlow {
   mailSort(): { readonly by: MailSortKey; readonly reversed: boolean };
   /** The mail list's sort kept, on this machine. */
   keepMailSort(by: MailSortKey, reversed: boolean): void;
+  /** An owner search window's Search By as last chosen on this machine: Partial Terms, where none was. */
+  ownersSearchBy(): number;
+  /** An owner search window's Search By kept, on this machine. */
+  keepOwnersSearchBy(matchBy: number): void;
+  /** The pilot's contacts that are characters and not NPCs, named, in the address book's order (charMgr.GetContactList). */
+  mailContacts(): Promise<readonly api.CharacterMatch[]>;
   /** Mark messages read, or not read, as the mail window's Mark as Read and Mark as Unread do. */
   markMail(messageIDs: readonly number[], read: boolean): Promise<void>;
   /** Move messages to the trash, as the mail window's Trash does. */
@@ -5407,6 +5415,53 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     } catch {
       // Storage full or refused: the sort lasts as long as the page.
     }
+  }
+
+  // An owner search window's Search By, as the client keeps it in the user's settings (ownerSearch.py 81, 95 to
+  // 97: ownersSearchBy, else partial terms), kept in this browser.
+  const OWNERS_SEARCH_BY_KEPT = "evejs.search.ownersSearchBy";
+
+  function ownersSearchBy(): number {
+    let kept: unknown = null;
+    try {
+      kept = JSON.parse(settingsStorage?.getItem(OWNERS_SEARCH_BY_KEPT) ?? "null");
+    } catch {
+      kept = null;
+    }
+    return typeof kept === "number" && [0, 1, 2, 3].includes(kept) ? kept : 0;
+  }
+
+  function keepOwnersSearchBy(matchBy: number): void {
+    try {
+      settingsStorage?.setItem(OWNERS_SEARCH_BY_KEPT, JSON.stringify(matchBy));
+    } catch {
+      // Storage full or refused: the choice lasts as long as the page.
+    }
+  }
+
+  // addressbook.GetContacts (addressbookService.py 193 to 250): charMgr.GetContactList(), by the generic call (on
+  // the game port answered from what the transport keeps, as the client's address book keeps it); the contacts
+  // that are characters and not NPCs (the compose window's buddies, evemail.py 1782; the search window's All
+  // Contacts, ownerSearch.py 190 to 204), named as the client primes them (cfg.eveowners), in the address book's
+  // order. A contact that names as no character is a corporation's or an alliance's.
+  async function mailContacts(): Promise<readonly api.CharacterMatch[]> {
+    let answer: JsonValue;
+    try {
+      answer = await bridgeAsk("charMgr", "GetContactList", []);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+      }
+      throw error;
+    }
+    const ids = addressBookOf(answer).contacts.map((contact) => contact.contactID).filter((id) => !isNpcOwner(id));
+    await resolveNamesNow(ids.map((id) => ({ kind: "character" as const, id })));
+    const resolved = store.names.get().resolved;
+    return ids.flatMap((id) => {
+      const name = resolved[nameKey("character", id)];
+      return typeof name === "string" && name !== "" ? [{ characterID: id, name }] : [];
+    });
   }
 
   // searchOld.Search for a pilot (searchOld.py 80 to 190; searchUtil.GetResultsList, 297 to 301): the search
@@ -16145,6 +16200,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     searchCharacters,
     ownCorporation,
     ownAlliance,
+    ownersSearchBy,
+    keepOwnersSearchBy,
+    mailContacts,
     sendMail,
     loadContracts,
     openContract,

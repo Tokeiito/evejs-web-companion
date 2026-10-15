@@ -416,6 +416,10 @@ const ACTIVE_BOOKMARKS = "GetMyActiveBookmarks";
  * and for one with something sent beside it, which is no call of the client's and is asked as it came.
  */
 const bookmarksKeptAs = (method, form) => (method === ACTIVE_BOOKMARKS && form.args.length === 0 && form.kwargs === null ? "active" : null);
+const CHAR_MGR = "charMgr";
+/** addressbook.GetContacts: charMgr.GetContactList(), nothing sent, is what the address book keeps. */
+const CONTACT_LIST = "GetContactList";
+const contactsKeptAs = (method, form) => (method === CONTACT_LIST && form.args.length === 0 && form.kwargs === null ? "contacts" : null);
 /** bookmarkSvc.ACLBookmarkLocation (617): the park's call that bookmarks a place in space, which the client works into what it keeps. */
 const BOOKMARK_LOCATION = "BookmarkLocation";
 const FACILITY_MANAGER = "facilityManager";
@@ -517,6 +521,19 @@ const KEPT_UNTIL_CHANGED = Object.freeze({
     notices: new Set(["OnStructureServiceChanged"]),
     concerns: ofTheStructureDockedIn,
     writes: Object.freeze({}),
+  }),
+  // addressbook (addressbookService.py GetContacts, 193 to 250): the pilot's contacts and blocked owners, asked as
+  // the character is chosen and kept for the session. The client works the server's word of a contact added,
+  // changed or taken away into what it keeps (OnContactSlashCommand, OnPersonalContactsUpdated, 106 to 155;
+  // OnContactNoLongerContact, 326 to 330; OnPersonalContactsAdded and Deleted, 585 to 616), and its own writes of
+  // a contact, a block or a contact's label (658 to 842, 1073 to 1134); here what is kept is let go at each, and
+  // asked for when it is next wanted.
+  [CHAR_MGR]: Object.freeze({
+    keptAs: contactsKeptAs,
+    notices: new Set(["OnContactSlashCommand", "OnPersonalContactsUpdated", "OnContactNoLongerContact", "OnPersonalContactsAdded", "OnPersonalContactsDeleted"]),
+    writes: Object.freeze({
+      [CHAR_MGR]: new Set(["AddContact", "EditContact", "EditContactsRelationshipID", "DeleteContacts", "BlockOwners", "UnblockOwners", "AssignLabels", "RemoveLabels", "DeleteLabel"]),
+    }),
   }),
 });
 /**
@@ -4917,8 +4934,9 @@ function createGamePortPilots({
    * online state (alliance.GetContactList, which is GetMoniker().GetAllianceContacts(), the moniker made and bound
    * for it). No recording has an alliance: the place is the address book's own order.
    *
-   * Nothing is kept of them, though the client keeps them all and works them over at the server's notices: no
-   * window of the page reads a contact yet.
+   * The pilot's own contacts and blocked owners are kept as the client keeps them (KEPT_UNTIL_CHANGED), for the
+   * page's reading of them by charMgr.GetContactList. Nothing is kept of the rest, though the client keeps them all
+   * and works them over at the server's notices: no window of the page reads them yet.
    */
   async function addressBookRead(entry) {
     const ofTheAlliance = (method) => {
@@ -4926,7 +4944,7 @@ function createGamePortPilots({
       return keptCall(entry, entry.monikers, ALLIANCE_REGISTRY, ALLIANCE_REGISTRY, () => monikerParams(entry, ALLIANCE_REGISTRY, undefined), method, [], null);
     };
     await Promise.all([
-      asks(entry, "charMgr", "GetContactList"),
+      keptRead(entry, CHAR_MGR, CONTACT_LIST, shape(CHAR_MGR, CONTACT_LIST, [], null, contextFor(entry))),
       ...(inNpcCorporation(entry) ? [] : [corporationAsk(entry, "GetCorporateContacts")]),
       ...(attribute(entry, "allianceid") === null ? [] : [ofTheAlliance("GetAllianceContacts")]),
       asks(entry, "onlineStatus", "GetInitialState"),

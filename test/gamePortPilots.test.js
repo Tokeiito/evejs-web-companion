@@ -3754,12 +3754,12 @@ test("a character chosen has its contacts, its corporation's and who of them is 
   assert.equal(ledgerOf(npc.pilots, "corpRegistry.GetCorporateContacts"), null);
 });
 
-test("nothing of the address book's is kept: a read of it through the BFF asks the server, and the client's own name for its priming is no call of the client's", async () => {
+test("the pilot's own contacts are kept as the client's address book keeps them, the rest is not: a read of the rest through the BFF asks the server, and the client's own name for its priming is no call of the client's", async () => {
   let asked = 0;
   const { pilots, session, handle } = await selected({ corpid: 98000001, answers: { "charMgr.GetContactList": () => { asked += 1; return { type: "list", items: [asked] }; } } }, ADDRESS_BOOK_PAIRS);
   const read = async (service, method, args = []) => (await pilots.callMethod(service, method, args, null, FIELDS, handle)).result;
-  // Asked at the choosing, and again at each read.
-  assert.deepEqual([await read("charMgr", "GetContactList"), await read("charMgr", "GetContactList"), ledgerOf(pilots, "charMgr.GetContactList")[0]], [{ type: "list", items: [2] }, { type: "list", items: [3] }, { same: 3 }]);
+  // Asked at the choosing and kept (addressbookService.py GetContacts, 193 to 250): each read is answered from it.
+  assert.deepEqual([await read("charMgr", "GetContactList"), await read("charMgr", "GetContactList"), ledgerOf(pilots, "charMgr.GetContactList")[0]], [{ type: "list", items: [1] }, { type: "list", items: [1] }, { same: 1 }]);
   await read("onlineStatus", "GetInitialState");
   await read("corpRegistry", "GetCorporateContacts");
   assert.deepEqual([ledgerOf(pilots, "onlineStatus.GetInitialState")[0], ledgerOf(pilots, "corpRegistry.GetCorporateContacts")[0], session.boundCalls.at(-1)], [{ same: 2 }, { same: 1, reshaped: 1 }, { objectID: "N=2:1", method: "GetCorporateContacts", args: [], kwargs: null }]);

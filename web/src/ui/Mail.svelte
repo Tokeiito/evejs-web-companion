@@ -61,6 +61,7 @@
   } from "../bridge/mail.ts";
   import { MAIL_QUOTE_LABELS, mailBodyLines, mailMarkupOfTyped, mailQuoteMarkup } from "../bridge/mailMarkup.ts";
   import { pyIntDictOrder } from "../bridge/pyDict.ts";
+  import { isSearchMatch } from "../bridge/searchMatch.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { isSessionLost } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -481,6 +482,8 @@
     unknown: "UI/Common/Unknown",
     labelCorp: "UI/Mail/LabelCorp",
     labelAlliance: "UI/Mail/LabelAlliance",
+    allContacts: "UI/Mail/AllContacts",
+    noContacts: "UI/AddressBook/NoContacts",
   } as const;
   /** The client's dialogs the compose window says things with. */
   const COMPOSE_DIALOGS = [
@@ -515,9 +518,19 @@
   /** The window "Search for Recipients" (MailSearchWindow): open or not, what is typed, Search By, and what it found. */
   let recipientSearchOpen = $state(false);
   let recipientSearchText = $state("");
-  let recipientMatchBy = $state(0);
+  // svelte-ignore state_referenced_locally
+  let recipientMatchBy = $state(flow.ownersSearchBy());
   let recipientResults = $state<readonly CharacterMatch[]>([]);
   let recipientSearchNote = $state("");
+  /** The window's tabs (Search, All Contacts), its own entries found (lists, the corporation, the alliance), and the contacts once loaded. */
+  let recipientSearchTab = $state<"search" | "contacts">("search");
+  interface RecipientExtra {
+    readonly kind: "corp" | "alliance" | "list";
+    readonly id: number;
+    readonly name: string;
+  }
+  let recipientExtras = $state<readonly RecipientExtra[]>([]);
+  let recipientContacts = $state<readonly CharacterMatch[] | null>(null);
 
   /** A list as the compose window writes it among its recipients (AddList, 1951 to 1959: UI/Mail/MailEntry). */
   function mailEntryOf(name: string): string {
@@ -805,7 +818,7 @@
 
   /** One of the field's offers (ReceiverEdit.GetValid): what it shows, the name it writes, and whose it is. */
   interface ReceiverOffer {
-    readonly group: "list" | "corp";
+    readonly group: "char" | "list" | "corp";
     readonly displayName: string;
     readonly name: string;
     readonly id: number;
@@ -817,11 +830,11 @@
 
   /**
    * ReceiverEdit.GetValid (2384 to 2426), as each letter is typed or taken out (CheckHistory): what follows the last
-   * comma matched as the start of the name of each list joined, offered as "name [ML]" in the order the client's
-   * dict holds them, of the pilot's own corporation where it is not an NPC's, as "name [Corp]", and of its alliance
-   * where the pilot has the Communications Officer's role, as "name [Alliance]"; a name that is
-   * all the field holds not offered (the client's own comparison, of what is typed as it is); sorted by the length of
-   * the name, the first five shown. The pilot's contacts are not offered: the page holds no address book.
+   * comma matched as the start of the name of each of the pilot's buddies (its contacts that are characters and not
+   * NPCs, evemail.py 1782), offered by name; of each list joined, as "name [ML]" in the order the client's dict holds
+   * them; of the pilot's own corporation where it is not an NPC's, as "name [Corp]"; and of its alliance where the
+   * pilot has the Communications Officer's role, as "name [Alliance]"; a name that is all the field holds not offered
+   * (the client's own comparison, of what is typed as it is); sorted by the length of the name, the first five shown.
    */
   async function checkOffers(): Promise<void> {
     const value = receiverText;
@@ -830,6 +843,12 @@
     const current = lastComma > -1 ? value.slice(lastComma + 1) : value;
     const typed = current.trim().toLowerCase();
     const valid: ReceiverOffer[] = [];
+    // The buddies first (2400 to 2403): the pilot's contacts that are characters and not NPCs (evemail.py 1782).
+    for (const buddy of await flow.mailContacts().catch(() => [])) {
+      if (buddy.name.toLowerCase().startsWith(typed) && buddy.name !== current) {
+        valid.push({ group: "char", displayName: buddy.name, name: buddy.name, id: buddy.characterID });
+      }
+    }
     const lists = $mail.lists ?? [];
     for (const listID of pyIntDictOrder(lists.map((list) => list.listID))) {
       const list = lists.find((each) => each.listID === listID);
@@ -871,7 +890,15 @@
     const groupsHeld = toCorpAlliance.length + (toList !== null ? 1 : 0);
     const corpNames = toCorpAlliance.map((group) => group.name);
     let taken: string | null = null;
-    if (offer.group === "list") {
+    if (offer.group === "char") {
+      // AddCharacterReceiver(id, partly=1) (1905 to 1917): no more than the most recipients.
+      if (recipients.length >= MAIL_MAX_RECIPIENTS) {
+        notes.push(filledWord("dialog:EvemailMaxRecipients/body", "You cannot add '{name}' to the list of recipients because you have reached the limit of {max} recipients", { name: offer.name, max: String(MAIL_MAX_RECIPIENTS) }));
+      } else {
+        recipients = [...recipients.filter((person) => person.name !== offer.name), { characterID: offer.id, name: offer.name }];
+        taken = offer.name;
+      }
+    } else if (offer.group === "list") {
       if (groupsHeld >= MAIL_MAX_GROUPS) {
         notes.push(maxGroupText(offer.name, corpNames, toList));
       } else {
@@ -911,38 +938,129 @@
     }
   }
 
-  /** The To button (OpenReceiverSearch) or a name not found (GetSearchWnd, 2336 to 2353): "Search for Recipients", with what is given. */
+  /**
+   * The To button (OpenReceiverSearch) or a name not found (GetSearchWnd, 2336 to 2353): "Search for Recipients",
+   * opened afresh on its Search tab with what is given, and searched at once where something is.
+   */
   function openRecipientSearch(input = ""): void {
     recipientSearchOpen = true;
+    recipientSearchTab = "search";
     recipientSearchText = input;
     recipientResults = [];
+    recipientExtras = [];
+    recipientContacts = null;
     recipientSearchNote = word(COMPOSE_WORDS.typeIn, "Type in search string and press \"Search\"");
+    if (input !== "") {
+      searchRecipients();
+    }
+  }
+
+  /**
+   * MailSearchWindow.GetExtraSearchEntries (evemail.py 2927 to 2946): the lists joined that match what was typed
+   * (searchUtil.IsMatch, by Search By), by their names; before them the alliance where the pilot has the
+   * Communications Officer's role, and before that the corporation where it is not an NPC's, each where it matches.
+   */
+  async function extraRecipientEntries(typed: string, matchBy: number): Promise<RecipientExtra[]> {
+    const lists = $mail.lists ?? [];
+    const extras: RecipientExtra[] = pyIntDictOrder(lists.map((list) => list.listID))
+      .flatMap((listID) => lists.filter((list) => list.listID === listID))
+      .filter((list) => isSearchMatch(typed, list.displayName, matchBy))
+      .map((list) => ({ kind: "list" as const, id: list.listID, name: list.displayName }))
+      .sort((left, right) => (left.name.toLowerCase() < right.name.toLowerCase() ? -1 : left.name.toLowerCase() > right.name.toLowerCase() ? 1 : 0));
+    const alliance = await flow.ownAlliance();
+    if (alliance !== null && hasChatManagerRole($station.online?.corpRole) && isSearchMatch(typed, alliance.name, matchBy)) {
+      extras.unshift({ kind: "alliance", id: alliance.allianceID, name: alliance.name });
+    }
+    const corporation = await flow.ownCorporation();
+    if (corporation !== null && !isNpcOwner(corporation.corporationID) && isSearchMatch(typed, corporation.name, matchBy)) {
+      extras.unshift({ kind: "corp", id: corporation.corporationID, name: corporation.name });
+    }
+    return extras;
   }
 
   /**
    * OwnerSearchWindow.Search (ownerSearch.py 137 to 163) by searchOld.Search, with hideNPC and Search By: nothing
    * typed asks nothing; % and ? and * taken out; partial terms need a term of three or more
-   * (PartialSearchLessThanMinLength); the pilots found by name, or the client's words for none.
+   * (PartialSearchLessThanMinLength); the window's own entries first (GetExtraSearchEntries), then the pilots
+   * found by name, or the client's words for none.
    */
   function searchRecipients(): void {
     const typed = recipientSearchText;
     if (typed.trim() === "") {
       recipientResults = [];
+      recipientExtras = [];
       recipientSearchNote = word(COMPOSE_WORDS.typeIn, "Type in search string and press \"Search\"");
       return;
     }
+    const matchBy = recipientMatchBy;
     const text = typed.replace(/%/g, "").replace(/\?/g, "").replace(/\*/g, "").trim();
-    if (recipientMatchBy === 0 && !text.split(/\s+/).some((term) => term.length >= MIN_WILDCARD_LENGTH)) {
+    if (matchBy === 0 && !text.split(/\s+/).some((term) => term.length >= MIN_WILDCARD_LENGTH)) {
       recipientSearchNote = filledWord("dialog:PartialSearchLessThanMinLength/body", "To search partial terms, at least one search term must be greater than {minChars} characters.", { minChars: String(MIN_WILDCARD_LENGTH) });
       return;
     }
     void run(async () => {
-      const found = text.length < 1 || text.length >= 100 ? [] : await flow.searchCharacters(text, recipientMatchBy);
+      const found = text.length < 1 || text.length >= 100 ? [] : await flow.searchCharacters(text, matchBy);
+      const extras = await extraRecipientEntries(typed, matchBy);
       recipientResults = [...found].sort((left, right) => (left.name.toLowerCase() < right.name.toLowerCase() ? -1 : 1));
-      recipientSearchNote = found.length === 0
+      recipientExtras = extras;
+      recipientSearchNote = found.length === 0 && extras.length === 0
         ? filledWord(COMPOSE_WORDS.nothingFound, "Nothing found with \"{search}\" in its name.", { search: typed })
         : found.length >= 500 ? filledWord(COMPOSE_WORDS.manyFound, "25 or more characters were found with \"{name}\".", { name: typed }) : "";
     });
+  }
+
+  /** Search By chosen (ChangeSearchBy, ownerSearch.py 95 to 97): kept in the user's settings. */
+  function recipientSearchByChanged(): void {
+    flow.keepOwnersSearchBy(recipientMatchBy);
+  }
+
+  /**
+   * The All Contacts tab (ownerSearch.py LoadContacts, 190 to 204), loaded once as it is first shown: the
+   * pilot's contacts that are characters and not NPCs, by name.
+   */
+  function showRecipientContacts(): void {
+    recipientSearchTab = "contacts";
+    if (recipientContacts !== null) {
+      return;
+    }
+    void run(async () => {
+      const contacts = await flow.mailContacts();
+      recipientContacts = [...contacts].sort((left, right) => (left.name.toLowerCase() < right.name.toLowerCase() ? -1 : left.name.toLowerCase() > right.name.toLowerCase() ? 1 : 0));
+    });
+  }
+
+  /**
+   * AddReceiverFromSearch (2318 to 2334) for one of the window's own entries: a list by AddList (1951 to 1959), a
+   * corporation or an alliance by AddCorpAllianceReciver (1938 to 1949), each refused where the most groups are
+   * held; then AddReceiver (1962 to 1972): its name added to the field, a list's with its mark, and the names checked.
+   */
+  function addExtraFromSearch(entry: RecipientExtra): void {
+    composeNotes = [];
+    const notes: string[] = [];
+    const groupsHeld = toCorpAlliance.length + (toList !== null ? 1 : 0);
+    const corpNames = toCorpAlliance.map((group) => group.name);
+    let added: string | null = null;
+    if (entry.kind === "list") {
+      if (groupsHeld >= MAIL_MAX_GROUPS) {
+        notes.push(maxGroupText(entry.name, corpNames, toList));
+      } else {
+        toList = entry.id;
+        added = mailEntryOf(entry.name);
+      }
+    } else if (validateCorpOrAlliance(entry.id, notes)) {
+      if (groupsHeld >= MAIL_MAX_GROUPS) {
+        notes.push(maxGroupText(entry.name, corpNames, toList));
+      } else {
+        toCorpAlliance = [...toCorpAlliance.filter((group) => group.name !== entry.name), { name: entry.name, ownerID: entry.id }];
+        added = entry.name;
+      }
+    }
+    composeNotes = notes;
+    if (added === null) {
+      return;
+    }
+    receiverText = receiverText === "" ? added : `${receiverText}, ${added}`;
+    void run(validateReceivers);
   }
 
   /** AddReceiverFromSearch by AddCharacterReceiver (1905 to 1917, 2318 to 2334): the pilot's name added to the field, then the names checked. */
@@ -2394,39 +2512,72 @@
         </div>
       {/if}
       {#if recipientSearchOpen}
-        <!-- "Search for Recipients" (MailSearchWindow; ownerSearch.py OwnerSearchWindow): Search By, the name, Search,
-             and the pilots found, each with Add, or marked where added. -->
+        <!-- "Search for Recipients" (MailSearchWindow; ownerSearch.py OwnerSearchWindow): its two tabs, Search and All
+             Contacts. Search: Search By, the name, Search, the window's own entries (the corporation, the alliance,
+             the lists) and then the pilots found, each with Add, a pilot marked where added. All Contacts: the
+             pilot's contacts, the same. -->
         <section class="bulk mail-recipient-search">
           <h3>{word(COMPOSE_WORDS.searchFor, "Search for Recipients")}</h3>
           <p class="controls">
-            <label>
-              {word(COMPOSE_WORDS.searchBy, "Search By")}
-              <select bind:value={recipientMatchBy} disabled={busy}>
-                {#each SEARCH_BY as [matchBy, label, own] (matchBy)}
-                  <option value={matchBy}>{word(label, own)}</option>
-                {/each}
-              </select>
-            </label>
-            <input type="text" maxlength="50" bind:value={recipientSearchText} onkeydown={(event) => { if (event.key === "Enter") { event.preventDefault(); searchRecipients(); } }} />
-            <button type="button" disabled={busy} onclick={searchRecipients}>{word(COMPOSE_WORDS.search, "Search")}</button>
+            <button type="button" class="minor" class:active={recipientSearchTab === "search"} onclick={() => (recipientSearchTab = "search")}>{word(COMPOSE_WORDS.search, "Search")}</button>
+            <button type="button" class="minor" class:active={recipientSearchTab === "contacts"} onclick={showRecipientContacts}>{word(COMPOSE_WORDS.allContacts, "All Contacts")}</button>
             <button type="button" class="minor" onclick={() => (recipientSearchOpen = false)}>✕</button>
           </p>
-          {#if recipientSearchNote !== ""}
-            <p class="note">{recipientSearchNote}</p>
-          {/if}
-          {#if recipientResults.length > 0}
-            <ul class="mail-label-list">
-              {#each recipientResults as person (person.characterID)}
-                <li>
-                  {person.name}
-                  {#if recipients.some((each) => each.characterID === person.characterID)}
-                    <span class="note">{word(COMPOSE_WORDS.added, "Character Added")}</span>
-                  {:else}
-                    <button type="button" class="minor" disabled={busy} onclick={() => addFromSearch(person)}>{word(COMPOSE_WORDS.add, "Add")}</button>
-                  {/if}
-                </li>
-              {/each}
-            </ul>
+          {#if recipientSearchTab === "search"}
+            <p class="controls">
+              <label>
+                {word(COMPOSE_WORDS.searchBy, "Search By")}
+                <select bind:value={recipientMatchBy} disabled={busy} onchange={recipientSearchByChanged}>
+                  {#each SEARCH_BY as [matchBy, label, own] (matchBy)}
+                    <option value={matchBy}>{word(label, own)}</option>
+                  {/each}
+                </select>
+              </label>
+              <input type="text" maxlength="50" bind:value={recipientSearchText} onkeydown={(event) => { if (event.key === "Enter") { event.preventDefault(); searchRecipients(); } }} />
+              <button type="button" disabled={busy} onclick={searchRecipients}>{word(COMPOSE_WORDS.search, "Search")}</button>
+            </p>
+            {#if recipientSearchNote !== ""}
+              <p class="note">{recipientSearchNote}</p>
+            {/if}
+            {#if recipientExtras.length > 0 || recipientResults.length > 0}
+              <ul class="mail-label-list">
+                {#each recipientExtras as entry (`${entry.kind}:${entry.id}`)}
+                  <li>
+                    {entry.kind === "list"
+                      ? mailEntryOf(entry.name)
+                      : filledWord(FOLDER_WORDS.mailEntry, "{entryName} {entryType}", { entryName: entry.name, entryType: entry.kind === "corp" ? word(COMPOSE_WORDS.labelCorp, "[Corp]") : word(COMPOSE_WORDS.labelAlliance, "[Alliance]") })}
+                    <button type="button" class="minor" disabled={busy} onclick={() => addExtraFromSearch(entry)}>{word(COMPOSE_WORDS.add, "Add")}</button>
+                  </li>
+                {/each}
+                {#each recipientResults as person (person.characterID)}
+                  <li>
+                    {person.name}
+                    {#if recipients.some((each) => each.characterID === person.characterID)}
+                      <span class="note">{word(COMPOSE_WORDS.added, "Character Added")}</span>
+                    {:else}
+                      <button type="button" class="minor" disabled={busy} onclick={() => addFromSearch(person)}>{word(COMPOSE_WORDS.add, "Add")}</button>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          {:else if recipientContacts !== null}
+            {#if recipientContacts.length === 0}
+              <p class="note">{word(COMPOSE_WORDS.noContacts, "No contacts")}</p>
+            {:else}
+              <ul class="mail-label-list">
+                {#each recipientContacts as person (person.characterID)}
+                  <li>
+                    {person.name}
+                    {#if recipients.some((each) => each.characterID === person.characterID)}
+                      <span class="note">{word(COMPOSE_WORDS.added, "Character Added")}</span>
+                    {:else}
+                      <button type="button" class="minor" disabled={busy} onclick={() => addFromSearch(person)}>{word(COMPOSE_WORDS.add, "Add")}</button>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            {/if}
           {/if}
         </section>
       {/if}
