@@ -10121,8 +10121,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (place.stationID !== null || place.structureID !== null) return;
     const status = store.travel.get().status;
     if (autopilotStarting || status === "running" || status === "paused") return;
+    startAutopilotRun(next);
+  }
+
+  /** The autopilot's run to a waypoint: planned from where the ship is, and off where none could be planned. */
+  function startAutopilotRun(destinationID: number): void {
+    autopilotTarget = destinationID;
     autopilotStarting = true;
-    void startRoute(next).then((outcome) => {
+    void startRoute(destinationID).then((outcome) => {
       if (!outcome.started && autopilotSignal.get()) {
         autopilotSignal.set(false);
         sayAutopilot("AutoPilotDisabled");
@@ -10133,6 +10139,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
   /** A route being planned for the autopilot: no second is started meanwhile. */
   let autopilotStarting = false;
+  /** The waypoint the autopilot's run flies to. */
+  let autopilotTarget: number | null = null;
 
   /**
    * The structures the structure directory has answered for (structureDirectory.py GetStructureInfo, 33 to 39: asked
@@ -10170,6 +10178,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       putWaypoints(made.waypoints);
       waypointsArrived();
+      autopilotRouteChanged();
     })();
   }
 
@@ -10183,6 +10192,30 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   function clearWaypoints(locationID?: number): void {
     putWaypoints(withoutWaypoint(heldWaypoints(), locationID ?? null));
+    autopilotRouteChanged();
+  }
+
+  /**
+   * The route changed by the pilot while the autopilot is on. The client's autopilot reads the star map's path afresh
+   * at each Update, every 2000 ms (autopilot.py 290 onward), so it heads for the new route's next place at once (a
+   * warp under way is finished first: Update does nothing in warp, 307 to 308); and with no waypoint left it is
+   * switched off ("no destination path set", 290 to 293). The page's run flies to one waypoint, so a new first
+   * waypoint is a new run, planned from where the ship is.
+   */
+  function autopilotRouteChanged(): void {
+    if (!autopilotSignal.get()) return;
+    const next = heldWaypoints()[0];
+    if (next === undefined) {
+      autopilotSignal.set(false);
+      autopilotTarget = null;
+      autopilot?.abort();
+      sayAutopilot("AutoPilotDisabledNoPathSet");
+      return;
+    }
+    if (next === autopilotTarget) return;
+    const place = pilotPlace();
+    if (place.stationID !== null || place.structureID !== null) return;
+    startAutopilotRun(next);
   }
 
   async function activateAutopilot(): Promise<void> {
@@ -10199,6 +10232,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return;
     }
     autopilotStarting = true;
+    autopilotTarget = first;
     let outcome: RouteStartOutcome;
     try {
       outcome = await startRoute(first);
