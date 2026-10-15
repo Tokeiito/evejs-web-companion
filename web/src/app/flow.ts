@@ -459,6 +459,7 @@ import { readMyLaunches } from "../bridge/launchReads.ts";
 import type { PlanetLaunchesRead } from "../bridge/planetLaunches.ts";
 import { readMarketTransactions, type MarketTransactionsRead } from "../bridge/marketTransactions.ts";
 import { decodeEntryKinds, decodeJournalEntries, journalLines, type WalletJournalRead } from "../bridge/walletJournal.ts";
+import type { WalletOverviewRead } from "../bridge/walletOverview.ts";
 import { readCharacterFittings, readCorporationFittings } from "../bridge/fittingReads.ts";
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, kickFleetMember as kickFleetMemberCall, leaveFleet as leaveFleetCall, makeFleetLeader as makeFleetLeaderCall, moveFleetMember as moveFleetMemberCall, tagFleetTarget, addToWatchlist as addToWatchlistCall, removeFromWatchlist as removeFromWatchlistCall, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
@@ -1593,6 +1594,12 @@ export interface AppFlow {
    */
   readonly walletJournal: ReadableSignal<WalletJournalRead>;
   loadWalletJournal(year?: number | null, month?: number | null): Promise<void>;
+  /**
+   * The wallet's Overview tab (bridge/walletOverview.ts): the last thirty days' journal with its derived lines and the
+   * kinds' names, as the account service keeps them, and the market service's trades (marketTransactions).
+   */
+  readonly walletOverview: ReadableSignal<WalletOverviewRead>;
+  loadWalletOverview(): Promise<void>;
   warpToPlanetLaunch(launchID: number): Promise<void>;
   removePlanetLaunch(launchID: number): Promise<void>;
   /**
@@ -5917,6 +5924,28 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       lines: entries.status === "fulfilled" ? journalLines(decodeJournalEntries(entries.value)) : [],
       kinds: kinds.status === "fulfilled" ? decodeEntryKinds(kinds.value) : walletJournalSignal.get().kinds,
       journalMessageIDs: messages.status === "fulfilled" ? messages.value : null,
+      error: entries.status === "rejected" ? (entries.reason instanceof Error ? entries.reason.message : String(entries.reason)) : null,
+    });
+  }
+
+  // The wallet's Overview tab (bridge/walletOverview.ts): the last thirty days' journal with the lines derived from it
+  // (the account service's GetPersonalTransactions(), as walletReads keeps it) and the kinds' names, read as the tab is
+  // chosen (OverviewPanel.OnTabSelect); the trades are the market service's (loadMarketTransactions).
+  const NO_WALLET_OVERVIEW: WalletOverviewRead = { loaded: false, lines: [], kinds: new Map(), error: null };
+  const walletOverviewSignal = createSignal<WalletOverviewRead>(NO_WALLET_OVERVIEW);
+  let walletOverviewGeneration = 0;
+
+  async function loadWalletOverview(): Promise<void> {
+    const generation = ++walletOverviewGeneration;
+    const [entries, kinds] = await Promise.allSettled([walletReads.journal(null, null), walletReads.entryKinds(), loadMarketTransactions()]);
+    if (generation !== walletOverviewGeneration) return;
+    for (const each of [entries, kinds]) {
+      if (each.status === "rejected" && isSessionLost(each.reason)) throw each.reason;
+    }
+    walletOverviewSignal.set({
+      loaded: true,
+      lines: entries.status === "fulfilled" ? journalLines(decodeJournalEntries(entries.value)) : [],
+      kinds: kinds.status === "fulfilled" ? decodeEntryKinds(kinds.value) : walletOverviewSignal.get().kinds,
       error: entries.status === "rejected" ? (entries.reason instanceof Error ? entries.reason.message : String(entries.reason)) : null,
     });
   }
@@ -18083,6 +18112,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       walletReads.forget();
       walletJournalGeneration += 1;
       walletJournalSignal.set(NO_WALLET_JOURNAL);
+      walletOverviewGeneration += 1;
+      walletOverviewSignal.set(NO_WALLET_OVERVIEW);
       // skillQueueSvc.ReInitialize: and what the queue service had reckoned of the training slots.
       trainingSlots.forget();
       requestGeneration++;
@@ -18906,6 +18937,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadMarketTransactions,
     walletJournal: readonlySignal(walletJournalSignal),
     loadWalletJournal,
+    walletOverview: readonlySignal(walletOverviewSignal),
+    loadWalletOverview,
 
     async approachPlanetLaunch(containerID) {
       await runFlightStep("Approach", () => orderedStep((flightNow) => approachCall(bridgeDo, flightNow, containerID, 50)));

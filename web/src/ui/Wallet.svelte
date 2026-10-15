@@ -24,6 +24,7 @@
   import { plainText } from "../bridge/clientWords.ts";
   import WalletMarketTransactions from "./WalletMarketTransactions.svelte";
   import WalletJournal from "./WalletJournal.svelte";
+  import WalletOverview from "./WalletOverview.svelte";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -32,9 +33,11 @@
   // svelte-ignore state_referenced_locally
   const words = store.words;
 
-  // The personal wallet's tabs (personalISKPanel.py GetMainTabs, 22 to 23), as far as the page has them: Transactions
-  // (the wallet's journal) and Market Transactions (WalletMarketTransactions).
+  // The personal wallet's tabs (personalISKPanel.py GetMainTabs, 22 to 23), as far as the page has them: Overview
+  // (WalletOverview), the first, which the window opens on; Transactions (WalletJournal); Market Transactions
+  // (WalletMarketTransactions).
   const TAB_WORDS = {
+    overview: "UI/Wallet/WalletWindow/TabOverview",
     transactions: "UI/Wallet/WalletWindow/TabTransactions",
     market: "UI/Wallet/WalletWindow/MarketTransactions",
   } as const;
@@ -45,7 +48,7 @@
     const template = $words.templates[label];
     return typeof template === "string" && template !== "" ? plainText(template) : own;
   }
-  let tab = $state<"transactions" | "market">("transactions");
+  let tab = $state<"overview" | "transactions" | "market">("overview");
 
   let busy = $state(false);
   let error = $state("");
@@ -113,11 +116,14 @@
   {/if}
 
   <nav class="tabs">
+    <button type="button" class:active={tab === "overview"} onclick={() => (tab = "overview")}>{tabWord(TAB_WORDS.overview, "Overview")}</button>
     <button type="button" class:active={tab === "transactions"} onclick={() => (tab = "transactions")}>{tabWord(TAB_WORDS.transactions, "Transactions")}</button>
     <button type="button" class:active={tab === "market"} onclick={() => (tab = "market")}>{tabWord(TAB_WORDS.market, "Market Transactions")}</button>
   </nav>
 
-  {#if tab === "market"}
+  {#if tab === "overview"}
+    <WalletOverview {store} {flow} />
+  {:else if tab === "market"}
     <WalletMarketTransactions {store} {flow} />
   {:else}
     <WalletJournal {store} {flow} />

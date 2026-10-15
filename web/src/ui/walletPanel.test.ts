@@ -14,6 +14,8 @@ const { render } = await import("svelte/server");
 const { createClientStore } = await import("../store/clientStore.ts");
 const { formatIsk } = await import("./isk.ts");
 const Wallet = (await import("./Wallet.svelte")).default;
+// The Transactions tab's own window part: the Wallet opens on its Overview tab (personalISKPanel.py GetMainTabs).
+const WalletJournal = (await import("./WalletJournal.svelte")).default;
 const CorpWallet = (await import("./CorpWallet.svelte")).default;
 
 type LedgerEntry = import("../store/types.ts").LedgerEntry;
@@ -24,9 +26,13 @@ type JournalLine = import("../bridge/walletJournal.ts").JournalLine;
 const NOT_READ: WalletJournalRead = { year: null, month: null, loaded: false, lines: [], kinds: new Map(), journalMessageIDs: null, error: null };
 
 function fakeFlow(journal: WalletJournalRead = NOT_READ): unknown {
-  // The journal the Transactions tab reads (flow.walletJournal), as the client's account service keeps it.
-  const walletJournal = { get: () => journal, subscribe: (listener: (value: WalletJournalRead) => void) => (listener(journal), () => {}) };
-  return new Proxy({ walletJournal } as Record<string, unknown>, { get: (held, key) => (typeof key === "string" && key in held ? held[key] : async () => {}) });
+  const signal = <T,>(value: T) => ({ get: () => value, subscribe: (listener: (value: T) => void) => (listener(value), () => {}) });
+  // The journal the Transactions tab reads (flow.walletJournal), as the client's account service keeps it; and what
+  // the Overview tab, which the window opens on, reads (flow.walletOverview, flow.marketTransactions), not read yet.
+  const walletJournal = signal(journal);
+  const walletOverview = signal({ loaded: false, lines: [], kinds: new Map(), error: null });
+  const marketTransactions = signal({ loaded: false, transactions: [], error: null });
+  return new Proxy({ walletJournal, walletOverview, marketTransactions } as Record<string, unknown>, { get: (held, key) => (typeof key === "string" && key in held ? held[key] : async () => {}) });
 }
 
 function visibleText(body: string): string {
@@ -162,7 +168,7 @@ function loadedWallet(over: Partial<{
 
 test("Wallet renders each ledger row as date + ref-type WORDS + signed ISK", () => {
   const store = loadedWallet({});
-  const output = render(Wallet as never, { props: { store, flow: fakeFlow(journalRead({ lines: REAL_JOURNAL })) } } as never);
+  const output = render(WalletJournal as never, { props: { store, flow: fakeFlow(journalRead({ lines: REAL_JOURNAL })) } } as never);
   const text = visibleText(output.body);
   // R9a: the ref-type reads as words, never the entryTypeID code (17/2/98).
   assert.match(text, /Bounty Prize/);
@@ -177,7 +183,7 @@ test("Wallet renders each ledger row as date + ref-type WORDS + signed ISK", () 
 // R7d SWEEP: no raw refID/ownerID/transactionID may appear in the rendered text.
 test("Wallet never renders a raw id from a ledger row (R7d)", () => {
   const store = loadedWallet({});
-  const output = render(Wallet as never, { props: { store, flow: fakeFlow(journalRead({ lines: REAL_JOURNAL })) } } as never);
+  const output = render(WalletJournal as never, { props: { store, flow: fakeFlow(journalRead({ lines: REAL_JOURNAL })) } } as never);
   const text = visibleText(output.body);
   // transactionID (kept only as a keyed-each key) and the ids the decoder drops.
   assert.equal(text.includes("1784675859816261"), false, "transactionID must not render");
@@ -193,7 +199,7 @@ test("Wallet never renders a raw id from a ledger row (R7d)", () => {
 // something.
 test("the Wallet id-sweep matcher actually inspects rendered text", () => {
   const store = loadedWallet({});
-  const output = render(Wallet as never, { props: { store, flow: fakeFlow(journalRead({ lines: REAL_JOURNAL })) } } as never);
+  const output = render(WalletJournal as never, { props: { store, flow: fakeFlow(journalRead({ lines: REAL_JOURNAL })) } } as never);
   const text = visibleText(output.body);
   // "45,000" is the grouped amount of the -45000 debit; its digits are present.
   assert.equal(text.includes("45,000"), true);
@@ -201,17 +207,18 @@ test("the Wallet id-sweep matcher actually inspects rendered text", () => {
 
 test("Wallet shows an honest empty message for a real 'no ledger entries'", () => {
   const store = loadedWallet({});
-  const output = render(Wallet as never, { props: { store, flow: fakeFlow(journalRead({ lines: [] })) } } as never);
+  const output = render(WalletJournal as never, { props: { store, flow: fakeFlow(journalRead({ lines: [] })) } } as never);
   const text = visibleText(output.body);
   assert.match(text, /No wallet activity yet/i);
-  // The wallet's activity is its Transactions tab. Market Transactions is the client's next tab (personalISKPanel.py
-  // GetMainTabs), another read, made as that tab is chosen.
-  assert.match(text, /Market Transactions/);
+  // The wallet's activity is its Transactions tab, beside Overview, which the window opens on, and Market Transactions
+  // (personalISKPanel.py GetMainTabs), each another read made as its tab is chosen.
+  const tabs = visibleText(render(Wallet as never, { props: { store, flow: fakeFlow() } } as never).body);
+  for (const tab of [/Overview/, /Transactions/, /Market Transactions/]) assert.match(tabs, tab);
 });
 
 test("Wallet shows the ledger error, NOT the empty message, when the read failed", () => {
   const store = loadedWallet({});
-  const output = render(Wallet as never, { props: { store, flow: fakeFlow(journalRead({ error: "transactions: READ_FAILED" })) } } as never);
+  const output = render(WalletJournal as never, { props: { store, flow: fakeFlow(journalRead({ error: "transactions: READ_FAILED" })) } } as never);
   const text = visibleText(output.body);
   assert.match(text, /READ_FAILED/);
   // ⚠ A failed journal read must never claim the wallet has no activity.
