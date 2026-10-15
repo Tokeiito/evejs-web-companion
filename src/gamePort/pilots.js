@@ -2405,6 +2405,11 @@ function createGamePortPilots({
       if (form.status === "differs") entry.clientStates.forget();
       else await safetyLevelSet(entry, form.args[0]);
     }
+    // characterSettingsSvc.Save and Delete (44 to 58): once the server has taken the call, the setting is the one the
+    // service keeps, or gone from it.
+    if (service === "charMgr" && (method === "SaveCharacterSetting" || method === "DeleteCharacterSetting")) {
+      characterSettingWorkedIn(entry, method, form.args);
+    }
     // What the client's own code names beside this call, which it does once the call is done (a refusal threw above).
     forgetNamed(entry, namedAfterCall(service, method, argumentsToWire(form.args), entry.session.attributes));
     // targetMgr._LockTarget: (flag, targets) with no flag set says the lock is made already, and the client adds the target itself.
@@ -2811,8 +2816,9 @@ function createGamePortPilots({
    * reads one by its key out of what is kept (36 to 42). Tranquility answers a utillib.KeyVal of them, each a
    * unicode string, and its recordings of a login each have the one call. One asking at a time.
    *
-   * The service's Save and Delete are not made here yet (44 to 58: charMgr.SaveCharacterSetting(key, value) and
-   * charMgr.DeleteCharacterSetting(key), each worked into what is kept): no page sets one.
+   * The service's Save and Delete (44 to 58: charMgr.SaveCharacterSetting(key, value) and
+   * charMgr.DeleteCharacterSetting(key)) are a page's writes, each worked into what is kept once the server has
+   * taken it (characterSettingWorkedIn).
    */
   function characterSettingsRead(entry) {
     const reading = entry.characterSettingsWork.then(async () => {
@@ -2825,6 +2831,25 @@ function createGamePortPilots({
     });
     entry.characterSettingsWork = reading.catch(() => {});
     return reading;
+  }
+
+  /**
+   * characterSettingsSvc.Save (44 to 50) and Delete (52 to 58), once the server has taken the call: the setting is
+   * put under its key in what is kept, or taken out of it. Nothing where the settings were never read: the next
+   * reading asks the server for them all.
+   */
+  function characterSettingWorkedIn(entry, method, args) {
+    const kept = entry.characterSettings;
+    const entries = kept && kept.type === "object" && kept.args && Array.isArray(kept.args.entries) ? kept.args.entries : null;
+    const settingKey = Array.isArray(args) ? args[0] : null;
+    if (entries === null || typeof settingKey !== "string") return;
+    const at = entries.findIndex((candidate) => Array.isArray(candidate) && candidate[0] === settingKey);
+    if (method === "DeleteCharacterSetting") {
+      if (at >= 0) entries.splice(at, 1);
+      return;
+    }
+    if (at >= 0) entries[at] = [settingKey, args[1]];
+    else entries.push([settingKey, args[1]]);
   }
 
   /**

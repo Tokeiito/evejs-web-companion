@@ -461,6 +461,7 @@ import { readMarketTransactions, type MarketTransactionsRead } from "../bridge/m
 import { decodeEntryKinds, decodeJournalEntries, journalLines, type WalletJournalRead } from "../bridge/walletJournal.ts";
 import type { WalletOverviewRead } from "../bridge/walletOverview.ts";
 import { readMyShares, type ShareHolding } from "../bridge/walletShares.ts";
+import { readCharacterSetting as readCharacterSettingCall, saveCharacterSetting as saveCharacterSettingCall } from "../bridge/characterSettings.ts";
 
 /** The pilot's shares as the flow keeps them for the wallet's Shares tab. */
 export interface WalletSharesRead {
@@ -1616,6 +1617,10 @@ export interface AppFlow {
   /** The wallet's Shares tab (bridge/walletShares.ts): the shares the pilot holds, read as the tab is chosen. */
   readonly walletShares: ReadableSignal<WalletSharesRead>;
   loadWalletShares(): Promise<void>;
+  /** One of the character's settings kept at the server (characterSettingsSvc.Get); null for none. */
+  readCharacterSetting(settingKey: string): Promise<string | null>;
+  /** A character setting saved at the server (characterSettingsSvc.Save); an empty value deleted instead. */
+  saveCharacterSetting(settingKey: string, value: string | null): Promise<void>;
   warpToPlanetLaunch(launchID: number): Promise<void>;
   removePlanetLaunch(launchID: number): Promise<void>;
   /**
@@ -5990,6 +5995,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (isSessionLost(error)) throw error;
       walletSharesSignal.set({ loaded: true, holdings: [], error: error instanceof Error ? error.message : String(error) });
     }
+  }
+
+  /** characterSettingsSvc.Get (bridge/characterSettings.ts): one of the character's settings kept at the server. */
+  function readCharacterSetting(settingKey: string): Promise<string | null> {
+    return readCharacterSettingCall(bridgeAsk, settingKey);
+  }
+
+  /** characterSettingsSvc.Save (bridge/characterSettings.ts): an empty value deleted instead. */
+  function saveCharacterSetting(settingKey: string, value: string | null): Promise<void> {
+    return saveCharacterSettingCall(bridgeDo, settingKey, value);
   }
 
   /** OnPILaunchesChange: what is kept is let go, and read afresh where the window has wanted it. */
@@ -18996,6 +19011,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadWalletOverview,
     walletShares: readonlySignal(walletSharesSignal),
     loadWalletShares,
+    readCharacterSetting,
+    saveCharacterSetting,
 
     async approachPlanetLaunch(containerID) {
       await runFlightStep("Approach", () => orderedStep((flightNow) => approachCall(bridgeDo, flightNow, containerID, 50)));
