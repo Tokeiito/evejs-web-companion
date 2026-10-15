@@ -100,7 +100,7 @@
   import type { BookmarkPlace } from "../bridge/locationsList.ts";
   import BookmarkWindow from "./BookmarkWindow.svelte";
 
-  let { store, flow, showAgents, openMail }: { store: ClientStore; flow: AppFlow; showAgents?: () => void; openMail?: () => void } = $props();
+  let { store, flow, showAgents, openMail, openWatchlist }: { store: ClientStore; flow: AppFlow; showAgents?: () => void; openMail?: () => void; openWatchlist?: () => void } = $props();
 
   // svelte-ignore state_referenced_locally
   const words = store.words;
@@ -759,6 +759,8 @@
       if (outcome === "too-many") {
         throw new Error(filledWord("dialog:FleetTooManyFavorites/body", "The watchlist holds {num} pilots at most.", { num: "100" }));
       }
+      // AddFavorite (674 to 677): with pilots added, the client opens its watch list.
+      if (outcome === "added") openWatchlist?.();
     });
   }
 

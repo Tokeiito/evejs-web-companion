@@ -1533,6 +1533,9 @@ function createGamePortPilots({
       fleetKept: createPilotFleet({ characterID }),
       /** What the client asks of a fleet of its own accord, one thing after another: over when each is answered. */
       fleetWork: Promise.resolve(),
+      // fleetSvc's self.favorites, the watchlist, as the page told the server of it last (AddToWatchlist and
+      // RemoveFromWatchlist): what the client's own RegisterForDamageUpdates sends (damageUpdatesRegistered).
+      watchlist: [],
       /** The pilot's standings as the client's standing service keeps them (pilotStandings.js), and the reading of them that is under way. */
       standings: createPilotStandings({ characterID, corporationID: () => attribute(entry, "corpid") }),
       standingsWork: Promise.resolve(),
@@ -1833,10 +1836,18 @@ function createGamePortPilots({
         entry.structureGuests.left();
         if (sessions.has(entry.handle)) structureServicesRead(entry).then(() => structureGuestsAsked(entry));
       }
-      // fleetSvc.ProcessSessionChange: in no fleet, there is no fleet's object.
+      // fleetSvc.ProcessSessionChange: in no fleet, there is no fleet's object, and no watchlist (favorites.clear()).
       if ("fleetid" in changes) {
         entry.fleetKept.sessionChanged();
-        if (changes.fleetid[1] === null) outOfFleet(entry);
+        if (changes.fleetid[1] === null) {
+          outOfFleet(entry);
+          entry.watchlist = [];
+        }
+      }
+      // fleetSvc.ProcessSessionChange (1688 to 1691): at a change of system, in space and in a fleet, the client tells
+      // fleetMgr of its watchlist again (RegisterForDamageUpdates, 793 to 796).
+      if ("solarsystemid" in changes && attribute(entry, "solarsystemid") !== null && attribute(entry, "fleetid") !== null && sessions.has(entry.handle)) {
+        damageUpdatesRegistered(entry);
       }
       // scanSvc.OnSessionChanged: another system, ship or structure, and the scanner knows of no probes.
       if (["solarsystemid", "shipid", "structureid"].some((name) => name in changes)) entry.scanner.flush();
@@ -2348,6 +2359,12 @@ function createGamePortPilots({
       ledger.note(service, method, ON_AN_ANSWERED_OBJECT.has(`${service}.${method}`)
         ? { ...form, status: "differs", note: "Asked of the service by its name. The client asks the object another call answered." }
         : form.moniker && form.status === "same" ? { ...form, status: "reshaped" } : form);
+    }
+    // fleetSvc.AddFavorite and RemoveFavorite: the watchlist as the client tells the server of it, kept for the
+    // client's own RegisterForDamageUpdates at a change of system (damageUpdatesRegistered).
+    if (service === "fleetMgr" && (method === "AddToWatchlist" || method === "RemoveFromWatchlist") && form.status !== "differs") {
+      const favorites = Array.isArray(args) ? args[1] : null;
+      if (Array.isArray(favorites)) entry.watchlist = favorites.filter((id) => Number.isSafeInteger(id) && id > 0);
     }
     // A call the client makes on a service's moniker is made on the object bound for where the pilot is.
     const result = await run(entry, service, method, async () => (form.moniker
@@ -4807,6 +4824,17 @@ function createGamePortPilots({
   function outOfFleet(entry) {
     entry.fleet = null;
     entry.fleetKept.clear();
+  }
+
+  /**
+   * fleetSvc.RegisterForDamageUpdates (793 to 796): sm.RemoteSvc('fleetMgr').RegisterForDamageUpdates(fav), every
+   * favourite as the client's set (GetWatchlistMembers, 788: damage updates on, as the client starts). Of the client's
+   * own accord, in its form and in the ledger; what cannot be done is left undone, as the client's handler leaves it.
+   */
+  function damageUpdatesRegistered(entry) {
+    const form = shape("fleetMgr", "RegisterForDamageUpdates", [[...entry.watchlist]], null, contextFor(entry));
+    ledger.note("fleetMgr", "RegisterForDamageUpdates", form);
+    return byName(entry.session, "fleetMgr", "RegisterForDamageUpdates", form).catch(() => {});
   }
 
   /** One call the client makes of its own accord on the fleet's object, in the client's form and in the ledger. */

@@ -989,6 +989,20 @@ const removingFromWatchlist = (args, kwargs, context) => {
   return { args: [taken, set], kwargs };
 };
 
+/**
+ * fleetSvc.RegisterForDamageUpdates (793 to 796): fleetMgr.RegisterForDamageUpdates(fav), every favourite (the set),
+ * at a change of system in space in a fleet (ProcessSessionChange, 1688 to 1691); the client's own, which the game
+ * port makes as it keeps the watchlist. No recording has one.
+ */
+const registeringForDamage = (args, kwargs, context) => {
+  const set = watchlistSet(args[0]);
+  if (!(args.length === 1 && set !== null && Object.keys(kwargs).length === 0)) {
+    return { args, kwargs, status: "differs", note: "The client sends every favourite, as its set: RegisterForDamageUpdates(favorites)." };
+  }
+  if (context.fleetID === null) return { args, kwargs, status: "differs", note: "The client registers only in a fleet." };
+  return { args: [set], kwargs };
+};
+
 /** droneFunctions.RealScoopToDroneBay (195): ship.ScoopDrone(objectIDs), the drones as one list of their IDs and nothing else. */
 const scooping = (args, kwargs) => (args.length === 1 && Array.isArray(args[0]) && args[0].length > 0 && args[0].every((each) => Number.isSafeInteger(each) && each > 0)
   && Object.keys(kwargs).length === 0 ? {} : { status: "differs", note: "The client sends the drones as one list of their IDs, and nothing else." });
@@ -2246,6 +2260,7 @@ const RETAIL_CALLS = Object.freeze({
     "michelle.GetRemotePark().CmdFleetTagTarget(itemID, tag): a fleet's tag on a thing in space, from the menu and from the shortcuts, on the ballpark's object. It answers nothing, set or not. No recording has one."),
   "fleetMgr.AddToWatchlist": judged(`${FLEET_SVC}:669`, addingToWatchlist, "sm.RemoteSvc('fleetMgr').AddToWatchlist(newCharsAdded, fav): the pilots added and every favourite, the client's set"),
   "fleetMgr.RemoveFromWatchlist": judged(`${FLEET_SVC}:719`, removingFromWatchlist, "sm.RemoteSvc('fleetMgr').RemoveFromWatchlist(charID, favs): the pilot taken off and every favourite left, the client's set"),
+  "fleetMgr.RegisterForDamageUpdates": judged(`${FLEET_SVC}:795`, registeringForDamage, "sm.RemoteSvc('fleetMgr').RegisterForDamageUpdates(fav): every favourite, the client's set, at a change of system in space in a fleet"),
   "fleetMgr.BroadcastToBubble": judged(`${FLEET_SVC}:998`, oneBubbleBroadcast,
     "sm.RemoteSvc('fleetMgr').BroadcastToBubble(name, self.broadcastScope, itemID, typeID): the client's broadcasts to its bubble (the three calls for repair, Target and HealTarget), the type left at None, and none sent inside the client's own wait since its last broadcast. No recording has one."),
   "fleetMgr.ForceLeaveFleet": judged(`${FLEET_SVC}:367`, leavingByName, "sm.RemoteSvc('fleetMgr').ForceLeaveFleet(), no arguments: asked only where the client holds no object for a fleet the session is in"),
