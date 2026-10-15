@@ -55,8 +55,13 @@
   // Location... (the bookmark window, BookmarkWindow.svelte), and Dock in Station (menusvc.py 579 to 580, 619 to 624;
   // _MapMenu, 172 to 184).
   //
-  // Not here yet: Capture Portrait,
-  // selecting several agents, and the rest of an owner's menu (chat, Invite to Fleet's places in the fleet, the
+  // The Agents tab's entries are chosen as its scroll chooses (multiSelect: a click alone, Ctrl to add or take out,
+  // Shift for a range), each entry one agent in one group; a double click is a conversation where the pilot is docked
+  // in a station, else Show Info (OnDblClick, 966 to 978). The menu of several (_GetMultiMenu, 884 to 939, on the
+  // merged CharacterMenu) has Show Info, Remove from Addressbook over all of them (one question, then each one's
+  // DeleteContacts), and where none is under "All Agents" their removal from their folders; a drag carries them all.
+  //
+  // Not here yet: Capture Portrait, and the rest of an owner's menu (chat, Invite to Fleet's places in the fleet, the
   // fleet's own menu).
   import { onMount } from "svelte";
   import { formatTemplate, plainText, type TemplateArguments } from "../bridge/clientWords.ts";
@@ -221,6 +226,7 @@
     changeLabel: "/Carbon/UI/Controls/ScrollEntries/ChangeLabel",
     deleteFolder: "/Carbon/UI/Controls/ScrollEntries/DeleteFolder",
     removeFromGroup: "UI/Common/RemoveFromGroup",
+    removeFromFolder: "UI/PeopleAndPlaces/RemoveFromFolder",
     startConversation: "UI/Chat/StartConversationAgent",
     removeFromAddressbook: "UI/PeopleAndPlaces/RemoveFromAddressbook",
     nameAndLevel: "UI/Agents/AgentEntryNameAndLevel",
@@ -1074,6 +1080,13 @@
   /** The group whose menu is open, and the agent's (by its group and its ID). */
   let groupMenuFor = $state<string | null>(null);
   let agentMenuFor = $state<string | null>(null);
+  /**
+   * The entries chosen, each by its group and its agent (an entry is one agent in one group), as the window's scroll
+   * chooses them (carbonui scroll.py: multiSelect by default, 64; SelectNode, 550 on); and the entry a later Shift goes
+   * from.
+   */
+  let agentsChosen = $state<string[]>([]);
+  let lastAgentRow = $state<number | null>(null);
   /** The name popup of Create Folder (registry.AddListGroup) or a folder's Change Label (GetNewGroupName). */
   let folderNaming = $state<{ readonly id: string | null; value: string } | null>(null);
   const ALL_AGENTS = "all";
@@ -1171,6 +1184,120 @@
     });
   });
 
+  /** An entry's key: its group and its agent. */
+  const agentKey = (groupID: string, agentID: number): string => `${groupID}|${agentID}`;
+  /** An entry's group and agent, from its key. */
+  function agentEntryOf(key: string): { readonly groupID: string; readonly agentID: number } {
+    const at = key.lastIndexOf("|");
+    return { groupID: key.slice(0, at), agentID: Number(key.slice(at + 1)) };
+  }
+  /**
+   * The entries chosen, in the scroll's order (GetSelectedNodes, scroll.py 656 to 664: its nodes, those selected). An
+   * entry of a closed group is no node of the scroll's, and is chosen no longer.
+   */
+  const chosenInOrder = $derived(agentGroups.flatMap((group) => (group.open ? group.lines.map((line) => agentKey(group.id, line.agentID)) : [])).filter((key) => agentsChosen.includes(key)));
+
+  /**
+   * An entry clicked (AgentEntry.OnClick, userentry.py 955 to 964: the scroll's SelectNode): alone; with Ctrl, added or
+   * taken out; with Shift, the entries from the one last chosen to it; with both, those added.
+   */
+  function agentClick(event: MouseEvent, key: string): void {
+    const entry = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+    const entries = entry === null ? [] : [...(entry.closest(".contacts-agents")?.querySelectorAll<HTMLElement>("[data-agent-key]") ?? [])];
+    const at = entry === null ? -1 : entries.indexOf(entry);
+    const control = event.ctrlKey || event.metaKey;
+    const ranged = (): string[] => {
+      const [from, to] = (lastAgentRow ?? at) < at ? [lastAgentRow ?? at, at] : [at, lastAgentRow ?? at];
+      return entries.slice(from, to + 1).map((each) => each.dataset.agentKey ?? "").filter((each) => each !== "");
+    };
+    const anchored = event.shiftKey && lastAgentRow !== null && lastAgentRow !== at && at >= 0 && lastAgentRow < entries.length;
+    if (event.shiftKey && control) {
+      if (anchored) agentsChosen = [...new Set([...agentsChosen, ...ranged()])];
+    } else if (event.shiftKey) {
+      // The range from the entry last chosen; that entry stays the one a later Shift goes from.
+      if (anchored) {
+        agentsChosen = [...new Set(ranged())];
+        return;
+      }
+      agentsChosen = [key];
+    } else if (control) {
+      agentsChosen = agentsChosen.includes(key) ? agentsChosen.filter((each) => each !== key) : [...agentsChosen, key];
+    } else {
+      agentsChosen = [key];
+    }
+    lastAgentRow = at;
+  }
+
+  /**
+   * An entry double-clicked (AgentEntry.OnDblClick, 966 to 978): a conversation with the agent where the pilot is
+   * docked in a station, else the agent's information.
+   */
+  function agentDoubleClick(agentID: number): void {
+    const status = $flightState.status;
+    const docked = status !== null ? (status.docked ? status.stationID : null) : ($station.online?.stationID ?? null);
+    if (docked !== null && docked !== undefined) startConversation(agentID);
+    else agentInfo(agentID);
+  }
+
+  /** An entry's menu (AgentEntry.GetMenu, 858 to 882), the entry chosen alone where it was not chosen (GetSelectedNodes). */
+  function openAgentMenu(key: string): void {
+    if (!chosenInOrder.includes(key)) agentsChosen = [key];
+    agentMenuFor = agentMenuFor === key ? null : key;
+  }
+
+  /**
+   * The menu of several (AgentEntry._GetMultiMenu, 884 to 939): menusvc.CharacterMenu of their agents, each one's menu
+   * made as for several and the menus merged (menuMerge.py MergeMenus): Show Info where it is offered for one of them,
+   * Remove from Addressbook (each is in the book: addressbookService IsInAddressBook, 'contact', holds the agents). Then,
+   * where none of them is under "All Agents", their removal from their folders, the folder named where there is one.
+   */
+  const severalMenu = $derived.by(() => {
+    const entries = chosenInOrder.map(agentEntryOf);
+    const folderIDs = [...new Set(entries.map((entry) => entry.groupID))];
+    const inFolders = entries.length > 0 && entries.every((entry) => entry.groupID !== ALL_AGENTS);
+    const folder = folderIDs.length === 1 ? folders.folders.find((each) => each.id === folderIDs[0]) ?? null : null;
+    return {
+      entries,
+      showInfo: entries.some((entry) => agentInfoOffered(entry.agentID)),
+      removeFromFolders: inFolders ? filledWord(AGENT_WORDS.removeFromFolder, "Take {removecount} out of {foldername}", { foldername: folder?.label ?? "folders", removecount: String(entries.length) }) : null,
+    };
+  });
+
+  /**
+   * Show Info of several (menuMerge._ExecMulti: not one of menu/__init__.py's MULTI_FUNCTIONS, so each agent's own is
+   * run): the page has one information window, which is left on the last.
+   */
+  function severalInfo(): void {
+    agentMenuFor = null;
+    for (const entry of severalMenu.entries) if (agentInfoOffered(entry.agentID)) showInfo({ kind: "character", characterID: entry.agentID });
+  }
+
+  /** Their removal from their folders (RemoveFromListGroup, 985 to 1000, with no list named): nothing asked of the server. */
+  function severalOutOfFolders(): void {
+    agentMenuFor = null;
+    const out = severalMenu.entries;
+    keepFolders({
+      ...folders,
+      folders: folders.folders.map((folder) => {
+        const items = folder.groupItems.filter((id) => !out.some((entry) => entry.groupID === folder.id && entry.agentID === id));
+        return items.length === folder.groupItems.length ? folder : { ...folder, groupItems: items };
+      }),
+    });
+    agentsChosen = [];
+  }
+
+  /** What a dragged entry carries: the entries' keys. */
+  const AGENTS_DRAG = "application/x-evejs-agents";
+
+  /** AgentEntry.GetDragData (947 to 952): the entries chosen, the entry chosen alone where it was not chosen. */
+  function agentDragStart(event: DragEvent, key: string): void {
+    if (!chosenInOrder.includes(key)) agentsChosen = [key];
+    const keys = chosenInOrder.includes(key) ? chosenInOrder : [key];
+    if (event.dataTransfer === null) return;
+    event.dataTransfer.setData(AGENTS_DRAG, JSON.stringify(keys));
+    event.dataTransfer.effectAllowed = "move";
+  }
+
   /**
    * What each agent's entry shown needs asked, on the Agents tab and among what the Search tab found: its record in
    * the agents service, its station's system's name, security and jumps, its division's name, and the journal.
@@ -1251,20 +1378,34 @@
     keepFolders({ ...folders, folders: folders.folders.map((folder) => (folder.id === folderID ? { ...folder, groupItems: folder.groupItems.filter((id) => id !== agentID) } : folder)) });
   }
 
-  /** DropInBuddyGroup (addressbookService.py 553 to 568): an agent dropped on a group taken out of the folder it came from, and put in the one it was dropped on ("All Agents" keeps none of its own). */
+  /**
+   * DropInBuddyGroup (addressbookService.py 553 to 568): the entries dropped on a group, each agent taken out of the
+   * folder it came from and put in the one it was dropped on ("All Agents" keeps none of its own), in their order.
+   */
   function dropAgent(event: DragEvent, groupID: string): void {
+    if (event.dataTransfer === null || !event.dataTransfer.types.includes(AGENTS_DRAG)) return;
     event.preventDefault();
-    const [agentText, fromGroup] = (event.dataTransfer?.getData("text/plain") ?? "").split("|");
-    const agentID = Number(agentText);
-    if (!Number.isSafeInteger(agentID) || agentID <= 0 || !bookAgentIDs.includes(agentID)) return;
-    keepFolders({
-      ...folders,
-      folders: folders.folders.map((folder) => {
-        let items = folder.id === fromGroup ? folder.groupItems.filter((id) => id !== agentID) : folder.groupItems;
-        if (folder.id === groupID && !items.includes(agentID)) items = [...items, agentID];
+    let keys: unknown;
+    try {
+      keys = JSON.parse(event.dataTransfer.getData(AGENTS_DRAG));
+    } catch {
+      return;
+    }
+    if (!Array.isArray(keys)) return;
+    const moved = keys
+      .filter((key): key is string => typeof key === "string")
+      .map(agentEntryOf)
+      .filter((entry) => Number.isSafeInteger(entry.agentID) && entry.agentID > 0 && bookAgentIDs.includes(entry.agentID));
+    if (moved.length === 0) return;
+    let next = folders.folders;
+    for (const entry of moved) {
+      next = next.map((folder) => {
+        let items = folder.id === entry.groupID ? folder.groupItems.filter((id) => id !== entry.agentID) : folder.groupItems;
+        if (folder.id === groupID && !items.includes(entry.agentID)) items = [...items, entry.agentID];
         return items === folder.groupItems ? folder : { ...folder, groupItems: items };
-      }),
-    });
+      });
+    }
+    keepFolders({ ...folders, folders: next });
   }
 
   /**
@@ -1382,24 +1523,31 @@
   }
 
   /**
-   * DeleteEntryMulti with no contact type (addressbookService.py 870 to 891): the client's RemoveAgents, then the
-   * agent out of every folder and RemoveFromAddressBook's DeleteContacts([agentID]) (817 to 823).
+   * DeleteEntryMulti with no contact type (addressbookService.py 870 to 891): the client's RemoveAgents once, then for
+   * each agent in turn, the agent out of every folder and RemoveFromAddressBook's DeleteContacts([agentID]) (817 to
+   * 823), one call each. Several come from the menu of several (Remove from Addressbook is one of menu/__init__.py's
+   * MULTI_FUNCTIONS, so their agents go to the one DeleteEntryMulti: menuMerge._GetMergedMenuEntryArgs); an agent chosen
+   * in two groups is removed once.
    */
-  function removeAgent(agentID: number): void {
+  function removeAgents(agentIDs: readonly number[]): void {
     agentMenuFor = null;
     notes = [];
+    const removed = [...new Set(agentIDs)];
     question = {
       title: filledWord("dialog:RemoveAgents/title", "Remove agents?", {}),
       body: filledWord("dialog:RemoveAgents/body", "Remove the agents chosen?", {}),
       answer: (yes) => {
         question = null;
         if (!yes) return;
-        keepFolders({ ...folders, folders: folders.folders.map((folder) => (folder.groupItems.includes(agentID) ? { ...folder, groupItems: folder.groupItems.filter((id) => id !== agentID) } : folder)) });
         void run(async () => {
-          await flow.deleteContacts([agentID]);
-          if (book !== null) {
-            book = { ...book, agents: book.agents.filter((agent) => agent.agentID !== agentID) };
+          for (const agentID of removed) {
+            keepFolders({ ...folders, folders: folders.folders.map((folder) => (folder.groupItems.includes(agentID) ? { ...folder, groupItems: folder.groupItems.filter((id) => id !== agentID) } : folder)) });
+            await flow.deleteContacts([agentID]);
+            if (book !== null) {
+              book = { ...book, agents: book.agents.filter((agent) => agent.agentID !== agentID) };
+            }
           }
+          agentsChosen = [];
         });
       },
     };
@@ -1795,9 +1943,21 @@
             {#if group.open}
               <ul class="agents-entries">
                 {#each group.lines as line (line.agentID)}
-                  <!-- An agent's entry (AgentEntry): its name and level, where it is, its mission's state and its kind; dragged by itself. -->
-                  <li draggable="true" ondragstart={(event) => event.dataTransfer?.setData("text/plain", `${line.agentID}|${group.id}`)}>
-                    <div class="agents-entry">
+                  {@const key = agentKey(group.id, line.agentID)}
+                  <!-- An agent's entry (AgentEntry): its name and level, where it is, its mission's state and its kind;
+                       chosen by a click, with Shift and Ctrl as the scroll chooses; dragged with the others chosen. -->
+                  <li draggable="true" ondragstart={(event) => agentDragStart(event, key)}>
+                    <!-- svelte-ignore a11y_click_events_have_key_events -->
+                    <div
+                      class="agents-entry"
+                      class:selected={chosenInOrder.includes(key)}
+                      role="option"
+                      tabindex="-1"
+                      aria-selected={chosenInOrder.includes(key)}
+                      data-agent-key={key}
+                      onclick={(event) => agentClick(event, key)}
+                      ondblclick={() => agentDoubleClick(line.agentID)}
+                    >
                       <div>
                         <strong>{line.nameLine}</strong>
                         {#if line.missionState !== null}
@@ -1807,18 +1967,29 @@
                         {#if line.typeLine !== ""}<br /><small class="note">{line.typeLine}</small>{/if}
                       </div>
                       <div class="agents-entry-buttons">
-                        <button type="button" class="minor" disabled={busy} aria-label={word(AGENT_WORDS.startConversation, "Talk")} title={word(AGENT_WORDS.startConversation, "Talk")} onclick={() => startConversation(line.agentID)}>💬</button>
-                        <button type="button" class="minor" aria-expanded={agentMenuFor === `${group.id}|${line.agentID}`} aria-label="Menu" onclick={() => (agentMenuFor = agentMenuFor === `${group.id}|${line.agentID}` ? null : `${group.id}|${line.agentID}`)}>⋯</button>
+                        <button type="button" class="minor" disabled={busy} aria-label={word(AGENT_WORDS.startConversation, "Talk")} title={word(AGENT_WORDS.startConversation, "Talk")} onclick={(event) => { event.stopPropagation(); startConversation(line.agentID); }}>💬</button>
+                        <button type="button" class="minor" aria-expanded={agentMenuFor === key} aria-label="Menu" onclick={(event) => { event.stopPropagation(); openAgentMenu(key); }}>⋯</button>
                       </div>
                     </div>
-                    {#if agentMenuFor === `${group.id}|${line.agentID}`}
+                    {#if agentMenuFor === key && chosenInOrder.length > 1 && chosenInOrder.includes(key)}
+                      <!-- The menu of several (userentry.py AgentEntry._GetMultiMenu, 884 to 939). -->
+                      <p class="controls contacts-menu">
+                        {#if severalMenu.showInfo}
+                          <button type="button" class="minor" onclick={severalInfo}>{word(WORDS.showInfo, "Info")}</button>
+                        {/if}
+                        <button type="button" class="minor" disabled={busy} onclick={() => removeAgents(severalMenu.entries.map((entry) => entry.agentID))}>{word(AGENT_WORDS.removeFromAddressbook, "Remove")}</button>
+                        {#if severalMenu.removeFromFolders !== null}
+                          <button type="button" class="minor" onclick={severalOutOfFolders}>{severalMenu.removeFromFolders}</button>
+                        {/if}
+                      </p>
+                    {:else if agentMenuFor === key}
                       <!-- The agent's menu (menusvc.py _CharacterMenu, 579 to 624; userentry.py AgentEntry.GetMenu, 858 to 882). -->
                       <p class="controls contacts-menu">
                         {#if agentInfoOffered(line.agentID)}
                           <button type="button" class="minor" onclick={() => agentInfo(line.agentID)}>{word(WORDS.showInfo, "Info")}</button>
                         {/if}
                         <button type="button" class="minor" disabled={busy} onclick={() => startConversation(line.agentID)}>{word(AGENT_WORDS.startConversation, "Talk")}</button>
-                        <button type="button" class="minor" disabled={busy} onclick={() => removeAgent(line.agentID)}>{word(AGENT_WORDS.removeFromAddressbook, "Remove")}</button>
+                        <button type="button" class="minor" disabled={busy} onclick={() => removeAgents([line.agentID])}>{word(AGENT_WORDS.removeFromAddressbook, "Remove")}</button>
                         {#if agentPlace(line.agentID) !== null}
                           {@const place = agentPlace(line.agentID)}
                           {#if agentDestinationOffered(line.agentID)}
@@ -1928,7 +2099,7 @@
                       {/if}
                       <button type="button" class="minor" disabled={busy} onclick={() => { searchMenuFor = null; startConversation(owner.id); }}>{word(AGENT_WORDS.startConversation, "Talk")}</button>
                       {#if searchAgentIDs.has(owner.id)}
-                        <button type="button" class="minor" disabled={busy} onclick={() => { searchMenuFor = null; removeAgent(owner.id); }}>{word(AGENT_WORDS.removeFromAddressbook, "Remove")}</button>
+                        <button type="button" class="minor" disabled={busy} onclick={() => { searchMenuFor = null; removeAgents([owner.id]); }}>{word(AGENT_WORDS.removeFromAddressbook, "Remove")}</button>
                       {:else}
                         <button type="button" class="minor" disabled={busy} onclick={() => addAgent(owner.id, owner.name)}>{word(SEARCH_WORDS.addToAddressbook, "Add to address book")}</button>
                       {/if}
@@ -2295,6 +2466,10 @@
   /* An entry selected, marked without colour alone. */
   tr.selected td {
     font-weight: 600;
+  }
+  .agents-entry.selected {
+    font-weight: 600;
+    outline: 1px dotted currentColor;
   }
   .contacts-list {
     flex: 1 1 18rem;
