@@ -958,6 +958,11 @@ export interface FleetCenterState {
   readonly activeAction: FleetAction | null;
   readonly readError: string | null;
   readonly actionError: string | null;
+  /**
+   * Whether the last action's refusal was said in the client's own dialog (flow.dialogsSaid, as the client puts up a
+   * UserError): the windows then say it no more. False or absent otherwise.
+   */
+  readonly actionErrorSaid?: boolean;
   readonly refreshedAtMs: number | null;
   /** The most recent OnFleetBroadcast call ("shoot that"). Last-write-wins. */
   readonly lastBroadcast: FleetBroadcast | null;

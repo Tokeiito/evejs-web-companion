@@ -709,6 +709,15 @@ export interface SupportTractorRequest {
  */
 export type AmmoOutcome = "changed" | "reloading" | "unchanged" | "refused";
 
+/** A dialog a refusal named (AppFlow.dialogsSaid): its name, the values for it, and the page's own words for it. */
+export interface SaidDialog {
+  readonly n: number;
+  readonly dialog: string;
+  readonly values: JsonValue | null;
+  /** What the page says where the install has not the dialog. */
+  readonly fallback: string;
+}
+
 export interface AppFlow {
   readonly droneRecovery: ReadableSignal<DroneRecoveryState>;
   retryDroneRecovery(): Promise<void>;
@@ -1720,6 +1729,14 @@ export interface AppFlow {
    * AutoPilotWaypointReached, AutoPilotDisabledNoPathSet, or a waypoint refused), `n` telling one from the next.
    */
   readonly autopilotSaid: ReadableSignal<{ readonly dialog: string; readonly n: number } | null>;
+  /**
+   * The dialogs the server's refusals named, oldest first, to be put up as the client puts up a UserError
+   * (eve_exception_handler.handle_exception: prompt_player_fsd_dialog(exc.msg, exc.dict)); ClientDialogs.svelte
+   * shows them.
+   */
+  readonly dialogsSaid: ReadableSignal<readonly SaidDialog[]>;
+  /** A dialog of dialogsSaid taken down: its OK, or the passing strip's time gone by. */
+  dismissDialog(n: number): void;
   /** Set Destination (starMapSvc.SetWaypoint(id, True)): the place the only waypoint. */
   setDestination(destinationID: number): void;
   /** Add Waypoint (SetWaypoint(id)): the place put at the end of the waypoints. */
@@ -4928,6 +4945,31 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
+  // The dialogs the server's refusals named (dialogsSaid), as the client puts up a UserError. A box stays until its
+  // OK, the passing strip until its time is gone by (ClientDialogs.svelte); twenty at most are kept.
+  const dialogsSaidSignal = createSignal<readonly SaidDialog[]>([]);
+  let dialogsSaidCount = 0;
+
+  /** The dialog a refusal names and the values for it: the BFF's word, or through the gateway a bare message key. */
+  function refusalDialogOf(error: unknown): { readonly dialog: string; readonly values: JsonValue | null } | null {
+    if (!(error instanceof BridgeCallError) || error.code !== "CALL_REFUSED") return null;
+    if (error.refusal !== null) return { dialog: error.refusal.key, values: error.refusal.values };
+    return /^[A-Z]\w{2,99}$/.test(error.message) ? { dialog: error.message, values: null } : null;
+  }
+
+  /** The dialog a refusal names put up, with the page's own words for it; false where it names none. */
+  function sayRefusalDialog(error: unknown, fallback: string): boolean {
+    const said = refusalDialogOf(error);
+    if (said === null) return false;
+    dialogsSaidCount += 1;
+    dialogsSaidSignal.set([...dialogsSaidSignal.get(), { n: dialogsSaidCount, ...said, fallback }].slice(-20));
+    return true;
+  }
+
+  function dismissDialog(n: number): void {
+    dialogsSaidSignal.set(dialogsSaidSignal.get().filter((said) => said.n !== n));
+  }
+
   async function runFleetAction(
     action: Exclude<FleetAction, "decline">,
     mutate: () => Promise<void>,
@@ -4935,6 +4977,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   ): Promise<void> {
     store.apply({ type: "fleet/action-started", action });
     let failure: string | null = null;
+    let said = false;
     try {
       await mutate();
     } catch (error) {
@@ -4945,6 +4988,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         throw error;
       }
       failure = `The fleet action was refused. ${errorWords(error)}`;
+      // A UserError the client puts up as its dialog (fleetSvc's calls let it through to the client's exception
+      // handler); the windows then do not say it again.
+      said = sayRefusalDialog(error, failure);
     }
 
     try {
@@ -4955,7 +5001,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         failure = fleetActionFailure(action);
       }
     } finally {
-      store.apply({ type: "fleet/action-finished", error: failure });
+      store.apply({ type: "fleet/action-finished", error: failure, said });
     }
   }
 
@@ -5056,6 +5102,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     // (The page's own call, bridge/fleetWrites.ts: none from a pilot the Fleet window knows to be in a fleet.)
     await runFleetAction("accept", () => acceptFleetInviteCall(bridgeDo, wanted, store.fleet.get().availability === "ready"), "ready");
+    // The client's own question is gone once it is answered, Yes as No, whatever the call said (OnFleetInvite: the
+    // question's answer, then AcceptInvite; a refusal is the client's dialog of its own).
+    store.apply({ type: "fleet/invite-settled", fleetID: wanted });
   }
 
   /**
@@ -5094,6 +5143,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return;
     }
     let failure: string | null = null;
+    let said = false;
     try {
       // (The page's own call, bridge/fleetWrites.ts: with True from a pilot the Fleet window knows to be in a fleet.)
       await declineFleetInviteCall(bridgeDo, wanted, store.fleet.get().availability === "ready");
@@ -5105,11 +5155,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         throw error;
       }
       failure = `The fleet action was refused. ${errorWords(error)}`;
+      said = sayRefusalDialog(error, failure);
     }
     // The client's own question is gone once it is answered, whatever the call said; and it reads nothing of a
     // fleet after, so nor does the page.
     store.apply({ type: "fleet/invite-settled", fleetID: wanted });
-    store.apply({ type: "fleet/action-finished", error: failure });
+    store.apply({ type: "fleet/action-finished", error: failure, said });
   }
 
   async function leaveFleet(): Promise<void> {
@@ -16609,6 +16660,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     waypoints: waypointsView,
     autopilotOn: readonlySignal(autopilotSignal),
     autopilotSaid: readonlySignal(autopilotSaidSignal),
+    dialogsSaid: readonlySignal(dialogsSaidSignal),
+    dismissDialog,
     setDestination,
     addWaypoint,
     clearWaypoints,

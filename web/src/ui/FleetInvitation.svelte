@@ -89,7 +89,8 @@
       } else {
         await flow.declineFleetInvite(invite.fleetID);
       }
-      const said = fleet.get().actionError;
+      // (A refusal the client's own dialog said is not said again: ClientDialogs.svelte.)
+      const said = fleet.get().actionErrorSaid === true ? null : fleet.get().actionError;
       if (said) {
         error = said;
       }

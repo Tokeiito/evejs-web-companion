@@ -54,6 +54,11 @@ export interface NoticeSource {
    * "mining" is a variable, "Mining" is what a player calls the panel.
    */
   readonly title: string;
+  /**
+   * A field on the slice that, true, says the message was said already in the client's own dialog
+   * (ClientDialogs.svelte): no flash for it then, as the client says it once.
+   */
+  readonly saidBy?: string;
 }
 
 /**
@@ -81,7 +86,7 @@ export const NOTICE_SOURCES: readonly NoticeSource[] = [
   { slice: "mail", field: "actionError", kind: "danger", title: "Mail" },
   { slice: "agents", field: "actionError", kind: "danger", title: "Agents" },
   { slice: "skills", field: "actionError", kind: "danger", title: "Skills" },
-  { slice: "fleet", field: "actionError", kind: "danger", title: "Fleet" },
+  { slice: "fleet", field: "actionError", kind: "danger", title: "Fleet", saidBy: "actionErrorSaid" },
   // Not a refusal: what another pilot answered to an invitation. It happened, and the pilot pressed nothing.
   { slice: "fleet", field: "inviteAnswered", kind: "info", title: "Fleet" },
 ];

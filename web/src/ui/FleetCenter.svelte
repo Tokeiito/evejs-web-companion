@@ -237,7 +237,8 @@
 
   {#if refreshError}<p class="error">{refreshError}</p>{/if}
   {#if $fleet.readError}<p class="error">{$fleet.readError}</p>{/if}
-  {#if $fleet.actionError}<p class="error">{$fleet.actionError}</p>{/if}
+  <!-- (A refusal the client's own dialog said is not said again here: ClientDialogs.svelte.) -->
+  {#if $fleet.actionError && !$fleet.actionErrorSaid}<p class="error">{$fleet.actionError}</p>{/if}
   {#if $fleet.activeAction !== null}
     <p class="note">Updating the fleet and checking the authoritative roster…</p>
   {/if}

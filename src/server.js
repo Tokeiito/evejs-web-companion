@@ -15492,12 +15492,25 @@ app.use((error, req, res, next) => {
     Number.isFinite(error && error.statusCode) && error.statusCode >= 400
       ? error.statusCode
       : 500;
+  const refusal = dialogRefusalOf(error);
   res.status(statusCode).json({
     ok: false,
     error: error && error.code ? error.code : error.message || "SERVER_ERROR",
     message: error && error.message ? error.message : "Server error",
+    ...(refusal ? { refusal } : {}),
   });
 });
+
+/**
+ * What the server refused a pilot's call with, where it said (a game-port pilot's UserError): its message key, the
+ * name of the dialog the client puts up for it, and the values for that dialog (exc.msg and exc.dict, which the
+ * client hands to prompt_player_fsd_dialog: eve_exception_handler.handle_exception). Null for any other failure.
+ */
+function dialogRefusalOf(error) {
+  const refusal = error && error.refusal;
+  if (!refusal || typeof refusal.key !== "string" || !/^\w{1,100}$/.test(refusal.key)) return null;
+  return { key: refusal.key, values: refusal.values ?? null };
+}
 
 return app;
 }

@@ -603,7 +603,8 @@
     searchMenuFor = null;
     void run(async () => {
       await (form ? flow.formFleetWith(ownerID) : flow.inviteFleetMember(ownerID));
-      const refused = store.fleet.get().actionError;
+      // (A refusal the client's own dialog said is not said again: ClientDialogs.svelte.)
+      const refused = store.fleet.get().actionErrorSaid === true ? null : store.fleet.get().actionError;
       if (refused !== null) throw new Error(refused);
     });
   }
@@ -620,7 +621,8 @@
     searchMenuFor = null;
     void run(async () => {
       await flow.inviteFleetMember(ownerID, undefined, undefined, { wingID: place.wingID, squadID: place.squadID, role: place.role });
-      const refused = store.fleet.get().actionError;
+      // (A refusal the client's own dialog said is not said again: ClientDialogs.svelte.)
+      const refused = store.fleet.get().actionErrorSaid === true ? null : store.fleet.get().actionError;
       if (refused !== null) throw new Error(refused);
     });
   }
@@ -755,7 +757,8 @@
   function fleetWrite(write: () => Promise<void>): void {
     void run(async () => {
       await write();
-      const refused = store.fleet.get().actionError;
+      // (A refusal the client's own dialog said is not said again: ClientDialogs.svelte.)
+      const refused = store.fleet.get().actionErrorSaid === true ? null : store.fleet.get().actionError;
       if (refused !== null) throw new Error(refused);
     });
   }

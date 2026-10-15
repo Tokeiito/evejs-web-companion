@@ -227,11 +227,11 @@ const nameByID: NameOf = (kind, id) => `${kind} ${id}`;
 const DIALOG_NAME = /^\w{1,100}$/;
 
 /** The dialog and the part a words key names, or null when the key is a label or a message's number. */
-export function dialogOfKey(key: string): { name: string; part: "title" | "body" | "suppressable" } | null {
+export function dialogOfKey(key: string): { name: string; part: "title" | "body" | "suppressable" | "type" } | null {
   // "suppressable": whether the install lets the dialog's answer be kept ("1"), for "do not ask again"
-  // (dialogSuppression.ts).
-  const match = /^dialog:(\w{1,100})\/(title|body|suppressable)$/.exec(key);
-  return match ? { name: match[1] as string, part: match[2] as "title" | "body" | "suppressable" } : null;
+  // (dialogSuppression.ts). "type": the dialog's type, which says how the client puts it up (ClientDialogs.svelte).
+  const match = /^dialog:(\w{1,100})\/(title|body|suppressable|type)$/.exec(key);
+  return match ? { name: match[1] as string, part: match[2] as "title" | "body" | "suppressable" | "type" } : null;
 }
 
 /**

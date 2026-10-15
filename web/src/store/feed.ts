@@ -387,7 +387,7 @@ export type FeedEvent =
       readonly refreshedAtMs: number;
     }
   | { readonly type: "fleet/action-started"; readonly action: FleetAction }
-  | { readonly type: "fleet/action-finished"; readonly error: string | null }
+  | { readonly type: "fleet/action-finished"; readonly error: string | null; readonly said?: boolean }
   | { readonly type: "fleet/pending-invite"; readonly invite: FleetPendingInvite }
   | { readonly type: "fleet/watchlist"; readonly members: readonly number[] }
   | { readonly type: "fleet/broadcast-history-cleared" }

@@ -86,6 +86,11 @@ export class BridgeCallError extends Error {
   readonly diagnosis: string | null;
   /** Exact unpublished login credential retained for a failed cancellation cleanup. */
   readonly cancelledSessionToken: string | null;
+  /**
+   * What the server refused with, where the BFF says: the refusal's message key, the name of the dialog the retail
+   * client puts up for it, and the values for that dialog (a UserError's msg and dict). Null otherwise.
+   */
+  readonly refusal: BridgeRefusal | null;
 
   constructor(
     code: BridgeErrorCode | BridgeClientErrorCode,
@@ -93,13 +98,28 @@ export class BridgeCallError extends Error {
     status: number,
     diagnosis: string | null = null,
     cancelledSessionToken: string | null = null,
+    refusal: BridgeRefusal | null = null,
   ) {
     super(message);
     this.code = code;
     this.status = status;
     this.diagnosis = diagnosis;
     this.cancelledSessionToken = cancelledSessionToken;
+    this.refusal = refusal;
   }
+}
+
+/** A refusal's dialog and its values, as the BFF says them (src/server.js, dialogRefusalOf). */
+export interface BridgeRefusal {
+  readonly key: string;
+  readonly values: JsonValue | null;
+}
+
+/** The refusal an error body says, or null where it says none or not as one. */
+function refusalOfBody(value: unknown): BridgeRefusal | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const { key, values } = value as { key?: unknown; values?: unknown };
+  return typeof key === "string" && /^\w{1,100}$/.test(key) ? { key, values: (values ?? null) as JsonValue | null } : null;
 }
 
 function isSuccessBody(data: unknown): data is BridgeCallSuccessBody<JsonValue> {
@@ -206,13 +226,16 @@ export async function callMethod<TResult = JsonValue>(
 
   assertCurrent?.();
   if (typeof data === "object" && data !== null && (data as { ok?: unknown }).ok === false) {
-    const errorBody = data as { error?: unknown; message?: unknown };
+    const errorBody = data as { error?: unknown; message?: unknown; refusal?: unknown };
     throw new BridgeCallError(
       typeof errorBody.error === "string" ? errorBody.error : "BRIDGE_BAD_RESPONSE",
       typeof errorBody.message === "string"
         ? errorBody.message
         : `Bridge call ${service}.${method} failed (HTTP ${response.status}).`,
       response.status,
+      null,
+      null,
+      refusalOfBody(errorBody.refusal),
     );
   }
 

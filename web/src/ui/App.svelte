@@ -12,6 +12,7 @@
   // elsewhere; this file is pure orchestration.
   import CharacterBar from "./CharacterBar.svelte";
   import FleetInvitation from "./FleetInvitation.svelte";
+  import ClientDialogs from "./ClientDialogs.svelte";
   import Onboarding from "./Onboarding.svelte";
   import PilotHangar from "./PilotHangar.svelte";
   import Workspace from "./Workspace.svelte";
@@ -687,6 +688,13 @@
         <FleetInvitation {session} inFront={session.id === activeId} />
       {/each}
     </div>
+  </ErrorBoundary>
+  <!-- A refusal the server names a dialog for, put up as the client puts up a UserError: each pilot's, whichever is in
+       front, as the invitations are. -->
+  <ErrorBoundary name="Client dialogs">
+    {#each sessions as session (session.id)}
+      <ClientDialogs {session} inFront={session.id === activeId} />
+    {/each}
   </ErrorBoundary>
 {:else if restoring}
   <!-- Refresh restore in flight and no cockpit up yet: bringing pilots back. -->

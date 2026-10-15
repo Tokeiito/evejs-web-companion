@@ -1601,6 +1601,7 @@ export function createClientStore(): ClientStore {
           ...fleet.get(),
           activeAction: event.action,
           actionError: null,
+          actionErrorSaid: false,
           // Another invitation sent: what was said of the last one is said no longer.
           inviteAnswered: event.action === "invite" ? null : fleet.get().inviteAnswered,
         });
@@ -1610,6 +1611,7 @@ export function createClientStore(): ClientStore {
           ...fleet.get(),
           activeAction: null,
           actionError: event.error,
+          actionErrorSaid: event.error !== null && event.said === true,
         });
         break;
       case "fleet/pending-invite":
