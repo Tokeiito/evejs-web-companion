@@ -51,9 +51,12 @@
   // format them, newest first, each its body's first two parts; its menu the sender's contact and block, and Delete
   // notification (contactNotificationEntry.py).
   //
-  // Not here yet: Capture Portrait, an agent's Show Info and its place's menu, selecting
-  // several agents, and the rest of an owner's menu (chat, Invite to Fleet's places in the fleet, the fleet's own
-  // menu).
+  // An agent's menu has the client's Show Info and Dock in Station (menusvc.py 579 to 580, 619 to 624).
+  //
+  // Not here yet: Capture Portrait, the rest of an agent's place menu (Set Destination, Add or Remove Waypoint, which
+  // wait on the client's route of waypoints, and Bookmark Location, which waits on the client's bookmark window),
+  // selecting several agents, and the rest of an owner's menu (chat, Invite to Fleet's places in the fleet, the
+  // fleet's own menu).
   import { onMount } from "svelte";
   import { formatTemplate, plainText, type TemplateArguments } from "../bridge/clientWords.ts";
   import { shownSecurity } from "../bridge/systemSecurity.ts";
@@ -99,6 +102,8 @@
   const station = store.station;
   // svelte-ignore state_referenced_locally
   const fleetState = store.fleet;
+  // svelte-ignore state_referenced_locally
+  const flightState = store.flight;
 
   /** The window's words, by their labels (addressBookWindow.py 60, 86; contactsForm.py 136, 144 to 265, 416 to 497). */
   const WORDS = {
@@ -226,6 +231,7 @@
     stateOffered: "UI/Journal/JournalWindow/Agents/StateOffered",
     stateAccepted: "UI/Journal/JournalWindow/Agents/StateAccepted",
     stateFailed: "UI/Journal/JournalWindow/Agents/StateFailed",
+    dockInStation: "UI/Inflight/DockInStation",
   } as const;
   /** The client's dialogs the window says things with. */
   const DIALOGS = ["RemoveOneFromContacts", "RemoveManyFromContacts", "DeleteMailLabel", "MailLabelNameExists", "LookupStringMinimum", "NoStandingsSelected", "RemoveAgents", "ConfirmDeleteFolder", "PartialSearchLessThanMinLength"] as const;
@@ -1250,6 +1256,48 @@
     });
   }
 
+  /** OfferShowInfo (characterCheckers.py 350 to 353): an agent's, unless it is an aura agent. */
+  function agentInfoOffered(agentID: number): boolean {
+    return ($agentsState.agentRecords[agentID]?.agentTypeID ?? null) !== AGENT_TYPE.aura;
+  }
+
+  /** Show Info from an agent's menu (menusvc.py 579 to 580): the agent's information window. */
+  function agentInfo(agentID: number): void {
+    agentMenuFor = null;
+    searchMenuFor = null;
+    showInfo({ kind: "character", characterID: agentID });
+  }
+
+  /**
+   * Dock in Station from an agent's menu (menusvc.py 619 to 624): where the pilot is in space in the agent's system,
+   * not in a structure, and the agent has a station. The station the agent is in, else none.
+   */
+  function agentDockStation(agentID: number): number | null {
+    const record = $agentsState.agentRecords[agentID] ?? null;
+    // The client's session.solarsystemid, which it has in space alone, and its structureid: the flight's status as
+    // the page last read it (the online pilot's station is the last one it docked in, kept after an undock).
+    const flight = $flightState.status;
+    if (record === null || record.stationID === null || flight === null) return null;
+    if (!flight.inSpace || flight.docked || flight.structureID !== null) return null;
+    return record.solarSystemID !== null && record.solarSystemID === flight.solarSystemID ? record.stationID : null;
+  }
+
+  /**
+   * menusvc.Dock (2981 to 2997): the station docked at as the client's menu docks, closing the distance first
+   * (DockStation's GetCloseAndTryCommand), which the page's dockAt does. It runs as the travel loop does, and says
+   * its refusal here.
+   */
+  function dockAtAgent(agentID: number): void {
+    agentMenuFor = null;
+    searchMenuFor = null;
+    const stationID = agentDockStation(agentID);
+    if (stationID === null) return;
+    error = "";
+    void flow.dockAt(stationID).catch((cause) => {
+      error = isSessionLost(cause) ? "Your session ended. Pick your character again." : cause instanceof Error ? cause.message : String(cause);
+    });
+  }
+
   /** agents.OpenDialogueWindow: the conversation, which the Agents & Missions window shows. */
   function startConversation(agentID: number): void {
     agentMenuFor = null;
@@ -1687,10 +1735,16 @@
                       </div>
                     </div>
                     {#if agentMenuFor === `${group.id}|${line.agentID}`}
-                      <!-- The agent's menu (menusvc.py _CharacterMenu, 584 and 598; userentry.py AgentEntry.GetMenu, 858 to 882). -->
+                      <!-- The agent's menu (menusvc.py _CharacterMenu, 579 to 624; userentry.py AgentEntry.GetMenu, 858 to 882). -->
                       <p class="controls contacts-menu">
+                        {#if agentInfoOffered(line.agentID)}
+                          <button type="button" class="minor" onclick={() => agentInfo(line.agentID)}>{word(WORDS.showInfo, "Info")}</button>
+                        {/if}
                         <button type="button" class="minor" disabled={busy} onclick={() => startConversation(line.agentID)}>{word(AGENT_WORDS.startConversation, "Talk")}</button>
                         <button type="button" class="minor" disabled={busy} onclick={() => removeAgent(line.agentID)}>{word(AGENT_WORDS.removeFromAddressbook, "Remove")}</button>
+                        {#if agentDockStation(line.agentID) !== null}
+                          <button type="button" class="minor" onclick={() => dockAtAgent(line.agentID)}>{word(AGENT_WORDS.dockInStation, "Dock there")}</button>
+                        {/if}
                         {#if !group.locked}
                           <button type="button" class="minor" onclick={() => removeFromFolder(group.id, line.agentID)}>{filledWord(AGENT_WORDS.removeFromGroup, "Take out of {groupname}", { groupname: group.label })}</button>
                         {/if}
@@ -1777,13 +1831,20 @@
                     </div>
                   </div>
                   {#if searchMenuFor === menuKey}
-                    <!-- An agent's menu (_CharacterMenu: Start Conversation, Add to Addressbook or Remove from Addressbook). -->
+                    <!-- An agent's menu (_CharacterMenu: Show Info, Start Conversation, Add to Addressbook or Remove from
+                         Addressbook, and Dock in Station where the pilot is in space in its system). -->
                     <p class="controls contacts-menu">
+                      {#if agentInfoOffered(owner.id)}
+                        <button type="button" class="minor" onclick={() => agentInfo(owner.id)}>{word(WORDS.showInfo, "Info")}</button>
+                      {/if}
                       <button type="button" class="minor" disabled={busy} onclick={() => { searchMenuFor = null; startConversation(owner.id); }}>{word(AGENT_WORDS.startConversation, "Talk")}</button>
                       {#if searchAgentIDs.has(owner.id)}
                         <button type="button" class="minor" disabled={busy} onclick={() => { searchMenuFor = null; removeAgent(owner.id); }}>{word(AGENT_WORDS.removeFromAddressbook, "Remove")}</button>
                       {:else}
                         <button type="button" class="minor" disabled={busy} onclick={() => addAgent(owner.id, owner.name)}>{word(SEARCH_WORDS.addToAddressbook, "Add to address book")}</button>
+                      {/if}
+                      {#if agentDockStation(owner.id) !== null}
+                        <button type="button" class="minor" onclick={() => dockAtAgent(owner.id)}>{word(AGENT_WORDS.dockInStation, "Dock there")}</button>
                       {/if}
                     </p>
                   {/if}

@@ -77,13 +77,20 @@
     return moduleEffectiveStats(entry?.attributes);
   });
 
+  /**
+   * The kind a character's name is kept under: an agent's (the NPC characters' numbers, 3000000 to 3999999) as an
+   * agent's, as the People & Places window asks for it, and a pilot's as a character's.
+   */
+  const characterNameKind = (characterID: number): "agent" | "character" =>
+    (characterID >= 3_000_000 && characterID < 4_000_000 ? "agent" : "character");
+
   const title = $derived.by(() => {
     const current = $subject;
     if (current === null) {
       return "Show Info";
     }
     if (current.kind === "character") {
-      return resolvedName($names.resolved, "character", current.characterID, "Unknown pilot");
+      return resolvedName($names.resolved, characterNameKind(current.characterID), current.characterID, "Unknown pilot");
     }
     // A space object's own name beats its type name — "Asteroid Belt 1" is more
     // use than "Asteroid Belt".
@@ -153,7 +160,7 @@
     }
     const current = $subject;
     if (current?.kind === "character") {
-      refs.push({ kind: "character", id: current.characterID });
+      refs.push({ kind: characterNameKind(current.characterID), id: current.characterID });
     }
     if (entity?.groupID != null) {
       refs.push({ kind: "typeGroup", id: entity.groupID });
