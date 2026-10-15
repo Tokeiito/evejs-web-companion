@@ -407,7 +407,8 @@
   {#if moduleNotice}
     <p class="error">{moduleNotice}</p>
   {/if}
-  {#if $fitting.actionError}
+  <!-- (A refusal the client's own dialog said is not said again here: ClientDialogs.svelte.) -->
+  {#if $fitting.actionError && !$fitting.actionErrorSaid}
     <p class="error">{$fitting.actionError}</p>
   {/if}
 </section>

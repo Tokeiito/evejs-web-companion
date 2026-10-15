@@ -267,7 +267,7 @@ export type FeedEvent =
     }
   // A fitting action (fit/unfit/online/offline/destroy) failed or was declined;
   // null clears the error after a clean action.
-  | { readonly type: "fitting/action-error"; readonly message: string | null }
+  | { readonly type: "fitting/action-error"; readonly message: string | null; readonly said?: boolean }
   // Round counts the server pushed as guns fired (`OnModuleAttributeChanges`).
   | {
       readonly type: "fitting/charge-quantity";

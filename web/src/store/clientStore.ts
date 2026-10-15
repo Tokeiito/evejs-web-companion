@@ -1410,7 +1410,7 @@ export function createClientStore(): ClientStore {
         break;
       }
       case "fitting/action-error":
-        fitting.set({ ...fitting.get(), actionError: event.message });
+        fitting.set({ ...fitting.get(), actionError: event.message, actionErrorSaid: event.message !== null && event.said === true });
         break;
       case "fitting/cleared":
         fitting.set(INITIAL_FITTING);

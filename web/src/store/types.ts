@@ -420,6 +420,11 @@ export interface FittingState {
   /** Non-null when the last fitting action failed or was declined. */
   readonly actionError: string | null;
   /**
+   * Whether that refusal was said in the client's own way (ClientDialogs.svelte; or not at all, where the client says
+   * nothing of it): the windows and the notices then do not say it again. False or absent otherwise.
+   */
+  readonly actionErrorSaid?: boolean;
+  /**
    * Reloads the SERVER announced (`OnChargeBeingLoadedToModule`), by module
    * itemID. In space a load is queued for the module's reload time, so the fit
    * read straight after the call still shows the old charge; this is how the

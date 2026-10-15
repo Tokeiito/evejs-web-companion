@@ -4190,8 +4190,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * Run a fitting action, then reload the panel so it shows SERVER truth.
    *
    * Two refusal shapes have to be handled, and they are not the same thing:
-   *  - a THROWN refusal carries the handler's own reason (e.g. "You do not
-   *    have enough CPU to online that module.") and is surfaced verbatim;
+   *  - a THROWN refusal carries the handler's own reason (e.g. NotEnoughCpu,
+   *    with the module's need and what is left) and is put up as the client
+   *    puts it up (sayRefusalDialog);
    *  - a SILENT decline returns success while nothing moved (invbroker's
    *    fit validation does this for a module you lack the skill for). The BFF
    *    re-reads the slots and reports `applied: false`; saying only that the
@@ -4244,7 +4245,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "fitting/action-error", message: errorWords(error) });
+      // Put up as the client puts up a UserError: LoadAmmoToModules and UnloadAmmoFromModules let theirs through to
+      // its handler (clientDogmaLocation.py 994 on, 1140 on).
+      const message = errorWords(error);
+      store.apply({ type: "fitting/action-error", message, said: sayRefusalDialog(error, message) });
       return "refused";
     }
     // The response's own notifications were applied before `action` resolved,
@@ -4287,7 +4291,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "fitting/action-error", message: errorWords(error) });
+      // Put up as the client puts up a UserError: a module fitted (fittingUtil.TryFit's MultiAdd, the dogma
+      // location's TryFit) and one taken off (UnloadModuleToContainer) let theirs through to its handler.
+      const message = errorWords(error);
+      store.apply({ type: "fitting/action-error", message, said: sayRefusalDialog(error, message) });
       return;
     }
     await loadFitting();
@@ -5088,6 +5095,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const NONE_SILENT: ReadonlySet<string> = new Set();
   /** targetMgr._LockTarget: the refusals of a lock the client puts up nothing for. */
   const LOCK_SILENT: ReadonlySet<string> = new Set(["DeniedShipChanged", "TargetingAttemptCancelled"]);
+  /** clientDogmaLocation.OnlineModule (698 to 711): a module online already is no refusal to the client. */
+  const ONLINE_SILENT: ReadonlySet<string> = new Set(["EffectAlreadyActive2"]);
 
   /** The dialog a refusal names and the values for it: the BFF's word, or through the gateway a bare message key. */
   function refusalDialogOf(error: unknown): { readonly dialog: string; readonly values: JsonValue | null } | null {
@@ -17219,7 +17228,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           store.apply({ type: "character/offline" });
           throw error;
         }
-        store.apply({ type: "fitting/action-error", message: errorWords(error) });
+        // Put up as the client puts up a UserError (OnlineModule and OfflineModule let theirs through to its
+        // handler), save EffectAlreadyActive2 on putting one online, which OnlineModule lets go without a word.
+        const message = errorWords(error);
+        store.apply({ type: "fitting/action-error", message, said: sayRefusalDialog(error, message, online ? ONLINE_SILENT : NONE_SILENT) });
         return;
       }
       await loadFitting();

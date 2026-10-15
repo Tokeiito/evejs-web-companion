@@ -1021,7 +1021,8 @@
   {#if error}
     <p class="error">{error}</p>
   {/if}
-  {#if $fitting.actionError}
+  <!-- (A refusal the client's own dialog said is not said again here: ClientDialogs.svelte.) -->
+  {#if $fitting.actionError && !$fitting.actionErrorSaid}
     <p class="error">Last change failed: {$fitting.actionError}</p>
   {/if}
   {#if $fitting.resourcesError}
