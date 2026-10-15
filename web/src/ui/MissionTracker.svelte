@@ -165,9 +165,10 @@
 
   const nameOf = (kind: NameKind, id: number): string => resolvedName($names.resolved, kind, id, "—");
   /**
-   * A mission bookmark's hint as text. Tranquility's server sends it worded ("Agent Home Base - Oiniken" in the
-   * recordings); this server sends the label it is worded by ("UI/Agents/Bookmarks/Objective/Pickup"), which is worded
-   * here by the install's text with the bookmark's place, as the Locations window words it.
+   * A mission bookmark's hint as text. The server sends the label it is worded by ("UI/Agents/Bookmarks/Objective/Pickup"),
+   * and the client's journal service words each as it reads the journal (journal.py _UpdateMissionDataFull, 311 to 317:
+   * GetByLabel(hint, location=locationID, index=locationNumber + 1); "Agent Home Base - Oiniken" in the recordings is
+   * that wording), as the Locations window words it here.
    */
   const hintArgs = (spot: MissionSpot): Record<string, JsonValue> => ({ location: spot.locationID ?? spot.solarSystemID ?? 0, index: spot.locationNumber + 1 });
   function bookmarkHint(spot: MissionSpot): string {
