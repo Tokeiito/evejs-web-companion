@@ -151,6 +151,40 @@ export interface NamedAddressBook {
   readonly blocked: readonly { readonly ownerID: number; readonly name: string }[];
   /** The pilot's contact labels; null where they could not be read. */
   readonly labels: readonly ContactLabel[] | null;
+  /** The agents among the addresses, kept apart as the address book keeps them (addressbookService.py 222 to 232), named. */
+  readonly agents: readonly { readonly agentID: number; readonly name: string }[];
+}
+
+/**
+ * The Agents tab's folders, as the client's registry keeps them for the character (carbonui/services/registry.py
+ * GetAllGroups: settings.char.ui 'listgroups', under 'agentgroups'): the locked "All Agents" group's open state,
+ * and each folder the pilot made, its name, the agents put in it and whether it is open.
+ */
+export interface AgentFolder {
+  /** The folder's key (registry.AddListGroup: the wallclock time it was made, as text). */
+  readonly id: string;
+  readonly label: string;
+  readonly groupItems: readonly number[];
+  readonly open: boolean;
+}
+export interface AgentFolders {
+  readonly allOpen: boolean;
+  readonly folders: readonly AgentFolder[];
+}
+
+/** What was kept of the folders, read back; none for anything that is not. "All Agents" is open where nothing says otherwise (ShowAgents). */
+export function agentFoldersOf(kept: unknown): AgentFolders {
+  const held = typeof kept === "object" && kept !== null ? (kept as { allOpen?: unknown; folders?: unknown }) : {};
+  const folders = Array.isArray(held.folders) ? held.folders : [];
+  return {
+    allOpen: held.allOpen !== false,
+    folders: folders.flatMap((each): AgentFolder[] => {
+      const folder = typeof each === "object" && each !== null ? (each as Record<string, unknown>) : {};
+      if (typeof folder.id !== "string" || typeof folder.label !== "string") return [];
+      const items = Array.isArray(folder.groupItems) ? folder.groupItems.filter((id): id is number => Number.isSafeInteger(id) && (id as number) > 0) : [];
+      return [{ id: folder.id, label: folder.label, groupItems: [...new Set(items)], open: folder.open === true }];
+    }),
+  };
 }
 
 /** appConst's contact groups (1864 to 1872): the five standings, and the window's own groups. */

@@ -915,16 +915,16 @@ test("an agent's record is its row of the agents table, with its corporation's f
 
   const found = await read(3008416);
   assert.equal(found.response.status, 200, JSON.stringify(found.payload));
-  assert.deepEqual(found.payload, { ok: true, agent: { agentID: 3008416, agentTypeID: 2, divisionID: 22, level: 1, stationID: 60000004, corporationID: 1000002, factionID: 500001, divisionNameID: 900109 } });
+  assert.deepEqual(found.payload, { ok: true, agent: { agentID: 3008416, agentTypeID: 2, divisionID: 22, level: 1, stationID: 60000004, corporationID: 1000002, factionID: 500001, divisionNameID: 900109, solarSystemID: null } });
   // The table is asked for as the client asks: the whole of it, with nothing.
   assert.deepEqual(calls.filter((call) => call.method === "GetAgents"), [{ service: "agentMgr", method: "GetAgents", args: [], kwargs: null }]);
   assert.deepEqual(clientBuiltData.asked, [["npcCorporations", 1000002], ["npcCorporationDivisions", 22]]);
 
   // A corporation with no faction in the client's record, and a division the client does not have: null, each.
-  assert.deepEqual((await read(3011895)).payload.agent, { agentID: 3011895, agentTypeID: 2, divisionID: 24, level: 1, stationID: 60000019, corporationID: 1000017, factionID: null, divisionNameID: null });
+  assert.deepEqual((await read(3011895)).payload.agent, { agentID: 3011895, agentTypeID: 2, divisionID: 24, level: 1, stationID: 60000019, corporationID: 1000017, factionID: null, divisionNameID: null, solarSystemID: null });
   // An agent with no corporation and no division asks the client for neither.
   clientBuiltData.asked.length = 0;
-  assert.deepEqual((await read(3019999)).payload.agent, { agentID: 3019999, agentTypeID: 4, divisionID: null, level: 3, stationID: null, corporationID: null, factionID: null, divisionNameID: null });
+  assert.deepEqual((await read(3019999)).payload.agent, { agentID: 3019999, agentTypeID: 4, divisionID: null, level: 3, stationID: null, corporationID: null, factionID: null, divisionNameID: null, solarSystemID: null });
   assert.deepEqual(clientBuiltData.asked, []);
   // An agent the server does not list.
   assert.deepEqual((await read(3000001)).payload, { ok: true, agent: null });
@@ -2241,7 +2241,7 @@ test("an agent's record without a client to read has its row and nothing of the 
   assert.equal(failed.response.status >= 500, true, JSON.stringify(failed.payload));
   fails = false;
   const found = await apiRequest(baseUrl, "/api/bridge/agents/3008416/record");
-  assert.deepEqual(found.payload.agent, { agentID: 3008416, agentTypeID: 2, divisionID: 22, level: 1, stationID: 60000004, corporationID: 1000002, factionID: null, divisionNameID: null });
+  assert.deepEqual(found.payload.agent, { agentID: 3008416, agentTypeID: 2, divisionID: 22, level: 1, stationID: 60000004, corporationID: 1000002, factionID: null, divisionNameID: null, solarSystemID: null });
   assert.equal(reads, 2);
 });
 

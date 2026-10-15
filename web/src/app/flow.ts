@@ -97,7 +97,7 @@ import {
   isNpcOwner,
   type DecodedMailbox,
 } from "../bridge/mail.ts";
-import { addressBookOf, contactLabelsOf, createdLabelOf, labelBitsSent, onlineStatesOf, type ContactLabel, type ContactWrite, type NamedAddressBook } from "../bridge/contacts.ts";
+import { addressBookOf, agentFoldersOf, contactLabelsOf, createdLabelOf, labelBitsSent, onlineStatesOf, type AgentFolders, type ContactLabel, type ContactWrite, type NamedAddressBook } from "../bridge/contacts.ts";
 import { sendMail as sendMailCall, type MailToSend } from "../bridge/mailWrites.ts";
 import { mailMarkupOfTyped } from "../bridge/mailMarkup.ts";
 import { reprocess as reprocessCall } from "../bridge/reprocessWrites.ts";
@@ -1119,6 +1119,14 @@ export interface AppFlow {
   contactsLastSelected(): number | string | null;
   /** The Contacts window's group viewed kept for the pilot online, on this machine. */
   keepContactsLastSelected(groupID: number | string): void;
+  /** The Agents tab's folders kept for the pilot online on this machine; "All Agents" open and no folder, where none were. */
+  agentFolders(): AgentFolders;
+  /** The Agents tab's folders kept for the pilot online, on this machine. */
+  keepAgentFolders(folders: AgentFolders): void;
+  /** The People & Places window's tab last chosen on this machine; none where none was. */
+  addressBookTab(): string | null;
+  /** The People & Places window's tab chosen kept, on this machine. */
+  keepAddressBookTab(tab: string): void;
   /** The Contacts window's "Online only" as last left on this machine: off, where it never was. */
   onlineBuddyOnly(): boolean;
   /** The Contacts window's "Online only" kept, on this machine. */
@@ -5498,6 +5506,54 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
+  // The Agents tab's folders, as the client's registry keeps them for the character (registry.py 431 to 540:
+  // settings.char.ui 'listgroups'), kept in this browser for the pilot online.
+  const AGENT_FOLDERS_KEPT = "evejs.contacts.agentgroups";
+
+  function agentFolders(): AgentFolders {
+    const characterID = store.station.get().online?.characterID ?? null;
+    let kept: unknown = null;
+    try {
+      kept = characterID === null ? null : JSON.parse(settingsStorage?.getItem(`${AGENT_FOLDERS_KEPT}.${characterID}`) ?? "null");
+    } catch {
+      kept = null;
+    }
+    return agentFoldersOf(kept);
+  }
+
+  function keepAgentFolders(folders: AgentFolders): void {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null) {
+      return;
+    }
+    try {
+      settingsStorage?.setItem(`${AGENT_FOLDERS_KEPT}.${characterID}`, JSON.stringify(folders));
+    } catch {
+      // Storage full or refused: the folders last as long as the page.
+    }
+  }
+
+  // The People & Places window's tab last chosen, as the client's tab group keeps it in the user's settings
+  // (addressBookWindow.py 76 to 92: tabgroups 'addressbookpanel', AutoSelect), kept in this browser.
+  const ADDRESS_BOOK_TAB_KEPT = "evejs.contacts.addressbookpanel";
+
+  function addressBookTab(): string | null {
+    try {
+      const kept: unknown = JSON.parse(settingsStorage?.getItem(ADDRESS_BOOK_TAB_KEPT) ?? "null");
+      return typeof kept === "string" ? kept : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function keepAddressBookTab(tab: string): void {
+    try {
+      settingsStorage?.setItem(ADDRESS_BOOK_TAB_KEPT, JSON.stringify(tab));
+    } catch {
+      // Storage full or refused: the tab lasts as long as the page.
+    }
+  }
+
   // The Contacts window's "Online only", as the client keeps it in the user's settings (contactsForm.py 136, 523 to
   // 526: onlinebuddyonly), kept in this browser.
   const ONLINE_BUDDY_ONLY_KEPT = "evejs.contacts.onlinebuddyonly";
@@ -5535,16 +5591,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // GetContactLabels('contact') (1022 to 1044): the labels, asked as the form first shows them, and kept (on the
     // game port by the transport). A label not read leaves the form without its labels.
     const labels = await bridgeAsk("charMgr", "GetLabels", []).then(contactLabelsOf, () => null);
-    await resolveNamesNow([...book.contacts.map((contact) => contact.contactID), ...book.blocked].map((id) => ({ kind: "owner" as const, id })));
+    await resolveNamesNow([
+      ...[...book.contacts.map((contact) => contact.contactID), ...book.blocked].map((id) => ({ kind: "owner" as const, id })),
+      ...book.agents.map((id) => ({ kind: "agent" as const, id })),
+    ]);
     const resolved = store.names.get().resolved;
-    const nameOf = (id: number): string => {
-      const name = resolved[nameKey("owner", id)];
+    const nameOf = (id: number, kind: "owner" | "agent" = "owner"): string => {
+      const name = resolved[nameKey(kind, id)];
       return typeof name === "string" && name !== "" ? name : String(id);
     };
     return {
       contacts: book.contacts.map((contact) => ({ ...contact, name: nameOf(contact.contactID) })),
       blocked: book.blocked.map((ownerID) => ({ ownerID, name: nameOf(ownerID) })),
       labels,
+      agents: book.agents.map((agentID) => ({ agentID, name: nameOf(agentID, "agent") })),
     };
   }
 
@@ -16434,6 +16494,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     onlineBuddyOnly,
     keepOnlineBuddyOnly,
     keepContactsLastSelected,
+    agentFolders,
+    keepAgentFolders,
+    addressBookTab,
+    keepAddressBookTab,
     sendMail,
     loadContracts,
     openContract,

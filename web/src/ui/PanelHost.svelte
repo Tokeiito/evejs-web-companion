@@ -119,7 +119,7 @@
 {:else if tab === "mail"}
   <Mail {store} {flow} />
 {:else if tab === "contacts"}
-  <Contacts {store} {flow} />
+  <Contacts {store} {flow} showAgents={() => onOpen?.("agents")} />
 {:else if tab === "contracts"}
   <Contracts {store} {flow} />
 {:else if tab === "assets"}

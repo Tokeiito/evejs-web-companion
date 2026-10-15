@@ -504,11 +504,11 @@ test("an action whose data is a briefing, not a button's number, is one of the a
 
 test("an agent's record is read whole, and is nothing without its agent", () => {
   assert.deepEqual(decodeAgentRecord({ agentID: 3008416, agentTypeID: 2, divisionID: 22, level: 1, stationID: 60000004, corporationID: 1000002, factionID: 500001, divisionNameID: 900109, more: "ignored" }), {
-    agentID: 3008416, agentTypeID: 2, divisionID: 22, level: 1, stationID: 60000004, corporationID: 1000002, factionID: 500001, divisionNameID: 900109,
+    agentID: 3008416, agentTypeID: 2, divisionID: 22, level: 1, stationID: 60000004, corporationID: 1000002, factionID: 500001, divisionNameID: 900109, solarSystemID: null,
   });
   // What is missing, or is not a whole positive number, is not known.
   assert.deepEqual(decodeAgentRecord({ agentID: 3008416, level: 0, divisionID: "22", stationID: null, corporationID: 1.5, factionID: -1 }), {
-    agentID: 3008416, agentTypeID: null, divisionID: null, level: null, stationID: null, corporationID: null, factionID: null, divisionNameID: null,
+    agentID: 3008416, agentTypeID: null, divisionID: null, level: null, stationID: null, corporationID: null, factionID: null, divisionNameID: null, solarSystemID: null,
   });
   for (const nothing of [null, undefined, 5, "x", [], {}, { agentID: 0 }, { agentID: "3008416" }, { level: 1 }]) {
     assert.equal(decodeAgentRecord(nothing), null, JSON.stringify(nothing));

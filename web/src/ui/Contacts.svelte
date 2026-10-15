@@ -30,9 +30,22 @@
   // RemoveManyFromContacts, Unblock where all are blocked, and the labels to add and remove. Adding an owner that is
   // none of the pilot's offers a label (contactManagementWindow.py ConstructLabelsCombo, 98 to 117).
   //
-  // Not here yet: the Notifications group, the Agents and Search tabs, and Capture Portrait.
+  // The Agents tab (addressBookWindow.py ShowAgents, 187 to 218; GetAgentsSubContent, 243 to 260): the agents the
+  // address book keeps apart, under the locked "All Agents" group and the pilot's own folders (the client's registry
+  // of list groups, kept for the character: registry.py 431 to 540), each group with how many it holds and its
+  // agents by name. Each agent's entry is the client's (userentry.py AgentEntry, 706 to 1001): its name and level, its
+  // place with its security and the jumps to it where it is not in the station the pilot is in, the state of its
+  // mission in the journal, and what kind of agent it is; its button starts a conversation. Its menu offers Start
+  // Conversation and Remove from Addressbook (menusvc.py _CharacterMenu, 584 and 598), and in a folder Remove from it. A folder is
+  // made by Create Folder, renamed or deleted from its menu (scrollentries.py 860 to 918), and an agent dragged onto
+  // a group goes into it out of the folder it was in (DropInBuddyGroup, 553 to 568).
+  //
+  // Not here yet: the Notifications group, the Search tab, Capture Portrait, an agent's Show Info and its place's
+  // menu, and selecting several agents.
   import { onMount } from "svelte";
-  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import { formatTemplate, plainText, type TemplateArguments } from "../bridge/clientWords.ts";
+  import { shownSecurity } from "../bridge/systemSecurity.ts";
+  import { resolvedName } from "../store/names.ts";
   import {
     CONTACT_GROUP,
     CONTACT_STANDING,
@@ -43,6 +56,7 @@
     labelNamesOf,
     labelsToAssign,
     labelsToRemove,
+    type AgentFolders,
     type ContactLabel,
     type NamedAddressBook,
   } from "../bridge/contacts.ts";
@@ -51,10 +65,14 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
 
-  let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  let { store, flow, showAgents }: { store: ClientStore; flow: AppFlow; showAgents?: () => void } = $props();
 
   // svelte-ignore state_referenced_locally
   const words = store.words;
+  // svelte-ignore state_referenced_locally
+  const names = store.names;
+  // svelte-ignore state_referenced_locally
+  const agentsState = store.agents;
   // svelte-ignore state_referenced_locally
   const addressBookState = store.addressBook;
   // svelte-ignore state_referenced_locally
@@ -141,8 +159,39 @@
     unblockContacts: "UI/PeopleAndPlaces/UnblockContacts",
     selectStanding: "UI/PeopleAndPlaces/SelectStanding",
   } as const;
+  /** The Agents tab's words, by their labels (addressBookWindow.py 70 to 260; userentry.py AgentEntry; menusvc.py; scrollentries.py). */
+  const AGENT_WORDS = {
+    agents: "UI/PeopleAndPlaces/Agents",
+    allAgents: "UI/PeopleAndPlaces/AllAgents",
+    createFolder: "UI/PeopleAndPlaces/CreateFolder",
+    typeName: "/Carbon/UI/Common/TypeName",
+    typeNameForFolder: "/Carbon/UI/Common/TypeNameForFolder",
+    typeInNewName: "/Carbon/UI/Controls/ScrollEntries/TypeInNewName",
+    typeInNewFolderName: "/Carbon/UI/Controls/ScrollEntries/TypeInNewFolderName",
+    pleaseTypeSomething: "UI/Common/PleaseTypeSomething",
+    expand: "UI/Common/Expand",
+    collapse: "UI/Common/Collapse",
+    changeLabel: "/Carbon/UI/Controls/ScrollEntries/ChangeLabel",
+    deleteFolder: "/Carbon/UI/Controls/ScrollEntries/DeleteFolder",
+    removeFromGroup: "UI/Common/RemoveFromGroup",
+    startConversation: "UI/Chat/StartConversationAgent",
+    removeFromAddressbook: "UI/PeopleAndPlaces/RemoveFromAddressbook",
+    nameAndLevel: "UI/Agents/AgentEntryNameAndLevel",
+    tutorial: "UI/AgentFinder/TutorialAgentDivision",
+    epicArc: "UI/AgentFinder/EpicArcAgentDivision",
+    storyline: "UI/AgentFinder/StorylineAgentDivision",
+    event: "UI/AgentFinder/EventAgentDivision",
+    career: "UI/AgentFinder/CareerAgentDivision",
+    heraldry: "UI/AgentFinder/HeraldryAgent",
+    locationAndJumps: "UI/Agency/LocationAndNumJumps",
+    location: "UI/Agency/Location",
+    numJumps: "UI/Common/NumJumps",
+    stateOffered: "UI/Journal/JournalWindow/Agents/StateOffered",
+    stateAccepted: "UI/Journal/JournalWindow/Agents/StateAccepted",
+    stateFailed: "UI/Journal/JournalWindow/Agents/StateFailed",
+  } as const;
   /** The client's dialogs the window says things with. */
-  const DIALOGS = ["RemoveOneFromContacts", "RemoveManyFromContacts", "DeleteMailLabel", "MailLabelNameExists", "LookupStringMinimum", "NoStandingsSelected"] as const;
+  const DIALOGS = ["RemoveOneFromContacts", "RemoveManyFromContacts", "DeleteMailLabel", "MailLabelNameExists", "LookupStringMinimum", "NoStandingsSelected", "RemoveAgents", "ConfirmDeleteFolder"] as const;
   /** appConst.mailMaxLabelSize: the longest name a label has (evemail.py ManageLabelsBase, 1543; addressbookService.py 991). */
   const MAX_LABEL_NAME = 40;
 
@@ -792,8 +841,256 @@
     }, 400);
   }
 
+  // ── The Agents tab ──────────────────────────────────────────────────────────
+
+  /** The window's tab (its tab group, AutoSelect: the one last chosen, kept). */
+  // svelte-ignore state_referenced_locally
+  let tab = $state<"contacts" | "agents">(flow.addressBookTab() === "agents" ? "agents" : "contacts");
+  function chooseTab(chosen: "contacts" | "agents"): void {
+    tab = chosen;
+    menuFor = null;
+    agentMenuFor = null;
+    groupMenuFor = null;
+    notes = [];
+    told = [];
+    flow.keepAddressBookTab(chosen);
+  }
+
+  /** The pilot's folders and "All Agents" open or not, as the registry keeps them for the character. */
+  // svelte-ignore state_referenced_locally
+  let folders = $state<AgentFolders>(flow.agentFolders());
+  function keepFolders(next: AgentFolders): void {
+    folders = next;
+    flow.keepAgentFolders(next);
+  }
+  /** The group whose menu is open, and the agent's (by its group and its ID). */
+  let groupMenuFor = $state<string | null>(null);
+  let agentMenuFor = $state<string | null>(null);
+  /** The name popup of Create Folder (registry.AddListGroup) or a folder's Change Label (GetNewGroupName). */
+  let folderNaming = $state<{ readonly id: string | null; value: string } | null>(null);
+  const ALL_AGENTS = "all";
+
+  /** appConst.agentType*, as AgentEntry.GetAgentInfo tells the agents apart (userentry.py 750 to 766). */
+  const AGENT_TYPE = Object.freeze({ genericStoryline: 6, storyline: 7, event: 8, epicArc: 10, aura: 11, career: 12, heraldry: 13 });
+  /** appConst.rookieAgentList: 910 to 969. */
+  const isRookieAgent = (agentID: number): boolean => agentID >= 910 && agentID <= 969;
+  const isAgentOwner = (ownerID: number): boolean => ownerID >= 3_000_000 && ownerID < 4_000_000;
+
+  /** A template filled with names: an agent's from the agents' names, a place's and others' by their kinds. */
+  function filledNamed(label: string, own: string, args: TemplateArguments): string {
+    return plainText(formatTemplate(word(label, own), args, {
+      nameOf: (kind, id) => resolvedName($names.resolved, kind === "owner" && isAgentOwner(id) ? "agent" : kind, id, ""),
+    }));
+  }
+
+  interface AgentLine {
+    readonly agentID: number;
+    readonly name: string;
+    /** GetAgentNameAndLevel: its name and level. */
+    readonly nameLine: string;
+    /** GetAgentLocationText: where it is, where that is not the station the pilot is in. */
+    readonly locationLine: string;
+    /** Its mission in the journal, by its state (GetMissionStateTextColored), and whether it is offered or taken. */
+    readonly missionState: { readonly text: string; readonly offered: boolean } | null;
+    /** What kind of agent it is: its division, or the kind of agent before it. */
+    readonly typeLine: string;
+  }
+
+  /** AgentEntry.Load and GetAgentInfo (userentry.py 743 to 812), from what the client's agents service and journal know. */
+  function agentLineOf(agentID: number, name: string): AgentLine {
+    const record = $agentsState.agentRecords[agentID] ?? null;
+    const level = record?.level ?? null;
+    const nameLine = level === null ? name : filledNamed(AGENT_WORDS.nameAndLevel, "{[character]ownerID.name}, level {level}", { ownerID: agentID, level });
+    let typeLine = "";
+    if (record !== null) {
+      const divisionTemplate = record.divisionNameID === null ? undefined : $words.templates[`#${record.divisionNameID}`];
+      const divisionName = typeof divisionTemplate === "string" ? plainText(divisionTemplate) : "";
+      const byKind = (label: string, own: string) => filledNamed(label, own, { divisionName });
+      if (isRookieAgent(agentID)) typeLine = byKind(AGENT_WORDS.tutorial, "Tutorial: {divisionName}");
+      else if (record.agentTypeID === AGENT_TYPE.epicArc) typeLine = byKind(AGENT_WORDS.epicArc, "Epic arc: {divisionName}");
+      else if (record.agentTypeID === AGENT_TYPE.genericStoryline || record.agentTypeID === AGENT_TYPE.storyline) typeLine = byKind(AGENT_WORDS.storyline, "Storyline: {divisionName}");
+      else if (record.agentTypeID === AGENT_TYPE.event) typeLine = byKind(AGENT_WORDS.event, "Event: {divisionName}");
+      else if (record.agentTypeID === AGENT_TYPE.career) typeLine = byKind(AGENT_WORDS.career, "Career: {divisionName}");
+      else if (record.agentTypeID === AGENT_TYPE.heraldry) typeLine = word(AGENT_WORDS.heraldry, "Paragon agent");
+      else if (record.agentTypeID === AGENT_TYPE.aura) typeLine = "";
+      else typeLine = divisionName;
+    }
+    // Where it is (765 to 772; eveformat solar_system_with_security_and_jumps): the system of its station, its
+    // security and the jumps to it, where its station is not the one the pilot is in; without the jumps where they
+    // are not known.
+    let locationLine = "";
+    const here = $station.online;
+    const solarSystemID = record?.solarSystemID ?? null;
+    if (record !== null && record.stationID !== null && here?.stationID !== record.stationID && solarSystemID !== null) {
+      const security = $names.systemSecurity[solarSystemID];
+      const secStatus = typeof security === "number" ? shownSecurity(security).toFixed(1) : "";
+      const jumps = here?.solarSystemID ? $names.autopilotJumps[`${here.solarSystemID}:${solarSystemID}`] : undefined;
+      locationLine = typeof jumps === "number"
+        ? filledNamed(AGENT_WORDS.locationAndJumps, "{[location]location.name} {secStatus}, {jumps}", { location: solarSystemID, secStatus, jumps: filledNamed(AGENT_WORDS.numJumps, "{[numeric]numJumps} jumps", { numJumps: jumps }) })
+        : filledNamed(AGENT_WORDS.location, "{[location]location.name} {secStatus}", { location: solarSystemID, secStatus });
+    }
+    // journal.GetActiveMissionForAgent (journal.py 363 to 368): its first mission in the journal, by its state's
+    // word (agentUtil.GetMissionStateText, 231 to 245: the expiry, a time, is never below nought there).
+    const journal = $agentsState.journal;
+    const mission = journal === null ? undefined : [...journal.active, ...journal.offered].find((each) => each.agentID === agentID);
+    const state = mission?.missionState ?? null;
+    const missionState = state === 0 || state === 1
+      ? { text: word(AGENT_WORDS.stateOffered, "Offered"), offered: true }
+      : state === 2 ? { text: word(AGENT_WORDS.stateAccepted, "Accepted"), offered: false }
+      : state === 3 ? { text: word(AGENT_WORDS.stateFailed, "Failed"), offered: false } : null;
+    return { agentID, name, nameLine, locationLine, missionState, typeLine };
+  }
+
+  /**
+   * _GetAgentScrollData (220 to 237): "All Agents" first (its key "  1") with every agent of the address book, then
+   * each folder by its name in lower case with those of its agents still in it; each group's agents by name.
+   */
+  const agentGroups = $derived.by(() => {
+    const agents = book?.agents ?? [];
+    const named = new Map(agents.map((agent) => [agent.agentID, agent.name]));
+    const linesOf = (ids: readonly number[]) => ids
+      .filter((id) => named.has(id))
+      .map((id) => agentLineOf(id, named.get(id) ?? String(id)))
+      .sort((left, right) => left.name.localeCompare(right.name));
+    const groups = [
+      { id: ALL_AGENTS, label: word(AGENT_WORDS.allAgents, "All Agents"), sortBy: "  1", locked: true, open: folders.allOpen, lines: linesOf(agents.map((agent) => agent.agentID)) },
+      ...folders.folders.map((folder) => ({ id: folder.id, label: folder.label, sortBy: folder.label, locked: false, open: folder.open, lines: linesOf(folder.groupItems) })),
+    ];
+    return groups.sort((left, right) => {
+      const a = left.sortBy.toLowerCase();
+      const b = right.sortBy.toLowerCase();
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+  });
+
+  /** What each agent's entry needs asked: its record in the agents service, its station's system's name, security and jumps, and its division's name. */
+  const bookAgentIDs = $derived((book?.agents ?? []).map((agent) => agent.agentID));
+  let journalAsked = false;
+  $effect(() => {
+    if (tab !== "agents") return;
+    for (const agentID of bookAgentIDs) flow.requestAgentRecord(agentID);
+    if (!journalAsked && $agentsState.journal === null) {
+      journalAsked = true;
+      void flow.loadJournal().catch(() => {});
+    }
+  });
+  const agentPlaces = $derived.by(() => {
+    const records = bookAgentIDs.map((agentID) => $agentsState.agentRecords[agentID] ?? null);
+    return {
+      systems: [...new Set(records.map((record) => record?.solarSystemID ?? null).filter((id): id is number => id !== null))],
+      divisions: [...new Set(records.map((record) => record?.divisionNameID ?? null).filter((id): id is number => id !== null))],
+    };
+  });
+  $effect(() => {
+    if (tab !== "agents") return;
+    const { systems, divisions } = agentPlaces;
+    flow.requestWords(divisions.map((id) => `#${id}`));
+    flow.requestNames(systems.map((id) => ({ kind: "system" as const, id })));
+    flow.requestSystemSecurity(systems);
+    const from = $station.online?.solarSystemID ?? null;
+    if (from !== null && systems.length > 0) flow.requestAutopilotJumps(from, systems);
+  });
+
+  /** A group opened or closed (ListGroup Toggle), and kept so. */
+  function toggleGroup(groupID: string): void {
+    groupMenuFor = null;
+    keepFolders(groupID === ALL_AGENTS
+      ? { ...folders, allOpen: !folders.allOpen }
+      : { ...folders, folders: folders.folders.map((folder) => (folder.id === groupID ? { ...folder, open: !folder.open } : folder)) });
+  }
+
+  /**
+   * Create Folder (registry.AddListGroup, 466 to 480) and a folder's Change Label (scrollentries.py 876 to 899): the
+   * client's name popup, refused where nothing but blanks is typed (namedPopup.py CheckName, 100 to 105); a new
+   * folder is closed and empty, keyed by when it was made.
+   */
+  function confirmFolderName(): void {
+    const held = folderNaming;
+    if (held === null) return;
+    if (held.value.trim().length < 1) {
+      notes = [word(AGENT_WORDS.pleaseTypeSomething, "Type a name first.")];
+      return;
+    }
+    notes = [];
+    folderNaming = null;
+    if (held.id === null) {
+      keepFolders({ ...folders, folders: [...folders.folders, { id: String(Date.now()), label: held.value, groupItems: [], open: false }] });
+    } else {
+      keepFolders({ ...folders, folders: folders.folders.map((folder) => (folder.id === held.id ? { ...folder, label: held.value } : folder)) });
+    }
+  }
+
+  /** DeleteFolder (scrollentries.py 901 to 918): the client's ConfirmDeleteFolder, then the folder let go; its agents stay in the address book. */
+  function deleteFolder(folderID: string): void {
+    groupMenuFor = null;
+    question = {
+      title: filledWord("dialog:ConfirmDeleteFolder/title", "Delete folder?", {}),
+      body: filledWord("dialog:ConfirmDeleteFolder/body", "Delete this folder?", {}),
+      answer: (yes) => {
+        question = null;
+        if (yes) keepFolders({ ...folders, folders: folders.folders.filter((folder) => folder.id !== folderID) });
+      },
+    };
+  }
+
+  /** AgentEntry.RemoveFromListGroup (userentry.py 985 to 1000): the agent out of the folder, and nothing asked of the server. */
+  function removeFromFolder(folderID: string, agentID: number): void {
+    agentMenuFor = null;
+    keepFolders({ ...folders, folders: folders.folders.map((folder) => (folder.id === folderID ? { ...folder, groupItems: folder.groupItems.filter((id) => id !== agentID) } : folder)) });
+  }
+
+  /** DropInBuddyGroup (addressbookService.py 553 to 568): an agent dropped on a group taken out of the folder it came from, and put in the one it was dropped on ("All Agents" keeps none of its own). */
+  function dropAgent(event: DragEvent, groupID: string): void {
+    event.preventDefault();
+    const [agentText, fromGroup] = (event.dataTransfer?.getData("text/plain") ?? "").split("|");
+    const agentID = Number(agentText);
+    if (!Number.isSafeInteger(agentID) || agentID <= 0 || !bookAgentIDs.includes(agentID)) return;
+    keepFolders({
+      ...folders,
+      folders: folders.folders.map((folder) => {
+        let items = folder.id === fromGroup ? folder.groupItems.filter((id) => id !== agentID) : folder.groupItems;
+        if (folder.id === groupID && !items.includes(agentID)) items = [...items, agentID];
+        return items === folder.groupItems ? folder : { ...folder, groupItems: items };
+      }),
+    });
+  }
+
+  /** agents.OpenDialogueWindow: the conversation, which the Agents & Missions window shows. */
+  function startConversation(agentID: number): void {
+    agentMenuFor = null;
+    notes = [];
+    void run(async () => {
+      await flow.openConversation(agentID);
+      showAgents?.();
+    });
+  }
+
+  /**
+   * DeleteEntryMulti with no contact type (addressbookService.py 870 to 891): the client's RemoveAgents, then the
+   * agent out of every folder and RemoveFromAddressBook's DeleteContacts([agentID]) (817 to 823).
+   */
+  function removeAgent(agentID: number): void {
+    agentMenuFor = null;
+    notes = [];
+    question = {
+      title: filledWord("dialog:RemoveAgents/title", "Remove agents?", {}),
+      body: filledWord("dialog:RemoveAgents/body", "Remove the agents chosen?", {}),
+      answer: (yes) => {
+        question = null;
+        if (!yes) return;
+        keepFolders({ ...folders, folders: folders.folders.map((folder) => (folder.groupItems.includes(agentID) ? { ...folder, groupItems: folder.groupItems.filter((id) => id !== agentID) } : folder)) });
+        void run(async () => {
+          await flow.deleteContacts([agentID]);
+          if (book !== null) {
+            book = { ...book, agents: book.agents.filter((agent) => agent.agentID !== agentID) };
+          }
+        });
+      },
+    };
+  }
+
   onMount(() => {
-    flow.requestWords([...Object.values(WORDS), ...DIALOGS.flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`])]);
+    flow.requestWords([...Object.values(WORDS), ...Object.values(AGENT_WORDS), ...DIALOGS.flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`])]);
     void load();
     void flow.primeContactsOnline().catch(() => {});
     return () => {
@@ -951,10 +1248,92 @@
     </section>
   {/if}
 
+  {#if folderNaming !== null}
+    <!-- The name popup (utilWindows.NamePopup) of Create Folder or a folder's Change Label. -->
+    <section class="contacts-confirm" aria-label={folderNaming.id === null ? word(AGENT_WORDS.typeName, "Folder name") : word(AGENT_WORDS.typeInNewName, "New name")}>
+      <h3>{folderNaming.id === null ? word(AGENT_WORDS.typeName, "Folder name") : word(AGENT_WORDS.typeInNewName, "New name")}</h3>
+      <p class="controls">
+        <label>
+          {folderNaming.id === null ? word(AGENT_WORDS.typeNameForFolder, "Name the folder.") : word(AGENT_WORDS.typeInNewFolderName, "Name the folder anew.")}
+          <input type="text" bind:value={folderNaming.value} />
+        </label>
+        <button type="button" onclick={confirmFolderName}>{word(WORDS.ok, "OK")}</button>
+        <button type="button" class="minor" onclick={() => { folderNaming = null; notes = []; }}>{word(WORDS.cancel, "Cancel")}</button>
+      </p>
+    </section>
+  {/if}
+
+  <!-- The window's tabs (ConstructTabs, 85 to 92): Contacts and Agents. -->
   <nav class="tabs">
-    <button type="button" class="active">{word(WORDS.contacts, "Contacts")}</button>
+    <button type="button" class:active={tab === "contacts"} aria-pressed={tab === "contacts"} onclick={() => chooseTab("contacts")}>{word(WORDS.contacts, "Contacts")}</button>
+    <button type="button" class:active={tab === "agents"} aria-pressed={tab === "agents"} onclick={() => chooseTab("agents")}>{word(AGENT_WORDS.agents, "Agents")}</button>
   </nav>
 
+  {#if tab === "agents"}
+    <div class="contacts-agents">
+      {#if book === null}
+        <p class="note">{busy ? "Reading…" : ""}</p>
+      {:else}
+        {#each agentGroups as group (group.id)}
+          <!-- A group (ListGroup): opened or closed, with how many it holds; an agent dropped on it goes into it. -->
+          <div class="agents-group" role="group" aria-label={group.label} ondragover={(event) => event.preventDefault()} ondrop={(event) => dropAgent(event, group.id)}>
+            <p class="controls agents-group-head">
+              <button type="button" class="minor" aria-expanded={group.open} onclick={() => toggleGroup(group.id)}>
+                {group.open ? "▾" : "▸"} {filledWord(WORDS.withLength, "{label} [{length}]", { label: group.label, length: String(group.lines.length) })}
+              </button>
+              <button type="button" class="minor" aria-expanded={groupMenuFor === group.id} aria-label="Group menu" onclick={() => (groupMenuFor = groupMenuFor === group.id ? null : group.id)}>⋯</button>
+            </p>
+            {#if groupMenuFor === group.id}
+              <!-- The group's menu (listgroup.py GetMenu, 284 to 311): Expand or Collapse, and for a folder Change Label and Delete Folder. -->
+              <p class="controls contacts-menu">
+                <button type="button" class="minor" onclick={() => toggleGroup(group.id)}>{group.open ? word(AGENT_WORDS.collapse, "Collapse") : word(AGENT_WORDS.expand, "Expand")}</button>
+                {#if !group.locked}
+                  <button type="button" class="minor" onclick={() => { groupMenuFor = null; notes = []; folderNaming = { id: group.id, value: "" }; }}>{word(AGENT_WORDS.changeLabel, "Rename")}</button>
+                  <button type="button" class="minor" onclick={() => deleteFolder(group.id)}>{word(AGENT_WORDS.deleteFolder, "Delete")}</button>
+                {/if}
+              </p>
+            {/if}
+            {#if group.open}
+              <ul class="agents-entries">
+                {#each group.lines as line (line.agentID)}
+                  <!-- An agent's entry (AgentEntry): its name and level, where it is, its mission's state and its kind; dragged by itself. -->
+                  <li draggable="true" ondragstart={(event) => event.dataTransfer?.setData("text/plain", `${line.agentID}|${group.id}`)}>
+                    <div class="agents-entry">
+                      <div>
+                        <strong>{line.nameLine}</strong>
+                        {#if line.missionState !== null}
+                          <span class="badge" class:accent={!line.missionState.offered}>{line.missionState.text}</span>
+                        {/if}
+                        {#if line.locationLine !== ""}<br /><small>{line.locationLine}</small>{/if}
+                        {#if line.typeLine !== ""}<br /><small class="note">{line.typeLine}</small>{/if}
+                      </div>
+                      <div class="agents-entry-buttons">
+                        <button type="button" class="minor" disabled={busy} aria-label={word(AGENT_WORDS.startConversation, "Talk")} title={word(AGENT_WORDS.startConversation, "Talk")} onclick={() => startConversation(line.agentID)}>💬</button>
+                        <button type="button" class="minor" aria-expanded={agentMenuFor === `${group.id}|${line.agentID}`} aria-label="Menu" onclick={() => (agentMenuFor = agentMenuFor === `${group.id}|${line.agentID}` ? null : `${group.id}|${line.agentID}`)}>⋯</button>
+                      </div>
+                    </div>
+                    {#if agentMenuFor === `${group.id}|${line.agentID}`}
+                      <!-- The agent's menu (menusvc.py _CharacterMenu, 584 and 598; userentry.py AgentEntry.GetMenu, 858 to 882). -->
+                      <p class="controls contacts-menu">
+                        <button type="button" class="minor" disabled={busy} onclick={() => startConversation(line.agentID)}>{word(AGENT_WORDS.startConversation, "Talk")}</button>
+                        <button type="button" class="minor" disabled={busy} onclick={() => removeAgent(line.agentID)}>{word(AGENT_WORDS.removeFromAddressbook, "Remove")}</button>
+                        {#if !group.locked}
+                          <button type="button" class="minor" onclick={() => removeFromFolder(group.id, line.agentID)}>{filledWord(AGENT_WORDS.removeFromGroup, "Take out of {groupname}", { groupname: group.label })}</button>
+                        {/if}
+                      </p>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+        {/each}
+        <p class="controls">
+          <button type="button" class="minor" onclick={() => { notes = []; folderNaming = { id: null, value: "" }; }}>{word(AGENT_WORDS.createFolder, "New Folder")}</button>
+        </p>
+      {/if}
+    </div>
+  {:else}
   <div class="contacts-form">
     <!-- The form's groups, each with how many it holds (ListGroup's LabelWithLength), and the labels under theirs. -->
     <ul class="contacts-groups">
@@ -1117,9 +1496,32 @@
       {/if}
     </div>
   </div>
+  {/if}
 </section>
 
 <style>
+  .agents-group-head {
+    margin: 0.25rem 0;
+  }
+  .agents-entries {
+    list-style: none;
+    margin: 0 0 0.5rem 1rem;
+    padding: 0;
+  }
+  .agents-entries > li {
+    padding: 0.25rem 0;
+    border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+  }
+  .agents-entry {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+  .agents-entry-buttons {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.25rem;
+  }
   .contacts-form {
     display: flex;
     flex-wrap: wrap;

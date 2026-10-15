@@ -6594,6 +6594,10 @@ app.get("/api/bridge/agents/:agentID/record", requireAuth, async (req, res, next
       row.divisionID ? clientBuiltData.lookup("npcCorporationDivisions", row.divisionID) : { row: null },
     ]);
     const whole = (value) => (Number.isSafeInteger(value) && value > 0 ? value : null);
+    // The client's row has the solar system of the agent's station from its own station data
+    // (agents.py 96 to 105: GetStationStaticInfo(stationID).solarSystemID), so does this, from the static
+    // station table; none for an agent in no station.
+    const station = row.stationID ? staticData.getStation(row.stationID) : null;
     res.json({
       ok: true,
       agent: {
@@ -6605,6 +6609,7 @@ app.get("/api/bridge/agents/:agentID/record", requireAuth, async (req, res, next
         corporationID: row.corporationID,
         factionID: whole(corporation.row && corporation.row.factionID),
         divisionNameID: whole(division.row && division.row.nameID),
+        solarSystemID: whole(station && station.solarSystemID),
       },
     });
   } catch (error) {

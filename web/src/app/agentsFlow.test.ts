@@ -1879,7 +1879,7 @@ test("what the client knows of an agent is asked for once, kept by its ID, and a
   const asked = () => requests.filter((request) => request.path.endsWith("/record")).map((request) => request.path);
   await flow.openMissionDetails(3008416);
   await until(() => store.agents.get().agentRecords[3008416] !== undefined);
-  assert.deepEqual(store.agents.get().agentRecords[3008416], { agentID: 3008416, agentTypeID: 2, divisionID: 22, level: 1, stationID: 60000004, corporationID: 1000002, factionID: 500001, divisionNameID: 900109 });
+  assert.deepEqual(store.agents.get().agentRecords[3008416], { agentID: 3008416, agentTypeID: 2, divisionID: 22, level: 1, stationID: 60000004, corporationID: 1000002, factionID: 500001, divisionNameID: 900109, solarSystemID: null });
   flow.closeMissionDetails();
   await flow.openMissionDetails(3008416);
   flow.requestAgentRecord(3008416);

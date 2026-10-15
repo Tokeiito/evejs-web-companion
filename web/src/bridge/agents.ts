@@ -242,6 +242,8 @@ export interface AgentRecord {
   readonly corporationID: number | null;
   readonly factionID: number | null;
   readonly divisionNameID: number | null;
+  /** The solar system of the agent's station, as the client's row has it (agents.py 96 to 105); null for none. */
+  readonly solarSystemID?: number | null;
 }
 
 /** A record as the BFF answers it (GET /api/bridge/agents/<id>/record), or null for anything that is not one. */
@@ -264,6 +266,7 @@ export function decodeAgentRecord(value: unknown): AgentRecord | null {
     corporationID: whole(row.corporationID),
     factionID: whole(row.factionID),
     divisionNameID: whole(row.divisionNameID),
+    solarSystemID: whole(row.solarSystemID),
   };
 }
 
