@@ -48,11 +48,34 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { Colony, ColonyPin } from "../store/types.ts";
   import TypeIcon from "./TypeIcon.svelte";
+  import PlanetLaunches from "./PlanetLaunches.svelte";
+  import { plainText } from "../bridge/clientWords.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
   // svelte-ignore state_referenced_locally
   const planets = store.planets;
+  // svelte-ignore state_referenced_locally
+  const launchesRead = flow.planetLaunches;
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+
+  // ReconstructWindow (planetWindow.py 40 to 53): with launches, two tabs, Colonies and Launches; without, the
+  // colonies alone. The launches are read as the window is built (onMount).
+  const TAB_WORDS = {
+    colonies: "UI/ScienceAndIndustry/ScienceAndIndustryWindow/Colonies",
+    launches: "UI/ScienceAndIndustry/ScienceAndIndustryWindow/Launches",
+  } as const;
+  $effect(() => {
+    flow.requestWords(Object.values(TAB_WORDS));
+  });
+  function tabWord(label: string, own: string): string {
+    const template = $words.templates[label];
+    return typeof template === "string" && template !== "" ? plainText(template) : own;
+  }
+  let chosenTab = $state<"colonies" | "launches">("colonies");
+  const hasLaunches = $derived($launchesRead.launches.length > 0);
+  const shownTab = $derived(hasLaunches ? chosenTab : "colonies");
 
   let busy = $state(false);
   let error = $state("");
@@ -172,6 +195,7 @@
 
   onMount(() => {
     void run(() => flow.loadPlanets());
+    void flow.loadPlanetLaunches().catch(() => undefined);
     const timer = setInterval(() => {
       browserNowMs = Date.now();
     }, 1000);
@@ -198,7 +222,16 @@
     <p class="error">{error}</p>
   {/if}
 
-  {#if !$planets.loaded}
+  {#if hasLaunches}
+    <nav class="tabs">
+      <button type="button" class:active={shownTab === "colonies"} onclick={() => (chosenTab = "colonies")}>{tabWord(TAB_WORDS.colonies, "Colonies")}</button>
+      <button type="button" class:active={shownTab === "launches"} onclick={() => (chosenTab = "launches")}>{tabWord(TAB_WORDS.launches, "Launches")}</button>
+    </nav>
+  {/if}
+
+  {#if shownTab === "launches"}
+    <PlanetLaunches {store} {flow} {nowMs} />
+  {:else if !$planets.loaded}
     <p class="note">Looking for your colonies…</p>
   {:else if $planets.error}
     <!-- A FAILED read. Worded deliberately unlike the empty case: "you have no

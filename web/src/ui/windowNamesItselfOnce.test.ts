@@ -41,7 +41,11 @@ const { createClientStore } = await import("../store/clientStore.ts");
 const { TABS, tabLabel } = await import("./tabs.ts");
 
 function fakeFlow(): unknown {
-  return new Proxy({}, { get: () => async () => {} });
+  // The launches the window reads as it is built (planetWindow.py ReconstructWindow; flow.planetLaunches): read, and
+  // none, so the planets window shows its colonies alone.
+  const none = { loaded: true, launches: [], error: null };
+  const planetLaunches = { get: () => none, subscribe: (listener: (value: typeof none) => void) => (listener(none), () => {}) };
+  return new Proxy({ planetLaunches } as Record<string, unknown>, { get: (held, key) => (typeof key === "string" && key in held ? held[key] : async () => {}) });
 }
 
 /** Compare the way a player does: case, punctuation and spacing are noise. */

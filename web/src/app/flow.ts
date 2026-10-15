@@ -456,6 +456,7 @@ import type { FleetCenterSnapshot } from "../bridge/fleetCenter.ts";
 import { decodeAvailableFleetAds, decodeMyFleetFinderAdvert } from "../bridge/fleetAds.ts";
 import { readAvailableFleetAds, readFleetFinder as readFleetFinderCalls } from "../bridge/fleetFinderReads.ts";
 import { readMyLaunches } from "../bridge/launchReads.ts";
+import type { PlanetLaunchesRead } from "../bridge/planetLaunches.ts";
 import { readCharacterFittings, readCorporationFittings } from "../bridge/fittingReads.ts";
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, kickFleetMember as kickFleetMemberCall, leaveFleet as leaveFleetCall, makeFleetLeader as makeFleetLeaderCall, moveFleetMember as moveFleetMemberCall, tagFleetTarget, addToWatchlist as addToWatchlistCall, removeFromWatchlist as removeFromWatchlistCall, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
@@ -1564,6 +1565,21 @@ export interface AppFlow {
    */
   warpToMissionBookmark(spot: MissionSpot, range: number): Promise<void>;
   approachMissionBookmark(spot: MissionSpot): Promise<void>;
+  /**
+   * The planets window's Launches tab (bridge/planetLaunches.ts): the pilot's launches as the client's planet service
+   * keeps them, read as the window is built (planetLaunches; loadPlanetLaunches, afresh with `force`), and kept until
+   * the server says they changed.
+   */
+  readonly planetLaunches: ReadableSignal<PlanetLaunchesRead>;
+  loadPlanetLaunches(force?: boolean): Promise<void>;
+  /**
+   * A launch's menu (journal.py PlanetaryInteractionLaunchEntry, 446 to 466), each a flight step whose refusal is said
+   * as the flight's are: Approach Location (CmdFollowBall to the launch's container, 50 m); Warp To (CmdWarpToStuff
+   * 'launch'); and Remove for one burned up (the row taken off, DeleteLaunch, the launches read afresh).
+   */
+  approachPlanetLaunch(containerID: number): Promise<void>;
+  warpToPlanetLaunch(launchID: number): Promise<void>;
+  removePlanetLaunch(launchID: number): Promise<void>;
   /**
    * R13 — cut the engines (CmdStop). As in retail, this also switches the
    * autopilot off: stopping the ship must not leave something still flying it.
@@ -3094,6 +3110,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/clone-grade", cloneGrade });
       }
       return;
+    }
+    // planetUISvc.OnPILaunchesChange and the planets window's (planetWindow.py 58 to 61): the launches kept let go,
+    // and read afresh where the window has wanted them.
+    if (method === "OnPILaunchesChange") {
+      planetLaunchesChanged();
     }
     const sessionNames = sessionChangeNames(method, args);
     contactLoggedOnOrOff(method, args);
@@ -5791,6 +5812,51 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   /** A launch warped to by the page's own call (bridge/movementWrites.ts), by the launch's own number, for the script bots. */
   async function warpToLaunchPickup(launchID: number): Promise<void> {
     await warpToLaunchCall(bridgeDo, readFlightNow, launchID);
+  }
+
+  // The pilot's planetary launches, for the planets window's Launches tab (bridge/planetLaunches.ts), as the client's
+  // planet service keeps them (planetUISvc.GetLaunches, 170 to 173): read once for the pilot and kept, read afresh
+  // where asked to be; the server's word that they changed (OnPILaunchesChange, 175 to 177) lets what is kept go, and
+  // the window, drawn again at it (planetWindow.py 58 to 61), reads them afresh. The transport keeps the same.
+  const planetLaunchesSignal = createSignal<PlanetLaunchesRead>({ loaded: false, launches: [], error: null });
+  let planetLaunchesFor: number | null = null;
+  let planetLaunchesWanted = false;
+
+  async function loadPlanetLaunches(force = false): Promise<void> {
+    planetLaunchesWanted = true;
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (!force && characterID !== null && planetLaunchesFor === characterID) return;
+    // Another pilot's launches are not shown while this one's are read.
+    if (planetLaunchesFor !== null && planetLaunchesFor !== characterID) planetLaunchesSignal.set({ loaded: false, launches: [], error: null });
+    try {
+      const launches = await readMyLaunches(bridgeAsk);
+      if ((store.station.get().online?.characterID ?? null) !== characterID) return;
+      planetLaunchesFor = characterID;
+      planetLaunchesSignal.set({ loaded: true, launches, error: null });
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      // What was read before for this pilot stays on show beside the failure; another pilot's does not.
+      const sameCharacter = planetLaunchesFor === characterID;
+      planetLaunchesFor = null;
+      planetLaunchesSignal.set({ loaded: true, launches: sameCharacter ? planetLaunchesSignal.get().launches : [], error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  /** OnPILaunchesChange: what is kept is let go, and read afresh where the window has wanted it. */
+  function planetLaunchesChanged(): void {
+    planetLaunchesFor = null;
+    if (planetLaunchesWanted) void loadPlanetLaunches(true).catch(() => undefined);
+  }
+
+  /** DeleteLaunchEntry (journal.py 456 to 466): the row taken off, the launch's record removed, the launches read afresh. */
+  async function removePlanetLaunch(launchID: number): Promise<void> {
+    const held = planetLaunchesSignal.get();
+    planetLaunchesSignal.set({ ...held, launches: held.launches.filter((launch) => launch.launchID !== launchID) });
+    try {
+      await removeLaunch(bridgeDo, launchID);
+    } finally {
+      await loadPlanetLaunches(true).catch(() => undefined);
+    }
   }
 
   /**
@@ -18752,6 +18818,19 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     async approachMissionBookmark(spot) {
       await runFlightStep("Approach", () => orderedStep((flightNow) => approachMissionLocationCall(bridgeDo, flightNow, spot)));
     },
+
+    planetLaunches: readonlySignal(planetLaunchesSignal),
+    loadPlanetLaunches,
+
+    async approachPlanetLaunch(containerID) {
+      await runFlightStep("Approach", () => orderedStep((flightNow) => approachCall(bridgeDo, flightNow, containerID, 50)));
+    },
+
+    async warpToPlanetLaunch(launchID) {
+      await runFlightStep("Warp", () => orderedStep((flightNow) => warpToLaunchCall(bridgeDo, flightNow, launchID)));
+    },
+
+    removePlanetLaunch,
 
     async stopShip() {
       // Retail's Stop cancels the client-side navigation BEFORE the command and

@@ -1830,6 +1830,9 @@ function resolveOneName(kind, id) {
       return getSolarSystem(numericID) ? getSolarSystemName(numericID) : null;
     case "region":
       return getRegion(numericID) ? getRegionName(numericID) : null;
+    // A planet, as cfg.evelocations names one: the planets window's launches (planetWindow.py 88 to 92).
+    case "planet":
+      return getPlanetName(numericID);
     case "constellation":
       return getConstellationName(numericID);
     // A station -> its type's name: the group of a station's default bookmark name (addressbookService.py

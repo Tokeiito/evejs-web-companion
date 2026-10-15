@@ -10,8 +10,8 @@
   // Read as the client's tracker reads (flow.refreshMissionTracker): as the window opens, at each change of the pilot's
   // place and each warp's end. The space feed is claimed while it is open, for the distance to a mission's place.
   //
-  // Not done: the objective's icon; untracking a mission (the job board's own window); Approaching (the page cannot
-  // tell what the ship follows); Open Container (DropItemInMissionContainer); Preparing to warp.
+  // Not done: the objective's icon; untracking a mission (the job board's own window); Open Container
+  // (DropItemInMissionContainer); Preparing to warp; Docking.
   import { onMount } from "svelte";
   import { formatTemplate, plainText, templateNameRefs } from "../bridge/clientWords.ts";
   import { questionText } from "../bridge/questions.ts";

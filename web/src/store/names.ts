@@ -58,6 +58,8 @@ export type NameKind =
   | "systemConstellation"
   /** A solar system -> its region's name: the Locations window's REG. */
   | "systemRegion"
+  /** A planet by its number, as cfg.evelocations names one ("Muvolailen X"): the planets window's launches. */
+  | "planet"
   | "owner"
   /** An owner's kind: the group its type is in, by name (Character, Corporation, Alliance, Faction). */
   | "ownerGroup";
