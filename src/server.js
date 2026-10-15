@@ -4696,11 +4696,23 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
         return;
       }
       expected = { fromSolarSystemID: Number(before.flight.solarSystemID) || null, toSolarSystemID: beaconSystemID, shipID };
+    } else if (kind === "bridge") {
+      if (before.flight.inSpace !== true) {
+        res.status(409).json({ ok: false, error: "NOT_IN_SPACE", message: "The ship is not in space; undock first." });
+        return;
+      }
+      const structureID = Number(args[0]);
+      if (!isPlayerStructureID(structureID) || args.length !== 1) {
+        res.status(400).json({ ok: false, error: "INVALID_STRUCTURE", message: "A jump gate is jumped through by its number, and nothing else." });
+        return;
+      }
+      expected = { fromSolarSystemID: Number(before.flight.solarSystemID) || null, shipID };
     } else {
       throw new Error(`No keeping of a ${kind} is known.`);
     }
-    // (A cyno's jump is kept as a stargate's: a session into another system, the park bound again there.)
-    const keeping = kind === "cyno" ? "stargate" : kind;
+    // (A cyno's jump and a jump gate's are kept as a stargate's: a session into another system, the park bound again
+    // there.)
+    const keeping = kind === "cyno" || kind === "bridge" ? "stargate" : kind;
     if (!await acquireRouteTransition(res, held, keeping, expected)) {
       return;
     }
@@ -4749,7 +4761,7 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
       ...pilotClock(held),
     });
   } catch (error) {
-    if (held.transition && held.transition.kind === (kind === "cyno" ? "stargate" : kind)) {
+    if (held.transition && held.transition.kind === (kind === "cyno" || kind === "bridge" ? "stargate" : kind)) {
       // (A dock never latches: it is safe to ask again, and an error releases it, as its route had it.)
       if (held.transition.phase === "requested" || kind === "dock") {
         cancelHeldTransition(held);

@@ -26,6 +26,11 @@ export interface RouteHop {
   readonly toSystemID: number;
   readonly gateToWarpID: number;
   readonly jumpToGateID: number;
+  /**
+   * A hop through an Ansiblex jump gate, not a stargate (Include Jump Gates, nav/jumpGates.ts): `gateToWarpID` is the
+   * Ansiblex, warped to as a stargate is and jumped through by its own call; `jumpToGateID` is nought.
+   */
+  readonly throughJumpGate?: boolean;
 }
 
 /** One directed stargate edge out of a system (as the graph stores it). */
@@ -244,10 +249,15 @@ export function solveRoute(
 
 /**
  * The hops along a way already chosen: the systems in order, each a jump from the one before. The gate
- * for a hop is the first the map has between the two. Not reachable where the way is empty or two of its
- * systems have no jump between them.
+ * for a hop is the first the map has between the two; where it has none, the jump gate the pilot may take
+ * from the one to the other (`jumpGates`). Not reachable where the way is empty or two of its systems have
+ * no jump between them.
  */
-export function routeAlong(graph: SystemGraph, systems: readonly number[]): RouteResult {
+export function routeAlong(
+  graph: SystemGraph,
+  systems: readonly number[],
+  jumpGates: readonly { readonly fromSystemID: number; readonly toSystemID: number; readonly structureID: number }[] = [],
+): RouteResult {
   const first = systems[0];
   if (first === undefined) {
     return UNREACHABLE(0);
@@ -258,7 +268,12 @@ export function routeAlong(graph: SystemGraph, systems: readonly number[]): Rout
     const toSystemID = systems[at]!;
     const edge = graph.neighbors(fromSystemID).find((each) => each.toSystemID === toSystemID);
     if (edge === undefined) {
-      return UNREACHABLE(first);
+      const jumpGate = jumpGates.find((each) => each.fromSystemID === fromSystemID && each.toSystemID === toSystemID);
+      if (jumpGate === undefined) {
+        return UNREACHABLE(first);
+      }
+      hops.push({ fromSystemID, toSystemID, gateToWarpID: jumpGate.structureID, jumpToGateID: 0, throughJumpGate: true });
+      continue;
     }
     hops.push({ fromSystemID, toSystemID, gateToWarpID: edge.gateID, jumpToGateID: edge.destinationGateID });
   }

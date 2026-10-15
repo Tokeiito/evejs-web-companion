@@ -463,7 +463,7 @@ import {
   scoopDrones as scoopDronesCall,
 } from "../bridge/boundEntityWrites.ts";
 import { alignTo as alignToCall, alignToBookmark as alignToBookmarkCall, approach as approachCall, approachBookmark as approachBookmarkCall, approachMissionLocation as approachMissionLocationCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpFleetToMember as warpFleetToMemberCall, toMemberBeacon as toMemberBeaconCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
-import { dock as dockCall, dockAtStructure as dockAtStructureCall, isStation, jump as jumpCall, undock as undockCall } from "../bridge/placeChanges.ts";
+import { dock as dockCall, dockAtStructure as dockAtStructureCall, isStation, jump as jumpCall, jumpThroughJumpGate as jumpThroughJumpGateCall, undock as undockCall } from "../bridge/placeChanges.ts";
 import { boardCorvette as boardCorvetteCall, boardShip as boardShipCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
 import { activityIDOf, createJobReckoner, type JobReckoner, type JobReckoning } from "../bridge/industryJobReckoning.ts";
 import { connectJob, decodeFacilityPlaces, disconnectJob, installJob, jobDump, jobPlaces, monitoredAs, type Monitored } from "../bridge/industryMonitor.ts";
@@ -5817,6 +5817,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return orderedStep((flightNow) => jumpCall(bridgeDo, flightNow, fromGateID, toGateID));
   }
 
+  /** A jump through an Ansiblex jump gate (bridge/placeChanges.ts jumpThroughJumpGate). */
+  function jumpGateStep(structureID: number): Promise<FlightStepResult> {
+    return orderedStep((flightNow) => jumpThroughJumpGateCall(bridgeDo, flightNow, structureID));
+  }
+
   async function orderedStep(order: (flightNow: () => Promise<FlightNow>) => Promise<void>): Promise<FlightStepResult> {
     const before = await api.getFlightStatus(callOptions);
     await order(async () => decodeFlightStatus(before.flight));
@@ -10363,10 +10368,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         await approachShip(destinationID, byMenu ? null : 0);
         if (!byMenu) sayAutopilotFlying("AutoPilotApproaching", null);
       },
-      jump: async (fromGateID, toGateID) => {
-        // (The system jumped to, named before the jump: the route is the one it is on.)
+      jump: async (fromGateID, toGateID, throughJumpGate) => {
+        // (The system jumped to, named before the jump: the route is the one it is on. A jump gate's jump is said as a
+        // stargate's is, AutoPilotJumping with the system: autopilot.py 380.)
         const into = routePlaceName(fromGateID);
-        await jumpStep(fromGateID, toGateID);
+        await (throughJumpGate === true ? jumpGateStep(fromGateID) : jumpStep(fromGateID, toGateID));
         sayAutopilotFlying("AutoPilotJumping", into);
       },
       dock: async (stationID) => {
@@ -10826,13 +10832,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     //    way and round the systems it avoids unless the pilot has set it otherwise (nav/autopilotRoute.ts,
     //    nav/autopilotSettings.ts), not the fewest jumps.
     const way = autopilotPath(await pathfinderMap(graph), originSystem, targetSystemID, await pathfinderSettings(graph));
-    // Each of the way's jumps is a stargate's, but where Include Jump Gates lets it go through an Ansiblex: a jump no
-    // stargate makes, which this page's loop does not fly yet (the client's autopilot does: autopilot.py 348 to 389).
-    const route = way === null ? null : routeAlong(graph, way);
+    // Each of the way's jumps is a stargate's, or where Include Jump Gates lets it go through an Ansiblex, that jump
+    // gate's (a hop the loop flies as the client's autopilot does: autopilot.py 348 to 389).
+    const route = way === null ? null : routeAlong(graph, way, await availableJumpGates(graph));
     if (route === null || !route.reachable) {
-      return planFailed(route === null
-        ? `No gate route from ${graph.systemName(originSystem) ?? originSystem} to ${structure?.solarSystemName ?? destination.systemName ?? targetSystemID}.`
-        : "The route goes through a jump gate, which this page's autopilot does not fly yet.");
+      return planFailed(
+        `No gate route from ${graph.systemName(originSystem) ?? originSystem} to ${structure?.solarSystemName ?? destination.systemName ?? targetSystemID}.`,
+      );
     }
 
     const destinationStationID = structure?.id ?? (destination.kind === "station" ? destination.stationID : null);
