@@ -364,7 +364,23 @@
   </p>
 </section>
 
-{#if $travel.status === "idle" || $travel.status === "arrived" || $travel.status === "aborted" || $travel.status === "error"}
+<!-- The run's own controls while a route runs; the search, the route settings and the destination by number whatever
+     it does, as the client's route panel has its search box and settings (infoPanelRoute.py GetSettingsMenu, 90 to
+     123; AddSearchBox, 126 to 132). -->
+{#if $travel.status === "running" || $travel.status === "paused"}
+  <section>
+    <h2>Route to {destinationText}</h2>
+    <p class="controls">
+      {#if $travel.status === "running"}
+        <button type="button" disabled={busy} onclick={() => run(async () => flow.pauseRoute())}>Pause</button>
+      {:else if $travel.status === "paused"}
+        <button type="button" disabled={busy} onclick={() => run(async () => flow.resumeRoute())}>Resume</button>
+      {/if}
+      <button type="button" disabled={busy} onclick={() => run(async () => flow.abortRoute())}>Abort</button>
+    </p>
+  </section>
+{/if}
+
   <section>
     <h2>Set destination</h2>
     <p class="note">
@@ -510,19 +526,6 @@
       </button>
     </p>
   </section>
-{:else}
-  <section>
-    <h2>Route to {destinationText}</h2>
-    <p class="controls">
-      {#if $travel.status === "running"}
-        <button type="button" disabled={busy} onclick={() => run(async () => flow.pauseRoute())}>Pause</button>
-      {:else if $travel.status === "paused"}
-        <button type="button" disabled={busy} onclick={() => run(async () => flow.resumeRoute())}>Resume</button>
-      {/if}
-      <button type="button" disabled={busy} onclick={() => run(async () => flow.abortRoute())}>Abort</button>
-    </p>
-  </section>
-{/if}
 
 {#if $travel.status !== "idle"}
   <section>
