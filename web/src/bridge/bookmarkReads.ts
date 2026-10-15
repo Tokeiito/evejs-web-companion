@@ -51,7 +51,7 @@
 // THE ROUTE STILL STANDS (src/server.js). Nothing of the page's asks it now.
 
 import type { Ask } from "./ask.ts";
-import { decodeActiveBookmarks, type ActiveBookmarks } from "./bookmarks.ts";
+import { decodeAccessGroups, decodeActiveBookmarks, decodeFolderInfo, type AccessGroup, type ActiveBookmarks, type BookmarkFolder } from "./bookmarks.ts";
 
 /**
  * The folders the pilot knows, active or not, and the bookmarks and subfolders of the active ones, as the server
@@ -64,4 +64,26 @@ export async function readMyActiveBookmarks(ask: Ask): Promise<ActiveBookmarks> 
     throw new Error("Your bookmarks could not be read (the server did not answer with its three lists).");
   }
   return decodeActiveBookmarks(answered);
+}
+
+/**
+ * The folder `folderID` as the server has it now (bookmarkSvc.GetBookmarkFolder with refresh, 517 to 522:
+ * accessGroupBookmarkMgr.GetFolderInfo(folderID)), which Edit Folder asks before its window opens (bookmarksPanel.py
+ * EditACLFolder, 428 to 433). Fails as the call fails, and where the answer is no folder.
+ */
+export async function readFolderInfo(ask: Ask, folderID: number): Promise<BookmarkFolder> {
+  const folder = decodeFolderInfo(await ask("accessGroupBookmarkMgr", "GetFolderInfo", [folderID]));
+  if (folder === null) {
+    throw new Error("That folder could not be read.");
+  }
+  return folder;
+}
+
+/**
+ * The pilot's access lists (accessGroupsController.GetMyGroups, 102 to 109: ownerGroupManager.GetMyGroups(), by name
+ * and with nothing), which the folder window offers a shared folder's four access levels from
+ * (bookmarkContainerWindow.py GetAccessGroups, 134 to 136). Fails as the call fails.
+ */
+export async function readMyAccessGroups(ask: Ask): Promise<readonly AccessGroup[]> {
+  return decodeAccessGroups(await ask("ownerGroupManager", "GetMyGroups", []));
 }

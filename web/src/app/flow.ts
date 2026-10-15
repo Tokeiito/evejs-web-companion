@@ -411,8 +411,8 @@ import { scannerStateFromRead } from "../scanner/scannerCenter.ts";
 import { siteKind } from "../scanner/siteKind.ts";
 import { decodeFittings } from "../bridge/fittings.ts";
 import { decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge/sharedFittings.ts";
-import { readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
-import type { ActiveBookmarks } from "../bridge/bookmarks.ts";
+import { readFolderInfo, readMyAccessGroups, readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
+import type { AccessGroup, ActiveBookmarks, BookmarkFolder } from "../bridge/bookmarks.ts";
 import { agentsAtStation, readAgentsTable } from "../bridge/agentReads.ts";
 import { readCorporationMemberIDs } from "../bridge/corpMemberReads.ts";
 import {
@@ -434,7 +434,7 @@ import { readMyLaunches } from "../bridge/launchReads.ts";
 import { readCharacterFittings, readCorporationFittings } from "../bridge/fittingReads.ts";
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
-import { BOOKMARK_EXPIRY, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, createSubfolder as createSubfolderCall, deleteBookmarks as deleteBookmarksCall, deleteFolder as deleteFolderCall, deleteSubfolder as deleteSubfolderCall, setFolderActive as setFolderActiveCall, updateBookmark as updateBookmarkCall, updateSubfolder as updateSubfolderCall } from "../bridge/bookmarkWrites.ts";
+import { BOOKMARK_EXPIRY, addFolder as addFolderCall, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, createSubfolder as createSubfolderCall, updateFolder as updateFolderCall, type FolderAccess, deleteBookmarks as deleteBookmarksCall, deleteFolder as deleteFolderCall, deleteSubfolder as deleteSubfolderCall, setFolderActive as setFolderActiveCall, updateBookmark as updateBookmarkCall, updateSubfolder as updateSubfolderCall } from "../bridge/bookmarkWrites.ts";
 import { giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
 import { afterArriving, keepWaypoints, readWaypoints, withWaypoint, withoutWaypoint, type PilotPlace } from "../nav/waypoints.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
@@ -1804,6 +1804,16 @@ export interface AppFlow {
   deleteSubfolder(folderID: number, subfolderID: number): Promise<readonly number[]>;
   setFolderActive(folderID: number, isActive: boolean): Promise<void>;
   deleteFolder(folderID: number): Promise<void>;
+  /**
+   * The folder window (bookmarkContainerWindow.py; bookmarkSvc.py 425 to 450, 517 to 522): the folder as the server
+   * has it, asked before Edit Folder opens; the pilot's access lists, which a shared folder's levels are chosen from;
+   * a folder made (answers it, or null where the answer is none) or changed (answers the pilot's access to it after).
+   * Each fails as its call fails.
+   */
+  readFolderInfo(folderID: number): Promise<BookmarkFolder>;
+  readAccessGroups(): Promise<readonly AccessGroup[]>;
+  addFolder(isPersonal: boolean, name: string, description: string, access: FolderAccess): Promise<BookmarkFolder | null>;
+  updateFolder(folderID: number, isPersonal: boolean, name: string, description: string, access: FolderAccess): Promise<number | null>;
   /**
    * The bookmark window's Submit (bookmarkLocationWindow.py Confirm, 205 to 225; bookmarkSvc.ACLBookmarkLocation, 609
    * to 620): a region, a constellation, a system or a station by the bookmark manager, anything else in space by the
@@ -17442,6 +17452,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     deleteFolder(folderID) {
       return deleteFolderCall(bridgeDo, folderID);
+    },
+
+    readFolderInfo(folderID) {
+      return readFolderInfo(bridgeAsk, folderID);
+    },
+
+    readAccessGroups() {
+      return readMyAccessGroups(bridgeAsk);
+    },
+
+    addFolder(isPersonal, name, description, access) {
+      return addFolderCall(bridgeDo, isPersonal, name, description, access);
+    },
+
+    updateFolder(folderID, isPersonal, name, description, access) {
+      return updateFolderCall(bridgeDo, folderID, isPersonal, name, description, access);
     },
 
     bookmarkPlace(place) {

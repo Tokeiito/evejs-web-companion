@@ -30,12 +30,14 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
 
-  let { store, flow, place = null, editing = null, onDone }: {
+  let { store, flow, place = null, editing = null, onDone, onCreateFolder = null }: {
     store: ClientStore;
     flow: AppFlow;
     place?: BookmarkPlace | null;
     editing?: Bookmark | null;
     onDone: (made: boolean) => void;
+    /** The folder window for a new folder, which CreateBookmarkFolderAsNoneValid's Yes opens, where the caller has one. */
+    onCreateFolder?: (() => void) | null;
   } = $props();
 
   // svelte-ignore state_referenced_locally
@@ -293,12 +295,13 @@
     </p>
   </section>
 {:else if phase === "noFolder"}
-  <!-- Yes opens the client's folder window (BookmarkContainerWindow), which the page has not got yet: either answer closes. -->
+  <!-- Yes opens the client's folder window (BookmarkContainerWindow) for a new folder, where the caller has it; the
+       place is not saved either way. -->
   <section class="bookmark-window">
     <h3>{filled("dialog:CreateBookmarkFolderAsNoneValid/title", "No folder", {})}</h3>
     <p>{filled("dialog:CreateBookmarkFolderAsNoneValid/body", "There is no folder to save the place in. Make one?", {})}</p>
     <p class="controls">
-      <button type="button" class="primary" onclick={() => onDone(false)}>{word(WORDS.yes, "Yes")}</button>
+      <button type="button" class="primary" onclick={() => { onDone(false); onCreateFolder?.(); }}>{word(WORDS.yes, "Yes")}</button>
       <button type="button" class="minor" onclick={() => onDone(false)}>{word(WORDS.no, "No")}</button>
     </p>
   </section>
