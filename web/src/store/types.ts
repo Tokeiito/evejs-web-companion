@@ -881,6 +881,10 @@ export interface ActivityNotificationRow {
   readonly created: bigint | null;
   /** Player-facing notification category; never a raw typeID. */
   readonly title: string;
+  /** Its type, its receiver and its data, as the server sent them: what the client words its subject from. */
+  readonly typeID?: number;
+  readonly receiverID?: number;
+  readonly data?: import("../bridge/wire.ts").JsonValue | null;
 }
 
 /** One upcoming calendar event from the requested UTC month. */

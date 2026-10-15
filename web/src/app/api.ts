@@ -1608,6 +1608,12 @@ export async function loadClientMission(missionID: number, options: ApiOptions =
   return data.mission ?? null;
 }
 
+/** How the client words each kind of notification, as its own code answers (null where it cannot be read). */
+export async function loadNotificationFormats(options: ApiOptions = {}): Promise<unknown> {
+  const data = await getJson("/api/client-data/notification-formats", options);
+  return data.formats ?? null;
+}
+
 /**
  * Answer a question the SERVER asked (a `question` event on the live channel).
  * The BFF hands the answer to the game server, which has been waiting for it.

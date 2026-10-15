@@ -9,7 +9,11 @@
     liveActivityTitle,
   } from "../bridge/activity.ts";
   import { isSessionLost } from "../app/flow.ts";
-  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import { formatTemplate, plainText, templateNameRefs } from "../bridge/clientWords.ts";
+  import { CONTACT_NOTIFICATION_LABELS } from "../bridge/contactNotifications.ts";
+  import { notificationSubject, notificationSubjectLabel, type NotificationFormats } from "../bridge/notificationFormats.ts";
+  import type { Notification } from "../bridge/notifications.ts";
+  import type { ActivityNotificationRow } from "../store/types.ts";
   import {
     SKILL_HISTORY_OWN_ACTION_WORDS,
     SKILL_HISTORY_WORD_LABELS,
@@ -82,6 +86,39 @@
     return plainText(`${action} - ${skill}`);
   }
 
+  /**
+   * How the client words each kind of notification, as its own code answers (bridge/notificationFormats.ts); none
+   * until the BFF has answered, or where it cannot read them. A notification's subject is the client's where the
+   * page can be sure of it, and the page's own word for its kind where not.
+   */
+  let formats = $state<NotificationFormats | null>(null);
+  const asNotification = (row: ActivityNotificationRow): Notification => ({
+    notificationID: row.notificationID,
+    typeID: row.typeID ?? 0,
+    senderID: row.senderID,
+    receiverID: row.receiverID ?? 0,
+    processed: row.processed,
+    created: row.created,
+    data: row.data ?? null,
+  });
+  function subjectOf(row: ActivityNotificationRow): string | null {
+    return formats === null ? null : notificationSubject(asNotification(row), formats, $words.templates, (kind, id) => resolvedName($names.resolved, kind, id, ""));
+  }
+  // The words of the subjects shown, and the names they are filled with, asked for.
+  $effect(() => {
+    const known = formats;
+    if (known === null || $activity.notifications.status !== "ready") return;
+    const labels = new Set<string>(Object.values(CONTACT_NOTIFICATION_LABELS));
+    for (const row of $activity.notifications.value) {
+      const found = notificationSubjectLabel(asNotification(row), known, $words.templates);
+      if (found === null) continue;
+      labels.add(found.label);
+      const template = $words.templates[found.label];
+      if (typeof template === "string") flow.requestNames(templateNameRefs(template, found.args));
+    }
+    flow.requestWords([...labels]);
+  });
+
   // The recent notifications as the client's center lists them: the skill history's and the server's together,
   // the newest first (notificationUI.py 326 to 336), as many as the panel shows.
   const listed = $derived.by((): readonly ListedNotification[] => {
@@ -90,7 +127,7 @@
       for (const notification of $activity.notifications.value) {
         all.push({
           key: `n${notification.notificationID}`,
-          title: notification.title,
+          title: subjectOf(notification) ?? notification.title,
           // A sender of nought is none (the client's None: its new-mail notification of a list's own mail has none).
           senderID: notification.senderID > 0 ? notification.senderID : null,
           processed: notification.processed,
@@ -154,6 +191,9 @@
 
   onMount(() => {
     flow.requestWords([...SKILL_HISTORY_WORD_LABELS, SKILL_NAME_AND_LEVEL_LABEL]);
+    void flow.notificationFormats().then((read) => {
+      formats = read;
+    });
     void refresh();
   });
 </script>

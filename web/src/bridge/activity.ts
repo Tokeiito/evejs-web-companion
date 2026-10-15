@@ -140,6 +140,9 @@ export function decodeActivityNotifications(envelope: unknown): ActivityNotifica
         processed: item.processed,
         created: item.created,
         title: notificationTitle(item.typeID),
+        typeID: item.typeID,
+        receiverID: item.receiverID,
+        data: item.data,
       }))
       .sort((left, right) => {
         if (left.created === right.created) {

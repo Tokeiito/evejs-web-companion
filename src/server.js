@@ -13,6 +13,7 @@ const staticDataModule = require("./staticData");
 const { createClientWords } = require("./clientData/clientWords");
 const { createClientBuiltData } = require("./clientData/clientBuiltData");
 const { createClientConstants } = require("./clientData/clientConstants");
+const { createClientNotificationFormats } = require("./clientData/clientNotificationFormats");
 const { STATION_CAPACITY, capacityAnswer, shipHasHold, usedVolume } = require("./clientData/holdCapacity");
 const { readMinerPilot } = require("./pilotTrainingRead");
 const { createTrainingQueueService } = require("./pilotTrainingQueue");
@@ -225,6 +226,13 @@ const clientConstants = options.clientConstants || createClientConstants({
   clientRoot: config.clientRoot,
   python: config.clientPython,
   onError: (error) => console.warn(`[client-data] the client's constants could not be read: ${error && error.message}`),
+});
+// How the retail client words each kind of notification, read by running its
+// code from the same install (src/clientData/clientNotificationFormats.js).
+const clientNotificationFormats = options.clientNotificationFormats || createClientNotificationFormats({
+  clientRoot: config.clientRoot,
+  python: config.clientPython,
+  onError: (error) => console.warn(`[client-data] the client's notification formats could not be read: ${error && error.message}`),
 });
 // The game-port client the customs-export hop speaks. Injected so the route
 // is exercised in tests without a socket, exactly as the gateway client is.
@@ -12855,6 +12863,18 @@ app.get("/api/client-data/missions/:missionID", requireAuth, async (req, res, ne
   try {
     const found = await clientBuiltData.lookup("missions", missionID);
     res.json({ ok: true, available: found.available, mission: found.row });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// How the retail client words each kind of notification (notificationSvc.py FormatNotifications): for each type
+// the labels of notificationUtil's table, or the formatter it has and the labels that formatter is made with, as
+// the client's own code answers (src/clientData/clientNotificationFormats.js). `formats` is null where they could
+// not be read (no client install, or no Python to host the client's code).
+app.get("/api/client-data/notification-formats", requireAuth, async (req, res, next) => {
+  try {
+    res.json({ ok: true, formats: await clientNotificationFormats.formats() });
   } catch (error) {
     next(error);
   }

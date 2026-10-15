@@ -208,6 +208,7 @@ import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { isListValue, readDictEntry, readDictPairs, type JsonValue } from "../bridge/wire.ts";
 import { decodeNotifications, type Notification } from "../bridge/notifications.ts";
 import { isCommunicationType } from "../bridge/contactNotifications.ts";
+import { decodeNotificationFormats, type NotificationFormats } from "../bridge/notificationFormats.ts";
 /** notificationconst.groupContacts: the contacts' notifications' group. */
 const CONTACTS_NOTIFICATION_GROUP = 9;
 import { itemChangeTouchesDroneBay } from "../bridge/droneBayNotices.ts";
@@ -1139,6 +1140,8 @@ export interface AppFlow {
   contactNotifications(): Promise<readonly Notification[]>;
   /** Notifications deleted (notificationMgr.DeleteNotifications); fails with the server's words. */
   deleteNotifications(notificationIDs: readonly number[]): Promise<void>;
+  /** How the client words each kind of notification, as its own code answers; null where it cannot be read. Asked once. */
+  notificationFormats(): Promise<NotificationFormats | null>;
   /** The People & Places window's tab last chosen on this machine; none where none was. */
   addressBookTab(): string | null;
   /** The People & Places window's tab chosen kept, on this machine. */
@@ -6654,6 +6657,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       clientMissions.set(contentID, asked);
     }
     return asked;
+  }
+
+  // How the client words each kind of notification, asked of the BFF once (its own code's tables:
+  // bridge/notificationFormats.ts).
+  let notificationFormatsAsked: Promise<NotificationFormats | null> | null = null;
+  function notificationFormats(): Promise<NotificationFormats | null> {
+    notificationFormatsAsked ??= api.loadNotificationFormats(callOptions).then(decodeNotificationFormats, () => {
+      // Not remembered: a later ask tries again.
+      notificationFormatsAsked = null;
+      return null;
+    });
+    return notificationFormatsAsked;
   }
 
   /** The page on show, when it is this agent's. */
@@ -16622,6 +16637,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     addAgentToAddressBook,
     contactNotifications,
     deleteNotifications,
+    notificationFormats,
     addressBookTab,
     keepAddressBookTab,
     sendMail,
