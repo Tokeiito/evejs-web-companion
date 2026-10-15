@@ -1745,11 +1745,6 @@ export interface AppFlow {
   /** Whether the client's autopilot is on (autoPilotSvc's GetState): the route flown to the first waypoint. */
   readonly autopilotOn: ReadableSignal<boolean>;
   /**
-   * The notify message the client's autopilot or star map last gave (AutoPilotEnabled, AutoPilotDisabled,
-   * AutoPilotWaypointReached, AutoPilotDisabledNoPathSet, or a waypoint refused), `n` telling one from the next.
-   */
-  readonly autopilotSaid: ReadableSignal<{ readonly dialog: string; readonly n: number } | null>;
-  /**
    * The dialogs the server's refusals named, oldest first, to be put up as the client puts up a UserError
    * (eve_exception_handler.handle_exception: prompt_player_fsd_dialog(exc.msg, exc.dict)); ClientDialogs.svelte
    * shows them.
@@ -9936,13 +9931,30 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // A waypoint changed while it flies leaves the run going to the waypoint it set out for.
   const waypointsSignal = createSignal<readonly number[]>([]);
   const autopilotSignal = createSignal(false);
-  const autopilotSaidSignal = createSignal<{ readonly dialog: string; readonly n: number } | null>(null);
   let waypointsOwner: number | null = null;
-  let autopilotSaidCount = 0;
 
+  /** The page's own words for the autopilot's and the star map's messages, where the install's are not to hand. */
+  const AUTOPILOT_OWN: Readonly<Record<string, string>> = {
+    AutoPilotEnabled: "Autopilot on",
+    AutoPilotDisabled: "Autopilot off",
+    AutoPilotWaypointReached: "Autopilot off at a waypoint",
+    AutoPilotDisabledNoPathSet: "Autopilot off: nowhere to go",
+    WaypointAlreadySet: "That place is on the route already",
+    WaypointAlreadyInConstellation: "You are in that constellation",
+    WaypointAlreadyInRegion: "You are in that region",
+    CantSetWaypoint: "That place cannot be on the route",
+  };
+
+  /**
+   * autopilot.py SetOn and SetOff (84 to 143) and starMapSvc.SetWaypoint (2327 to 2344): prompt_player_fsd_dialog of
+   * each message; a place that is no destination is its Command, worded by UI/Map/StarMap/CantSetWaypoint (2330).
+   */
   function sayAutopilot(dialog: string): void {
-    autopilotSaidCount += 1;
-    autopilotSaidSignal.set({ dialog, n: autopilotSaidCount });
+    if (dialog === "CantSetWaypoint") {
+      sayDialog("Command", { type: "dict", entries: [["command", [UE_LOC, "UI/Map/StarMap/CantSetWaypoint"]]] }, AUTOPILOT_OWN.CantSetWaypoint ?? dialog);
+      return;
+    }
+    sayDialog(dialog, null, AUTOPILOT_OWN[dialog] ?? dialog);
   }
 
   /** The waypoints of the pilot at the helm: what is kept for it, read again where the pilot is another. */
@@ -16879,7 +16891,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     droneRecovery: readonlySignal(recoverySignal),
     waypoints: waypointsView,
     autopilotOn: readonlySignal(autopilotSignal),
-    autopilotSaid: readonlySignal(autopilotSaidSignal),
     dialogsSaid: readonlySignal(dialogsSaidSignal),
     dismissDialog,
     quantityAsked: readonlySignal(quantityAskedSignal),

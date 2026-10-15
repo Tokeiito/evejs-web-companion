@@ -102,10 +102,12 @@ const PANELS = [
  * back as a no-op async function.
  */
 function fakeFlow(): unknown {
-  // Its one store, the drone-recovery gate, reads ready: the flow default
-  // unless the pilot opts in to browser recovery.
+  // Its stores: the drone-recovery gate, which reads ready (the flow default
+  // unless the pilot opts in to browser recovery), and the pilot's waypoints,
+  // none on a cold start (nav/waypoints.ts).
   const droneRecovery = { subscribe: (run: (value: unknown) => void) => (run({ phase: "ready", reason: null }), () => {}) };
-  return new Proxy({}, { get: (_target, key) => key === "droneRecovery" ? droneRecovery : async () => {} });
+  const waypoints = { subscribe: (run: (value: unknown) => void) => (run([]), () => {}) };
+  return new Proxy({}, { get: (_target, key) => key === "droneRecovery" ? droneRecovery : key === "waypoints" ? waypoints : async () => {} });
 }
 
 async function loadPanel(name: string): Promise<unknown> {
