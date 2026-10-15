@@ -206,7 +206,7 @@ import { BridgeCallError } from "../bridge/callMethod.ts";
 import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey } from "../bridge/questions.ts";
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
-import { isListValue, readDictEntry, readDictPairs, type JsonValue } from "../bridge/wire.ts";
+import { isListValue, readDictEntry, readDictPairs, readKeyVal, type JsonValue } from "../bridge/wire.ts";
 import { decodeNotifications, notificationRows, type Notification } from "../bridge/notifications.ts";
 import { isCommunicationType } from "../bridge/contactNotifications.ts";
 import { decodeNotificationFormats, type NotificationFormats } from "../bridge/notificationFormats.ts";
@@ -488,6 +488,23 @@ import { expandSubBots, hasSubBots, type BotResolution, type SubBotReference } f
 import { autoRejectInvitations } from "./autoRejectInvitations.ts";
 import { disableAutopilotAtEachWaypoint } from "./autopilotStopAtEachWaypoint.ts";
 import { routeData, routeJumps, routeMarkers, type RouteMarker } from "../nav/routeMarkers.ts";
+
+/** A place the route panel's search found: the kind the search names it by, its number, its name and its system. */
+export interface LocationFound {
+  readonly resultType: number;
+  readonly id: number;
+  readonly name: string;
+  readonly solarSystemID: number | null;
+}
+/**
+ * The kinds of place the route panel's search asks for, in its order (infoPanelRoute.py 136 to 141;
+ * eve/common/script/search/const.py ResultType): solar system, constellation, region, station, and structure with
+ * its data inlined.
+ */
+const ROUTE_SEARCH_KINDS = [7, 6, 8, 9, 13] as const;
+const STRUCTURE_WITH_INLINED_DATA = 13;
+/** The name kind each of those is named by in the page's name cache. */
+const LOCATION_NAME_KINDS: Readonly<Record<number, "system" | "constellation" | "region" | "station">> = { 7: "system", 6: "constellation", 8: "region", 9: "station" };
 
 /** The route as the route panel shows it: its markers, each with its system's security, and its jumps. */
 export interface WaypointsRoute {
@@ -1785,6 +1802,11 @@ export interface AppFlow {
     query: string,
     kind?: "system" | "station" | "dockable" | null,
   ): Promise<DestinationMatch[]>;
+  /**
+   * The route panel's search, as the client's (infoPanelRoute.py SearchForLocation): the places found by the kind
+   * the search names them by, each kind sorted by name; null where the text was refused before asking (said).
+   */
+  searchLocations(text: string): Promise<ReadonlyMap<number, readonly LocationFound[]> | null>;
   // --- R26: the mining bot -----------------------------------------------
   //
   // A SECOND browser decide-loop, built from the same parts as the autopilot
@@ -16738,6 +16760,68 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }));
   }
 
+  /**
+   * The route panel's search (infoPanelRoute.py SearchForLocation, 134 to 144, by way of searchUtil.GetResultsByGroupID,
+   * 274 to 282): the search service's Query with the text (its asterisks taken out and trimmed, _FormatSearchInput 304
+   * to 307), the five kinds of place in the client's order (solar systems, constellations, regions, stations, and
+   * structures with their data), and partial terms as `exact`. Refused before asking as _ValidateSearchInput refuses
+   * (310 to 319), said as the client says it; then null. The places found by kind, each kind sorted by name.
+   */
+  async function searchLocations(text: string): Promise<ReadonlyMap<number, readonly LocationFound[]> | null> {
+    const searchStr = text.replace(/\*/g, "").trim();
+    if (searchStr.length < 1) {
+      sayDialog("LookupStringMinimum", { type: "dict", entries: [["minimum", 1]] }, "Type something to search for.");
+      return null;
+    }
+    if (searchStr.length >= 100) {
+      sayDialog("CustomInfo", { type: "dict", entries: [["info", [UE_LOC, "UI/Common/SearchStringTooLong"]]] }, "That is too long to search for.");
+      return null;
+    }
+    if (!searchStr.split(/\s+/).some((term) => term.length >= 3)) {
+      sayDialog("PartialSearchLessThanMinLength", { type: "dict", entries: [["minChars", 3]] }, "A word of three letters or more is needed.");
+      return null;
+    }
+    const answer = await bridgeAsk("search", "Query", [searchStr, [...ROUTE_SEARCH_KINDS]], { exact: 0 });
+    const found = new Map<number, LocationFound[]>();
+    const refs: NameRef[] = [];
+    for (const [key, value] of readDictPairs(answer)) {
+      const resultType = Number(key);
+      if (!Number.isSafeInteger(resultType)) continue;
+      const items = isListValue(value) ? value.items : Array.isArray(value) ? value : [];
+      const places: LocationFound[] = [];
+      for (const item of items) {
+        if (resultType === STRUCTURE_WITH_INLINED_DATA) {
+          // (searchUtil.py 219 to 225: each a structure's structureID, typeID and itemName.)
+          const id = Number(readKeyVal(item, "structureID"));
+          const name = readKeyVal(item, "itemName");
+          const systemID = Number(readKeyVal(item, "solarSystemID"));
+          if (Number.isSafeInteger(id) && id > 0) {
+            places.push({ resultType, id, name: typeof name === "string" ? name : String(id), solarSystemID: Number.isSafeInteger(systemID) && systemID > 0 ? systemID : null });
+          }
+          continue;
+        }
+        const id = Number(item);
+        if (!Number.isSafeInteger(id) || id <= 0) continue;
+        places.push({ resultType, id, name: "", solarSystemID: resultType === 7 ? id : null });
+        refs.push({ kind: LOCATION_NAME_KINDS[resultType] ?? "system", id });
+      }
+      found.set(resultType, places);
+    }
+    // (A station's system, which its entry is rated and counted by: cfg.stations' solarSystemID, the page's resolver.)
+    const stations = found.get(9) ?? [];
+    const stationSystems = await Promise.all(stations.map((place) => waypointSystemOf(place.id)));
+    found.set(9, stations.map((place, i) => ({ ...place, solarSystemID: stationSystems[i] ?? null })));
+    await resolveNamesNow(refs);
+    const resolved = store.names.get().resolved;
+    return new Map([...found].map(([resultType, places]) => [resultType, places
+      .map((place) => {
+        if (place.name !== "") return place;
+        const name = resolved[nameKey(LOCATION_NAME_KINDS[resultType] ?? "system", place.id)];
+        return { ...place, name: typeof name === "string" && name !== "" ? name : String(place.id) };
+      })
+      .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))]));
+  }
+
   // --- R7c Names everywhere (batch name cache) -----------------------------
 
   // The generalized R7a location-name cache: every tab asks for names by
@@ -18071,6 +18155,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     startRoute,
 
     searchDestinations,
+    searchLocations,
 
     startFleetCompanion,
     pauseFleetCompanion,

@@ -730,7 +730,7 @@ test("R30 slice F: destination results are COMPONENT-LOCAL, never a store slice"
   // what the SHIP reports. The claim followed the search into Travel, which is
   // the one panel making it now — the cockpit's second copy went with the file.
   const travel = readFileSync(path.join(UI_DIR, "Travel.svelte"), "utf8");
-  assert.match(travel, /flow\.searchDestinations\(/);
+  assert.match(travel, /flow\.searchLocations\(/);
   assert.equal(
     /store\.apply\(\s*\{\s*type:\s*"travel\//.test(travel),
     false,

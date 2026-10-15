@@ -15,13 +15,12 @@
   import { isSessionLost } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
-  import type { DestinationMatch } from "../store/types.ts";
   import { resolvedName, type NameRef } from "../store/names.ts";
   import { deriveDocked } from "./tabs.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { securityStatusColor, shownSecurity } from "../bridge/systemSecurity.ts";
-  import type { WaypointsRoute } from "../app/flow.ts";
+  import type { LocationFound, WaypointsRoute } from "../app/flow.ts";
   import { waypointNameKind } from "../nav/waypoints.ts";
   import { clickDisableAutopilotAtEachWaypoint, disableAutopilotAtEachWaypoint } from "../app/autopilotStopAtEachWaypoint.ts";
   import {
@@ -48,7 +47,28 @@
     disableAtEachWaypoint: "UI/Map/MapPallet/cbDisableAtEachWaypoint",
     jumps: "UI/Market/MarketQuote/NumberOfJumps",
     markerJumps: "UI/Common/numberOfJumps",
+    addWaypoint: "UI/Inflight/AddWaypoint",
   } as const;
+  /** The route panel's search's words (infoPanelRoute.py 128 to 129; searchUtil.py 43 to 54, 68 to 79). */
+  const SEARCH_WORDS = {
+    hint: "UI/Map/MapPallet/lblSearchForLocation",
+    button: "UI/Map/MapPallet/btnSearchForLocation",
+    header: "UI/Common/SearchResults",
+    numResults: "UI/Search/UniversalSearch/WindowHeaderNumResults",
+    overMax: "UI/Search/UniversalSearch/WindowHeaderOverMax",
+    noResults: "UI/Search/UniversalSearch/NoResultsReturned",
+    entryJumps: "UI/Fleet/FleetRegistry/NumberOfJumps",
+  } as const;
+  /** The kinds in the order the client lists them (searchUtil.py RESULT_ORDER, 30 to 42), with its label for each. */
+  const RESULT_ORDER: readonly { readonly resultType: number; readonly label: string; readonly own: string }[] = [
+    { resultType: 8, label: "UI/Search/UniversalSearch/Regions", own: "Regions" },
+    { resultType: 7, label: "UI/Search/UniversalSearch/SolarSystems", own: "Solar systems" },
+    { resultType: 9, label: "UI/Common/LocationTypes/Stations", own: "Stations" },
+    { resultType: 13, label: "UI/Common/LocationTypes/Structures", own: "Structures" },
+    { resultType: 6, label: "UI/Search/UniversalSearch/Constellations", own: "Constellations" },
+  ];
+  /** search_const.max_result_count: at that many, the client says there are more. */
+  const MAX_RESULT_COUNT = 500;
 
   // svelte-ignore state_referenced_locally
   const travel = store.travel;
@@ -88,7 +108,7 @@
     if (refs.length > 0) flow.requestNames(refs);
   });
   /** A label of the client's filled with a count, as plain text; the page's own words where it is not to hand. */
-  function countWord(label: string, args: Record<string, number>, own: string): string {
+  function countWord(label: string, args: Record<string, string | number>, own: string): string {
     const template = $words.templates[label];
     return typeof template === "string" ? plainText(formatTemplate(template, args, { nameOf: () => "" })) : own;
   }
@@ -123,7 +143,7 @@
     penaltyShown = penaltyOf(kept);
   });
   $effect(() => {
-    flow.requestWords([...ROUTE_SETTING_WORD_LABELS, ...Object.values(ROUTE_WORDS)]);
+    flow.requestWords([...ROUTE_SETTING_WORD_LABELS, ...Object.values(ROUTE_WORDS), ...Object.values(SEARCH_WORDS), ...RESULT_ORDER.map((kind) => kind.label)]);
   });
   /** A route word from the install, the page's own where there is none to read. */
   const routeWord = (label: string, own: string): string => settingText(label) ?? own;
@@ -146,9 +166,18 @@
   // chosen result is set as the destination, as the client's Set Destination
   // sets it (nav/waypoints.ts); the autopilot flies it once it is switched on.
   let searchQuery = $state("");
-  let searchResults = $state<DestinationMatch[]>([]);
-  let searched = $state(false);
-  let searchTotal = $state(0);
+  let searchFound = $state.raw<ReadonlyMap<number, readonly LocationFound[]> | null>(null);
+  let searchedFor = $state("");
+  const searchTotal = $derived(searchFound === null ? 0 : [...searchFound.values()].reduce((sum, places) => sum + places.length, 0));
+  /** Where the pilot is: the system the entries' jumps are counted from (session.solarsystemid2). */
+  const searchFrom = $derived($flight.status?.solarSystemID ?? $station.online?.solarSystemID ?? null);
+  // A system's and a station's entry gives its rating and its jumps from here (SolarSystem._GetText, 35 to 45).
+  $effect(() => {
+    const systems = [...new Set([...(searchFound?.values() ?? [])].flat().map((place) => place.solarSystemID).filter((id): id is number => id !== null))];
+    if (systems.length === 0) return;
+    flow.requestSystemSecurity(systems);
+    if (searchFrom !== null) flow.requestAutopilotJumps(searchFrom, systems);
+  });
 
   let destinationInput = $state("");
   let busy = $state(false);
@@ -169,11 +198,6 @@
     }
     if (t.destinationStationID) {
       refs.push({ kind: "station", id: t.destinationStationID });
-    }
-    for (const match of searchResults) {
-      if (match.solarSystemName === null && match.solarSystemID) {
-        refs.push({ kind: "system", id: match.solarSystemID });
-      }
     }
     if (refs.length > 0) {
       flow.requestNames(refs);
@@ -226,38 +250,40 @@
     return Number.isSafeInteger(id) && id > 0 ? id : 0;
   }
 
-  function jumpsText(jumps: number | null): string {
-    if (jumps === null) {
-      return "—";
-    }
-    if (jumps === 0) {
-      return "here";
-    }
-    return jumps === 1 ? "1 jump" : `${jumps} jumps`;
-  }
-
   // Search the static map by name; results go into local state (a transient
   // search, not a store slice). A too-short query clears the list.
   async function search(): Promise<void> {
-    const query = searchQuery.trim();
-    if (query.length < 2) {
-      searchResults = [];
-      searched = false;
-      return;
-    }
+    const query = searchQuery;
     await run(async () => {
-      searchResults = await flow.searchDestinations(query);
-      searchTotal = searchResults.length;
-      searched = true;
+      const found = await flow.searchLocations(query);
+      if (found !== null) {
+        searchFound = found;
+        searchedFor = query.replace(/\*/g, "").trim();
+      }
     });
   }
 
-  // Set Destination (starMapSvc.SetWaypoint(id, True)): the match the only waypoint. Nothing flies until the
-  // autopilot is switched on.
-  function setDestination(match: DestinationMatch): void {
-    error = "";
-    flow.setDestination(match.id);
+  /** A system's or a station's entry (SolarSystem._GetText, 35 to 45): its system's rating, and its jumps from here. */
+  function entryRating(place: LocationFound): { readonly text: string; readonly color: string } | null {
+    if (place.solarSystemID === null) return null;
+    const security = $names.systemSecurity[place.solarSystemID];
+    return typeof security === "number" ? { text: shownSecurity(security).toFixed(1), color: securityStatusColor(security) } : null;
   }
+  function entryJumps(place: LocationFound): string {
+    if (place.solarSystemID === null || searchFrom === null) return "—";
+    const jumps = $names.autopilotJumps[`${searchFrom}:${place.solarSystemID}`];
+    return typeof jumps === "number" ? countWord(SEARCH_WORDS.entryJumps, { numJumps: jumps }, `${jumps} jumps`) : "—";
+  }
+  /**
+   * CelestialChecker's route entries for a place found (celestialCheckers.py OfferSetDestination, 1354 to 1362;
+   * OfferAddWaypoint, 440 to 445): a system, a station or a structure can be a waypoint; Set Destination unless it is
+   * the system the pilot is in or the route's last waypoint already.
+   */
+  function destinationOffered(place: LocationFound): boolean {
+    if (place.resultType === 7 && place.id === searchFrom) return false;
+    return $waypoints.at(-1) !== place.id;
+  }
+  const canBeWaypoint = (place: LocationFound): boolean => place.resultType === 7 || place.resultType === 9 || place.resultType === 13;
 
   async function run(action: () => Promise<void>): Promise<void> {
     if (busy) {
@@ -384,7 +410,8 @@
   <section>
     <h2>Set destination</h2>
     <p class="note">
-      Search any solar system or station by name and make it the destination;
+      Search for a solar system, constellation, region, station or structure by
+      name, as the client's route panel searches, and put a place on the route;
       the autopilot flies there once it is on. The route is planned from where
       you are when it starts.
     </p>
@@ -394,7 +421,7 @@
         <input
           type="search"
           bind:value={searchQuery}
-          placeholder="e.g. Jita"
+          placeholder={routeWord(SEARCH_WORDS.hint, "e.g. Jita")}
           onkeydown={(event) => {
             if (event.key === "Enter") {
               void search();
@@ -402,43 +429,49 @@
           }}
         />
       </label>
-      <button type="button" disabled={busy || searchQuery.trim().length < 2} onclick={() => void search()}>
-        Search
+      <button type="button" disabled={busy || searchQuery.trim().length < 1} onclick={() => void search()}>
+        {routeWord(SEARCH_WORDS.button, "Search")}
       </button>
     </p>
-    {#if searched}
-      {#if searchResults.length === 0}
-        <p class="empty">No systems or stations match “{searchQuery.trim()}”.</p>
+    {#if searchFound !== null}
+      <!-- The results as the client's search window lists them (searchUtil.GetResultsInNewWindow, 65 to 84): by kind,
+           in its order, under its labels. -->
+      <h3>{routeWord(SEARCH_WORDS.header, "Search results")}</h3>
+      {#if searchTotal === 0}
+        <p class="empty">{countWord(SEARCH_WORDS.noResults, { searchStr: searchedFor }, `Nothing was found for “${searchedFor}”.`)}</p>
       {:else}
-        <p class="note">Showing {searchResults.length} match{searchTotal === 1 ? "" : "es"}, nearest first where known.</p>
-        <div class="table-wrap overflow-x-auto">
-          <table class="guests reflow">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Kind</th>
-                <th>System</th>
-                <th class="num">Jumps</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each searchResults as match (match.kind + ":" + match.id)}
-                <tr>
-                  <td data-label="Name">{match.name}</td>
-                  <td data-label="Kind">{match.kind}</td>
-                  <td data-label="System">{match.solarSystemName ?? resolvedName($names.resolved, "system", match.solarSystemID, "—")}</td>
-                  <td class="num" data-label="Jumps">{jumpsText(match.jumps)}</td>
-                  <td data-label="">
-                    <button type="button" disabled={busy} onclick={() => setDestination(match)}>
-                      {routeWord(ROUTE_WORDS.setDestination, "Head there")}
-                    </button>
-                  </td>
-                </tr>
+        <p class="note">{searchTotal >= MAX_RESULT_COUNT
+          ? countWord(SEARCH_WORDS.overMax, { maxNumber: MAX_RESULT_COUNT, searchStr: searchedFor }, `More than ${MAX_RESULT_COUNT} found for “${searchedFor}”.`)
+          : countWord(SEARCH_WORDS.numResults, { numResults: searchTotal, searchStr: searchedFor }, `${searchTotal} found for “${searchedFor}”.`)}</p>
+        {#each RESULT_ORDER as kind (kind.resultType)}
+          {@const places = searchFound.get(kind.resultType) ?? []}
+          {#if places.length > 0}
+            <h4>{routeWord(kind.label, kind.own)}</h4>
+            <ul class="search-found">
+              {#each places as place (place.id)}
+                {@const rating = kind.resultType === 7 || kind.resultType === 9 ? entryRating(place) : null}
+                <li>
+                  {#if kind.resultType === 7 || kind.resultType === 9}
+                    {#if rating !== null}<span style:color={rating.color}>{rating.text}</span>{/if}
+                    {place.name} ({entryJumps(place)})
+                  {:else}
+                    {place.name}
+                  {/if}
+                  {#if canBeWaypoint(place)}
+                    {#if destinationOffered(place)}
+                      <button type="button" class="minor" onclick={() => { error = ""; flow.setDestination(place.id); }}>{routeWord(ROUTE_WORDS.setDestination, "Head there")}</button>
+                    {/if}
+                    {#if $waypoints.includes(place.id)}
+                      <button type="button" class="minor" onclick={() => flow.clearWaypoints(place.id)}>{routeWord(ROUTE_WORDS.removeWaypoint, "Take off the route")}</button>
+                    {:else}
+                      <button type="button" class="minor" onclick={() => flow.addWaypoint(place.id)}>{routeWord(ROUTE_WORDS.addWaypoint, "Put on the route")}</button>
+                    {/if}
+                  {/if}
+                </li>
               {/each}
-            </tbody>
-          </table>
-        </div>
+            </ul>
+          {/if}
+        {/each}
       {/if}
     {/if}
     {#if $travel.failureReason}
