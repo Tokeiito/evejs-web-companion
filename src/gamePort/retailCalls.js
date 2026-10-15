@@ -928,6 +928,20 @@ const applyingToOneFleet = (args, kwargs, context) => {
 /** The broadcasts fleetSvc sends to its bubble, by name (1039 to 1055), and the scopes a client can be set to (evefleet/const.py 33 to 35). */
 const BUBBLE_BROADCASTS = Object.freeze(new Set(["HealArmor", "HealShield", "HealCapacitor", "Target", "HealTarget"]));
 const BROADCAST_SCOPES = Object.freeze(new Set([1, 2, 3]));
+/** The broadcasts fleetSvc sends to the whole fleet, by name (SendGlobalBroadcast's callers, 1010 to 1035 and 1128). */
+const GLOBAL_BROADCASTS = Object.freeze(new Set(["EnemySpotted", "NeedBackup", "HoldPosition", "TravelTo", "InPosition", "JumpBeacon", "Location"]));
+/**
+ * fleetSvc.SendGlobalBroadcast (983 to 990): self.fleet.SendBroadcast(name, self.broadcastScope, itemID, typeID), on
+ * the fleet's object: one of those names, the scope, the item (a solar system for TravelTo), and a type where InPosition
+ * and JumpBeacon give one, None else; and only from a session in a fleet (CheckIsInFleet, 984). No recording has one.
+ */
+const aGlobalBroadcast = (args, kwargs, context) => {
+  if (!(args.length === 4 && GLOBAL_BROADCASTS.has(args[0]) && BROADCAST_SCOPES.has(args[1]) && Number.isSafeInteger(args[2]) && args[2] > 0
+    && (args[3] === null || (Number.isSafeInteger(args[3]) && args[3] > 0)) && Object.keys(kwargs).length === 0)) {
+    return { status: "differs", note: "The client sends one of its seven names for the fleet, its scope, the item and a type or None, and nothing else: SendBroadcast(name, scope, itemID, typeID)." };
+  }
+  return context.fleetID === null ? { status: "differs", note: "The client broadcasts only from a session in a fleet: in none it sends nothing." } : {};
+};
 /**
  * fleetSvc.SendBubbleBroadcast (992 to 998): one of those names, the scope, the item, and None for the type, which
  * no caller of it gives; and only from a session in a fleet (CheckIsInFleet, 993).
@@ -2121,6 +2135,7 @@ const RETAIL_CALLS = Object.freeze({
   "fleetObjectHandler.MakeLeader": same(`${FLEET_SVC}:604`, "self.fleet.MakeLeader(charID), once the user has agreed"),
   "fleetObjectHandler.SetMotdEx": same(`${FLEET_SVC}:1961`, "self.fleet.SetMotdEx(motd)"),
   "fleetObjectHandler.KickMember": judged(`${FLEET_SVC}:611`, kickingAnother, "self.fleet.KickMember(charID), for any member but the pilot's own"),
+  "fleetObjectHandler.SendBroadcast": judged(`${FLEET_SVC}:989`, aGlobalBroadcast, "self.fleet.SendBroadcast(name, self.broadcastScope, itemID, typeID), on the fleet's object, after the client's own checks and wait"),
   "fleetObjectHandler.DisbandFleet": judged(`${FLEET_SVC}:617`, disbandingAsBoss, "self.fleet.DisbandFleet(), no arguments, for the fleet's boss"),
   "fleetObjectHandler.SetOptions": reshaped(`${FLEET_SVC}:449`, fleetOptionsCopy, "self.fleet.SetOptions(options): a copy of the options the client keeps, free move changed"),
   "fleetObjectHandler.Reconnect": same(`${FLEET_SVC}:1714`, "GetFleet(fleetID).Reconnect(), no arguments, on a Moniker for the fleet the connection was lost in"),

@@ -1010,6 +1010,14 @@ export interface AppFlow {
   /** Warp the pilot's fleet, wing or squad to a member at a range, as the fleet's menu for a member does for a commander. */
   warpFleetToMember(characterID: number, range: number): Promise<void>;
   /**
+   * Broadcast Travel To Me, from the fleet's menu for the pilot's own: a TravelTo broadcast of the pilot's own solar
+   * system to the whole fleet, after the client's checks. What came of it: sent, not sent (the client's wait between
+   * broadcasts not over, or the server sending nothing), or refused before anything was asked (not in a fleet; docked
+   * at a station; docked in a structure: the client's FleetNotInFleetInSpace, FleetCannotDoInStation and
+   * FleetCannotDoInStructure).
+   */
+  broadcastTravelToMe(): Promise<"sent" | "unsent" | "not-in-fleet" | "in-station" | "in-structure">;
+  /**
    * The fleet finder, for a pilot that has been told which fleet to join: the
    * adverts open to this session, and the name of the fleet it is already in.
    *
@@ -5116,6 +5124,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // formation (michelle.SetFleetFormationSettings), from the fleet's menu for a member: Warp Fleet, Wing or Squad to Member.
   async function warpFleetToMember(characterID: number, range: number): Promise<void> {
     await runFlightStep("Warp", () => orderedStep((flightNow) => warpFleetToMemberCall(bridgeDo, flightNow, characterID, range)));
+  }
+
+  // fleetSvc.SendBroadcast_TravelTo (1034): SendGlobalBroadcast('TravelTo', session.solarsystemid2), from the fleet's
+  // menu for the pilot's own (menusvc.FleetMenu, Broadcast Travel To Me). CheckIsInFleet(inSpace=True) first (848 to
+  // 858: no fleet's object, then no solar system, then docked in a structure), then the wait (fleetWrites.ts).
+  async function broadcastTravelToMe(): Promise<"sent" | "unsent" | "not-in-fleet" | "in-station" | "in-structure"> {
+    if (store.fleet.get().availability !== "ready") {
+      return "not-in-fleet";
+    }
+    const now = await readFlightNow();
+    if (!now.inSpace) {
+      return now.structureID !== null && now.structureID !== undefined ? "in-structure" : "in-station";
+    }
+    if (now.solarSystemID === null) {
+      return "in-station";
+    }
+    return (await fleetBroadcasts.toFleet("TravelTo", FLEET_BROADCAST_SCOPE_ALL, now.solarSystemID)) ? "sent" : "unsent";
   }
 
   async function readFleetFinder(inAFleet: boolean | null = null): Promise<FleetFinderRead> {
@@ -17053,6 +17078,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     makeFleetLeader,
     warpToFleetMember,
     warpFleetToMember,
+    broadcastTravelToMe,
     readFleetFinder,
     applyToJoinFleet,
     flyToPoint,

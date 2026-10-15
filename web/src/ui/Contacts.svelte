@@ -255,7 +255,7 @@
     spot: "UI/PeopleAndPlaces/SpotInSolarSystem",
   } as const;
   /** The client's dialogs the window says things with. */
-  const DIALOGS = ["RemoveOneFromContacts", "RemoveManyFromContacts", "DeleteMailLabel", "MailLabelNameExists", "LookupStringMinimum", "NoStandingsSelected", "RemoveAgents", "ConfirmDeleteFolder", "PartialSearchLessThanMinLength", "ConfirmMakeFleetBoss"] as const;
+  const DIALOGS = ["RemoveOneFromContacts", "RemoveManyFromContacts", "DeleteMailLabel", "MailLabelNameExists", "LookupStringMinimum", "NoStandingsSelected", "RemoveAgents", "ConfirmDeleteFolder", "PartialSearchLessThanMinLength", "ConfirmMakeFleetBoss", "FleetNotInFleetInSpace", "FleetCannotDoInStation", "FleetCannotDoInStructure"] as const;
   /** appConst.mailMaxLabelSize: the longest name a label has (evemail.py ManageLabelsBase, 1543; addressbookService.py 991). */
   const MAX_LABEL_NAME = 40;
 
@@ -619,6 +619,7 @@
     warpSquadWithin: "UI/Fleet/FleetSubmenus/WarpSquadToMember",
     /** GetSelectedFormationName (evefleet/client/util.py 37): the formation of a pilot who has chosen none, POINT. */
     formationPoint: "UI/Fleet/FleetFormations/Point",
+    travelToMe: "UI/Fleet/FleetBroadcast/Commands/BroadcastTravelToMe",
   } as const;
   /**
    * A commander's warp of its own to a member (characterCheckers.py OfferWarpFleetToMember, 538 to 563): the fleet's
@@ -667,7 +668,7 @@
    * Make Fleet Leader for another, the pilot its creator; Warp to Member for another, the pilot in space and the member
    * far enough; Leave My Fleet for the pilot's own.
    */
-  function fleetOffersOf(ownerID: number): { readonly kick: boolean; readonly leader: boolean; readonly warp: boolean; readonly groupWarp: keyof typeof GROUP_WARP_WORDS | null; readonly leave: boolean } {
+  function fleetOffersOf(ownerID: number): { readonly kick: boolean; readonly leader: boolean; readonly travelToMe: boolean; readonly warp: boolean; readonly groupWarp: keyof typeof GROUP_WARP_WORDS | null; readonly leave: boolean } {
     const mine = ownerID === myID;
     const member = fleetMembers.find((each) => Number(each.charID) === ownerID) ?? null;
     const creator = myFleetMember !== null && (myFleetMember.job & FLEET_JOB_CREATOR) !== 0;
@@ -680,6 +681,8 @@
     return {
       kick: !mine && (creator || subordinate),
       leader: !mine && creator,
+      // OfferBroadcastTravelToMe (492 to 499): the pilot's own, as the fleet's creator or a commander (fleetCmdrRoles).
+      travelToMe: mine && (creator || role === FLEET_ROLE.leader || role === FLEET_ROLE.wingCmdr || role === FLEET_ROLE.squadCmdr),
       warp,
       // session.IsPilotFleetLeader, IsPilotWingCommander, IsPilotSquadCommander: the pilot's own role in the fleet.
       groupWarp: !warp ? null : role === FLEET_ROLE.leader ? "fleet" : role === FLEET_ROLE.wingCmdr ? "wing" : role === FLEET_ROLE.squadCmdr ? "squad" : null,
@@ -734,6 +737,22 @@
   function warpToMember(ownerID: number, range: number): void {
     fleetDone();
     void run(() => flow.warpToFleetMember(ownerID, range));
+  }
+
+  /**
+   * Broadcast Travel To Me (fleetSvc.SendBroadcast_TravelTo): the pilot's own solar system to the whole fleet. What the
+   * client refuses before it asks anything is said in its own dialog's words; a broadcast inside the client's wait
+   * is no broadcast, and nothing is said of it, as the client says nothing.
+   */
+  function broadcastTravelToMe(): void {
+    fleetDone();
+    void run(async () => {
+      const outcome = await flow.broadcastTravelToMe();
+      const refusal = outcome === "not-in-fleet" ? "FleetNotInFleetInSpace" : outcome === "in-station" ? "FleetCannotDoInStation" : outcome === "in-structure" ? "FleetCannotDoInStructure" : null;
+      if (refusal !== null) {
+        throw new Error(filledWord(`dialog:${refusal}/body`, outcome === "not-in-fleet" ? "That needs a fleet, and a ship in space." : outcome === "in-station" ? "That cannot be done from a station." : "That cannot be done from a structure.", {}));
+      }
+    });
   }
 
   /** Warp Fleet, Wing or Squad to Member, and their Within (menusvc.WarpFleetToMember): the one call, the commander's. */
@@ -2603,6 +2622,9 @@
       {/if}
       {#if fleetOffers.leader}
         <button type="button" class="minor" disabled={busy} onclick={() => makeBoss(ownerID, name)}>{word(FLEET_WORDS.makeLeader, "Hand the fleet on")}</button>
+      {/if}
+      {#if fleetOffers.travelToMe}
+        <button type="button" class="minor" disabled={busy} onclick={broadcastTravelToMe}>{word(FLEET_WORDS.travelToMe, "Call the fleet here")}</button>
       {/if}
       {#if fleetOffers.warp}
         <button type="button" class="minor" disabled={busy} onclick={() => warpToMember(ownerID, defaultWarp)}>{word(FLEET_WORDS.warpToMember, "Warp there")}</button>
