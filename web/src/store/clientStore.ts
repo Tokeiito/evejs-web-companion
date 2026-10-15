@@ -73,6 +73,7 @@ import type {
   LiveState,
   OnlineCharacterState,
   RewardsState,
+  AddressBookState,
   GateLink,
   SpaceState,
   DamageEvent,
@@ -172,6 +173,7 @@ export interface ClientState {
   readonly agents: AgentsState;
   readonly finder: AgentFinderState;
   readonly rewards: RewardsState;
+  readonly addressBook: AddressBookState;
   readonly wallet: WalletState;
   readonly standings: StandingsState;
   readonly characterSheet: CharacterSheetState;
@@ -476,6 +478,8 @@ const INITIAL_FINDER: AgentFinderState = Object.freeze({
   target: null,
   error: null,
 });
+
+const INITIAL_ADDRESS_BOOK: AddressBookState = Object.freeze({ online: null });
 
 const INITIAL_REWARDS: RewardsState = Object.freeze({
   cashBalance: null,
@@ -842,6 +846,7 @@ export interface ClientStore {
   readonly agents: ReadableSignal<AgentsState>;
   readonly finder: ReadableSignal<AgentFinderState>;
   readonly rewards: ReadableSignal<RewardsState>;
+  readonly addressBook: ReadableSignal<AddressBookState>;
   readonly wallet: ReadableSignal<WalletState>;
   readonly standings: ReadableSignal<StandingsState>;
   readonly characterSheet: ReadableSignal<CharacterSheetState>;
@@ -903,6 +908,7 @@ export function createClientStore(): ClientStore {
   const agents = createSignal<AgentsState>(INITIAL_AGENTS);
   const finder = createSignal<AgentFinderState>(INITIAL_FINDER);
   const rewards = createSignal<RewardsState>(INITIAL_REWARDS);
+  const addressBook = createSignal<AddressBookState>(INITIAL_ADDRESS_BOOK);
   const wallet = createSignal<WalletState>(INITIAL_WALLET);
   const standings = createSignal<StandingsState>(INITIAL_STANDINGS);
   const characterSheet = createSignal<CharacterSheetState>(INITIAL_CHARACTER_SHEET);
@@ -951,6 +957,7 @@ export function createClientStore(): ClientStore {
     agents: agents.get(),
     finder: finder.get(),
     rewards: rewards.get(),
+    addressBook: addressBook.get(),
     wallet: wallet.get(),
     standings: standings.get(),
     characterSheet: characterSheet.get(),
@@ -1007,6 +1014,7 @@ export function createClientStore(): ClientStore {
         agents.set(INITIAL_AGENTS);
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
+        addressBook.set(INITIAL_ADDRESS_BOOK);
         wallet.set(INITIAL_WALLET);
         standings.set(INITIAL_STANDINGS);
         characterSheet.set(INITIAL_CHARACTER_SHEET);
@@ -1070,6 +1078,7 @@ export function createClientStore(): ClientStore {
         agents.set(INITIAL_AGENTS);
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
+        addressBook.set(INITIAL_ADDRESS_BOOK);
         wallet.set(INITIAL_WALLET);
         standings.set(INITIAL_STANDINGS);
         characterSheet.set(INITIAL_CHARACTER_SHEET);
@@ -1112,6 +1121,7 @@ export function createClientStore(): ClientStore {
         agents.set(INITIAL_AGENTS);
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
+        addressBook.set(INITIAL_ADDRESS_BOOK);
         wallet.set(INITIAL_WALLET);
         standings.set(INITIAL_STANDINGS);
         characterSheet.set(INITIAL_CHARACTER_SHEET);
@@ -1865,6 +1875,14 @@ export function createClientStore(): ClientStore {
       case "rewards/cleared":
         rewards.set(INITIAL_REWARDS);
         break;
+      case "address-book/online-primed":
+        addressBook.set({ ...addressBook.get(), online: { ...event.online } });
+        break;
+      case "address-book/online-changed": {
+        const current = addressBook.get();
+        addressBook.set({ ...current, online: { ...(current.online ?? {}), [event.contactID]: event.online } });
+        break;
+      }
       // R50 wallet. The two halves land together but keep their own errors, so a
       // failed corp read never blanks the personal balance. `corpDivisions`
       // stays NULL on a failed corp read (carried in `corpError`); a successful
@@ -2815,6 +2833,7 @@ export function createClientStore(): ClientStore {
     agents: readonlySignal(agents),
     finder: readonlySignal(finder),
     rewards: readonlySignal(rewards),
+    addressBook: readonlySignal(addressBook),
     wallet: readonlySignal(wallet),
     standings: readonlySignal(standings),
     characterSheet: readonlySignal(characterSheet),

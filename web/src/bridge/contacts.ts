@@ -9,7 +9,7 @@
 // order is CPython's for those keys (bridge/pyDict.ts), which is the order its users go through it in.
 
 import { pyIntDictOrder } from "./pyDict.ts";
-import { readKeyVal, readRowField, readRowsetRows, unwrapBool, unwrapLong, unwrapReal, type JsonValue } from "./wire.ts";
+import { readDictPairs, readKeyVal, readRowField, readRowsetRows, unwrapBool, unwrapLong, unwrapReal, type JsonValue } from "./wire.ts";
 
 /** One of the pilot's contacts. */
 export interface Contact {
@@ -30,6 +30,53 @@ export interface AddressBook {
   readonly blocked: readonly number[];
 }
 
+/** One of the pilot's contact labels (charMgr.GetLabels): its bit, its name and its colour. */
+export interface ContactLabel {
+  readonly labelID: bigint;
+  readonly name: string;
+  readonly color: number;
+}
+
+/**
+ * charMgr.GetLabels' answer: a dict of the labels by their bits, each a util.KeyVal (labelID, name, color), in the
+ * order the client's dict goes through them. A label marked static is none of the pilot's own, and the form shows
+ * none (contactsForm.py GetLabelsSubContent, 195 to 213).
+ */
+export function contactLabelsOf(answer: JsonValue): readonly ContactLabel[] {
+  const labels: ContactLabel[] = [];
+  for (const [key, value] of readDictPairs(answer)) {
+    const labelID = unwrapLong(readKeyVal(value, "labelID") ?? key);
+    const name = readKeyVal(value, "name");
+    if (labelID === null || labelID <= 0n || readKeyVal(value, "static") === true) {
+      continue;
+    }
+    labels.push({ labelID, name: typeof name === "string" ? name : "", color: Number(readKeyVal(value, "color") ?? 0) || 0 });
+  }
+  const order = pyIntDictOrder(labels.map((label) => Number(label.labelID)));
+  return order.flatMap((labelID) => labels.filter((label) => Number(label.labelID) === labelID));
+}
+
+/** ContactsForm.CheckHasLabel (335 to 343): "No Label" (-1) holds those with none; a label, those with its bit. */
+export function hasContactLabel(labelID: bigint, labelMask: bigint): boolean {
+  if (labelID === -1n) {
+    return labelMask === 0n;
+  }
+  return (labelMask & labelID) === labelID;
+}
+
+/** onlineStatus.GetInitialState's answer, indexed by contactID as the client's service indexes it: online or not. */
+export function onlineStatesOf(answer: JsonValue): Readonly<Record<number, boolean>> {
+  const online: Record<number, boolean> = {};
+  for (const row of rowsOf(answer)) {
+    const contactID = wholeOf(fieldOf(row, "contactID"));
+    const state = fieldOf(row, "online");
+    if (contactID !== null && contactID > 0) {
+      online[contactID] = (typeof state === "number" ? state !== 0 : unwrapBool(state)) ?? false;
+    }
+  }
+  return online;
+}
+
 /** A contact with its name, as the client's entries show one (cfg.eveowners). */
 export interface NamedContact extends Contact {
   readonly name: string;
@@ -39,6 +86,8 @@ export interface NamedContact extends Contact {
 export interface NamedAddressBook {
   readonly contacts: readonly NamedContact[];
   readonly blocked: readonly { readonly ownerID: number; readonly name: string }[];
+  /** The pilot's contact labels; null where they could not be read. */
+  readonly labels: readonly ContactLabel[] | null;
 }
 
 /** appConst's contact groups (1864 to 1872): the five standings, and the window's own groups. */

@@ -1359,6 +1359,14 @@ export interface CharStanding {
  * Complete. Each read is independent (Promise.allSettled on the BFF); a failed
  * read carries its own error code. ISK/LP are decimal strings (bigint-safe).
  */
+/**
+ * What the client's online status service keeps (comtool/onlineStatus.py): each watched contact online or not, by
+ * its id, from GetInitialState and the server's OnContactLoggedOn and OnContactLoggedOff; null until it is primed.
+ */
+export interface AddressBookState {
+  readonly online: Readonly<Record<number, boolean>> | null;
+}
+
 export interface RewardsState {
   /** Personal ISK balance (account.GetCashBalance), decimal string; null until read. */
   readonly cashBalance: string | null;

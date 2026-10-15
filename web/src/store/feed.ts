@@ -145,6 +145,10 @@ export type FeedEvent =
     }
   // ...or went offline (release, TTL expiry, session lost).
   | { readonly type: "character/offline" }
+  // The client's online status service primed (GetInitialState), and a watched contact logged on or off
+  // (OnContactLoggedOn, OnContactLoggedOff).
+  | { readonly type: "address-book/online-primed"; readonly online: Readonly<Record<number, boolean>> }
+  | { readonly type: "address-book/online-changed"; readonly contactID: number; readonly online: boolean }
   // The session's corporation, alliance or corporation roles changed (OnSessionChanged: corpid, allianceid,
   // corprole), each given where it changed, as the client's session takes them.
   | {

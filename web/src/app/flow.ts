@@ -97,7 +97,7 @@ import {
   isNpcOwner,
   type DecodedMailbox,
 } from "../bridge/mail.ts";
-import { addressBookOf, type NamedAddressBook } from "../bridge/contacts.ts";
+import { addressBookOf, contactLabelsOf, onlineStatesOf, type NamedAddressBook } from "../bridge/contacts.ts";
 import { sendMail as sendMailCall, type MailToSend } from "../bridge/mailWrites.ts";
 import { reprocess as reprocessCall } from "../bridge/reprocessWrites.ts";
 import {
@@ -1094,10 +1094,16 @@ export interface AppFlow {
   mailContacts(): Promise<readonly api.CharacterMatch[]>;
   /** The pilot's contacts and blocked owners, each named, as the Contacts window shows them (charMgr.GetContactList). */
   addressBook(): Promise<NamedAddressBook>;
+  /** The client's online status service primed, where it is not: the watched contacts' online state in the store. */
+  primeContactsOnline(): Promise<void>;
   /** The Contacts window's last group viewed by the pilot online, kept on this machine; none where none was. */
-  contactsLastSelected(): number | null;
+  contactsLastSelected(): number | string | null;
   /** The Contacts window's group viewed kept for the pilot online, on this machine. */
-  keepContactsLastSelected(groupID: number): void;
+  keepContactsLastSelected(groupID: number | string): void;
+  /** The Contacts window's "Online only" as last left on this machine: off, where it never was. */
+  onlineBuddyOnly(): boolean;
+  /** The Contacts window's "Online only" kept, on this machine. */
+  keepOnlineBuddyOnly(checked: boolean): void;
   /** Mark messages read, or not read, as the mail window's Mark as Read and Mark as Unread do. */
   markMail(messageIDs: readonly number[], read: boolean): Promise<void>;
   /** Move messages to the trash, as the mail window's Trash does. */
@@ -2657,6 +2663,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return;
     }
     const sessionNames = sessionChangeNames(method, args);
+    contactLoggedOnOrOff(method, args);
     // The client's session takes the new corporation, alliance and roles as the change says them; so does the
     // page's pilot, for what goes by them (the compose window's ValidateCorpOrAlliance and its offers).
     if (sessionNames?.some((name) => name === "corpid" || name === "allianceid" || name === "corprole")) {
@@ -5449,7 +5456,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // (contactsForm.py 267 to 274, 424: contacts_lastselected), kept in this browser for each character.
   const CONTACTS_LAST_SELECTED_KEPT = "evejs.contacts.lastselected";
 
-  function contactsLastSelected(): number | null {
+  function contactsLastSelected(): number | string | null {
     const characterID = store.station.get().online?.characterID ?? null;
     let kept: unknown = null;
     try {
@@ -5457,10 +5464,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     } catch {
       kept = null;
     }
-    return typeof kept === "number" && Number.isSafeInteger(kept) ? kept : null;
+    return (typeof kept === "number" && Number.isSafeInteger(kept)) || typeof kept === "string" ? kept : null;
   }
 
-  function keepContactsLastSelected(groupID: number): void {
+  function keepContactsLastSelected(groupID: number | string): void {
     const characterID = store.station.get().online?.characterID ?? null;
     if (characterID === null) {
       return;
@@ -5469,6 +5476,26 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       settingsStorage?.setItem(`${CONTACTS_LAST_SELECTED_KEPT}.${characterID}`, JSON.stringify(groupID));
     } catch {
       // Storage full or refused: the group lasts as long as the page.
+    }
+  }
+
+  // The Contacts window's "Online only", as the client keeps it in the user's settings (contactsForm.py 136, 523 to
+  // 526: onlinebuddyonly), kept in this browser.
+  const ONLINE_BUDDY_ONLY_KEPT = "evejs.contacts.onlinebuddyonly";
+
+  function onlineBuddyOnly(): boolean {
+    try {
+      return JSON.parse(settingsStorage?.getItem(ONLINE_BUDDY_ONLY_KEPT) ?? "false") === true;
+    } catch {
+      return false;
+    }
+  }
+
+  function keepOnlineBuddyOnly(checked: boolean): void {
+    try {
+      settingsStorage?.setItem(ONLINE_BUDDY_ONLY_KEPT, JSON.stringify(checked));
+    } catch {
+      // Storage full or refused: the choice lasts as long as the page.
     }
   }
 
@@ -5486,6 +5513,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       throw error;
     }
     const book = addressBookOf(answer);
+    // GetContactLabels('contact') (1022 to 1044): the labels, asked as the form first shows them, and kept (on the
+    // game port by the transport). A label not read leaves the form without its labels.
+    const labels = await bridgeAsk("charMgr", "GetLabels", []).then(contactLabelsOf, () => null);
     await resolveNamesNow([...book.contacts.map((contact) => contact.contactID), ...book.blocked].map((id) => ({ kind: "owner" as const, id })));
     const resolved = store.names.get().resolved;
     const nameOf = (id: number): string => {
@@ -5495,7 +5525,42 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return {
       contacts: book.contacts.map((contact) => ({ ...contact, name: nameOf(contact.contactID) })),
       blocked: book.blocked.map((ownerID) => ({ ownerID, name: nameOf(ownerID) })),
+      labels,
     };
+  }
+
+  // The client's online status service (comtool/onlineStatus.py): Prime (74 to 82) asks GetInitialState once and
+  // keeps it by contact, on the game port answered from what the transport keeps; OnContactLoggedOn and
+  // OnContactLoggedOff (26 to 34) prime it where it is not and set the one named.
+  let onlinePriming: Promise<void> | null = null;
+  function primeContactsOnline(): Promise<void> {
+    if (store.addressBook.get().online !== null) {
+      return Promise.resolve();
+    }
+    onlinePriming ??= (async () => {
+      try {
+        const answer = await bridgeAsk("onlineStatus", "GetInitialState", []);
+        store.apply({ type: "address-book/online-primed", online: onlineStatesOf(answer) });
+      } finally {
+        onlinePriming = null;
+      }
+    })();
+    return onlinePriming;
+  }
+
+  function contactLoggedOnOrOff(method: string | null, args: readonly unknown[]): void {
+    if (method !== "OnContactLoggedOn" && method !== "OnContactLoggedOff") {
+      return;
+    }
+    const contactID = Number(args[0]);
+    if (!Number.isSafeInteger(contactID) || contactID <= 0) {
+      return;
+    }
+    const online = method === "OnContactLoggedOn";
+    void primeContactsOnline().then(
+      () => store.apply({ type: "address-book/online-changed", contactID, online }),
+      () => {},
+    );
   }
 
   // addressbook.GetContacts (addressbookService.py 193 to 250): charMgr.GetContactList(), by the generic call (on
@@ -16263,7 +16328,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     keepOwnersSearchBy,
     mailContacts,
     addressBook,
+    primeContactsOnline,
     contactsLastSelected,
+    onlineBuddyOnly,
+    keepOnlineBuddyOnly,
     keepContactsLastSelected,
     sendMail,
     loadContracts,

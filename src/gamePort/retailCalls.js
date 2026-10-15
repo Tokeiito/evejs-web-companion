@@ -687,6 +687,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // The search service's quick query, as the compose window and its "Search for Recipients" find a pilot
   // (searchOld.Search; searchUtil.GetResultsList). The gateway's list has nothing of the search service's.
   "search.QuickQuery",
+  // The pilot's contact labels, as the address book asks them for the Contacts window's labels
+  // (addressbookService.py GetContactLabels, 1022 to 1044). The gateway's list has the contacts and not these.
+  "charMgr.GetLabels",
 ]);
 
 /**
@@ -1781,6 +1784,7 @@ const RETAIL_CALLS = Object.freeze({
     shape: ofTheCharacter,
   }),
   "charMgr.GetContactList": same("eve/client/script/ui/shared/neocom/addressBook/addressbookService.py:207", "RemoteSvc('charMgr').GetContactList(), no arguments: asked as the character is chosen, beside the corporation's contacts and the watched contacts' online state, and kept"),
+  "charMgr.GetLabels": same("eve/client/script/ui/shared/neocom/addressBook/addressbookService.py:1029", "GetContactLabels('contact'): RemoteSvc('charMgr').GetLabels(), no arguments, by the service's name: the pilot's contact labels, asked as the Contacts window's labels are first shown (contactsForm.py GetLabelsSubContent) and kept. In no recording."),
   "onlineStatus.GetInitialState": same("eve/client/script/ui/shared/comtool/onlineStatus.py:79", "RemoteSvc('onlineStatus').GetInitialState(), no arguments: asked once (Prime), as the character is chosen, and kept by contact"),
   "onlineStatus.GetOnlineStatus": same("eve/client/script/ui/shared/comtool/onlineStatus.py:56", "RemoteSvc('onlineStatus').GetOnlineStatus(charID), for a character the kept state does not have, and kept"),
   "onlineStatus.Prime": webOnly("eve/client/script/ui/shared/comtool/onlineStatus.py:74", "The client never asks this of the server. Prime is its own service's method, which asks GetInitialState() once."),

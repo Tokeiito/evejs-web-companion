@@ -417,9 +417,17 @@ const ACTIVE_BOOKMARKS = "GetMyActiveBookmarks";
  */
 const bookmarksKeptAs = (method, form) => (method === ACTIVE_BOOKMARKS && form.args.length === 0 && form.kwargs === null ? "active" : null);
 const CHAR_MGR = "charMgr";
-/** addressbook.GetContacts: charMgr.GetContactList(), nothing sent, is what the address book keeps. */
+/**
+ * addressbook.GetContacts: charMgr.GetContactList(), nothing sent, is what the address book keeps; and
+ * GetContactLabels('contact'): charMgr.GetLabels(), nothing sent, its labels.
+ */
 const CONTACT_LIST = "GetContactList";
-const contactsKeptAs = (method, form) => (method === CONTACT_LIST && form.args.length === 0 && form.kwargs === null ? "contacts" : null);
+const CONTACT_LABELS = "GetLabels";
+const contactsKeptAs = (method, form) => (form.args.length !== 0 || form.kwargs !== null ? null
+  : method === CONTACT_LIST ? "contacts" : method === CONTACT_LABELS ? "labels" : null);
+const ONLINE_STATUS = "onlineStatus";
+/** onlineStatus.Prime: GetInitialState(), nothing sent, is what the client's online status service keeps. */
+const onlineKeptAs = (method, form) => (method === "GetInitialState" && form.args.length === 0 && form.kwargs === null ? "initial" : null);
 /** bookmarkSvc.ACLBookmarkLocation (617): the park's call that bookmarks a place in space, which the client works into what it keeps. */
 const BOOKMARK_LOCATION = "BookmarkLocation";
 const FACILITY_MANAGER = "facilityManager";
@@ -527,13 +535,23 @@ const KEPT_UNTIL_CHANGED = Object.freeze({
   // changed or taken away into what it keeps (OnContactSlashCommand, OnPersonalContactsUpdated, 106 to 155;
   // OnContactNoLongerContact, 326 to 330; OnPersonalContactsAdded and Deleted, 585 to 616), and its own writes of
   // a contact, a block or a contact's label (658 to 842, 1073 to 1134); here what is kept is let go at each, and
-  // asked for when it is next wanted.
+  // asked for when it is next wanted. Its contact labels (GetContactLabels, 1022 to 1044) are kept beside them, from
+  // their first asking, and let go with them and at the pilot's own making and renaming of one (1001 to 1021).
   [CHAR_MGR]: Object.freeze({
     keptAs: contactsKeptAs,
     notices: new Set(["OnContactSlashCommand", "OnPersonalContactsUpdated", "OnContactNoLongerContact", "OnPersonalContactsAdded", "OnPersonalContactsDeleted"]),
     writes: Object.freeze({
-      [CHAR_MGR]: new Set(["AddContact", "EditContact", "EditContactsRelationshipID", "DeleteContacts", "BlockOwners", "UnblockOwners", "AssignLabels", "RemoveLabels", "DeleteLabel"]),
+      [CHAR_MGR]: new Set(["AddContact", "EditContact", "EditContactsRelationshipID", "DeleteContacts", "BlockOwners", "UnblockOwners", "AssignLabels", "RemoveLabels", "CreateLabel", "EditLabel", "DeleteLabel"]),
     }),
+  }),
+  // onlineStatus (comtool/onlineStatus.py, Prime, 74 to 82): the watched contacts' online state, asked as the
+  // character is chosen and kept; the client works the server's word of one logging on or off into it
+  // (OnContactLoggedOn, OnContactLoggedOff, 26 to 34), and so does the page, which asks it once. Here what is kept
+  // is let go at either, and asked for when it is next wanted.
+  [ONLINE_STATUS]: Object.freeze({
+    keptAs: onlineKeptAs,
+    notices: new Set(["OnContactLoggedOn", "OnContactLoggedOff"]),
+    writes: Object.freeze({}),
   }),
 });
 /**
@@ -4934,9 +4952,10 @@ function createGamePortPilots({
    * online state (alliance.GetContactList, which is GetMoniker().GetAllianceContacts(), the moniker made and bound
    * for it). No recording has an alliance: the place is the address book's own order.
    *
-   * The pilot's own contacts and blocked owners are kept as the client keeps them (KEPT_UNTIL_CHANGED), for the
-   * page's reading of them by charMgr.GetContactList. Nothing is kept of the rest, though the client keeps them all
-   * and works them over at the server's notices: no window of the page reads them yet.
+   * The pilot's own contacts and blocked owners, and the watched contacts' online state, are kept as the client
+   * keeps them (KEPT_UNTIL_CHANGED), for the page's reading of them by charMgr.GetContactList and
+   * onlineStatus.GetInitialState. Nothing is kept of the corporation's and the alliance's, though the client keeps
+   * them and works them over at the server's notices: no window of the page reads them yet.
    */
   async function addressBookRead(entry) {
     const ofTheAlliance = (method) => {
@@ -4947,7 +4966,7 @@ function createGamePortPilots({
       keptRead(entry, CHAR_MGR, CONTACT_LIST, shape(CHAR_MGR, CONTACT_LIST, [], null, contextFor(entry))),
       ...(inNpcCorporation(entry) ? [] : [corporationAsk(entry, "GetCorporateContacts")]),
       ...(attribute(entry, "allianceid") === null ? [] : [ofTheAlliance("GetAllianceContacts")]),
-      asks(entry, "onlineStatus", "GetInitialState"),
+      keptRead(entry, ONLINE_STATUS, "GetInitialState", shape(ONLINE_STATUS, "GetInitialState", [], null, contextFor(entry))),
     ].map((asked) => asked.catch(() => {})));
   }
 

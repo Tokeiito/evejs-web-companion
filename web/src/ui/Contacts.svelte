@@ -3,19 +3,24 @@
   // (ContactsForm, neocom/addressBook/contactsForm.py): the pilot's own contacts and blocked owners, as the client's
   // address book keeps them (charMgr.GetContactList; app/flow.ts addressBook).
   //
-  // On the left the form's groups (GetStaticLabelsGroups, 240 to 265): All Contacts, the five standings, the Buddy
-  // List, and Blocked, each with how many it holds (GetContactsCount, 372 to 405). On the right the group chosen
-  // (GetScrolllist, 416 to 497): its contacts by name, fifty to a page (maxContactsPerPage), with the window's quick
-  // filter (QuickFilterEdit: the names holding what is typed). The group last viewed is kept for the pilot
-  // (contacts_lastselected), else the first is shown.
+  // On the left the form's groups (GetStaticLabelsGroups, 240 to 265; LoadLeftSide, 144 to 180): All Contacts, the
+  // five standings, the Buddy List, Blocked, and the Labels with "No Label" first and the pilot's own by name
+  // (GetLabelsSubContent, 195 to 213), each with how many it holds (GetContactsCount, 372 to 405;
+  // GetContactsLabelCount, 363 to 370). On the right the group chosen (GetScrolllist, 416 to 497): its contacts by
+  // name, fifty to a page (maxContactsPerPage), with the window's quick filter (QuickFilterEdit: the names holding
+  // what is typed) and "Online only" (onlinebuddyonly: those on the buddy list the online status service has
+  // online). A buddy's entry says it is online or offline where that service keeps it (userentry.py SetOnline,
+  // 320 to 332; fetch=False, 176), and a blocked owner's says so (SetBlocked, 334 to 342). The group last viewed is
+  // kept for the pilot (contacts_lastselected), else the first is shown.
   //
-  // Not here yet: the Notifications group, the labels, "Online only", the Agents and Search tabs, and every write.
+  // Not here yet: the Notifications group, the Agents and Search tabs, and every write.
   import { onMount } from "svelte";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import {
     CONTACT_GROUP,
     CONTACT_STANDING,
     MAX_CONTACTS_PER_PAGE,
+    hasContactLabel,
     inStandingGroup,
     type NamedAddressBook,
   } from "../bridge/contacts.ts";
@@ -27,8 +32,10 @@
 
   // svelte-ignore state_referenced_locally
   const words = store.words;
+  // svelte-ignore state_referenced_locally
+  const addressBookState = store.addressBook;
 
-  /** The window's words, by their labels (addressBookWindow.py 60, 86; contactsForm.py 182 to 265, 416 to 497). */
+  /** The window's words, by their labels (addressBookWindow.py 60, 86; contactsForm.py 136, 144 to 265, 416 to 497). */
   const WORDS = {
     title: "UI/PeopleAndPlaces/WindowTitle",
     contacts: "UI/PeopleAndPlaces/Contacts",
@@ -40,6 +47,11 @@
     terrible: "UI/PeopleAndPlaces/TerribleStanding",
     watchlist: "UI/PeopleAndPlaces/Watchlist",
     blocked: "UI/PeopleAndPlaces/Blocked",
+    labels: "UI/PeopleAndPlaces/Labels",
+    noLabel: "UI/PeopleAndPlaces/NoLabel",
+    onlineOnly: "UI/PeopleAndPlaces/OnlineOnly",
+    online: "UI/Common/Online",
+    offline: "UI/Common/Offline",
     standingExcellent: "UI/PeopleAndPlaces/StandingExcellent",
     standingGood: "UI/PeopleAndPlaces/StandingGood",
     standingNeutral: "UI/PeopleAndPlaces/StandingNeutral",
@@ -49,6 +61,8 @@
     noneOnWatchlist: "UI/PeopleAndPlaces/NoneOnWatchlist",
     noneBlocked: "UI/PeopleAndPlaces/NoneBlockedYet",
     noContactsStanding: "UI/PeopleAndPlaces/NoContactsStanding",
+    noContactsLabel: "UI/PeopleAndPlaces/NoContactsLabel",
+    noOnlineContact: "UI/PeopleAndPlaces/NoOnlineContact",
     nothingFound: "UI/Common/NothingFound",
     name: "UI/Common/Name",
     next: "UI/Common/Next",
@@ -87,13 +101,20 @@
     [CONTACT_STANDING.horrible]: [WORDS.standingTerrible, "Terrible"],
   };
 
+  /** A label's group, by its bit: "No Label" is -1 (GetLabelsSubContent, 205 to 213). */
+  const labelGroup = (labelID: bigint): string => `label:${labelID}`;
+  const NO_LABEL = labelGroup(-1n);
+
   let book = $state<NamedAddressBook | null>(null);
   let error = $state("");
   let busy = $state(false);
   // svelte-ignore state_referenced_locally
   const lastSelected: unknown = flow.contactsLastSelected();
-  let group = $state<number>(typeof lastSelected === "number" ? lastSelected : CONTACT_GROUP.all);
+  let group = $state<number | string>(typeof lastSelected === "number" || typeof lastSelected === "string" ? lastSelected : CONTACT_GROUP.all);
   let startPos = $state(0);
+  // svelte-ignore state_referenced_locally
+  const keptOnlineOnly: unknown = flow.onlineBuddyOnly();
+  let onlineOnly = $state(keptOnlineOnly === true);
   /** What the quick filter holds, and the text it filters by: taken 0.4 s after the typing stops (_SetQuickFilterInput). */
   let filterText = $state("");
   let filtering = $state("");
@@ -111,16 +132,35 @@
     }
   }
 
+  /** The labels by name in lower case (GetLabelsSubContent, 197 to 204). */
+  const labels = $derived([...(book?.labels ?? [])].sort((left, right) => {
+    const a = left.name.toLowerCase();
+    const b = right.name.toLowerCase();
+    return a < b ? -1 : a > b ? 1 : 0;
+  }));
+  const labelOf = (groupID: number | string) => labels.find((label) => labelGroup(label.labelID) === groupID);
+
   /** LoadData's filter (contactsForm.py 548 to 552; quickFilter.py QuickFilter): an owner whose name holds the text. */
   const matches = (name: string): boolean => filtering === "" || name.toLowerCase().includes(filtering.toLowerCase());
   const contacts = $derived((book?.contacts ?? []).filter((contact) => matches(contact.name)));
   const blocked = $derived((book?.blocked ?? []).filter((owner) => matches(owner.name)));
+  const blockedIDs = $derived(new Set((book?.blocked ?? []).map((owner) => owner.ownerID)));
+  const watched = $derived(new Set((book?.contacts ?? []).filter((contact) => contact.inWatchlist).map((contact) => contact.contactID)));
 
-  /** GetContactsCount (372 to 405): how many a group holds, of what the filter leaves. */
-  function countOf(groupID: number): number {
+  /** onlineStatus.GetOnlineStatus as the entries read it, from what the service keeps: online, offline, or not known. */
+  function onlineOf(contactID: number): boolean | undefined {
+    return $addressBookState.online?.[contactID];
+  }
+
+  /** GetContactsCount (372 to 405) and GetContactsLabelCount (363 to 370): how many a group holds, of what the filter leaves. */
+  function countOf(groupID: number | string): number {
     if (groupID === CONTACT_GROUP.blocked) return blocked.length;
     if (groupID === CONTACT_GROUP.all) return contacts.length;
     if (groupID === CONTACT_GROUP.watchlist) return contacts.filter((contact) => contact.inWatchlist).length;
+    if (typeof groupID === "string") {
+      const labelID = groupID === NO_LABEL ? -1n : labelOf(groupID)?.labelID;
+      return labelID === undefined ? 0 : contacts.filter((contact) => hasContactLabel(labelID, contact.labelMask)).length;
+    }
     return contacts.filter((contact) => inStandingGroup(groupID, contact.relationshipID)).length;
   }
 
@@ -128,32 +168,50 @@
     readonly id: number;
     readonly name: string;
     readonly standing: number | null;
+    /** Its online state where it is a buddy whose state the service keeps (SetOnline), else none. */
+    readonly online: boolean | null;
+    readonly blocked: boolean;
   }
 
   /**
    * GetScrolllist (416 to 497): the group's entries by name (SortListOfTuples on the name in lower case), a page of
-   * them, and the hint for none. The buddy list holds characters only; the page takes a contact for one where it is
-   * no corporation's or alliance's by its id.
+   * them, and the hint for none. "Online only" keeps the buddies the service has online (GetContactEntry, 936 to
+   * 948). The buddy list holds characters only; the page takes a contact for one where it is no corporation's or
+   * alliance's by its id.
    */
   const shown = $derived.by((): { rows: readonly Row[]; total: number; hint: string } => {
-    let rows: Row[];
+    let entries: { readonly id: number; readonly name: string; readonly standing: number | null }[];
     let hint = word(WORDS.noContacts, "You do not have any contacts.");
     if (group === CONTACT_GROUP.blocked) {
-      rows = blocked.map((owner) => ({ id: owner.ownerID, name: owner.name, standing: null }));
+      entries = blocked.map((owner) => ({ id: owner.ownerID, name: owner.name, standing: null }));
       hint = word(WORDS.noneBlocked, "No one is blocked.");
     } else if (group === CONTACT_GROUP.watchlist) {
-      rows = contacts.filter((contact) => contact.inWatchlist && isCharacterContact(contact.contactID)).map(rowOf);
+      entries = contacts.filter((contact) => contact.inWatchlist && isCharacterContact(contact.contactID)).map(entryOf);
       hint = word(WORDS.noneOnWatchlist, "No one is on the buddy list yet.");
     } else if (group === CONTACT_GROUP.all) {
-      rows = contacts.map(rowOf);
+      entries = contacts.map(entryOf);
+    } else if (typeof group === "string") {
+      const label = labelOf(group);
+      const labelID = group === NO_LABEL ? -1n : label?.labelID;
+      entries = labelID === undefined ? [] : contacts.filter((contact) => hasContactLabel(labelID, contact.labelMask)).map(entryOf);
+      hint = filledWord(WORDS.noContactsLabel, "No contacts with the label: {standingText}", { standingText: group === NO_LABEL ? word(WORDS.noLabel, "No Label") : (label?.name ?? "") });
     } else {
-      rows = contacts.filter((contact) => inStandingGroup(group, contact.relationshipID)).map(rowOf);
+      entries = contacts.filter((contact) => inStandingGroup(group as number, contact.relationshipID)).map(entryOf);
       const [label, own] = STANDING_SHORT[group] ?? [WORDS.standingNeutral, "Neutral"];
       hint = filledWord(WORDS.noContactsStanding, "No contacts with standing: {standingText}", { standingText: word(label, own) });
+    }
+    if (onlineOnly) {
+      entries = entries.filter((entry) => watched.has(entry.id) && onlineOf(entry.id) === true);
+      hint = word(WORDS.noOnlineContact, "None of your contacts is online.");
     }
     if (filtering !== "") {
       hint = word(WORDS.nothingFound, "Nothing Found");
     }
+    const rows = entries.map((entry): Row => ({
+      ...entry,
+      online: group !== CONTACT_GROUP.blocked && watched.has(entry.id) && isCharacterContact(entry.id) ? (onlineOf(entry.id) ?? null) : null,
+      blocked: blockedIDs.has(entry.id),
+    }));
     const sorted = rows.map((row, place) => ({ row, place })).sort((left, right) => {
       const a = left.row.name.toLowerCase();
       const b = right.row.name.toLowerCase();
@@ -162,7 +220,7 @@
     return { rows: sorted.slice(startPos, startPos + MAX_CONTACTS_PER_PAGE), total: sorted.length, hint };
   });
 
-  function rowOf(contact: { readonly contactID: number; readonly name: string; readonly relationshipID: number }): Row {
+  function entryOf(contact: { readonly contactID: number; readonly name: string; readonly relationshipID: number }) {
     return { id: contact.contactID, name: contact.name, standing: contact.relationshipID };
   }
 
@@ -172,7 +230,7 @@
   }
 
   /** LoadGroupFromEntry (345 to 354): another group from the first page, and kept as the one last viewed (424). */
-  function choose(groupID: number): void {
+  function choose(groupID: number | string): void {
     if (group !== groupID) {
       startPos = 0;
       group = groupID;
@@ -183,6 +241,11 @@
   /** BrowseContacts (554 to 558): a page back or on. */
   function browse(step: number): void {
     startPos = Math.max(0, startPos + MAX_CONTACTS_PER_PAGE * step);
+  }
+
+  /** CheckBoxChange (523 to 526): "Online only" kept in the user's settings, and the form drawn again. */
+  function onlineOnlyChanged(): void {
+    flow.keepOnlineBuddyOnly(onlineOnly);
   }
 
   function filterTyped(): void {
@@ -198,6 +261,7 @@
   onMount(() => {
     flow.requestWords(Object.values(WORDS));
     void load();
+    void flow.primeContactsOnline().catch(() => {});
     return () => {
       if (filterTimer !== null) clearTimeout(filterTimer);
     };
@@ -218,7 +282,7 @@
   </nav>
 
   <div class="contacts-form">
-    <!-- The form's groups, each with how many it holds (ListGroup's LabelWithLength). -->
+    <!-- The form's groups, each with how many it holds (ListGroup's LabelWithLength), and the labels under theirs. -->
     <ul class="contacts-groups">
       {#each GROUPS as [groupID, label, own] (groupID)}
         {#if groupID === CONTACT_GROUP.blocked}
@@ -230,10 +294,30 @@
           </button>
         </li>
       {/each}
+      {#if book !== null && book.labels !== null}
+        <li class="contacts-gap" aria-hidden="true"></li>
+        <li class="contacts-labels-head">{word(WORDS.labels, "Labels")}</li>
+        <li>
+          <button type="button" class="minor contacts-label" class:active={group === NO_LABEL} onclick={() => choose(NO_LABEL)}>
+            {word(WORDS.noLabel, "No Label")} [{countOf(NO_LABEL)}]
+          </button>
+        </li>
+        {#each labels as label (String(label.labelID))}
+          <li>
+            <button type="button" class="minor contacts-label" class:active={group === labelGroup(label.labelID)} onclick={() => choose(labelGroup(label.labelID))}>
+              {label.name} [{countOf(labelGroup(label.labelID))}]
+            </button>
+          </li>
+        {/each}
+      {/if}
     </ul>
 
     <div class="contacts-list">
       <p class="controls">
+        <label>
+          <input type="checkbox" bind:checked={onlineOnly} onchange={onlineOnlyChanged} />
+          {word(WORDS.onlineOnly, "Online only")}
+        </label>
         <input type="search" maxlength="100" aria-label="Filter" bind:value={filterText} oninput={filterTyped} />
       </p>
       {#if book === null}
@@ -243,12 +327,19 @@
       {:else}
         <table>
           <thead>
-            <tr><th>{word(WORDS.name, "Name")}</th><th></th></tr>
+            <tr><th>{word(WORDS.name, "Name")}</th><th></th><th></th></tr>
           </thead>
           <tbody>
             {#each shown.rows as row (row.id)}
               <tr>
                 <td>{row.name}</td>
+                <td class="contacts-state">
+                  {#if row.blocked}
+                    <span class="badge">{word(WORDS.blocked, "Blocked")}</span>
+                  {:else if row.online !== null}
+                    <span class="badge" class:accent={row.online}>{row.online ? word(WORDS.online, "Online") : word(WORDS.offline, "Offline")}</span>
+                  {/if}
+                </td>
                 <td class="contacts-standing">{row.standing === null ? "" : row.standing > 0 ? `+${row.standing}` : String(row.standing)}</td>
               </tr>
             {/each}
@@ -292,9 +383,18 @@
   .contacts-gap {
     height: 0.75rem;
   }
+  .contacts-labels-head {
+    font-weight: 600;
+  }
+  .contacts-label {
+    padding-left: 1rem;
+  }
   .contacts-list {
     flex: 1 1 18rem;
     min-width: 0;
+  }
+  .contacts-state {
+    text-align: center;
   }
   .contacts-standing {
     text-align: right;

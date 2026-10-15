@@ -1785,6 +1785,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "mailingListsMgr.GetWelcomeMail", "mailingListsMgr.SaveWelcomeMail", "mailingListsMgr.SendWelcomeMail", "mailingListsMgr.ClearWelcomeMail",
     // The search service's quick query. The gateway's list has nothing of the search service's.
     "search.QuickQuery",
+    // The pilot's contact labels. The gateway's list has the contacts and not these.
+    "charMgr.GetLabels",
   ]);
   // structureGuests.py 25: sm.RemoteSvc('structureGuests').GetGuests(session.structureid), by the service's name,
   // with the structure the session is docked in and nothing else.
