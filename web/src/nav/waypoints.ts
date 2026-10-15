@@ -11,8 +11,8 @@
 //
 //   Whenever the pilot's place changes (UpdateRoute, from the autopilot's OnSessionChanged), a first waypoint that is
 //   where the pilot is now (its structure, station, system, constellation or region) is taken off, and the autopilot,
-//   where it is on, is switched off: "waypoint reached" (the route panel's Disable Autopilot at Each Waypoint, ticked
-//   until the pilot unticks it, which the page does not offer).
+//   where it is on, is switched off: "waypoint reached", where the route panel's Disable Autopilot at Each Waypoint is
+//   ticked, as it is until the pilot unticks it (app/autopilotStopAtEachWaypoint.ts); unticked, it flies on.
 //
 // The page keeps the list in this browser, for the character, as the client keeps it in its own settings.
 

@@ -20,7 +20,8 @@
 // Here they are kept the same way: by character, in this browser's own storage, under the client's names.
 //
 // Not done: the list's own window (adding and removing systems, constellations and regions), the other
-// avoidance ticks (pod kills, Triglavian and EDENCOM systems), jump gates, and stopping at each waypoint.
+// avoidance ticks (pod kills, Triglavian and EDENCOM systems), and jump gates. (Stopping at each waypoint is the
+// user's, not the character's: app/autopilotStopAtEachWaypoint.ts.)
 
 import { DEFAULT_AUTOPILOT_SETTINGS, isKnownSpaceSystem, type AutopilotRouteType, type AutopilotSettings } from "./autopilotRoute.ts";
 

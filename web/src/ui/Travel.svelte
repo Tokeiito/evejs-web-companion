@@ -21,6 +21,7 @@
   import { panelErrorWords } from "../bridge/refusals.ts";
   import { plainText } from "../bridge/clientWords.ts";
   import { waypointNameKind } from "../nav/waypoints.ts";
+  import { clickDisableAutopilotAtEachWaypoint, disableAutopilotAtEachWaypoint } from "../app/autopilotStopAtEachWaypoint.ts";
   import {
     OFFERED_ROUTE_TYPES, PENALTY_RANGE, ROUTE_SETTING_WORD_LABELS, avoidingSystems, penaltyOf, penaltyWords, routeSettingWords, routeTypeOf,
     type StoredAutopilotSettings,
@@ -42,6 +43,7 @@
     autopilotActive: "UI/Map/MapPallet/AutopilotActive",
     removeWaypoint: "UI/Inflight/RemoveWaypoint",
     setDestination: "UI/Inflight/SetDestination",
+    disableAtEachWaypoint: "UI/Map/MapPallet/cbDisableAtEachWaypoint",
   } as const;
 
   // svelte-ignore state_referenced_locally
@@ -265,7 +267,8 @@
 
 <!-- The route (infoPanelRoute.py): the destination and the waypoints on the way, each taken off by Remove Waypoint,
      Clear All Waypoints, and Autopilot active, offered in space: the autopilot flies to the first waypoint and is
-     switched off there (nav/waypoints.ts). -->
+     switched off there, or flies on where Disable Autopilot at Each Waypoint is unticked (nav/waypoints.ts,
+     app/autopilotStopAtEachWaypoint.ts). -->
 <section class="route-panel">
   <h2>{routeWord(ROUTE_WORDS.route, "Route")}</h2>
   {#if $waypoints.length === 0}
@@ -409,6 +412,17 @@
           }}
         />
         {routeSettingWords("avoidSystems", settingText)}
+      </label>
+      <label class="route-stop-each">
+        <input
+          type="checkbox"
+          checked={$disableAutopilotAtEachWaypoint}
+          onchange={(event) => {
+            clickDisableAutopilotAtEachWaypoint();
+            event.currentTarget.checked = disableAutopilotAtEachWaypoint.get();
+          }}
+        />
+        {routeWord(ROUTE_WORDS.disableAtEachWaypoint, "Turn the autopilot off at each waypoint")}
       </label>
     </p>
   </section>

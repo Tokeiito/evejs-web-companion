@@ -486,6 +486,7 @@ import type { BotScript, WorldRef } from "../bots/botScript.ts";
 import { decodeScriptValue } from "../bots/scriptCodec.ts";
 import { expandSubBots, hasSubBots, type BotResolution, type SubBotReference } from "../bots/subBots.ts";
 import { autoRejectInvitations } from "./autoRejectInvitations.ts";
+import { disableAutopilotAtEachWaypoint } from "./autopilotStopAtEachWaypoint.ts";
 
 /**
  * What the player asked the mission bot to do (goal R36).
@@ -8053,8 +8054,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       scannerLoadGeneration += 1;
     }
     store.apply({ type: "flight/status", status });
-    // The client's star map on every session change (UpdateRoute): a first waypoint the pilot is at taken off.
-    waypointsArrived();
+    // The client's star map on every session change (UpdateRoute): a first waypoint the pilot is at taken off. And an
+    // autopilot left on past waypoints that waited docked flies on once the ship is in space (autopilot.py Update).
+    if (!waypointsArrived() && !disableAutopilotAtEachWaypoint.get()) flyOnAutopilot();
     if (refreshScanner) {
       void loadScanner().catch(() => undefined);
     }
@@ -10014,11 +10016,47 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (rest === null) return false;
     putWaypoints(rest);
     if (autopilotSignal.get()) {
-      autopilotSignal.set(false);
-      sayAutopilot("AutoPilotWaypointReached");
+      // (2448 to 2450): switched off here where the route panel's Disable Autopilot at Each Waypoint is ticked;
+      // otherwise left on, to fly on along the route.
+      if (disableAutopilotAtEachWaypoint.get()) {
+        autopilotSignal.set(false);
+        sayAutopilot("AutoPilotWaypointReached");
+      } else {
+        flyOnAutopilot();
+      }
     }
     return true;
   }
+
+  /**
+   * The autopilot left on past a waypoint, as its Update finds it every 2000 ms (autopilot.py 290 onward): with no
+   * waypoint left it is switched off ("no destination path set", 290 to 293); docked, it waits, finding no ballpark
+   * (300 to 302); in space it flies the route to the next waypoint, where the route loop is not flying already.
+   */
+  function flyOnAutopilot(): void {
+    if (!autopilotSignal.get()) return;
+    const next = heldWaypoints()[0];
+    if (next === undefined) {
+      autopilotSignal.set(false);
+      sayAutopilot("AutoPilotDisabledNoPathSet");
+      return;
+    }
+    const place = pilotPlace();
+    if (place.stationID !== null || place.structureID !== null) return;
+    const status = store.travel.get().status;
+    if (autopilotStarting || status === "running" || status === "paused") return;
+    autopilotStarting = true;
+    void startRoute(next).then((outcome) => {
+      if (!outcome.started && autopilotSignal.get()) {
+        autopilotSignal.set(false);
+        sayAutopilot("AutoPilotDisabled");
+      }
+    }).catch(() => undefined).finally(() => {
+      autopilotStarting = false;
+    });
+  }
+  /** A route being planned for the autopilot: no second is started meanwhile. */
+  let autopilotStarting = false;
 
   /**
    * The structures the structure directory has answered for (structureDirectory.py GetStructureInfo, 33 to 39: asked
@@ -10084,7 +10122,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       sayAutopilot("AutoPilotDisabledNoPathSet");
       return;
     }
-    const outcome = await startRoute(first);
+    autopilotStarting = true;
+    let outcome: RouteStartOutcome;
+    try {
+      outcome = await startRoute(first);
+    } finally {
+      autopilotStarting = false;
+    }
     if (!outcome.started && autopilotSignal.get()) {
       autopilotSignal.set(false);
       sayAutopilot("AutoPilotDisabled");
@@ -10105,6 +10149,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (!autopilotSignal.get()) return;
     if (travel.status === "arrived") {
       if (!waypointsArrived()) {
+        // The waypoint was taken off already, by the session's change (observeFlightStatus): where the autopilot is
+        // left on past waypoints it flies on; otherwise it is off at the route's end.
+        if (!disableAutopilotAtEachWaypoint.get()) {
+          flyOnAutopilot();
+          return;
+        }
         autopilotSignal.set(false);
         sayAutopilot("AutoPilotDisabled");
       }
