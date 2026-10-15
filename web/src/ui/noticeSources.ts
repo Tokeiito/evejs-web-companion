@@ -87,8 +87,6 @@ export const NOTICE_SOURCES: readonly NoticeSource[] = [
   { slice: "agents", field: "actionError", kind: "danger", title: "Agents", saidBy: "actionErrorSaid" },
   { slice: "skills", field: "actionError", kind: "danger", title: "Skills", saidBy: "actionErrorSaid" },
   { slice: "fleet", field: "actionError", kind: "danger", title: "Fleet", saidBy: "actionErrorSaid" },
-  // Not a refusal: what another pilot answered to an invitation. It happened, and the pilot pressed nothing.
-  { slice: "fleet", field: "inviteAnswered", kind: "info", title: "Fleet" },
 ];
 
 /**

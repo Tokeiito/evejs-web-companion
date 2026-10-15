@@ -387,7 +387,6 @@ const INITIAL_FLEET: FleetCenterState = Object.freeze({
   availability: "unknown",
   fleet: null,
   pendingInvite: null,
-  inviteAnswered: null,
   activeAction: null,
   readError: null,
   actionError: null,
@@ -1602,8 +1601,6 @@ export function createClientStore(): ClientStore {
           activeAction: event.action,
           actionError: null,
           actionErrorSaid: false,
-          // Another invitation sent: what was said of the last one is said no longer.
-          inviteAnswered: event.action === "invite" ? null : fleet.get().inviteAnswered,
         });
         break;
       case "fleet/action-finished":
@@ -1616,9 +1613,6 @@ export function createClientStore(): ClientStore {
         break;
       case "fleet/pending-invite":
         fleet.set({ ...fleet.get(), pendingInvite: event.invite });
-        break;
-      case "fleet/invite-answered":
-        fleet.set({ ...fleet.get(), inviteAnswered: event.words });
         break;
       case "fleet/invite-settled":
         // An invitation the pilot has answered is the window's no longer. Another fleet's stays.

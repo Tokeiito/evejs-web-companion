@@ -323,7 +323,6 @@
           </p>
         {/if}
       </form>
-      {#if $fleet.inviteAnswered}<p class="note">{$fleet.inviteAnswered}</p>{/if}
     </section>
 
     <FleetHistory {store} {flow} />

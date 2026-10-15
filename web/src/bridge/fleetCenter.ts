@@ -251,8 +251,9 @@ export function decodeFleetInviteAnswerNotification(method: string | null, args:
 }
 
 /**
- * What the page says to the inviter of it, in the page's own words (the client's wording is not the page's to
- * use). `name` is the pilot's, where it could be had.
+ * The page's own words for it, put up where the install's are not to hand: the client puts up its labels
+ * (fleetSvc.OnFleetJoinReject, 1217 to 1223; the flow's tellOfInviteAnswer). `name` is the pilot's, where it could
+ * be had.
  */
 export function fleetInviteAnswerWords(name: string | null, reason: FleetInviteAnswerReason): string {
   const who = name !== null && name.trim() !== "" ? name.trim() : "The pilot you invited";

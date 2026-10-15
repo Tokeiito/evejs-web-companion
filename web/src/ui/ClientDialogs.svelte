@@ -253,7 +253,7 @@
 {#if strip !== null}
   <div class="client-strip" role="status" data-dialog={strip.said.dialog} data-in-front={inFront}>
     {#if !inFront && pilotName !== null}<span class="for-pilot">For {pilotName}</span>{/if}
-    {strip.text}
+    <span class="strip-text">{strip.text}</span>
   </div>
 {/if}
 
@@ -264,6 +264,8 @@
   .client-dialog { pointer-events: auto; display: flex; flex-direction: column; gap: 0.6rem; width: min(26rem, calc(100vw - 2rem));
     padding: 0.75rem 1rem; background: #14273a; color: #d6e6f7; border: 1px solid #3c6f9e; }
   .body { margin: 0; white-space: pre-line; }
+  /* The client's label starts a new line at each line break in its text (trinity, Tr2LabelTextParser.cpp 360 to 375). */
+  .strip-text { white-space: pre-line; }
   .answers { display: flex; justify-content: flex-end; gap: 0.4rem; }
   .quantity { display: contents; }
   input { background: #0d1b29; color: inherit; border: 1px solid #3c6f9e; padding: 0.2rem 0.4rem; }

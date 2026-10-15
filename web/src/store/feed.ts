@@ -395,8 +395,6 @@ export type FeedEvent =
   | { readonly type: "fleet/broadcast-history-cleared" }
   // An invitation answered or turned down: the window's no longer, where it is the one held.
   | { readonly type: "fleet/invite-settled"; readonly fleetID: number }
-  // What the inviter was told of an invitation it sent, or null to say it no longer.
-  | { readonly type: "fleet/invite-answered"; readonly words: string | null }
   // A one-shot fleet call (OnFleetBroadcast). Pure push-to-store, same shape
   // as fleet/pending-invite: last-write-wins, no reducer-side interpretation.
   | { readonly type: "fleet/broadcast"; readonly broadcast: FleetBroadcast }

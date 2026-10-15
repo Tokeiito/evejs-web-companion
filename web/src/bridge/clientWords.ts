@@ -363,6 +363,22 @@ const UE_LOCID = 3;
 const UE_TYPEID = 4;
 const UE_TYPEIDANDQUANTITY = 24;
 const UE_LIST = 103;
+/** carbon/common/lib/const.py 273: one of the client's labels, worded with its own arguments (cfg.py 125, _GetLocalization). */
+const UE_LOC = 101;
+
+/** A dict as the bridge carries one ({type: "dict", entries}), as a label's arguments; anything else gives none. */
+function dictArguments(value: JsonValue | undefined): Record<string, JsonValue> {
+  const out: Record<string, JsonValue> = {};
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const record = value as Record<string, JsonValue>;
+    if (record.type === "dict" && Array.isArray(record.entries)) {
+      for (const entry of record.entries) {
+        if (Array.isArray(entry) && typeof entry[0] === "string") out[entry[0]] = entry[1] ?? null;
+      }
+    }
+  }
+  return out;
+}
 
 export interface TypedContext extends FormatContext {
   /** The client's templates by label, for the two the conversion words with. */
@@ -428,6 +444,11 @@ export function convertTyped(code: JsonValue | undefined, value: JsonValue | und
       const separator = typeof second === "string" ? second : context.templates?.[LIST_DELIMITER] ?? ", ";
       return texts.join(separator);
     }
+    case UE_LOC: {
+      // cfg._GetLocalization (264 to 284): the label's own text, filled with its arguments, each typed one worded first.
+      const template = typeof inner === "string" ? context.templates?.[inner] : undefined;
+      return typeof template === "string" ? formatTemplate(template, prepareArguments(dictArguments(second), context), context) : "";
+    }
     default:
       return "";
   }
@@ -443,17 +464,25 @@ export function prepareArguments(args: TemplateArguments, context: TypedContext)
 }
 
 /** What a typed value needs before it can be worded: the names, and the client's labels. */
-function typedNeeds(tuple: readonly JsonValue[], refs: NameRef[], labels: string[]): void {
+function typedNeeds(tuple: readonly JsonValue[], refs: NameRef[], labels: string[], templates?: TypedContext["templates"]): void {
   const [code, value] = tuple;
   if (nestedTyped(value)) {
-    typedNeeds(value, refs, labels);
+    typedNeeds(value, refs, labels, templates);
     return;
   }
   const id = idOf(value);
-  if (code === UE_LIST) {
+  if (code === UE_LOC && typeof value === "string") {
+    labels.push(value);
+    const args = dictArguments(third(tuple));
+    for (const each of Object.values(args)) {
+      if (Array.isArray(each)) typedNeeds(each, refs, labels, templates);
+    }
+    const template = templates?.[value];
+    if (typeof template === "string") refs.push(...templateNameRefs(template, args));
+  } else if (code === UE_LIST) {
     for (const entry of listEntries(value)) {
       if (Array.isArray(entry)) {
-        typedNeeds(entry, refs, labels);
+        typedNeeds(entry, refs, labels, templates);
       }
     }
     if (typeof third(tuple) !== "string") {
@@ -471,12 +500,15 @@ function typedNeeds(tuple: readonly JsonValue[], refs: NameRef[], labels: string
   }
 }
 
-/** The names a dialog's typed arguments need, for the page's name cache to fetch. */
-export function typedNameRefs(args: TemplateArguments): NameRef[] {
+/**
+ * The names a dialog's typed arguments need, for the page's name cache to fetch. A label's own names (UE_LOC) are
+ * known only from its text, where `templates` has it.
+ */
+export function typedNameRefs(args: TemplateArguments, templates?: TypedContext["templates"]): NameRef[] {
   const refs: NameRef[] = [];
   for (const value of Object.values(args)) {
     if (Array.isArray(value)) {
-      typedNeeds(value, refs, []);
+      typedNeeds(value, refs, [], templates);
     }
   }
   return refs;

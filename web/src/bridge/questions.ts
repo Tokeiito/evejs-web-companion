@@ -367,7 +367,7 @@ export function wordsNameRefs(all: ReadonlyArray<QuestionWords | null | undefine
       refs.push(...templateNameRefs(template, argumentsFor(words, client as ClientWording, nameByID), { playerID: client?.playerID ?? null }));
       if (typeof words.dialog === "string") {
         // What the dialog's typed values name: they are text by the time the template is filled.
-        refs.push(...typedNameRefs(parametersOf(words.parameters)));
+        refs.push(...typedNameRefs(parametersOf(words.parameters), client?.templates));
       }
       continue;
     }

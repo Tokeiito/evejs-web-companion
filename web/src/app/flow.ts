@@ -214,6 +214,8 @@ import { decodeNotificationFormats, type NotificationFormats } from "../bridge/n
 const CONTACTS_NOTIFICATION_GROUP = 9;
 /** const.ownerSystem, which a notification's sender of -1 is (neocom/notifications.py 176 to 177). */
 const OWNER_SYSTEM = 1;
+/** const.UE_LOC (carbon/common/lib/const.py 273): a dialog's value that is one of the client's labels, with its arguments. */
+const UE_LOC = 101;
 import { itemChangeTouchesDroneBay } from "../bridge/droneBayNotices.ts";
 import * as api from "./api.ts";
 import type { ClientStore } from "../store/clientStore.ts";
@@ -416,7 +418,6 @@ import { decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge
 import { readAccessGroup, readFolderInfo, readFoldersWithAdminAccess, readMyAccessGroups, readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
 import type { AccessGroup, ActiveBookmarks, BookmarkFolder } from "../bridge/bookmarks.ts";
 import { agentsAtStation, readAgentsTable } from "../bridge/agentReads.ts";
-import { readCorporationMemberIDs } from "../bridge/corpMemberReads.ts";
 import {
   authoritativeFleetMemberCharacterIDs,
   fleetCommanderCharacterIDs,
@@ -426,7 +427,6 @@ import {
   fleetInviteAnswerWords,
   memberWhereabouts,
   type FleetInviteAnswer,
-  type FleetPendingInvite,
 } from "../bridge/fleetCenter.ts";
 import { canBroadcastInFleet, canTagInFleet } from "../bridge/fleetCommand.ts";
 import type { FleetCenterSnapshot } from "../bridge/fleetCenter.ts";
@@ -2802,11 +2802,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         void acceptFleetInvite(fleetInvite.fleetID).catch(() => {});
         return;
       }
+      // (1191 to 1199): otherwise it asks its pilot (AskJoinFleet, yes or no), whoever the inviter is. So does the page.
       store.apply({ type: "fleet/pending-invite", invite: fleetInvite });
       if (fleetInvite.inviterID !== null) {
         requestNames([{ kind: "character", id: fleetInvite.inviterID }]);
       }
-      void autoAcceptCorpFleetInvite(fleetInvite);
       return;
     }
     // fleetSvc.OnFleetJoinReject (1217): the inviter is told that its invitation was turned down, and why where
@@ -5267,55 +5267,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     await inviteFleetMember(characterID);
   }
 
-  /**
- * Join a fleet a CORP-MATE invited us to, without anybody clicking anything.
- *
- * ⚠ THE MANUAL PATH WAS UNRELIABLE IN A WAY NOBODY COULD SEE. An invitation
- * lives only in the session that received the push -- `pendingInvite` starts
- * null and is only ever set by `OnFleetInvite` -- so a page reload destroys it
- * and the panel then truthfully reports that no invitation has arrived. To an
- * operator that reads as "accepting invites works sometimes". It also sat behind
- * a `window.confirm`, which some embedded browsers suppress outright, failing
- * silently. Neither is fixed by trying again; both are fixed by not needing a
- * human at the moment the push lands.
- *
- * ⚠ CORP-MATES ONLY, AND "COULD NOT TELL" MEANS NO. The inviter is a mate where
- * its number is among the corporation's members as the registry lists them (the
- * page's own read, bridge/corpMemberReads.ts: the client's own test of a member).
- * A list that could not be read leaves the invitation sitting in the panel
- * for a human, which is exactly what used to happen for every invitation. This
- * only ever REMOVES a click, never widens who can put this character in a fleet:
- * an invite from outside the corporation still waits to be accepted by hand.
- *
- * ⚠ AND IT NEVER OVERRIDES A FLEET WE ARE ALREADY IN. `acceptFleetInvite`
- * refuses when the roster already reads ready, so a stray invitation cannot pull
- * a pilot out of the fleet it is flying with.
- */
-  async function autoAcceptCorpFleetInvite(invite: FleetPendingInvite): Promise<void> {
-    const inviter = invite.inviterID;
-    if (inviter === null) {
-      return;
-    }
-    let sameCorp: boolean;
-    try {
-      sameCorp = (await readCorporationMemberIDs(bridgeAsk)).includes(inviter);
-    } catch {
-      return;
-    }
-    if (!sameCorp) {
-      return;
-    }
-    // Still pending? A human may have accepted it in the seconds this read took.
-    if (store.fleet.get().pendingInvite?.fleetID !== invite.fleetID) {
-      return;
-    }
-    try {
-      await acceptFleetInvite();
-    } catch {
-      // The panel still shows the invitation; a human can press the button.
-    }
-  }
-
   async function acceptFleetInvite(fleetID?: number): Promise<void> {
     // ⚠ AN EXPLICIT ID BEATS THE SLICE, and the caller that has one is the one
     // that just applied. See the declaration for the race this avoids.
@@ -5342,14 +5293,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    */
   async function tellOfInviteAnswer(answer: FleetInviteAnswer): Promise<void> {
     const told = onlineCharacterID();
-    await resolveNamesNow([{ kind: "character", id: answer.characterID }]);
+    // (The page's words name the pilot as a character; the client's label as an owner, its [character] tag's kind.)
+    await resolveNamesNow([{ kind: "character", id: answer.characterID }, { kind: "owner", id: answer.characterID }]);
     if (told === null || onlineCharacterID() !== told) {
       return;
     }
+    // fleetSvc.OnFleetJoinReject (1217 to 1223): a CustomNotify of UI/Fleet/InviteRejected, the pilot named; with the
+    // reason's own words (InviteRejectedWithReason) where it is one of the client's two (evefleet/const.py 16 to 19).
+    // The page's own words where the install's are not to hand.
+    const reasonLabel = answer.reason === "no-response" ? "UI/Fleet/FleetServer/NoResponse"
+      : answer.reason === "in-a-fleet" ? "UI/Fleet/FleetServer/AlreadyInFleet" : null;
+    const notify: JsonValue = reasonLabel === null
+      ? [UE_LOC, "UI/Fleet/InviteRejected", { type: "dict", entries: [["charID", answer.characterID]] }]
+      : [UE_LOC, "UI/Fleet/InviteRejectedWithReason", { type: "dict", entries: [["charID", answer.characterID], ["reason", [UE_LOC, reasonLabel]]] }];
     const words = fleetInviteAnswerWords(nameCache.get(nameKey("character", answer.characterID)) ?? null, answer.reason);
-    // (Said no longer, and then said: the same answer a second time is said a second time.)
-    store.apply({ type: "fleet/invite-answered", words: null });
-    store.apply({ type: "fleet/invite-answered", words });
+    sayDialog("CustomNotify", { type: "dict", entries: [["notify", notify]] }, words);
   }
 
   /**

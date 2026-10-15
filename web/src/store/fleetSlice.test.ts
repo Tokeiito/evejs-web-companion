@@ -286,26 +286,5 @@ test("an invitation settled is the window's no longer, where it is the one held;
   assert.equal(store.get().fleet.pendingInvite, null);
 });
 
-test("what the inviter was told is kept until another invitation is sent from the window, and goes with the fleet's reset", () => {
-  const store = createClientStore();
-  assert.equal(store.get().fleet.inviteAnswered, null);
-  const words = "Test Three turned down your fleet invitation.";
-  store.apply({ type: "fleet/invite-answered", words });
-  assert.equal(store.get().fleet.inviteAnswered, words);
-  // The fleet's other actions leave it where it is.
-  for (const action of ["form", "accept", "decline", "leave"] as const) {
-    store.apply({ type: "fleet/action-started", action });
-    store.apply({ type: "fleet/action-finished", error: null });
-    assert.equal(store.get().fleet.inviteAnswered, words, action);
-  }
-  // Another invitation sent: what was said of the last one is said no longer.
-  store.apply({ type: "fleet/action-started", action: "invite" });
-  assert.equal(store.get().fleet.inviteAnswered, null);
-  store.apply({ type: "fleet/action-finished", error: null });
-  store.apply({ type: "fleet/invite-answered", words });
-  store.apply({ type: "fleet/invite-answered", words: null });
-  assert.equal(store.get().fleet.inviteAnswered, null);
-  store.apply({ type: "fleet/invite-answered", words });
-  store.apply({ type: "fleet/cleared" });
-  assert.equal(store.get().fleet.inviteAnswered, null);
-});
+// (What the inviter was told of an invitation was kept on the slice until 2026-10-15. The client keeps nothing of it:
+// it puts it up as a strip (fleetSvc.OnFleetJoinReject, 1217 to 1223), and so does the page now.)
