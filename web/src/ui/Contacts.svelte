@@ -46,7 +46,12 @@
   // Agents tab with Add to Addressbook, an owner's with the address book's part of its menu (menusvc.py 570 to 620,
   // 2304 to 2318).
   //
-  // Not here yet: the Notifications group, Capture Portrait, an agent's Show Info and its place's menu, selecting
+  // The Notifications group (contactsForm.py 258, 462 to 469; addressbookService.py GetNotifications, 970 to 988):
+  // the contacts' notifications (notificationMgr.GetByGroupID(9)) formatted as the client's contact formatters
+  // format them, newest first, each its body's first two parts; its menu the sender's contact and block, and Delete
+  // notification (contactNotificationEntry.py).
+  //
+  // Not here yet: Capture Portrait, an agent's Show Info and its place's menu, selecting
   // several agents, and the rest of an owner's menu (mail, chat, fleet and money).
   import { onMount } from "svelte";
   import { formatTemplate, plainText, type TemplateArguments } from "../bridge/clientWords.ts";
@@ -68,6 +73,8 @@
   } from "../bridge/contacts.ts";
   import { isNpcOwner } from "../bridge/mail.ts";
   import { MATCH_BY, MIN_WILDCARD_LENGTH } from "../bridge/searchMatch.ts";
+  import { CONTACT_NOTIFICATION_LABELS, formatContactNotification, notificationEntryParts } from "../bridge/contactNotifications.ts";
+  import type { Notification } from "../bridge/notifications.ts";
   import { isSessionLost } from "../app/flow.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -108,6 +115,9 @@
     standingBad: "UI/PeopleAndPlaces/StandingBad",
     standingTerrible: "UI/PeopleAndPlaces/StandingTerrible",
     noContacts: "UI/PeopleAndPlaces/NoContacts",
+    notifications: "UI/PeopleAndPlaces/Notifications",
+    noNotifications: "UI/PeopleAndPlaces/NoNotifications",
+    deleteNotification: "UI/PeopleAndPlaces/DeleteNotification",
     noneOnWatchlist: "UI/PeopleAndPlaces/NoneOnWatchlist",
     noneBlocked: "UI/PeopleAndPlaces/NoneBlockedYet",
     noContactsStanding: "UI/PeopleAndPlaces/NoContactsStanding",
@@ -214,6 +224,7 @@
 
   /** The groups of the Contacts tab, in the form's order, each with its word (GetStaticLabelsGroups). */
   const GROUPS: readonly (readonly [number, string, string])[] = [
+    [CONTACT_GROUP.notifications, WORDS.notifications, "Notifications"],
     [CONTACT_GROUP.all, WORDS.all, "All Contacts"],
     [CONTACT_STANDING.high, WORDS.excellent, "Excellent Standing"],
     [CONTACT_STANDING.good, WORDS.good, "Good Standing"],
@@ -297,11 +308,18 @@
   /** The window that edits several contacts (ContactManagementMultiEditWnd): whom, their names, the standing chosen. */
   let editingSeveral = $state<{ readonly ids: readonly number[]; readonly names: string; level: number | null } | null>(null);
 
+  /** The contacts' notifications (LoadData, 545: notificationSvc.GetFormattedNotifications(groupContacts)); none where they could not be read. */
+  let notificationsHeld = $state<readonly Notification[] | null>(null);
+  /** The notification whose menu is open. */
+  let notificationMenuFor = $state<number | null>(null);
+
   async function load(): Promise<void> {
     busy = true;
     error = "";
     try {
-      book = await flow.addressBook();
+      const [read, notifications] = await Promise.all([flow.addressBook(), flow.contactNotifications().catch(() => null)]);
+      book = read;
+      notificationsHeld = notifications;
     } catch (cause) {
       error = isSessionLost(cause) ? "Your session ended. Pick your character again." : cause instanceof Error ? cause.message : String(cause);
     } finally {
@@ -331,6 +349,7 @@
 
   /** GetContactsCount (372 to 405) and GetContactsLabelCount (363 to 370): how many a group holds, of what the filter leaves. */
   function countOf(groupID: number | string): number {
+    if (groupID === CONTACT_GROUP.notifications) return notificationsHeld?.length ?? 0;
     if (groupID === CONTACT_GROUP.blocked) return blocked.length;
     if (groupID === CONTACT_GROUP.all) return contacts.length;
     if (groupID === CONTACT_GROUP.watchlist) return contacts.filter((contact) => contact.inWatchlist).length;
@@ -363,7 +382,11 @@
   const shown = $derived.by((): { rows: readonly Row[]; total: number; hint: string } => {
     let entries: { readonly id: number; readonly name: string; readonly standing: number | null }[];
     let hint = word(WORDS.noContacts, "You do not have any contacts.");
-    if (group === CONTACT_GROUP.blocked) {
+    if (group === CONTACT_GROUP.notifications) {
+      // Its entries are the notifications' (notificationEntries, below), and no contact is among them.
+      entries = [];
+      hint = word(WORDS.noNotifications, "No notifications.");
+    } else if (group === CONTACT_GROUP.blocked) {
       entries = blocked.map((owner) => ({ id: owner.ownerID, name: owner.name, standing: null }));
       hint = word(WORDS.noneBlocked, "No one is blocked.");
     } else if (group === CONTACT_GROUP.watchlist) {
@@ -856,6 +879,41 @@
     }, 400);
   }
 
+  // ── The Notifications group ─────────────────────────────────────────────────
+
+  /**
+   * The group's entries (GetScrolllist, 462 to 469; addressbookService.py GetNotifications, 970 to 988): each
+   * notification formatted as the client formats it (FormatNotifications) and shown by its body's first two parts,
+   * newest first (SortListOfTuples by when it was made, reversed). A type the page cannot word yet says so.
+   */
+  const notificationEntries = $derived.by(() => {
+    const templates = $words.templates;
+    const nameOf = (kind: Parameters<typeof resolvedName>[1], id: number) => resolvedName($names.resolved, kind, id, "");
+    return [...(notificationsHeld ?? [])]
+      .sort((left, right) => (left.created === right.created ? 0 : left.created === null ? 1 : right.created === null ? -1 : left.created > right.created ? -1 : 1))
+      .map((notification) => {
+        const formatted = formatContactNotification(notification, templates, nameOf);
+        const parts = formatted === null ? { label: "A notification the page cannot word yet", label2: "", hint: "" } : notificationEntryParts(formatted.body);
+        return {
+          notificationID: notification.notificationID,
+          senderID: notification.senderID,
+          senderName: resolvedName($names.resolved, "owner", notification.senderID, String(notification.senderID)),
+          ...parts,
+        };
+      });
+  });
+
+  /** Delete notification (contactNotificationEntry.py DeleteNotifications, 72 to 73; notificationSvc.py 312 to 321): DeleteNotifications, and it let go of what the group holds. */
+  function deleteNotification(notificationID: number): void {
+    notificationMenuFor = null;
+    notes = [];
+    void run(async () => {
+      await flow.deleteNotifications([notificationID]);
+      notificationsHeld = (notificationsHeld ?? []).filter((notification) => notification.notificationID !== notificationID);
+      drawnAgain();
+    });
+  }
+
   // ── The Agents tab ──────────────────────────────────────────────────────────
 
   /** The window's tab (its tab group, AutoSelect: the one last chosen, kept). */
@@ -1261,6 +1319,7 @@
       ...Object.values(AGENT_WORDS),
       ...Object.values(SEARCH_WORDS),
       "UI/PeopleAndPlaces/AlreadyAContact",
+      ...Object.values(CONTACT_NOTIFICATION_LABELS),
       ...DIALOGS.flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`]),
     ]);
     void load();
@@ -1676,6 +1735,41 @@
       </p>
       {#if book === null}
         <p class="note">{busy ? "Reading…" : ""}</p>
+      {:else if group === CONTACT_GROUP.notifications && notificationEntries.length > 0}
+        <!-- The Notifications group (GetScrolllist, 462 to 469): the contacts' notifications, newest first, each its
+             body's first two parts and the whole as its hint (ContactNotificationEntry). -->
+        <ul class="agents-entries">
+          {#each notificationEntries.slice(startPos, startPos + MAX_CONTACTS_PER_PAGE) as entry (entry.notificationID)}
+            <li title={entry.hint}>
+              <div class="agents-entry">
+                <div>
+                  <strong>{entry.label}</strong>
+                  {#if entry.label2 !== ""}<br /><small>{entry.label2}</small>{/if}
+                </div>
+                <div class="agents-entry-buttons">
+                  <button type="button" class="minor" aria-expanded={notificationMenuFor === entry.notificationID} aria-label="Menu" onclick={() => (notificationMenuFor = notificationMenuFor === entry.notificationID ? null : entry.notificationID)}>⋯</button>
+                </div>
+              </div>
+              {#if notificationMenuFor === entry.notificationID}
+                <!-- Its menu (contactNotificationEntry.py GetMenu, 53 to 70): the sender's contact and block, and Delete notification. -->
+                <p class="controls contacts-menu">
+                  {#if contactIDs.has(entry.senderID)}
+                    <button type="button" class="minor" disabled={busy} onclick={() => { notificationMenuFor = null; manage(entry.senderID, entry.senderName); }}>{word(WORDS.editContact, "Edit Contact")}</button>
+                    <button type="button" class="minor" disabled={busy} onclick={() => { notificationMenuFor = null; removeContacts([{ id: entry.senderID, name: entry.senderName }]); }}>{word(WORDS.removeContact, "Remove Contact")}</button>
+                  {:else}
+                    <button type="button" class="minor" disabled={busy} onclick={() => { notificationMenuFor = null; manage(entry.senderID, entry.senderName); }}>{word(WORDS.addContact, "Add Contact")}</button>
+                  {/if}
+                  {#if blockedIDs.has(entry.senderID)}
+                    <button type="button" class="minor" disabled={busy} onclick={() => { notificationMenuFor = null; unblock([entry.senderID]); }}>{word(WORDS.unblockContact, "Unblock")}</button>
+                  {:else}
+                    <button type="button" class="minor" disabled={busy} onclick={() => { notificationMenuFor = null; block(entry.senderID, entry.senderName); }}>{word(WORDS.blockContact, "Block")}</button>
+                  {/if}
+                  <button type="button" class="minor" disabled={busy} onclick={() => deleteNotification(entry.notificationID)}>{word(WORDS.deleteNotification, "Delete")}</button>
+                </p>
+              {/if}
+            </li>
+          {/each}
+        </ul>
       {:else if shown.rows.length === 0}
         <p class="note">{shown.hint}</p>
       {:else}

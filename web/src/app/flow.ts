@@ -206,6 +206,10 @@ import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey } from "../b
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { isListValue, readDictEntry, readDictPairs, type JsonValue } from "../bridge/wire.ts";
+import { decodeNotifications, type Notification } from "../bridge/notifications.ts";
+import { isCommunicationType } from "../bridge/contactNotifications.ts";
+/** notificationconst.groupContacts: the contacts' notifications' group. */
+const CONTACTS_NOTIFICATION_GROUP = 9;
 import { itemChangeTouchesDroneBay } from "../bridge/droneBayNotices.ts";
 import * as api from "./api.ts";
 import type { ClientStore } from "../store/clientStore.ts";
@@ -1131,6 +1135,10 @@ export interface AppFlow {
   searchOwners(text: string, resultTypes: readonly number[], matchBy: number): Promise<ReadonlyMap<number, readonly { readonly id: number; readonly name: string }[]>>;
   /** An agent added to the address book (charMgr.AddContact with the agent alone); fails with the server's words. */
   addAgentToAddressBook(agentID: number): Promise<void>;
+  /** The contacts' notifications (notificationMgr.GetByGroupID(9)), those of a communication's type, their senders named. */
+  contactNotifications(): Promise<readonly Notification[]>;
+  /** Notifications deleted (notificationMgr.DeleteNotifications); fails with the server's words. */
+  deleteNotifications(notificationIDs: readonly number[]): Promise<void>;
   /** The People & Places window's tab last chosen on this machine; none where none was. */
   addressBookTab(): string | null;
   /** The People & Places window's tab chosen kept, on this machine. */
@@ -5716,6 +5724,41 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // list, and the standing chosen.
   async function editContactsRelationship(contactIDs: readonly number[], relationshipID: number): Promise<void> {
     await contactWrite("EditContactsRelationshipID", [[...contactIDs], relationshipID]);
+  }
+
+  // notificationSvc.GetFormattedNotifications(groupContacts) for the Contacts tab's Notifications group
+  // (notificationSvc.py 138 to 141; GetNotificationsByGroupID, 60 to 73): notificationMgr.GetByGroupID(9), which the
+  // client's service keeps (on the game port the transport keeps it, until a notice or the pilot's own write changes
+  // it); those of a type in communications; their senders named (mailSvc.PrimeOwners).
+  async function contactNotifications(): Promise<readonly Notification[]> {
+    let answer: JsonValue;
+    try {
+      answer = await bridgeAsk("notificationMgr", "GetByGroupID", [CONTACTS_NOTIFICATION_GROUP]);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+      }
+      throw error;
+    }
+    const found = decodeNotifications(isListValue(answer) ? answer.items : answer).filter((notification) => isCommunicationType(notification.typeID));
+    await resolveNamesNow([...new Set(found.map((notification) => notification.senderID).filter((id) => id > 0))].map((id) => ({ kind: "owner" as const, id })));
+    return found;
+  }
+
+  // notificationSvc.DeleteNotifications (312 to 321): DeleteNotifications with the notifications, a list.
+  async function deleteNotifications(notificationIDs: readonly number[]): Promise<void> {
+    try {
+      await bridgeDo("notificationMgr", "DeleteNotifications", [[...notificationIDs]]);
+    } catch (error) {
+      throwIfRequestRetired(error);
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      throw new Error(mailRefusalMessage(error));
+    }
   }
 
   // AddToAddressBook for an agent (addressbookService.py 732 to 735): AddContact with the agent and nothing else.
@@ -16577,6 +16620,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     keepContactsSearchSettings,
     searchOwners,
     addAgentToAddressBook,
+    contactNotifications,
+    deleteNotifications,
     addressBookTab,
     keepAddressBookTab,
     sendMail,

@@ -924,6 +924,8 @@ const aJobAndItsSystem = (args, kwargs) => (args.length === 2 && Number.isSafeIn
 const dronesListed = ([drones, ...rest], kwargs) => ({ args: [list(drones), ...rest], kwargs });
 /** The address book's writes of owners (addressbookService.py 658, 674, 842): the owners a list, as the client's are. */
 const ownersListed = ([owners, ...rest], kwargs) => ({ args: [list(owners), ...rest], kwargs });
+/** notificationSvc.DeleteNotifications (319): the notifications a list, as the client's are. */
+const notificationsListed = ([notifications, ...rest], kwargs) => ({ args: [list(notifications), ...rest], kwargs });
 /**
  * A contact label's bit, or the sum of several (manageLabels.py ManageLabel, 76 to 78), as the page sends it: a
  * number as it is, and past what a number holds exactly the text of its digits, a long. Anything else as it came.
@@ -1896,6 +1898,7 @@ const RETAIL_CALLS = Object.freeze({
   "mailMgr.SendMail": typing(reshaped(`${MAIL_SERVICES}/mailSvc.py:965`, recipientsListed,
     "self.mailMgr.SendMail(toCharacterIDs, toListID, toCorpOrAllianceID, title, body, isReplyTo, isForwardedFrom), through eveMisc.CSPAChargedAction: the recipients a list (the compose window's self.toChars.values(), evemail.py 2281), the message answered and the one forwarded 0 for none. In no recording. The subject and the body unicode, the body the empty byte string where the editor holds nothing."), [3, 4]),
   "notificationMgr.GetByGroupID": same(`${MAIL_SERVICES}/notificationSvc.py:64`, "RemoteSvc('notificationMgr').GetByGroupID(groupID)"),
+  "notificationMgr.DeleteNotifications": reshaped(`${MAIL_SERVICES}/notificationSvc.py:319`, notificationsListed, "self.notificationMgr.DeleteNotifications(notificationIDs): the notifications a list, from the Contacts tab's notification entry's Delete notification ([self.notificationID]: contactNotificationEntry.py DeleteNotifications), a hundred at most. In no recording."),
   "notificationMgr.GetUnprocessed": same(`${MAIL_SERVICES}/notificationSvc.py:107`, "RemoteSvc('notificationMgr').GetUnprocessed(), no arguments"),
   "notificationMgr.GetAllNotifications": Object.freeze({
     status: "same",
