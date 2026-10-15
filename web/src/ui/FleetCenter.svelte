@@ -4,6 +4,7 @@
   import { nameKey, resolvedName } from "../store/names.ts";
   import type { AppFlow } from "../app/flow.ts";
   import { memberWhereabouts } from "../bridge/fleetCenter.ts";
+  import FleetHistory from "./FleetHistory.svelte";
   import type { FleetMember, FleetSquad, FleetWing } from "../bridge/boundFleet.ts";
   import type { ClientStore } from "../store/clientStore.ts";
 
@@ -236,7 +237,8 @@
 
   {#if refreshError}<p class="error">{refreshError}</p>{/if}
   {#if $fleet.readError}<p class="error">{$fleet.readError}</p>{/if}
-  {#if $fleet.actionError}<p class="error">{$fleet.actionError}</p>{/if}
+  <!-- (A refusal the client's own dialog said is not said again here: ClientDialogs.svelte.) -->
+  {#if $fleet.actionError && !$fleet.actionErrorSaid}<p class="error">{$fleet.actionError}</p>{/if}
   {#if $fleet.activeAction !== null}
     <p class="note">Updating the fleet and checking the authoritative roster…</p>
   {/if}
@@ -323,6 +325,8 @@
       </form>
       {#if $fleet.inviteAnswered}<p class="note">{$fleet.inviteAnswered}</p>{/if}
     </section>
+
+    <FleetHistory {store} {flow} />
 
     <section class="hierarchy" aria-label="Fleet hierarchy">
       <h3>Fleet hierarchy</h3>

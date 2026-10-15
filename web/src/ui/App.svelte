@@ -11,6 +11,8 @@
   // switching is instant and safe. Login/select and all fetch/decode live
   // elsewhere; this file is pure orchestration.
   import CharacterBar from "./CharacterBar.svelte";
+  import FleetInvitation from "./FleetInvitation.svelte";
+  import ClientDialogs from "./ClientDialogs.svelte";
   import Onboarding from "./Onboarding.svelte";
   import PilotHangar from "./PilotHangar.svelte";
   import Workspace from "./Workspace.svelte";
@@ -391,6 +393,22 @@
     }
   });
 
+  // What the server sends a pilot not in front waits at the BFF for that pilot's next read, and a docked, idle
+  // pilot makes none: it heard nothing until it was switched to (seen 2026-10-15, a fleet invitation 54 seconds
+  // unheard). The retail client each pilot stands for hears at once, and puts some of it to its pilot (a fleet
+  // invitation, FleetInvitation.svelte). So each pilot not in front hears what waits for it every few seconds, by
+  // a read that asks the server nothing (flow.hearInBackground), each guarded as every beat here is.
+  const BACKGROUND_HEARING_MS = 4000;
+  $effect(() => {
+    const behind = sessions.filter((s) => s.id !== activeId);
+    if (behind.length === 0) return;
+    const beats = behind.map((s) => skipWhileBusy(() => s.flow.hearInBackground().catch(() => {})));
+    const handle = setInterval(() => {
+      for (const beat of beats) void beat();
+    }, BACKGROUND_HEARING_MS);
+    return () => clearInterval(handle);
+  });
+
   // R107 — mirror the ACTIVE pilot's token into the per-tab global. A few panels
   // still call the API WITHOUT per-session options — the Bot Builder's
   // create/update/list/deleteBotScript and iconCache's admin routes — and those
@@ -662,6 +680,22 @@
       />
     </ErrorBoundary>
   {/key}
+  <!-- A fleet invitation is asked of its own pilot whichever pilot is in front (fleetSvc.OnFleetInvite: the
+       client's own window for that pilot), so the questions are the tab's, above every pilot's cockpit. -->
+  <ErrorBoundary name="Fleet invitations">
+    <div class="fleet-invitations">
+      {#each sessions as session (session.id)}
+        <FleetInvitation {session} inFront={session.id === activeId} />
+      {/each}
+    </div>
+  </ErrorBoundary>
+  <!-- A refusal the server names a dialog for, put up as the client puts up a UserError: each pilot's, whichever is in
+       front, as the invitations are. -->
+  <ErrorBoundary name="Client dialogs">
+    {#each sessions as session (session.id)}
+      <ClientDialogs {session} inFront={session.id === activeId} />
+    {/each}
+  </ErrorBoundary>
 {:else if restoring}
   <!-- Refresh restore in flight and no cockpit up yet: bringing pilots back. -->
   <h1>EveJS Web</h1>

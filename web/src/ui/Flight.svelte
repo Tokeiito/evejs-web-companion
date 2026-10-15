@@ -214,10 +214,11 @@
   const doingLine = $derived(doingText($bot, $travel));
   const wrongLine = $derived(
     wrongText({
-      flightActionError: $flight.actionError,
+      // (A refusal the client's own dialog said is not said again here: ClientDialogs.svelte.)
+      flightActionError: $flight.actionErrorSaid ? null : $flight.actionError,
       travelFailureReason: $travel.failureReason,
       botFailureReason: $bot.failureReason,
-      targetingActionError: $targeting.actionError,
+      targetingActionError: $targeting.actionErrorSaid ? null : $targeting.actionError,
     }),
   );
 

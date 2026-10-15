@@ -1046,7 +1046,8 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
     return;
   }
   // (The fleet an invitation is to, where the call says one: a fleet's number as above. And the pilot invited
-  // is a pilot's number, the call's first argument: nothing else of what it came with is taken.)
+  // is a pilot's number, the call's first argument; its place, the next three, a wing's, a squad's and a role's
+  // number or nothing each: nothing else of what it came with is taken.)
   if (objectKind === "fleetExpected" && saysWhich && strictPositiveID(body.of) === null) {
     res.status(400).json({ ok: false, error: "INVALID_FLEET_ID", message: "A positive fleetID is required." });
     return;
@@ -1055,14 +1056,19 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
     res.status(400).json({ ok: false, error: "INVALID_CHARACTER", message: "A positive characterID is required." });
     return;
   }
+  if (objectKind === "fleetExpected" && invitedPlaceOf(body.args) === null) {
+    res.status(400).json({ ok: false, error: "INVALID_FLEET_PLACE", message: "A wing, a squad and a role are each a positive number or nothing." });
+    return;
+  }
   if (objectKind !== null && body.pilot !== true) {
     res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: "A call on an object is a pilot's." });
     return;
   }
   // A warp of the page's is one the client's menus make: to a thing, a fleet member, a bookmark, a scan result or
-  // a launch, with a range and fleet=False at most. The server's handler takes more of a caller than that (a point
-  // to fly to, a fleet's warp, subjects no menu of the page's has): what is none of a client's is refused here,
-  // on either transport, and nothing is sent.
+  // a launch, with a range and fleet=False at most, and a fleet's warp to a member with the formation's settings.
+  // The server's handler takes more of a caller than that (a point to fly to, a fleet's warp to anything else,
+  // subjects no menu of the page's has): what is none of a client's is refused here, on either transport, and
+  // nothing is sent.
   if (body.service === "beyonce" && body.method === "CmdWarpToStuff") {
     const why = notAClientsWarp(body.args, body.kwargs ?? null);
     if (why !== null) {
@@ -1147,9 +1153,13 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
       // held. Answered as the call that was asked.)
       // (Or a fleet formed, as its route forms one: bound through the call, and Init asked on what it answered.)
       : objectKind === "fleet"
+      // (Or a member kicked, or the boss handed on, on the session's own fleet's object: fleetSvc.KickMember and
+      // MakeLeader, 601 to 612.)
       ? { ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => (body.method === "CreateFleet"
         ? createFleetCall(heldBridgeSession, req.webSessionID)
-        : leaveFleetCall(heldBridgeSession, req.webSessionID, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null))), service: body.service, method: body.method }
+        : body.method === "LeaveFleet"
+        ? leaveFleetCall(heldBridgeSession, req.webSessionID, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null)
+        : boundCall(heldBridgeSession, req.webSessionID, fleetBindSpec(), body.method, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null))), service: body.service, method: body.method }
       // (An invitation accepted, as its route accepts one: on the fleet the page names, bound by its number,
       // with no type of ship said whatever the call came with.)
       : objectKind === "fleetByNumber"
@@ -1158,11 +1168,11 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
         ? rejectFleetInviteCall(heldBridgeSession, req.webSessionID, strictPositiveID(body.of), decliningWordOf(body.args))
         : acceptFleetInviteCall(heldBridgeSession, req.webSessionID, strictPositiveID(body.of)))),
         service: body.service, method: body.method }
-      // (A pilot invited, on the session's own fleet or on the fleet the call expects, with the invitee and
-      // nothing of a wing, a squad or a role whatever the call came with.)
+      // (A pilot invited, on the session's own fleet or on the fleet the call expects, with the invitee and the
+      // place the call says, a wing, a squad and a role or nothing of them.)
       : objectKind === "fleetExpected"
       ? { ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => inviteToFleetCall(
-        heldBridgeSession, req.webSessionID, inviteeOf(body.args), saysWhich ? strictPositiveID(body.of) : null)), service: body.service, method: body.method }
+        heldBridgeSession, req.webSessionID, inviteeOf(body.args), saysWhich ? strictPositiveID(body.of) : null, invitedPlaceOf(body.args))), service: body.service, method: body.method }
       // (A follow, as its routes made it: held back where the ship already flies it, and through the gateway
       // with the throttle opened first. bridgeCallPolicy.js, PAGE_FOLLOW_CALLS.)
       : ordersAFollow(body.service, body.method)
@@ -2678,12 +2688,27 @@ app.get("/api/bridge/bound-fleet", requireAuth, async (req, res, next) => {
       });
       return;
     }
+    // fleetSvc.InitFleet (254 to 258): without its fleet's object the client asks nothing of its fleet, whatever the
+    // session says, and it has that object only from CreateFleet or an invitation it accepted (334, 1195); the game
+    // port holds one the same way (pilots.js afterFleetCall). Where none is held the session's fleet is said and
+    // nothing is asked (until 2026-10-15 the BFF bound one afresh here and asked all five reads).
+    if (own.holdsObject !== true) {
+      held.fleetID = String(own.fleetID);
+      res.json({
+        ok: true,
+        characterID: held.characterID,
+        fleetID: held.fleetID,
+        reads: Object.fromEntries(FLEET_READ_METHODS.map((method) => [method, { error: "NOT_ASKED", message: null }])),
+        notifications: [],
+      });
+      return;
+    }
   }
   // fleetSvc.py reads a fleet's state once and keeps it right from the server's notices, its wings and its message
   // with it. Where the game port holds the fleet's object it keeps the fleet the same way (pilots.js fleetKept),
-  // and those reads are answered from what is kept. With nothing kept they are asked, as before.
+  // and those reads are answered from what is kept. With nothing kept they are asked of that object.
   let kept = null;
-  if (own && own.holdsObject === true) {
+  if (own) {
     try {
       kept = await gamePortPilots.fleetKept({ userid: held.accountID }, held.bridgeSessionID);
     } catch (error) {
@@ -4588,6 +4613,10 @@ async function dispatchShipSwapWrite(req, res, next, service, method, args, targ
  *            work out from the gate itself. Waited for in full and latched on a timeout, and the park bound again in
  *            the new system before the answer, as its route did (reparkAfterArrival: the barrier answers while the
  *            hull is still inert).
+ *   cyno     by the ship's jump drive into a fleet member's cyno's system (cynoTravelSvc.py: CmdJumpToFleetModuleBeacon
+ *            and CmdGroupJumpToFleetModuleBeacon(charID, beaconID, solarsystemID)). Refused for a pilot not in space and
+ *            for a member, a beacon or a system that is no number. Kept as a stargate's jump is (its keeping, latch
+ *            and repark), into the beacon's system.
  */
 async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, args, kwargs) {
   const held = requireHeldBridgeSession(req, res);
@@ -4656,10 +4685,23 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
         return;
       }
       expected = { fromSolarSystemID: Number(before.flight.solarSystemID) || null, shipID };
+    } else if (kind === "cyno") {
+      if (before.flight.inSpace !== true) {
+        res.status(409).json({ ok: false, error: "NOT_IN_SPACE", message: "The ship is not in space; undock first." });
+        return;
+      }
+      const [memberID, beaconID, beaconSystemID] = args.map(Number);
+      if (![memberID, beaconID, beaconSystemID].every((id) => Number.isSafeInteger(id) && id > 0)) {
+        res.status(400).json({ ok: false, error: "INVALID_BEACON", message: "A member, its beacon and the beacon's system are each a positive number." });
+        return;
+      }
+      expected = { fromSolarSystemID: Number(before.flight.solarSystemID) || null, toSolarSystemID: beaconSystemID, shipID };
     } else {
       throw new Error(`No keeping of a ${kind} is known.`);
     }
-    if (!await acquireRouteTransition(res, held, kind, expected)) {
+    // (A cyno's jump is kept as a stargate's: a session into another system, the park bound again there.)
+    const keeping = kind === "cyno" ? "stargate" : kind;
+    if (!await acquireRouteTransition(res, held, keeping, expected)) {
       return;
     }
     // (By the name the transport knows it by, as the generic call asks any write: bridgeCallPolicy.js, gatewaysNameFor.
@@ -4672,7 +4714,7 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
         ? await heldTopLevelCall(held, req.webSessionID, "beyonce", "CmdDock", args, kwargs)
         : await heldTopLevelCall(held, req.webSessionID, "ship", "Undock", [shipID, Boolean(kwargs && kwargs.ignoreContraband)], null);
     markTransitionAccepted(held);
-    const after = await awaitRouteTransition(held, req.webSessionID, kind, expected, waiting);
+    const after = await awaitRouteTransition(held, req.webSessionID, keeping, expected, waiting);
     if (!after.ok && kind === "dock") {
       // The server's silent decline, as the route took it: released (unless another change took its place) and
       // answered, the page reading the flight after.
@@ -4695,7 +4737,7 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
     }
     // Arrived through a gate: the park bound again in the new system before the answer, so that the ship can move
     // the moment the page acts on it (reparkAfterArrival).
-    if (kind === "stargate") {
+    if (keeping === "stargate") {
       await reparkAfterArrival(held, after.flight && after.flight.solarSystemID);
     }
     res.json({
@@ -4707,7 +4749,7 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
       ...pilotClock(held),
     });
   } catch (error) {
-    if (held.transition && held.transition.kind === kind) {
+    if (held.transition && held.transition.kind === (kind === "cyno" ? "stargate" : kind)) {
       // (A dock never latches: it is safe to ask again, and an error releases it, as its route had it.)
       if (held.transition.phase === "requested" || kind === "dock") {
         cancelHeldTransition(held);
@@ -5553,17 +5595,41 @@ function inviteeOf(args) {
 }
 
 /**
- * A pilot invited to the pilot's own fleet, as the client invites one from its menus (fleetSvc.Invite, 351 to
- * 363): self.fleet.Invite(charID, None, None, None), on the fleet's own object. The page names the invitee alone:
- * a wing, a squad and a role are None here whatever the call came with, since the server seats an invitee in
- * whatever role it is told. `expectedFleetID` is the fleet the caller expects its pilot to be in, where it says
- * one: the call is then made on the object bound by that number, so that the server's check of the inviter runs
- * against that fleet and a held-back invitation cannot follow its pilot into another. Whatever comes of it, none
- * of the BFF's handles for a fleet is kept, as after its route.
+ * The place a call of the page's invites a pilot to: its second, third and fourth arguments, a wing's, a squad's and
+ * a role's number, each nothing where the call says none (the invite menu's first entry says none of them). Null
+ * where one is neither.
  */
-async function inviteToFleetCall(held, webSessionID, inviteeCharID, expectedFleetID) {
+function invitedPlaceOf(args) {
+  if (!Array.isArray(args)) {
+    return null;
+  }
+  const place = [];
+  for (const value of [args[1], args[2], args[3]]) {
+    if (value === undefined || value === null) {
+      place.push(null);
+      continue;
+    }
+    const id = strictPositiveID(value);
+    if (id === null) {
+      return null;
+    }
+    place.push(id);
+  }
+  return { wingID: place[0], squadID: place[1], role: place[2] };
+}
+
+/**
+ * A pilot invited to the pilot's own fleet, as the client invites one from its menus (fleetSvc.Invite, 351 to
+ * 363): self.fleet.Invite(charID, wingID, squadID, role), on the fleet's own object. `place` is the invite menu's
+ * (menusvc.FleetInviteMenu, MemberMenu's places), None for each it does not say; the server holds a placed
+ * invitation to the inviter's command, as it holds a member's move. `expectedFleetID` is the fleet the caller
+ * expects its pilot to be in, where it says one: the call is then made on the object bound by that number, so that
+ * the server's check of the inviter runs against that fleet and a held-back invitation cannot follow its pilot into
+ * another. Whatever comes of it, none of the BFF's handles for a fleet is kept, as after its route.
+ */
+async function inviteToFleetCall(held, webSessionID, inviteeCharID, expectedFleetID, place = null) {
   try {
-    return await boundCall(held, webSessionID, expectedFleetID === null ? fleetBindSpec() : fleetIDBindSpec(expectedFleetID), "Invite", [inviteeCharID, null, null, null], null);
+    return await boundCall(held, webSessionID, expectedFleetID === null ? fleetBindSpec() : fleetIDBindSpec(expectedFleetID), "Invite", [inviteeCharID, place?.wingID ?? null, place?.squadID ?? null, place?.role ?? null], null);
   } finally {
     invalidateFleetBoundHandles(held);
   }
@@ -12987,6 +13053,47 @@ app.post("/api/names", requireAuth, async (req, res, next) => {
   }
 });
 
+// Corporations' tickers, as the client's cfg.corptickernames has them: an NPC corporation's from the static tables
+// (the client fills those from its own data and asks for none), a player corporation's asked of the game server by
+// the game-port transport, which keeps each it is answered (pilots.js corpTickersNamed): in one call, or in one for
+// each where `each` is said, as the client's own askings go. A ticker that could not be asked (no pilot on the game
+// port, or the call refused) is named in `unresolved`; null is the server's answer of none.
+app.post("/api/corp-tickers", requireAuth, async (req, res, next) => {
+  try {
+    const asked = Array.isArray(req.body && req.body.corpIDs) ? req.body.corpIDs : [];
+    const corpIDs = [...new Set(asked.filter((corpID) => Number.isSafeInteger(corpID) && corpID > 0))].slice(0, 200);
+    const each = Boolean(req.body && req.body.each === true);
+    const tickers = {};
+    const unresolved = [];
+    const players = [];
+    for (const corpID of corpIDs) {
+      if (corpID >= 1000000 && corpID < 2000000) {
+        const corporation = staticData.getCorporation(corpID);
+        tickers[corpID] = corporation && corporation.tickerName ? String(corporation.tickerName) : null;
+      } else {
+        players.push(corpID);
+      }
+    }
+    if (players.length > 0) {
+      const held = bridgeSessions.get(req.webSessionID) || null;
+      if (!held || !gamePortPilots || !isGamePortHandle(held.bridgeSessionID)) {
+        unresolved.push(...players);
+      } else {
+        try {
+          const named = await heldRequest(held, req.webSessionID, false, () => gamePortPilots.corpTickersNamed(
+            players, each, { userid: held.accountID }, held.bridgeSessionID));
+          for (const corpID of players) tickers[corpID] = named.get(corpID) ?? null;
+        } catch (_error) {
+          unresolved.push(...players);
+        }
+      }
+    }
+    res.json({ ok: true, tickers, unresolved });
+  } catch (error) {
+    next(error);
+  }
+});
+
 /**
  * R24 slice C — MODULE CYCLE TIMES, from static reference data.
  *
@@ -15402,12 +15509,25 @@ app.use((error, req, res, next) => {
     Number.isFinite(error && error.statusCode) && error.statusCode >= 400
       ? error.statusCode
       : 500;
+  const refusal = dialogRefusalOf(error);
   res.status(statusCode).json({
     ok: false,
     error: error && error.code ? error.code : error.message || "SERVER_ERROR",
     message: error && error.message ? error.message : "Server error",
+    ...(refusal ? { refusal } : {}),
   });
 });
+
+/**
+ * What the server refused a pilot's call with, where it said (a game-port pilot's UserError): its message key, the
+ * name of the dialog the client puts up for it, and the values for that dialog (exc.msg and exc.dict, which the
+ * client hands to prompt_player_fsd_dialog: eve_exception_handler.handle_exception). Null for any other failure.
+ */
+function dialogRefusalOf(error) {
+  const refusal = error && error.refusal;
+  if (!refusal || typeof refusal.key !== "string" || !/^\w{1,100}$/.test(refusal.key)) return null;
+  return { key: refusal.key, values: refusal.values ?? null };
+}
 
 return app;
 }

@@ -38,6 +38,7 @@ export type TabID =
   | "miningOperations"
   | "activity"
   | "fleet"
+  | "watchlist"
   | "scanner"
   | "mail"
   | "contacts"
@@ -176,6 +177,9 @@ export const TABS: readonly TabDef[] = [
   { id: "miningOperations", label: "Mining Command Center", where: "both", launchable: false },
   { id: "activity", label: "Activity", where: "both" },
   { id: "fleet", label: "Fleet", where: "both" },
+  // The fleet's watch list (fleetWatchList.py WatchListPanel): opened where it is wanted, as the client opens it on an
+  // add to it (fleetSvc.AddFavorite, 676), so not offered in the rail.
+  { id: "watchlist", label: "Watch List", where: "both", launchable: false },
   { id: "mail", label: "Mail", where: "both" },
   // The client's People & Places (AddressBookWindow), titled Contacts: the pilot's own contacts and blocked owners.
   { id: "contacts", label: "Contacts", where: "both" },

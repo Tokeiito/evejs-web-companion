@@ -14,6 +14,7 @@
   import Scanner from "./Scanner.svelte";
   import Mail from "./Mail.svelte";
   import Contacts from "./Contacts.svelte";
+  import Watchlist from "./Watchlist.svelte";
   import Locations from "./Locations.svelte";
   import Contracts from "./Contracts.svelte";
   import PersonalAssets from "./PersonalAssets.svelte";
@@ -120,7 +121,7 @@
 {:else if tab === "mail"}
   <Mail {store} {flow} />
 {:else if tab === "contacts"}
-  <Contacts {store} {flow} showAgents={() => onOpen?.("agents")} openMail={() => onOpen?.("mail")} />
+  <Contacts {store} {flow} showAgents={() => onOpen?.("agents")} openMail={() => onOpen?.("mail")} openWatchlist={() => onOpen?.("watchlist")} />
 {:else if tab === "locations"}
   <Locations {store} {flow} />
 {:else if tab === "contracts"}
@@ -176,6 +177,8 @@
   <Standings {store} {flow} />
 {:else if tab === "characterSheet"}
   <CharacterSheet {store} {flow} />
+{:else if tab === "watchlist"}
+  <Watchlist {store} {flow} />
 {:else if tab === "settings"}
   <Settings {store} {flow} />
 {:else if tab === "log"}

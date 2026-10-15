@@ -91,9 +91,16 @@ export function labelsToRemove(masks: readonly (bigint | null)[], labels: readon
 
 /** GetLabelNameList (1204 to 1213; mailSvc.GetLabelMaskAsList): the names of the pilot's labels a mask has, by name in lower case. */
 export function labelNamesOf(labelMask: bigint, labels: readonly ContactLabel[]): string[] {
-  return byKey(labels.filter((label) => label.labelID > 0n && (labelMask & label.labelID) === label.labelID), (label) => label.name.toLowerCase())
-    .map((label) => label.name);
+  return labelsOf(labelMask, labels).map((label) => label.name);
 }
+
+/** The pilot's labels a mask has, by name in lower case (GetLabelNameList, as above). */
+export function labelsOf(labelMask: bigint, labels: readonly ContactLabel[]): ContactLabel[] {
+  return byKey(labels.filter((label) => label.labelID > 0n && (labelMask & label.labelID) === label.labelID), (label) => label.name.toLowerCase());
+}
+
+/** The labels' colours, which the contacts' labels share with the mail's (bridge/labelSwatches.ts). */
+export { SWATCH_COLORS, labelSwatch } from "./labelSwatches.ts";
 
 /** A mask with bits taken off it, as the client takes them (labelMask & const.maxLong - labelID: 1084, 1145). */
 export function labelMaskWithout(labelMask: bigint, bits: bigint): bigint {

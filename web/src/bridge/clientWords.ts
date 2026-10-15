@@ -52,6 +52,18 @@ export interface FormatContext {
   readonly writeInterval?: (ticks: bigint, from: string | null, to: string | null) => string | null;
   /** The same for a tag that asks for an interval's short written form ("6d 8h 57m"). */
   readonly writeShortInterval?: (ticks: bigint, from: string | null, to: string | null) => string | null;
+  /**
+   * A distance in metres written as the client writes one (NumericPropertyHandler._GetDistance: FmtDist(value,
+   * maxdemicals=decimalPlaces, 3 where the tag says none)), for a numeric tag that asks for its distance. Without
+   * it such a tag is written as a plain number.
+   */
+  readonly writeDistance?: (meters: number, decimalPlaces: number) => string;
+  /**
+   * An amount of ISK written as the client writes one (NumericPropertyHandler._GetIsk: FmtISK(value,
+   * showFractionsAlways=decimalPlaces > 0), 2 places where the tag says none), for a numeric tag that asks for its
+   * isk. Null, or without it, such a tag is written as a plain number.
+   */
+  readonly writeIsk?: (amount: number, decimalPlaces: number) => string | null;
 }
 
 /** A message's arguments by name: what the server sent with the label, and what the client adds. */
@@ -200,7 +212,9 @@ function formatDateTime(filetime: number, settings: Readonly<Record<string, stri
     return "";
   }
   const date = `${when.getUTCFullYear()}.${two(when.getUTCMonth() + 1)}.${two(when.getUTCDate())}`;
-  const time = `${two(when.getUTCHours())}:${two(when.getUTCMinutes())}`;
+  // dateTimeFormatters.FormatDateTime (11 to 18): a full, long or medium time has its seconds, a short one not.
+  const seconds = settings.time === "medium" || settings.time === "long" || settings.time === "full" ? `:${two(when.getUTCSeconds())}` : "";
+  const time = `${two(when.getUTCHours())}:${two(when.getUTCMinutes())}${seconds}`;
   if (settings.date === "none") return time;
   if (settings.time === "none") return date;
   return `${date} ${time}`;
@@ -258,7 +272,16 @@ function renderToken(token: TemplateToken, args: TemplateArguments, context: For
   switch (token.type) {
     case "numeric": {
       const value = numberOf(given);
-      text = value === null ? "" : formatNumber(value, token);
+      const places = (fallback: number): number => {
+        const said = Number(token.settings.decimalPlaces ?? fallback);
+        return Number.isInteger(said) && said >= 0 ? said : fallback;
+      };
+      const isk = value !== null && token.property === "isk" && context.writeIsk ? context.writeIsk(value, places(2)) : null;
+      text = value === null
+        ? ""
+        : token.property === "distance" && context.writeDistance
+          ? context.writeDistance(value, places(3))
+          : isk ?? formatNumber(value, token);
       break;
     }
     case "item":

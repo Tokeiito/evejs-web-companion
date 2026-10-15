@@ -179,6 +179,11 @@ export interface InventoryState {
   readonly loaded: boolean;
   /** Non-null when the last mutation (move/stack/board) failed. */
   readonly actionError: string | null;
+  /**
+   * Whether that refusal was said in the client's own way (ClientDialogs.svelte): the panel and the notices then do
+   * not say it again. False or absent otherwise.
+   */
+  readonly actionErrorSaid?: boolean;
   // --- R14 inventory depth ---
   /** The items ticked for a bulk move / trash, by itemID. */
   readonly selection: readonly number[];
@@ -415,6 +420,11 @@ export interface FittingState {
   /** Non-null when the last fitting action failed or was declined. */
   readonly actionError: string | null;
   /**
+   * Whether that refusal was said in the client's own way (ClientDialogs.svelte; or not at all, where the client says
+   * nothing of it): the windows and the notices then do not say it again. False or absent otherwise.
+   */
+  readonly actionErrorSaid?: boolean;
+  /**
    * Reloads the SERVER announced (`OnChargeBeingLoadedToModule`), by module
    * itemID. In space a load is queued for the module's reload time, so the fit
    * read straight after the call still shows the old charge; this is how the
@@ -607,6 +617,11 @@ export interface IndustryState {
   /** Non-null when the last install/deliver/cancel failed or was declined. */
   readonly actionError: string | null;
   /**
+   * Whether that refusal was said in the client's own way (ClientDialogs.svelte): the window and the notices then do
+   * not say it again. False or absent otherwise.
+   */
+  readonly actionErrorSaid?: boolean;
+  /**
    * What the server last said a monitored job's place has (OnIndustryMaterials: the monitor's number, and typeID
    * -> how much), with the count of its tellings since the pilot came online. Null where it has said nothing.
    */
@@ -749,6 +764,11 @@ export interface MarketState {
   /** Non-null when the last place/cancel/modify failed or was declined. */
   readonly actionError: string | null;
   /**
+   * Whether that refusal was said in the client's own way (ClientDialogs.svelte): the window and the notices then do
+   * not say it again. False or absent otherwise.
+   */
+  readonly actionErrorSaid?: boolean;
+  /**
    * What the LAST write actually did, read back from the server afterwards.
    * Never a prediction — see `MarketActionOutcome`.
    */
@@ -855,6 +875,11 @@ export interface MailState {
   readonly inboxError: string | null;
   /** Non-null when the last open/send failed or was declined. */
   readonly actionError: string | null;
+  /**
+   * Whether that refusal was said in the client's own way (ClientDialogs.svelte): the window and the notices then do
+   * not say it again. False or absent otherwise.
+   */
+  readonly actionErrorSaid?: boolean;
   readonly lastOutcome: MailActionOutcome | null;
 }
 
@@ -928,7 +953,7 @@ export interface ActivityState {
 
 // --- Fleet Center ----------------------------------------------------------
 
-export type FleetAction = "form" | "invite" | "accept" | "decline" | "leave";
+export type FleetAction = "form" | "invite" | "accept" | "decline" | "leave" | "kick" | "leader" | "move";
 
 /**
  * Player-facing fleet state. `fleet` is the last authoritative bound read;
@@ -944,6 +969,13 @@ export type FleetAction = "form" | "invite" | "accept" | "decline" | "leave";
  * sites updated by hand, and would silently drift the first time one of them
  * was missed.
  */
+/** A member's cyno, as the fleet told it: its system, the beacon and its type. */
+export interface FleetJumpBeacon {
+  readonly solarSystemID: number;
+  readonly beaconID: number;
+  readonly typeID: number | null;
+}
+
 export interface FleetCenterState {
   readonly loaded: boolean;
   readonly loading: boolean;
@@ -958,9 +990,30 @@ export interface FleetCenterState {
   readonly activeAction: FleetAction | null;
   readonly readError: string | null;
   readonly actionError: string | null;
+  /**
+   * Whether the last action's refusal was said in the client's own dialog (flow.dialogsSaid, as the client puts up a
+   * UserError): the windows then say it no more. False or absent otherwise.
+   */
+  readonly actionErrorSaid?: boolean;
   readonly refreshedAtMs: number | null;
   /** The most recent OnFleetBroadcast call ("shoot that"). Last-write-wins. */
   readonly lastBroadcast: FleetBroadcast | null;
+  /**
+   * The pilot's watchlist in this fleet, fleetSvc's self.favorites, in the order its members were added: kept by the
+   * page as the client keeps it, and gone with the fleet (ProcessSessionChange, 1671: favorites.clear()).
+   */
+  readonly watchlist?: readonly number[];
+  /**
+   * The members' cynos lit, by the member's number (fleetSvc.activeModuleBeacons: OnFleetJumpBeaconModuleChange, 209
+   * to 216; a member that leaves takes its own with it, 1240), what Jump, Bridge and Conduit Jump To go by. Kept by
+   * the page as the client keeps it, and gone with the fleet.
+   */
+  readonly jumpBeacons?: Readonly<Record<string, FleetJumpBeacon>>;
+  /**
+   * The broadcasts the pilot has heard, newest first, five hundred at most (fleetSvc.AddBroadcast: broadcastHistory),
+   * kept across fleets as the client keeps them until cleared.
+   */
+  readonly broadcastHistory?: readonly FleetBroadcast[];
   /**
    * itemID -> standing target tag, from the last OnFleetStateChange.
    * ⚠ `null` and an empty map mean different things and must stay distinct:
@@ -1264,6 +1317,26 @@ export interface MissionSpot {
   readonly locationNumber: number;
   readonly solarSystemID: number | null;
   readonly isAgentBase: boolean;
+  /**
+   * The bookmark's own place, as the journal holds it, for the Locations window's Agent Missions
+   * (bookmarkSvc.GetAgentBookmarks): its thing (or none), type, place, label, when it was made, point, and whether it
+   * is a deadspace site's. Absent where a spot was made by other than the journal's decoder.
+   */
+  readonly itemID?: number | null;
+  readonly typeID?: number | null;
+  readonly locationID?: number | null;
+  readonly hint?: string;
+  readonly created?: bigint | null;
+  readonly x?: number | null;
+  readonly y?: number | null;
+  readonly z?: number | null;
+  readonly deadspace?: boolean;
+  /**
+   * The other agent a mission's bookmark names, where it names one: the client sends it with the warp and the
+   * approach (movementFunctions 401 and 415, getattr(bookmark, 'referringAgentID', None)). No journal of EveJS's or of
+   * the Tranquility recordings has it.
+   */
+  readonly referringAgentID?: number | null;
 }
 
 /**
@@ -1330,6 +1403,11 @@ export interface AgentsState {
   readonly loaded: boolean;
   /** Non-null when the last agent action/read failed (non-fatally). */
   readonly actionError: string | null;
+  /**
+   * Whether that refusal was said in the client's own way (ClientDialogs.svelte): the window and the notices then do
+   * not say it again. False or absent otherwise.
+   */
+  readonly actionErrorSaid?: boolean;
 }
 
 // --- R6 Courier completion reward readout (Step 12) ------------------------
@@ -1739,6 +1817,11 @@ export interface FlightState {
   readonly lastAction: string | null;
   /** Non-null when the last movement step failed (the handler's refusal reason). */
   readonly actionError: string | null;
+  /**
+   * Whether that refusal was said in the client's own way (ClientDialogs.svelte; or not at all, where the client says
+   * nothing of it): the windows and the notices then do not say it again. False or absent otherwise.
+   */
+  readonly actionErrorSaid?: boolean;
   /**
    * Resolved location names for the current status (goal R7a), so the readout
    * shows "Jita" not "30000142". Resolved from the static /api/map routes and
@@ -2152,6 +2235,11 @@ export interface TargetingState {
   /** Non-null when the last action failed — the SERVER's own refusal reason. */
   readonly actionError: string | null;
   /**
+   * Whether that refusal was said in the client's own way (ClientDialogs.svelte; or not at all, where the client says
+   * nothing of it): the windows and the notices then do not say it again. False or absent otherwise.
+   */
+  readonly actionErrorSaid?: boolean;
+  /**
    * Non-null when a call returned 200 but the re-read showed nothing changed
    * and the server gave no reason. This is deliberately a DIFFERENT field from
    * actionError: "it was refused, and here is why" and "it quietly did nothing"
@@ -2434,6 +2522,11 @@ export interface DronesState {
   readonly error: string | null;
   readonly lastAction: string | null;
   readonly actionError: string | null;
+  /**
+   * Whether that refusal was said in the client's own way (ClientDialogs.svelte): the window and the notices then do
+   * not say it again. False or absent otherwise.
+   */
+  readonly actionErrorSaid?: boolean;
   /**
    * A drone call that answered success and changed nothing. The server's launch
    * handler returns an empty dict when it refuses, so this is the ONLY way a
@@ -3018,6 +3111,11 @@ export interface SkillsState {
   readonly error: string | null;
   readonly lastAction: string | null;
   readonly actionError: string | null;
+  /**
+   * Whether that refusal was said in the client's own way (ClientDialogs.svelte): the window and the notices then do
+   * not say it again. False or absent otherwise.
+   */
+  readonly actionErrorSaid?: boolean;
 }
 
 // --- R37 Personal Assets ---------------------------------------------------

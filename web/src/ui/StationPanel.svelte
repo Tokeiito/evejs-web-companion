@@ -934,7 +934,8 @@
     if (outcome) {
       list.push({ text: outcome.message, bad: !outcome.applied });
     }
-    if ($inventory.actionError) {
+    // (A refusal the client's own dialog said is not said again here: ClientDialogs.svelte.)
+    if ($inventory.actionError && !$inventory.actionErrorSaid) {
       list.push({ text: `Last action failed: ${$inventory.actionError}`, bad: true });
     }
     if (error) {

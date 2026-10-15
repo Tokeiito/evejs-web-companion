@@ -54,6 +54,11 @@ export interface NoticeSource {
    * "mining" is a variable, "Mining" is what a player calls the panel.
    */
   readonly title: string;
+  /**
+   * A field on the slice that, true, says the message was said already in the client's own dialog
+   * (ClientDialogs.svelte): no flash for it then, as the client says it once.
+   */
+  readonly saidBy?: string;
 }
 
 /**
@@ -66,22 +71,22 @@ export interface NoticeSource {
  * did not happen.
  */
 export const NOTICE_SOURCES: readonly NoticeSource[] = [
-  { slice: "flight", field: "actionError", kind: "danger", title: "Flight" },
-  { slice: "targeting", field: "actionError", kind: "danger", title: "Targeting" },
+  { slice: "flight", field: "actionError", kind: "danger", title: "Flight", saidBy: "actionErrorSaid" },
+  { slice: "targeting", field: "actionError", kind: "danger", title: "Targeting", saidBy: "actionErrorSaid" },
   { slice: "targeting", field: "silentDecline", kind: "warn", title: "Targeting" },
   { slice: "mining", field: "actionError", kind: "danger", title: "Mining" },
   { slice: "mining", field: "silentDecline", kind: "warn", title: "Mining" },
   { slice: "mining", field: "holdsError", kind: "warn", title: "Mining holds" },
-  { slice: "drones", field: "actionError", kind: "danger", title: "Drones" },
+  { slice: "drones", field: "actionError", kind: "danger", title: "Drones", saidBy: "actionErrorSaid" },
   { slice: "drones", field: "silentDecline", kind: "warn", title: "Drones" },
-  { slice: "inventory", field: "actionError", kind: "danger", title: "Inventory" },
-  { slice: "fitting", field: "actionError", kind: "danger", title: "Fitting" },
-  { slice: "industry", field: "actionError", kind: "danger", title: "Industry" },
-  { slice: "market", field: "actionError", kind: "danger", title: "Market" },
-  { slice: "mail", field: "actionError", kind: "danger", title: "Mail" },
-  { slice: "agents", field: "actionError", kind: "danger", title: "Agents" },
-  { slice: "skills", field: "actionError", kind: "danger", title: "Skills" },
-  { slice: "fleet", field: "actionError", kind: "danger", title: "Fleet" },
+  { slice: "inventory", field: "actionError", kind: "danger", title: "Inventory", saidBy: "actionErrorSaid" },
+  { slice: "fitting", field: "actionError", kind: "danger", title: "Fitting", saidBy: "actionErrorSaid" },
+  { slice: "industry", field: "actionError", kind: "danger", title: "Industry", saidBy: "actionErrorSaid" },
+  { slice: "market", field: "actionError", kind: "danger", title: "Market", saidBy: "actionErrorSaid" },
+  { slice: "mail", field: "actionError", kind: "danger", title: "Mail", saidBy: "actionErrorSaid" },
+  { slice: "agents", field: "actionError", kind: "danger", title: "Agents", saidBy: "actionErrorSaid" },
+  { slice: "skills", field: "actionError", kind: "danger", title: "Skills", saidBy: "actionErrorSaid" },
+  { slice: "fleet", field: "actionError", kind: "danger", title: "Fleet", saidBy: "actionErrorSaid" },
   // Not a refusal: what another pilot answered to an invitation. It happened, and the pilot pressed nothing.
   { slice: "fleet", field: "inviteAnswered", kind: "info", title: "Fleet" },
 ];

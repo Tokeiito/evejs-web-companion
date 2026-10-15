@@ -84,6 +84,10 @@ function watchOne(
     if (message === null) {
       return;
     }
+    // Said already in the client's own dialog: not said again.
+    if (source.saidBy !== undefined && value !== null && typeof value === "object" && (value as Record<string, unknown>)[source.saidBy] === true) {
+      return;
+    }
     post({
       kind: source.kind,
       title: source.title,

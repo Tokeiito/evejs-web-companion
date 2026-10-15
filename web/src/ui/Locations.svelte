@@ -43,14 +43,20 @@
   // may administer (SearchFoldersWithAdminAccess), each with its state, Folder Information and Disconnect from Folder
   // for one it knows, Connect for another (Folder Information's connecting: AddToKnownFolders).
   //
-  // Not here yet: the Search tab, the Agent Missions group (the agents' bookmarks), a structure's Add Location, the
-  // rest of a bookmark's menu (a gate's jumps, the fleet's warps and
+  // The list ends with Agent Missions (GetAgentPlacesScrollList): the journal's missions that have bookmarks, each a
+  // group by its name, its bookmarks' rows with the window's columns and a menu of the part of BookmarkMenu the page
+  // offers for an agent's bookmark: Show Info, Dock, Warp to Within (Warp to Location for a deadspace site's) and
+  // Approach Location asked of the agent (WarpToLocation and GotoLocation), Set Destination and the waypoints; no Align
+  // to, no Edit or Remove, no drag.
+  //
+  // Not here yet: the Search tab, a structure's Add Location, an agent's home base's or objective's distance as the
+  // client takes it (the agent's GetEntryPoint), the rest of a bookmark's menu (a gate's jumps, the fleet's warps and
   // broadcast, the map's and the camera's entries, avoiding a place), things from other windows dropped here (an
   // item's place saved), and a shared bookmark shown dim before its delay has passed. Show Info shows a thing the page
   // has read in space as that thing, and any other place by its type (the info window has no station or system of its
   // own).
   import { onMount } from "svelte";
-  import { formatTemplate, plainText, type TemplateArguments } from "../bridge/clientWords.ts";
+  import { formatTemplate, plainText, templateNameRefs, type TemplateArguments } from "../bridge/clientWords.ts";
   import { resolvedName, type NameRef } from "../store/names.ts";
   import {
     isCoordinateBookmark,
@@ -70,6 +76,7 @@
   import { flyingDistances, setDistance, WARP_RANGES } from "./flyingDistances.ts";
   import { showInfo, type InfoSubject } from "./showInfo.ts";
   import type { ActiveBookmarks, Bookmark, BookmarkFolder, Subfolder } from "../bridge/bookmarks.ts";
+  import type { JournalMission, MissionSpot } from "../store/types.ts";
   import type { BookmarkPlace } from "../bridge/locationsList.ts";
   import type { MovedOrCopied } from "../bridge/bookmarkWrites.ts";
   import BookmarkWindow from "./BookmarkWindow.svelte";
@@ -96,6 +103,8 @@
   const space = store.space;
   // svelte-ignore state_referenced_locally
   const waypointsState = flow.waypoints;
+  // svelte-ignore state_referenced_locally
+  const agentsState = store.agents;
 
   /** The window's words (window.py 22 to 37; bookmarksPanel.py 42 to 51, 173 to 300, 340 to 544). */
   const WORDS = {
@@ -156,6 +165,8 @@
     connect: "UI/AclBookmarks/AddFolder",
     addedOffline: "UI/AclBookmarks/FolderAddedAsInactiveFolder",
     tooManyKnown: "dialog:TooManyKnownFolders/body",
+    agentMissions: "UI/PeopleAndPlaces/AgentMissions",
+    warpToBookmark: "UI/Inflight/WarpToBookmark",
     editSubfolder: "UI/AclBookmarks/EditSubfolder",
     deleteSubfolder: "UI/AclBookmarks/DeleteSubfolder",
     tooManyOnline: "dialog:TooManyActiveFolders/body",
@@ -237,6 +248,8 @@
     }
     // The admin folders are read as their group opens (GetSubContent: GetAdminFolders).
     if (id === "adminFolders" && isOpen(id)) readAdminFolders();
+    // The missions' bookmarks are the journal's, read again as their group opens.
+    if (id === "agentMissions" && isOpen(id)) void flow.loadJournal().catch(() => {});
   }
 
   const sections = $derived<readonly LocationsSection[]>(active === null ? [] : [locationsSection(active, true, label), locationsSection(active, false, label)]);
@@ -326,6 +339,73 @@
     lastSelectedRow = at;
   }
 
+  /**
+   * Agent Missions (bookmarksPanel.py GetAgentPlacesScrollList and its sub-contents, 113 to 170): the journal's missions
+   * that have bookmarks (journal.GetMyAgentJournalBookmarks), each a group by its name, holding its bookmarks as
+   * bookmarkSvc.GetAgentBookmarks makes them (121 to 137).
+   */
+  const AGENT_MISSIONS = "agentMissions";
+  const missionGroups = $derived(($agentsState.journal === null ? [] : [...$agentsState.journal.active, ...$agentsState.journal.offered])
+    .filter((mission) => (mission.bookmarks ?? []).length > 0));
+
+  /** A mission's name: its message (GetByMessageID), or its text where the journal has text. */
+  function missionName(mission: JournalMission): string {
+    if (typeof mission.missionTitle === "string") return mission.missionTitle;
+    return mission.missionTitleID !== null ? word(`#${mission.missionTitleID}`, "") : "";
+  }
+
+  /** A mission's group, as the client keys it (the name's number and the agent, 146). */
+  const missionKey = (mission: JournalMission): string => `mission:${mission.missionTitleID ?? mission.missionTitle ?? ""}:${mission.agentID}`;
+  /** A mission's bookmark, as the client numbers it ('agentmissions', agentID, locationType, locationNumber). */
+  const spotKey = (spot: MissionSpot): string => `${spot.agentID}:${spot.locationType}:${spot.locationNumber}`;
+
+  /**
+   * A mission's bookmark's hint as the client's journal words it (journal.py _UpdateMissionDataFull, 313 to 317):
+   * GetByLabel(hint, location=locationID, index=locationNumber + 1).
+   */
+  const hintArgs = (spot: MissionSpot): TemplateArguments => ({ location: spot.locationID ?? spot.solarSystemID ?? 0, index: spot.locationNumber + 1 });
+  const missionHint = (spot: MissionSpot): string => (spot.hint ? filled(spot.hint, spot.hint, hintArgs(spot)) : "");
+
+  /** GetAgentBookmarks (121 to 137): a mission's bookmark as the window lists it, its memo the hint, no expiry, nobody's. */
+  function agentBookmarkOf(spot: MissionSpot): Bookmark {
+    return {
+      bookmarkID: 0,
+      folderID: 0,
+      itemID: spot.itemID ?? null,
+      typeID: spot.typeID ?? 5,
+      memo: `${missionHint(spot)}\t`,
+      note: "",
+      created: spot.created ?? null,
+      expiry: null,
+      x: spot.x ?? null,
+      y: spot.y ?? null,
+      z: spot.z ?? null,
+      locationID: spot.locationID ?? spot.solarSystemID ?? 0,
+      subfolderID: null,
+      creatorID: null,
+    };
+  }
+
+  let missionMenuFor = $state<string | null>(null);
+
+  function openMissionMenu(key: string): void {
+    missionMenuFor = missionMenuFor === key ? null : key;
+    menuFor = null;
+    warpOpen = false;
+    defaultOpen = false;
+    if (missionMenuFor !== null && $flight.status?.inSpace === true) void flow.loadSpaceSnapshot().catch(() => {});
+  }
+
+  /** A mission's bookmark's warp and approach, asked of its agent (movementFunctions.py 397 to 421). */
+  function moveMission(how: "warp" | "approach", spot: MissionSpot, range = 0): void {
+    missionMenuFor = null;
+    error = "";
+    const order = how === "warp" ? flow.warpToMissionBookmark(spot, range) : flow.approachMissionBookmark(spot);
+    void order.catch((cause) => {
+      error = isSessionLost(cause) ? "Your session ended. Pick your character again." : panelErrorWords(cause);
+    });
+  }
+
   /** What a dragged row carries: the bookmarks' numbers. */
   const BOOKMARK_DRAG = "application/x-evejs-bookmarks";
   /** The folder or subfolder a drag is over, for its mark. */
@@ -404,6 +484,7 @@
   function openMenu(bookmarkID: number): void {
     if (!selected.includes(bookmarkID)) selected = [bookmarkID];
     menuFor = menuFor === bookmarkID ? null : bookmarkID;
+    missionMenuFor = null;
     warpOpen = false;
     defaultOpen = false;
     // The client builds the menu from its ballpark as it is: the page reads space again for it.
@@ -835,6 +916,36 @@
   onMount(() => {
     flow.requestWords([...Object.values(WORDS), ...DISTANCE_WORD_LABELS, DO_NOT_ASK_AGAIN_LABEL, ...DIALOGS.flatMap((name) => [`dialog:${name}/title`, `dialog:${name}/body`, suppressableKey(name)])]);
     void load();
+    // The Agent Missions group's bookmarks are the journal's, as the window is built (GetAgentPlacesScrollList).
+    void flow.loadJournal().catch(() => {});
+  });
+
+  // What the missions' groups and rows name: the missions' names, and their bookmarks' systems, constellations,
+  // regions and types' groups, and the jumps to their systems.
+  $effect(() => {
+    const labels: string[] = [];
+    const refs: NameRef[] = [];
+    const systems = new Set<number>();
+    for (const mission of missionGroups) {
+      if (mission.missionTitleID !== null) labels.push(`#${mission.missionTitleID}`);
+      for (const spot of mission.bookmarks ?? []) {
+        // The hint's label, and what its words name once they are to hand.
+        if (spot.hint) {
+          labels.push(spot.hint);
+          const template = $words.templates[spot.hint];
+          if (typeof template === "string") refs.push(...templateNameRefs(template, hintArgs(spot)));
+        }
+        const bookmark = agentBookmarkOf(spot);
+        const sol = solSystemOf(bookmark);
+        if (sol !== null) refs.push({ kind: "system", id: sol }, { kind: "systemConstellation", id: sol }, { kind: "systemRegion", id: sol });
+        const jumpsTo = jumpsSystemOf(bookmark);
+        if (jumpsTo !== null) systems.add(jumpsTo);
+        refs.push({ kind: "typeGroup", id: bookmark.typeID });
+      }
+    }
+    if (labels.length > 0) flow.requestWords(labels);
+    if (refs.length > 0) flow.requestNames(refs);
+    if (systemID !== null && systems.size > 0) flow.requestAutopilotJumps(systemID, [...systems]);
   });
 
   // What the rows name: their systems, the systems' constellations and regions, their types' groups, their makers;
@@ -985,20 +1096,7 @@
                     {/if}
                   </p>
                   {#if warpOpen && !(selected.length > 1 && selected.includes(bookmark.bookmarkID)) && menuOf(bookmark).warp}
-                    <!-- WarpToMenu (menusvc.py 2254 to 2274): each of the seven distances, then Set Default's. -->
-                    <p class="controls locations-submenu" aria-label={word(WORDS.warpToWithin, "Warp there")}>
-                      {#each WARP_RANGES as choice (choice.metres)}
-                        <button type="button" class="minor" onclick={() => move("warp", bookmark.bookmarkID, choice.metres)}>{filled(WORDS.within, "Stop {distance} short", { distance: fmtDist(choice.metres, 2, say) })}</button>
-                      {/each}
-                      <button type="button" class="minor" aria-expanded={defaultOpen} onclick={() => (defaultOpen = !defaultOpen)}>{word(WORDS.setDefault, "Usual distance")} {defaultOpen ? "▾" : "▸"}</button>
-                    </p>
-                    {#if defaultOpen}
-                      <p class="controls locations-submenu" aria-label={word(WORDS.setDefault, "Usual distance")}>
-                        {#each WARP_RANGES as choice (choice.metres)}
-                          <button type="button" class="minor" aria-pressed={choice.metres === defaultWarp} onclick={() => setDefaultWarp(choice.metres)}>{fmtDist(choice.metres, 2, say)}</button>
-                        {/each}
-                      </p>
-                    {/if}
+                    {@render warpSubmenu((range) => move("warp", bookmark.bookmarkID, range))}
                   {/if}
                 </td>
               </tr>
@@ -1008,6 +1106,92 @@
       </table>
     </div>
   {/if}
+{/snippet}
+
+{#snippet warpSubmenu(go: (range: number) => void)}
+  <!-- WarpToMenu (menusvc.py 2254 to 2274): each of the seven distances, then Set Default's. -->
+  <p class="controls locations-submenu" aria-label={word(WORDS.warpToWithin, "Warp there")}>
+    {#each WARP_RANGES as choice (choice.metres)}
+      <button type="button" class="minor" onclick={() => go(choice.metres)}>{filled(WORDS.within, "Stop {distance} short", { distance: fmtDist(choice.metres, 2, say) })}</button>
+    {/each}
+    <button type="button" class="minor" aria-expanded={defaultOpen} onclick={() => (defaultOpen = !defaultOpen)}>{word(WORDS.setDefault, "Usual distance")} {defaultOpen ? "▾" : "▸"}</button>
+  </p>
+  {#if defaultOpen}
+    <p class="controls locations-submenu" aria-label={word(WORDS.setDefault, "Usual distance")}>
+      {#each WARP_RANGES as choice (choice.metres)}
+        <button type="button" class="minor" aria-pressed={choice.metres === defaultWarp} onclick={() => setDefaultWarp(choice.metres)}>{fmtDist(choice.metres, 2, say)}</button>
+      {/each}
+    </p>
+  {/if}
+{/snippet}
+
+{#snippet missionPlaces(list: readonly MissionSpot[], depth: number)}
+  <!-- A mission's bookmarks (GetPlacesSubContent_AgentMissions2 and GetPlacesScrollList): the window's columns, each
+       row's menu the part of BookmarkMenu the page offers for an agent's bookmark (no Align to, no Edit or Remove;
+       the warp and the approach asked of the agent). -->
+  <div class="table-wrap overflow-x-auto" style={`padding-left: ${depth * 1.25}rem`}>
+    <table class="guests locations-places">
+      <thead>
+        <tr>
+          {#each HEADERS as [path, own] (path)}
+            <th>{word(path, own)}</th>
+          {/each}
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {#each list as spot (spotKey(spot))}
+          {@const key = spotKey(spot)}
+          {@const bookmark = agentBookmarkOf(spot)}
+          {@const row = rowOf(bookmark)}
+          <tr title={row.hint}>
+            {#each row.cells as cell, at (at)}
+              <td class:num={at === 2}>{cell}</td>
+            {/each}
+            <td>
+              <button type="button" class="minor" aria-label="Menu" aria-expanded={missionMenuFor === key} onclick={() => openMissionMenu(key)}>⋯</button>
+            </td>
+          </tr>
+          {#if missionMenuFor === key}
+            {@const menu = menuOf(bookmark)}
+            <tr class="locations-menu">
+              <td colspan="10">
+                <p class="controls">
+                  <button type="button" class="minor" onclick={() => { missionMenuFor = null; showInfo(infoOf(bookmark)); }}>{word(WORDS.showInfo, "About it")}</button>
+                  {#if menu.dock !== null}
+                    <button type="button" class="minor" onclick={() => { missionMenuFor = null; if (menu.dock !== null) dockAt(menu.dock); }}>{word(WORDS.dock, "Dock there")}</button>
+                  {/if}
+                  {#if menu.warp}
+                    {#if spot.deadspace}
+                      <!-- A deadspace site's: Warp to Location, at the pilot's own warp distance (_BookmarkMenu, 1483). -->
+                      <button type="button" class="minor" onclick={() => moveMission("warp", spot, defaultWarp)}>{word(WORDS.warpToBookmark, "Warp there")}</button>
+                    {:else}
+                      <button type="button" class="minor" onclick={() => moveMission("warp", spot, defaultWarp)}>{filled(WORDS.withDistance, "{actionName} ({distanceString})", { actionName: word(WORDS.warpToWithin, "Warp there"), distanceString: fmtDist(defaultWarp, 2, say) })}</button>
+                      <button type="button" class="minor" aria-label={word(WORDS.warpToWithin, "Warp there")} aria-expanded={warpOpen} onclick={() => { warpOpen = !warpOpen; defaultOpen = false; }}>{warpOpen ? "▾" : "▸"}</button>
+                    {/if}
+                  {/if}
+                  {#if menu.approach}
+                    <button type="button" class="minor" onclick={() => moveMission("approach", spot)}>{word(WORDS.approachLocation, "Fly there")}</button>
+                  {/if}
+                  {#if menu.destination !== null}
+                    <button type="button" class="minor" onclick={() => { missionMenuFor = null; if (menu.destination !== null) route("destination", menu.destination); }}>{word(WORDS.setDestination, "Head there")}</button>
+                  {/if}
+                  {#if menu.addWaypoint !== null}
+                    <button type="button" class="minor" onclick={() => { missionMenuFor = null; if (menu.addWaypoint !== null) route("add", menu.addWaypoint); }}>{word(WORDS.addWaypoint, "Put on the route")}</button>
+                  {:else if menu.removeWaypoint !== null}
+                    <button type="button" class="minor" onclick={() => { missionMenuFor = null; if (menu.removeWaypoint !== null) route("remove", menu.removeWaypoint); }}>{word(WORDS.removeWaypoint, "Take off the route")}</button>
+                  {/if}
+                </p>
+                {#if warpOpen && menu.warp && !spot.deadspace}
+                  {@render warpSubmenu((range) => moveMission("warp", spot, range))}
+                {/if}
+              </td>
+            </tr>
+          {/if}
+        {/each}
+      </tbody>
+    </table>
+  </div>
 {/snippet}
 
 {#snippet folderMenuButton(folder: BookmarkFolder)}
@@ -1223,6 +1407,17 @@
           {/if}
         {/if}
       {/each}
+      <!-- Agent Missions (GetAgentPlacesScrollList): a group by each mission's name, holding its bookmarks. -->
+      {@render groupHead(AGENT_MISSIONS, word(WORDS.agentMissions, "Mission places"), null, 0, null)}
+      {#if isOpen(AGENT_MISSIONS)}
+        {#each missionGroups as mission (missionKey(mission))}
+          {@const key = missionKey(mission)}
+          {@render groupHead(key, missionName(mission), null, 1, null)}
+          {#if isOpen(key)}
+            {@render missionPlaces(mission.bookmarks ?? [], 2)}
+          {/if}
+        {/each}
+      {/if}
     </div>
   {/if}
 </section>

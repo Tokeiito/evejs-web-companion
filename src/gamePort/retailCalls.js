@@ -255,25 +255,28 @@ const rangeOf = (value) => (value !== null && typeof value === "object" && value
  * (the scanner's None) of one that was not, a float where the client's is one; and fleet=False where the client
  * says it. The transport puts them in a client's order (py27.js).
  *
- * A fleet's warp (fleet=True) goes with the formation's settings (michelle.SetFleetFormationSettings, 755), which
- * nothing here sends: it differs, as does any keyword else, a range that is no distance, and a warp to what the
- * routes do not warp to.
+ * A fleet's warp (fleet=True) goes with the formation's settings (michelle.SetFleetFormationSettings, 755 to 760:
+ * fleetFormationSettings, a dict of the formation's type, spacing and size). The page makes one to a fleet member
+ * (menusvc.WarpFleetToMember, 2753 to 2760: the fleet's menu for a member, Warp Fleet, Wing or Squad to Member), with
+ * the range and the three settings; it goes with minRange as a float, fleet=True and the settings as a dict in the
+ * client's order. No recording has one. A fleet's warp to anything else differs, as does any keyword else, a range
+ * that is no distance, and a warp to what the routes do not warp to.
  */
 const warping = (args, kwargs, context) => {
   const notAClients = (note) => ({ status: "differs", note });
   const [subject, which] = args;
   const said = Object.keys(kwargs);
-  if (args.length !== 2 || said.some((name) => name !== "minRange" && name !== "fleet")) {
+  if (args.length !== 2 || said.some((name) => name !== "minRange" && name !== "fleet" && name !== "fleetFormationSettings")) {
     return notAClients("The client warps to one thing by what it is and its number, with a range and a fleet's word at most.");
   }
   const range = rangeOf(kwargs.minRange ?? null);
   if (range !== null && !(Number.isFinite(range) && range >= 0)) {
     return notAClients("A warp's range is a distance: a number, nought or more.");
   }
-  if (kwargs.fleet === true) {
-    return notAClients("A fleet's warp goes with the formation's settings (michelle.SetFleetFormationSettings), which nothing here sends.");
+  if ((kwargs.fleet === true || kwargs.fleetFormationSettings !== undefined) && subject !== "char") {
+    return notAClients("A fleet's warp goes with the formation's settings (michelle.SetFleetFormationSettings), which nothing here sends but to a fleet member.");
   }
-  if (kwargs.fleet !== undefined && kwargs.fleet !== false) {
+  if (kwargs.fleet !== undefined && kwargs.fleet !== false && kwargs.fleet !== true) {
     return notAClients("A warp's fleet keyword is True or False.");
   }
   // What a caller that cannot say a float said: each keyword, with a float read as its number.
@@ -290,9 +293,22 @@ const warping = (args, kwargs, context) => {
       // (A ship that is not known is no number an item's ID can be: the item is above nought.)
       if (Number(context.shipID) === which) return notAClients("The client does not warp to the pilot's own ship: it sends nothing.");
       return made(kwargs.fleet === false ? { minRange: kwargs.minRange ?? null, fleet: false } : { minRange: kwargs.minRange ?? 0 });
-    case "char":
-      if (!aThingsID(which) || kwargs.fleet !== undefined) return notAClients("The client warps to a fleet member by its number, with a range and nothing else.");
-      return made({ minRange: asReal(range ?? 0) });
+    case "char": {
+      if (!aThingsID(which)) return notAClients("The client warps to a fleet member by its number, with a range and nothing else.");
+      if (kwargs.fleet === undefined && kwargs.fleetFormationSettings === undefined) return made({ minRange: asReal(range ?? 0) });
+      // menusvc.WarpFleetToMember: fleet=True, and the formation's three settings beside it.
+      const given = kwargs.fleetFormationSettings;
+      const settings = given !== null && typeof given === "object" && !Array.isArray(given) ? given : {};
+      if (kwargs.fleet !== true || Object.keys(settings).length !== FORMATION_NAMES.length || !FORMATION_NAMES.every((name) => Number.isSafeInteger(settings[name]))) {
+        return notAClients("The client warps its fleet to a member with fleet=True and the formation's three settings: CmdWarpToStuff('char', charID, minRange=warpRange, fleet=True, fleetFormationSettings={formationType, formationSpacing, formationSize}).");
+      }
+      // The settings go as a dict, in the client's order, whatever order they were written in: that is the
+      // transport's making, as a page's JSON has no dict, and is no reshaping of what was said.
+      const wanted = { minRange: asReal(range ?? 0), fleet: true, fleetFormationSettings: dict(FORMATION_NAMES.map((name) => [name, settings[name]])) };
+      return isDeepStrictEqual(asSaid({ minRange: wanted.minRange, fleet: true }), asSaid({ minRange: kwargs.minRange, fleet: kwargs.fleet }))
+        ? { kwargs: wanted }
+        : { kwargs: wanted, status: "reshaped", note: "The fleet's warp was given the range the client's menu sends, a float." };
+    }
     case "bookmark":
       if (!aThingsID(which)) return notAClients("The client warps to a bookmark by its number.");
       return made({ minRange: asReal(range ?? 0), fleet: false });
@@ -334,6 +350,18 @@ const agentWarping = (args, kwargs) => {
   if (!(referringAgentID === null || aThingsID(referringAgentID))) return notAClients;
   if (named.length !== FORMATION_NAMES.length || !FORMATION_NAMES.every((name) => Number.isSafeInteger(given[name]))) return notAClients;
   return { args: [locationType, locationNumber, range, fleet, referringAgentID, dict(FORMATION_NAMES.map((name) => [name, given[name]]))] };
+};
+/**
+ * movementFunctions.ApproachLocation (402): GetAgentMoniker(agentID).GotoLocation(locationType, locationNumber,
+ * referringAgentID), on the agent's own object: the location's type and number as the journal has them, and another
+ * agent or None. Three, and no keyword.
+ */
+const agentGoing = (args, kwargs) => {
+  const [locationType, locationNumber, referringAgentID] = args;
+  return args.length === 3 && typeof locationType === "string" && locationType !== "" && Number.isSafeInteger(locationNumber)
+    && (referringAgentID === null || aThingsID(referringAgentID)) && Object.keys(kwargs).length === 0
+    ? {}
+    : { status: "differs", note: "The client sends the location's type and number and another agent or None: GotoLocation(locationType, locationNumber, referringAgentID)." };
 };
 /** A judge for a call the client sends with nothing: no argument, and no keyword. */
 /**
@@ -579,7 +607,7 @@ const PROXY_SERVICES = Object.freeze(new Set([
  */
 // (The station's office object's reads are the lobby's, which the gateway never had: see GAME_PORT_ONLY_CALLS.)
 const TRANSPORT_OWN_CALLS = Object.freeze([
-  "config.GetMultiOwnersEx", "facilityManager.GetFacility", "config.GetAverageMarketPrices",
+  "config.GetMultiOwnersEx", "config.GetMultiCorpTickerNamesEx", "facilityManager.GetFacility", "config.GetAverageMarketPrices",
   "XmppChatMgr.Hostname", "XmppChatMgr.GetDeprecatedPrefsFallback", "chatAuthenticationService.GetAuthenticationToken", "XmppChatMgr.ResyncSystemChannelAccess",
   "browserLockdownSvc.GetFlaggedSitesHash", "browserLockdownSvc.GetFlaggedSitesList",
   // What a client asks before a character is chosen: the cfg's two as it loads (eveCfg.py 476, 750), whether the
@@ -729,6 +757,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   "accessGroupBookmarkMgr.CopyBookmarksToFolderAndSubfolder",
   // A folder added to those the pilot knows (bookmarkSvc.py 357). The gateway's list has not got it.
   "accessGroupBookmarkMgr.AddToKnownFolders",
+  // A jump to a fleet member's lit cyno, the fleet's jump with the pilot's own, and a bridge opened to it
+  // (cynoTravelSvc.py 36, 103 and 62), on the ballpark's object. The gateway's list has none of them.
+  "beyonce.CmdJumpToFleetModuleBeacon", "beyonce.CmdGroupJumpToFleetModuleBeacon", "beyonce.CmdBridgeToFleetModuleBeacon",
 ]);
 
 /**
@@ -748,7 +779,9 @@ const ON_AN_ANSWERED_OBJECT = Object.freeze(new Set(["scanMgr.GetFullState"]));
 // CmdStargateJump the same day, the page's own jump: gateJumpSvc.JumpThroughGate's remoteBallpark.CmdStargateJump.)
 // (CmdGotoBookmark on 2026-10-15, the page's Approach Location of a bookmark: movementFunctions.ApproachLocation's
 // bp.CmdGotoBookmark, on the ballpark's object.)
-const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdGotoBookmark", "CmdAlignTo", "CmdFollowBall", "CmdSetSpeedFraction", "CmdOrbit", "CmdStop", "BookmarkLocation", "CmdWarpToStuff", "CmdWarpToStuffAutopilot", "CmdDock", "CmdStargateJump"]));
+// (CmdJumpToFleetModuleBeacon, CmdGroupJumpToFleetModuleBeacon and CmdBridgeToFleetModuleBeacon on 2026-10-15, the fleet
+// menu's Jump To, Conduit Jump To and Bridge To: cynoTravelSvc.py's bp.Cmd..., on the ballpark's object.)
+const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdGotoBookmark", "CmdAlignTo", "CmdFollowBall", "CmdSetSpeedFraction", "CmdOrbit", "CmdStop", "BookmarkLocation", "CmdWarpToStuff", "CmdWarpToStuffAutopilot", "CmdDock", "CmdStargateJump", "CmdJumpToFleetModuleBeacon", "CmdGroupJumpToFleetModuleBeacon", "CmdBridgeToFleetModuleBeacon"]));
 const madeOnMoniker = (service, method) => Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method) && method !== "MachoBindObject";
 /**
  * Whether the game port makes a call on an object though it is asked of a service by its name: on the service's
@@ -900,6 +933,20 @@ const applyingToOneFleet = (args, kwargs, context) => {
 /** The broadcasts fleetSvc sends to its bubble, by name (1039 to 1055), and the scopes a client can be set to (evefleet/const.py 33 to 35). */
 const BUBBLE_BROADCASTS = Object.freeze(new Set(["HealArmor", "HealShield", "HealCapacitor", "Target", "HealTarget"]));
 const BROADCAST_SCOPES = Object.freeze(new Set([1, 2, 3]));
+/** The broadcasts fleetSvc sends to the whole fleet, by name (SendGlobalBroadcast's callers, 1010 to 1035 and 1128). */
+const GLOBAL_BROADCASTS = Object.freeze(new Set(["EnemySpotted", "NeedBackup", "HoldPosition", "TravelTo", "InPosition", "JumpBeacon", "Location"]));
+/**
+ * fleetSvc.SendGlobalBroadcast (983 to 990): self.fleet.SendBroadcast(name, self.broadcastScope, itemID, typeID), on
+ * the fleet's object: one of those names, the scope, the item (a solar system for TravelTo), and a type where InPosition
+ * and JumpBeacon give one, None else; and only from a session in a fleet (CheckIsInFleet, 984). No recording has one.
+ */
+const aGlobalBroadcast = (args, kwargs, context) => {
+  if (!(args.length === 4 && GLOBAL_BROADCASTS.has(args[0]) && BROADCAST_SCOPES.has(args[1]) && Number.isSafeInteger(args[2]) && args[2] > 0
+    && (args[3] === null || (Number.isSafeInteger(args[3]) && args[3] > 0)) && Object.keys(kwargs).length === 0)) {
+    return { status: "differs", note: "The client sends one of its seven names for the fleet, its scope, the item and a type or None, and nothing else: SendBroadcast(name, scope, itemID, typeID)." };
+  }
+  return context.fleetID === null ? { status: "differs", note: "The client broadcasts only from a session in a fleet: in none it sends nothing." } : {};
+};
 /**
  * fleetSvc.SendBubbleBroadcast (992 to 998): one of those names, the scope, the item, and None for the type, which
  * no caller of it gives; and only from a session in a fleet (CheckIsInFleet, 993).
@@ -909,6 +956,56 @@ const oneBubbleBroadcast = (args, kwargs, context) => {
     return { status: "differs", note: "The client sends one of its five names for the bubble, its scope, the item and None for the type, and nothing else: BroadcastToBubble(name, scope, itemID, None)." };
   }
   return context.fleetID === null ? { status: "differs", note: "The client broadcasts only from a session in a fleet: in none it sends nothing." } : {};
+};
+
+/**
+ * fleetSvc's watchlist, self.favorites: a set, which blue writes by the reduce protocol, (set, ([...],)) (blue's
+ * src/Marshal.cpp WriteObjectReduce; set.__reduce_ex__(2) in the client's Python), its items in the set's own order.
+ * The page says a list, of pilots' numbers. Null where what was given is no such list.
+ */
+const watchlistSet = (given) => {
+  const listed = Array.isArray(given) ? given : given && given.type === "list" && Array.isArray(given.items) ? given.items : null;
+  if (listed === null || !listed.every((id) => Number.isSafeInteger(id) && id > 0)) return null;
+  return { type: "objectex1", header: [token("__builtin__.set"), [{ type: "list", items: dictOrder(listed) }]], list: [], dict: [] };
+};
+/**
+ * fleetSvc.AddFavorite (640 to 682): fleetMgr.AddToWatchlist(newCharsAdded, fav), the pilots just added (a list) and
+ * every favourite with them (GetWatchlistMembers, 788: the set; None with damage updates off, which the page never is);
+ * from a session in a fleet (CheckIsInFleet, 641). No recording has one.
+ */
+const addingToWatchlist = (args, kwargs, context) => {
+  const [added, favorites] = args;
+  const set = watchlistSet(favorites);
+  if (!(args.length === 2 && Array.isArray(added) && added.length > 0 && added.every((id) => Number.isSafeInteger(id) && id > 0) && set !== null && Object.keys(kwargs).length === 0)) {
+    return { args, kwargs, status: "differs", note: "The client sends the pilots it added, as a list, and every favourite, as its set: AddToWatchlist(newCharsAdded, favorites)." };
+  }
+  if (context.fleetID === null) return { args, kwargs, status: "differs", note: "The client keeps a watchlist only in a fleet: in none it sends nothing." };
+  // newCharsAdded is a list the client appends to (659 to 663); an array of the page's goes as a tuple else.
+  return { args: [{ type: "list", items: added }, set], kwargs };
+};
+/** fleetSvc.RemoveFavorite (715 to 723): fleetMgr.RemoveFromWatchlist(charID, favs), the pilot taken off and every favourite left (the set). */
+const removingFromWatchlist = (args, kwargs, context) => {
+  const [taken, favorites] = args;
+  const set = watchlistSet(favorites);
+  if (!(args.length === 2 && Number.isSafeInteger(taken) && taken > 0 && set !== null && Object.keys(kwargs).length === 0)) {
+    return { args, kwargs, status: "differs", note: "The client sends the pilot it took off and every favourite left, as its set: RemoveFromWatchlist(charID, favorites)." };
+  }
+  if (context.fleetID === null) return { args, kwargs, status: "differs", note: "The client keeps a watchlist only in a fleet: in none it sends nothing." };
+  return { args: [taken, set], kwargs };
+};
+
+/**
+ * fleetSvc.RegisterForDamageUpdates (793 to 796): fleetMgr.RegisterForDamageUpdates(fav), every favourite (the set),
+ * at a change of system in space in a fleet (ProcessSessionChange, 1688 to 1691); the client's own, which the game
+ * port makes as it keeps the watchlist. No recording has one.
+ */
+const registeringForDamage = (args, kwargs, context) => {
+  const set = watchlistSet(args[0]);
+  if (!(args.length === 1 && set !== null && Object.keys(kwargs).length === 0)) {
+    return { args, kwargs, status: "differs", note: "The client sends every favourite, as its set: RegisterForDamageUpdates(favorites)." };
+  }
+  if (context.fleetID === null) return { args, kwargs, status: "differs", note: "The client registers only in a fleet." };
+  return { args: [set], kwargs };
 };
 
 /** droneFunctions.RealScoopToDroneBay (195): ship.ScoopDrone(objectIDs), the drones as one list of their IDs and nothing else. */
@@ -1832,6 +1929,8 @@ const RETAIL_CALLS = Object.freeze({
   "agentMgr.GetMissionBriefingInfo": same(`${AGENTS}:750`, "no arguments"),
   "agentMgr.GetMissionObjectiveInfo": same(`${AGENT_WINDOW}:222`, "no arguments when the dialogue opens; the job board's page of a mission adds ignoreLocateCheck=True (jobboard/client/features/agent_missions/job.py:413)"),
   "agentMgr.GetAgentLocationWrap": same(`${AGENT_WINDOW}:276`, "no arguments"),
+  "agentMgr.GotoLocation": judged("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:402", agentGoing,
+    "GetAgentMoniker(agentID).GotoLocation(locationType, locationNumber, referringAgentID): a mission's bookmark's Approach Location, on the agent's own object. It answers nothing. In no recording."),
   "agentMgr.WarpToLocation": judged("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:416", agentWarping,
     "GetAgentMoniker(agentID).WarpToLocation(locationType, locationNumber, warpRange, fleet, referringAgentID, GetFormationSettings()), on the agent's own object: a mission's marked spot warped to. Recorded 23 times on Tranquility, each ('dungeon', 0, nought, False, None, the three settings)."),
   "agentMgr.RemoveOfferFromJournal": same(`${AGENTS}:783`, "GetAgentMoniker(agentID).RemoveOfferFromJournal(), no arguments, on the agent's bound object"),
@@ -1861,6 +1960,9 @@ const RETAIL_CALLS = Object.freeze({
   "corporationSvc.GetEmployementRecordAndCharacterTransfers": same("eve/client/script/ui/shared/info/infosvc.py:2842", "RemoteSvc('corporationSvc').GetEmployementRecordAndCharacterTransfers(itemID), CCP's spelling, with the character the History panel's employment tab is of (session.charid). In no recording."),
   "structureDocking.Undock": same("eve/client/script/ui/services/structure/structureDocking.py:36", "RemoteSvc('structureDocking').Undock(session.structureid, shipID, ignoreContraband=...), by the service's name, through sessionMgr.PerformSessionChange('undock', ...), the ship None where it is the structure; no online modules named. Recorded on Tranquility with the two IDs and ignoreContraband False."),
   "beyonce.CmdDock": same("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:517", "bp.CmdDock(itemID, session.shipid), on the ballpark's object, through sessionMgr.PerformSessionChange('dock', ...). Recorded on Tranquility with the two IDs."),
+  "beyonce.CmdJumpToFleetModuleBeacon": same("eve/client/script/parklife/cynoTravelSvc.py:36", "bp.CmdJumpToFleetModuleBeacon(charID, beaconID, solarsystemID), on the ballpark's object, through sessionMgr.PerformSessionChange('jump', ...): the member whose cyno it is, the beacon and its system as fleetSvc keeps them (menusvc.JumpToMember). In no recording."),
+  "beyonce.CmdGroupJumpToFleetModuleBeacon": same("eve/client/script/parklife/cynoTravelSvc.py:103", "bp.CmdGroupJumpToFleetModuleBeacon(charID, beaconID, solarsystemID), on the ballpark's object, through sessionMgr.PerformSessionChange('jump', ...) (menusvc.GroupJumpToMember). In no recording."),
+  "beyonce.CmdBridgeToFleetModuleBeacon": same("eve/client/script/parklife/cynoTravelSvc.py:62", "bp.CmdBridgeToFleetModuleBeacon(charID, beaconID, solarsystemID), on the ballpark's object, no session change: the ship that opens the bridge stays (menusvc.BridgeToMember). In no recording."),
   "beyonce.CmdFollowBall": reshaped("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:302", following, "bp.CmdFollowBall(targetID, range), on the ballpark's object: the menu's approach with const.approachRange, keep at range with the pilot's distance (229), the autopilot's with 0.0 (autopilot.py 437). Not sent for the pilot's own ship. Recorded on Tranquility as (itemID, 50), and at 5000 and 7500, each a whole number; the autopilot's twice, its range a float of nought, which is how a range of nought goes."),
   "beyonce.CmdOrbit": reshaped("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:260", orbiting, "bp.CmdOrbit(targetID, range), on the ballpark's object: the range a float under 10 m and a whole number from there (243). Not sent for the pilot's own ship. Recorded on Tranquility as (itemID, 1000) and (itemID, 5000), 7500 and 10000, each a whole number, with nothing before it; none is recorded under ten metres, where the client's float is how it goes."),
   "beyonce.CmdStop": judged("eve/client/script/ui/eveCommands.py:1104", stopping, "bp.CmdStop(), no arguments, on the ballpark's object: from the stop command, in a ship in space, and from a double click on the pilot's own capsule (menusvc.py 2432). Recorded on Tranquility so, 24 times."),
@@ -2042,7 +2144,7 @@ const RETAIL_CALLS = Object.freeze({
   "mailMgr.MoveToTrashByList": same(`${MAIL_SERVICES}/mailSvc.py:373`, "self.mailMgr.MoveToTrashByList(listID); a mailing list's Trash All, asked to be sure of. In no recording."),
   "mailMgr.MoveAllFromTrash": same(`${MAIL_SERVICES}/mailSvc.py:450`, "self.mailMgr.MoveAllFromTrash(), no arguments; the trash's Restore All, asked to be sure of. In no recording."),
   "mailMgr.CreateLabel": typing(same(`${MAIL_SERVICES}/mailSvc.py:734`, "self.mailMgr.CreateLabel(name, color): from the labels window, the colour None; answered the label's bit. In no recording. The name the labels window's field's, stripped, unicode (evemail.py 1563 to 1578)."), [0]),
-  "mailMgr.EditLabel": typing(same(`${MAIL_SERVICES}/mailSvc.py:715`, "self.mailMgr.EditLabel(labelID, name, color): a rename, the colour None (RenameLabelFromUI, 1290 to 1299). In no recording. The name the popup's, stripped, unicode."), [1]),
+  "mailMgr.EditLabel": typing(same(`${MAIL_SERVICES}/mailSvc.py:715`, "self.mailMgr.EditLabel(labelID, name, color): a rename, the colour None (RenameLabelFromUI, 1290 to 1299), or Assign Color, the name None and the colour a swatch's number (ChangeLabelColorFromUI, 1301 to 1309). In no recording. The name the popup's, stripped, unicode."), [1]),
   "mailMgr.DeleteLabel": same(`${MAIL_SERVICES}/mailSvc.py:741`, "self.mailMgr.DeleteLabel(labelID), after the DeleteMailLabel dialog (1314 to 1317). In no recording."),
   "mailMgr.AssignLabels": reshaped(`${MAIL_SERVICES}/mailSvc.py:765`, recipientsListed, "self.mailMgr.AssignLabels(mailsToGetLabel.keys(), labelID): the messages that lack the label, a list, and the label. In no recording."),
   "mailMgr.RemoveLabels": reshaped(`${MAIL_SERVICES}/mailSvc.py:783`, recipientsListed, "self.mailMgr.RemoveLabels(mailsToRemoveLabelFrom.keys(), labelID): the messages that have the label, a list, and the label. In no recording."),
@@ -2091,6 +2193,7 @@ const RETAIL_CALLS = Object.freeze({
   "fleetObjectHandler.MakeLeader": same(`${FLEET_SVC}:604`, "self.fleet.MakeLeader(charID), once the user has agreed"),
   "fleetObjectHandler.SetMotdEx": same(`${FLEET_SVC}:1961`, "self.fleet.SetMotdEx(motd)"),
   "fleetObjectHandler.KickMember": judged(`${FLEET_SVC}:611`, kickingAnother, "self.fleet.KickMember(charID), for any member but the pilot's own"),
+  "fleetObjectHandler.SendBroadcast": judged(`${FLEET_SVC}:989`, aGlobalBroadcast, "self.fleet.SendBroadcast(name, self.broadcastScope, itemID, typeID), on the fleet's object, after the client's own checks and wait"),
   "fleetObjectHandler.DisbandFleet": judged(`${FLEET_SVC}:617`, disbandingAsBoss, "self.fleet.DisbandFleet(), no arguments, for the fleet's boss"),
   "fleetObjectHandler.SetOptions": reshaped(`${FLEET_SVC}:449`, fleetOptionsCopy, "self.fleet.SetOptions(options): a copy of the options the client keeps, free move changed"),
   "fleetObjectHandler.Reconnect": same(`${FLEET_SVC}:1714`, "GetFleet(fleetID).Reconnect(), no arguments, on a Moniker for the fleet the connection was lost in"),
@@ -2163,6 +2266,9 @@ const RETAIL_CALLS = Object.freeze({
     "bp.CmdAlignTo(dstID=targetID, bookmarkID=bookmarkID), on the ballpark's object: a thing or a bookmark by name, the other None, and nothing by position; from the menu, the shortcut and a site's bracket. With no park, and for the pilot's own ship, it sends nothing. It answers nothing. Tranquility's two recordings have it so, the thing a long."),
   "beyonce.CmdFleetTagTarget": judged("eve/client/script/ui/services/menusvc.py:2825", tagging,
     "michelle.GetRemotePark().CmdFleetTagTarget(itemID, tag): a fleet's tag on a thing in space, from the menu and from the shortcuts, on the ballpark's object. It answers nothing, set or not. No recording has one."),
+  "fleetMgr.AddToWatchlist": judged(`${FLEET_SVC}:669`, addingToWatchlist, "sm.RemoteSvc('fleetMgr').AddToWatchlist(newCharsAdded, fav): the pilots added and every favourite, the client's set"),
+  "fleetMgr.RemoveFromWatchlist": judged(`${FLEET_SVC}:719`, removingFromWatchlist, "sm.RemoteSvc('fleetMgr').RemoveFromWatchlist(charID, favs): the pilot taken off and every favourite left, the client's set"),
+  "fleetMgr.RegisterForDamageUpdates": judged(`${FLEET_SVC}:795`, registeringForDamage, "sm.RemoteSvc('fleetMgr').RegisterForDamageUpdates(fav): every favourite, the client's set, at a change of system in space in a fleet"),
   "fleetMgr.BroadcastToBubble": judged(`${FLEET_SVC}:998`, oneBubbleBroadcast,
     "sm.RemoteSvc('fleetMgr').BroadcastToBubble(name, self.broadcastScope, itemID, typeID): the client's broadcasts to its bubble (the three calls for repair, Target and HealTarget), the type left at None, and none sent inside the client's own wait since its last broadcast. No recording has one."),
   "fleetMgr.ForceLeaveFleet": judged(`${FLEET_SVC}:367`, leavingByName, "sm.RemoteSvc('fleetMgr').ForceLeaveFleet(), no arguments: asked only where the client holds no object for a fleet the session is in"),

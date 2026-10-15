@@ -163,6 +163,38 @@ export interface FleetBroadcast {
   readonly receivedAtMs: number;
 }
 
+/** fleetSvc.py 61, MAX_NUM_BROADCASTS: the most broadcasts the client's history keeps. */
+export const MAX_BROADCAST_HISTORY = 500;
+
+/**
+ * The client's label for a broadcast in its history (fleetSvc.AddBroadcast, 1430 to 1490), and the label's
+ * arguments as AddBroadcast gives them. The heals' labels have the healed thing's type after them where the ship is
+ * in the ballpark, and Target's and HealTarget's are the WithType ones where the target is there: those the caller
+ * makes (it has the ballpark). spaceAndOptionalGroupName is ' ', and ' <group> ' only for a stargate or a skyhook,
+ * whose group the page does not tell here: TravelTo, the one the page's menu sends, gives no type.
+ */
+export function broadcastHistoryLabel(broadcast: FleetBroadcast): { readonly label: string; readonly args: Readonly<Record<string, JsonValue>> } {
+  const charID = broadcast.senderCharID;
+  const place = { charID, locationID: broadcast.itemID, spaceAndOptionalGroupName: " " };
+  switch (broadcast.name) {
+    case "EnemySpotted": return { label: "UI/Fleet/FleetBroadcast/BroadcastEventEnemySpotted", args: { charID } };
+    case "NeedBackup": return { label: "UI/Fleet/FleetBroadcast/BroadcastEventNeedBackup", args: { charID } };
+    case "HealArmor": return { label: "UI/Fleet/FleetBroadcast/BroadcastEventHealArmor", args: { charID } };
+    case "HealShield": return { label: "UI/Fleet/FleetBroadcast/BroadcastEventHealShield", args: { charID } };
+    case "HealCapacitor": return { label: "UI/Fleet/FleetBroadcast/BroadcastEventHealCapacitor", args: { charID } };
+    case "InPosition": return { label: "UI/Fleet/FleetBroadcast/BroadcastEventInPosition2", args: place };
+    case "HoldPosition": return { label: "UI/Fleet/FleetBroadcast/BroadcastEventHoldPosition", args: { charID } };
+    case "JumpBeacon": return { label: "UI/Fleet/FleetBroadcast/BroadcastEventJumpToBeacon", args: { charID } };
+    case "Location": return { label: "UI/Fleet/FleetBroadcast/BroadcastEventLocation", args: { charID, solarsystemID: broadcast.senderSolarSystemID } };
+    case "WarpTo": return { label: "UI/Fleet/FleetBroadcast/BroadcastEventWarpTo2", args: place };
+    case "AlignTo": return { label: "UI/Fleet/FleetBroadcast/BroadcastEventAlignTo2", args: place };
+    case "JumpTo": return { label: "UI/Fleet/FleetBroadcast/BroadcastEventJumpTo2", args: place };
+    case "TravelTo": return { label: "UI/Fleet/FleetBroadcast/BroadcastEventTravelTo2", args: place };
+    case "Target": return { label: "UI/Fleet/FleetBroadcast/BroadcastEventTarget", args: {} };
+    case "HealTarget": return { label: "UI/Fleet/FleetBroadcast/BroadcastEventHealTarget", args: {} };
+  }
+}
+
 /**
  * A positive game id as a Number. Accepts the `{type:"long"}` wrapper, a
  * bare integer, or a bare decimal string — see the ⚠ at the top of this

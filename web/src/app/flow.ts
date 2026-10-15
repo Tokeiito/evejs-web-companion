@@ -53,6 +53,7 @@ import {
   inflateMailBody,
   MAIL_BODIES_KEPT,
   type MailBody,
+  isSystemMailLabel,
   mailLabelOf,
   mailLabelsOf,
   mailingListKeyAndName,
@@ -231,6 +232,7 @@ import type {
   FittingSlot,
   FleetAction,
   FlightStatus,
+  CapacityInfo,
   InventoryItemRow,
   InventoryPlace,
   MiningHold,
@@ -283,7 +285,7 @@ import { buildGateLinks, type GateLink } from "../space/gateLinks.ts";
 import { CRIMEWATCH_NOTICES, CRIMEWATCH_SESSION_NAMES } from "../space/crimewatch.ts";
 import type { SafetyLevel } from "../space/crimewatch.ts";
 import { CLONE_GRADE_NOTICE, cloneGradeOf } from "../bridge/cloneGrade.ts";
-import type { AgentFinderRow, HoldItem } from "../store/types.ts";
+import type { AgentFinderRow, HoldItem, MissionSpot } from "../store/types.ts";
 import {
   MENU_WARP_RANGE_M,
   createAutopilot,
@@ -397,7 +399,7 @@ import {
 import { readScanFullState } from "../bridge/scanFullState.ts";
 import { applyFitting, destroyRig as destroyRigCall, fitModule as fitModuleCall, unfitModule as unfitModuleCall } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
-import { BAY_FLAGS, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, stackAll as stackAllCall, trashItems as trashItemsCall, type MovePlace } from "../bridge/inventoryWrites.ts";
+import { BAY_FLAGS, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, type MovePlace } from "../bridge/inventoryWrites.ts";
 import {
   cancelOrder as cancelOrderCall,
   modifyOrder as modifyOrderCall,
@@ -435,7 +437,7 @@ import { readAvailableFleetAds, readFleetFinder as readFleetFinderCalls } from "
 import { readMyLaunches } from "../bridge/launchReads.ts";
 import { readCharacterFittings, readCorporationFittings } from "../bridge/fittingReads.ts";
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
-import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
+import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, kickFleetMember as kickFleetMemberCall, leaveFleet as leaveFleetCall, makeFleetLeader as makeFleetLeaderCall, moveFleetMember as moveFleetMemberCall, tagFleetTarget, addToWatchlist as addToWatchlistCall, removeFromWatchlist as removeFromWatchlistCall, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { BOOKMARK_EXPIRY, addFolder as addFolderCall, addToKnownFolders as addToKnownFoldersCall, copyBookmarks as copyBookmarksCall, moveBookmarks as moveBookmarksCall, removeFromKnownFolders as removeFromKnownFoldersCall, type MovedOrCopied, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, createSubfolder as createSubfolderCall, updateFolder as updateFolderCall, type FolderAccess, deleteBookmarks as deleteBookmarksCall, deleteFolder as deleteFolderCall, deleteSubfolder as deleteSubfolderCall, setFolderActive as setFolderActiveCall, updateBookmark as updateBookmarkCall, updateSubfolder as updateSubfolderCall } from "../bridge/bookmarkWrites.ts";
 import { giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
 import { afterArriving, keepWaypoints, readWaypoints, withWaypoint, withoutWaypoint, type PilotPlace } from "../nav/waypoints.ts";
@@ -450,7 +452,7 @@ import {
   salvageWithDrones,
   scoopDrones as scoopDronesCall,
 } from "../bridge/boundEntityWrites.ts";
-import { alignTo as alignToCall, alignToBookmark as alignToBookmarkCall, approach as approachCall, approachBookmark as approachBookmarkCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
+import { alignTo as alignToCall, alignToBookmark as alignToBookmarkCall, approach as approachCall, approachBookmark as approachBookmarkCall, approachMissionLocation as approachMissionLocationCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpFleetToMember as warpFleetToMemberCall, toMemberBeacon as toMemberBeaconCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
 import { dock as dockCall, dockAtStructure as dockAtStructureCall, isStation, jump as jumpCall, undock as undockCall } from "../bridge/placeChanges.ts";
 import { boardCorvette as boardCorvetteCall, boardShip as boardShipCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
 import { activityIDOf, createJobReckoner, type JobReckoner, type JobReckoning } from "../bridge/industryJobReckoning.ts";
@@ -709,6 +711,29 @@ export interface SupportTractorRequest {
  * it said no in its own words. The last two also land in `actionError`.
  */
 export type AmmoOutcome = "changed" | "reloading" | "unchanged" | "refused";
+
+/**
+ * The client's quantity question (uix.QtyPopup, as invControllers.PromptUserForQuantity asks it): a whole number
+ * from `min` to `max`, `value` to begin with, and its hint, a label of the client's (`hintLabel`) with the page's
+ * own words for it (`hint`).
+ */
+export interface QuantityAsk {
+  readonly n: number;
+  readonly min: number;
+  readonly max: number;
+  readonly value: number;
+  readonly hintLabel: string | null;
+  readonly hint: string | null;
+}
+
+/** A dialog a refusal named (AppFlow.dialogsSaid): its name, the values for it, and the page's own words for it. */
+export interface SaidDialog {
+  readonly n: number;
+  readonly dialog: string;
+  readonly values: JsonValue | null;
+  /** What the page says where the install has not the dialog. */
+  readonly fallback: string;
+}
 
 export interface AppFlow {
   readonly droneRecovery: ReadableSignal<DroneRecoveryState>;
@@ -972,8 +997,11 @@ export interface AppFlow {
   loadFleet(): Promise<void>;
   /** Form a fleet, then re-read membership before settling. */
   formFleet(): Promise<void>;
-  /** Invite one character by ID, then re-read the authoritative fleet. */
-  inviteFleetMember(characterID: number, assertCurrent?: () => void, expectedFleetID?: number): Promise<void>;
+  /**
+   * Invite one character by ID, then re-read the authoritative fleet. `place` is where in the fleet, as the invite
+   * menu's places give it (menusvc.FleetInviteMenu); none, a squad member with no place said.
+   */
+  inviteFleetMember(characterID: number, assertCurrent?: () => void, expectedFleetID?: number, place?: { readonly wingID: number | null; readonly squadID: number | null; readonly role: number | null }): Promise<void>;
   /**
    * An owner's menu's Form Fleet With (menusvc.py 637 to 638; fleetSvc.Invite, 351 to 363): a fleet formed where the
    * pilot is in none, then the character invited; the pilot's own character is invited to nothing.
@@ -1002,6 +1030,39 @@ export interface AppFlow {
   declineFleetInvite(fleetID?: number): Promise<void>;
   /** Leave the current fleet, then re-read membership before settling. */
   leaveFleet(): Promise<void>;
+  /** Kick a member of the pilot's fleet (the pilot's own leaves), as the fleet's menu for a member does; the fleet read again. */
+  kickFleetMember(characterID: number): Promise<void>;
+  /** Hand the fleet's boss on to a member, as the fleet's menu for a member does once asked; the fleet read again. */
+  makeFleetLeader(characterID: number): Promise<void>;
+  /** Give a member another place in the fleet, as the fleet's menu for a member does (Move Fleet Member); the fleet read again. */
+  moveFleetMember(characterID: number, wingID: number | null, squadID: number | null, role: number): Promise<void>;
+  /** Warp to a member of the pilot's fleet at a range, as the fleet's menu for a member does. */
+  warpToFleetMember(characterID: number, range: number): Promise<void>;
+  /** Warp the pilot's fleet, wing or squad to a member at a range, as the fleet's menu for a member does for a commander. */
+  warpFleetToMember(characterID: number, range: number): Promise<void>;
+  /**
+   * The fleet menu's Jump To, Conduit Jump To and Bridge To a member's cyno (menusvc.JumpToMember, GroupJumpToMember,
+   * BridgeToMember): by the member's cyno the fleet told of, nothing where it told of none.
+   */
+  toFleetMemberBeacon(characterID: number, how: "jump" | "group" | "bridge"): Promise<void>;
+  /**
+   * Broadcast Travel To Me, from the fleet's menu for the pilot's own: a TravelTo broadcast of the pilot's own solar
+   * system to the whole fleet, after the client's checks. What came of it: sent, not sent (the client's wait between
+   * broadcasts not over, or the server sending nothing), or refused before anything was asked (not in a fleet; docked
+   * at a station; docked in a structure: the client's FleetNotInFleetInSpace, FleetCannotDoInStation and
+   * FleetCannotDoInStructure).
+   */
+  broadcastTravelToMe(): Promise<"sent" | "unsent" | "not-in-fleet" | "in-station" | "in-structure">;
+  /**
+   * Add Pilot to Watchlist, from the fleet's menu for a member: the pilots added to the pilot's watchlist and the
+   * server told, after the client's checks. What came of it: added, nothing to add (the pilot's own, one no member,
+   * or one already on it), or refused (not in a fleet: FleetNotInFleet; the list full: FleetTooManyFavorites).
+   */
+  addToFleetWatchlist(characterIDs: readonly number[]): Promise<"added" | "unchanged" | "not-in-fleet" | "too-many">;
+  /** Remove Pilot from Watchlist, from the same menu: the pilot taken off and the server told; refused out of a fleet. */
+  removeFromFleetWatchlist(characterID: number): Promise<"removed" | "not-in-fleet">;
+  /** The fleet window's History cleared of its broadcasts (BroadcastHistoryPanel.ClearHistory): nothing is asked. */
+  clearFleetBroadcastHistory(): void;
   /**
    * The fleet finder, for a pilot that has been told which fleet to join: the
    * adverts open to this session, and the name of the fleet it is already in.
@@ -1146,6 +1207,11 @@ export interface AppFlow {
   keepContactsSearchSettings(settings: { readonly searchType: number; readonly searchBy: number }): void;
   /** Owners found by the search service's Query, by result type, each named and sorted by name; fails with the server's words. */
   searchOwners(text: string, resultTypes: readonly number[], matchBy: number): Promise<ReadonlyMap<number, readonly { readonly id: number; readonly name: string }[]>>;
+  /**
+   * A player corporation's entry's ticker, as the entry gets it as it is loaded (userentry.py User.PreLoad, 139 to
+   * 140: cfg.corptickernames.Get, a priming of its own for each): the transport asks each not asked yet, in turn.
+   */
+  corpTickersEach(corpIDs: readonly number[]): Promise<void>;
   /** An agent added to the address book (charMgr.AddContact with the agent alone); fails with the server's words. */
   addAgentToAddressBook(agentID: number): Promise<void>;
   /** The contacts' notifications (notificationMgr.GetByGroupID(9)), those of a communication's type, their senders named. */
@@ -1209,6 +1275,8 @@ export interface AppFlow {
   createMailLabel(name: string): Promise<number | null>;
   /** Rename a label of the pilot's own, as the labels window's Rename does. */
   renameMailLabel(labelID: number, name: string): Promise<void>;
+  /** Give a label (the pilot's own or the system's) a colour, as the colour window's swatch does. */
+  setMailLabelColor(labelID: number, color: number): Promise<void>;
   /** Delete a label of the pilot's own, as the labels window's Delete does once it is asked to be sure of. */
   deleteMailLabel(labelID: number): Promise<void>;
   /** Give messages a label, as a message's Assign Label does: how many were given it (0, nothing asked, where all had it). */
@@ -1402,6 +1470,13 @@ export interface AppFlow {
   warpToBookmark(bookmarkID: number, range: number): Promise<void>;
   approachBookmark(bookmarkID: number): Promise<void>;
   alignToBookmark(bookmarkID: number): Promise<void>;
+  /**
+   * A mission's bookmark's moves, asked of its agent (movementFunctions.py 397 to 421), each a flight step whose refusal
+   * is said as the flight's are: Warp to Within at `range` metres, one of the menu's seven (WarpToLocation); Approach
+   * Location (GotoLocation).
+   */
+  warpToMissionBookmark(spot: MissionSpot, range: number): Promise<void>;
+  approachMissionBookmark(spot: MissionSpot): Promise<void>;
   /**
    * R13 — cut the engines (CmdStop). As in retail, this also switches the
    * autopilot off: stopping the ship must not leave something still flying it.
@@ -1676,6 +1751,18 @@ export interface AppFlow {
    * AutoPilotWaypointReached, AutoPilotDisabledNoPathSet, or a waypoint refused), `n` telling one from the next.
    */
   readonly autopilotSaid: ReadableSignal<{ readonly dialog: string; readonly n: number } | null>;
+  /**
+   * The dialogs the server's refusals named, oldest first, to be put up as the client puts up a UserError
+   * (eve_exception_handler.handle_exception: prompt_player_fsd_dialog(exc.msg, exc.dict)); ClientDialogs.svelte
+   * shows them.
+   */
+  readonly dialogsSaid: ReadableSignal<readonly SaidDialog[]>;
+  /** A dialog of dialogsSaid taken down: its OK, or the passing strip's time gone by. */
+  dismissDialog(n: number): void;
+  /** The client's quantity question open now, one at a time (ClientDialogs.svelte shows it); null with none. */
+  readonly quantityAsked: ReadableSignal<QuantityAsk | null>;
+  /** Its answer: a quantity on OK, null on Cancel. An answer to a question no longer open is nothing. */
+  answerQuantity(n: number, quantity: number | null): void;
   /** Set Destination (starMapSvc.SetWaypoint(id, True)): the place the only waypoint. */
   setDestination(destinationID: number): void;
   /** Add Waypoint (SetWaypoint(id)): the place put at the end of the waypoints. */
@@ -1941,6 +2028,14 @@ export interface AppFlow {
   setLivePush(enabled: boolean): void;
   /** R92 multibox — mark this flow as the pilot on screen (or not). */
   setForeground(active: boolean): void;
+  /**
+   * What a pilot not in front has been sent since it last heard. Such a pilot holds no stream, and what the server
+   * sends it waits at the BFF for its next read, which a docked, idle pilot does not make; the retail client each
+   * pilot stands for hears at once, and some of what it hears asks the pilot something (a fleet invitation). The
+   * read is the flight as the transport keeps it, which asks the server nothing; what it brings is acted on as a
+   * push is. Nothing is read with no pilot online.
+   */
+  hearInBackground(): Promise<void>;
   /** Release the persistent session (character offline), back to the select list. */
   releaseSession(): Promise<void>;
   logout(): Promise<void>;
@@ -2120,6 +2215,13 @@ const SCOOP_LEAVE_STEP_MS = 250;
 /** How long a launch's new drones are waited for in the drones' read, and how often it is made again. */
 const LAUNCH_ARRIVAL_WAIT_MS = 3000;
 const LAUNCH_ARRIVAL_STEP_MS = 250;
+/** A whole number as the bridge carries one: a number, or a long as a decimal text; null for anything else. */
+function wholeNumberOf(value: unknown): number | null {
+  const raw = value !== null && typeof value === "object" && "value" in (value as object) ? (value as { value: unknown }).value : value;
+  const number = typeof raw === "number" ? raw : typeof raw === "string" && /^-?\d+$/.test(raw) ? Number(raw) : NaN;
+  return Number.isSafeInteger(number) ? number : null;
+}
+
 /** One of an item's attributes as godma was primed with it, where it is a number. */
 function dogmaNumber(item: DogmaItemInfo | null, attributeID: number): number | null {
   const value = item?.attributes.find((attribute) => attribute.attributeID === attributeID)?.value;
@@ -2699,6 +2801,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         turnDownUnasked(fleetInvite.fleetID);
         return;
       }
+      // (1192): with the dict's autoAccept (the fleet finder's) the client joins without asking its pilot.
+      if (fleetInvite.autoAccept === true) {
+        void acceptFleetInvite(fleetInvite.fleetID).catch(() => {});
+        return;
+      }
       store.apply({ type: "fleet/pending-invite", invite: fleetInvite });
       if (fleetInvite.inviterID !== null) {
         requestNames([{ kind: "character", id: fleetInvite.inviterID }]);
@@ -2924,6 +3031,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         void loadStationOffices().catch(() => {});
       }
       return;
+    }
+    if (method === "OnFleetJumpBeaconModuleChange") {
+      // fleetSvc.OnFleetJumpBeaconModuleChange (209 to 216): a member's cyno lit, kept by the member, or put out.
+      const [charID, solarSystemID, beaconID, typeID, active] = args;
+      const characterID = wholeNumberOf(charID);
+      if (characterID !== null && characterID > 0) {
+        const beacon = active === true || active === 1
+          ? { solarSystemID: wholeNumberOf(solarSystemID) ?? 0, beaconID: wholeNumberOf(beaconID) ?? 0, typeID: wholeNumberOf(typeID) }
+          : null;
+        store.apply({ type: "fleet/jump-beacon", characterID, beacon });
+      }
+      return;
+    }
+    if (method === "OnFleetLeave") {
+      // fleetSvc (1240 to 1243): a member that leaves takes its cyno with it.
+      const characterID = wholeNumberOf(args[0]);
+      if (characterID !== null && characterID > 0) store.apply({ type: "fleet/jump-beacon", characterID, beacon: null });
     }
     if (method !== null && fleetSnapshotNotifications.has(method)) {
       // The notification is an invalidation, never the roster authority. A
@@ -3365,7 +3489,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // unwind the flow; any other failure is surfaced through the store (the page
   // stays put and shows the reason) rather than thrown into the UI handler.
   // An action that answers `false` did nothing (the pilot said no): nothing is said, and nothing is read again.
-  async function runMutation(action: () => Promise<void | boolean>): Promise<void> {
+  // A refusal is put up as the client puts up a UserError (a ship boarded, left or repaired, Stack All: each lets
+  // its UserError through to the client's handler), save those of `kept`.
+  async function runMutation(action: () => Promise<void | boolean>, kept: ReadonlySet<string> = NONE_SILENT): Promise<void> {
     try {
       if ((await action()) === false) {
         return;
@@ -3377,10 +3503,120 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "inventory/action-error", message: errorWords(error) });
+      const message = errorWords(error);
+      store.apply({ type: "inventory/action-error", message, said: sayInventoryRefusal(error, message, kept) });
       return;
     }
     await loadInventory();
+  }
+
+  /** A refusal the inventory's own code has put up already, as the client does (NotEnoughCargoSpaceFor1Unit). */
+  class DialogAlreadySaid extends Error {}
+
+  /** invControllers._AddItem (252 to 258): a single stack's want of room, which the client answers itself. */
+  const ADD_ROOM_REFUSALS: ReadonlySet<string> = new Set([
+    "NotEnoughCargoSpace", "NotEnoughCargoSpaceOverload", "NotEnoughDroneBaySpace", "NotEnoughDroneBaySpaceOverload",
+    "NoSpaceForThat", "NoSpaceForThatOverload", "NotEnoughChargeSpace", "NotEnoughSpecialBaySpace",
+    "NotEnoughSpecialBaySpaceOverload", "NotEnoughSpace", "NotEnoughFighterBaySpace",
+  ]);
+  /** And CannotAddToQtyLimit (275 to 279), with what may yet be added: the refusals noRoomForAll answers. */
+  const ONE_STACK_ANSWERED: ReadonlySet<string> = new Set([...ADD_ROOM_REFUSALS, "CannotAddToQtyLimit"]);
+  /** invControllers.StackAll (393 to 407): a container's password asked for. */
+  const STACK_KEPT: ReadonlySet<string> = new Set(["PermissionDenied"]);
+
+  /** Used and capacity of a place as the page last read them; null where it has none, or has not read it. */
+  function capacityAt(place: InventoryPlace): CapacityInfo | null {
+    const inventory = store.get().inventory;
+    switch (place.kind) {
+      case "hangar":
+        return inventory.hangar.capacity;
+      case "cargo":
+        return inventory.cargo.capacity;
+      case "container":
+        return inventory.container && inventory.container.itemID === place.itemID ? inventory.container.capacity : null;
+      case "shipBay": {
+        const ship = inventory.openShip;
+        if (!ship || ship.itemID !== inventory.activeShipID) return null;
+        return ship.bays.find((bay) => bay.key === place.bay)?.capacity ?? null;
+      }
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * A single stack the server would not take, as the client answers it (invControllers._AddItem, 229 to 290, two
+   * tries). For want of room the place's room is read again (the client's GetCapacity: here the places' reads, which
+   * ask it): none to spare at all, the refusal is the client's handler's; room for not even one unit,
+   * NotEnoughCargoSpaceFor1Unit with the type, the room free and one unit's, at least 0.01; room for some, on the first
+   * try the client asks how many (PromptUserForQuantity's uix.QtyPopup: up to what fits, begun at that, its hint "no
+   * more units" where that is the whole stack and "no room for more" where not), and on the second it says nothing.
+   * CannotAddToQtyLimit with nothing more to add is the handler's; with some, the same question up to what may be
+   * added. Any other refusal is thrown on as it is. Returns the quantity to try again with, or null where nothing more
+   * is to be done (the question cancelled, or the second try's silence); throws DialogAlreadySaid where it is said.
+   */
+  async function noRoomForAll(error: unknown, row: InventoryItemRow, to: InventoryPlace, mayAsk: boolean): Promise<number | null> {
+    const refusal = refusalDialogOf(error);
+    if (refusal === null || !ONE_STACK_ANSWERED.has(refusal.dialog)) throw error;
+    const message = errorWords(error);
+    const toHandler = (): never => {
+      sayRefusalDialog(error, message);
+      throw new DialogAlreadySaid(message);
+    };
+    const stack = row.singleton ? 1 : row.quantity;
+    const volume = typeof row.volume === "number" && row.volume > 0 ? row.volume : null;
+    let allowed: number;
+    if (refusal.dialog === "CannotAddToQtyLimit") {
+      const maxToAdd = numberIn(refusal.values, "maxToAdd");
+      if (maxToAdd === null || maxToAdd <= 0) toHandler();
+      allowed = maxToAdd as number;
+    } else {
+      await refreshOpenPlaces().catch(() => {});
+      const capacity = capacityAt(to);
+      if (capacity === null || volume === null) toHandler();
+      const free = (capacity as CapacityInfo).capacity - (capacity as CapacityInfo).used;
+      if (free < 0) toHandler();
+      allowed = Math.min(stack, Math.round((free / (volume as number)) * 1e7) / 1e7 | 0);
+      if (allowed <= 0) {
+        // (The values as a dict the bridge carries, as a refusal's come: a plain object's `type` is a wire value's tag.)
+        const required = (volume as number) < 0.01 ? 0.01 : (volume as number);
+        const values: JsonValue = { type: "dict", entries: [["type", row.typeID], ["free", free], ["required", required]] };
+        sayDialog("NotEnoughCargoSpaceFor1Unit", values, message);
+        throw new DialogAlreadySaid(message);
+      }
+    }
+    if (!mayAsk) return null;
+    // PromptUserForQuantity: the least of the stack, what is allowed, and what the place's room holds.
+    const capacity = capacityAt(to);
+    const roomFor = capacity !== null && volume !== null ? Math.trunc((capacity.capacity - capacity.used) / volume + 1e-7) : null;
+    const most = Math.min(...[stack, allowed, roomFor].filter((each): each is number => each !== null && each > 0));
+    const whole = most === stack;
+    return askQuantity({
+      min: 0,
+      max: most,
+      value: most,
+      hintLabel: whole ? "UI/Common/NoMoreUnits" : "UI/Common/NoRoomForMore",
+      hint: whole ? "There are no more units where these lie." : "There is no room for more where these are going.",
+    }).then((quantity) => (quantity !== null && quantity > 0 ? quantity : null));
+  }
+
+  /** A number a refusal's values hold under `key` (a dict as the bridge carries one), or null. */
+  function numberIn(values: JsonValue | null, key: string): number | null {
+    const found = values === null ? undefined : readDictEntry(values, key);
+    return typeof found === "number" && Number.isFinite(found) ? found : null;
+  }
+
+  /**
+   * An inventory action's refusal put up as the client puts it up: TrashItems' answered refusals each its dialog
+   * (TrashInvItems), one the action put up itself as it is, any other by sayRefusalDialog, save those of `kept`.
+   */
+  function sayInventoryRefusal(error: unknown, message: string, kept: ReadonlySet<string>): boolean {
+    if (error instanceof DialogAlreadySaid) return true;
+    if (error instanceof TrashRefusedError) {
+      for (const dialog of error.dialogs) sayDialog(dialog, null, message);
+      return error.dialogs.length > 0;
+    }
+    return sayRefusalDialog(error, message, NONE_SILENT, kept);
   }
 
   // --- R14 Inventory depth + corporation hangars ---------------------------
@@ -3595,14 +3831,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // Run a mutation and report what the SERVER says actually happened. The BFF
   // re-reads after every call because invbroker declines silently, so `applied`
   // here is a real observation, not an echo of the request.
+  // A refusal is put up as the client puts up a UserError (sayInventoryRefusal), save those of `kept`. An action that
+  // answers null did nothing and has nothing to say (the client's quantity question cancelled): nothing is read again.
   async function runInventoryAction(
-    action: () => Promise<{ applied: boolean; declinedSilently: boolean; message: string }>,
+    action: () => Promise<{ applied: boolean; declinedSilently: boolean; message: string } | null>,
+    kept: ReadonlySet<string> = NONE_SILENT,
   ): Promise<void> {
     store.apply({ type: "inventory/outcome", outcome: null });
-    let outcome: { applied: boolean; declinedSilently: boolean; message: string };
+    let outcome: { applied: boolean; declinedSilently: boolean; message: string } | null;
     try {
       outcome = await action();
       store.apply({ type: "inventory/action-error", message: null });
+      if (outcome === null) return;
     } catch (error) {
       if (isSessionLost(error)) {
         stopLiveStream();
@@ -3611,7 +3851,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       // A typed refusal carries the HANDLER's own reason; it is surfaced
       // verbatim rather than reworded.
-      store.apply({ type: "inventory/action-error", message: errorWords(error) });
+      const message = errorWords(error);
+      store.apply({ type: "inventory/action-error", message, said: sayInventoryRefusal(error, message, kept) });
       return;
     }
     store.apply({ type: "inventory/outcome", outcome });
@@ -3982,8 +4223,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * Run a fitting action, then reload the panel so it shows SERVER truth.
    *
    * Two refusal shapes have to be handled, and they are not the same thing:
-   *  - a THROWN refusal carries the handler's own reason (e.g. "You do not
-   *    have enough CPU to online that module.") and is surfaced verbatim;
+   *  - a THROWN refusal carries the handler's own reason (e.g. NotEnoughCpu,
+   *    with the module's need and what is left) and is put up as the client
+   *    puts it up (sayRefusalDialog);
    *  - a SILENT decline returns success while nothing moved (invbroker's
    *    fit validation does this for a module you lack the skill for). The BFF
    *    re-reads the slots and reports `applied: false`; saying only that the
@@ -4036,7 +4278,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "fitting/action-error", message: errorWords(error) });
+      // Put up as the client puts up a UserError: LoadAmmoToModules and UnloadAmmoFromModules let theirs through to
+      // its handler (clientDogmaLocation.py 994 on, 1140 on).
+      const message = errorWords(error);
+      store.apply({ type: "fitting/action-error", message, said: sayRefusalDialog(error, message) });
       return "refused";
     }
     // The response's own notifications were applied before `action` resolved,
@@ -4079,7 +4324,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "fitting/action-error", message: errorWords(error) });
+      // Put up as the client puts up a UserError: a module fitted (fittingUtil.TryFit's MultiAdd, the dogma
+      // location's TryFit) and one taken off (UnloadModuleToContainer) let theirs through to its handler.
+      const message = errorWords(error);
+      store.apply({ type: "fitting/action-error", message, said: sayRefusalDialog(error, message) });
       return;
     }
     await loadFitting();
@@ -4240,10 +4488,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({
-        type: "industry/action-error",
-        message: industryRefusalMessage(error),
-      });
+      // Put up as the client puts up a UserError: industrySvc.InstallJob, CompleteJob and CancelJob raise theirs to its
+      // handler (industrySvc.py 139 to 162). IndustryValidationError's dialog says only that the job was not
+      // submitted, and the client shows its reasons in the submit button's tooltip (submitButton.py 223 to 225): the
+      // window's line, the page's words for those reasons, stays for it.
+      const message = industryRefusalMessage(error);
+      const said = sayRefusalDialog(error, message) && refusalDialogOf(error)?.dialog !== "IndustryValidationError";
+      store.apply({ type: "industry/action-error", message, said });
       return;
     }
     await loadIndustry();
@@ -4371,7 +4622,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "market/action-error", message: marketRefusalMessage(error) });
+      // Put up as the client puts up a UserError: marketsvc's BuyStuff, CancelOrder and ModifyOrder and the sell's
+      // PlaceMultiSellOrder let theirs through to its handler (marketsvc.py 256 to 290).
+      const message = marketRefusalMessage(error);
+      store.apply({ type: "market/action-error", message, said: sayRefusalDialog(error, message) });
       return;
     }
     // Reload first: the panel must show the server's own picture of the
@@ -4864,7 +5118,88 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         return "Leaving the fleet could not be confirmed by the follow-up membership read.";
       case "invite":
         return "The fleet could not be re-read after the invitation was sent.";
+      case "kick":
+        return "The fleet could not be re-read after the member was kicked.";
+      case "leader":
+        return "The fleet could not be re-read after the boss was handed on.";
+      case "move":
+        return "The fleet could not be re-read after the member was moved.";
     }
+  }
+
+  // The dialogs the server's refusals named (dialogsSaid), as the client puts up a UserError. A box stays until its
+  // OK, the passing strip until its time is gone by (ClientDialogs.svelte); twenty at most are kept.
+  const dialogsSaidSignal = createSignal<readonly SaidDialog[]>([]);
+  let dialogsSaidCount = 0;
+  const NONE_SILENT: ReadonlySet<string> = new Set();
+  /** targetMgr._LockTarget: the refusals of a lock the client puts up nothing for. */
+  const LOCK_SILENT: ReadonlySet<string> = new Set(["DeniedShipChanged", "TargetingAttemptCancelled"]);
+  /** clientDogmaLocation.OnlineModule (698 to 711): a module online already is no refusal to the client. */
+  const ONLINE_SILENT: ReadonlySet<string> = new Set(["EffectAlreadyActive2"]);
+  /**
+   * skillQueuePanelNew.ApplySkillQueue (318 to 344): the refusals of a queue's save the panel answers itself, another
+   * character training (ShowMultiTrainingMessageOrRaise) and an Alpha's limit (its message, the queue saved unstarted).
+   */
+  const SKILL_QUEUE_KEPT: ReadonlySet<string> = new Set(["UserAlreadyHasSkillInTraining", "SkillInQueueOverAlphaSpTrainingSize"]);
+
+  /** The dialog a refusal names and the values for it: the BFF's word, or through the gateway a bare message key. */
+  function refusalDialogOf(error: unknown): { readonly dialog: string; readonly values: JsonValue | null } | null {
+    if (!(error instanceof BridgeCallError) || error.code !== "CALL_REFUSED") return null;
+    if (error.refusal !== null) return { dialog: error.refusal.key, values: error.refusal.values };
+    return /^[A-Z]\w{2,99}$/.test(error.message) ? { dialog: error.message, values: null } : null;
+  }
+
+  /**
+   * The dialog a refusal names put up, with the page's own words for it; false where it names none. One of `silent`
+   * is one the client's code lets go without a word: said as the client says it, which is not at all. One of `kept`
+   * is one the client's code answers in a way of its own that the page has not (a question it asks): not put up, and
+   * the page's own words for it stand.
+   */
+  function sayRefusalDialog(
+    error: unknown,
+    fallback: string,
+    silent: ReadonlySet<string> = NONE_SILENT,
+    kept: ReadonlySet<string> = NONE_SILENT,
+  ): boolean {
+    const said = refusalDialogOf(error);
+    if (said === null || kept.has(said.dialog)) return false;
+    if (silent.has(said.dialog)) return true;
+    sayDialog(said.dialog, said.values, fallback);
+    return true;
+  }
+
+  /** A dialog put up by its name, with the values for it and the page's own words for it (dialogsSaid). */
+  function sayDialog(dialog: string, values: JsonValue | null, fallback: string): void {
+    dialogsSaidCount += 1;
+    dialogsSaidSignal.set([...dialogsSaidSignal.get(), { n: dialogsSaidCount, dialog, values, fallback }].slice(-20));
+  }
+
+  function dismissDialog(n: number): void {
+    dialogsSaidSignal.set(dialogsSaidSignal.get().filter((said) => said.n !== n));
+  }
+
+  // The client's quantity question (uix.QtyPopup: modal, OK and Cancel), one open at a time; a newer one cancels it.
+  const quantityAskedSignal = createSignal<QuantityAsk | null>(null);
+  let quantityAnswer: ((quantity: number | null) => void) | null = null;
+
+  /** Asks the client's quantity question; a whole number in its range on OK, null on Cancel. */
+  function askQuantity(ask: Omit<QuantityAsk, "n">): Promise<number | null> {
+    quantityAnswer?.(null);
+    dialogsSaidCount += 1;
+    const n = dialogsSaidCount;
+    return new Promise((resolve) => {
+      quantityAnswer = (quantity) => {
+        quantityAnswer = null;
+        quantityAskedSignal.set(null);
+        resolve(quantity === null || !Number.isFinite(quantity) ? null : Math.min(ask.max, Math.max(ask.min, Math.trunc(quantity))));
+      };
+      quantityAskedSignal.set({ n, ...ask });
+    });
+  }
+
+  function answerQuantity(n: number, quantity: number | null): void {
+    if (quantityAskedSignal.get()?.n !== n || quantityAnswer === null) return;
+    quantityAnswer(quantity);
   }
 
   async function runFleetAction(
@@ -4874,6 +5209,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   ): Promise<void> {
     store.apply({ type: "fleet/action-started", action });
     let failure: string | null = null;
+    let said = false;
     try {
       await mutate();
     } catch (error) {
@@ -4884,6 +5220,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         throw error;
       }
       failure = `The fleet action was refused. ${errorWords(error)}`;
+      // A UserError the client puts up as its dialog (fleetSvc's calls let it through to the client's exception
+      // handler); the windows then do not say it again.
+      said = sayRefusalDialog(error, failure);
     }
 
     try {
@@ -4894,7 +5233,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         failure = fleetActionFailure(action);
       }
     } finally {
-      store.apply({ type: "fleet/action-finished", error: failure });
+      store.apply({ type: "fleet/action-finished", error: failure, said });
     }
   }
 
@@ -4903,7 +5242,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     await runFleetAction("form", () => formFleetCall(bridgeDo, store.fleet.get().availability === "ready"), "ready");
   }
 
-  async function inviteFleetMember(characterID: number, assertCurrent?: () => void, expectedFleetID?: number): Promise<void> {
+  async function inviteFleetMember(characterID: number, assertCurrent?: () => void, expectedFleetID?: number, place?: { readonly wingID: number | null; readonly squadID: number | null; readonly role: number | null }): Promise<void> {
     if (!Number.isSafeInteger(characterID) || characterID <= 0) {
       store.apply({ type: "fleet/action-started", action: "invite" });
       store.apply({
@@ -4916,7 +5255,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       "invite",
       // (The page's own call, bridge/fleetWrites.ts: the invitee alone, and the fleet expected where the caller
       // says one. Under a caller's fence it is asked through fencedDo.)
-      () => inviteToFleetCall(assertCurrent ? fencedDo(assertCurrent) : bridgeDo, characterID, onlineCharacterID(), expectedFleetID),
+      () => inviteToFleetCall(assertCurrent ? fencedDo(assertCurrent) : bridgeDo, characterID, onlineCharacterID(), expectedFleetID, place),
       "ready",
     );
   }
@@ -4995,6 +5334,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     // (The page's own call, bridge/fleetWrites.ts: none from a pilot the Fleet window knows to be in a fleet.)
     await runFleetAction("accept", () => acceptFleetInviteCall(bridgeDo, wanted, store.fleet.get().availability === "ready"), "ready");
+    // The client's own question is gone once it is answered, Yes as No, whatever the call said (OnFleetInvite: the
+    // question's answer, then AcceptInvite; a refusal is the client's dialog of its own).
+    store.apply({ type: "fleet/invite-settled", fleetID: wanted });
   }
 
   /**
@@ -5033,6 +5375,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return;
     }
     let failure: string | null = null;
+    let said = false;
     try {
       // (The page's own call, bridge/fleetWrites.ts: with True from a pilot the Fleet window knows to be in a fleet.)
       await declineFleetInviteCall(bridgeDo, wanted, store.fleet.get().availability === "ready");
@@ -5044,16 +5387,128 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         throw error;
       }
       failure = `The fleet action was refused. ${errorWords(error)}`;
+      said = sayRefusalDialog(error, failure);
     }
     // The client's own question is gone once it is answered, whatever the call said; and it reads nothing of a
     // fleet after, so nor does the page.
     store.apply({ type: "fleet/invite-settled", fleetID: wanted });
-    store.apply({ type: "fleet/action-finished", error: failure });
+    store.apply({ type: "fleet/action-finished", error: failure, said });
   }
 
   async function leaveFleet(): Promise<void> {
     // The page's own call, on the fleet's object (bridge/fleetWrites.ts).
     await runFleetAction("leave", () => leaveFleetCall(bridgeDo), "not-in-fleet");
+  }
+
+  // fleetSvc.KickMember (607 to 612): another member kicked on the fleet's object, the pilot's own leaving instead.
+  async function kickFleetMember(characterID: number): Promise<void> {
+    if (characterID === onlineCharacterID()) {
+      await leaveFleet();
+      return;
+    }
+    await runFleetAction("kick", () => kickFleetMemberCall(bridgeDo, characterID), "ready");
+  }
+
+  // fleetSvc.MakeLeader (601 to 605): the boss handed on, on the fleet's object, once the question is answered yes.
+  async function makeFleetLeader(characterID: number): Promise<void> {
+    await runFleetAction("leader", () => makeFleetLeaderCall(bridgeDo, characterID), "ready");
+  }
+
+  // fleetSvc.MoveMember (513 to 520): self.fleet.MoveMember(charID, wingID, squadID, role); the asking of a pilot who
+  // moves itself down (CheckIfIsOKWithDemotion) is the menu's, before this.
+  async function moveFleetMember(characterID: number, wingID: number | null, squadID: number | null, role: number): Promise<void> {
+    await runFleetAction("move", () => moveFleetMemberCall(bridgeDo, characterID, wingID, squadID, role), "ready");
+  }
+
+  // menusvc.WarpToMember (2748): CmdWarpToStuff('char', charID, minRange=warpRange), from the fleet's menu for a member
+  // at the pilot's default distance or one of its submenu's seven.
+  async function warpToFleetMember(characterID: number, range: number): Promise<void> {
+    await runFlightStep("Warp", () => orderedStep((flightNow) => warpToFleetMemberCall(bridgeDo, flightNow, characterID, range)));
+  }
+
+  // menusvc.WarpFleetToMember (2753): CmdWarpToStuff('char', charID, minRange=warpRange, fleet=True), with the pilot's
+  // formation (michelle.SetFleetFormationSettings), from the fleet's menu for a member: Warp Fleet, Wing or Squad to Member.
+  async function warpFleetToMember(characterID: number, range: number): Promise<void> {
+    await runFlightStep("Warp", () => orderedStep((flightNow) => warpFleetToMemberCall(bridgeDo, flightNow, characterID, range)));
+  }
+
+  // menusvc.JumpToMember, GroupJumpToMember and BridgeToMember (2614 to 2681): the member's cyno as fleetSvc keeps it
+  // (GetActiveBeaconForChar; none, nothing asked), then cynoTravelSvc's call on the park (bridge/movementWrites.ts).
+  async function toFleetMemberBeacon(characterID: number, how: "jump" | "group" | "bridge"): Promise<void> {
+    const beacon = store.fleet.get().jumpBeacons?.[String(characterID)] ?? null;
+    if (beacon === null) return;
+    await runFlightStep(how === "bridge" ? "Bridge" : "Jump", () => orderedStep((flightNow) => toMemberBeaconCall(bridgeDo, flightNow, characterID, beacon, how)));
+  }
+
+  // fleetSvc.SendBroadcast_TravelTo (1034): SendGlobalBroadcast('TravelTo', session.solarsystemid2), from the fleet's
+  // menu for the pilot's own (menusvc.FleetMenu, Broadcast Travel To Me). CheckIsInFleet(inSpace=True) first (848 to
+  // 858: no fleet's object, then no solar system, then docked in a structure), then the wait (fleetWrites.ts).
+  async function broadcastTravelToMe(): Promise<"sent" | "unsent" | "not-in-fleet" | "in-station" | "in-structure"> {
+    if (store.fleet.get().availability !== "ready") {
+      return "not-in-fleet";
+    }
+    const now = await readFlightNow();
+    if (!now.inSpace) {
+      return now.structureID !== null && now.structureID !== undefined ? "in-structure" : "in-station";
+    }
+    if (now.solarSystemID === null) {
+      return "in-station";
+    }
+    return (await fleetBroadcasts.toFleet("TravelTo", FLEET_BROADCAST_SCOPE_ALL, now.solarSystemID)) ? "sent" : "unsent";
+  }
+
+  /** evefleet MAX_DAMAGE_SENDERS: the most pilots a watchlist holds. */
+  const MAX_WATCHLIST = 100;
+
+  // fleetSvc.AddFavorite (640 to 682): CheckIsInFleet (FleetNotInFleet); the pilot's own number dropped; the list full
+  // already refused (FleetTooManyFavorites); of the rest, the fleet's members not on it yet are added while there is
+  // room; then fleetMgr.AddToWatchlist(newCharsAdded, favorites), every favourite after the adding. The list is kept
+  // whatever the call comes to, as the client keeps its set.
+  async function addToFleetWatchlist(characterIDs: readonly number[]): Promise<"added" | "unchanged" | "not-in-fleet" | "too-many"> {
+    const state = store.fleet.get();
+    if (state.availability !== "ready" || state.fleet === null) {
+      return "not-in-fleet";
+    }
+    const me = onlineCharacterID();
+    const wanted = characterIDs.filter((id) => id !== me);
+    if (wanted.length === 0) {
+      return "unchanged";
+    }
+    const favorites = [...(state.watchlist ?? [])];
+    if (favorites.length >= MAX_WATCHLIST) {
+      return "too-many";
+    }
+    const members = new Set(state.fleet.initState.value.members.map((member) => Number(member.charID)));
+    const added: number[] = [];
+    for (const id of wanted) {
+      if (!members.has(id) || favorites.includes(id)) {
+        continue;
+      }
+      if (favorites.length >= MAX_WATCHLIST) {
+        break;
+      }
+      favorites.push(id);
+      added.push(id);
+    }
+    if (added.length === 0) {
+      return "unchanged";
+    }
+    store.apply({ type: "fleet/watchlist", members: favorites });
+    await addToWatchlistCall(bridgeDo, added, favorites);
+    return "added";
+  }
+
+  // fleetSvc.RemoveFavorite (715 to 723): CheckIsInFleet; the pilot taken off; fleetMgr.RemoveFromWatchlist(charID,
+  // favs), every favourite left.
+  async function removeFromFleetWatchlist(characterID: number): Promise<"removed" | "not-in-fleet"> {
+    const state = store.fleet.get();
+    if (state.availability !== "ready" || state.fleet === null) {
+      return "not-in-fleet";
+    }
+    const favorites = (state.watchlist ?? []).filter((id) => id !== characterID);
+    store.apply({ type: "fleet/watchlist", members: favorites });
+    await removeFromWatchlistCall(bridgeDo, characterID, favorites);
+    return "removed";
   }
 
   async function readFleetFinder(inAFleet: boolean | null = null): Promise<FleetFinderRead> {
@@ -5397,7 +5852,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "mail/action-error", message: mailRefusalMessage(error) });
+      mailRefused(error);
       return null;
     }
     if (markRead) {
@@ -5439,7 +5894,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "mail/action-error", message: mailRefusalMessage(error) });
+      mailRefused(error);
       return undefined;
     }
   }
@@ -5499,8 +5954,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
+  /**
+   * A mail write's refusal: put up as the client puts up a UserError (mailSvc and mailingListsSvc catch none of
+   * theirs), save those of `kept`, whose own words the window says.
+   */
+  function mailRefused(error: unknown, kept: ReadonlySet<string> = NONE_SILENT): void {
+    const message = mailRefusalMessage(error);
+    store.apply({ type: "mail/action-error", message, said: sayRefusalDialog(error, message, NONE_SILENT, kept) });
+  }
+  /**
+   * eveMisc.CSPAChargedAction (89 to 101): a mail whose recipients charge for contact is answered with a question of
+   * the client's own (pay, and send again with approvedCost), which the page does not ask; EveJS raises none.
+   */
+  const SEND_MAIL_KEPT: ReadonlySet<string> = new Set(["ContactCostNotApproved"]);
+
   // mailingListsSvc.GetDisplayName (55 to 66): a list joined, or one asked before, by its kept name; any other asked
-  // of the server (GetInfo) and kept; none, the client's MailingListNoSuchList, said.
+  // of the server (GetInfo) and kept; none, the client's MailingListNoSuchList, raised to its handler and put up so.
   async function mailingListName(listID: number): Promise<string | null> {
     const { lists, externalLists } = store.mail.get();
     const known = (lists ?? []).find((list) => list.listID === listID) ?? externalLists.find((list) => list.listID === listID);
@@ -5511,7 +5980,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const info = answer === null ? null : mailingListOf(answer);
     if (info === null) {
       const said = store.words.get().templates["dialog:MailingListNoSuchList/body"];
-      store.apply({ type: "mail/action-error", message: typeof said === "string" ? said : "That mailing list cannot be found." });
+      const message = typeof said === "string" ? said : "That mailing list cannot be found.";
+      sayDialog("MailingListNoSuchList", null, message);
+      store.apply({ type: "mail/action-error", message, said: true });
       return null;
     }
     store.apply({ type: "mail/external-list", list: info });
@@ -6009,6 +6480,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
+  // User.PreLoad (userentry.py 139 to 140): a player corporation's entry gets its ticker as it is loaded, each its own
+  // priming (cfg.py Get, 630 to 645); what was asked already is not asked again (the transport keeps it).
+  async function corpTickersEach(corpIDs: readonly number[]): Promise<void> {
+    if (corpIDs.length > 0) await api.corpTickers(corpIDs, true, callOptions).catch(() => null);
+  }
+
   // AddToAddressBook for an agent (addressbookService.py 732 to 735): AddContact with the agent and nothing else.
   async function addAgentToAddressBook(agentID: number): Promise<void> {
     await contactWrite("AddContact", [agentID]);
@@ -6039,6 +6516,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     const kindOf = (resultType: number): "agent" | "owner" => (resultType === AGENT ? "agent" : "owner");
     await resolveNamesNow([...found].flatMap(([resultType, ids]) => ids.map((id) => ({ kind: kindOf(resultType), id }))));
+    // _PrimeCorpTickers (searchUtil.py 329 to 333): the corporations found, their tickers primed in one asking.
+    const CORPORATION = 3;
+    const corporations = found.get(CORPORATION) ?? [];
+    if (corporations.length > 0) await api.corpTickers(corporations, false, callOptions).catch(() => null);
     const resolved = store.names.get().resolved;
     return new Map([...found].map(([resultType, ids]) => [resultType, ids
       .map((id) => {
@@ -6237,7 +6718,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "mail/action-error", message: mailRefusalMessage(error) });
+      mailRefused(error);
       return false;
     }
     mailboxLoaded(after(store.mail.get()));
@@ -6301,7 +6782,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "mail/action-error", message: mailRefusalMessage(error) });
+      mailRefused(error);
       return null;
     }
     // AddLabel (727 to 730): the label kept, by the bit the server answered.
@@ -6318,6 +6799,26 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (await mailCall("EditLabel", [labelID, name, null], (mailbox) => mailbox, [])) {
       const kept = store.mail.get().labels ?? [];
       store.apply({ type: "mail/labels", labels: kept.map((label) => (label.labelID === labelID ? { ...label, name } : label)) });
+    }
+  }
+
+  // ChangeLabelColorFromUI (mailSvc.py 1301 to 1309): a label's colour, from the colour window, sent only where it is
+  // not the colour the label has (a system label the server keeps none of has None), as EditLabel(labelID, None,
+  // color) (711 to 725); the label then keeps it, a system label kept with no name of its own.
+  async function setMailLabelColor(labelID: number, color: number): Promise<void> {
+    const kept = store.mail.get().labels ?? [];
+    const current = kept.find((label) => label.labelID === labelID);
+    if (current !== undefined ? current.color === color : !isSystemMailLabel(labelID)) {
+      return;
+    }
+    if (await mailCall("EditLabel", [labelID, null, color], (mailbox) => mailbox, [])) {
+      const now = store.mail.get().labels ?? [];
+      store.apply({
+        type: "mail/labels",
+        labels: now.some((label) => label.labelID === labelID)
+          ? now.map((label) => (label.labelID === labelID ? { ...label, color } : label))
+          : [...now, { labelID, name: "", color }],
+      });
     }
   }
 
@@ -6708,7 +7209,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "mail/action-error", message: mailRefusalMessage(error) });
+      mailRefused(error, SEND_MAIL_KEPT);
       return;
     }
     // mailSvc.SendMail (959 to 990) takes no header of the mail in: the server's OnMailSent brings it, as it brings
@@ -7396,7 +7897,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "agents/action-error", message: errorWords(error) });
+      // Put up as the client puts up a UserError: the agent's window (agentDialogueWindow.InteractWithAgent, the
+      // moniker's DoAction) and the journal's RemoveOfferFromJournal catch none of theirs.
+      const message = errorWords(error);
+      store.apply({ type: "agents/action-error", message, said: sayRefusalDialog(error, message) });
     }
   }
 
@@ -7903,6 +8407,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * Run one targeting/activation action: record it, surface a refusal verbatim,
    * and land the server's own re-read. `verify` decides whether the action
    * actually took effect; false with no thrown refusal is a SILENT DECLINE.
+   *
+   * A refusal is put up as the client puts up a UserError (targetMgr._LockTarget's prompt_player_fsd_dialog;
+   * a module's ActivateEffect and DeactivateEffect raise theirs to the client's handler), save those of `silent`,
+   * which the client lets go without a word.
    */
   async function runTargetingAction<T>(
     label: string,
@@ -7910,6 +8418,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     apply: (result: T) => void | Promise<void>,
     verify: (result: T) => boolean,
     declineMessage: string,
+    silent: ReadonlySet<string> = NONE_SILENT,
   ): Promise<void> {
     let result: T;
     try {
@@ -7920,10 +8429,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({
-        type: "targeting/action-error",
-        message: `${label} refused: ${flightRefusalWords(error)}`,
-      });
+      const message = `${label} refused: ${flightRefusalWords(error)}`;
+      store.apply({ type: "targeting/action-error", message, said: sayRefusalDialog(error, message, silent) });
       return;
     }
     store.apply({ type: "targeting/action", action: label });
@@ -7976,6 +8483,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // "nothing happened" while the server is mid-acquisition would be wrong.
       (result) => result.locked || result.acquiring,
       "The server accepted that lock and then did not lock anything, and gave no reason.",
+      LOCK_SILENT,
     );
   }
 
@@ -8422,10 +8930,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({
-        type: "drones/action-error",
-        message: `${label} refused: ${flightRefusalWords(error)}`,
-      });
+      // Put up as the client puts up a UserError: a drone command refused whole (droneFunctions' CmdEngage,
+      // CmdReturnBay, the launch) goes to its handler; the drones' own answers are the reports below.
+      const message = `${label} refused: ${flightRefusalWords(error)}`;
+      store.apply({ type: "drones/action-error", message, said: sayRefusalDialog(error, message) });
       return;
     }
     const inSpace = decodeDronesInSpace(result.inSpace);
@@ -9010,7 +9518,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "flight/action-error", message: `${label} refused: ${flightRefusalWords(error)}` });
+      // Put up as the client puts up a UserError: a movement order's (movementFunctions: WarpToItem, Approach,
+      // Orbit, KeepAtRange, the dock and the jump) goes to its handler.
+      const message = `${label} refused: ${flightRefusalWords(error)}`;
+      store.apply({ type: "flight/action-error", message, said: sayRefusalDialog(error, message) });
       // Re-read the true state so the page shows where the ship actually is,
       // not a stale optimistic guess (best-effort; ignore a follow-up failure).
       try {
@@ -9099,12 +9610,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // ⚠ THE REFUSAL IS THE FEATURE. All eleven of the server's public codes
       // are things a player hits in ordinary play, and every one of them says
       // what to do next instead of showing its name.
-      store.apply({
-        type: "skills/action-error",
-        message: error instanceof BridgeCallError
-          ? skillQueueRefusal(error.code, error.message, context)
-          : `That change could not be saved: ${errorWords(error)}`,
-      });
+      const message = error instanceof BridgeCallError
+        ? skillQueueRefusal(error.code, error.message, context)
+        : `That change could not be saved: ${errorWords(error)}`;
+      // Put up as the client puts up a UserError (skillQueuePanelNew.ApplySkillQueue, 318 to 344, raises to its
+      // handler), save what the panel answers itself: another character training (its multi-training message) and
+      // an Alpha's limit (its message, and the queue saved again unstarted). The page's words stand for those.
+      store.apply({ type: "skills/action-error", message, said: sayRefusalDialog(error, message, NONE_SILENT, SKILL_QUEUE_KEPT) });
       // The queue is unchanged on the server, but the panel may have been
       // showing an optimistic order — re-read so what is on screen is the
       // server's, not ours.
@@ -9145,10 +9657,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({
-        type: "skills/action-error",
-        message: `Training could not be paused: ${errorWords(error)}`,
-      });
+      // Put up as the client puts up a UserError (the panel's PauseTraining: skills.AbortTrain, raised to its handler).
+      const message = `Training could not be paused: ${errorWords(error)}`;
+      store.apply({ type: "skills/action-error", message, said: sayRefusalDialog(error, message) });
       // Whether it stopped or not is the server's to say: read it again.
       await loadSkills().catch(() => {});
       return;
@@ -9180,12 +9691,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({
-        type: "skills/action-error",
-        message: error instanceof BridgeCallError
-          ? skillQueueRefusal(error.code, error.message, "that skill")
-          : `Those points could not be applied: ${errorWords(error)}`,
-      });
+      // Put up as the client puts up a UserError (skillQueueSvc.UseFreeSkillPoints: the skill handler's call raises
+      // to its handler).
+      const message = error instanceof BridgeCallError
+        ? skillQueueRefusal(error.code, error.message, "that skill")
+        : `Those points could not be applied: ${errorWords(error)}`;
+      store.apply({ type: "skills/action-error", message, said: sayRefusalDialog(error, message) });
       await loadSkills().catch(() => {});
       return;
     }
@@ -16491,6 +17002,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     waypoints: waypointsView,
     autopilotOn: readonlySignal(autopilotSignal),
     autopilotSaid: readonlySignal(autopilotSaidSignal),
+    dialogsSaid: readonlySignal(dialogsSaidSignal),
+    dismissDialog,
+    quantityAsked: readonlySignal(quantityAskedSignal),
+    answerQuantity,
     setDestination,
     addWaypoint,
     clearWaypoints,
@@ -16616,7 +17131,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadInventory,
 
     async stackContainer(target) {
-      await runMutation(() => stackPlaceNow(target));
+      // invControllers.StackAll (382 to 388): PermissionDenied asks for the container's password, which the page
+      // does not ask yet; any other refusal goes to the client's handler.
+      await runMutation(() => stackPlaceNow(target), STACK_KEPT);
     },
 
     async boardShip(shipID) {
@@ -16712,6 +17229,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async transferItems(itemIDs, from, to, qty = null) {
+      // One stack's want of room is the client's own to answer (invControllers._AddItem, 229 to 290: noRoomForAll);
+      // many stacks' goes to its handler, as every other refusal does.
       await runInventoryAction(async () => {
         // Between the hangar, the ship's hold, its bays and a container, the client's own call
         // (bridge/inventoryWrites.ts), judged by the places' rows refreshed, the source's above all: a thing moved can
@@ -16725,7 +17244,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             throw new Error("Those items are no longer where the panel last saw them; refresh and try again.");
           }
           const [destination, source] = [await inventoryOfPlace(to), await inventoryOfPlace(from)];
-          await moveItemsCall(bridgeDo, destination.inventory, to as MovePlace, source.liesIn, present, qty ?? null);
+          // invControllers._AddItem's two tries: a single stack's want of room answered as the client answers it,
+          // the second try with the quantity the pilot gave (noRoomForAll).
+          let quantity = qty ?? null;
+          for (let attempt = 0; ; attempt += 1) {
+            try {
+              await moveItemsCall(bridgeDo, destination.inventory, to as MovePlace, source.liesIn, present, quantity);
+              break;
+            } catch (error) {
+              if (present.length !== 1) throw error;
+              const asked = await noRoomForAll(error, present[0] as InventoryItemRow, to, attempt === 0);
+              if (asked === null) return null;
+              quantity = asked;
+            }
+          }
           await refreshOpenPlaces();
           const sourceAfter = new Map((rowsAt(from) ?? []).map((row) => [row.itemID, row]));
           const left = (row: InventoryItemRow) => {
@@ -16737,7 +17269,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           return {
             applied: moved.length > 0,
             declinedSilently: moved.length === 0 && declined.length > 0,
-            message: describeTransfer({ applied: moved.length > 0, moved, declined }, itemIDs.length, qty ?? null),
+            message: describeTransfer({ applied: moved.length > 0, moved, declined }, itemIDs.length, quantity),
           };
         }
         const result = await api.transferItems(itemIDs, from, to, qty ?? null, callOptions);
@@ -16843,7 +17375,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           store.apply({ type: "character/offline" });
           throw error;
         }
-        store.apply({ type: "fitting/action-error", message: errorWords(error) });
+        // Put up as the client puts up a UserError (OnlineModule and OfflineModule let theirs through to its
+        // handler), save EffectAlreadyActive2 on putting one online, which OnlineModule lets go without a word.
+        const message = errorWords(error);
+        store.apply({ type: "fitting/action-error", message, said: sayRefusalDialog(error, message, online ? ONLINE_SILENT : NONE_SILENT) });
         return;
       }
       await loadFitting();
@@ -17033,6 +17568,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     acceptFleetInvite,
     declineFleetInvite,
     leaveFleet,
+    kickFleetMember,
+    makeFleetLeader,
+    moveFleetMember,
+    warpToFleetMember,
+    warpFleetToMember,
+    toFleetMemberBeacon,
+    broadcastTravelToMe,
+    addToFleetWatchlist,
+    removeFromFleetWatchlist,
+    clearFleetBroadcastHistory() {
+      store.apply({ type: "fleet/broadcast-history-cleared" });
+    },
     readFleetFinder,
     applyToJoinFleet,
     flyToPoint,
@@ -17076,6 +17623,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     emptyMailTrash,
     createMailLabel,
     renameMailLabel,
+    setMailLabelColor,
     deleteMailLabel,
     assignMailLabel,
     removeMailLabel,
@@ -17107,6 +17655,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     contactsSearchSettings,
     keepContactsSearchSettings,
     searchOwners,
+    corpTickersEach,
     addAgentToAddressBook,
     contactNotifications,
     deleteNotifications,
@@ -17341,6 +17890,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     async alignToBookmark(bookmarkID) {
       await runFlightStep("Align", () => orderedStep((flightNow) => alignToBookmarkCall(bridgeDo, flightNow, bookmarkID)));
+    },
+
+    async warpToMissionBookmark(spot, range) {
+      await runFlightStep("Warp", () => orderedStep((flightNow) => warpToMissionLocationCall(bridgeDo, flightNow, spot, range, true)));
+    },
+
+    async approachMissionBookmark(spot) {
+      await runFlightStep("Approach", () => orderedStep((flightNow) => approachMissionLocationCall(bridgeDo, flightNow, spot)));
     },
 
     async stopShip() {
@@ -17664,6 +18221,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
      */
     setForeground(active) {
       callOptions.priority = foregroundCallPriority(active);
+    },
+
+    async hearInBackground() {
+      if (store.station.get().online === null) {
+        return;
+      }
+      await api.getFlightStatus(callOptions);
     },
 
     setLivePush(enabled) {

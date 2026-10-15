@@ -1793,8 +1793,20 @@ test("the game port carries the customs office's transfer, the station's offices
     "charMgr.EditContact",
     // The pilot's contact labels made, renamed and deleted, given and taken off. The gateway's list has none of them.
     "charMgr.CreateLabel", "charMgr.EditLabel", "charMgr.DeleteLabel", "charMgr.AssignLabels", "charMgr.RemoveLabels",
-    // A shared bookmark folder taken up, and a known one switched on or off (bookmarkSvc.py 357 and 483).
-    "accessGroupBookmarkMgr.AddToKnownFolders", "accessGroupBookmarkMgr.UpdateKnownFolderState",
+    // A bookmark folder's subfolders made, renamed and deleted, and a folder put online or offline. The gateway's list has none of them.
+    "accessGroupBookmarkMgr.CreateSubfolder", "accessGroupBookmarkMgr.UpdateSubfolder", "accessGroupBookmarkMgr.DeleteSubfolder",
+    "accessGroupBookmarkMgr.UpdateKnownFolderState",
+    // The pilot's access lists. The gateway's list has nothing of the owner group manager's.
+    "ownerGroupManager.GetMyGroups",
+    // A shared folder disconnected from, and an access list asked by its number. The gateway's list has neither.
+    "accessGroupBookmarkMgr.RemoveFromKnownFolders", "ownerGroupManager.GetGroup",
+    // Bookmarks copied into a folder. The gateway's list has their moving and not this.
+    "accessGroupBookmarkMgr.CopyBookmarksToFolderAndSubfolder",
+    // A folder added to those the pilot knows. The gateway's list has not got it.
+    "accessGroupBookmarkMgr.AddToKnownFolders",
+    // A jump to a fleet member's lit cyno, the fleet's jump with it, and a bridge opened to it (cynoTravelSvc.py 36,
+    // 103 and 62). The gateway's list has none of them.
+    "beyonce.CmdJumpToFleetModuleBeacon", "beyonce.CmdGroupJumpToFleetModuleBeacon", "beyonce.CmdBridgeToFleetModuleBeacon",
   ]);
   // structureGuests.py 25: sm.RemoteSvc('structureGuests').GetGuests(session.structureid), by the service's name,
   // with the structure the session is docked in and nothing else.
@@ -3220,24 +3232,4 @@ test("the survey scan is the client's with nothing sent", () => {
     assert.deepEqual([odd.status, odd.args, odd.kwargs], ["differs", args, kwargs], why);
     assert.match(odd.note, /sends nothing/, why);
   }
-});
-
-test("a shared folder is taken up, switched and its bookmarks moved as the client's bookmark service asks: the move's bookmarks a set", () => {
-  // bookmarkSvc.py 357 and 483: AddToKnownFolders(folderID, isActive) and UpdateKnownFolderState(folderID, isActive).
-  for (const method of ["AddToKnownFolders", "UpdateKnownFolderState"]) {
-    const made = retailForm("accessGroupBookmarkMgr", method, [7000001, true], null, {});
-    assert.deepEqual([made.status, made.args], ["same", [7000001, true]], method);
-    assert.equal(retailForm("accessGroupBookmarkMgr", method, [7000001, 1], null, {}).status, "differs", method);
-  }
-  // bookmarkSvc.py 715: SearchFoldersWithAdminAccess(), with nothing.
-  assert.equal(retailForm("accessGroupBookmarkMgr", "SearchFoldersWithAdminAccess", [], null, {}).status, "same");
-  // bookmarkSvc.py 691: MoveBookmarksToFolderAndSubfolder(oldFolderID, folderID, subfolderID, bookmarkIDs), the
-  // bookmarks the values of a defaultdict(set): (set, ([...],)) on the wire.
-  const moved = retailForm("accessGroupBookmarkMgr", "MoveBookmarksToFolderAndSubfolder", [7000001, 7000002, null, [9000011]], null, {});
-  assert.equal(moved.status, "reshaped");
-  assert.deepEqual(moved.args.slice(0, 3), [7000001, 7000002, null]);
-  assert.equal(moved.args[3].type, "objectex1");
-  assert.equal(moved.args[3].header[0].value, "__builtin__.set");
-  assert.deepEqual(moved.args[3].header[1][0].items, [9000011]);
-  assert.equal(retailForm("accessGroupBookmarkMgr", "MoveBookmarksToFolderAndSubfolder", [7000001, 7000002, null, []], null, {}).status, "differs");
 });

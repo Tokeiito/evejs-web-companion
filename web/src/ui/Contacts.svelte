@@ -55,12 +55,18 @@
   // Location... (the bookmark window, BookmarkWindow.svelte), and Dock in Station (menusvc.py 579 to 580, 619 to 624;
   // _MapMenu, 172 to 184).
   //
-  // Not here yet: Capture Portrait,
-  // selecting several agents, and the rest of an owner's menu (chat, Invite to Fleet's places in the fleet, the
+  // The Agents tab's entries are chosen as its scroll chooses (multiSelect: a click alone, Ctrl to add or take out,
+  // Shift for a range), each entry one agent in one group; a double click is a conversation where the pilot is docked
+  // in a station, else Show Info (OnDblClick, 966 to 978). The menu of several (_GetMultiMenu, 884 to 939, on the
+  // merged CharacterMenu) has Show Info, Remove from Addressbook over all of them (one question, then each one's
+  // DeleteContacts), and where none is under "All Agents" their removal from their folders; a drag carries them all.
+  //
+  // Not here yet: Capture Portrait, and the rest of an owner's menu (chat, Invite to Fleet's places in the fleet, the
   // fleet's own menu).
   import { onMount } from "svelte";
   import { formatTemplate, plainText, type TemplateArguments } from "../bridge/clientWords.ts";
   import { shownSecurity } from "../bridge/systemSecurity.ts";
+  import { FLEET_ROLE as MENU_ROLE, memberMenu, rankLabel, type MemberMenuEntry, type MemberMenuPlace, type MemberMenuSquad, type MemberMenuWing } from "../bridge/fleetMemberMenu.ts";
   import { resolvedName } from "../store/names.ts";
   import {
     CONTACT_GROUP,
@@ -69,7 +75,8 @@
     hasContactLabel,
     inStandingGroup,
     labelMaskWithout,
-    labelNamesOf,
+    labelSwatch,
+    labelsOf,
     labelsToAssign,
     labelsToRemove,
     type AgentFolders,
@@ -78,6 +85,9 @@
   } from "../bridge/contacts.ts";
   import { isNpcOwner } from "../bridge/mail.ts";
   import { MATCH_BY, MIN_WILDCARD_LENGTH } from "../bridge/searchMatch.ts";
+  import { fmtDist } from "../space/overview.ts";
+  import { DISTANCE_WORD_LABELS, distanceSay } from "../space/distanceWords.ts";
+  import { flyingDistances, setDistance, WARP_RANGES } from "./flyingDistances.ts";
   import { CONTACT_NOTIFICATION_LABELS, formatContactNotification, notificationEntryParts } from "../bridge/contactNotifications.ts";
   import type { Notification } from "../bridge/notifications.ts";
   import { isSessionLost } from "../app/flow.ts";
@@ -91,7 +101,7 @@
   import type { BookmarkPlace } from "../bridge/locationsList.ts";
   import BookmarkWindow from "./BookmarkWindow.svelte";
 
-  let { store, flow, showAgents, openMail }: { store: ClientStore; flow: AppFlow; showAgents?: () => void; openMail?: () => void } = $props();
+  let { store, flow, showAgents, openMail, openWatchlist }: { store: ClientStore; flow: AppFlow; showAgents?: () => void; openMail?: () => void; openWatchlist?: () => void } = $props();
 
   // svelte-ignore state_referenced_locally
   const words = store.words;
@@ -221,6 +231,7 @@
     changeLabel: "/Carbon/UI/Controls/ScrollEntries/ChangeLabel",
     deleteFolder: "/Carbon/UI/Controls/ScrollEntries/DeleteFolder",
     removeFromGroup: "UI/Common/RemoveFromGroup",
+    removeFromFolder: "UI/PeopleAndPlaces/RemoveFromFolder",
     startConversation: "UI/Chat/StartConversationAgent",
     removeFromAddressbook: "UI/PeopleAndPlaces/RemoveFromAddressbook",
     nameAndLevel: "UI/Agents/AgentEntryNameAndLevel",
@@ -245,7 +256,7 @@
     spot: "UI/PeopleAndPlaces/SpotInSolarSystem",
   } as const;
   /** The client's dialogs the window says things with. */
-  const DIALOGS = ["RemoveOneFromContacts", "RemoveManyFromContacts", "DeleteMailLabel", "MailLabelNameExists", "LookupStringMinimum", "NoStandingsSelected", "RemoveAgents", "ConfirmDeleteFolder", "PartialSearchLessThanMinLength"] as const;
+  const DIALOGS = ["RemoveOneFromContacts", "RemoveManyFromContacts", "DeleteMailLabel", "MailLabelNameExists", "LookupStringMinimum", "NoStandingsSelected", "RemoveAgents", "ConfirmDeleteFolder", "PartialSearchLessThanMinLength", "ConfirmMakeFleetBoss", "FleetNotInFleetInSpace", "FleetCannotDoInStation", "FleetCannotDoInStructure", "FleetNotInFleet", "FleetTooManyFavorites", "FleetConfirmDemoteSelf"] as const;
   /** appConst.mailMaxLabelSize: the longest name a label has (evemail.py ManageLabelsBase, 1543; addressbookService.py 991). */
   const MAX_LABEL_NAME = 40;
 
@@ -406,8 +417,11 @@
     readonly blocked: boolean;
     /** Its contact's labels' bits, nought for an owner that is no contact (userentry.py SetLabelText, 345 to 351: GetLabelMask). */
     readonly labelMask: bigint;
-    /** Its labels' names, as the entry shows them under its name (GetLabelText, 1189 to 1202). */
-    readonly labelText: string;
+    /**
+     * Its labels, as the entry shows them under its name (GetLabelText, 1189 to 1202): by name, each in its swatch's
+     * colour where it has one, joined by commas.
+     */
+    readonly labelNames: readonly { readonly name: string; readonly color: string | null }[];
   }
 
   /**
@@ -455,7 +469,7 @@
         online: group !== CONTACT_GROUP.blocked && watched.has(entry.id) && isCharacterContact(entry.id) ? (onlineOf(entry.id) ?? null) : null,
         blocked: blockedIDs.has(entry.id),
         labelMask,
-        labelText: labelNamesOf(labelMask, labels).join(", "),
+        labelNames: labelsOf(labelMask, labels).map((label) => ({ name: label.name, color: labelSwatch(label.color) })),
       };
     });
     const sorted = rows.map((row, place) => ({ row, place })).sort((left, right) => {
@@ -513,6 +527,20 @@
   const fleetKnown = $derived($fleetState.availability === "ready" || $fleetState.availability === "not-in-fleet");
   const fleetMembers = $derived($fleetState.availability === "ready" ? ($fleetState.fleet?.initState.value.members ?? []) : []);
   const fleetMemberIDs = $derived(new Set(fleetMembers.map((member) => Number(member.charID))));
+  /** The fleet as MemberMenu reads it (fleetSvc.GetMembers, GetWings, GetOptions().isFreeMove), numbers made numbers. */
+  const idOrNull = (value: number | string | null): number | null => (value === null || value === "" || !Number.isFinite(Number(value)) ? null : Number(value));
+  const menuMembers = $derived(fleetMembers.flatMap((member) => {
+    const charID = idOrNull(member.charID);
+    return charID === null ? [] : [{ charID, role: member.role, job: member.job, wingID: idOrNull(member.wingID), squadID: idOrNull(member.squadID) }];
+  }));
+  const menuWings = $derived(($fleetState.availability === "ready" ? ($fleetState.fleet?.initState.value.wings ?? []) : []).flatMap((wing) => {
+    const wingID = idOrNull(wing.wingID);
+    return wingID === null ? [] : [{ wingID, name: wing.name, squads: wing.squads.flatMap((squad) => {
+      const squadID = idOrNull(squad.squadID);
+      return squadID === null ? [] : [{ squadID, name: squad.name }];
+    }) }];
+  }));
+  const fleetIsFreeMove = $derived($fleetState.fleet?.initState.value.options.isFreeMove === true);
   /** IsPilotFleetCreator or IsPilotFleetCommander (characterCheckers.py 425 to 427; sessionChecker.py 120 to 121). */
   const commandsFleet = $derived(fleetMembers.some((member) => Number(member.charID) === myID && isFleetCommander(member)));
 
@@ -575,9 +603,341 @@
     searchMenuFor = null;
     void run(async () => {
       await (form ? flow.formFleetWith(ownerID) : flow.inviteFleetMember(ownerID));
-      const refused = store.fleet.get().actionError;
+      // (A refusal the client's own dialog said is not said again: ClientDialogs.svelte.)
+      const refused = store.fleet.get().actionErrorSaid === true ? null : store.fleet.get().actionError;
       if (refused !== null) throw new Error(refused);
     });
+  }
+
+  /** Invite to Fleet (menusvc.FleetInviteMenu): MemberMenu's places for one not in the fleet, isMove False. */
+  function inviteMenuOf(ownerID: number): MemberMenuEntry[] {
+    if (myID === null) return [];
+    return memberMenu({ targetCharID: ownerID, me: myID, members: menuMembers, wings: menuWings, isFreeMove: fleetIsFreeMove, isMove: false });
+  }
+
+  /** One of the invite menu's places (DoInviteToFleet: fleetSvc.Invite(charID, wingID, squadID, role)). */
+  function fleetInviteTo(ownerID: number, place: MemberMenuPlace): void {
+    menuFor = null;
+    searchMenuFor = null;
+    void run(async () => {
+      await flow.inviteFleetMember(ownerID, undefined, undefined, { wingID: place.wingID, squadID: place.squadID, role: place.role });
+      // (A refusal the client's own dialog said is not said again: ClientDialogs.svelte.)
+      const refused = store.fleet.get().actionErrorSaid === true ? null : store.fleet.get().actionError;
+      if (refused !== null) throw new Error(refused);
+    });
+  }
+
+  // ── The fleet's own menu for a member (menusvc.py FleetMenu; characterCheckers.py FleetMemberChecker) ─────────
+
+  /** evefleet/const.py: the creator's job, and the commanders' roles. */
+  const FLEET_JOB_CREATOR = 2;
+  const FLEET_ROLE = Object.freeze({ leader: 1, wingCmdr: 2, squadCmdr: 3 });
+  /** appConst.minWarpDistance: no warp to what is nearer (sessionChecker.py isInWarpRange, 83 to 84). */
+  const MIN_WARP_DISTANCE_M = 150_000;
+  /** The fleet menu's words (menusvc.py FleetMenu; WarpToMenu, 2254 to 2274; ConfirmMenu, 2250). */
+  const FLEET_WORDS = {
+    fleet: "UI/Fleet/Fleet",
+    kick: "UI/Fleet/KickFleetMember",
+    confirm: "UI/Menusvc/ConfirmMenuOption",
+    makeLeader: "UI/Fleet/MakeFleetLeader",
+    warpToMember: "UI/Fleet/WarpToMember",
+    warpToMemberWithin: "UI/Fleet/WarpToMemberSubmenuOption",
+    within: "UI/Inflight/WarpToWithin",
+    setDefault: "UI/Inflight/Submenus/SetDefaultWarpRange",
+    leave: "UI/Fleet/LeaveMyFleet",
+    warpFleet: "UI/Fleet/WarpFleetToMember",
+    warpFleetWithin: "UI/Fleet/FleetSubmenus/WarpFleetToMember",
+    warpWing: "UI/Fleet/WarpWingToMember",
+    warpWingWithin: "UI/Fleet/FleetSubmenus/WarpWingToMember",
+    warpSquad: "UI/Fleet/WarpSquadToMember",
+    warpSquadWithin: "UI/Fleet/FleetSubmenus/WarpSquadToMember",
+    /** GetSelectedFormationName (evefleet/client/util.py 37): the formation of a pilot who has chosen none, POINT. */
+    formationPoint: "UI/Fleet/FleetFormations/Point",
+    travelToMe: "UI/Fleet/FleetBroadcast/Commands/BroadcastTravelToMe",
+    moveMember: "UI/Fleet/FleetSubmenus/MoveFleetMember",
+    wingX: "UI/Fleet/FleetSubmenus/WingX",
+    squadX: "UI/Fleet/FleetSubmenus/SquadX",
+    squadWithCount: "UI/Fleet/FleetSubmenus/SquadNameWithNumMembers",
+    rankLeader: "UI/Fleet/Ranks/FleetCommander",
+    rankWing: "UI/Fleet/Ranks/WingCommander",
+    rankSquad: "UI/Fleet/Ranks/SquadCommander",
+    rankMember: "UI/Fleet/Ranks/SquadMember",
+    addWatch: "UI/Fleet/AddPilotToWatchlist",
+    removeWatch: "UI/Fleet/RemovePilotFromWatchlist",
+    jumpTo: "UI/Inflight/JumpToFleetMember",
+    bridgeTo: "UI/Fleet/BridgeToMember",
+    conduitTo: "UI/Fleet/ConduitJumpToFleetMember",
+  } as const;
+  /**
+   * dogmaconst: the ship's jump drive (attributeCanJump), a fitted module's jump portal (attributeJumpPortalPassenger
+   * RequiredAttributeID) and the ship's jump conduit (attributeJumpConduitPassengerRequiredAttributeID), by which
+   * sessionChecker.isShipJumpCapable, canOpenJumpPortal and canPerformGroupJump (229 to 255) offer the three.
+   */
+  const ATTRIBUTE_CAN_JUMP = 861;
+  const ATTRIBUTE_JUMP_PORTAL_PASSENGER_REQUIRED = 3318;
+  const ATTRIBUTE_JUMP_CONDUIT_PASSENGER_REQUIRED = 3321;
+  /** A wormhole system's number (sessionChecker.IsInWormholeSystem): no jump drive works there. */
+  const isWormholeSystem = (solarSystemID: number | null): boolean => solarSystemID !== null && solarSystemID >= 31_000_000 && solarSystemID < 32_000_000;
+  /**
+   * A commander's warp of its own to a member (characterCheckers.py OfferWarpFleetToMember, 538 to 563): the fleet's
+   * for its leader, a wing's for a wing's commander, a squad's for a squad's; the labels for each, the page's words
+   * where the client's are not to hand, the formation's name in them.
+   */
+  const GROUP_WARP_WORDS = {
+    fleet: { now: FLEET_WORDS.warpFleet, within: FLEET_WORDS.warpFleetWithin, own: "Take the fleet there ({fleetFormation})", ownWithin: "Take the fleet there, short ({fleetFormation})" },
+    wing: { now: FLEET_WORDS.warpWing, within: FLEET_WORDS.warpWingWithin, own: "Take the wing there ({fleetFormation})", ownWithin: "Take the wing there, short ({fleetFormation})" },
+    squad: { now: FLEET_WORDS.warpSquad, within: FLEET_WORDS.warpSquadWithin, own: "Take the squad there ({fleetFormation})", ownWithin: "Take the squad there, short ({fleetFormation})" },
+  } as const;
+  // svelte-ignore state_referenced_locally
+  const space = store.space;
+  // svelte-ignore state_referenced_locally
+  const dogma = store.dogma;
+  /** An attribute of the active ship (the first of godma's ships) or of a module fitted to it, where it is a number. */
+  const shipAttribute = (attributeID: number): number | null => {
+    const value = $dogma.allInfo?.ships[0]?.attributes.find((attribute) => attribute.attributeID === attributeID)?.value;
+    return typeof value === "number" ? value : null;
+  };
+  const anyModuleHas = (attributeID: number): boolean => ($dogma.allInfo?.ships.slice(1) ?? []).some((module) => {
+    const value = module.attributes.find((attribute) => attribute.attributeID === attributeID)?.value;
+    return typeof value === "number" ? value !== 0 : value === true;
+  });
+  /** The pilot's own warp distance (GetDefaultActionDistance('WarpTo')), and the distances' words. */
+  const defaultWarp = $derived(Number($flyingDistances.warp));
+  const say = $derived(distanceSay($words.templates));
+  /** The fleet menu open, by where it is and whose, and which of its parts is open. */
+  let fleetMenuFor = $state<string | null>(null);
+  let fleetPart = $state<"kick" | "leave" | "warp" | "default" | "groupWarp" | "groupDefault" | "move" | null>(null);
+  const myFleetMember = $derived(fleetMembers.find((member) => Number(member.charID) === myID) ?? null);
+
+  /** OfferFleetMenu (characterCheckers.py 158 to 165): a character of the pilot's own fleet, no NPC. */
+  function fleetMenuOffered(ownerID: number): boolean {
+    return isCharacterContact(ownerID) && !isNpcOwner(ownerID) && $fleetState.availability === "ready" && fleetMemberIDs.has(ownerID);
+  }
+
+  /**
+   * GetDistanceToActiveShip (FleetMemberChecker): the member's ship among those the pilot sees (SlimItemFromCharID),
+   * the distance between their surfaces; none where it is not seen, which is far enough to warp to (or sys.maxint).
+   */
+  function memberDistance(ownerID: number): number | null {
+    const snapshot = $space.snapshot;
+    const ship = snapshot?.ship ?? null;
+    if (snapshot === null || !snapshot.inSpace || ship === null) return null;
+    const ball = snapshot.entities.find((entity) => entity.characterID === ownerID && !entity.isSelf) ?? null;
+    if (ball === null) return null;
+    const dx = ball.position.x - ship.position.x;
+    const dy = ball.position.y - ship.position.y;
+    const dz = ball.position.z - ship.position.z;
+    return Math.max(0, Math.hypot(dx, dy, dz) - ball.radius - ship.radius);
+  }
+
+  /**
+   * FleetMemberChecker's offers, the part the page makes: Kick Fleet Member for another, the pilot its creator or
+   * commanding it (IsMySubordinate: the leader any, a wing commander its wing's, a squad commander its squad's);
+   * Make Fleet Leader for another, the pilot its creator; Warp to Member for another, the pilot in space and the member
+   * far enough; Leave My Fleet for the pilot's own.
+   */
+  function fleetOffersOf(ownerID: number): { readonly kick: boolean; readonly leader: boolean; readonly addWatch: boolean; readonly removeWatch: boolean; readonly travelToMe: boolean; readonly warp: boolean; readonly groupWarp: keyof typeof GROUP_WARP_WORDS | null; readonly jumpTo: boolean; readonly bridgeTo: boolean; readonly conduitTo: boolean; readonly leave: boolean } {
+    const mine = ownerID === myID;
+    const member = fleetMembers.find((each) => Number(each.charID) === ownerID) ?? null;
+    const creator = myFleetMember !== null && (myFleetMember.job & FLEET_JOB_CREATOR) !== 0;
+    const role = myFleetMember?.role ?? null;
+    const subordinate = member !== null && myFleetMember !== null && (role === FLEET_ROLE.leader
+      || (role === FLEET_ROLE.wingCmdr && String(member.wingID) === String(myFleetMember.wingID))
+      || (role === FLEET_ROLE.squadCmdr && String(member.squadID) === String(myFleetMember.squadID)));
+    const distance = memberDistance(ownerID);
+    const warp = !mine && $flightState.status?.inSpace === true && (distance === null || distance > MIN_WARP_DISTANCE_M);
+    // OfferJumpToFleetMember, OfferBridgeToMember and OfferGroupJumpToFleetMember (characterCheckers.py 470 to 510):
+    // another, the pilot in a ship in space, the member's own ship not where the pilot sees it, the member's cyno lit
+    // (HasActiveBeacon), and the ship able (sessionChecker 229 to 255: a jump drive, out of wormhole space; with a
+    // fitted jump portal for the bridge, with a jump conduit for the conduit's).
+    const toBeacon = !mine && $flightState.status?.inSpace === true && distance === null
+      && ($fleetState.jumpBeacons ?? {})[String(ownerID)] !== undefined;
+    const jumpCapable = toBeacon && !isWormholeSystem($flightState.status?.solarSystemID ?? null)
+      && (shipAttribute(ATTRIBUTE_CAN_JUMP) ?? 0) !== 0;
+    return {
+      kick: !mine && (creator || subordinate),
+      leader: !mine && creator,
+      // OfferAddPilotToWatchlist and OfferRemovePilotFromWatchlist (465 to 468, 526 to 529): another, not on the
+      // pilot's watchlist yet, or on it.
+      addWatch: !mine && !($fleetState.watchlist ?? []).includes(ownerID),
+      removeWatch: !mine && ($fleetState.watchlist ?? []).includes(ownerID),
+      // OfferBroadcastTravelToMe (492 to 499): the pilot's own, as the fleet's creator or a commander (fleetCmdrRoles).
+      travelToMe: mine && (creator || role === FLEET_ROLE.leader || role === FLEET_ROLE.wingCmdr || role === FLEET_ROLE.squadCmdr),
+      warp,
+      // session.IsPilotFleetLeader, IsPilotWingCommander, IsPilotSquadCommander: the pilot's own role in the fleet.
+      groupWarp: !warp ? null : role === FLEET_ROLE.leader ? "fleet" : role === FLEET_ROLE.wingCmdr ? "wing" : role === FLEET_ROLE.squadCmdr ? "squad" : null,
+      jumpTo: jumpCapable,
+      bridgeTo: jumpCapable && anyModuleHas(ATTRIBUTE_JUMP_PORTAL_PASSENGER_REQUIRED),
+      conduitTo: jumpCapable && (shipAttribute(ATTRIBUTE_JUMP_CONDUIT_PASSENGER_REQUIRED) ?? 0) !== 0,
+      leave: mine,
+    };
+  }
+
+  /** The fleet menu opened or shut; the space read again for it where the pilot is in space, as the client's menu reads its ballpark. */
+  function openFleetMenu(key: string): void {
+    fleetMenuFor = fleetMenuFor === key ? null : key;
+    fleetPart = null;
+    if (fleetMenuFor !== null && $flightState.status?.inSpace === true) {
+      void flow.loadSpaceSnapshot().catch(() => {});
+      // (And the ship's dogma, by which the jumps to a member's cyno are offered, where it is not read yet.)
+      if ($dogma.allInfo === null) void flow.loadDogma().catch(() => {});
+    }
+  }
+
+  /** Jump, Conduit Jump and Bridge To a member's cyno (menusvc.JumpToMember, GroupJumpToMember, BridgeToMember). */
+  function toMemberBeacon(ownerID: number, how: "jump" | "group" | "bridge"): void {
+    fleetDone();
+    void run(() => flow.toFleetMemberBeacon(ownerID, how));
+  }
+
+  function fleetDone(): void {
+    fleetMenuFor = null;
+    fleetPart = null;
+    menuFor = null;
+    searchMenuFor = null;
+    notes = [];
+  }
+
+  /** A fleet write, its refusal said as the Fleet window says it. */
+  function fleetWrite(write: () => Promise<void>): void {
+    void run(async () => {
+      await write();
+      // (A refusal the client's own dialog said is not said again: ClientDialogs.svelte.)
+      const refused = store.fleet.get().actionErrorSaid === true ? null : store.fleet.get().actionError;
+      if (refused !== null) throw new Error(refused);
+    });
+  }
+
+  /** Kick Fleet Member's Confirm (fleetSvc.KickMember, 607 to 612). */
+  function kickMember(ownerID: number): void {
+    fleetDone();
+    fleetWrite(() => flow.kickFleetMember(ownerID));
+  }
+
+  /** Make Fleet Leader (fleetSvc.MakeLeader, 601 to 605): the client's ConfirmMakeFleetBoss, and the boss handed on where it is answered yes. */
+  function makeBoss(ownerID: number, name: string): void {
+    fleetDone();
+    question = {
+      title: filledWord("dialog:ConfirmMakeFleetBoss/title", "Hand the fleet on?", {}),
+      body: filledWord("dialog:ConfirmMakeFleetBoss/body", "Make {charName} the fleet's boss?", { charName: name }),
+      answer: (yes) => {
+        question = null;
+        if (yes) fleetWrite(() => flow.makeFleetLeader(ownerID));
+      },
+    };
+  }
+
+  /** Warp to Member at the pilot's default distance, or Warp to Member Within at one of the seven (menusvc.WarpToMember). */
+  function warpToMember(ownerID: number, range: number): void {
+    fleetDone();
+    void run(() => flow.warpToFleetMember(ownerID, range));
+  }
+
+  /**
+   * Add Pilot to Watchlist and Remove Pilot from Watchlist (fleetSvc.AddFavorite, RemoveFavorite): the pilot's own list
+   * of members to watch, the server told. What the client refuses is said in its own dialog's words.
+   */
+  function watch(ownerID: number, add: boolean): void {
+    fleetDone();
+    void run(async () => {
+      const outcome = add ? await flow.addToFleetWatchlist([ownerID]) : await flow.removeFromFleetWatchlist(ownerID);
+      if (outcome === "not-in-fleet") {
+        throw new Error(filledWord("dialog:FleetNotInFleet/body", "That needs a fleet.", {}));
+      }
+      if (outcome === "too-many") {
+        throw new Error(filledWord("dialog:FleetTooManyFavorites/body", "The watchlist holds {num} pilots at most.", { num: "100" }));
+      }
+      // AddFavorite (674 to 677): with pilots added, the client opens its watch list.
+      if (outcome === "added") openWatchlist?.();
+    });
+  }
+
+  /**
+   * Broadcast Travel To Me (fleetSvc.SendBroadcast_TravelTo): the pilot's own solar system to the whole fleet. What the
+   * client refuses before it asks anything is said in its own dialog's words; a broadcast inside the client's wait
+   * is no broadcast, and nothing is said of it, as the client says nothing.
+   */
+  function broadcastTravelToMe(): void {
+    fleetDone();
+    void run(async () => {
+      const outcome = await flow.broadcastTravelToMe();
+      const refusal = outcome === "not-in-fleet" ? "FleetNotInFleetInSpace" : outcome === "in-station" ? "FleetCannotDoInStation" : outcome === "in-structure" ? "FleetCannotDoInStructure" : null;
+      if (refusal !== null) {
+        throw new Error(filledWord(`dialog:${refusal}/body`, outcome === "not-in-fleet" ? "That needs a fleet, and a ship in space." : outcome === "in-station" ? "That cannot be done from a station." : "That cannot be done from a structure.", {}));
+      }
+    });
+  }
+
+  /** Move Fleet Member (menusvc.FleetMenu: GetFleetMemberMenu2(charID, fleetSvc.MoveMember, True)): where the member may go. */
+  function moveMenuOf(ownerID: number): MemberMenuEntry[] {
+    if (myID === null) return [];
+    return memberMenu({ targetCharID: ownerID, me: myID, members: menuMembers, wings: menuWings, isFreeMove: fleetIsFreeMove, isMove: true });
+  }
+
+  /** A rank's word (RANK_LABELS), the page's own where the client's is not to hand. */
+  function rankWord(role: number | null): string {
+    const label = rankLabel(role);
+    const own = role === MENU_ROLE.leader ? "Fleet boss" : role === MENU_ROLE.wingCmdr ? "Wing lead" : role === MENU_ROLE.squadCmdr ? "Squad lead" : "Member";
+    return word(label, own);
+  }
+
+  /** A wing's name, or the client's WingX by its number. */
+  function wingWord(wing: MemberMenuWing): string {
+    return wing.name !== "" ? wing.name : filledWord(FLEET_WORDS.wingX, "Wing {wingNumber}", { wingNumber: String(wing.wingNumber) });
+  }
+
+  /** A squad's name, or the client's SquadX by its number, with how many are in it (SquadNameWithNumMembers). */
+  function squadWord(squad: MemberMenuSquad): string {
+    const squadName = squad.name !== "" ? squad.name : filledWord(FLEET_WORDS.squadX, "Squad {squadNumber}", { squadNumber: String(squad.squadNumber) });
+    return filledWord(FLEET_WORDS.squadWithCount, "{squadName} [{numMembers}]", { squadName, numMembers: String(squad.numMembers) });
+  }
+
+  /**
+   * fleetSvc.MoveMember (513 to 520): a pilot that moves itself to a lower role than its own, a fleet or wing
+   * commander and not the fleet's creator, is asked first (CheckIfIsOKWithDemotion, 505 to 511: FleetConfirmDemoteSelf).
+   */
+  function moveMember(ownerID: number, place: MemberMenuPlace): void {
+    fleetDone();
+    const role = place.role ?? MENU_ROLE.member;
+    const mine = myFleetMember;
+    const creator = mine !== null && (mine.job & FLEET_JOB_CREATOR) !== 0;
+    const move = () => fleetWrite(() => flow.moveFleetMember(ownerID, place.wingID, place.squadID, role));
+    if (ownerID === myID && mine !== null && !creator && mine.role < MENU_ROLE.squadCmdr && role > mine.role) {
+      question = {
+        title: filledWord("dialog:FleetConfirmDemoteSelf/title", "Step down?", {}),
+        body: filledWord("dialog:FleetConfirmDemoteSelf/body", "This gives up the command you hold.", {}),
+        answer: (yes) => {
+          question = null;
+          if (yes) move();
+        },
+      };
+      return;
+    }
+    move();
+  }
+
+  /** Warp Fleet, Wing or Squad to Member, and their Within (menusvc.WarpFleetToMember): the one call, the commander's. */
+  function warpGroupToMember(ownerID: number, range: number): void {
+    fleetDone();
+    void run(() => flow.warpFleetToMember(ownerID, range));
+  }
+
+  /** A commander's warp's label, the formation's name in it (menusvc.FleetMenu: {'fleetFormation': GetSelectedFormationName()}). */
+  function groupWarpWord(group: keyof typeof GROUP_WARP_WORDS, within: boolean): string {
+    const words = GROUP_WARP_WORDS[group];
+    return filledWord(within ? words.within : words.now, within ? words.ownWithin : words.own, { fleetFormation: word(FLEET_WORDS.formationPoint, "Point") });
+  }
+
+  /** Leave My Fleet's Confirm (fleetSvc.LeaveFleet, 365 to 371). */
+  function leaveMyFleet(): void {
+    fleetDone();
+    fleetWrite(() => flow.leaveFleet());
+  }
+
+  /** WarpToMenu's Set Default (defaultRangeUtils.SetDefaultWarpToDist): the pilot's own warp distance. */
+  function setDefaultWarp(metres: number): void {
+    setDistance("warp", String(metres));
+    fleetPart = "warp";
   }
 
   /** The transfer window (transferMoneyWnd.py): to whom, what is typed, and what the pilot has (none while not known). */
@@ -976,6 +1336,20 @@
     return !((ownerID >= 1_000_000 && ownerID <= 1_999_999) || (ownerID >= 98_000_000 && ownerID <= 99_999_999) || (ownerID >= 500_000 && ownerID < 599_999));
   }
 
+  /** A player corporation (IsCorporation and not IsNPC, as User.PreLoad asks, 139): 98000000 to 98999999. */
+  const isPlayerCorporation = (ownerID: number): boolean => ownerID >= 98_000_000 && ownerID <= 98_999_999;
+
+  // User.PreLoad (userentry.py 139 to 140): each player corporation's entry gets its ticker as it is loaded
+  // (cfg.corptickernames.Get), each asking its own; one asked already is not asked again.
+  const tickersAsked = new Set<number>();
+  $effect(() => {
+    if (tab !== "contacts") return;
+    const corporations = shown.rows.map((row) => row.id).filter((id) => isPlayerCorporation(id) && !tickersAsked.has(id));
+    if (corporations.length === 0) return;
+    for (const id of corporations) tickersAsked.add(id);
+    void flow.corpTickersEach(corporations);
+  });
+
   /** LoadGroupFromEntry (345 to 354): another group from the first page, and kept as the one last viewed (424). */
   function choose(groupID: number | string): void {
     if (group !== groupID) {
@@ -1074,6 +1448,13 @@
   /** The group whose menu is open, and the agent's (by its group and its ID). */
   let groupMenuFor = $state<string | null>(null);
   let agentMenuFor = $state<string | null>(null);
+  /**
+   * The entries chosen, each by its group and its agent (an entry is one agent in one group), as the window's scroll
+   * chooses them (carbonui scroll.py: multiSelect by default, 64; SelectNode, 550 on); and the entry a later Shift goes
+   * from.
+   */
+  let agentsChosen = $state<string[]>([]);
+  let lastAgentRow = $state<number | null>(null);
   /** The name popup of Create Folder (registry.AddListGroup) or a folder's Change Label (GetNewGroupName). */
   let folderNaming = $state<{ readonly id: string | null; value: string } | null>(null);
   const ALL_AGENTS = "all";
@@ -1171,6 +1552,120 @@
     });
   });
 
+  /** An entry's key: its group and its agent. */
+  const agentKey = (groupID: string, agentID: number): string => `${groupID}|${agentID}`;
+  /** An entry's group and agent, from its key. */
+  function agentEntryOf(key: string): { readonly groupID: string; readonly agentID: number } {
+    const at = key.lastIndexOf("|");
+    return { groupID: key.slice(0, at), agentID: Number(key.slice(at + 1)) };
+  }
+  /**
+   * The entries chosen, in the scroll's order (GetSelectedNodes, scroll.py 656 to 664: its nodes, those selected). An
+   * entry of a closed group is no node of the scroll's, and is chosen no longer.
+   */
+  const chosenInOrder = $derived(agentGroups.flatMap((group) => (group.open ? group.lines.map((line) => agentKey(group.id, line.agentID)) : [])).filter((key) => agentsChosen.includes(key)));
+
+  /**
+   * An entry clicked (AgentEntry.OnClick, userentry.py 955 to 964: the scroll's SelectNode): alone; with Ctrl, added or
+   * taken out; with Shift, the entries from the one last chosen to it; with both, those added.
+   */
+  function agentClick(event: MouseEvent, key: string): void {
+    const entry = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+    const entries = entry === null ? [] : [...(entry.closest(".contacts-agents")?.querySelectorAll<HTMLElement>("[data-agent-key]") ?? [])];
+    const at = entry === null ? -1 : entries.indexOf(entry);
+    const control = event.ctrlKey || event.metaKey;
+    const ranged = (): string[] => {
+      const [from, to] = (lastAgentRow ?? at) < at ? [lastAgentRow ?? at, at] : [at, lastAgentRow ?? at];
+      return entries.slice(from, to + 1).map((each) => each.dataset.agentKey ?? "").filter((each) => each !== "");
+    };
+    const anchored = event.shiftKey && lastAgentRow !== null && lastAgentRow !== at && at >= 0 && lastAgentRow < entries.length;
+    if (event.shiftKey && control) {
+      if (anchored) agentsChosen = [...new Set([...agentsChosen, ...ranged()])];
+    } else if (event.shiftKey) {
+      // The range from the entry last chosen; that entry stays the one a later Shift goes from.
+      if (anchored) {
+        agentsChosen = [...new Set(ranged())];
+        return;
+      }
+      agentsChosen = [key];
+    } else if (control) {
+      agentsChosen = agentsChosen.includes(key) ? agentsChosen.filter((each) => each !== key) : [...agentsChosen, key];
+    } else {
+      agentsChosen = [key];
+    }
+    lastAgentRow = at;
+  }
+
+  /**
+   * An entry double-clicked (AgentEntry.OnDblClick, 966 to 978): a conversation with the agent where the pilot is
+   * docked in a station, else the agent's information.
+   */
+  function agentDoubleClick(agentID: number): void {
+    const status = $flightState.status;
+    const docked = status !== null ? (status.docked ? status.stationID : null) : ($station.online?.stationID ?? null);
+    if (docked !== null && docked !== undefined) startConversation(agentID);
+    else agentInfo(agentID);
+  }
+
+  /** An entry's menu (AgentEntry.GetMenu, 858 to 882), the entry chosen alone where it was not chosen (GetSelectedNodes). */
+  function openAgentMenu(key: string): void {
+    if (!chosenInOrder.includes(key)) agentsChosen = [key];
+    agentMenuFor = agentMenuFor === key ? null : key;
+  }
+
+  /**
+   * The menu of several (AgentEntry._GetMultiMenu, 884 to 939): menusvc.CharacterMenu of their agents, each one's menu
+   * made as for several and the menus merged (menuMerge.py MergeMenus): Show Info where it is offered for one of them,
+   * Remove from Addressbook (each is in the book: addressbookService IsInAddressBook, 'contact', holds the agents). Then,
+   * where none of them is under "All Agents", their removal from their folders, the folder named where there is one.
+   */
+  const severalMenu = $derived.by(() => {
+    const entries = chosenInOrder.map(agentEntryOf);
+    const folderIDs = [...new Set(entries.map((entry) => entry.groupID))];
+    const inFolders = entries.length > 0 && entries.every((entry) => entry.groupID !== ALL_AGENTS);
+    const folder = folderIDs.length === 1 ? folders.folders.find((each) => each.id === folderIDs[0]) ?? null : null;
+    return {
+      entries,
+      showInfo: entries.some((entry) => agentInfoOffered(entry.agentID)),
+      removeFromFolders: inFolders ? filledWord(AGENT_WORDS.removeFromFolder, "Take {removecount} out of {foldername}", { foldername: folder?.label ?? "folders", removecount: String(entries.length) }) : null,
+    };
+  });
+
+  /**
+   * Show Info of several (menuMerge._ExecMulti: not one of menu/__init__.py's MULTI_FUNCTIONS, so each agent's own is
+   * run): the page has one information window, which is left on the last.
+   */
+  function severalInfo(): void {
+    agentMenuFor = null;
+    for (const entry of severalMenu.entries) if (agentInfoOffered(entry.agentID)) showInfo({ kind: "character", characterID: entry.agentID });
+  }
+
+  /** Their removal from their folders (RemoveFromListGroup, 985 to 1000, with no list named): nothing asked of the server. */
+  function severalOutOfFolders(): void {
+    agentMenuFor = null;
+    const out = severalMenu.entries;
+    keepFolders({
+      ...folders,
+      folders: folders.folders.map((folder) => {
+        const items = folder.groupItems.filter((id) => !out.some((entry) => entry.groupID === folder.id && entry.agentID === id));
+        return items.length === folder.groupItems.length ? folder : { ...folder, groupItems: items };
+      }),
+    });
+    agentsChosen = [];
+  }
+
+  /** What a dragged entry carries: the entries' keys. */
+  const AGENTS_DRAG = "application/x-evejs-agents";
+
+  /** AgentEntry.GetDragData (947 to 952): the entries chosen, the entry chosen alone where it was not chosen. */
+  function agentDragStart(event: DragEvent, key: string): void {
+    if (!chosenInOrder.includes(key)) agentsChosen = [key];
+    const keys = chosenInOrder.includes(key) ? chosenInOrder : [key];
+    if (event.dataTransfer === null) return;
+    event.dataTransfer.setData(AGENTS_DRAG, JSON.stringify(keys));
+    event.dataTransfer.effectAllowed = "move";
+  }
+
   /**
    * What each agent's entry shown needs asked, on the Agents tab and among what the Search tab found: its record in
    * the agents service, its station's system's name, security and jumps, its division's name, and the journal.
@@ -1251,20 +1746,34 @@
     keepFolders({ ...folders, folders: folders.folders.map((folder) => (folder.id === folderID ? { ...folder, groupItems: folder.groupItems.filter((id) => id !== agentID) } : folder)) });
   }
 
-  /** DropInBuddyGroup (addressbookService.py 553 to 568): an agent dropped on a group taken out of the folder it came from, and put in the one it was dropped on ("All Agents" keeps none of its own). */
+  /**
+   * DropInBuddyGroup (addressbookService.py 553 to 568): the entries dropped on a group, each agent taken out of the
+   * folder it came from and put in the one it was dropped on ("All Agents" keeps none of its own), in their order.
+   */
   function dropAgent(event: DragEvent, groupID: string): void {
+    if (event.dataTransfer === null || !event.dataTransfer.types.includes(AGENTS_DRAG)) return;
     event.preventDefault();
-    const [agentText, fromGroup] = (event.dataTransfer?.getData("text/plain") ?? "").split("|");
-    const agentID = Number(agentText);
-    if (!Number.isSafeInteger(agentID) || agentID <= 0 || !bookAgentIDs.includes(agentID)) return;
-    keepFolders({
-      ...folders,
-      folders: folders.folders.map((folder) => {
-        let items = folder.id === fromGroup ? folder.groupItems.filter((id) => id !== agentID) : folder.groupItems;
-        if (folder.id === groupID && !items.includes(agentID)) items = [...items, agentID];
+    let keys: unknown;
+    try {
+      keys = JSON.parse(event.dataTransfer.getData(AGENTS_DRAG));
+    } catch {
+      return;
+    }
+    if (!Array.isArray(keys)) return;
+    const moved = keys
+      .filter((key): key is string => typeof key === "string")
+      .map(agentEntryOf)
+      .filter((entry) => Number.isSafeInteger(entry.agentID) && entry.agentID > 0 && bookAgentIDs.includes(entry.agentID));
+    if (moved.length === 0) return;
+    let next = folders.folders;
+    for (const entry of moved) {
+      next = next.map((folder) => {
+        let items = folder.id === entry.groupID ? folder.groupItems.filter((id) => id !== entry.agentID) : folder.groupItems;
+        if (folder.id === groupID && !items.includes(entry.agentID)) items = [...items, entry.agentID];
         return items === folder.groupItems ? folder : { ...folder, groupItems: items };
-      }),
-    });
+      });
+    }
+    keepFolders({ ...folders, folders: next });
   }
 
   /**
@@ -1382,24 +1891,31 @@
   }
 
   /**
-   * DeleteEntryMulti with no contact type (addressbookService.py 870 to 891): the client's RemoveAgents, then the
-   * agent out of every folder and RemoveFromAddressBook's DeleteContacts([agentID]) (817 to 823).
+   * DeleteEntryMulti with no contact type (addressbookService.py 870 to 891): the client's RemoveAgents once, then for
+   * each agent in turn, the agent out of every folder and RemoveFromAddressBook's DeleteContacts([agentID]) (817 to
+   * 823), one call each. Several come from the menu of several (Remove from Addressbook is one of menu/__init__.py's
+   * MULTI_FUNCTIONS, so their agents go to the one DeleteEntryMulti: menuMerge._GetMergedMenuEntryArgs); an agent chosen
+   * in two groups is removed once.
    */
-  function removeAgent(agentID: number): void {
+  function removeAgents(agentIDs: readonly number[]): void {
     agentMenuFor = null;
     notes = [];
+    const removed = [...new Set(agentIDs)];
     question = {
       title: filledWord("dialog:RemoveAgents/title", "Remove agents?", {}),
       body: filledWord("dialog:RemoveAgents/body", "Remove the agents chosen?", {}),
       answer: (yes) => {
         question = null;
         if (!yes) return;
-        keepFolders({ ...folders, folders: folders.folders.map((folder) => (folder.groupItems.includes(agentID) ? { ...folder, groupItems: folder.groupItems.filter((id) => id !== agentID) } : folder)) });
         void run(async () => {
-          await flow.deleteContacts([agentID]);
-          if (book !== null) {
-            book = { ...book, agents: book.agents.filter((agent) => agent.agentID !== agentID) };
+          for (const agentID of removed) {
+            keepFolders({ ...folders, folders: folders.folders.map((folder) => (folder.groupItems.includes(agentID) ? { ...folder, groupItems: folder.groupItems.filter((id) => id !== agentID) } : folder)) });
+            await flow.deleteContacts([agentID]);
+            if (book !== null) {
+              book = { ...book, agents: book.agents.filter((agent) => agent.agentID !== agentID) };
+            }
           }
+          agentsChosen = [];
         });
       },
     };
@@ -1552,6 +2068,8 @@
     flow.requestWords([
       ...Object.values(WORDS),
       ...Object.values(AGENT_WORDS),
+      ...Object.values(FLEET_WORDS),
+      ...DISTANCE_WORD_LABELS,
       ...Object.values(SEARCH_WORDS),
       "UI/PeopleAndPlaces/AlreadyAContact",
       ...Object.values(CONTACT_NOTIFICATION_LABELS),
@@ -1795,9 +2313,21 @@
             {#if group.open}
               <ul class="agents-entries">
                 {#each group.lines as line (line.agentID)}
-                  <!-- An agent's entry (AgentEntry): its name and level, where it is, its mission's state and its kind; dragged by itself. -->
-                  <li draggable="true" ondragstart={(event) => event.dataTransfer?.setData("text/plain", `${line.agentID}|${group.id}`)}>
-                    <div class="agents-entry">
+                  {@const key = agentKey(group.id, line.agentID)}
+                  <!-- An agent's entry (AgentEntry): its name and level, where it is, its mission's state and its kind;
+                       chosen by a click, with Shift and Ctrl as the scroll chooses; dragged with the others chosen. -->
+                  <li draggable="true" ondragstart={(event) => agentDragStart(event, key)}>
+                    <!-- svelte-ignore a11y_click_events_have_key_events -->
+                    <div
+                      class="agents-entry"
+                      class:selected={chosenInOrder.includes(key)}
+                      role="option"
+                      tabindex="-1"
+                      aria-selected={chosenInOrder.includes(key)}
+                      data-agent-key={key}
+                      onclick={(event) => agentClick(event, key)}
+                      ondblclick={() => agentDoubleClick(line.agentID)}
+                    >
                       <div>
                         <strong>{line.nameLine}</strong>
                         {#if line.missionState !== null}
@@ -1807,18 +2337,29 @@
                         {#if line.typeLine !== ""}<br /><small class="note">{line.typeLine}</small>{/if}
                       </div>
                       <div class="agents-entry-buttons">
-                        <button type="button" class="minor" disabled={busy} aria-label={word(AGENT_WORDS.startConversation, "Talk")} title={word(AGENT_WORDS.startConversation, "Talk")} onclick={() => startConversation(line.agentID)}>💬</button>
-                        <button type="button" class="minor" aria-expanded={agentMenuFor === `${group.id}|${line.agentID}`} aria-label="Menu" onclick={() => (agentMenuFor = agentMenuFor === `${group.id}|${line.agentID}` ? null : `${group.id}|${line.agentID}`)}>⋯</button>
+                        <button type="button" class="minor" disabled={busy} aria-label={word(AGENT_WORDS.startConversation, "Talk")} title={word(AGENT_WORDS.startConversation, "Talk")} onclick={(event) => { event.stopPropagation(); startConversation(line.agentID); }}>💬</button>
+                        <button type="button" class="minor" aria-expanded={agentMenuFor === key} aria-label="Menu" onclick={(event) => { event.stopPropagation(); openAgentMenu(key); }}>⋯</button>
                       </div>
                     </div>
-                    {#if agentMenuFor === `${group.id}|${line.agentID}`}
+                    {#if agentMenuFor === key && chosenInOrder.length > 1 && chosenInOrder.includes(key)}
+                      <!-- The menu of several (userentry.py AgentEntry._GetMultiMenu, 884 to 939). -->
+                      <p class="controls contacts-menu">
+                        {#if severalMenu.showInfo}
+                          <button type="button" class="minor" onclick={severalInfo}>{word(WORDS.showInfo, "Info")}</button>
+                        {/if}
+                        <button type="button" class="minor" disabled={busy} onclick={() => removeAgents(severalMenu.entries.map((entry) => entry.agentID))}>{word(AGENT_WORDS.removeFromAddressbook, "Remove")}</button>
+                        {#if severalMenu.removeFromFolders !== null}
+                          <button type="button" class="minor" onclick={severalOutOfFolders}>{severalMenu.removeFromFolders}</button>
+                        {/if}
+                      </p>
+                    {:else if agentMenuFor === key}
                       <!-- The agent's menu (menusvc.py _CharacterMenu, 579 to 624; userentry.py AgentEntry.GetMenu, 858 to 882). -->
                       <p class="controls contacts-menu">
                         {#if agentInfoOffered(line.agentID)}
                           <button type="button" class="minor" onclick={() => agentInfo(line.agentID)}>{word(WORDS.showInfo, "Info")}</button>
                         {/if}
                         <button type="button" class="minor" disabled={busy} onclick={() => startConversation(line.agentID)}>{word(AGENT_WORDS.startConversation, "Talk")}</button>
-                        <button type="button" class="minor" disabled={busy} onclick={() => removeAgent(line.agentID)}>{word(AGENT_WORDS.removeFromAddressbook, "Remove")}</button>
+                        <button type="button" class="minor" disabled={busy} onclick={() => removeAgents([line.agentID])}>{word(AGENT_WORDS.removeFromAddressbook, "Remove")}</button>
                         {#if agentPlace(line.agentID) !== null}
                           {@const place = agentPlace(line.agentID)}
                           {#if agentDestinationOffered(line.agentID)}
@@ -1928,7 +2469,7 @@
                       {/if}
                       <button type="button" class="minor" disabled={busy} onclick={() => { searchMenuFor = null; startConversation(owner.id); }}>{word(AGENT_WORDS.startConversation, "Talk")}</button>
                       {#if searchAgentIDs.has(owner.id)}
-                        <button type="button" class="minor" disabled={busy} onclick={() => { searchMenuFor = null; removeAgent(owner.id); }}>{word(AGENT_WORDS.removeFromAddressbook, "Remove")}</button>
+                        <button type="button" class="minor" disabled={busy} onclick={() => { searchMenuFor = null; removeAgents([owner.id]); }}>{word(AGENT_WORDS.removeFromAddressbook, "Remove")}</button>
                       {:else}
                         <button type="button" class="minor" disabled={busy} onclick={() => addAgent(owner.id, owner.name)}>{word(SEARCH_WORDS.addToAddressbook, "Add to address book")}</button>
                       {/if}
@@ -1987,7 +2528,10 @@
                       {/if}
                       {#if offers.inviteToFleet}
                         <span class="contacts-submenu">{word(WORDS.inviteToFleet, "Fleet invite")}:</span>
-                        <button type="button" class="minor" disabled={busy} onclick={() => fleetInvite(owner.id, false)}>{word(WORDS.squadMember, "As a member")}</button>
+                        {@render memberPlaces(inviteMenuOf(owner.id), (place) => fleetInviteTo(owner.id, place))}
+                      {/if}
+                      {#if fleetMenuOffered(owner.id)}
+                        {@render fleetSubmenu(owner.id, owner.name, `search:${owner.id}`)}
                       {/if}
                       {#if offers.formFleetWith}
                         <button type="button" class="minor" disabled={busy} onclick={() => fleetInvite(owner.id, true)}>{word(WORDS.formFleetWith, "Start a fleet with")}</button>
@@ -2106,9 +2650,9 @@
                 </td>
                 <td>
                   {row.name}
-                  {#if row.labelText !== ""}
-                    <!-- Its labels' names under its own (SetContactLabelText, 353 to 358). -->
-                    <br /><small class="contacts-entry-labels">{row.labelText}</small>
+                  {#if row.labelNames.length > 0}
+                    <!-- Its labels' names under its own (SetContactLabelText, 353 to 358), each in its colour. -->
+                    <br /><small class="contacts-entry-labels">{#each row.labelNames as label, at (at)}{at > 0 ? ", " : ""}<span style:color={label.color}>{label.name}</span>{/each}</small>
                   {/if}
                 </td>
                 <td class="contacts-state">
@@ -2181,7 +2725,10 @@
                     {/if}
                     {#if offers.inviteToFleet}
                       <span class="contacts-submenu">{word(WORDS.inviteToFleet, "Fleet invite")}:</span>
-                      <button type="button" class="minor" disabled={busy} onclick={() => fleetInvite(row.id, false)}>{word(WORDS.squadMember, "As a member")}</button>
+                      {@render memberPlaces(inviteMenuOf(row.id), (place) => fleetInviteTo(row.id, place))}
+                    {/if}
+                    {#if fleetMenuOffered(row.id)}
+                      {@render fleetSubmenu(row.id, row.name, `contacts:${row.id}`)}
                     {/if}
                     {#if offers.formFleetWith}
                       <button type="button" class="minor" disabled={busy} onclick={() => fleetInvite(row.id, true)}>{word(WORDS.formFleetWith, "Start a fleet with")}</button>
@@ -2217,6 +2764,115 @@
   </div>
   {/if}
 </section>
+
+{#snippet memberPlaces(entries: readonly MemberMenuEntry[], pick: (place: MemberMenuPlace) => void)}
+  <!-- MemberMenu's places (evefleet/client/menu.py): ranks, then each wing with its wing commander's place and its
+       squads, each squad with its places; the rank's word on each, the wing's and the squad's names before them. -->
+  {#each entries as entry, index (index)}
+    {#if entry.kind === "place"}
+      <button type="button" class="minor" disabled={busy} onclick={() => pick(entry)}>{rankWord(entry.role)}</button>
+    {:else}
+      <span class="contacts-submenu" data-wing-id={entry.wingID}>{wingWord(entry)}:
+        {#each entry.entries as inner, innerIndex (innerIndex)}
+          {#if inner.kind === "place"}
+            <button type="button" class="minor" disabled={busy} onclick={() => pick(inner)}>{rankWord(inner.role)}</button>
+          {:else}
+            <span class="contacts-submenu" data-squad-id={inner.squadID}>{squadWord(inner)}:
+              {#each inner.places as place, placeIndex (placeIndex)}
+                <button type="button" class="minor" disabled={busy} onclick={() => pick(place)}>{rankWord(place.role)}</button>
+              {/each}
+            </span>
+          {/if}
+        {/each}
+      </span>
+    {/if}
+  {/each}
+{/snippet}
+
+{#snippet fleetSubmenu(ownerID: number, name: string, key: string)}
+  <!-- The fleet's own menu for a member (menusvc.py FleetMenu, in its order; characterCheckers.py FleetMemberChecker):
+       Show Info; Kick Fleet Member and its Confirm; Make Fleet Leader; Warp to Member, and Warp to Member Within with
+       the seven distances and Set Default; Warp Fleet, Wing or Squad to Member and its Within, for a commander;
+       Leave My Fleet and its Confirm, for the pilot's own. -->
+  <button type="button" class="minor" aria-expanded={fleetMenuFor === key} onclick={() => openFleetMenu(key)}>{word(FLEET_WORDS.fleet, "Fleet")} {fleetMenuFor === key ? "▾" : "▸"}</button>
+  {#if fleetMenuFor === key}
+    {@const fleetOffers = fleetOffersOf(ownerID)}
+    {@const moves = moveMenuOf(ownerID)}
+    <span class="contacts-submenu">
+      <button type="button" class="minor" onclick={() => { fleetDone(); ownerInfo(ownerID); }}>{word(WORDS.showInfo, "Info")}</button>
+      {#if fleetOffers.kick}
+        <button type="button" class="minor" aria-expanded={fleetPart === "kick"} onclick={() => (fleetPart = fleetPart === "kick" ? null : "kick")}>{word(FLEET_WORDS.kick, "Kick out")} {fleetPart === "kick" ? "▾" : "▸"}</button>
+        {#if fleetPart === "kick"}
+          <button type="button" class="minor" disabled={busy} onclick={() => kickMember(ownerID)}>{word(FLEET_WORDS.confirm, "Yes, do it")}</button>
+        {/if}
+      {/if}
+      {#if fleetOffers.leader}
+        <button type="button" class="minor" disabled={busy} onclick={() => makeBoss(ownerID, name)}>{word(FLEET_WORDS.makeLeader, "Hand the fleet on")}</button>
+      {/if}
+      {#if fleetOffers.addWatch}
+        <button type="button" class="minor" disabled={busy} onclick={() => watch(ownerID, true)}>{word(FLEET_WORDS.addWatch, "Watch this pilot")}</button>
+      {/if}
+      {#if fleetOffers.removeWatch}
+        <button type="button" class="minor" disabled={busy} onclick={() => watch(ownerID, false)}>{word(FLEET_WORDS.removeWatch, "Stop watching this pilot")}</button>
+      {/if}
+      {#if fleetOffers.travelToMe}
+        <button type="button" class="minor" disabled={busy} onclick={broadcastTravelToMe}>{word(FLEET_WORDS.travelToMe, "Call the fleet here")}</button>
+      {/if}
+      {#if fleetOffers.warp}
+        <button type="button" class="minor" disabled={busy} onclick={() => warpToMember(ownerID, defaultWarp)}>{word(FLEET_WORDS.warpToMember, "Warp there")}</button>
+        <button type="button" class="minor" aria-expanded={fleetPart === "warp" || fleetPart === "default"} onclick={() => (fleetPart = fleetPart === "warp" || fleetPart === "default" ? null : "warp")}>{word(FLEET_WORDS.warpToMemberWithin, "Warp there, short")} {fleetPart === "warp" || fleetPart === "default" ? "▾" : "▸"}</button>
+        {#if fleetPart === "warp" || fleetPart === "default"}
+          {#each WARP_RANGES as choice (choice.metres)}
+            <button type="button" class="minor" disabled={busy} onclick={() => warpToMember(ownerID, choice.metres)}>{filledWord(FLEET_WORDS.within, "Stop {distance} short", { distance: fmtDist(choice.metres, 2, say) })}</button>
+          {/each}
+          <button type="button" class="minor" aria-expanded={fleetPart === "default"} onclick={() => (fleetPart = fleetPart === "default" ? "warp" : "default")}>{word(FLEET_WORDS.setDefault, "Usual distance")} {fleetPart === "default" ? "▾" : "▸"}</button>
+          {#if fleetPart === "default"}
+            {#each WARP_RANGES as choice (choice.metres)}
+              <button type="button" class="minor" aria-pressed={choice.metres === defaultWarp} onclick={() => setDefaultWarp(choice.metres)}>{fmtDist(choice.metres, 2, say)}</button>
+            {/each}
+          {/if}
+        {/if}
+      {/if}
+      {#if fleetOffers.groupWarp !== null}
+        {@const group = fleetOffers.groupWarp}
+        <button type="button" class="minor" disabled={busy} onclick={() => warpGroupToMember(ownerID, defaultWarp)}>{groupWarpWord(group, false)}</button>
+        <button type="button" class="minor" aria-expanded={fleetPart === "groupWarp" || fleetPart === "groupDefault"} onclick={() => (fleetPart = fleetPart === "groupWarp" || fleetPart === "groupDefault" ? null : "groupWarp")}>{groupWarpWord(group, true)} {fleetPart === "groupWarp" || fleetPart === "groupDefault" ? "▾" : "▸"}</button>
+        {#if fleetPart === "groupWarp" || fleetPart === "groupDefault"}
+          {#each WARP_RANGES as choice (choice.metres)}
+            <button type="button" class="minor" disabled={busy} onclick={() => warpGroupToMember(ownerID, choice.metres)}>{filledWord(FLEET_WORDS.within, "Stop {distance} short", { distance: fmtDist(choice.metres, 2, say) })}</button>
+          {/each}
+          <button type="button" class="minor" aria-expanded={fleetPart === "groupDefault"} onclick={() => (fleetPart = fleetPart === "groupDefault" ? "groupWarp" : "groupDefault")}>{word(FLEET_WORDS.setDefault, "Usual distance")} {fleetPart === "groupDefault" ? "▾" : "▸"}</button>
+          {#if fleetPart === "groupDefault"}
+            {#each WARP_RANGES as choice (choice.metres)}
+              <button type="button" class="minor" aria-pressed={choice.metres === defaultWarp} onclick={() => setDefaultWarp(choice.metres)}>{fmtDist(choice.metres, 2, say)}</button>
+            {/each}
+          {/if}
+        {/if}
+      {/if}
+      {#if fleetOffers.jumpTo}
+        <button type="button" class="minor" disabled={busy} onclick={() => toMemberBeacon(ownerID, "jump")}>{word(FLEET_WORDS.jumpTo, "Jump to their cyno")}</button>
+      {/if}
+      {#if fleetOffers.bridgeTo}
+        <button type="button" class="minor" disabled={busy} onclick={() => toMemberBeacon(ownerID, "bridge")}>{word(FLEET_WORDS.bridgeTo, "Open a bridge to their cyno")}</button>
+      {/if}
+      {#if fleetOffers.conduitTo}
+        <button type="button" class="minor" disabled={busy} onclick={() => toMemberBeacon(ownerID, "group")}>{word(FLEET_WORDS.conduitTo, "Take the fleet to their cyno")}</button>
+      {/if}
+      {#if fleetOffers.leave}
+        <button type="button" class="minor" aria-expanded={fleetPart === "leave"} onclick={() => (fleetPart = fleetPart === "leave" ? null : "leave")}>{word(FLEET_WORDS.leave, "Leave")} {fleetPart === "leave" ? "▾" : "▸"}</button>
+        {#if fleetPart === "leave"}
+          <button type="button" class="minor" disabled={busy} onclick={leaveMyFleet}>{word(FLEET_WORDS.confirm, "Yes, do it")}</button>
+        {/if}
+      {/if}
+      {#if moves.length > 0}
+        <button type="button" class="minor" aria-expanded={fleetPart === "move"} onclick={() => (fleetPart = fleetPart === "move" ? null : "move")}>{word(FLEET_WORDS.moveMember, "Put elsewhere")} {fleetPart === "move" ? "▾" : "▸"}</button>
+        {#if fleetPart === "move"}
+          {@render memberPlaces(moves, (place) => moveMember(ownerID, place))}
+        {/if}
+      {/if}
+    </span>
+  {/if}
+{/snippet}
 
 <style>
   .agents-group-head {
@@ -2295,6 +2951,10 @@
   /* An entry selected, marked without colour alone. */
   tr.selected td {
     font-weight: 600;
+  }
+  .agents-entry.selected {
+    font-weight: 600;
+    outline: 1px dotted currentColor;
   }
   .contacts-list {
     flex: 1 1 18rem;

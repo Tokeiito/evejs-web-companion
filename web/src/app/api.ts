@@ -3177,6 +3177,29 @@ export async function resolveNames(
 }
 
 /**
+ * Corporations' tickers as the client's cfg.corptickernames has them (POST /api/corp-tickers): an NPC
+ * corporation's from the static tables, a player corporation's asked of the game server by the pilot's game-port
+ * transport where it has not been asked yet (config.GetMultiCorpTickerNamesEx), in one call, or in one for each
+ * where `each` is said. A ticker is null where the server answered none; one in `unresolved` was not asked.
+ */
+export async function corpTickers(
+  corpIDs: readonly number[],
+  each: boolean,
+  options: ApiOptions = {},
+): Promise<{ tickers: Record<string, string | null>; unresolved: readonly number[] }> {
+  const data = await postJson("/api/corp-tickers", { corpIDs, each }, options);
+  const raw = typeof data.tickers === "object" && data.tickers !== null && !Array.isArray(data.tickers)
+    ? (data.tickers as Record<string, JsonValue>)
+    : {};
+  const tickers: Record<string, string | null> = {};
+  for (const [key, value] of Object.entries(raw)) tickers[key] = typeof value === "string" ? value : null;
+  const unresolved = Array.isArray(data.unresolved)
+    ? (data.unresolved as JsonValue[]).filter((id): id is number => typeof id === "number")
+    : [];
+  return { tickers, unresolved };
+}
+
+/**
  * The retail client's own text for localisation labels, as templates with
  * their parameters left in (POST /api/words). `available` is false when the
  * BFF has no client install to read; a label the client does not have is null.
@@ -3191,10 +3214,11 @@ export async function loadWords(
   words: Record<string, string | null>;
   messages: Record<string, string | null>;
   /**
-   * A dialog by its name: its title and its body, each the client's text or null, and whether the install lets its
-   * answer be kept ("1", else null). Null for a dialog it has not.
+   * A dialog by its name: its title and its body, each the client's text or null, whether the install lets its
+   * answer be kept ("1", else null), and its type (dialogType: "info", "notify" and the others). Null for a dialog it
+   * has not.
    */
-  dialogs: Record<string, { title: string | null; body: string | null; suppressable: string | null } | null>;
+  dialogs: Record<string, { title: string | null; body: string | null; suppressable: string | null; type: string | null } | null>;
 }> {
   const data = await postJson(
     "/api/words",
@@ -3209,7 +3233,7 @@ export async function loadWords(
     }
     return out;
   };
-  const named: Record<string, { title: string | null; body: string | null; suppressable: string | null } | null> = {};
+  const named: Record<string, { title: string | null; body: string | null; suppressable: string | null; type: string | null } | null> = {};
   const rawDialogs = typeof data.dialogs === "object" && data.dialogs !== null && !Array.isArray(data.dialogs)
     ? (data.dialogs as Record<string, JsonValue>)
     : {};
@@ -3222,6 +3246,7 @@ export async function loadWords(
           title: typeof record.title === "string" ? record.title : null,
           body: typeof record.body === "string" ? record.body : null,
           suppressable: record.suppressable === true ? "1" : null,
+          type: typeof record.type === "string" ? record.type : null,
         };
   }
   return { available: data.available === true, words: texts(data.words), messages: texts(data.messages), dialogs: named };

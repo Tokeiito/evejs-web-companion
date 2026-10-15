@@ -948,6 +948,25 @@ export function mailLabelText(labelMask: number, ownLabels: readonly MailLabel[]
   return names.sort((left, right) => (left < right ? -1 : left > right ? 1 : 0)).join(", ");
 }
 
+/**
+ * GetLabelText (evemail.py 697 to 714) with its colours: a mail's labels as mailLabelText names them, sorted by name
+ * then colour, each with the colour the client writes it in (the label's, none taken as the first swatch's).
+ */
+export function mailLabelParts(labelMask: number, labels: readonly MailLabel[], fourNames: ReadonlyMap<number, string>): readonly { readonly name: string; readonly color: number }[] {
+  const parts: { name: string; color: number }[] = [];
+  for (let bit = 1; bit > 0 && bit <= labelMask; bit *= 2) {
+    if ((labelMask & bit) === 0) {
+      continue;
+    }
+    const own = labels.find((label) => label.labelID === bit);
+    const name = fourNames.get(bit) ?? own?.name;
+    if (name !== undefined) {
+      parts.push({ name, color: own?.color ?? 0 });
+    }
+  }
+  return parts.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : left.color - right.color));
+}
+
 /** A list off the wire, its items; anything else, none. */
 function itemsOf(value: JsonValue | undefined): readonly JsonValue[] {
   return Array.isArray(value) ? value : listItems(value);
@@ -1070,16 +1089,30 @@ export function mailLabelOf(row: JsonValue | undefined): MailLabel | null {
 }
 
 /**
- * GetLabels' answer, a dict of the pilot's labels by their bits: the pilot's own, the system's four (which
- * GetAllLabels names in its own words, 681 to 710) left out.
+ * GetLabels' answer, a dict of the pilot's labels by their bits: the pilot's own, and of the system's four (which
+ * GetAllLabels names in its own words, 681 to 710) those the server keeps, once one is given a colour. The pilot's
+ * own are those not the system's (isSystemMailLabel).
  */
 export function mailLabelsOf(answer: JsonValue): readonly MailLabel[] {
   const labels: MailLabel[] = [];
   for (const [, row] of readDictPairs(answer)) {
     const label = mailLabelOf(row as JsonValue);
-    if (label !== null && !SYSTEM_LABELS.has(label.labelID)) labels.push(label);
+    if (label !== null) labels.push(label);
   }
   return labels;
+}
+
+/** Whether a label is one of the system's four: the inbox, sent, the corporation's and the alliance's. */
+export function isSystemMailLabel(labelID: number): boolean {
+  return SYSTEM_LABELS.has(labelID);
+}
+
+/**
+ * A system label's colour as the client keeps it (GetAllLabels, 681 to 710: the server's where it has the label,
+ * else None), and an own label's.
+ */
+export function mailLabelColor(labelID: number, labels: readonly MailLabel[]): number | null {
+  return labels.find((label) => label.labelID === labelID)?.color ?? null;
 }
 
 /** GetUnreadCounts (mailSvc.py 249 to 276), by label: each label's mails neither read nor trashed; all under null. */

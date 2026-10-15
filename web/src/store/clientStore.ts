@@ -19,6 +19,7 @@ import {
   type Unsubscribe,
 } from "./signals.ts";
 import type { FeedAdapter, FeedEvent, FeedSink, FeedStatus, HealthStatus } from "./feed.ts";
+import { MAX_BROADCAST_HISTORY } from "../bridge/fleetBroadcasts.ts";
 // R43 — the bot registry owns the BotID union and what "holding the ship"
 // means, so the store and flow.ts can never disagree about either.
 import {
@@ -393,6 +394,8 @@ const INITIAL_FLEET: FleetCenterState = Object.freeze({
   refreshedAtMs: null,
   lastBroadcast: null,
   targetTags: null,
+  watchlist: [],
+  broadcastHistory: [],
   authoritativeFleetID: null,
 });
 
@@ -1272,7 +1275,7 @@ export function createClientStore(): ClientStore {
         break;
       }
       case "inventory/action-error":
-        inventory.set({ ...inventory.get(), actionError: event.message });
+        inventory.set({ ...inventory.get(), actionError: event.message, actionErrorSaid: event.message !== null && event.said === true });
         break;
       case "inventory/cleared":
         inventory.set(INITIAL_INVENTORY);
@@ -1407,7 +1410,7 @@ export function createClientStore(): ClientStore {
         break;
       }
       case "fitting/action-error":
-        fitting.set({ ...fitting.get(), actionError: event.message });
+        fitting.set({ ...fitting.get(), actionError: event.message, actionErrorSaid: event.message !== null && event.said === true });
         break;
       case "fitting/cleared":
         fitting.set(INITIAL_FITTING);
@@ -1443,7 +1446,7 @@ export function createClientStore(): ClientStore {
         });
         break;
       case "industry/action-error":
-        industry.set({ ...industry.get(), actionError: event.message });
+        industry.set({ ...industry.get(), actionError: event.message, actionErrorSaid: event.message !== null && event.said === true });
         break;
       case "industry/materials-said":
         // Each telling is counted: a window knows by the count what was said since it last asked.
@@ -1489,7 +1492,7 @@ export function createClientStore(): ClientStore {
         });
         break;
       case "market/action-error":
-        market.set({ ...market.get(), actionError: event.message });
+        market.set({ ...market.get(), actionError: event.message, actionErrorSaid: event.message !== null && event.said === true });
         break;
       case "market/outcome":
         market.set({ ...market.get(), lastOutcome: event.outcome });
@@ -1583,6 +1586,7 @@ export function createClientStore(): ClientStore {
           pendingInvite: event.availability === "ready" ? null : current.pendingInvite,
           lastBroadcast: switchedFleet ? null : current.lastBroadcast,
           targetTags: switchedFleet ? null : current.targetTags,
+          watchlist: switchedFleet || event.availability === "not-in-fleet" ? [] : current.watchlist,
           // Only an authoritative read moves the basis; a blip leaves it alone.
           authoritativeFleetID: authoritative
             ? event.fleet.fleetID
@@ -1597,6 +1601,7 @@ export function createClientStore(): ClientStore {
           ...fleet.get(),
           activeAction: event.action,
           actionError: null,
+          actionErrorSaid: false,
           // Another invitation sent: what was said of the last one is said no longer.
           inviteAnswered: event.action === "invite" ? null : fleet.get().inviteAnswered,
         });
@@ -1606,6 +1611,7 @@ export function createClientStore(): ClientStore {
           ...fleet.get(),
           activeAction: null,
           actionError: event.error,
+          actionErrorSaid: event.error !== null && event.said === true,
         });
         break;
       case "fleet/pending-invite":
@@ -1620,12 +1626,28 @@ export function createClientStore(): ClientStore {
           fleet.set({ ...fleet.get(), pendingInvite: null });
         }
         break;
-      case "fleet/broadcast":
-        fleet.set({ ...fleet.get(), lastBroadcast: event.broadcast });
+      case "fleet/broadcast": {
+        // fleetSvc.AddBroadcast (1493 to 1496): the newest first, and the oldest let go past five hundred.
+        const history = [event.broadcast, ...(fleet.get().broadcastHistory ?? [])].slice(0, MAX_BROADCAST_HISTORY);
+        fleet.set({ ...fleet.get(), lastBroadcast: event.broadcast, broadcastHistory: history });
+        break;
+      }
+      case "fleet/broadcast-history-cleared":
+        fleet.set({ ...fleet.get(), broadcastHistory: [] });
         break;
       case "fleet/target-tags":
         fleet.set({ ...fleet.get(), targetTags: event.tags });
         break;
+      case "fleet/watchlist":
+        fleet.set({ ...fleet.get(), watchlist: event.members });
+        break;
+      case "fleet/jump-beacon": {
+        const beacons = { ...(fleet.get().jumpBeacons ?? {}) };
+        if (event.beacon === null) delete beacons[String(event.characterID)];
+        else beacons[String(event.characterID)] = event.beacon;
+        fleet.set({ ...fleet.get(), jumpBeacons: beacons });
+        break;
+      }
       case "fleet/cleared":
         fleet.set(INITIAL_FLEET);
         break;
@@ -1676,7 +1698,7 @@ export function createClientStore(): ClientStore {
         mail.set({ ...mail.get(), externalLists: [...mail.get().externalLists.filter((each) => each.listID !== event.list.listID), event.list] });
         break;
       case "mail/action-error":
-        mail.set({ ...mail.get(), actionError: event.message });
+        mail.set({ ...mail.get(), actionError: event.message, actionErrorSaid: event.message !== null && event.said === true });
         break;
       case "mail/outcome":
         mail.set({ ...mail.get(), lastOutcome: event.outcome });
@@ -1835,7 +1857,7 @@ export function createClientStore(): ClientStore {
         agents.set({ ...agents.get(), journal: event.journal });
         break;
       case "agents/action-error":
-        agents.set({ ...agents.get(), actionError: event.message });
+        agents.set({ ...agents.get(), actionError: event.message, actionErrorSaid: event.message !== null && event.said === true });
         break;
       case "agents/cleared":
         agents.set(INITIAL_AGENTS);
@@ -2047,7 +2069,7 @@ export function createClientStore(): ClientStore {
         flight.set({ ...flight.get(), lastAction: event.action, actionError: null });
         break;
       case "flight/action-error":
-        flight.set({ ...flight.get(), actionError: event.message });
+        flight.set({ ...flight.get(), actionError: event.message, actionErrorSaid: event.message !== null && event.said === true });
         break;
       case "flight/crimewatch":
         flight.set({ ...flight.get(), crimewatch: event.crimewatch });
@@ -2147,7 +2169,7 @@ export function createClientStore(): ClientStore {
         });
         break;
       case "targeting/action-error":
-        targeting.set({ ...targeting.get(), actionError: event.message });
+        targeting.set({ ...targeting.get(), actionError: event.message, actionErrorSaid: event.message !== null && event.said === true });
         break;
       case "targeting/silent-decline":
         targeting.set({ ...targeting.get(), silentDecline: event.message });
@@ -2348,7 +2370,7 @@ export function createClientStore(): ClientStore {
         });
         break;
       case "drones/action-error":
-        drones.set({ ...drones.get(), actionError: event.message });
+        drones.set({ ...drones.get(), actionError: event.message, actionErrorSaid: event.message !== null && event.said === true });
         break;
       case "drones/silent-decline":
         drones.set({ ...drones.get(), silentDecline: event.message });
@@ -2388,7 +2410,7 @@ export function createClientStore(): ClientStore {
         skills.set({ ...skills.get(), lastAction: event.action, actionError: null });
         break;
       case "skills/action-error":
-        skills.set({ ...skills.get(), actionError: event.message });
+        skills.set({ ...skills.get(), actionError: event.message, actionErrorSaid: event.message !== null && event.said === true });
         break;
       case "skills/cleared":
         skills.set(INITIAL_SKILLS);

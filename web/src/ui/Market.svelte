@@ -436,7 +436,8 @@
   {#if $market.marketUnavailable}
     <p class="error">{$market.marketUnavailable}</p>
   {/if}
-  {#if $market.actionError}
+  <!-- (A refusal the client's own dialog said is not said again here: ClientDialogs.svelte.) -->
+  {#if $market.actionError && !$market.actionErrorSaid}
     <p class="error">Your last order was not placed: {$market.actionError}</p>
   {/if}
   {#if outcomeText}
