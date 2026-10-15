@@ -458,6 +458,7 @@ import { readAvailableFleetAds, readFleetFinder as readFleetFinderCalls } from "
 import { readMyLaunches } from "../bridge/launchReads.ts";
 import type { PlanetLaunchesRead } from "../bridge/planetLaunches.ts";
 import { readMarketTransactions, type MarketTransactionsRead } from "../bridge/marketTransactions.ts";
+import { decodeEntryKinds, decodeJournalEntries, journalLines, type WalletJournalRead } from "../bridge/walletJournal.ts";
 import { readCharacterFittings, readCorporationFittings } from "../bridge/fittingReads.ts";
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, kickFleetMember as kickFleetMemberCall, leaveFleet as leaveFleetCall, makeFleetLeader as makeFleetLeaderCall, moveFleetMember as moveFleetMemberCall, tagFleetTarget, addToWatchlist as addToWatchlistCall, removeFromWatchlist as removeFromWatchlistCall, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
@@ -1585,6 +1586,13 @@ export interface AppFlow {
    */
   readonly marketTransactions: ReadableSignal<MarketTransactionsRead>;
   loadMarketTransactions(): Promise<void>;
+  /**
+   * The wallet's Transactions tab (bridge/walletJournal.ts): the journal for a period as the client's account service
+   * keeps it, with the kinds' names and journal messages. Read as the tab is shown (the period held) and as a period is
+   * chosen (None and None for the last thirty days, else a year and a month, 1 to 12).
+   */
+  readonly walletJournal: ReadableSignal<WalletJournalRead>;
+  loadWalletJournal(year?: number | null, month?: number | null): Promise<void>;
   warpToPlanetLaunch(launchID: number): Promise<void>;
   removePlanetLaunch(launchID: number): Promise<void>;
   /**
@@ -5872,6 +5880,45 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (isSessionLost(error)) throw error;
       marketTransactionsSignal.set({ loaded: true, transactions: [], error: error instanceof Error ? error.message : String(error) });
     }
+  }
+
+  // The wallet's Transactions tab (bridge/walletJournal.ts): the journal for the period chosen, as the client's account
+  // service keeps it (walletReads.journal), with the kinds' names (GetEntryTypes, kept) and each kind's journal message
+  // (the client's own built data, asked of the BFF once). Read as the tab is shown and as its period is chosen
+  // (TransactionsPanel.OnDateCombo); kept until any account changes, as the service keeps it.
+  const NO_WALLET_JOURNAL: WalletJournalRead = { year: null, month: null, loaded: false, lines: [], kinds: new Map(), journalMessageIDs: null, error: null };
+  const walletJournalSignal = createSignal<WalletJournalRead>(NO_WALLET_JOURNAL);
+  let walletJournalGeneration = 0;
+  let journalMessagesRead: Promise<Readonly<Record<string, number>> | null> | null = null;
+  const journalMessages = (): Promise<Readonly<Record<string, number>> | null> => {
+    journalMessagesRead ??= api.loadAccountingEntryTypes(callOptions).then(
+      (read) => (read.available ? read.journalMessageIDs : null),
+      () => {
+        journalMessagesRead = null;
+        return null;
+      },
+    );
+    return journalMessagesRead;
+  };
+
+  async function loadWalletJournal(year: number | null = walletJournalSignal.get().year, month: number | null = walletJournalSignal.get().month): Promise<void> {
+    const generation = ++walletJournalGeneration;
+    const held = walletJournalSignal.get();
+    if (held.year !== year || held.month !== month) walletJournalSignal.set({ ...held, year, month, loaded: false, lines: [], error: null });
+    const [entries, kinds, messages] = await Promise.allSettled([walletReads.journal(year, month), walletReads.entryKinds(), journalMessages()]);
+    if (generation !== walletJournalGeneration) return;
+    for (const each of [entries, kinds]) {
+      if (each.status === "rejected" && isSessionLost(each.reason)) throw each.reason;
+    }
+    walletJournalSignal.set({
+      year,
+      month,
+      loaded: true,
+      lines: entries.status === "fulfilled" ? journalLines(decodeJournalEntries(entries.value)) : [],
+      kinds: kinds.status === "fulfilled" ? decodeEntryKinds(kinds.value) : walletJournalSignal.get().kinds,
+      journalMessageIDs: messages.status === "fulfilled" ? messages.value : null,
+      error: entries.status === "rejected" ? (entries.reason instanceof Error ? entries.reason.message : String(entries.reason)) : null,
+    });
   }
 
   /** OnPILaunchesChange: what is kept is let go, and read afresh where the window has wanted it. */
@@ -18034,6 +18081,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const result = await api.selectCharacter(characterID, callOptions);
       // accountsvc.ProcessSessionChange: another character, and what the account service kept was the last one's.
       walletReads.forget();
+      walletJournalGeneration += 1;
+      walletJournalSignal.set(NO_WALLET_JOURNAL);
       // skillQueueSvc.ReInitialize: and what the queue service had reckoned of the training slots.
       trainingSlots.forget();
       requestGeneration++;
@@ -18855,6 +18904,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadPlanetLaunches,
     marketTransactions: readonlySignal(marketTransactionsSignal),
     loadMarketTransactions,
+    walletJournal: readonlySignal(walletJournalSignal),
+    loadWalletJournal,
 
     async approachPlanetLaunch(containerID) {
       await runFlightStep("Approach", () => orderedStep((flightNow) => approachCall(bridgeDo, flightNow, containerID, 50)));

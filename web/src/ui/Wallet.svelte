@@ -20,10 +20,10 @@
   import { formatIsk } from "./isk.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
-  import type { LedgerEntry } from "../store/types.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
   import { plainText } from "../bridge/clientWords.ts";
   import WalletMarketTransactions from "./WalletMarketTransactions.svelte";
+  import WalletJournal from "./WalletJournal.svelte";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -76,35 +76,6 @@
     void run(() => flow.loadWallet());
   });
 
-  // A retail FILETIME (100 ns ticks since 1601) as a plain date + time. Never
-  // rendered as a number.
-  function whenText(filetime: bigint | null): string {
-    if (filetime === null) {
-      return "—";
-    }
-    const unixMs = Number(filetime / 10000n - 11644473600000n);
-    if (!Number.isFinite(unixMs)) {
-      return "—";
-    }
-    return new Date(unixMs).toLocaleString();
-  }
-
-  // A signed ISK amount for a ledger row: a credit carries a leading "+", a debit
-  // keeps its own "-" (formatIsk preserves the sign). "0" gets no sign.
-  function amountText(amount: string): string {
-    const formatted = formatIsk(amount);
-    if (amount.startsWith("-") || amount === "0" || amount === "0.00") {
-      return formatted;
-    }
-    return `+${formatted}`;
-  }
-
-  function amountFlow(amount: string): "credit" | "debit" | "flat" {
-    if (amount.startsWith("-")) {
-      return "debit";
-    }
-    return amount === "0" || amount === "0.00" ? "flat" : "credit";
-  }
 </script>
 
 <section class="panel">
@@ -141,35 +112,6 @@
     </table>
   {/if}
 
-  {#snippet ledger(rows: readonly LedgerEntry[] | null, err: string | null, emptyMsg: string)}
-    {#if err}
-      <p class="error">The read failed: {err}</p>
-    {:else if rows === null}
-      <p class="empty">Reading…</p>
-    {:else if rows.length === 0}
-      <p class="empty">{emptyMsg}</p>
-    {:else}
-      <table class="guests ledger">
-        <thead>
-          <tr>
-            <th scope="col">When</th>
-            <th scope="col">What</th>
-            <th scope="col" class="num">Amount</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each rows as entry (entry.id)}
-            <tr>
-              <td>{whenText(entry.date)}</td>
-              <td>{entry.refType}</td>
-              <td class="num {amountFlow(entry.amount)}">{amountText(entry.amount)}</td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    {/if}
-  {/snippet}
-
   <nav class="tabs">
     <button type="button" class:active={tab === "transactions"} onclick={() => (tab = "transactions")}>{tabWord(TAB_WORDS.transactions, "Transactions")}</button>
     <button type="button" class:active={tab === "market"} onclick={() => (tab = "market")}>{tabWord(TAB_WORDS.market, "Market Transactions")}</button>
@@ -178,26 +120,8 @@
   {#if tab === "market"}
     <WalletMarketTransactions {store} {flow} />
   {:else}
-    {@render ledger($wallet.journal, $wallet.journalError, "No wallet activity yet.")}
+    <WalletJournal {store} {flow} />
   {/if}
 
 </section>
 
-<style>
-  /* A credit reads green, a debit red — the sign is already in the text, so the
-     colour is a redundant cue, not the only one (accessible in both themes). */
-  .ledger .credit {
-    color: #2e7d32;
-  }
-  .ledger .debit {
-    color: #c62828;
-  }
-  @media (prefers-color-scheme: dark) {
-    .ledger .credit {
-      color: #7fce82;
-    }
-    .ledger .debit {
-      color: #ef8a8a;
-    }
-  }
-</style>

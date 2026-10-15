@@ -57,7 +57,10 @@ const CSS_NO_COMMENTS = CSS.replace(/\/\*[\s\S]*?\*\//g, "");
 
 /** A flow stub — the server generator never runs onMount / handlers. */
 function fakeFlow(): unknown {
-  return new Proxy({}, { get: () => async () => {} });
+  // The journal the wallet's Transactions tab reads as it is shown (flow.walletJournal), not read yet.
+  const unread = { year: null, month: null, loaded: false, lines: [], kinds: new Map(), journalMessageIDs: null, error: null };
+  const walletJournal = { get: () => unread, subscribe: (listener: (value: typeof unread) => void) => (listener(unread), () => {}) };
+  return new Proxy({ walletJournal } as Record<string, unknown>, { get: (held, key) => (typeof key === "string" && key in held ? held[key] : async () => {}) });
 }
 
 const SHIP_ID = 9001;

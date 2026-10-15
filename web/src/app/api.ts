@@ -1609,6 +1609,15 @@ export async function loadClientMission(missionID: number, options: ApiOptions =
 }
 
 /** How the client words each kind of notification, as its own code answers (null where it cannot be read). */
+/**
+ * Each wallet journal entry kind's journal message, from the client's own built data (eveaccounting
+ * get_entry_format_localization_id). `available` is false where the table could not be read.
+ */
+export async function loadAccountingEntryTypes(options: ApiOptions = {}): Promise<{ readonly available: boolean; readonly journalMessageIDs: Readonly<Record<string, number>> }> {
+  const data = await getJson("/api/client-data/accounting-entry-types", options);
+  return { available: data.available === true, journalMessageIDs: (data.journalMessageIDs ?? {}) as Record<string, number> };
+}
+
 export async function loadNotificationFormats(options: ApiOptions = {}): Promise<unknown> {
   const data = await getJson("/api/client-data/notification-formats", options);
   return data.formats ?? null;

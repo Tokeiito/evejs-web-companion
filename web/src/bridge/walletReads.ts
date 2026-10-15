@@ -74,6 +74,13 @@ export interface WalletReads {
   /** The pilot's own ISK and nothing else, asked of the server now. */
   cash(): Promise<JsonValue>;
   /**
+   * The pilot's journal for a period (accountsvc.py GetPersonalTransactions, 108 to 116): None and None for the last
+   * thirty days, else a year and a month (1 to 12). Each is kept until any account changes (OnAccountChange, 64).
+   */
+  journal(year: number | null, month: number | null): Promise<JsonValue>;
+  /** account.GetEntryTypes, asked once for the pilot and kept (GetStaticData). */
+  entryKinds(): Promise<JsonValue>;
+  /**
    * The pilot's own ISK as the client's wallet service keeps it (walletSvc.py wealth, 46 to 49): asked once, and from
    * then what the server says it is (OnAccountChange).
    */
@@ -171,7 +178,21 @@ export function createWalletReads(ask: Ask, deps: WalletDeps = {}): WalletReads 
   const cash = (): Promise<JsonValue> => ask("account", "GetCashBalance", [0]);
   const kinds = keptOnce(() => ask("account", "GetEntryTypes", []));
   const wealth = keptOnce(cash);
-  const ledger = keptOnce(() => ask("account", "GetTransactions", [ACCOUNTING_KEY_CASH, null, null, false]));
+  // accountsvc.transactionCache: each period's journal, kept by its year and month, all let go together.
+  const periods = new Map<string, Kept>();
+  const ledgerFor = (year: number | null, month: number | null): Kept => {
+    const key = `${year ?? "-"}:${month ?? "-"}`;
+    let kept = periods.get(key);
+    if (kept === undefined) {
+      kept = keptOnce(() => ask("account", "GetTransactions", [ACCOUNTING_KEY_CASH, year, month, false]));
+      periods.set(key, kept);
+    }
+    return kept;
+  };
+  const forgetLedgers = (): void => {
+    for (const each of periods.values()) each.forget();
+  };
+  const ledger = ledgerFor(null, null);
   const corporationRow = keptOnce(() => ask("corpRegistry", "GetCorporation", []));
   let divisionsAskedAt = Number.NEGATIVE_INFINITY;
   const divisionsKept = keptOnce(() => {
@@ -185,9 +206,12 @@ export function createWalletReads(ask: Ask, deps: WalletDeps = {}): WalletReads 
   return {
     cash,
     wealth: () => wealth.read(),
+    journal: (year, month) => ledgerFor(year, month).read(),
+    entryKinds: () => kinds.read(),
     async read(how = {}) {
       if (how.fresh === true) {
-        for (const each of [wealth, ledger, corporationRow, divisionsKept]) each.forget();
+        for (const each of [wealth, corporationRow, divisionsKept]) each.forget();
+        forgetLedgers();
       }
       const [balance, divisions, corporation, transactions, entryTypes] = await Promise.allSettled([
         wealth.read(),
@@ -221,7 +245,7 @@ export function createWalletReads(ask: Ask, deps: WalletDeps = {}): WalletReads 
     },
     accountChanged(accountKey, ownerID, balance, whose) {
       // accountsvc.OnAccountChange (64): whichever account it was, the transactions kept are out of date.
-      ledger.forget();
+      forgetLedgers();
       // walletSvc.OnAccountChange (80): `if balance is not None`.
       if (balance === null || balance === undefined) return;
       const owner = Number(ownerID);
@@ -236,7 +260,8 @@ export function createWalletReads(ask: Ask, deps: WalletDeps = {}): WalletReads 
       corporationRow.forget();
     },
     forget() {
-      for (const each of [kinds, wealth, ledger, corporationRow, divisionsKept]) each.forget();
+      for (const each of [kinds, wealth, corporationRow, divisionsKept]) each.forget();
+      forgetLedgers();
     },
   };
 }

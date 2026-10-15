@@ -12966,6 +12966,25 @@ app.get("/api/client-data/missions/:missionID", requireAuth, async (req, res, ne
   }
 });
 
+// Each kind of a wallet journal's entries with the message its line is worded by, as the client's own data has it
+// (eveaccounting/data.py get_entry_format_localization_id: the entry type's entryJournalMessageID). The client's
+// FmtWalletEntry words a line by it, unless the kind has none or is worded by hand (walletEntryFormat.py 22 to 26).
+// `available` is false when the table could not be read (no client install, or no Python to host the client's
+// loader); `journalMessageIDs` is then empty.
+app.get("/api/client-data/accounting-entry-types", requireAuth, async (req, res, next) => {
+  try {
+    const table = await clientBuiltData.table("accountingEntryTypes");
+    const journalMessageIDs = {};
+    for (const [entryTypeID, row] of Object.entries(table || {})) {
+      const messageID = row && Number(row.entryJournalMessageID);
+      if (Number.isSafeInteger(messageID) && messageID > 0) journalMessageIDs[entryTypeID] = messageID;
+    }
+    res.json({ ok: true, available: Boolean(table), journalMessageIDs });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // How the retail client words each kind of notification (notificationSvc.py FormatNotifications): for each type
 // the labels of notificationUtil's table, or the formatter it has and the labels that formatter is made with, as
 // the client's own code answers (src/clientData/clientNotificationFormats.js). `formats` is null where they could

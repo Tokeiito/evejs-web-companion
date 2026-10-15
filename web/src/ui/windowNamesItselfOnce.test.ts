@@ -45,7 +45,10 @@ function fakeFlow(): unknown {
   // none, so the planets window shows its colonies alone.
   const none = { loaded: true, launches: [], error: null };
   const planetLaunches = { get: () => none, subscribe: (listener: (value: typeof none) => void) => (listener(none), () => {}) };
-  return new Proxy({ planetLaunches } as Record<string, unknown>, { get: (held, key) => (typeof key === "string" && key in held ? held[key] : async () => {}) });
+  // And the journal the wallet's Transactions tab reads as it is shown (flow.walletJournal), not read yet.
+  const unread = { year: null, month: null, loaded: false, lines: [], kinds: new Map(), journalMessageIDs: null, error: null };
+  const walletJournal = { get: () => unread, subscribe: (listener: (value: typeof unread) => void) => (listener(unread), () => {}) };
+  return new Proxy({ planetLaunches, walletJournal } as Record<string, unknown>, { get: (held, key) => (typeof key === "string" && key in held ? held[key] : async () => {}) });
 }
 
 /** Compare the way a player does: case, punctuation and spacing are noise. */

@@ -18,8 +18,15 @@ const CorpWallet = (await import("./CorpWallet.svelte")).default;
 
 type LedgerEntry = import("../store/types.ts").LedgerEntry;
 
-function fakeFlow(): unknown {
-  return new Proxy({}, { get: () => async () => {} });
+type WalletJournalRead = import("../bridge/walletJournal.ts").WalletJournalRead;
+type JournalLine = import("../bridge/walletJournal.ts").JournalLine;
+
+const NOT_READ: WalletJournalRead = { year: null, month: null, loaded: false, lines: [], kinds: new Map(), journalMessageIDs: null, error: null };
+
+function fakeFlow(journal: WalletJournalRead = NOT_READ): unknown {
+  // The journal the Transactions tab reads (flow.walletJournal), as the client's account service keeps it.
+  const walletJournal = { get: () => journal, subscribe: (listener: (value: WalletJournalRead) => void) => (listener(journal), () => {}) };
+  return new Proxy({ walletJournal } as Record<string, unknown>, { get: (held, key) => (typeof key === "string" && key in held ? held[key] : async () => {}) });
 }
 
 function visibleText(body: string): string {
@@ -121,14 +128,19 @@ test("CorpWallet shows the error, NOT the empty message, when the read failed", 
 
 // --- R54 Wallet ledger ------------------------------------------------------
 
-// The three real ledger rows Farmer's wallet returned, already decoded to the
-// LedgerEntry shape the store carries (transactionID kept only as `id`, dates as
-// FILETIME bigints, ISK as signed decimal strings, ref-types as words).
-const REAL_LEDGER: readonly LedgerEntry[] = [
-  { id: "1784675859816261", date: 134291494598160000n, amount: "10000", refType: "Bounty Prize" },
-  { id: "1784621463235892", date: 134290950632350000n, amount: "-1459390", refType: "Market Transaction" },
-  { id: "1784233305981917", date: 134287069059810000n, amount: "-45000", refType: "Planetary Construction" },
+// The three real ledger rows Farmer's wallet returned, as the Transactions tab's lines (bridge/walletJournal.ts):
+// each with its kind, its two parties and its reference, which the tab words by name and never shows as numbers.
+const line = (transactionID: number, transactionDate: bigint, entryTypeID: number, amount: number, description: string | null): JournalLine => ({
+  transactionID, sortValue: transactionID, transactionDate, referenceID: 21980, entryTypeID, ownerID1: 140000005, ownerID2: 140000005, amount, balance: 115789452720, description, derived: false,
+});
+const REAL_JOURNAL: readonly JournalLine[] = [
+  line(1784675859816261, 134291494598160000n, 17, 10000, "NBL:\n  21980: 1"),
+  line(1784621463235892, 134290950632350000n, 2, -1459390, null),
+  line(1784233305981917, 134287069059810000n, 98, -45000, null),
 ];
+// The kinds as account.GetEntryTypes names them, where the install's messages for them are not to hand.
+const KINDS = new Map([[17, { nameID: null, name: "Bounty Prize" }], [2, { nameID: null, name: "Market Transaction" }], [98, { nameID: null, name: "Planetary Construction" }]]);
+const journalRead = (over: Partial<WalletJournalRead>): WalletJournalRead => ({ ...NOT_READ, loaded: true, kinds: KINDS, ...over });
 
 function loadedWallet(over: Partial<{
   journal: readonly LedgerEntry[] | null;
@@ -149,22 +161,23 @@ function loadedWallet(over: Partial<{
 }
 
 test("Wallet renders each ledger row as date + ref-type WORDS + signed ISK", () => {
-  const store = loadedWallet({ journal: REAL_LEDGER });
-  const output = render(Wallet as never, { props: { store, flow: fakeFlow() } } as never);
+  const store = loadedWallet({});
+  const output = render(Wallet as never, { props: { store, flow: fakeFlow(journalRead({ lines: REAL_JOURNAL })) } } as never);
   const text = visibleText(output.body);
   // R9a: the ref-type reads as words, never the entryTypeID code (17/2/98).
   assert.match(text, /Bounty Prize/);
   assert.match(text, /Market Transaction/);
   assert.match(text, /Planetary Construction/);
-  // A credit shows "+", a debit its "-"; both grouped, bigint-safe.
-  assert.match(text, /\+10,000 ISK/);
+  // FmtWalletCurrency: whole ISK, grouped, a debit with its "-" and a credit with no sign (its colour says it).
+  assert.match(text, /10,000 ISK/);
+  assert.doesNotMatch(text, /\+10,000 ISK/);
   assert.match(text, /-1,459,390 ISK/);
 });
 
 // R7d SWEEP: no raw refID/ownerID/transactionID may appear in the rendered text.
 test("Wallet never renders a raw id from a ledger row (R7d)", () => {
-  const store = loadedWallet({ journal: REAL_LEDGER });
-  const output = render(Wallet as never, { props: { store, flow: fakeFlow() } } as never);
+  const store = loadedWallet({});
+  const output = render(Wallet as never, { props: { store, flow: fakeFlow(journalRead({ lines: REAL_JOURNAL })) } } as never);
   const text = visibleText(output.body);
   // transactionID (kept only as a keyed-each key) and the ids the decoder drops.
   assert.equal(text.includes("1784675859816261"), false, "transactionID must not render");
@@ -179,16 +192,16 @@ test("Wallet never renders a raw id from a ledger row (R7d)", () => {
 // it — proving `includes` fires on rendered content, so the absences above mean
 // something.
 test("the Wallet id-sweep matcher actually inspects rendered text", () => {
-  const store = loadedWallet({ journal: REAL_LEDGER });
-  const output = render(Wallet as never, { props: { store, flow: fakeFlow() } } as never);
+  const store = loadedWallet({});
+  const output = render(Wallet as never, { props: { store, flow: fakeFlow(journalRead({ lines: REAL_JOURNAL })) } } as never);
   const text = visibleText(output.body);
   // "45,000" is the grouped amount of the -45000 debit; its digits are present.
   assert.equal(text.includes("45,000"), true);
 });
 
 test("Wallet shows an honest empty message for a real 'no ledger entries'", () => {
-  const store = loadedWallet({ journal: [] });
-  const output = render(Wallet as never, { props: { store, flow: fakeFlow() } } as never);
+  const store = loadedWallet({});
+  const output = render(Wallet as never, { props: { store, flow: fakeFlow(journalRead({ lines: [] })) } } as never);
   const text = visibleText(output.body);
   assert.match(text, /No wallet activity yet/i);
   // The wallet's activity is its Transactions tab. Market Transactions is the client's next tab (personalISKPanel.py
@@ -197,11 +210,8 @@ test("Wallet shows an honest empty message for a real 'no ledger entries'", () =
 });
 
 test("Wallet shows the ledger error, NOT the empty message, when the read failed", () => {
-  const store = loadedWallet({
-    journal: null,
-    journalError: "transactions: READ_FAILED",
-  });
-  const output = render(Wallet as never, { props: { store, flow: fakeFlow() } } as never);
+  const store = loadedWallet({});
+  const output = render(Wallet as never, { props: { store, flow: fakeFlow(journalRead({ error: "transactions: READ_FAILED" })) } } as never);
   const text = visibleText(output.body);
   assert.match(text, /READ_FAILED/);
   // ⚠ A failed journal read must never claim the wallet has no activity.
