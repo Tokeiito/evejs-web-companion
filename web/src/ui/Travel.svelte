@@ -20,6 +20,7 @@
   import { deriveDocked } from "./tabs.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
   import { plainText } from "../bridge/clientWords.ts";
+  import { waypointNameKind } from "../nav/waypoints.ts";
   import {
     OFFERED_ROUTE_TYPES, PENALTY_RANGE, ROUTE_SETTING_WORD_LABELS, avoidingSystems, penaltyOf, penaltyWords, routeSettingWords, routeTypeOf,
     type StoredAutopilotSettings,
@@ -75,11 +76,11 @@
   const routeWord = (label: string, own: string): string => settingText(label) ?? own;
   /** The route panel's Autopilot active is offered to a pilot in space (infoPanelRoute.py 93: not docked). */
   const docked = $derived(deriveDocked($flight.status, $station.online));
-  /** A waypoint's name: a station's or a system's (nav/waypoints.ts takes no other). */
+  /** A waypoint's name: a structure's, a station's or a system's (nav/waypoints.ts takes no other). */
   const placeName = (id: number): string =>
-    resolvedName($names.resolved, id >= 60_000_000 ? "station" : "system", id, "—");
+    resolvedName($names.resolved, waypointNameKind(id), id, "—");
   $effect(() => {
-    const refs: NameRef[] = $waypoints.map((id) => ({ kind: id >= 60_000_000 ? "station" : "system", id }) as NameRef);
+    const refs: NameRef[] = $waypoints.map((id) => ({ kind: waypointNameKind(id), id }) as NameRef);
     if (refs.length > 0) flow.requestNames(refs);
   });
   const settingText = (label: string): string | null => {

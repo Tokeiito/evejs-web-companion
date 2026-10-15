@@ -28,14 +28,26 @@ export interface PilotPlace {
   readonly regionID?: number | null;
 }
 
+/** idCheckers.IsPlayerItem (69 to 70): minPlayerItem (inventorycommon/const.py 83) and up, the number a structure has. */
+export function isPlayerItemID(id: number): boolean {
+  return Number.isSafeInteger(id) && id >= 100_000_000;
+}
+
 /**
- * _IsDestinationValid (2301 to 2318), as far as the page can tell by the number: a station, or a solar system of known
- * space. (The client also refuses a deprecated station and a Triglavian system from outside Pochven, and takes a
- * structure it knows; the page does neither yet.)
+ * _IsDestinationValid (2301 to 2318), as far as the page can tell: a station or a solar system of known space by the
+ * number, and a structure where the structure directory knows it (`knownStructure`: its GetStructureInfo answered,
+ * structureDirectory.py 33 to 39). (The client also refuses a deprecated station and a Triglavian system from outside
+ * Pochven; the page does not yet.)
  */
-export function isWaypointPlace(id: number): boolean {
+export function isWaypointPlace(id: number, knownStructure = false): boolean {
   if (!Number.isSafeInteger(id)) return false;
+  if (knownStructure && isPlayerItemID(id)) return true;
   return (id >= 60_000_000 && id < 64_000_000) || (id >= 30_000_000 && id < 31_000_000);
+}
+
+/** The name kind a waypoint is named by: a structure's, a station's or a solar system's. */
+export function waypointNameKind(id: number): "structure" | "station" | "system" {
+  return isPlayerItemID(id) ? "structure" : id >= 60_000_000 ? "station" : "system";
 }
 
 /** SetWaypoint (2327 to 2349): the list with the place put on it, or the client's refusal. */
@@ -44,8 +56,9 @@ export function withWaypoint(
   destinationID: number,
   how: { readonly clearOthers?: boolean; readonly first?: boolean },
   here: PilotPlace,
+  knownStructure = false,
 ): { readonly waypoints: readonly number[] } | { readonly refused: WaypointRefusal } {
-  if (!isWaypointPlace(destinationID)) return { refused: "CantSetWaypoint" };
+  if (!isWaypointPlace(destinationID, knownStructure)) return { refused: "CantSetWaypoint" };
   const list = how.clearOthers === true ? [] : [...waypoints];
   if (list.includes(destinationID)) return { refused: "WaypointAlreadySet" };
   if (here.constellationID != null && destinationID === here.constellationID) return { refused: "WaypointAlreadyInConstellation" };
@@ -73,12 +86,16 @@ export function afterArriving(waypoints: readonly number[], here: PilotPlace): r
 
 const KEPT = "evejs.autopilot_waypoints.";
 
-/** The character's waypoints as this browser keeps them; none where nothing is kept, or it cannot be read. */
+/**
+ * The character's waypoints as this browser keeps them; none where nothing is kept, or it cannot be read. A structure
+ * kept is taken as it was set. (The client asks its directory again for each on every GetWaypoints, 2370 to 2376, and
+ * drops the whole list where one is gone; the page does not ask again.)
+ */
 export function readWaypoints(characterID: number): readonly number[] {
   try {
     const raw = globalThis.localStorage?.getItem(`${KEPT}${characterID}`);
     const parsed: unknown = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed.filter((id): id is number => typeof id === "number" && isWaypointPlace(id)) : [];
+    return Array.isArray(parsed) ? parsed.filter((id): id is number => typeof id === "number" && (isWaypointPlace(id) || isPlayerItemID(id))) : [];
   } catch {
     return [];
   }

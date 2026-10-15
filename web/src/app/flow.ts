@@ -438,7 +438,7 @@ import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, kickFleetMember as kickFleetMemberCall, leaveFleet as leaveFleetCall, makeFleetLeader as makeFleetLeaderCall, moveFleetMember as moveFleetMemberCall, tagFleetTarget, addToWatchlist as addToWatchlistCall, removeFromWatchlist as removeFromWatchlistCall, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { BOOKMARK_EXPIRY, addFolder as addFolderCall, addToKnownFolders as addToKnownFoldersCall, copyBookmarks as copyBookmarksCall, moveBookmarks as moveBookmarksCall, removeFromKnownFolders as removeFromKnownFoldersCall, type MovedOrCopied, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, createSubfolder as createSubfolderCall, updateFolder as updateFolderCall, type FolderAccess, deleteBookmarks as deleteBookmarksCall, deleteFolder as deleteFolderCall, deleteSubfolder as deleteSubfolderCall, setFolderActive as setFolderActiveCall, updateBookmark as updateBookmarkCall, updateSubfolder as updateSubfolderCall } from "../bridge/bookmarkWrites.ts";
 import { giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
-import { afterArriving, keepWaypoints, readWaypoints, withWaypoint, withoutWaypoint, type PilotPlace } from "../nav/waypoints.ts";
+import { afterArriving, isPlayerItemID, isWaypointPlace, keepWaypoints, readWaypoints, withWaypoint, withoutWaypoint, type PilotPlace } from "../nav/waypoints.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
 import {
   decodeLaunched,
@@ -10007,15 +10007,43 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return true;
   }
 
-  /** SetWaypoint (2327 to 2361): the place put on the list, or the client's refusal said; then UpdateRoute. */
+  /**
+   * The structures the structure directory has answered for (structureDirectory.py GetStructureInfo, 33 to 39: asked
+   * once for each, by the remote service, and kept), whether it knows each. A read that fails is not kept.
+   */
+  const knownStructures = new Map<number, boolean>();
+  async function structureKnown(structureID: number): Promise<boolean> {
+    const kept = knownStructures.get(structureID);
+    if (kept !== undefined) return kept;
+    const info = await bridgeAsk("structureDirectory", "GetStructureInfo", [structureID]);
+    const known = info !== null && info !== undefined;
+    knownStructures.set(structureID, known);
+    return known;
+  }
+
+  /**
+   * SetWaypoint (2327 to 2361): the place put on the list, or the client's refusal said; then UpdateRoute. A structure
+   * is a destination where the directory knows it (_IsDestinationValid, 2317); asking is the only wait, so a station or
+   * a system is put on the list at once.
+   */
   function setWaypointAs(destinationID: number, clearOthers: boolean): void {
-    const made = withWaypoint(heldWaypoints(), destinationID, { clearOthers }, pilotPlace());
-    if ("refused" in made) {
-      sayAutopilot(made.refused);
-      return;
-    }
-    putWaypoints(made.waypoints);
-    waypointsArrived();
+    void (async () => {
+      let knownStructure = false;
+      if (!isWaypointPlace(destinationID) && isPlayerItemID(destinationID)) {
+        try {
+          knownStructure = await structureKnown(destinationID);
+        } catch {
+          knownStructure = false;
+        }
+      }
+      const made = withWaypoint(heldWaypoints(), destinationID, { clearOthers }, pilotPlace(), knownStructure);
+      if ("refused" in made) {
+        sayAutopilot(made.refused);
+        return;
+      }
+      putWaypoints(made.waypoints);
+      waypointsArrived();
+    })();
   }
 
   function setDestination(destinationID: number): void {
