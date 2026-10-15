@@ -1150,6 +1150,11 @@
       tab = "notifications";
       return;
     }
+    if (focus.kind === "compose") {
+      mailFocusServed(focus.n);
+      composeTo(focus.characterID, focus.name);
+      return;
+    }
     tab = "inbox";
     focusedMail = { messageID: focus.messageID, n: focus.n };
   });
@@ -1294,6 +1299,15 @@
       quote = await quoteOf(header);
       tab = "compose";
     });
+  }
+
+  /** An owner's menu's Send Pilot EVEMail (menusvc.py 590 to 591; mailSvc.SendMsgDlg([charID])): a new message to the pilot alone. */
+  function composeTo(characterID: number, name: string): void {
+    clearCompose();
+    recipients = [{ characterID, name }];
+    // SendMsgDlg (994 to 997): the window's field written from what it is opened with (ApplyAttributes, 1803 to 1822).
+    writeReceivers();
+    tab = "compose";
   }
 
   /** A list's Send Mail to Mailing List (evemail.py SendMailToList; mailSvc.SendMsgDlg): a new message to the list alone. */

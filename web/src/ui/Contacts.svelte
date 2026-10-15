@@ -78,8 +78,10 @@
   import { isSessionLost } from "../app/flow.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
+  import { showInfo } from "./showInfo.ts";
+  import { focusMail } from "./mailFocus.ts";
 
-  let { store, flow, showAgents }: { store: ClientStore; flow: AppFlow; showAgents?: () => void } = $props();
+  let { store, flow, showAgents, openMail }: { store: ClientStore; flow: AppFlow; showAgents?: () => void; openMail?: () => void } = $props();
 
   // svelte-ignore state_referenced_locally
   const words = store.words;
@@ -130,6 +132,8 @@
     withLength: "/Carbon/UI/Controls/ScrollEntries/LabelWithLength",
     management: "UI/PeopleAndPlaces/ContactManagement",
     addContact: "UI/PeopleAndPlaces/AddContact",
+    showInfo: "UI/Commands/ShowInfo",
+    sendMail: "UI/EVEMail/SendPilotEVEMail",
     editContact: "UI/PeopleAndPlaces/EditContact",
     removeContact: "UI/PeopleAndPlaces/RemoveContact",
     blockContact: "UI/PeopleAndPlaces/BlockContact",
@@ -474,7 +478,7 @@
    * one (254 to 263), Block where it is not blocked (104 to 111), Unblock where it is (373 to 378); none for the pilot
    * itself, and none but Unblock for an NPC.
    */
-  function offersOf(ownerID: number): { add: boolean; edit: boolean; block: boolean; unblock: boolean } {
+  function offersOf(ownerID: number): { showInfo: boolean; mail: boolean; add: boolean; edit: boolean; block: boolean; unblock: boolean } {
     const mine = ownerID === myID;
     const npc = isNpcOwner(ownerID);
     const isContact = contactIDs.has(ownerID);
@@ -482,14 +486,34 @@
     if (!isCharacterContact(ownerID)) {
       // A corporation's, an alliance's or a faction's (menusvc.py GetMenuFromItemIDTypeID, 2304 to 2318): Edit and
       // Remove Contact where it is one, Add Contact where not, an NPC's as well; Block or Unblock where it is no NPC's.
-      return { add: !isContact, edit: isContact, block: !npc && !isBlocked, unblock: !npc && isBlocked };
+      // Its Show Info the page's info window does not show yet (it shows a character, a type and an object).
+      return { showInfo: false, mail: false, add: !isContact, edit: isContact, block: !npc && !isBlocked, unblock: !npc && isBlocked };
     }
     return {
+      // OfferShowInfo (350 to 353): every character's (an aura agent's aside, which no address book holds).
+      showInfo: true,
+      // OfferSendPilotEVEMail (343 to 348): none for the pilot itself or an NPC.
+      mail: !mine && !npc,
       add: !mine && !npc && !isContact,
       edit: !mine && !npc && isContact,
       block: !mine && !npc && !isBlocked,
       unblock: !mine && isBlocked,
     };
+  }
+
+  /** Show Info from an owner's menu (menusvc.py 579 to 580): the character's information window. */
+  function ownerInfo(ownerID: number): void {
+    menuFor = null;
+    searchMenuFor = null;
+    showInfo({ kind: "character", characterID: ownerID });
+  }
+
+  /** Send Pilot EVEMail from an owner's menu (menusvc.py 590 to 591): the mail window, a new message to the pilot. */
+  function mailOwner(ownerID: number, name: string): void {
+    menuFor = null;
+    searchMenuFor = null;
+    openMail?.();
+    focusMail({ kind: "compose", characterID: ownerID, name });
   }
 
   /** A write of the window's, its refusal said. */
@@ -1659,6 +1683,12 @@
                   </div>
                   {#if searchMenuFor === menuKey}
                     <p class="controls contacts-menu">
+                      {#if offers.showInfo}
+                        <button type="button" class="minor" disabled={busy} onclick={() => ownerInfo(owner.id)}>{word(WORDS.showInfo, "Info")}</button>
+                      {/if}
+                      {#if offers.mail && openMail}
+                        <button type="button" class="minor" disabled={busy} onclick={() => mailOwner(owner.id, owner.name)}>{word(WORDS.sendMail, "Write a mail")}</button>
+                      {/if}
                       {#if offers.add}
                         <button type="button" class="minor" disabled={busy} onclick={() => { searchMenuFor = null; manage(owner.id, owner.name); }}>{word(WORDS.addContact, "Add Contact")}</button>
                       {/if}
@@ -1837,6 +1867,12 @@
                 <!-- The entry's menu of a contact (menusvc.py 590 to 602), and its labels' (userentry.py GetMenu, 444 to 452). -->
                 <tr class="contacts-menu">
                   <td colspan="5">
+                    {#if offers.showInfo}
+                      <button type="button" class="minor" disabled={busy} onclick={() => ownerInfo(row.id)}>{word(WORDS.showInfo, "Info")}</button>
+                    {/if}
+                    {#if offers.mail && openMail}
+                      <button type="button" class="minor" disabled={busy} onclick={() => mailOwner(row.id, row.name)}>{word(WORDS.sendMail, "Write a mail")}</button>
+                    {/if}
                     {#if offers.add}
                       <button type="button" class="minor" disabled={busy} onclick={() => manage(row.id, row.name)}>{word(WORDS.addContact, "Add Contact")}</button>
                     {/if}
