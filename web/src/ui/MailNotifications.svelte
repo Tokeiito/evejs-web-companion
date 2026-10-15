@@ -218,7 +218,31 @@
     });
   });
 
-  onDestroy(cancelReadTimer);
+  // What arrives while the window is open (NotificationForm.__notifyevents__): a new notification updates the
+  // counts alone (OnNewNotificationReceived, 383 to 385: UpdateCounters); one deleted or brought back elsewhere has
+  // the window read again (notificationSvc.OnNotificationDeleted and OnNotificationUndeleted scatter
+  // OnNotificationsRefresh, 353 to 387: LoadLeftSide).
+  const seenLive = new WeakSet<object>();
+  let firstLive = true;
+  const stopLive = store.live.subscribe((live) => {
+    if (firstLive) {
+      for (const each of live.notifications) seenLive.add(each);
+      firstLive = false;
+      return;
+    }
+    for (const each of live.notifications) {
+      if (seenLive.has(each)) continue;
+      seenLive.add(each);
+      if (groups === null) continue;
+      if (each.method === "OnNotificationReceived") void run(loadUnread);
+      else if (each.method === "OnNotificationDeleted" || each.method === "OnNotificationUndeleted") void run(loadLeftSide);
+    }
+  });
+
+  onDestroy(() => {
+    cancelReadTimer();
+    stopLive();
+  });
 
   /**
    * MarkAsRead (form 275 to 279; notificationSvc.py 241 to 260): those given that are unread, a hundred at most, marked

@@ -21,6 +21,7 @@
   import DockWipe from "./DockWipe.svelte";
   import Toasts from "./Toasts.svelte";
   import NoticeBridge from "./NoticeBridge.svelte";
+  import NotificationPopups from "./NotificationPopups.svelte";
   import DroneRecoveryNotice from "./DroneRecoveryNotice.svelte";
   import ServerQuestion from "./ServerQuestion.svelte";
   import { showInfoTarget } from "./showInfo.ts";
@@ -347,6 +348,7 @@
        it would be strange for only one of them to acknowledge it. -->
   <DockWipe {isDocked} />
   <NoticeBridge {store} />
+  <NotificationPopups {store} {flow} />
   <DroneRecoveryNotice {flow} />
   <ServerQuestion {store} {flow} />
   <Toasts />
@@ -358,6 +360,7 @@
        the flash is where one APPEARS. Both have to outlive the panel the event
        came from — that is the entire point — so neither can live in a panel. -->
   <NoticeBridge {store} />
+  <NotificationPopups {store} {flow} />
   <DroneRecoveryNotice {flow} />
   <ServerQuestion {store} {flow} />
   <Toasts />
