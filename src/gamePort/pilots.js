@@ -2049,6 +2049,11 @@ function createGamePortPilots({
         structureID: attribute(entry, "structureid"),
         solarSystemID: attribute(entry, "solarsystemid2") ?? attribute(entry, "solarsystemid"),
         corporationID: attribute(entry, "corpid"),
+        // session.allianceid and session.corprole, as the client's session holds them from its choosing on (the
+        // compose window's ValidateCorpOrAlliance goes by both): the alliance, none where the corporation is in
+        // none, and the roles a 64-bit mask, so as its digits. The page keeps them as the session's changes say.
+        allianceID: attribute(entry, "allianceid"),
+        corpRole: String(wholeOf(entry.session.attributes.corprole) ?? 0n),
         shipID: attribute(entry, "shipid"),
       },
     };

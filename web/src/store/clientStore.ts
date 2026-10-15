@@ -1085,6 +1085,13 @@ export function createClientStore(): ClientStore {
         chat.set(INITIAL_CHAT);
         live.set(INITIAL_LIVE);
         break;
+      case "character/session-changed": {
+        const current = station.get();
+        if (current.online === null) break;
+        const { type: _type, ...changed } = event;
+        station.set({ ...current, online: { ...current.online, ...changed } });
+        break;
+      }
       case "character/offline":
         // R28: the skill sheet belongs to the character who was selected, so it
         // goes with them. Leaving it behind would show the NEXT character

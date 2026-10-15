@@ -331,6 +331,8 @@ export async function selectCharacter(
       structureID: asNumberOrNull(character.structureID),
       solarSystemID: asNumberOrNull(character.solarSystemID),
       corporationID: asNumberOrNull(character.corporationID),
+      allianceID: asNumberOrNull(character.allianceID),
+      corpRole: typeof character.corpRole === "string" && /^\d+$/.test(character.corpRole) ? character.corpRole : null,
     },
     station:
       typeof station === "object" && station !== null && !Array.isArray(station)

@@ -93,6 +93,7 @@ import {
   mailRefusalMessage,
   syncMailArguments,
   unreadMailCount,
+  isAllianceOwner,
   type DecodedMailbox,
 } from "../bridge/mail.ts";
 import { sendMail as sendMailCall, type MailToSend } from "../bridge/mailWrites.ts";
@@ -130,7 +131,7 @@ import {
   windowOnMissionChange,
   type MissionChange,
 } from "../bridge/agents.ts";
-import { sessionChangeNames } from "../bridge/sessionChange.ts";
+import { sessionChangeNames, sessionChangeValue, wholeDigits } from "../bridge/sessionChange.ts";
 import { createPushLedger } from "../bridge/pushOnce.ts";
 import { standingsAfter } from "../bridge/standingChanges.ts";
 import { decodeMissionTimes } from "../bridge/missionTime.ts";
@@ -1128,6 +1129,12 @@ export interface AppFlow {
    * name is not known.
    */
   ownCorporation(): Promise<{ readonly corporationID: number; readonly name: string } | null>;
+  /**
+   * The pilot's own alliance and its name, as the compose window reads them (session.allianceid;
+   * cfg.eveowners.Get(session.allianceid).ownerName); null where the session is in none, the transport does not
+   * say it, or its name is not known.
+   */
+  ownAlliance(): Promise<{ readonly allianceID: number; readonly name: string } | null>;
   /**
    * SEND a message. Not a costly or destructive write, so no confirm gate —
    * but an empty recipient list is refused, because the SERVER will not refuse
@@ -2636,6 +2643,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return;
     }
     const sessionNames = sessionChangeNames(method, args);
+    // The client's session takes the new corporation, alliance and roles as the change says them; so does the
+    // page's pilot, for what goes by them (the compose window's ValidateCorpOrAlliance and its offers).
+    if (sessionNames?.some((name) => name === "corpid" || name === "allianceid" || name === "corprole")) {
+      const ownerOf = (value: unknown): number | null => {
+        const id = Number(wholeDigits(value) ?? Number.NaN);
+        return Number.isSafeInteger(id) && id > 0 ? id : null;
+      };
+      store.apply({
+        type: "character/session-changed",
+        ...(sessionNames.includes("corpid") ? { corporationID: ownerOf(sessionChangeValue(method, args, "corpid")) } : {}),
+        ...(sessionNames.includes("allianceid") ? { allianceID: ownerOf(sessionChangeValue(method, args, "allianceid")) } : {}),
+        ...(sessionNames.includes("corprole") ? { corpRole: wholeDigits(sessionChangeValue(method, args, "corprole")) } : {}),
+      });
+    }
     // godma.ProcessSessionChange (1156, 1199): another station, system, ship, character or structure, and godma
     // ends every repair it began. So does the page.
     if (sessionNames?.some((name) => GODMA_SESSION_NAMES.has(name))) {
@@ -5108,7 +5129,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         refs.push({ kind: "character", id: recipientID });
       }
       if (header.toCorpOrAllianceID !== null) {
-        refs.push({ kind: "corporation", id: header.toCorpOrAllianceID });
+        // cfg.eveowners names either; the page's names go by the kind, an alliance's by its range.
+        refs.push({ kind: isAllianceOwner(header.toCorpOrAllianceID) ? "alliance" : "corporation", id: header.toCorpOrAllianceID });
       }
     }
     requestNames(refs);
@@ -5419,6 +5441,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     await resolveNamesNow([{ kind: "corporation", id: corporationID }]);
     const name = store.names.get().resolved[nameKey("corporation", corporationID)];
     return typeof name === "string" && name !== "" ? { corporationID, name } : null;
+  }
+
+  async function ownAlliance(): Promise<{ readonly allianceID: number; readonly name: string } | null> {
+    const allianceID = store.station.get().online?.allianceID ?? null;
+    if (allianceID === null || !(allianceID > 0)) {
+      return null;
+    }
+    await resolveNamesNow([{ kind: "alliance", id: allianceID }]);
+    const name = store.names.get().resolved[nameKey("alliance", allianceID)];
+    return typeof name === "string" && name !== "" ? { allianceID, name } : null;
   }
 
   // SearchOwners with hideNPC (searchOld.py 258 to 259): lookupSvc.LookupPCOwners(searchStr, exact), exact False as
@@ -6001,7 +6033,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         declinedSilently: messageID === null,
         recipientCount: new Set(request.toCharacterIDs).size,
         toList: request.toListID == null ? null : ((store.mail.get().lists ?? []).find((list) => list.listID === request.toListID)?.displayName ?? null),
-        toCorpOrAlliance: request.toCorpOrAllianceID == null ? null : (store.names.get().resolved[nameKey("corporation", request.toCorpOrAllianceID)] ?? null),
+        toCorpOrAlliance: request.toCorpOrAllianceID == null
+          ? null
+          : (store.names.get().resolved[nameKey(isAllianceOwner(request.toCorpOrAllianceID) ? "alliance" : "corporation", request.toCorpOrAllianceID)] ?? null),
         message: messageID === null ? "The server did not send that message, and did not say why." : null,
       },
     });
@@ -16110,6 +16144,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     findCharacters: (q: string) => api.findCharacters(q, callOptions),
     searchCharacters,
     ownCorporation,
+    ownAlliance,
     sendMail,
     loadContracts,
     openContract,

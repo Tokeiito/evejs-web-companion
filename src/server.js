@@ -1744,6 +1744,14 @@ app.post("/api/bridge/select", requireAuth, async (req, res, next) => {
         corporationID: outcome.session.corporationID === undefined
           ? null
           : outcome.session.corporationID,
+        // The alliance and the corporation roles, as the client's session holds them, where the transport says
+        // them (the game port does; the gateway does not, and the page holds none).
+        allianceID: outcome.session.allianceID === undefined
+          ? null
+          : outcome.session.allianceID,
+        corpRole: typeof outcome.session.corpRole === "string" && /^\d+$/.test(outcome.session.corpRole)
+          ? outcome.session.corpRole
+          : null,
       },
       station: buildStationStatic(outcome.session.stationID),
       notifications: outcome.notifications,

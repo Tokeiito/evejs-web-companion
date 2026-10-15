@@ -1122,3 +1122,19 @@ export function isNpcOwner(ownerID: number): boolean {
 export function isCorporationOwner(ownerID: number): boolean {
   return (ownerID >= 1_000_000 && ownerID <= 1_999_999) || (ownerID >= 98_000_000 && ownerID <= 98_999_999);
 }
+
+/**
+ * idCheckers.IsAlliance by its range: a player alliance's (minPlayerAlliance to maxPlayerAlliance, 99000000 to
+ * 99999999). One from before the 64-bit items the client asks its owner cache of, which the page has not.
+ */
+export function isAllianceOwner(ownerID: number): boolean {
+  return ownerID >= 99_000_000 && ownerID <= 99_999_999;
+}
+
+/** appConst.corpRoleChatManager, the Communications Officer's role: an alliance is written to by it. */
+export const CORP_ROLE_CHAT_MANAGER = 36_028_797_018_963_968n;
+
+/** Whether a session's roles (a 64-bit mask as its digits) hold the Communications Officer's; none known holds none. */
+export function hasChatManagerRole(corpRole: string | null | undefined): boolean {
+  return typeof corpRole === "string" && /^\d+$/.test(corpRole) && (BigInt(corpRole) & CORP_ROLE_CHAT_MANAGER) === CORP_ROLE_CHAT_MANAGER;
+}

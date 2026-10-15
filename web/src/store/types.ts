@@ -58,6 +58,13 @@ export interface OnlineCharacterState {
   readonly structureID: number | null;
   readonly solarSystemID: number | null;
   readonly corporationID: number | null;
+  /** session.allianceid: the pilot's corporation's alliance, null for none or where the transport does not say it. */
+  readonly allianceID?: number | null;
+  /**
+   * session.corprole: the pilot's roles in its corporation, a 64-bit mask as its digits; null where the transport
+   * does not say them.
+   */
+  readonly corpRole?: string | null;
 }
 
 /**

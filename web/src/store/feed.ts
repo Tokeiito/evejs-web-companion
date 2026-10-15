@@ -145,6 +145,14 @@ export type FeedEvent =
     }
   // ...or went offline (release, TTL expiry, session lost).
   | { readonly type: "character/offline" }
+  // The session's corporation, alliance or corporation roles changed (OnSessionChanged: corpid, allianceid,
+  // corprole), each given where it changed, as the client's session takes them.
+  | {
+      readonly type: "character/session-changed";
+      readonly corporationID?: number | null;
+      readonly allianceID?: number | null;
+      readonly corpRole?: string | null;
+    }
   // Goal R6b — the docked station changed on the SAME live session (autopilot
   // arrival / manual dock), learned from a flight-status snapshot. Re-points the
   // docked identity (online station/system + static station identity) and clears

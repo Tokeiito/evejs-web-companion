@@ -56,6 +56,8 @@
     type MailSortKey,
     isCorporationOwner,
     isNpcOwner,
+    isAllianceOwner,
+    hasChatManagerRole,
   } from "../bridge/mail.ts";
   import { MAIL_QUOTE_LABELS, mailBodyLines, mailMarkupOfTyped, mailQuoteMarkup } from "../bridge/mailMarkup.ts";
   import { pyIntDictOrder } from "../bridge/pyDict.ts";
@@ -101,7 +103,7 @@
   let replyTo = $state(0);
   /** The mailing list written to (the compose window's toListID), or null. */
   let toList = $state<number | null>(null);
-  /** The corporation written to, by its name (the compose window's toCorpAlliance); none for none. */
+  /** The corporation or alliance written to, by its name (the compose window's toCorpAlliance); none for none. */
   let toCorpAlliance = $state<readonly { readonly name: string; readonly ownerID: number }[]>([]);
   /** The list written to while the pilot has it joined, as ValidateReceivers keeps it (evemail.py 2198 to 2201). */
   const composeList = $derived(toList === null ? undefined : ($mail.lists ?? []).find((list) => list.listID === toList));
@@ -393,7 +395,7 @@
   }
 
   function ownerName(ownerID: number): string {
-    return resolvedName($names.resolved, "corporation", ownerID, "their organisation");
+    return resolvedName($names.resolved, isAllianceOwner(ownerID) ? "alliance" : "corporation", ownerID, "their organisation");
   }
 
   /** A retail FILETIME as a plain date and time. Never rendered as a number. */
@@ -478,14 +480,17 @@
     tooMany: "UI/Mail/TooManyRecipients",
     unknown: "UI/Common/Unknown",
     labelCorp: "UI/Mail/LabelCorp",
+    labelAlliance: "UI/Mail/LabelAlliance",
   } as const;
   /** The client's dialogs the compose window says things with. */
   const COMPOSE_DIALOGS = [
     "EvemailCantFindRecipient", "EvemailMaxRecipients", "EvemailMaxListOrCorp", "PartialSearchLessThanMinLength",
     "EvemailCantSendToOtherCorp", "EvemailCantSendToNPCCorp", "EvemailSendingFailed", "DiscardMailMessage",
+    "EvemailCantSendToOtherAlliance", "EvemailCantSendToAllianceNoRole",
   ] as const;
-  /** What may be typed for the pilot's own corporation besides its name (evemail.py 62, CORPTEXT). */
+  /** What may be typed for the pilot's own corporation and alliance besides their names (evemail.py 62 to 63). */
   const CORP_TEXT = "corp";
+  const ALLIANCE_TEXT = "alliance";
   /** The search's Search By (searchUtil.SEARCHBY_OPTIONS; search/const.py MatchBy): its four, in their order. */
   const SEARCH_BY: readonly (readonly [number, string, string])[] = [
     [0, COMPOSE_WORDS.partial, "Partial Terms"],
@@ -581,23 +586,35 @@
   }
 
   /**
-   * ValidateCorpOrAlliance (1919 to 1937) for a corporation: the pilot's own, and not an NPC's, each refused in the
-   * client's words. An alliance is not taken, nor anything else: the page is not given the session's alliance or
-   * its corporation roles.
+   * ValidateCorpOrAlliance (1919 to 1937): a corporation the pilot's own and not an NPC's; an alliance the session's
+   * own, and the pilot with the Communications Officer's role; each refused in the client's words; anything else
+   * refused with nothing said. The session's alliance and roles are as the transport says them (the gateway says
+   * neither, and the page then takes no alliance).
    */
   function validateCorpOrAlliance(ownerID: number, notes: string[]): boolean {
-    if (!isCorporationOwner(ownerID)) {
-      return false;
+    if (isCorporationOwner(ownerID)) {
+      if (ownerID !== ($station.online?.corporationID ?? null)) {
+        notes.push(filledWord("dialog:EvemailCantSendToOtherCorp/body", "Mail can go to no corporation but your own.", {}));
+        return false;
+      }
+      if (isNpcOwner(ownerID)) {
+        notes.push(filledWord("dialog:EvemailCantSendToNPCCorp/body", "Mail can go to a corporation of players only.", {}));
+        return false;
+      }
+      return true;
     }
-    if (ownerID !== ($station.online?.corporationID ?? null)) {
-      notes.push(filledWord("dialog:EvemailCantSendToOtherCorp/body", "Mail can go to no corporation but your own.", {}));
-      return false;
+    if (isAllianceOwner(ownerID)) {
+      if (ownerID !== ($station.online?.allianceID ?? null)) {
+        notes.push(filledWord("dialog:EvemailCantSendToOtherAlliance/body", "Mail can go to no alliance but your own.", {}));
+        return false;
+      }
+      if (!hasChatManagerRole($station.online?.corpRole)) {
+        notes.push(filledWord("dialog:EvemailCantSendToAllianceNoRole/body", "Mail to your alliance needs a role you do not have.", {}));
+        return false;
+      }
+      return true;
     }
-    if (isNpcOwner(ownerID)) {
-      notes.push(filledWord("dialog:EvemailCantSendToNPCCorp/body", "Mail can go to a corporation of players only.", {}));
-      return false;
-    }
-    return true;
+    return false;
   }
 
   /**
@@ -633,25 +650,35 @@
       check.listNamesUsed.add(name);
       return { listed: true, name };
     }
-    const own = await flow.ownCorporation();
-    if (own !== null && [own.name.toLowerCase(), CORP_TEXT].includes(trimmed.toLowerCase())) {
-      if (!validateCorpOrAlliance(own.corporationID, check.notes)) {
+    // The pilot's own corporation (1986 to 1996), then its alliance where the session is in one (1997 to 2008): each
+    // by its name or its word.
+    const corporation = await flow.ownCorporation();
+    const alliance = await flow.ownAlliance();
+    const groups = [
+      ...(corporation === null ? [] : [{ name: corporation.name, ownerID: corporation.corporationID, word: CORP_TEXT }]),
+      ...(alliance === null ? [] : [{ name: alliance.name, ownerID: alliance.allianceID, word: ALLIANCE_TEXT }]),
+    ];
+    for (const group of groups) {
+      if (![group.name.toLowerCase(), group.word].includes(trimmed.toLowerCase())) {
+        continue;
+      }
+      if (!validateCorpOrAlliance(group.ownerID, check.notes)) {
         return null;
       }
       if (groupsHeld() >= MAIL_MAX_GROUPS) {
-        check.notes.push(maxGroupText(own.name, check.toCorpAlliance.keys(), check.listID));
+        check.notes.push(maxGroupText(group.name, check.toCorpAlliance.keys(), check.listID));
         return null;
       }
-      check.toCorpAlliance.set(own.name, own.corporationID);
+      check.toCorpAlliance.set(group.name, group.ownerID);
       if (groupsUsed() >= MAIL_MAX_GROUPS) {
-        check.notes.push(maxGroupText(own.name, check.corpNamesUsed, check.listID));
+        check.notes.push(maxGroupText(group.name, check.corpNamesUsed, check.listID));
         return null;
       }
-      if (check.corpNamesUsed.has(own.name)) {
+      if (check.corpNamesUsed.has(group.name)) {
         return null;
       }
-      check.corpNamesUsed.add(own.name);
-      return { listed: false, name: own.name };
+      check.corpNamesUsed.add(group.name);
+      return { listed: false, name: group.name };
     }
     let found: CharacterMatch | null = null;
     const held = check.toChars.get(trimmed);
@@ -791,7 +818,8 @@
   /**
    * ReceiverEdit.GetValid (2384 to 2426), as each letter is typed or taken out (CheckHistory): what follows the last
    * comma matched as the start of the name of each list joined, offered as "name [ML]" in the order the client's
-   * dict holds them, and of the pilot's own corporation where it is not an NPC's, as "name [Corp]"; a name that is
+   * dict holds them, of the pilot's own corporation where it is not an NPC's, as "name [Corp]", and of its alliance
+   * where the pilot has the Communications Officer's role, as "name [Alliance]"; a name that is
    * all the field holds not offered (the client's own comparison, of what is typed as it is); sorted by the length of
    * the name, the first five shown. The pilot's contacts are not offered: the page holds no address book.
    */
@@ -809,10 +837,19 @@
         valid.push({ group: "list", displayName: mailEntryOf(list.displayName), name: list.displayName, id: list.listID });
       }
     }
-    const own = await flow.ownCorporation();
-    if (own !== null && !isNpcOwner(own.corporationID) && own.name.toLowerCase().startsWith(typed) && own.name !== current) {
-      const displayName = filledWord(FOLDER_WORDS.mailEntry, "{entryName} {entryType}", { entryName: own.name, entryType: word(COMPOSE_WORDS.labelCorp, "[Corp]") });
-      valid.push({ group: "corp", displayName, name: own.name, id: own.corporationID });
+    // The corporation, then the alliance (GetAllOptions' corpAll, 2048 to 2058): an NPC's not offered, nor an
+    // alliance without the Communications Officer's role.
+    const corporation = await flow.ownCorporation();
+    const alliance = await flow.ownAlliance();
+    const owners = [
+      ...(corporation === null ? [] : [{ id: corporation.corporationID, name: corporation.name, mark: word(COMPOSE_WORDS.labelCorp, "[Corp]") }]),
+      ...(alliance === null || !hasChatManagerRole($station.online?.corpRole) ? [] : [{ id: alliance.allianceID, name: alliance.name, mark: word(COMPOSE_WORDS.labelAlliance, "[Alliance]") }]),
+    ];
+    for (const owner of owners) {
+      if (!isNpcOwner(owner.id) && owner.name.toLowerCase().startsWith(typed) && owner.name !== current) {
+        const displayName = filledWord(FOLDER_WORDS.mailEntry, "{entryName} {entryType}", { entryName: owner.name, entryType: owner.mark });
+        valid.push({ group: "corp", displayName, name: owner.name, id: owner.id });
+      }
     }
     if (receiverText !== value) {
       return;
@@ -1113,7 +1150,7 @@
   /** Whom a sent message went to, in the page's words. */
   function sentTo(count: number, list: string | null, corporation: string | null): string {
     const people = count === 1 ? "one person" : `${count} people`;
-    const group = list !== null ? `the mailing list ${list}` : corporation !== null ? `your corporation ${corporation}` : null;
+    const group = list !== null ? `the mailing list ${list}` : corporation !== null ? corporation : null;
     if (group === null) return people;
     return count === 0 ? group : `${group} and ${people}`;
   }

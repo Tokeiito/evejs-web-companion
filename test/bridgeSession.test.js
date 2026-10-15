@@ -338,6 +338,9 @@ test("select pins identity, keeps the bridgeSessionID server-side, and returns c
     structureID: null,
     solarSystemID: 30000142,
     corporationID: 98000000,
+    // A transport that does not say the session's alliance and roles (the gateway's): none handed on.
+    allianceID: null,
+    corpRole: null,
   });
   assert.equal(payload.station.stationName, STATION_STATIC.stationName);
   assert.equal(payload.station.stationTypeName, "Caldari Administrative Station");

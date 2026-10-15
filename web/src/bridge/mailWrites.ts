@@ -13,7 +13,7 @@
 //                                             toCorpOrAllianceID, title, body, isReplyTo, isForwardedFrom)
 //                 the recipients a list; the mailing list where the window has one, which must be one the pilot has
 //                 joined (961 to 964, EveMailCanOnlySendToOwnMailinglists; the window keeps no other, 2198 to
-//                 2201); the pilot's own corporation where the window has one (its toCorpAlliance's first, checked
+//                 2201); the pilot's own corporation or alliance where the window has one (its toCorpAlliance's first, checked
 //                 again by ValidateCorpOrAlliance, 2272 to 2277), an int, else None; and the message it answers or
 //                 forwards, 0 for none (the defaults, 959). Answered the message's number, or None,
 //                 where the client does nothing more; with a number it keeps the body and the header itself
@@ -36,7 +36,7 @@ export interface MailToSend {
   readonly toCharacterIDs: readonly number[];
   /** The mailing list it goes to, one the pilot has joined (the compose window's toListID); none for pilots only. */
   readonly toListID?: number | null;
-  /** The pilot's own corporation it goes to (the compose window's toCorpAlliance, its first); none for no corporation. */
+  /** The pilot's own corporation or alliance it goes to (the compose window's toCorpAlliance, its first); none for neither. */
   readonly toCorpOrAllianceID?: number | null;
   readonly title: string;
   readonly body: string;

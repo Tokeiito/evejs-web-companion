@@ -507,6 +507,9 @@ test("select answers as the gateway's does: the call, the session echo, and what
     structureID: null,
     solarSystemID: SYSTEM,
     corporationID: 1000044,
+    // session.allianceid, none for a corporation in none, and session.corprole as its digits, nought for no roles.
+    allianceID: null,
+    corpRole: "0",
     shipID: SHIP,
   });
   // The character's session change, and not the account's from the login before it. It is the session's
