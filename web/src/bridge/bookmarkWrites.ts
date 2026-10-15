@@ -42,11 +42,28 @@ const isStaticPlace = (itemID: number): boolean => (itemID >= 10_000_000 && item
  * where the answer names none. Fails as the call fails.
  */
 export async function bookmarkLocation(act: Ask, itemID: number, folderID: number, name: string, comment: string, expiry: number, subfolderID: number | null = null): Promise<number | null> {
+  if (anID(itemID) && isStaticPlace(itemID)) {
+    throw new Error("A station, a system, a constellation or a region is not bookmarked this way.");
+  }
+  return bookmarkThing(act, "beyonce", "BookmarkLocation", itemID, folderID, name, comment, expiry, subfolderID);
+}
+
+/**
+ * Bookmarks the place `itemID` (a region, a constellation, a system or a station) as bookmarkSvc.ACLBookmarkLocation
+ * asks for one (609 to 613): accessGroupBookmarkMgr.BookmarkStaticLocation(itemID, folderID, name, comment, expiry,
+ * subfolderID=subfolderID). Answers the new bookmark's number, or null where the answer names none. Fails as the
+ * call fails.
+ */
+export async function bookmarkStaticLocation(act: Ask, itemID: number, folderID: number, name: string, comment: string, expiry: number, subfolderID: number | null = null): Promise<number | null> {
+  if (anID(itemID) && !isStaticPlace(itemID)) {
+    throw new Error("Only a station, a system, a constellation or a region is bookmarked this way.");
+  }
+  return bookmarkThing(act, "accessGroupBookmarkMgr", "BookmarkStaticLocation", itemID, folderID, name, comment, expiry, subfolderID);
+}
+
+async function bookmarkThing(act: Ask, service: string, method: string, itemID: number, folderID: number, name: string, comment: string, expiry: number, subfolderID: number | null): Promise<number | null> {
   if (!anID(itemID)) {
     throw new Error("There is nothing there to bookmark.");
-  }
-  if (isStaticPlace(itemID)) {
-    throw new Error("A station, a system, a constellation or a region is not bookmarked this way.");
   }
   if (!anID(folderID)) {
     throw new Error("That is no bookmark folder.");
@@ -61,7 +78,7 @@ export async function bookmarkLocation(act: Ask, itemID: number, folderID: numbe
   if (subfolderID !== null && !anID(subfolderID)) {
     throw new Error("That is no bookmark subfolder.");
   }
-  const answer = await act("beyonce", "BookmarkLocation", [itemID, folderID, label, comment, expiry], { subfolderID });
+  const answer = await act(service, method, [itemID, folderID, label, comment, expiry], { subfolderID });
   const made = Array.isArray(answer) ? unwrapLong(answer[0]) : null;
   return made !== null && made > 0n && made <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(made) : null;
 }

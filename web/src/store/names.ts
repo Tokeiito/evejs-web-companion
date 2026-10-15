@@ -52,6 +52,8 @@ export type NameKind =
   | "system"
   | "region"
   | "constellation"
+  /** A station -> its type's name: the group in a station's default bookmark name. */
+  | "stationType"
   /** A solar system -> its constellation's name: the Locations window's CON. */
   | "systemConstellation"
   /** A solar system -> its region's name: the Locations window's REG. */

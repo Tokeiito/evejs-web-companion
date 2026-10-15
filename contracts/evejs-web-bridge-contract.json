@@ -1122,6 +1122,7 @@
     "genericBridgeAllowsWrites": true,
     "genericBridgeWrites": [
       "accessGroupBookmarkMgr.AddToKnownFolders",
+      "accessGroupBookmarkMgr.BookmarkStaticLocation",
       "accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder",
       "accessGroupBookmarkMgr.UpdateKnownFolderState",
       "account.GiveCash",

@@ -9,8 +9,12 @@
   //   (Label, Type, Jumps, SOL, CON, REG, Date, Expiry, Creator), its hint the label and its note's first fifty
   //   characters.
   //
+  // Its bottom's Add Location (window.py 104 to 108: addressbookService.BookmarkCurrentLocation) opens the bookmark
+  // window (BookmarkWindow.svelte) for the station the pilot is docked in, or the ship's spot in space; the list is
+  // read again once a place is saved.
+  //
   // Not here yet: the Search tab, the Agent Missions group (the agents' bookmarks), the folders the pilot may
-  // administer, the bottom's Add Location, Create Folder and Create Subfolder, the rows' and the folders' menus, and
+  // administer, Create Folder and Create Subfolder, a structure's Add Location, the rows' and the folders' menus, and
   // a shared bookmark shown dim before its delay has passed.
   import { onMount } from "svelte";
   import { formatTemplate, plainText, type TemplateArguments } from "../bridge/clientWords.ts";
@@ -26,6 +30,8 @@
     type LocationsSection,
   } from "../bridge/locationsList.ts";
   import type { ActiveBookmarks, Bookmark, Subfolder } from "../bridge/bookmarks.ts";
+  import type { BookmarkPlace } from "../bridge/locationsList.ts";
+  import BookmarkWindow from "./BookmarkWindow.svelte";
   import { isSessionLost } from "../app/flow.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -63,6 +69,10 @@
     personalFolder: "UI/AclBookmarks/PersonalFolderType",
     sharedFolder: "UI/AclBookmarks/SharedFolderType",
     dateTime: "/Carbon/UI/Common/DateTime/DateLongShort",
+    addBookmark: "UI/PeopleAndPlaces/AddBookmark",
+    placeLabel: "UI/PeopleAndPlaces/NewBookmarkLocationLabel",
+    spot: "UI/PeopleAndPlaces/SpotInSolarSystem",
+    notHere: "dialog:HavetobeatstationOrinShip/body",
   } as const;
 
   /** The client's word for a label, from the player's install; the page's own where there is none to read. */
@@ -113,6 +123,48 @@
 
   const sections = $derived<readonly LocationsSection[]>(active === null ? [] : [locationsSection(active, true, label), locationsSection(active, false, label)]);
   const local = $derived(active === null ? [] : placesInSystem(active, systemID));
+
+  /** The bookmark window, open for a place, or none. */
+  let bookmarking = $state<BookmarkPlace | null>(null);
+
+  /**
+   * Add Location (BookmarkCurrentLocation, addressbookService.py 376 to 394): the station the pilot is docked in, by
+   * its default name (GetDefaultLocationName: "<station> ( <its type> )"); else the ship's spot in space ("spot in
+   * <system> solar system"); else the client's HavetobeatstationOrinShip.
+   */
+  function addLocation(): void {
+    error = "";
+    const status = $flight.status;
+    const docked = status !== null ? (status.docked ? status.stationID : null) : ($station.online?.stationID ?? null);
+    const structure = status !== null ? status.structureID : ($station.online?.structureID ?? null);
+    if (docked !== null) {
+      flow.requestNames([{ kind: "station", id: docked }, { kind: "stationType", id: docked }]);
+      const typeName = (): string => resolvedName($names.resolved, "stationType", docked, "");
+      bookmarking = {
+        itemID: docked,
+        askIfKnown: true,
+        typeName,
+        name: () => filled(WORDS.placeLabel, "{[location] loc.name} ( {group} )", { loc: docked, group: typeName() }),
+      };
+    } else if (structure !== null) {
+      error = "Saving a structure's place is not here yet.";
+    } else if (status !== null && status.inSpace && status.shipID !== null) {
+      const solarSystemID = status.solarSystemID;
+      bookmarking = {
+        itemID: status.shipID,
+        askIfKnown: false,
+        typeName: () => "",
+        name: () => filled(WORDS.spot, "a spot in {solarSystemName}", { solarSystemName: solarSystemID === null ? "" : resolvedName($names.resolved, "system", solarSystemID, "") }),
+      };
+    } else {
+      error = word(WORDS.notHere, "Be docked, or in a ship, to save where you are.");
+    }
+  }
+
+  function bookmarkDone(made: boolean): void {
+    bookmarking = null;
+    if (made) void load();
+  }
 
   async function load(): Promise<void> {
     error = "";
@@ -240,6 +292,13 @@
   {#if error}
     <p class="error">{error}</p>
   {/if}
+  {#if bookmarking !== null}
+    <BookmarkWindow {store} {flow} place={bookmarking} onDone={bookmarkDone} />
+  {/if}
+  <!-- The window's bottom (window.py 104 to 108): Add Location; Create Folder and Create Subfolder are not here yet. -->
+  <p class="controls">
+    <button type="button" class="minor" disabled={bookmarking !== null} onclick={addLocation}>{word(WORDS.addBookmark, "Save where I am")}</button>
+  </p>
   {#if active === null}
     {#if !error}<p class="note">…</p>{/if}
   {:else}

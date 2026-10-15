@@ -1832,6 +1832,12 @@ function resolveOneName(kind, id) {
       return getRegion(numericID) ? getRegionName(numericID) : null;
     case "constellation":
       return getConstellationName(numericID);
+    // A station -> its type's name: the group of a station's default bookmark name (addressbookService.py
+    // GetDefaultLocationName, 430 to 434: NewBookmarkLocationLabel with the map item's type, the station's type).
+    case "stationType": {
+      const station = getStation(numericID);
+      return station && station.stationTypeID && getType(station.stationTypeID) ? getTypeName(station.stationTypeID) : null;
+    }
     // A solar system's constellation and region by the system's number: the Locations window's CON and REG
     // (addressbookService.py GetSolConReg, 354 to 374, by GetSolarSystemDetails).
     case "systemConstellation": {
