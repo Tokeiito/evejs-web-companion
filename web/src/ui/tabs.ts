@@ -49,6 +49,7 @@ export type TabID =
   | "standings"
   | "characterSheet"
   | "showInfo"
+  | "routeWindow"
   | "log"
   | "settings";
 
@@ -194,6 +195,10 @@ export const TABS: readonly TabDef[] = [
   // but CONTEXTUAL: it opens on the thing you clicked, so it is not offered in
   // the rail, where it could only ever open onto nothing.
   { id: "showInfo", label: "Show Info", where: "both", launchable: false },
+  // The client's route window (autopilotSettings.py AutopilotSettings): the waypoints in their order and the avoidance
+  // list. Contextual: the client opens it from the route panel's Manage Route (infoPanelRoute.py 123), and so does
+  // the page, from Travel.
+  { id: "routeWindow", label: "Route and avoidance", where: "both", launchable: false },
   // R80 — the notice log. Launchable on purpose, unlike Show Info: "what did I
   // miss?" is a question a player asks without anything having been clicked.
   { id: "log", label: "Log", where: "both" },

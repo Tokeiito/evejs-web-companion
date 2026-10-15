@@ -270,12 +270,15 @@ import {
   type SystemGraph,
 } from "../nav/routeSolver.ts";
 import { systemGraphOnce } from "../nav/systemGraphKept.ts";
-import { autopilotDistances, autopilotJumpCounts, autopilotMap, autopilotPath, type AutopilotRouteType } from "../nav/autopilotRoute.ts";
+import { autopilotDistances, autopilotJumpCounts, autopilotMap, autopilotPath, type AutopilotRouteType, type AutopilotSettings } from "../nav/autopilotRoute.ts";
 import {
   autopilotSettingsFrom,
+  avoidanceItems,
   loadAutopilotSettings,
   saveAutopilotSettings,
+  withAvoidanceItem,
   withAvoidSystemsClicked,
+  withoutAvoidanceItem,
   withPenalty,
   withRouteType,
   type SettingsStorage,
@@ -438,7 +441,7 @@ import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, kickFleetMember as kickFleetMemberCall, leaveFleet as leaveFleetCall, makeFleetLeader as makeFleetLeaderCall, moveFleetMember as moveFleetMemberCall, tagFleetTarget, addToWatchlist as addToWatchlistCall, removeFromWatchlist as removeFromWatchlistCall, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { BOOKMARK_EXPIRY, addFolder as addFolderCall, addToKnownFolders as addToKnownFoldersCall, copyBookmarks as copyBookmarksCall, moveBookmarks as moveBookmarksCall, removeFromKnownFolders as removeFromKnownFoldersCall, type MovedOrCopied, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, createSubfolder as createSubfolderCall, updateFolder as updateFolderCall, type FolderAccess, deleteBookmarks as deleteBookmarksCall, deleteFolder as deleteFolderCall, deleteSubfolder as deleteSubfolderCall, setFolderActive as setFolderActiveCall, updateBookmark as updateBookmarkCall, updateSubfolder as updateSubfolderCall } from "../bridge/bookmarkWrites.ts";
 import { giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
-import { afterArriving, destinationValid, isPlayerItemID, isWaypointPlace, keepWaypoints, readWaypoints, withWaypoint, withoutWaypoint, type DestinationFacts, type PilotPlace } from "../nav/waypoints.ts";
+import { afterArriving, destinationValid, isPlayerItemID, isWaypointPlace, keepWaypoints, movedWaypoint, readWaypoints, withWaypoint, withoutWaypoint, type DestinationFacts, type PilotPlace } from "../nav/waypoints.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
 import {
   decodeLaunched,
@@ -504,6 +507,10 @@ export interface LocationFound {
  */
 const ROUTE_SEARCH_KINDS = [7, 6, 8, 9, 13] as const;
 const STRUCTURE_WITH_INLINED_DATA = 13;
+/** The types the client's map gives a solar system, a constellation and a region (const.typeSolarSystem etc.). */
+const TYPE_SOLAR_SYSTEM = 5;
+const TYPE_CONSTELLATION = 4;
+const TYPE_REGION = 3;
 /** The name kind each of those is named by in the page's name cache. */
 const LOCATION_NAME_KINDS: Readonly<Record<number, "system" | "constellation" | "region" | "station">> = { 7: "system", 6: "constellation", 8: "region", 9: "station" };
 
@@ -511,6 +518,29 @@ const LOCATION_NAME_KINDS: Readonly<Record<number, "system" | "constellation" | 
 export interface WaypointsRoute {
   readonly markers: readonly (RouteMarker & { readonly security: number | null })[];
   readonly jumps: number;
+}
+
+/**
+ * A place in the route window's lists (autopilotSettings.py LoadWaypoints and LoadAvoidance): what it is named by
+ * (`what`: a waypoint's type, an avoided place's group), and the places it is in, nearest first, as the window walks
+ * mapSvc.GetParent from it (a station's system, constellation and region; a structure's constellation and region, the
+ * walk starting at its system; a system's constellation and region; a constellation's region).
+ */
+export interface RouteWindowPlace {
+  readonly id: number;
+  readonly what: NameRef | null;
+  readonly within: readonly number[];
+}
+
+/** A waypoint in the route window, with the systems the autopilot's route goes through to it (GetRouteBetween[1:-1]). */
+export interface RouteWindowWaypoint extends RouteWindowPlace {
+  readonly between: readonly number[];
+}
+
+/** The route window's waypoints: the pilot's system first, then each waypoint the window can name. */
+export interface RouteWindowWaypoints {
+  readonly currentSystemID: number;
+  readonly waypoints: readonly RouteWindowWaypoint[];
 }
 
 /**
@@ -2033,18 +2063,42 @@ export interface AppFlow {
   requestAutopilotJumps(fromSystemID: number, toSystemIDs: readonly number[]): void;
   /** The autopilot's settings as the pilot has set them: only what has been set is there (nav/autopilotSettings.ts). */
   autopilotSettings(): StoredAutopilotSettings;
+  /**
+   * The same, for a window to follow: changed by each change of a setting, and by another pilot's being read when
+   * `autopilotSettings` is next asked.
+   */
+  readonly routeSettings: ReadableSignal<StoredAutopilotSettings>;
   /** The route through the waypoints as the route panel shows it (infoPanelRoute.py UpdateRoute); null with none. */
   routeOfWaypoints(): Promise<WaypointsRoute | null>;
   /** The route panel's Optimize Route (autopilot.py OptimizeRoute): the waypoints put in their order of fewest jumps. */
   optimizeRoute(): Promise<void>;
   /**
+   * The route window's waypoints (autopilotSettings.py LoadWaypoints, 104 to 170): the pilot's system, then each
+   * waypoint with the systems the route goes through to it. A structure the directory does not know is left out, as
+   * the window leaves it. Null with no waypoint, or no system known for the pilot.
+   */
+  routeWindowWaypoints(): Promise<RouteWindowWaypoints | null>;
+  /** The route window's avoidance list (LoadAvoidance, 182 to 213): each place on the list as it is kept. */
+  routeWindowAvoidance(): Promise<readonly RouteWindowPlace[]>;
+  /**
+   * The route window's drag and drop (ChangeWaypointSorting, 71 to 97, then starMapSvc.SetWaypoints): the waypoint at
+   * `index` put where the one at `orderID` stood, or last for -1; the route then as any change of the waypoints leaves
+   * it.
+   */
+  moveWaypoint(index: number, orderID: number): void;
+  /**
    * Change one of the autopilot's settings, as the client's route panel does: kept for this character, and
-   * what was worked out with the old settings forgotten. Each answers the settings as they now are. A route
-   * already being flown is not plotted again.
+   * what was worked out with the old settings forgotten. Each answers the settings as they now are. The autopilot,
+   * where it is flying, is set on the route as the new settings plot it, as the client's follows its star map's
+   * route plotted again (clientPathfinderService.py UpdatesAutopilot; starMapSvc.py 2645; autopilot.py 291).
    */
   setAutopilotRouteType(routeType: AutopilotRouteType): StoredAutopilotSettings;
   setAutopilotPenalty(penalty: number): StoredAutopilotSettings;
   clickAutopilotAvoidSystems(): StoredAutopilotSettings;
+  /** A location's Avoid (menusvc.py 2030 to 2031: AddAvoidanceItem): a known-space system, constellation or region put on the list. */
+  avoidLocation(id: number): StoredAutopilotSettings;
+  /** A location's Do Not Avoid (2032 to 2033: RemoveAvoidanceItem): taken off the list, and avoiding set back to not set. */
+  stopAvoidingLocation(id: number): StoredAutopilotSettings;
   /**
    * Multibox — open or close this pilot's live push channel (SSE). Browsers
    * allow only ~6 concurrent HTTP/1.1 connections per origin, and every open
@@ -9902,7 +9956,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       const graph = await loadRouteGraph();
       const map = autopilotMap(graph);
-      const settings = autopilotSettingsFrom(autopilotSettings());
+      const settings = pathfinderSettings(graph);
       const targets = [...route.systems, current];
       const countsFrom = new Map<number, Map<number, number | null>>();
       const jumpCount = (fromID: number, toID: number): number => {
@@ -9941,7 +9995,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     const systemOf = (id: number): number | null => waypointSystems.get(id) ?? null;
     const map = autopilotMap(graph);
-    const settings = autopilotSettingsFrom(autopilotSettings());
+    const settings = pathfinderSettings(graph);
     const data = routeData(start, waypoints, systemOf, (fromID, toID) => autopilotPath(map, fromID, toID, settings));
     if (data === null) return null;
     return {
@@ -9954,32 +10008,135 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // pilot at the helm is first asked about, and kept here from then on.
   const settingsStorage: SettingsStorage | null = options.storage !== undefined ? options.storage : typeof localStorage === "undefined" ? null : localStorage;
   let autopilotKept: { readonly characterID: number | null; readonly stored: StoredAutopilotSettings } = { characterID: null, stored: {} };
+  const routeSettingsSignal = createSignal<StoredAutopilotSettings>({});
   function autopilotSettings(): StoredAutopilotSettings {
     const characterID = store.station.get().online?.characterID ?? null;
     if (characterID !== autopilotKept.characterID) {
       autopilotKept = { characterID, stored: characterID === null ? {} : loadAutopilotSettings(settingsStorage, characterID) };
+      routeSettingsSignal.set(autopilotKept.stored);
       // Another pilot, other settings: what was worked out for the last one is not this one's.
       store.apply({ type: "names/autopilot-jumps-cleared" });
     }
     return autopilotKept.stored;
   }
+  /** The settings the pathfinder is given, the list's constellations and regions as their systems on this map. */
+  function pathfinderSettings(graph: SystemGraph, stored: StoredAutopilotSettings = autopilotSettings()): AutopilotSettings {
+    return autopilotSettingsFrom(stored, (id) => graph.systemsIn?.(id) ?? [id]);
+  }
   function changeAutopilotSettings(change: (stored: StoredAutopilotSettings) => StoredAutopilotSettings): StoredAutopilotSettings {
-    const stored = change(autopilotSettings());
+    const before = autopilotSettings();
+    const stored = change(before);
+    if (stored === before) return stored;
     const characterID = autopilotKept.characterID;
     autopilotKept = { characterID, stored };
     if (characterID !== null) {
       saveAutopilotSettings(settingsStorage, characterID, stored);
     }
+    routeSettingsSignal.set(stored);
     // The client's pathfinder keeps what it has worked out by its settings, and works it out again when they change.
     store.apply({ type: "names/autopilot-jumps-cleared" });
+    // And says so (UpdatesAutopilot, OnAutopilotUpdated): its star map plots the route again (starMapSvc.py 2645), and
+    // its autopilot flies the route as it is plotted at its next Update (autopilot.py 291). So a run under way here is
+    // planned again, from where the ship is.
+    replanAutopilotRun();
     return stored;
+  }
+  function replanAutopilotRun(): void {
+    if (!autopilotSignal.get() || autopilotStarting) return;
+    const next = heldWaypoints()[0];
+    if (next === undefined) return;
+    const place = pilotPlace();
+    if (place.stationID !== null || place.structureID !== null) return;
+    startAutopilotRun(next);
+  }
+  /** The settings as a window follows them: what is kept for the pilot at the helm, read on the first look. */
+  const routeSettingsView: ReadableSignal<StoredAutopilotSettings> = {
+    get: () => autopilotSettings(),
+    subscribe: (listener) => {
+      autopilotSettings();
+      return routeSettingsSignal.subscribe(listener);
+    },
+  };
+
+  /**
+   * The route window's waypoints (autopilotSettings.py LoadWaypoints, 104 to 170, and _GetWaypointInfo, 172 to 180):
+   * each waypoint with what it is (a system's type, a station's, a structure's) and the places it is in, and the
+   * systems the autopilot's route goes through to it from the last waypoint named (GetRouteBetween, starMapSvc.py
+   * 2430: the path between their systems, less its two ends; none where no path reaches).
+   */
+  async function routeWindowWaypoints(): Promise<RouteWindowWaypoints | null> {
+    const waypoints = heldWaypoints();
+    const currentSystemID = pilotPlace().solarSystemID;
+    if (waypoints.length === 0 || currentSystemID === null) return null;
+    const graph = await loadRouteGraph();
+    const map = autopilotMap(graph);
+    const settings = pathfinderSettings(graph);
+    const parentsOf = (id: number | null): number[] => {
+      const out: number[] = [];
+      for (let at = id === null ? null : graph.parentOf?.(id) ?? null; at !== null; at = graph.parentOf?.(at) ?? null) out.push(at);
+      return out;
+    };
+    const listed: RouteWindowWaypoint[] = [];
+    let fromSystemID: number | null = currentSystemID;
+    for (const id of waypoints) {
+      let systemID: number | null;
+      let what: NameRef | null;
+      let within: number[];
+      if (id >= 30_000_000 && id <= 39_999_999) {
+        systemID = id;
+        what = { kind: "type", id: TYPE_SOLAR_SYSTEM };
+        within = parentsOf(id);
+      } else if (id >= 60_000_000 && id < 64_000_000) {
+        systemID = await waypointSystemOf(id);
+        what = { kind: "stationType", id };
+        within = systemID === null ? [] : [systemID, ...parentsOf(systemID)];
+      } else {
+        // A structure the directory knows (its answer's solarSystemID and typeID); one it does not know is left out.
+        const info = await structureInfo(id).catch(() => null);
+        if (info === null) continue;
+        systemID = info.solarSystemID;
+        what = info.typeID === null ? null : { kind: "type", id: info.typeID };
+        within = parentsOf(systemID);
+      }
+      const way = fromSystemID === null || systemID === null ? null : autopilotPath(map, fromSystemID, systemID, settings);
+      listed.push({ id, what, within, between: way === null ? [] : way.slice(1, -1) });
+      fromSystemID = systemID;
+    }
+    return { currentSystemID, waypoints: listed };
+  }
+
+  /** The route window's avoidance list (LoadAvoidance, 182 to 213): each place on it, named by its group (mapSvc.GetItem's typeID). */
+  async function routeWindowAvoidance(): Promise<readonly RouteWindowPlace[]> {
+    const items = avoidanceItems(autopilotSettings());
+    let graph: SystemGraph | null = null;
+    try {
+      graph = await loadRouteGraph();
+    } catch {
+      graph = null;
+    }
+    return items.map((id) => {
+      const typeID = id >= 30_000_000 && id <= 39_999_999 ? TYPE_SOLAR_SYSTEM : id >= 20_000_000 && id <= 29_999_999 ? TYPE_CONSTELLATION : id >= 10_000_000 && id <= 19_999_999 ? TYPE_REGION : null;
+      const within: number[] = [];
+      for (let at = graph?.parentOf?.(id) ?? null; at !== null; at = graph?.parentOf?.(at) ?? null) within.push(at);
+      return { id, what: typeID === null ? null : { kind: "typeGroup", id: typeID }, within };
+    });
+  }
+
+  /** The route window's drag and drop (ChangeWaypointSorting), then the waypoints set (starMapSvc.SetWaypoints, 2363 to 2368). */
+  function moveWaypoint(index: number, orderID: number): void {
+    const next = movedWaypoint(heldWaypoints(), index, orderID);
+    if (next === null) return;
+    putWaypoints(next);
+    waypointsArrived();
+    autopilotRouteChanged();
   }
 
   // The jumps on the autopilot's route from a system to every system it reaches, with the pilot's settings: what
   // the client's own lists count (GetAutopilotJumpCount), and what a bot would have to fly.
   async function autopilotDistancesFrom(fromSystemID: number): Promise<Map<number, number>> {
-    const settings = autopilotSettingsFrom(autopilotSettings());
-    return autopilotDistances(autopilotMap(await loadRouteGraph()), fromSystemID, settings);
+    const stored = autopilotSettings();
+    const graph = await loadRouteGraph();
+    return autopilotDistances(autopilotMap(graph), fromSystemID, pathfinderSettings(graph, stored));
   }
 
   // The jumps on the autopilot's route, worked out here as the client works them out
@@ -9988,7 +10145,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (!Number.isSafeInteger(fromSystemID) || fromSystemID <= 0) {
       return;
     }
-    const settings = autopilotSettingsFrom(autopilotSettings());
+    const stored = autopilotSettings();
     const held = store.names.get().autopilotJumps;
     const keyOf = (toID: number): string => `${fromSystemID}:${toID}`;
     const wanted = [...new Set(toSystemIDs)].filter((toID) => Number.isSafeInteger(toID) && toID > 0 && !(keyOf(toID) in held));
@@ -9997,7 +10154,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     void loadRouteGraph()
       .then((graph) => {
-        const counts = autopilotJumpCounts(autopilotMap(graph), fromSystemID, wanted, settings);
+        const counts = autopilotJumpCounts(autopilotMap(graph), fromSystemID, wanted, pathfinderSettings(graph, stored));
         store.apply({ type: "names/autopilot-jumps", jumps: Object.fromEntries([...counts].map(([toID, count]) => [keyOf(toID), count])) });
       })
       // Without the map nothing is kept: a later ask reads it again.
@@ -10282,16 +10439,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   /**
    * The structures the structure directory has answered for (structureDirectory.py GetStructureInfo, 33 to 39: asked
-   * once for each, by the remote service, and kept), whether it knows each. A read that fails is not kept.
+   * once for each, by the remote service, and kept): its system and type where it knows one, null where it does not.
+   * A read that fails is not kept.
    */
-  const knownStructures = new Map<number, boolean>();
-  async function structureKnown(structureID: number): Promise<boolean> {
+  const knownStructures = new Map<number, { readonly solarSystemID: number | null; readonly typeID: number | null } | null>();
+  async function structureInfo(structureID: number): Promise<{ readonly solarSystemID: number | null; readonly typeID: number | null } | null> {
     const kept = knownStructures.get(structureID);
     if (kept !== undefined) return kept;
     const info = await bridgeAsk("structureDirectory", "GetStructureInfo", [structureID]);
-    const known = info !== null && info !== undefined;
+    const idOf = (key: string): number | null => {
+      const value = Number(readKeyVal(info, key));
+      return Number.isSafeInteger(value) && value > 0 ? value : null;
+    };
+    const known = info === null || info === undefined ? null : { solarSystemID: idOf("solarSystemID"), typeID: idOf("typeID") };
     knownStructures.set(structureID, known);
     return known;
+  }
+  async function structureKnown(structureID: number): Promise<boolean> {
+    return (await structureInfo(structureID)) !== null;
   }
 
   /**
@@ -10522,7 +10687,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // 4. Solve the route: the one the client's autopilot plots with its settings as they come, the safe
     //    way and round the systems it avoids unless the pilot has set it otherwise (nav/autopilotRoute.ts,
     //    nav/autopilotSettings.ts), not the fewest jumps.
-    const way = autopilotPath(autopilotMap(graph), originSystem, targetSystemID, autopilotSettingsFrom(autopilotSettings()));
+    const way = autopilotPath(autopilotMap(graph), originSystem, targetSystemID, pathfinderSettings(graph));
     // The way is through this same map, so each of its jumps has a gate.
     const route = way === null ? null : routeAlong(graph, way);
     if (route === null) {
@@ -17331,6 +17496,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     autopilotOn: readonlySignal(autopilotSignal),
     routeOfWaypoints,
     optimizeRoute,
+    routeWindowWaypoints,
+    routeWindowAvoidance,
+    moveWaypoint,
     dialogsSaid: readonlySignal(dialogsSaidSignal),
     dismissDialog,
     answerDialog,
@@ -18522,9 +18690,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     requestSystemSecurity,
     requestAutopilotJumps,
     autopilotSettings,
+    routeSettings: routeSettingsView,
     setAutopilotRouteType: (routeType) => changeAutopilotSettings((stored) => withRouteType(stored, routeType)),
     setAutopilotPenalty: (penalty) => changeAutopilotSettings((stored) => withPenalty(stored, penalty)),
     clickAutopilotAvoidSystems: () => changeAutopilotSettings(withAvoidSystemsClicked),
+    avoidLocation: (id) => changeAutopilotSettings((stored) => withAvoidanceItem(stored, id)),
+    stopAvoidingLocation: (id) => changeAutopilotSettings((stored) => withoutAvoidanceItem(stored, id)),
 
     /**
      * R92 multibox — is this the pilot the player is LOOKING at?

@@ -12370,6 +12370,10 @@ app.get("/api/map/graph", requireAuth, async (req, res, next) => {
     // And the systems of the Triglavian Collective, which the client's star map takes for no destination from outside
     // them (idCheckers.IsTriglavianSystem: the system's factionID, appConst.factionTriglavian 500026).
     const triglavian = [];
+    // And each system's constellation and region, by which the client's pathfinder takes a constellation or a region
+    // on the avoidance list for its systems, and its route window names where each place is (mapSvc.ExpandItems and
+    // GetParent, from cfg.mapSystemCache).
+    const within = {};
     for (const id of Object.keys(graph.systems)) {
       const system = staticData.getSolarSystem(Number(id));
       if (system && typeof system.security === "number") {
@@ -12377,6 +12381,9 @@ app.get("/api/map/graph", requireAuth, async (req, res, next) => {
       }
       if (system && Number(system.factionID) === FACTION_TRIGLAVIAN) {
         triglavian.push(Number(id));
+      }
+      if (system && Number(system.constellationID) > 0 && Number(system.regionID) > 0) {
+        within[id] = [Number(system.constellationID), Number(system.regionID)];
       }
     }
     res.json({
@@ -12388,6 +12395,7 @@ app.get("/api/map/graph", requireAuth, async (req, res, next) => {
       edges: graph.edges,
       security,
       triglavian,
+      within,
     });
   } catch (error) {
     next(error);

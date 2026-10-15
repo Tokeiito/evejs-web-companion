@@ -186,6 +186,7 @@ const idOf = (value: JsonValue | undefined): number | null => {
 /** Which of the page's name kinds a place's ID belongs to, by the game's ID ranges. */
 function locationKind(id: number): NameKind {
   if (id >= 10_000_000 && id < 20_000_000) return "region";
+  if (id >= 20_000_000 && id < 30_000_000) return "constellation";
   if (id >= 30_000_000 && id < 40_000_000) return "system";
   if (id >= 60_000_000 && id < 64_000_000) return "station";
   return "structure";

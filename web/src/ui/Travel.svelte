@@ -24,13 +24,16 @@
   import { waypointNameKind } from "../nav/waypoints.ts";
   import { clickDisableAutopilotAtEachWaypoint, disableAutopilotAtEachWaypoint } from "../app/autopilotStopAtEachWaypoint.ts";
   import {
-    OFFERED_ROUTE_TYPES, PENALTY_RANGE, ROUTE_SETTING_WORD_LABELS, avoidingSystems, penaltyOf, penaltyWords, routeSettingWords, routeTypeOf,
-    type StoredAutopilotSettings,
+    OFFERED_ROUTE_TYPES, PENALTY_RANGE, ROUTE_SETTING_WORD_LABELS, avoidanceItems, avoidingSystems, isAvoidablePlace, penaltyOf, penaltyWords,
+    routeSettingWords, routeTypeOf,
   } from "../nav/autopilotSettings.ts";
+  import { AVOID_WORDS, avoidEntryWords } from "./avoidLocation.ts";
 
-  let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  let { store, flow, showRouteWindow }: { store: ClientStore; flow: AppFlow; showRouteWindow?: () => void } = $props();
   // svelte-ignore state_referenced_locally
   const waypoints = flow.waypoints;
+  // svelte-ignore state_referenced_locally
+  const routeSettingsKept = flow.routeSettings;
   // svelte-ignore state_referenced_locally
   const autopilotOn = flow.autopilotOn;
   // svelte-ignore state_referenced_locally
@@ -49,6 +52,7 @@
     markerJumps: "UI/Common/numberOfJumps",
     addWaypoint: "UI/Inflight/AddWaypoint",
     optimize: "UI/Map/MapPallet/OptimizeRoute",
+    manageRoute: "UI/Map/MapPallet/ManageRoute",
   } as const;
   /** The route panel's search's words (infoPanelRoute.py 128 to 129; searchUtil.py 43 to 54, 68 to 79). */
   const SEARCH_WORDS = {
@@ -81,12 +85,14 @@
   const station = store.station;
 
   // The route as the client's route panel shows it (infoPanelRoute.py UpdateRoute, 251 to 366): read again when the
-  // waypoints change or the pilot is in another system (flow.routeOfWaypoints, nav/routeMarkers.ts).
+  // waypoints change, the pilot is in another system, or the autopilot's settings change (OnAutopilotUpdated:
+  // starMapSvc.py 2645) (flow.routeOfWaypoints, nav/routeMarkers.ts).
   let routeShown = $state.raw<WaypointsRoute | null>(null);
   const routeSystem = $derived($flight.status?.solarSystemID ?? null);
   $effect(() => {
     const kept = $waypoints;
     void routeSystem;
+    void $routeSettingsKept;
     if (kept.length === 0) {
       routeShown = null;
       return;
@@ -129,23 +135,28 @@
 
   // The autopilot's settings, which the client's route panel has in its menu: the kind of route, the
   // security penalty, and whether the systems on the list are avoided (nav/autopilotSettings.ts). They are
-  // the pilot's own, so they are read again when the pilot at the helm changes.
+  // the pilot's own, so they are read again when the pilot at the helm changes; and followed as they change,
+  // here or in the route window.
+  const routeSettings = $derived($routeSettingsKept);
   // svelte-ignore state_referenced_locally
-  let routeSettings = $state.raw<StoredAutopilotSettings>(flow.autopilotSettings());
-  // svelte-ignore state_referenced_locally
-  let penaltyShown = $state(penaltyOf(routeSettings));
+  let penaltyShown = $state(penaltyOf(flow.autopilotSettings()));
   const pilotID = $derived($station.online?.characterID ?? null);
-  // The effect hangs on the pilot alone. It must not read what it sets: read back, each setting would start it
-  // again, and the panel stops ("effect_update_depth_exceeded", seen live on 2026-10-09).
+  // Each effect must not read what it sets: read back, each setting would start it again, and the panel stops
+  // ("effect_update_depth_exceeded", seen live on 2026-10-09).
   $effect(() => {
     void pilotID;
-    const kept = flow.autopilotSettings();
-    routeSettings = kept;
-    penaltyShown = penaltyOf(kept);
+    flow.autopilotSettings();
   });
   $effect(() => {
-    flow.requestWords([...ROUTE_SETTING_WORD_LABELS, ...Object.values(ROUTE_WORDS), ...Object.values(SEARCH_WORDS), ...RESULT_ORDER.map((kind) => kind.label)]);
+    penaltyShown = penaltyOf($routeSettingsKept);
   });
+  $effect(() => {
+    flow.requestWords([...ROUTE_SETTING_WORD_LABELS, ...Object.values(ROUTE_WORDS), ...Object.values(SEARCH_WORDS), ...RESULT_ORDER.map((kind) => kind.label), ...Object.values(AVOID_WORDS)]);
+    // (The kinds an avoidable place is said to be, by its map item's group.)
+    flow.requestNames([5, 4, 3].map((id) => ({ kind: "typeGroup", id }) as NameRef));
+  });
+  /** A name from the cache for a client text's tag. */
+  const nameOf = (kind: NameRef["kind"], id: number): string => resolvedName($names.resolved, kind, id, "—");
   /** A route word from the install, the page's own where there is none to read. */
   const routeWord = (label: string, own: string): string => settingText(label) ?? own;
   /** The route panel's Autopilot active is offered to a pilot in space (infoPanelRoute.py 93: not docked). */
@@ -378,6 +389,12 @@
       {/if}
     </p>
   {/if}
+  {#if showRouteWindow}
+    <!-- Manage Route (infoPanelRoute.py 123): the route window, offered whatever the route. -->
+    <p class="controls">
+      <button type="button" class="minor" onclick={() => showRouteWindow?.()}>{routeWord(ROUTE_WORDS.manageRoute, "Waypoints and avoidance")}</button>
+    </p>
+  {/if}
   <p class="controls">
     <label>
       <input
@@ -471,6 +488,10 @@
                       <button type="button" class="minor" onclick={() => flow.addWaypoint(place.id)}>{routeWord(ROUTE_WORDS.addWaypoint, "Put on the route")}</button>
                     {/if}
                   {/if}
+                  {#if isAvoidablePlace(place.id)}
+                    {@const avoided = avoidanceItems(routeSettings).includes(place.id)}
+                    <button type="button" class="minor" onclick={() => (avoided ? flow.stopAvoidingLocation(place.id) : flow.avoidLocation(place.id))}>{avoidEntryWords(avoided, place.id, $words.templates, nameOf)}</button>
+                  {/if}
                 </li>
               {/each}
             </ul>
@@ -496,7 +517,7 @@
             name="pfRouteType"
             value={routeType}
             checked={routeTypeOf(routeSettings) === routeType}
-            onchange={() => { routeSettings = flow.setAutopilotRouteType(routeType); }}
+            onchange={() => { flow.setAutopilotRouteType(routeType); }}
           />
           {routeSettingWords(routeType as "shortest" | "safe" | "unsafe", settingText)}
         </label>
@@ -511,7 +532,7 @@
           step="1"
           value={penaltyShown}
           oninput={(event) => { penaltyShown = Number(event.currentTarget.value); }}
-          onchange={(event) => { routeSettings = flow.setAutopilotPenalty(Number(event.currentTarget.value)); penaltyShown = penaltyOf(routeSettings); }}
+          onchange={(event) => { penaltyShown = penaltyOf(flow.setAutopilotPenalty(Number(event.currentTarget.value))); }}
         />
         {penaltyWords(routeSettingWords("penalty", settingText), penaltyShown)}
       </label>
@@ -520,9 +541,9 @@
           type="checkbox"
           checked={avoidingSystems(routeSettings)}
           onchange={(event) => {
-            routeSettings = flow.clickAutopilotAvoidSystems();
+            const kept = flow.clickAutopilotAvoidSystems();
             // The client's first click on a tick never touched leaves it on: the box is put back to what is kept.
-            event.currentTarget.checked = avoidingSystems(routeSettings);
+            event.currentTarget.checked = avoidingSystems(kept);
           }}
         />
         {routeSettingWords("avoidSystems", settingText)}

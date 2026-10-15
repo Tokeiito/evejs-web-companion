@@ -123,6 +123,21 @@ export function afterArriving(waypoints: readonly number[], here: PilotPlace): r
   return places.some((place) => place !== null && place === waypoints[0]) ? waypoints.slice(1) : null;
 }
 
+/**
+ * The route window's drag and drop (autopilotSettings.py ChangeWaypointSorting, 71 to 97): the waypoint at `index`
+ * taken out and put back where the waypoint let go on stood, which is before it; last where it was let go on no
+ * waypoint (`orderID` -1). Null for an index that is no waypoint's, where the client changes nothing.
+ */
+export function movedWaypoint(waypoints: readonly number[], index: number, orderID: number): readonly number[] | null {
+  if (!Number.isSafeInteger(index) || index < 0 || index >= waypoints.length) return null;
+  const rest = [...waypoints];
+  const [moved] = rest.splice(index, 1);
+  let at = index < orderID ? orderID - 1 : orderID;
+  if (at === -1) at = rest.length;
+  rest.splice(Math.max(0, Math.min(at, rest.length)), 0, moved!);
+  return rest;
+}
+
 const KEPT = "evejs.autopilot_waypoints.";
 
 /**

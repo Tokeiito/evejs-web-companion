@@ -19,9 +19,14 @@
 //
 // Here they are kept the same way: by character, in this browser's own storage, under the client's names.
 //
-// Not done: the list's own window (adding and removing systems, constellations and regions), the other
-// avoidance ticks (pod kills, Triglavian and EDENCOM systems), and jump gates. (Stopping at each waypoint is the
-// user's, not the character's: app/autopilotStopAtEachWaypoint.ts.)
+// The list holds solar systems, constellations and regions of known space, each put on by the location's Avoid and
+// taken off by its Do Not Avoid (menusvc.py 2030 to 2033; clientPathfinderService.py 258 to 268), and shown in the
+// route window's second tab (autopilotSettings.py LoadAvoidance). A constellation or a region stands for its systems
+// (mapSvc.ExpandItems). Taking one off also sets the tick back to not set (pathfinder.py RemoveAvoidanceItem:
+// SetSystemAvoidance(None), which the settings read as never set), so avoiding is on again.
+//
+// Not done: the other avoidance ticks (pod kills, Triglavian and EDENCOM systems), and jump gates. (Stopping at each
+// waypoint is the user's, not the character's: app/autopilotStopAtEachWaypoint.ts.)
 
 import { DEFAULT_AUTOPILOT_SETTINGS, isKnownSpaceSystem, type AutopilotRouteType, type AutopilotSettings } from "./autopilotRoute.ts";
 
@@ -54,14 +59,44 @@ export function avoidingSystems(stored: StoredAutopilotSettings): boolean {
   return stored.pfAvoidSystems ?? true;
 }
 
-/** What the pathfinder is given (AutopilotPathfinderInterface): the list only while avoiding is on, known space only, in order. */
-export function autopilotSettingsFrom(stored: StoredAutopilotSettings): AutopilotSettings {
-  const listed = stored.autopilot_avoidance2 ?? DEFAULT_AUTOPILOT_SETTINGS.avoid;
+/**
+ * What the pathfinder is given (AutopilotPathfinderInterface.GetAvoidanceList): the list only while avoiding is on,
+ * each constellation and region on it as its systems (`systemsIn`, mapSvc.ExpandItems), known space only, in order.
+ */
+export function autopilotSettingsFrom(stored: StoredAutopilotSettings, systemsIn: (id: number) => readonly number[] = (id) => [id]): AutopilotSettings {
   return {
     routeType: routeTypeOf(stored),
     penalty: penaltyOf(stored),
-    avoid: avoidingSystems(stored) ? listed.filter(isKnownSpaceSystem).sort((a, b) => a - b) : [],
+    avoid: avoidingSystems(stored) ? avoidanceItems(stored).flatMap((id) => systemsIn(id)).filter(isKnownSpaceSystem).sort((a, b) => a - b) : [],
   };
+}
+
+/** The list as it is kept, its constellations and regions as they are (GetAvoidanceItems(expandSystems=False)): Jita and Zarzakh until set. */
+export function avoidanceItems(stored: StoredAutopilotSettings): readonly number[] {
+  return stored.autopilot_avoidance2 ?? DEFAULT_AUTOPILOT_SETTINGS.avoid;
+}
+
+/**
+ * Whether a place can be put on the list or taken off it (celestialCheckers.py OfferAvoidLocation, 545 to 550, by
+ * OfferShowLocationOnMap, 1439 to 1446): a solar system, a constellation or a region of known space.
+ */
+export function isAvoidablePlace(id: number): boolean {
+  return (id >= 10_000_000 && id <= 10_999_999) || (id >= 20_000_000 && id <= 20_999_999) || isKnownSpaceSystem(id);
+}
+
+/** Avoid (AddAvoidanceItem): put at the end of the list. The client offers it only for a place not on it already. */
+export function withAvoidanceItem(stored: StoredAutopilotSettings, id: number): StoredAutopilotSettings {
+  return { ...stored, autopilot_avoidance2: [...avoidanceItems(stored), id] };
+}
+
+/** Do Not Avoid (RemoveAvoidanceItem): the first of it on the list taken off, and the tick set back to not set. */
+export function withoutAvoidanceItem(stored: StoredAutopilotSettings, id: number): StoredAutopilotSettings {
+  const items = [...avoidanceItems(stored)];
+  const at = items.indexOf(id);
+  if (at === -1) return stored;
+  items.splice(at, 1);
+  const { pfAvoidSystems: _unset, ...rest } = stored;
+  return { ...rest, autopilot_avoidance2: items };
 }
 
 export function withRouteType(stored: StoredAutopilotSettings, routeType: AutopilotRouteType): StoredAutopilotSettings {

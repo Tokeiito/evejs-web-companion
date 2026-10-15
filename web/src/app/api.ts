@@ -2397,6 +2397,8 @@ export interface SystemGraphResult {
   readonly security: Readonly<Record<string, number>>;
   /** The systems of the Triglavian Collective (idCheckers.IsTriglavianSystem). */
   readonly triglavian: readonly number[];
+  /** Each system's constellation and region, by the system's ID. */
+  readonly within: Readonly<Record<string, readonly [number, number]>>;
 }
 
 /** Fetch the system-adjacency graph for the client-side route solver. */
@@ -2415,6 +2417,10 @@ export async function loadSystemGraph(options: ApiOptions = {}): Promise<SystemG
         ? (data.security as Record<string, number>)
         : {},
     triglavian: Array.isArray(data.triglavian) ? data.triglavian.filter((id): id is number => typeof id === "number") : [],
+    within:
+      typeof data.within === "object" && data.within !== null && !Array.isArray(data.within)
+        ? (data.within as Record<string, readonly [number, number]>)
+        : {},
   };
 }
 

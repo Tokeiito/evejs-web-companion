@@ -50,6 +50,8 @@ export interface SystemGraphData {
   readonly security?: Readonly<Record<string, number>>;
   /** The systems of the Triglavian Collective (idCheckers.IsTriglavianSystem); a map served without them has none. */
   readonly triglavian?: readonly number[];
+  /** Each system's constellation and region, by the system's ID; a map served without them has none. */
+  readonly within?: Readonly<Record<string, readonly [number, number]>>;
 }
 
 /** A built, queryable system-adjacency graph. */
@@ -61,6 +63,10 @@ export interface SystemGraph {
   neighbors(systemID: number): readonly SystemEdge[];
   /** Whether the system is the Triglavian Collective's (idCheckers.IsTriglavianSystem: its factionID 500026). */
   isTriglavian?(systemID: number): boolean;
+  /** The systems a place stands for (mapSvc.GetSolarSystemIDsIn): a system itself, a constellation's or a region's systems. */
+  systemsIn?(id: number): readonly number[];
+  /** A system's constellation, a constellation's region (mapSvc.GetParent); null for a region or what the map has not. */
+  parentOf?(id: number): number | null;
   readonly systemCount: number;
   readonly edgeCount: number;
 }
@@ -114,12 +120,32 @@ export function buildSystemGraph(data: SystemGraphData): SystemGraph {
 
   const triglavian = new Set<number>((data.triglavian ?? []).map(Number).filter((id) => Number.isSafeInteger(id) && id > 0));
 
+  const parents = new Map<number, number>();
+  const children = new Map<number, number[]>();
+  const holds = (placeID: number, systemID: number): void => {
+    const list = children.get(placeID);
+    if (list) list.push(systemID);
+    else children.set(placeID, [systemID]);
+  };
+  for (const [key, pair] of Object.entries(data.within ?? {})) {
+    const systemID = Number(key);
+    const constellationID = Number(Array.isArray(pair) ? pair[0] : 0);
+    const regionID = Number(Array.isArray(pair) ? pair[1] : 0);
+    if (!(systemID > 0) || !(constellationID > 0) || !(regionID > 0)) continue;
+    parents.set(systemID, constellationID);
+    parents.set(constellationID, regionID);
+    holds(constellationID, systemID);
+    holds(regionID, systemID);
+  }
+
   return {
     hasSystem: (systemID) => known.has(systemID),
     systemName: (systemID) => names.get(systemID) ?? null,
     security: (systemID) => security.get(systemID) ?? null,
     neighbors: (systemID) => adjacency.get(systemID) ?? [],
     isTriglavian: (systemID) => triglavian.has(systemID),
+    systemsIn: (id) => (id >= 30_000_000 && id <= 39_999_999 ? [id] : children.get(id) ?? []),
+    parentOf: (id) => parents.get(id) ?? null,
     systemCount: known.size,
     edgeCount,
   };
