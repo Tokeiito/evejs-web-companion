@@ -438,7 +438,7 @@ import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, kickFleetMember as kickFleetMemberCall, leaveFleet as leaveFleetCall, makeFleetLeader as makeFleetLeaderCall, moveFleetMember as moveFleetMemberCall, tagFleetTarget, addToWatchlist as addToWatchlistCall, removeFromWatchlist as removeFromWatchlistCall, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { BOOKMARK_EXPIRY, addFolder as addFolderCall, addToKnownFolders as addToKnownFoldersCall, copyBookmarks as copyBookmarksCall, moveBookmarks as moveBookmarksCall, removeFromKnownFolders as removeFromKnownFoldersCall, type MovedOrCopied, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, createSubfolder as createSubfolderCall, updateFolder as updateFolderCall, type FolderAccess, deleteBookmarks as deleteBookmarksCall, deleteFolder as deleteFolderCall, deleteSubfolder as deleteSubfolderCall, setFolderActive as setFolderActiveCall, updateBookmark as updateBookmarkCall, updateSubfolder as updateSubfolderCall } from "../bridge/bookmarkWrites.ts";
 import { giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
-import { afterArriving, isPlayerItemID, isWaypointPlace, keepWaypoints, readWaypoints, withWaypoint, withoutWaypoint, type PilotPlace } from "../nav/waypoints.ts";
+import { afterArriving, destinationValid, isPlayerItemID, isWaypointPlace, keepWaypoints, readWaypoints, withWaypoint, withoutWaypoint, type DestinationFacts, type PilotPlace } from "../nav/waypoints.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
 import {
   decodeLaunched,
@@ -7219,7 +7219,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * the only waypoint, as starMapSvc.SetWaypoint(id, True) makes it. Nothing flies until the autopilot is on.
    */
   async function setDestinationToAssetStation(stationID: number): Promise<void> {
-    setDestination(stationID);
+    await setWaypointAs(stationID, true);
   }
 
   /**
@@ -10273,33 +10273,66 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * is a destination where the directory knows it (_IsDestinationValid, 2317); asking is the only wait, so a station or
    * a system is put on the list at once.
    */
-  function setWaypointAs(destinationID: number, clearOthers: boolean): void {
-    void (async () => {
-      let knownStructure = false;
-      if (!isWaypointPlace(destinationID) && isPlayerItemID(destinationID)) {
+  async function setWaypointAs(destinationID: number, clearOthers: boolean): Promise<void> {
+    const facts = await destinationFacts(destinationID);
+    const made = withWaypoint(heldWaypoints(), destinationID, { clearOthers }, pilotPlace(), destinationValid(destinationID, facts));
+    if ("refused" in made) {
+      sayAutopilot(made.refused);
+      return;
+    }
+    putWaypoints(made.waypoints);
+    waypointsArrived();
+    autopilotRouteChanged();
+  }
+
+  /** A station's system and type as the map tells them (api.resolveDestination), asked once for each and kept. */
+  const stationFacts = new Map<number, { readonly solarSystemID: number; readonly stationTypeID: number | null } | null>();
+
+  /**
+   * What _IsDestinationValid reads (nav/waypoints.ts destinationValid): the map's Triglavian systems, the place as a
+   * station of the map, and whether the structure directory knows it. A read that fails refuses nothing.
+   */
+  async function destinationFacts(destinationID: number): Promise<DestinationFacts> {
+    let isTriglavian: ((systemID: number) => boolean) | null = null;
+    try {
+      const graph = await loadRouteGraph();
+      if (graph.isTriglavian) isTriglavian = (systemID) => graph.isTriglavian!(systemID);
+    } catch {
+      isTriglavian = null;
+    }
+    let station: DestinationFacts["station"] = null;
+    if (destinationID >= 60_000_000 && destinationID < 64_000_000) {
+      if (stationFacts.has(destinationID)) {
+        station = stationFacts.get(destinationID) ?? null;
+      } else {
         try {
-          knownStructure = await structureKnown(destinationID);
+          const resolved = await api.resolveDestination(destinationID, callOptions);
+          station = resolved.kind === "station" && resolved.solarSystemID !== null
+            ? { solarSystemID: resolved.solarSystemID, stationTypeID: resolved.stationTypeID }
+            : null;
+          stationFacts.set(destinationID, station);
         } catch {
-          knownStructure = false;
+          station = "unread";
         }
       }
-      const made = withWaypoint(heldWaypoints(), destinationID, { clearOthers }, pilotPlace(), knownStructure);
-      if ("refused" in made) {
-        sayAutopilot(made.refused);
-        return;
+    }
+    let knownStructure = false;
+    if (!isWaypointPlace(destinationID) && isPlayerItemID(destinationID)) {
+      try {
+        knownStructure = await structureKnown(destinationID);
+      } catch {
+        knownStructure = false;
       }
-      putWaypoints(made.waypoints);
-      waypointsArrived();
-      autopilotRouteChanged();
-    })();
+    }
+    return { station, knownStructure, isTriglavian, currentSystemID: pilotPlace().solarSystemID };
   }
 
   function setDestination(destinationID: number): void {
-    setWaypointAs(destinationID, true);
+    void setWaypointAs(destinationID, true);
   }
 
   function addWaypoint(destinationID: number): void {
-    setWaypointAs(destinationID, false);
+    void setWaypointAs(destinationID, false);
   }
 
   function clearWaypoints(locationID?: number): void {
@@ -17263,7 +17296,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     });
     // Set Destination to its station (the client's map menu of the agent's place); nothing flies until the
     // autopilot is on.
-    setDestination(agent.stationID);
+    await setWaypointAs(agent.stationID, true);
   }
 
   return {

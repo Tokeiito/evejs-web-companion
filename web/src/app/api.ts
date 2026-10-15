@@ -2395,6 +2395,8 @@ export interface SystemGraphResult {
   readonly edges: ReadonlyArray<readonly [number, number, number, number]>;
   /** Each system's security as it was made, by its ID. */
   readonly security: Readonly<Record<string, number>>;
+  /** The systems of the Triglavian Collective (idCheckers.IsTriglavianSystem). */
+  readonly triglavian: readonly number[];
 }
 
 /** Fetch the system-adjacency graph for the client-side route solver. */
@@ -2412,6 +2414,7 @@ export async function loadSystemGraph(options: ApiOptions = {}): Promise<SystemG
       typeof data.security === "object" && data.security !== null && !Array.isArray(data.security)
         ? (data.security as Record<string, number>)
         : {},
+    triglavian: Array.isArray(data.triglavian) ? data.triglavian.filter((id): id is number => typeof id === "number") : [],
   };
 }
 
@@ -2432,6 +2435,8 @@ export interface ResolvedDestination {
    * must not cache the miss when this is set.
    */
   readonly lookupFailed: boolean;
+  /** A station's type (idCheckers.IsDeprecatedStation reads it); null for anything else, or where it is not known. */
+  readonly stationTypeID: number | null;
 }
 
 /**
@@ -2461,6 +2466,7 @@ export async function resolveDestination(
     stationID: asNumberOrNull(data.stationID),
     stationName: typeof data.stationName === "string" ? data.stationName : null,
     lookupFailed: data.lookupFailed === true,
+    stationTypeID: asNumberOrNull(data.stationTypeID),
   };
 }
 

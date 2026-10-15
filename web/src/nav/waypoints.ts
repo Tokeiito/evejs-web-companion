@@ -45,6 +45,45 @@ export function isWaypointPlace(id: number, knownStructure = false): boolean {
   return (id >= 60_000_000 && id < 64_000_000) || (id >= 30_000_000 && id < 31_000_000);
 }
 
+/** idCheckers.IsDeprecatedStation (452 to 460): the outposts' and the conquerable stations' types (inventorycommon/const.py). */
+const DEPRECATED_STATION_TYPES: ReadonlySet<number> = new Set([21642, 21644, 21645, 21646, 12242, 12294, 12295]);
+
+/** What _IsDestinationValid reads of the place and of the map, as the page could read it. */
+export interface DestinationFacts {
+  /**
+   * The place as a station of the map: its system and its type; null where the map has no such station; "unread"
+   * where the map could not be asked (then nothing is refused for it).
+   */
+  readonly station: { readonly solarSystemID: number; readonly stationTypeID: number | null } | null | "unread";
+  /** Whether the structure directory knows the place. */
+  readonly knownStructure: boolean;
+  /** Whether a system is the Triglavian Collective's; null where the map could not be read (none taken for one). */
+  readonly isTriglavian: ((systemID: number) => boolean) | null;
+  /** The pilot's system (session.solarsystemid2). */
+  readonly currentSystemID: number | null;
+}
+
+/**
+ * _IsDestinationValid (starMapSvc.py 2301 to 2318). (Its first test, systemExclusions.IsValidDestination, lets every
+ * place through while its bypass is on, as it is from the start.) A station of the map: no deprecated station, none in
+ * a Triglavian system from outside them, and one in the pilot's system or known space. Anything else: no Triglavian
+ * system from outside them; a solar system of known space; else a structure the directory knows.
+ */
+export function destinationValid(id: number, facts: DestinationFacts): boolean {
+  const triglavian = (systemID: number | null): boolean => systemID !== null && facts.isTriglavian !== null && facts.isTriglavian(systemID);
+  const isKnownSpaceSystem = (systemID: number): boolean => systemID >= 30_000_000 && systemID <= 30_999_999;
+  if (facts.station === "unread") return true;
+  if (facts.station !== null) {
+    if (facts.station.stationTypeID !== null && DEPRECATED_STATION_TYPES.has(facts.station.stationTypeID)) return false;
+    const systemID = facts.station.solarSystemID;
+    if (triglavian(systemID) && !triglavian(facts.currentSystemID)) return false;
+    return systemID === facts.currentSystemID || isKnownSpaceSystem(systemID);
+  }
+  if (triglavian(id) && !triglavian(facts.currentSystemID)) return false;
+  if (isKnownSpaceSystem(id)) return true;
+  return facts.knownStructure;
+}
+
 /** The name kind a waypoint is named by: a structure's, a station's or a solar system's. */
 export function waypointNameKind(id: number): "structure" | "station" | "system" {
   return isPlayerItemID(id) ? "structure" : id >= 60_000_000 ? "station" : "system";
@@ -56,9 +95,9 @@ export function withWaypoint(
   destinationID: number,
   how: { readonly clearOthers?: boolean; readonly first?: boolean },
   here: PilotPlace,
-  knownStructure = false,
+  valid: boolean = isWaypointPlace(destinationID),
 ): { readonly waypoints: readonly number[] } | { readonly refused: WaypointRefusal } {
-  if (!isWaypointPlace(destinationID, knownStructure)) return { refused: "CantSetWaypoint" };
+  if (!valid) return { refused: "CantSetWaypoint" };
   const list = how.clearOthers === true ? [] : [...waypoints];
   if (list.includes(destinationID)) return { refused: "WaypointAlreadySet" };
   if (here.constellationID != null && destinationID === here.constellationID) return { refused: "WaypointAlreadyInConstellation" };

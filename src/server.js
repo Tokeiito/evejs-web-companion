@@ -12359,16 +12359,24 @@ app.post("/api/roster/stock", requireAuth, async (req, res, next) => {
 // (like station names), served here from src/staticData.js. This is NOT a
 // gateway/bridge call and NOT a server-side travel job — no live bridge session
 // is touched. Requires the web login session (as every /api route does).
+/** appConst.factionTriglavian. */
+const FACTION_TRIGLAVIAN = 500026;
 app.get("/api/map/graph", requireAuth, async (req, res, next) => {
   try {
     const graph = staticData.getSolarSystemGraph();
     // Each system's security as it was made, for the route the client's autopilot plots, which goes by it
     // (web/src/nav/autopilotRoute.ts). A system with none in the data is left out.
     const security = {};
+    // And the systems of the Triglavian Collective, which the client's star map takes for no destination from outside
+    // them (idCheckers.IsTriglavianSystem: the system's factionID, appConst.factionTriglavian 500026).
+    const triglavian = [];
     for (const id of Object.keys(graph.systems)) {
       const system = staticData.getSolarSystem(Number(id));
       if (system && typeof system.security === "number") {
         security[id] = system.security;
+      }
+      if (system && Number(system.factionID) === FACTION_TRIGLAVIAN) {
+        triglavian.push(Number(id));
       }
     }
     res.json({
@@ -12379,6 +12387,7 @@ app.get("/api/map/graph", requireAuth, async (req, res, next) => {
       systems: graph.systems,
       edges: graph.edges,
       security,
+      triglavian,
     });
   } catch (error) {
     next(error);
@@ -12420,6 +12429,9 @@ app.get("/api/map/resolve/:id", requireAuth, async (req, res, next) => {
         kind: "station",
         stationID: id,
         stationName: String(station.stationName || `Station ${id}`),
+        // (Its type, which the client's star map takes for no destination where it is a deprecated station's:
+        // idCheckers.IsDeprecatedStation.)
+        stationTypeID: Number(station.stationTypeID) || null,
         solarSystemID,
         systemName: solarSystemID ? staticData.getSolarSystemName(solarSystemID) : null,
       });

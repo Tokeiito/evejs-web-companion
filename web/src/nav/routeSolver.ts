@@ -48,6 +48,8 @@ export interface SystemGraphData {
   readonly edges: ReadonlyArray<readonly [number, number, number, number]>;
   /** Each system's security as it was made, by its ID; a map served without it has none. */
   readonly security?: Readonly<Record<string, number>>;
+  /** The systems of the Triglavian Collective (idCheckers.IsTriglavianSystem); a map served without them has none. */
+  readonly triglavian?: readonly number[];
 }
 
 /** A built, queryable system-adjacency graph. */
@@ -57,6 +59,8 @@ export interface SystemGraph {
   /** The security the system was made with; null where the map has none for it. */
   security(systemID: number): number | null;
   neighbors(systemID: number): readonly SystemEdge[];
+  /** Whether the system is the Triglavian Collective's (idCheckers.IsTriglavianSystem: its factionID 500026). */
+  isTriglavian?(systemID: number): boolean;
   readonly systemCount: number;
   readonly edgeCount: number;
 }
@@ -108,11 +112,14 @@ export function buildSystemGraph(data: SystemGraphData): SystemGraph {
     edgeCount += 1;
   }
 
+  const triglavian = new Set<number>((data.triglavian ?? []).map(Number).filter((id) => Number.isSafeInteger(id) && id > 0));
+
   return {
     hasSystem: (systemID) => known.has(systemID),
     systemName: (systemID) => names.get(systemID) ?? null,
     security: (systemID) => security.get(systemID) ?? null,
     neighbors: (systemID) => adjacency.get(systemID) ?? [],
+    isTriglavian: (systemID) => triglavian.has(systemID),
     systemCount: known.size,
     edgeCount,
   };
