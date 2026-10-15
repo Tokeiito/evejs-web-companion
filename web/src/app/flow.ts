@@ -1145,6 +1145,11 @@ export interface AppFlow {
   keepContactsSearchSettings(settings: { readonly searchType: number; readonly searchBy: number }): void;
   /** Owners found by the search service's Query, by result type, each named and sorted by name; fails with the server's words. */
   searchOwners(text: string, resultTypes: readonly number[], matchBy: number): Promise<ReadonlyMap<number, readonly { readonly id: number; readonly name: string }[]>>;
+  /**
+   * A player corporation's entry's ticker, as the entry gets it as it is loaded (userentry.py User.PreLoad, 139 to
+   * 140: cfg.corptickernames.Get, a priming of its own for each): the transport asks each not asked yet, in turn.
+   */
+  corpTickersEach(corpIDs: readonly number[]): Promise<void>;
   /** An agent added to the address book (charMgr.AddContact with the agent alone); fails with the server's words. */
   addAgentToAddressBook(agentID: number): Promise<void>;
   /** The contacts' notifications (notificationMgr.GetByGroupID(9)), those of a communication's type, their senders named. */
@@ -6015,6 +6020,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
+  // User.PreLoad (userentry.py 139 to 140): a player corporation's entry gets its ticker as it is loaded, each its own
+  // priming (cfg.py Get, 630 to 645); what was asked already is not asked again (the transport keeps it).
+  async function corpTickersEach(corpIDs: readonly number[]): Promise<void> {
+    if (corpIDs.length > 0) await api.corpTickers(corpIDs, true, callOptions).catch(() => null);
+  }
+
   // AddToAddressBook for an agent (addressbookService.py 732 to 735): AddContact with the agent and nothing else.
   async function addAgentToAddressBook(agentID: number): Promise<void> {
     await contactWrite("AddContact", [agentID]);
@@ -6045,6 +6056,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     const kindOf = (resultType: number): "agent" | "owner" => (resultType === AGENT ? "agent" : "owner");
     await resolveNamesNow([...found].flatMap(([resultType, ids]) => ids.map((id) => ({ kind: kindOf(resultType), id }))));
+    // _PrimeCorpTickers (searchUtil.py 329 to 333): the corporations found, their tickers primed in one asking.
+    const CORPORATION = 3;
+    const corporations = found.get(CORPORATION) ?? [];
+    if (corporations.length > 0) await api.corpTickers(corporations, false, callOptions).catch(() => null);
     const resolved = store.names.get().resolved;
     return new Map([...found].map(([resultType, ids]) => [resultType, ids
       .map((id) => {
@@ -17058,6 +17073,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     contactsSearchSettings,
     keepContactsSearchSettings,
     searchOwners,
+    corpTickersEach,
     addAgentToAddressBook,
     contactNotifications,
     deleteNotifications,

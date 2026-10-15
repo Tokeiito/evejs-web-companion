@@ -1162,6 +1162,8 @@ function createGamePortPilots({
   const LOAD_SLOT_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/client/script/ui/login/charSelection/characterSelection.py:750", note: null });
   /** cfg.eveowners' priming: config.GetMultiOwnersEx(list(keysToGet)), which no route of the BFF's may ask by name. */
   const OWNERS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbon/common/script/sys/cfg.py:579", note: null });
+  /** cfg.corptickernames' priming: config.GetMultiCorpTickerNamesEx(list(keysToGet)), the Recordset's Prime as its Get makes it too (cfg.py 630 to 645). */
+  const TICKERS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbon/common/script/sys/cfg.py:579", note: null });
   /**
    * agents.py __GetAllAgents: the whole table of agents, which every client asks its server for once and keeps for
    * as long as it runs. It is the same for every pilot and large (some eleven thousand rows), so here it is kept
@@ -1564,6 +1566,9 @@ function createGamePortPilots({
       /** cfg.eveowners: each owner the server has been asked about, as { name, typeID }, or null for one it had no row for; and the askings, one after another. */
       owners: new Map(),
       ownersWork: Promise.resolve(),
+      /** cfg.corptickernames: each player corporation the server has been asked about, its ticker, or null for one it had no row for; and the askings, one after another. */
+      tickers: new Map(),
+      tickersWork: Promise.resolve(),
       /** What the client's services keep until it changes, as the server answered it, by the service asked (KEPT_UNTIL_CHANGED). */
       kept: Object.fromEntries(Object.keys(KEPT_UNTIL_CHANGED).map((service) => [service, createKeptReads()])),
       /** The two reads of a planet's own object that are kept by the planet, each as { at, answer } (planetRead). */
@@ -2634,6 +2639,40 @@ function createGamePortPilots({
       return new Map(wanted.map((each) => [each, entry.owners.get(each)]));
     }));
     entry.ownersWork = priming.catch(() => {});
+    return priming;
+  }
+
+  /**
+   * cfg.corptickernames (eveCfg.py LoadCrpTickerNames, 479 to 486: a Recordset by corporationID over
+   * GetCorpTickerNamesEx and GetMultiCorpTickerNamesEx): the NPC corporations' tickers the client fills from its own
+   * data, and asks for none of. Of the others asked about, those not known yet are asked for by the Recordset's Prime
+   * (cfg.py 579), config.GetMultiCorpTickerNamesEx(a list of their IDs): in one call, as the search primes the
+   * corporations it found (searchUtil.py _PrimeCorpTickers, 329 to 333), or in a call for each where `each` is said,
+   * as an entry gets its own (userentry.py User.PreLoad, 139 to 140: Get, which on a client is Prime([key]), cfg.py 630
+   * to 645). Each row answered, (corporationID, tickerName, shapes and colours), is kept for as long as the pilot is
+   * on, and a corporation the server answers no row for is not asked about again (the Recordset's knownLuzers). One
+   * asking after another.
+   *
+   * Answers a Map of each player corporation asked about to its ticker, or to null for one with no row. Fails as a
+   * call fails, with nothing kept of it.
+   */
+  async function corpTickersNamed(corpIDs, each = false, sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    const isNpcCorporation = (corpID) => corpID >= 1000000 && corpID < 2000000;
+    const wanted = [...new Set((Array.isArray(corpIDs) ? corpIDs : []).map(positive).filter((corpID) => corpID !== null && !isNpcCorporation(corpID)))];
+    const priming = entry.tickersWork.then(() => run(entry, "config", "GetMultiCorpTickerNamesEx", async () => {
+      const unknown = wanted.filter((corpID) => !entry.tickers.has(corpID));
+      for (const asked of each ? unknown.map((corpID) => [corpID]) : unknown.length > 0 ? [unknown] : []) {
+        ledger.note("config", "GetMultiCorpTickerNamesEx", TICKERS_AS_THE_CLIENT_ASKS);
+        const [header, rows] = itemsOf(await entry.session.call("config", "GetMultiCorpTickerNamesEx", [{ type: "list", items: asked }], null));
+        const columns = itemsOf(header).map(textOf);
+        const [corporationID, tickerName] = ["corporationID", "tickerName"].map((column) => columns.indexOf(column));
+        for (const row of itemsOf(rows).map(itemsOf)) entry.tickers.set(positive(row[corporationID]), textOf(row[tickerName]));
+        for (const corpID of asked) if (!entry.tickers.has(corpID)) entry.tickers.set(corpID, null);
+      }
+      return new Map(wanted.map((corpID) => [corpID, entry.tickers.get(corpID) ?? null]));
+    }));
+    entry.tickersWork = priming.catch(() => {});
     return priming;
   }
 
@@ -5253,6 +5292,7 @@ function createGamePortPilots({
     saveSkillQueue,
     journalKept,
     ownersNamed,
+    corpTickersNamed,
     shipInfo,
     shipAttribute,
     chatConnection,

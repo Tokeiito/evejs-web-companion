@@ -986,6 +986,20 @@
     return !((ownerID >= 1_000_000 && ownerID <= 1_999_999) || (ownerID >= 98_000_000 && ownerID <= 99_999_999) || (ownerID >= 500_000 && ownerID < 599_999));
   }
 
+  /** A player corporation (IsCorporation and not IsNPC, as User.PreLoad asks, 139): 98000000 to 98999999. */
+  const isPlayerCorporation = (ownerID: number): boolean => ownerID >= 98_000_000 && ownerID <= 98_999_999;
+
+  // User.PreLoad (userentry.py 139 to 140): each player corporation's entry gets its ticker as it is loaded
+  // (cfg.corptickernames.Get), each asking its own; one asked already is not asked again.
+  const tickersAsked = new Set<number>();
+  $effect(() => {
+    if (tab !== "contacts") return;
+    const corporations = shown.rows.map((row) => row.id).filter((id) => isPlayerCorporation(id) && !tickersAsked.has(id));
+    if (corporations.length === 0) return;
+    for (const id of corporations) tickersAsked.add(id);
+    void flow.corpTickersEach(corporations);
+  });
+
   /** LoadGroupFromEntry (345 to 354): another group from the first page, and kept as the one last viewed (424). */
   function choose(groupID: number | string): void {
     if (group !== groupID) {

@@ -591,7 +591,7 @@ const PROXY_SERVICES = Object.freeze(new Set([
  */
 // (The station's office object's reads are the lobby's, which the gateway never had: see GAME_PORT_ONLY_CALLS.)
 const TRANSPORT_OWN_CALLS = Object.freeze([
-  "config.GetMultiOwnersEx", "facilityManager.GetFacility", "config.GetAverageMarketPrices",
+  "config.GetMultiOwnersEx", "config.GetMultiCorpTickerNamesEx", "facilityManager.GetFacility", "config.GetAverageMarketPrices",
   "XmppChatMgr.Hostname", "XmppChatMgr.GetDeprecatedPrefsFallback", "chatAuthenticationService.GetAuthenticationToken", "XmppChatMgr.ResyncSystemChannelAccess",
   "browserLockdownSvc.GetFlaggedSitesHash", "browserLockdownSvc.GetFlaggedSitesList",
   // What a client asks before a character is chosen: the cfg's two as it loads (eveCfg.py 476, 750), whether the

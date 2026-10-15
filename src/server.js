@@ -12987,6 +12987,47 @@ app.post("/api/names", requireAuth, async (req, res, next) => {
   }
 });
 
+// Corporations' tickers, as the client's cfg.corptickernames has them: an NPC corporation's from the static tables
+// (the client fills those from its own data and asks for none), a player corporation's asked of the game server by
+// the game-port transport, which keeps each it is answered (pilots.js corpTickersNamed): in one call, or in one for
+// each where `each` is said, as the client's own askings go. A ticker that could not be asked (no pilot on the game
+// port, or the call refused) is named in `unresolved`; null is the server's answer of none.
+app.post("/api/corp-tickers", requireAuth, async (req, res, next) => {
+  try {
+    const asked = Array.isArray(req.body && req.body.corpIDs) ? req.body.corpIDs : [];
+    const corpIDs = [...new Set(asked.filter((corpID) => Number.isSafeInteger(corpID) && corpID > 0))].slice(0, 200);
+    const each = Boolean(req.body && req.body.each === true);
+    const tickers = {};
+    const unresolved = [];
+    const players = [];
+    for (const corpID of corpIDs) {
+      if (corpID >= 1000000 && corpID < 2000000) {
+        const corporation = staticData.getCorporation(corpID);
+        tickers[corpID] = corporation && corporation.tickerName ? String(corporation.tickerName) : null;
+      } else {
+        players.push(corpID);
+      }
+    }
+    if (players.length > 0) {
+      const held = bridgeSessions.get(req.webSessionID) || null;
+      if (!held || !gamePortPilots || !isGamePortHandle(held.bridgeSessionID)) {
+        unresolved.push(...players);
+      } else {
+        try {
+          const named = await heldRequest(held, req.webSessionID, false, () => gamePortPilots.corpTickersNamed(
+            players, each, { userid: held.accountID }, held.bridgeSessionID));
+          for (const corpID of players) tickers[corpID] = named.get(corpID) ?? null;
+        } catch (_error) {
+          unresolved.push(...players);
+        }
+      }
+    }
+    res.json({ ok: true, tickers, unresolved });
+  } catch (error) {
+    next(error);
+  }
+});
+
 /**
  * R24 slice C — MODULE CYCLE TIMES, from static reference data.
  *

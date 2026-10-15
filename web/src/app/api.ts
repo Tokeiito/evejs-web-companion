@@ -3177,6 +3177,29 @@ export async function resolveNames(
 }
 
 /**
+ * Corporations' tickers as the client's cfg.corptickernames has them (POST /api/corp-tickers): an NPC
+ * corporation's from the static tables, a player corporation's asked of the game server by the pilot's game-port
+ * transport where it has not been asked yet (config.GetMultiCorpTickerNamesEx), in one call, or in one for each
+ * where `each` is said. A ticker is null where the server answered none; one in `unresolved` was not asked.
+ */
+export async function corpTickers(
+  corpIDs: readonly number[],
+  each: boolean,
+  options: ApiOptions = {},
+): Promise<{ tickers: Record<string, string | null>; unresolved: readonly number[] }> {
+  const data = await postJson("/api/corp-tickers", { corpIDs, each }, options);
+  const raw = typeof data.tickers === "object" && data.tickers !== null && !Array.isArray(data.tickers)
+    ? (data.tickers as Record<string, JsonValue>)
+    : {};
+  const tickers: Record<string, string | null> = {};
+  for (const [key, value] of Object.entries(raw)) tickers[key] = typeof value === "string" ? value : null;
+  const unresolved = Array.isArray(data.unresolved)
+    ? (data.unresolved as JsonValue[]).filter((id): id is number => typeof id === "number")
+    : [];
+  return { tickers, unresolved };
+}
+
+/**
  * The retail client's own text for localisation labels, as templates with
  * their parameters left in (POST /api/words). `available` is false when the
  * BFF has no client install to read; a label the client does not have is null.
