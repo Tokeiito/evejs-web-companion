@@ -464,7 +464,7 @@ import { readCharacterFittings, readCorporationFittings } from "../bridge/fittin
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, kickFleetMember as kickFleetMemberCall, leaveFleet as leaveFleetCall, makeFleetLeader as makeFleetLeaderCall, moveFleetMember as moveFleetMemberCall, tagFleetTarget, addToWatchlist as addToWatchlistCall, removeFromWatchlist as removeFromWatchlistCall, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { BOOKMARK_EXPIRY, addFolder as addFolderCall, addToKnownFolders as addToKnownFoldersCall, copyBookmarks as copyBookmarksCall, moveBookmarks as moveBookmarksCall, removeFromKnownFolders as removeFromKnownFoldersCall, type MovedOrCopied, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, createSubfolder as createSubfolderCall, updateFolder as updateFolderCall, type FolderAccess, deleteBookmarks as deleteBookmarksCall, deleteFolder as deleteFolderCall, deleteSubfolder as deleteSubfolderCall, setFolderActive as setFolderActiveCall, updateBookmark as updateBookmarkCall, updateSubfolder as updateSubfolderCall } from "../bridge/bookmarkWrites.ts";
-import { giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
+import { giveIskFromWallet as giveIskFromWalletCall, giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
 import { afterArriving, destinationValid, isPlayerItemID, isWaypointPlace, keepWaypoints, movedWaypoint, readWaypoints, withWaypoint, withoutWaypoint, type DestinationFacts, type PilotPlace } from "../nav/waypoints.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
 import {
@@ -1503,6 +1503,11 @@ export interface AppFlow {
   pilotWealth(): Promise<number | null>;
   /** Give Money's OK (transferMoneyWnd.py Confirm, 138 to 152): the pilot's ISK given to a character. Fails as the call fails. */
   giveMoney(toID: number, amount: number, reason: string): Promise<void>;
+  /**
+   * The wallet's Give ISK tab's Transfer (giveIskPanel.py TransferISK): AskAreYouSure with the tab's words, then
+   * GiveCash(toID, amount). Answers whether the transfer was answered as made; false for No. Fails as the call fails.
+   */
+  giveIskFromWallet(toID: number, amount: number, cons: string): Promise<boolean>;
   /**
    * R55 — the Standings page: the character's own standings and the
    * corporation's, in one pull, with every entity id resolved to a name.
@@ -8068,6 +8073,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function giveMoney(toID: number, amount: number, reason: string): Promise<void> {
     // (The page's own call, bridge/giveMoney.ts; the pilot's ISK is put right by the OnAccountChange that follows.)
     await giveMoneyCall(bridgeDo, toID, amount, reason);
+  }
+
+  /**
+   * The wallet's Give ISK tab's Transfer (giveIskPanel.py TransferISK, 101 to 112): nothing for an amount not above
+   * nought; else AskAreYouSure with the tab's own words (`cons`), and on Yes GiveCash(toID, amount). Answers whether the
+   * server answered something (`if ret:`); false where the pilot said No.
+   */
+  async function giveIskFromWallet(toID: number, amount: number, cons: string): Promise<boolean> {
+    if (!(amount > 0)) return false;
+    if (!(await askDialog("AskAreYouSure", { type: "dict", entries: [["cons", cons]] }, cons))) return false;
+    return giveIskFromWalletCall(bridgeDo, toID, amount);
   }
 
   async function loadWallet(how: { readonly fresh?: boolean } = {}): Promise<void> {
@@ -18788,6 +18804,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadWallet,
     pilotWealth,
     giveMoney,
+    giveIskFromWallet,
 
     loadStandings,
 

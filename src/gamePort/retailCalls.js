@@ -372,6 +372,11 @@ const agentGoing = (args, kwargs) => {
 const givingCash = (args, kwargs) => {
   const [toID, amount, reason] = args;
   const said = Object.keys(kwargs);
+  // The wallet's Give ISK tab (giveIskPanel.py TransferISK): GiveCash(selectedCharacterID, amount), and nothing else.
+  if (args.length === 2 && said.length === 0 && Number.isSafeInteger(toID) && toID > 0 && typeof amount === "number" && amount > 0) {
+    const clients = [toID, asFloat(amount)];
+    return sameValues(clients, args) ? { args, kwargs } : { args: clients, kwargs, status: "reshaped" };
+  }
   if (args.length !== 3 || !(Number.isSafeInteger(toID) && toID > 0) || typeof amount !== "number" || !(amount > 0)
     || typeof reason !== "string" || said.some((name) => name !== "toAccountKey")) {
     return { args, kwargs, status: "differs", note: "The client sends the one given to, the amount, the reason, and the account key by keyword. This is not that." };
@@ -2451,7 +2456,7 @@ const RETAIL_CALLS = Object.freeze({
   "account.GiveCash": typing(Object.freeze({
     status: "same",
     source: "eve/client/script/ui/shared/neocom/wallet/transferMoneyWnd.py:148",
-    note: "sm.RemoteSvc('account').GiveCash(self.toID, amount, reason, toAccountKey=toAccountKey): the transfer window's OK, from an owner's menu's Give Money; the amount a float of two decimal places, the reason its edit's, and the account key None for a character. Tranquility's recording of a transfer to a corporation: GiveCash(98827279, 100.0, '') with toAccountKey=1000, answered the two balances.",
+    note: "sm.RemoteSvc('account').GiveCash(self.toID, amount, reason, toAccountKey=toAccountKey): the transfer window's OK, from an owner's menu's Give Money; the amount a float of two decimal places, the reason its edit's, and the account key None for a character. Tranquility's recording of a transfer to a corporation: GiveCash(98827279, 100.0, '') with toAccountKey=1000, answered the two balances. The wallet's Give ISK tab sends GiveCash(selectedCharacterID, amount) and nothing else (giveIskPanel.py TransferISK).",
     shape: givingCash,
   }), [2]),
   "account.GetEntryTypes": same(`${ACCOUNT_SVC}:101`, "GetAccountMgr().GetEntryTypes(), no arguments, once for the session"),

@@ -25,6 +25,7 @@
   import WalletMarketTransactions from "./WalletMarketTransactions.svelte";
   import WalletJournal from "./WalletJournal.svelte";
   import WalletOverview from "./WalletOverview.svelte";
+  import WalletGiveIsk from "./WalletGiveIsk.svelte";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -40,6 +41,7 @@
     overview: "UI/Wallet/WalletWindow/TabOverview",
     transactions: "UI/Wallet/WalletWindow/TabTransactions",
     market: "UI/Wallet/WalletWindow/MarketTransactions",
+    give: "UI/Wallet/WalletWindow/GiveMoney",
   } as const;
   $effect(() => {
     flow.requestWords(Object.values(TAB_WORDS));
@@ -48,7 +50,7 @@
     const template = $words.templates[label];
     return typeof template === "string" && template !== "" ? plainText(template) : own;
   }
-  let tab = $state<"overview" | "transactions" | "market">("overview");
+  let tab = $state<"overview" | "transactions" | "market" | "give">("overview");
 
   let busy = $state(false);
   let error = $state("");
@@ -119,12 +121,15 @@
     <button type="button" class:active={tab === "overview"} onclick={() => (tab = "overview")}>{tabWord(TAB_WORDS.overview, "Overview")}</button>
     <button type="button" class:active={tab === "transactions"} onclick={() => (tab = "transactions")}>{tabWord(TAB_WORDS.transactions, "Transactions")}</button>
     <button type="button" class:active={tab === "market"} onclick={() => (tab = "market")}>{tabWord(TAB_WORDS.market, "Market Transactions")}</button>
+    <button type="button" class:active={tab === "give"} onclick={() => (tab = "give")}>{tabWord(TAB_WORDS.give, "Give ISK")}</button>
   </nav>
 
   {#if tab === "overview"}
     <WalletOverview {store} {flow} />
   {:else if tab === "market"}
     <WalletMarketTransactions {store} {flow} />
+  {:else if tab === "give"}
+    <WalletGiveIsk {store} {flow} />
   {:else}
     <WalletJournal {store} {flow} />
   {/if}
