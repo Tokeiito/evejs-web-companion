@@ -22,12 +22,23 @@
   // them from the page's read of space, read again as the menu opens. Removing asks the client's RemoveLocation or
   // RemoveMultipleLocation, whose Yes may be kept (addressbookService.py DeleteBookmarks, 452 to 473).
   //
+  // A folder's menu (bookmarksPanel.py BookmarkACLFolderMenu, 320 to 338), on an online folder and on an offline one,
+  // has the part the page offers: Delete Folder for a personal folder or one the pilot administers (ConfirmDeleteFolder
+  // first), Offline Folder or Online Folder (bookmarkSvc.UpdateFolderActiveState: TooManyActiveFolders where the
+  // pilot has the most online of its kind already), and Create Subfolder on an online folder the pilot does more than
+  // view. A subfolder's menu (BookmarkSubfolderMenu, 408 to 417), where the pilot may write to its folder and, using
+  // it only, made the subfolder: Edit Subfolder (not one the system made) and Delete Subfolder (ConfirmDeleteSubfolder
+  // first; CouldNotDeleteBookmarksInSubfolder where it holds another's bookmarks and the pilot only uses the folder).
+  // Create Subfolder at the window's bottom (window.py _create_sub_folder, 149 to 157) asks
+  // CreateBookmarkFolderAsNoneValid where no folder takes one. The subfolder window is SubfolderWindow.svelte.
+  //
   // Not here yet: the Search tab, the Agent Missions group (the agents' bookmarks), the folders the pilot may
-  // administer, Create Folder and Create Subfolder, a structure's Add Location, the rest of a bookmark's menu (a
-  // gate's jumps, the fleet's warps and broadcast, the map's and the camera's entries, avoiding a place), the
-  // folders' and the subfolders' menus, a choice by Shift, and a shared bookmark shown dim before its delay has
-  // passed. Show Info shows a thing the page has read in space as that thing, and any other place by its type (the
-  // info window has no station or system of its own).
+  // administer, Create Folder and the folder window (so Folder Information, Edit Folder, and the Yes of
+  // CreateBookmarkFolderAsNoneValid), Disconnect from Folder, a structure's Add Location, the rest of a bookmark's
+  // menu (a gate's jumps, the fleet's warps and broadcast, the map's and the camera's entries, avoiding a place,
+  // Move), a choice by Shift, and a shared bookmark shown dim before its delay has passed. Show Info shows a thing
+  // the page has read in space as that thing, and any other place by its type (the info window has no station or
+  // system of its own).
   import { onMount } from "svelte";
   import { formatTemplate, plainText, type TemplateArguments } from "../bridge/clientWords.ts";
   import { resolvedName, type NameRef } from "../store/names.ts";
@@ -48,9 +59,10 @@
   import { DISTANCE_WORD_LABELS, distanceSay } from "../space/distanceWords.ts";
   import { flyingDistances, setDistance, WARP_RANGES } from "./flyingDistances.ts";
   import { showInfo, type InfoSubject } from "./showInfo.ts";
-  import type { ActiveBookmarks, Bookmark, Subfolder } from "../bridge/bookmarks.ts";
+  import type { ActiveBookmarks, Bookmark, BookmarkFolder, Subfolder } from "../bridge/bookmarks.ts";
   import type { BookmarkPlace } from "../bridge/locationsList.ts";
   import BookmarkWindow from "./BookmarkWindow.svelte";
+  import SubfolderWindow from "./SubfolderWindow.svelte";
   import { ASKED_KEEPING_YES, DO_NOT_ASK_AGAIN_LABEL, suppressableKey } from "../bridge/dialogSuppression.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
   import { isSessionLost } from "../app/flow.ts";
@@ -114,9 +126,37 @@
     couldNotDelete: "dialog:CouldNotDeleteBookmark/body",
     yes: "UI/Common/Buttons/Yes",
     no: "UI/Common/Buttons/No",
+    deleteFolder: "UI/AclBookmarks/DeleteBookmarkFolder",
+    offlineFolder: "UI/AclBookmarks/MarkFolderAsInactive",
+    onlineFolder: "UI/AclBookmarks/MarkFolderActive",
+    createSubfolder: "UI/AclBookmarks/CreateSubfolder",
+    editSubfolder: "UI/AclBookmarks/EditSubfolder",
+    deleteSubfolder: "UI/AclBookmarks/DeleteSubfolder",
+    tooManyOnline: "dialog:TooManyActiveFolders/body",
+    othersInSubfolder: "dialog:CouldNotDeleteBookmarksInSubfolder/body",
   } as const;
-  /** The client's questions before a removal (addressbookService.py DeleteBookmarks, 457 and 459). */
-  const DIALOGS = ["RemoveLocation", "RemoveMultipleLocation"] as const;
+  /**
+   * The client's questions: before a bookmark's removal (addressbookService.py DeleteBookmarks, 457 and 459), a
+   * folder's and a subfolder's deletion (bookmarksPanel.py 435 to 487), and Create Subfolder with no folder to put it
+   * in (window.py 152); each with the page's own words where the install's are not to hand.
+   */
+  const DIALOGS = ["RemoveLocation", "RemoveMultipleLocation", "ConfirmDeleteFolder", "ConfirmDeleteSubfolder", "CreateBookmarkFolderAsNoneValid"] as const;
+  const OWN_QUESTIONS: Readonly<Record<(typeof DIALOGS)[number], readonly [string, string]>> = {
+    RemoveLocation: ["Take off?", "Take {locationName} off?"],
+    RemoveMultipleLocation: ["Take off?", "Take {numLocations} places off?"],
+    ConfirmDeleteFolder: ["Throw the folder away?", "Throw this folder away, with all it holds?"],
+    ConfirmDeleteSubfolder: ["Throw the subfolder away?", "Throw this subfolder away, with all it holds?"],
+    CreateBookmarkFolderAsNoneValid: ["No folder", "There is no folder to put it in. Make one?"],
+  };
+  /** appConst: the access levels, and how many folders of each kind may be online at once. */
+  const ACCESS_PERSONAL = 1;
+  const ACCESS_VIEW = 2;
+  const ACCESS_USE = 3;
+  const ACCESS_ADMIN = 5;
+  const MAX_ONLINE_PERSONAL = 5;
+  const MAX_ONLINE_SHARED = 3;
+  /** invConst.ownerSystem: a subfolder the system made. */
+  const OWNER_SYSTEM = 1;
 
   /** The client's word for a label, from the player's install; the page's own where there is none to read. */
   function word(label: string, own: string): string {
@@ -127,7 +167,9 @@
   function filled(label: string, own: string, args: TemplateArguments): string {
     const template = $words.templates[label];
     return plainText(formatTemplate(typeof template === "string" ? template : own, args, {
-      nameOf: (kind, id) => resolvedName($names.resolved, kind, id, ""),
+      // A pilot's name is the owner's (cfg.eveowners, as the client's [character] tag reads it): the BFF's static
+      // table of characters does not hold the players of the store.
+      nameOf: (kind, id) => resolvedName($names.resolved, kind === "character" ? "owner" : kind, id, ""),
     }));
   }
 
@@ -395,6 +437,11 @@
       await load();
       if (deleted.length === 0) error = word(WORDS.couldNotDelete, "Nothing was removed.");
     };
+    ask(dialog, args, act);
+  }
+
+  /** The client's question (prompt_player_fsd_dialog with suppress=ID_YES): its Yes kept, or asked. */
+  function ask(dialog: (typeof DIALOGS)[number], args: TemplateArguments, act: () => Promise<void>): void {
     if (ASKED_KEEPING_YES.has(dialog) && flow.dialogYesKept(dialog)) {
       void runAct(act);
       return;
@@ -410,6 +457,114 @@
     // _persist_prompt_suppress_choice: Yes kept where the box was ticked.
     if (dontAskAgain && ASKED_KEEPING_YES.has(waiting.dialog)) flow.keepDialogYes(waiting.dialog);
     void runAct(waiting.act);
+  }
+
+  /** The folder and the subfolder whose menus are open, and the subfolder window: for a folder, or a subfolder's edit. */
+  let folderMenuFor = $state<number | null>(null);
+  let subfolderMenuFor = $state<number | null>(null);
+  let subfolderWindow = $state<{ readonly folderID: number | null; readonly subfolder: Subfolder | null } | null>(null);
+
+  function toggleFolderMenu(folderID: number): void {
+    folderMenuFor = folderMenuFor === folderID ? null : folderID;
+    subfolderMenuFor = null;
+  }
+
+  function toggleSubfolderMenu(subfolderID: number): void {
+    subfolderMenuFor = subfolderMenuFor === subfolderID ? null : subfolderID;
+    folderMenuFor = null;
+  }
+
+  /** BookmarkACLFolderMenu (320 to 338): the part the page offers. */
+  function folderMenuOf(folder: BookmarkFolder): { readonly remove: boolean; readonly offline: boolean; readonly online: boolean; readonly createSubfolder: boolean } {
+    return {
+      remove: folder.accessLevel === ACCESS_PERSONAL || folder.accessLevel === ACCESS_ADMIN,
+      offline: folder.isActive,
+      online: !folder.isActive,
+      createSubfolder: folder.isActive && folder.accessLevel !== ACCESS_VIEW,
+    };
+  }
+
+  /** DeleteACLFolder (435 to 441): ConfirmDeleteFolder, then the folder deleted and the list read again. */
+  function askDeleteFolder(folder: BookmarkFolder): void {
+    folderMenuFor = null;
+    ask("ConfirmDeleteFolder", {}, async () => {
+      await flow.deleteFolder(folder.folderID);
+      selected = [];
+      await load();
+    });
+  }
+
+  /**
+   * Offline Folder and Online Folder (bookmarkSvc.UpdateFolderActiveState, 479 to 503); online only where the pilot
+   * has fewer online of its kind than it may (ValidateActiveFolderCount, 505 to 515: TooManyActiveFolders).
+   */
+  function setFolderOnline(folder: BookmarkFolder, isActive: boolean): void {
+    folderMenuFor = null;
+    error = "";
+    if (isActive && active !== null) {
+      const online = active.folders.filter((each) => each.isPersonal === folder.isPersonal && each.isActive).length;
+      if (online >= (folder.isPersonal ? MAX_ONLINE_PERSONAL : MAX_ONLINE_SHARED)) {
+        error = filled(WORDS.tooManyOnline, "You have as many folders online as you may: {[numeric]maxPersonalFolders} of your own and {[numeric]maxSharedFolders} shared.",
+          { maxPersonalFolders: MAX_ONLINE_PERSONAL, maxSharedFolders: MAX_ONLINE_SHARED });
+        return;
+      }
+    }
+    void runAct(async () => {
+      await flow.setFolderActive(folder.folderID, isActive);
+      await load();
+    });
+  }
+
+  /** The folders a subfolder may be put in (bookmarkSvc.GetFilteredFolders, 535 to 544): online, more than viewed. */
+  const subfolderFolders = $derived(active === null ? [] : active.folders.filter((folder) => folder.accessLevel !== ACCESS_VIEW && folder.isActive));
+
+  /** Create Subfolder: from a folder's menu (CreateSubFolderInFolder, 457 to 461), or the bottom's (window.py 149 to 157). */
+  function createSubfolderIn(folderID: number | null): void {
+    folderMenuFor = null;
+    if (folderID === null && subfolderFolders.length === 0) {
+      // Yes opens the client's folder window, which the page has not got yet: either answer leaves it there.
+      ask("CreateBookmarkFolderAsNoneValid", {}, async () => {});
+      return;
+    }
+    subfolderWindow = { folderID, subfolder: null };
+  }
+
+  /** BookmarkSubfolderMenu (408 to 417): where the pilot may write to the folder and, using it only, made the subfolder. */
+  function subfolderMenuOf(subfolder: Subfolder): { readonly edit: boolean; readonly remove: boolean } {
+    const folder = active?.folders.find((each) => each.folderID === subfolder.folderID);
+    const may = folder !== undefined && folder.accessLevel !== ACCESS_VIEW && (folder.accessLevel !== ACCESS_USE || subfolder.creatorID === pilotID);
+    return { edit: may && subfolder.creatorID !== OWNER_SYSTEM, remove: may };
+  }
+
+  function editSubfolder(subfolder: Subfolder): void {
+    subfolderMenuFor = null;
+    subfolderWindow = { folderID: subfolder.folderID, subfolder };
+  }
+
+  function subfolderDone(made: boolean): void {
+    subfolderWindow = null;
+    if (made) void load();
+  }
+
+  /**
+   * DeleteSubfolder (481 to 487; bookmarkSvc.DeleteSubfolder, 579 to 597): ConfirmDeleteSubfolder, then the subfolder
+   * deleted with its bookmarks; where the pilot only uses the folder and another's bookmark is in it, the client's
+   * CouldNotDeleteBookmarksInSubfolder and nothing asked of the server.
+   */
+  function askDeleteSubfolder(subfolder: Subfolder): void {
+    subfolderMenuFor = null;
+    error = "";
+    ask("ConfirmDeleteSubfolder", {}, async () => {
+      const folder = active?.folders.find((each) => each.folderID === subfolder.folderID);
+      if (folder?.accessLevel === ACCESS_USE && active !== null
+        && active.bookmarks.some((bookmark) => bookmark.subfolderID === subfolder.subfolderID && bookmark.creatorID !== pilotID)) {
+        error = word(WORDS.othersInSubfolder, "Others' places are in that subfolder: it stays.");
+        return;
+      }
+      await flow.deleteSubfolder(subfolder.folderID, subfolder.subfolderID);
+      selected = [];
+      await load();
+    });
   }
 
   const chosenBookmarks = $derived(active === null ? [] : active.bookmarks.filter((bookmark) => selected.includes(bookmark.bookmarkID)));
@@ -443,7 +598,7 @@
       if (bookmark.creatorID !== null) refs.push({ kind: "owner", id: bookmark.creatorID });
     }
     for (const subfolder of active.subfolders) {
-      if (subfolder.creatorID !== null && subfolder.creatorID !== 1) refs.push({ kind: "character", id: subfolder.creatorID });
+      if (subfolder.creatorID !== null && subfolder.creatorID !== 1) refs.push({ kind: "owner", id: subfolder.creatorID });
     }
     if (systemID !== null) refs.push({ kind: "system", id: systemID });
     if (refs.length > 0) flow.requestNames(refs);
@@ -594,6 +749,49 @@
   {/if}
 {/snippet}
 
+{#snippet folderMenuButton(folder: BookmarkFolder)}
+  <button type="button" class="minor" aria-label="Folder menu" aria-expanded={folderMenuFor === folder.folderID} onclick={() => toggleFolderMenu(folder.folderID)}>⋯</button>
+{/snippet}
+
+{#snippet folderMenu(folder: BookmarkFolder, depth: number)}
+  {#if folderMenuFor === folder.folderID}
+    <!-- BookmarkACLFolderMenu, in its order: Delete Folder, Offline Folder and Create Subfolder, or Online Folder. -->
+    {@const menu = folderMenuOf(folder)}
+    <p class="controls locations-submenu" style={`margin-left: ${depth * 1.25 + 1.5}rem`}>
+      {#if menu.remove}
+        <button type="button" class="minor" disabled={busy} onclick={() => askDeleteFolder(folder)}>{word(WORDS.deleteFolder, "Throw it away")}</button>
+      {/if}
+      {#if menu.offline}
+        <button type="button" class="minor" disabled={busy} onclick={() => setFolderOnline(folder, false)}>{word(WORDS.offlineFolder, "Take it offline")}</button>
+      {/if}
+      {#if menu.createSubfolder}
+        <button type="button" class="minor" onclick={() => createSubfolderIn(folder.folderID)}>{word(WORDS.createSubfolder, "Make a subfolder")}</button>
+      {/if}
+      {#if menu.online}
+        <button type="button" class="minor" disabled={busy} onclick={() => setFolderOnline(folder, true)}>{word(WORDS.onlineFolder, "Bring it online")}</button>
+      {/if}
+    </p>
+  {/if}
+{/snippet}
+
+{#snippet subfolderMenu(subfolder: Subfolder, depth: number)}
+  {@const menu = subfolderMenuOf(subfolder)}
+  {#if menu.edit || menu.remove}
+    <button type="button" class="minor" aria-label="Subfolder menu" aria-expanded={subfolderMenuFor === subfolder.subfolderID} onclick={() => toggleSubfolderMenu(subfolder.subfolderID)}>⋯</button>
+  {/if}
+  {#if subfolderMenuFor === subfolder.subfolderID}
+    <!-- BookmarkSubfolderMenu: Edit Subfolder and Delete Subfolder. -->
+    <p class="controls locations-submenu" style={`margin-left: ${depth * 1.25 + 1.5}rem`}>
+      {#if menu.edit}
+        <button type="button" class="minor" onclick={() => editSubfolder(subfolder)}>{word(WORDS.editSubfolder, "Rename it")}</button>
+      {/if}
+      {#if menu.remove}
+        <button type="button" class="minor" disabled={busy} onclick={() => askDeleteSubfolder(subfolder)}>{word(WORDS.deleteSubfolder, "Throw it away")}</button>
+      {/if}
+    </p>
+  {/if}
+{/snippet}
+
 {#snippet groupHead(id: string, line: string, count: number | null, depth: number, hint: string | null)}
   <button
     type="button"
@@ -617,9 +815,10 @@
   {#if confirming !== null}
     <!-- The client's question before a removal: its title and body, the box that keeps Yes where the install lets it,
          Yes and No. -->
-    <div class="bookmark-confirm" role="alertdialog" aria-label={filled(`dialog:${confirming.dialog}/title`, "Take off?", {})}>
-      <strong>{filled(`dialog:${confirming.dialog}/title`, "Take off?", {})}</strong>
-      <p>{filled(`dialog:${confirming.dialog}/body`, confirming.dialog === "RemoveLocation" ? "Take {locationName} off?" : "Take {numLocations} places off?", confirming.args)}</p>
+    {@const own = OWN_QUESTIONS[confirming.dialog]}
+    <div class="bookmark-confirm" role="alertdialog" aria-label={filled(`dialog:${confirming.dialog}/title`, own[0], {})}>
+      <strong>{filled(`dialog:${confirming.dialog}/title`, own[0], {})}</strong>
+      <p>{filled(`dialog:${confirming.dialog}/body`, own[1], confirming.args)}</p>
       {#if $words.templates[suppressableKey(confirming.dialog)] === "1"}
         <label><input type="checkbox" bind:checked={dontAskAgain} /> {word(DO_NOT_ASK_AGAIN_LABEL, "Skip this question from now on")}</label>
       {/if}
@@ -635,9 +834,13 @@
   {#if editing !== null}
     <BookmarkWindow {store} {flow} editing={editing} onDone={editDone} />
   {/if}
-  <!-- The window's bottom (window.py 104 to 108): Add Location; Create Folder and Create Subfolder are not here yet. -->
+  {#if subfolderWindow !== null && active !== null}
+    <SubfolderWindow {store} {flow} {active} folderID={subfolderWindow.folderID} subfolder={subfolderWindow.subfolder} onDone={subfolderDone} />
+  {/if}
+  <!-- The window's bottom (window.py 104 to 110): Add Location and Create Subfolder; Create Folder is not here yet. -->
   <p class="controls">
     <button type="button" class="minor" disabled={bookmarking !== null} onclick={addLocation}>{word(WORDS.addBookmark, "Save where I am")}</button>
+    <button type="button" class="minor" disabled={subfolderWindow !== null || active === null} onclick={() => createSubfolderIn(null)}>{word(WORDS.createSubfolder, "Make a subfolder")}</button>
   </p>
   {#if active === null}
     {#if !error}<p class="note">…</p>{/if}
@@ -653,11 +856,18 @@
         {#if isOpen(sectionID)}
           {#each section.folders as entry (entry.folder.folderID)}
             {@const folderKey = `folder:${entry.folder.folderID}`}
-            {@render groupHead(folderKey, entry.folder.folderName, entry.count, 1, null)}
+            <div class="locations-head">
+              {@render groupHead(folderKey, entry.folder.folderName, entry.count, 1, null)}
+              {@render folderMenuButton(entry.folder)}
+            </div>
+            {@render folderMenu(entry.folder, 1)}
             {#if isOpen(folderKey)}
               {#each entry.subfolders as sub (sub.subfolder.subfolderID)}
                 {@const subKey = `subfolder:${sub.subfolder.subfolderID}`}
-                {@render groupHead(subKey, subfolderLine(sub.subfolder), sub.bookmarks.length, 2, null)}
+                <div class="locations-head">
+                  {@render groupHead(subKey, subfolderLine(sub.subfolder), sub.bookmarks.length, 2, null)}
+                  {@render subfolderMenu(sub.subfolder, 2)}
+                </div>
                 {#if isOpen(subKey)}
                   {@render places(sub.bookmarks, 3)}
                 {/if}
@@ -671,7 +881,11 @@
             {#if isOpen(inactiveKey)}
               <ul class="locations-inactive" style="padding-left: 2.5rem">
                 {#each section.inactive as folder (folder.folderID)}
-                  <li title={folder.isPersonal ? word(WORDS.personalFolder, "Yours") : word(WORDS.sharedFolder, "Shared")}>{folder.folderName}</li>
+                  <li title={folder.isPersonal ? word(WORDS.personalFolder, "Yours") : word(WORDS.sharedFolder, "Shared")}>
+                    {folder.folderName}
+                    {@render folderMenuButton(folder)}
+                    {@render folderMenu(folder, 0)}
+                  </li>
                 {/each}
               </ul>
             {/if}
@@ -701,6 +915,16 @@
   }
   .locations-submenu {
     margin-left: 1.5rem;
+  }
+  /* A folder's or a subfolder's line, its menu's button beside it and the menu below. */
+  .locations-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem;
+  }
+  .locations-head > .locations-submenu {
+    flex-basis: 100%;
   }
   .bookmark-confirm {
     border: 1px solid currentColor;

@@ -66,10 +66,5 @@ export async function moveBookmarks(act: Ask, fromFolderID: number, toFolderID: 
   await act("accessGroupBookmarkMgr", "MoveBookmarksToFolderAndSubfolder", [fromFolderID, toFolderID, null, [...bookmarkIDs]]);
 }
 
-/** Switches the known folder `folderID` on or off. Fails as the call fails (TooManyActiveFolders past the limit). */
-export async function updateKnownFolderState(act: Ask, folderID: number, isActive: boolean): Promise<void> {
-  if (!anID(folderID)) {
-    throw new Error("That is no bookmark folder.");
-  }
-  await act("accessGroupBookmarkMgr", "UpdateKnownFolderState", [folderID, isActive]);
-}
+/** Switches the known folder `folderID` on or off: the Locations window's own write. Fails as the call fails (TooManyActiveFolders past the limit). */
+export { setFolderActive as updateKnownFolderState } from "./bookmarkWrites.ts";

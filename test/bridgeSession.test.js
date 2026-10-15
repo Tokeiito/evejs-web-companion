@@ -4309,7 +4309,8 @@ test("a pilot's bookmarks go by the generic call as a pilot's read, as it was se
   const sent = gateway.calls.call.at(-1);
   assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["accessGroupBookmarkMgr", "GetMyActiveBookmarks", [], null, BRIDGE_SESSION_ID, { userid: 4 }]);
   assert.equal(gateway.calls.call.length, before + 1);
-  for (const method of ["AddFolder", "UpdateFolder", "DeleteFolder"]) {
+  // A folder's deletion is the Locations window's own write (PAGE_WRITE_PAIR_KEYS), so it is not refused here.
+  for (const method of ["AddFolder", "UpdateFolder"]) {
     const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "accessGroupBookmarkMgr", method, args: [1], kwargs: null, pilot: true, confirm: true } });
     assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], method);
   }

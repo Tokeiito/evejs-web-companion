@@ -98,9 +98,87 @@ export async function deleteBookmarks(act: Ask, folderID: number, bookmarkIDs: r
   if (ids.length === 0) {
     return [];
   }
-  const answer = await act("accessGroupBookmarkMgr", "DeleteBookmarks", [folderID, ids]);
-  const items = Array.isArray(answer) ? answer : answer !== null && typeof answer === "object" && !Array.isArray(answer) && Array.isArray((answer as { items?: unknown }).items) ? (answer as { items: unknown[] }).items : [];
+  return idsOf(await act("accessGroupBookmarkMgr", "DeleteBookmarks", [folderID, ids]));
+}
+
+/** The bookmarks an answer names: a list of their numbers. */
+function idsOf(answer: unknown): readonly number[] {
+  const items = Array.isArray(answer) ? answer : answer !== null && typeof answer === "object" && Array.isArray((answer as { items?: unknown }).items) ? (answer as { items: unknown[] }).items : [];
   return items.map((item) => unwrapLong(item as never)).filter((id): id is bigint => id !== null && id > 0n && id <= BigInt(Number.MAX_SAFE_INTEGER)).map(Number);
+}
+
+/** appConst.MAX_FOLDER_NAME_LENGTH: the most a folder's or a subfolder's name holds (bookmarkSubfolderWindow.py 52). */
+export const MAX_FOLDER_NAME_LENGTH = 40;
+
+/** A subfolder's name as the subfolder window sends it (Confirm, 104 to 107): stripped, and never nothing. */
+function subfolderNameOf(subfolderName: string): string {
+  const name = subfolderName.trim();
+  if (name === "") {
+    throw new Error("A subfolder needs a name.");
+  }
+  return name;
+}
+
+/**
+ * Makes a subfolder of the folder `folderID`, as the subfolder window's Submit does (bookmarkSubfolderWindow.py
+ * Confirm, 104 to 122; bookmarkSvc.CreateSubfolder, 564 to 569): accessGroupBookmarkMgr.CreateSubfolder(folderID,
+ * subfolderName). Fails as the call fails, and before it for what is no folder and for no name.
+ */
+export async function createSubfolder(act: Ask, folderID: number, subfolderName: string): Promise<void> {
+  if (!anID(folderID)) {
+    throw new Error("That is no bookmark folder.");
+  }
+  await act("accessGroupBookmarkMgr", "CreateSubfolder", [folderID, subfolderNameOf(subfolderName)]);
+}
+
+/**
+ * Renames the subfolder `subfolderID` of the folder `folderID`, as the subfolder window's Submit in its edit does
+ * (bookmarkSvc.UpdateSubfolder, 571 to 577): accessGroupBookmarkMgr.UpdateSubfolder(folderID, subfolderID,
+ * subfolderName). Answers whether the server had it; one it had not is the client's BookmarkSubfolderNoLongerThere,
+ * which the caller says. Fails as the call fails.
+ */
+export async function updateSubfolder(act: Ask, folderID: number, subfolderID: number, subfolderName: string): Promise<boolean> {
+  if (!anID(folderID) || !anID(subfolderID)) {
+    throw new Error("That is no bookmark subfolder.");
+  }
+  const answer = await act("accessGroupBookmarkMgr", "UpdateSubfolder", [folderID, subfolderID, subfolderNameOf(subfolderName)]);
+  return answer === true || answer === 1;
+}
+
+/**
+ * Deletes the subfolder `subfolderID` of the folder `folderID` and the bookmarks in it, as Delete Subfolder does
+ * (bookmarkSvc.DeleteSubfolder, 579 to 597): accessGroupBookmarkMgr.DeleteSubfolder(folderID, subfolderID). Answers
+ * the bookmarks the server deleted with it. Fails as the call fails.
+ */
+export async function deleteSubfolder(act: Ask, folderID: number, subfolderID: number): Promise<readonly number[]> {
+  if (!anID(folderID) || !anID(subfolderID)) {
+    throw new Error("That is no bookmark subfolder.");
+  }
+  return idsOf(await act("accessGroupBookmarkMgr", "DeleteSubfolder", [folderID, subfolderID]));
+}
+
+/**
+ * Puts the folder `folderID` online or offline for the pilot, as Online Folder and Offline Folder do
+ * (bookmarkSvc.UpdateFolderActiveState, 479 to 503): accessGroupBookmarkMgr.UpdateKnownFolderState(folderID,
+ * isActive). The server answers the folder with its bookmarks and subfolders; the caller reads the list again.
+ * Fails as the call fails.
+ */
+export async function setFolderActive(act: Ask, folderID: number, isActive: boolean): Promise<void> {
+  if (!anID(folderID)) {
+    throw new Error("That is no bookmark folder.");
+  }
+  await act("accessGroupBookmarkMgr", "UpdateKnownFolderState", [folderID, isActive]);
+}
+
+/**
+ * Deletes the folder `folderID` and everything in it, as Delete Folder does (bookmarkSvc.DeleteBookmarkFolder, 452 to
+ * 457): accessGroupBookmarkMgr.DeleteFolder(folderID). Fails as the call fails.
+ */
+export async function deleteFolder(act: Ask, folderID: number): Promise<void> {
+  if (!anID(folderID)) {
+    throw new Error("That is no bookmark folder.");
+  }
+  await act("accessGroupBookmarkMgr", "DeleteFolder", [folderID]);
 }
 
 async function bookmarkThing(act: Ask, service: string, method: string, itemID: number, folderID: number, name: string, comment: string, expiry: number, subfolderID: number | null): Promise<number | null> {
