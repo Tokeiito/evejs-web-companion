@@ -715,6 +715,10 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // The pilot's contact labels made, renamed and deleted, and given to contacts or taken off them
   // (addressbookService.py 1001 to 1147). The gateway's list has none of them.
   "charMgr.CreateLabel", "charMgr.EditLabel", "charMgr.DeleteLabel", "charMgr.AssignLabels", "charMgr.RemoveLabels",
+  // A bookmark folder's subfolders made, renamed and deleted, and a folder put online or offline for the pilot
+  // (bookmarkSvc.py 483 to 589). The gateway's list has its folders' and bookmarks' writes and none of these.
+  "accessGroupBookmarkMgr.CreateSubfolder", "accessGroupBookmarkMgr.UpdateSubfolder", "accessGroupBookmarkMgr.DeleteSubfolder",
+  "accessGroupBookmarkMgr.UpdateKnownFolderState",
 ]);
 
 /**
@@ -1149,6 +1153,30 @@ const bookmarksOfFolder = ([folderID, given, ...rest], kwargs) => {
   const ids = listed.map(wholeKey).filter((id) => id !== null);
   return { args: [folderID, { type: "objectex1", header: [token("__builtin__.set"), [{ type: "list", items: dictOrder(ids) }]], list: [], dict: [] }, ...rest], kwargs };
 };
+
+/** The bookmark service's folder and subfolder calls (bookmarkSvc.py 453 to 589): numbers above nought, and a name that is not nothing. */
+const aBookmarkFolderID = (value) => Number.isSafeInteger(value) && value > 0;
+const aSubfolderName = (value) => typeof value === "string" && value.trim() !== "";
+/** bookmarkSvc.CreateSubfolder (565): CreateSubfolder(folderID, subfolderName), the subfolder window's name stripped (bookmarkSubfolderWindow.Confirm, 104 to 107). */
+const subfolderMade = (args, kwargs) => (args.length === 2 && aBookmarkFolderID(args[0]) && aSubfolderName(args[1]) && Object.keys(kwargs).length === 0
+  ? {}
+  : { status: "differs", note: "The client sends a folder's number and the subfolder's name, and nothing else." });
+/** bookmarkSvc.UpdateSubfolder (572): UpdateSubfolder(folderID, subfolderID, subfolderName). */
+const subfolderRenamed = (args, kwargs) => (args.length === 3 && aBookmarkFolderID(args[0]) && aBookmarkFolderID(args[1]) && aSubfolderName(args[2]) && Object.keys(kwargs).length === 0
+  ? {}
+  : { status: "differs", note: "The client sends the folder's number, the subfolder's and its new name, and nothing else." });
+/** bookmarkSvc.DeleteSubfolder (589): DeleteSubfolder(subfolder.folderID, subfolderID). */
+const subfolderDeleted = (args, kwargs) => (args.length === 2 && aBookmarkFolderID(args[0]) && aBookmarkFolderID(args[1]) && Object.keys(kwargs).length === 0
+  ? {}
+  : { status: "differs", note: "The client sends the folder's number and the subfolder's, and nothing else." });
+/** bookmarkSvc.UpdateFolderActiveState (483): UpdateKnownFolderState(folderID, isActive), True or False from the folder's menu. */
+const folderStateSet = (args, kwargs) => (args.length === 2 && aBookmarkFolderID(args[0]) && typeof args[1] === "boolean" && Object.keys(kwargs).length === 0
+  ? {}
+  : { status: "differs", note: "The client sends the folder's number and True or False, and nothing else." });
+/** bookmarkSvc.DeleteBookmarkFolder (453): DeleteFolder(folderID). */
+const folderDeleted = (args, kwargs) => (args.length === 1 && aBookmarkFolderID(args[0]) && Object.keys(kwargs).length === 0
+  ? {}
+  : { status: "differs", note: "The client sends the folder's number and nothing else." });
 
 const following = (args, kwargs, context) => {
   const [thing, range] = args;
@@ -2037,6 +2065,16 @@ const RETAIL_CALLS = Object.freeze({
     shape: updatingBookmark,
   }), [2, 3]),
   "accessGroupBookmarkMgr.DeleteBookmarks": reshaped("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:664", bookmarksOfFolder, "self.accessGroupBookmarkMgr.DeleteBookmarks(folderID, bookmarks), each folder's bookmarks a set, from Remove Location after RemoveLocation or RemoveMultipleLocation; answered the ones deleted. In no recording."),
+  "accessGroupBookmarkMgr.CreateSubfolder": typing(judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:565", subfolderMade,
+    "self.accessGroupBookmarkMgr.CreateSubfolder(folderID, subfolderName): the subfolder window's Submit (bookmarkSubfolderWindow.py Confirm, 104 to 122), from Create Subfolder at the Locations window's bottom or a folder's menu; the name the edit's, stripped, unicode. Answered the subfolder. In no recording."), [1]),
+  "accessGroupBookmarkMgr.UpdateSubfolder": typing(judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:572", subfolderRenamed,
+    "self.accessGroupBookmarkMgr.UpdateSubfolder(folderID, subfolderID, subfolderName): the subfolder window's Submit in its edit (Edit Subfolder, a subfolder's menu); the name unicode. Answered whether the subfolder was there; the client says BookmarkSubfolderNoLongerThere where it was not. In no recording."), [2]),
+  "accessGroupBookmarkMgr.DeleteSubfolder": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:589", subfolderDeleted,
+    "self.accessGroupBookmarkMgr.DeleteSubfolder(subfolder.folderID, subfolderID): Delete Subfolder, a subfolder's menu, after ConfirmDeleteSubfolder. Answered the bookmarks deleted with it. In no recording."),
+  "accessGroupBookmarkMgr.UpdateKnownFolderState": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:483", folderStateSet,
+    "self.accessGroupBookmarkMgr.UpdateKnownFolderState(folderID, isActive): Online Folder and Offline Folder, a folder's menu; online only where the pilot has fewer than the most online of its kind (ValidateActiveFolderCount). Answered the folder, its bookmarks and its subfolders. In no recording."),
+  "accessGroupBookmarkMgr.DeleteFolder": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:453", folderDeleted,
+    "self.accessGroupBookmarkMgr.DeleteFolder(folderID): Delete Folder, a folder's menu, after ConfirmDeleteFolder; for a personal folder or one the pilot administers. Answered nothing. In no recording."),
   "accessGroupBookmarkMgr.GetMyActiveBookmarks": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:163", sentWithNothing,
     "folders, bookmarks, subfolders = self.accessGroupBookmarkMgr.GetMyActiveBookmarks(), by name and with nothing: recorded on Tranquility so, in three recordings. The client asks once in a session and keeps the three, changing them as it makes, changes and deletes a bookmark and as the server says a shared folder changed. The transport asks as a character is chosen and keeps the three (pilots.js, bookmarksRead): a place bookmarked on the ballpark's object is worked into them as the client works it (afterBookmarkCall), and they are let go at any other write of the pilot's own of a bookmark, a folder or a subfolder and at the server's word of a shared folder, and asked for when they are next wanted. The page asks each time it wants them, and is answered from what is kept."),
   "beyonce.BookmarkLocation": typing(reshaped("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:617", bookmarking,
