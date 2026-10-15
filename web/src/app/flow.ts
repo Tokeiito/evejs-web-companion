@@ -2330,6 +2330,8 @@ const droneRangeBonusByTypeID = new Map<number, number | null>();
 
 /** godma.ProcessSessionChange (1156): the session's names at whose change godma primes itself again, and ends the repairs it began. */
 const GODMA_SESSION_NAMES: ReadonlySet<string> = new Set(["stationid", "solarsystemid", "shipid", "charid", "structureid"]);
+/** gameui.OnSessionChanged (433 to 470): the session's names of a place or a ship, at whose change the client's view goes where the session is now. */
+const VIEW_SESSION_NAMES: ReadonlySet<string> = new Set(["solarsystemid", "stationid", "structureid", "shipid"]);
 /** dogma attributes: a module's hit points, and the hit points a character mends in a minute with nanite paste. */
 const ATTRIBUTE_HP = 9;
 const ATTRIBUTE_MODULE_REPAIR_RATE = 1267;
@@ -3113,6 +3115,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // ends every repair it began. So does the page.
     if (sessionNames?.some((name) => GODMA_SESSION_NAMES.has(name))) {
       void moduleRepairs.endAll();
+    }
+    // gameui.OnSessionChanged: another system, station, structure or ship, and the client's view goes where the
+    // session is now (_HandleSessionChangeInStation, InStructure, InSpace), whoever changed it: the pilot's own undock,
+    // dock or jump, or the server's own move (a capsule sent to its clone's station, a GM's move). The page reads its
+    // place again, from what the pilot's transport has of the session.
+    if (sessionNames?.some((name) => VIEW_SESSION_NAMES.has(name))) {
+      void loadFlightStatus().catch(() => {});
     }
     // crimewatchSvc.ProcessSessionChange and OnSessionChanged: another place, or another system or ship, and
     // the client asks crimewatch its states again. So does the page, of the BFF.
