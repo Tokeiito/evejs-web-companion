@@ -97,8 +97,9 @@ import {
   isNpcOwner,
   type DecodedMailbox,
 } from "../bridge/mail.ts";
-import { addressBookOf, contactLabelsOf, onlineStatesOf, type NamedAddressBook } from "../bridge/contacts.ts";
+import { addressBookOf, contactLabelsOf, onlineStatesOf, type ContactWrite, type NamedAddressBook } from "../bridge/contacts.ts";
 import { sendMail as sendMailCall, type MailToSend } from "../bridge/mailWrites.ts";
+import { mailMarkupOfTyped } from "../bridge/mailMarkup.ts";
 import { reprocess as reprocessCall } from "../bridge/reprocessWrites.ts";
 import {
   activityReadError,
@@ -1096,6 +1097,14 @@ export interface AppFlow {
   addressBook(): Promise<NamedAddressBook>;
   /** The client's online status service primed, where it is not: the watched contacts' online state in the store. */
   primeContactsOnline(): Promise<void>;
+  /** A contact added, or edited where `edit` (charMgr.AddContact, EditContact); fails with the server's words. */
+  addOrEditContact(contact: ContactWrite, edit: boolean): Promise<void>;
+  /** Contacts taken away (charMgr.DeleteContacts); fails with the server's words. */
+  deleteContacts(contactIDs: readonly number[]): Promise<void>;
+  /** Owners blocked (charMgr.BlockOwners); fails with the server's words. */
+  blockOwners(ownerIDs: readonly number[]): Promise<void>;
+  /** Owners no longer blocked (charMgr.UnblockOwners); fails with the server's words. */
+  unblockOwners(ownerIDs: readonly number[]): Promise<void>;
   /** The Contacts window's last group viewed by the pilot online, kept on this machine; none where none was. */
   contactsLastSelected(): number | string | null;
   /** The Contacts window's group viewed kept for the pilot online, on this machine. */
@@ -5546,6 +5555,53 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
     })();
     return onlinePriming;
+  }
+
+  // The address book's writes (addressbookService.py 645 to 869), each a page write by the generic call; a refusal
+  // told in the server's words, as the mail's are.
+  async function contactWrite(method: string, args: readonly JsonValue[]): Promise<void> {
+    try {
+      await bridgeDo("charMgr", method, [...args]);
+    } catch (error) {
+      throwIfRequestRetired(error);
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      throw new Error(mailRefusalMessage(error));
+    }
+  }
+
+  // AddToAddressBook (705 to 816): AddContact, or EditContact for a contact the pilot has, with the standing, the
+  // buddy list's box, the notification's and the message as the window's editor gives it (its markup). A character
+  // put on the buddy list has its online state asked where the service keeps none (GetOnlineStatus, fetch: 806 to
+  // 811; onlineStatus.py 42 to 51).
+  async function addOrEditContact(contact: ContactWrite, edit: boolean): Promise<void> {
+    await contactWrite(edit ? "EditContact" : "AddContact", [
+      contact.contactID, contact.relationshipID, contact.inWatchlist, contact.sendNotification, mailMarkupOfTyped(contact.message),
+    ]);
+    const online = store.addressBook.get().online;
+    if (contact.inWatchlist && contact.isCharacter && online !== null && online[contact.contactID] === undefined) {
+      const answer = await bridgeAsk("onlineStatus", "GetOnlineStatus", [contact.contactID]).catch(() => null);
+      if (typeof answer === "boolean") {
+        store.apply({ type: "address-book/online-changed", contactID: contact.contactID, online: answer });
+      }
+    }
+  }
+
+  // RemoveFromAddressBook (817 to 869), after its question: DeleteContacts with the contacts, a list.
+  async function deleteContacts(contactIDs: readonly number[]): Promise<void> {
+    await contactWrite("DeleteContacts", [[...contactIDs]]);
+  }
+
+  // BlockOwner (645 to 664) and UnblockOwner (666 to 677): BlockOwners([ownerID]), UnblockOwners(blocked), lists.
+  async function blockOwners(ownerIDs: readonly number[]): Promise<void> {
+    await contactWrite("BlockOwners", [[...ownerIDs]]);
+  }
+
+  async function unblockOwners(ownerIDs: readonly number[]): Promise<void> {
+    await contactWrite("UnblockOwners", [[...ownerIDs]]);
   }
 
   function contactLoggedOnOrOff(method: string | null, args: readonly unknown[]): void {
@@ -16329,6 +16385,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     mailContacts,
     addressBook,
     primeContactsOnline,
+    addOrEditContact,
+    deleteContacts,
+    blockOwners,
+    unblockOwners,
     contactsLastSelected,
     onlineBuddyOnly,
     keepOnlineBuddyOnly,

@@ -77,6 +77,19 @@ export function onlineStatesOf(answer: JsonValue): Readonly<Record<number, boole
   return online;
 }
 
+/** What the contact management window sends (ContactManagementWnd.Confirm: contactManagementWindow.py 146 to 160). */
+export interface ContactWrite {
+  readonly contactID: number;
+  /** One of the five standings. */
+  readonly relationshipID: number;
+  readonly inWatchlist: boolean;
+  readonly sendNotification: boolean;
+  /** What is typed in the message's editor, sent as its markup. */
+  readonly message: string;
+  /** Whether the owner is a character, whose online state the service keeps where it is a buddy. */
+  readonly isCharacter: boolean;
+}
+
 /** A contact with its name, as the client's entries show one (cfg.eveowners). */
 export interface NamedContact extends Contact {
   readonly name: string;

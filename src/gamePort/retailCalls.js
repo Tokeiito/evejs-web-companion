@@ -690,6 +690,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // The pilot's contact labels, as the address book asks them for the Contacts window's labels
   // (addressbookService.py GetContactLabels, 1022 to 1044). The gateway's list has the contacts and not these.
   "charMgr.GetLabels",
+  // A contact edited (addressbookService.py AddToAddressBook, 786 to 789). The gateway's list has its adding and
+  // not this.
+  "charMgr.EditContact",
 ]);
 
 /**
@@ -914,6 +917,8 @@ const aJobAndItsSystem = (args, kwargs) => (args.length === 2 && Number.isSafeIn
 
 /** droneFunctions.py: an order to drones names them as a list, as every recorded one does. */
 const dronesListed = ([drones, ...rest], kwargs) => ({ args: [list(drones), ...rest], kwargs });
+/** The address book's writes of owners (addressbookService.py 658, 674, 842): the owners a list, as the client's are. */
+const ownersListed = ([owners, ...rest], kwargs) => ({ args: [list(owners), ...rest], kwargs });
 /** mailSvc.SendMail (965): the recipients a list, as the compose window's self.toChars.values() is (evemail.py 2281). */
 const recipientsListed = ([recipients, ...rest], kwargs) => ({ args: [list(recipients), ...rest], kwargs });
 /** A mailing list's number, then its members chosen, a list (evemailingListConfig.py _GetSelectedMembers, 295 to 300). */
@@ -1784,6 +1789,11 @@ const RETAIL_CALLS = Object.freeze({
     shape: ofTheCharacter,
   }),
   "charMgr.GetContactList": same("eve/client/script/ui/shared/neocom/addressBook/addressbookService.py:207", "RemoteSvc('charMgr').GetContactList(), no arguments: asked as the character is chosen, beside the corporation's contacts and the watched contacts' online state, and kept"),
+  "charMgr.AddContact": typing(same("eve/client/script/ui/shared/neocom/addressBook/addressbookService.py:789", "eveMisc.CSPAChargedAction('CSPAContactNotifyCheck', sm.RemoteSvc('charMgr'), 'AddContact', contactID, relationshipID, inWatchlist, sendNotification, message): from the contact management window, the standing one of the five, the buddy list's box and the notification's a bool each, the message the editor's (the empty byte string where it holds nothing). An agent is added with its contactID alone (733). In no recording."), [4]),
+  "charMgr.EditContact": typing(same("eve/client/script/ui/shared/neocom/addressBook/addressbookService.py:789", "eveMisc.CSPAChargedAction('CSPAContactNotifyCheck', sm.RemoteSvc('charMgr'), 'EditContact', contactID, relationshipID, inWatchlist, sendNotification, message): as AddContact, for a contact the pilot has. In no recording."), [4]),
+  "charMgr.DeleteContacts": reshaped("eve/client/script/ui/shared/neocom/addressBook/addressbookService.py:842", ownersListed, "sm.RemoteSvc('charMgr').DeleteContacts(contactIDs): the contacts a list, after the RemoveOneFromContacts or RemoveManyFromContacts question. In no recording."),
+  "charMgr.BlockOwners": reshaped("eve/client/script/ui/shared/neocom/addressBook/addressbookService.py:658", ownersListed, "sm.RemoteSvc('charMgr').BlockOwners([ownerID]): one owner, in a list, not the pilot, no NPC's and none blocked already. In no recording."),
+  "charMgr.UnblockOwners": reshaped("eve/client/script/ui/shared/neocom/addressBook/addressbookService.py:674", ownersListed, "sm.RemoteSvc('charMgr').UnblockOwners(blocked): the owners blocked among those named, a list. In no recording."),
   "charMgr.GetLabels": same("eve/client/script/ui/shared/neocom/addressBook/addressbookService.py:1029", "GetContactLabels('contact'): RemoteSvc('charMgr').GetLabels(), no arguments, by the service's name: the pilot's contact labels, asked as the Contacts window's labels are first shown (contactsForm.py GetLabelsSubContent) and kept. In no recording."),
   "onlineStatus.GetInitialState": same("eve/client/script/ui/shared/comtool/onlineStatus.py:79", "RemoteSvc('onlineStatus').GetInitialState(), no arguments: asked once (Prime), as the character is chosen, and kept by contact"),
   "onlineStatus.GetOnlineStatus": same("eve/client/script/ui/shared/comtool/onlineStatus.py:56", "RemoteSvc('onlineStatus').GetOnlineStatus(charID), for a character the kept state does not have, and kept"),

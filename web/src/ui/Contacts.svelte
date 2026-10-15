@@ -13,7 +13,13 @@
   // 320 to 332; fetch=False, 176), and a blocked owner's says so (SetBlocked, 334 to 342). The group last viewed is
   // kept for the pilot (contacts_lastselected), else the first is shown.
   //
-  // Not here yet: the Notifications group, the Agents and Search tabs, and every write.
+  // Each entry has the client's menu of a contact (menusvc.py 590 to 602, as characterCheckers.py offers each): Add
+  // Contact, Edit Contact and Remove Contact, Block and Unblock. Adding and editing open the Contact Management window
+  // (contactManagementWindow.py: the five standings, and for a character the buddy list's box, the notification's
+  // and a message), confirmed as AddContact or EditContact; removing asks the client's question first
+  // (RemoveOneFromContacts); blocking refuses the pilot itself and NPCs in the client's words (BlockOwner, 645 to 664).
+  //
+  // Not here yet: the Notifications group, the Agents and Search tabs, the labels' writes, and editing several at once.
   import { onMount } from "svelte";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import {
@@ -24,6 +30,7 @@
     inStandingGroup,
     type NamedAddressBook,
   } from "../bridge/contacts.ts";
+  import { isNpcOwner } from "../bridge/mail.ts";
   import { isSessionLost } from "../app/flow.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -34,6 +41,8 @@
   const words = store.words;
   // svelte-ignore state_referenced_locally
   const addressBookState = store.addressBook;
+  // svelte-ignore state_referenced_locally
+  const station = store.station;
 
   /** The window's words, by their labels (addressBookWindow.py 60, 86; contactsForm.py 136, 144 to 265, 416 to 497). */
   const WORDS = {
@@ -68,7 +77,26 @@
     next: "UI/Common/Next",
     previous: "UI/Common/Previous",
     withLength: "/Carbon/UI/Controls/ScrollEntries/LabelWithLength",
+    management: "UI/PeopleAndPlaces/ContactManagement",
+    addContact: "UI/PeopleAndPlaces/AddContact",
+    editContact: "UI/PeopleAndPlaces/EditContact",
+    removeContact: "UI/PeopleAndPlaces/RemoveContact",
+    blockContact: "UI/PeopleAndPlaces/BlockContact",
+    unblockContact: "UI/PeopleAndPlaces/UnblockContact",
+    toWatchlist: "UI/PeopleAndPlaces/AddContactToWatchlist",
+    buddyHint: "UI/PeopleAndPlaces/BuddyListHint",
+    sendNotification: "UI/PeopleAndPlaces/SendNotificationTo",
+    messageTo: "UI/PeopleAndPlaces/MessageTo",
+    cannotBlockSelf: "UI/PeopleAndPlaces/CannotBlockSelf",
+    cannotBlockAgents: "UI/PeopleAndPlaces/CannotBlockAgents",
+    cannotBlockNpcCorps: "UI/PeopleAndPlaces/CannotBlockNPCCorps",
+    alreadyBlocked: "UI/PeopleAndPlaces/AlreadyHaveBlocked",
+    cancel: "UI/Common/Buttons/Cancel",
+    yes: "UI/Common/Buttons/Yes",
+    no: "UI/Common/Buttons/No",
   } as const;
+  /** The client's dialogs the window says things with. */
+  const DIALOGS = ["RemoveOneFromContacts"] as const;
 
   /** The client's word for a label, from the player's install; the page's own where there is none to read. */
   function word(label: string, own: string): string {
@@ -101,6 +129,15 @@
     [CONTACT_STANDING.horrible]: [WORDS.standingTerrible, "Terrible"],
   };
 
+  /** STANDING_DESCRIPTION (contactManagementWindow.py 22 to 26): the five standings' words, the highest first. */
+  const LEVELS: readonly (readonly [number, string, string])[] = [
+    [CONTACT_STANDING.high, WORDS.excellent, "Excellent Standing"],
+    [CONTACT_STANDING.good, WORDS.good, "Good Standing"],
+    [CONTACT_STANDING.neutral, WORDS.neutral, "Neutral Standing"],
+    [CONTACT_STANDING.bad, WORDS.bad, "Bad Standing"],
+    [CONTACT_STANDING.horrible, WORDS.terrible, "Terrible Standing"],
+  ];
+
   /** A label's group, by its bit: "No Label" is -1 (GetLabelsSubContent, 205 to 213). */
   const labelGroup = (labelID: bigint): string => `label:${labelID}`;
   const NO_LABEL = labelGroup(-1n);
@@ -119,6 +156,24 @@
   let filterText = $state("");
   let filtering = $state("");
   let filterTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The entry whose menu is open, by its owner. */
+  let menuFor = $state<number | null>(null);
+  /** The Contact Management window open (ContactManagementWnd), with what it holds. */
+  interface Managing {
+    readonly contactID: number;
+    readonly name: string;
+    readonly isContact: boolean;
+    readonly isCharacter: boolean;
+    level: number;
+    inWatchlist: boolean;
+    notify: boolean;
+    message: string;
+  }
+  let managing = $state<Managing | null>(null);
+  /** A question of the client's waiting on the pilot (its dialog), and what it says. */
+  let question = $state<{ readonly title: string; readonly body: string; readonly answer: (yes: boolean) => void } | null>(null);
+  /** What the window last said (CustomInfo). */
+  let notes = $state<readonly string[]>([]);
 
   async function load(): Promise<void> {
     busy = true;
@@ -224,6 +279,140 @@
     return { id: contact.contactID, name: contact.name, standing: contact.relationshipID };
   }
 
+  /** The pilot's own character, which the menus offer nothing of (characterCheckers.py IsMe). */
+  const myID = $derived($station.online?.characterID ?? null);
+  const contactIDs = $derived(new Set((book?.contacts ?? []).map((contact) => contact.contactID)));
+
+  /**
+   * characterCheckers.py: Add Contact where it is none of the pilot's (62 to 69), Edit and Remove Contact where it is
+   * one (254 to 263), Block where it is not blocked (104 to 111), Unblock where it is (373 to 378); none for the pilot
+   * itself, and none but Unblock for an NPC.
+   */
+  function offersOf(ownerID: number): { add: boolean; edit: boolean; block: boolean; unblock: boolean } {
+    const mine = ownerID === myID;
+    const npc = isNpcOwner(ownerID);
+    const isContact = contactIDs.has(ownerID);
+    const isBlocked = blockedIDs.has(ownerID);
+    return {
+      add: !mine && !npc && !isContact,
+      edit: !mine && !npc && isContact,
+      block: !mine && !npc && !isBlocked,
+      unblock: !mine && isBlocked,
+    };
+  }
+
+  /** A write of the window's, its refusal said. */
+  async function run(action: () => Promise<void>): Promise<void> {
+    busy = true;
+    error = "";
+    try {
+      await action();
+    } catch (cause) {
+      error = isSessionLost(cause) ? "Your session ended. Pick your character again." : cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      busy = false;
+    }
+  }
+
+  /**
+   * AddToAddressBook (addressbookService.py 705 to 816): the Contact Management window for the owner, a contact's
+   * standing and buddy list as they are, a new one at Neutral (contactManagementWindow.py 36 to 37), the
+   * notification off and no message.
+   */
+  function manage(ownerID: number, name: string): void {
+    menuFor = null;
+    notes = [];
+    const contact = (book?.contacts ?? []).find((each) => each.contactID === ownerID);
+    managing = {
+      contactID: ownerID,
+      name,
+      isContact: contact !== undefined,
+      isCharacter: isCharacterContact(ownerID),
+      level: contact?.relationshipID ?? CONTACT_STANDING.neutral,
+      inWatchlist: contact?.inWatchlist ?? false,
+      notify: false,
+      message: "",
+    };
+  }
+
+  /** Confirm (contactManagementWindow.py 146 to 160): AddContact or EditContact, and the contact kept as the address book keeps it. */
+  function confirmManagement(): void {
+    const held = managing;
+    if (held === null) return;
+    void run(async () => {
+      await flow.addOrEditContact({
+        contactID: held.contactID,
+        relationshipID: held.level,
+        inWatchlist: held.isCharacter ? held.inWatchlist : false,
+        sendNotification: held.isCharacter ? held.notify : false,
+        message: held.isCharacter ? held.message : "",
+        isCharacter: held.isCharacter,
+      }, held.isContact);
+      if (book !== null) {
+        const before = book.contacts.find((each) => each.contactID === held.contactID);
+        const contact = { contactID: held.contactID, name: held.name, relationshipID: held.level, inWatchlist: held.isCharacter && held.inWatchlist, labelMask: before?.labelMask ?? 0n };
+        book = { ...book, contacts: [...book.contacts.filter((each) => each.contactID !== held.contactID), contact] };
+      }
+      managing = null;
+    });
+  }
+
+  /** RemoveFromAddressBook (817 to 869): the client's question, then DeleteContacts, and the contact let go. */
+  function removeContact(ownerID: number, name: string): void {
+    menuFor = null;
+    notes = [];
+    question = {
+      title: filledWord("dialog:RemoveOneFromContacts/title", "Remove?", {}),
+      body: filledWord("dialog:RemoveOneFromContacts/body", "Take {names} off your contacts?", { names: name }),
+      answer: (yes) => {
+        question = null;
+        if (!yes) return;
+        void run(async () => {
+          await flow.deleteContacts([ownerID]);
+          if (book !== null) {
+            book = { ...book, contacts: book.contacts.filter((each) => each.contactID !== ownerID) };
+          }
+        });
+      },
+    };
+  }
+
+  /** BlockOwner (645 to 664): the pilot itself, an agent and an NPC's corporation refused in the client's words; else BlockOwners. */
+  function block(ownerID: number, name: string): void {
+    menuFor = null;
+    notes = [];
+    if (ownerID === myID) {
+      notes = [word(WORDS.cannotBlockSelf, "You cannot block yourself.")];
+      return;
+    }
+    if (isNpcOwner(ownerID)) {
+      notes = [isCharacterContact(ownerID) ? word(WORDS.cannotBlockAgents, "Agents cannot be blocked.") : word(WORDS.cannotBlockNpcCorps, "NPC corporations cannot be blocked.")];
+      return;
+    }
+    if (blockedIDs.has(ownerID)) {
+      notes = [filledWord(WORDS.alreadyBlocked, "{userName} is blocked already.", { userName: name })];
+      return;
+    }
+    void run(async () => {
+      await flow.blockOwners([ownerID]);
+      if (book !== null) {
+        book = { ...book, blocked: [...book.blocked, { ownerID, name }] };
+      }
+    });
+  }
+
+  /** UnblockOwner (666 to 677): UnblockOwners with the owner, and it let go of the blocked. */
+  function unblock(ownerID: number): void {
+    menuFor = null;
+    notes = [];
+    void run(async () => {
+      await flow.unblockOwners([ownerID]);
+      if (book !== null) {
+        book = { ...book, blocked: book.blocked.filter((each) => each.ownerID !== ownerID) };
+      }
+    });
+  }
+
   /** idCheckers.IsCharacter as the page can tell it: no corporation's (1000000 to 1999999, 98000000 to 98999999) nor alliance's (99000000 to 99999999). */
   function isCharacterContact(ownerID: number): boolean {
     return !((ownerID >= 1_000_000 && ownerID <= 1_999_999) || (ownerID >= 98_000_000 && ownerID <= 99_999_999));
@@ -259,7 +448,7 @@
   }
 
   onMount(() => {
-    flow.requestWords(Object.values(WORDS));
+    flow.requestWords([...Object.values(WORDS), ...DIALOGS.flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`])]);
     void load();
     void flow.primeContactsOnline().catch(() => {});
     return () => {
@@ -275,6 +464,55 @@
 
   {#if error}
     <p class="error">{error}</p>
+  {/if}
+  {#each notes as said, place (place)}
+    <p class="error">{said}</p>
+  {/each}
+  {#if question !== null}
+    <!-- The client's question (its dialog): its title, its body, yes and no. -->
+    <div class="contacts-confirm" role="alertdialog" aria-label={question.title}>
+      <strong>{question.title}</strong>
+      <p>{question.body}</p>
+      <p class="controls">
+        <button type="button" onclick={() => question?.answer(true)}>{word(WORDS.yes, "Yes")}</button>
+        <button type="button" class="minor" onclick={() => question?.answer(false)}>{word(WORDS.no, "No")}</button>
+      </p>
+    </div>
+  {/if}
+  {#if managing !== null}
+    <!-- Contact Management (ContactManagementWnd): the name, the five standings and the one chosen, and for a
+         character the buddy list's box, the notification's and the message; Add Contact or Edit Contact, and Cancel. -->
+    <section class="contacts-confirm" aria-label={word(WORDS.management, "Contact Management")}>
+      <h3>{word(WORDS.management, "Contact Management")}</h3>
+      <p><strong>{managing.name}</strong></p>
+      <p>{word(LEVELS.find(([level]) => level === managing?.level)?.[1] ?? WORDS.neutral, LEVELS.find(([level]) => level === managing?.level)?.[2] ?? "Neutral Standing")}</p>
+      <p class="controls">
+        {#each LEVELS as [level, label, own] (level)}
+          <button type="button" class="minor" class:active={managing.level === level} aria-pressed={managing.level === level} title={word(label, own)} onclick={() => { if (managing) managing.level = level; }}>
+            {level > 0 ? `+${level}` : String(level)}
+          </button>
+        {/each}
+      </p>
+      {#if managing.isCharacter}
+        <p class="controls">
+          <label title={word(WORDS.buddyHint, "")}>
+            <input type="checkbox" bind:checked={managing.inWatchlist} />
+            {word(WORDS.toWatchlist, "Add contact to buddy list")}
+          </label>
+        </p>
+        <p class="controls">
+          <label>
+            <input type="checkbox" bind:checked={managing.notify} />
+            {filledWord(WORDS.sendNotification, "Send notification to {contactName}", { contactName: managing.name })}
+          </label>
+        </p>
+        <textarea rows="3" maxlength="120" disabled={!managing.notify} placeholder={filledWord(WORDS.messageTo, "Message to {charName}", { charName: managing.name })} bind:value={managing.message}></textarea>
+      {/if}
+      <p class="controls">
+        <button type="button" class="primary" disabled={busy} onclick={confirmManagement}>{managing.isContact ? word(WORDS.editContact, "Edit Contact") : word(WORDS.addContact, "Add Contact")}</button>
+        <button type="button" class="minor" onclick={() => (managing = null)}>{word(WORDS.cancel, "Cancel")}</button>
+      </p>
+    </section>
   {/if}
 
   <nav class="tabs">
@@ -327,7 +565,7 @@
       {:else}
         <table>
           <thead>
-            <tr><th>{word(WORDS.name, "Name")}</th><th></th><th></th></tr>
+            <tr><th>{word(WORDS.name, "Name")}</th><th></th><th></th><th></th></tr>
           </thead>
           <tbody>
             {#each shown.rows as row (row.id)}
@@ -341,7 +579,31 @@
                   {/if}
                 </td>
                 <td class="contacts-standing">{row.standing === null ? "" : row.standing > 0 ? `+${row.standing}` : String(row.standing)}</td>
+                <td>
+                  <button type="button" class="minor" aria-expanded={menuFor === row.id} aria-label="Menu" onclick={() => (menuFor = menuFor === row.id ? null : row.id)}>⋯</button>
+                </td>
               </tr>
+              {#if menuFor === row.id}
+                {@const offers = offersOf(row.id)}
+                <!-- The entry's menu of a contact (menusvc.py 590 to 602). -->
+                <tr class="contacts-menu">
+                  <td colspan="4">
+                    {#if offers.add}
+                      <button type="button" class="minor" disabled={busy} onclick={() => manage(row.id, row.name)}>{word(WORDS.addContact, "Add Contact")}</button>
+                    {/if}
+                    {#if offers.edit}
+                      <button type="button" class="minor" disabled={busy} onclick={() => manage(row.id, row.name)}>{word(WORDS.editContact, "Edit Contact")}</button>
+                      <button type="button" class="minor" disabled={busy} onclick={() => removeContact(row.id, row.name)}>{word(WORDS.removeContact, "Remove Contact")}</button>
+                    {/if}
+                    {#if offers.unblock}
+                      <button type="button" class="minor" disabled={busy} onclick={() => unblock(row.id)}>{word(WORDS.unblockContact, "Unblock")}</button>
+                    {/if}
+                    {#if offers.block}
+                      <button type="button" class="minor" disabled={busy} onclick={() => block(row.id, row.name)}>{word(WORDS.blockContact, "Block")}</button>
+                    {/if}
+                  </td>
+                </tr>
+              {/if}
             {/each}
           </tbody>
         </table>
@@ -402,5 +664,19 @@
   }
   .contacts-pages {
     justify-content: flex-end;
+  }
+  .contacts-confirm {
+    border: 1px solid currentColor;
+    padding: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+  .contacts-confirm textarea {
+    width: 100%;
+    font: inherit;
+  }
+  /* The standing chosen, marked without colour alone. */
+  .contacts-confirm button.active {
+    text-decoration: underline;
+    font-weight: 600;
   }
 </style>

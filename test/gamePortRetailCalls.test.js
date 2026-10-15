@@ -1787,6 +1787,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "search.QuickQuery",
     // The pilot's contact labels. The gateway's list has the contacts and not these.
     "charMgr.GetLabels",
+    // A contact edited. The gateway's list has its adding and not this.
+    "charMgr.EditContact",
   ]);
   // structureGuests.py 25: sm.RemoteSvc('structureGuests').GetGuests(session.structureid), by the service's name,
   // with the structure the session is docked in and nothing else.
