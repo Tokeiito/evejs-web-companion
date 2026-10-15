@@ -727,6 +727,8 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   "accessGroupBookmarkMgr.RemoveFromKnownFolders", "ownerGroupManager.GetGroup",
   // Bookmarks copied into a folder (bookmarkSvc.py 701). The gateway's list has their moving and not this.
   "accessGroupBookmarkMgr.CopyBookmarksToFolderAndSubfolder",
+  // A folder added to those the pilot knows (bookmarkSvc.py 357). The gateway's list has not got it.
+  "accessGroupBookmarkMgr.AddToKnownFolders",
 ]);
 
 /**
@@ -2145,6 +2147,10 @@ const RETAIL_CALLS = Object.freeze({
     "self.accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder(oldFolderID, folderID, subfolderID, bookmarkIDs): bookmarks dropped on a folder or a subfolder of the Locations window (DropInPlacesFolder), each source folder's a set; answered the rows moved and a message or None. In no recording."),
   "accessGroupBookmarkMgr.CopyBookmarksToFolderAndSubfolder": reshaped("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:701", bookmarksMovedOrCopied,
     "self.accessGroupBookmarkMgr.CopyBookmarksToFolderAndSubfolder(oldFolderID, folderID, subfolderID, bookmarkIDs): the same drop with Shift held, or from a folder the pilot may only view or use; answered the new bookmarks by number and a message or None. In no recording."),
+  "accessGroupBookmarkMgr.AddToKnownFolders": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:357", folderStateSet,
+    "self.accessGroupBookmarkMgr.AddToKnownFolders(folderID, isActive): Folder Information's Add Folder for a folder the pilot does not know (LinkedBookmarkFolderWindow.AddFolder), online or offline as chosen; answered the folder, its bookmarks and its subfolders. In no recording."),
+  "accessGroupBookmarkMgr.SearchFoldersWithAdminAccess": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:715", sentWithNothing,
+    "self.accessGroupBookmarkMgr.SearchFoldersWithAdminAccess(), by name and with nothing, kept two minutes (Memoize(2)): the folders the pilot may administer, for the Locations window's Folders with Admin Access. In no recording."),
   "accessGroupBookmarkMgr.GetMyActiveBookmarks": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:163", sentWithNothing,
     "folders, bookmarks, subfolders = self.accessGroupBookmarkMgr.GetMyActiveBookmarks(), by name and with nothing: recorded on Tranquility so, in three recordings. The client asks once in a session and keeps the three, changing them as it makes, changes and deletes a bookmark and as the server says a shared folder changed. The transport asks as a character is chosen and keeps the three (pilots.js, bookmarksRead): a place bookmarked on the ballpark's object is worked into them as the client works it (afterBookmarkCall), and they are let go at any other write of the pilot's own of a bookmark, a folder or a subfolder and at the server's word of a shared folder, and asked for when they are next wanted. The page asks each time it wants them, and is answered from what is kept."),
   "beyonce.BookmarkLocation": typing(reshaped("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:617", bookmarking,

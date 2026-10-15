@@ -411,7 +411,7 @@ import { scannerStateFromRead } from "../scanner/scannerCenter.ts";
 import { siteKind } from "../scanner/siteKind.ts";
 import { decodeFittings } from "../bridge/fittings.ts";
 import { decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge/sharedFittings.ts";
-import { readAccessGroup, readFolderInfo, readMyAccessGroups, readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
+import { readAccessGroup, readFolderInfo, readFoldersWithAdminAccess, readMyAccessGroups, readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
 import type { AccessGroup, ActiveBookmarks, BookmarkFolder } from "../bridge/bookmarks.ts";
 import { agentsAtStation, readAgentsTable } from "../bridge/agentReads.ts";
 import { readCorporationMemberIDs } from "../bridge/corpMemberReads.ts";
@@ -434,7 +434,7 @@ import { readMyLaunches } from "../bridge/launchReads.ts";
 import { readCharacterFittings, readCorporationFittings } from "../bridge/fittingReads.ts";
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
-import { BOOKMARK_EXPIRY, addFolder as addFolderCall, copyBookmarks as copyBookmarksCall, moveBookmarks as moveBookmarksCall, removeFromKnownFolders as removeFromKnownFoldersCall, type MovedOrCopied, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, createSubfolder as createSubfolderCall, updateFolder as updateFolderCall, type FolderAccess, deleteBookmarks as deleteBookmarksCall, deleteFolder as deleteFolderCall, deleteSubfolder as deleteSubfolderCall, setFolderActive as setFolderActiveCall, updateBookmark as updateBookmarkCall, updateSubfolder as updateSubfolderCall } from "../bridge/bookmarkWrites.ts";
+import { BOOKMARK_EXPIRY, addFolder as addFolderCall, addToKnownFolders as addToKnownFoldersCall, copyBookmarks as copyBookmarksCall, moveBookmarks as moveBookmarksCall, removeFromKnownFolders as removeFromKnownFoldersCall, type MovedOrCopied, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, createSubfolder as createSubfolderCall, updateFolder as updateFolderCall, type FolderAccess, deleteBookmarks as deleteBookmarksCall, deleteFolder as deleteFolderCall, deleteSubfolder as deleteSubfolderCall, setFolderActive as setFolderActiveCall, updateBookmark as updateBookmarkCall, updateSubfolder as updateSubfolderCall } from "../bridge/bookmarkWrites.ts";
 import { giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
 import { afterArriving, keepWaypoints, readWaypoints, withWaypoint, withoutWaypoint, type PilotPlace } from "../nav/waypoints.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
@@ -1816,6 +1816,10 @@ export interface AppFlow {
   readAccessGroup(groupID: number): Promise<AccessGroup | null>;
   /** Disconnect from Folder (bookmarkSvc.RemoveFromKnownFolders, 459 to 464): a shared folder the pilot no longer knows. */
   removeFromKnownFolders(folderID: number): Promise<void>;
+  /** The folders the pilot may administer, known or not (accessGroupBookmarkMgr.SearchFoldersWithAdminAccess). */
+  readFoldersWithAdminAccess(): Promise<readonly BookmarkFolder[]>;
+  /** Add Folder (bookmarkSvc.AddToKnownFolders, 350 to 370): answers the folder as the server has it after, or null. */
+  addToKnownFolders(folderID: number, isActive: boolean): Promise<BookmarkFolder | null>;
   /**
    * A source folder's bookmarks moved or copied into a folder and its subfolder (null for the folder itself), as
    * bookmarkSvc.MoveOrCopyBookmarks asks for each source folder (690, 701). Each answers how many it did and the
@@ -17479,6 +17483,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     removeFromKnownFolders(folderID) {
       return removeFromKnownFoldersCall(bridgeDo, folderID);
+    },
+
+    readFoldersWithAdminAccess() {
+      return readFoldersWithAdminAccess(bridgeAsk);
+    },
+
+    addToKnownFolders(folderID, isActive) {
+      return addToKnownFoldersCall(bridgeDo, folderID, isActive);
     },
 
     moveBookmarks(oldFolderID, folderID, subfolderID, bookmarkIDs) {
