@@ -390,6 +390,7 @@ export type FeedEvent =
   | { readonly type: "fleet/action-finished"; readonly error: string | null }
   | { readonly type: "fleet/pending-invite"; readonly invite: FleetPendingInvite }
   | { readonly type: "fleet/watchlist"; readonly members: readonly number[] }
+  | { readonly type: "fleet/broadcast-history-cleared" }
   // An invitation answered or turned down: the window's no longer, where it is the one held.
   | { readonly type: "fleet/invite-settled"; readonly fleetID: number }
   // What the inviter was told of an invitation it sent, or null to say it no longer.

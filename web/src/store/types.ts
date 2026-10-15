@@ -967,6 +967,11 @@ export interface FleetCenterState {
    */
   readonly watchlist?: readonly number[];
   /**
+   * The broadcasts the pilot has heard, newest first, five hundred at most (fleetSvc.AddBroadcast: broadcastHistory),
+   * kept across fleets as the client keeps them until cleared.
+   */
+  readonly broadcastHistory?: readonly FleetBroadcast[];
+  /**
    * itemID -> standing target tag, from the last OnFleetStateChange.
    * ⚠ `null` and an empty map mean different things and must stay distinct:
    * `null` = never received (or unreadable) this fleet; an empty map =

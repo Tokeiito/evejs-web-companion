@@ -200,7 +200,9 @@ function formatDateTime(filetime: number, settings: Readonly<Record<string, stri
     return "";
   }
   const date = `${when.getUTCFullYear()}.${two(when.getUTCMonth() + 1)}.${two(when.getUTCDate())}`;
-  const time = `${two(when.getUTCHours())}:${two(when.getUTCMinutes())}`;
+  // dateTimeFormatters.FormatDateTime (11 to 18): a full, long or medium time has its seconds, a short one not.
+  const seconds = settings.time === "medium" || settings.time === "long" || settings.time === "full" ? `:${two(when.getUTCSeconds())}` : "";
+  const time = `${two(when.getUTCHours())}:${two(when.getUTCMinutes())}${seconds}`;
   if (settings.date === "none") return time;
   if (settings.time === "none") return date;
   return `${date} ${time}`;

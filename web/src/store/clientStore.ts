@@ -19,6 +19,7 @@ import {
   type Unsubscribe,
 } from "./signals.ts";
 import type { FeedAdapter, FeedEvent, FeedSink, FeedStatus, HealthStatus } from "./feed.ts";
+import { MAX_BROADCAST_HISTORY } from "../bridge/fleetBroadcasts.ts";
 // R43 — the bot registry owns the BotID union and what "holding the ship"
 // means, so the store and flow.ts can never disagree about either.
 import {
@@ -394,6 +395,7 @@ const INITIAL_FLEET: FleetCenterState = Object.freeze({
   lastBroadcast: null,
   targetTags: null,
   watchlist: [],
+  broadcastHistory: [],
   authoritativeFleetID: null,
 });
 
@@ -1622,8 +1624,14 @@ export function createClientStore(): ClientStore {
           fleet.set({ ...fleet.get(), pendingInvite: null });
         }
         break;
-      case "fleet/broadcast":
-        fleet.set({ ...fleet.get(), lastBroadcast: event.broadcast });
+      case "fleet/broadcast": {
+        // fleetSvc.AddBroadcast (1493 to 1496): the newest first, and the oldest let go past five hundred.
+        const history = [event.broadcast, ...(fleet.get().broadcastHistory ?? [])].slice(0, MAX_BROADCAST_HISTORY);
+        fleet.set({ ...fleet.get(), lastBroadcast: event.broadcast, broadcastHistory: history });
+        break;
+      }
+      case "fleet/broadcast-history-cleared":
+        fleet.set({ ...fleet.get(), broadcastHistory: [] });
         break;
       case "fleet/target-tags":
         fleet.set({ ...fleet.get(), targetTags: event.tags });

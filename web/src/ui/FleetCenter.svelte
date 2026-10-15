@@ -4,6 +4,7 @@
   import { nameKey, resolvedName } from "../store/names.ts";
   import type { AppFlow } from "../app/flow.ts";
   import { memberWhereabouts } from "../bridge/fleetCenter.ts";
+  import FleetHistory from "./FleetHistory.svelte";
   import type { FleetMember, FleetSquad, FleetWing } from "../bridge/boundFleet.ts";
   import type { ClientStore } from "../store/clientStore.ts";
 
@@ -323,6 +324,8 @@
       </form>
       {#if $fleet.inviteAnswered}<p class="note">{$fleet.inviteAnswered}</p>{/if}
     </section>
+
+    <FleetHistory {store} {flow} />
 
     <section class="hierarchy" aria-label="Fleet hierarchy">
       <h3>Fleet hierarchy</h3>

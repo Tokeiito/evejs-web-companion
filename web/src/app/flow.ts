@@ -1025,6 +1025,8 @@ export interface AppFlow {
   addToFleetWatchlist(characterIDs: readonly number[]): Promise<"added" | "unchanged" | "not-in-fleet" | "too-many">;
   /** Remove Pilot from Watchlist, from the same menu: the pilot taken off and the server told; refused out of a fleet. */
   removeFromFleetWatchlist(characterID: number): Promise<"removed" | "not-in-fleet">;
+  /** The fleet window's History cleared of its broadcasts (BroadcastHistoryPanel.ClearHistory): nothing is asked. */
+  clearFleetBroadcastHistory(): void;
   /**
    * The fleet finder, for a pilot that has been told which fleet to join: the
    * adverts open to this session, and the name of the fleet it is already in.
@@ -17143,6 +17145,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     broadcastTravelToMe,
     addToFleetWatchlist,
     removeFromFleetWatchlist,
+    clearFleetBroadcastHistory() {
+      store.apply({ type: "fleet/broadcast-history-cleared" });
+    },
     readFleetFinder,
     applyToJoinFleet,
     flyToPoint,
