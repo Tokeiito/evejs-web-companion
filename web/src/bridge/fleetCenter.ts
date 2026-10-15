@@ -12,6 +12,7 @@
 
 import { decodeBoundFleet, type BoundFleet, type BoundFleetResult, type FleetCompositionEntry, type FleetMember } from "./boundFleet.ts";
 import { unwrapLong, type JsonValue } from "./wire.ts";
+import { argumentsOf } from "./questions.ts";
 // ⚠ A VALUE IMPORT INTO A MODULE THAT IMPORTS US BACK, and it is safe because
 // the edge going the other way is TYPE-ONLY (`import type { FleetCenterSnapshot }`)
 // and is erased before it can become a runtime cycle. Kept this way round
@@ -30,6 +31,11 @@ export interface FleetPendingInvite {
   readonly fleetID: number;
   readonly inviterID: number | null;
   readonly receivedAtMs: number;
+  /** The client's dialog the invitation is asked with (its third argument: AskJoinFleet), and its parameters. */
+  readonly dialog?: string;
+  readonly parameters?: JsonValue | null;
+  /** fleetSvc.OnFleetInvite (1177, 1192): msgDict's autoAccept, with which the client joins without asking. */
+  readonly autoAccept?: boolean;
 }
 
 function readCells(fleet: BoundFleet): readonly BoundFleetResult<unknown>[] {
@@ -189,8 +195,8 @@ function positiveSafeID(value: unknown): number | null {
 /**
  * Read the existing OnFleetInvite popup payload:
  *   [fleetID, inviterCharacterID, "AskJoinFleet", inviteData]
- * Only the two IDs needed for the dedicated accept route and a resolved display
- * name are retained. No popup internals reach the Fleet Center UI.
+ * as Tranquility sends it: (1198512288650L, 2119942208, 'AskJoinFleet', {'autoAccept': False, 'name': (2,
+ * 2119942208)}). The two IDs, the dialog the client asks with and its parameters, and the dict's autoAccept.
  */
 export function decodeFleetInviteNotification(
   method: string | null,
@@ -204,10 +210,14 @@ export function decodeFleetInviteNotification(
   if (fleetID === null) {
     return null;
   }
+  const parameters = (args[3] ?? null) as JsonValue | null;
   return {
     fleetID,
     inviterID: positiveSafeID(args[1]),
     receivedAtMs: Number.isFinite(receivedAtMs) && receivedAtMs > 0 ? receivedAtMs : Date.now(),
+    dialog: typeof args[2] === "string" && args[2] !== "" ? args[2] : "AskJoinFleet",
+    parameters,
+    autoAccept: argumentsOf(parameters).autoAccept === true,
   };
 }
 

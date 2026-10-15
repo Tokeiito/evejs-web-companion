@@ -3718,6 +3718,23 @@
     top: 52px;
     z-index: 35;
   }
+  /* The tab's fleet invitations (FleetInvitation.svelte), one for each pilot asked: over every cockpit and the
+   * global windows, below the character bar and the hangar's dialogs, and eating no click but its own. */
+  .fleet-invitations {
+    position: fixed;
+    top: calc(var(--char-bar-h) + 0.5rem);
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(46rem, calc(100vw - 2rem));
+    z-index: 38;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    pointer-events: none;
+  }
+  .fleet-invitations > * {
+    pointer-events: auto;
+  }
   /* ⚠ THERE IS NO SECOND STRIP ANY MORE, and its absence is the fix. This layer
    * used to put its own chips bottom-RIGHT, opposite the desktop's own strip, on
    * the reasoning that two layers deserved two strips. What a player sees is one

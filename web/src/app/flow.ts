@@ -1958,6 +1958,14 @@ export interface AppFlow {
   setLivePush(enabled: boolean): void;
   /** R92 multibox — mark this flow as the pilot on screen (or not). */
   setForeground(active: boolean): void;
+  /**
+   * What a pilot not in front has been sent since it last heard. Such a pilot holds no stream, and what the server
+   * sends it waits at the BFF for its next read, which a docked, idle pilot does not make; the retail client each
+   * pilot stands for hears at once, and some of what it hears asks the pilot something (a fleet invitation). The
+   * read is the flight as the transport keeps it, which asks the server nothing; what it brings is acted on as a
+   * push is. Nothing is read with no pilot online.
+   */
+  hearInBackground(): Promise<void>;
   /** Release the persistent session (character offline), back to the select list. */
   releaseSession(): Promise<void>;
   logout(): Promise<void>;
@@ -2714,6 +2722,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // and asks its pilot nothing. The page goes by what it has read of its pilot's fleet.
       if (store.fleet.get().availability === "ready") {
         turnDownUnasked(fleetInvite.fleetID);
+        return;
+      }
+      // (1192): with the dict's autoAccept (the fleet finder's) the client joins without asking its pilot.
+      if (fleetInvite.autoAccept === true) {
+        void acceptFleetInvite(fleetInvite.fleetID).catch(() => {});
         return;
       }
       store.apply({ type: "fleet/pending-invite", invite: fleetInvite });
@@ -17665,6 +17678,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
      */
     setForeground(active) {
       callOptions.priority = foregroundCallPriority(active);
+    },
+
+    async hearInBackground() {
+      if (store.station.get().online === null) {
+        return;
+      }
+      await api.getFlightStatus(callOptions);
     },
 
     setLivePush(enabled) {
