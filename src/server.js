@@ -1147,9 +1147,13 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
       // held. Answered as the call that was asked.)
       // (Or a fleet formed, as its route forms one: bound through the call, and Init asked on what it answered.)
       : objectKind === "fleet"
+      // (Or a member kicked, or the boss handed on, on the session's own fleet's object: fleetSvc.KickMember and
+      // MakeLeader, 601 to 612.)
       ? { ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => (body.method === "CreateFleet"
         ? createFleetCall(heldBridgeSession, req.webSessionID)
-        : leaveFleetCall(heldBridgeSession, req.webSessionID, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null))), service: body.service, method: body.method }
+        : body.method === "LeaveFleet"
+        ? leaveFleetCall(heldBridgeSession, req.webSessionID, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null)
+        : boundCall(heldBridgeSession, req.webSessionID, fleetBindSpec(), body.method, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null))), service: body.service, method: body.method }
       // (An invitation accepted, as its route accepts one: on the fleet the page names, bound by its number,
       // with no type of ship said whatever the call came with.)
       : objectKind === "fleetByNumber"

@@ -513,14 +513,19 @@ export async function autopilotWarp(act: Ask, flightNow: () => Promise<FlightNow
 
 /**
  * Warps the pilot's ship to a member of its fleet, as the fleet's menu does: by the member's own number (a pilot's,
- * not a ship's), with a range of nought and nothing else. Fails as the call fails, and before it for what is no
- * pilot's number and for a pilot that is not in space.
+ * not a ship's), at the range chosen (Warp to Member at the pilot's default, its submenu at one of the seven: menusvc.py
+ * FleetMenu; nought where none is said) and nothing else; the transport sends the range as the float the client's
+ * menu makes it. Fails as the call fails, and before it where the range is none of those, for what is no pilot's
+ * number and for a pilot that is not in space.
  *
  * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER AN ARRIVAL. The member need not be on this grid.
  */
-export async function warpToFleetMember(act: Ask, flightNow: () => Promise<FlightNow>, characterID: number): Promise<void> {
+export async function warpToFleetMember(act: Ask, flightNow: () => Promise<FlightNow>, characterID: number, range = 0): Promise<void> {
+  if (!WARP_RANGES_M.includes(range)) {
+    throw new Error("The warp range must be one of the offered distances.");
+  }
   await aPlaceToWarpTo(flightNow, characterID, "A fleet member is required.");
-  await act("beyonce", "CmdWarpToStuff", ["char", characterID], { minRange: 0 });
+  await act("beyonce", "CmdWarpToStuff", ["char", characterID], { minRange: range });
 }
 
 /** The fleet formation a pilot has who has chosen none: a point, the first spacing and the first size (evefleet: POINT, FLEET_FORMATION_SPACING[0], FLEET_FORMATION_SIZE[0]). */

@@ -234,6 +234,34 @@ export async function leaveFleet(act: Ask): Promise<void> {
   await act("fleetObjectHandler", "LeaveFleet", []);
 }
 
+// --- A member kicked, and the boss handed on ------------------------------------------
+//
+// THE CALLS, as the client makes them from the fleet's menu for a member (menusvc.py FleetMenu): fleetSvc.KickMember
+// (607 to 612), self.fleet.KickMember(charID), once its Confirm is chosen, LeaveFleet instead for the pilot's own;
+// fleetSvc.MakeLeader (601 to 605), self.fleet.MakeLeader(charID), once ConfirmMakeFleetBoss is answered yes. Both
+// on the fleet's own object, which the BFF holds.
+//
+// WHAT THE SERVER TAKES FROM THE CALLER: the member. It refuses a kick from a pilot who commands nothing over that
+// member, and a boss handed on by a pilot who is not the boss.
+//
+// ⚠ THE ANSWER IS NO PROOF OF ANYTHING. As with every fleet write here, the fleet is read again after.
+
+/** Kicks a member of the pilot's fleet (not the pilot's own, which is leaving). Fails as the call fails. */
+export async function kickFleetMember(act: Ask, characterID: number): Promise<void> {
+  if (!Number.isSafeInteger(characterID) || characterID <= 0) {
+    throw new Error("A fleet member is required.");
+  }
+  await act("fleetObjectHandler", "KickMember", [characterID]);
+}
+
+/** Hands the boss of the pilot's fleet on to a member. Fails as the call fails. */
+export async function makeFleetLeader(act: Ask, characterID: number): Promise<void> {
+  if (!Number.isSafeInteger(characterID) || characterID <= 0) {
+    throw new Error("A fleet member is required.");
+  }
+  await act("fleetObjectHandler", "MakeLeader", [characterID]);
+}
+
 // --- A fleet formed (the plan's Phase 6b) -------------------------------------
 //
 // Until 2026-10-11 it was one route of the BFF (POST /api/bridge/fleet/create).

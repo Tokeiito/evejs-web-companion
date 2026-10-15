@@ -84,6 +84,9 @@
   } from "../bridge/contacts.ts";
   import { isNpcOwner } from "../bridge/mail.ts";
   import { MATCH_BY, MIN_WILDCARD_LENGTH } from "../bridge/searchMatch.ts";
+  import { fmtDist } from "../space/overview.ts";
+  import { DISTANCE_WORD_LABELS, distanceSay } from "../space/distanceWords.ts";
+  import { flyingDistances, setDistance, WARP_RANGES } from "./flyingDistances.ts";
   import { CONTACT_NOTIFICATION_LABELS, formatContactNotification, notificationEntryParts } from "../bridge/contactNotifications.ts";
   import type { Notification } from "../bridge/notifications.ts";
   import { isSessionLost } from "../app/flow.ts";
@@ -252,7 +255,7 @@
     spot: "UI/PeopleAndPlaces/SpotInSolarSystem",
   } as const;
   /** The client's dialogs the window says things with. */
-  const DIALOGS = ["RemoveOneFromContacts", "RemoveManyFromContacts", "DeleteMailLabel", "MailLabelNameExists", "LookupStringMinimum", "NoStandingsSelected", "RemoveAgents", "ConfirmDeleteFolder", "PartialSearchLessThanMinLength"] as const;
+  const DIALOGS = ["RemoveOneFromContacts", "RemoveManyFromContacts", "DeleteMailLabel", "MailLabelNameExists", "LookupStringMinimum", "NoStandingsSelected", "RemoveAgents", "ConfirmDeleteFolder", "PartialSearchLessThanMinLength", "ConfirmMakeFleetBoss"] as const;
   /** appConst.mailMaxLabelSize: the longest name a label has (evemail.py ManageLabelsBase, 1543; addressbookService.py 991). */
   const MAX_LABEL_NAME = 40;
 
@@ -588,6 +591,140 @@
       const refused = store.fleet.get().actionError;
       if (refused !== null) throw new Error(refused);
     });
+  }
+
+  // ── The fleet's own menu for a member (menusvc.py FleetMenu; characterCheckers.py FleetMemberChecker) ─────────
+
+  /** evefleet/const.py: the creator's job, and the commanders' roles. */
+  const FLEET_JOB_CREATOR = 2;
+  const FLEET_ROLE = Object.freeze({ leader: 1, wingCmdr: 2, squadCmdr: 3 });
+  /** appConst.minWarpDistance: no warp to what is nearer (sessionChecker.py isInWarpRange, 83 to 84). */
+  const MIN_WARP_DISTANCE_M = 150_000;
+  /** The fleet menu's words (menusvc.py FleetMenu; WarpToMenu, 2254 to 2274; ConfirmMenu, 2250). */
+  const FLEET_WORDS = {
+    fleet: "UI/Fleet/Fleet",
+    kick: "UI/Fleet/KickFleetMember",
+    confirm: "UI/Menusvc/ConfirmMenuOption",
+    makeLeader: "UI/Fleet/MakeFleetLeader",
+    warpToMember: "UI/Fleet/WarpToMember",
+    warpToMemberWithin: "UI/Fleet/WarpToMemberSubmenuOption",
+    within: "UI/Inflight/WarpToWithin",
+    setDefault: "UI/Inflight/Submenus/SetDefaultWarpRange",
+    leave: "UI/Fleet/LeaveMyFleet",
+  } as const;
+  // svelte-ignore state_referenced_locally
+  const space = store.space;
+  /** The pilot's own warp distance (GetDefaultActionDistance('WarpTo')), and the distances' words. */
+  const defaultWarp = $derived(Number($flyingDistances.warp));
+  const say = $derived(distanceSay($words.templates));
+  /** The fleet menu open, by where it is and whose, and which of its parts is open. */
+  let fleetMenuFor = $state<string | null>(null);
+  let fleetPart = $state<"kick" | "leave" | "warp" | "default" | null>(null);
+  const myFleetMember = $derived(fleetMembers.find((member) => Number(member.charID) === myID) ?? null);
+
+  /** OfferFleetMenu (characterCheckers.py 158 to 165): a character of the pilot's own fleet, no NPC. */
+  function fleetMenuOffered(ownerID: number): boolean {
+    return isCharacterContact(ownerID) && !isNpcOwner(ownerID) && $fleetState.availability === "ready" && fleetMemberIDs.has(ownerID);
+  }
+
+  /**
+   * GetDistanceToActiveShip (FleetMemberChecker): the member's ship among those the pilot sees (SlimItemFromCharID),
+   * the distance between their surfaces; none where it is not seen, which is far enough to warp to (or sys.maxint).
+   */
+  function memberDistance(ownerID: number): number | null {
+    const snapshot = $space.snapshot;
+    const ship = snapshot?.ship ?? null;
+    if (snapshot === null || !snapshot.inSpace || ship === null) return null;
+    const ball = snapshot.entities.find((entity) => entity.characterID === ownerID && !entity.isSelf) ?? null;
+    if (ball === null) return null;
+    const dx = ball.position.x - ship.position.x;
+    const dy = ball.position.y - ship.position.y;
+    const dz = ball.position.z - ship.position.z;
+    return Math.max(0, Math.hypot(dx, dy, dz) - ball.radius - ship.radius);
+  }
+
+  /**
+   * FleetMemberChecker's offers, the part the page makes: Kick Fleet Member for another, the pilot its creator or
+   * commanding it (IsMySubordinate: the leader any, a wing commander its wing's, a squad commander its squad's);
+   * Make Fleet Leader for another, the pilot its creator; Warp to Member for another, the pilot in space and the member
+   * far enough; Leave My Fleet for the pilot's own.
+   */
+  function fleetOffersOf(ownerID: number): { readonly kick: boolean; readonly leader: boolean; readonly warp: boolean; readonly leave: boolean } {
+    const mine = ownerID === myID;
+    const member = fleetMembers.find((each) => Number(each.charID) === ownerID) ?? null;
+    const creator = myFleetMember !== null && (myFleetMember.job & FLEET_JOB_CREATOR) !== 0;
+    const role = myFleetMember?.role ?? null;
+    const subordinate = member !== null && myFleetMember !== null && (role === FLEET_ROLE.leader
+      || (role === FLEET_ROLE.wingCmdr && String(member.wingID) === String(myFleetMember.wingID))
+      || (role === FLEET_ROLE.squadCmdr && String(member.squadID) === String(myFleetMember.squadID)));
+    const distance = memberDistance(ownerID);
+    return {
+      kick: !mine && (creator || subordinate),
+      leader: !mine && creator,
+      warp: !mine && $flightState.status?.inSpace === true && (distance === null || distance > MIN_WARP_DISTANCE_M),
+      leave: mine,
+    };
+  }
+
+  /** The fleet menu opened or shut; the space read again for it where the pilot is in space, as the client's menu reads its ballpark. */
+  function openFleetMenu(key: string): void {
+    fleetMenuFor = fleetMenuFor === key ? null : key;
+    fleetPart = null;
+    if (fleetMenuFor !== null && $flightState.status?.inSpace === true) void flow.loadSpaceSnapshot().catch(() => {});
+  }
+
+  function fleetDone(): void {
+    fleetMenuFor = null;
+    fleetPart = null;
+    menuFor = null;
+    searchMenuFor = null;
+    notes = [];
+  }
+
+  /** A fleet write, its refusal said as the Fleet window says it. */
+  function fleetWrite(write: () => Promise<void>): void {
+    void run(async () => {
+      await write();
+      const refused = store.fleet.get().actionError;
+      if (refused !== null) throw new Error(refused);
+    });
+  }
+
+  /** Kick Fleet Member's Confirm (fleetSvc.KickMember, 607 to 612). */
+  function kickMember(ownerID: number): void {
+    fleetDone();
+    fleetWrite(() => flow.kickFleetMember(ownerID));
+  }
+
+  /** Make Fleet Leader (fleetSvc.MakeLeader, 601 to 605): the client's ConfirmMakeFleetBoss, and the boss handed on where it is answered yes. */
+  function makeBoss(ownerID: number, name: string): void {
+    fleetDone();
+    question = {
+      title: filledWord("dialog:ConfirmMakeFleetBoss/title", "Hand the fleet on?", {}),
+      body: filledWord("dialog:ConfirmMakeFleetBoss/body", "Make {charName} the fleet's boss?", { charName: name }),
+      answer: (yes) => {
+        question = null;
+        if (yes) fleetWrite(() => flow.makeFleetLeader(ownerID));
+      },
+    };
+  }
+
+  /** Warp to Member at the pilot's default distance, or Warp to Member Within at one of the seven (menusvc.WarpToMember). */
+  function warpToMember(ownerID: number, range: number): void {
+    fleetDone();
+    void run(() => flow.warpToFleetMember(ownerID, range));
+  }
+
+  /** Leave My Fleet's Confirm (fleetSvc.LeaveFleet, 365 to 371). */
+  function leaveMyFleet(): void {
+    fleetDone();
+    fleetWrite(() => flow.leaveFleet());
+  }
+
+  /** WarpToMenu's Set Default (defaultRangeUtils.SetDefaultWarpToDist): the pilot's own warp distance. */
+  function setDefaultWarp(metres: number): void {
+    setDistance("warp", String(metres));
+    fleetPart = "warp";
   }
 
   /** The transfer window (transferMoneyWnd.py): to whom, what is typed, and what the pilot has (none while not known). */
@@ -1718,6 +1855,8 @@
     flow.requestWords([
       ...Object.values(WORDS),
       ...Object.values(AGENT_WORDS),
+      ...Object.values(FLEET_WORDS),
+      ...DISTANCE_WORD_LABELS,
       ...Object.values(SEARCH_WORDS),
       "UI/PeopleAndPlaces/AlreadyAContact",
       ...Object.values(CONTACT_NOTIFICATION_LABELS),
@@ -2178,6 +2317,9 @@
                         <span class="contacts-submenu">{word(WORDS.inviteToFleet, "Fleet invite")}:</span>
                         <button type="button" class="minor" disabled={busy} onclick={() => fleetInvite(owner.id, false)}>{word(WORDS.squadMember, "As a member")}</button>
                       {/if}
+                      {#if fleetMenuOffered(owner.id)}
+                        {@render fleetSubmenu(owner.id, owner.name, `search:${owner.id}`)}
+                      {/if}
                       {#if offers.formFleetWith}
                         <button type="button" class="minor" disabled={busy} onclick={() => fleetInvite(owner.id, true)}>{word(WORDS.formFleetWith, "Start a fleet with")}</button>
                       {/if}
@@ -2372,6 +2514,9 @@
                       <span class="contacts-submenu">{word(WORDS.inviteToFleet, "Fleet invite")}:</span>
                       <button type="button" class="minor" disabled={busy} onclick={() => fleetInvite(row.id, false)}>{word(WORDS.squadMember, "As a member")}</button>
                     {/if}
+                    {#if fleetMenuOffered(row.id)}
+                      {@render fleetSubmenu(row.id, row.name, `contacts:${row.id}`)}
+                    {/if}
                     {#if offers.formFleetWith}
                       <button type="button" class="minor" disabled={busy} onclick={() => fleetInvite(row.id, true)}>{word(WORDS.formFleetWith, "Start a fleet with")}</button>
                     {/if}
@@ -2406,6 +2551,49 @@
   </div>
   {/if}
 </section>
+
+{#snippet fleetSubmenu(ownerID: number, name: string, key: string)}
+  <!-- The fleet's own menu for a member (menusvc.py FleetMenu, in its order; characterCheckers.py FleetMemberChecker):
+       Show Info; Kick Fleet Member and its Confirm; Make Fleet Leader; Warp to Member, and Warp to Member Within with
+       the seven distances and Set Default; Leave My Fleet and its Confirm, for the pilot's own. -->
+  <button type="button" class="minor" aria-expanded={fleetMenuFor === key} onclick={() => openFleetMenu(key)}>{word(FLEET_WORDS.fleet, "Fleet")} {fleetMenuFor === key ? "▾" : "▸"}</button>
+  {#if fleetMenuFor === key}
+    {@const fleetOffers = fleetOffersOf(ownerID)}
+    <span class="contacts-submenu">
+      <button type="button" class="minor" onclick={() => { fleetDone(); ownerInfo(ownerID); }}>{word(WORDS.showInfo, "Info")}</button>
+      {#if fleetOffers.kick}
+        <button type="button" class="minor" aria-expanded={fleetPart === "kick"} onclick={() => (fleetPart = fleetPart === "kick" ? null : "kick")}>{word(FLEET_WORDS.kick, "Kick out")} {fleetPart === "kick" ? "▾" : "▸"}</button>
+        {#if fleetPart === "kick"}
+          <button type="button" class="minor" disabled={busy} onclick={() => kickMember(ownerID)}>{word(FLEET_WORDS.confirm, "Yes, do it")}</button>
+        {/if}
+      {/if}
+      {#if fleetOffers.leader}
+        <button type="button" class="minor" disabled={busy} onclick={() => makeBoss(ownerID, name)}>{word(FLEET_WORDS.makeLeader, "Hand the fleet on")}</button>
+      {/if}
+      {#if fleetOffers.warp}
+        <button type="button" class="minor" disabled={busy} onclick={() => warpToMember(ownerID, defaultWarp)}>{word(FLEET_WORDS.warpToMember, "Warp there")}</button>
+        <button type="button" class="minor" aria-expanded={fleetPart === "warp" || fleetPart === "default"} onclick={() => (fleetPart = fleetPart === "warp" || fleetPart === "default" ? null : "warp")}>{word(FLEET_WORDS.warpToMemberWithin, "Warp there, short")} {fleetPart === "warp" || fleetPart === "default" ? "▾" : "▸"}</button>
+        {#if fleetPart === "warp" || fleetPart === "default"}
+          {#each WARP_RANGES as choice (choice.metres)}
+            <button type="button" class="minor" disabled={busy} onclick={() => warpToMember(ownerID, choice.metres)}>{filledWord(FLEET_WORDS.within, "Stop {distance} short", { distance: fmtDist(choice.metres, 2, say) })}</button>
+          {/each}
+          <button type="button" class="minor" aria-expanded={fleetPart === "default"} onclick={() => (fleetPart = fleetPart === "default" ? "warp" : "default")}>{word(FLEET_WORDS.setDefault, "Usual distance")} {fleetPart === "default" ? "▾" : "▸"}</button>
+          {#if fleetPart === "default"}
+            {#each WARP_RANGES as choice (choice.metres)}
+              <button type="button" class="minor" aria-pressed={choice.metres === defaultWarp} onclick={() => setDefaultWarp(choice.metres)}>{fmtDist(choice.metres, 2, say)}</button>
+            {/each}
+          {/if}
+        {/if}
+      {/if}
+      {#if fleetOffers.leave}
+        <button type="button" class="minor" aria-expanded={fleetPart === "leave"} onclick={() => (fleetPart = fleetPart === "leave" ? null : "leave")}>{word(FLEET_WORDS.leave, "Leave")} {fleetPart === "leave" ? "▾" : "▸"}</button>
+        {#if fleetPart === "leave"}
+          <button type="button" class="minor" disabled={busy} onclick={leaveMyFleet}>{word(FLEET_WORDS.confirm, "Yes, do it")}</button>
+        {/if}
+      {/if}
+    </span>
+  {/if}
+{/snippet}
 
 <style>
   .agents-group-head {
