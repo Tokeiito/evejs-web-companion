@@ -255,25 +255,28 @@ const rangeOf = (value) => (value !== null && typeof value === "object" && value
  * (the scanner's None) of one that was not, a float where the client's is one; and fleet=False where the client
  * says it. The transport puts them in a client's order (py27.js).
  *
- * A fleet's warp (fleet=True) goes with the formation's settings (michelle.SetFleetFormationSettings, 755), which
- * nothing here sends: it differs, as does any keyword else, a range that is no distance, and a warp to what the
- * routes do not warp to.
+ * A fleet's warp (fleet=True) goes with the formation's settings (michelle.SetFleetFormationSettings, 755 to 760:
+ * fleetFormationSettings, a dict of the formation's type, spacing and size). The page makes one to a fleet member
+ * (menusvc.WarpFleetToMember, 2753 to 2760: the fleet's menu for a member, Warp Fleet, Wing or Squad to Member), with
+ * the range and the three settings; it goes with minRange as a float, fleet=True and the settings as a dict in the
+ * client's order. No recording has one. A fleet's warp to anything else differs, as does any keyword else, a range
+ * that is no distance, and a warp to what the routes do not warp to.
  */
 const warping = (args, kwargs, context) => {
   const notAClients = (note) => ({ status: "differs", note });
   const [subject, which] = args;
   const said = Object.keys(kwargs);
-  if (args.length !== 2 || said.some((name) => name !== "minRange" && name !== "fleet")) {
+  if (args.length !== 2 || said.some((name) => name !== "minRange" && name !== "fleet" && name !== "fleetFormationSettings")) {
     return notAClients("The client warps to one thing by what it is and its number, with a range and a fleet's word at most.");
   }
   const range = rangeOf(kwargs.minRange ?? null);
   if (range !== null && !(Number.isFinite(range) && range >= 0)) {
     return notAClients("A warp's range is a distance: a number, nought or more.");
   }
-  if (kwargs.fleet === true) {
-    return notAClients("A fleet's warp goes with the formation's settings (michelle.SetFleetFormationSettings), which nothing here sends.");
+  if ((kwargs.fleet === true || kwargs.fleetFormationSettings !== undefined) && subject !== "char") {
+    return notAClients("A fleet's warp goes with the formation's settings (michelle.SetFleetFormationSettings), which nothing here sends but to a fleet member.");
   }
-  if (kwargs.fleet !== undefined && kwargs.fleet !== false) {
+  if (kwargs.fleet !== undefined && kwargs.fleet !== false && kwargs.fleet !== true) {
     return notAClients("A warp's fleet keyword is True or False.");
   }
   // What a caller that cannot say a float said: each keyword, with a float read as its number.
@@ -290,9 +293,22 @@ const warping = (args, kwargs, context) => {
       // (A ship that is not known is no number an item's ID can be: the item is above nought.)
       if (Number(context.shipID) === which) return notAClients("The client does not warp to the pilot's own ship: it sends nothing.");
       return made(kwargs.fleet === false ? { minRange: kwargs.minRange ?? null, fleet: false } : { minRange: kwargs.minRange ?? 0 });
-    case "char":
-      if (!aThingsID(which) || kwargs.fleet !== undefined) return notAClients("The client warps to a fleet member by its number, with a range and nothing else.");
-      return made({ minRange: asReal(range ?? 0) });
+    case "char": {
+      if (!aThingsID(which)) return notAClients("The client warps to a fleet member by its number, with a range and nothing else.");
+      if (kwargs.fleet === undefined && kwargs.fleetFormationSettings === undefined) return made({ minRange: asReal(range ?? 0) });
+      // menusvc.WarpFleetToMember: fleet=True, and the formation's three settings beside it.
+      const given = kwargs.fleetFormationSettings;
+      const settings = given !== null && typeof given === "object" && !Array.isArray(given) ? given : {};
+      if (kwargs.fleet !== true || Object.keys(settings).length !== FORMATION_NAMES.length || !FORMATION_NAMES.every((name) => Number.isSafeInteger(settings[name]))) {
+        return notAClients("The client warps its fleet to a member with fleet=True and the formation's three settings: CmdWarpToStuff('char', charID, minRange=warpRange, fleet=True, fleetFormationSettings={formationType, formationSpacing, formationSize}).");
+      }
+      // The settings go as a dict, in the client's order, whatever order they were written in: that is the
+      // transport's making, as a page's JSON has no dict, and is no reshaping of what was said.
+      const wanted = { minRange: asReal(range ?? 0), fleet: true, fleetFormationSettings: dict(FORMATION_NAMES.map((name) => [name, settings[name]])) };
+      return isDeepStrictEqual(asSaid({ minRange: wanted.minRange, fleet: true }), asSaid({ minRange: kwargs.minRange, fleet: kwargs.fleet }))
+        ? { kwargs: wanted }
+        : { kwargs: wanted, status: "reshaped", note: "The fleet's warp was given the range the client's menu sends, a float." };
+    }
     case "bookmark":
       if (!aThingsID(which)) return notAClients("The client warps to a bookmark by its number.");
       return made({ minRange: asReal(range ?? 0), fleet: false });

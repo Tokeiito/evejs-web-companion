@@ -1060,9 +1060,10 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
     return;
   }
   // A warp of the page's is one the client's menus make: to a thing, a fleet member, a bookmark, a scan result or
-  // a launch, with a range and fleet=False at most. The server's handler takes more of a caller than that (a point
-  // to fly to, a fleet's warp, subjects no menu of the page's has): what is none of a client's is refused here,
-  // on either transport, and nothing is sent.
+  // a launch, with a range and fleet=False at most, and a fleet's warp to a member with the formation's settings.
+  // The server's handler takes more of a caller than that (a point to fly to, a fleet's warp to anything else,
+  // subjects no menu of the page's has): what is none of a client's is refused here, on either transport, and
+  // nothing is sent.
   if (body.service === "beyonce" && body.method === "CmdWarpToStuff") {
     const why = notAClientsWarp(body.args, body.kwargs ?? null);
     if (why !== null) {

@@ -528,6 +528,24 @@ export async function warpToFleetMember(act: Ask, flightNow: () => Promise<Fligh
   await act("beyonce", "CmdWarpToStuff", ["char", characterID], { minRange: range });
 }
 
+/**
+ * Warps the pilot's fleet, wing or squad to a member of it, as the fleet's menu does for a commander
+ * (menusvc.WarpFleetToMember, 2753 to 2760: michelle.CmdWarpToStuff('char', charID, minRange=warpRange, fleet=True),
+ * to which michelle adds the pilot's formation, SetFleetFormationSettings 755 to 760): the member's number, the range
+ * chosen, fleet=True, and the formation a pilot has who has chosen none. Warp Fleet, Warp Wing and Warp Squad to
+ * Member are the one call: which of the fleet goes with the pilot is the server's, by the pilot's command. Fails as
+ * Warp to Member fails.
+ *
+ * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER AN ARRIVAL.
+ */
+export async function warpFleetToMember(act: Ask, flightNow: () => Promise<FlightNow>, characterID: number, range = 0): Promise<void> {
+  if (!WARP_RANGES_M.includes(range)) {
+    throw new Error("The warp range must be one of the offered distances.");
+  }
+  await aPlaceToWarpTo(flightNow, characterID, "A fleet member is required.");
+  await act("beyonce", "CmdWarpToStuff", ["char", characterID], { minRange: range, fleet: true, fleetFormationSettings: { ...FORMATION_OF_NO_CHOICE } });
+}
+
 /** The fleet formation a pilot has who has chosen none: a point, the first spacing and the first size (evefleet: POINT, FLEET_FORMATION_SPACING[0], FLEET_FORMATION_SIZE[0]). */
 const FORMATION_OF_NO_CHOICE = Object.freeze({ formationType: 0, formationSpacing: 1000, formationSize: 10000 });
 

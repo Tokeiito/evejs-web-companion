@@ -449,7 +449,7 @@ import {
   salvageWithDrones,
   scoopDrones as scoopDronesCall,
 } from "../bridge/boundEntityWrites.ts";
-import { alignTo as alignToCall, alignToBookmark as alignToBookmarkCall, approach as approachCall, approachBookmark as approachBookmarkCall, approachMissionLocation as approachMissionLocationCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
+import { alignTo as alignToCall, alignToBookmark as alignToBookmarkCall, approach as approachCall, approachBookmark as approachBookmarkCall, approachMissionLocation as approachMissionLocationCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpFleetToMember as warpFleetToMemberCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
 import { dock as dockCall, dockAtStructure as dockAtStructureCall, isStation, jump as jumpCall, undock as undockCall } from "../bridge/placeChanges.ts";
 import { boardCorvette as boardCorvetteCall, boardShip as boardShipCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
 import { activityIDOf, createJobReckoner, type JobReckoner, type JobReckoning } from "../bridge/industryJobReckoning.ts";
@@ -1007,6 +1007,8 @@ export interface AppFlow {
   makeFleetLeader(characterID: number): Promise<void>;
   /** Warp to a member of the pilot's fleet at a range, as the fleet's menu for a member does. */
   warpToFleetMember(characterID: number, range: number): Promise<void>;
+  /** Warp the pilot's fleet, wing or squad to a member at a range, as the fleet's menu for a member does for a commander. */
+  warpFleetToMember(characterID: number, range: number): Promise<void>;
   /**
    * The fleet finder, for a pilot that has been told which fleet to join: the
    * adverts open to this session, and the name of the fleet it is already in.
@@ -5108,6 +5110,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // at the pilot's default distance or one of its submenu's seven.
   async function warpToFleetMember(characterID: number, range: number): Promise<void> {
     await runFlightStep("Warp", () => orderedStep((flightNow) => warpToFleetMemberCall(bridgeDo, flightNow, characterID, range)));
+  }
+
+  // menusvc.WarpFleetToMember (2753): CmdWarpToStuff('char', charID, minRange=warpRange, fleet=True), with the pilot's
+  // formation (michelle.SetFleetFormationSettings), from the fleet's menu for a member: Warp Fleet, Wing or Squad to Member.
+  async function warpFleetToMember(characterID: number, range: number): Promise<void> {
+    await runFlightStep("Warp", () => orderedStep((flightNow) => warpFleetToMemberCall(bridgeDo, flightNow, characterID, range)));
   }
 
   async function readFleetFinder(inAFleet: boolean | null = null): Promise<FleetFinderRead> {
@@ -17044,6 +17052,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     kickFleetMember,
     makeFleetLeader,
     warpToFleetMember,
+    warpFleetToMember,
     readFleetFinder,
     applyToJoinFleet,
     flyToPoint,
