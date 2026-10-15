@@ -336,6 +336,23 @@ const agentWarping = (args, kwargs) => {
   return { args: [locationType, locationNumber, range, fleet, referringAgentID, dict(FORMATION_NAMES.map((name) => [name, given[name]]))] };
 };
 /** A judge for a call the client sends with nothing: no argument, and no keyword. */
+/**
+ * transferMoneyWnd.py Confirm (148): GiveCash(self.toID, amount, reason, toAccountKey=toAccountKey): the one given to,
+ * the amount the window's float field holds, the reason its text field's, and the account key by keyword every time,
+ * None for a character.
+ */
+const givingCash = (args, kwargs) => {
+  const [toID, amount, reason] = args;
+  const said = Object.keys(kwargs);
+  if (args.length !== 3 || !(Number.isSafeInteger(toID) && toID > 0) || typeof amount !== "number" || !(amount > 0)
+    || typeof reason !== "string" || said.some((name) => name !== "toAccountKey")) {
+    return { args, kwargs, status: "differs", note: "The client sends the one given to, the amount, the reason, and the account key by keyword. This is not that." };
+  }
+  const clients = [toID, asFloat(amount), reason];
+  return sameValues(clients, args) && said.length === 1
+    ? { args, kwargs }
+    : { args: clients, kwargs: { toAccountKey: kwargs.toAccountKey ?? null }, status: "reshaped" };
+};
 const sentWithNothing = (args, kwargs) => (args.length === 0 && Object.keys(kwargs).length === 0 ? {} : { status: "differs", note: "The client sends nothing with this call." });
 /** A judge for a call the client sends with one bool and nothing else. */
 const oneBoolAlone = (args, kwargs) => (args.length === 1 && typeof args[0] === "boolean" && Object.keys(kwargs).length === 0 ? {} : { status: "differs", note: "The client sends one bool with this call, and nothing else." });
@@ -2132,6 +2149,12 @@ const RETAIL_CALLS = Object.freeze({
   "calendarMgr.GetResponsesForCharacter": same(`${CALENDAR_SVC}:252`, "RemoteSvc('calendarMgr').GetResponsesForCharacter(), no arguments, asked once and kept"),
   "calendarMgr.GetResponsesToEvent": judged(`${CALENDAR_SVC}:415`, ofAnOpenedEvent, "RemoteSvc('calendarMgr').GetResponsesToEvent(eventID, ownerID)"),
   "account.GetCashBalance": same(`${WALLET_SVC}:41`, "RemoteSvc('account').GetCashBalance(0): nought for the pilot's own wallet"),
+  "account.GiveCash": typing(Object.freeze({
+    status: "same",
+    source: "eve/client/script/ui/shared/neocom/wallet/transferMoneyWnd.py:148",
+    note: "sm.RemoteSvc('account').GiveCash(self.toID, amount, reason, toAccountKey=toAccountKey): the transfer window's OK, from an owner's menu's Give Money; the amount a float of two decimal places, the reason its edit's, and the account key None for a character. Tranquility's recording of a transfer to a corporation: GiveCash(98827279, 100.0, '') with toAccountKey=1000, answered the two balances.",
+    shape: givingCash,
+  }), [2]),
   "account.GetEntryTypes": same(`${ACCOUNT_SVC}:101`, "GetAccountMgr().GetEntryTypes(), no arguments, once for the session"),
   "account.GetWalletDivisionsInfo": same(`${ACCOUNT_SVC}:135`, "GetAccountMgr().GetWalletDivisionsInfo(), no arguments, kept five minutes"),
   "account.GetTransactions": Object.freeze({

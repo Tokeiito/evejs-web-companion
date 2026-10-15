@@ -74,6 +74,11 @@ export interface WalletReads {
   /** The pilot's own ISK and nothing else, asked of the server now. */
   cash(): Promise<JsonValue>;
   /**
+   * The pilot's own ISK as the client's wallet service keeps it (walletSvc.py wealth, 46 to 49): asked once, and from
+   * then what the server says it is (OnAccountChange).
+   */
+  wealth(): Promise<JsonValue>;
+  /**
    * The server's word that an account changed: OnAccountChange(accountKey, ownerID, balance). `whose` is the pilot
    * and its corporation, to tell its own accounts from another's.
    */
@@ -179,6 +184,7 @@ export function createWalletReads(ask: Ask, deps: WalletDeps = {}): WalletReads 
   };
   return {
     cash,
+    wealth: () => wealth.read(),
     async read(how = {}) {
       if (how.fresh === true) {
         for (const each of [wealth, ledger, corporationRow, divisionsKept]) each.forget();

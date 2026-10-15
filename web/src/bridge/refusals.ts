@@ -198,6 +198,11 @@ const SERVER_REFUSALS: Readonly<Record<string, string>> = Object.freeze({
   // which a bare panel read does not hold).
   FakeItemNotFound:
     "That ship or container is no longer there, or is too far away to reach.",
+  // fleetObjectHandler Handle_Invite — the pilot invited is not online (the
+  // client's FleetCandidateOffline, which only the server raises). The server
+  // names the invitee beside the key; what reaches the page is the key alone.
+  FleetCandidateOffline:
+    "That pilot is not online, so no invitation was sent.",
   // fleetRuntime's general refusal of a fleet's call, and the client's own for
   // a fleet formed from within one (fleetSvc.py 333), which the game port makes
   // in its place. It says no more than that the fleet said no.

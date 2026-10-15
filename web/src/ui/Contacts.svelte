@@ -52,7 +52,8 @@
   // notification (contactNotificationEntry.py).
   //
   // Not here yet: Capture Portrait, an agent's Show Info and its place's menu, selecting
-  // several agents, and the rest of an owner's menu (mail, chat, fleet and money).
+  // several agents, and the rest of an owner's menu (chat, Invite to Fleet's places in the fleet, the fleet's own
+  // menu).
   import { onMount } from "svelte";
   import { formatTemplate, plainText, type TemplateArguments } from "../bridge/clientWords.ts";
   import { shownSecurity } from "../bridge/systemSecurity.ts";
@@ -80,6 +81,9 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import { showInfo } from "./showInfo.ts";
   import { focusMail } from "./mailFocus.ts";
+  import { notify } from "./notices.ts";
+  import { TRANSFER_REASON_MAX, transferAmount, transferReason } from "../bridge/giveMoney.ts";
+  import { isFleetCommander } from "../bridge/fleetCommand.ts";
 
   let { store, flow, showAgents, openMail }: { store: ClientStore; flow: AppFlow; showAgents?: () => void; openMail?: () => void } = $props();
 
@@ -93,6 +97,8 @@
   const addressBookState = store.addressBook;
   // svelte-ignore state_referenced_locally
   const station = store.station;
+  // svelte-ignore state_referenced_locally
+  const fleetState = store.fleet;
 
   /** The window's words, by their labels (addressBookWindow.py 60, 86; contactsForm.py 136, 144 to 265, 416 to 497). */
   const WORDS = {
@@ -134,6 +140,16 @@
     addContact: "UI/PeopleAndPlaces/AddContact",
     showInfo: "UI/Commands/ShowInfo",
     sendMail: "UI/EVEMail/SendPilotEVEMail",
+    giveMoney: "UI/Commands/GiveMoney",
+    inviteToFleet: "UI/Fleet/InvitePilotToFleet",
+    squadMember: "UI/Fleet/Ranks/SquadMember",
+    formFleetWith: "UI/Fleet/FormFleetWith",
+    transferMoney: "UI/Wallet/WalletWindow/TransferMoney",
+    fromCharacter: "UI/Wallet/WalletWindow/FromCharacter",
+    toCharacter: "UI/Wallet/WalletWindow/ToCharacter",
+    amount: "UI/Wallet/WalletWindow/ColHeaderAmount",
+    reason: "UI/Wallet/WalletWindow/Reason",
+    transferSuccessful: "UI/Wallet/WalletWindow/TransferSuccessful",
     editContact: "UI/PeopleAndPlaces/EditContact",
     removeContact: "UI/PeopleAndPlaces/RemoveContact",
     blockContact: "UI/PeopleAndPlaces/BlockContact",
@@ -472,13 +488,23 @@
   /** The pilot's own character, which the menus offer nothing of (characterCheckers.py IsMe). */
   const myID = $derived($station.online?.characterID ?? null);
   const contactIDs = $derived(new Set((book?.contacts ?? []).map((contact) => contact.contactID)));
+  /**
+   * The pilot's fleet as the page last read it, which the client's session always knows (sessionChecker.py
+   * IsPilotFleetMember, 126 to 127; isPilotInSameFleetAs, 141 to 142, by the fleet service's members): known where
+   * the read said the pilot is in one or in none, and nothing of a fleet offered while it is not.
+   */
+  const fleetKnown = $derived($fleetState.availability === "ready" || $fleetState.availability === "not-in-fleet");
+  const fleetMembers = $derived($fleetState.availability === "ready" ? ($fleetState.fleet?.initState.value.members ?? []) : []);
+  const fleetMemberIDs = $derived(new Set(fleetMembers.map((member) => Number(member.charID))));
+  /** IsPilotFleetCreator or IsPilotFleetCommander (characterCheckers.py 425 to 427; sessionChecker.py 120 to 121). */
+  const commandsFleet = $derived(fleetMembers.some((member) => Number(member.charID) === myID && isFleetCommander(member)));
 
   /**
    * characterCheckers.py: Add Contact where it is none of the pilot's (62 to 69), Edit and Remove Contact where it is
    * one (254 to 263), Block where it is not blocked (104 to 111), Unblock where it is (373 to 378); none for the pilot
    * itself, and none but Unblock for an NPC.
    */
-  function offersOf(ownerID: number): { showInfo: boolean; mail: boolean; add: boolean; edit: boolean; block: boolean; unblock: boolean } {
+  function offersOf(ownerID: number): { showInfo: boolean; mail: boolean; add: boolean; edit: boolean; block: boolean; unblock: boolean; money: boolean; inviteToFleet: boolean; formFleetWith: boolean } {
     const mine = ownerID === myID;
     const npc = isNpcOwner(ownerID);
     const isContact = contactIDs.has(ownerID);
@@ -487,7 +513,7 @@
       // A corporation's, an alliance's or a faction's (menusvc.py GetMenuFromItemIDTypeID, 2304 to 2318): Edit and
       // Remove Contact where it is one, Add Contact where not, an NPC's as well; Block or Unblock where it is no NPC's.
       // Its Show Info the page's info window does not show yet (it shows a character, a type and an object).
-      return { showInfo: false, mail: false, add: !isContact, edit: isContact, block: !npc && !isBlocked, unblock: !npc && isBlocked };
+      return { showInfo: false, mail: false, add: !isContact, edit: isContact, block: !npc && !isBlocked, unblock: !npc && isBlocked, money: false, inviteToFleet: false, formFleetWith: false };
     }
     return {
       // OfferShowInfo (350 to 353): every character's (an aura agent's aside, which no address book holds).
@@ -498,6 +524,12 @@
       edit: !mine && !npc && isContact,
       block: !mine && !npc && !isBlocked,
       unblock: !mine && isBlocked,
+      // OfferGiveMoney (178 to 185): none for the pilot itself or an NPC.
+      money: !mine && !npc,
+      // OfferInvitePilotToFleet (187 to 196): in a fleet the character is not in, the pilot its creator or a
+      // commander. OfferFormFleetWith (171 to 176): in none, the pilot's own character too. Neither for an NPC.
+      inviteToFleet: !npc && fleetKnown && $fleetState.availability === "ready" && !fleetMemberIDs.has(ownerID) && commandsFleet,
+      formFleetWith: !npc && fleetKnown && $fleetState.availability === "not-in-fleet",
     };
   }
 
@@ -514,6 +546,64 @@
     searchMenuFor = null;
     openMail?.();
     focusMail({ kind: "compose", characterID: ownerID, name });
+  }
+
+  /**
+   * Invite to Fleet's Squad Member (menusvc.py 631 to 632; evefleet/client/menu.py 64 to 65) and Form Fleet With
+   * (637 to 638): fleetSvc.Invite(charID, None, None, None), a fleet formed first where the pilot is in none. A
+   * refusal is said as the Fleet window says it.
+   */
+  function fleetInvite(ownerID: number, form: boolean): void {
+    menuFor = null;
+    searchMenuFor = null;
+    void run(async () => {
+      await (form ? flow.formFleetWith(ownerID) : flow.inviteFleetMember(ownerID));
+      const refused = store.fleet.get().actionError;
+      if (refused !== null) throw new Error(refused);
+    });
+  }
+
+  /** The transfer window (transferMoneyWnd.py): to whom, what is typed, and what the pilot has (none while not known). */
+  let transferring = $state<{ readonly toID: number; readonly toName: string; amount: string; reason: string; wealth: number | null } | null>(null);
+
+  /** A word of the transfer window's with its character's name (FromCharacter, ToCharacter). */
+  function transferWord(label: string, own: string, characterID: number | null, name: string): string {
+    return plainText(formatTemplate(word(label, own), { charID: characterID }, { nameOf: () => name }));
+  }
+
+  /**
+   * Give Money from an owner's menu (menusvc.py 615 to 616; walletSvc.py TransferMoney, 142 to 151): the transfer
+   * window for the character, its amount the least (93), at most what the pilot has as the client keeps it.
+   */
+  function giveMoneyTo(ownerID: number, name: string): void {
+    menuFor = null;
+    searchMenuFor = null;
+    error = "";
+    transferring = { toID: ownerID, toName: name, amount: "0.1", reason: "", wealth: null };
+    void flow.pilotWealth().then((wealth) => {
+      if (transferring !== null && transferring.toID === ownerID) transferring.wealth = wealth;
+    }).catch(() => {});
+  }
+
+  /** The amount's field let go of: what it holds made what the client's float field would hold. */
+  function transferAmountLeft(): void {
+    if (transferring !== null) transferring.amount = String(transferAmount(transferring.amount, transferring.wealth));
+  }
+
+  /**
+   * OK (Confirm, 138 to 152): nothing where the amount is not above nought; otherwise GiveCash, the transfer said to
+   * have been made (message_player), and the window closed.
+   */
+  function confirmTransfer(): void {
+    const held = transferring;
+    if (held === null) return;
+    const amount = transferAmount(held.amount, held.wealth);
+    if (!(amount > 0)) return;
+    void run(async () => {
+      await flow.giveMoney(held.toID, amount, transferReason(held.reason));
+      notify({ kind: "good", title: word(WORDS.transferSuccessful, "ISK given"), key: `transfer:${held.toID}:${Date.now()}` });
+      transferring = null;
+    });
   }
 
   /** A write of the window's, its refusal said. */
@@ -1348,6 +1438,8 @@
     ]);
     void load();
     void flow.primeContactsOnline().catch(() => {});
+    // The owner's menus' fleet entries go by the pilot's fleet, which the page reads where it has not yet.
+    if (store.fleet.get().availability === "unknown") void flow.loadFleet().catch(() => {});
     return () => {
       if (filterTimer !== null) clearTimeout(filterTimer);
     };
@@ -1499,6 +1591,32 @@
       <p class="controls">
         <button type="button" class="primary" disabled={busy} onclick={confirmManagement}>{managing.isContact ? word(WORDS.editContact, "Edit Contact") : word(WORDS.addContact, "Add Contact")}</button>
         <button type="button" class="minor" onclick={cancelManagement}>{word(WORDS.cancel, "Cancel")}</button>
+      </p>
+    </section>
+  {/if}
+
+  {#if transferring !== null}
+    <!-- The transfer window (TransferMoneyWnd, transferMoneyWnd.py 49 to 102): from whom and to whom, the amount and
+         the reason, OK and Cancel. -->
+    <section class="contacts-confirm" aria-label={word(WORDS.transferMoney, "Give ISK")}>
+      <h3>{word(WORDS.transferMoney, "Give ISK")}</h3>
+      <p>{transferWord(WORDS.fromCharacter, "Giver: {[character]charID.name}", myID, $station.online?.characterName ?? "")}</p>
+      <p>{transferWord(WORDS.toCharacter, "Receiver: {[character]charID.name}", transferring.toID, transferring.toName)}</p>
+      <p class="controls">
+        <label>
+          {word(WORDS.amount, "Amount")}
+          <input type="text" inputmode="decimal" bind:value={transferring.amount} onblur={transferAmountLeft} />
+        </label>
+      </p>
+      <p class="controls">
+        <label>
+          {word(WORDS.reason, "Reason")}
+          <input type="text" maxlength={TRANSFER_REASON_MAX} bind:value={transferring.reason} />
+        </label>
+      </p>
+      <p class="controls">
+        <button type="button" class="primary" disabled={busy} onclick={confirmTransfer}>{word(WORDS.ok, "OK")}</button>
+        <button type="button" class="minor" onclick={() => (transferring = null)}>{word(WORDS.cancel, "Cancel")}</button>
       </p>
     </section>
   {/if}
@@ -1702,6 +1820,16 @@
                       {#if offers.block}
                         <button type="button" class="minor" disabled={busy} onclick={() => { searchMenuFor = null; block(owner.id, owner.name); }}>{word(WORDS.blockContact, "Block")}</button>
                       {/if}
+                      {#if offers.money}
+                        <button type="button" class="minor" disabled={busy} onclick={() => giveMoneyTo(owner.id, owner.name)}>{word(WORDS.giveMoney, "Give ISK")}</button>
+                      {/if}
+                      {#if offers.inviteToFleet}
+                        <span class="contacts-submenu">{word(WORDS.inviteToFleet, "Fleet invite")}:</span>
+                        <button type="button" class="minor" disabled={busy} onclick={() => fleetInvite(owner.id, false)}>{word(WORDS.squadMember, "As a member")}</button>
+                      {/if}
+                      {#if offers.formFleetWith}
+                        <button type="button" class="minor" disabled={busy} onclick={() => fleetInvite(owner.id, true)}>{word(WORDS.formFleetWith, "Start a fleet with")}</button>
+                      {/if}
                     </p>
                   {/if}
                 {/if}
@@ -1885,6 +2013,16 @@
                     {/if}
                     {#if offers.block}
                       <button type="button" class="minor" disabled={busy} onclick={() => block(row.id, row.name)}>{word(WORDS.blockContact, "Block")}</button>
+                    {/if}
+                    {#if offers.money}
+                      <button type="button" class="minor" disabled={busy} onclick={() => giveMoneyTo(row.id, row.name)}>{word(WORDS.giveMoney, "Give ISK")}</button>
+                    {/if}
+                    {#if offers.inviteToFleet}
+                      <span class="contacts-submenu">{word(WORDS.inviteToFleet, "Fleet invite")}:</span>
+                      <button type="button" class="minor" disabled={busy} onclick={() => fleetInvite(row.id, false)}>{word(WORDS.squadMember, "As a member")}</button>
+                    {/if}
+                    {#if offers.formFleetWith}
+                      <button type="button" class="minor" disabled={busy} onclick={() => fleetInvite(row.id, true)}>{word(WORDS.formFleetWith, "Start a fleet with")}</button>
                     {/if}
                     {#if toAssign.length > 0}
                       <span class="contacts-submenu">{word(WORDS.assignLabel, "Assign Label")}:</span>

@@ -434,6 +434,7 @@ import { readCharacterFittings, readCorporationFittings } from "../bridge/fittin
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { BOOKMARK_EXPIRY, bookmarkLocation as bookmarkLocationCall } from "../bridge/bookmarkWrites.ts";
+import { giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
 import {
   decodeLaunched,
@@ -970,6 +971,11 @@ export interface AppFlow {
   /** Invite one character by ID, then re-read the authoritative fleet. */
   inviteFleetMember(characterID: number, assertCurrent?: () => void, expectedFleetID?: number): Promise<void>;
   /**
+   * An owner's menu's Form Fleet With (menusvc.py 637 to 638; fleetSvc.Invite, 351 to 363): a fleet formed where the
+   * pilot is in none, then the character invited; the pilot's own character is invited to nothing.
+   */
+  formFleetWith(characterID: number): Promise<void>;
+  /**
    * Accept a fleet invitation, then re-read membership before settling.
    *
    * With no argument this accepts the pending OnFleetInvite observed for this
@@ -1330,6 +1336,10 @@ export interface AppFlow {
    */
   /** `fresh`: asked of the server again, as the window's own Refresh asks; otherwise from what is kept (bridge/walletReads.ts). */
   loadWallet(how?: { readonly fresh?: boolean }): Promise<void>;
+  /** The pilot's own ISK as the client keeps it (walletSvc.py wealth); null where it could not be read. */
+  pilotWealth(): Promise<number | null>;
+  /** Give Money's OK (transferMoneyWnd.py Confirm, 138 to 152): the pilot's ISK given to a character. Fails as the call fails. */
+  giveMoney(toID: number, amount: number, reason: string): Promise<void>;
   /**
    * R55 — the Standings page: the character's own standings and the
    * corporation's, in one pull, with every entity id resolved to a name.
@@ -4804,6 +4814,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     );
   }
 
+  async function formFleetWith(characterID: number): Promise<void> {
+    // fleetSvc.Invite (351 to 363): with no fleet one is formed first, and where none could be, nothing more is
+    // asked; the pilot's own character is asked nothing.
+    if (store.fleet.get().availability !== "ready") {
+      await formFleet();
+      if (store.fleet.get().actionError !== null || store.fleet.get().availability !== "ready") return;
+    }
+    if (characterID === onlineCharacterID()) return;
+    await inviteFleetMember(characterID);
+  }
+
   /**
  * Join a fleet a CORP-MATE invited us to, without anybody clicking anything.
  *
@@ -6931,6 +6952,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // the reason in `corpError`. A SUCCESSFUL corp read decodes to a list — which
   // may be empty, and an empty list is the real "this corporation has no wallet
   // divisions" answer. The two must not collapse into one another.
+  async function pilotWealth(): Promise<number | null> {
+    const cash = decodeWalletCash(await walletReads.wealth());
+    const value = cash === null ? Number.NaN : Number(cash);
+    return Number.isFinite(value) ? value : null;
+  }
+
+  async function giveMoney(toID: number, amount: number, reason: string): Promise<void> {
+    // (The page's own call, bridge/giveMoney.ts; the pilot's ISK is put right by the OnAccountChange that follows.)
+    await giveMoneyCall(bridgeDo, toID, amount, reason);
+  }
+
   async function loadWallet(how: { readonly fresh?: boolean } = {}): Promise<void> {
     const reads = await walletReads.read(how);
     const corpFailed = reads.errors.divisions !== null;
@@ -16675,6 +16707,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadFleet,
     formFleet,
     inviteFleetMember,
+    formFleetWith,
     acceptFleetInvite,
     declineFleetInvite,
     leaveFleet,
@@ -16851,6 +16884,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadRewards,
 
     loadWallet,
+    pilotWealth,
+    giveMoney,
 
     loadStandings,
 
