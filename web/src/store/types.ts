@@ -1299,6 +1299,8 @@ export interface JournalMission {
   readonly expirationTime: string | null;
   /** The mission's marked spots, as the client's bookmark service takes them from the journal (bookmarkSvc.py 121 to 136). */
   readonly bookmarks?: readonly MissionSpot[];
+  /** Whether the mission may be handed in from anywhere (remoteCompletable): its tracker's last objective is talk then. */
+  readonly remoteCompletable?: boolean;
 }
 
 /**

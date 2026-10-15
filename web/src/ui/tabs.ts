@@ -50,6 +50,7 @@ export type TabID =
   | "characterSheet"
   | "showInfo"
   | "routeWindow"
+  | "missionTracker"
   | "log"
   | "settings";
 
@@ -199,6 +200,9 @@ export const TABS: readonly TabDef[] = [
   // list. Contextual: the client opens it from the route panel's Manage Route (infoPanelRoute.py 123), and so does
   // the page, from Travel.
   { id: "routeWindow", label: "Route and avoidance", where: "both", launchable: false },
+  // The client's job board's tracker (InfoPanelJobBoard): each accepted mission and the objective it is on, with its one
+  // button. The client keeps it on screen among its info panels; here it is a window the rail opens.
+  { id: "missionTracker", label: "Opportunities", where: "both" },
   // R80 — the notice log. Launchable on purpose, unlike Show Info: "what did I
   // miss?" is a question a player asks without anything having been clicked.
   { id: "log", label: "Log", where: "both" },

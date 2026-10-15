@@ -1547,8 +1547,9 @@ function createGamePortPilots({
       /** The pilot's agents' journal as the client's journal service keeps it (pilotJournal.js), and the readings of it, one after another. */
       journal: createPilotJournal(),
       journalWork: Promise.resolve(),
-      /** The askings after each accepted mission, one after another (missionInfoAsked). */
+      /** The askings after each accepted mission, one after another (missionInfoAsked), and their last answers, by the agent. */
       missionInfoWork: Promise.resolve(),
+      missionInfoKept: new Map(),
       /** The askings of the ship's free turret slots, one after another (turretSlotsAsked), and whether one is owed: the ship changed, and godma has not been primed since. */
       turretSlotsWork: Promise.resolve(),
       turretSlotsOwed: false,
@@ -2339,6 +2340,17 @@ function createGamePortPilots({
         return byName(entry.session, service, method, form);
       }));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
+    }
+    // missionObjectivesTracker's currentAgentMissionInfo: what was asked of a mission at the session's last change or
+    // warp's end (missionInfoAsked) is what the client's tracker has of it, and its panel asks nothing more. Asked for
+    // by name with the agent, it is answered from what was kept once the asking is done: nothing is sent, and nothing
+    // is counted. A mission not asked about goes on as any call does.
+    if (service === "missionTrackerMgr" && method === "GetMissionInfoItems" && form.args.length === 1 && form.kwargs === null) {
+      await entry.missionInfoWork;
+      const agentID = positive(form.args[0]);
+      if (agentID !== null && entry.missionInfoKept.has(agentID)) {
+        return { service, method, result: wireToBridgeJson(entry.missionInfoKept.get(agentID) ?? null), notifications: drain(entry) };
+      }
     }
     // objectCaching.PerformCachedMethodCall: what the server marked as cached is answered from its first answer
     // for as long as the client would keep it. Nothing is sent, and nothing is counted.
@@ -3672,16 +3684,18 @@ function createGamePortPilots({
    * 89 to 94, by UpdateMissionStatusForSessionChange, 213) and as each warp ends (OnClientEvent_WarpFinished, 84 to
    * 87). The missions are read from the journal (GetAgentMissions asks the journal service for them, which reads
    * what it has to). With none accepted nothing is asked. Tranquility's recordings have it so: a pilot on three
-   * missions, three calls at each session change and three at each warp's end. No page shows what is answered
-   * yet: it is asked as the client asks it, and nothing is kept of the answer.
+   * missions, three calls at each session change and three at each warp's end. What each answers is kept, as the
+   * tracker keeps it (currentAgentMissionInfo), for the page's mission tracker to be answered from.
    */
   function missionInfoAsked(entry) {
     const asking = entry.missionInfoWork.then(async () => {
       await journalUpToDate(entry);
+      const kept = new Map();
+      entry.missionInfoKept = kept;
       for (const agentID of acceptedMissionAgents(entry.journal.read(), filetime(now()))) {
         const form = shape("missionTrackerMgr", "GetMissionInfoItems", [agentID], null, contextFor(entry));
         ledger.note("missionTrackerMgr", "GetMissionInfoItems", form);
-        await byName(entry.session, "missionTrackerMgr", "GetMissionInfoItems", form);
+        kept.set(agentID, await byName(entry.session, "missionTrackerMgr", "GetMissionInfoItems", form));
       }
     });
     entry.missionInfoWork = asking.catch(() => {});

@@ -764,6 +764,12 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // service asks for the autopilot's avoidance ticks (mapSvc.py 501 to 513) and which a Tranquility client asks as it
   // logs in. The gateway's list has the map service's history and none of these.
   "map.GetTriglavianMinorVictorySystems", "map.GetEdencomFortressSystems", "map.GetEdencomMinorVictorySystems",
+  // A mission's objectives and whether the pilot is in its site, which the client's mission objectives tracker asks
+  // for each accepted mission (missionObjectivesTracker.py 312 and 320). The gateway's list has none of them.
+  "missionTrackerMgr.GetAllMissionObjectives", "missionTrackerMgr.IsInActiveDungeonID",
+  // And its asking after missions, which the server answers by OnMissionsUpdated (UpdateMissionStatusData, 216 to 220):
+  // at its start, for a mission accepted, as an awaited item comes aboard and as an awaited place is reached.
+  "missionTrackerMgr.UpdateAllMissions",
 ]);
 
 /**

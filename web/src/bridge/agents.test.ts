@@ -298,6 +298,8 @@ test("decodeJournal reads a row as the client unpacks it: whether it is importan
     agentID: 222,
     expirationTime: "135",
     missionID: 666,
+    // (The row's ninth, remoteCompletable: 0.)
+    remoteCompletable: false,
     // (The row's seventh, its marked spots: none of this row's is a spot of a mission's.)
     bookmarks: [],
   });

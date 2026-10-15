@@ -124,7 +124,18 @@ import { employmentHistoryOf } from "../bridge/employmentHistory.ts";
 import { filetimeOf } from "../bridge/journalWords.ts";
 import { readAssetStationItems, readAssetStations, type AssetStationItemsRead, type AssetStationsRead } from "../bridge/assetReads.ts";
 import {
+  arrivalAwaited,
+  decodeMissionInfo,
+  decodeMissionInfos,
+  decodeMissionsUpdated,
+  isArrivalFlag,
+  placesAwaited,
+  type MissionInfo,
+  type TrackedMission,
+} from "../bridge/missionTracker.ts";
+import {
   AGENT_BUTTON,
+  AGENT_MISSION_STATE,
   decodeBriefing,
   decodeConversation,
   decodeJournal,
@@ -299,7 +310,7 @@ import { buildGateLinks, type GateLink } from "../space/gateLinks.ts";
 import { CRIMEWATCH_NOTICES, CRIMEWATCH_SESSION_NAMES } from "../space/crimewatch.ts";
 import type { SafetyLevel } from "../space/crimewatch.ts";
 import { CLONE_GRADE_NOTICE, cloneGradeOf } from "../bridge/cloneGrade.ts";
-import type { AgentFinderRow, HoldItem, MissionSpot } from "../store/types.ts";
+import type { AgentFinderRow, HoldItem, JournalMission, MissionSpot } from "../store/types.ts";
 import {
   MENU_WARP_RANGE_M,
   createAutopilot,
@@ -1448,6 +1459,16 @@ export interface AppFlow {
    * journal.
    */
   openMissionDetails(agentID: number): Promise<void>;
+  /**
+   * The mission tracker (missionObjectivesTracker.py; bridge/missionTracker.ts): each accepted mission's objectives as
+   * read, by its agent. Read once a window asks for it (refreshMissionTracker), and again as the client's tracker reads
+   * again.
+   */
+  readonly missionTracker: ReadableSignal<ReadonlyMap<number, TrackedMission>>;
+  /** The tracker read: its window opened; with `placeChanged`, the pilot's place changed or a warp ended. */
+  refreshMissionTracker(placeChanged?: boolean): void;
+  /** A waypoint's solar system (ConvertStationIDToSolarSystemIDIfNecessary): itself for a system, else as resolved; null where not known. */
+  waypointSystem(id: number): Promise<number | null>;
   /** Close the mission's page. */
   closeMissionDetails(): void;
   /**
@@ -2987,6 +3008,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       onMissionChange(missionChange);
       return;
     }
+    if (method === "OnMissionsUpdated") {
+      onMissionsUpdated(decodeMissionsUpdated((args as readonly JsonValue[])[0]));
+      return;
+    }
     // The mailing lists service's notices (mailingListsSvc.py 144 to 180): the lists kept changed as it changes them.
     const listsNow = store.mail.get().lists;
     if (method !== null && listsNow !== null) {
@@ -3208,6 +3233,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "industry/materials-said", ...said });
       }
       return;
+    }
+    if (method === "OnItemsChanged" || method === "OnItemChange") {
+      // (The mission tracker's OnItemsChanged, which the client's inventory cache raises for both.)
+      const first = (args as readonly JsonValue[])[0];
+      trackerOnItemsArrived(method === "OnItemChange" ? [first] : isListValue(first) ? first.items : Array.isArray(first) ? first : []);
     }
     if (method === "OnItemsChanged") {
       // Coalesced: mining grants ore stack by stack, so a busy cycle can push
@@ -7486,6 +7516,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           journalReadAgain = false;
           await loadJournal();
         } while (journalReadAgain);
+        // (The tracker's missions are the journal's: OnAgentMissionChanged reads them again, missionObjectivesTracker.py 162 to 179.)
+        if (missionTrackerWanted) refreshMissionTracker();
       } catch {
         // The journal on show stays as it was; the next change, or Refresh, reads it again.
       } finally {
@@ -7507,7 +7539,167 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       talkToOpenAgentAgain();
     }
     missionPageOnChange(change);
+    trackerOnMissionChange(change);
     refreshJournal();
+  }
+
+  // --- the mission tracker: each accepted mission's objectives, as the client's job board's tracker shows them ------
+  //
+  // missionObjectivesTracker.py, for each mission the journal holds accepted and not expired:
+  //   the one it is on now (currentAgentMissionInfo): GetMissionInfoItems for each at the first use and again at each
+  //   change of the pilot's place and each warp's end (_InitializeCurrentAgentMissionInfo, 267 to 279: the transport
+  //   asks them then, as the client does, and answers the page from what it kept); set by OnMissionsUpdated (145 to
+  //   160) and taken away by OnAgentMissionChanged (162 to 179), with nothing asked; none for a mission accepted since;
+  //   its objectives (missionObjectives): GetAllMissionObjectives as the panel is built, kept until the mission
+  //   changes or the place does (GetAllAgentMissionInfo, 309 to 312);
+  //   whether the pilot is in its site: IsInActiveDungeonID, as its objectives ask it.
+  // Read only once a window has wanted it. (bridge/missionTracker.ts for what is shown of them.)
+  const missionTrackerSignal = createSignal<ReadonlyMap<number, TrackedMission>>(new Map());
+  const trackerCurrent = new Map<number, MissionInfo | null>();
+  const trackerObjectives = new Map<number, readonly MissionInfo[]>();
+  let trackerInitialized = false;
+  let trackerResetOwed = false;
+  let missionTrackerWanted = false;
+  let missionTrackerReading = false;
+  let missionTrackerReadAgain = false;
+
+  /** GetAgentMissions: the journal's missions accepted and not expired. */
+  function trackedJournalMissions(): JournalMission[] {
+    const journal = store.agents.get().journal;
+    const now = filetimeOf(Date.now());
+    return (journal?.active ?? []).filter((mission) => mission.missionState === AGENT_MISSION_STATE.ACCEPTED && mission.agentID !== null
+      && !(mission.expirationTime !== null && mission.expirationTime !== "0" && BigInt(mission.expirationTime) < now));
+  }
+
+  /**
+   * The tracker read as the client's reads it; `placeChanged` for a change of the pilot's place or a warp's end, after
+   * which the objectives now are asked again. Asks that come while it reads are answered by one more read.
+   */
+  function refreshMissionTracker(placeChanged = false): void {
+    missionTrackerWanted = true;
+    if (placeChanged) trackerResetOwed = true;
+    if (missionTrackerReading) {
+      missionTrackerReadAgain = true;
+      return;
+    }
+    missionTrackerReading = true;
+    void (async () => {
+      try {
+        do {
+          missionTrackerReadAgain = false;
+          if (store.agents.get().journal === null) await loadJournal();
+          const agentIDs = trackedJournalMissions().map((mission) => mission.agentID!);
+          if (!trackerInitialized || trackerResetOwed) {
+            trackerInitialized = true;
+            trackerResetOwed = false;
+            trackerCurrent.clear();
+            trackerObjectives.clear();
+            // (One after another, as the tracker asks them.)
+            for (const agentID of agentIDs) {
+              trackerCurrent.set(agentID, decodeMissionInfo(await bridgeAsk("missionTrackerMgr", "GetMissionInfoItems", [agentID])));
+            }
+          }
+          const read: TrackedMission[] = [];
+          for (const agentID of agentIDs) {
+            let all = trackerObjectives.get(agentID);
+            if (all === undefined) {
+              all = decodeMissionInfos(await bridgeAsk("missionTrackerMgr", "GetAllMissionObjectives", [agentID]));
+              trackerObjectives.set(agentID, all);
+            }
+            const inDungeon = await bridgeAsk("missionTrackerMgr", "IsInActiveDungeonID", [agentID]);
+            read.push({ agentID, all, current: trackerCurrent.get(agentID) ?? null, inActiveDungeon: inDungeon === true });
+          }
+          missionTrackerSignal.set(new Map(read.map((one) => [one.agentID, one])));
+        } while (missionTrackerReadAgain);
+      } catch {
+        // What is shown stays as it was; the next change reads again.
+      } finally {
+        missionTrackerReading = false;
+      }
+    })();
+  }
+
+  /** OnMissionsUpdated (missionObjectivesTracker.py 145 to 160): each mission's objective now, its objectives asked again. */
+  function onMissionsUpdated(missions: ReturnType<typeof decodeMissionsUpdated>): void {
+    for (const { agentID, info } of missions) {
+      // NotifyTrackerWhenTypeIDArrives or StopNotifyingTrackerForTypeID; and the place it names (the objective's
+      // SetDestinationNotificationTrigger, made as it is built).
+      const awaited = arrivalAwaited(info);
+      const was = waitingAgentType.get(agentID);
+      if (was !== undefined) waitingForTypes.get(was)?.delete(agentID);
+      if (awaited === null) waitingAgentType.delete(agentID);
+      else {
+        waitingAgentType.set(agentID, awaited);
+        if (!waitingForTypes.has(awaited)) waitingForTypes.set(awaited, new Set());
+        waitingForTypes.get(awaited)!.add(agentID);
+      }
+      for (const place of placesAwaited(info)) {
+        if (!placeTriggers.has(place)) placeTriggers.set(place, new Set());
+        placeTriggers.get(place)!.add(agentID);
+      }
+    }
+    if (!missionTrackerWanted) return;
+    for (const { agentID, info } of missions) {
+      trackerCurrent.set(agentID, info);
+      trackerObjectives.delete(agentID);
+    }
+    refreshMissionTracker();
+  }
+
+  /**
+   * OnAgentMissionChanged (162 to 179): the mission's objective now taken away unless it was only changed, and its
+   * objectives forgotten; a mission quit no more waited on at a place; one accepted asked after (UpdateMissionStatusData).
+   */
+  function trackerOnMissionChange(change: MissionChange): void {
+    if (change.agentID === null) return;
+    if (change.action === "quit") {
+      for (const agents of placeTriggers.values()) agents.delete(change.agentID);
+    } else if (change.action === "accepted") {
+      updateAllMissions([change.agentID]);
+    }
+    if (!missionTrackerWanted) return;
+    if (change.action !== "modified") trackerCurrent.set(change.agentID, null);
+    trackerObjectives.delete(change.agentID);
+  }
+
+  // The tracker's own asking of the server (UpdateMissionStatusData, 216 to 220): UpdateAllMissions with agents, which
+  // the server answers by OnMissionsUpdated. Asked for every accepted mission as the client's info panels start
+  // (RegisterMissionTracking, 235 to 246, by infoPanelSvc 109), for a mission accepted, for those waiting on an item's
+  // type as one comes aboard (OnItemsChanged, 104 to 131), and for those waiting on a place as the pilot reaches it or
+  // leaves it (UpdateMissionStatusForSessionChange, 207 to 214).
+  const waitingForTypes = new Map<number, Set<number>>();
+  const waitingAgentType = new Map<number, number>();
+  const placeTriggers = new Map<number, Set<number>>();
+  function updateAllMissions(agentIDs: readonly number[]): void {
+    if (agentIDs.length === 0) return;
+    void bridgeAsk("missionTrackerMgr", "UpdateAllMissions", [[...agentIDs]]).catch(() => undefined);
+  }
+  async function registerMissionTracking(): Promise<void> {
+    if (store.agents.get().journal === null) await loadJournal();
+    updateAllMissions(trackedJournalMissions().map((mission) => mission.agentID!));
+  }
+  /** OnItemsChanged's items (each a row of the item's columns): the missions waiting on any one's type, where it came. */
+  function trackerOnItemsArrived(items: readonly unknown[]): void {
+    if (waitingForTypes.size === 0) return;
+    const docked = store.flight.get().status?.docked === true;
+    const agents = new Set<number>();
+    for (const item of items) {
+      const fields = (item as { readonly fields?: Readonly<Record<string, unknown>> } | null)?.fields;
+      const typeID = Number(fields?.typeID);
+      const flagID = Number(fields?.flagID);
+      if (!Number.isSafeInteger(typeID) || !isArrivalFlag(flagID, docked)) continue;
+      for (const agentID of waitingForTypes.get(typeID) ?? []) agents.add(agentID);
+    }
+    updateAllMissions([...agents]);
+  }
+  /** session.locationid before and after: the missions waiting on either. */
+  function trackerOnPlaceChange(before: FlightStatus | null, after: FlightStatus): void {
+    const placeOf = (status: FlightStatus | null): number | null => (status === null ? null : status.docked ? status.stationID ?? status.structureID ?? null : status.solarSystemID);
+    const was = placeOf(before);
+    const now = placeOf(after);
+    if (before === null || was === now) return;
+    const agents = new Set<number>([...(was === null ? [] : placeTriggers.get(was) ?? []), ...(now === null ? [] : placeTriggers.get(now) ?? [])]);
+    updateAllMissions([...agents]);
   }
 
   // --- the journal's Read Details: the mission's page in the client's job board -------------------------
@@ -8202,6 +8394,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // not block on a panel refresh). Name resolution is always fire-and-forget.
   function observeFlightStatus(status: FlightStatus): Promise<void> {
     const previousSystemID = store.flight.get().status?.solarSystemID ?? null;
+    trackerOnPlaceChange(store.flight.get().status, status);
     const scannerBefore = store.scanner.get();
     const flightSystemChanged =
       previousSystemID !== null &&
@@ -17767,6 +17960,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       void retryDroneRecovery();
       void loadCrimewatch().catch(() => {});
       void loadCloneGrade().catch(() => {});
+      // The mission tracker's registration as the client's info panels start (RegisterMissionTracking).
+      void registerMissionTracking().catch(() => {});
       await refreshStationPanel();
     },
 
@@ -18391,6 +18586,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     openMissionDetails,
+    missionTracker: readonlySignal(missionTrackerSignal),
+    refreshMissionTracker,
+    waypointSystem: (id) => (id >= 30_000_000 && id < 40_000_000 ? Promise.resolve(id) : waypointSystemOf(id)),
 
     closeMissionDetails() {
       store.apply({ type: "agents/mission-page", page: null });

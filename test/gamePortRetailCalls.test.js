@@ -1809,6 +1809,10 @@ test("the game port carries the customs office's transfer, the station's offices
     "beyonce.CmdJumpToFleetModuleBeacon", "beyonce.CmdGroupJumpToFleetModuleBeacon", "beyonce.CmdBridgeToFleetModuleBeacon",
     // The map service's lists for the autopilot's avoidance ticks (mapSvc.py 501 to 513). The gateway's list has none of them.
     "map.GetTriglavianMinorVictorySystems", "map.GetEdencomFortressSystems", "map.GetEdencomMinorVictorySystems",
+    // The mission tracker's objectives and site reads (missionObjectivesTracker.py 312 and 320). The gateway's list has neither.
+    "missionTrackerMgr.GetAllMissionObjectives", "missionTrackerMgr.IsInActiveDungeonID",
+    // And its asking after missions (UpdateMissionStatusData, 216 to 220). The gateway's list has it not.
+    "missionTrackerMgr.UpdateAllMissions",
   ]);
   // structureGuests.py 25: sm.RemoteSvc('structureGuests').GetGuests(session.structureid), by the service's name,
   // with the structure the session is docked in and nothing else.
