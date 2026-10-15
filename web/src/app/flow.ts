@@ -150,6 +150,7 @@ import { sessionChangeNames, sessionChangeValue, wholeDigits } from "../bridge/s
 import { createPushLedger } from "../bridge/pushOnce.ts";
 import { standingsAfter } from "../bridge/standingChanges.ts";
 import { decodeMissionTimes } from "../bridge/missionTime.ts";
+import { decodeAgentLocationWrap } from "../bridge/agentHeader.ts";
 import { decodeObjectives } from "../bridge/missionObjectives.ts";
 import { decodeClientMission, pageObjectives, pageOnMissionChange, type ClientMission } from "../bridge/missionPage.ts";
 import {
@@ -8121,6 +8122,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     store.apply({ type: "agents/objectives", objectives: objectivesShown(conversation.lastActionInfo) ? decodeObjectives(reads.objective ?? undefined) : null });
     // The briefing's two times belong to what the agent says, not to the objectives: they are kept whatever the last action was.
     store.apply({ type: "agents/mission-times", times: decodeMissionTimes(reads.briefing) });
+    // The window's header (agentDialogueWindow.GetAgentHeader, bridge/agentHeader.ts): where the agent is, asked
+    // afresh for every layout.
+    store.apply({ type: "agents/agent-location", location: decodeAgentLocationWrap(reads.location) });
   }
 
   // R6 — the post-completion reward readout (Step 12): wallet / LP / standings.

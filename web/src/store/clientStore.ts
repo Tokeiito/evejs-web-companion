@@ -467,6 +467,7 @@ const INITIAL_AGENTS: AgentsState = Object.freeze({
   briefing: null,
   objectives: null,
   missionTimes: null,
+  agentLocation: null,
   missionPage: null,
   agentRecords: Object.freeze({}) as AgentsState["agentRecords"],
   agentSolarSystems: Object.freeze({}) as AgentsState["agentSolarSystems"],
@@ -1827,7 +1828,7 @@ export function createClientStore(): ClientStore {
         });
         break;
       case "agents/conversation-closed":
-        agents.set({ ...agents.get(), activeAgentID: null, conversation: null, briefing: null, objectives: null, missionTimes: null });
+        agents.set({ ...agents.get(), activeAgentID: null, conversation: null, briefing: null, objectives: null, missionTimes: null, agentLocation: null });
         break;
       case "agents/mission-keywords": {
         const current = agents.get();
@@ -1842,6 +1843,9 @@ export function createClientStore(): ClientStore {
         break;
       case "agents/mission-times":
         agents.set({ ...agents.get(), missionTimes: event.times });
+        break;
+      case "agents/agent-location":
+        agents.set({ ...agents.get(), agentLocation: event.location });
         break;
       case "agents/mission-page":
         agents.set({ ...agents.get(), missionPage: event.page });

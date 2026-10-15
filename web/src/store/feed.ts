@@ -525,6 +525,8 @@ export type FeedEvent =
   | { readonly type: "agents/objectives"; readonly objectives: import("../bridge/missionObjectives.ts").MissionObjectives | null }
   // What the briefing read for this layout says of the mission's time (null with no briefing).
   | { readonly type: "agents/mission-times"; readonly times: import("../bridge/missionTime.ts").MissionTimes | null }
+  // Where the agent is, as GetAgentLocationWrap answered it for this layout (null: no place named).
+  | { readonly type: "agents/agent-location"; readonly location: import("../bridge/agentHeader.ts").AgentLocationWrap | null }
   /** What the client's agents service knows of one agent, as answered (null: the server lists no such agent). */
   | { readonly type: "agents/record"; readonly agentID: number; readonly record: import("../bridge/agents.ts").AgentRecord | null }
   /** The solar system the server says an agent is in (null: none). */

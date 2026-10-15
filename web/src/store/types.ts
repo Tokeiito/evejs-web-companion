@@ -1383,6 +1383,11 @@ export interface AgentsState {
   readonly objectives: MissionObjectives | null;
   /** What the mission's briefing says of time, as read for the layout on show; null with no briefing. */
   readonly missionTimes: MissionTimes | null;
+  /**
+   * Where the agent is, as GetAgentLocationWrap answered it for the layout on show (the window's header,
+   * agentDialogueWindow.GetAgentHeader); null with no conversation, or an answer that names no place.
+   */
+  readonly agentLocation: import("../bridge/agentHeader.ts").AgentLocationWrap | null;
   /** The mission's page on show (the journal's Read Details); null when none is. */
   readonly missionPage: MissionPageState | null;
   /**
