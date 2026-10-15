@@ -168,9 +168,86 @@ function evaluate(described: Described | null | undefined, context: Context): Js
       // Its parameters as described, over the notification's data: the client's functions mostly give a label the
       // whole of the data (GetByLabel(label, **notification.data)), which a description holds only the added part of.
       return typeof described.label === "string" && isObject(described.params) ? worded(described.label, described.params, context.args, context) : undefined;
+    case "isk":
+      return iskWorded(evaluate(part("amount"), context), argument(described, 0, "showFractionsAlways", context), context);
+    case "date":
+      return dateWorded(evaluate(part("when"), context), argument(described, 0, "fmt", context, "format"), context);
+    case "message": {
+      const messageID = wholeOf(evaluate(part("messageID"), context));
+      if (messageID === null) return undefined;
+      context.labels.add(`#${messageID}`);
+      const words = context.templates[`#${messageID}`];
+      return typeof words === "string" ? words : undefined;
+    }
     default:
       return undefined;
   }
+}
+
+/**
+ * An optional argument of a recorded call: by its name among the keywords, else the one at `place` after those the
+ * recorder named (`more`), else, where the recorder named it, that; undefined where it was not given.
+ */
+function argument(described: Described, place: number, keyword: string, context: Context, named?: string): JsonValue | undefined {
+  const keywords = isObject(described.keywords) ? described.keywords : null;
+  if (keywords !== null && isObject(keywords[keyword])) return evaluate(keywords[keyword] as Described, context);
+  if (named !== undefined && isObject(described[named])) return evaluate(described[named] as Described, context);
+  const more = Array.isArray(described.more) ? described.more : [];
+  return isObject(more[place]) ? evaluate(more[place] as Described, context) : undefined;
+}
+
+/** A number off a value as the wire has it (a long, a real, a number); null for anything else. */
+function amountOf(value: JsonValue | undefined): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const inner = (value as { value?: unknown }).value;
+    const number = typeof inner === "number" ? inner : typeof inner === "string" ? Number(inner) : Number.NaN;
+    return Number.isFinite(number) ? number : null;
+  }
+  return null;
+}
+
+/**
+ * eveFormat.FmtISK (24 to 25) by FmtCurrency (63 to 73): the label of ISK with or without fractions
+ * (CURRENCY_FORMAT_TRANSLATIONS: UI/Util/FmtIsk, UI/Util/FmtIskNoDecimal), the amount rounded half away from
+ * nought where without (int(round(amount))).
+ */
+function iskWorded(amount: JsonValue | undefined, showFractionsAlways: JsonValue | undefined, context: Context): string | undefined {
+  const number = amountOf(amount);
+  if (number === null) return undefined;
+  const fractions = showFractionsAlways === undefined ? true : Boolean(amountOf(showFractionsAlways) ?? showFractionsAlways);
+  const shown = fractions ? number : Math.sign(number) * Math.round(Math.abs(number));
+  return worded(fractions ? "UI/Util/FmtIsk" : "UI/Util/FmtIskNoDecimal", {}, { amount: shown }, context);
+}
+
+/** The client's clock: 100 ns ticks. appConst.YEAR365 * 199, below which FmtDate takes the value for a length of time. */
+const YEAR_1800 = 365n * 24n * 3600n * 10_000_000n * 199n;
+/** carbon's format.FmtDate (71 to 114): the label for each format, by its two letters. */
+const DATE_LABELS: Readonly<Record<string, string>> = {
+  ll: "/Carbon/UI/Common/DateTime/SimpleDateUTC", sl: "/Carbon/UI/Common/DateTime/SimpleDateUTC", xs: "/Carbon/UI/Common/DateTime/SimpleDateUTC",
+  ls: "/Carbon/UI/Common/DateTime/DateLongShort", ss: "/Carbon/UI/Common/DateTime/DateLongShort",
+  ln: "/Carbon/UI/Common/DateTime/DateLongNone", sn: "/Carbon/UI/Common/DateTime/DateLongNone", xn: "/Carbon/UI/Common/DateTime/DateLongNone",
+  nl: "/Carbon/UI/Common/DateTime/Time",
+  ns: "/Carbon/UI/Common/DateTime/HoursAndMinutes",
+  xl: "/Carbon/UI/Common/DateTime/SimpleDateUTC",
+  el: "/Carbon/UI/Common/DateTime/DateExtendedLong",
+  es: "/Carbon/UI/Common/DateTime/DateExtendedShort",
+  en: "/Carbon/UI/Common/DateTime/DateExtendedNone",
+};
+
+/**
+ * FmtDate(date, fmt='ll'): a time as the label of its format words it (datetime=date); undefined for a length of
+ * time (below the year 1800), which the client words otherwise, and for a format it would refuse.
+ */
+function dateWorded(when: JsonValue | undefined, format: JsonValue | undefined, context: Context): string | undefined {
+  const ticks = typeof when === "number" && Number.isSafeInteger(when) ? BigInt(when) : when && typeof when === "object" && !Array.isArray(when) && /^-?\d+$/.test(String((when as { value?: unknown }).value)) ? BigInt(String((when as { value?: unknown }).value)) : null;
+  if (ticks === null) return undefined;
+  const fmt = format === undefined ? "ll" : typeof format === "string" ? (format === "nn" ? "ll" : format) : null;
+  if (fmt === null) return undefined;
+  const magnitude = ticks < 0n ? -ticks : ticks;
+  if (magnitude < YEAR_1800) return undefined;
+  const label = DATE_LABELS[fmt];
+  return label === undefined ? undefined : worded(label, {}, { datetime: { type: "long", value: magnitude.toString() } }, context);
 }
 
 /**
@@ -195,61 +272,76 @@ function worded(label: string, described: Readonly<Record<string, unknown>>, giv
   return formatTemplate(template, params, { nameOf: context.nameOf });
 }
 
-/** What wording a notification's subject asks for, and the subject where the page can be sure of it. */
-export interface SubjectWording {
-  /** The subject, as plain text; null where the page cannot be sure of it, or what it asks for is not to hand yet. */
-  readonly subject: string | null;
+/** What wording a notification's part asks for, and the part where the page can be sure of it. */
+export interface PartWording {
+  /** The part as the client's markup; null where the page cannot be sure of it, or what it asks for is not to hand yet. */
+  readonly markup: string | null;
   /** The labels whose words it asked for, and the names. */
   readonly labels: readonly string[];
   readonly refs: readonly NameRef[];
 }
 
+/** A notification's subject's wording: the subject as plain text, where the page can be sure of it. */
+export interface SubjectWording {
+  readonly subject: string | null;
+  readonly labels: readonly string[];
+  readonly refs: readonly NameRef[];
+}
+
 /**
- * A notification's subject as the client words it (FormatNotifications): by its formatter's described subject,
- * by its whole-wording function's, or by the table's subject label with the data and the described parameters.
- * `templates` are the install's words by label; the labels and names it asks for are returned, to be asked for.
+ * A notification's subject or body as the client words it (FormatNotifications): by its formatter's described
+ * part, by its whole-wording function's, or by the table's label for the part with the data and the described
+ * parameters. `templates` are the install's words by label; the labels and names it asks for are returned, to be
+ * asked for. The body is the client's markup (line breaks as <br>, links), to be shown as such.
  */
-export function notificationSubjectWording(notification: Notification, formats: NotificationFormats, templates: Templates, nameOf: FormatContext["nameOf"]): SubjectWording {
+export function notificationWording(notification: Notification, formats: NotificationFormats, templates: Templates, nameOf: FormatContext["nameOf"], part: "subject" | "body"): PartWording {
   const context: Context = { args: notificationArguments(notification), templates, nameOf, labels: new Set(), refs: [] };
-  const done = (subject: string | undefined | null): SubjectWording => ({
-    subject: typeof subject === "string" ? plainText(subject) : null,
+  const done = (markup: string | undefined | null): PartWording => ({
+    markup: typeof markup === "string" ? markup : null,
     labels: [...context.labels],
     refs: context.refs,
   });
   if (notification.typeID === CONTACT_NOTIFICATION_TYPE.add || notification.typeID === CONTACT_NOTIFICATION_TYPE.edit || notification.typeID === CONTACT_NOTIFICATION_TYPE.buddyAdd) {
     const formatted = formatContactNotification(notification, templates, nameOf);
-    return { subject: formatted === null ? null : plainText(formatted.subject), labels: [], refs: [{ kind: "owner", id: notification.senderID }] };
+    return { markup: formatted === null ? null : formatted[part], labels: [], refs: [{ kind: "owner", id: notification.senderID }] };
   }
   const key = String(notification.typeID);
   const formatter = formats.formatters[key];
   if (formatter !== undefined) {
-    const described = formatter.described?.subject ?? null;
+    const described = formatter.described?.[part] ?? null;
     return done(described === null ? null : evaluate(described, context) as string | undefined);
   }
   const entry = formats.table[key];
   if (entry === undefined) return done(null);
   if (entry.function !== null) {
-    const described = entry.described?.subject ?? null;
+    const described = entry.described?.[part] ?? null;
     return done(described === null ? null : evaluate(described, context) as string | undefined);
   }
-  if (entry.subject === null) return done(null);
-  // A parameter function not followed may put in anything: the subject is sure only where it asks for nothing but
-  // what the data holds and that function would not have changed. One followed puts in what it is described as.
+  const label = entry[part];
+  if (label === null) return done(null);
+  // A parameter function not followed may put in anything: the part is sure only where it asks for nothing at all.
+  // One followed puts in what it is described as.
   const params: Record<string, Described | null> = entry.parameters !== null && entry.described !== null ? { ...entry.described } : {};
   if (entry.parameters !== null && entry.described === null) {
-    context.labels.add(entry.subject);
-    const template = templates[entry.subject];
+    context.labels.add(label);
+    const template = templates[label];
     if (typeof template !== "string") return done(null);
     const asked = parseTemplate(template).flatMap((token) => (typeof token === "string" ? [] : [token.name]));
     if (asked.length > 0) return done(null);
   }
-  // A parameter described as null was not followed: where the subject asks for it, it cannot be worded.
+  // A parameter described as null was not followed: where the part asks for it, it cannot be worded.
   const unknown = new Set(Object.entries(params).filter(([, each]) => each === null).map(([name]) => name));
-  const template = templates[entry.subject];
+  const template = templates[label];
   if (typeof template === "string" && parseTemplate(template).some((token) => typeof token !== "string" && unknown.has(token.name))) {
-    context.labels.add(entry.subject);
+    context.labels.add(label);
     return done(null);
   }
   const known = Object.fromEntries(Object.entries(params).filter(([, each]) => each !== null)) as Record<string, Described>;
-  return done(worded(entry.subject, known, context.args, context));
+  return done(worded(label, known, context.args, context));
+}
+
+/** A notification's subject as the client words it, as plain text (notificationWording's subject). */
+export function notificationSubjectWording(notification: Notification, formats: NotificationFormats, templates: Templates, nameOf: FormatContext["nameOf"]): SubjectWording {
+  const wording = notificationWording(notification, formats, templates, nameOf, "subject");
+  return { subject: wording.markup === null ? null : plainText(wording.markup), labels: wording.labels, refs: wording.refs };
 }

@@ -11,7 +11,7 @@
   import { isSessionLost } from "../app/flow.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { CONTACT_NOTIFICATION_LABELS } from "../bridge/contactNotifications.ts";
-  import { notificationSubjectWording, type NotificationFormats } from "../bridge/notificationFormats.ts";
+  import { notificationSubjectWording, notificationWording, type NotificationFormats } from "../bridge/notificationFormats.ts";
   import type { Notification } from "../bridge/notifications.ts";
   import type { ActivityNotificationRow } from "../store/types.ts";
   import {
@@ -64,6 +64,8 @@
   interface ListedNotification {
     readonly key: string;
     readonly title: string;
+    /** Its body as the client words it, as plain text; null where the page cannot be sure of it. */
+    readonly body: string | null;
     readonly senderID: number | null;
     readonly processed: boolean | null;
     readonly created: bigint | null;
@@ -104,15 +106,22 @@
   function subjectOf(row: ActivityNotificationRow): string | null {
     return formats === null ? null : notificationSubjectWording(asNotification(row), formats, $words.templates, (kind, id) => resolvedName($names.resolved, kind, id, "")).subject;
   }
-  // The words of the subjects shown, and the names they are filled with, asked for.
+  function bodyOf(row: ActivityNotificationRow): string | null {
+    if (formats === null) return null;
+    const markup = notificationWording(asNotification(row), formats, $words.templates, (kind, id) => resolvedName($names.resolved, kind, id, ""), "body").markup;
+    return markup === null ? null : plainText(markup).trim();
+  }
+  // The words of the subjects and bodies shown, and the names they are filled with, asked for.
   $effect(() => {
     const known = formats;
     if (known === null || $activity.notifications.status !== "ready") return;
     const labels = new Set<string>(Object.values(CONTACT_NOTIFICATION_LABELS));
     for (const row of $activity.notifications.value) {
-      const wording = notificationSubjectWording(asNotification(row), known, $words.templates, (kind, id) => resolvedName($names.resolved, kind, id, ""));
-      for (const label of wording.labels) labels.add(label);
-      if (wording.refs.length > 0) flow.requestNames(wording.refs);
+      for (const part of ["subject", "body"] as const) {
+        const wording = notificationWording(asNotification(row), known, $words.templates, (kind, id) => resolvedName($names.resolved, kind, id, ""), part);
+        for (const label of wording.labels) labels.add(label);
+        if (wording.refs.length > 0) flow.requestNames(wording.refs);
+      }
     }
     flow.requestWords([...labels]);
   });
@@ -126,6 +135,7 @@
         all.push({
           key: `n${notification.notificationID}`,
           title: subjectOf(notification) ?? notification.title,
+          body: bodyOf(notification),
           // A sender of nought is none (the client's None: its new-mail notification of a list's own mail has none).
           senderID: notification.senderID > 0 ? notification.senderID : null,
           processed: notification.processed,
@@ -135,7 +145,7 @@
     }
     if ($activity.skillNotifications.status === "ready") {
       $activity.skillNotifications.value.forEach((notification, place) => {
-        all.push({ key: `s${place}`, title: skillNotificationTitle(notification), senderID: null, processed: null, created: BigInt(notification.logDate) });
+        all.push({ key: `s${place}`, title: skillNotificationTitle(notification), body: null, senderID: null, processed: null, created: BigInt(notification.logDate) });
       });
     }
     return all
@@ -276,6 +286,13 @@
                   {/if}
                   {whenText(notification.created)}
                 </span>
+                {#if notification.body !== null && notification.body !== ""}
+                  <!-- Its body as the client words it (FormatNotifications), folded away as the page's own. -->
+                  <details class="activity-body">
+                    <summary>Read</summary>
+                    <p>{notification.body}</p>
+                  </details>
+                {/if}
               </div>
               {#if notification.processed !== null}
                 <span class="badge" class:accent={!notification.processed}>
@@ -397,6 +414,16 @@
   .meta {
     color: var(--color-muted);
     font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+  .activity-body summary {
+    color: var(--color-muted);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .activity-body p {
+    margin: 0.3rem 0 0;
+    white-space: pre-line;
     overflow-wrap: anywhere;
   }
   .response {
