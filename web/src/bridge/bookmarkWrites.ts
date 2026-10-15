@@ -232,6 +232,60 @@ export async function setFolderActive(act: Ask, folderID: number, isActive: bool
   await act("accessGroupBookmarkMgr", "UpdateKnownFolderState", [folderID, isActive]);
 }
 
+/** What a move or a copy answers (bookmarkSvc.MoveOrCopyBookmarks, 690 to 705): how many it did, and the server's message, if any. */
+export interface MovedOrCopied {
+  readonly count: number;
+  /** A dialog's name and its values, which the client shows (prompt_player_fsd_dialog(*message)); null for none. */
+  readonly message: { readonly dialog: string; readonly values: unknown } | null;
+}
+
+function movedOrCopiedOf(answer: unknown, counted: (first: unknown) => number): MovedOrCopied {
+  const parts = Array.isArray(answer) ? answer : [];
+  const raw = parts[1];
+  const said = Array.isArray(raw) && typeof raw[0] === "string" ? { dialog: raw[0], values: raw[1] ?? null } : null;
+  return { count: counted(parts[0]), message: said };
+}
+
+async function moveOrCopy(act: Ask, method: string, oldFolderID: number, folderID: number, subfolderID: number | null, bookmarkIDs: readonly number[]): Promise<unknown> {
+  if (!anID(oldFolderID) || !anID(folderID)) {
+    throw new Error("That is no bookmark folder.");
+  }
+  if (subfolderID !== null && !anID(subfolderID)) {
+    throw new Error("That is no bookmark subfolder.");
+  }
+  const ids = bookmarkIDs.filter(anID);
+  if (ids.length === 0) {
+    throw new Error("No bookmark is chosen.");
+  }
+  return act("accessGroupBookmarkMgr", method, [oldFolderID, folderID, subfolderID, ids]);
+}
+
+/**
+ * Moves bookmarks of the folder `oldFolderID` into the folder `folderID` and its subfolder `subfolderID` (null for the
+ * folder itself), as bookmarkSvc.MoveOrCopyBookmarks moves a source folder's (690):
+ * accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder(oldFolderID, folderID, subfolderID, bookmarks), the
+ * bookmarks a set. Answers how many rows came back moved, and the server's message. Fails as the call fails.
+ */
+export async function moveBookmarks(act: Ask, oldFolderID: number, folderID: number, subfolderID: number | null, bookmarkIDs: readonly number[]): Promise<MovedOrCopied> {
+  const answer = await moveOrCopy(act, "MoveBookmarksToFolderAndSubfolder", oldFolderID, folderID, subfolderID, bookmarkIDs);
+  return movedOrCopiedOf(answer, (rows) => (Array.isArray(rows) ? rows.length : rows !== null && typeof rows === "object" && Array.isArray((rows as { items?: unknown }).items) ? (rows as { items: unknown[] }).items.length : 0));
+}
+
+/**
+ * Copies bookmarks of the folder `oldFolderID` into the folder `folderID` and its subfolder `subfolderID`, as
+ * bookmarkSvc.MoveOrCopyBookmarks copies a source folder's (701):
+ * accessGroupBookmarkMgr.CopyBookmarksToFolderAndSubfolder(oldFolderID, folderID, subfolderID, bookmarks). Answers
+ * how many new bookmarks came back, and the server's message. Fails as the call fails.
+ */
+export async function copyBookmarks(act: Ask, oldFolderID: number, folderID: number, subfolderID: number | null, bookmarkIDs: readonly number[]): Promise<MovedOrCopied> {
+  const answer = await moveOrCopy(act, "CopyBookmarksToFolderAndSubfolder", oldFolderID, folderID, subfolderID, bookmarkIDs);
+  return movedOrCopiedOf(answer, (made) => {
+    if (made === null || typeof made !== "object") return 0;
+    const entries = (made as { entries?: unknown }).entries;
+    return Array.isArray(entries) ? entries.length : Object.keys(made).length;
+  });
+}
+
 /**
  * Disconnects the pilot from the shared folder `folderID`, as Disconnect from Folder does (bookmarkSvc.RemoveFromKnownFolders,
  * 459 to 464): accessGroupBookmarkMgr.RemoveFromKnownFolders(folderID). The folder stays; the pilot no longer knows it.
