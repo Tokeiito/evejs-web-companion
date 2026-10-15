@@ -206,7 +206,7 @@ import { BridgeCallError } from "../bridge/callMethod.ts";
 import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey } from "../bridge/questions.ts";
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
-import { isListValue, readDictEntry, readDictPairs, readKeyVal, type JsonValue } from "../bridge/wire.ts";
+import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, type JsonValue } from "../bridge/wire.ts";
 import { decodeNotifications, notificationRows, type Notification } from "../bridge/notifications.ts";
 import { isCommunicationType } from "../bridge/contactNotifications.ts";
 import { decodeNotificationFormats, type NotificationFormats } from "../bridge/notificationFormats.ts";
@@ -272,15 +272,20 @@ import {
 import { systemGraphOnce } from "../nav/systemGraphKept.ts";
 import { autopilotDistances, autopilotJumpCounts, autopilotMap, autopilotPath, type AutopilotRouteType, type AutopilotSettings } from "../nav/autopilotRoute.ts";
 import {
+  AVOIDING_DIALOGS,
   autopilotSettingsFrom,
   avoidanceItems,
+  avoidanceTickOn,
   loadAutopilotSettings,
   saveAutopilotSettings,
   withAvoidanceItem,
+  withAvoidanceTickClicked,
   withAvoidSystemsClicked,
   withoutAvoidanceItem,
   withPenalty,
   withRouteType,
+  type AvoidanceTick,
+  type AvoidedLists,
   type SettingsStorage,
   type StoredAutopilotSettings,
 } from "../nav/autopilotSettings.ts";
@@ -1813,6 +1818,11 @@ export interface AppFlow {
   dismissDialog(n: number): void;
   /** A question of dialogsSaid (answers "yesno") answered: Yes or No. */
   answerDialog(n: number, yes: boolean): void;
+  /**
+   * A dialog's answer kept, its box's "do not show again" or "do not ask again" ticked (dialog_handler.py
+   * _persist_prompt_suppress_choice): the dialog is not put up again, and a question is answered with what was kept.
+   */
+  keepDialogAnswer(dialog: string, answer: "ok" | "yes" | "no"): void;
   /** The client's quantity question open now, one at a time (ClientDialogs.svelte shows it); null with none. */
   readonly quantityAsked: ReadableSignal<QuantityAsk | null>;
   /** Its answer: a quantity on OK, null on Cancel. An answer to a question no longer open is nothing. */
@@ -2095,6 +2105,8 @@ export interface AppFlow {
   setAutopilotRouteType(routeType: AutopilotRouteType): StoredAutopilotSettings;
   setAutopilotPenalty(penalty: number): StoredAutopilotSettings;
   clickAutopilotAvoidSystems(): StoredAutopilotSettings;
+  /** One of the ticks that add a list of the server's (pod kills, Triglavian and EDENCOM systems) clicked. */
+  clickAutopilotAvoidanceTick(tick: AvoidanceTick): StoredAutopilotSettings;
   /** A location's Avoid (menusvc.py 2030 to 2031: AddAvoidanceItem): a known-space system, constellation or region put on the list. */
   avoidLocation(id: number): StoredAutopilotSettings;
   /** A location's Do Not Avoid (2032 to 2033: RemoveAvoidanceItem): taken off the list, and avoiding set back to not set. */
@@ -5263,6 +5275,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   /** A dialog put up by its name, with the values for it and the page's own words for it (dialogsSaid). */
   function sayDialog(dialog: string, values: JsonValue | null, fallback: string): void {
+    // An answer kept for it (_handle_player_fsd_dialog, 59 to 64): not put up.
+    if (dialogAnswerKept(dialog) !== null) return;
     dialogsSaidCount += 1;
     putDialog({ n: dialogsSaidCount, dialog, values, fallback });
   }
@@ -5280,6 +5294,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // answer; true on Yes.
   const dialogAnswers = new Map<number, (yes: boolean) => void>();
   function askDialog(dialog: string, values: JsonValue | null, fallback: string): Promise<boolean> {
+    const kept = dialogAnswerKept(dialog);
+    if (kept !== null) return Promise.resolve(kept === "yes");
     dialogsSaidCount += 1;
     const n = dialogsSaidCount;
     return new Promise((resolve) => {
@@ -6533,8 +6549,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   function keepDialogYes(dialog: string): void {
+    keepDialogAnswer(dialog, "yes");
+  }
+
+  /** The answer kept for a dialog ("ok", "yes" or "no"), or null where none is. */
+  function dialogAnswerKept(dialog: string): string | null {
     try {
-      settingsStorage?.setItem(`${DIALOG_ANSWER_KEPT}${dialog}`, "yes");
+      const kept = settingsStorage?.getItem(`${DIALOG_ANSWER_KEPT}${dialog}`) ?? null;
+      return kept === "ok" || kept === "yes" || kept === "no" ? kept : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function keepDialogAnswer(dialog: string, answer: "ok" | "yes" | "no"): void {
+    try {
+      settingsStorage?.setItem(`${DIALOG_ANSWER_KEPT}${dialog}`, answer);
     } catch {
       // Storage full or refused: the dialog is asked again.
     }
@@ -9956,7 +9986,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       const graph = await loadRouteGraph();
       const map = autopilotMap(graph);
-      const settings = pathfinderSettings(graph);
+      const settings = await pathfinderSettings(graph);
       const targets = [...route.systems, current];
       const countsFrom = new Map<number, Map<number, number | null>>();
       const jumpCount = (fromID: number, toID: number): number => {
@@ -9995,7 +10025,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     const systemOf = (id: number): number | null => waypointSystems.get(id) ?? null;
     const map = autopilotMap(graph);
-    const settings = pathfinderSettings(graph);
+    const settings = await pathfinderSettings(graph);
     const data = routeData(start, waypoints, systemOf, (fromID, toID) => autopilotPath(map, fromID, toID, settings));
     if (data === null) return null;
     return {
@@ -10019,9 +10049,66 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     return autopilotKept.stored;
   }
-  /** The settings the pathfinder is given, the list's constellations and regions as their systems on this map. */
-  function pathfinderSettings(graph: SystemGraph, stored: StoredAutopilotSettings = autopilotSettings()): AutopilotSettings {
-    return autopilotSettingsFrom(stored, (id) => graph.systemsIn?.(id) ?? [id]);
+  /**
+   * The settings the pathfinder is given: the list's constellations and regions as their systems on this map, and the
+   * server's lists whose ticks are on, read first (avoidedListsFor).
+   */
+  async function pathfinderSettings(graph: SystemGraph, stored: StoredAutopilotSettings = autopilotSettings()): Promise<AutopilotSettings> {
+    return autopilotSettingsFrom(stored, (id) => graph.systemsIn?.(id) ?? [id], await avoidedListsFor(stored));
+  }
+
+  // The server's lists the avoidance ticks add (stateinterface.py GetAvoidanceList, 68 to 83), read as the client
+  // reads them: the systems where pods were killed in the last day by the map service's GetHistory each time
+  // (clientPathfinderService.py UpdatePodKillList, 238 to 249: each system whose value3 is above nothing; the answer
+  // kept by the transport for as long as the server says, as the client's object cache keeps it); the Triglavians'
+  // and EDENCOM's minor victory systems once (mapSvc.py 504 to 513, Memoize); EDENCOM's fortress systems each time
+  // (501 to 502). A read that fails adds nothing, and is not kept.
+  const MAP_HISTORY_STAT_KILLS = 3;
+  let triglavianVictories: readonly number[] | null = null;
+  let edencomVictories: readonly number[] | null = null;
+  const systemIDsIn = (answer: JsonValue): number[] => {
+    const items = isListValue(answer) ? answer.items : Array.isArray(answer) ? answer : [];
+    return items.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0);
+  };
+  async function avoidedListsFor(stored: StoredAutopilotSettings): Promise<AvoidedLists> {
+    const lists: { -readonly [Tick in AvoidanceTick]?: readonly number[] } = {};
+    if (avoidanceTickOn(stored, "pfAvoidPodKill")) {
+      try {
+        const rows = readRowsetRows(await bridgeAsk("map", "GetHistory", [MAP_HISTORY_STAT_KILLS, 24]));
+        lists.pfAvoidPodKill = rows
+          .filter((row) => Number(row.value3) > 0)
+          .map((row) => Number(row.solarSystemID))
+          .filter((id) => Number.isSafeInteger(id) && id > 0)
+          .sort((a, b) => a - b);
+      } catch {
+        lists.pfAvoidPodKill = [];
+      }
+    }
+    if (avoidanceTickOn(stored, "pfAvoidTriglavianTales")) {
+      if (triglavianVictories === null) {
+        triglavianVictories = await bridgeAsk("map", "GetTriglavianMinorVictorySystems", []).then(systemIDsIn, () => null);
+      }
+      lists.pfAvoidTriglavianTales = triglavianVictories ?? [];
+    }
+    if (avoidanceTickOn(stored, "pfAvoidEdencomSystems")) {
+      const fortresses = await bridgeAsk("map", "GetEdencomFortressSystems", []).then(systemIDsIn, () => []);
+      if (edencomVictories === null) {
+        edencomVictories = await bridgeAsk("map", "GetEdencomMinorVictorySystems", []).then(systemIDsIn, () => null);
+      }
+      lists.pfAvoidEdencomSystems = [...fortresses, ...(edencomVictories ?? [])];
+    }
+    return lists;
+  }
+
+  /**
+   * One of the route panel's avoiding ticks clicked (infoPanelRoute.py 163 to 189): the setting changed, and where it
+   * is turned on, the tick's warning put up first.
+   */
+  function clickAvoidingTick(tick: AvoidanceTick | "pfAvoidSystems"): StoredAutopilotSettings {
+    const before = autopilotSettings();
+    const turningOn = tick === "pfAvoidSystems" ? !(before.pfAvoidSystems ?? false) : !avoidanceTickOn(before, tick);
+    if (turningOn) sayDialog(AVOIDING_DIALOGS[tick], null, "Avoiding these may make the autopilot's routes very long.");
+    return changeAutopilotSettings((stored) => (tick === "pfAvoidSystems" ? withAvoidSystemsClicked(stored) : withAvoidanceTickClicked(stored, tick)));
   }
   function changeAutopilotSettings(change: (stored: StoredAutopilotSettings) => StoredAutopilotSettings): StoredAutopilotSettings {
     const before = autopilotSettings();
@@ -10070,7 +10157,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (waypoints.length === 0 || currentSystemID === null) return null;
     const graph = await loadRouteGraph();
     const map = autopilotMap(graph);
-    const settings = pathfinderSettings(graph);
+    const settings = await pathfinderSettings(graph);
     const parentsOf = (id: number | null): number[] => {
       const out: number[] = [];
       for (let at = id === null ? null : graph.parentOf?.(id) ?? null; at !== null; at = graph.parentOf?.(at) ?? null) out.push(at);
@@ -10136,7 +10223,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function autopilotDistancesFrom(fromSystemID: number): Promise<Map<number, number>> {
     const stored = autopilotSettings();
     const graph = await loadRouteGraph();
-    return autopilotDistances(autopilotMap(graph), fromSystemID, pathfinderSettings(graph, stored));
+    return autopilotDistances(autopilotMap(graph), fromSystemID, await pathfinderSettings(graph, stored));
   }
 
   // The jumps on the autopilot's route, worked out here as the client works them out
@@ -10153,8 +10240,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return;
     }
     void loadRouteGraph()
-      .then((graph) => {
-        const counts = autopilotJumpCounts(autopilotMap(graph), fromSystemID, wanted, pathfinderSettings(graph, stored));
+      .then(async (graph) => {
+        const settings = await pathfinderSettings(graph, stored);
+        // The settings changed while the server's lists were read: what was worked out with the old is not kept.
+        if (autopilotSettings() !== stored) return;
+        const counts = autopilotJumpCounts(autopilotMap(graph), fromSystemID, wanted, settings);
         store.apply({ type: "names/autopilot-jumps", jumps: Object.fromEntries([...counts].map(([toID, count]) => [keyOf(toID), count])) });
       })
       // Without the map nothing is kept: a later ask reads it again.
@@ -10687,7 +10777,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // 4. Solve the route: the one the client's autopilot plots with its settings as they come, the safe
     //    way and round the systems it avoids unless the pilot has set it otherwise (nav/autopilotRoute.ts,
     //    nav/autopilotSettings.ts), not the fewest jumps.
-    const way = autopilotPath(autopilotMap(graph), originSystem, targetSystemID, pathfinderSettings(graph));
+    const way = autopilotPath(autopilotMap(graph), originSystem, targetSystemID, await pathfinderSettings(graph));
     // The way is through this same map, so each of its jumps has a gate.
     const route = way === null ? null : routeAlong(graph, way);
     if (route === null) {
@@ -17502,6 +17592,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     dialogsSaid: readonlySignal(dialogsSaidSignal),
     dismissDialog,
     answerDialog,
+    keepDialogAnswer,
     quantityAsked: readonlySignal(quantityAskedSignal),
     answerQuantity,
     setDestination,
@@ -18693,7 +18784,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     routeSettings: routeSettingsView,
     setAutopilotRouteType: (routeType) => changeAutopilotSettings((stored) => withRouteType(stored, routeType)),
     setAutopilotPenalty: (penalty) => changeAutopilotSettings((stored) => withPenalty(stored, penalty)),
-    clickAutopilotAvoidSystems: () => changeAutopilotSettings(withAvoidSystemsClicked),
+    clickAutopilotAvoidSystems: () => clickAvoidingTick("pfAvoidSystems"),
+    clickAutopilotAvoidanceTick: (tick) => clickAvoidingTick(tick),
     avoidLocation: (id) => changeAutopilotSettings((stored) => withAvoidanceItem(stored, id)),
     stopAvoidingLocation: (id) => changeAutopilotSettings((stored) => withoutAvoidanceItem(stored, id)),
 

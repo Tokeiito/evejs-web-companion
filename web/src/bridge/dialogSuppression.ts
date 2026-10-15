@@ -43,6 +43,19 @@ export const ASKED_KEEPING_YES: ReadonlySet<string> = new Set([
 
 /** The checkbox's words on a dialog that asks (messagebox.py 164 to 168). */
 export const DO_NOT_ASK_AGAIN_LABEL = "/Carbon/UI/Common/DoNotAskAgain";
+/** And on one with OK alone (messagebox.py 164 to 166). */
+export const DO_NOT_SHOW_AGAIN_LABEL = "/Carbon/UI/Common/DoNotShowAgain";
+
+/** Where the words store keeps which answer a dialog lets be kept: "any", "yes" or "no" (GetSuppressValueForMessage). */
+export const suppressKey = (dialog: string): string => `dialog:${dialog}/suppress`;
+
+/**
+ * Whether a box's answer, its checkbox ticked, is kept (dialog_handler.py _persist_prompt_suppress_choice, 126 to
+ * 132, with no suppress given): where the dialog lets any be kept, or the answer is the one it lets be kept.
+ */
+export function answerKept(suppress: string | null | undefined, answer: "ok" | "yes" | "no"): boolean {
+  return suppress === "any" || (suppress === "yes" && answer === "yes") || (suppress === "no" && answer === "no");
+}
 
 /** Where the words store keeps whether a dialog may be kept: "1" where the install marks it suppressable. */
 export const suppressableKey = (dialog: string): string => `dialog:${dialog}/suppressable`;

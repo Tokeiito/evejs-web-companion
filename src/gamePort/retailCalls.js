@@ -760,6 +760,10 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // A jump to a fleet member's lit cyno, the fleet's jump with the pilot's own, and a bridge opened to it
   // (cynoTravelSvc.py 36, 103 and 62), on the ballpark's object. The gateway's list has none of them.
   "beyonce.CmdJumpToFleetModuleBeacon", "beyonce.CmdGroupJumpToFleetModuleBeacon", "beyonce.CmdBridgeToFleetModuleBeacon",
+  // The systems of the Triglavians' and EDENCOM's minor victories and EDENCOM's fortresses, which the client's map
+  // service asks for the autopilot's avoidance ticks (mapSvc.py 501 to 513) and which a Tranquility client asks as it
+  // logs in. The gateway's list has the map service's history and none of these.
+  "map.GetTriglavianMinorVictorySystems", "map.GetEdencomFortressSystems", "map.GetEdencomMinorVictorySystems",
 ]);
 
 /**

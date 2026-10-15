@@ -24,8 +24,8 @@
   import { waypointNameKind } from "../nav/waypoints.ts";
   import { clickDisableAutopilotAtEachWaypoint, disableAutopilotAtEachWaypoint } from "../app/autopilotStopAtEachWaypoint.ts";
   import {
-    OFFERED_ROUTE_TYPES, PENALTY_RANGE, ROUTE_SETTING_WORD_LABELS, avoidanceItems, avoidingSystems, isAvoidablePlace, penaltyOf, penaltyWords,
-    routeSettingWords, routeTypeOf,
+    AVOIDANCE_TICKS, OFFERED_ROUTE_TYPES, PENALTY_RANGE, ROUTE_SETTING_WORD_LABELS, avoidanceItems, avoidanceTickOn, avoidingSystems, isAvoidablePlace,
+    penaltyOf, penaltyWords, routeSettingWords, routeTypeOf,
   } from "../nav/autopilotSettings.ts";
   import { AVOID_WORDS, avoidEntryWords } from "./avoidLocation.ts";
 
@@ -536,6 +536,20 @@
         />
         {penaltyWords(routeSettingWords("penalty", settingText), penaltyShown)}
       </label>
+      <!-- The ticks that add the server's lists, in the route panel's order (pod kills, the Triglavians' and EDENCOM's
+           systems), each before the list's own tick. -->
+      {#each AVOIDANCE_TICKS as tick (tick)}
+        <label class="route-avoid-list">
+          <input
+            type="checkbox"
+            checked={avoidanceTickOn(routeSettings, tick)}
+            onchange={(event) => {
+              event.currentTarget.checked = avoidanceTickOn(flow.clickAutopilotAvoidanceTick(tick), tick);
+            }}
+          />
+          {routeSettingWords(tick, settingText)}
+        </label>
+      {/each}
       <label class="route-avoid">
         <input
           type="checkbox"

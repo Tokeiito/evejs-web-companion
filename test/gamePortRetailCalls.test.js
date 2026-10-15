@@ -1807,6 +1807,8 @@ test("the game port carries the customs office's transfer, the station's offices
     // A jump to a fleet member's lit cyno, the fleet's jump with it, and a bridge opened to it (cynoTravelSvc.py 36,
     // 103 and 62). The gateway's list has none of them.
     "beyonce.CmdJumpToFleetModuleBeacon", "beyonce.CmdGroupJumpToFleetModuleBeacon", "beyonce.CmdBridgeToFleetModuleBeacon",
+    // The map service's lists for the autopilot's avoidance ticks (mapSvc.py 501 to 513). The gateway's list has none of them.
+    "map.GetTriglavianMinorVictorySystems", "map.GetEdencomFortressSystems", "map.GetEdencomMinorVictorySystems",
   ]);
   // structureGuests.py 25: sm.RemoteSvc('structureGuests').GetGuests(session.structureid), by the service's name,
   // with the structure the session is docked in and nothing else.

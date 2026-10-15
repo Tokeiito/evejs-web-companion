@@ -47,6 +47,14 @@ const DIALOGS = "res:/staticdata/dialogs.static";
 const DIALOGS_SCHEMA = "res:/staticdata/dialogs.schema";
 const languageResource = (language) => `res:/localizationfsd/localization_fsd_${language}.pickle`;
 
+/** A dialog's suppressable as the answer it lets be kept: "any" (true), "yes" (ID_YES), "no" (ID_NO), or null. */
+function suppressKept(value) {
+  if (value === true || value === "true") return "any";
+  if (value === "ID_YES") return "yes";
+  if (value === "ID_NO") return "no";
+  return null;
+}
+
 /** The client's resource index: resource name (lower case) -> path under ResFiles. */
 function readResourceIndex(text) {
   const index = new Map();
@@ -68,7 +76,7 @@ function readResourceIndex(text) {
  *   templates(labels)  {label: text | null}
  *   message(id)        the client's text for a message ID, parameters unfilled, or null
  *   messages(ids)      {id: text | null}
- *   dialog(name)       a dialog's {type, suppressable, title, body}, texts unfilled, or null
+ *   dialog(name)       a dialog's {type, suppressable, suppress, title, body}, texts unfilled, or null
  *   dialogs(names)     {name: dialog | null}
  *   status()           {available, loaded, labels, worded, messages, everyMessageKept, dialogs, language, error}
  */
@@ -122,6 +130,9 @@ function createClientWords({ clientRoot = null, language = "en-us", readFile = f
           type: dialog.dialogType ?? null,
           // The schema's default is false; set, it is one of the enum's names.
           suppressable: dialog.suppressable !== false && dialog.suppressable !== "false" && dialog.suppressable !== null,
+          // Which answer may be kept (eveCfg.GetSuppressValueForMessage): any where it is true, Yes where ID_YES, No
+          // where ID_NO; null where none.
+          suppress: suppressKept(dialog.suppressable),
           title: textOf(messages.get(dialog.titleID)),
           body: textOf(messages.get(dialog.bodyID)),
         });
