@@ -4541,6 +4541,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const refs: NameRef[] = [];
     for (const blueprint of blueprints) {
       refs.push({ kind: "type", id: blueprint.typeID });
+      // Its facility, which the client's blueprint list shows (blueprintEntry.py, the Facility column).
+      if (blueprint.facilityID !== null) refs.push({ kind: "station", id: blueprint.facilityID });
     }
     for (const job of jobs) {
       refs.push({ kind: "type", id: job.blueprintTypeID });

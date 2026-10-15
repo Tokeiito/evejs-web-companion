@@ -5,6 +5,7 @@
   import type { AppFlow } from "../app/flow.ts";
   import { memberWhereabouts } from "../bridge/fleetCenter.ts";
   import FleetHistory from "./FleetHistory.svelte";
+  import PlaceRouteMenu from "./PlaceRouteMenu.svelte";
   import type { FleetMember, FleetSquad, FleetWing } from "../bridge/boundFleet.ts";
   import type { ClientStore } from "../store/clientStore.ts";
 
@@ -83,6 +84,12 @@
       positiveID(where.solarSystemID),
       "Location unavailable",
     );
+  }
+
+  /** The heading the composition window's row menu gives a member's system (fleetCompositionWnd.py 163 and 164). */
+  const SYSTEM_HEADING = { label: "UI/Common/SolarSystem", own: "System" } as const;
+  function memberSystemID(member: FleetMember): number | null {
+    return positiveID(memberWhereabouts(member, composition).solarSystemID);
   }
 
   function memberInSquad(member: FleetMember, squad: FleetSquad): boolean {
@@ -193,7 +200,12 @@
   <li class="member-row">
     <div class="member-main">
       <strong>{memberName(member)}</strong>
-      <span class="meta">{memberShip(member)} · {memberLocation(member)}</span>
+      <span class="meta">
+        {memberShip(member)} · {memberLocation(member)}
+        {#if memberSystemID(member) !== null}
+          <PlaceRouteMenu {store} {flow} placeID={memberSystemID(member)!} heading={SYSTEM_HEADING} />
+        {/if}
+      </span>
     </div>
     <span class="badge">{memberRole(member)}</span>
   </li>
