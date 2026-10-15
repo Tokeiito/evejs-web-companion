@@ -63,7 +63,12 @@
           <!-- The kind is spelled out as a word, so the colour is reinforcement
                and never the only thing carrying the severity. -->
           <span class="toast-kind">{notice.kind === "danger" ? "Alert" : notice.kind === "warn" ? "Warning" : notice.kind === "good" ? "Done" : "Note"}</span>
-          <span class="toast-title">{notice.title}</span>
+          {#if notice.action}
+            <!-- A popup's click (notificationCenter.GetNotificationAction): what it opens. -->
+            <button type="button" class="toast-title toast-action" onclick={() => { notice.action?.(); noticeBoard.dismiss(notice.id); }}>{notice.title}</button>
+          {:else}
+            <span class="toast-title">{notice.title}</span>
+          {/if}
           {#if notice.detail}
             <span class="toast-detail">{notice.detail}</span>
           {/if}

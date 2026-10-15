@@ -4287,6 +4287,19 @@
     line-height: 1.25;
     overflow-wrap: anywhere;
   }
+  /* A flash that takes a click (a notification's popup): its title is the button, plain until pointed at. */
+  .toast-action {
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    cursor: pointer;
+    text-align: inherit;
+  }
+  .toast-action:hover,
+  .toast-action:focus-visible {
+    text-decoration: underline;
+  }
   .toast-detail {
     color: var(--color-muted);
     font-size: 12px;

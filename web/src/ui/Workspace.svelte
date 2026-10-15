@@ -312,6 +312,17 @@
   // Neither is a timing problem, so neither has a timing fix. The request names
   // the pilot it is for; a workspace serves only its own and says so, and App
   // drops it once served, which is what stops a later remount finding it again.
+  // A popup's click opens its panel here (notificationPopups.ts): a window on the desktop, the selection on a phone,
+  // its number below nought so it is never one of App's.
+  let popupOpens = 0;
+  const openFromPopup = (id: TabID): void => {
+    if (isMobile) {
+      popupOpens += 1;
+      mobileOpenRequest = { id, n: -popupOpens };
+    } else {
+      open(id);
+    }
+  };
   let servedOpenRequest = 0;
   $effect(() => {
     const request = openRequest;
@@ -348,7 +359,7 @@
        it would be strange for only one of them to acknowledge it. -->
   <DockWipe {isDocked} />
   <NoticeBridge {store} />
-  <NotificationPopups {store} {flow} />
+  <NotificationPopups {store} {flow} onOpen={openFromPopup} />
   <DroneRecoveryNotice {flow} />
   <ServerQuestion {store} {flow} />
   <Toasts />
@@ -360,7 +371,7 @@
        the flash is where one APPEARS. Both have to outlive the panel the event
        came from — that is the entire point — so neither can live in a panel. -->
   <NoticeBridge {store} />
-  <NotificationPopups {store} {flow} />
+  <NotificationPopups {store} {flow} onOpen={openFromPopup} />
   <DroneRecoveryNotice {flow} />
   <ServerQuestion {store} {flow} />
   <Toasts />

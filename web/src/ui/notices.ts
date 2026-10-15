@@ -46,6 +46,8 @@ export interface Notice {
    * same event being re-observed by a polling loop, not two events.
    */
   readonly key: string;
+  /** What a click on it does, where it takes one (a notification's popup); none where it does not. */
+  readonly action?: (() => void) | null;
 }
 
 /** A notice a caller is asking to raise. */
@@ -55,6 +57,8 @@ export interface NoticeInput {
   readonly detail?: string | null;
   /** Defaults to the title, which is right for most one-off messages. */
   readonly key?: string;
+  /** What a click on it does, where it takes one. */
+  readonly action?: (() => void) | null;
 }
 
 /**
@@ -140,6 +144,7 @@ export function createNoticeBoard(): NoticeBoard {
         detail: input.detail ?? null,
         atMs: nowMs,
         key,
+        action: input.action ?? null,
       };
       nextID += 1;
       const next = [...current, notice];

@@ -6,8 +6,9 @@
   import { watchNotificationPopups } from "./notificationPopups.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
+  import type { TabID } from "./tabs.ts";
 
-  let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  let { store, flow, onOpen }: { store: ClientStore; flow: AppFlow; onOpen: (id: TabID) => void } = $props();
 
-  $effect(() => watchNotificationPopups(store, flow));
+  $effect(() => watchNotificationPopups(store, flow, (id) => onOpen(id)));
 </script>

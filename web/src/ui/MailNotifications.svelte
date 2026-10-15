@@ -20,6 +20,7 @@
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { mailBodyLines } from "../bridge/mailMarkup.ts";
   import { ASKED_KEEPING_YES, DO_NOT_ASK_AGAIN_LABEL, suppressableKey } from "../bridge/dialogSuppression.ts";
+  import { mailFocus, mailFocusServed } from "./mailFocus.ts";
   import { notificationTitle } from "../bridge/activity.ts";
   import { notificationWording, type NotificationFormats } from "../bridge/notificationFormats.ts";
   import {
@@ -206,6 +207,30 @@
     await showGroup(last !== null && order.includes(last) ? last : (order[0] ?? groups.unread));
   }
 
+  // A popup's click (mailFocus.ts; MailInteractor.SelectByNotificationID, 37 to 41): the notification's type's group
+  // shown (SelectGroupForTypeID), and the notification selected in it, read a second after as any selection is.
+  let focusedNotification: { readonly notificationID: number; readonly typeID: number; readonly n: number } | null = null;
+  let leftSideLoaded = false;
+  async function serveFocus(): Promise<void> {
+    const focus = focusedNotification;
+    if (focus === null || groups === null || !leftSideLoaded) return;
+    focusedNotification = null;
+    mailFocusServed(focus.n);
+    const groupID = groups.typeGroup.get(focus.typeID);
+    if (groupID !== undefined && groupID !== shownGroup) await showGroup(groupID);
+    const list = shown ?? [];
+    const place = list.findIndex((each) => each.notificationID === focus.notificationID);
+    if (place < 0) return;
+    selected = [focus.notificationID];
+    anchor = place;
+    readAfterAWhile(list[place]!);
+  }
+  const stopFocus = mailFocus.subscribe((focus) => {
+    if (focus === null || focus.kind !== "notification") return;
+    focusedNotification = focus;
+    void run(serveFocus);
+  });
+
   onMount(() => {
     flow.requestWords([...Object.values(WORDS), DO_NOT_ASK_AGAIN_LABEL, ...DIALOGS.flatMap((name) => [`dialog:${name}/title`, `dialog:${name}/body`, suppressableKey(name)])]);
     void run(async () => {
@@ -216,6 +241,8 @@
       }
       flow.requestWords([...groups.names.values()]);
       await loadLeftSide();
+      leftSideLoaded = true;
+      await serveFocus();
     });
   });
 
@@ -243,6 +270,7 @@
   onDestroy(() => {
     cancelReadTimer();
     stopLive();
+    stopFocus();
   });
 
   /**

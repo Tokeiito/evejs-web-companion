@@ -16,6 +16,11 @@
 // Here each lands in the page's flash (notices.ts notify) once its words and names are to hand, or after a few
 // seconds with what is had and the page's own word for what is not. Mounted once per workspace, beside the
 // NoticeBridge.
+//
+// A click on one does what the client's does (notificationCenter.GetNotificationAction and OnEntryClick, 304 to
+// 410): a new mail's opens the mail (mailSvc.OnOpenPopupMail); any other's opens the mail window's notifications on
+// its type's group and selects it (MailInteractor.SelectByNotificationID), which every type the page sees takes, the
+// client's own cases being for types it does not (contracts, kill reports, applications, ...).
 
 import { notificationTitle } from "../bridge/activity.ts";
 import { plainText } from "../bridge/clientWords.ts";
@@ -27,7 +32,9 @@ import type { AppFlow } from "../app/flow.ts";
 import type { ClientStore } from "../store/clientStore.ts";
 import { resolvedName, type NameRef } from "../store/names.ts";
 import type { LiveNotification } from "../store/types.ts";
+import { focusMail } from "./mailFocus.ts";
 import { notify, type NoticeInput } from "./notices.ts";
+import type { TabID } from "./tabs.ts";
 
 /** delayedNotificationsByID's types (notificationSvc.py 37 to 38): CloneActivationMsg and CloneActivationMsg2. */
 const DELAYED_TYPES: ReadonlySet<number> = new Set([15, 138]);
@@ -46,7 +53,7 @@ const numberOf = (value: unknown): number | null => {
 };
 
 /** Watches the live channel for notifications and new mail and pops each up as the client does. */
-export function watchNotificationPopups(store: ClientStore, flow: AppFlow, post: Post = notify): () => void {
+export function watchNotificationPopups(store: ClientStore, flow: AppFlow, open: (id: TabID) => void, post: Post = notify): () => void {
   const seen = new WeakSet<object>();
   let first = true;
   let stopped = false;
@@ -111,11 +118,15 @@ export function watchNotificationPopups(store: ClientStore, flow: AppFlow, post:
       created,
       data: (args[4] ?? null) as JsonValue | null,
     };
+    const action = () => {
+      open("mail");
+      focusMail({ kind: "notification", notificationID, typeID });
+    };
     void flow.notificationFormats().then((formats) => {
       if (stopped) return;
       const fallback = notificationTitle(typeID);
       if (formats === null) {
-        post({ kind: "info", title: fallback, key: `notification:${notificationID}` });
+        post({ kind: "info", title: fallback, key: `notification:${notificationID}`, action });
         return;
       }
       const wording = () => notificationSubjectWording(notification, formats, templates(), nameOf);
@@ -129,7 +140,7 @@ export function watchNotificationPopups(store: ClientStore, flow: AppFlow, post:
           if (asked.labels.length > 0) flow.requestWords(asked.labels);
           if (asked.refs.length > 0) flow.requestNames(asked.refs);
         },
-        (title) => post({ kind: "info", title, key: `notification:${notificationID}` }),
+        (title) => post({ kind: "info", title, key: `notification:${notificationID}`, action }),
       );
     });
   }
@@ -170,7 +181,16 @@ export function watchNotificationPopups(store: ClientStore, flow: AppFlow, post:
         flow.requestWords(Object.values(WORDS));
         if (listsName() === null) flow.requestNames([senderRef]);
       },
-      ({ title, detail }) => post({ kind: "info", title, detail, key: `mail:${messageID}` }),
+      ({ title, detail }) => post({
+        kind: "info",
+        title,
+        detail,
+        key: `mail:${messageID}`,
+        action: () => {
+          open("mail");
+          focusMail({ kind: "mail", messageID });
+        },
+      }),
     );
   }
 

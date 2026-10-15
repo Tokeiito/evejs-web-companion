@@ -14,7 +14,8 @@
   //
   // ⚠ THE INBOX IS THE WHOLE MAILBOX. The flow keeps it as the client's mail
   // service does, so there is no paging to build and no "load more".
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
+  import { mailFocus, mailFocusServed } from "./mailFocus.ts";
   import {
     MAIL_MAX_BODY,
     MAIL_MAX_TITLE,
@@ -1139,6 +1140,27 @@
   function open(messageID: number): void {
     void run(() => flow.openMail(messageID, isUnread(messageID)));
   }
+
+  // A popup's click (mailFocus.ts): a new mail's opens the mail (mailSvc.OnOpenPopupMail), once the mailbox holds it;
+  // a notification's shows the notifications tab, which takes it from there.
+  let focusedMail = $state<{ readonly messageID: number; readonly n: number } | null>(null);
+  const stopFocus = mailFocus.subscribe((focus) => {
+    if (focus === null) return;
+    if (focus.kind === "notification") {
+      tab = "notifications";
+      return;
+    }
+    tab = "inbox";
+    focusedMail = { messageID: focus.messageID, n: focus.n };
+  });
+  onDestroy(stopFocus);
+  $effect(() => {
+    const focus = focusedMail;
+    if (focus === null || !$mail.loaded || !$mail.messages.some((header) => header.messageID === focus.messageID)) return;
+    focusedMail = null;
+    mailFocusServed(focus.n);
+    open(focus.messageID);
+  });
 
   /**
    * ClickSend (evemail.py 2245 to 2297): the names checked first; then no recipient, more than the most, no subject
