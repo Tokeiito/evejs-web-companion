@@ -53,6 +53,7 @@ import {
   inflateMailBody,
   MAIL_BODIES_KEPT,
   type MailBody,
+  isSystemMailLabel,
   mailLabelOf,
   mailLabelsOf,
   mailingListKeyAndName,
@@ -1207,6 +1208,8 @@ export interface AppFlow {
   createMailLabel(name: string): Promise<number | null>;
   /** Rename a label of the pilot's own, as the labels window's Rename does. */
   renameMailLabel(labelID: number, name: string): Promise<void>;
+  /** Give a label (the pilot's own or the system's) a colour, as the colour window's swatch does. */
+  setMailLabelColor(labelID: number, color: number): Promise<void>;
   /** Delete a label of the pilot's own, as the labels window's Delete does once it is asked to be sure of. */
   deleteMailLabel(labelID: number): Promise<void>;
   /** Give messages a label, as a message's Assign Label does: how many were given it (0, nothing asked, where all had it). */
@@ -6321,6 +6324,26 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (await mailCall("EditLabel", [labelID, name, null], (mailbox) => mailbox, [])) {
       const kept = store.mail.get().labels ?? [];
       store.apply({ type: "mail/labels", labels: kept.map((label) => (label.labelID === labelID ? { ...label, name } : label)) });
+    }
+  }
+
+  // ChangeLabelColorFromUI (mailSvc.py 1301 to 1309): a label's colour, from the colour window, sent only where it is
+  // not the colour the label has (a system label the server keeps none of has None), as EditLabel(labelID, None,
+  // color) (711 to 725); the label then keeps it, a system label kept with no name of its own.
+  async function setMailLabelColor(labelID: number, color: number): Promise<void> {
+    const kept = store.mail.get().labels ?? [];
+    const current = kept.find((label) => label.labelID === labelID);
+    if (current !== undefined ? current.color === color : !isSystemMailLabel(labelID)) {
+      return;
+    }
+    if (await mailCall("EditLabel", [labelID, null, color], (mailbox) => mailbox, [])) {
+      const now = store.mail.get().labels ?? [];
+      store.apply({
+        type: "mail/labels",
+        labels: now.some((label) => label.labelID === labelID)
+          ? now.map((label) => (label.labelID === labelID ? { ...label, color } : label))
+          : [...now, { labelID, name: "", color }],
+      });
     }
   }
 
@@ -17003,6 +17026,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     emptyMailTrash,
     createMailLabel,
     renameMailLabel,
+    setMailLabelColor,
     deleteMailLabel,
     assignMailLabel,
     removeMailLabel,

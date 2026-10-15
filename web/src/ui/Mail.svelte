@@ -49,7 +49,9 @@
     type OwnerMatch,
     MAIL_MAX_TAGGED_BODY,
     MAILS_PER_PAGE,
-    mailLabelText,
+    isSystemMailLabel,
+    mailLabelColor,
+    mailLabelParts,
     mailRecipientOf,
     mailRowState,
     mailsSorted,
@@ -65,6 +67,7 @@
   import { pyIntDictOrder } from "../bridge/pyDict.ts";
   import { isSearchMatch } from "../bridge/searchMatch.ts";
   import { formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import { SWATCH_IDS, labelSwatch, swatchColor, swatchTag } from "../bridge/labelSwatches.ts";
   import { isSessionLost } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -151,7 +154,7 @@
     [MAIL_FOLDER_TRASH, FOLDER_WORDS.trash, "Trash"],
   ];
   const unreadCounts = $derived(unreadByLabel($mail));
-  const ownLabels = $derived([...($mail.labels ?? [])].sort((left, right) => left.name.toLowerCase().localeCompare(right.name.toLowerCase())));
+  const ownLabels = $derived([...($mail.labels ?? [])].filter((label) => !isSystemMailLabel(label.labelID)).sort((left, right) => left.name.toLowerCase().localeCompare(right.name.toLowerCase())));
   const shownMessages = $derived(viewingList !== null ? mailsOfList($mail, viewingList) : mailsInFolder($mail, folder));
   /** The page of the folder shown (the window's startPos), the first as a folder is shown; newest first, thirty to a page. */
   let mailPage = $state(0);
@@ -284,6 +287,8 @@
     delete: "UI/Mail/Delete",
     ok: "UI/Common/Buttons/OK",
     cancel: "UI/Common/Buttons/Cancel",
+    assignColor: "UI/Mail/AssignColor",
+    selectColor: "UI/Mail/Select Color",
   } as const;
   /** The client's dialogs of the labels' writes, by their names. */
   const LABEL_DIALOGS = ["DeleteMailLabel", "MailLabelNameExists", "LookupStringMinimum"] as const;
@@ -293,6 +298,31 @@
   let renaming = $state<{ readonly labelID: number; name: string } | null>(null);
   /** What the last label's write said (the client's note after an assignment or a removal), or a refusal. */
   let labelNote = $state("");
+
+  /**
+   * The label the colour window is open for (MailAssignColorWnd, evemail.py 2974 on: Assign Color in a folder's menu,
+   * 557 to 575 and 1107, and in Manage Labels, 1632 to 1651), and where it was opened; none while it is shut.
+   */
+  let colorFor = $state<{ readonly labelID: number; readonly where: "folders" | "manage" } | null>(null);
+  function openColorWindow(labelID: number, where: "folders" | "manage"): void {
+    colorFor = colorFor !== null && colorFor.labelID === labelID && colorFor.where === where ? null : { labelID, where };
+  }
+  /** A swatch picked (PickCol): the window shut, and the label given that colour (ChangeLabelColorFromUI). */
+  function pickColor(color: number): void {
+    const chosen = colorFor;
+    colorFor = null;
+    if (chosen === null) return;
+    void run(() => flow.setMailLabelColor(chosen.labelID, color));
+  }
+  /**
+   * A folder's colour tag (MailGroup.Load, 1420 to 1428, for the inbox, sent, the corporation's and the alliance's;
+   * MailLabelEntry.Load, 1501 to 1513, for the pilot's own): its label's swatch, none for no colour or white, and none
+   * for All Mails and the trash.
+   */
+  function folderTag(id: number | null): string | null {
+    if (id === null || id === MAIL_FOLDER_TRASH) return null;
+    return swatchTag(mailLabelColor(id, $mail.labels ?? []));
+  }
 
   /**
    * GetAllLabels(assignable=1) (mailSvc.py 681 to 710): the system's that may be given (the inbox, the
@@ -1849,9 +1879,10 @@
     }
   }
 
-  /** A mail's Labels column (GetLabelText). */
-  function labelsText(header: MailHeaderRow): string {
-    return mailLabelText(statusByID.get(header.messageID)?.labelMask ?? 0, $mail.labels ?? [], fourLabelNames);
+  /** A mail's Labels column (GetLabelText): its labels by name, each in its colour, joined by commas. */
+  function labelParts(header: MailHeaderRow): readonly { readonly name: string; readonly color: string | null }[] {
+    return mailLabelParts(statusByID.get(header.messageID)?.labelMask ?? 0, $mail.labels ?? [], fourLabelNames)
+      .map((part) => ({ name: part.name, color: labelSwatch(part.color) }));
   }
 
   /** FmtDate(sentDate, 'ls'), as the list writes a mail's date (GetMsgEntry, 677). */
@@ -2053,14 +2084,26 @@
           <button type="button" disabled={busy} onclick={createLabel}>{word(LABEL_WORDS.create, "Create")}</button>
         </p>
         <ul class="mail-label-list">
+          <!-- GetAllLabels(assignable=1) (mailSvc.py 681 to 710): the inbox, the corporation's and the alliance's, by their
+               numbers first, Assign Color alone their menu (ManageLabelsBase.GetLabelMenu, 1632 to 1645). -->
+          {#each assignableLabels.filter((label) => isSystemMailLabel(label.labelID)) as label (label.labelID)}
+            <li>
+              {label.name}
+              <button type="button" class="minor" disabled={busy} aria-expanded={colorFor !== null && colorFor.labelID === label.labelID && colorFor.where === "manage"} onclick={() => openColorWindow(label.labelID, "manage")}>{word(LABEL_WORDS.assignColor, "Colour")}</button>
+            </li>
+          {/each}
           {#each ownLabels as label (label.labelID)}
             <li>
               {label.name}
+              <button type="button" class="minor" disabled={busy} aria-expanded={colorFor !== null && colorFor.labelID === label.labelID && colorFor.where === "manage"} onclick={() => openColorWindow(label.labelID, "manage")}>{word(LABEL_WORDS.assignColor, "Colour")}</button>
               <button type="button" class="minor" disabled={busy} onclick={() => (renaming = { labelID: label.labelID, name: label.name })}>{word(LABEL_WORDS.rename, "Rename")}</button>
               <button type="button" class="minor" disabled={busy} onclick={() => (ask({ dialog: "DeleteMailLabel", args: { labelName: label.name }, act: () => flow.deleteMailLabel(label.labelID) }))}>{word(LABEL_WORDS.delete, "Delete")}</button>
             </li>
           {/each}
         </ul>
+      {#if colorFor !== null && colorFor.where === "manage"}
+        {@render colorWindow()}
+      {/if}
         {#if renaming !== null}
           <p class="controls">
             <label>
@@ -2271,6 +2314,7 @@
         {#each SYSTEM_FOLDERS as [id, label, own] (label)}
           <button type="button" class:active={viewingList === null && folder === id} class:mail-bold={folderUnread(id) > 0} onclick={() => showFolder(id)}>
             {folderText(word(label, own), id)}
+            {#if folderTag(id) !== null}<span class="mail-label-tag" style:background={folderTag(id)}></span>{/if}
           </button>
         {/each}
         {#if ownLabels.length > 0}
@@ -2278,6 +2322,7 @@
           {#each ownLabels as label (label.labelID)}
             <button type="button" class:active={viewingList === null && folder === label.labelID} class:mail-bold={folderUnread(label.labelID) > 0} onclick={() => showFolder(label.labelID)}>
               {folderText(label.name, label.labelID)}
+              {#if folderTag(label.labelID) !== null}<span class="mail-label-tag" style:background={folderTag(label.labelID)}></span>{/if}
             </button>
           {/each}
         {/if}
@@ -2345,6 +2390,9 @@
           </button>
         {:else}
           {@const labelID = folder}
+          <button type="button" class="minor" disabled={busy} aria-expanded={colorFor !== null && colorFor.labelID === labelID && colorFor.where === "folders"} onclick={() => openColorWindow(labelID, "folders")}>
+            {word(LABEL_WORDS.assignColor, "Colour")}
+          </button>
           <button type="button" class="minor" disabled={busy} onclick={() => (ask({ dialog: "EvemailMailReadLabelGroup", args: { labelName: folderName }, act: () => flow.readAllMail(labelID) }))}>
             {filledWord(FOLDER_WRITE_WORDS.markAll, "Read all of {folderName}", { folderName })}
           </button>
@@ -2353,6 +2401,9 @@
           </button>
         {/if}
       </p>
+      {#if colorFor !== null && colorFor.where === "folders"}
+        {@render colorWindow()}
+      {/if}
       {#if shownMessages.length === 0}
         <p class="empty">{word(LIST_WORDS.noMails, "No mail here.")}</p>
       {:else}
@@ -2379,7 +2430,7 @@
                 <td data-label={inSent ? word(LIST_WORDS.recipient, "Recipient") : word(LIST_WORDS.sender, "Sender")}>{nameCell(header)}</td>
                 <td data-label={word(LIST_WORDS.subject, "Subject")}>{header.title}</td>
                 <td data-label={inSent ? word(LIST_WORDS.dateSent, "Date Sent") : word(LIST_WORDS.received, "Received")}>{dateText(header.sentDate)}</td>
-                <td data-label={word(LIST_WORDS.labels, "Labels")}>{labelsText(header)}</td>
+                <td data-label={word(LIST_WORDS.labels, "Labels")}>{#each labelParts(header) as part, at (at)}{at > 0 ? ", " : ""}<span style:color={part.color}>{part.name}</span>{/each}</td>
                 <td data-label="">
                   <div class="row-actions">
                     <button type="button" disabled={busy} onclick={() => open(header.messageID)}>
@@ -2701,7 +2752,49 @@
   {/if}
 </section>
 
+{#snippet colorWindow()}
+  <!-- The colour window (MailAssignColorWnd, evemail.py 2974 on): "Select Color" over the service's swatches in its
+       order (swatchColors.values()), five to a row as its 104-pixel window holds them; one picked shuts it. -->
+  <section class="mail-color-window" aria-label={word(LABEL_WORDS.selectColor, "Pick a colour")}>
+    <strong>{word(LABEL_WORDS.selectColor, "Pick a colour")}</strong>
+    <div class="mail-swatches">
+      {#each SWATCH_IDS as swatchID (swatchID)}
+        <button type="button" class="mail-swatch" style:background={swatchColor(swatchID)} aria-label={swatchColor(swatchID)} title={swatchColor(swatchID)} disabled={busy} onclick={() => pickColor(swatchID)}></button>
+      {/each}
+    </div>
+  </section>
+{/snippet}
+
 <style>
+  /* A label's colour tag beside its folder (MailLabelEntry: eight pixels square, at 0.75 opacity). */
+  .mail-label-tag {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-left: 0.35rem;
+    opacity: 0.75;
+    vertical-align: middle;
+  }
+  .mail-color-window {
+    display: inline-flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    padding: 0.35rem;
+    margin-bottom: 0.5rem;
+    border: 1px solid var(--color-line-strong);
+  }
+  .mail-swatches {
+    display: grid;
+    grid-template-columns: repeat(5, 16px);
+    gap: 2px;
+  }
+  .mail-swatch {
+    width: 16px;
+    height: 16px;
+    min-width: 0;
+    padding: 0;
+    border: 1px solid transparent;
+  }
   /* Message text keeps the sender's own line breaks and never runs off the
    * side of a phone. */
   .mail-body {

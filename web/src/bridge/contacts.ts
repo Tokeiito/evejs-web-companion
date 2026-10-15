@@ -99,36 +99,8 @@ export function labelsOf(labelMask: bigint, labels: readonly ContactLabel[]): Co
   return byKey(labels.filter((label) => label.labelID > 0n && (labelMask & label.labelID) === label.labelID), (label) => label.name.toLowerCase());
 }
 
-/** The labels' colours by their numbers, each an RGB hex (mailSvc.py swatchColors, 31 to 48: the mail's and the contacts' labels share them). */
-export const SWATCH_COLORS: Readonly<Record<number, string>> = Object.freeze({
-  0: "ffffff",
-  1: "ffff01",
-  2: "ff6600",
-  3: "fe0000",
-  4: "9a0000",
-  5: "660066",
-  6: "0000fe",
-  7: "0099ff",
-  8: "01ffff",
-  9: "00ff33",
-  10: "349800",
-  11: "006634",
-  12: "666666",
-  13: "999999",
-  14: "e6e6e6",
-  15: "ffffcd",
-  16: "99ffff",
-  17: "ccff9a",
-});
-
-/**
- * A label's colour as an entry shows it (addressbookService.py GetLabelText, 1189 to 1202: `<color=0xBF…>`, its swatch
- * at three quarters' opacity), as a CSS colour; none where the label has no colour or one that is no swatch's.
- */
-export function labelSwatch(color: number | null): string | null {
-  if (color === null || !Object.prototype.hasOwnProperty.call(SWATCH_COLORS, color)) return null;
-  return `#${SWATCH_COLORS[color]}bf`;
-}
+/** The labels' colours, which the contacts' labels share with the mail's (bridge/labelSwatches.ts). */
+export { SWATCH_COLORS, labelSwatch } from "./labelSwatches.ts";
 
 /** A mask with bits taken off it, as the client takes them (labelMask & const.maxLong - labelID: 1084, 1145). */
 export function labelMaskWithout(labelMask: bigint, bits: bigint): bigint {
