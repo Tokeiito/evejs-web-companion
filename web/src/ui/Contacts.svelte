@@ -381,7 +381,7 @@
    */
   const shown = $derived.by((): { rows: readonly Row[]; total: number; hint: string } => {
     let entries: { readonly id: number; readonly name: string; readonly standing: number | null }[];
-    let hint = word(WORDS.noContacts, "You do not have any contacts.");
+    let hint = word(WORDS.noContacts, "No contacts yet.");
     if (group === CONTACT_GROUP.notifications) {
       // Its entries are the notifications' (notificationEntries, below), and no contact is among them.
       entries = [];
@@ -1461,16 +1461,16 @@
         <p class="controls">
           <label title={word(WORDS.buddyHint, "")}>
             <input type="checkbox" bind:checked={managing.inWatchlist} />
-            {word(WORDS.toWatchlist, "Add contact to buddy list")}
+            {word(WORDS.toWatchlist, "Watch this contact")}
           </label>
         </p>
         <p class="controls">
           <label>
             <input type="checkbox" bind:checked={managing.notify} />
-            {filledWord(WORDS.sendNotification, "Send notification to {contactName}", { contactName: managing.name })}
+            {filledWord(WORDS.sendNotification, "Let {contactName} know", { contactName: managing.name })}
           </label>
         </p>
-        <textarea rows="3" maxlength="120" disabled={!managing.notify} placeholder={filledWord(WORDS.messageTo, "Message to {charName}", { charName: managing.name })} bind:value={managing.message}></textarea>
+        <textarea rows="3" maxlength="120" disabled={!managing.notify} placeholder={filledWord(WORDS.messageTo, "A note for {charName}", { charName: managing.name })} bind:value={managing.message}></textarea>
       {/if}
       <p class="controls">
         <button type="button" class="primary" disabled={busy} onclick={confirmManagement}>{managing.isContact ? word(WORDS.editContact, "Edit Contact") : word(WORDS.addContact, "Add Contact")}</button>

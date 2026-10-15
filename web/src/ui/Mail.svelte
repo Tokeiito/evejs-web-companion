@@ -179,11 +179,11 @@
     const name = listNameInput;
     labelNote = "";
     if (name.trim() === "") {
-      labelNote = filledWord("dialog:LookupStringMinimum/body", "Please type in at least {minimum} character", { minimum: "1" });
+      labelNote = filledWord("dialog:LookupStringMinimum/body", "Type {minimum} or more characters.", { minimum: "1" });
       return;
     }
     if (create && name.length > MAILING_LIST_NAME_MAX) {
-      labelNote = word(FOLDER_WORDS.nameTooLong, "The name is too long.");
+      labelNote = word(FOLDER_WORDS.nameTooLong, "That name runs too long.");
       return;
     }
     void run(async () => {
@@ -322,15 +322,15 @@
     const name = newLabelName.trim();
     labelNote = "";
     if (assignableLabels.some((label) => label.name.toLowerCase() === name.toLowerCase()) || name.toLowerCase() === word(FOLDER_WORDS.sent, "Sent").toLowerCase()) {
-      labelNote = filledWord("dialog:MailLabelNameExists/body", "This label name already exists", {});
+      labelNote = filledWord("dialog:MailLabelNameExists/body", "A label goes by that name already.", {});
       return;
     }
     if (name.length < 1) {
-      labelNote = filledWord("dialog:LookupStringMinimum/body", "Please type in at least {minimum} character", { minimum: "1" });
+      labelNote = filledWord("dialog:LookupStringMinimum/body", "Type {minimum} or more characters.", { minimum: "1" });
       return;
     }
     if (name.length > MAIL_LABEL_MAX) {
-      labelNote = word(LABEL_WORDS.tooLong, "Label name is too long.");
+      labelNote = word(LABEL_WORDS.tooLong, "That label name runs too long.");
       return;
     }
     void run(async () => {
@@ -502,7 +502,7 @@
     [0, COMPOSE_WORDS.partial, "Partial Terms"],
     [1, COMPOSE_WORDS.exactTerms, "Exact Terms"],
     [2, COMPOSE_WORDS.exactPhrase, "Exact Phrase"],
-    [3, COMPOSE_WORDS.onlyExact, "Only Exact Phrase"],
+    [3, COMPOSE_WORDS.onlyExact, "Exact phrase only"],
   ];
   /** MatchBy.exact_phrase, as GetReceiver searches (evemail.py 2033); and the least a partial term may be (min_wildcard_length). */
   const MATCH_EXACT_PHRASE = 2;
@@ -518,7 +518,7 @@
   let composePick = $state<{ readonly caption: string; readonly hint: string; readonly options: readonly CharacterMatch[]; readonly answer: (characterID: number | null) => void } | null>(null);
   let composePicked = $state<number | null>(null);
   let composePickNote = $state("");
-  /** The window "Search for Recipients" (MailSearchWindow): open or not, what is typed, Search By, and what it found. */
+  /** The window "Find recipients" (MailSearchWindow): open or not, what is typed, Search By, and what it found. */
   let recipientSearchOpen = $state(false);
   let recipientSearchText = $state("");
   // svelte-ignore state_referenced_locally
@@ -599,7 +599,7 @@
     const held = listID === null ? undefined : ($mail.lists ?? []).find((list) => list.listID === listID);
     const groups = [...corpNames, ...(held !== undefined ? [held.displayName] : [])];
     const groupName = groups.length >= MAIL_MAX_GROUPS ? (groups[0] ?? "") : word(COMPOSE_WORDS.unknown, "Unknown");
-    return filledWord("dialog:EvemailMaxListOrCorp/body", "You cannot add '{name}' to the list of recipients because you have already one mailing list, corporation, or alliance ({groupName}) on the list", { name, groupName });
+    return filledWord("dialog:EvemailMaxListOrCorp/body", "'{name}' stays off: a mail goes to one mailing list, corporation or alliance at most, and {groupName} is it.", { name, groupName });
   }
 
   /**
@@ -638,7 +638,7 @@
    * AddUnknownToValidate (2216 to 2243) by NewParseReceiver (1975 to 2018): a list joined by its very name, after the
    * client's question; else the pilot's own corporation by its name or "corp", where ValidateCorpOrAlliance takes it;
    * else a pilot by GetReceiver (2029 to 2046): one held by the name, or searchOld.Search for the exact phrase, one
-   * found taken, more picked from, none: "Search for Recipients" opened with the name. Each group counted against
+   * found taken, more picked from, none: "Find recipients" opened with the name. Each group counted against
    * the most groups (TotalNumberOfGroups, 2099 to 2100). Null where nothing is added.
    */
   async function addUnknown(name: string, check: ReceiverCheck): Promise<{ readonly listed: boolean; readonly name: string } | null> {
@@ -649,7 +649,7 @@
       if (list.displayName !== trimmed) {
         continue;
       }
-      if (!(await askYesNo(word(COMPOSE_WORDS.listQ, "Send to a mailing list?"), filledWord(COMPOSE_WORDS.listQ2, "You are a member of a mailing list with the name {listName}. Do you wish to send a mail to the mailing list?", { listName: trimmed })))) {
+      if (!(await askYesNo(word(COMPOSE_WORDS.listQ, "Write to the list?"), filledWord(COMPOSE_WORDS.listQ2, "{listName} is a mailing list you belong to. Mail the list?", { listName: trimmed })))) {
         continue;
       }
       if (groupsHeld() >= MAIL_MAX_GROUPS) {
@@ -723,12 +723,12 @@
       return null;
     }
     if (check.toChars.size >= MAIL_MAX_RECIPIENTS) {
-      check.notes.push(filledWord("dialog:EvemailMaxRecipients/body", "You cannot add '{name}' to the list of recipients because you have reached the limit of {max} recipients", { name: found.name, max: String(MAIL_MAX_RECIPIENTS) }));
+      check.notes.push(filledWord("dialog:EvemailMaxRecipients/body", "'{name}' stays off: a mail goes to {max} recipients at most.", { name: found.name, max: String(MAIL_MAX_RECIPIENTS) }));
       return null;
     }
     check.toChars.set(found.name, found.characterID);
     if (check.charNamesUsed.size >= MAIL_MAX_RECIPIENTS) {
-      check.notes.push(filledWord("dialog:EvemailMaxRecipients/body", "You cannot add '{name}' to the list of recipients because you have reached the limit of {max} recipients", { name: found.name, max: String(MAIL_MAX_RECIPIENTS) }));
+      check.notes.push(filledWord("dialog:EvemailMaxRecipients/body", "'{name}' stays off: a mail goes to {max} recipients at most.", { name: found.name, max: String(MAIL_MAX_RECIPIENTS) }));
       return null;
     }
     if (check.charNamesUsed.has(found.name)) {
@@ -776,7 +776,7 @@
       if (!known.includes(cleanName)) {
         const added = await addUnknown(cleanName, check);
         if (added === null) {
-          check.notes.push(filledWord("dialog:EvemailCantFindRecipient/body", "\"{name}\" is not a valid recipient", { name: cleanName }));
+          check.notes.push(filledWord("dialog:EvemailCantFindRecipient/body", "Mail cannot go to \"{name}\".", { name: cleanName }));
           continue;
         }
         listed = added.listed;
@@ -897,7 +897,7 @@
     if (offer.group === "char") {
       // AddCharacterReceiver(id, partly=1) (1905 to 1917): no more than the most recipients.
       if (recipients.length >= MAIL_MAX_RECIPIENTS) {
-        notes.push(filledWord("dialog:EvemailMaxRecipients/body", "You cannot add '{name}' to the list of recipients because you have reached the limit of {max} recipients", { name: offer.name, max: String(MAIL_MAX_RECIPIENTS) }));
+        notes.push(filledWord("dialog:EvemailMaxRecipients/body", "'{name}' stays off: a mail goes to {max} recipients at most.", { name: offer.name, max: String(MAIL_MAX_RECIPIENTS) }));
       } else {
         recipients = [...recipients.filter((person) => person.name !== offer.name), { characterID: offer.id, name: offer.name }];
         taken = offer.name;
@@ -943,7 +943,7 @@
   }
 
   /**
-   * The To button (OpenReceiverSearch) or a name not found (GetSearchWnd, 2336 to 2353): "Search for Recipients",
+   * The To button (OpenReceiverSearch) or a name not found (GetSearchWnd, 2336 to 2353): "Find recipients",
    * opened afresh on its Search tab with what is given, and searched at once where something is.
    */
   function openRecipientSearch(input = ""): void {
@@ -953,7 +953,7 @@
     recipientResults = [];
     recipientExtras = [];
     recipientContacts = null;
-    recipientSearchNote = word(COMPOSE_WORDS.typeIn, "Type in search string and press \"Search\"");
+    recipientSearchNote = word(COMPOSE_WORDS.typeIn, "Enter a name, then search.");
     if (input !== "") {
       searchRecipients();
     }
@@ -993,13 +993,13 @@
     if (typed.trim() === "") {
       recipientResults = [];
       recipientExtras = [];
-      recipientSearchNote = word(COMPOSE_WORDS.typeIn, "Type in search string and press \"Search\"");
+      recipientSearchNote = word(COMPOSE_WORDS.typeIn, "Enter a name, then search.");
       return;
     }
     const matchBy = recipientMatchBy;
     const text = typed.replace(/%/g, "").replace(/\?/g, "").replace(/\*/g, "").trim();
     if (matchBy === 0 && !text.split(/\s+/).some((term) => term.length >= MIN_WILDCARD_LENGTH)) {
-      recipientSearchNote = filledWord("dialog:PartialSearchLessThanMinLength/body", "To search partial terms, at least one search term must be greater than {minChars} characters.", { minChars: String(MIN_WILDCARD_LENGTH) });
+      recipientSearchNote = filledWord("dialog:PartialSearchLessThanMinLength/body", "A partial search needs a term longer than {minChars} characters.", { minChars: String(MIN_WILDCARD_LENGTH) });
       return;
     }
     void run(async () => {
@@ -1008,7 +1008,7 @@
       recipientResults = [...found].sort((left, right) => (left.name.toLowerCase() < right.name.toLowerCase() ? -1 : 1));
       recipientExtras = extras;
       recipientSearchNote = found.length === 0 && extras.length === 0
-        ? filledWord(COMPOSE_WORDS.nothingFound, "Nothing found with \"{search}\" in its name.", { search: typed })
+        ? filledWord(COMPOSE_WORDS.nothingFound, "No name holds \"{search}\".", { search: typed })
         : found.length >= 500 ? filledWord(COMPOSE_WORDS.manyFound, "25 or more characters were found with \"{name}\".", { name: typed }) : "";
     });
   }
@@ -1071,7 +1071,7 @@
   function addFromSearch(person: CharacterMatch): void {
     composeNotes = [];
     if (recipients.length >= MAIL_MAX_RECIPIENTS) {
-      composeNotes = [filledWord("dialog:EvemailMaxRecipients/body", "You cannot add '{name}' to the list of recipients because you have reached the limit of {max} recipients", { name: person.name, max: String(MAIL_MAX_RECIPIENTS) })];
+      composeNotes = [filledWord("dialog:EvemailMaxRecipients/body", "'{name}' stays off: a mail goes to {max} recipients at most.", { name: person.name, max: String(MAIL_MAX_RECIPIENTS) })];
       return;
     }
     if (!recipients.some((each) => each.name === person.name)) {
@@ -1135,15 +1135,15 @@
         return;
       }
       if (count > MAIL_MAX_RECIPIENTS + 1) {
-        composeNotes = [...composeNotes, filledWord(COMPOSE_WORDS.tooMany, "At most {max} recipients per message, please.", { max: String(MAIL_MAX_RECIPIENTS) })];
+        composeNotes = [...composeNotes, filledWord(COMPOSE_WORDS.tooMany, "A mail goes to {max} recipients at most.", { max: String(MAIL_MAX_RECIPIENTS) })];
         return;
       }
       if (draftTitle.trim() === "") {
-        composeNotes = [...composeNotes, filledWord("dialog:NoSubject/body", "You cannot send a mail without a subject.", {})];
+        composeNotes = [...composeNotes, filledWord("dialog:NoSubject/body", "A mail needs a subject.", {})];
         return;
       }
       if (draftTitle.length > MAIL_MAX_TITLE) {
-        composeNotes = [...composeNotes, word(FOLDER_WORDS.nameTooLong, "The name is too long.")];
+        composeNotes = [...composeNotes, word(FOLDER_WORDS.nameTooLong, "That name runs too long.")];
         return;
       }
       const corpAlliance = toCorpAlliance[0]?.ownerID ?? null;
@@ -1314,13 +1314,13 @@
     ["members", MANAGE_WORDS.normal, "Normal members"],
     ["muted", MANAGE_WORDS.muted, "Muted members"],
     ["operators", MANAGE_WORDS.operators, "Operators"],
-    ["byName", MANAGE_WORDS.byName, "Search by name"],
+    ["byName", MANAGE_WORDS.byName, "Find by name"],
   ];
   /** Apply to selected's choices, in the window's order (110 to 119). */
   const MEMBER_ACTIONS: readonly (readonly [MailingListMemberAction, string, string])[] = [
-    ["member", MANAGE_WORDS.setMember, "Set role: Member"],
-    ["muted", MANAGE_WORDS.setMuted, "Set role: Muted member"],
-    ["operator", MANAGE_WORDS.setOperator, "Set role: Operator"],
+    ["member", MANAGE_WORDS.setMember, "Make a member"],
+    ["muted", MANAGE_WORDS.setMuted, "Mute"],
+    ["operator", MANAGE_WORDS.setOperator, "Make an operator"],
     ["kick", MANAGE_WORDS.kick, "Kick"],
   ];
   /** Each place's word (self.roles, 121 to 124). */
@@ -1598,7 +1598,7 @@
       return;
     }
     if (subject.length < 1) {
-      welcomeNote = filledWord("dialog:NoSubject/body", "You cannot send a mail without a subject.", {});
+      welcomeNote = filledWord("dialog:NoSubject/body", "A mail needs a subject.", {});
       return;
     }
     const toAll = welcomeToAllChecked;
@@ -1649,18 +1649,18 @@
     accessNote = "";
     const text = entityText.replace(/%/g, "").replace(/\?/g, "");
     if (text.length < 1) {
-      accessNote = filledWord("dialog:LookupStringMinimum/body", "Please type in at least {minimum} character", { minimum: "1" });
+      accessNote = filledWord("dialog:LookupStringMinimum/body", "Type {minimum} or more characters.", { minimum: "1" });
       return;
     }
     if (text.length >= 100) {
-      accessNote = word(ACCESS_WORDS.tooLong, "Search String Too Long");
+      accessNote = word(ACCESS_WORDS.tooLong, "That search runs too long.");
       return;
     }
     void run(async () => {
       const kept = new Set(OWNER_GROUPS.map(([groupID]) => groupID));
       const owners = (await flow.lookupPlayerOwners(text)).filter((owner) => kept.has(owner.groupID));
       if (owners.length === 0) {
-        accessNote = filledWord(ACCESS_WORDS.noneFound, "No {groupName} can be found with \"{searchTerm}\" in the beginning of its name.", { groupName: ownerGroupNames(false), searchTerm: text });
+        accessNote = filledWord(ACCESS_WORDS.noneFound, "No {groupName} has a name starting \"{searchTerm}\".", { groupName: ownerGroupNames(false), searchTerm: text });
         return;
       }
       const sorted = [...owners].sort((left, right) => {
@@ -1689,7 +1689,7 @@
     }
     const ownerID = pickedOwner;
     if (ownerID === null) {
-      pickNote = filledWord(ACCESS_WORDS.mustSelect, "Must select {num}.", { num: "1" });
+      pickNote = filledWord(ACCESS_WORDS.mustSelect, "Choose {num}.", { num: "1" });
       return;
     }
     entityPick = null;
@@ -1722,7 +1722,7 @@
     accessNote = "";
     const chosen = [...blockedRows, ...allowedRows].filter((row) => chosenAccess.has(row.ownerID)).map((row) => row.ownerID);
     if (chosen.length === 0) {
-      accessNote = filledWord("dialog:PICKERRORNOTIFY/body", "Must select at least {num} ", { num: "1" }).trim();
+      accessNote = filledWord("dialog:PICKERRORNOTIFY/body", "Choose {num} or more.", { num: "1" }).trim();
       return;
     }
     void run(async () => {
@@ -1967,14 +1967,14 @@
     <p class="controls">
       <button type="button" class="minor" onclick={() => (managingLabels = !managingLabels)}>{word(LABEL_WORDS.manage, "Manage Labels")}</button>
       <!-- The mail window's Add Mailing List (evemail.py 237): MailinglistWnd, a name, Join or Create. -->
-      <button type="button" class="minor" onclick={() => (addingList = !addingList)}>{word(FOLDER_WORDS.addList, "Add Mailing List")}</button>
+      <button type="button" class="minor" onclick={() => (addingList = !addingList)}>{word(FOLDER_WORDS.addList, "Add a list")}</button>
     </p>
     {#if addingList}
       <section class="bulk mail-add-list">
-        <h3>{word(FOLDER_WORDS.createOrJoin, "Create or Join Mailing List")}</h3>
+        <h3>{word(FOLDER_WORDS.createOrJoin, "Make or join a list")}</h3>
         <p class="controls">
           <label>
-            {word(FOLDER_WORDS.listName, "Mailing List Name")}
+            {word(FOLDER_WORDS.listName, "List name")}
             <input type="text" maxlength={MAILING_LIST_NAME_MAX} bind:value={listNameInput} />
           </label>
           <button type="button" disabled={busy} onclick={() => addList(false)}>{word(FOLDER_WORDS.join, "Join")}</button>
@@ -2007,7 +2007,7 @@
         {#if renaming !== null}
           <p class="controls">
             <label>
-              {word(LABEL_WORDS.typeNew, "Type a new label name.")}
+              {word(LABEL_WORDS.typeNew, "Name the new label.")}
               <input type="text" maxlength={MAIL_LABEL_MAX} bind:value={renaming.name} />
             </label>
             <button type="button" disabled={busy} onclick={renameLabel}>{word(LABEL_WORDS.ok, "OK")}</button>
@@ -2020,7 +2020,7 @@
       <!-- The list's management window (evemailingListConfig.py MaillistSetupWindow): its Members, Access and Welcome
            Mail tabs. -->
       <section class="bulk mail-list-management">
-        <h3>{filledWord(MANAGE_WORDS.caption, "Mailing list management: {mailinglistName}", { mailinglistName: managedList?.displayName ?? "" })}</h3>
+        <h3>{filledWord(MANAGE_WORDS.caption, "Managing {mailinglistName}", { mailinglistName: managedList?.displayName ?? "" })}</h3>
         <p class="controls">
           <button type="button" class:active={manageTab === "members"} disabled={busy} onclick={() => chooseManageTab("members")}>{word(MANAGE_WORDS.membersTab, "Members")}</button>
           <button type="button" class:active={manageTab === "access"} disabled={busy} onclick={() => chooseManageTab("access")}>{word(ACCESS_WORDS.tab, "Access")}</button>
@@ -2049,7 +2049,7 @@
           <button type="button" class="minor" disabled={busy || memberPages <= 1 || memberPage >= memberPages - 1} onclick={() => turnMemberPage(1)}>{word(MANAGE_WORDS.next, "Next")}</button>
         </p>
         {#if pageOfMembers.length === 0}
-          <p class="empty">{word(MANAGE_WORDS.none, "No members found matching criteria")}</p>
+          <p class="empty">{word(MANAGE_WORDS.none, "No member matches.")}</p>
         {:else}
           <div class="table-wrap overflow-x-auto">
             <table class="guests reflow">
@@ -2075,7 +2075,7 @@
         {/if}
         <p class="controls">
           <label>
-            {word(MANAGE_WORDS.applyTo, "Apply to selected")}
+            {word(MANAGE_WORDS.applyTo, "Apply to those chosen")}
             <select bind:value={memberAction} disabled={busy}>
               {#each MEMBER_ACTIONS as [action, label, own] (action)}
                 <option value={action}>{word(label, own)}</option>
@@ -2089,14 +2089,14 @@
                corporation or alliance blocked or allowed by a search; the blocked and the allowed; Remove Selected. -->
           <p class="controls">
             <label>
-              {word(ACCESS_WORDS.defaultAccess, "Mailing List Subscription Access")}
+              {word(ACCESS_WORDS.defaultAccess, "Who may join")}
               <select bind:value={accessChoice} disabled={busy}>
-                <option value={MAILING_LIST_BLOCKED}>{word(ACCESS_WORDS.private, "Only open to allowed (Private)")}</option>
-                <option value={MAILING_LIST_ALLOWED}>{word(ACCESS_WORDS.public, "Open to everyone (Public)")}</option>
+                <option value={MAILING_LIST_BLOCKED}>{word(ACCESS_WORDS.private, "Private: those let in")}</option>
+                <option value={MAILING_LIST_ALLOWED}>{word(ACCESS_WORDS.public, "Public: anyone")}</option>
               </select>
             </label>
             <label>
-              {word(ACCESS_WORDS.defaultRole, "Default member role")}
+              {word(ACCESS_WORDS.defaultRole, "A new member's role")}
               <select bind:value={roleChoice} disabled={busy}>
                 <option value={MAILING_LIST_MEMBER_DEFAULT}>{word(ACCESS_WORDS.normal, "Normal")}</option>
                 <option value={MAILING_LIST_MEMBER_MUTED}>{word(ACCESS_WORDS.mutedRole, "Muted")}</option>
@@ -2179,7 +2179,7 @@
           <p class="controls">
             <label>
               <input type="checkbox" checked={welcomeToAllChecked} onchange={(event) => tickWelcomeToAll(event.currentTarget.checked)} />
-              {word(WELCOME_WORDS.toAll, "Send welcome mail to all members when it is saved.")}
+              {word(WELCOME_WORDS.toAll, "On saving, mail the welcome to every member.")}
             </label>
           </p>
           {#if welcomeNote !== ""}
@@ -2244,27 +2244,27 @@
             {@const listName = shownList.displayName}
             {#if !shownList.isMuted}
               <button type="button" class="minor" disabled={busy} onclick={() => sendToList(listID)}>
-                {word(FOLDER_WORDS.sendToList, "Send Mail to Mailing List")}
+                {word(FOLDER_WORDS.sendToList, "Mail the list")}
               </button>
             {/if}
             {#if shownList.isOperator || shownList.isOwner}
               <button type="button" class="minor" disabled={busy} onclick={() => openListManagement(listID)}>
-                {word(MANAGE_WORDS.open, "Open Mailing List Management")}
+                {word(MANAGE_WORDS.open, "Manage the list")}
               </button>
             {/if}
             <button type="button" class="minor" disabled={busy} onclick={() => { const id = listID; confirming = { dialog: "EvemailMailReadMailinglistGroup", args: { listName }, act: () => flow.readListMail(id) }; }}>
-              {filledWord(FOLDER_WRITE_WORDS.markAll, "Mark All as Read ({folderName})", { folderName: listName })}
+              {filledWord(FOLDER_WRITE_WORDS.markAll, "Read all of {folderName}", { folderName: listName })}
             </button>
             <button type="button" class="minor" disabled={busy} onclick={() => { const id = listID; confirming = { dialog: "EvemailMailTrashMailinglistGroup", args: { listName }, act: () => flow.trashListMail(id) }; }}>
-              {filledWord(FOLDER_WRITE_WORDS.trashAll, "Trash All ({folderName})", { folderName: listName })}
+              {filledWord(FOLDER_WRITE_WORDS.trashAll, "Trash all of {folderName}", { folderName: listName })}
             </button>
             {#if shownList.isOwner}
               <button type="button" class="minor" disabled={busy} onclick={() => { const id = listID; confirming = { dialog: "DeleteMailingList", args: { mailinglistName: listName }, act: async () => { await flow.deleteMailingList(id); if (!(store.get().mail.lists ?? []).some((each) => each.listID === id)) viewingList = null; } }; }}>
-                {word(FOLDER_WORDS.deleteList, "Delete Mailing List")}
+                {word(FOLDER_WORDS.deleteList, "Delete the list")}
               </button>
             {:else}
               <button type="button" class="minor" disabled={busy} onclick={() => { const id = listID; viewingList = null; void run(() => flow.leaveMailingList(id)); }}>
-                {word(FOLDER_WORDS.leaveList, "Leave Mailing List")}
+                {word(FOLDER_WORDS.leaveList, "Leave the list")}
               </button>
             {/if}
           {/if}
@@ -2277,23 +2277,23 @@
           </button>
         {:else if folder === null}
           <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "EvemailMailMarkAllRead", args: {}, act: () => flow.readAllMail(null) })}>
-            {filledWord(FOLDER_WRITE_WORDS.markAll, "Mark All as Read ({folderName})", { folderName: word(FOLDER_WRITE_WORDS.all, "All") })}
+            {filledWord(FOLDER_WRITE_WORDS.markAll, "Read all of {folderName}", { folderName: word(FOLDER_WRITE_WORDS.all, "All") })}
           </button>
           <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "EvemailMailTrashAll", args: {}, act: () => flow.trashAllMail(null) })}>
-            {filledWord(FOLDER_WRITE_WORDS.trashAll, "Trash All ({folderName})", { folderName: word(FOLDER_WRITE_WORDS.all, "All") })}
+            {filledWord(FOLDER_WRITE_WORDS.trashAll, "Trash all of {folderName}", { folderName: word(FOLDER_WRITE_WORDS.all, "All") })}
           </button>
         {:else}
           {@const labelID = folder}
           <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "EvemailMailReadLabelGroup", args: { labelName: folderName }, act: () => flow.readAllMail(labelID) })}>
-            {filledWord(FOLDER_WRITE_WORDS.markAll, "Mark All as Read ({folderName})", { folderName })}
+            {filledWord(FOLDER_WRITE_WORDS.markAll, "Read all of {folderName}", { folderName })}
           </button>
           <button type="button" class="minor" disabled={busy} onclick={() => (confirming = { dialog: "EvemailMailTrashLabelGroup", args: { labelName: folderName }, act: () => flow.trashAllMail(labelID) })}>
-            {filledWord(FOLDER_WRITE_WORDS.trashAll, "Trash All ({folderName})", { folderName })}
+            {filledWord(FOLDER_WRITE_WORDS.trashAll, "Trash all of {folderName}", { folderName })}
           </button>
         {/if}
       </p>
       {#if shownMessages.length === 0}
-        <p class="empty">{word(LIST_WORDS.noMails, "No Mails Found")}</p>
+        <p class="empty">{word(LIST_WORDS.noMails, "No mail here.")}</p>
       {:else}
       <div class="table-wrap overflow-x-auto">
         <table class="guests reflow">
@@ -2335,11 +2335,11 @@
                     <!-- The mail window's menu of a message (GetMsgMenu): read or not, and trash; restore and delete in the trash. -->
                     {#if isUnread(header.messageID)}
                       <button type="button" class="minor" disabled={busy} onclick={() => void run(() => flow.markMail([header.messageID], true))}>
-                        {word(WRITE_WORDS.read, "Mark as Read")}
+                        {word(WRITE_WORDS.read, "Mark read")}
                       </button>
                     {:else}
                       <button type="button" class="minor" disabled={busy} onclick={() => void run(() => flow.markMail([header.messageID], false))}>
-                        {word(WRITE_WORDS.unread, "Mark as Unread")}
+                        {word(WRITE_WORDS.unread, "Mark unread")}
                       </button>
                     {/if}
                     {#if inTrash(header.messageID)}
@@ -2518,18 +2518,18 @@
             <p class="error">{composePickNote}</p>
           {/if}
           <p class="controls">
-            <button type="button" onclick={() => { if (composePicked === null) { composePickNote = filledWord(ACCESS_WORDS.mustSelect, "Must select {num}.", { num: "1" }); } else { composePick?.answer(composePicked); } }}>{word(ACCESS_WORDS.ok, "OK")}</button>
+            <button type="button" onclick={() => { if (composePicked === null) { composePickNote = filledWord(ACCESS_WORDS.mustSelect, "Choose {num}.", { num: "1" }); } else { composePick?.answer(composePicked); } }}>{word(ACCESS_WORDS.ok, "OK")}</button>
             <button type="button" class="minor" onclick={() => composePick?.answer(null)}>{word(ACCESS_WORDS.cancel, "Cancel")}</button>
           </p>
         </div>
       {/if}
       {#if recipientSearchOpen}
-        <!-- "Search for Recipients" (MailSearchWindow; ownerSearch.py OwnerSearchWindow): its two tabs, Search and All
+        <!-- "Find recipients" (MailSearchWindow; ownerSearch.py OwnerSearchWindow): its two tabs, Search and All
              Contacts. Search: Search By, the name, Search, the window's own entries (the corporation, the alliance,
              the lists) and then the pilots found, each with Add, a pilot marked where added. All Contacts: the
              pilot's contacts, the same. -->
         <section class="bulk mail-recipient-search">
-          <h3>{word(COMPOSE_WORDS.searchFor, "Search for Recipients")}</h3>
+          <h3>{word(COMPOSE_WORDS.searchFor, "Find recipients")}</h3>
           <p class="controls">
             <button type="button" class="minor" class:active={recipientSearchTab === "search"} onclick={() => (recipientSearchTab = "search")}>{word(COMPOSE_WORDS.search, "Search")}</button>
             <button type="button" class="minor" class:active={recipientSearchTab === "contacts"} onclick={showRecipientContacts}>{word(COMPOSE_WORDS.allContacts, "All Contacts")}</button>
