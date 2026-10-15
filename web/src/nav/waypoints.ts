@@ -37,7 +37,7 @@ export function isPlayerItemID(id: number): boolean {
  * _IsDestinationValid (2301 to 2318), as far as the page can tell: a station or a solar system of known space by the
  * number, and a structure where the structure directory knows it (`knownStructure`: its GetStructureInfo answered,
  * structureDirectory.py 33 to 39). (The client also refuses a deprecated station and a Triglavian system from outside
- * Pochven; the page does not yet.)
+ * Pochven, which want facts read first: destinationValid, below.)
  */
 export function isWaypointPlace(id: number, knownStructure = false): boolean {
   if (!Number.isSafeInteger(id)) return false;
@@ -121,6 +121,29 @@ export function afterArriving(waypoints: readonly number[], here: PilotPlace): r
   if (waypoints.length === 0) return null;
   const places = [here.structureID, here.stationID, here.solarSystemID, here.constellationID ?? null, here.regionID ?? null];
   return places.some((place) => place !== null && place === waypoints[0]) ? waypoints.slice(1) : null;
+}
+
+/** A place's route entries as a menu offers them. */
+export interface RouteEntries {
+  readonly setDestination: boolean;
+  readonly addWaypoint: boolean;
+  readonly removeWaypoint: boolean;
+}
+
+/**
+ * The celestial menu's route entries (menusvc.py _CelestialMenu, 2003 to 2008, by celestialCheckers.py), which a
+ * place's Location menu is in the windows that list places (the market's orders, entries.py GetMenu, 111 to 123):
+ * Set Destination where the place can be a waypoint, is not the system the pilot is in and is not the route's last
+ * waypoint (OfferSetDestination, 1354 to 1362); Add Waypoint where it can be one and is not one (OfferAddWaypoint,
+ * 440 to 445), else Remove Waypoint where it is one.
+ */
+export function celestialRouteEntries(placeID: number, canBeWaypoint: boolean, currentSystemID: number | null, waypoints: readonly number[]): RouteEntries {
+  const isWaypoint = waypoints.includes(placeID);
+  return {
+    setDestination: canBeWaypoint && placeID !== currentSystemID && waypoints.at(-1) !== placeID,
+    addWaypoint: canBeWaypoint && !isWaypoint,
+    removeWaypoint: !(canBeWaypoint && !isWaypoint) && isWaypoint,
+  };
 }
 
 /**

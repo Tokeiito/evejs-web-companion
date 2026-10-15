@@ -1304,6 +1304,17 @@
     background: rgb(127 180 217 / 0.08);
     border-color: var(--color-accent-dim);
   }
+  /* A row and its Location menu (PlaceRouteMenu) beside it: the row takes the room, the menu wraps below when open. */
+  .book-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem;
+  }
+  .book-line > .book-row {
+    flex: 1 1 0;
+    min-width: 0;
+  }
   /* The number the whole row exists for. Tabular so a column of prices lines up
    * under itself, which is how "which of these is cheapest" becomes a glance. */
   .book-price {

@@ -40,6 +40,7 @@
   // R27 — the shared item icon: one cached picture per thing, falling back
   // to a name-derived tile whenever the icon cache has no entry (or no cache).
   import TypeIcon from "./TypeIcon.svelte";
+  import PlaceRouteMenu from "./PlaceRouteMenu.svelte";
   import type { MarketGroupNode } from "../app/api.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
@@ -616,7 +617,7 @@
       {:else}
         <ul class="market-book">
           {#each sells as order (order.orderID)}
-            <li>
+            <li class="book-line">
               <button
                 type="button"
                 class="book-row"
@@ -636,6 +637,8 @@
                 </span>
                 <span class="book-qty">×{order.volumeRemaining}</span>
               </button>
+              <!-- The order's Location (entries.py GetMenu, 111 to 123): its station's or structure's route entries. -->
+              <PlaceRouteMenu {store} {flow} placeID={order.stationID} />
             </li>
           {/each}
         </ul>
@@ -647,7 +650,7 @@
       {:else}
         <ul class="market-book">
           {#each buys as order (order.orderID)}
-            <li>
+            <li class="book-line">
               <button
                 type="button"
                 class="book-row"
@@ -666,6 +669,7 @@
                 </span>
                 <span class="book-qty">×{order.volumeRemaining}</span>
               </button>
+              <PlaceRouteMenu {store} {flow} placeID={order.stationID} />
             </li>
           {/each}
         </ul>
@@ -864,7 +868,7 @@
                 </td>
                 <td class="num" data-label="Price each">{formatIsk(order.price)}</td>
                 <td class="num" data-label="Left">{order.volumeRemaining} of {order.volumeEntered}</td>
-                <td data-label="Where">{stationName(order.stationID)}</td>
+                <td data-label="Where">{stationName(order.stationID)} <PlaceRouteMenu {store} {flow} placeID={order.stationID} /></td>
                 <td class="num" data-label="Tied up">
                   {order.side === "buy" ? formatIsk(order.escrow) : "—"}
                 </td>
