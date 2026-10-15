@@ -9894,6 +9894,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // this was the menu's warp at nought (R24 slice A), which a client's
         // autopilot does not make.
         await warpAsTheAutopilot(destinationID);
+        sayAutopilotFlying("AutoPilotWarpingTo", routePlaceName(destinationID));
       },
       approach: async (destinationID, byMenu) => {
         // The autopilot's own approach is the throttle and a follow at nought
@@ -9901,9 +9902,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // metres with no throttle (ShipApproach): a pilot's own Dock or Jump, and
         // the autopilot's last station under fifty kilometres.
         await approachShip(destinationID, byMenu ? null : 0);
+        if (!byMenu) sayAutopilotFlying("AutoPilotApproaching", null);
       },
       jump: async (fromGateID, toGateID) => {
+        // (The system jumped to, named before the jump: the route is the one it is on.)
+        const into = routePlaceName(fromGateID);
         await jumpStep(fromGateID, toGateID);
+        sayAutopilotFlying("AutoPilotJumping", into);
       },
       dock: async (stationID) => {
         await dockStep(stationID);
@@ -9959,6 +9964,27 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     WaypointAlreadyInRegion: "You are in that region",
     CantSetWaypoint: "That place cannot be on the route",
   };
+
+  /**
+   * The autopilot's messages as it flies (autopilot.py): AutoPilotWarpingTo after its warp (AP_WarpToDestID, 466),
+   * AutoPilotApproaching after its approach (AP_ApproachDestID, 455), AutoPilotJumping after its jump (359), each
+   * where the autopilot is on and not for a pilot's own Dock or Jump. `what` is the place's name: the system a gate
+   * leads to, or the station (jumpToLocationName, 331 to 334).
+   */
+  function sayAutopilotFlying(dialog: "AutoPilotWarpingTo" | "AutoPilotApproaching" | "AutoPilotJumping", what: string | null): void {
+    if (!autopilotSignal.get()) return;
+    const own = dialog === "AutoPilotApproaching" ? "Approaching"
+      : `${dialog === "AutoPilotJumping" ? "Jumping to" : "Warping to"} ${what ?? "the next place"}`;
+    sayDialog(dialog, what === null ? null : { type: "dict", entries: [["what", what]] }, own);
+  }
+
+  /** The name of the place a gate on the route leads to, or of the route's station; null where it is not known. */
+  function routePlaceName(gateOrStationID: number): string | null {
+    const travel = store.travel.get();
+    const hop = travel.route.find((step) => step.gateToWarpID === gateOrStationID);
+    if (hop !== undefined) return hop.toSystemName;
+    return travel.destinationStationID === gateOrStationID ? travel.destinationName : null;
+  }
 
   /**
    * autopilot.py SetOn and SetOff (84 to 143) and starMapSvc.SetWaypoint (2327 to 2344): prompt_player_fsd_dialog of
