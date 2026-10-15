@@ -40,6 +40,7 @@ export type TabID =
   | "fleet"
   | "scanner"
   | "mail"
+  | "contacts"
   | "chat"
   | "wallet"
   | "corpWallet"
@@ -175,6 +176,8 @@ export const TABS: readonly TabDef[] = [
   { id: "activity", label: "Activity", where: "both" },
   { id: "fleet", label: "Fleet", where: "both" },
   { id: "mail", label: "Mail", where: "both" },
+  // The client's People & Places (AddressBookWindow), titled Contacts: the pilot's own contacts and blocked owners.
+  { id: "contacts", label: "Contacts", where: "both" },
   { id: "chat", label: "Chat", where: "both" },
   { id: "wallet", label: "Wallet", where: "both" },
   { id: "corpWallet", label: "Corp Wallet", where: "both" },

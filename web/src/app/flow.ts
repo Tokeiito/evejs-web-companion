@@ -97,7 +97,7 @@ import {
   isNpcOwner,
   type DecodedMailbox,
 } from "../bridge/mail.ts";
-import { addressBookOf } from "../bridge/contacts.ts";
+import { addressBookOf, type NamedAddressBook } from "../bridge/contacts.ts";
 import { sendMail as sendMailCall, type MailToSend } from "../bridge/mailWrites.ts";
 import { reprocess as reprocessCall } from "../bridge/reprocessWrites.ts";
 import {
@@ -1092,6 +1092,12 @@ export interface AppFlow {
   keepOwnersSearchBy(matchBy: number): void;
   /** The pilot's contacts that are characters and not NPCs, named, in the address book's order (charMgr.GetContactList). */
   mailContacts(): Promise<readonly api.CharacterMatch[]>;
+  /** The pilot's contacts and blocked owners, each named, as the Contacts window shows them (charMgr.GetContactList). */
+  addressBook(): Promise<NamedAddressBook>;
+  /** The Contacts window's last group viewed by the pilot online, kept on this machine; none where none was. */
+  contactsLastSelected(): number | null;
+  /** The Contacts window's group viewed kept for the pilot online, on this machine. */
+  keepContactsLastSelected(groupID: number): void;
   /** Mark messages read, or not read, as the mail window's Mark as Read and Mark as Unread do. */
   markMail(messageIDs: readonly number[], read: boolean): Promise<void>;
   /** Move messages to the trash, as the mail window's Trash does. */
@@ -5437,6 +5443,59 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     } catch {
       // Storage full or refused: the choice lasts as long as the page.
     }
+  }
+
+  // The Contacts window's last group viewed, as the client keeps it in the character's settings
+  // (contactsForm.py 267 to 274, 424: contacts_lastselected), kept in this browser for each character.
+  const CONTACTS_LAST_SELECTED_KEPT = "evejs.contacts.lastselected";
+
+  function contactsLastSelected(): number | null {
+    const characterID = store.station.get().online?.characterID ?? null;
+    let kept: unknown = null;
+    try {
+      kept = characterID === null ? null : JSON.parse(settingsStorage?.getItem(`${CONTACTS_LAST_SELECTED_KEPT}.${characterID}`) ?? "null");
+    } catch {
+      kept = null;
+    }
+    return typeof kept === "number" && Number.isSafeInteger(kept) ? kept : null;
+  }
+
+  function keepContactsLastSelected(groupID: number): void {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null) {
+      return;
+    }
+    try {
+      settingsStorage?.setItem(`${CONTACTS_LAST_SELECTED_KEPT}.${characterID}`, JSON.stringify(groupID));
+    } catch {
+      // Storage full or refused: the group lasts as long as the page.
+    }
+  }
+
+  // addressbook.GetContacts (addressbookService.py 193 to 250) for the Contacts window: charMgr.GetContactList() by
+  // the generic call, every contact and blocked owner named as the client primes them (cfg.eveowners, 240 to 244).
+  async function addressBook(): Promise<NamedAddressBook> {
+    let answer: JsonValue;
+    try {
+      answer = await bridgeAsk("charMgr", "GetContactList", []);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+      }
+      throw error;
+    }
+    const book = addressBookOf(answer);
+    await resolveNamesNow([...book.contacts.map((contact) => contact.contactID), ...book.blocked].map((id) => ({ kind: "owner" as const, id })));
+    const resolved = store.names.get().resolved;
+    const nameOf = (id: number): string => {
+      const name = resolved[nameKey("owner", id)];
+      return typeof name === "string" && name !== "" ? name : String(id);
+    };
+    return {
+      contacts: book.contacts.map((contact) => ({ ...contact, name: nameOf(contact.contactID) })),
+      blocked: book.blocked.map((ownerID) => ({ ownerID, name: nameOf(ownerID) })),
+    };
   }
 
   // addressbook.GetContacts (addressbookService.py 193 to 250): charMgr.GetContactList(), by the generic call (on
@@ -16203,6 +16262,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     ownersSearchBy,
     keepOwnersSearchBy,
     mailContacts,
+    addressBook,
+    contactsLastSelected,
+    keepContactsLastSelected,
     sendMail,
     loadContracts,
     openContract,

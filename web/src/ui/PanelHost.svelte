@@ -13,6 +13,7 @@
   import FleetCenter from "./FleetCenter.svelte";
   import Scanner from "./Scanner.svelte";
   import Mail from "./Mail.svelte";
+  import Contacts from "./Contacts.svelte";
   import Contracts from "./Contracts.svelte";
   import PersonalAssets from "./PersonalAssets.svelte";
   import AgentsMissions from "./AgentsMissions.svelte";
@@ -117,6 +118,8 @@
   <Scanner {store} {flow} />
 {:else if tab === "mail"}
   <Mail {store} {flow} />
+{:else if tab === "contacts"}
+  <Contacts {store} {flow} />
 {:else if tab === "contracts"}
   <Contracts {store} {flow} />
 {:else if tab === "assets"}

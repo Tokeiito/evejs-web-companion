@@ -94,6 +94,8 @@ export const NEOCOM_GLYPHS: Readonly<Record<TabID, NeocomGlyph>> = {
   // --- people ---
   fleet: ["M12 3l4 8-4-2-4 2z", "M6 13l3 7-3-1.5-3 1.5z", "M18 13l3 7-3-1.5-3 1.5z"],
   mail: ["M4 6h16v12H4z", "M4 7.5l8 6 8-6"],
+  // Contacts: two heads, the address book's people.
+  contacts: ["M9 5a3 3 0 1 0 0 6 3 3 0 0 0 0-6", "M3 19a6 6 0 0 1 12 0", "M16 6a2.5 2.5 0 1 1 0 5", "M17 14a5 5 0 0 1 4 5"],
   chat: ["M4 5h16v10H9l-5 4z"],
   activity: ["M6 17h12l-1.5-2v-4a4.5 4.5 0 0 0-9 0v4z", "M10 20h4"],
 

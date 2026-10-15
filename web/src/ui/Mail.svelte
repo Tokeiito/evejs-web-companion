@@ -519,7 +519,8 @@
   let recipientSearchOpen = $state(false);
   let recipientSearchText = $state("");
   // svelte-ignore state_referenced_locally
-  let recipientMatchBy = $state(flow.ownersSearchBy());
+  const keptSearchBy: unknown = flow.ownersSearchBy();
+  let recipientMatchBy = $state(typeof keptSearchBy === "number" ? keptSearchBy : 0);
   let recipientResults = $state<readonly CharacterMatch[]>([]);
   let recipientSearchNote = $state("");
   /** The window's tabs (Search, All Contacts), its own entries found (lists, the corporation, the alliance), and the contacts once loaded. */

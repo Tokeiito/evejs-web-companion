@@ -30,6 +30,41 @@ export interface AddressBook {
   readonly blocked: readonly number[];
 }
 
+/** A contact with its name, as the client's entries show one (cfg.eveowners). */
+export interface NamedContact extends Contact {
+  readonly name: string;
+}
+
+/** The address book with every contact and blocked owner named, for the Contacts window. */
+export interface NamedAddressBook {
+  readonly contacts: readonly NamedContact[];
+  readonly blocked: readonly { readonly ownerID: number; readonly name: string }[];
+}
+
+/** appConst's contact groups (1864 to 1872): the five standings, and the window's own groups. */
+export const CONTACT_STANDING = Object.freeze({ high: 10, good: 5, neutral: 0, bad: -5, horrible: -10 });
+export const CONTACT_GROUP = Object.freeze({ all: 100, blocked: 200, watchlist: 300, notifications: 400 });
+/** appConst.maxContactsPerPage. */
+export const MAX_CONTACTS_PER_PAGE = 50;
+
+/** ContactsForm.CheckInGroup (contactsForm.py 317 to 334): whether a standing is in one of the five standing groups. */
+export function inStandingGroup(groupID: number, relationshipID: number): boolean {
+  switch (groupID) {
+    case CONTACT_STANDING.high:
+      return relationshipID > CONTACT_STANDING.good;
+    case CONTACT_STANDING.good:
+      return relationshipID > CONTACT_STANDING.neutral && relationshipID <= CONTACT_STANDING.good;
+    case CONTACT_STANDING.neutral:
+      return relationshipID === CONTACT_STANDING.neutral;
+    case CONTACT_STANDING.bad:
+      return relationshipID < CONTACT_STANDING.neutral && relationshipID >= CONTACT_STANDING.bad;
+    case CONTACT_STANDING.horrible:
+      return relationshipID < CONTACT_STANDING.bad;
+    default:
+      return false;
+  }
+}
+
 /** idCheckers.IsNPCCharacter: an agent's range (minAgent, maxAgent). */
 const isNpcCharacter = (ownerID: number): boolean => ownerID >= 3_000_000 && ownerID <= 3_999_999;
 
