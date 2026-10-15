@@ -485,6 +485,7 @@ import {
 import type { BotScript, WorldRef } from "../bots/botScript.ts";
 import { decodeScriptValue } from "../bots/scriptCodec.ts";
 import { expandSubBots, hasSubBots, type BotResolution, type SubBotReference } from "../bots/subBots.ts";
+import { autoRejectInvitations } from "./autoRejectInvitations.ts";
 
 /**
  * What the player asked the mission bot to do (goal R36).
@@ -2792,6 +2793,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         turnDownUnasked(fleetInvite.fleetID);
         return;
       }
+      // (1183 to 1185): with the pilot's Auto-reject invitations ticked, an invitation of a fleet the pilot did not
+      // apply to, and that does not say autoAccept, is turned away unasked: RejectInvite(False).
+      if (autoRejectInvitations.get() && expectingInvite !== fleetInvite.fleetID && fleetInvite.autoAccept !== true) {
+        void declineFleetInviteCall(bridgeDo, fleetInvite.fleetID, false, true).catch(() => {});
+        return;
+      }
+      // (1189): the fleet applied to is expected no longer.
+      expectingInvite = null;
       // (1192): with the dict's autoAccept (the fleet finder's) the client joins without asking its pilot.
       if (fleetInvite.autoAccept === true) {
         void acceptFleetInvite(fleetInvite.fleetID).catch(() => {});
@@ -5680,8 +5689,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // this round trip lied about itself.
     // The page's own call, and with the invitation to be taken unasked: who applies here has said yes already
     // (a fleet's name typed for the companions, or a bot's block), as the Agency's join window has.
+    expectingInvite = fleetID;
     return applyToJoinFleetCall(bridgeDo, fleetID, true);
   }
+
+  /** fleetSvc.ApplyToJoinFleet (1906): the fleet applied to, whose invitation the pilot's setting does not turn away. */
+  let expectingInvite: number | null = null;
 
   // --- R17 Mail -------------------------------------------------------------
 
@@ -13748,7 +13761,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           if (action.kind === "createFleet") await formFleetCall(bridgeDo, false);
           else if (action.kind === "inviteToFleet") await inviteToFleetCall(bridgeDo, action.charID, onlineCharacterID());
           else if (action.kind === "acceptFleetInvite") await acceptFleetInviteCall(bridgeDo, action.fleetID, false);
-          else applicationOutcome = await applyToJoinFleetCall(bridgeDo, action.fleetID, true);
+          else {
+            expectingInvite = action.fleetID;
+            applicationOutcome = await applyToJoinFleetCall(bridgeDo, action.fleetID, true);
+          }
         } catch (error) {
           outcome = "unknown"; code = errorWords(error);
           if (error instanceof BridgeCallError) { diagnosticCode = error.code; httpStatus = error.status; }
@@ -16157,6 +16173,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             // it is the only place that answer exists -- so it is kept rather
             // than discarded, and a throw leaves the previous value alone so a
             // failed apply reads as "no answer yet" and not as somebody else's.
+            expectingInvite = action.fleetID;
             const outcome = await applyToJoinFleetCall(bridgeDo, action.fleetID, true);
             fleetApplication = { fleetID: action.fleetID, outcome, ...(action.supportOrder ? { supportOrder: action.supportOrder } : {}) };
             return;
