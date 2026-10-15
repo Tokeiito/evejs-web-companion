@@ -4949,6 +4949,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // OK, the passing strip until its time is gone by (ClientDialogs.svelte); twenty at most are kept.
   const dialogsSaidSignal = createSignal<readonly SaidDialog[]>([]);
   let dialogsSaidCount = 0;
+  const NONE_SILENT: ReadonlySet<string> = new Set();
+  /** targetMgr._LockTarget: the refusals of a lock the client puts up nothing for. */
+  const LOCK_SILENT: ReadonlySet<string> = new Set(["DeniedShipChanged", "TargetingAttemptCancelled"]);
 
   /** The dialog a refusal names and the values for it: the BFF's word, or through the gateway a bare message key. */
   function refusalDialogOf(error: unknown): { readonly dialog: string; readonly values: JsonValue | null } | null {
@@ -4957,10 +4960,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return /^[A-Z]\w{2,99}$/.test(error.message) ? { dialog: error.message, values: null } : null;
   }
 
-  /** The dialog a refusal names put up, with the page's own words for it; false where it names none. */
-  function sayRefusalDialog(error: unknown, fallback: string): boolean {
+  /**
+   * The dialog a refusal names put up, with the page's own words for it; false where it names none. One of `silent`
+   * is one the client's code lets go without a word: said as the client says it, which is not at all.
+   */
+  function sayRefusalDialog(error: unknown, fallback: string, silent: ReadonlySet<string> = NONE_SILENT): boolean {
     const said = refusalDialogOf(error);
     if (said === null) return false;
+    if (silent.has(said.dialog)) return true;
     dialogsSaidCount += 1;
     dialogsSaidSignal.set([...dialogsSaidSignal.get(), { n: dialogsSaidCount, ...said, fallback }].slice(-20));
     return true;
@@ -8148,6 +8155,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * Run one targeting/activation action: record it, surface a refusal verbatim,
    * and land the server's own re-read. `verify` decides whether the action
    * actually took effect; false with no thrown refusal is a SILENT DECLINE.
+   *
+   * A refusal is put up as the client puts up a UserError (targetMgr._LockTarget's prompt_player_fsd_dialog;
+   * a module's ActivateEffect and DeactivateEffect raise theirs to the client's handler), save those of `silent`,
+   * which the client lets go without a word.
    */
   async function runTargetingAction<T>(
     label: string,
@@ -8155,6 +8166,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     apply: (result: T) => void | Promise<void>,
     verify: (result: T) => boolean,
     declineMessage: string,
+    silent: ReadonlySet<string> = NONE_SILENT,
   ): Promise<void> {
     let result: T;
     try {
@@ -8165,10 +8177,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({
-        type: "targeting/action-error",
-        message: `${label} refused: ${flightRefusalWords(error)}`,
-      });
+      const message = `${label} refused: ${flightRefusalWords(error)}`;
+      store.apply({ type: "targeting/action-error", message, said: sayRefusalDialog(error, message, silent) });
       return;
     }
     store.apply({ type: "targeting/action", action: label });
@@ -8221,6 +8231,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // "nothing happened" while the server is mid-acquisition would be wrong.
       (result) => result.locked || result.acquiring,
       "The server accepted that lock and then did not lock anything, and gave no reason.",
+      LOCK_SILENT,
     );
   }
 
@@ -9255,7 +9266,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "flight/action-error", message: `${label} refused: ${flightRefusalWords(error)}` });
+      // Put up as the client puts up a UserError: a movement order's (movementFunctions: WarpToItem, Approach,
+      // Orbit, KeepAtRange, the dock and the jump) goes to its handler.
+      const message = `${label} refused: ${flightRefusalWords(error)}`;
+      store.apply({ type: "flight/action-error", message, said: sayRefusalDialog(error, message) });
       // Re-read the true state so the page shows where the ship actually is,
       // not a stale optimistic guess (best-effort; ignore a follow-up failure).
       try {

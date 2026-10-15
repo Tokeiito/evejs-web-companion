@@ -52,6 +52,12 @@ export interface FormatContext {
   readonly writeInterval?: (ticks: bigint, from: string | null, to: string | null) => string | null;
   /** The same for a tag that asks for an interval's short written form ("6d 8h 57m"). */
   readonly writeShortInterval?: (ticks: bigint, from: string | null, to: string | null) => string | null;
+  /**
+   * A distance in metres written as the client writes one (NumericPropertyHandler._GetDistance: FmtDist(value,
+   * maxdemicals=decimalPlaces, 3 where the tag says none)), for a numeric tag that asks for its distance. Without
+   * it such a tag is written as a plain number.
+   */
+  readonly writeDistance?: (meters: number, decimalPlaces: number) => string;
 }
 
 /** A message's arguments by name: what the server sent with the label, and what the client adds. */
@@ -260,7 +266,12 @@ function renderToken(token: TemplateToken, args: TemplateArguments, context: For
   switch (token.type) {
     case "numeric": {
       const value = numberOf(given);
-      text = value === null ? "" : formatNumber(value, token);
+      const places = Number(token.settings.decimalPlaces ?? 3);
+      text = value === null
+        ? ""
+        : token.property === "distance" && context.writeDistance
+          ? context.writeDistance(value, Number.isInteger(places) && places >= 0 ? places : 3)
+          : formatNumber(value, token);
       break;
     }
     case "item":

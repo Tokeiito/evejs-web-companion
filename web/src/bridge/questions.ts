@@ -36,6 +36,8 @@ import {
 } from "./clientWords.ts";
 import type { JsonValue } from "./wire.ts";
 import { intervalWriter, shortIntervalWriter } from "./timeInterval.ts";
+import { fmtDist } from "../space/overview.ts";
+import { distanceSay } from "../space/distanceWords.ts";
 
 /**
  * The retail client's own text, when the page has it: its templates by label
@@ -282,6 +284,8 @@ export function questionMarkup(words: QuestionWords, nameOf: NameOf, client: Cli
         playerID: client.playerID ?? null,
         writeInterval: intervalWriter(client.templates),
         writeShortInterval: shortIntervalWriter(client.templates),
+        // A distance in the client's units and its words for them, where they are to hand (DISTANCE_WORD_LABELS).
+        writeDistance: (meters, decimalPlaces) => fmtDist(meters, decimalPlaces, distanceSay(client.templates)),
       })
     : null;
 }

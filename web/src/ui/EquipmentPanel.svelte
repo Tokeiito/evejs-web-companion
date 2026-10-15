@@ -397,7 +397,8 @@
   {#if error}
     <p class="error" role="alert">{error}</p>
   {/if}
-  {#if $targeting.actionError}
+  <!-- (A refusal the client's own dialog said is not said again here: ClientDialogs.svelte.) -->
+  {#if $targeting.actionError && !$targeting.actionErrorSaid}
     <p class="error">{$targeting.actionError}</p>
   {/if}
   {#if $targeting.silentDecline}

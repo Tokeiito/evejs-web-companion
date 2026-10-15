@@ -2062,7 +2062,7 @@ export function createClientStore(): ClientStore {
         flight.set({ ...flight.get(), lastAction: event.action, actionError: null });
         break;
       case "flight/action-error":
-        flight.set({ ...flight.get(), actionError: event.message });
+        flight.set({ ...flight.get(), actionError: event.message, actionErrorSaid: event.message !== null && event.said === true });
         break;
       case "flight/crimewatch":
         flight.set({ ...flight.get(), crimewatch: event.crimewatch });
@@ -2162,7 +2162,7 @@ export function createClientStore(): ClientStore {
         });
         break;
       case "targeting/action-error":
-        targeting.set({ ...targeting.get(), actionError: event.message });
+        targeting.set({ ...targeting.get(), actionError: event.message, actionErrorSaid: event.message !== null && event.said === true });
         break;
       case "targeting/silent-decline":
         targeting.set({ ...targeting.get(), silentDecline: event.message });

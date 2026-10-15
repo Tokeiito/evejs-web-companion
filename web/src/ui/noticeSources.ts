@@ -71,8 +71,8 @@ export interface NoticeSource {
  * did not happen.
  */
 export const NOTICE_SOURCES: readonly NoticeSource[] = [
-  { slice: "flight", field: "actionError", kind: "danger", title: "Flight" },
-  { slice: "targeting", field: "actionError", kind: "danger", title: "Targeting" },
+  { slice: "flight", field: "actionError", kind: "danger", title: "Flight", saidBy: "actionErrorSaid" },
+  { slice: "targeting", field: "actionError", kind: "danger", title: "Targeting", saidBy: "actionErrorSaid" },
   { slice: "targeting", field: "silentDecline", kind: "warn", title: "Targeting" },
   { slice: "mining", field: "actionError", kind: "danger", title: "Mining" },
   { slice: "mining", field: "silentDecline", kind: "warn", title: "Mining" },

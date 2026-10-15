@@ -672,7 +672,7 @@ export type FeedEvent =
   // status readout. A successful step clears any stale action error.
   | { readonly type: "flight/action"; readonly action: string }
   // A movement step failed (the handler's own refusal reason); null clears it.
-  | { readonly type: "flight/action-error"; readonly message: string | null }
+  | { readonly type: "flight/action-error"; readonly message: string | null; readonly said?: boolean }
   // Drop the flight state (character offline / logged out).
   | { readonly type: "flight/cleared" }
   // crimewatchSvc's client states, read again at each of the server's notices of them.
@@ -717,7 +717,7 @@ export type FeedEvent =
   | { readonly type: "targeting/action"; readonly action: string }
   // An action was REFUSED, carrying the server's own reason verbatim; null
   // clears it.
-  | { readonly type: "targeting/action-error"; readonly message: string | null }
+  | { readonly type: "targeting/action-error"; readonly message: string | null; readonly said?: boolean }
   // An action returned 200, the re-read showed nothing changed, and the server
   // gave no reason. Deliberately separate from action-error: "refused, here is
   // why" and "quietly did nothing" are different and the page says which.

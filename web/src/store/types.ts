@@ -1775,6 +1775,11 @@ export interface FlightState {
   /** Non-null when the last movement step failed (the handler's refusal reason). */
   readonly actionError: string | null;
   /**
+   * Whether that refusal was said in the client's own way (ClientDialogs.svelte; or not at all, where the client says
+   * nothing of it): the windows and the notices then do not say it again. False or absent otherwise.
+   */
+  readonly actionErrorSaid?: boolean;
+  /**
    * Resolved location names for the current status (goal R7a), so the readout
    * shows "Jita" not "30000142". Resolved from the static /api/map routes and
    * cached client-side by the flow; null until resolved (the UI falls back to
@@ -2171,6 +2176,11 @@ export interface TargetingState {
   readonly lastAction: string | null;
   /** Non-null when the last action failed — the SERVER's own refusal reason. */
   readonly actionError: string | null;
+  /**
+   * Whether that refusal was said in the client's own way (ClientDialogs.svelte; or not at all, where the client says
+   * nothing of it): the windows and the notices then do not say it again. False or absent otherwise.
+   */
+  readonly actionErrorSaid?: boolean;
   /**
    * Non-null when a call returned 200 but the re-read showed nothing changed
    * and the server gave no reason. This is deliberately a DIFFERENT field from
