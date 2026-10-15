@@ -4074,6 +4074,10 @@ function createGamePortPilots({
     } else if (method === "CmdGotoDirection") {
       // Steered by hand: the client forgets what it had aligned to (cameraUtil, eveCommands: ClearAlignTargets).
       entry.alignTarget = null;
+    } else if (method === "CmdGotoBookmark") {
+      // movementFunctions.ApproachLocation: a bookmark approached, the client forgets what it had aligned to
+      // (StoreAlignTarget(alignTargetID=None, aligningToBookmark=False)).
+      entry.alignTarget = null;
     }
   }
 

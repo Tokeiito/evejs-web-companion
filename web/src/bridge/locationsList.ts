@@ -122,3 +122,119 @@ export function locationsSection(active: ActiveBookmarks, isPersonal: boolean, l
     inactive: own.filter((folder) => !folder.isActive).sort((a, b) => byLower(a.folderName, b.folderName)),
   };
 }
+
+/** A point in space, in metres. */
+export interface SpacePoint {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+}
+
+/** A thing of the pilot's ballpark, as the page last read it. */
+export interface SpaceBall {
+  readonly position: SpacePoint;
+  readonly radius: number;
+  readonly typeID: number | null;
+  readonly categoryID: number | null;
+}
+
+/**
+ * What a bookmark's menu reads of a pilot flying in space: the client's session (its system and ship, whether the
+ * ship is in warp) and its ballpark (the ship's own ball and the things around it), as the page last read them.
+ */
+export interface SpaceHere {
+  readonly solarSystemID: number;
+  readonly shipID: number;
+  readonly warping: boolean;
+  readonly shipPosition: SpacePoint;
+  readonly shipRadius: number;
+  readonly balls: ReadonlyMap<number, SpaceBall>;
+}
+
+/** appConst.minWarpDistance: a warp's least distance (sessionChecker.isInWarpRange). */
+export const MIN_WARP_DISTANCE_M = 150_000;
+/** appConst.maxApproachDistance: the farthest a place is approached from (OfferApproachLocation). */
+export const MAX_APPROACH_DISTANCE_M = 10_000_000;
+
+/** invConst's categories the warp's check names: asteroid, structure, orbital, sovereignty structure. */
+const CATEGORY_ASTEROID = 25;
+const CATEGORY_STRUCTURE = 65;
+const CATEGORY_ORBITAL = 46;
+const CATEGORY_SOVEREIGNTY_STRUCTURE = 40;
+/**
+ * The things a ballpark holds that move (a ball's isFree): ships, drones, fighters and the server's own pilots. The
+ * page's read of space carries no ball's flag, so it goes by the thing's category.
+ */
+const MOVING_CATEGORIES: ReadonlySet<number> = new Set([6, 18, 87, 11]);
+
+function metresBetween(from: SpacePoint, to: SpacePoint): number {
+  return Math.hypot(to.x - from.x, to.y - from.y, to.z - from.z);
+}
+
+/**
+ * BookmarkChecker.getDistanceToActiveShip (bookmarkChecker.py 117 to 151): none where the place is not in the
+ * pilot's system; a coordinate's, from the ship to its point; a thing's in the ballpark, from surface to surface; a
+ * structure's or an orbital's elsewhere, from the ship to its point; and nought for any other (a station or a
+ * celestial the ballpark does not hold).
+ *
+ * The client takes an agent's home base and objective from the agent (GetEntryPoint): those are no bookmarks the
+ * Locations window lists. A structure's or an orbital's bookmark is told by the thing's category in the page's read
+ * of space; one the page has not read is measured as nought, as any place the client cannot tell apart is.
+ */
+export function bookmarkDistance(bookmark: Bookmark, here: SpaceHere): number | null {
+  if (bookmark.locationID !== here.solarSystemID) return null;
+  const point = bookmark.x === null ? null : { x: bookmark.x, y: bookmark.y ?? 0, z: bookmark.z ?? 0 };
+  if ((bookmark.typeID === TYPE_SOLAR_SYSTEM || bookmark.itemID === bookmark.locationID) && point !== null) {
+    return metresBetween(here.shipPosition, point);
+  }
+  const ball = bookmark.itemID === null ? undefined : here.balls.get(bookmark.itemID);
+  if (ball !== undefined) {
+    return Math.max(0, metresBetween(here.shipPosition, ball.position) - ball.radius - here.shipRadius);
+  }
+  return 0;
+}
+
+/** What of a bookmark's menu a pilot in space is offered of the ballpark's moves. */
+export interface SpaceOffers {
+  readonly distance: number | null;
+  readonly warp: boolean;
+  readonly approach: boolean;
+  readonly align: boolean;
+  readonly dock: boolean;
+}
+
+const NOTHING_IN_SPACE: SpaceOffers = Object.freeze({ distance: null, warp: false, approach: false, align: false, dock: false });
+
+/**
+ * The ballpark's moves of a bookmark's menu (menusvc.py _BookmarkMenu, 1459 to 1500), as BookmarkChecker offers each
+ * to a pilot flying in the bookmark's system and not in warp:
+ *
+ *   Warp to Within (OfferWarpTo, _CanWarpToItem, celestialCheckers.py 2186 to 2209): farther off than a warp's least
+ *   distance, and not the pilot's own ship; a thing that moves only where it is an asteroid, a structure or an
+ *   orbital (a fleet member's ship besides, which no bookmark the window lists is);
+ *   Approach Location (OfferApproachLocation, bookmarkChecker.py 30 to 45): nearer than the farthest approach;
+ *   Align to (OfferAlignTo, 47 to 61): where Approach Location is not offered, and farther off than a warp's least
+ *   distance;
+ *   Dock (OfferDock, celestialCheckers.py 752 to 765): a station in the system.
+ *
+ * None of them for a pilot with no ballpark (docked, or not read).
+ */
+export function spaceOffersOf(bookmark: Bookmark, here: SpaceHere | null): SpaceOffers {
+  if (here === null || here.warping) return NOTHING_IN_SPACE;
+  const distance = bookmarkDistance(bookmark, here);
+  if (distance === null) return NOTHING_IN_SPACE;
+  const item = bookmark.itemID ?? bookmark.locationID;
+  const ball = here.balls.get(item);
+  const category = ball?.categoryID ?? null;
+  const warpable = category === null || !MOVING_CATEGORIES.has(category)
+    || [CATEGORY_ASTEROID, CATEGORY_STRUCTURE, CATEGORY_ORBITAL, CATEGORY_SOVEREIGNTY_STRUCTURE].includes(category);
+  const inWarpRange = distance > MIN_WARP_DISTANCE_M;
+  const approach = item > 0 && distance < MAX_APPROACH_DISTANCE_M;
+  return {
+    distance,
+    warp: item !== here.shipID && inWarpRange && warpable,
+    approach,
+    align: !approach && item > 0 && inWarpRange,
+    dock: item >= 60_000_000 && item < 64_000_000,
+  };
+}

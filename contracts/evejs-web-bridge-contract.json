@@ -1136,6 +1136,7 @@
       "beyonce.CmdDock",
       "beyonce.CmdFleetTagTarget",
       "beyonce.CmdFollowBall",
+      "beyonce.CmdGotoBookmark",
       "beyonce.CmdGotoPoint",
       "beyonce.CmdOrbit",
       "beyonce.CmdSetSpeedFraction",

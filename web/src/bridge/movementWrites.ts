@@ -39,9 +39,9 @@
 // nothing. Either transport carries it, asked of beyonce by its name; the game port makes it on the ballpark's
 // object.
 //
-// The page aligns to things only: it has no align to a bookmark. What the client keeps of an align for itself
-// (StoreAlignTarget, for the HUD's words) the BFF keeps for a pilot on the game port (pilots.js,
-// afterMovementCall).
+// The page aligns to things, and to bookmarks from a bookmark's menu in the Locations window (AlignToBookmark,
+// 2804: the bookmark by name, and no thing). What the client keeps of an align for itself (StoreAlignTarget, for
+// the HUD's words) the BFF keeps for a pilot on the game port (pilots.js, afterMovementCall).
 //
 // ⚠ AND NOTHING IS CANCELLED HERE EITHER. After the call the client forgets its own navigation in the system
 // (autoPilot.CancelSystemNavigation, autopilot.py 494: a destination in the system it was flying to by steps of
@@ -137,12 +137,26 @@
 // that is not there (BookmarkNotAvailable), and flies the session's own ship to the thing the bookmark is of, or
 // to its point.
 //
-// The page says a range of nought and fleet=False. Its JSON has one kind of number: on the game port the range is
-// made the client's float where the call is sent (retailCalls.js, warping), as a follow's nought is.
+// The page says fleet=False, and the range the pilot chose from a bookmark's menu in the Locations window (Warp to
+// Within: the pilot's own warp distance, or one of the menu's seven), or nought for the script bots. Its JSON has
+// one kind of number: on the game port the range is made the client's float where the call is sent
+// (retailCalls.js, warping), as a follow's nought is.
 //
 // ⚠ A MISSION'S BOOKMARK IS NOT WARPED TO SO BY A CLIENT. One that has an agent and a location's number is asked
 // of the agent (GetAgentMoniker(agentID).WarpToLocation, 416), and never of the ballpark. The page's mission
 // block asks the agent so too, since 2026-10-11 (warpToMissionLocation, below), and reads no folder of bookmarks.
+//
+// SENT TO A BOOKMARK: APPROACH LOCATION. movementFunctions.ApproachLocation (397 to 407), with a park:
+//
+//   sm.GetService('menu').StoreAlignTarget(alignTargetID=None, aligningToBookmark=False)
+//   bp.CmdGotoBookmark(bookmark.bookmarkID)
+//
+// The bookmark's number alone, on the ballpark's object. It answers nothing. No recording has one. The server
+// (beyonceService.Handle_CmdGotoBookmark) looks the bookmark up among the session's own character's, refuses one
+// that is not there (BookmarkNotAvailable), and flies the session's own ship after the thing the bookmark is of
+// where its scene holds it, else to its point. What the client forgets of an align the BFF forgets for a pilot on
+// the game port (pilots.js, afterMovementCall). An agent's bookmark is the agent's to go to (GotoLocation, 402):
+// the Locations window lists none.
 //
 // SENT INTO WARP, TO A LAUNCH. journal.py 452 to 453, the journal's "warp to" on a launch in the pilot's system
 // that is farther off than a warp's least distance (433 to 440):
@@ -417,15 +431,43 @@ async function aPlaceToWarpTo(flightNow: () => Promise<FlightNow>, id: number, n
 }
 
 /**
- * Warps the pilot's ship to one of its bookmarks, as the bookmark's menu does: by the bookmark's number, with a
- * range of nought and the fleet's word False. Fails as the call fails, and before it for what is no bookmark's
- * number and for a pilot that is not in space.
+ * Warps the pilot's ship to one of its bookmarks, as the bookmark's menu does: by the bookmark's number, to stop
+ * `range` metres short of it (nought where none is said, one of the seven the menu offers), and the fleet's word
+ * False. Fails as the call fails, and before it where the range is none of those, for what is no bookmark's number
+ * and for a pilot that is not in space.
  *
  * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER AN ARRIVAL.
  */
-export async function warpToBookmark(act: Ask, flightNow: () => Promise<FlightNow>, bookmarkID: number): Promise<void> {
+export async function warpToBookmark(act: Ask, flightNow: () => Promise<FlightNow>, bookmarkID: number, range = 0): Promise<void> {
+  if (!WARP_RANGES_M.includes(range)) {
+    throw new Error("The warp range must be one of the offered distances.");
+  }
   await aPlaceToWarpTo(flightNow, bookmarkID, "A bookmark is required.");
-  await act("beyonce", "CmdWarpToStuff", ["bookmark", bookmarkID], { minRange: 0, fleet: false });
+  await act("beyonce", "CmdWarpToStuff", ["bookmark", bookmarkID], { minRange: range, fleet: false });
+}
+
+/**
+ * Sends the pilot's ship to one of its bookmarks, as the bookmark's Approach Location does: by the bookmark's number
+ * alone. Fails as the call fails, and before it for what is no bookmark's number and for a pilot that is not in
+ * space.
+ *
+ * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER AN ARRIVAL.
+ */
+export async function approachBookmark(act: Ask, flightNow: () => Promise<FlightNow>, bookmarkID: number): Promise<void> {
+  await aPlaceToWarpTo(flightNow, bookmarkID, "A bookmark is required.");
+  await act("beyonce", "CmdGotoBookmark", [bookmarkID]);
+}
+
+/**
+ * Aligns the pilot's ship to one of its bookmarks, as the bookmark's Align to does: the bookmark by name and no
+ * thing. Fails as the call fails, and before it for what is no bookmark's number and for a pilot that is not in
+ * space.
+ *
+ * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER A SHIP ALIGNED.
+ */
+export async function alignToBookmark(act: Ask, flightNow: () => Promise<FlightNow>, bookmarkID: number): Promise<void> {
+  await aPlaceToWarpTo(flightNow, bookmarkID, "A bookmark is required.");
+  await act("beyonce", "CmdAlignTo", [], { dstID: null, bookmarkID });
 }
 
 /**

@@ -754,7 +754,9 @@ const ON_AN_ANSWERED_OBJECT = Object.freeze(new Set(["scanMgr.GetFullState"]));
 // (CmdDock since 2026-10-14, when the page made the dock at a station itself: movementFunctions.RealDock's bp.CmdDock,
 // made on the ballpark's bound object as Tranquility's recordings have it. Its route bound the park for itself. And
 // CmdStargateJump the same day, the page's own jump: gateJumpSvc.JumpThroughGate's remoteBallpark.CmdStargateJump.)
-const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdAlignTo", "CmdFollowBall", "CmdSetSpeedFraction", "CmdOrbit", "CmdStop", "BookmarkLocation", "CmdWarpToStuff", "CmdWarpToStuffAutopilot", "CmdDock", "CmdStargateJump"]));
+// (CmdGotoBookmark on 2026-10-15, the page's Approach Location of a bookmark: movementFunctions.ApproachLocation's
+// bp.CmdGotoBookmark, on the ballpark's object.)
+const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdGotoBookmark", "CmdAlignTo", "CmdFollowBall", "CmdSetSpeedFraction", "CmdOrbit", "CmdStop", "BookmarkLocation", "CmdWarpToStuff", "CmdWarpToStuffAutopilot", "CmdDock", "CmdStargateJump"]));
 const madeOnMoniker = (service, method) => Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method) && method !== "MachoBindObject";
 /**
  * Whether the game port makes a call on an object though it is asked of a service by its name: on the service's
@@ -1066,6 +1068,11 @@ const salvaging = ([drones, target, ...rest], kwargs) => ({ args: [list(drones),
 const goingToPoint = (args, kwargs) => (args.length === 3 && args.every((each) => typeof each === "number" && Number.isFinite(each)) && Object.keys(kwargs).length === 0
   ? { args: args.map((each) => ({ type: "real", value: each })), kwargs }
   : { args, kwargs, status: "differs", note: "The client sends a point's three numbers and nothing else." });
+
+/** movementFunctions.ApproachLocation (405): bp.CmdGotoBookmark(bookmark.bookmarkID), on the ballpark's object, the bookmark's number and nothing else. */
+const goingToBookmark = (args, kwargs) => (args.length === 1 && Number.isSafeInteger(args[0]) && args[0] > 0 && Object.keys(kwargs).length === 0
+  ? {}
+  : { status: "differs", note: "The client sends a bookmark's number and nothing else." });
 
 /**
  * menusvc._AlignTo (2778 to 2793): bp.CmdAlignTo(dstID=targetID, bookmarkID=bookmarkID), on the ballpark's object,
@@ -2066,6 +2073,8 @@ const RETAIL_CALLS = Object.freeze({
     "bp.BookmarkLocation(itemID, folderID, name, comment, expiry, subfolderID=subfolderID), on the ballpark's object: the subfolder by keyword every time, None where there is none. No recording has one. The name the label field's, unicode (bookmarkLocationWindow.py Confirm, 212 to 219), and the note the editor's, the empty byte string where it holds nothing."), [2, 3]),
   "beyonce.CmdGotoPoint": reshaped("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:324", goingToPoint,
     "bp.CmdGotoPoint(*position), on the ballpark's object: the point's three, each a float, from the positional control's drag, once the autopilot's navigation in the system is cancelled. A pilot controlling a structure sends none. It answers nothing. In no recording."),
+  "beyonce.CmdGotoBookmark": judged("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:405", goingToBookmark,
+    "bp.CmdGotoBookmark(bookmark.bookmarkID), on the ballpark's object: a bookmark's Approach Location, once the menu has forgotten what was aligned to (StoreAlignTarget). An agent's bookmark is asked of the agent (GotoLocation). It answers nothing. In no recording."),
   "beyonce.CmdAlignTo": judged("eve/client/script/ui/services/menusvc.py:2790", aligning,
     "bp.CmdAlignTo(dstID=targetID, bookmarkID=bookmarkID), on the ballpark's object: a thing or a bookmark by name, the other None, and nothing by position; from the menu, the shortcut and a site's bracket. With no park, and for the pilot's own ship, it sends nothing. It answers nothing. Tranquility's two recordings have it so, the thing a long."),
   "beyonce.CmdFleetTagTarget": judged("eve/client/script/ui/services/menusvc.py:2825", tagging,
