@@ -2403,7 +2403,7 @@ export function createClientStore(): ClientStore {
         skills.set({ ...skills.get(), lastAction: event.action, actionError: null });
         break;
       case "skills/action-error":
-        skills.set({ ...skills.get(), actionError: event.message });
+        skills.set({ ...skills.get(), actionError: event.message, actionErrorSaid: event.message !== null && event.said === true });
         break;
       case "skills/cleared":
         skills.set(INITIAL_SKILLS);

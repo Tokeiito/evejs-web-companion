@@ -270,7 +270,8 @@
   {#if sheet.error}
     <p class="error">{sheet.error}</p>
   {/if}
-  {#if sheet.actionError}
+  <!-- (A refusal the client's own dialog said is not said again here: ClientDialogs.svelte.) -->
+  {#if sheet.actionError && !sheet.actionErrorSaid}
     <p class="error">{sheet.actionError}</p>
   {/if}
   {#if sheet.lastAction && !sheet.actionError}

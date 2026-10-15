@@ -3063,6 +3063,11 @@ export interface SkillsState {
   readonly error: string | null;
   readonly lastAction: string | null;
   readonly actionError: string | null;
+  /**
+   * Whether that refusal was said in the client's own way (ClientDialogs.svelte): the window and the notices then do
+   * not say it again. False or absent otherwise.
+   */
+  readonly actionErrorSaid?: boolean;
 }
 
 // --- R37 Personal Assets ---------------------------------------------------

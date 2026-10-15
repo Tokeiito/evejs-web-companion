@@ -846,7 +846,7 @@ export type FeedEvent =
   // A queue edit the server ACCEPTED — landed only after the re-read confirmed
   // it, never on the strength of the call returning.
   | { readonly type: "skills/action"; readonly action: string }
-  | { readonly type: "skills/action-error"; readonly message: string | null }
+  | { readonly type: "skills/action-error"; readonly message: string | null; readonly said?: boolean }
   | { readonly type: "skills/cleared" }
   // Goal R41 — the character's planetary colonies.
   //

@@ -5097,6 +5097,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const LOCK_SILENT: ReadonlySet<string> = new Set(["DeniedShipChanged", "TargetingAttemptCancelled"]);
   /** clientDogmaLocation.OnlineModule (698 to 711): a module online already is no refusal to the client. */
   const ONLINE_SILENT: ReadonlySet<string> = new Set(["EffectAlreadyActive2"]);
+  /**
+   * skillQueuePanelNew.ApplySkillQueue (318 to 344): the refusals of a queue's save the panel answers itself, another
+   * character training (ShowMultiTrainingMessageOrRaise) and an Alpha's limit (its message, the queue saved unstarted).
+   */
+  const SKILL_QUEUE_KEPT: ReadonlySet<string> = new Set(["UserAlreadyHasSkillInTraining", "SkillInQueueOverAlphaSpTrainingSize"]);
 
   /** The dialog a refusal names and the values for it: the BFF's word, or through the gateway a bare message key. */
   function refusalDialogOf(error: unknown): { readonly dialog: string; readonly values: JsonValue | null } | null {
@@ -9555,12 +9560,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // ⚠ THE REFUSAL IS THE FEATURE. All eleven of the server's public codes
       // are things a player hits in ordinary play, and every one of them says
       // what to do next instead of showing its name.
-      store.apply({
-        type: "skills/action-error",
-        message: error instanceof BridgeCallError
-          ? skillQueueRefusal(error.code, error.message, context)
-          : `That change could not be saved: ${errorWords(error)}`,
-      });
+      const message = error instanceof BridgeCallError
+        ? skillQueueRefusal(error.code, error.message, context)
+        : `That change could not be saved: ${errorWords(error)}`;
+      // Put up as the client puts up a UserError (skillQueuePanelNew.ApplySkillQueue, 318 to 344, raises to its
+      // handler), save what the panel answers itself: another character training (its multi-training message) and
+      // an Alpha's limit (its message, and the queue saved again unstarted). The page's words stand for those.
+      store.apply({ type: "skills/action-error", message, said: sayRefusalDialog(error, message, NONE_SILENT, SKILL_QUEUE_KEPT) });
       // The queue is unchanged on the server, but the panel may have been
       // showing an optimistic order — re-read so what is on screen is the
       // server's, not ours.
@@ -9601,10 +9607,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({
-        type: "skills/action-error",
-        message: `Training could not be paused: ${errorWords(error)}`,
-      });
+      // Put up as the client puts up a UserError (the panel's PauseTraining: skills.AbortTrain, raised to its handler).
+      const message = `Training could not be paused: ${errorWords(error)}`;
+      store.apply({ type: "skills/action-error", message, said: sayRefusalDialog(error, message) });
       // Whether it stopped or not is the server's to say: read it again.
       await loadSkills().catch(() => {});
       return;
@@ -9636,12 +9641,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({
-        type: "skills/action-error",
-        message: error instanceof BridgeCallError
-          ? skillQueueRefusal(error.code, error.message, "that skill")
-          : `Those points could not be applied: ${errorWords(error)}`,
-      });
+      // Put up as the client puts up a UserError (skillQueueSvc.UseFreeSkillPoints: the skill handler's call raises
+      // to its handler).
+      const message = error instanceof BridgeCallError
+        ? skillQueueRefusal(error.code, error.message, "that skill")
+        : `Those points could not be applied: ${errorWords(error)}`;
+      store.apply({ type: "skills/action-error", message, said: sayRefusalDialog(error, message) });
       await loadSkills().catch(() => {});
       return;
     }
