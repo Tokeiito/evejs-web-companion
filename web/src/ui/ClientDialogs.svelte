@@ -45,6 +45,11 @@
     "UI/Common/Buttons/OK": "OK",
     "UI/Common/Buttons/Cancel": "Cancel",
   };
+  /** A question's two answers (uiconst.YESNO), in the client's words. */
+  const ANSWER_WORDS: Readonly<Record<string, string>> = {
+    "UI/Common/Buttons/Yes": "Yes",
+    "UI/Common/Buttons/No": "No",
+  };
   const wordOf = (label: string, own: string): string => {
     const template = $words.templates[label];
     return typeof template === "string" && template !== "" ? template : own;
@@ -90,7 +95,7 @@
       return;
     }
     // (And the words a dialog's numeric distance and ISK are written in: questions.ts, writeDistance and writeIsk.)
-    flow.requestWords([...wordsLabels(parts), ...$said.map(typeKey), ...Object.keys(OWN_TITLES), ...NUMERIC_WORD_LABELS]);
+    flow.requestWords([...wordsLabels(parts), ...$said.map(typeKey), ...Object.keys(OWN_TITLES), ...NUMERIC_WORD_LABELS, ...Object.keys(ANSWER_WORDS)]);
     const refs = wordsNameRefs(parts, client);
     if (refs.length > 0) {
       flow.requestNames(refs);
@@ -111,6 +116,8 @@
     const type = $words.templates[key] ?? null;
     // No such dialog to be read: the page's own words, in a box.
     if (type === null) return { said: one, kind: "box", type: null };
+    // A question waits on its answer: a box, whatever its type.
+    if (one.answers === "yesno") return { said: one, kind: "box", type };
     return { said: one, kind: BOX_TYPES.has(type) ? "box" : STRIP_TYPES.has(type) ? "strip" : "none", type };
   }));
 
@@ -245,7 +252,12 @@
       <strong>{box.title}</strong>
       <p class="body">{box.body}</p>
       <span class="answers">
-        <button type="button" onclick={() => flow.dismissDialog(box.said.n)}>OK</button>
+        {#if box.said.answers === "yesno"}
+          <button type="button" onclick={() => flow.answerDialog(box.said.n, true)}>{wordOf("UI/Common/Buttons/Yes", "Yes")}</button>
+          <button type="button" onclick={() => flow.answerDialog(box.said.n, false)}>{wordOf("UI/Common/Buttons/No", "No")}</button>
+        {:else}
+          <button type="button" onclick={() => flow.dismissDialog(box.said.n)}>OK</button>
+        {/if}
       </span>
     </div>
   </div>

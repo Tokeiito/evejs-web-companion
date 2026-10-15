@@ -48,6 +48,7 @@
     jumps: "UI/Market/MarketQuote/NumberOfJumps",
     markerJumps: "UI/Common/numberOfJumps",
     addWaypoint: "UI/Inflight/AddWaypoint",
+    optimize: "UI/Map/MapPallet/OptimizeRoute",
   } as const;
   /** The route panel's search's words (infoPanelRoute.py 128 to 129; searchUtil.py 43 to 54, 68 to 79). */
   const SEARCH_WORDS = {
@@ -372,6 +373,9 @@
     </ol>
     <p class="controls">
       <button type="button" class="minor" onclick={() => flow.clearWaypoints()}>{routeWord(ROUTE_WORDS.clearAll, "Clear the route")}</button>
+      {#if $waypoints.length > 1}
+        <button type="button" class="minor" disabled={busy} onclick={() => void run(() => flow.optimizeRoute())}>{routeWord(ROUTE_WORDS.optimize, "Best order")}</button>
+      {/if}
     </p>
   {/if}
   <p class="controls">

@@ -488,6 +488,7 @@ import { expandSubBots, hasSubBots, type BotResolution, type SubBotReference } f
 import { autoRejectInvitations } from "./autoRejectInvitations.ts";
 import { disableAutopilotAtEachWaypoint } from "./autopilotStopAtEachWaypoint.ts";
 import { routeData, routeJumps, routeMarkers, type RouteMarker } from "../nav/routeMarkers.ts";
+import { optimizedWaypoints, routeToOptimize, UNREACHABLE_JUMP_COUNT } from "../nav/optimizeRoute.ts";
 
 /** A place the route panel's search found: the kind the search names it by, its number, its name and its system. */
 export interface LocationFound {
@@ -757,6 +758,8 @@ export interface SaidDialog {
   readonly values: JsonValue | null;
   /** What the page says where the install has not the dialog. */
   readonly fallback: string;
+  /** A question the client puts with Yes and No (uiconst.YESNO), answered by AppFlow.answerDialog; else OK alone. */
+  readonly answers?: "yesno";
 }
 
 export interface AppFlow {
@@ -1778,6 +1781,8 @@ export interface AppFlow {
   readonly dialogsSaid: ReadableSignal<readonly SaidDialog[]>;
   /** A dialog of dialogsSaid taken down: its OK, or the passing strip's time gone by. */
   dismissDialog(n: number): void;
+  /** A question of dialogsSaid (answers "yesno") answered: Yes or No. */
+  answerDialog(n: number, yes: boolean): void;
   /** The client's quantity question open now, one at a time (ClientDialogs.svelte shows it); null with none. */
   readonly quantityAsked: ReadableSignal<QuantityAsk | null>;
   /** Its answer: a quantity on OK, null on Cancel. An answer to a question no longer open is nothing. */
@@ -2030,6 +2035,8 @@ export interface AppFlow {
   autopilotSettings(): StoredAutopilotSettings;
   /** The route through the waypoints as the route panel shows it (infoPanelRoute.py UpdateRoute); null with none. */
   routeOfWaypoints(): Promise<WaypointsRoute | null>;
+  /** The route panel's Optimize Route (autopilot.py OptimizeRoute): the waypoints put in their order of fewest jumps. */
+  optimizeRoute(): Promise<void>;
   /**
    * Change one of the autopilot's settings, as the client's route panel does: kept for this character, and
    * what was worked out with the old settings forgotten. Each answers the settings as they now are. A route
@@ -5203,10 +5210,42 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   /** A dialog put up by its name, with the values for it and the page's own words for it (dialogsSaid). */
   function sayDialog(dialog: string, values: JsonValue | null, fallback: string): void {
     dialogsSaidCount += 1;
-    dialogsSaidSignal.set([...dialogsSaidSignal.get(), { n: dialogsSaidCount, dialog, values, fallback }].slice(-20));
+    putDialog({ n: dialogsSaidCount, dialog, values, fallback });
+  }
+
+  /** The dialogs said, the newest twenty kept; a question that falls off them is answered No. */
+  function putDialog(one: SaidDialog): void {
+    const kept = [...dialogsSaidSignal.get(), one].slice(-20);
+    dialogsSaidSignal.set(kept);
+    for (const n of [...dialogAnswers.keys()]) {
+      if (!kept.some((each) => each.n === n)) answerDialog(n, false);
+    }
+  }
+
+  // prompt_player_fsd_dialog(..., uiconst.YESNO): the dialog put up with Yes and No, and the client waiting on the
+  // answer; true on Yes.
+  const dialogAnswers = new Map<number, (yes: boolean) => void>();
+  function askDialog(dialog: string, values: JsonValue | null, fallback: string): Promise<boolean> {
+    dialogsSaidCount += 1;
+    const n = dialogsSaidCount;
+    return new Promise((resolve) => {
+      dialogAnswers.set(n, resolve);
+      putDialog({ n, dialog, values, fallback, answers: "yesno" });
+    });
+  }
+
+  function answerDialog(n: number, yes: boolean): void {
+    const answer = dialogAnswers.get(n);
+    dialogAnswers.delete(n);
+    dialogsSaidSignal.set(dialogsSaidSignal.get().filter((said) => said.n !== n));
+    answer?.(yes);
   }
 
   function dismissDialog(n: number): void {
+    if (dialogAnswers.has(n)) {
+      answerDialog(n, false);
+      return;
+    }
     dialogsSaidSignal.set(dialogsSaidSignal.get().filter((said) => said.n !== n));
   }
 
@@ -9831,6 +9870,57 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return systemID ?? null;
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * The route panel's Optimize Route (autopilot.py OptimizeRoute, 644 to 755; nav/optimizeRoute.ts): once at a time;
+   * the waypoints' systems ordered for the fewest jumps from the pilot's system, by the autopilot's own counts with
+   * the pilot's settings; over ten of them, the pilot asked first (AskAreYouSure, msgOptimizeQuestion1 or 2); none
+   * reachable, AutoPilotDisabledUnreachable said; then the route set (SetWaypoints) as a route the pilot changed.
+   */
+  let optimizingRoute = false;
+  async function optimizeRoute(): Promise<void> {
+    if (optimizingRoute) return;
+    optimizingRoute = true;
+    try {
+      const current = pilotPlace().solarSystemID;
+      if (current === null) return;
+      const waypoints = heldWaypoints();
+      for (const waypoint of waypoints) {
+        if (!(waypoint >= 30_000_000 && waypoint < 33_000_000)) await waypointSystemOf(waypoint);
+      }
+      const route = routeToOptimize(waypoints, current, (id) => waypointSystems.get(id) ?? null);
+      if (route === null) return;
+      const count = route.systems.length;
+      const question = count > 12 ? "UI/Map/MapPallet/msgOptimizeQuestion1" : count > 10 ? "UI/Map/MapPallet/msgOptimizeQuestion2" : null;
+      if (question !== null) {
+        const cons: JsonValue = [UE_LOC, question, { type: "dict", entries: [["numWaypoints", route.originalCount]] }];
+        if (!(await askDialog("AskAreYouSure", { type: "dict", entries: [["cons", cons]] }, `Put ${route.originalCount} waypoints in their best order?`))) return;
+      }
+      const graph = await loadRouteGraph();
+      const map = autopilotMap(graph);
+      const settings = autopilotSettingsFrom(autopilotSettings());
+      const targets = [...route.systems, current];
+      const countsFrom = new Map<number, Map<number, number | null>>();
+      const jumpCount = (fromID: number, toID: number): number => {
+        let counts = countsFrom.get(fromID);
+        if (counts === undefined) {
+          counts = autopilotJumpCounts(map, fromID, targets, settings);
+          countsFrom.set(fromID, counts);
+        }
+        return counts.get(toID) ?? UNREACHABLE_JUMP_COUNT;
+      };
+      const ordered = optimizedWaypoints(route, current, jumpCount);
+      if (ordered === "unreachable") {
+        sayDialog("AutoPilotDisabledUnreachable", null, "No route reaches those waypoints.");
+        return;
+      }
+      putWaypoints(ordered);
+      waypointsArrived();
+      autopilotRouteChanged();
+    } finally {
+      optimizingRoute = false;
     }
   }
 
@@ -17181,8 +17271,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     waypoints: waypointsView,
     autopilotOn: readonlySignal(autopilotSignal),
     routeOfWaypoints,
+    optimizeRoute,
     dialogsSaid: readonlySignal(dialogsSaidSignal),
     dismissDialog,
+    answerDialog,
     quantityAsked: readonlySignal(quantityAskedSignal),
     answerQuantity,
     setDestination,
