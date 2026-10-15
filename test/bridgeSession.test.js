@@ -3991,16 +3991,18 @@ test("none of the BFF's handles for a fleet is kept across the page's own accept
 // ── a pilot invited by the page itself ───────────────────────────────────────
 //
 // fleetSvc.Invite (351 to 363): self.fleet.Invite(charID, wingID, squadID, role), on the pilot's own fleet's
-// object; the menus' plain invitation names the pilot and three Nones. The page names the invitee alone. The BFF
-// makes the call as its route made it: on the session's own fleet, or, where the call says the number of the fleet
-// it expects to be in, on the object bound by that number, so that the server's check of the inviter runs against
-// that fleet; and keeps none of its handles for a fleet after. A wing, a squad and a role are not the page's to
-// name here: the server seats an invitee in whatever role it is told.
+// object; the menus' plain invitation names the pilot and three Nones, the invite menu's places (menusvc
+// FleetInviteMenu, MemberMenu with isMove False) a wing, a squad and a role. The page names the invitee and the
+// place, each of the place a positive number or nothing; the server holds a placed invitation to the inviter's
+// command (eve.js fleetRuntime.js assertPlacementInCommand). The BFF makes the call as its route made it: on the
+// session's own fleet, or, where the call says the number of the fleet it expects to be in, on the object bound by
+// that number, so that the server's check of the inviter runs against that fleet; and keeps none of its handles for
+// a fleet after.
 
 const THE_INVITING = { service: "fleetObjectHandler", method: "Invite", args: [43, null, null, null], kwargs: null };
-const THROUGH_THE_INVITING = (handle, bound = [], invitee = 43) => [["bind", "fleetObjectHandler", "MachoBindObject", bound, null], [`on ${handle}`, "fleetObjectHandler", "Invite", [invitee, null, null, null], null]];
+const THROUGH_THE_INVITING = (handle, bound = [], invitee = 43, place = [null, null, null]) => [["bind", "fleetObjectHandler", "MachoBindObject", bound, null], [`on ${handle}`, "fleetObjectHandler", "Invite", [invitee, ...place], null]];
 
-test("an invitation is a write the page means, made on the pilot's own fleet or the one the call expects, with the invitee and nothing of a place", async () => {
+test("an invitation is a write the page means, made on the pilot's own fleet or the one the call expects, with the invitee and the place it says", async () => {
   for (const transport of ["gameport", "gateway"]) {
     const { asked, byName, baseUrl } = await formFleetByCall({ transport });
     const invite = (more) => apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { ...THE_INVITING, ...more } });
@@ -4012,6 +4014,11 @@ test("an invitation is a write the page means, made on the pilot's own fleet or 
     for (const args of [[], [0, null, null, null], [-43], [1.5], ["a pilot"], [null], "43", undefined, [[43]]]) {
       const nobody = await invite({ pilot: true, confirm: true, args });
       assert.deepEqual([nobody.response.status, nobody.payload.error, asked], [400, "INVALID_CHARACTER", []], `${transport} ${JSON.stringify(args)}`);
+    }
+    // A place's wing, squad and role are each a positive number or nothing.
+    for (const args of [[43, -1, null, null], [43, null, 0, null], [43, null, null, 1.5], [43, "a wing", null, null], [43, null, [6], null], [43, null, null, true]]) {
+      const nowhere = await invite({ pilot: true, confirm: true, args });
+      assert.deepEqual([nowhere.response.status, nowhere.payload.error, asked], [400, "INVALID_FLEET_PLACE", []], `${transport} ${JSON.stringify(args)}`);
     }
     // And a fleet expected is a fleet's number.
     for (const of of [0, -1, 1.5, "", "a fleet", [INVITING], true]) {
@@ -4030,10 +4037,11 @@ test("an invitation is a write the page means, made on the pilot's own fleet or 
       const expected = await invite({ pilot: true, confirm: true, of });
       assert.deepEqual([expected.response.status, asked], [200, THROUGH_THE_INVITING(handle, bound)], `${transport} ${JSON.stringify(of)}`);
     }
-    // A wing, a squad, a role and anything by keyword are not taken from the page; the pilot named as text is that pilot.
+    // A wing, a squad and a role are taken as the page says them, a number or the text of one; anything past them
+    // and anything by keyword are not; the pilot named as text is that pilot.
     asked.length = 0;
-    const placed = await invite({ pilot: true, confirm: true, args: ["44", 5, 6, 1, true], kwargs: { approvedCost: 1 } });
-    assert.deepEqual([placed.response.status, asked], [200, THROUGH_THE_INVITING("made 5", [], 44)], transport);
+    const placed = await invite({ pilot: true, confirm: true, args: ["44", 5, "6", 3, true], kwargs: { approvedCost: 1 } });
+    assert.deepEqual([placed.response.status, asked], [200, THROUGH_THE_INVITING("made 5", [], 44, [5, 6, 3])], transport);
   }
 });
 

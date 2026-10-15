@@ -608,6 +608,23 @@
     });
   }
 
+  /** Invite to Fleet (menusvc.FleetInviteMenu): MemberMenu's places for one not in the fleet, isMove False. */
+  function inviteMenuOf(ownerID: number): MemberMenuEntry[] {
+    if (myID === null) return [];
+    return memberMenu({ targetCharID: ownerID, me: myID, members: menuMembers, wings: menuWings, isFreeMove: fleetIsFreeMove, isMove: false });
+  }
+
+  /** One of the invite menu's places (DoInviteToFleet: fleetSvc.Invite(charID, wingID, squadID, role)). */
+  function fleetInviteTo(ownerID: number, place: MemberMenuPlace): void {
+    menuFor = null;
+    searchMenuFor = null;
+    void run(async () => {
+      await flow.inviteFleetMember(ownerID, undefined, undefined, { wingID: place.wingID, squadID: place.squadID, role: place.role });
+      const refused = store.fleet.get().actionError;
+      if (refused !== null) throw new Error(refused);
+    });
+  }
+
   // ── The fleet's own menu for a member (menusvc.py FleetMenu; characterCheckers.py FleetMemberChecker) ─────────
 
   /** evefleet/const.py: the creator's job, and the commanders' roles. */
@@ -2463,7 +2480,7 @@
                       {/if}
                       {#if offers.inviteToFleet}
                         <span class="contacts-submenu">{word(WORDS.inviteToFleet, "Fleet invite")}:</span>
-                        <button type="button" class="minor" disabled={busy} onclick={() => fleetInvite(owner.id, false)}>{word(WORDS.squadMember, "As a member")}</button>
+                        {@render memberPlaces(inviteMenuOf(owner.id), (place) => fleetInviteTo(owner.id, place))}
                       {/if}
                       {#if fleetMenuOffered(owner.id)}
                         {@render fleetSubmenu(owner.id, owner.name, `search:${owner.id}`)}
@@ -2660,7 +2677,7 @@
                     {/if}
                     {#if offers.inviteToFleet}
                       <span class="contacts-submenu">{word(WORDS.inviteToFleet, "Fleet invite")}:</span>
-                      <button type="button" class="minor" disabled={busy} onclick={() => fleetInvite(row.id, false)}>{word(WORDS.squadMember, "As a member")}</button>
+                      {@render memberPlaces(inviteMenuOf(row.id), (place) => fleetInviteTo(row.id, place))}
                     {/if}
                     {#if fleetMenuOffered(row.id)}
                       {@render fleetSubmenu(row.id, row.name, `contacts:${row.id}`)}
@@ -2699,6 +2716,30 @@
   </div>
   {/if}
 </section>
+
+{#snippet memberPlaces(entries: readonly MemberMenuEntry[], pick: (place: MemberMenuPlace) => void)}
+  <!-- MemberMenu's places (evefleet/client/menu.py): ranks, then each wing with its wing commander's place and its
+       squads, each squad with its places; the rank's word on each, the wing's and the squad's names before them. -->
+  {#each entries as entry, index (index)}
+    {#if entry.kind === "place"}
+      <button type="button" class="minor" disabled={busy} onclick={() => pick(entry)}>{rankWord(entry.role)}</button>
+    {:else}
+      <span class="contacts-submenu" data-wing-id={entry.wingID}>{wingWord(entry)}:
+        {#each entry.entries as inner, innerIndex (innerIndex)}
+          {#if inner.kind === "place"}
+            <button type="button" class="minor" disabled={busy} onclick={() => pick(inner)}>{rankWord(inner.role)}</button>
+          {:else}
+            <span class="contacts-submenu" data-squad-id={inner.squadID}>{squadWord(inner)}:
+              {#each inner.places as place, placeIndex (placeIndex)}
+                <button type="button" class="minor" disabled={busy} onclick={() => pick(place)}>{rankWord(place.role)}</button>
+              {/each}
+            </span>
+          {/if}
+        {/each}
+      </span>
+    {/if}
+  {/each}
+{/snippet}
 
 {#snippet fleetSubmenu(ownerID: number, name: string, key: string)}
   <!-- The fleet's own menu for a member (menusvc.py FleetMenu, in its order; characterCheckers.py FleetMemberChecker):
@@ -2769,25 +2810,7 @@
       {#if moves.length > 0}
         <button type="button" class="minor" aria-expanded={fleetPart === "move"} onclick={() => (fleetPart = fleetPart === "move" ? null : "move")}>{word(FLEET_WORDS.moveMember, "Put elsewhere")} {fleetPart === "move" ? "▾" : "▸"}</button>
         {#if fleetPart === "move"}
-          {#each moves as entry, index (index)}
-            {#if entry.kind === "place"}
-              <button type="button" class="minor" disabled={busy} onclick={() => moveMember(ownerID, entry)}>{rankWord(entry.role)}</button>
-            {:else}
-              <span class="contacts-submenu" data-wing-id={entry.wingID}>{wingWord(entry)}:
-                {#each entry.entries as inner, innerIndex (innerIndex)}
-                  {#if inner.kind === "place"}
-                    <button type="button" class="minor" disabled={busy} onclick={() => moveMember(ownerID, inner)}>{rankWord(inner.role)}</button>
-                  {:else}
-                    <span class="contacts-submenu" data-squad-id={inner.squadID}>{squadWord(inner)}:
-                      {#each inner.places as place, placeIndex (placeIndex)}
-                        <button type="button" class="minor" disabled={busy} onclick={() => moveMember(ownerID, place)}>{rankWord(place.role)}</button>
-                      {/each}
-                    </span>
-                  {/if}
-                {/each}
-              </span>
-            {/if}
-          {/each}
+          {@render memberPlaces(moves, (place) => moveMember(ownerID, place))}
         {/if}
       {/if}
     </span>

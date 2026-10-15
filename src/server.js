@@ -1046,13 +1046,18 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
     return;
   }
   // (The fleet an invitation is to, where the call says one: a fleet's number as above. And the pilot invited
-  // is a pilot's number, the call's first argument: nothing else of what it came with is taken.)
+  // is a pilot's number, the call's first argument; its place, the next three, a wing's, a squad's and a role's
+  // number or nothing each: nothing else of what it came with is taken.)
   if (objectKind === "fleetExpected" && saysWhich && strictPositiveID(body.of) === null) {
     res.status(400).json({ ok: false, error: "INVALID_FLEET_ID", message: "A positive fleetID is required." });
     return;
   }
   if (objectKind === "fleetExpected" && inviteeOf(body.args) === null) {
     res.status(400).json({ ok: false, error: "INVALID_CHARACTER", message: "A positive characterID is required." });
+    return;
+  }
+  if (objectKind === "fleetExpected" && invitedPlaceOf(body.args) === null) {
+    res.status(400).json({ ok: false, error: "INVALID_FLEET_PLACE", message: "A wing, a squad and a role are each a positive number or nothing." });
     return;
   }
   if (objectKind !== null && body.pilot !== true) {
@@ -1163,11 +1168,11 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
         ? rejectFleetInviteCall(heldBridgeSession, req.webSessionID, strictPositiveID(body.of), decliningWordOf(body.args))
         : acceptFleetInviteCall(heldBridgeSession, req.webSessionID, strictPositiveID(body.of)))),
         service: body.service, method: body.method }
-      // (A pilot invited, on the session's own fleet or on the fleet the call expects, with the invitee and
-      // nothing of a wing, a squad or a role whatever the call came with.)
+      // (A pilot invited, on the session's own fleet or on the fleet the call expects, with the invitee and the
+      // place the call says, a wing, a squad and a role or nothing of them.)
       : objectKind === "fleetExpected"
       ? { ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => inviteToFleetCall(
-        heldBridgeSession, req.webSessionID, inviteeOf(body.args), saysWhich ? strictPositiveID(body.of) : null)), service: body.service, method: body.method }
+        heldBridgeSession, req.webSessionID, inviteeOf(body.args), saysWhich ? strictPositiveID(body.of) : null, invitedPlaceOf(body.args))), service: body.service, method: body.method }
       // (A follow, as its routes made it: held back where the ship already flies it, and through the gateway
       // with the throttle opened first. bridgeCallPolicy.js, PAGE_FOLLOW_CALLS.)
       : ordersAFollow(body.service, body.method)
@@ -5573,17 +5578,41 @@ function inviteeOf(args) {
 }
 
 /**
- * A pilot invited to the pilot's own fleet, as the client invites one from its menus (fleetSvc.Invite, 351 to
- * 363): self.fleet.Invite(charID, None, None, None), on the fleet's own object. The page names the invitee alone:
- * a wing, a squad and a role are None here whatever the call came with, since the server seats an invitee in
- * whatever role it is told. `expectedFleetID` is the fleet the caller expects its pilot to be in, where it says
- * one: the call is then made on the object bound by that number, so that the server's check of the inviter runs
- * against that fleet and a held-back invitation cannot follow its pilot into another. Whatever comes of it, none
- * of the BFF's handles for a fleet is kept, as after its route.
+ * The place a call of the page's invites a pilot to: its second, third and fourth arguments, a wing's, a squad's and
+ * a role's number, each nothing where the call says none (the invite menu's first entry says none of them). Null
+ * where one is neither.
  */
-async function inviteToFleetCall(held, webSessionID, inviteeCharID, expectedFleetID) {
+function invitedPlaceOf(args) {
+  if (!Array.isArray(args)) {
+    return null;
+  }
+  const place = [];
+  for (const value of [args[1], args[2], args[3]]) {
+    if (value === undefined || value === null) {
+      place.push(null);
+      continue;
+    }
+    const id = strictPositiveID(value);
+    if (id === null) {
+      return null;
+    }
+    place.push(id);
+  }
+  return { wingID: place[0], squadID: place[1], role: place[2] };
+}
+
+/**
+ * A pilot invited to the pilot's own fleet, as the client invites one from its menus (fleetSvc.Invite, 351 to
+ * 363): self.fleet.Invite(charID, wingID, squadID, role), on the fleet's own object. `place` is the invite menu's
+ * (menusvc.FleetInviteMenu, MemberMenu's places), None for each it does not say; the server holds a placed
+ * invitation to the inviter's command, as it holds a member's move. `expectedFleetID` is the fleet the caller
+ * expects its pilot to be in, where it says one: the call is then made on the object bound by that number, so that
+ * the server's check of the inviter runs against that fleet and a held-back invitation cannot follow its pilot into
+ * another. Whatever comes of it, none of the BFF's handles for a fleet is kept, as after its route.
+ */
+async function inviteToFleetCall(held, webSessionID, inviteeCharID, expectedFleetID, place = null) {
   try {
-    return await boundCall(held, webSessionID, expectedFleetID === null ? fleetBindSpec() : fleetIDBindSpec(expectedFleetID), "Invite", [inviteeCharID, null, null, null], null);
+    return await boundCall(held, webSessionID, expectedFleetID === null ? fleetBindSpec() : fleetIDBindSpec(expectedFleetID), "Invite", [inviteeCharID, place?.wingID ?? null, place?.squadID ?? null, place?.role ?? null], null);
   } finally {
     invalidateFleetBoundHandles(held);
   }

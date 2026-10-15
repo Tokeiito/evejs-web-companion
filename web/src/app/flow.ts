@@ -971,8 +971,11 @@ export interface AppFlow {
   loadFleet(): Promise<void>;
   /** Form a fleet, then re-read membership before settling. */
   formFleet(): Promise<void>;
-  /** Invite one character by ID, then re-read the authoritative fleet. */
-  inviteFleetMember(characterID: number, assertCurrent?: () => void, expectedFleetID?: number): Promise<void>;
+  /**
+   * Invite one character by ID, then re-read the authoritative fleet. `place` is where in the fleet, as the invite
+   * menu's places give it (menusvc.FleetInviteMenu); none, a squad member with no place said.
+   */
+  inviteFleetMember(characterID: number, assertCurrent?: () => void, expectedFleetID?: number, place?: { readonly wingID: number | null; readonly squadID: number | null; readonly role: number | null }): Promise<void>;
   /**
    * An owner's menu's Form Fleet With (menusvc.py 637 to 638; fleetSvc.Invite, 351 to 363): a fleet formed where the
    * pilot is in none, then the character invited; the pilot's own character is invited to nothing.
@@ -4961,7 +4964,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     await runFleetAction("form", () => formFleetCall(bridgeDo, store.fleet.get().availability === "ready"), "ready");
   }
 
-  async function inviteFleetMember(characterID: number, assertCurrent?: () => void, expectedFleetID?: number): Promise<void> {
+  async function inviteFleetMember(characterID: number, assertCurrent?: () => void, expectedFleetID?: number, place?: { readonly wingID: number | null; readonly squadID: number | null; readonly role: number | null }): Promise<void> {
     if (!Number.isSafeInteger(characterID) || characterID <= 0) {
       store.apply({ type: "fleet/action-started", action: "invite" });
       store.apply({
@@ -4974,7 +4977,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       "invite",
       // (The page's own call, bridge/fleetWrites.ts: the invitee alone, and the fleet expected where the caller
       // says one. Under a caller's fence it is asked through fencedDo.)
-      () => inviteToFleetCall(assertCurrent ? fencedDo(assertCurrent) : bridgeDo, characterID, onlineCharacterID(), expectedFleetID),
+      () => inviteToFleetCall(assertCurrent ? fencedDo(assertCurrent) : bridgeDo, characterID, onlineCharacterID(), expectedFleetID, place),
       "ready",
     );
   }

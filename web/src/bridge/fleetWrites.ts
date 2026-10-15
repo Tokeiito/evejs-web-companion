@@ -428,9 +428,11 @@ const couldBeAPilot = (characterID: number): boolean => Number.isSafeInteger(cha
  * Invites the pilot `inviteeCharID` to the pilot's own fleet. `ownCharacterID` is the pilot's own character as
  * the caller knows it (null where it does not): the client asks nothing for that one, and nor does this.
  * `expectedFleetID`, where the caller says one, is the fleet the invitation is to: the call is made on that
- * fleet's object and no other. Fails as the call fails.
+ * fleet's object and no other. `place` is where in the fleet (menusvc.FleetInviteMenu, MemberMenu's places: a wing,
+ * a squad and a role, None for each not given); none, as the menu's first entry, a squad member with no place said.
+ * Fails as the call fails.
  */
-export async function inviteToFleet(act: Ask, inviteeCharID: number, ownCharacterID: number | null, expectedFleetID?: number): Promise<void> {
+export async function inviteToFleet(act: Ask, inviteeCharID: number, ownCharacterID: number | null, expectedFleetID?: number, place?: { readonly wingID: number | null; readonly squadID: number | null; readonly role: number | null }): Promise<void> {
   if (!couldBeAPilot(inviteeCharID)) {
     throw new Error("That is no pilot to invite.");
   }
@@ -441,7 +443,7 @@ export async function inviteToFleet(act: Ask, inviteeCharID: number, ownCharacte
   if (expectedFleetID !== undefined && !(Number.isSafeInteger(expectedFleetID) && expectedFleetID > 0)) {
     throw new Error("That is no fleet to invite a pilot to.");
   }
-  await act("fleetObjectHandler", "Invite", [inviteeCharID, null, null, null], undefined, expectedFleetID);
+  await act("fleetObjectHandler", "Invite", [inviteeCharID, place?.wingID ?? null, place?.squadID ?? null, place?.role ?? null], undefined, expectedFleetID);
 }
 
 // --- An invitation turned down (the plan's Phase 6b) --------------------------
