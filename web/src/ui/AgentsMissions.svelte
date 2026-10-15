@@ -534,7 +534,8 @@
       </button>
     </p>
   </header>
-  {#if $agents.actionError}
+  <!-- (A refusal the client's own dialog said is not said again here: ClientDialogs.svelte.) -->
+  {#if $agents.actionError && !$agents.actionErrorSaid}
     <p class="error">Last agent action failed: {$agents.actionError}</p>
   {/if}
   {#if error}

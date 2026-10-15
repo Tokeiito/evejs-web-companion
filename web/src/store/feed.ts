@@ -534,7 +534,7 @@ export type FeedEvent =
   // The mission journal (active + offered missions).
   | { readonly type: "agents/journal"; readonly journal: JournalState }
   // An agent action/read failed; null clears the error after success.
-  | { readonly type: "agents/action-error"; readonly message: string | null }
+  | { readonly type: "agents/action-error"; readonly message: string | null; readonly said?: boolean }
   // Drop the agents state (character offline / logged out).
   | { readonly type: "agents/cleared" }
   // Goal R6 — the post-completion reward readout (inventory Step 12). The

@@ -7853,7 +7853,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "agents/action-error", message: errorWords(error) });
+      // Put up as the client puts up a UserError: the agent's window (agentDialogueWindow.InteractWithAgent, the
+      // moniker's DoAction) and the journal's RemoveOfferFromJournal catch none of theirs.
+      const message = errorWords(error);
+      store.apply({ type: "agents/action-error", message, said: sayRefusalDialog(error, message) });
     }
   }
 

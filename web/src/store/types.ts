@@ -1385,6 +1385,11 @@ export interface AgentsState {
   readonly loaded: boolean;
   /** Non-null when the last agent action/read failed (non-fatally). */
   readonly actionError: string | null;
+  /**
+   * Whether that refusal was said in the client's own way (ClientDialogs.svelte): the window and the notices then do
+   * not say it again. False or absent otherwise.
+   */
+  readonly actionErrorSaid?: boolean;
 }
 
 // --- R6 Courier completion reward readout (Step 12) ------------------------

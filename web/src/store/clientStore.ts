@@ -1850,7 +1850,7 @@ export function createClientStore(): ClientStore {
         agents.set({ ...agents.get(), journal: event.journal });
         break;
       case "agents/action-error":
-        agents.set({ ...agents.get(), actionError: event.message });
+        agents.set({ ...agents.get(), actionError: event.message, actionErrorSaid: event.message !== null && event.said === true });
         break;
       case "agents/cleared":
         agents.set(INITIAL_AGENTS);
