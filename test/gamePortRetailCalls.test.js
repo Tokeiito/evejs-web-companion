@@ -1785,6 +1785,8 @@ test("the game port carries the customs office's transfer, the station's offices
     "mailingListsMgr.GetWelcomeMail", "mailingListsMgr.SaveWelcomeMail", "mailingListsMgr.SendWelcomeMail", "mailingListsMgr.ClearWelcomeMail",
     // The search service's quick query. The gateway's list has nothing of the search service's.
     "search.QuickQuery",
+    // Its query by kinds. The gateway's list has nothing of the search service's.
+    "search.Query",
     // The pilot's contact labels. The gateway's list has the contacts and not these.
     "charMgr.GetLabels",
     // A contact edited. The gateway's list has its adding and not this.

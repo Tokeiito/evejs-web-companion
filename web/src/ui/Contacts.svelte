@@ -40,8 +40,14 @@
   // made by Create Folder, renamed or deleted from its menu (scrollentries.py 860 to 918), and an agent dragged onto
   // a group goes into it out of the folder it was in (DropInBuddyGroup, 553 to 568).
   //
-  // Not here yet: the Notifications group, the Search tab, Capture Portrait, an agent's Show Info and its place's
-  // menu, and selecting several agents.
+  // The Search tab (SearchPanel, 322 to 381): what is typed searched on Return by the search service's Query, with
+  // the Search Type and Search By of its settings menu, kept for the character (319 to 320); what is found shown by
+  // kind in the client's order, each kind a group with how many (searchUtil.py 21 to 360), an agent's entry as in the
+  // Agents tab with Add to Addressbook, an owner's with the address book's part of its menu (menusvc.py 570 to 620,
+  // 2304 to 2318).
+  //
+  // Not here yet: the Notifications group, Capture Portrait, an agent's Show Info and its place's menu, selecting
+  // several agents, and the rest of an owner's menu (mail, chat, fleet and money).
   import { onMount } from "svelte";
   import { formatTemplate, plainText, type TemplateArguments } from "../bridge/clientWords.ts";
   import { shownSecurity } from "../bridge/systemSecurity.ts";
@@ -61,6 +67,7 @@
     type NamedAddressBook,
   } from "../bridge/contacts.ts";
   import { isNpcOwner } from "../bridge/mail.ts";
+  import { MATCH_BY, MIN_WILDCARD_LENGTH } from "../bridge/searchMatch.ts";
   import { isSessionLost } from "../app/flow.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -191,7 +198,7 @@
     stateFailed: "UI/Journal/JournalWindow/Agents/StateFailed",
   } as const;
   /** The client's dialogs the window says things with. */
-  const DIALOGS = ["RemoveOneFromContacts", "RemoveManyFromContacts", "DeleteMailLabel", "MailLabelNameExists", "LookupStringMinimum", "NoStandingsSelected", "RemoveAgents", "ConfirmDeleteFolder"] as const;
+  const DIALOGS = ["RemoveOneFromContacts", "RemoveManyFromContacts", "DeleteMailLabel", "MailLabelNameExists", "LookupStringMinimum", "NoStandingsSelected", "RemoveAgents", "ConfirmDeleteFolder", "PartialSearchLessThanMinLength"] as const;
   /** appConst.mailMaxLabelSize: the longest name a label has (evemail.py ManageLabelsBase, 1543; addressbookService.py 991). */
   const MAX_LABEL_NAME = 40;
 
@@ -449,6 +456,11 @@
     const npc = isNpcOwner(ownerID);
     const isContact = contactIDs.has(ownerID);
     const isBlocked = blockedIDs.has(ownerID);
+    if (!isCharacterContact(ownerID)) {
+      // A corporation's, an alliance's or a faction's (menusvc.py GetMenuFromItemIDTypeID, 2304 to 2318): Edit and
+      // Remove Contact where it is one, Add Contact where not, an NPC's as well; Block or Unblock where it is no NPC's.
+      return { add: !isContact, edit: isContact, block: !npc && !isBlocked, unblock: !npc && isBlocked };
+    }
     return {
       add: !mine && !npc && !isContact,
       edit: !mine && !npc && isContact,
@@ -802,9 +814,12 @@
     });
   }
 
-  /** idCheckers.IsCharacter as the page can tell it: no corporation's (1000000 to 1999999, 98000000 to 98999999) nor alliance's (99000000 to 99999999). */
+  /**
+   * idCheckers.IsCharacter as the page can tell it: no corporation's (1000000 to 1999999, 98000000 to 98999999),
+   * alliance's (99000000 to 99999999) nor faction's (IsFaction: minFaction 500000 to below maxFaction 599999).
+   */
   function isCharacterContact(ownerID: number): boolean {
-    return !((ownerID >= 1_000_000 && ownerID <= 1_999_999) || (ownerID >= 98_000_000 && ownerID <= 99_999_999));
+    return !((ownerID >= 1_000_000 && ownerID <= 1_999_999) || (ownerID >= 98_000_000 && ownerID <= 99_999_999) || (ownerID >= 500_000 && ownerID < 599_999));
   }
 
   /** LoadGroupFromEntry (345 to 354): another group from the first page, and kept as the one last viewed (424). */
@@ -844,9 +859,13 @@
   // ── The Agents tab ──────────────────────────────────────────────────────────
 
   /** The window's tab (its tab group, AutoSelect: the one last chosen, kept). */
+  type AddressBookTab = "contacts" | "agents" | "search";
   // svelte-ignore state_referenced_locally
-  let tab = $state<"contacts" | "agents">(flow.addressBookTab() === "agents" ? "agents" : "contacts");
-  function chooseTab(chosen: "contacts" | "agents"): void {
+  const keptTab = flow.addressBookTab();
+  let tab = $state<AddressBookTab>(keptTab === "agents" || keptTab === "search" ? keptTab : "contacts");
+  /** What the Search tab's last search found, by kind; none before any. */
+  let searchFound = $state<ReadonlyMap<number, readonly { readonly id: number; readonly name: string }[]> | null>(null);
+  function chooseTab(chosen: AddressBookTab): void {
     tab = chosen;
     menuFor = null;
     agentMenuFor = null;
@@ -963,27 +982,31 @@
     });
   });
 
-  /** What each agent's entry needs asked: its record in the agents service, its station's system's name, security and jumps, and its division's name. */
+  /**
+   * What each agent's entry shown needs asked, on the Agents tab and among what the Search tab found: its record in
+   * the agents service, its station's system's name, security and jumps, its division's name, and the journal.
+   */
   const bookAgentIDs = $derived((book?.agents ?? []).map((agent) => agent.agentID));
+  const shownAgentIDs = $derived(tab === "agents" ? bookAgentIDs : tab === "search" ? (searchFound?.get(1) ?? []).map((agent) => agent.id) : []);
   let journalAsked = false;
   $effect(() => {
-    if (tab !== "agents") return;
-    for (const agentID of bookAgentIDs) flow.requestAgentRecord(agentID);
+    if (shownAgentIDs.length === 0) return;
+    for (const agentID of shownAgentIDs) flow.requestAgentRecord(agentID);
     if (!journalAsked && $agentsState.journal === null) {
       journalAsked = true;
       void flow.loadJournal().catch(() => {});
     }
   });
   const agentPlaces = $derived.by(() => {
-    const records = bookAgentIDs.map((agentID) => $agentsState.agentRecords[agentID] ?? null);
+    const records = shownAgentIDs.map((agentID) => $agentsState.agentRecords[agentID] ?? null);
     return {
       systems: [...new Set(records.map((record) => record?.solarSystemID ?? null).filter((id): id is number => id !== null))],
       divisions: [...new Set(records.map((record) => record?.divisionNameID ?? null).filter((id): id is number => id !== null))],
     };
   });
   $effect(() => {
-    if (tab !== "agents") return;
     const { systems, divisions } = agentPlaces;
+    if (systems.length === 0 && divisions.length === 0) return;
     flow.requestWords(divisions.map((id) => `#${id}`));
     flow.requestNames(systems.map((id) => ({ kind: "system" as const, id })));
     flow.requestSystemSecurity(systems);
@@ -1089,8 +1112,157 @@
     };
   }
 
+  // ── The Search tab ──────────────────────────────────────────────────────────
+
+  /** The Search tab's words, by their labels (addressBookWindow.py 263 to 381; searchUtil.py 21 to 54). */
+  const SEARCH_WORDS = {
+    search: "UI/Common/Search",
+    settings: "UI/Common/Settings",
+    searchType: "UI/Common/SearchType",
+    searchBy: "UI/Common/SearchBy",
+    any: "UI/Common/Any",
+    character: "UI/Common/Character",
+    corporation: "UI/Common/Corporation",
+    alliance: "UI/Common/Alliance",
+    agent: "UI/Agents/Agent",
+    faction: "UI/Common/Faction",
+    partialTerms: "UI/Search/UniversalSearch/PartialTerms",
+    exactTerms: "UI/Search/UniversalSearch/ExactTerms",
+    exactPhrase: "UI/Search/UniversalSearch/ExactPhrase",
+    onlyExactPhrase: "UI/Search/UniversalSearch/OnlyExactPhrase",
+    sectionHeader: "UI/Search/UniversalSearch/SectionHeader",
+    agents: "UI/Search/UniversalSearch/Agents",
+    characters: "UI/Search/UniversalSearch/Characters",
+    factions: "UI/Search/UniversalSearch/Factions",
+    corporations: "UI/Search/UniversalSearch/Corporations",
+    alliances: "UI/Search/UniversalSearch/Alliances",
+    tooLong: "UI/Common/SearchStringTooLong",
+    addToAddressbook: "UI/PeopleAndPlaces/AddToAddressbook",
+  } as const;
+  /** search/const.py ResultType: the kinds of owner the tab finds. */
+  const RESULT_TYPE = Object.freeze({ agent: 1, character: 2, corporation: 3, alliance: 4, faction: 5 });
+  /** SearchType.as_result_type_list (283 to 296): what each Search Type asks, Any its five in the client's order. */
+  const RESULT_TYPES_OF: Readonly<Record<number, readonly number[]>> = {
+    0: [RESULT_TYPE.character, RESULT_TYPE.corporation, RESULT_TYPE.alliance, RESULT_TYPE.agent, RESULT_TYPE.faction],
+    1: [RESULT_TYPE.character],
+    2: [RESULT_TYPE.corporation],
+    3: [RESULT_TYPE.alliance],
+    4: [RESULT_TYPE.agent],
+    5: [RESULT_TYPE.faction],
+  };
+  /** The settings menu's Search Type (SearchType, 263 to 310), in SORT_KEY_BY_SEARCH_TYPE's order (313 to 318), and its Search By (searchUtil.SEARCHBY_OPTIONS). */
+  const SEARCH_TYPE_CHOICES: readonly (readonly [number, string, string])[] = [
+    [0, SEARCH_WORDS.any, "Any"],
+    [1, SEARCH_WORDS.character, "Character"],
+    [4, SEARCH_WORDS.agent, "Agent"],
+    [2, SEARCH_WORDS.corporation, "Corporation"],
+    [3, SEARCH_WORDS.alliance, "Alliance"],
+    [5, SEARCH_WORDS.faction, "Faction"],
+  ];
+  const SEARCH_BY_CHOICES: readonly (readonly [number, string, string])[] = [
+    [MATCH_BY.partialTerms, SEARCH_WORDS.partialTerms, "Partial terms"],
+    [MATCH_BY.exactTerms, SEARCH_WORDS.exactTerms, "Exact terms"],
+    [MATCH_BY.exactPhrase, SEARCH_WORDS.exactPhrase, "Exact phrase"],
+    [MATCH_BY.exactPhraseOnly, SEARCH_WORDS.onlyExactPhrase, "Only the exact phrase"],
+  ];
+  /** RESULT_ORDER and RESULT_LABELS (searchUtil.py 28 to 54): the kinds shown, in the order shown, each with its word. */
+  const RESULT_GROUPS: readonly (readonly [number, string, string])[] = [
+    [RESULT_TYPE.agent, SEARCH_WORDS.agents, "Agents"],
+    [RESULT_TYPE.character, SEARCH_WORDS.characters, "Characters"],
+    [RESULT_TYPE.faction, SEARCH_WORDS.factions, "Factions"],
+    [RESULT_TYPE.corporation, SEARCH_WORDS.corporations, "Corporations"],
+    [RESULT_TYPE.alliance, SEARCH_WORDS.alliances, "Alliances"],
+  ];
+
+  // svelte-ignore state_referenced_locally
+  let searchSettings = $state(flow.contactsSearchSettings());
+  let searchText = $state("");
+  let searchSettingsOpen = $state(false);
+  let searching = $state(false);
+  /** The result groups closed, by kind, and the entry whose menu is open (its kind and owner). */
+  let searchClosed = $state<readonly number[]>([]);
+  let searchMenuFor = $state<string | null>(null);
+
+  /** A setting chosen from the tab's menu, kept for the character, and the search made again (on_change, 342 to 348). */
+  function chooseSearchSetting(next: { readonly searchType: number; readonly searchBy: number }): void {
+    searchSettings = next;
+    flow.keepContactsSearchSettings(next);
+    runSearch();
+  }
+
+  /**
+   * SearchPanel._search (351 to 363): nothing typed asks nothing; else GetResultsScrollList, the text's * taken out
+   * and stripped (_FormatSearchInput, 304 to 307) and refused as _ValidateSearchInput refuses it (310 to 320: nothing
+   * left, a hundred or more, or Partial Terms with no term of three); the kinds of the Search Type, and Search By.
+   */
+  function runSearch(): void {
+    const typed = searchText.trim();
+    if (typed === "") return;
+    const text = typed.replace(/\*/g, "").trim();
+    const matchBy = searchSettings.searchBy;
+    notes = [];
+    told = [];
+    searchMenuFor = null;
+    if ([...text].length < 1) {
+      tell(filledWord("dialog:LookupStringMinimum/body", "Type at least {minimum} character.", { minimum: "1" }));
+      return;
+    }
+    if ([...text].length >= 100) {
+      notes = [word(SEARCH_WORDS.tooLong, "That is too long to search for.")];
+      return;
+    }
+    if (matchBy === MATCH_BY.partialTerms && !text.split(/\s+/).some((term) => [...term].length >= MIN_WILDCARD_LENGTH)) {
+      tell(filledWord("dialog:PartialSearchLessThanMinLength/body", "Partial terms need a word of {minChars} letters or more.", { minChars: String(MIN_WILDCARD_LENGTH) }));
+      return;
+    }
+    searching = true;
+    void run(async () => {
+      try {
+        searchFound = await flow.searchOwners(text, RESULT_TYPES_OF[searchSettings.searchType] ?? RESULT_TYPES_OF[0] ?? [], matchBy);
+        for (const agent of searchFound.get(RESULT_TYPE.agent) ?? []) flow.requestAgentRecord(agent.id);
+      } finally {
+        searching = false;
+      }
+    });
+  }
+
+  /**
+   * _GetResultsScrollList (87 to 97) by GetScrollEntryData (155 to 250): each kind in the client's order, a group
+   * where any was found; an agent the agents service knows nothing of left out (its record answered none).
+   */
+  const searchGroups = $derived.by(() => {
+    if (searchFound === null) return [];
+    return RESULT_GROUPS.flatMap(([resultType, label, own]) => {
+      const found = (searchFound?.get(resultType) ?? []).filter((owner) => resultType !== RESULT_TYPE.agent || $agentsState.agentRecords[owner.id] !== null);
+      return found.length === 0 ? [] : [{ resultType, label: word(label, own), found }];
+    });
+  });
+  const searchAgentIDs = $derived(new Set((book?.agents ?? []).map((agent) => agent.agentID)));
+
+  /** AddToPersonal for an agent (addressbookService.py 626 to 643; AddToAddressBook, 705 to 735): AddContact with it alone, and it kept among the agents. */
+  function addAgent(agentID: number, name: string): void {
+    searchMenuFor = null;
+    notes = [];
+    if (searchAgentIDs.has(agentID)) {
+      notes = [filledWord("UI/PeopleAndPlaces/AlreadyAContact", "{contactName} is in your address book already.", { contactName: name })];
+      return;
+    }
+    void run(async () => {
+      await flow.addAgentToAddressBook(agentID);
+      if (book !== null && !book.agents.some((agent) => agent.agentID === agentID)) {
+        book = { ...book, agents: [...book.agents, { agentID, name }] };
+      }
+    });
+  }
+
   onMount(() => {
-    flow.requestWords([...Object.values(WORDS), ...Object.values(AGENT_WORDS), ...DIALOGS.flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`])]);
+    flow.requestWords([
+      ...Object.values(WORDS),
+      ...Object.values(AGENT_WORDS),
+      ...Object.values(SEARCH_WORDS),
+      "UI/PeopleAndPlaces/AlreadyAContact",
+      ...DIALOGS.flatMap((dialog) => [`dialog:${dialog}/title`, `dialog:${dialog}/body`]),
+    ]);
     void load();
     void flow.primeContactsOnline().catch(() => {});
     return () => {
@@ -1267,6 +1439,7 @@
   <nav class="tabs">
     <button type="button" class:active={tab === "contacts"} aria-pressed={tab === "contacts"} onclick={() => chooseTab("contacts")}>{word(WORDS.contacts, "Contacts")}</button>
     <button type="button" class:active={tab === "agents"} aria-pressed={tab === "agents"} onclick={() => chooseTab("agents")}>{word(AGENT_WORDS.agents, "Agents")}</button>
+    <button type="button" class:active={tab === "search"} aria-pressed={tab === "search"} onclick={() => chooseTab("search")}>{word(SEARCH_WORDS.search, "Search")}</button>
   </nav>
 
   {#if tab === "agents"}
@@ -1332,6 +1505,122 @@
           <button type="button" class="minor" onclick={() => { notes = []; folderNaming = { id: null, value: "" }; }}>{word(AGENT_WORDS.createFolder, "New Folder")}</button>
         </p>
       {/if}
+    </div>
+  {:else if tab === "search"}
+    <!-- The Search tab (SearchPanel): the search's field, searched on Return, and its settings menu; what was found
+         by kind, each kind a group with how many, its owners' entries and their menus. -->
+    <div class="contacts-search">
+      <p class="controls">
+        <input
+          type="search"
+          maxlength="100"
+          placeholder="Search"
+          aria-label={word(SEARCH_WORDS.search, "Search")}
+          bind:value={searchText}
+          onkeydown={(event) => { if (event.key === "Enter") runSearch(); }}
+        />
+        <button type="button" class="minor" aria-expanded={searchSettingsOpen} title={word(SEARCH_WORDS.settings, "Settings")} aria-label={word(SEARCH_WORDS.settings, "Settings")} onclick={() => (searchSettingsOpen = !searchSettingsOpen)}>⚙</button>
+      </p>
+      {#if searchSettingsOpen}
+        <!-- The settings menu (_get_search_settings_menu, 365 to 376): Search Type and Search By, one of each chosen. -->
+        <div class="contacts-menu contacts-search-settings">
+          <strong>{word(SEARCH_WORDS.searchType, "Search Type")}</strong>
+          {#each SEARCH_TYPE_CHOICES as [searchType, label, own] (searchType)}
+            <label>
+              <input type="radio" name="contacts-search-type" checked={searchSettings.searchType === searchType} onchange={() => chooseSearchSetting({ ...searchSettings, searchType })} />
+              {word(label, own)}
+            </label>
+          {/each}
+          <strong>{word(SEARCH_WORDS.searchBy, "Search By")}</strong>
+          {#each SEARCH_BY_CHOICES as [searchBy, label, own] (searchBy)}
+            <label>
+              <input type="radio" name="contacts-search-by" checked={searchSettings.searchBy === searchBy} onchange={() => chooseSearchSetting({ ...searchSettings, searchBy })} />
+              {word(label, own)}
+            </label>
+          {/each}
+        </div>
+      {/if}
+      {#if searching}
+        <p class="note">Searching…</p>
+      {:else if searchFound !== null && searchGroups.length === 0}
+        <p class="note">No results</p>
+      {/if}
+      {#each searchGroups as group (group.resultType)}
+        {@const open = !searchClosed.includes(group.resultType)}
+        <!-- A kind's group (GetScrollListGroup: its SectionHeader, the kind and how many). -->
+        <p class="controls agents-group-head">
+          <button type="button" class="minor" aria-expanded={open} onclick={() => (searchClosed = open ? [...searchClosed, group.resultType] : searchClosed.filter((each) => each !== group.resultType))}>
+            {open ? "▾" : "▸"} {filledWord(SEARCH_WORDS.sectionHeader, "{resultType} ({numberReturned})", { resultType: group.label, numberReturned: String(group.found.length) })}
+          </button>
+        </p>
+        {#if open}
+          <ul class="agents-entries">
+            {#each group.found as owner (owner.id)}
+              {@const menuKey = `${group.resultType}|${owner.id}`}
+              <li>
+                {#if group.resultType === RESULT_TYPE.agent}
+                  {@const line = agentLineOf(owner.id, owner.name)}
+                  <!-- An agent's entry (AgentEntry), as in the Agents tab. -->
+                  <div class="agents-entry">
+                    <div>
+                      <strong>{line.nameLine}</strong>
+                      {#if line.missionState !== null}
+                        <span class="badge" class:accent={!line.missionState.offered}>{line.missionState.text}</span>
+                      {/if}
+                      {#if line.locationLine !== ""}<br /><small>{line.locationLine}</small>{/if}
+                      {#if line.typeLine !== ""}<br /><small class="note">{line.typeLine}</small>{/if}
+                    </div>
+                    <div class="agents-entry-buttons">
+                      <button type="button" class="minor" disabled={busy} aria-label={word(AGENT_WORDS.startConversation, "Talk")} title={word(AGENT_WORDS.startConversation, "Talk")} onclick={() => startConversation(owner.id)}>💬</button>
+                      <button type="button" class="minor" aria-expanded={searchMenuFor === menuKey} aria-label="Menu" onclick={() => (searchMenuFor = searchMenuFor === menuKey ? null : menuKey)}>⋯</button>
+                    </div>
+                  </div>
+                  {#if searchMenuFor === menuKey}
+                    <!-- An agent's menu (_CharacterMenu: Start Conversation, Add to Addressbook or Remove from Addressbook). -->
+                    <p class="controls contacts-menu">
+                      <button type="button" class="minor" disabled={busy} onclick={() => { searchMenuFor = null; startConversation(owner.id); }}>{word(AGENT_WORDS.startConversation, "Talk")}</button>
+                      {#if searchAgentIDs.has(owner.id)}
+                        <button type="button" class="minor" disabled={busy} onclick={() => { searchMenuFor = null; removeAgent(owner.id); }}>{word(AGENT_WORDS.removeFromAddressbook, "Remove")}</button>
+                      {:else}
+                        <button type="button" class="minor" disabled={busy} onclick={() => addAgent(owner.id, owner.name)}>{word(SEARCH_WORDS.addToAddressbook, "Add to address book")}</button>
+                      {/if}
+                    </p>
+                  {/if}
+                {:else}
+                  {@const offers = offersOf(owner.id)}
+                  <!-- An owner's entry (User): its name, and the address book's part of its menu. -->
+                  <div class="agents-entry">
+                    <div>
+                      {owner.name}
+                      {#if blockedIDs.has(owner.id)}<span class="badge">{word(WORDS.blocked, "Blocked")}</span>{/if}
+                    </div>
+                    <div class="agents-entry-buttons">
+                      <button type="button" class="minor" aria-expanded={searchMenuFor === menuKey} aria-label="Menu" onclick={() => (searchMenuFor = searchMenuFor === menuKey ? null : menuKey)}>⋯</button>
+                    </div>
+                  </div>
+                  {#if searchMenuFor === menuKey}
+                    <p class="controls contacts-menu">
+                      {#if offers.add}
+                        <button type="button" class="minor" disabled={busy} onclick={() => { searchMenuFor = null; manage(owner.id, owner.name); }}>{word(WORDS.addContact, "Add Contact")}</button>
+                      {/if}
+                      {#if offers.edit}
+                        <button type="button" class="minor" disabled={busy} onclick={() => { searchMenuFor = null; manage(owner.id, owner.name); }}>{word(WORDS.editContact, "Edit Contact")}</button>
+                        <button type="button" class="minor" disabled={busy} onclick={() => { searchMenuFor = null; removeContacts([owner]); }}>{word(WORDS.removeContact, "Remove Contact")}</button>
+                      {/if}
+                      {#if offers.unblock}
+                        <button type="button" class="minor" disabled={busy} onclick={() => { searchMenuFor = null; unblock([owner.id]); }}>{word(WORDS.unblockContact, "Unblock")}</button>
+                      {/if}
+                      {#if offers.block}
+                        <button type="button" class="minor" disabled={busy} onclick={() => { searchMenuFor = null; block(owner.id, owner.name); }}>{word(WORDS.blockContact, "Block")}</button>
+                      {/if}
+                    </p>
+                  {/if}
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      {/each}
     </div>
   {:else}
   <div class="contacts-form">

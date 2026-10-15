@@ -205,7 +205,7 @@ import { BridgeCallError } from "../bridge/callMethod.ts";
 import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey } from "../bridge/questions.ts";
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
-import { isListValue, readDictEntry, type JsonValue } from "../bridge/wire.ts";
+import { isListValue, readDictEntry, readDictPairs, type JsonValue } from "../bridge/wire.ts";
 import { itemChangeTouchesDroneBay } from "../bridge/droneBayNotices.ts";
 import * as api from "./api.ts";
 import type { ClientStore } from "../store/clientStore.ts";
@@ -1123,6 +1123,14 @@ export interface AppFlow {
   agentFolders(): AgentFolders;
   /** The Agents tab's folders kept for the pilot online, on this machine. */
   keepAgentFolders(folders: AgentFolders): void;
+  /** The Search tab's Search Type and Search By kept for the pilot online on this machine; Any and Partial Terms where none were. */
+  contactsSearchSettings(): { readonly searchType: number; readonly searchBy: number };
+  /** The Search tab's Search Type and Search By kept for the pilot online, on this machine. */
+  keepContactsSearchSettings(settings: { readonly searchType: number; readonly searchBy: number }): void;
+  /** Owners found by the search service's Query, by result type, each named and sorted by name; fails with the server's words. */
+  searchOwners(text: string, resultTypes: readonly number[], matchBy: number): Promise<ReadonlyMap<number, readonly { readonly id: number; readonly name: string }[]>>;
+  /** An agent added to the address book (charMgr.AddContact with the agent alone); fails with the server's words. */
+  addAgentToAddressBook(agentID: number): Promise<void>;
   /** The People & Places window's tab last chosen on this machine; none where none was. */
   addressBookTab(): string | null;
   /** The People & Places window's tab chosen kept, on this machine. */
@@ -5533,6 +5541,36 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
+  // The Search tab's Search Type and Search By, as the client keeps them for the character (addressBookWindow.py
+  // 319 to 320: CharSettingEnum contacts_window_search_type, Any by default; contacts_window_search_by, Partial Terms),
+  // kept in this browser for the pilot online.
+  const CONTACTS_SEARCH_KEPT = "evejs.contacts.search";
+
+  function contactsSearchSettings(): { readonly searchType: number; readonly searchBy: number } {
+    const characterID = store.station.get().online?.characterID ?? null;
+    let kept: unknown = null;
+    try {
+      kept = characterID === null ? null : JSON.parse(settingsStorage?.getItem(`${CONTACTS_SEARCH_KEPT}.${characterID}`) ?? "null");
+    } catch {
+      kept = null;
+    }
+    const held = typeof kept === "object" && kept !== null ? (kept as { searchType?: unknown; searchBy?: unknown }) : {};
+    const inRange = (value: unknown, top: number, fallback: number): number => (Number.isInteger(value) && (value as number) >= 0 && (value as number) <= top ? (value as number) : fallback);
+    return { searchType: inRange(held.searchType, 5, 0), searchBy: inRange(held.searchBy, 3, 0) };
+  }
+
+  function keepContactsSearchSettings(settings: { readonly searchType: number; readonly searchBy: number }): void {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null) {
+      return;
+    }
+    try {
+      settingsStorage?.setItem(`${CONTACTS_SEARCH_KEPT}.${characterID}`, JSON.stringify(settings));
+    } catch {
+      // Storage full or refused: the settings last as long as the page.
+    }
+  }
+
   // The People & Places window's tab last chosen, as the client's tab group keeps it in the user's settings
   // (addressBookWindow.py 76 to 92: tabgroups 'addressbookpanel', AutoSelect), kept in this browser.
   const ADDRESS_BOOK_TAB_KEPT = "evejs.contacts.addressbookpanel";
@@ -5678,6 +5716,45 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // list, and the standing chosen.
   async function editContactsRelationship(contactIDs: readonly number[], relationshipID: number): Promise<void> {
     await contactWrite("EditContactsRelationshipID", [[...contactIDs], relationshipID]);
+  }
+
+  // AddToAddressBook for an agent (addressbookService.py 732 to 735): AddContact with the agent and nothing else.
+  async function addAgentToAddressBook(agentID: number): Promise<void> {
+    await contactWrite("AddContact", [agentID]);
+  }
+
+  // GetResultsByGroupID (searchUtil.py 274 to 282) for the People & Places window's Search tab: the search service's
+  // Query with the text, the result types, a list, and Search By as `exact`; the owners found named as the client
+  // primes them (_PrimeOwners: cfg.eveowners, an agent by the agents' names), and each kind's sorted by name as
+  // _SortResults sorts them (285 to 294: by the name's characters).
+  async function searchOwners(text: string, resultTypes: readonly number[], matchBy: number): Promise<ReadonlyMap<number, readonly { readonly id: number; readonly name: string }[]>> {
+    let answer: JsonValue;
+    try {
+      answer = await bridgeAsk("search", "Query", [text, [...resultTypes]], { exact: matchBy });
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+      }
+      throw error;
+    }
+    const AGENT = 1;
+    const found = new Map<number, number[]>();
+    for (const [key, value] of readDictPairs(answer)) {
+      const resultType = Number(key);
+      const items = isListValue(value) ? value.items : Array.isArray(value) ? value : [];
+      const ids = [...new Set(items.map((item) => Number(item)).filter((id) => Number.isSafeInteger(id) && id > 0))];
+      if (Number.isSafeInteger(resultType)) found.set(resultType, ids);
+    }
+    const kindOf = (resultType: number): "agent" | "owner" => (resultType === AGENT ? "agent" : "owner");
+    await resolveNamesNow([...found].flatMap(([resultType, ids]) => ids.map((id) => ({ kind: kindOf(resultType), id }))));
+    const resolved = store.names.get().resolved;
+    return new Map([...found].map(([resultType, ids]) => [resultType, ids
+      .map((id) => {
+        const name = resolved[nameKey(kindOf(resultType), id)];
+        return { id, name: typeof name === "string" && name !== "" ? name : String(id) };
+      })
+      .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))]));
   }
 
   // The contact labels' writes (1001 to 1147): CreateLabel(name, None), answered the label's bit; EditLabel(labelID,
@@ -16496,6 +16573,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     keepContactsLastSelected,
     agentFolders,
     keepAgentFolders,
+    contactsSearchSettings,
+    keepContactsSearchSettings,
+    searchOwners,
+    addAgentToAddressBook,
     addressBookTab,
     keepAddressBookTab,
     sendMail,
