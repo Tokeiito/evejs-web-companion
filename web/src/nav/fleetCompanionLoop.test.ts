@@ -28,6 +28,7 @@ import {
   type FleetCompanionRequest,
 } from "./fleetCompanionLoop.ts";
 import type { ChatMessage, SpaceSnapshot } from "../store/types.ts";
+import type { CombatUtilities, CombatUtility } from "./combatUtilities.ts";
 import type { BotLogDraft } from "./botLog.ts";
 import type { FleetBroadcast } from "../bridge/fleetBroadcasts.ts";
 import type { DroneFacts } from "./droneSizing.ts";
@@ -10605,4 +10606,112 @@ test("no hostiles on grid: today's rule, a microwarpdrive may light while travel
     freshLadderMemory(),
   );
   assert.notEqual(running.phase, "Propulsion");
+});
+
+// --- rung 8a: combat utilities -------------------------------------------------
+//
+// End to end through the ladder: the rule itself is companionUtilities.test.ts.
+
+/** The ship's own id: the self row `fightGrid` builds. */
+const UTILITY_SHIP = 1;
+const UTILITY_WEB = 11400001;
+const UTILITY_SENSOR = 11400002;
+const UTILITY_T0 = 2_000_000;
+
+function utilityModule(itemID: number, family: "web" | "sensor"): CombatUtility {
+  const [groupID, effectID] = family === "web" ? [65, 6426] : [212, 2670];
+  return {
+    itemID, typeID: 5000 + groupID, family, effectID, active: false, targetID: null,
+    rangeM: family === "web" ? 10_000 : null, falloffM: null, capNeed: 10, modeKnown: true,
+    type: { typeID: 5000 + groupID, groupID, categoryID: 7, effects: [effectID], attributes: {}, capacity: null, volume: null },
+    charge: null, quantity: 0, chargeUnits: null,
+  };
+}
+
+const UTILITY_FACTS: CombatUtilities = {
+  shipID: UTILITY_SHIP, modules: [utilityModule(UTILITY_WEB, "web")], cargo: null, capacitor: 1_000, capacitorRatio: 1,
+};
+
+/** `fightGrid` has no ship id or rack option of its own: spread them in. */
+function utilityGrid(grid: SpaceSnapshot, activeModuleIDs: readonly number[]): SpaceSnapshot {
+  return { ...grid, ship: { ...grid.ship!, itemID: UTILITY_SHIP, activeModuleIDs } } as SpaceSnapshot;
+}
+
+/** Both guns already firing at RAT, so the fleet rung stands and the rungs beneath get the tick. */
+const GUNS_ON_RAT: CompanionLadderMemory = {
+  ...freshLadderMemory(), lastFireTargetID: RAT, lastFireModuleIDs: [FIGHT_GUN_1, FIGHT_GUN_2],
+};
+
+test("the web goes on once the called target is locked and inside its optimal", () => {
+  const grid = utilityGrid(ratAt(8_000), [FIGHT_GUN_1, FIGHT_GUN_2]);
+  const unlocked = decideCompanionAction(
+    TWO_GUNS, fightObs(SHORT_GUNS, grid, RAT, { lockedTargetIDs: [], combatUtilities: UTILITY_FACTS }), GUNS_ON_RAT, UTILITY_T0);
+  assert.deepEqual(unlocked.action, { kind: "lock", targetID: RAT }, "no web before the lock");
+
+  const locked = decideCompanionAction(
+    TWO_GUNS, fightObs(SHORT_GUNS, grid, RAT, { combatUtilities: UTILITY_FACTS }), unlocked.memory, UTILITY_T0 + 2_000);
+  assert.deepEqual(locked.action, { kind: "activate", moduleID: UTILITY_WEB, targetID: RAT });
+  assert.equal(locked.why, "Webbing the target.");
+  assert.equal(locked.phase, "Obeying fleet");
+
+  // Out of its optimal (the guns are out of reach there too): no web.
+  const far = decideCompanionAction(
+    TWO_GUNS, fightObs(SHORT_GUNS, utilityGrid(ratAt(30_000), [FIGHT_GUN_1, FIGHT_GUN_2]), RAT,
+      { combatUtilities: UTILITY_FACTS }), GUNS_ON_RAT, UTILITY_T0);
+  assert.notEqual(far.action.kind, "activate");
+});
+
+test("the web goes off when the target dies, and a web that stopped by itself costs no call", () => {
+  const grid = utilityGrid(ratAt(8_000), [FIGHT_GUN_1, FIGHT_GUN_2]);
+  const webbing = decideCompanionAction(
+    TWO_GUNS, fightObs(SHORT_GUNS, grid, RAT, { combatUtilities: UTILITY_FACTS }), GUNS_ON_RAT, UTILITY_T0);
+  assert.deepEqual(webbing.action, { kind: "activate", moduleID: UTILITY_WEB, targetID: RAT });
+
+  const dead = (active: readonly number[]) => fightObs(SHORT_GUNS, utilityGrid(fightGrid({ rats: [] }), active), RAT, {
+    fleetTargetTags: null, lockedTargetIDs: [], hostileOnGrid: false, combatUtilities: UTILITY_FACTS,
+  });
+  const stopping = decideCompanionAction(TWO_GUNS, dead([UTILITY_WEB]), webbing.memory, UTILITY_T0 + 2_000);
+  assert.deepEqual(stopping.action, { kind: "deactivate", moduleID: UTILITY_WEB, typeID: 5065 });
+  assert.equal(stopping.why, "The target is gone: switching the stasis webifier off.");
+
+  // Not running once its activation grace is over: the cycle ran out on the
+  // dead rat, so there is nothing to stop and nothing left to own.
+  const quiet = decideCompanionAction(TWO_GUNS, dead([]), webbing.memory, UTILITY_T0 + 10_000);
+  assert.notEqual(quiet.action.kind, "deactivate");
+  assert.deepEqual(quiet.memory.utilities.owned, []);
+});
+
+test("a fleeing pilot is not kept busy with its utilities", () => {
+  const station = {
+    itemID: 60000001, kind: "station", isSelf: false, position: { x: 200_000, y: 0, z: 0 }, radius: 0, mode: null,
+  };
+  const facts: CombatUtilities = {
+    ...UTILITY_FACTS, modules: [utilityModule(UTILITY_WEB, "web"), utilityModule(UTILITY_SENSOR, "sensor")],
+  };
+  const owned: CompanionLadderMemory = {
+    ...GUNS_ON_RAT,
+    utilities: {
+      ...freshLadderMemory().utilities, shipID: UTILITY_SHIP,
+      owned: [{ itemID: UTILITY_SENSOR, typeID: 5212, family: "sensor", targetID: 0, sinceMs: UTILITY_T0 - 60_000 }],
+    },
+  };
+  const hurt = (active: readonly number[]) => fightObs(
+    SHORT_GUNS, utilityGrid(fightGrid({ rats: [{ itemID: RAT, typeID: TYPE_LONG_RAT, x: 8_000 }], extra: [station] }), active),
+    RAT, {
+      health: 0.1, combatUtilities: facts,
+      flightStatus: { solarSystemID: 30000142 } as FleetCompanionObservation["flightStatus"],
+    });
+  const fleeing = decideCompanionAction(TWO_GUNS, hurt([FIGHT_GUN_1, FIGHT_GUN_2, UTILITY_SENSOR]), owned, UTILITY_T0);
+  assert.equal(fleeing.phase, "Getting clear");
+  assert.equal(fleeing.action.kind, "warp");
+  let memory = fleeing.memory;
+  for (let tick = 1; tick <= 3; tick++) {
+    const next = decideCompanionAction(TWO_GUNS, hurt([FIGHT_GUN_1, FIGHT_GUN_2, UTILITY_SENSOR]), memory, UTILITY_T0 + tick * 2_000);
+    assert.ok(
+      !((next.action.kind === "activate" || next.action.kind === "deactivate") &&
+        [UTILITY_WEB, UTILITY_SENSOR].includes(next.action.moduleID)),
+      `tick ${tick}: ${JSON.stringify(next.action)}`,
+    );
+    memory = next.memory;
+  }
 });
