@@ -16,6 +16,19 @@
 
 import type { ActiveBookmarks, Bookmark, BookmarkFolder, Subfolder } from "./bookmarks.ts";
 
+/**
+ * A place the bookmark window is opened for (addressbookService.py BookmarkLocationPopup, 405 to 421): its number;
+ * the name of the type its popup is asked with (the "already saved" question's), and its default name
+ * (GetDefaultLocationName, 423 to 441), each read when the window shows them; and whether a place already bookmarked
+ * is asked about (not the pilot's own spot or system).
+ */
+export interface BookmarkPlace {
+  readonly itemID: number;
+  readonly typeName: () => string;
+  readonly name: () => string;
+  readonly askIfKnown: boolean;
+}
+
 /** The most of a group's bookmarks the client lists (bookmarksPanel.py 41: MAX_BOOKMARKS_DISPLAYED_IN_GROUP). */
 export const MAX_PLACES_IN_GROUP = 3000;
 

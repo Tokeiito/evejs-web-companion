@@ -1097,6 +1097,28 @@ const bookmarking = (args, kwargs) => {
  * Tranquility's recordings (168): the menu's ranges whole numbers, the autopilot's a float of nought. A whole
  * number goes as one from here, so a range of nought is made the float; any other goes as it stands.
  */
+/**
+ * bookmarkSvc.ACLBookmarkLocation (609 to 613): self.accessGroupBookmarkMgr.BookmarkStaticLocation(itemID, folderID,
+ * name, comment, expiry, subfolderID=subfolderID) for a region, a constellation, a system or a station, the subfolder
+ * by keyword every time, None where there is none; put in where a call came without it. A thing in space is the
+ * park's. No Tranquility recording has a bookmark made.
+ */
+const bookmarkingStatic = (args, kwargs) => {
+  const anID = (value) => Number.isSafeInteger(value) && value > 0;
+  const keywords = Object.keys(kwargs);
+  const [thing, folder, name, comment, expiry] = args;
+  const formed = args.length === 5 && anID(thing) && anID(folder) && typeof name === "string" && name.trim() !== "" && typeof comment === "string"
+    && [0, 1, 2, 3].includes(expiry)
+    && (keywords.length === 0 || (keywords.length === 1 && (kwargs.subfolderID === null || anID(kwargs.subfolderID))));
+  if (!formed) {
+    return { args, kwargs, status: "differs", note: "The client sends a place, a folder, a name, a note and one of its four times to keep it, and the subfolder or None by keyword." };
+  }
+  if (!isStaticPlace(thing)) {
+    return { args, kwargs, status: "differs", note: "The client asks the bookmark manager for a region, a constellation, a system or a station, and the park for a thing in space." };
+  }
+  return keywords.length === 0 ? { args, kwargs: { subfolderID: null }, status: "reshaped" } : { args, kwargs };
+};
+
 const following = (args, kwargs, context) => {
   const [thing, range] = args;
   if (!(args.length === 2 && Number.isSafeInteger(thing) && thing > 0 && Number.isFinite(range) && range >= 0 && Object.keys(kwargs).length === 0)) {
@@ -1971,6 +1993,12 @@ const RETAIL_CALLS = Object.freeze({
     "eveMoniker.GetEntityAccess().CmdMineRepeatedly(droneIDs, targetID): the drones a list and the active target. No recording has one."),
   "entity.CmdSalvage": reshaped(`${DRONE_FUNCTIONS}:160`, salvaging,
     "eveMoniker.GetEntityAccess().CmdSalvage(droneIDs, targetID): the drones a list, and the active target or None, from a salvage drone's menu and the drones' primary action. It answers the drones that could not, each with why. No recording has one."),
+  "accessGroupBookmarkMgr.BookmarkStaticLocation": typing(Object.freeze({
+    status: "same",
+    source: "eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:612",
+    note: "self.accessGroupBookmarkMgr.BookmarkStaticLocation(itemID, folderID, name, comment, expiry, subfolderID=subfolderID): the bookmark window's Submit (bookmarkLocationWindow.py Confirm, 205 to 225) for a region, a constellation, a system or a station; the name the label's, the comment the notes' editor's, each unicode where it holds text; answered (bookmarkID, itemID, typeID, x, y, z, locationID, expiryDate). In no recording.",
+    shape: bookmarkingStatic,
+  }), [2, 3]),
   "accessGroupBookmarkMgr.GetMyActiveBookmarks": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:163", sentWithNothing,
     "folders, bookmarks, subfolders = self.accessGroupBookmarkMgr.GetMyActiveBookmarks(), by name and with nothing: recorded on Tranquility so, in three recordings. The client asks once in a session and keeps the three, changing them as it makes, changes and deletes a bookmark and as the server says a shared folder changed. The transport asks as a character is chosen and keeps the three (pilots.js, bookmarksRead): a place bookmarked on the ballpark's object is worked into them as the client works it (afterBookmarkCall), and they are let go at any other write of the pilot's own of a bookmark, a folder or a subfolder and at the server's word of a shared folder, and asked for when they are next wanted. The page asks each time it wants them, and is answered from what is kept."),
   "beyonce.BookmarkLocation": typing(reshaped("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:617", bookmarking,

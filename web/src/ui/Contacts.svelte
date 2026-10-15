@@ -51,10 +51,11 @@
   // format them, newest first, each its body's first two parts; its menu the sender's contact and block, and Delete
   // notification (contactNotificationEntry.py).
   //
-  // An agent's menu has the client's Show Info, its place's Set Destination and Add or Remove Waypoint, and Dock in
-  // Station (menusvc.py 579 to 580, 619 to 624; _MapMenu, 172 to 184).
+  // An agent's menu has the client's Show Info, its place's Set Destination, Add or Remove Waypoint and Save
+  // Location... (the bookmark window, BookmarkWindow.svelte), and Dock in Station (menusvc.py 579 to 580, 619 to 624;
+  // _MapMenu, 172 to 184).
   //
-  // Not here yet: Capture Portrait, an agent's Bookmark Location, which waits on the client's bookmark window,
+  // Not here yet: Capture Portrait,
   // selecting several agents, and the rest of an owner's menu (chat, Invite to Fleet's places in the fleet, the
   // fleet's own menu).
   import { onMount } from "svelte";
@@ -87,6 +88,8 @@
   import { notify } from "./notices.ts";
   import { TRANSFER_REASON_MAX, transferAmount, transferReason } from "../bridge/giveMoney.ts";
   import { isFleetCommander } from "../bridge/fleetCommand.ts";
+  import type { BookmarkPlace } from "../bridge/locationsList.ts";
+  import BookmarkWindow from "./BookmarkWindow.svelte";
 
   let { store, flow, showAgents, openMail }: { store: ClientStore; flow: AppFlow; showAgents?: () => void; openMail?: () => void } = $props();
 
@@ -237,6 +240,9 @@
     setDestination: "UI/Inflight/SetDestination",
     addWaypoint: "UI/Inflight/AddWaypoint",
     removeWaypoint: "UI/Inflight/RemoveWaypoint",
+    bookmarkLocation: "UI/Inflight/BookmarkLocation",
+    placeLabel: "UI/PeopleAndPlaces/NewBookmarkLocationLabel",
+    spot: "UI/PeopleAndPlaces/SpotInSolarSystem",
   } as const;
   /** The client's dialogs the window says things with. */
   const DIALOGS = ["RemoveOneFromContacts", "RemoveManyFromContacts", "DeleteMailLabel", "MailLabelNameExists", "LookupStringMinimum", "NoStandingsSelected", "RemoveAgents", "ConfirmDeleteFolder", "PartialSearchLessThanMinLength"] as const;
@@ -1281,6 +1287,37 @@
     return place !== docked && place !== structure;
   }
 
+  /** The bookmark window, open for an agent's place, or none. */
+  let bookmarking = $state<BookmarkPlace | null>(null);
+
+  /**
+   * The map menu's Save Location... (_MapMenu, 183: Bookmark(itemID, typeSolarSystem, constellationID); infosvc.py
+   * Bookmark, 3623 to 3625): the bookmark window for the agent's place, its popup asked with the solar system's type
+   * (as the menu asks it for any place), and its default name GetDefaultLocationName's: "<place> ( <its type> )", or
+   * the pilot's own spot where the place is the system the pilot is in space in.
+   */
+  function bookmarkAgentPlace(agentID: number): void {
+    agentMenuFor = null;
+    searchMenuFor = null;
+    const place = agentPlace(agentID);
+    if (place === null) return;
+    const isStation = place >= 60_000_000;
+    flow.requestNames(isStation
+      ? [{ kind: "type", id: 5 }, { kind: "station", id: place }, { kind: "stationType", id: place }]
+      : [{ kind: "type", id: 5 }, { kind: "system", id: place }]);
+    const status = $flightState.status;
+    const ownSystem = status !== null && status.inSpace && !status.docked && status.solarSystemID === place;
+    const solarSystemType = (): string => resolvedName($names.resolved, "type", 5, "");
+    bookmarking = {
+      itemID: place,
+      askIfKnown: !ownSystem,
+      typeName: solarSystemType,
+      name: () => ownSystem
+        ? filledNamed(AGENT_WORDS.spot, "a spot in {solarSystemName}", { solarSystemName: resolvedName($names.resolved, "system", place, "") })
+        : filledNamed(AGENT_WORDS.placeLabel, "{[location] loc.name} ( {group} )", { loc: place, group: isStation ? resolvedName($names.resolved, "stationType", place, "") : solarSystemType() }),
+    };
+  }
+
   /** The map menu's entries (_MapMenu, 176 to 181): Set Destination, and Remove Waypoint or Add Waypoint. */
   function agentRoute(agentID: number, how: "destination" | "add" | "remove"): void {
     agentMenuFor = null;
@@ -1679,6 +1716,10 @@
     </section>
   {/if}
 
+  {#if bookmarking !== null}
+    <BookmarkWindow {store} {flow} place={bookmarking} onDone={() => (bookmarking = null)} />
+  {/if}
+
   {#if transferring !== null}
     <!-- The transfer window (TransferMoneyWnd, transferMoneyWnd.py 49 to 102): from whom and to whom, the amount and
          the reason, OK and Cancel. -->
@@ -1788,6 +1829,7 @@
                           {:else}
                             <button type="button" class="minor" onclick={() => agentRoute(line.agentID, "add")}>{word(AGENT_WORDS.addWaypoint, "Put on the route")}</button>
                           {/if}
+                          <button type="button" class="minor" disabled={bookmarking !== null} onclick={() => bookmarkAgentPlace(line.agentID)}>{word(AGENT_WORDS.bookmarkLocation, "Save the place")}</button>
                         {/if}
                         {#if agentDockStation(line.agentID) !== null}
                           <button type="button" class="minor" onclick={() => dockAtAgent(line.agentID)}>{word(AGENT_WORDS.dockInStation, "Dock there")}</button>
@@ -1900,6 +1942,7 @@
                         {:else}
                           <button type="button" class="minor" onclick={() => agentRoute(owner.id, "add")}>{word(AGENT_WORDS.addWaypoint, "Put on the route")}</button>
                         {/if}
+                        <button type="button" class="minor" disabled={bookmarking !== null} onclick={() => bookmarkAgentPlace(owner.id)}>{word(AGENT_WORDS.bookmarkLocation, "Save the place")}</button>
                       {/if}
                       {#if agentDockStation(owner.id) !== null}
                         <button type="button" class="minor" onclick={() => dockAtAgent(owner.id)}>{word(AGENT_WORDS.dockInStation, "Dock there")}</button>

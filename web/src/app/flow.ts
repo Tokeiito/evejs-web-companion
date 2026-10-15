@@ -434,7 +434,7 @@ import { readMyLaunches } from "../bridge/launchReads.ts";
 import { readCharacterFittings, readCorporationFittings } from "../bridge/fittingReads.ts";
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
-import { BOOKMARK_EXPIRY, bookmarkLocation as bookmarkLocationCall } from "../bridge/bookmarkWrites.ts";
+import { BOOKMARK_EXPIRY, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall } from "../bridge/bookmarkWrites.ts";
 import { giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
 import { afterArriving, keepWaypoints, readWaypoints, withWaypoint, withoutWaypoint, type PilotPlace } from "../nav/waypoints.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
@@ -1765,6 +1765,19 @@ export interface AppFlow {
    * client's bookmark service primes them): the Locations window's list.
    */
   readLocations(): Promise<ActiveBookmarks>;
+  /**
+   * The bookmark window's Submit (bookmarkLocationWindow.py Confirm, 205 to 225; bookmarkSvc.ACLBookmarkLocation, 609
+   * to 620): a region, a constellation, a system or a station by the bookmark manager, anything else in space by the
+   * park. Answers the new bookmark's number, or null where the answer names none. Fails as the call fails.
+   */
+  bookmarkPlace(place: {
+    readonly itemID: number;
+    readonly folderID: number;
+    readonly subfolderID: number | null;
+    readonly label: string;
+    readonly note: string;
+    readonly expiry: number;
+  }): Promise<number | null>;
   /**
    * Manual escape hatch: stop every loop, recall drones, and dock at the nearest
    * station on grid. Always available while a bot runs — the operator's override.
@@ -17346,6 +17359,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     readLocations() {
       return readMyActiveBookmarks(bridgeAsk);
+    },
+
+    bookmarkPlace(place) {
+      const isPlace = (place.itemID >= 10_000_000 && place.itemID <= 39_999_999) || (place.itemID >= 60_000_000 && place.itemID <= 63_999_999);
+      const call = isPlace ? bookmarkStaticLocationCall : bookmarkLocationCall;
+      return call(bridgeDo, place.itemID, place.folderID, place.label, place.note, place.expiry, place.subfolderID);
     },
 
     async listBookmarks() {
