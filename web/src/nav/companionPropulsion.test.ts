@@ -5,7 +5,9 @@ import { freshLadderMemory, type CompanionLadderMemory, type FleetCompanionObser
 import {
   missileRatsOnGrid,
   orbitingAgainstMissiles,
+  propsBecause,
   propsOnThisGrid,
+  propsWanted,
 } from "./companionPropulsion.ts";
 import type { PropulsionModule } from "./propulsion.ts";
 import { SHORT_RAT, TYPE_SHORT_RAT, companionObs, fightGrid } from "./fightFixtures.test-util.ts";
@@ -29,6 +31,21 @@ function grid(
 }
 
 const FACTS = { [TYPE_SHORT_RAT]: SHORT_RAT, [TYPE_MISSILE]: MISSILE };
+
+test("propsBecause: the chat word first, rung 8's hold next, travel only without one", () => {
+  const base = { held: null, ownHold: false, closing: false, missileOrbit: false, travel: false };
+  assert.equal(propsBecause({ ...base, held: true }), "held-on");
+  assert.equal(propsBecause({ ...base, held: false, closing: true, travel: true }), "held-off");
+  assert.equal(propsBecause({ ...base, ownHold: true, closing: true, missileOrbit: true }), "closing");
+  assert.equal(propsBecause({ ...base, ownHold: true, missileOrbit: true }), "missile-orbit");
+  assert.equal(propsBecause({ ...base, ownHold: true, travel: true }), "none", "travel is not asked under rung 8's order");
+  assert.equal(propsBecause({ ...base, travel: true }), "travel");
+  assert.equal(propsBecause(base), "none");
+  assert.deepEqual(
+    (["held-on", "held-off", "closing", "missile-orbit", "travel", "none"] as const).map(propsWanted),
+    [true, false, true, true, true, false],
+  );
+});
 
 test("missileRatsOnGrid: known missile rats only, with hostiles on grid", () => {
   assert.equal(missileRatsOnGrid(grid([TYPE_MISSILE], FACTS)), true);
