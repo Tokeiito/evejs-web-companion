@@ -546,6 +546,32 @@ export async function warpFleetToMember(act: Ask, flightNow: () => Promise<Fligh
   await act("beyonce", "CmdWarpToStuff", ["char", characterID], { minRange: range, fleet: true, fleetFormationSettings: { ...FORMATION_OF_NO_CHOICE } });
 }
 
+/** A fleet member's cyno as fleetSvc keeps it (OnFleetJumpBeaconModuleChange): its system, the beacon and its type. */
+export interface MemberBeacon {
+  readonly solarSystemID: number;
+  readonly beaconID: number;
+  readonly typeID: number | null;
+}
+
+/**
+ * Jumps the pilot's ship to a fleet member's cyno, as the fleet menu's Jump To does (menusvc.JumpToMember, 2643 to 2650;
+ * cynoTravelSvc.JumpToFleetModuleBeacon, 30 to 37: bp.CmdJumpToFleetModuleBeacon(charID, beaconID, solarsystemID), a
+ * change of session), `group` the Conduit Jump To that takes the fleet's members in range along
+ * (GroupJumpToFleetModuleBeacon, 97 to 104), and Bridge To (BridgeToFleetModuleBeacon, 57 to 63:
+ * bp.CmdBridgeToFleetModuleBeacon, the same three, no change of session) where `bridge`. Fails as the call fails,
+ * and before it for a member that is no character's number, a beacon the page has none of, and a ship not in space.
+ *
+ * ⚠ A JUMP'S CALL COMING BACK IS THE SESSION IN THE BEACON'S SYSTEM: the BFF answers once the ship is usable there.
+ */
+export async function toMemberBeacon(act: Ask, flightNow: () => Promise<FlightNow>, characterID: number, beacon: MemberBeacon | null, how: "jump" | "group" | "bridge"): Promise<void> {
+  await aPlaceToWarpTo(flightNow, characterID, "A fleet member is required.");
+  if (beacon === null || !isAnID(beacon.beaconID) || !isAnID(beacon.solarSystemID)) {
+    throw new Error("That member has no cyno lit.");
+  }
+  const method = how === "jump" ? "CmdJumpToFleetModuleBeacon" : how === "group" ? "CmdGroupJumpToFleetModuleBeacon" : "CmdBridgeToFleetModuleBeacon";
+  await act("beyonce", method, [characterID, beacon.beaconID, beacon.solarSystemID]);
+}
+
 /** The fleet formation a pilot has who has chosen none: a point, the first spacing and the first size (evefleet: POINT, FLEET_FORMATION_SPACING[0], FLEET_FORMATION_SIZE[0]). */
 const FORMATION_OF_NO_CHOICE = Object.freeze({ formationType: 0, formationSpacing: 1000, formationSize: 10000 });
 

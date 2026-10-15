@@ -4613,6 +4613,10 @@ async function dispatchShipSwapWrite(req, res, next, service, method, args, targ
  *            work out from the gate itself. Waited for in full and latched on a timeout, and the park bound again in
  *            the new system before the answer, as its route did (reparkAfterArrival: the barrier answers while the
  *            hull is still inert).
+ *   cyno     by the ship's jump drive into a fleet member's cyno's system (cynoTravelSvc.py: CmdJumpToFleetModuleBeacon
+ *            and CmdGroupJumpToFleetModuleBeacon(charID, beaconID, solarsystemID)). Refused for a pilot not in space and
+ *            for a member, a beacon or a system that is no number. Kept as a stargate's jump is (its keeping, latch
+ *            and repark), into the beacon's system.
  */
 async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, args, kwargs) {
   const held = requireHeldBridgeSession(req, res);
@@ -4681,10 +4685,23 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
         return;
       }
       expected = { fromSolarSystemID: Number(before.flight.solarSystemID) || null, shipID };
+    } else if (kind === "cyno") {
+      if (before.flight.inSpace !== true) {
+        res.status(409).json({ ok: false, error: "NOT_IN_SPACE", message: "The ship is not in space; undock first." });
+        return;
+      }
+      const [memberID, beaconID, beaconSystemID] = args.map(Number);
+      if (![memberID, beaconID, beaconSystemID].every((id) => Number.isSafeInteger(id) && id > 0)) {
+        res.status(400).json({ ok: false, error: "INVALID_BEACON", message: "A member, its beacon and the beacon's system are each a positive number." });
+        return;
+      }
+      expected = { fromSolarSystemID: Number(before.flight.solarSystemID) || null, toSolarSystemID: beaconSystemID, shipID };
     } else {
       throw new Error(`No keeping of a ${kind} is known.`);
     }
-    if (!await acquireRouteTransition(res, held, kind, expected)) {
+    // (A cyno's jump is kept as a stargate's: a session into another system, the park bound again there.)
+    const keeping = kind === "cyno" ? "stargate" : kind;
+    if (!await acquireRouteTransition(res, held, keeping, expected)) {
       return;
     }
     // (By the name the transport knows it by, as the generic call asks any write: bridgeCallPolicy.js, gatewaysNameFor.
@@ -4697,7 +4714,7 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
         ? await heldTopLevelCall(held, req.webSessionID, "beyonce", "CmdDock", args, kwargs)
         : await heldTopLevelCall(held, req.webSessionID, "ship", "Undock", [shipID, Boolean(kwargs && kwargs.ignoreContraband)], null);
     markTransitionAccepted(held);
-    const after = await awaitRouteTransition(held, req.webSessionID, kind, expected, waiting);
+    const after = await awaitRouteTransition(held, req.webSessionID, keeping, expected, waiting);
     if (!after.ok && kind === "dock") {
       // The server's silent decline, as the route took it: released (unless another change took its place) and
       // answered, the page reading the flight after.
@@ -4720,7 +4737,7 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
     }
     // Arrived through a gate: the park bound again in the new system before the answer, so that the ship can move
     // the moment the page acts on it (reparkAfterArrival).
-    if (kind === "stargate") {
+    if (keeping === "stargate") {
       await reparkAfterArrival(held, after.flight && after.flight.solarSystemID);
     }
     res.json({
@@ -4732,7 +4749,7 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
       ...pilotClock(held),
     });
   } catch (error) {
-    if (held.transition && held.transition.kind === kind) {
+    if (held.transition && held.transition.kind === (kind === "cyno" ? "stargate" : kind)) {
       // (A dock never latches: it is safe to ask again, and an error releases it, as its route had it.)
       if (held.transition.phase === "requested" || kind === "dock") {
         cancelHeldTransition(held);

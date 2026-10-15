@@ -969,6 +969,13 @@ export type FleetAction = "form" | "invite" | "accept" | "decline" | "leave" | "
  * sites updated by hand, and would silently drift the first time one of them
  * was missed.
  */
+/** A member's cyno, as the fleet told it: its system, the beacon and its type. */
+export interface FleetJumpBeacon {
+  readonly solarSystemID: number;
+  readonly beaconID: number;
+  readonly typeID: number | null;
+}
+
 export interface FleetCenterState {
   readonly loaded: boolean;
   readonly loading: boolean;
@@ -996,6 +1003,12 @@ export interface FleetCenterState {
    * page as the client keeps it, and gone with the fleet (ProcessSessionChange, 1671: favorites.clear()).
    */
   readonly watchlist?: readonly number[];
+  /**
+   * The members' cynos lit, by the member's number (fleetSvc.activeModuleBeacons: OnFleetJumpBeaconModuleChange, 209
+   * to 216; a member that leaves takes its own with it, 1240), what Jump, Bridge and Conduit Jump To go by. Kept by
+   * the page as the client keeps it, and gone with the fleet.
+   */
+  readonly jumpBeacons?: Readonly<Record<string, FleetJumpBeacon>>;
   /**
    * The broadcasts the pilot has heard, newest first, five hundred at most (fleetSvc.AddBroadcast: broadcastHistory),
    * kept across fleets as the client keeps them until cleared.

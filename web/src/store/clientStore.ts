@@ -1641,6 +1641,13 @@ export function createClientStore(): ClientStore {
       case "fleet/watchlist":
         fleet.set({ ...fleet.get(), watchlist: event.members });
         break;
+      case "fleet/jump-beacon": {
+        const beacons = { ...(fleet.get().jumpBeacons ?? {}) };
+        if (event.beacon === null) delete beacons[String(event.characterID)];
+        else beacons[String(event.characterID)] = event.beacon;
+        fleet.set({ ...fleet.get(), jumpBeacons: beacons });
+        break;
+      }
       case "fleet/cleared":
         fleet.set(INITIAL_FLEET);
         break;

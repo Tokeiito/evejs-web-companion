@@ -664,7 +664,20 @@
     rankMember: "UI/Fleet/Ranks/SquadMember",
     addWatch: "UI/Fleet/AddPilotToWatchlist",
     removeWatch: "UI/Fleet/RemovePilotFromWatchlist",
+    jumpTo: "UI/Inflight/JumpToFleetMember",
+    bridgeTo: "UI/Fleet/BridgeToMember",
+    conduitTo: "UI/Fleet/ConduitJumpToFleetMember",
   } as const;
+  /**
+   * dogmaconst: the ship's jump drive (attributeCanJump), a fitted module's jump portal (attributeJumpPortalPassenger
+   * RequiredAttributeID) and the ship's jump conduit (attributeJumpConduitPassengerRequiredAttributeID), by which
+   * sessionChecker.isShipJumpCapable, canOpenJumpPortal and canPerformGroupJump (229 to 255) offer the three.
+   */
+  const ATTRIBUTE_CAN_JUMP = 861;
+  const ATTRIBUTE_JUMP_PORTAL_PASSENGER_REQUIRED = 3318;
+  const ATTRIBUTE_JUMP_CONDUIT_PASSENGER_REQUIRED = 3321;
+  /** A wormhole system's number (sessionChecker.IsInWormholeSystem): no jump drive works there. */
+  const isWormholeSystem = (solarSystemID: number | null): boolean => solarSystemID !== null && solarSystemID >= 31_000_000 && solarSystemID < 32_000_000;
   /**
    * A commander's warp of its own to a member (characterCheckers.py OfferWarpFleetToMember, 538 to 563): the fleet's
    * for its leader, a wing's for a wing's commander, a squad's for a squad's; the labels for each, the page's words
@@ -677,6 +690,17 @@
   } as const;
   // svelte-ignore state_referenced_locally
   const space = store.space;
+  // svelte-ignore state_referenced_locally
+  const dogma = store.dogma;
+  /** An attribute of the active ship (the first of godma's ships) or of a module fitted to it, where it is a number. */
+  const shipAttribute = (attributeID: number): number | null => {
+    const value = $dogma.allInfo?.ships[0]?.attributes.find((attribute) => attribute.attributeID === attributeID)?.value;
+    return typeof value === "number" ? value : null;
+  };
+  const anyModuleHas = (attributeID: number): boolean => ($dogma.allInfo?.ships.slice(1) ?? []).some((module) => {
+    const value = module.attributes.find((attribute) => attribute.attributeID === attributeID)?.value;
+    return typeof value === "number" ? value !== 0 : value === true;
+  });
   /** The pilot's own warp distance (GetDefaultActionDistance('WarpTo')), and the distances' words. */
   const defaultWarp = $derived(Number($flyingDistances.warp));
   const say = $derived(distanceSay($words.templates));
@@ -712,7 +736,7 @@
    * Make Fleet Leader for another, the pilot its creator; Warp to Member for another, the pilot in space and the member
    * far enough; Leave My Fleet for the pilot's own.
    */
-  function fleetOffersOf(ownerID: number): { readonly kick: boolean; readonly leader: boolean; readonly addWatch: boolean; readonly removeWatch: boolean; readonly travelToMe: boolean; readonly warp: boolean; readonly groupWarp: keyof typeof GROUP_WARP_WORDS | null; readonly leave: boolean } {
+  function fleetOffersOf(ownerID: number): { readonly kick: boolean; readonly leader: boolean; readonly addWatch: boolean; readonly removeWatch: boolean; readonly travelToMe: boolean; readonly warp: boolean; readonly groupWarp: keyof typeof GROUP_WARP_WORDS | null; readonly jumpTo: boolean; readonly bridgeTo: boolean; readonly conduitTo: boolean; readonly leave: boolean } {
     const mine = ownerID === myID;
     const member = fleetMembers.find((each) => Number(each.charID) === ownerID) ?? null;
     const creator = myFleetMember !== null && (myFleetMember.job & FLEET_JOB_CREATOR) !== 0;
@@ -722,6 +746,14 @@
       || (role === FLEET_ROLE.squadCmdr && String(member.squadID) === String(myFleetMember.squadID)));
     const distance = memberDistance(ownerID);
     const warp = !mine && $flightState.status?.inSpace === true && (distance === null || distance > MIN_WARP_DISTANCE_M);
+    // OfferJumpToFleetMember, OfferBridgeToMember and OfferGroupJumpToFleetMember (characterCheckers.py 470 to 510):
+    // another, the pilot in a ship in space, the member's own ship not where the pilot sees it, the member's cyno lit
+    // (HasActiveBeacon), and the ship able (sessionChecker 229 to 255: a jump drive, out of wormhole space; with a
+    // fitted jump portal for the bridge, with a jump conduit for the conduit's).
+    const toBeacon = !mine && $flightState.status?.inSpace === true && distance === null
+      && ($fleetState.jumpBeacons ?? {})[String(ownerID)] !== undefined;
+    const jumpCapable = toBeacon && !isWormholeSystem($flightState.status?.solarSystemID ?? null)
+      && (shipAttribute(ATTRIBUTE_CAN_JUMP) ?? 0) !== 0;
     return {
       kick: !mine && (creator || subordinate),
       leader: !mine && creator,
@@ -734,6 +766,9 @@
       warp,
       // session.IsPilotFleetLeader, IsPilotWingCommander, IsPilotSquadCommander: the pilot's own role in the fleet.
       groupWarp: !warp ? null : role === FLEET_ROLE.leader ? "fleet" : role === FLEET_ROLE.wingCmdr ? "wing" : role === FLEET_ROLE.squadCmdr ? "squad" : null,
+      jumpTo: jumpCapable,
+      bridgeTo: jumpCapable && anyModuleHas(ATTRIBUTE_JUMP_PORTAL_PASSENGER_REQUIRED),
+      conduitTo: jumpCapable && (shipAttribute(ATTRIBUTE_JUMP_CONDUIT_PASSENGER_REQUIRED) ?? 0) !== 0,
       leave: mine,
     };
   }
@@ -742,7 +777,17 @@
   function openFleetMenu(key: string): void {
     fleetMenuFor = fleetMenuFor === key ? null : key;
     fleetPart = null;
-    if (fleetMenuFor !== null && $flightState.status?.inSpace === true) void flow.loadSpaceSnapshot().catch(() => {});
+    if (fleetMenuFor !== null && $flightState.status?.inSpace === true) {
+      void flow.loadSpaceSnapshot().catch(() => {});
+      // (And the ship's dogma, by which the jumps to a member's cyno are offered, where it is not read yet.)
+      if ($dogma.allInfo === null) void flow.loadDogma().catch(() => {});
+    }
+  }
+
+  /** Jump, Conduit Jump and Bridge To a member's cyno (menusvc.JumpToMember, GroupJumpToMember, BridgeToMember). */
+  function toMemberBeacon(ownerID: number, how: "jump" | "group" | "bridge"): void {
+    fleetDone();
+    void run(() => flow.toFleetMemberBeacon(ownerID, how));
   }
 
   function fleetDone(): void {
@@ -2803,6 +2848,15 @@
             {/each}
           {/if}
         {/if}
+      {/if}
+      {#if fleetOffers.jumpTo}
+        <button type="button" class="minor" disabled={busy} onclick={() => toMemberBeacon(ownerID, "jump")}>{word(FLEET_WORDS.jumpTo, "Jump to their cyno")}</button>
+      {/if}
+      {#if fleetOffers.bridgeTo}
+        <button type="button" class="minor" disabled={busy} onclick={() => toMemberBeacon(ownerID, "bridge")}>{word(FLEET_WORDS.bridgeTo, "Open a bridge to their cyno")}</button>
+      {/if}
+      {#if fleetOffers.conduitTo}
+        <button type="button" class="minor" disabled={busy} onclick={() => toMemberBeacon(ownerID, "group")}>{word(FLEET_WORDS.conduitTo, "Take the fleet to their cyno")}</button>
       {/if}
       {#if fleetOffers.leave}
         <button type="button" class="minor" aria-expanded={fleetPart === "leave"} onclick={() => (fleetPart = fleetPart === "leave" ? null : "leave")}>{word(FLEET_WORDS.leave, "Leave")} {fleetPart === "leave" ? "▾" : "▸"}</button>

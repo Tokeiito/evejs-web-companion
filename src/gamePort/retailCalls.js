@@ -757,6 +757,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   "accessGroupBookmarkMgr.CopyBookmarksToFolderAndSubfolder",
   // A folder added to those the pilot knows (bookmarkSvc.py 357). The gateway's list has not got it.
   "accessGroupBookmarkMgr.AddToKnownFolders",
+  // A jump to a fleet member's lit cyno, the fleet's jump with the pilot's own, and a bridge opened to it
+  // (cynoTravelSvc.py 36, 103 and 62), on the ballpark's object. The gateway's list has none of them.
+  "beyonce.CmdJumpToFleetModuleBeacon", "beyonce.CmdGroupJumpToFleetModuleBeacon", "beyonce.CmdBridgeToFleetModuleBeacon",
 ]);
 
 /**
@@ -776,7 +779,9 @@ const ON_AN_ANSWERED_OBJECT = Object.freeze(new Set(["scanMgr.GetFullState"]));
 // CmdStargateJump the same day, the page's own jump: gateJumpSvc.JumpThroughGate's remoteBallpark.CmdStargateJump.)
 // (CmdGotoBookmark on 2026-10-15, the page's Approach Location of a bookmark: movementFunctions.ApproachLocation's
 // bp.CmdGotoBookmark, on the ballpark's object.)
-const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdGotoBookmark", "CmdAlignTo", "CmdFollowBall", "CmdSetSpeedFraction", "CmdOrbit", "CmdStop", "BookmarkLocation", "CmdWarpToStuff", "CmdWarpToStuffAutopilot", "CmdDock", "CmdStargateJump"]));
+// (CmdJumpToFleetModuleBeacon, CmdGroupJumpToFleetModuleBeacon and CmdBridgeToFleetModuleBeacon on 2026-10-15, the fleet
+// menu's Jump To, Conduit Jump To and Bridge To: cynoTravelSvc.py's bp.Cmd..., on the ballpark's object.)
+const ON_THE_PARK = Object.freeze(new Set(["CmdFleetTagTarget", "CmdGotoPoint", "CmdGotoBookmark", "CmdAlignTo", "CmdFollowBall", "CmdSetSpeedFraction", "CmdOrbit", "CmdStop", "BookmarkLocation", "CmdWarpToStuff", "CmdWarpToStuffAutopilot", "CmdDock", "CmdStargateJump", "CmdJumpToFleetModuleBeacon", "CmdGroupJumpToFleetModuleBeacon", "CmdBridgeToFleetModuleBeacon"]));
 const madeOnMoniker = (service, method) => Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method) && method !== "MachoBindObject";
 /**
  * Whether the game port makes a call on an object though it is asked of a service by its name: on the service's
@@ -1955,6 +1960,9 @@ const RETAIL_CALLS = Object.freeze({
   "corporationSvc.GetEmployementRecordAndCharacterTransfers": same("eve/client/script/ui/shared/info/infosvc.py:2842", "RemoteSvc('corporationSvc').GetEmployementRecordAndCharacterTransfers(itemID), CCP's spelling, with the character the History panel's employment tab is of (session.charid). In no recording."),
   "structureDocking.Undock": same("eve/client/script/ui/services/structure/structureDocking.py:36", "RemoteSvc('structureDocking').Undock(session.structureid, shipID, ignoreContraband=...), by the service's name, through sessionMgr.PerformSessionChange('undock', ...), the ship None where it is the structure; no online modules named. Recorded on Tranquility with the two IDs and ignoreContraband False."),
   "beyonce.CmdDock": same("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:517", "bp.CmdDock(itemID, session.shipid), on the ballpark's object, through sessionMgr.PerformSessionChange('dock', ...). Recorded on Tranquility with the two IDs."),
+  "beyonce.CmdJumpToFleetModuleBeacon": same("eve/client/script/parklife/cynoTravelSvc.py:36", "bp.CmdJumpToFleetModuleBeacon(charID, beaconID, solarsystemID), on the ballpark's object, through sessionMgr.PerformSessionChange('jump', ...): the member whose cyno it is, the beacon and its system as fleetSvc keeps them (menusvc.JumpToMember). In no recording."),
+  "beyonce.CmdGroupJumpToFleetModuleBeacon": same("eve/client/script/parklife/cynoTravelSvc.py:103", "bp.CmdGroupJumpToFleetModuleBeacon(charID, beaconID, solarsystemID), on the ballpark's object, through sessionMgr.PerformSessionChange('jump', ...) (menusvc.GroupJumpToMember). In no recording."),
+  "beyonce.CmdBridgeToFleetModuleBeacon": same("eve/client/script/parklife/cynoTravelSvc.py:62", "bp.CmdBridgeToFleetModuleBeacon(charID, beaconID, solarsystemID), on the ballpark's object, no session change: the ship that opens the bridge stays (menusvc.BridgeToMember). In no recording."),
   "beyonce.CmdFollowBall": reshaped("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:302", following, "bp.CmdFollowBall(targetID, range), on the ballpark's object: the menu's approach with const.approachRange, keep at range with the pilot's distance (229), the autopilot's with 0.0 (autopilot.py 437). Not sent for the pilot's own ship. Recorded on Tranquility as (itemID, 50), and at 5000 and 7500, each a whole number; the autopilot's twice, its range a float of nought, which is how a range of nought goes."),
   "beyonce.CmdOrbit": reshaped("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:260", orbiting, "bp.CmdOrbit(targetID, range), on the ballpark's object: the range a float under 10 m and a whole number from there (243). Not sent for the pilot's own ship. Recorded on Tranquility as (itemID, 1000) and (itemID, 5000), 7500 and 10000, each a whole number, with nothing before it; none is recorded under ten metres, where the client's float is how it goes."),
   "beyonce.CmdStop": judged("eve/client/script/ui/eveCommands.py:1104", stopping, "bp.CmdStop(), no arguments, on the ballpark's object: from the stop command, in a ship in space, and from a double click on the pilot's own capsule (menusvc.py 2432). Recorded on Tranquility so, 24 times."),

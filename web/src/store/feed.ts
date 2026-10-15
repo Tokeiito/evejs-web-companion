@@ -91,6 +91,7 @@ import type {
   StandingTransaction,
   CharacterIdentity,
   CloneSummary,
+  FleetJumpBeacon,
 } from "./types.ts";
 import type { BoundDogmaAllInfo } from "../bridge/boundDogma.ts";
 import type { SkillHistoryLine } from "../bridge/skillHistoryPanel.ts";
@@ -390,6 +391,7 @@ export type FeedEvent =
   | { readonly type: "fleet/action-finished"; readonly error: string | null; readonly said?: boolean }
   | { readonly type: "fleet/pending-invite"; readonly invite: FleetPendingInvite }
   | { readonly type: "fleet/watchlist"; readonly members: readonly number[] }
+  | { readonly type: "fleet/jump-beacon"; readonly characterID: number; readonly beacon: FleetJumpBeacon | null }
   | { readonly type: "fleet/broadcast-history-cleared" }
   // An invitation answered or turned down: the window's no longer, where it is the one held.
   | { readonly type: "fleet/invite-settled"; readonly fleetID: number }

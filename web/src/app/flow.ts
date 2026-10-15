@@ -450,7 +450,7 @@ import {
   salvageWithDrones,
   scoopDrones as scoopDronesCall,
 } from "../bridge/boundEntityWrites.ts";
-import { alignTo as alignToCall, alignToBookmark as alignToBookmarkCall, approach as approachCall, approachBookmark as approachBookmarkCall, approachMissionLocation as approachMissionLocationCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpFleetToMember as warpFleetToMemberCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
+import { alignTo as alignToCall, alignToBookmark as alignToBookmarkCall, approach as approachCall, approachBookmark as approachBookmarkCall, approachMissionLocation as approachMissionLocationCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpFleetToMember as warpFleetToMemberCall, toMemberBeacon as toMemberBeaconCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
 import { dock as dockCall, dockAtStructure as dockAtStructureCall, isStation, jump as jumpCall, undock as undockCall } from "../bridge/placeChanges.ts";
 import { boardCorvette as boardCorvetteCall, boardShip as boardShipCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
 import { activityIDOf, createJobReckoner, type JobReckoner, type JobReckoning } from "../bridge/industryJobReckoning.ts";
@@ -1038,6 +1038,11 @@ export interface AppFlow {
   warpToFleetMember(characterID: number, range: number): Promise<void>;
   /** Warp the pilot's fleet, wing or squad to a member at a range, as the fleet's menu for a member does for a commander. */
   warpFleetToMember(characterID: number, range: number): Promise<void>;
+  /**
+   * The fleet menu's Jump To, Conduit Jump To and Bridge To a member's cyno (menusvc.JumpToMember, GroupJumpToMember,
+   * BridgeToMember): by the member's cyno the fleet told of, nothing where it told of none.
+   */
+  toFleetMemberBeacon(characterID: number, how: "jump" | "group" | "bridge"): Promise<void>;
   /**
    * Broadcast Travel To Me, from the fleet's menu for the pilot's own: a TravelTo broadcast of the pilot's own solar
    * system to the whole fleet, after the client's checks. What came of it: sent, not sent (the client's wait between
@@ -2206,6 +2211,13 @@ const SCOOP_LEAVE_STEP_MS = 250;
 /** How long a launch's new drones are waited for in the drones' read, and how often it is made again. */
 const LAUNCH_ARRIVAL_WAIT_MS = 3000;
 const LAUNCH_ARRIVAL_STEP_MS = 250;
+/** A whole number as the bridge carries one: a number, or a long as a decimal text; null for anything else. */
+function wholeNumberOf(value: unknown): number | null {
+  const raw = value !== null && typeof value === "object" && "value" in (value as object) ? (value as { value: unknown }).value : value;
+  const number = typeof raw === "number" ? raw : typeof raw === "string" && /^-?\d+$/.test(raw) ? Number(raw) : NaN;
+  return Number.isSafeInteger(number) ? number : null;
+}
+
 /** One of an item's attributes as godma was primed with it, where it is a number. */
 function dogmaNumber(item: DogmaItemInfo | null, attributeID: number): number | null {
   const value = item?.attributes.find((attribute) => attribute.attributeID === attributeID)?.value;
@@ -3015,6 +3027,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         void loadStationOffices().catch(() => {});
       }
       return;
+    }
+    if (method === "OnFleetJumpBeaconModuleChange") {
+      // fleetSvc.OnFleetJumpBeaconModuleChange (209 to 216): a member's cyno lit, kept by the member, or put out.
+      const [charID, solarSystemID, beaconID, typeID, active] = args;
+      const characterID = wholeNumberOf(charID);
+      if (characterID !== null && characterID > 0) {
+        const beacon = active === true || active === 1
+          ? { solarSystemID: wholeNumberOf(solarSystemID) ?? 0, beaconID: wholeNumberOf(beaconID) ?? 0, typeID: wholeNumberOf(typeID) }
+          : null;
+        store.apply({ type: "fleet/jump-beacon", characterID, beacon });
+      }
+      return;
+    }
+    if (method === "OnFleetLeave") {
+      // fleetSvc (1240 to 1243): a member that leaves takes its cyno with it.
+      const characterID = wholeNumberOf(args[0]);
+      if (characterID !== null && characterID > 0) store.apply({ type: "fleet/jump-beacon", characterID, beacon: null });
     }
     if (method !== null && fleetSnapshotNotifications.has(method)) {
       // The notification is an invalidation, never the roster authority. A
@@ -5397,6 +5426,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // formation (michelle.SetFleetFormationSettings), from the fleet's menu for a member: Warp Fleet, Wing or Squad to Member.
   async function warpFleetToMember(characterID: number, range: number): Promise<void> {
     await runFlightStep("Warp", () => orderedStep((flightNow) => warpFleetToMemberCall(bridgeDo, flightNow, characterID, range)));
+  }
+
+  // menusvc.JumpToMember, GroupJumpToMember and BridgeToMember (2614 to 2681): the member's cyno as fleetSvc keeps it
+  // (GetActiveBeaconForChar; none, nothing asked), then cynoTravelSvc's call on the park (bridge/movementWrites.ts).
+  async function toFleetMemberBeacon(characterID: number, how: "jump" | "group" | "bridge"): Promise<void> {
+    const beacon = store.fleet.get().jumpBeacons?.[String(characterID)] ?? null;
+    if (beacon === null) return;
+    await runFlightStep(how === "bridge" ? "Bridge" : "Jump", () => orderedStep((flightNow) => toMemberBeaconCall(bridgeDo, flightNow, characterID, beacon, how)));
   }
 
   // fleetSvc.SendBroadcast_TravelTo (1034): SendGlobalBroadcast('TravelTo', session.solarsystemid2), from the fleet's
@@ -17456,6 +17493,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     moveFleetMember,
     warpToFleetMember,
     warpFleetToMember,
+    toFleetMemberBeacon,
     broadcastTravelToMe,
     addToFleetWatchlist,
     removeFromFleetWatchlist,

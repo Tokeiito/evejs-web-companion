@@ -1793,6 +1793,20 @@ test("the game port carries the customs office's transfer, the station's offices
     "charMgr.EditContact",
     // The pilot's contact labels made, renamed and deleted, given and taken off. The gateway's list has none of them.
     "charMgr.CreateLabel", "charMgr.EditLabel", "charMgr.DeleteLabel", "charMgr.AssignLabels", "charMgr.RemoveLabels",
+    // A bookmark folder's subfolders made, renamed and deleted, and a folder put online or offline. The gateway's list has none of them.
+    "accessGroupBookmarkMgr.CreateSubfolder", "accessGroupBookmarkMgr.UpdateSubfolder", "accessGroupBookmarkMgr.DeleteSubfolder",
+    "accessGroupBookmarkMgr.UpdateKnownFolderState",
+    // The pilot's access lists. The gateway's list has nothing of the owner group manager's.
+    "ownerGroupManager.GetMyGroups",
+    // A shared folder disconnected from, and an access list asked by its number. The gateway's list has neither.
+    "accessGroupBookmarkMgr.RemoveFromKnownFolders", "ownerGroupManager.GetGroup",
+    // Bookmarks copied into a folder. The gateway's list has their moving and not this.
+    "accessGroupBookmarkMgr.CopyBookmarksToFolderAndSubfolder",
+    // A folder added to those the pilot knows. The gateway's list has not got it.
+    "accessGroupBookmarkMgr.AddToKnownFolders",
+    // A jump to a fleet member's lit cyno, the fleet's jump with it, and a bridge opened to it (cynoTravelSvc.py 36,
+    // 103 and 62). The gateway's list has none of them.
+    "beyonce.CmdJumpToFleetModuleBeacon", "beyonce.CmdGroupJumpToFleetModuleBeacon", "beyonce.CmdBridgeToFleetModuleBeacon",
   ]);
   // structureGuests.py 25: sm.RemoteSvc('structureGuests').GetGuests(session.structureid), by the service's name,
   // with the structure the session is docked in and nothing else.
