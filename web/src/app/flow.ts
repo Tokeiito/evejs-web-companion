@@ -412,6 +412,7 @@ import { siteKind } from "../scanner/siteKind.ts";
 import { decodeFittings } from "../bridge/fittings.ts";
 import { decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge/sharedFittings.ts";
 import { readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
+import type { ActiveBookmarks } from "../bridge/bookmarks.ts";
 import { agentsAtStation, readAgentsTable } from "../bridge/agentReads.ts";
 import { readCorporationMemberIDs } from "../bridge/corpMemberReads.ts";
 import {
@@ -1759,6 +1760,11 @@ export interface AppFlow {
   listSavedFittings(): Promise<readonly (import("../bridge/sharedFittings.ts").SourcedFitting & { readonly shipName: string | null })[]>;
   /** The character's saved bookmarks (for the Bot Builder's saved-spot picker). */
   listBookmarks(): Promise<readonly { bookmarkID: number; name: string }[]>;
+  /**
+   * The pilot's bookmark folders, bookmarks and subfolders (accessGroupBookmarkMgr.GetMyActiveBookmarks, as the
+   * client's bookmark service primes them): the Locations window's list.
+   */
+  readLocations(): Promise<ActiveBookmarks>;
   /**
    * Manual escape hatch: stop every loop, recall drones, and dock at the nearest
    * station on grid. Always available while a bot runs — the operator's override.
@@ -17336,6 +17342,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const hulls = [...new Set(library.map((f) => f.shipTypeID))].map((id) => ({ kind: "type" as const, id }));
       const names = await api.resolveNames(hulls, callOptions).then((r) => r.names).catch(() => ({}) as Record<string, string | null>);
       return library.map((f) => ({ ...f, shipName: names[nameKey("type", f.shipTypeID)] ?? null }));
+    },
+
+    readLocations() {
+      return readMyActiveBookmarks(bridgeAsk);
     },
 
     async listBookmarks() {

@@ -51,6 +51,11 @@ export type NameKind =
   | "structure"
   | "system"
   | "region"
+  | "constellation"
+  /** A solar system -> its constellation's name: the Locations window's CON. */
+  | "systemConstellation"
+  /** A solar system -> its region's name: the Locations window's REG. */
+  | "systemRegion"
   | "owner"
   /** An owner's kind: the group its type is in, by name (Character, Corporation, Alliance, Faction). */
   | "ownerGroup";

@@ -41,6 +41,7 @@ export type TabID =
   | "scanner"
   | "mail"
   | "contacts"
+  | "locations"
   | "chat"
   | "wallet"
   | "corpWallet"
@@ -178,6 +179,8 @@ export const TABS: readonly TabDef[] = [
   { id: "mail", label: "Mail", where: "both" },
   // The client's People & Places (AddressBookWindow), titled Contacts: the pilot's own contacts and blocked owners.
   { id: "contacts", label: "Contacts", where: "both" },
+  // The client's Locations window (neocom/locations/window.py): the pilot's bookmarks.
+  { id: "locations", label: "Locations", where: "both" },
   { id: "chat", label: "Chat", where: "both" },
   { id: "wallet", label: "Wallet", where: "both" },
   { id: "corpWallet", label: "Corp Wallet", where: "both" },
