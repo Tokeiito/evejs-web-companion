@@ -18,7 +18,7 @@
   // Not done: the dialog's icon, its sound (audio.AudioMessage), its line in the client's log (logger.AddMessage), the
   // strip's place with the HUD at the top and its being dragged, and the box's holding the rest of the client still
   // (is_modal) for a pilot not in front.
-  import { onDestroy } from "svelte";
+  import { onDestroy, tick } from "svelte";
   import type { Session } from "../app/sessions.ts";
   import type { SaidDialog } from "../app/flow.ts";
   import type { QuestionWords } from "../store/types.ts";
@@ -36,6 +36,19 @@
   const flow = session.flow;
   // svelte-ignore state_referenced_locally
   const said = flow.dialogsSaid;
+  // svelte-ignore state_referenced_locally
+  const asked = flow.quantityAsked;
+
+  /** The client's words for its quantity question (uix.QtyPopup) and for the buttons, with the page's own. */
+  const QUANTITY_WORDS: Readonly<Record<string, string>> = {
+    "UI/Common/SetQuantity": "Set Quantity",
+    "UI/Common/Buttons/OK": "OK",
+    "UI/Common/Buttons/Cancel": "Cancel",
+  };
+  const wordOf = (label: string, own: string): string => {
+    const template = $words.templates[label];
+    return typeof template === "string" && template !== "" ? template : own;
+  };
 
   /** The types the client puts up as a box (_prompt_player), and as the passing strip (message_player). */
   const BOX_TYPES: ReadonlySet<string> = new Set(["info", "infomodal", "warning", "question", "error", "fatal", "windowhelp"]);
@@ -155,7 +168,73 @@
       clearTimeout(stripTimer);
     }
   });
+
+  // The quantity question (uix.QtyPopup): its words asked for, the number it begins at put in once for each question,
+  // and the field taken to it with what is in it selected (setfocus, selectall).
+  $effect(() => {
+    const ask = $asked;
+    if (ask === null) return;
+    flow.requestWords([...Object.keys(QUANTITY_WORDS), ...(ask.hintLabel === null ? [] : [ask.hintLabel])]);
+  });
+  // (Text, not a number field: a number field's text cannot be selected, and the client's is selected to begin with.
+  // Digits only, as the client's field takes them: intonly.)
+  let typed = $state("");
+  let typedFor: number | null = null;
+  let field = $state<HTMLInputElement | null>(null);
+  $effect(() => {
+    const ask = $asked;
+    if ((ask?.n ?? null) === typedFor) return;
+    typedFor = ask?.n ?? null;
+    typed = ask === null ? "" : String(ask.value);
+    // Selected once its number is in it.
+    void tick().then(() => field?.select());
+  });
+  const hintText = $derived($asked === null ? "" : $asked.hintLabel === null ? $asked.hint ?? "" : wordOf($asked.hintLabel, $asked.hint ?? ""));
+  function focusAll(node: HTMLInputElement): void {
+    node.focus();
+    node.select();
+  }
+  function answerQuantity(ok: boolean): void {
+    const ask = $asked;
+    if (ask === null) return;
+    // A field left empty is no answer (the client's field is required).
+    if (ok && !/^\d+$/.test(typed)) return;
+    flow.answerQuantity(ask.n, ok ? Number(typed) : null);
+  }
 </script>
+
+{#if $asked !== null}
+  <div class="client-dialog-shade" class:modal={inFront}>
+    <div class="client-dialog" role="dialog" aria-label={wordOf("UI/Common/SetQuantity", "Set Quantity")} data-dialog="setQuantityPopup" data-in-front={inFront}>
+      <form
+        class="quantity"
+        onsubmit={(event) => {
+          event.preventDefault();
+          answerQuantity(true);
+        }}
+      >
+        {#if !inFront && pilotName !== null}
+          <span class="for-pilot">For {pilotName}</span>
+        {/if}
+        <strong>{wordOf("UI/Common/SetQuantity", "Set Quantity")}</strong>
+        {#if hintText !== ""}<p class="body">{hintText}</p>{/if}
+        <input
+          type="text"
+          inputmode="numeric"
+          aria-label={wordOf("UI/Common/SetQuantity", "Set Quantity")}
+          bind:value={typed}
+          oninput={() => (typed = typed.replace(/\D+/g, ""))}
+          bind:this={field}
+          use:focusAll
+        />
+        <span class="answers">
+          <button type="submit">{wordOf("UI/Common/Buttons/OK", "OK")}</button>
+          <button type="button" onclick={() => answerQuantity(false)}>{wordOf("UI/Common/Buttons/Cancel", "Cancel")}</button>
+        </span>
+      </form>
+    </div>
+  </div>
+{/if}
 
 {#if box !== null}
   <div class="client-dialog-shade" class:modal={inFront}>
@@ -185,7 +264,9 @@
   .client-dialog { pointer-events: auto; display: flex; flex-direction: column; gap: 0.6rem; width: min(26rem, calc(100vw - 2rem));
     padding: 0.75rem 1rem; background: #14273a; color: #d6e6f7; border: 1px solid #3c6f9e; }
   .body { margin: 0; white-space: pre-line; }
-  .answers { display: flex; justify-content: flex-end; }
+  .answers { display: flex; justify-content: flex-end; gap: 0.4rem; }
+  .quantity { display: contents; }
+  input { background: #0d1b29; color: inherit; border: 1px solid #3c6f9e; padding: 0.2rem 0.4rem; }
   button { border: 1px solid #5b93c7; background: #1b3956; color: inherit; padding: 0.2rem 1rem; cursor: pointer; }
   .for-pilot { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.8; }
   .client-strip { position: fixed; top: max(20vh, 175px); left: 50%; transform: translateX(-50%); width: 300px; z-index: 44;

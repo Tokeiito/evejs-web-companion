@@ -710,6 +710,20 @@ export interface SupportTractorRequest {
  */
 export type AmmoOutcome = "changed" | "reloading" | "unchanged" | "refused";
 
+/**
+ * The client's quantity question (uix.QtyPopup, as invControllers.PromptUserForQuantity asks it): a whole number
+ * from `min` to `max`, `value` to begin with, and its hint, a label of the client's (`hintLabel`) with the page's
+ * own words for it (`hint`).
+ */
+export interface QuantityAsk {
+  readonly n: number;
+  readonly min: number;
+  readonly max: number;
+  readonly value: number;
+  readonly hintLabel: string | null;
+  readonly hint: string | null;
+}
+
 /** A dialog a refusal named (AppFlow.dialogsSaid): its name, the values for it, and the page's own words for it. */
 export interface SaidDialog {
   readonly n: number;
@@ -1738,6 +1752,10 @@ export interface AppFlow {
   readonly dialogsSaid: ReadableSignal<readonly SaidDialog[]>;
   /** A dialog of dialogsSaid taken down: its OK, or the passing strip's time gone by. */
   dismissDialog(n: number): void;
+  /** The client's quantity question open now, one at a time (ClientDialogs.svelte shows it); null with none. */
+  readonly quantityAsked: ReadableSignal<QuantityAsk | null>;
+  /** Its answer: a quantity on OK, null on Cancel. An answer to a question no longer open is nothing. */
+  answerQuantity(n: number, quantity: number | null): void;
   /** Set Destination (starMapSvc.SetWaypoint(id, True)): the place the only waypoint. */
   setDestination(destinationID: number): void;
   /** Add Waypoint (SetWaypoint(id)): the place put at the end of the waypoints. */
@@ -3468,8 +3486,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     "NoSpaceForThat", "NoSpaceForThatOverload", "NotEnoughChargeSpace", "NotEnoughSpecialBaySpace",
     "NotEnoughSpecialBaySpaceOverload", "NotEnoughSpace", "NotEnoughFighterBaySpace",
   ]);
-  /** And CannotAddToQtyLimit (275 to 279), with what may yet be added. */
-  const ONE_STACK_KEPT: ReadonlySet<string> = new Set([...ADD_ROOM_REFUSALS, "CannotAddToQtyLimit"]);
+  /** And CannotAddToQtyLimit (275 to 279), with what may yet be added: the refusals noRoomForAll answers. */
+  const ONE_STACK_ANSWERED: ReadonlySet<string> = new Set([...ADD_ROOM_REFUSALS, "CannotAddToQtyLimit"]);
   /** invControllers.StackAll (393 to 407): a container's password asked for. */
   const STACK_KEPT: ReadonlySet<string> = new Set(["PermissionDenied"]);
 
@@ -3494,39 +3512,59 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   /**
-   * A single stack the server would not take, as the client answers it (invControllers._AddItem, 252 to 290). For want
-   * of room the place's room is read again (the client's GetCapacity: here the places' reads, which ask it): none to
-   * spare at all, the refusal is the client's handler's; room for not even one unit, NotEnoughCargoSpaceFor1Unit with
-   * the type, the room free and one unit's, at least 0.01; room for some, the client asks how many, which the page does
-   * not ask yet, and the refusal stays its own. CannotAddToQtyLimit with nothing more to add is the handler's; with
-   * some, the same question. Returns where the refusal is to go on as it is; throws DialogAlreadySaid where it is said.
+   * A single stack the server would not take, as the client answers it (invControllers._AddItem, 229 to 290, two
+   * tries). For want of room the place's room is read again (the client's GetCapacity: here the places' reads, which
+   * ask it): none to spare at all, the refusal is the client's handler's; room for not even one unit,
+   * NotEnoughCargoSpaceFor1Unit with the type, the room free and one unit's, at least 0.01; room for some, on the first
+   * try the client asks how many (PromptUserForQuantity's uix.QtyPopup: up to what fits, begun at that, its hint "no
+   * more units" where that is the whole stack and "no room for more" where not), and on the second it says nothing.
+   * CannotAddToQtyLimit with nothing more to add is the handler's; with some, the same question up to what may be
+   * added. Any other refusal is thrown on as it is. Returns the quantity to try again with, or null where nothing more
+   * is to be done (the question cancelled, or the second try's silence); throws DialogAlreadySaid where it is said.
    */
-  async function noRoomForAll(error: unknown, row: InventoryItemRow, to: InventoryPlace): Promise<void> {
+  async function noRoomForAll(error: unknown, row: InventoryItemRow, to: InventoryPlace, mayAsk: boolean): Promise<number | null> {
     const refusal = refusalDialogOf(error);
-    if (refusal === null || !ONE_STACK_KEPT.has(refusal.dialog)) return;
+    if (refusal === null || !ONE_STACK_ANSWERED.has(refusal.dialog)) throw error;
     const message = errorWords(error);
     const toHandler = (): never => {
       sayRefusalDialog(error, message);
       throw new DialogAlreadySaid(message);
     };
+    const stack = row.singleton ? 1 : row.quantity;
+    const volume = typeof row.volume === "number" && row.volume > 0 ? row.volume : null;
+    let allowed: number;
     if (refusal.dialog === "CannotAddToQtyLimit") {
       const maxToAdd = numberIn(refusal.values, "maxToAdd");
       if (maxToAdd === null || maxToAdd <= 0) toHandler();
-      return;
+      allowed = maxToAdd as number;
+    } else {
+      await refreshOpenPlaces().catch(() => {});
+      const capacity = capacityAt(to);
+      if (capacity === null || volume === null) toHandler();
+      const free = (capacity as CapacityInfo).capacity - (capacity as CapacityInfo).used;
+      if (free < 0) toHandler();
+      allowed = Math.min(stack, Math.round((free / (volume as number)) * 1e7) / 1e7 | 0);
+      if (allowed <= 0) {
+        // (The values as a dict the bridge carries, as a refusal's come: a plain object's `type` is a wire value's tag.)
+        const required = (volume as number) < 0.01 ? 0.01 : (volume as number);
+        const values: JsonValue = { type: "dict", entries: [["type", row.typeID], ["free", free], ["required", required]] };
+        sayDialog("NotEnoughCargoSpaceFor1Unit", values, message);
+        throw new DialogAlreadySaid(message);
+      }
     }
-    await refreshOpenPlaces().catch(() => {});
+    if (!mayAsk) return null;
+    // PromptUserForQuantity: the least of the stack, what is allowed, and what the place's room holds.
     const capacity = capacityAt(to);
-    if (capacity === null) toHandler();
-    const free = (capacity as CapacityInfo).capacity - (capacity as CapacityInfo).used;
-    if (free < 0) toHandler();
-    const volume = typeof row.volume === "number" && row.volume > 0 ? row.volume : null;
-    if (volume === null) return;
-    const stack = row.singleton ? 1 : row.quantity;
-    if (Math.min(stack, Math.round((free / volume) * 1e7) / 1e7 | 0) > 0) return;
-    // (The values as a dict the bridge carries, as a refusal's come: a plain object's `type` is a wire value's tag.)
-    const values: JsonValue = { type: "dict", entries: [["type", row.typeID], ["free", free], ["required", volume < 0.01 ? 0.01 : volume]] };
-    sayDialog("NotEnoughCargoSpaceFor1Unit", values, message);
-    throw new DialogAlreadySaid(message);
+    const roomFor = capacity !== null && volume !== null ? Math.trunc((capacity.capacity - capacity.used) / volume + 1e-7) : null;
+    const most = Math.min(...[stack, allowed, roomFor].filter((each): each is number => each !== null && each > 0));
+    const whole = most === stack;
+    return askQuantity({
+      min: 0,
+      max: most,
+      value: most,
+      hintLabel: whole ? "UI/Common/NoMoreUnits" : "UI/Common/NoRoomForMore",
+      hint: whole ? "There are no more units where these lie." : "There is no room for more where these are going.",
+    }).then((quantity) => (quantity !== null && quantity > 0 ? quantity : null));
   }
 
   /** A number a refusal's values hold under `key` (a dict as the bridge carries one), or null. */
@@ -3760,16 +3798,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // Run a mutation and report what the SERVER says actually happened. The BFF
   // re-reads after every call because invbroker declines silently, so `applied`
   // here is a real observation, not an echo of the request.
-  // A refusal is put up as the client puts up a UserError (sayInventoryRefusal), save those of `kept`.
+  // A refusal is put up as the client puts up a UserError (sayInventoryRefusal), save those of `kept`. An action that
+  // answers null did nothing and has nothing to say (the client's quantity question cancelled): nothing is read again.
   async function runInventoryAction(
-    action: () => Promise<{ applied: boolean; declinedSilently: boolean; message: string }>,
+    action: () => Promise<{ applied: boolean; declinedSilently: boolean; message: string } | null>,
     kept: ReadonlySet<string> = NONE_SILENT,
   ): Promise<void> {
     store.apply({ type: "inventory/outcome", outcome: null });
-    let outcome: { applied: boolean; declinedSilently: boolean; message: string };
+    let outcome: { applied: boolean; declinedSilently: boolean; message: string } | null;
     try {
       outcome = await action();
       store.apply({ type: "inventory/action-error", message: null });
+      if (outcome === null) return;
     } catch (error) {
       if (isSessionLost(error)) {
         stopLiveStream();
@@ -5083,6 +5123,30 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   function dismissDialog(n: number): void {
     dialogsSaidSignal.set(dialogsSaidSignal.get().filter((said) => said.n !== n));
+  }
+
+  // The client's quantity question (uix.QtyPopup: modal, OK and Cancel), one open at a time; a newer one cancels it.
+  const quantityAskedSignal = createSignal<QuantityAsk | null>(null);
+  let quantityAnswer: ((quantity: number | null) => void) | null = null;
+
+  /** Asks the client's quantity question; a whole number in its range on OK, null on Cancel. */
+  function askQuantity(ask: Omit<QuantityAsk, "n">): Promise<number | null> {
+    quantityAnswer?.(null);
+    dialogsSaidCount += 1;
+    const n = dialogsSaidCount;
+    return new Promise((resolve) => {
+      quantityAnswer = (quantity) => {
+        quantityAnswer = null;
+        quantityAskedSignal.set(null);
+        resolve(quantity === null || !Number.isFinite(quantity) ? null : Math.min(ask.max, Math.max(ask.min, Math.trunc(quantity))));
+      };
+      quantityAskedSignal.set({ n, ...ask });
+    });
+  }
+
+  function answerQuantity(n: number, quantity: number | null): void {
+    if (quantityAskedSignal.get()?.n !== n || quantityAnswer === null) return;
+    quantityAnswer(quantity);
   }
 
   async function runFleetAction(
@@ -16784,6 +16848,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     autopilotSaid: readonlySignal(autopilotSaidSignal),
     dialogsSaid: readonlySignal(dialogsSaidSignal),
     dismissDialog,
+    quantityAsked: readonlySignal(quantityAskedSignal),
+    answerQuantity,
     setDestination,
     addWaypoint,
     clearWaypoints,
@@ -17007,8 +17073,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async transferItems(itemIDs, from, to, qty = null) {
-      // One stack's want of room is the client's own to answer (invControllers._AddItem, 229 to 290): kept here
-      // where it asks how many (noRoomForAll); many stacks' goes to its handler, as every other refusal does.
+      // One stack's want of room is the client's own to answer (invControllers._AddItem, 229 to 290: noRoomForAll);
+      // many stacks' goes to its handler, as every other refusal does.
       await runInventoryAction(async () => {
         // Between the hangar, the ship's hold, its bays and a container, the client's own call
         // (bridge/inventoryWrites.ts), judged by the places' rows refreshed, the source's above all: a thing moved can
@@ -17022,11 +17088,19 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             throw new Error("Those items are no longer where the panel last saw them; refresh and try again.");
           }
           const [destination, source] = [await inventoryOfPlace(to), await inventoryOfPlace(from)];
-          try {
-            await moveItemsCall(bridgeDo, destination.inventory, to as MovePlace, source.liesIn, present, qty ?? null);
-          } catch (error) {
-            if (present.length === 1) await noRoomForAll(error, present[0] as InventoryItemRow, to);
-            throw error;
+          // invControllers._AddItem's two tries: a single stack's want of room answered as the client answers it,
+          // the second try with the quantity the pilot gave (noRoomForAll).
+          let quantity = qty ?? null;
+          for (let attempt = 0; ; attempt += 1) {
+            try {
+              await moveItemsCall(bridgeDo, destination.inventory, to as MovePlace, source.liesIn, present, quantity);
+              break;
+            } catch (error) {
+              if (present.length !== 1) throw error;
+              const asked = await noRoomForAll(error, present[0] as InventoryItemRow, to, attempt === 0);
+              if (asked === null) return null;
+              quantity = asked;
+            }
           }
           await refreshOpenPlaces();
           const sourceAfter = new Map((rowsAt(from) ?? []).map((row) => [row.itemID, row]));
@@ -17039,7 +17113,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           return {
             applied: moved.length > 0,
             declinedSilently: moved.length === 0 && declined.length > 0,
-            message: describeTransfer({ applied: moved.length > 0, moved, declined }, itemIDs.length, qty ?? null),
+            message: describeTransfer({ applied: moved.length > 0, moved, declined }, itemIDs.length, quantity),
           };
         }
         const result = await api.transferItems(itemIDs, from, to, qty ?? null, callOptions);
@@ -17048,7 +17122,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           declinedSilently: result.declinedSilently,
           message: describeTransfer(result, itemIDs.length, qty ?? null),
         };
-      }, itemIDs.length === 1 ? ONE_STACK_KEPT : NONE_SILENT);
+      });
     },
 
     async mergeStacks(sourceItemID, destinationItemID, place) {
