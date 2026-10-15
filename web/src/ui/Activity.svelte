@@ -9,9 +9,9 @@
     liveActivityTitle,
   } from "../bridge/activity.ts";
   import { isSessionLost } from "../app/flow.ts";
-  import { formatTemplate, plainText, templateNameRefs } from "../bridge/clientWords.ts";
+  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { CONTACT_NOTIFICATION_LABELS } from "../bridge/contactNotifications.ts";
-  import { notificationSubject, notificationSubjectLabel, type NotificationFormats } from "../bridge/notificationFormats.ts";
+  import { notificationSubjectWording, type NotificationFormats } from "../bridge/notificationFormats.ts";
   import type { Notification } from "../bridge/notifications.ts";
   import type { ActivityNotificationRow } from "../store/types.ts";
   import {
@@ -102,7 +102,7 @@
     data: row.data ?? null,
   });
   function subjectOf(row: ActivityNotificationRow): string | null {
-    return formats === null ? null : notificationSubject(asNotification(row), formats, $words.templates, (kind, id) => resolvedName($names.resolved, kind, id, ""));
+    return formats === null ? null : notificationSubjectWording(asNotification(row), formats, $words.templates, (kind, id) => resolvedName($names.resolved, kind, id, "")).subject;
   }
   // The words of the subjects shown, and the names they are filled with, asked for.
   $effect(() => {
@@ -110,11 +110,9 @@
     if (known === null || $activity.notifications.status !== "ready") return;
     const labels = new Set<string>(Object.values(CONTACT_NOTIFICATION_LABELS));
     for (const row of $activity.notifications.value) {
-      const found = notificationSubjectLabel(asNotification(row), known, $words.templates);
-      if (found === null) continue;
-      labels.add(found.label);
-      const template = $words.templates[found.label];
-      if (typeof template === "string") flow.requestNames(templateNameRefs(template, found.args));
+      const wording = notificationSubjectWording(asNotification(row), known, $words.templates, (kind, id) => resolvedName($names.resolved, kind, id, ""));
+      for (const label of wording.labels) labels.add(label);
+      if (wording.refs.length > 0) flow.requestNames(wording.refs);
     }
     flow.requestWords([...labels]);
   });

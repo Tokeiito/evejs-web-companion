@@ -20,6 +20,17 @@ the data, or null. A formatter's labels are those its class is made with
 (BaseNotificationFormatter's subjectLabel and bodyLabel); a formatter that is a
 function, or a class that cannot be made here, has none.
 
+Each entry also has `described`: what its function makes of a notification,
+found by running the function on a notification whose data's values are
+stand-ins that say which value they are, with the client's helpers that word a
+part recorded (an owner's link, a place's, a type's, an amount of ISK, a date,
+a label's words with their parameters). For a parameter function, each
+parameter it adds; for a function or a formatter, the subject and the body.
+Each is run with the data's values read as true, as false, and once for each
+key it reads with that key not there; a part that comes out differently, or
+that the function does anything else with (compares, adds, prints), is null.
+The whole is null where the function cannot be run that way at all.
+
 The modules run are notificationconst, notificationUtil and every module under
 notifications/common, as the client compiled them. What they import of the rest
 of the client is stood in for: an object whose every attribute and call is
@@ -135,15 +146,268 @@ def text(value):
 def name_of(value):
     return getattr(value, '__name__', None)
 
+# What a function makes of a notification, described by running it.
+# A function is run on a notification whose data's every value is a Token, a stand-in that says which value of the
+# data it is; what the client's helpers are handed is recorded (a name's link, an amount of ISK, a date, a label's
+# words). Anything else done with a Token (compared, added, printed, its attribute read) is Unsure: the function
+# cannot be described. It is run twice, the data's values read once as true and once as false, and what comes out
+# the same both times is described; what does not, turned on a value, is not.
+
+class Unsure(Exception):
+    pass
+
+def unsure(*arguments, **keywords):
+    raise Unsure()
+
+class Token(object):
+    def __init__(self, path, truth):
+        self.path = path
+        self.truth = truth
+    def __nonzero__(self):
+        return self.truth
+    def __getitem__(self, index):
+        if not isinstance(index, (int, long, basestring)):
+            raise Unsure()
+        return Token(self.path + [index], self.truth)
+    def __hash__(self):
+        return id(self)
+    def __getattr__(self, name):
+        raise Unsure()
+    __eq__ = __ne__ = __lt__ = __le__ = __gt__ = __ge__ = __cmp__ = unsure
+    __str__ = __repr__ = __unicode__ = __int__ = __long__ = __float__ = __len__ = __iter__ = __contains__ = unsure
+    __add__ = __radd__ = __sub__ = __rsub__ = __mul__ = __rmul__ = __div__ = __rdiv__ = __truediv__ = __mod__ = __rmod__ = __neg__ = __abs__ = unsure
+
+class Marker(object):
+    def __init__(self, described):
+        self.described = described
+    def __nonzero__(self):
+        return True
+    def __hash__(self):
+        return id(self)
+    def __getattr__(self, name):
+        raise Unsure()
+    __eq__ = __ne__ = __lt__ = __le__ = __gt__ = __ge__ = __cmp__ = unsure
+    __str__ = __repr__ = __unicode__ = __int__ = __long__ = __float__ = __len__ = __iter__ = __contains__ = __getitem__ = unsure
+    __add__ = __radd__ = __mod__ = __rmod__ = unsure
+
+def describe(value):
+    if isinstance(value, Token):
+        return {'data': list(value.path)}
+    if isinstance(value, Marker):
+        return value.described
+    if value is None or isinstance(value, (bool, int, long, float, basestring)):
+        return {'value': value}
+    if isinstance(value, (list, tuple)):
+        return {'list': [describe(each) for each in value]}
+    raise Unsure()
+
+def literal_or_described(value):
+    return describe(value)
+
+def recorder(kind, keys):
+    def record(*arguments, **keywords):
+        made = {'kind': kind}
+        for place, key in enumerate(keys):
+            if place < len(arguments):
+                made[key] = describe(arguments[place])
+        if len(arguments) > len(keys):
+            made['more'] = [describe(each) for each in arguments[len(keys):]]
+        if keywords:
+            made['keywords'] = dict((key, describe(each)) for key, each in keywords.items())
+        return Marker(made)
+    return record
+
+def by_label(label, *arguments, **keywords):
+    if not isinstance(label, basestring) or arguments:
+        raise Unsure()
+    return Marker({'kind': 'label', 'label': label, 'params': dict((key, describe(each)) for key, each in keywords.items())})
+
+class Recording(object):
+    """The client's helpers that word a notification's parts, recorded: a stand-in for a module or a service."""
+    def __init__(self, names):
+        self.names = names
+    def __getattr__(self, name):
+        if name in self.names:
+            return self.names[name]
+        raise Unsure()
+
+class OwnerRecord(object):
+    def __init__(self, ownerID):
+        self.ownerID = ownerID
+    def __getattr__(self, name):
+        if name in ('name', 'ownerName'):
+            return Marker({'kind': 'ownerName', 'id': describe(self.ownerID)})
+        raise Unsure()
+
+class LocationRecord(object):
+    def __init__(self, locationID):
+        self.locationID = locationID
+    def __getattr__(self, name):
+        if name in ('name', 'locationName'):
+            return Marker({'kind': 'locationName', 'id': describe(self.locationID)})
+        raise Unsure()
+
+RECORDED = {
+    'CreateItemInfoLink': recorder('link', ['id']),
+    'CreateLocationInfoLink': recorder('location', ['id', 'typeID']),
+    'CreateTypeInfoLink': recorder('type', ['typeID']),
+    'GetShowInfoLink': recorder('showinfo', ['typeID', 'name', 'itemID']),
+    'FmtISK': recorder('isk', ['amount']),
+    'FmtDate': recorder('date', ['when', 'format']),
+    'GetByLabel': by_label,
+}
+RECORDED['localization'] = Recording({'GetByLabel': by_label, 'GetByMessageID': recorder('message', ['messageID'])})
+RECORDED['evefmt'] = RECORDED['eveFormat'] = Recording({'FmtISK': RECORDED['FmtISK'], 'FmtAmt': recorder('amount', ['amount'])})
+RECORDED['fmtutil'] = RECORDED['fmtUtils'] = Recording({'FmtDate': RECORDED['FmtDate'], 'FmtISK': RECORDED['FmtISK']})
+RECORDED['cfg'] = Recording({
+    'eveowners': Recording({'Get': lambda ownerID: OwnerRecord(ownerID)}),
+    'evelocations': Recording({'Get': lambda locationID: LocationRecord(locationID)}),
+})
+
+# What the client's modules reach for, recorded where it words a part and stood in for elsewhere.
+for __name, __module in list(sys.modules.items()):
+    if __name in REAL and __module is not None and hasattr(__module, '__dict__'):
+        for __key in list(__module.__dict__.keys()):
+            if __key in RECORDED:
+                __module.__dict__[__key] = RECORDED[__key]
+        __module.__dict__['cfg'] = RECORDED['cfg']
+sys.modules['localization'] = RECORDED['localization']
+
+class Data(dict):
+    """A notification's data: every key there, its value a Token, but `absent`, which is not; the keys read noted."""
+    def __init__(self, truth, absent, read):
+        dict.__init__(self)
+        self.truth = truth
+        self.absent = absent
+        self.read = read
+    def __missing__(self, key):
+        self.read.add(key)
+        if key == self.absent:
+            raise KeyError(key)
+        return Token([key], self.truth)
+    def get(self, key, default=None):
+        self.read.add(key)
+        if key == self.absent:
+            return default
+        return self[key]
+    def __contains__(self, key):
+        self.read.add(key)
+        return dict.__contains__(self, key) or key != self.absent
+    has_key = __contains__
+
+class Fake(object):
+    """A notification whose every value is a Token."""
+    def __init__(self, typeID, truth, util_format, absent=None, read=None):
+        self.typeID = typeID
+        self.data = Data(truth, absent, read if read is not None else set())
+        self.notificationID = Token(['notificationID'], truth)
+        self.senderID = Token(['notification_senderID'], truth)
+        self.receiverID = Token(['notification_receiverID'], truth)
+        self.created = Token(['notification_created'], truth)
+        self.subject = None
+        self.body = None
+        if util_format:
+            # notificationUtil.Format gives the data these three before a parameter function is called (1512 to 1515).
+            dict.__setitem__(self.data, 'notification_senderID', self.senderID)
+            dict.__setitem__(self.data, 'notification_receiverID', self.receiverID)
+            dict.__setitem__(self.data, 'notification_created', self.created)
+
+def agreed(first, second):
+    """Two descriptions of one part: the part where they are the same; a label's where only some of its parameters
+    differ, those set to None; None where they differ otherwise."""
+    if first == second:
+        return first
+    if (type(first) is dict and type(second) is dict and first.get('kind') == 'label' and second.get('kind') == 'label'
+            and first.get('label') == second.get('label')):
+        params = {}
+        for key in set(first['params'].keys()) | set(second['params'].keys()):
+            params[key] = agreed(first['params'].get(key), second['params'].get(key))
+        return {'kind': 'label', 'label': first['label'], 'params': params}
+    return None
+
+def twice(run):
+    """What `run(truth, absent, read)` makes of a fake notification: run with the data's values true and false, and
+    then once more for each key either run read, with that key not in the data. Each part is described where the
+    runs agree (agreed) and None where they differ; a run with a key absent that fails tells nothing (the client
+    fails there too), and one that does not is compared with the rest. None for the whole where the true or the
+    false run is Unsure."""
+    read = set()
+    made = []
+    for truth in (True, False):
+        try:
+            made.append(run(truth, None, read))
+        except Exception:
+            return None
+    first, second = made
+    if sorted(first.keys()) != sorted(second.keys()):
+        return None
+    parts = dict((key, agreed(first[key], second[key])) for key in first)
+    for absent in sorted(read, key=repr):
+        try:
+            without = run(True, absent, set())
+        except Exception:
+            continue
+        for key in parts:
+            parts[key] = agreed(parts[key], without.get(key)) if parts[key] is not None else None
+    return parts
+
+def walk(value):
+    if value is None:
+        return 'null'
+    if value is True:
+        return 'true'
+    if value is False:
+        return 'false'
+    if isinstance(value, (int, long)):
+        return str(value)
+    if isinstance(value, float):
+        return repr(value)
+    if isinstance(value, basestring):
+        return text(value)
+    if isinstance(value, dict):
+        return '{' + ','.join([text(str(key)) + ':' + walk(each) for key, each in sorted(value.items())]) + '}'
+    if isinstance(value, (list, tuple)):
+        return '[' + ','.join([walk(each) for each in value]) + ']'
+    return 'null'
+
+def parameters_of(typeID, function):
+    def run(truth, absent, read):
+        made = function(Fake(typeID, truth, True, absent, read))
+        if type(made) is not dict:
+            raise Unsure()
+        return dict((key, describe(each)) for key, each in made.items())
+    return twice(run)
+
+def worded_by_function(typeID, function):
+    def run(truth, absent, read):
+        made = function(Fake(typeID, truth, False, absent, read))
+        if type(made) is not tuple or len(made) != 2:
+            raise Unsure()
+        return {'subject': describe(made[0]), 'body': describe(made[1])}
+    return twice(run)
+
+def worded_by_formatter(typeID, value):
+    def run(truth, absent, read):
+        notification = Fake(typeID, truth, False, absent, read)
+        if isinstance(value, type):
+            value().Format(notification)
+            return {'subject': describe(notification.subject), 'body': describe(notification.body)}
+        made = value(notification)
+        if type(made) is tuple and len(made) == 2:
+            return {'subject': describe(made[0]), 'body': describe(made[1])}
+        return {'subject': describe(notification.subject), 'body': describe(notification.body)}
+    return twice(run)
+
 table = []
 for typeID, value in sorted(util.__dict__['formatters'].items()):
     if not isinstance(typeID, (int, long)):
         continue
     if type(value) is tuple:
         parameters = name_of(value[2]) if len(value) > 2 else None
-        table.append('"%d":{"subject":%s,"body":%s,"parameters":%s,"function":null}' % (typeID, text(value[0]), text(value[1]), text(parameters)))
+        described = parameters_of(typeID, value[2]) if len(value) > 2 else None
+        table.append('"%d":{"subject":%s,"body":%s,"parameters":%s,"function":null,"described":%s}' % (typeID, text(value[0]), text(value[1]), text(parameters), walk(described)))
     else:
-        table.append('"%d":{"subject":null,"body":null,"parameters":null,"function":%s}' % (typeID, text(name_of(value))))
+        table.append('"%d":{"subject":null,"body":null,"parameters":null,"function":%s,"described":%s}' % (typeID, text(name_of(value)), walk(worded_by_function(typeID, value))))
 
 formatters = []
 for typeID, value in sorted(mapping.__dict__['formatterByNotificationType'].items()):
@@ -161,7 +425,7 @@ for typeID, value in sorted(mapping.__dict__['formatterByNotificationType'].item
         subject = None
     if not isinstance(body, basestring):
         body = None
-    formatters.append('"%d":{"name":%s,"subject":%s,"body":%s}' % (typeID, text(name_of(value)), text(subject), text(body)))
+    formatters.append('"%d":{"name":%s,"subject":%s,"body":%s,"described":%s}' % (typeID, text(name_of(value)), text(subject), text(body), walk(worded_by_formatter(typeID, value))))
 
 __out = open(OUT, 'wb')
 __out.write('{"table":{' + ','.join(table) + '},"formatters":{' + ','.join(formatters) + '}}')
