@@ -487,6 +487,13 @@ import { decodeScriptValue } from "../bots/scriptCodec.ts";
 import { expandSubBots, hasSubBots, type BotResolution, type SubBotReference } from "../bots/subBots.ts";
 import { autoRejectInvitations } from "./autoRejectInvitations.ts";
 import { disableAutopilotAtEachWaypoint } from "./autopilotStopAtEachWaypoint.ts";
+import { routeData, routeJumps, routeMarkers, type RouteMarker } from "../nav/routeMarkers.ts";
+
+/** The route as the route panel shows it: its markers, each with its system's security, and its jumps. */
+export interface WaypointsRoute {
+  readonly markers: readonly (RouteMarker & { readonly security: number | null })[];
+  readonly jumps: number;
+}
 
 /**
  * What the player asked the mission bot to do (goal R36).
@@ -1999,6 +2006,8 @@ export interface AppFlow {
   requestAutopilotJumps(fromSystemID: number, toSystemIDs: readonly number[]): void;
   /** The autopilot's settings as the pilot has set them: only what has been set is there (nav/autopilotSettings.ts). */
   autopilotSettings(): StoredAutopilotSettings;
+  /** The route through the waypoints as the route panel shows it (infoPanelRoute.py UpdateRoute); null with none. */
+  routeOfWaypoints(): Promise<WaypointsRoute | null>;
   /**
    * Change one of the autopilot's settings, as the client's route panel does: kept for this character, and
    * what was worked out with the old settings forgotten. Each answers the settings as they now are. A route
@@ -9786,6 +9795,47 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return routeGraphLoading;
   }
 
+  /** A waypoint's system, as the route's resolver tells it: asked once for each place, and kept where it answered. */
+  const waypointSystems = new Map<number, number | null>();
+  async function waypointSystemOf(id: number): Promise<number | null> {
+    if (waypointSystems.has(id)) return waypointSystems.get(id) ?? null;
+    try {
+      const destination = await api.resolveDestination(id, callOptions);
+      let systemID = destination.solarSystemID;
+      if (systemID === null && destination.kind === "structure") {
+        systemID = (await api.resolveAccessibleStructure(id, callOptions)).solarSystemID;
+      }
+      waypointSystems.set(id, systemID ?? null);
+      return systemID ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The route as the route panel shows it (infoPanelRoute.py UpdateRoute and _GetNumJumps; nav/routeMarkers.ts): from
+   * the pilot's system through every waypoint, by the autopilot's own way with the pilot's settings, each marker with
+   * its system's security. Null with no waypoint, no system known for the pilot, or a waypoint no route reaches.
+   */
+  async function routeOfWaypoints(): Promise<WaypointsRoute | null> {
+    const waypoints = heldWaypoints();
+    const start = pilotPlace().solarSystemID;
+    if (waypoints.length === 0 || start === null) return null;
+    const graph = await loadRouteGraph();
+    for (const waypoint of waypoints) {
+      if (!(waypoint >= 30_000_000 && waypoint < 33_000_000)) await waypointSystemOf(waypoint);
+    }
+    const systemOf = (id: number): number | null => waypointSystems.get(id) ?? null;
+    const map = autopilotMap(graph);
+    const settings = autopilotSettingsFrom(autopilotSettings());
+    const data = routeData(start, waypoints, systemOf, (fromID, toID) => autopilotPath(map, fromID, toID, settings));
+    if (data === null) return null;
+    return {
+      markers: routeMarkers(data, waypoints, start, systemOf).map((marker) => ({ ...marker, security: graph.security(marker.solarSystemID) })),
+      jumps: routeJumps(data, start, systemOf),
+    };
+  }
+
   // The autopilot's settings, as the client keeps them: with the character, on this machine. Read when the
   // pilot at the helm is first asked about, and kept here from then on.
   const settingsStorage: SettingsStorage | null = options.storage !== undefined ? options.storage : typeof localStorage === "undefined" ? null : localStorage;
@@ -17012,6 +17062,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     droneRecovery: readonlySignal(recoverySignal),
     waypoints: waypointsView,
     autopilotOn: readonlySignal(autopilotSignal),
+    routeOfWaypoints,
     dialogsSaid: readonlySignal(dialogsSaidSignal),
     dismissDialog,
     quantityAsked: readonlySignal(quantityAskedSignal),

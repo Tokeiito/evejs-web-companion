@@ -19,7 +19,9 @@
   import { resolvedName, type NameRef } from "../store/names.ts";
   import { deriveDocked } from "./tabs.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
-  import { plainText } from "../bridge/clientWords.ts";
+  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
+  import { securityStatusColor, shownSecurity } from "../bridge/systemSecurity.ts";
+  import type { WaypointsRoute } from "../app/flow.ts";
   import { waypointNameKind } from "../nav/waypoints.ts";
   import { clickDisableAutopilotAtEachWaypoint, disableAutopilotAtEachWaypoint } from "../app/autopilotStopAtEachWaypoint.ts";
   import {
@@ -44,6 +46,8 @@
     removeWaypoint: "UI/Inflight/RemoveWaypoint",
     setDestination: "UI/Inflight/SetDestination",
     disableAtEachWaypoint: "UI/Map/MapPallet/cbDisableAtEachWaypoint",
+    jumps: "UI/Market/MarketQuote/NumberOfJumps",
+    markerJumps: "UI/Common/numberOfJumps",
   } as const;
 
   // svelte-ignore state_referenced_locally
@@ -54,6 +58,53 @@
   const words = store.words;
   // svelte-ignore state_referenced_locally
   const station = store.station;
+
+  // The route as the client's route panel shows it (infoPanelRoute.py UpdateRoute, 251 to 366): read again when the
+  // waypoints change or the pilot is in another system (flow.routeOfWaypoints, nav/routeMarkers.ts).
+  let routeShown = $state.raw<WaypointsRoute | null>(null);
+  const routeSystem = $derived($flight.status?.solarSystemID ?? null);
+  $effect(() => {
+    const kept = $waypoints;
+    void routeSystem;
+    if (kept.length === 0) {
+      routeShown = null;
+      return;
+    }
+    let live = true;
+    void flow.routeOfWaypoints().then((route) => {
+      if (live) routeShown = route;
+    }, () => {
+      if (live) routeShown = null;
+    });
+    return () => {
+      live = false;
+    };
+  });
+  $effect(() => {
+    const refs: NameRef[] = [];
+    for (const marker of routeShown?.markers ?? []) {
+      refs.push({ kind: "system", id: marker.solarSystemID }, { kind: "systemConstellation", id: marker.solarSystemID }, { kind: "systemRegion", id: marker.solarSystemID });
+    }
+    if (refs.length > 0) flow.requestNames(refs);
+  });
+  /** A label of the client's filled with a count, as plain text; the page's own words where it is not to hand. */
+  function countWord(label: string, args: Record<string, number>, own: string): string {
+    const template = $words.templates[label];
+    return typeof template === "string" ? plainText(formatTemplate(template, args, { nameOf: () => "" })) : own;
+  }
+  /**
+   * A marker's tooltip (AutopilotDestinationIcon.LoadTooltipPanel): the system and its rating, then its constellation
+   * and region (infoPanelSvc.GetSolarSystemTrace); the station's name where it is one; and the jumps to it.
+   */
+  function markerTip(marker: WaypointsRoute["markers"][number]): string {
+    const system = resolvedName($names.resolved, "system", marker.solarSystemID, "—");
+    const rating = marker.security === null ? "" : ` ${shownSecurity(marker.security).toFixed(1)}`;
+    const trace = `${system}${rating} < ${resolvedName($names.resolved, "systemConstellation", marker.solarSystemID, "—")} < ${resolvedName($names.resolved, "systemRegion", marker.solarSystemID, "—")}`;
+    const lines = [trace];
+    if (marker.kind === "station") lines.push(placeName(marker.destinationID));
+    if (marker.numJumps > 0) lines.push(countWord(ROUTE_WORDS.markerJumps, { numJumps: marker.numJumps }, `${marker.numJumps} jumps`));
+    return lines.join("\n");
+  }
 
   // The autopilot's settings, which the client's route panel has in its menu: the kind of route, the
   // security penalty, and whether the systems on the list are avoided (nav/autopilotSettings.ts). They are
@@ -270,11 +321,21 @@
      switched off there, or flies on where Disable Autopilot at Each Waypoint is unticked (nav/waypoints.ts,
      app/autopilotStopAtEachWaypoint.ts). -->
 <section class="route-panel">
-  <h2>{routeWord(ROUTE_WORDS.route, "Route")}</h2>
+  <h2>{routeWord(ROUTE_WORDS.route, "Route")}{#if routeShown !== null}{" "}<small>{countWord(ROUTE_WORDS.jumps, { num: routeShown.jumps }, `${routeShown.jumps} jumps`)}</small>{/if}</h2>
   {#if $waypoints.length === 0}
     <p class="empty">{routeWord(ROUTE_WORDS.noDestination, "Nowhere set")}</p>
   {:else}
     <p>{routeWord(ROUTE_WORDS.currentDestination, "Heading for")}: <strong>{placeName($waypoints[$waypoints.length - 1] ?? 0)}</strong></p>
+    {#if routeShown !== null && routeShown.markers.length > 0}
+      <!-- A marker for each place on the way (UpdateRoute 284 to 344): its system's security's colour, a waypoint's
+           and a station's each their own shape. -->
+      <div class="route-markers">
+        {#each routeShown.markers as marker, i (i)}
+          <span class="route-marker {marker.kind}" title={markerTip(marker)}
+            style:background-color={marker.security === null ? "grey" : securityStatusColor(marker.security)}></span>
+        {/each}
+      </div>
+    {/if}
     <ol class="route">
       {#each $waypoints as id (id)}
         <li>
@@ -500,3 +561,12 @@
     </section>
   {/if}
 {/if}
+
+<style>
+  /* The route's markers (infoPanelRoute.py: ROUTE_MARKERSIZE 8, ROUTE_MARKERGAP 2), each drawn in its system's
+     colour; a waypoint's and a station's marker each a shape of its own, where the client has a picture of each. */
+  .route-markers { display: flex; flex-wrap: wrap; gap: 2px; margin: 0.25rem 0; }
+  .route-marker { display: inline-block; width: 8px; height: 8px; }
+  .route-marker.waypoint { transform: rotate(45deg) scale(0.85); }
+  .route-marker.station { border-radius: 50%; }
+</style>
