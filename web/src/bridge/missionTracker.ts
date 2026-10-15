@@ -395,8 +395,11 @@ export const BUTTON_LABELS: Readonly<Record<Exclude<ButtonState, "none">, { read
   dropItemInMissionContainer: { label: "UI/Agents/Commands/OpenContainer", own: "Open it" },
 });
 
-/** BUTTON_DISABLED_STATES, as far as the page has them. */
-export const BUTTON_DISABLED: ReadonlySet<ButtonState> = new Set<ButtonState>(["destinationSet", "warping"]);
+/**
+ * BUTTON_DISABLED_STATES, as far as the page has them, and Approaching: StatefulButton.SetBusy disables the button in
+ * each of ACTIVE_BUTTON_STATES but Undocking.
+ */
+export const BUTTON_DISABLED: ReadonlySet<ButtonState> = new Set<ButtonState>(["destinationSet", "warping", "approaching"]);
 
 /** Where the pilot is, as the button goes by it. */
 export interface TrackerSituation {

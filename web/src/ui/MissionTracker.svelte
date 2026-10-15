@@ -23,6 +23,7 @@
   } from "../bridge/missionTracker.ts";
   import { resolvedName, type NameKind, type NameRef } from "../store/names.ts";
   import { flyingDistances } from "./flyingDistances.ts";
+  import { approachedBallID } from "../space/actionIndication.ts";
   import type { JsonValue } from "../bridge/wire.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -135,7 +136,7 @@
         solarSystemID,
         inSpace,
         warping,
-        approachingID: null,
+        approachingID: approachedBallID($space.snapshot),
         waypoints: $waypoints,
         lastWaypointSystemID,
         distanceToBookmark: distanceTo(objective.bookmark),
