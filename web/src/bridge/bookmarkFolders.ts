@@ -28,6 +28,7 @@
 
 import type { Ask } from "./ask.ts";
 import { decodeFolderList, type BookmarkFolder } from "./bookmarks.ts";
+import { moveBookmarks as moveBookmarksInto } from "./bookmarkWrites.ts";
 
 /** appConst.MAX_ACTIVE_SHARED_BOOKMARK_FOLDERS. */
 export const MAX_ACTIVE_SHARED_FOLDERS = 3;
@@ -53,8 +54,8 @@ export async function addToKnownFolders(act: Ask, folderID: number, isActive: bo
 
 /**
  * Moves the bookmarks `bookmarkIDs`, all in the folder `fromFolderID`, into the folder `toFolderID` (no subfolder):
- * the client's own move (bookmarkSvc.MoveOrCopyBookmarks, 691), which needs the pilot able to manage both folders.
- * Fails as the call fails.
+ * the client's own move (bookmarkSvc.MoveOrCopyBookmarks, 691), which needs the pilot able to manage both folders,
+ * made as the Locations window makes it. Fails as the call fails.
  */
 export async function moveBookmarks(act: Ask, fromFolderID: number, toFolderID: number, bookmarkIDs: readonly number[]): Promise<void> {
   if (!anID(fromFolderID) || !anID(toFolderID)) {
@@ -63,7 +64,7 @@ export async function moveBookmarks(act: Ask, fromFolderID: number, toFolderID: 
   if (bookmarkIDs.length === 0 || !bookmarkIDs.every(anID)) {
     throw new Error("There is no bookmark to move.");
   }
-  await act("accessGroupBookmarkMgr", "MoveBookmarksToFolderAndSubfolder", [fromFolderID, toFolderID, null, [...bookmarkIDs]]);
+  await moveBookmarksInto(act, fromFolderID, toFolderID, null, bookmarkIDs);
 }
 
 /** Switches the known folder `folderID` on or off: the Locations window's own write. Fails as the call fails (TooManyActiveFolders past the limit). */

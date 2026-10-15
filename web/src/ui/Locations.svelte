@@ -13,7 +13,11 @@
   // window (BookmarkWindow.svelte) for the station the pilot is docked in, or the ship's spot in space; the list is
   // read again once a place is saved.
   //
-  // A bookmark's row is chosen by a click (Ctrl adds to the choice), edited by a double click (EditBookmark), and has
+  // A bookmark's row is chosen by a click (Ctrl adds to the choice or takes it out, Shift chooses the rows from the one
+  // last chosen, as the client's scroll does), dragged (the rows chosen, where it is among them) onto a folder, a
+  // subfolder or another bookmark's row to move them there, or copy them with Shift held (DropInPlacesFolder and
+  // DropOnBookmark; bookmarkSvc.MoveOrCopyBookmarks: MoveBookmarksToFolderAndSubfolder or
+  // CopyBookmarksToFolderAndSubfolder), edited by a double click (EditBookmark), and has
   // the part of the client's bookmark menu the page offers (PlaceEntry.GetMenu, addressBookEntries.py 123 to 141;
   // menusvc.py BookmarkMenu, 1437 to 1534, as BookmarkChecker offers each): Show Info, Dock, Warp to Within (at the
   // pilot's own warp distance, or one of the seven its submenu offers, which also sets that distance), Approach
@@ -36,11 +40,11 @@
   // one, its Yes the folder window. The subfolder window is SubfolderWindow.svelte.
   //
   // Not here yet: the Search tab, the Agent Missions group (the agents' bookmarks), the folders the pilot may
-  // administer, a structure's Add Location, the rest of a bookmark's
-  // menu (a gate's jumps, the fleet's warps and broadcast, the map's and the camera's entries, avoiding a place,
-  // Move), a choice by Shift, and a shared bookmark shown dim before its delay has passed. Show Info shows a thing
-  // the page has read in space as that thing, and any other place by its type (the info window has no station or
-  // system of its own).
+  // administer, a structure's Add Location, the rest of a bookmark's menu (a gate's jumps, the fleet's warps and
+  // broadcast, the map's and the camera's entries, avoiding a place), things from other windows dropped here (an
+  // item's place saved), and a shared bookmark shown dim before its delay has passed. Show Info shows a thing the page
+  // has read in space as that thing, and any other place by its type (the info window has no station or system of its
+  // own).
   import { onMount } from "svelte";
   import { formatTemplate, plainText, type TemplateArguments } from "../bridge/clientWords.ts";
   import { resolvedName, type NameRef } from "../store/names.ts";
@@ -63,6 +67,7 @@
   import { showInfo, type InfoSubject } from "./showInfo.ts";
   import type { ActiveBookmarks, Bookmark, BookmarkFolder, Subfolder } from "../bridge/bookmarks.ts";
   import type { BookmarkPlace } from "../bridge/locationsList.ts";
+  import type { MovedOrCopied } from "../bridge/bookmarkWrites.ts";
   import BookmarkWindow from "./BookmarkWindow.svelte";
   import SubfolderWindow from "./SubfolderWindow.svelte";
   import FolderWindow from "./FolderWindow.svelte";
@@ -161,6 +166,7 @@
   const ACCESS_PERSONAL = 1;
   const ACCESS_VIEW = 2;
   const ACCESS_USE = 3;
+  const ACCESS_MANAGE = 4;
   const ACCESS_ADMIN = 5;
   const MAX_ONLINE_PERSONAL = 5;
   const MAX_ONLINE_SHARED = 3;
@@ -267,12 +273,110 @@
   let busy = $state(false);
 
   /** A click chooses the row; with Ctrl it is added to the choice, or taken out of it. */
+  /** The row last chosen by a click with no Shift (the scroll's lastSelected), by its place among the window's rows. */
+  let lastSelectedRow: number | null = null;
+
+  /**
+   * The scroll's SelectNode (carbonui/control/scroll.py, as PlaceEntry.OnClick asks it): a click chooses the row;
+   * Ctrl adds it to the choice or takes it out; Shift chooses the rows from the one last chosen to it, Ctrl and Shift
+   * adds them. The rows go in the window's order, as the scroll's nodes do.
+   */
   function rowClick(event: MouseEvent, bookmarkID: number): void {
-    if (event.ctrlKey || event.metaKey) {
+    const row = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+    const rows = row === null ? [] : [...(row.closest("section.locations")?.querySelectorAll<HTMLElement>("tr[data-bookmark-id]") ?? [])];
+    const at = row === null ? -1 : rows.indexOf(row);
+    const control = event.ctrlKey || event.metaKey;
+    const ranged = (): number[] => {
+      const [from, to] = (lastSelectedRow ?? at) < at ? [lastSelectedRow ?? at, at] : [at, lastSelectedRow ?? at];
+      return rows.slice(from, to + 1).map((each) => Number(each.dataset.bookmarkId)).filter((id) => Number.isSafeInteger(id) && id > 0);
+    };
+    const anchored = event.shiftKey && lastSelectedRow !== null && lastSelectedRow !== at && at >= 0 && lastSelectedRow < rows.length;
+    if (event.shiftKey && control) {
+      if (anchored) selected = [...new Set([...selected, ...ranged()])];
+    } else if (event.shiftKey) {
+      // The range from the row last chosen; that row stays the one a later Shift goes from.
+      if (anchored) {
+        selected = [...new Set(ranged())];
+        return;
+      }
+      selected = [bookmarkID];
+    } else if (control) {
       selected = selected.includes(bookmarkID) ? selected.filter((id) => id !== bookmarkID) : [...selected, bookmarkID];
     } else {
       selected = [bookmarkID];
     }
+    lastSelectedRow = at;
+  }
+
+  /** What a dragged row carries: the bookmarks' numbers. */
+  const BOOKMARK_DRAG = "application/x-evejs-bookmarks";
+  /** The folder or subfolder a drag is over, for its mark. */
+  let dropOver = $state<string | null>(null);
+
+  /** GetDragData (addressBookEntries.py 110 to 121): the rows chosen where the one dragged is among them, else it alone. */
+  function dragStart(event: DragEvent, bookmarkID: number): void {
+    const ids = selected.includes(bookmarkID) ? selected : [bookmarkID];
+    if (event.dataTransfer === null) return;
+    event.dataTransfer.setData(BOOKMARK_DRAG, JSON.stringify(ids));
+    event.dataTransfer.effectAllowed = "copyMove";
+  }
+
+  function dragOver(event: DragEvent, key: string): void {
+    if (event.dataTransfer === null || !event.dataTransfer.types.includes(BOOKMARK_DRAG)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = event.shiftKey ? "copy" : "move";
+    dropOver = key;
+  }
+
+  /** DropInPlacesFolder (bookmarksPanel.py 69 to 80): the dragged bookmarks moved there, or copied where Shift is held. */
+  function dropOn(event: DragEvent, folderID: number, subfolderID: number | null): void {
+    dropOver = null;
+    const raw = event.dataTransfer?.getData(BOOKMARK_DRAG) ?? "";
+    if (raw === "") return;
+    event.preventDefault();
+    let ids: number[] = [];
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      ids = Array.isArray(parsed) ? parsed.filter((id): id is number => Number.isSafeInteger(id) && id > 0) : [];
+    } catch {
+      ids = [];
+    }
+    if (ids.length > 0) moveOrCopyBookmarks(folderID, subfolderID, ids, event.shiftKey);
+  }
+
+  /**
+   * bookmarkSvc.MoveOrCopyBookmarks (678 to 711): each bookmark not already there is copied where Shift is held or its
+   * folder is one the pilot may not move from (not its own, managed or administered), else moved; a source folder's at
+   * once; a message the server answers is shown; and the list read again.
+   */
+  function moveOrCopyBookmarks(folderID: number, subfolderID: number | null, ids: readonly number[], forceCopy: boolean): void {
+    if (active === null) return;
+    const moves = new Map<number, number[]>();
+    const copies = new Map<number, number[]>();
+    for (const id of new Set(ids)) {
+      const bookmark = active.bookmarks.find((each) => each.bookmarkID === id);
+      if (bookmark === undefined) continue;
+      if (bookmark.subfolderID === subfolderID && bookmark.folderID === folderID) continue;
+      const source = active.folders.find((each) => each.folderID === bookmark.folderID);
+      const movable = source !== undefined && [ACCESS_PERSONAL, ACCESS_MANAGE, ACCESS_ADMIN].includes(source.accessLevel);
+      const into = forceCopy || !movable ? copies : moves;
+      into.set(bookmark.folderID, [...(into.get(bookmark.folderID) ?? []), id]);
+    }
+    if (moves.size === 0 && copies.size === 0) return;
+    notice = "";
+    void runAct(async () => {
+      const said: string[] = [];
+      const tell = (message: MovedOrCopied["message"]): void => {
+        if (message === null) return;
+        flow.requestWords([`dialog:${message.dialog}/body`]);
+        const values = message.values !== null && typeof message.values === "object" ? message.values as TemplateArguments : {};
+        said.push(filled(`dialog:${message.dialog}/body`, message.dialog, values));
+      };
+      for (const [oldFolderID, list] of moves) tell((await flow.moveBookmarks(oldFolderID, folderID, subfolderID, list)).message);
+      for (const [oldFolderID, list] of copies) tell((await flow.copyBookmarks(oldFolderID, folderID, subfolderID, list)).message);
+      await load();
+      if (said.length > 0) notice = said.join(" ");
+    });
   }
 
   /** The warp's submenu open, and its Set Default's. */
@@ -734,6 +838,13 @@
             <tr
               title={row.hint}
               class:locations-chosen={selected.includes(bookmark.bookmarkID)}
+              data-bookmark-id={bookmark.bookmarkID}
+              draggable="true"
+              class:locations-drop={dropOver === `row:${bookmark.bookmarkID}`}
+              ondragstart={(event) => dragStart(event, bookmark.bookmarkID)}
+              ondragover={(event) => dragOver(event, `row:${bookmark.bookmarkID}`)}
+              ondragleave={() => { if (dropOver === `row:${bookmark.bookmarkID}`) dropOver = null; }}
+              ondrop={(event) => dropOn(event, bookmark.folderID, bookmark.subfolderID)}
               onclick={(event) => rowClick(event, bookmark.bookmarkID)}
               ondblclick={() => editBookmark(bookmark)}
             >
@@ -943,7 +1054,15 @@
         {#if isOpen(sectionID)}
           {#each section.folders as entry (entry.folder.folderID)}
             {@const folderKey = `folder:${entry.folder.folderID}`}
-            <div class="locations-head">
+            <!-- A folder takes bookmarks dropped on it (its entry's DropData, DropInPlacesFolder). -->
+            <div
+              class="locations-head"
+              class:locations-drop={dropOver === folderKey}
+              role="group"
+              ondragover={(event) => dragOver(event, folderKey)}
+              ondragleave={() => { if (dropOver === folderKey) dropOver = null; }}
+              ondrop={(event) => dropOn(event, entry.folder.folderID, null)}
+            >
               {@render groupHead(folderKey, entry.folder.folderName, entry.count, 1, null)}
               {@render folderMenuButton(entry.folder)}
             </div>
@@ -951,7 +1070,15 @@
             {#if isOpen(folderKey)}
               {#each entry.subfolders as sub (sub.subfolder.subfolderID)}
                 {@const subKey = `subfolder:${sub.subfolder.subfolderID}`}
-                <div class="locations-head">
+                <!-- A subfolder takes them too (GetSubfolderEntry's DropData). -->
+                <div
+                  class="locations-head"
+                  class:locations-drop={dropOver === subKey}
+                  role="group"
+                  ondragover={(event) => dragOver(event, subKey)}
+                  ondragleave={() => { if (dropOver === subKey) dropOver = null; }}
+                  ondrop={(event) => dropOn(event, sub.subfolder.folderID, sub.subfolder.subfolderID)}
+                >
                   {@render groupHead(subKey, subfolderLine(sub.subfolder), sub.bookmarks.length, 2, null)}
                   {@render subfolderMenu(sub.subfolder, 2)}
                 </div>
@@ -1012,6 +1139,11 @@
   }
   .locations-head > .locations-submenu {
     flex-basis: 100%;
+  }
+  /* A folder or a subfolder a drag is over: outlined, not only coloured. */
+  .locations-drop {
+    outline: 2px dashed currentColor;
+    outline-offset: 2px;
   }
   .bookmark-confirm {
     border: 1px solid currentColor;

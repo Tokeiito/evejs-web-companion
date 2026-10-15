@@ -360,21 +360,6 @@ const oneBoolAlone = (args, kwargs) => (args.length === 1 && typeof args[0] === 
 const folderAndState = (args, kwargs) => (args.length === 2 && Number.isSafeInteger(args[0]) && args[0] > 0 && typeof args[1] === "boolean" && Object.keys(kwargs).length === 0
   ? {}
   : { status: "differs", note: "The client sends the folder's ID and whether it is active, and nothing else." });
-/**
- * bookmarkSvc.MoveOrCopyBookmarks (691): MoveBookmarksToFolderAndSubfolder(oldFolderID, folderID, subfolderID,
- * bookmarkIDs), the bookmarks a set (the values of a defaultdict(set)), which Python reduces to (set, ([...],)). A
- * route gives a list.
- */
-const movingBookmarks = (args, kwargs) => {
-  const anID = (value) => Number.isSafeInteger(value) && value > 0;
-  const [from, to, subfolder, bookmarkIDs] = args;
-  const ids = Array.isArray(bookmarkIDs) ? bookmarkIDs : null;
-  if (args.length !== 4 || !anID(from) || !anID(to) || !(subfolder === null || anID(subfolder)) || ids === null || ids.length === 0 || !ids.every(anID)
-    || Object.keys(kwargs).length !== 0) {
-    return { args, kwargs, status: "differs", note: "The client sends the folder the bookmarks are in, the folder and subfolder (or None) they go to, and a set of them." };
-  }
-  return { args: [from, to, subfolder, { type: "objectex1", header: [token("__builtin__.set"), [{ type: "list", items: dictOrder(ids) }]], list: [], dict: [] }], kwargs };
-};
 /** Items' IDs as the client's repair shop lists them: whole numbers above nought, and one at least. */
 const itemIDsListed = (value) => Array.isArray(value) && value.length > 0 && value.every((each) => Number.isSafeInteger(each) && each > 0);
 /** repair.GetRepairQuotes (base_repairshop.py 63): GetRemoteRepairMgr().GetRepairQuotes(itemIDs), the IDs a list. */
@@ -744,6 +729,8 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // A shared folder disconnected from (bookmarkSvc.py 460), and an access list the pilot has not got asked by its
   // number (accessGroupsController.py 184). The gateway's list has neither.
   "accessGroupBookmarkMgr.RemoveFromKnownFolders", "ownerGroupManager.GetGroup",
+  // Bookmarks copied into a folder (bookmarkSvc.py 701). The gateway's list has their moving and not this.
+  "accessGroupBookmarkMgr.CopyBookmarksToFolderAndSubfolder",
   // A shared bookmark folder taken up, as the client's bookmark service makes it (bookmarkSvc.py 357). The gateway's
   // list has it not: through the gateway a pilot cannot.
   "accessGroupBookmarkMgr.AddToKnownFolders",
@@ -1235,6 +1222,22 @@ const listAsked = (args, kwargs) => (args.length === 1 && aBookmarkFolderID(args
 const folderAsked = (args, kwargs) => (args.length === 1 && aBookmarkFolderID(args[0]) && Object.keys(kwargs).length === 0
   ? {}
   : { status: "differs", note: "The client sends the folder's number and nothing else." });
+
+/**
+ * bookmarkSvc.MoveOrCopyBookmarks (678 to 711): MoveBookmarksToFolderAndSubfolder and CopyBookmarksToFolderAndSubfolder,
+ * each (oldFolderID, folderID, subfolderID, bookmarks), the subfolder None for the folder itself and the bookmarks a
+ * source folder's set (a defaultdict(set)'s), which Python reduces to (set, ([...],)). A list given is made the set.
+ */
+const bookmarksMovedOrCopied = (args, kwargs) => {
+  const [oldFolderID, folderID, subfolderID, given] = args;
+  const listed = Array.isArray(given) ? given : given && given.type === "list" && Array.isArray(given.items) ? given.items : null;
+  const ids = listed === null ? null : listed.map(wholeKey);
+  if (!(args.length === 4 && aBookmarkFolderID(oldFolderID) && aBookmarkFolderID(folderID) && anAccessList(subfolderID)
+    && ids !== null && ids.length > 0 && ids.every((id) => id !== null) && Object.keys(kwargs).length === 0)) {
+    return { args, kwargs, status: "differs", note: "The client sends the folder the bookmarks are in, the folder and the subfolder (or None) they go to, and the bookmarks, and nothing else." };
+  }
+  return { args: [oldFolderID, folderID, subfolderID, { type: "objectex1", header: [token("__builtin__.set"), [{ type: "list", items: dictOrder(ids) }]], list: [], dict: [] }], kwargs, status: "reshaped" };
+};
 
 const following = (args, kwargs, context) => {
   const [thing, range] = args;
@@ -2145,12 +2148,14 @@ const RETAIL_CALLS = Object.freeze({
     "self.remoteSvc.GetGroup(groupID), of ownerGroupManager by its name: an access list that is none of the pilot's, asked where its name is wanted (GetGroupInfoFromID with fetchToServer: a folder's lists in the folder window and in Folder Information). Answered the list. In no recording."),
   "ownerGroupManager.GetMyGroups": judged("eve/client/script/ui/structure/accessGroups/accessGroupsController.py:105", sentWithNothing,
     "self.remoteSvc.GetMyGroups(), of ownerGroupManager by its name and with nothing: the pilot's access lists, asked once and kept by the client's controller; the folder window offers a shared folder's access levels from them. In no recording."),
+  "accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder": reshaped("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:690", bookmarksMovedOrCopied,
+    "self.accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder(oldFolderID, folderID, subfolderID, bookmarkIDs): bookmarks dropped on a folder or a subfolder of the Locations window (DropInPlacesFolder), each source folder's a set; answered the rows moved and a message or None. In no recording."),
+  "accessGroupBookmarkMgr.CopyBookmarksToFolderAndSubfolder": reshaped("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:701", bookmarksMovedOrCopied,
+    "self.accessGroupBookmarkMgr.CopyBookmarksToFolderAndSubfolder(oldFolderID, folderID, subfolderID, bookmarkIDs): the same drop with Shift held, or from a folder the pilot may only view or use; answered the new bookmarks by number and a message or None. In no recording."),
   "accessGroupBookmarkMgr.GetMyActiveBookmarks": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:163", sentWithNothing,
     "folders, bookmarks, subfolders = self.accessGroupBookmarkMgr.GetMyActiveBookmarks(), by name and with nothing: recorded on Tranquility so, in three recordings. The client asks once in a session and keeps the three, changing them as it makes, changes and deletes a bookmark and as the server says a shared folder changed. The transport asks as a character is chosen and keeps the three (pilots.js, bookmarksRead): a place bookmarked on the ballpark's object is worked into them as the client works it (afterBookmarkCall), and they are let go at any other write of the pilot's own of a bookmark, a folder or a subfolder and at the server's word of a shared folder, and asked for when they are next wanted. The page asks each time it wants them, and is answered from what is kept."),
   "accessGroupBookmarkMgr.SearchFoldersWithAdminAccess": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:715", sentWithNothing,
     "self.accessGroupBookmarkMgr.SearchFoldersWithAdminAccess(), by name and with nothing, kept two minutes (Memoize(2)): the pilot's personal folders and the shared folders it administers, which is how the Locations panel finds a folder to add by its name (bookmarksPanel.py 638). No recording has one."),
-  "accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder": reshaped("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:691", movingBookmarks,
-    "self.accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder(oldFolderID, folderID, subfolderID, bookmarkIDs), by name, once for each folder the bookmarks are in, the bookmarks a set. It answers the rows moved and a message or None. No recording has one."),
   "accessGroupBookmarkMgr.AddToKnownFolders": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:357", folderAndState,
     "self.accessGroupBookmarkMgr.AddToKnownFolders(folderID, isActive), by name, from the window that adds a shared folder (linkedBookmarkFolderWindow.py 173). It answers the folder, and its bookmarks and subfolders where it is active. No recording has one."),
   "beyonce.BookmarkLocation": typing(reshaped("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:617", bookmarking,
