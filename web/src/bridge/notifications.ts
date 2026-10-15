@@ -26,14 +26,24 @@
 // numeric field for a future UI to resolve to a name — never rendered as a
 // number, never forced into a label. An empty array is a REAL "no notifications"
 // answer (Farmer's own GetByGroupID/GetUnprocessed can legitimately be empty).
+//
+// Tranquility's answer to the three reads is a CRowset (carbon.common.script.sys.crowset.CRowset) of DBRows of
+// eight columns, notificationID, typeID, senderID, receiverID, processed, created, data and deleted, the data the
+// notification's data as YAML text (its recordings: "Logging In To Space.txt", "Resign As CEO - Corp Disbands.txt";
+// notificationSvc.py TryUnYamlNotificationData loads it), and EveJS answers so (eve.js notificationState.js
+// buildNotificationRowset). Both shapes are read: a row a KeyVal or a packed row, the data a dict as it came or
+// YAML text read as the client's loader reads it (notificationYaml.ts).
 
 import {
   isKeyValValue,
-  readKeyVal,
+  isListValue,
+  isPackedRowValue,
   readPlainJsonField,
+  readRowField,
   unwrapLong,
   type JsonValue,
 } from "./wire.ts";
+import { notificationDataOfYaml } from "./notificationYaml.ts";
 
 /** One notification, envelope decoded; its per-type `data` carried raw. */
 export interface Notification {
@@ -64,21 +74,42 @@ function toNumber(value: JsonValue | undefined): number {
   return 0;
 }
 
-/** Decode one notification KeyVal DTO. undefined when the value is not a KeyVal. */
+/** A row's data: YAML text read as the client's loader reads it (null where it cannot be), anything else as it came. */
+function dataOf(value: JsonValue | undefined): JsonValue | null {
+  if (value === undefined) return null;
+  if (typeof value === "string") return notificationDataOfYaml(value);
+  if (value !== null && typeof value === "object" && !Array.isArray(value) && (value as { type?: unknown }).type === "wstring") {
+    return notificationDataOfYaml(String((value as { value?: unknown }).value ?? ""));
+  }
+  return value;
+}
+
+/** Decode one notification row, a KeyVal DTO or a CRowset's DBRow. undefined when the value is neither. */
 function decodeNotification(row: JsonValue): Notification | undefined {
-  if (!isKeyValValue(row)) {
+  if (!isKeyValValue(row) && !isPackedRowValue(row)) {
     return undefined;
   }
-  const data = readKeyVal(row, "data");
+  const processed = readRowField(row, "processed");
   return {
-    notificationID: toNumber(readKeyVal(row, "notificationID")),
-    typeID: toNumber(readKeyVal(row, "typeID")),
-    senderID: toNumber(readKeyVal(row, "senderID")),
-    receiverID: toNumber(readKeyVal(row, "receiverID")),
-    processed: readKeyVal(row, "processed") === true,
-    created: unwrapLong(readKeyVal(row, "created")),
-    data: data === undefined ? null : data,
+    notificationID: toNumber(readRowField(row, "notificationID")),
+    typeID: toNumber(readRowField(row, "typeID")),
+    senderID: toNumber(readRowField(row, "senderID")),
+    receiverID: toNumber(readRowField(row, "receiverID")),
+    processed: processed === true || processed === 1,
+    created: unwrapLong(readRowField(row, "created")),
+    data: dataOf(readRowField(row, "data")),
   };
+}
+
+/** The rows of a read's answer: a bare array, a list, or a CRowset (its rows on `list`). */
+export function notificationRows(result: JsonValue | null | undefined): readonly JsonValue[] {
+  if (Array.isArray(result)) return result;
+  if (isListValue(result)) return result.items;
+  if (result !== null && typeof result === "object" && !Array.isArray(result)) {
+    const list = (result as { list?: unknown }).list;
+    if (Array.isArray(list)) return list as JsonValue[];
+  }
+  return [];
 }
 
 /**
@@ -90,11 +121,8 @@ function decodeNotification(row: JsonValue): Notification | undefined {
 export function decodeNotifications(
   result: JsonValue | null | undefined,
 ): readonly Notification[] {
-  if (!Array.isArray(result)) {
-    return [];
-  }
   const notifications: Notification[] = [];
-  for (const row of result) {
+  for (const row of notificationRows(result)) {
     const decoded = decodeNotification(row);
     if (decoded) {
       notifications.push(decoded);

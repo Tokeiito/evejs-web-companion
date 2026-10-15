@@ -206,7 +206,7 @@ import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey } from "../b
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { isListValue, readDictEntry, readDictPairs, type JsonValue } from "../bridge/wire.ts";
-import { decodeNotifications, type Notification } from "../bridge/notifications.ts";
+import { decodeNotifications, notificationRows, type Notification } from "../bridge/notifications.ts";
 import { isCommunicationType } from "../bridge/contactNotifications.ts";
 import { decodeNotificationFormats, type NotificationFormats } from "../bridge/notificationFormats.ts";
 /** notificationconst.groupContacts: the contacts' notifications' group. */
@@ -4322,8 +4322,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             `Skill notifications could not be refreshed. ${errorWords(skillResult.reason)}`,
           );
 
-    // Each read answered, or why it was not, as the decoder takes them: a list, its items.
-    const listOf = (value: JsonValue): JsonValue => (isListValue(value) ? value.items : value);
+    // Each read answered, or why it was not, as the decoder takes them: its rows (a CRowset's, as Tranquility answers
+    // the notification reads, or a list's items).
+    const listOf = (value: JsonValue): JsonValue => [...notificationRows(value)];
     const notificationReads: ReturnType<typeof decodeActivityNotifications> = decodeActivityNotifications({
       all: notificationResult.status === "fulfilled" ? listOf(notificationResult.value) : null,
       unprocessed: unprocessedResult.status === "fulfilled" ? listOf(unprocessedResult.value) : null,
