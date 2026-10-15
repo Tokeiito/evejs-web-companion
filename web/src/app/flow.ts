@@ -270,17 +270,21 @@ import {
   type SystemGraph,
 } from "../nav/routeSolver.ts";
 import { systemGraphOnce } from "../nav/systemGraphKept.ts";
-import { autopilotDistances, autopilotJumpCounts, autopilotMap, autopilotPath, type AutopilotRouteType, type AutopilotSettings } from "../nav/autopilotRoute.ts";
+import { autopilotDistances, autopilotJumpCounts, autopilotMap, autopilotPath, type AutopilotMap, type AutopilotRouteType, type AutopilotSettings } from "../nav/autopilotRoute.ts";
+import { availableJumpGateJumps, type JumpGateJump } from "../nav/jumpGates.ts";
+import { decodeJumpBridgesWithMyAccess } from "../bridge/structures.ts";
 import {
   AVOIDING_DIALOGS,
   autopilotSettingsFrom,
   avoidanceItems,
   avoidanceTickOn,
+  includingJumpGates,
   loadAutopilotSettings,
   saveAutopilotSettings,
   withAvoidanceItem,
   withAvoidanceTickClicked,
   withAvoidSystemsClicked,
+  withIncludeJumpGatesClicked,
   withoutAvoidanceItem,
   withPenalty,
   withRouteType,
@@ -2107,6 +2111,8 @@ export interface AppFlow {
   clickAutopilotAvoidSystems(): StoredAutopilotSettings;
   /** One of the ticks that add a list of the server's (pod kills, Triglavian and EDENCOM systems) clicked. */
   clickAutopilotAvoidanceTick(tick: AvoidanceTick): StoredAutopilotSettings;
+  /** Include Jump Gates clicked: the jump gates the pilot may take read again, and the route optimized. */
+  clickIncludeJumpGates(): StoredAutopilotSettings;
   /** A location's Avoid (menusvc.py 2030 to 2031: AddAvoidanceItem): a known-space system, constellation or region put on the list. */
   avoidLocation(id: number): StoredAutopilotSettings;
   /** A location's Do Not Avoid (2032 to 2033: RemoveAvoidanceItem): taken off the list, and avoiding set back to not set. */
@@ -9985,7 +9991,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         if (!(await askDialog("AskAreYouSure", { type: "dict", entries: [["cons", cons]] }, `Put ${route.originalCount} waypoints in their best order?`))) return;
       }
       const graph = await loadRouteGraph();
-      const map = autopilotMap(graph);
+      const map = await pathfinderMap(graph);
       const settings = await pathfinderSettings(graph);
       const targets = [...route.systems, current];
       const countsFrom = new Map<number, Map<number, number | null>>();
@@ -10024,7 +10030,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (!(waypoint >= 30_000_000 && waypoint < 33_000_000)) await waypointSystemOf(waypoint);
     }
     const systemOf = (id: number): number | null => waypointSystems.get(id) ?? null;
-    const map = autopilotMap(graph);
+    const map = await pathfinderMap(graph);
     const settings = await pathfinderSettings(graph);
     const data = routeData(start, waypoints, systemOf, (fromID, toID) => autopilotPath(map, fromID, toID, settings));
     if (data === null) return null;
@@ -10100,6 +10106,47 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return lists;
   }
 
+  // The jump gates the pathfinder may take (nav/jumpGates.ts), as the client's pathfinder service keeps them
+  // (lastJumpGatesLoaded): read as the pathfinder is first wanted for a pilot (Initialize, 190 to 203), read again when
+  // Include Jump Gates is clicked (UpdateJumpGates by OnMapShowsJumpGatesChanged) and each hour (autopilot.py 207,
+  // UpdateJumpGatesTimerThread). None while the tick is off; a read that fails gives none, and is not kept.
+  const JUMP_GATES_READ_AGAIN_MS = 60 * 60 * 1000;
+  let jumpGatesKept: { readonly characterID: number | null; readonly readAt: number; readonly jumps: readonly JumpGateJump[] } | null = null;
+  async function availableJumpGates(graph: SystemGraph): Promise<readonly JumpGateJump[]> {
+    const characterID = onlineCharacterID();
+    const kept = jumpGatesKept;
+    if (kept !== null && kept.characterID === characterID && Date.now() - kept.readAt < JUMP_GATES_READ_AGAIN_MS) return kept.jumps;
+    if (!includingJumpGates(autopilotSettings())) {
+      jumpGatesKept = { characterID, readAt: Date.now(), jumps: [] };
+      return [];
+    }
+    let access: ReturnType<typeof decodeJumpBridgesWithMyAccess>;
+    try {
+      access = decodeJumpBridgesWithMyAccess(await bridgeAsk("structureDirectory", "GetJumpBridgesWithMyAccess", []));
+    } catch {
+      return [];
+    }
+    const jumps = availableJumpGateJumps(access, (fromSystemID, toSystemID) => graph.neighbors(fromSystemID).some((edge) => edge.toSystemID === toSystemID));
+    jumpGatesKept = { characterID, readAt: Date.now(), jumps };
+    return jumps;
+  }
+  /** The pathfinder's map: the stargates' jumps and the jump gates the pilot may take. */
+  async function pathfinderMap(graph: SystemGraph): Promise<AutopilotMap> {
+    return autopilotMap(graph, await availableJumpGates(graph));
+  }
+
+  /**
+   * Include Jump Gates clicked (infoPanelRoute.py OnCheckBoxUseJumpGates, 196 to 200): the setting its opposite, then
+   * OnMapShowsJumpGatesChanged (autopilot.py UpdateJumpGatesAndRoute, 634 to 637): the jump gates read again, and the
+   * route optimized.
+   */
+  function clickIncludeJumpGates(): StoredAutopilotSettings {
+    jumpGatesKept = null;
+    const stored = changeAutopilotSettings(withIncludeJumpGatesClicked);
+    void optimizeRoute().catch(() => undefined);
+    return stored;
+  }
+
   /**
    * One of the route panel's avoiding ticks clicked (infoPanelRoute.py 163 to 189): the setting changed, and where it
    * is turned on, the tick's warning put up first.
@@ -10156,7 +10203,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const currentSystemID = pilotPlace().solarSystemID;
     if (waypoints.length === 0 || currentSystemID === null) return null;
     const graph = await loadRouteGraph();
-    const map = autopilotMap(graph);
+    const map = await pathfinderMap(graph);
     const settings = await pathfinderSettings(graph);
     const parentsOf = (id: number | null): number[] => {
       const out: number[] = [];
@@ -10223,7 +10270,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function autopilotDistancesFrom(fromSystemID: number): Promise<Map<number, number>> {
     const stored = autopilotSettings();
     const graph = await loadRouteGraph();
-    return autopilotDistances(autopilotMap(graph), fromSystemID, await pathfinderSettings(graph, stored));
+    return autopilotDistances(await pathfinderMap(graph), fromSystemID, await pathfinderSettings(graph, stored));
   }
 
   // The jumps on the autopilot's route, worked out here as the client works them out
@@ -10242,9 +10289,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     void loadRouteGraph()
       .then(async (graph) => {
         const settings = await pathfinderSettings(graph, stored);
+        const map = await pathfinderMap(graph);
         // The settings changed while the server's lists were read: what was worked out with the old is not kept.
         if (autopilotSettings() !== stored) return;
-        const counts = autopilotJumpCounts(autopilotMap(graph), fromSystemID, wanted, settings);
+        const counts = autopilotJumpCounts(map, fromSystemID, wanted, settings);
         store.apply({ type: "names/autopilot-jumps", jumps: Object.fromEntries([...counts].map(([toID, count]) => [keyOf(toID), count])) });
       })
       // Without the map nothing is kept: a later ask reads it again.
@@ -10777,13 +10825,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // 4. Solve the route: the one the client's autopilot plots with its settings as they come, the safe
     //    way and round the systems it avoids unless the pilot has set it otherwise (nav/autopilotRoute.ts,
     //    nav/autopilotSettings.ts), not the fewest jumps.
-    const way = autopilotPath(autopilotMap(graph), originSystem, targetSystemID, await pathfinderSettings(graph));
-    // The way is through this same map, so each of its jumps has a gate.
+    const way = autopilotPath(await pathfinderMap(graph), originSystem, targetSystemID, await pathfinderSettings(graph));
+    // Each of the way's jumps is a stargate's, but where Include Jump Gates lets it go through an Ansiblex: a jump no
+    // stargate makes, which this page's loop does not fly yet (the client's autopilot does: autopilot.py 348 to 389).
     const route = way === null ? null : routeAlong(graph, way);
-    if (route === null) {
-      return planFailed(
-        `No gate route from ${graph.systemName(originSystem) ?? originSystem} to ${structure?.solarSystemName ?? destination.systemName ?? targetSystemID}.`,
-      );
+    if (route === null || !route.reachable) {
+      return planFailed(route === null
+        ? `No gate route from ${graph.systemName(originSystem) ?? originSystem} to ${structure?.solarSystemName ?? destination.systemName ?? targetSystemID}.`
+        : "The route goes through a jump gate, which this page's autopilot does not fly yet.");
     }
 
     const destinationStationID = structure?.id ?? (destination.kind === "station" ? destination.stationID : null);
@@ -18786,6 +18835,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     setAutopilotPenalty: (penalty) => changeAutopilotSettings((stored) => withPenalty(stored, penalty)),
     clickAutopilotAvoidSystems: () => clickAvoidingTick("pfAvoidSystems"),
     clickAutopilotAvoidanceTick: (tick) => clickAvoidingTick(tick),
+    clickIncludeJumpGates,
     avoidLocation: (id) => changeAutopilotSettings((stored) => withAvoidanceItem(stored, id)),
     stopAvoidingLocation: (id) => changeAutopilotSettings((stored) => withoutAvoidanceItem(stored, id)),
 

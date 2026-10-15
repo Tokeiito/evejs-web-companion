@@ -33,8 +33,11 @@
 // (mapSvc.ExpandItems). Taking one off also sets the tick back to not set (pathfinder.py RemoveAvoidanceItem:
 // SetSystemAvoidance(None), which the settings read as never set), so avoiding is on again.
 //
-// Not done: jump gates. (Stopping at each waypoint is the user's, not the character's:
-// app/autopilotStopAtEachWaypoint.ts.)
+// And pathFinder_includeJumpGates, off until set: whether the pathfinder may take the Ansiblex jump gates the pilot may
+// use (nav/jumpGates.ts). Its click sets it to its opposite (infoPanelRoute.py OnCheckBoxUseJumpGates, 196 to 200);
+// the jump gates are then read again and the route optimized (autopilot.py OnMapShowsJumpGatesChanged, 634 to 641).
+//
+// (Stopping at each waypoint is the user's, not the character's: app/autopilotStopAtEachWaypoint.ts.)
 
 import { DEFAULT_AUTOPILOT_SETTINGS, isKnownSpaceSystem, type AutopilotRouteType, type AutopilotSettings } from "./autopilotRoute.ts";
 
@@ -47,6 +50,17 @@ export interface StoredAutopilotSettings {
   readonly pfAvoidPodKill?: boolean;
   readonly pfAvoidTriglavianTales?: boolean;
   readonly pfAvoidEdencomSystems?: boolean;
+  readonly pathFinder_includeJumpGates?: boolean;
+}
+
+/** Whether the pathfinder may take jump gates (GetAvailableJumpGateJumps), and what the tick shows: off until set. */
+export function includingJumpGates(stored: StoredAutopilotSettings): boolean {
+  return stored.pathFinder_includeJumpGates ?? false;
+}
+
+/** Include Jump Gates clicked (OnCheckBoxUseJumpGates): the opposite of what it is. */
+export function withIncludeJumpGatesClicked(stored: StoredAutopilotSettings): StoredAutopilotSettings {
+  return { ...stored, pathFinder_includeJumpGates: !includingJumpGates(stored) };
 }
 
 /** The ticks for the server's lists, in the order the route panel has them (infoPanelRoute.py 109 to 111). */
@@ -169,6 +183,7 @@ export const ROUTE_SETTING_LABELS = Object.freeze({
   pfAvoidPodKill: "UI/Map/MapPallet/cbAdvoidPodkill",
   pfAvoidTriglavianTales: "UI/Map/MapPallet/cbAvoidTriglavianTales",
   pfAvoidEdencomSystems: "UI/Map/MapPallet/cbAvoidEdencomSystems",
+  includeJumpGates: "UI/Map/MapPallet/IncludeJumpGates",
 });
 export const ROUTE_SETTING_WORD_LABELS: readonly string[] = Object.values(ROUTE_SETTING_LABELS);
 /** This page's own words for them, for when the client's are not to hand. */
@@ -181,6 +196,7 @@ const OWN_WORDS: Readonly<Record<keyof typeof ROUTE_SETTING_LABELS, string>> = O
   pfAvoidPodKill: "Avoid where pods were killed",
   pfAvoidTriglavianTales: "Avoid the Triglavians' minor victories",
   pfAvoidEdencomSystems: "Avoid EDENCOM's systems",
+  includeJumpGates: "Take jump gates",
 });
 
 /** The words for one of the settings: the client's where its text is to hand (given as plain text), this page's own where not. */
@@ -213,7 +229,8 @@ export function loadAutopilotSettings(storage: SettingsStorage | null, character
   if (kept === null) {
     return {};
   }
-  const { pfRouteType, pfPenalty, pfAvoidSystems, autopilot_avoidance2, pfAvoidPodKill, pfAvoidTriglavianTales, pfAvoidEdencomSystems } = kept as Record<string, unknown>;
+  const { pfRouteType, pfPenalty, pfAvoidSystems, autopilot_avoidance2, pfAvoidPodKill, pfAvoidTriglavianTales, pfAvoidEdencomSystems, pathFinder_includeJumpGates } =
+    kept as Record<string, unknown>;
   return {
     ...(typeof pfRouteType === "string" && ROUTE_TYPES.includes(pfRouteType) ? { pfRouteType: pfRouteType as AutopilotRouteType } : {}),
     ...(typeof pfPenalty === "number" && Number.isFinite(pfPenalty) ? { pfPenalty } : {}),
@@ -222,6 +239,7 @@ export function loadAutopilotSettings(storage: SettingsStorage | null, character
     ...(typeof pfAvoidPodKill === "boolean" ? { pfAvoidPodKill } : {}),
     ...(typeof pfAvoidTriglavianTales === "boolean" ? { pfAvoidTriglavianTales } : {}),
     ...(typeof pfAvoidEdencomSystems === "boolean" ? { pfAvoidEdencomSystems } : {}),
+    ...(typeof pathFinder_includeJumpGates === "boolean" ? { pathFinder_includeJumpGates } : {}),
   };
 }
 
