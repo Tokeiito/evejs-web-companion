@@ -13,9 +13,16 @@
   // window (BookmarkWindow.svelte) for the station the pilot is docked in, or the ship's spot in space; the list is
   // read again once a place is saved.
   //
+  // A bookmark's row is chosen by a click (Ctrl adds to the choice), edited by a double click (EditBookmark), and has
+  // the part of the client's bookmark menu the page offers (PlaceEntry.GetMenu, addressBookEntries.py 123 to 141;
+  // menusvc.py BookmarkMenu, 1437 to 1534, as BookmarkChecker offers each): Dock, Set Destination, Add or Remove
+  // Waypoint, Edit Location and Remove Location; several chosen have Remove Location alone. Removing asks the client's
+  // RemoveLocation or RemoveMultipleLocation, whose Yes may be kept (addressbookService.py DeleteBookmarks, 452 to 473).
+  //
   // Not here yet: the Search tab, the Agent Missions group (the agents' bookmarks), the folders the pilot may
-  // administer, Create Folder and Create Subfolder, a structure's Add Location, the rows' and the folders' menus, and
-  // a shared bookmark shown dim before its delay has passed.
+  // administer, Create Folder and Create Subfolder, a structure's Add Location, the rest of a bookmark's menu (Show
+  // Info, Warp To, Approach, Align To, the map's and the fleet's entries), the folders' and the subfolders' menus, a
+  // choice by Shift, and a shared bookmark shown dim before its delay has passed.
   import { onMount } from "svelte";
   import { formatTemplate, plainText, type TemplateArguments } from "../bridge/clientWords.ts";
   import { resolvedName, type NameRef } from "../store/names.ts";
@@ -32,6 +39,8 @@
   import type { ActiveBookmarks, Bookmark, Subfolder } from "../bridge/bookmarks.ts";
   import type { BookmarkPlace } from "../bridge/locationsList.ts";
   import BookmarkWindow from "./BookmarkWindow.svelte";
+  import { ASKED_KEEPING_YES, DO_NOT_ASK_AGAIN_LABEL, suppressableKey } from "../bridge/dialogSuppression.ts";
+  import { panelErrorWords } from "../bridge/refusals.ts";
   import { isSessionLost } from "../app/flow.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -46,6 +55,8 @@
   const station = store.station;
   // svelte-ignore state_referenced_locally
   const flight = store.flight;
+  // svelte-ignore state_referenced_locally
+  const waypointsState = flow.waypoints;
 
   /** The window's words (window.py 22 to 37; bookmarksPanel.py 42 to 51, 173 to 300, 340 to 544). */
   const WORDS = {
@@ -73,7 +84,18 @@
     placeLabel: "UI/PeopleAndPlaces/NewBookmarkLocationLabel",
     spot: "UI/PeopleAndPlaces/SpotInSolarSystem",
     notHere: "dialog:HavetobeatstationOrinShip/body",
+    dock: "UI/Inflight/DockInStation",
+    setDestination: "UI/Inflight/SetDestination",
+    addWaypoint: "UI/Inflight/AddWaypoint",
+    removeWaypoint: "UI/Inflight/RemoveWaypoint",
+    editBookmark: "UI/Inflight/EditBookmark",
+    removeBookmark: "UI/Inflight/RemoveBookmark",
+    couldNotDelete: "dialog:CouldNotDeleteBookmark/body",
+    yes: "UI/Common/Buttons/Yes",
+    no: "UI/Common/Buttons/No",
   } as const;
+  /** The client's questions before a removal (addressbookService.py DeleteBookmarks, 457 and 459). */
+  const DIALOGS = ["RemoveLocation", "RemoveMultipleLocation"] as const;
 
   /** The client's word for a label, from the player's install; the page's own where there is none to read. */
   function word(label: string, own: string): string {
@@ -166,6 +188,138 @@
     if (made) void load();
   }
 
+  /** The bookmarks chosen (the scroll's selection), the one whose menu is open, and the one being edited. */
+  let selected = $state<readonly number[]>([]);
+  let menuFor = $state<number | null>(null);
+  let editing = $state<Bookmark | null>(null);
+  let busy = $state(false);
+
+  /** A click chooses the row; with Ctrl it is added to the choice, or taken out of it. */
+  function rowClick(event: MouseEvent, bookmarkID: number): void {
+    if (event.ctrlKey || event.metaKey) {
+      selected = selected.includes(bookmarkID) ? selected.filter((id) => id !== bookmarkID) : [...selected, bookmarkID];
+    } else {
+      selected = [bookmarkID];
+    }
+  }
+
+  function openMenu(bookmarkID: number): void {
+    if (!selected.includes(bookmarkID)) selected = [bookmarkID];
+    menuFor = menuFor === bookmarkID ? null : bookmarkID;
+  }
+
+  /** The bookmark's place on the map (BookmarkChecker.GetMapIDs, 176 to 185): a station or a system itself, else the system it is in. */
+  function mapPlaceOf(bookmark: Bookmark): number {
+    const item = bookmark.itemID ?? bookmark.locationID;
+    const isPlace = (item >= 10_000_000 && item < 40_000_000) || (item >= 60_000_000 && item < 64_000_000);
+    return isPlace ? item : bookmark.locationID;
+  }
+
+  /** The part of BookmarkMenu the page offers for one bookmark, as BookmarkChecker offers each. */
+  function menuOf(bookmark: Bookmark): {
+    readonly dock: number | null;
+    readonly destination: number | null;
+    readonly addWaypoint: number | null;
+    readonly removeWaypoint: number | null;
+    readonly edit: boolean;
+  } {
+    const item = bookmark.itemID ?? bookmark.locationID;
+    const mapPlace = mapPlaceOf(bookmark);
+    const status = $flight.status;
+    const inSpace = status !== null && status.inSpace && !status.docked;
+    // OfferDock (celestialCheckers.py 752 to 765): a station in the ballpark of a pilot in space, its system.
+    const dock = item >= 60_000_000 && item < 64_000_000 && inSpace && status.solarSystemID === bookmark.locationID ? item : null;
+    // OfferSetDestination (1354 to 1362): not the system the pilot is in, nor the route's last waypoint.
+    const here = status?.solarSystemID ?? $station.online?.solarSystemID ?? null;
+    const waypoints = $waypointsState;
+    const destination = here !== item && waypoints[waypoints.length - 1] !== item ? mapPlace : null;
+    // OfferAddWaypoint (440 to 445), else Remove Waypoint where the item is one (BookmarkMenu, 1503 to 1506).
+    const isWaypoint = waypoints.includes(item);
+    // OfferEditBookmark (bookmarkChecker.py 65 to 70; IsEditableWithCharacterRoles, 107 to 113): the folder's own,
+    // managed or administered, or used and the bookmark the pilot's.
+    const folder = active?.folders.find((each) => each.folderID === bookmark.folderID);
+    const edit = folder !== undefined && ([1, 4, 5].includes(folder.accessLevel) || (folder.accessLevel === 3 && bookmark.creatorID === pilotID));
+    return { dock, destination, addWaypoint: isWaypoint ? null : mapPlace, removeWaypoint: isWaypoint ? mapPlace : null, edit };
+  }
+
+  function dockAt(stationID: number): void {
+    menuFor = null;
+    error = "";
+    void flow.dockAt(stationID).catch((cause) => {
+      error = isSessionLost(cause) ? "Your session ended. Pick your character again." : panelErrorWords(cause);
+    });
+  }
+
+  function route(how: "destination" | "add" | "remove", placeID: number): void {
+    menuFor = null;
+    if (how === "destination") flow.setDestination(placeID);
+    else if (how === "add") flow.addWaypoint(placeID);
+    else flow.clearWaypoints(placeID);
+  }
+
+  /** Edit Location and a row's double click (EditBookmark): the bookmark window on the bookmark. */
+  function editBookmark(bookmark: Bookmark): void {
+    menuFor = null;
+    if (!menuOf(bookmark).edit) return;
+    editing = bookmark;
+  }
+
+  function editDone(made: boolean): void {
+    editing = null;
+    if (made) void load();
+  }
+
+  /** The client's question waiting for an answer, what it says, and the removal it holds back. */
+  let confirming = $state<{ readonly dialog: (typeof DIALOGS)[number]; readonly args: TemplateArguments; readonly act: () => Promise<void> } | null>(null);
+  let dontAskAgain = $state(false);
+
+  async function runAct(act: () => Promise<void>): Promise<void> {
+    busy = true;
+    error = "";
+    try {
+      await act();
+    } catch (cause) {
+      error = isSessionLost(cause) ? "Your session ended. Pick your character again." : panelErrorWords(cause);
+    } finally {
+      busy = false;
+    }
+  }
+
+  /**
+   * Remove Location (DeleteBookmarks, 452 to 473): RemoveLocation for one, RemoveMultipleLocation for several, unless
+   * Yes is kept; then the bookmarks deleted folder by folder and the list read again; none deleted is the client's
+   * CouldNotDeleteBookmark.
+   */
+  function askRemove(bookmarks: readonly Bookmark[]): void {
+    menuFor = null;
+    if (bookmarks.length === 0) return;
+    const dialog = bookmarks.length === 1 ? "RemoveLocation" : "RemoveMultipleLocation";
+    const args: TemplateArguments = bookmarks.length === 1 ? { locationName: unzipMemo(bookmarks[0]?.memo ?? "")[0] } : { numLocations: bookmarks.length };
+    const act = async (): Promise<void> => {
+      const deleted = await flow.deleteBookmarks(bookmarks.map((bookmark) => ({ bookmarkID: bookmark.bookmarkID, folderID: bookmark.folderID })));
+      selected = [];
+      await load();
+      if (deleted.length === 0) error = word(WORDS.couldNotDelete, "Nothing was removed.");
+    };
+    if (ASKED_KEEPING_YES.has(dialog) && flow.dialogYesKept(dialog)) {
+      void runAct(act);
+      return;
+    }
+    dontAskAgain = false;
+    confirming = { dialog, args, act };
+  }
+
+  function confirmed(): void {
+    const waiting = confirming;
+    confirming = null;
+    if (waiting === null) return;
+    // _persist_prompt_suppress_choice: Yes kept where the box was ticked.
+    if (dontAskAgain && ASKED_KEEPING_YES.has(waiting.dialog)) flow.keepDialogYes(waiting.dialog);
+    void runAct(waiting.act);
+  }
+
+  const chosenBookmarks = $derived(active === null ? [] : active.bookmarks.filter((bookmark) => selected.includes(bookmark.bookmarkID)));
+
   async function load(): Promise<void> {
     error = "";
     try {
@@ -176,7 +330,7 @@
   }
 
   onMount(() => {
-    flow.requestWords(Object.values(WORDS));
+    flow.requestWords([...Object.values(WORDS), DO_NOT_ASK_AGAIN_LABEL, ...DIALOGS.flatMap((name) => [`dialog:${name}/title`, `dialog:${name}/body`, suppressableKey(name)])]);
     void load();
   });
 
@@ -255,16 +409,61 @@
             {#each HEADERS as [path, own] (path)}
               <th>{word(path, own)}</th>
             {/each}
+            <th></th>
           </tr>
         </thead>
         <tbody>
           {#each list as bookmark (bookmark.bookmarkID)}
             {@const row = rowOf(bookmark)}
-            <tr title={row.hint}>
+            <tr
+              title={row.hint}
+              class:locations-chosen={selected.includes(bookmark.bookmarkID)}
+              onclick={(event) => rowClick(event, bookmark.bookmarkID)}
+              ondblclick={() => editBookmark(bookmark)}
+            >
               {#each row.cells as cell, at (at)}
                 <td class:num={at === 2}>{cell}</td>
               {/each}
+              <td>
+                <button
+                  type="button"
+                  class="minor"
+                  aria-label="Menu"
+                  aria-expanded={menuFor === bookmark.bookmarkID}
+                  onclick={(event) => { event.stopPropagation(); openMenu(bookmark.bookmarkID); }}
+                >⋯</button>
+              </td>
             </tr>
+            {#if menuFor === bookmark.bookmarkID}
+              <!-- The bookmark's menu (PlaceEntry.GetMenu): several chosen, Remove Location alone; one, the part of
+                   BookmarkMenu the page offers, in its order. -->
+              <tr class="locations-menu">
+                <td colspan="10">
+                  <p class="controls">
+                    {#if selected.length > 1 && selected.includes(bookmark.bookmarkID)}
+                      <button type="button" class="minor" disabled={busy} onclick={() => askRemove(chosenBookmarks)}>{word(WORDS.removeBookmark, "Take them off")}</button>
+                    {:else}
+                      {@const menu = menuOf(bookmark)}
+                      {#if menu.dock !== null}
+                        <button type="button" class="minor" onclick={() => menu.dock !== null && dockAt(menu.dock)}>{word(WORDS.dock, "Dock there")}</button>
+                      {/if}
+                      {#if menu.destination !== null}
+                        <button type="button" class="minor" onclick={() => menu.destination !== null && route("destination", menu.destination)}>{word(WORDS.setDestination, "Head there")}</button>
+                      {/if}
+                      {#if menu.addWaypoint !== null}
+                        <button type="button" class="minor" onclick={() => menu.addWaypoint !== null && route("add", menu.addWaypoint)}>{word(WORDS.addWaypoint, "Put on the route")}</button>
+                      {:else if menu.removeWaypoint !== null}
+                        <button type="button" class="minor" onclick={() => menu.removeWaypoint !== null && route("remove", menu.removeWaypoint)}>{word(WORDS.removeWaypoint, "Take off the route")}</button>
+                      {/if}
+                      {#if menu.edit}
+                        <button type="button" class="minor" disabled={busy} onclick={() => editBookmark(bookmark)}>{word(WORDS.editBookmark, "Change it")}</button>
+                        <button type="button" class="minor" disabled={busy} onclick={() => askRemove([bookmark])}>{word(WORDS.removeBookmark, "Take it off")}</button>
+                      {/if}
+                    {/if}
+                  </p>
+                </td>
+              </tr>
+            {/if}
           {/each}
         </tbody>
       </table>
@@ -292,8 +491,26 @@
   {#if error}
     <p class="error">{error}</p>
   {/if}
+  {#if confirming !== null}
+    <!-- The client's question before a removal: its title and body, the box that keeps Yes where the install lets it,
+         Yes and No. -->
+    <div class="bookmark-confirm" role="alertdialog" aria-label={filled(`dialog:${confirming.dialog}/title`, "Take off?", {})}>
+      <strong>{filled(`dialog:${confirming.dialog}/title`, "Take off?", {})}</strong>
+      <p>{filled(`dialog:${confirming.dialog}/body`, confirming.dialog === "RemoveLocation" ? "Take {locationName} off?" : "Take {numLocations} places off?", confirming.args)}</p>
+      {#if $words.templates[suppressableKey(confirming.dialog)] === "1"}
+        <label><input type="checkbox" bind:checked={dontAskAgain} /> {word(DO_NOT_ASK_AGAIN_LABEL, "Skip this question from now on")}</label>
+      {/if}
+      <p class="controls">
+        <button type="button" disabled={busy} onclick={confirmed}>{word(WORDS.yes, "Yes")}</button>
+        <button type="button" class="minor" onclick={() => (confirming = null)}>{word(WORDS.no, "No")}</button>
+      </p>
+    </div>
+  {/if}
   {#if bookmarking !== null}
     <BookmarkWindow {store} {flow} place={bookmarking} onDone={bookmarkDone} />
+  {/if}
+  {#if editing !== null}
+    <BookmarkWindow {store} {flow} editing={editing} onDone={editDone} />
   {/if}
   <!-- The window's bottom (window.py 104 to 108): Add Location; Create Folder and Create Subfolder are not here yet. -->
   <p class="controls">
@@ -354,5 +571,14 @@
   }
   .locations-places td {
     white-space: nowrap;
+  }
+  /* A chosen row, marked by more than colour: its text is underlined. */
+  .locations-chosen td {
+    text-decoration: underline;
+  }
+  .bookmark-confirm {
+    border: 1px solid currentColor;
+    padding: 0.5rem;
+    margin-bottom: 0.5rem;
   }
 </style>

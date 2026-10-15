@@ -12,6 +12,11 @@
   //   (bookmarkSvc.ACLBookmarkLocation: a place by BookmarkStaticLocation, a thing in space by the park), and keeps
   //   the folder and the folder's time (Confirm, 205 to 225).
   //
+  // Opened for a bookmark (EditBookmark, addressbookService.py 475 to 483: Edit Location, a double click), it is
+  // "Edit Location": the bookmark's label and note, its folder and subfolder chosen (its own folder offered even where
+  // it is full), its expiry shown with Cancel automated expiry where it has one; Submit edits it
+  // (bookmarkSvc.UpdateACLBookmark, 642 to 646), the folder kept as the last used.
+  //
   // The folder's choice and the times are kept for the pilot in this browser, as the client keeps them in its own
   // settings. A shown window takes the folders as they are when it opens.
   import { onMount } from "svelte";
@@ -19,13 +24,19 @@
   import { resolvedName } from "../store/names.ts";
   import { BOOKMARK_EXPIRY } from "../bridge/bookmarkWrites.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
-  import type { ActiveBookmarks, BookmarkFolder, Subfolder } from "../bridge/bookmarks.ts";
-  import type { BookmarkPlace } from "../bridge/locationsList.ts";
+  import type { ActiveBookmarks, Bookmark, BookmarkFolder, Subfolder } from "../bridge/bookmarks.ts";
+  import { unzipMemo, type BookmarkPlace } from "../bridge/locationsList.ts";
   import { isSessionLost } from "../app/flow.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
 
-  let { store, flow, place, onDone }: { store: ClientStore; flow: AppFlow; place: BookmarkPlace; onDone: (made: boolean) => void } = $props();
+  let { store, flow, place = null, editing = null, onDone }: {
+    store: ClientStore;
+    flow: AppFlow;
+    place?: BookmarkPlace | null;
+    editing?: Bookmark | null;
+    onDone: (made: boolean) => void;
+  } = $props();
 
   // svelte-ignore state_referenced_locally
   const words = store.words;
@@ -37,6 +48,9 @@
   /** The window's words (bookmarkLocationWindow.py 31 to 34, 59 to 108, 120 to 154; addressbookService.py 405 to 417). */
   const WORDS = {
     title: "UI/PeopleAndPlaces/NewBookmark",
+    editTitle: "UI/PeopleAndPlaces/EditLocation",
+    cancelExpiry: "UI/AclBookmarks/CancelAutomatedExpiry",
+    dateTime: "/Carbon/UI/Common/DateTime/DateLongShort",
     label: "UI/PeopleAndPlaces/Label",
     expire: "UI/AclBookmarks/AutoExpire",
     folder: "UI/PeopleAndPlaces/Folder",
@@ -99,6 +113,8 @@
   let expiry = $state<number>(BOOKMARK_EXPIRY.none);
   let label = $state("");
   let note = $state("");
+  /** Cancel automated expiry, in an edit of a bookmark that has one. */
+  let expiryCancel = $state(false);
   let error = $state("");
   let busy = $state(false);
 
@@ -122,12 +138,12 @@
     }
   }
 
-  /** GetFilteredFoldersAndSubfolders (395 to 411): online, more than viewed, and not full. */
-  function usableFolders(read: ActiveBookmarks): readonly BookmarkFolder[] {
+  /** GetFilteredFoldersAndSubfolders (395 to 411): online, more than viewed, and not full (the bookmark's own folder may be). */
+  function usableFolders(read: ActiveBookmarks, forcedFolderID: number | null): readonly BookmarkFolder[] {
     return read.folders.filter((folder) => {
       if (folder.accessLevel === ACCESS_VIEW || !folder.isActive) return false;
       const held = read.bookmarks.filter((bookmark) => bookmark.folderID === folder.folderID).length;
-      return held < (folder.isPersonal ? MAX_IN_PERSONAL : MAX_IN_SHARED);
+      return held < (folder.isPersonal ? MAX_IN_PERSONAL : MAX_IN_SHARED) || folder.folderID === forcedFolderID;
     });
   }
 
@@ -160,7 +176,7 @@
   }
 
   function openForm(read: ActiveBookmarks): void {
-    const folders = usableFolders(read);
+    const folders = usableFolders(read, editing?.folderID ?? null);
     if (folders.length === 0) {
       phase = "noFolder";
       return;
@@ -168,12 +184,22 @@
     const usable = new Set(folders.map((folder) => folder.folderID));
     options = optionsOf(folders, read.subfolders.filter((subfolder) => usable.has(subfolder.folderID)));
     personalOffered = folders.some((folder) => folder.isPersonal);
+    if (editing !== null) {
+      // The bookmark's own folder and subfolder, label and note (EditBookmark; ApplyAttributes, 67 to 70).
+      const ownKey = `${editing.folderID}:${editing.subfolderID ?? ""}`;
+      chosen = options.some((option) => option.key === ownKey) ? ownKey : (options[0]?.key ?? "");
+      label = unzipMemo(editing.memo)[0].slice(0, MAX_NAME);
+      note = editing.note;
+      expiryCancel = false;
+      phase = "form";
+      return;
+    }
     // The folder last used (settings.char.ui bookmarkFolderAndSubfolder), else the first offered.
     const kept = readKept(keptFolderKey());
     const keptKey = Array.isArray(kept) ? `${kept[0]}:${kept[1] ?? ""}` : "";
     chosen = options.some((option) => option.key === keptKey) ? keptKey : (options[0]?.key ?? "");
     expiry = expiryFor(options.find((option) => option.key === chosen) ?? null);
-    label = place.name().slice(0, MAX_NAME);
+    label = (place?.name() ?? "").slice(0, MAX_NAME);
     note = "";
     phase = "form";
   }
@@ -183,7 +209,7 @@
       const read = await flow.readLocations();
       active = read;
       // CheckLocationID: a place already bookmarked is asked about (not the pilot's own spot or system).
-      const known = place.askIfKnown ? read.bookmarks.find((bookmark) => bookmark.itemID === place.itemID) : undefined;
+      const known = place !== null && place.askIfKnown ? read.bookmarks.find((bookmark) => bookmark.itemID === place.itemID) : undefined;
       if (known !== undefined) {
         phase = "known";
         return;
@@ -200,11 +226,12 @@
     void load();
   });
 
-  const knownBookmark = $derived(active === null ? undefined : active.bookmarks.find((bookmark) => bookmark.itemID === place.itemID));
+  const knownBookmark = $derived(active === null || place === null ? undefined : active.bookmarks.find((bookmark) => bookmark.itemID === place.itemID));
 
   function chooseFolder(key: string): void {
     chosen = key;
-    expiry = expiryFor(options.find((option) => option.key === key) ?? null);
+    // OnFolderChange (169 to 173): a new bookmark's time is the folder's.
+    if (editing === null) expiry = expiryFor(options.find((option) => option.key === key) ?? null);
   }
 
   async function submit(): Promise<void> {
@@ -217,6 +244,21 @@
     busy = true;
     error = "";
     try {
+      if (editing !== null) {
+        await flow.updateBookmark({
+          bookmarkID: editing.bookmarkID,
+          folderID: editing.folderID,
+          label: label.replace(/\t/g, " "),
+          note,
+          subfolderID: option.subfolderID,
+          newFolderID: option.folderID,
+          expiryCancel,
+        });
+        keep(keptFolderKey(), [option.folderID, option.subfolderID]);
+        onDone(true);
+        return;
+      }
+      if (place === null) return;
       await flow.bookmarkPlace({
         itemID: place.itemID,
         folderID: option.folderID,
@@ -241,7 +283,7 @@
   <section class="bookmark-window">
     <h3>{filled("dialog:AskBookmarkExistingLocation/title", "Go on?", {})}</h3>
     <p>{filled("dialog:AskBookmarkExistingLocation/body", "{locationName} is saved already, in {folderName} as {caption}. Save it again?", {
-      locationName: place.typeName(),
+      locationName: place?.typeName() ?? "",
       folderName,
       caption: knownBookmark.memo,
     })}</p>
@@ -261,23 +303,37 @@
     </p>
   </section>
 {:else if phase === "form"}
-  <section class="bookmark-window" aria-label={word(WORDS.title, "Save a place")}>
-    <h3>{word(WORDS.title, "Save a place")}</h3>
+  {@const heading = editing !== null ? word(WORDS.editTitle, "Change the place") : word(WORDS.title, "Save a place")}
+  <section class="bookmark-window" aria-label={heading}>
+    <h3>{heading}</h3>
     <p class="controls">
       <label>
         {word(WORDS.label, "Label")}
         <input type="text" maxlength={MAX_NAME} bind:value={label} onkeydown={(event) => { if (event.key === "Enter") void submit(); }} />
       </label>
     </p>
-    <fieldset class="bookmark-expiry">
-      <legend title={word(WORDS.expiryHelp, "")}>{word(WORDS.expire, "Expire")}</legend>
-      {#each EXPIRIES as [value, path, own] (value)}
-        <label>
-          <input type="radio" name="bookmark-expiry" checked={expiry === value} onchange={() => (expiry = value)} />
-          {word(path, own)}
-        </label>
-      {/each}
-    </fieldset>
+    {#if editing !== null}
+      <!-- _AddExpiryContainer (102 to 113): when it expires, or Never, and Cancel automated expiry where it does. -->
+      <p class="controls">
+        {word(WORDS.expire, "Expire")}:
+        {editing.expiry === null
+          ? word("UI/AclBookmarks/ExpireNever", "Kept until deleted")
+          : filled(WORDS.dateTime, "{[datetime]datetime}", { datetime: String(editing.expiry) })}
+        {#if editing.expiry !== null}
+          <label><input type="checkbox" bind:checked={expiryCancel} /> {word(WORDS.cancelExpiry, "Keep it after all")}</label>
+        {/if}
+      </p>
+    {:else}
+      <fieldset class="bookmark-expiry">
+        <legend title={word(WORDS.expiryHelp, "")}>{word(WORDS.expire, "Expire")}</legend>
+        {#each EXPIRIES as [value, path, own] (value)}
+          <label>
+            <input type="radio" name="bookmark-expiry" checked={expiry === value} onchange={() => (expiry = value)} />
+            {word(path, own)}
+          </label>
+        {/each}
+      </fieldset>
+    {/if}
     <p class="controls">
       <label>
         {word(WORDS.folder, "Folder")}

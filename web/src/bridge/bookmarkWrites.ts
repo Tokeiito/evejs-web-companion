@@ -61,6 +61,48 @@ export async function bookmarkStaticLocation(act: Ask, itemID: number, folderID:
   return bookmarkThing(act, "accessGroupBookmarkMgr", "BookmarkStaticLocation", itemID, folderID, name, comment, expiry, subfolderID);
 }
 
+/**
+ * Edits the bookmark `bookmarkID`, as the bookmark window's Submit edits one (bookmarkLocationWindow.py
+ * _ConfirmAclBookmark, 219 to 220; bookmarkSvc.UpdateACLBookmark, 642 to 646):
+ * accessGroupBookmarkMgr.UpdateBookmark(bookmarkID, folderID, name, note, subfolderID, newFolderID, expiryCancel),
+ * `folderID` the folder it is in, `newFolderID` and `subfolderID` the ones chosen, `expiryCancel` whether its
+ * expiry is taken away. Fails as the call fails.
+ */
+export async function updateBookmark(act: Ask, bookmarkID: number, folderID: number, name: string, note: string, subfolderID: number | null, newFolderID: number, expiryCancel: boolean): Promise<void> {
+  if (!anID(bookmarkID)) {
+    throw new Error("That is no bookmark.");
+  }
+  if (!anID(folderID) || !anID(newFolderID)) {
+    throw new Error("That is no bookmark folder.");
+  }
+  if (subfolderID !== null && !anID(subfolderID)) {
+    throw new Error("That is no bookmark subfolder.");
+  }
+  const label = name.replace(/\t/g, " ");
+  if (label.trim() === "") {
+    throw new Error("A bookmark needs a name.");
+  }
+  await act("accessGroupBookmarkMgr", "UpdateBookmark", [bookmarkID, folderID, label, note, subfolderID, newFolderID, expiryCancel]);
+}
+
+/**
+ * Deletes bookmarks of the folder `folderID`, as bookmarkSvc.DeleteBookmarks asks it for each folder (656 to 668):
+ * accessGroupBookmarkMgr.DeleteBookmarks(folderID, bookmarks), the bookmarks a set. Answers the ones the server
+ * deleted. Fails as the call fails.
+ */
+export async function deleteBookmarks(act: Ask, folderID: number, bookmarkIDs: readonly number[]): Promise<readonly number[]> {
+  if (!anID(folderID)) {
+    throw new Error("That is no bookmark folder.");
+  }
+  const ids = bookmarkIDs.filter(anID);
+  if (ids.length === 0) {
+    return [];
+  }
+  const answer = await act("accessGroupBookmarkMgr", "DeleteBookmarks", [folderID, ids]);
+  const items = Array.isArray(answer) ? answer : answer !== null && typeof answer === "object" && !Array.isArray(answer) && Array.isArray((answer as { items?: unknown }).items) ? (answer as { items: unknown[] }).items : [];
+  return items.map((item) => unwrapLong(item as never)).filter((id): id is bigint => id !== null && id > 0n && id <= BigInt(Number.MAX_SAFE_INTEGER)).map(Number);
+}
+
 async function bookmarkThing(act: Ask, service: string, method: string, itemID: number, folderID: number, name: string, comment: string, expiry: number, subfolderID: number | null): Promise<number | null> {
   if (!anID(itemID)) {
     throw new Error("There is nothing there to bookmark.");
