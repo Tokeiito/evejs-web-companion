@@ -457,6 +457,7 @@ import { decodeAvailableFleetAds, decodeMyFleetFinderAdvert } from "../bridge/fl
 import { readAvailableFleetAds, readFleetFinder as readFleetFinderCalls } from "../bridge/fleetFinderReads.ts";
 import { readMyLaunches } from "../bridge/launchReads.ts";
 import type { PlanetLaunchesRead } from "../bridge/planetLaunches.ts";
+import { readMarketTransactions, type MarketTransactionsRead } from "../bridge/marketTransactions.ts";
 import { readCharacterFittings, readCorporationFittings } from "../bridge/fittingReads.ts";
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, kickFleetMember as kickFleetMemberCall, leaveFleet as leaveFleetCall, makeFleetLeader as makeFleetLeaderCall, moveFleetMember as moveFleetMemberCall, tagFleetTarget, addToWatchlist as addToWatchlistCall, removeFromWatchlist as removeFromWatchlistCall, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
@@ -1578,6 +1579,12 @@ export interface AppFlow {
    * 'launch'); and Remove for one burned up (the row taken off, DeleteLaunch, the launches read afresh).
    */
   approachPlanetLaunch(containerID: number): Promise<void>;
+  /**
+   * The wallet's Market Transactions (bridge/marketTransactions.ts): the pilot's trades as the client's market service
+   * keeps them, read as the tab is chosen (loadMarketTransactions) and kept until the pilot's own orders change.
+   */
+  readonly marketTransactions: ReadableSignal<MarketTransactionsRead>;
+  loadMarketTransactions(): Promise<void>;
   warpToPlanetLaunch(launchID: number): Promise<void>;
   removePlanetLaunch(launchID: number): Promise<void>;
   /**
@@ -3115,6 +3122,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // and read afresh where the window has wanted them.
     if (method === "OnPILaunchesChange") {
       planetLaunchesChanged();
+    }
+    // marketSvc.OnOwnOrdersChanged (33 to 35): the trades kept are let go, and read again when the tab is next chosen.
+    if (method === "OnOwnOrdersChanged") {
+      marketTransactionsFor = null;
     }
     const sessionNames = sessionChangeNames(method, args);
     contactLoggedOnOrOff(method, args);
@@ -5839,6 +5850,27 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const sameCharacter = planetLaunchesFor === characterID;
       planetLaunchesFor = null;
       planetLaunchesSignal.set({ loaded: true, launches: sameCharacter ? planetLaunchesSignal.get().launches : [], error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  // The pilot's trades for the wallet's Market Transactions (bridge/marketTransactions.ts), as the client's market
+  // service keeps them (marketSvc.GetPersonalMarketTransactions, 20 to 26): read for the pilot and kept, let go when the
+  // pilot's own orders change (OnOwnOrdersChanged, 33 to 35) and read again when the tab is next chosen.
+  const marketTransactionsSignal = createSignal<MarketTransactionsRead>({ loaded: false, transactions: [], error: null });
+  let marketTransactionsFor: number | null = null;
+
+  async function loadMarketTransactions(): Promise<void> {
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null || marketTransactionsFor === characterID) return;
+    if (marketTransactionsSignal.get().loaded) marketTransactionsSignal.set({ loaded: false, transactions: [], error: null });
+    try {
+      const transactions = await readMarketTransactions(bridgeAsk, characterID);
+      if ((store.station.get().online?.characterID ?? null) !== characterID) return;
+      marketTransactionsFor = characterID;
+      marketTransactionsSignal.set({ loaded: true, transactions, error: null });
+    } catch (error) {
+      if (isSessionLost(error)) throw error;
+      marketTransactionsSignal.set({ loaded: true, transactions: [], error: error instanceof Error ? error.message : String(error) });
     }
   }
 
@@ -18821,6 +18853,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     planetLaunches: readonlySignal(planetLaunchesSignal),
     loadPlanetLaunches,
+    marketTransactions: readonlySignal(marketTransactionsSignal),
+    loadMarketTransactions,
 
     async approachPlanetLaunch(containerID) {
       await runFlightStep("Approach", () => orderedStep((flightNow) => approachCall(bridgeDo, flightNow, containerID, 50)));

@@ -22,11 +22,30 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { LedgerEntry } from "../store/types.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
+  import { plainText } from "../bridge/clientWords.ts";
+  import WalletMarketTransactions from "./WalletMarketTransactions.svelte";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
   // svelte-ignore state_referenced_locally
   const wallet = store.wallet;
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+
+  // The personal wallet's tabs (personalISKPanel.py GetMainTabs, 22 to 23), as far as the page has them: Transactions
+  // (the wallet's journal) and Market Transactions (WalletMarketTransactions).
+  const TAB_WORDS = {
+    transactions: "UI/Wallet/WalletWindow/TabTransactions",
+    market: "UI/Wallet/WalletWindow/MarketTransactions",
+  } as const;
+  $effect(() => {
+    flow.requestWords(Object.values(TAB_WORDS));
+  });
+  function tabWord(label: string, own: string): string {
+    const template = $words.templates[label];
+    return typeof template === "string" && template !== "" ? plainText(template) : own;
+  }
+  let tab = $state<"transactions" | "market">("transactions");
 
   let busy = $state(false);
   let error = $state("");
@@ -151,8 +170,16 @@
     {/if}
   {/snippet}
 
-  <h3>Recent activity</h3>
-  {@render ledger($wallet.journal, $wallet.journalError, "No wallet activity yet.")}
+  <nav class="tabs">
+    <button type="button" class:active={tab === "transactions"} onclick={() => (tab = "transactions")}>{tabWord(TAB_WORDS.transactions, "Transactions")}</button>
+    <button type="button" class:active={tab === "market"} onclick={() => (tab = "market")}>{tabWord(TAB_WORDS.market, "Market Transactions")}</button>
+  </nav>
+
+  {#if tab === "market"}
+    <WalletMarketTransactions {store} {flow} />
+  {:else}
+    {@render ledger($wallet.journal, $wallet.journalError, "No wallet activity yet.")}
+  {/if}
 
 </section>
 

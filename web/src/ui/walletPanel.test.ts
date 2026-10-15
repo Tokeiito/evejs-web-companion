@@ -191,8 +191,9 @@ test("Wallet shows an honest empty message for a real 'no ledger entries'", () =
   const output = render(Wallet as never, { props: { store, flow: fakeFlow() } } as never);
   const text = visibleText(output.body);
   assert.match(text, /No wallet activity yet/i);
-  // The wallet's activity is one list. What the client calls market transactions is another read, on the Market page.
-  assert.doesNotMatch(text, /market transactions/i);
+  // The wallet's activity is its Transactions tab. Market Transactions is the client's next tab (personalISKPanel.py
+  // GetMainTabs), another read, made as that tab is chosen.
+  assert.match(text, /Market Transactions/);
 });
 
 test("Wallet shows the ledger error, NOT the empty message, when the read failed", () => {
