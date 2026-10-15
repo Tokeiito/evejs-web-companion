@@ -283,7 +283,7 @@ import { buildGateLinks, type GateLink } from "../space/gateLinks.ts";
 import { CRIMEWATCH_NOTICES, CRIMEWATCH_SESSION_NAMES } from "../space/crimewatch.ts";
 import type { SafetyLevel } from "../space/crimewatch.ts";
 import { CLONE_GRADE_NOTICE, cloneGradeOf } from "../bridge/cloneGrade.ts";
-import type { AgentFinderRow, HoldItem } from "../store/types.ts";
+import type { AgentFinderRow, HoldItem, MissionSpot } from "../store/types.ts";
 import {
   MENU_WARP_RANGE_M,
   createAutopilot,
@@ -448,7 +448,7 @@ import {
   salvageWithDrones,
   scoopDrones as scoopDronesCall,
 } from "../bridge/boundEntityWrites.ts";
-import { alignTo as alignToCall, alignToBookmark as alignToBookmarkCall, approach as approachCall, approachBookmark as approachBookmarkCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
+import { alignTo as alignToCall, alignToBookmark as alignToBookmarkCall, approach as approachCall, approachBookmark as approachBookmarkCall, approachMissionLocation as approachMissionLocationCall, autopilotWarp as autopilotWarpCall, warpToFleetMember as warpToFleetMemberCall, warpToItem as warpToItemCall, goToPoint, keepAtRange as keepAtRangeCall, orbit as orbitCall, stopShip as stopShipCall, warpToBookmark as warpToBookmarkCall, warpToLaunch as warpToLaunchCall, warpToMissionLocation as warpToMissionLocationCall, warpToScanResult as warpToScanResultCall, type FlightNow, type SitesReadIn } from "../bridge/movementWrites.ts";
 import { dock as dockCall, dockAtStructure as dockAtStructureCall, isStation, jump as jumpCall, undock as undockCall } from "../bridge/placeChanges.ts";
 import { boardCorvette as boardCorvetteCall, boardShip as boardShipCall, jettison as jettisonCall, leaveShip as leaveShipCall, type JettisonOutcome } from "../bridge/shipWrites.ts";
 import { activityIDOf, createJobReckoner, type JobReckoner, type JobReckoning } from "../bridge/industryJobReckoning.ts";
@@ -1400,6 +1400,13 @@ export interface AppFlow {
   warpToBookmark(bookmarkID: number, range: number): Promise<void>;
   approachBookmark(bookmarkID: number): Promise<void>;
   alignToBookmark(bookmarkID: number): Promise<void>;
+  /**
+   * A mission's bookmark's moves, asked of its agent (movementFunctions.py 397 to 421), each a flight step whose refusal
+   * is said as the flight's are: Warp to Within at `range` metres, one of the menu's seven (WarpToLocation); Approach
+   * Location (GotoLocation).
+   */
+  warpToMissionBookmark(spot: MissionSpot, range: number): Promise<void>;
+  approachMissionBookmark(spot: MissionSpot): Promise<void>;
   /**
    * R13 — cut the engines (CmdStop). As in retail, this also switches the
    * autopilot off: stopping the ship must not leave something still flying it.
@@ -17261,6 +17268,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     async alignToBookmark(bookmarkID) {
       await runFlightStep("Align", () => orderedStep((flightNow) => alignToBookmarkCall(bridgeDo, flightNow, bookmarkID)));
+    },
+
+    async warpToMissionBookmark(spot, range) {
+      await runFlightStep("Warp", () => orderedStep((flightNow) => warpToMissionLocationCall(bridgeDo, flightNow, spot, range)));
+    },
+
+    async approachMissionBookmark(spot) {
+      await runFlightStep("Approach", () => orderedStep((flightNow) => approachMissionLocationCall(bridgeDo, flightNow, spot)));
     },
 
     async stopShip() {

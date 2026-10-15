@@ -335,6 +335,18 @@ const agentWarping = (args, kwargs) => {
   if (named.length !== FORMATION_NAMES.length || !FORMATION_NAMES.every((name) => Number.isSafeInteger(given[name]))) return notAClients;
   return { args: [locationType, locationNumber, range, fleet, referringAgentID, dict(FORMATION_NAMES.map((name) => [name, given[name]]))] };
 };
+/**
+ * movementFunctions.ApproachLocation (402): GetAgentMoniker(agentID).GotoLocation(locationType, locationNumber,
+ * referringAgentID), on the agent's own object: the location's type and number as the journal has them, and another
+ * agent or None. Three, and no keyword.
+ */
+const agentGoing = (args, kwargs) => {
+  const [locationType, locationNumber, referringAgentID] = args;
+  return args.length === 3 && typeof locationType === "string" && locationType !== "" && Number.isSafeInteger(locationNumber)
+    && (referringAgentID === null || aThingsID(referringAgentID)) && Object.keys(kwargs).length === 0
+    ? {}
+    : { status: "differs", note: "The client sends the location's type and number and another agent or None: GotoLocation(locationType, locationNumber, referringAgentID)." };
+};
 /** A judge for a call the client sends with nothing: no argument, and no keyword. */
 /**
  * transferMoneyWnd.py Confirm (148): GiveCash(self.toID, amount, reason, toAccountKey=toAccountKey): the one given to,
@@ -1832,6 +1844,8 @@ const RETAIL_CALLS = Object.freeze({
   "agentMgr.GetMissionBriefingInfo": same(`${AGENTS}:750`, "no arguments"),
   "agentMgr.GetMissionObjectiveInfo": same(`${AGENT_WINDOW}:222`, "no arguments when the dialogue opens; the job board's page of a mission adds ignoreLocateCheck=True (jobboard/client/features/agent_missions/job.py:413)"),
   "agentMgr.GetAgentLocationWrap": same(`${AGENT_WINDOW}:276`, "no arguments"),
+  "agentMgr.GotoLocation": judged("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:402", agentGoing,
+    "GetAgentMoniker(agentID).GotoLocation(locationType, locationNumber, referringAgentID): a mission's bookmark's Approach Location, on the agent's own object. It answers nothing. In no recording."),
   "agentMgr.WarpToLocation": judged("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:416", agentWarping,
     "GetAgentMoniker(agentID).WarpToLocation(locationType, locationNumber, warpRange, fleet, referringAgentID, GetFormationSettings()), on the agent's own object: a mission's marked spot warped to. Recorded 23 times on Tranquility, each ('dungeon', 0, nought, False, None, the three settings)."),
   "agentMgr.RemoveOfferFromJournal": same(`${AGENTS}:783`, "GetAgentMoniker(agentID).RemoveOfferFromJournal(), no arguments, on the agent's bound object"),

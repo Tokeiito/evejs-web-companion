@@ -9,7 +9,7 @@
 // value. ISK amounts and FILETIMEs (which can exceed 2^53) are kept as decimal
 // strings, not lossy Number.
 
-import { unwrapLong, type DictEntry, type JsonValue } from "./wire.ts";
+import { unwrapLong, unwrapReal, type DictEntry, type JsonValue } from "./wire.ts";
 import type {
   AgentAction,
   AgentConversation,
@@ -434,7 +434,30 @@ function decodeMissionSpot(value: JsonValue): MissionSpot | null {
     return null;
   }
   const isAgentBase = readDict(value, "isAgentBase");
-  return { agentID, locationType, locationNumber, solarSystemID: toNumber(readDict(value, "solarsystemID")), isAgentBase: isAgentBase === true || isAgentBase === 1 };
+  const hint = readDict(value, "hint");
+  const created = unwrapLong(readDict(value, "created"));
+  const coordinate = (key: string): number | null => {
+    const raw = readDict(value, key);
+    return raw === null || raw === undefined ? null : (unwrapReal(raw) ?? toFloat(raw));
+  };
+  const deadspace = readDict(value, "deadspace");
+  return {
+    agentID,
+    locationType,
+    locationNumber,
+    solarSystemID: toNumber(readDict(value, "solarsystemID")),
+    isAgentBase: isAgentBase === true || isAgentBase === 1,
+    itemID: toNumber(readDict(value, "itemID")),
+    typeID: toNumber(readDict(value, "typeID")),
+    locationID: toNumber(readDict(value, "locationID")),
+    hint: typeof hint === "string" ? hint : hint !== null && typeof hint === "object" && !Array.isArray(hint) && typeof (hint as { value?: unknown }).value === "string" ? (hint as { value: string }).value : "",
+    created: created !== null && created > 0n ? created : null,
+    x: coordinate("x"),
+    y: coordinate("y"),
+    z: coordinate("z"),
+    deadspace: deadspace === true || deadspace === 1,
+    referringAgentID: toNumber(readDict(value, "referringAgentID")),
+  };
 }
 
 function decodeJournalRow(row: JsonValue): JournalMission {

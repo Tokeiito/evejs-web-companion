@@ -527,13 +527,37 @@ const FORMATION_OF_NO_CHOICE = Object.freeze({ formationType: 0, formationSpacin
 
 /**
  * Warps the pilot's ship to a mission's marked spot, as the client's menu does: by asking the spot's agent, on
- * that agent's own object, with the spot's type and number as the journal has them, a range of nought, no fleet's
- * word, no other agent, and a fleet's formation settings as a pilot has them who has chosen none. Fails as the call
+ * that agent's own object, with the spot's type and number as the journal has them, the range chosen (nought where
+ * none is), no fleet's word, the other agent the bookmark names or none, and a fleet's formation settings as a pilot
+ * has them who has chosen none. Fails as the call
  * fails, and before it for what is no spot of a mission's and for a pilot that is not in space.
  *
  * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN OR NOT, AND NEVER AN ARRIVAL. The server answers nothing either way.
  */
-export async function warpToMissionLocation(act: Ask, flightNow: () => Promise<FlightNow>, spot: Pick<MissionSpot, "agentID" | "locationType" | "locationNumber">): Promise<void> {
+export async function warpToMissionLocation(act: Ask, flightNow: () => Promise<FlightNow>, spot: Pick<MissionSpot, "agentID" | "locationType" | "locationNumber" | "referringAgentID">, range = 0): Promise<void> {
+  if (!isAnID(spot.agentID) || spot.locationType === "" || !Number.isSafeInteger(spot.locationNumber)) {
+    throw new Error("That is no spot of a mission's.");
+  }
+  if (!WARP_RANGES_M.includes(range)) {
+    throw new Error("The warp range must be one of the offered distances.");
+  }
+  const now = await flightNow();
+  if (!now.inSpace) {
+    throw new Error("The ship is not in space; undock first.");
+  }
+  await act("agentMgr", "WarpToLocation", [spot.locationType, spot.locationNumber, range, false, spot.referringAgentID ?? null, { ...FORMATION_OF_NO_CHOICE }], undefined, spot.agentID);
+}
+
+/**
+ * Sends the pilot's ship to a mission's marked spot, as Approach Location does for a mission's bookmark
+ * (movementFunctions.ApproachLocation, 397 to 407): GetAgentMoniker(agentID).GotoLocation(locationType,
+ * locationNumber, referringAgentID), on the agent's own object, with the other agent the bookmark names or none. Fails
+ * as the call fails, and
+ * before it for what is no spot of a mission's and for a pilot that is not in space.
+ *
+ * ⚠ THE CALL COMING BACK IS AN ORDER TAKEN, NEVER AN ARRIVAL.
+ */
+export async function approachMissionLocation(act: Ask, flightNow: () => Promise<FlightNow>, spot: Pick<MissionSpot, "agentID" | "locationType" | "locationNumber" | "referringAgentID">): Promise<void> {
   if (!isAnID(spot.agentID) || spot.locationType === "" || !Number.isSafeInteger(spot.locationNumber)) {
     throw new Error("That is no spot of a mission's.");
   }
@@ -541,5 +565,5 @@ export async function warpToMissionLocation(act: Ask, flightNow: () => Promise<F
   if (!now.inSpace) {
     throw new Error("The ship is not in space; undock first.");
   }
-  await act("agentMgr", "WarpToLocation", [spot.locationType, spot.locationNumber, 0, false, null, { ...FORMATION_OF_NO_CHOICE }], undefined, spot.agentID);
+  await act("agentMgr", "GotoLocation", [spot.locationType, spot.locationNumber, spot.referringAgentID ?? null], undefined, spot.agentID);
 }

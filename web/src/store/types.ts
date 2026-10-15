@@ -1264,6 +1264,26 @@ export interface MissionSpot {
   readonly locationNumber: number;
   readonly solarSystemID: number | null;
   readonly isAgentBase: boolean;
+  /**
+   * The bookmark's own place, as the journal holds it, for the Locations window's Agent Missions
+   * (bookmarkSvc.GetAgentBookmarks): its thing (or none), type, place, label, when it was made, point, and whether it
+   * is a deadspace site's. Absent where a spot was made by other than the journal's decoder.
+   */
+  readonly itemID?: number | null;
+  readonly typeID?: number | null;
+  readonly locationID?: number | null;
+  readonly hint?: string;
+  readonly created?: bigint | null;
+  readonly x?: number | null;
+  readonly y?: number | null;
+  readonly z?: number | null;
+  readonly deadspace?: boolean;
+  /**
+   * The other agent a mission's bookmark names, where it names one: the client sends it with the warp and the
+   * approach (movementFunctions 401 and 415, getattr(bookmark, 'referringAgentID', None)). No journal of EveJS's or of
+   * the Tranquility recordings has it.
+   */
+  readonly referringAgentID?: number | null;
 }
 
 /**
