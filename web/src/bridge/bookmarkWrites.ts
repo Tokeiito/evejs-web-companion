@@ -28,6 +28,7 @@
 
 import type { Ask } from "./ask.ts";
 import { unwrapLong } from "./wire.ts";
+import { decodeFolderInfo, type BookmarkFolder } from "./bookmarks.ts";
 
 /** bookmarkConst: how long a bookmark is kept for. */
 export const BOOKMARK_EXPIRY = Object.freeze({ none: 0, fourHours: 1, twoDays: 2, oneDay: 3 } as const);
@@ -109,6 +110,67 @@ function idsOf(answer: unknown): readonly number[] {
 
 /** appConst.MAX_FOLDER_NAME_LENGTH: the most a folder's or a subfolder's name holds (bookmarkSubfolderWindow.py 52). */
 export const MAX_FOLDER_NAME_LENGTH = 40;
+
+/** appConst.MAX_FOLDER_DESCRIPTION_LENGTH: the most a folder's notes hold (bookmarkContainerWindow.py 94). */
+export const MAX_FOLDER_DESCRIPTION_LENGTH = 3900;
+
+/** A folder's four access lists, as the folder window sends them; none of them for a personal folder. */
+export interface FolderAccess {
+  readonly adminGroupID: number | null;
+  readonly manageGroupID: number | null;
+  readonly useGroupID: number | null;
+  readonly viewGroupID: number | null;
+}
+
+/** The access lists sent (Confirm, 203 to 219): None for a personal folder; a shared one's admins' list, then the others or None. */
+function accessSent(isPersonal: boolean, access: FolderAccess): readonly (number | null)[] {
+  if (isPersonal) {
+    return [null, null, null, null];
+  }
+  const groups = [access.adminGroupID, access.manageGroupID, access.useGroupID, access.viewGroupID];
+  if (groups.some((id) => id !== null && !anID(id))) {
+    throw new Error("That is no access list.");
+  }
+  if (access.adminGroupID === null) {
+    throw new Error("A shared folder needs an access list for its admins.");
+  }
+  return groups;
+}
+
+/** A folder's name as the folder window sends it (Confirm, 197 to 201): stripped, and never nothing. */
+function folderNameOf(folderName: string): string {
+  const name = folderName.trim();
+  if (name === "") {
+    throw new Error("A folder needs a name.");
+  }
+  return name;
+}
+
+/**
+ * Makes a folder, as the folder window's Submit does (bookmarkContainerWindow.py Confirm, 197 to 242;
+ * bookmarkSvc.CreateBookmarkFolder, 425 to 430): accessGroupBookmarkMgr.AddFolder(isPersonal, folderName,
+ * description, adminGroupID, manageGroupID, useGroupID, viewGroupID). Answers the new folder, or null where the answer
+ * is none. Fails as the call fails, and before it for no name and a shared folder with no admins' list.
+ */
+export async function addFolder(act: Ask, isPersonal: boolean, folderName: string, description: string, access: FolderAccess): Promise<BookmarkFolder | null> {
+  const name = folderNameOf(folderName);
+  return decodeFolderInfo(await act("accessGroupBookmarkMgr", "AddFolder", [isPersonal, name, description, ...accessSent(isPersonal, access)]));
+}
+
+/**
+ * Changes the folder `folderID`'s name, notes and access lists, as the folder window's Submit in its edit does
+ * (bookmarkSvc.UpdateBookmarkFolder, 437 to 450): accessGroupBookmarkMgr.UpdateFolder(folderID, folderName,
+ * description, adminGroupID, manageGroupID, useGroupID, viewGroupID). Answers the pilot's access to it after, or null
+ * where the answer is no number. Fails as the call fails, and before it as the making does.
+ */
+export async function updateFolder(act: Ask, folderID: number, isPersonal: boolean, folderName: string, description: string, access: FolderAccess): Promise<number | null> {
+  if (!anID(folderID)) {
+    throw new Error("That is no bookmark folder.");
+  }
+  const name = folderNameOf(folderName);
+  const answer = await act("accessGroupBookmarkMgr", "UpdateFolder", [folderID, name, description, ...accessSent(isPersonal, access)]);
+  return typeof answer === "number" && Number.isSafeInteger(answer) ? answer : null;
+}
 
 /** A subfolder's name as the subfolder window sends it (Confirm, 104 to 107): stripped, and never nothing. */
 function subfolderNameOf(subfolderName: string): string {

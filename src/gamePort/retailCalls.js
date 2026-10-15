@@ -738,6 +738,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // (bookmarkSvc.py 483 to 589). The gateway's list has its folders' and bookmarks' writes and none of these.
   "accessGroupBookmarkMgr.CreateSubfolder", "accessGroupBookmarkMgr.UpdateSubfolder", "accessGroupBookmarkMgr.DeleteSubfolder",
   "accessGroupBookmarkMgr.UpdateKnownFolderState",
+  // The pilot's access lists, which the folder window offers a shared folder's access levels from
+  // (accessGroupsController.py 105). The gateway's list has nothing of the owner group manager's.
+  "ownerGroupManager.GetMyGroups",
   // A shared bookmark folder taken up, as the client's bookmark service makes it (bookmarkSvc.py 357). The gateway's
   // list has it not: through the gateway a pilot cannot.
   "accessGroupBookmarkMgr.AddToKnownFolders",
@@ -1197,6 +1200,32 @@ const folderStateSet = (args, kwargs) => (args.length === 2 && aBookmarkFolderID
   : { status: "differs", note: "The client sends the folder's number and True or False, and nothing else." });
 /** bookmarkSvc.DeleteBookmarkFolder (453): DeleteFolder(folderID). */
 const folderDeleted = (args, kwargs) => (args.length === 1 && aBookmarkFolderID(args[0]) && Object.keys(kwargs).length === 0
+  ? {}
+  : { status: "differs", note: "The client sends the folder's number and nothing else." });
+
+/** An access list's number, or None. */
+const anAccessList = (value) => value === null || aBookmarkFolderID(value);
+/**
+ * bookmarkSvc.CreateBookmarkFolder (426): AddFolder(isPersonal, folderName, description, adminGroupID, manageGroupID,
+ * useGroupID, viewGroupID), the folder window's Confirm (bookmarkContainerWindow.py 197 to 242): a personal folder with
+ * the four None, a shared one with its admins' list and the others or None.
+ */
+const folderMade = (args, kwargs) => {
+  const [isPersonal, name, description, ...groups] = args;
+  const lists = groups.length === 4 && groups.every(anAccessList) && (isPersonal === true ? groups.every((each) => each === null) : groups[0] !== null);
+  return args.length === 7 && typeof isPersonal === "boolean" && aSubfolderName(name) && typeof description === "string" && lists && Object.keys(kwargs).length === 0
+    ? {}
+    : { status: "differs", note: "The client sends whether the folder is personal, its name, its notes and its four access lists (None for a personal folder, an admins' list for a shared one), and nothing else." };
+};
+/** bookmarkSvc.UpdateBookmarkFolder (441): UpdateFolder(folderID, folderName, description, adminGroupID, manageGroupID, useGroupID, viewGroupID). */
+const folderChanged = (args, kwargs) => {
+  const [folderID, name, description, ...groups] = args;
+  return args.length === 7 && aBookmarkFolderID(folderID) && aSubfolderName(name) && typeof description === "string" && groups.length === 4 && groups.every(anAccessList) && Object.keys(kwargs).length === 0
+    ? {}
+    : { status: "differs", note: "The client sends the folder's number, its name, its notes and its four access lists, and nothing else." };
+};
+/** bookmarkSvc.GetBookmarkFolder and GetFolderInfo (519, 528): GetFolderInfo(folderID). */
+const folderAsked = (args, kwargs) => (args.length === 1 && aBookmarkFolderID(args[0]) && Object.keys(kwargs).length === 0
   ? {}
   : { status: "differs", note: "The client sends the folder's number and nothing else." });
 
@@ -2097,6 +2126,14 @@ const RETAIL_CALLS = Object.freeze({
     "self.accessGroupBookmarkMgr.UpdateKnownFolderState(folderID, isActive): Online Folder and Offline Folder, a folder's menu; online only where the pilot has fewer than the most online of its kind (ValidateActiveFolderCount). Answered the folder, its bookmarks and its subfolders. In no recording."),
   "accessGroupBookmarkMgr.DeleteFolder": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:453", folderDeleted,
     "self.accessGroupBookmarkMgr.DeleteFolder(folderID): Delete Folder, a folder's menu, after ConfirmDeleteFolder; for a personal folder or one the pilot administers. Answered nothing. In no recording."),
+  "accessGroupBookmarkMgr.AddFolder": typing(judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:426", folderMade,
+    "self.accessGroupBookmarkMgr.AddFolder(isPersonal, folderName, description, adminGroupID, manageGroupID, useGroupID, viewGroupID): the folder window's Submit (bookmarkContainerWindow.py Confirm, 197 to 242), from Create Folder; the name the edit's, stripped, and the notes the editor's, each unicode where it holds text. Answered the folder. In no recording."), [1, 2]),
+  "accessGroupBookmarkMgr.UpdateFolder": typing(judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:441", folderChanged,
+    "self.accessGroupBookmarkMgr.UpdateFolder(folderID, folderName, description, adminGroupID, manageGroupID, useGroupID, viewGroupID): the folder window's Submit in its edit (Edit Folder, a folder's menu); the name and the notes unicode where they hold text. Answered the pilot's access to the folder after. In no recording."), [1, 2]),
+  "accessGroupBookmarkMgr.GetFolderInfo": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:519", folderAsked,
+    "self.accessGroupBookmarkMgr.GetFolderInfo(folderID): the folder as the server has it, asked by Edit Folder before its window opens (GetBookmarkFolder with refresh) and for a folder the client does not know (GetFolderInfo, 528). In no recording."),
+  "ownerGroupManager.GetMyGroups": judged("eve/client/script/ui/structure/accessGroups/accessGroupsController.py:105", sentWithNothing,
+    "self.remoteSvc.GetMyGroups(), of ownerGroupManager by its name and with nothing: the pilot's access lists, asked once and kept by the client's controller; the folder window offers a shared folder's access levels from them. In no recording."),
   "accessGroupBookmarkMgr.GetMyActiveBookmarks": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:163", sentWithNothing,
     "folders, bookmarks, subfolders = self.accessGroupBookmarkMgr.GetMyActiveBookmarks(), by name and with nothing: recorded on Tranquility so, in three recordings. The client asks once in a session and keeps the three, changing them as it makes, changes and deletes a bookmark and as the server says a shared folder changed. The transport asks as a character is chosen and keeps the three (pilots.js, bookmarksRead): a place bookmarked on the ballpark's object is worked into them as the client works it (afterBookmarkCall), and they are let go at any other write of the pilot's own of a bookmark, a folder or a subfolder and at the server's word of a shared folder, and asked for when they are next wanted. The page asks each time it wants them, and is answered from what is kept."),
   "accessGroupBookmarkMgr.SearchFoldersWithAdminAccess": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:715", sentWithNothing,

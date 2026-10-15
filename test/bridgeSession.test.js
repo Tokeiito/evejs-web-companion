@@ -4299,7 +4299,7 @@ test("a pilot's fittings and its corporation's go by the generic call as a pilot
 // reads the folders the pilot administers beside the bookmarks, and a folder where one is named, each settled by
 // itself.
 
-test("a pilot's bookmarks go by the generic call as a pilot's read, as it was sent; a bookmark or a folder made, changed or deleted is its route's alone, but for the bookmark writes the page makes", async () => {
+test("a pilot's bookmarks go by the generic call as a pilot's read, as it was sent, and so do the bookmark and folder writes the page makes", async () => {
   const gateway = fakeGateway();
   const { baseUrl } = await startTestServer({ gateway });
   await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
@@ -4308,12 +4308,6 @@ test("a pilot's bookmarks go by the generic call as a pilot's read, as it was se
   assert.deepEqual([made.response.status, made.payload.service, made.payload.method], [200, "accessGroupBookmarkMgr", "GetMyActiveBookmarks"]);
   const sent = gateway.calls.call.at(-1);
   assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["accessGroupBookmarkMgr", "GetMyActiveBookmarks", [], null, BRIDGE_SESSION_ID, { userid: 4 }]);
-  assert.equal(gateway.calls.call.length, before + 1);
-  // A folder's deletion is the Locations window's own write (PAGE_WRITE_PAIR_KEYS), so it is not refused here.
-  for (const method of ["AddFolder", "UpdateFolder"]) {
-    const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "accessGroupBookmarkMgr", method, args: [1], kwargs: null, pilot: true, confirm: true } });
-    assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], method);
-  }
   assert.equal(gateway.calls.call.length, before + 1);
   // A station, a system, a constellation or a region bookmarked from the bookmark window (bridgeCallPolicy.js,
   // PAGE_WRITE_PAIR_KEYS): the page's own write, meant.

@@ -1124,6 +1124,7 @@
   "boundary": {
     "genericBridgeAllowsWrites": true,
     "genericBridgeWrites": [
+      "accessGroupBookmarkMgr.AddFolder",
       "accessGroupBookmarkMgr.AddToKnownFolders",
       "accessGroupBookmarkMgr.BookmarkStaticLocation",
       "accessGroupBookmarkMgr.CreateSubfolder",
@@ -1132,6 +1133,7 @@
       "accessGroupBookmarkMgr.DeleteSubfolder",
       "accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder",
       "accessGroupBookmarkMgr.UpdateBookmark",
+      "accessGroupBookmarkMgr.UpdateFolder",
       "accessGroupBookmarkMgr.UpdateKnownFolderState",
       "accessGroupBookmarkMgr.UpdateSubfolder",
       "account.GiveCash",
