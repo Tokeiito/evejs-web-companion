@@ -435,6 +435,7 @@ import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, leaveFleet as leaveFleetCall, tagFleetTarget, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { BOOKMARK_EXPIRY, bookmarkLocation as bookmarkLocationCall } from "../bridge/bookmarkWrites.ts";
 import { giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
+import { afterArriving, keepWaypoints, readWaypoints, withWaypoint, withoutWaypoint, type PilotPlace } from "../nav/waypoints.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
 import {
   decodeLaunched,
@@ -1654,6 +1655,25 @@ export interface AppFlow {
    * error (unreachable / unknown) through the travel slice rather than throwing.
    */
   startRoute(destinationID: number): Promise<RouteStartOutcome>;
+  /** The pilot's waypoints as the client's star map keeps them (nav/waypoints.ts); the destination is the last. */
+  readonly waypoints: ReadableSignal<readonly number[]>;
+  /** Whether the client's autopilot is on (autoPilotSvc's GetState): the route flown to the first waypoint. */
+  readonly autopilotOn: ReadableSignal<boolean>;
+  /**
+   * The notify message the client's autopilot or star map last gave (AutoPilotEnabled, AutoPilotDisabled,
+   * AutoPilotWaypointReached, AutoPilotDisabledNoPathSet, or a waypoint refused), `n` telling one from the next.
+   */
+  readonly autopilotSaid: ReadableSignal<{ readonly dialog: string; readonly n: number } | null>;
+  /** Set Destination (starMapSvc.SetWaypoint(id, True)): the place the only waypoint. */
+  setDestination(destinationID: number): void;
+  /** Add Waypoint (SetWaypoint(id)): the place put at the end of the waypoints. */
+  addWaypoint(destinationID: number): void;
+  /** Remove Waypoint (ClearWaypoints(id)), or Clear All Waypoints where no place is named. */
+  clearWaypoints(locationID?: number): void;
+  /** The route panel's Autopilot active ticked (autoPilotSvc.SetOn): the route flown to the first waypoint. */
+  activateAutopilot(): Promise<void>;
+  /** Autopilot active unticked (SetOff): the route stopped. */
+  deactivateAutopilot(): void;
   /**
    * R7a — search the static map by name (systems + stations) so a player can set
    * a destination without knowing EVE IDs. Returns the matches annotated with
@@ -6574,17 +6594,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   /**
-   * Fly to where your stuff is.
-   *
-   * ⚠ THIS BUILDS NO NAVIGATION. `startRoute` already accepts a stationID,
-   * resolves it, solves the route against the cached map graph and hands the
-   * plan to the one shared autopilot controller — the same call Travel,
-   * Overview, the agent finder and the mission bot all make. Setting a
-   * destination from an asset location is that call with a station the player
-   * picked from this list instead of from a search box.
+   * Set Destination to where your stuff is (the assets window's station menu, the client's map menu): the station
+   * the only waypoint, as starMapSvc.SetWaypoint(id, True) makes it. Nothing flies until the autopilot is on.
    */
   async function setDestinationToAssetStation(stationID: number): Promise<void> {
-    await startRoute(stationID);
+    setDestination(stationID);
   }
 
   /**
@@ -7486,6 +7500,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       scannerLoadGeneration += 1;
     }
     store.apply({ type: "flight/status", status });
+    // The client's star map on every session change (UpdateRoute): a first waypoint the pilot is at taken off.
+    waypointsArrived();
     if (refreshScanner) {
       void loadScanner().catch(() => undefined);
     }
@@ -9359,6 +9375,139 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       refusalReason: (error) => flightErrorReason(error),
     };
   }
+
+  // --- The client's waypoints and autopilot (nav/waypoints.ts; autopilot.py) ----------------------------------------
+  //
+  // The waypoints are the star map's, kept for the pilot at the helm; the autopilot is apart from them, and flies the
+  // route to the first waypoint by the page's one route loop (startRoute). It is switched off there (UpdateRoute's
+  // "waypoint reached"), by its untick, or where the route loop stops short; each time it says so as the client does.
+  // A waypoint changed while it flies leaves the run going to the waypoint it set out for.
+  const waypointsSignal = createSignal<readonly number[]>([]);
+  const autopilotSignal = createSignal(false);
+  const autopilotSaidSignal = createSignal<{ readonly dialog: string; readonly n: number } | null>(null);
+  let waypointsOwner: number | null = null;
+  let autopilotSaidCount = 0;
+
+  function sayAutopilot(dialog: string): void {
+    autopilotSaidCount += 1;
+    autopilotSaidSignal.set({ dialog, n: autopilotSaidCount });
+  }
+
+  /** The waypoints of the pilot at the helm: what is kept for it, read again where the pilot is another. */
+  function heldWaypoints(): readonly number[] {
+    const characterID = onlineCharacterID();
+    if (characterID !== waypointsOwner) {
+      waypointsOwner = characterID;
+      waypointsSignal.set(characterID === null ? [] : readWaypoints(characterID));
+      autopilotSignal.set(false);
+    }
+    return waypointsSignal.get();
+  }
+
+  /** The waypoints as a window reads them: what is kept for the pilot at the helm, read on the first look. */
+  const waypointsView: ReadableSignal<readonly number[]> = {
+    get: () => heldWaypoints(),
+    subscribe: (listener) => {
+      heldWaypoints();
+      return waypointsSignal.subscribe(listener);
+    },
+  };
+
+  function putWaypoints(next: readonly number[]): void {
+    const characterID = onlineCharacterID();
+    if (characterID === null) return;
+    heldWaypoints();
+    waypointsSignal.set(next);
+    keepWaypoints(characterID, next);
+  }
+
+  /** Where the pilot is: the flight's status as the page last read it, else the online pilot's station. */
+  function pilotPlace(): PilotPlace {
+    const status = store.flight.get().status;
+    if (status !== null) {
+      return { structureID: status.structureID, stationID: status.docked ? status.stationID : null, solarSystemID: status.solarSystemID };
+    }
+    const online = store.station.get().online;
+    return { structureID: online?.structureID ?? null, stationID: online?.stationID ?? null, solarSystemID: online?.solarSystemID ?? null };
+  }
+
+  /** UpdateRoute (2441 to 2448): a first waypoint the pilot is at taken off, and the autopilot, where it is on, off. */
+  function waypointsArrived(): boolean {
+    const rest = afterArriving(heldWaypoints(), pilotPlace());
+    if (rest === null) return false;
+    putWaypoints(rest);
+    if (autopilotSignal.get()) {
+      autopilotSignal.set(false);
+      sayAutopilot("AutoPilotWaypointReached");
+    }
+    return true;
+  }
+
+  /** SetWaypoint (2327 to 2361): the place put on the list, or the client's refusal said; then UpdateRoute. */
+  function setWaypointAs(destinationID: number, clearOthers: boolean): void {
+    const made = withWaypoint(heldWaypoints(), destinationID, { clearOthers }, pilotPlace());
+    if ("refused" in made) {
+      sayAutopilot(made.refused);
+      return;
+    }
+    putWaypoints(made.waypoints);
+    waypointsArrived();
+  }
+
+  function setDestination(destinationID: number): void {
+    setWaypointAs(destinationID, true);
+  }
+
+  function addWaypoint(destinationID: number): void {
+    setWaypointAs(destinationID, false);
+  }
+
+  function clearWaypoints(locationID?: number): void {
+    putWaypoints(withoutWaypoint(heldWaypoints(), locationID ?? null));
+  }
+
+  async function activateAutopilot(): Promise<void> {
+    // SetOn (84 to 116): once, in a ship (the route panel offers no tick to a docked pilot); then said.
+    const place = pilotPlace();
+    if (autopilotSignal.get() || place.stationID !== null || place.structureID !== null) return;
+    autopilotSignal.set(true);
+    sayAutopilot("AutoPilotEnabled");
+    const first = heldWaypoints()[0];
+    if (first === undefined) {
+      // Update (290 to 293): with no route it switches itself off.
+      autopilotSignal.set(false);
+      sayAutopilot("AutoPilotDisabledNoPathSet");
+      return;
+    }
+    const outcome = await startRoute(first);
+    if (!outcome.started && autopilotSignal.get()) {
+      autopilotSignal.set(false);
+      sayAutopilot("AutoPilotDisabled");
+    }
+  }
+
+  function deactivateAutopilot(): void {
+    // SetOff (125 to 143).
+    if (!autopilotSignal.get()) return;
+    autopilotSignal.set(false);
+    autopilot?.abort();
+    sayAutopilot("AutoPilotDisabled");
+  }
+
+  // The route loop ended while the autopilot was on: arrived, where the waypoint was reached (else off as the client
+  // is off at a route's end), or stopped short (SetOff with its reason, said as AutoPilotDisabled).
+  store.travel.subscribe((travel) => {
+    if (!autopilotSignal.get()) return;
+    if (travel.status === "arrived") {
+      if (!waypointsArrived()) {
+        autopilotSignal.set(false);
+        sayAutopilot("AutoPilotDisabled");
+      }
+    } else if (travel.status === "aborted" || travel.status === "error") {
+      autopilotSignal.set(false);
+      sayAutopilot("AutoPilotDisabled");
+    }
+  });
 
   async function startRoute(destinationID: number): Promise<RouteStartOutcome> {
     const generation = sessionCloseGeneration;
@@ -16169,11 +16318,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         jumps: agent.jumps,
       },
     });
-    await startRoute(agent.stationID);
+    // Set Destination to its station (the client's map menu of the agent's place); nothing flies until the
+    // autopilot is on.
+    setDestination(agent.stationID);
   }
 
   return {
     droneRecovery: readonlySignal(recoverySignal),
+    waypoints: waypointsView,
+    autopilotOn: readonlySignal(autopilotSignal),
+    autopilotSaid: readonlySignal(autopilotSaidSignal),
+    setDestination,
+    addWaypoint,
+    clearWaypoints,
+    activateAutopilot,
+    deactivateAutopilot,
     retryDroneRecovery,
     requireAutomationReady,
     async checkHealth() {

@@ -17,6 +17,7 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { DestinationMatch } from "../store/types.ts";
   import { resolvedName, type NameRef } from "../store/names.ts";
+  import { deriveDocked } from "./tabs.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
   import { plainText } from "../bridge/clientWords.ts";
   import {
@@ -25,6 +26,22 @@
   } from "../nav/autopilotSettings.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  // svelte-ignore state_referenced_locally
+  const waypoints = flow.waypoints;
+  // svelte-ignore state_referenced_locally
+  const autopilotOn = flow.autopilotOn;
+  // svelte-ignore state_referenced_locally
+  const flight = store.flight;
+  /** The route panel's words (infoPanelRoute.py 53 to 123; menusvc.py _MapMenu). */
+  const ROUTE_WORDS = {
+    route: "UI/InfoWindow/TabNames/Route",
+    currentDestination: "UI/Neocom/Autopilot/CurrentDestination",
+    noDestination: "UI/Inflight/NoDestination",
+    clearAll: "UI/Neocom/ClearAllAutopilotWaypoints",
+    autopilotActive: "UI/Map/MapPallet/AutopilotActive",
+    removeWaypoint: "UI/Inflight/RemoveWaypoint",
+    setDestination: "UI/Inflight/SetDestination",
+  } as const;
 
   // svelte-ignore state_referenced_locally
   const travel = store.travel;
@@ -52,7 +69,18 @@
     penaltyShown = penaltyOf(kept);
   });
   $effect(() => {
-    flow.requestWords(ROUTE_SETTING_WORD_LABELS);
+    flow.requestWords([...ROUTE_SETTING_WORD_LABELS, ...Object.values(ROUTE_WORDS)]);
+  });
+  /** A route word from the install, the page's own where there is none to read. */
+  const routeWord = (label: string, own: string): string => settingText(label) ?? own;
+  /** The route panel's Autopilot active is offered to a pilot in space (infoPanelRoute.py 93: not docked). */
+  const docked = $derived(deriveDocked($flight.status, $station.online));
+  /** A waypoint's name: a station's or a system's (nav/waypoints.ts takes no other). */
+  const placeName = (id: number): string =>
+    resolvedName($names.resolved, id >= 60_000_000 ? "station" : "system", id, "—");
+  $effect(() => {
+    const refs: NameRef[] = $waypoints.map((id) => ({ kind: id >= 60_000_000 ? "station" : "system", id }) as NameRef);
+    if (refs.length > 0) flow.requestNames(refs);
   });
   const settingText = (label: string): string | null => {
     const template = $words.templates[label];
@@ -61,7 +89,8 @@
 
   // R7a — set a destination anywhere by NAME (primary), with the raw-ID input
   // kept as a fallback. The search box hits the static /api/map/find route; a
-  // chosen result reuses flow.startRoute (the R5b route solver + autopilot).
+  // chosen result is set as the destination, as the client's Set Destination
+  // sets it (nav/waypoints.ts); the autopilot flies it once it is switched on.
   let searchQuery = $state("");
   let searchResults = $state<DestinationMatch[]>([]);
   let searched = $state(false);
@@ -169,11 +198,11 @@
     });
   }
 
-  // Set the autopilot to a chosen match — reuse startRoute (resolves the ID to a
-  // system, solves the route, runs the decide-loop). This flips the travel state
-  // to running, so the panel switches to the route readout below.
-  async function setDestination(match: DestinationMatch): Promise<void> {
-    await run(() => flow.startRoute(match.id));
+  // Set Destination (starMapSvc.SetWaypoint(id, True)): the match the only waypoint. Nothing flies until the
+  // autopilot is switched on.
+  function setDestination(match: DestinationMatch): void {
+    error = "";
+    flow.setDestination(match.id);
   }
 
   async function run(action: () => Promise<void>): Promise<void> {
@@ -233,12 +262,50 @@
   </p>
 </section>
 
+<!-- The route (infoPanelRoute.py): the destination and the waypoints on the way, each taken off by Remove Waypoint,
+     Clear All Waypoints, and Autopilot active, offered in space: the autopilot flies to the first waypoint and is
+     switched off there (nav/waypoints.ts). -->
+<section class="route-panel">
+  <h2>{routeWord(ROUTE_WORDS.route, "Route")}</h2>
+  {#if $waypoints.length === 0}
+    <p class="empty">{routeWord(ROUTE_WORDS.noDestination, "Nowhere set")}</p>
+  {:else}
+    <p>{routeWord(ROUTE_WORDS.currentDestination, "Heading for")}: <strong>{placeName($waypoints[$waypoints.length - 1] ?? 0)}</strong></p>
+    <ol class="route">
+      {#each $waypoints as id (id)}
+        <li>
+          {placeName(id)}
+          <button type="button" class="minor" onclick={() => flow.clearWaypoints(id)}>{routeWord(ROUTE_WORDS.removeWaypoint, "Take off")}</button>
+        </li>
+      {/each}
+    </ol>
+    <p class="controls">
+      <button type="button" class="minor" onclick={() => flow.clearWaypoints()}>{routeWord(ROUTE_WORDS.clearAll, "Clear the route")}</button>
+    </p>
+  {/if}
+  <p class="controls">
+    <label>
+      <input
+        type="checkbox"
+        checked={$autopilotOn}
+        disabled={docked}
+        onchange={(event) => {
+          if (event.currentTarget.checked) void flow.activateAutopilot();
+          else flow.deactivateAutopilot();
+        }}
+      />
+      {routeWord(ROUTE_WORDS.autopilotActive, "Autopilot on")}
+    </label>
+  </p>
+</section>
+
 {#if $travel.status === "idle" || $travel.status === "arrived" || $travel.status === "aborted" || $travel.status === "error"}
   <section>
     <h2>Set destination</h2>
     <p class="note">
-      Search any solar system or station by name, then Set destination to fly
-      there. The route is planned from where you are now.
+      Search any solar system or station by name and make it the destination;
+      the autopilot flies there once it is on. The route is planned from where
+      you are when it starts.
     </p>
     <p class="controls">
       <label>
@@ -283,7 +350,7 @@
                   <td class="num" data-label="Jumps">{jumpsText(match.jumps)}</td>
                   <td data-label="">
                     <button type="button" disabled={busy} onclick={() => setDestination(match)}>
-                      Set destination
+                      {routeWord(ROUTE_WORDS.setDestination, "Head there")}
                     </button>
                   </td>
                 </tr>
@@ -346,7 +413,7 @@
   </section>
 
   <section>
-    <h2>Start route by ID</h2>
+    <h2>Destination by ID</h2>
     <p class="note">Advanced: enter a station or solar system ID directly.</p>
     <p class="controls">
       <label>
@@ -361,9 +428,9 @@
       <button
         type="button"
         disabled={busy || parseID(destinationInput) === 0}
-        onclick={() => run(() => flow.startRoute(parseID(destinationInput)))}
+        onclick={() => { error = ""; flow.setDestination(parseID(destinationInput)); }}
       >
-        Start route
+        {routeWord(ROUTE_WORDS.setDestination, "Head there")}
       </button>
     </p>
   </section>

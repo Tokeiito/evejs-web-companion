@@ -5,9 +5,10 @@
   // so this lists agents from the static agentAuthority reference table
   // (GET /api/agents/find — read-only static data, not a gateway call), sorted
   // by jumps from the current system (a single client-side BFS, distancesFrom).
-  // "Set destination" reuses the R5b browser autopilot (startRoute to the
-  // agent's station); traveling there docks and populates the live agents
-  // normally, so the player can accept a courier (R4/R6).
+  // "Set destination" sets the agent's station as the destination, as the
+  // client's map menu does (nav/waypoints.ts); the autopilot, switched on in the
+  // Travel tab, flies there and docks, and the live agents populate normally,
+  // so the player can accept a courier (R4/R6).
   //
   // A pure reader of the store's finder slice; all fetch/decode/distance logic
   // lives in app/flow.ts. Mission kind + level are server-side filters (a
@@ -173,17 +174,17 @@
 
 {#if $finder.target}
   <section>
-    <h2>Autopilot target</h2>
+    <h2>Destination</h2>
     <p>
-      Flying to <strong>{$finder.target.name}</strong>
+      Heading for <strong>{$finder.target.name}</strong>
       (L{$finder.target.level ?? "?"}) at
       {$finder.target.stationName ?? resolvedName($names.resolved, "station", $finder.target.stationID, "the station")}
       in {$finder.target.solarSystemName ?? resolvedName($names.resolved, "system", $finder.target.solarSystemID, "its system")}
       — {jumpsText($finder.target.jumps)} jumps.
     </p>
     <p class="note">
-      The autopilot is running (see the Travel tab). When you arrive and dock,
-      open Agents &amp; Missions to talk to the agent and accept a courier.
+      Switch the autopilot on in the Travel tab to fly there. When you arrive and
+      dock, open Agents &amp; Missions to talk to the agent and accept a courier.
     </p>
     {#if showTravel}
       <p><button type="button" onclick={() => showTravel?.()}>Go to Travel tab</button></p>
