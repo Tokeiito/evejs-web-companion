@@ -4589,7 +4589,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "market/action-error", message: marketRefusalMessage(error) });
+      // Put up as the client puts up a UserError: marketsvc's BuyStuff, CancelOrder and ModifyOrder and the sell's
+      // PlaceMultiSellOrder let theirs through to its handler (marketsvc.py 256 to 290).
+      const message = marketRefusalMessage(error);
+      store.apply({ type: "market/action-error", message, said: sayRefusalDialog(error, message) });
       return;
     }
     // Reload first: the panel must show the server's own picture of the
@@ -8886,10 +8889,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({
-        type: "drones/action-error",
-        message: `${label} refused: ${flightRefusalWords(error)}`,
-      });
+      // Put up as the client puts up a UserError: a drone command refused whole (droneFunctions' CmdEngage,
+      // CmdReturnBay, the launch) goes to its handler; the drones' own answers are the reports below.
+      const message = `${label} refused: ${flightRefusalWords(error)}`;
+      store.apply({ type: "drones/action-error", message, said: sayRefusalDialog(error, message) });
       return;
     }
     const inSpace = decodeDronesInSpace(result.inSpace);

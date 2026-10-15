@@ -354,7 +354,7 @@ export type FeedEvent =
       readonly marketUnavailable: string | null;
     }
   // A market write failed or was declined; null clears the error.
-  | { readonly type: "market/action-error"; readonly message: string | null }
+  | { readonly type: "market/action-error"; readonly message: string | null; readonly said?: boolean }
   // What the last write ACTUALLY did, assembled from re-reads (never a
   // prediction, and never the estimated fee shown at confirm time).
   | { readonly type: "market/outcome"; readonly outcome: MarketActionOutcome | null }
@@ -814,7 +814,7 @@ export type FeedEvent =
   // return values prove nothing, so this always carries a fresh re-read.
   | { readonly type: "drones/in-space"; readonly inSpace: readonly DroneInSpace[] | null }
   | { readonly type: "drones/action"; readonly action: string }
-  | { readonly type: "drones/action-error"; readonly message: string | null }
+  | { readonly type: "drones/action-error"; readonly message: string | null; readonly said?: boolean }
   // A drone call that answered success and changed nothing — the ONLY way a
   // refused launch can surface, because the handler returns an empty dict.
   | { readonly type: "drones/silent-decline"; readonly message: string | null }

@@ -764,6 +764,11 @@ export interface MarketState {
   /** Non-null when the last place/cancel/modify failed or was declined. */
   readonly actionError: string | null;
   /**
+   * Whether that refusal was said in the client's own way (ClientDialogs.svelte): the window and the notices then do
+   * not say it again. False or absent otherwise.
+   */
+  readonly actionErrorSaid?: boolean;
+  /**
    * What the LAST write actually did, read back from the server afterwards.
    * Never a prediction — see `MarketActionOutcome`.
    */
@@ -2489,6 +2494,11 @@ export interface DronesState {
   readonly error: string | null;
   readonly lastAction: string | null;
   readonly actionError: string | null;
+  /**
+   * Whether that refusal was said in the client's own way (ClientDialogs.svelte): the window and the notices then do
+   * not say it again. False or absent otherwise.
+   */
+  readonly actionErrorSaid?: boolean;
   /**
    * A drone call that answered success and changed nothing. The server's launch
    * handler returns an empty dict when it refuses, so this is the ONLY way a

@@ -1492,7 +1492,7 @@ export function createClientStore(): ClientStore {
         });
         break;
       case "market/action-error":
-        market.set({ ...market.get(), actionError: event.message });
+        market.set({ ...market.get(), actionError: event.message, actionErrorSaid: event.message !== null && event.said === true });
         break;
       case "market/outcome":
         market.set({ ...market.get(), lastOutcome: event.outcome });
@@ -2363,7 +2363,7 @@ export function createClientStore(): ClientStore {
         });
         break;
       case "drones/action-error":
-        drones.set({ ...drones.get(), actionError: event.message });
+        drones.set({ ...drones.get(), actionError: event.message, actionErrorSaid: event.message !== null && event.said === true });
         break;
       case "drones/silent-decline":
         drones.set({ ...drones.get(), silentDecline: event.message });

@@ -310,7 +310,8 @@
   {#if $drones.error}
     <p class="error">{$drones.error}</p>
   {/if}
-  {#if $drones.actionError}
+  <!-- (A refusal the client's own dialog said is not said again here: ClientDialogs.svelte.) -->
+  {#if $drones.actionError && !$drones.actionErrorSaid}
     <p class="error">{$drones.actionError}</p>
   {/if}
   {#if $drones.silentDecline}
