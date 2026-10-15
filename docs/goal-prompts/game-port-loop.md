@@ -29,7 +29,7 @@ logic into the browser.
 
 | File | What it holds |
 |---|---|
-| `docs/game-port-loop-log.md` | **The loop's own journal. Its last entry says what to do next.** |
+| `docs/game-port-loop-log.md` | **The loop's own journal, kept in the working tree and never committed (git ignores it). Its Next list, at its end, says what to do next.** |
 | `docs/game-port-transport-plan.md` | The plan, each phase's "done when", and each phase's status |
 | `docs/game-port-client-reference.md` | What the retail client does on the connection, and where we match |
 | `docs/game-port-parity-report.md` | Gateway against game port, read by read (generated) |
@@ -55,6 +55,10 @@ or put it right before starting anything new.
    (below).
 6. **Write the log entry**: what was done, the evidence, the commit, any decision you took in the
    operator's place, and what is next. Update the plan's status when a phase's "done when" is met.
+   The log is the loop's own and is not committed (the operator's word of 2026-10-15). Nothing in it
+   is written twice: the entry goes in before the Next list, and the Next list, once, at the end, is
+   changed in place, never appended again. A standing thing (no test run, eve.js's state) is said
+   in an entry only where it changed.
 7. **Go straight on to the next unit.** There is nothing to wait for between units.
 
 ## Tests: the operator's word of 2026-10-13
