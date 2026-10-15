@@ -2682,12 +2682,27 @@ app.get("/api/bridge/bound-fleet", requireAuth, async (req, res, next) => {
       });
       return;
     }
+    // fleetSvc.InitFleet (254 to 258): without its fleet's object the client asks nothing of its fleet, whatever the
+    // session says, and it has that object only from CreateFleet or an invitation it accepted (334, 1195); the game
+    // port holds one the same way (pilots.js afterFleetCall). Where none is held the session's fleet is said and
+    // nothing is asked (until 2026-10-15 the BFF bound one afresh here and asked all five reads).
+    if (own.holdsObject !== true) {
+      held.fleetID = String(own.fleetID);
+      res.json({
+        ok: true,
+        characterID: held.characterID,
+        fleetID: held.fleetID,
+        reads: Object.fromEntries(FLEET_READ_METHODS.map((method) => [method, { error: "NOT_ASKED", message: null }])),
+        notifications: [],
+      });
+      return;
+    }
   }
   // fleetSvc.py reads a fleet's state once and keeps it right from the server's notices, its wings and its message
   // with it. Where the game port holds the fleet's object it keeps the fleet the same way (pilots.js fleetKept),
-  // and those reads are answered from what is kept. With nothing kept they are asked, as before.
+  // and those reads are answered from what is kept. With nothing kept they are asked of that object.
   let kept = null;
-  if (own && own.holdsObject === true) {
+  if (own) {
     try {
       kept = await gamePortPilots.fleetKept({ userid: held.accountID }, held.bridgeSessionID);
     } catch (error) {

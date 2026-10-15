@@ -2469,8 +2469,10 @@ test("on the game port a pilot whose session has no fleet is asked nothing of on
 });
 
 test("with a fleet in the session, and on the gateway, the fleet is asked as before", async () => {
-  // In a fleet: the five reads, on the fleet's object, and nothing said of the session having none.
-  const member = await fleetRoute({ own: { fleetID: 654500010000 } });
+  // In a fleet, its object held and nothing kept: the five reads, on the fleet's object, and nothing said of the
+  // session having none. (Mended 2026-10-15 by reading: the object is said to be held, as pilots.js fleet says it;
+  // with none held nothing is asked, the test after the next.)
+  const member = await fleetRoute({ own: { fleetID: 654500010000, holdsObject: true } });
   assert.deepEqual([member.asked.slice().sort(), member.payload.membership, member.payload.fleetID], [ALL_FIVE.slice().sort(), undefined, "654500010000"]);
   assert.deepEqual(member.payload.reads.GetInitState, { result: fleetState(654500010000) });
   // A transport that cannot say, and the gateway, whose held session does not know: asked, and refused five times.
@@ -2596,8 +2598,8 @@ test("on the game port a fleet whose object is held is read from what is kept, a
 
 test("with nothing kept the fleet is asked all five, as before", async () => {
   const fleetID = 654500010000;
+  // (Mended 2026-10-15 by reading: "no object is held" went to the test after this one, which asks nothing.)
   for (const [why, options] of [
-    ["no object is held", { own: { fleetID, holdsObject: false, kept: () => keptFleet(fleetID) } }],
     ["nothing could be read", { own: { fleetID, holdsObject: true, kept: () => null } }],
     ["the reading failed", { own: { fleetID, holdsObject: true, kept: () => { throw Object.assign(new Error("lost"), { code: "CALL_FAILED" }); } } }],
     ["the transport keeps none", { own: { fleetID, holdsObject: true } }],
@@ -2609,6 +2611,18 @@ test("with nothing kept the fleet is asked all five, as before", async () => {
     // Kept or not is asked only where an object is held, and only of the game port.
     assert.equal(keptAsked.length, why === "nothing could be read" || why === "the reading failed" ? 1 : 0, why);
   }
+});
+
+test("on the game port a fleet whose object is not held is said, and nothing is asked of it", async () => {
+  // fleetSvc.InitFleet (254 to 258) asks nothing without its fleet's object, which the client has only from
+  // CreateFleet or an invitation it accepted (334, 1195), whatever the session says.
+  const fleetID = 654500010000;
+  const { payload, asked, keptAsked, baseUrl } = await fleetRoute({ own: { fleetID, holdsObject: false, kept: () => keptFleet(fleetID) } });
+  assert.deepEqual([asked, keptAsked], [[], []]);
+  assert.deepEqual([payload.fleetID, payload.membership, payload.notifications], ["654500010000", undefined, []]);
+  assert.deepEqual(payload.reads, Object.fromEntries(FLEET_READ_NAMES.map((name) => [name, { error: "NOT_ASKED", message: null }])));
+  // The fleet the BFF holds for the session is the session's own.
+  assert.equal((await apiRequest(baseUrl, "/api/bots/squad-board")).payload.fleetID, "654500010000");
 });
 
 test("a session the game port has lost while the kept fleet is read is forgotten, and the route says so", async () => {
