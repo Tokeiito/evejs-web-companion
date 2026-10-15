@@ -15,14 +15,19 @@
   //
   // A bookmark's row is chosen by a click (Ctrl adds to the choice), edited by a double click (EditBookmark), and has
   // the part of the client's bookmark menu the page offers (PlaceEntry.GetMenu, addressBookEntries.py 123 to 141;
-  // menusvc.py BookmarkMenu, 1437 to 1534, as BookmarkChecker offers each): Dock, Set Destination, Add or Remove
-  // Waypoint, Edit Location and Remove Location; several chosen have Remove Location alone. Removing asks the client's
-  // RemoveLocation or RemoveMultipleLocation, whose Yes may be kept (addressbookService.py DeleteBookmarks, 452 to 473).
+  // menusvc.py BookmarkMenu, 1437 to 1534, as BookmarkChecker offers each): Show Info, Dock, Warp to Within (at the
+  // pilot's own warp distance, or one of the seven its submenu offers, which also sets that distance), Approach
+  // Location, Align to, Set Destination, Add or Remove Waypoint, Edit Location and Remove Location; several chosen
+  // have Remove Location alone. The ballpark's moves are offered as bridge/locationsList.ts spaceOffersOf reckons
+  // them from the page's read of space, read again as the menu opens. Removing asks the client's RemoveLocation or
+  // RemoveMultipleLocation, whose Yes may be kept (addressbookService.py DeleteBookmarks, 452 to 473).
   //
   // Not here yet: the Search tab, the Agent Missions group (the agents' bookmarks), the folders the pilot may
-  // administer, Create Folder and Create Subfolder, a structure's Add Location, the rest of a bookmark's menu (Show
-  // Info, Warp To, Approach, Align To, the map's and the fleet's entries), the folders' and the subfolders' menus, a
-  // choice by Shift, and a shared bookmark shown dim before its delay has passed.
+  // administer, Create Folder and Create Subfolder, a structure's Add Location, the rest of a bookmark's menu (a
+  // gate's jumps, the fleet's warps and broadcast, the map's and the camera's entries, avoiding a place), the
+  // folders' and the subfolders' menus, a choice by Shift, and a shared bookmark shown dim before its delay has
+  // passed. Show Info shows a thing the page has read in space as that thing, and any other place by its type (the
+  // info window has no station or system of its own).
   import { onMount } from "svelte";
   import { formatTemplate, plainText, type TemplateArguments } from "../bridge/clientWords.ts";
   import { resolvedName, type NameRef } from "../store/names.ts";
@@ -32,10 +37,17 @@
     locationsSection,
     placesInSystem,
     solSystemOf,
+    spaceOffersOf,
     subfolderNameOf,
     unzipMemo,
     type LocationsSection,
+    type SpaceBall,
+    type SpaceHere,
   } from "../bridge/locationsList.ts";
+  import { fmtDist } from "../space/overview.ts";
+  import { DISTANCE_WORD_LABELS, distanceSay } from "../space/distanceWords.ts";
+  import { flyingDistances, setDistance, WARP_RANGES } from "./flyingDistances.ts";
+  import { showInfo, type InfoSubject } from "./showInfo.ts";
   import type { ActiveBookmarks, Bookmark, Subfolder } from "../bridge/bookmarks.ts";
   import type { BookmarkPlace } from "../bridge/locationsList.ts";
   import BookmarkWindow from "./BookmarkWindow.svelte";
@@ -55,6 +67,8 @@
   const station = store.station;
   // svelte-ignore state_referenced_locally
   const flight = store.flight;
+  // svelte-ignore state_referenced_locally
+  const space = store.space;
   // svelte-ignore state_referenced_locally
   const waypointsState = flow.waypoints;
 
@@ -84,7 +98,14 @@
     placeLabel: "UI/PeopleAndPlaces/NewBookmarkLocationLabel",
     spot: "UI/PeopleAndPlaces/SpotInSolarSystem",
     notHere: "dialog:HavetobeatstationOrinShip/body",
+    showInfo: "UI/Commands/ShowInfo",
     dock: "UI/Inflight/DockInStation",
+    warpToWithin: "UI/Inflight/Submenus/WarpToWithin",
+    within: "UI/Inflight/WarpToWithin",
+    setDefault: "UI/Inflight/Submenus/SetDefaultWarpRange",
+    withDistance: "UI/Menusvc/MenuHints/SelectedItemActionWithDist",
+    approachLocation: "UI/Inflight/ApproachLocationActionGroup",
+    alignTo: "UI/Inflight/AlignTo",
     setDestination: "UI/Inflight/SetDestination",
     addWaypoint: "UI/Inflight/AddWaypoint",
     removeWaypoint: "UI/Inflight/RemoveWaypoint",
@@ -203,9 +224,55 @@
     }
   }
 
+  /** The warp's submenu open, and its Set Default's. */
+  let warpOpen = $state(false);
+  let defaultOpen = $state(false);
+
   function openMenu(bookmarkID: number): void {
     if (!selected.includes(bookmarkID)) selected = [bookmarkID];
     menuFor = menuFor === bookmarkID ? null : bookmarkID;
+    warpOpen = false;
+    defaultOpen = false;
+    // The client builds the menu from its ballpark as it is: the page reads space again for it.
+    if (menuFor !== null && $flight.status?.inSpace === true) void flow.loadSpaceSnapshot().catch(() => {});
+  }
+
+  /**
+   * What the bookmark's menu reads of a pilot flying in space (the client's session and ballpark): the flight's system
+   * and ship, and the page's read of space where it is of that system; none for a pilot docked, or one the page has
+   * not read.
+   */
+  const here = $derived.by((): SpaceHere | null => {
+    const status = $flight.status;
+    const snapshot = $space.snapshot;
+    if (status === null || !status.inSpace || status.docked || status.solarSystemID === null || status.shipID === null) return null;
+    if (snapshot === null || !snapshot.inSpace || snapshot.solarSystemID !== status.solarSystemID) return null;
+    const ship = snapshot.ship;
+    if (ship === null || ship.geometryAvailable === false) return null;
+    const balls = new Map<number, SpaceBall>();
+    for (const entity of snapshot.entities) {
+      if (entity.isSelf || entity.geometryAvailable === false) continue;
+      balls.set(entity.itemID, { position: entity.position, radius: entity.radius, typeID: entity.typeID, categoryID: entity.categoryID });
+    }
+    return {
+      solarSystemID: status.solarSystemID,
+      shipID: status.shipID,
+      warping: (ship.mode ?? "").trim().toUpperCase() === "WARP",
+      shipPosition: ship.position,
+      shipRadius: ship.radius,
+      balls,
+    };
+  });
+
+  /** The pilot's own warp distance (defaultRangeUtils' WarpTo), which Warp to Within warps at. */
+  const defaultWarp = $derived(Number($flyingDistances.warp));
+  const say = $derived(distanceSay($words.templates));
+
+  /** Show Info (_BookmarkMenu, 1446 to 1450): the thing as the ballpark holds it, else the bookmark's type. */
+  function infoOf(bookmark: Bookmark): InfoSubject {
+    const item = bookmark.itemID ?? bookmark.locationID;
+    const ball = here?.balls.get(item);
+    return ball !== undefined ? { kind: "spaceObject", itemID: item, typeID: ball.typeID } : { kind: "type", typeID: bookmark.typeID };
   }
 
   /** The bookmark's place on the map (BookmarkChecker.GetMapIDs, 176 to 185): a station or a system itself, else the system it is in. */
@@ -218,6 +285,9 @@
   /** The part of BookmarkMenu the page offers for one bookmark, as BookmarkChecker offers each. */
   function menuOf(bookmark: Bookmark): {
     readonly dock: number | null;
+    readonly warp: boolean;
+    readonly approach: boolean;
+    readonly align: boolean;
     readonly destination: number | null;
     readonly addWaypoint: number | null;
     readonly removeWaypoint: number | null;
@@ -225,21 +295,45 @@
   } {
     const item = bookmark.itemID ?? bookmark.locationID;
     const mapPlace = mapPlaceOf(bookmark);
-    const status = $flight.status;
-    const inSpace = status !== null && status.inSpace && !status.docked;
-    // OfferDock (celestialCheckers.py 752 to 765): a station in the ballpark of a pilot in space, its system.
-    const dock = item >= 60_000_000 && item < 64_000_000 && inSpace && status.solarSystemID === bookmark.locationID ? item : null;
+    // The ballpark's moves: Dock (a station in the system), Warp to Within, Approach Location and Align to.
+    const offers = spaceOffersOf(bookmark, here);
     // OfferSetDestination (1354 to 1362): not the system the pilot is in, nor the route's last waypoint.
-    const here = status?.solarSystemID ?? $station.online?.solarSystemID ?? null;
+    const status = $flight.status;
+    const pilotSystem = status?.solarSystemID ?? $station.online?.solarSystemID ?? null;
     const waypoints = $waypointsState;
-    const destination = here !== item && waypoints[waypoints.length - 1] !== item ? mapPlace : null;
+    const destination = pilotSystem !== item && waypoints[waypoints.length - 1] !== item ? mapPlace : null;
     // OfferAddWaypoint (440 to 445), else Remove Waypoint where the item is one (BookmarkMenu, 1503 to 1506).
     const isWaypoint = waypoints.includes(item);
     // OfferEditBookmark (bookmarkChecker.py 65 to 70; IsEditableWithCharacterRoles, 107 to 113): the folder's own,
     // managed or administered, or used and the bookmark the pilot's.
     const folder = active?.folders.find((each) => each.folderID === bookmark.folderID);
     const edit = folder !== undefined && ([1, 4, 5].includes(folder.accessLevel) || (folder.accessLevel === 3 && bookmark.creatorID === pilotID));
-    return { dock, destination, addWaypoint: isWaypoint ? null : mapPlace, removeWaypoint: isWaypoint ? mapPlace : null, edit };
+    return {
+      dock: offers.dock ? item : null,
+      warp: offers.warp,
+      approach: offers.approach,
+      align: offers.align,
+      destination,
+      addWaypoint: isWaypoint ? null : mapPlace,
+      removeWaypoint: isWaypoint ? mapPlace : null,
+      edit,
+    };
+  }
+
+  /** Warp to Within, Approach Location and Align to: the page's own calls, as flight steps. */
+  function move(how: "warp" | "approach" | "align", bookmarkID: number, range = 0): void {
+    menuFor = null;
+    error = "";
+    const order = how === "warp" ? flow.warpToBookmark(bookmarkID, range) : how === "approach" ? flow.approachBookmark(bookmarkID) : flow.alignToBookmark(bookmarkID);
+    void order.catch((cause) => {
+      error = isSessionLost(cause) ? "Your session ended. Pick your character again." : panelErrorWords(cause);
+    });
+  }
+
+  /** WarpToMenu's Set Default (defaultRangeUtils.SetDefaultWarpToDist): the pilot's own warp distance. */
+  function setDefaultWarp(metres: number): void {
+    setDistance("warp", String(metres));
+    defaultOpen = false;
   }
 
   function dockAt(stationID: number): void {
@@ -330,7 +424,7 @@
   }
 
   onMount(() => {
-    flow.requestWords([...Object.values(WORDS), DO_NOT_ASK_AGAIN_LABEL, ...DIALOGS.flatMap((name) => [`dialog:${name}/title`, `dialog:${name}/body`, suppressableKey(name)])]);
+    flow.requestWords([...Object.values(WORDS), ...DISTANCE_WORD_LABELS, DO_NOT_ASK_AGAIN_LABEL, ...DIALOGS.flatMap((name) => [`dialog:${name}/title`, `dialog:${name}/body`, suppressableKey(name)])]);
     void load();
   });
 
@@ -444,8 +538,21 @@
                       <button type="button" class="minor" disabled={busy} onclick={() => askRemove(chosenBookmarks)}>{word(WORDS.removeBookmark, "Take them off")}</button>
                     {:else}
                       {@const menu = menuOf(bookmark)}
+                      <button type="button" class="minor" onclick={() => { menuFor = null; showInfo(infoOf(bookmark)); }}>{word(WORDS.showInfo, "About it")}</button>
                       {#if menu.dock !== null}
                         <button type="button" class="minor" onclick={() => menu.dock !== null && dockAt(menu.dock)}>{word(WORDS.dock, "Dock there")}</button>
+                      {/if}
+                      {#if menu.warp}
+                        <!-- Warp to Within (WarpToMenuEntryData): at the pilot's own warp distance, shown beside it;
+                             its submenu (WarpToMenu) the seven distances and Set Default. -->
+                        <button type="button" class="minor" onclick={() => move("warp", bookmark.bookmarkID, defaultWarp)}>{filled(WORDS.withDistance, "{actionName} ({distanceString})", { actionName: word(WORDS.warpToWithin, "Warp there"), distanceString: fmtDist(defaultWarp, 2, say) })}</button>
+                        <button type="button" class="minor" aria-label={word(WORDS.warpToWithin, "Warp there")} aria-expanded={warpOpen} onclick={() => { warpOpen = !warpOpen; defaultOpen = false; }}>{warpOpen ? "▾" : "▸"}</button>
+                      {/if}
+                      {#if menu.approach}
+                        <button type="button" class="minor" onclick={() => move("approach", bookmark.bookmarkID)}>{word(WORDS.approachLocation, "Fly there")}</button>
+                      {/if}
+                      {#if menu.align}
+                        <button type="button" class="minor" onclick={() => move("align", bookmark.bookmarkID)}>{word(WORDS.alignTo, "Line up with it")}</button>
                       {/if}
                       {#if menu.destination !== null}
                         <button type="button" class="minor" onclick={() => menu.destination !== null && route("destination", menu.destination)}>{word(WORDS.setDestination, "Head there")}</button>
@@ -461,6 +568,22 @@
                       {/if}
                     {/if}
                   </p>
+                  {#if warpOpen && !(selected.length > 1 && selected.includes(bookmark.bookmarkID)) && menuOf(bookmark).warp}
+                    <!-- WarpToMenu (menusvc.py 2254 to 2274): each of the seven distances, then Set Default's. -->
+                    <p class="controls locations-submenu" aria-label={word(WORDS.warpToWithin, "Warp there")}>
+                      {#each WARP_RANGES as choice (choice.metres)}
+                        <button type="button" class="minor" onclick={() => move("warp", bookmark.bookmarkID, choice.metres)}>{filled(WORDS.within, "Stop {distance} short", { distance: fmtDist(choice.metres, 2, say) })}</button>
+                      {/each}
+                      <button type="button" class="minor" aria-expanded={defaultOpen} onclick={() => (defaultOpen = !defaultOpen)}>{word(WORDS.setDefault, "Usual distance")} {defaultOpen ? "▾" : "▸"}</button>
+                    </p>
+                    {#if defaultOpen}
+                      <p class="controls locations-submenu" aria-label={word(WORDS.setDefault, "Usual distance")}>
+                        {#each WARP_RANGES as choice (choice.metres)}
+                          <button type="button" class="minor" aria-pressed={choice.metres === defaultWarp} onclick={() => setDefaultWarp(choice.metres)}>{fmtDist(choice.metres, 2, say)}</button>
+                        {/each}
+                      </p>
+                    {/if}
+                  {/if}
                 </td>
               </tr>
             {/if}
@@ -575,6 +698,9 @@
   /* A chosen row, marked by more than colour: its text is underlined. */
   .locations-chosen td {
     text-decoration: underline;
+  }
+  .locations-submenu {
+    margin-left: 1.5rem;
   }
   .bookmark-confirm {
     border: 1px solid currentColor;
