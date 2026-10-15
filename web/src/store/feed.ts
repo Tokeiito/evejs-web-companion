@@ -429,7 +429,7 @@ export type FeedEvent =
   // zlib buffer mailMgr.GetBody answers.
   | { readonly type: "mail/opened"; readonly open: MailOpenMessage | null }
   // A mail action failed or was declined; null clears the error.
-  | { readonly type: "mail/action-error"; readonly message: string | null }
+  | { readonly type: "mail/action-error"; readonly message: string | null; readonly said?: boolean }
   // What a send ACTUALLY did, from a re-read of the sender's own mailbox.
   | { readonly type: "mail/outcome"; readonly outcome: MailActionOutcome | null }
   // Drop the mail state (character offline / logged out).

@@ -865,6 +865,11 @@ export interface MailState {
   readonly inboxError: string | null;
   /** Non-null when the last open/send failed or was declined. */
   readonly actionError: string | null;
+  /**
+   * Whether that refusal was said in the client's own way (ClientDialogs.svelte): the window and the notices then do
+   * not say it again. False or absent otherwise.
+   */
+  readonly actionErrorSaid?: boolean;
   readonly lastOutcome: MailActionOutcome | null;
 }
 

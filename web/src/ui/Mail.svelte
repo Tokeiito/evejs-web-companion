@@ -2012,7 +2012,8 @@
   {#if error}
     <p class="error">{error}</p>
   {/if}
-  {#if $mail.actionError}
+  <!-- (A refusal the client's own dialog said is not said again here: ClientDialogs.svelte.) -->
+  {#if $mail.actionError && !$mail.actionErrorSaid}
     <p class="error">{$mail.actionError}</p>
   {/if}
   {#if $mail.inboxError}

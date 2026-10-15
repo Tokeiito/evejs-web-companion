@@ -5800,7 +5800,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "mail/action-error", message: mailRefusalMessage(error) });
+      mailRefused(error);
       return null;
     }
     if (markRead) {
@@ -5842,7 +5842,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "mail/action-error", message: mailRefusalMessage(error) });
+      mailRefused(error);
       return undefined;
     }
   }
@@ -5902,8 +5902,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
+  /**
+   * A mail write's refusal: put up as the client puts up a UserError (mailSvc and mailingListsSvc catch none of
+   * theirs), save those of `kept`, whose own words the window says.
+   */
+  function mailRefused(error: unknown, kept: ReadonlySet<string> = NONE_SILENT): void {
+    const message = mailRefusalMessage(error);
+    store.apply({ type: "mail/action-error", message, said: sayRefusalDialog(error, message, NONE_SILENT, kept) });
+  }
+  /**
+   * eveMisc.CSPAChargedAction (89 to 101): a mail whose recipients charge for contact is answered with a question of
+   * the client's own (pay, and send again with approvedCost), which the page does not ask; EveJS raises none.
+   */
+  const SEND_MAIL_KEPT: ReadonlySet<string> = new Set(["ContactCostNotApproved"]);
+
   // mailingListsSvc.GetDisplayName (55 to 66): a list joined, or one asked before, by its kept name; any other asked
-  // of the server (GetInfo) and kept; none, the client's MailingListNoSuchList, said.
+  // of the server (GetInfo) and kept; none, the client's MailingListNoSuchList, raised to its handler and put up so.
   async function mailingListName(listID: number): Promise<string | null> {
     const { lists, externalLists } = store.mail.get();
     const known = (lists ?? []).find((list) => list.listID === listID) ?? externalLists.find((list) => list.listID === listID);
@@ -5914,7 +5928,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const info = answer === null ? null : mailingListOf(answer);
     if (info === null) {
       const said = store.words.get().templates["dialog:MailingListNoSuchList/body"];
-      store.apply({ type: "mail/action-error", message: typeof said === "string" ? said : "That mailing list cannot be found." });
+      const message = typeof said === "string" ? said : "That mailing list cannot be found.";
+      sayDialog("MailingListNoSuchList", null, message);
+      store.apply({ type: "mail/action-error", message, said: true });
       return null;
     }
     store.apply({ type: "mail/external-list", list: info });
@@ -6650,7 +6666,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "mail/action-error", message: mailRefusalMessage(error) });
+      mailRefused(error);
       return false;
     }
     mailboxLoaded(after(store.mail.get()));
@@ -6714,7 +6730,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "mail/action-error", message: mailRefusalMessage(error) });
+      mailRefused(error);
       return null;
     }
     // AddLabel (727 to 730): the label kept, by the bit the server answered.
@@ -7141,7 +7157,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "mail/action-error", message: mailRefusalMessage(error) });
+      mailRefused(error, SEND_MAIL_KEPT);
       return;
     }
     // mailSvc.SendMail (959 to 990) takes no header of the mail in: the server's OnMailSent brings it, as it brings

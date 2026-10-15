@@ -1691,7 +1691,7 @@ export function createClientStore(): ClientStore {
         mail.set({ ...mail.get(), externalLists: [...mail.get().externalLists.filter((each) => each.listID !== event.list.listID), event.list] });
         break;
       case "mail/action-error":
-        mail.set({ ...mail.get(), actionError: event.message });
+        mail.set({ ...mail.get(), actionError: event.message, actionErrorSaid: event.message !== null && event.said === true });
         break;
       case "mail/outcome":
         mail.set({ ...mail.get(), lastOutcome: event.outcome });
