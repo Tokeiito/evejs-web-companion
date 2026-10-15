@@ -232,6 +232,7 @@ import type {
   FittingSlot,
   FleetAction,
   FlightStatus,
+  CapacityInfo,
   InventoryItemRow,
   InventoryPlace,
   MiningHold,
@@ -398,7 +399,7 @@ import {
 import { readScanFullState } from "../bridge/scanFullState.ts";
 import { applyFitting, destroyRig as destroyRigCall, fitModule as fitModuleCall, unfitModule as unfitModuleCall } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
-import { BAY_FLAGS, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, stackAll as stackAllCall, trashItems as trashItemsCall, type MovePlace } from "../bridge/inventoryWrites.ts";
+import { BAY_FLAGS, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, type MovePlace } from "../bridge/inventoryWrites.ts";
 import {
   cancelOrder as cancelOrderCall,
   modifyOrder as modifyOrderCall,
@@ -3437,7 +3438,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // unwind the flow; any other failure is surfaced through the store (the page
   // stays put and shows the reason) rather than thrown into the UI handler.
   // An action that answers `false` did nothing (the pilot said no): nothing is said, and nothing is read again.
-  async function runMutation(action: () => Promise<void | boolean>): Promise<void> {
+  // A refusal is put up as the client puts up a UserError (a ship boarded, left or repaired, Stack All: each lets
+  // its UserError through to the client's handler), save those of `kept`.
+  async function runMutation(action: () => Promise<void | boolean>, kept: ReadonlySet<string> = NONE_SILENT): Promise<void> {
     try {
       if ((await action()) === false) {
         return;
@@ -3449,10 +3452,100 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "inventory/action-error", message: errorWords(error) });
+      const message = errorWords(error);
+      store.apply({ type: "inventory/action-error", message, said: sayInventoryRefusal(error, message, kept) });
       return;
     }
     await loadInventory();
+  }
+
+  /** A refusal the inventory's own code has put up already, as the client does (NotEnoughCargoSpaceFor1Unit). */
+  class DialogAlreadySaid extends Error {}
+
+  /** invControllers._AddItem (252 to 258): a single stack's want of room, which the client answers itself. */
+  const ADD_ROOM_REFUSALS: ReadonlySet<string> = new Set([
+    "NotEnoughCargoSpace", "NotEnoughCargoSpaceOverload", "NotEnoughDroneBaySpace", "NotEnoughDroneBaySpaceOverload",
+    "NoSpaceForThat", "NoSpaceForThatOverload", "NotEnoughChargeSpace", "NotEnoughSpecialBaySpace",
+    "NotEnoughSpecialBaySpaceOverload", "NotEnoughSpace", "NotEnoughFighterBaySpace",
+  ]);
+  /** And CannotAddToQtyLimit (275 to 279), with what may yet be added. */
+  const ONE_STACK_KEPT: ReadonlySet<string> = new Set([...ADD_ROOM_REFUSALS, "CannotAddToQtyLimit"]);
+  /** invControllers.StackAll (393 to 407): a container's password asked for. */
+  const STACK_KEPT: ReadonlySet<string> = new Set(["PermissionDenied"]);
+
+  /** Used and capacity of a place as the page last read them; null where it has none, or has not read it. */
+  function capacityAt(place: InventoryPlace): CapacityInfo | null {
+    const inventory = store.get().inventory;
+    switch (place.kind) {
+      case "hangar":
+        return inventory.hangar.capacity;
+      case "cargo":
+        return inventory.cargo.capacity;
+      case "container":
+        return inventory.container && inventory.container.itemID === place.itemID ? inventory.container.capacity : null;
+      case "shipBay": {
+        const ship = inventory.openShip;
+        if (!ship || ship.itemID !== inventory.activeShipID) return null;
+        return ship.bays.find((bay) => bay.key === place.bay)?.capacity ?? null;
+      }
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * A single stack the server would not take, as the client answers it (invControllers._AddItem, 252 to 290). For want
+   * of room the place's room is read again (the client's GetCapacity: here the places' reads, which ask it): none to
+   * spare at all, the refusal is the client's handler's; room for not even one unit, NotEnoughCargoSpaceFor1Unit with
+   * the type, the room free and one unit's, at least 0.01; room for some, the client asks how many, which the page does
+   * not ask yet, and the refusal stays its own. CannotAddToQtyLimit with nothing more to add is the handler's; with
+   * some, the same question. Returns where the refusal is to go on as it is; throws DialogAlreadySaid where it is said.
+   */
+  async function noRoomForAll(error: unknown, row: InventoryItemRow, to: InventoryPlace): Promise<void> {
+    const refusal = refusalDialogOf(error);
+    if (refusal === null || !ONE_STACK_KEPT.has(refusal.dialog)) return;
+    const message = errorWords(error);
+    const toHandler = (): never => {
+      sayRefusalDialog(error, message);
+      throw new DialogAlreadySaid(message);
+    };
+    if (refusal.dialog === "CannotAddToQtyLimit") {
+      const maxToAdd = numberIn(refusal.values, "maxToAdd");
+      if (maxToAdd === null || maxToAdd <= 0) toHandler();
+      return;
+    }
+    await refreshOpenPlaces().catch(() => {});
+    const capacity = capacityAt(to);
+    if (capacity === null) toHandler();
+    const free = (capacity as CapacityInfo).capacity - (capacity as CapacityInfo).used;
+    if (free < 0) toHandler();
+    const volume = typeof row.volume === "number" && row.volume > 0 ? row.volume : null;
+    if (volume === null) return;
+    const stack = row.singleton ? 1 : row.quantity;
+    if (Math.min(stack, Math.round((free / volume) * 1e7) / 1e7 | 0) > 0) return;
+    // (The values as a dict the bridge carries, as a refusal's come: a plain object's `type` is a wire value's tag.)
+    const values: JsonValue = { type: "dict", entries: [["type", row.typeID], ["free", free], ["required", volume < 0.01 ? 0.01 : volume]] };
+    sayDialog("NotEnoughCargoSpaceFor1Unit", values, message);
+    throw new DialogAlreadySaid(message);
+  }
+
+  /** A number a refusal's values hold under `key` (a dict as the bridge carries one), or null. */
+  function numberIn(values: JsonValue | null, key: string): number | null {
+    const found = values === null ? undefined : readDictEntry(values, key);
+    return typeof found === "number" && Number.isFinite(found) ? found : null;
+  }
+
+  /**
+   * An inventory action's refusal put up as the client puts it up: TrashItems' answered refusals each its dialog
+   * (TrashInvItems), one the action put up itself as it is, any other by sayRefusalDialog, save those of `kept`.
+   */
+  function sayInventoryRefusal(error: unknown, message: string, kept: ReadonlySet<string>): boolean {
+    if (error instanceof DialogAlreadySaid) return true;
+    if (error instanceof TrashRefusedError) {
+      for (const dialog of error.dialogs) sayDialog(dialog, null, message);
+      return error.dialogs.length > 0;
+    }
+    return sayRefusalDialog(error, message, NONE_SILENT, kept);
   }
 
   // --- R14 Inventory depth + corporation hangars ---------------------------
@@ -3667,8 +3760,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // Run a mutation and report what the SERVER says actually happened. The BFF
   // re-reads after every call because invbroker declines silently, so `applied`
   // here is a real observation, not an echo of the request.
+  // A refusal is put up as the client puts up a UserError (sayInventoryRefusal), save those of `kept`.
   async function runInventoryAction(
     action: () => Promise<{ applied: boolean; declinedSilently: boolean; message: string }>,
+    kept: ReadonlySet<string> = NONE_SILENT,
   ): Promise<void> {
     store.apply({ type: "inventory/outcome", outcome: null });
     let outcome: { applied: boolean; declinedSilently: boolean; message: string };
@@ -3683,7 +3778,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       // A typed refusal carries the HANDLER's own reason; it is surfaced
       // verbatim rather than reworded.
-      store.apply({ type: "inventory/action-error", message: errorWords(error) });
+      const message = errorWords(error);
+      store.apply({ type: "inventory/action-error", message, said: sayInventoryRefusal(error, message, kept) });
       return;
     }
     store.apply({ type: "inventory/outcome", outcome });
@@ -4962,15 +5058,27 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   /**
    * The dialog a refusal names put up, with the page's own words for it; false where it names none. One of `silent`
-   * is one the client's code lets go without a word: said as the client says it, which is not at all.
+   * is one the client's code lets go without a word: said as the client says it, which is not at all. One of `kept`
+   * is one the client's code answers in a way of its own that the page has not (a question it asks): not put up, and
+   * the page's own words for it stand.
    */
-  function sayRefusalDialog(error: unknown, fallback: string, silent: ReadonlySet<string> = NONE_SILENT): boolean {
+  function sayRefusalDialog(
+    error: unknown,
+    fallback: string,
+    silent: ReadonlySet<string> = NONE_SILENT,
+    kept: ReadonlySet<string> = NONE_SILENT,
+  ): boolean {
     const said = refusalDialogOf(error);
-    if (said === null) return false;
+    if (said === null || kept.has(said.dialog)) return false;
     if (silent.has(said.dialog)) return true;
-    dialogsSaidCount += 1;
-    dialogsSaidSignal.set([...dialogsSaidSignal.get(), { n: dialogsSaidCount, ...said, fallback }].slice(-20));
+    sayDialog(said.dialog, said.values, fallback);
     return true;
+  }
+
+  /** A dialog put up by its name, with the values for it and the page's own words for it (dialogsSaid). */
+  function sayDialog(dialog: string, values: JsonValue | null, fallback: string): void {
+    dialogsSaidCount += 1;
+    dialogsSaidSignal.set([...dialogsSaidSignal.get(), { n: dialogsSaidCount, dialog, values, fallback }].slice(-20));
   }
 
   function dismissDialog(n: number): void {
@@ -16801,7 +16909,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadInventory,
 
     async stackContainer(target) {
-      await runMutation(() => stackPlaceNow(target));
+      // invControllers.StackAll (382 to 388): PermissionDenied asks for the container's password, which the page
+      // does not ask yet; any other refusal goes to the client's handler.
+      await runMutation(() => stackPlaceNow(target), STACK_KEPT);
     },
 
     async boardShip(shipID) {
@@ -16897,6 +17007,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async transferItems(itemIDs, from, to, qty = null) {
+      // One stack's want of room is the client's own to answer (invControllers._AddItem, 229 to 290): kept here
+      // where it asks how many (noRoomForAll); many stacks' goes to its handler, as every other refusal does.
       await runInventoryAction(async () => {
         // Between the hangar, the ship's hold, its bays and a container, the client's own call
         // (bridge/inventoryWrites.ts), judged by the places' rows refreshed, the source's above all: a thing moved can
@@ -16910,7 +17022,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             throw new Error("Those items are no longer where the panel last saw them; refresh and try again.");
           }
           const [destination, source] = [await inventoryOfPlace(to), await inventoryOfPlace(from)];
-          await moveItemsCall(bridgeDo, destination.inventory, to as MovePlace, source.liesIn, present, qty ?? null);
+          try {
+            await moveItemsCall(bridgeDo, destination.inventory, to as MovePlace, source.liesIn, present, qty ?? null);
+          } catch (error) {
+            if (present.length === 1) await noRoomForAll(error, present[0] as InventoryItemRow, to);
+            throw error;
+          }
           await refreshOpenPlaces();
           const sourceAfter = new Map((rowsAt(from) ?? []).map((row) => [row.itemID, row]));
           const left = (row: InventoryItemRow) => {
@@ -16931,7 +17048,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           declinedSilently: result.declinedSilently,
           message: describeTransfer(result, itemIDs.length, qty ?? null),
         };
-      });
+      }, itemIDs.length === 1 ? ONE_STACK_KEPT : NONE_SILENT);
     },
 
     async mergeStacks(sourceItemID, destinationItemID, place) {

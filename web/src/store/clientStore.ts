@@ -1275,7 +1275,7 @@ export function createClientStore(): ClientStore {
         break;
       }
       case "inventory/action-error":
-        inventory.set({ ...inventory.get(), actionError: event.message });
+        inventory.set({ ...inventory.get(), actionError: event.message, actionErrorSaid: event.message !== null && event.said === true });
         break;
       case "inventory/cleared":
         inventory.set(INITIAL_INVENTORY);

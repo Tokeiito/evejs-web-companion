@@ -37,7 +37,7 @@ import {
 import type { JsonValue } from "./wire.ts";
 import { intervalWriter, shortIntervalWriter } from "./timeInterval.ts";
 import { fmtDist } from "../space/overview.ts";
-import { distanceSay } from "../space/distanceWords.ts";
+import { DISTANCE_WORD_LABELS, distanceSay } from "../space/distanceWords.ts";
 
 /**
  * The retail client's own text, when the page has it: its templates by label
@@ -286,8 +286,25 @@ export function questionMarkup(words: QuestionWords, nameOf: NameOf, client: Cli
         writeShortInterval: shortIntervalWriter(client.templates),
         // A distance in the client's units and its words for them, where they are to hand (DISTANCE_WORD_LABELS).
         writeDistance: (meters, decimalPlaces) => fmtDist(meters, decimalPlaces, distanceSay(client.templates)),
+        writeIsk: (amount, decimalPlaces) => iskWords(amount, decimalPlaces, client.templates, nameOf),
       })
     : null;
+}
+
+/** The labels a dialog's numeric values are written with: a distance's units, and ISK's (ISK_LABELS). */
+export const NUMERIC_WORD_LABELS: readonly string[] = [...DISTANCE_WORD_LABELS, "UI/Util/FmtIsk", "UI/Util/FmtIskNoDecimal"];
+
+/**
+ * eveFormat.FmtISK(value, showFractionsAlways) by FmtCurrency: the label of ISK with fractions or without
+ * (UI/Util/FmtIsk, UI/Util/FmtIskNoDecimal), the amount rounded half away from nought where without; null where the
+ * label is not to hand.
+ */
+function iskWords(amount: number, decimalPlaces: number, templates: ClientWording["templates"], nameOf: NameOf): string | null {
+  const fractions = decimalPlaces > 0;
+  const template = templates[fractions ? "UI/Util/FmtIsk" : "UI/Util/FmtIskNoDecimal"];
+  if (typeof template !== "string") return null;
+  const shown = fractions ? amount : Math.sign(amount) * Math.round(Math.abs(amount));
+  return plainText(formatTemplate(template, { amount: shown }, { nameOf }));
 }
 
 /**

@@ -58,6 +58,12 @@ export interface FormatContext {
    * it such a tag is written as a plain number.
    */
   readonly writeDistance?: (meters: number, decimalPlaces: number) => string;
+  /**
+   * An amount of ISK written as the client writes one (NumericPropertyHandler._GetIsk: FmtISK(value,
+   * showFractionsAlways=decimalPlaces > 0), 2 places where the tag says none), for a numeric tag that asks for its
+   * isk. Null, or without it, such a tag is written as a plain number.
+   */
+  readonly writeIsk?: (amount: number, decimalPlaces: number) => string | null;
 }
 
 /** A message's arguments by name: what the server sent with the label, and what the client adds. */
@@ -266,12 +272,16 @@ function renderToken(token: TemplateToken, args: TemplateArguments, context: For
   switch (token.type) {
     case "numeric": {
       const value = numberOf(given);
-      const places = Number(token.settings.decimalPlaces ?? 3);
+      const places = (fallback: number): number => {
+        const said = Number(token.settings.decimalPlaces ?? fallback);
+        return Number.isInteger(said) && said >= 0 ? said : fallback;
+      };
+      const isk = value !== null && token.property === "isk" && context.writeIsk ? context.writeIsk(value, places(2)) : null;
       text = value === null
         ? ""
         : token.property === "distance" && context.writeDistance
-          ? context.writeDistance(value, Number.isInteger(places) && places >= 0 ? places : 3)
-          : formatNumber(value, token);
+          ? context.writeDistance(value, places(3))
+          : isk ?? formatNumber(value, token);
       break;
     }
     case "item":

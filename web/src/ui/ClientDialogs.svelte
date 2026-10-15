@@ -23,8 +23,7 @@
   import type { SaidDialog } from "../app/flow.ts";
   import type { QuestionWords } from "../store/types.ts";
   import { resolvedName, type NameKind } from "../store/names.ts";
-  import { questionText, wordsLabels, wordsNameRefs, type ClientWording } from "../bridge/questions.ts";
-  import { DISTANCE_WORD_LABELS } from "../space/distanceWords.ts";
+  import { NUMERIC_WORD_LABELS, questionText, wordsLabels, wordsNameRefs, type ClientWording } from "../bridge/questions.ts";
 
   let { session, inFront }: { session: Session; inFront: boolean } = $props();
   // svelte-ignore state_referenced_locally
@@ -77,8 +76,8 @@
     if (parts.length === 0) {
       return;
     }
-    // (And a distance's words, which a dialog's numeric distance is written in: questions.ts, writeDistance.)
-    flow.requestWords([...wordsLabels(parts), ...$said.map(typeKey), ...Object.keys(OWN_TITLES), ...DISTANCE_WORD_LABELS]);
+    // (And the words a dialog's numeric distance and ISK are written in: questions.ts, writeDistance and writeIsk.)
+    flow.requestWords([...wordsLabels(parts), ...$said.map(typeKey), ...Object.keys(OWN_TITLES), ...NUMERIC_WORD_LABELS]);
     const refs = wordsNameRefs(parts, client);
     if (refs.length > 0) {
       flow.requestNames(refs);

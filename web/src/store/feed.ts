@@ -191,7 +191,7 @@ export type FeedEvent =
       readonly cargo: InventoryContainerState;
     }
   // A mutation (move/stack/board) failed; null clears the error after success.
-  | { readonly type: "inventory/action-error"; readonly message: string | null }
+  | { readonly type: "inventory/action-error"; readonly message: string | null; readonly said?: boolean }
   // Drop the inventory state (character offline / logged out).
   | { readonly type: "inventory/cleared" }
   // Goal R14 — the items ticked for a bulk move or trash. Replaces the whole

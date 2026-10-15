@@ -179,6 +179,11 @@ export interface InventoryState {
   readonly loaded: boolean;
   /** Non-null when the last mutation (move/stack/board) failed. */
   readonly actionError: string | null;
+  /**
+   * Whether that refusal was said in the client's own way (ClientDialogs.svelte): the panel and the notices then do
+   * not say it again. False or absent otherwise.
+   */
+  readonly actionErrorSaid?: boolean;
   // --- R14 inventory depth ---
   /** The items ticked for a bulk move / trash, by itemID. */
   readonly selection: readonly number[];
