@@ -32,6 +32,7 @@ export type CombatOutcome =
   | "target-off-grid"
   | "leashed" // the target is further from the commander than the lock range
   | "no-reach" // a gun boat with no readable reach, or nothing to position with
+  | "between-targets" // our hold stands, the target died, rats remain: hold here until the next call
   | "reform" // re-forming on the commander after our own order was dropped
   | "reform-stop"; // re-form wanted, no commander on grid: one stopShip
 
@@ -102,6 +103,11 @@ export interface PropsTrace {
   readonly want: boolean;
   readonly because: PropsBecause;
   readonly withheld: PropsWithheld | null;
+  /** The two inputs the formation rule turns on, as the rung read them this tick. */
+  readonly hostiles?: boolean | null;
+  readonly formation?: boolean;
+  /** The ship's movement mode this tick (GOTO, FOLLOW, ORBIT, ...), null when unread. */
+  readonly mode?: string | null;
 }
 
 /** Why the ammo step looked at no gun at all this tick. */
