@@ -4455,10 +4455,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({
-        type: "industry/action-error",
-        message: industryRefusalMessage(error),
-      });
+      // Put up as the client puts up a UserError: industrySvc.InstallJob, CompleteJob and CancelJob raise theirs to its
+      // handler (industrySvc.py 139 to 162). IndustryValidationError's dialog says only that the job was not
+      // submitted, and the client shows its reasons in the submit button's tooltip (submitButton.py 223 to 225): the
+      // window's line, the page's words for those reasons, stays for it.
+      const message = industryRefusalMessage(error);
+      const said = sayRefusalDialog(error, message) && refusalDialogOf(error)?.dialog !== "IndustryValidationError";
+      store.apply({ type: "industry/action-error", message, said });
       return;
     }
     await loadIndustry();

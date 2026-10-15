@@ -617,6 +617,11 @@ export interface IndustryState {
   /** Non-null when the last install/deliver/cancel failed or was declined. */
   readonly actionError: string | null;
   /**
+   * Whether that refusal was said in the client's own way (ClientDialogs.svelte): the window and the notices then do
+   * not say it again. False or absent otherwise.
+   */
+  readonly actionErrorSaid?: boolean;
+  /**
    * What the server last said a monitored job's place has (OnIndustryMaterials: the monitor's number, and typeID
    * -> how much), with the count of its tellings since the pilot came online. Null where it has said nothing.
    */

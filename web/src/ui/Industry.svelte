@@ -555,7 +555,8 @@
   {#if error}
     <p class="error">{error}</p>
   {/if}
-  {#if $industry.actionError}
+  <!-- (A refusal the client's own dialog said is not said again here: ClientDialogs.svelte.) -->
+  {#if $industry.actionError && !$industry.actionErrorSaid}
     <p class="error">Last change failed: {$industry.actionError}</p>
   {/if}
   {#if !$industry.loaded}

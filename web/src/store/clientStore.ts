@@ -1446,7 +1446,7 @@ export function createClientStore(): ClientStore {
         });
         break;
       case "industry/action-error":
-        industry.set({ ...industry.get(), actionError: event.message });
+        industry.set({ ...industry.get(), actionError: event.message, actionErrorSaid: event.message !== null && event.said === true });
         break;
       case "industry/materials-said":
         // Each telling is counted: a window knows by the count what was said since it last asked.

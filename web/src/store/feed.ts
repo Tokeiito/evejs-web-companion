@@ -318,7 +318,7 @@ export type FeedEvent =
     }
   // An industry action (install/deliver/cancel) failed or was declined; null
   // clears the error after a clean action.
-  | { readonly type: "industry/action-error"; readonly message: string | null }
+  | { readonly type: "industry/action-error"; readonly message: string | null; readonly said?: boolean }
   // The server's word of what a monitored job's place has (OnIndustryMaterials).
   | {
       readonly type: "industry/materials-said";

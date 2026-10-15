@@ -81,7 +81,7 @@ export const NOTICE_SOURCES: readonly NoticeSource[] = [
   { slice: "drones", field: "silentDecline", kind: "warn", title: "Drones" },
   { slice: "inventory", field: "actionError", kind: "danger", title: "Inventory", saidBy: "actionErrorSaid" },
   { slice: "fitting", field: "actionError", kind: "danger", title: "Fitting", saidBy: "actionErrorSaid" },
-  { slice: "industry", field: "actionError", kind: "danger", title: "Industry" },
+  { slice: "industry", field: "actionError", kind: "danger", title: "Industry", saidBy: "actionErrorSaid" },
   { slice: "market", field: "actionError", kind: "danger", title: "Market" },
   { slice: "mail", field: "actionError", kind: "danger", title: "Mail", saidBy: "actionErrorSaid" },
   { slice: "agents", field: "actionError", kind: "danger", title: "Agents" },
