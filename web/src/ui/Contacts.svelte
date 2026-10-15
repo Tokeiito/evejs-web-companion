@@ -74,7 +74,8 @@
     hasContactLabel,
     inStandingGroup,
     labelMaskWithout,
-    labelNamesOf,
+    labelSwatch,
+    labelsOf,
     labelsToAssign,
     labelsToRemove,
     type AgentFolders,
@@ -412,8 +413,11 @@
     readonly blocked: boolean;
     /** Its contact's labels' bits, nought for an owner that is no contact (userentry.py SetLabelText, 345 to 351: GetLabelMask). */
     readonly labelMask: bigint;
-    /** Its labels' names, as the entry shows them under its name (GetLabelText, 1189 to 1202). */
-    readonly labelText: string;
+    /**
+     * Its labels, as the entry shows them under its name (GetLabelText, 1189 to 1202): by name, each in its swatch's
+     * colour where it has one, joined by commas.
+     */
+    readonly labelNames: readonly { readonly name: string; readonly color: string | null }[];
   }
 
   /**
@@ -461,7 +465,7 @@
         online: group !== CONTACT_GROUP.blocked && watched.has(entry.id) && isCharacterContact(entry.id) ? (onlineOf(entry.id) ?? null) : null,
         blocked: blockedIDs.has(entry.id),
         labelMask,
-        labelText: labelNamesOf(labelMask, labels).join(", "),
+        labelNames: labelsOf(labelMask, labels).map((label) => ({ name: label.name, color: labelSwatch(label.color) })),
       };
     });
     const sorted = rows.map((row, place) => ({ row, place })).sort((left, right) => {
@@ -2277,9 +2281,9 @@
                 </td>
                 <td>
                   {row.name}
-                  {#if row.labelText !== ""}
-                    <!-- Its labels' names under its own (SetContactLabelText, 353 to 358). -->
-                    <br /><small class="contacts-entry-labels">{row.labelText}</small>
+                  {#if row.labelNames.length > 0}
+                    <!-- Its labels' names under its own (SetContactLabelText, 353 to 358), each in its colour. -->
+                    <br /><small class="contacts-entry-labels">{#each row.labelNames as label, at (at)}{at > 0 ? ", " : ""}<span style:color={label.color}>{label.name}</span>{/each}</small>
                   {/if}
                 </td>
                 <td class="contacts-state">
