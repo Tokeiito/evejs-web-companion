@@ -265,16 +265,24 @@ export interface AccessGroup {
 export function decodeAccessGroups(result: JsonValue): AccessGroup[] {
   const groups: AccessGroup[] = [];
   for (const item of listItems(result)) {
-    if (!isRow(item)) {
-      continue;
+    const group = decodeAccessGroup(item);
+    if (group !== null) {
+      groups.push(group);
     }
-    const groupID = toNumber(readRowField(item, "groupID"));
-    if (groupID <= 0) {
-      continue;
-    }
-    groups.push({ groupID, creatorID: toOptionalID(readRowField(item, "creatorID")), name: toText(readRowField(item, "name")) });
   }
   return groups;
+}
+
+/** Decode one access list's KeyVal (ownerGroupManager.GetGroup), or null where it is none. */
+export function decodeAccessGroup(result: JsonValue): AccessGroup | null {
+  if (result === null || result === undefined || !isRow(result)) {
+    return null;
+  }
+  const groupID = toNumber(readRowField(result, "groupID"));
+  if (groupID <= 0) {
+    return null;
+  }
+  return { groupID, creatorID: toOptionalID(readRowField(result, "creatorID")), name: toText(readRowField(result, "name")) };
 }
 
 // --- R87 write acks ---------------------------------------------------------

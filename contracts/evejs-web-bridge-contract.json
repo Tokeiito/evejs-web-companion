@@ -728,8 +728,8 @@
     ]
   },
   "bffWritePolicy": {
-    "count": 388,
-    "sha256": "b2ec7c1fd0fc379db9524872eaabcdfc60ea9332b7c478835770c3bc3cad106e",
+    "count": 389,
+    "sha256": "7fb2967f022232d572adbc73206cd6a6998b1a2d77d885c2373f5943f12e0b92",
     "pairs": [
       "LPStoreMgr.TakeOfferForCharacter",
       "LPStoreMgr.TakeOfferForCorporation",
@@ -750,6 +750,7 @@
       "accessGroupBookmarkMgr.DeleteFolder",
       "accessGroupBookmarkMgr.DeleteSubfolder",
       "accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder",
+      "accessGroupBookmarkMgr.RemoveFromKnownFolders",
       "accessGroupBookmarkMgr.UpdateBookmark",
       "accessGroupBookmarkMgr.UpdateFolder",
       "accessGroupBookmarkMgr.UpdateKnownFolderState",
@@ -1132,6 +1133,7 @@
       "accessGroupBookmarkMgr.DeleteFolder",
       "accessGroupBookmarkMgr.DeleteSubfolder",
       "accessGroupBookmarkMgr.MoveBookmarksToFolderAndSubfolder",
+      "accessGroupBookmarkMgr.RemoveFromKnownFolders",
       "accessGroupBookmarkMgr.UpdateBookmark",
       "accessGroupBookmarkMgr.UpdateFolder",
       "accessGroupBookmarkMgr.UpdateKnownFolderState",

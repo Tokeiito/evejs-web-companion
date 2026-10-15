@@ -233,6 +233,18 @@ export async function setFolderActive(act: Ask, folderID: number, isActive: bool
 }
 
 /**
+ * Disconnects the pilot from the shared folder `folderID`, as Disconnect from Folder does (bookmarkSvc.RemoveFromKnownFolders,
+ * 459 to 464): accessGroupBookmarkMgr.RemoveFromKnownFolders(folderID). The folder stays; the pilot no longer knows it.
+ * Fails as the call fails.
+ */
+export async function removeFromKnownFolders(act: Ask, folderID: number): Promise<void> {
+  if (!anID(folderID)) {
+    throw new Error("That is no bookmark folder.");
+  }
+  await act("accessGroupBookmarkMgr", "RemoveFromKnownFolders", [folderID]);
+}
+
+/**
  * Deletes the folder `folderID` and everything in it, as Delete Folder does (bookmarkSvc.DeleteBookmarkFolder, 452 to
  * 457): accessGroupBookmarkMgr.DeleteFolder(folderID). Fails as the call fails.
  */

@@ -741,6 +741,9 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // The pilot's access lists, which the folder window offers a shared folder's access levels from
   // (accessGroupsController.py 105). The gateway's list has nothing of the owner group manager's.
   "ownerGroupManager.GetMyGroups",
+  // A shared folder disconnected from (bookmarkSvc.py 460), and an access list the pilot has not got asked by its
+  // number (accessGroupsController.py 184). The gateway's list has neither.
+  "accessGroupBookmarkMgr.RemoveFromKnownFolders", "ownerGroupManager.GetGroup",
   // A shared bookmark folder taken up, as the client's bookmark service makes it (bookmarkSvc.py 357). The gateway's
   // list has it not: through the gateway a pilot cannot.
   "accessGroupBookmarkMgr.AddToKnownFolders",
@@ -1224,6 +1227,10 @@ const folderChanged = (args, kwargs) => {
     ? {}
     : { status: "differs", note: "The client sends the folder's number, its name, its notes and its four access lists, and nothing else." };
 };
+/** accessGroupsController.GetGroupInfoFromID (184): GetGroup(groupID). */
+const listAsked = (args, kwargs) => (args.length === 1 && aBookmarkFolderID(args[0]) && Object.keys(kwargs).length === 0
+  ? {}
+  : { status: "differs", note: "The client sends the access list's number and nothing else." });
 /** bookmarkSvc.GetBookmarkFolder and GetFolderInfo (519, 528): GetFolderInfo(folderID). */
 const folderAsked = (args, kwargs) => (args.length === 1 && aBookmarkFolderID(args[0]) && Object.keys(kwargs).length === 0
   ? {}
@@ -2132,6 +2139,10 @@ const RETAIL_CALLS = Object.freeze({
     "self.accessGroupBookmarkMgr.UpdateFolder(folderID, folderName, description, adminGroupID, manageGroupID, useGroupID, viewGroupID): the folder window's Submit in its edit (Edit Folder, a folder's menu); the name and the notes unicode where they hold text. Answered the pilot's access to the folder after. In no recording."), [1, 2]),
   "accessGroupBookmarkMgr.GetFolderInfo": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:519", folderAsked,
     "self.accessGroupBookmarkMgr.GetFolderInfo(folderID): the folder as the server has it, asked by Edit Folder before its window opens (GetBookmarkFolder with refresh) and for a folder the client does not know (GetFolderInfo, 528). In no recording."),
+  "accessGroupBookmarkMgr.RemoveFromKnownFolders": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:460", folderAsked,
+    "self.accessGroupBookmarkMgr.RemoveFromKnownFolders(folderID): Disconnect from Folder, a shared folder's menu, after ConfirmForgetFolder. Answered nothing. In no recording."),
+  "ownerGroupManager.GetGroup": judged("eve/client/script/ui/structure/accessGroups/accessGroupsController.py:184", listAsked,
+    "self.remoteSvc.GetGroup(groupID), of ownerGroupManager by its name: an access list that is none of the pilot's, asked where its name is wanted (GetGroupInfoFromID with fetchToServer: a folder's lists in the folder window and in Folder Information). Answered the list. In no recording."),
   "ownerGroupManager.GetMyGroups": judged("eve/client/script/ui/structure/accessGroups/accessGroupsController.py:105", sentWithNothing,
     "self.remoteSvc.GetMyGroups(), of ownerGroupManager by its name and with nothing: the pilot's access lists, asked once and kept by the client's controller; the folder window offers a shared folder's access levels from them. In no recording."),
   "accessGroupBookmarkMgr.GetMyActiveBookmarks": judged("eve/client/script/ui/shared/bookmarks/bookmarkSvc.py:163", sentWithNothing,
